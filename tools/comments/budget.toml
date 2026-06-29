@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+#
+# Implementation comments only. Excludes SPDX license lines, Rustdoc, and
+# xtask-generated Rust sources. Lower this ceiling in the same commit that
+# removes comments; never raise it without maintainer approval.
+max_implementation_comment_lines = 460

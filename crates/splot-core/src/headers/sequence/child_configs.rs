@@ -11,9 +11,6 @@ use crate::error::{Error, Result};
 use crate::segment::{SegmentInfo, parse_seg_info};
 use crate::tile::{TileParams, TileParamsInput, parse_tile_layout};
 
-// AV2 § 3 constants used by the sequence-header child config parsers. Values are
-// taken from the AV2 v1.0.0 symbol table; they control bit positions and so are
-// modeled explicitly rather than inlined as magic numbers.
 /// `MOTION_MODES`: number of motion modes (AV2 § 3).
 const MOTION_MODES: usize = 5;
 /// `INTERINTRA`: first signalled motion-mode index (AV2 § 3).
@@ -155,7 +152,6 @@ pub fn parse_sequence_segment_config(reader: &mut BitReader<'_>) -> Result<Seque
     let seq_seg_info_present_flag = reader.read_flag()?;
     let (seq_allow_seg_info_change, segment_info) = if seq_seg_info_present_flag {
         let allow = reader.read_flag()?;
-        // AV2 § 5.4.4: ( SeqFeatureEnabled, SeqFeatureData ) = seg_info( MaxSegments ).
         let info = parse_seg_info(reader, max_segments)?;
         (Some(allow), Some(info))
     } else {
@@ -375,13 +371,11 @@ pub fn parse_sequence_inter_config(
     };
 
     if single_picture {
-        // single_picture_header_flag branch: only a small set of flags is signalled.
         config.enable_refmvbank = reader.read_flag()?;
         config.drl_reorder = read_drl_reorder(reader)?;
         config.seq_max_bvp_drl_bits_minus_1 = reader.read_ns(MAX_REF_BV_STACK_SIZE - 1)?;
         config.allow_frame_max_bvp_drl_bits = reader.read_flag()?;
         config.enable_bawp = reader.read_flag()?;
-        // NumRefFrames = 2, long_term_frame_id_bits = 0 (inferred above).
         return Ok(config);
     }
 
@@ -453,7 +447,6 @@ pub fn parse_sequence_inter_config(
     config.enable_adaptive_mvd = reader.read_flag()?;
     config.enable_mvd_sign_derive = reader.read_flag()?;
     config.enable_flex_mvres = reader.read_flag()?;
-    // single_picture_header_flag is false on this branch, so enable_global_motion is signalled.
     config.enable_global_motion = reader.read_flag()?;
     config.enable_short_refresh_frame_flags = reader.read_flag()?;
 
@@ -599,9 +592,6 @@ pub fn parse_sequence_transform_quant_entropy_config(
     } else {
         false
     };
-    // AV2 § 5.4.8: enable_parity_hiding is inferred 0 only when
-    // (enable_tcq && !choose_tcq_per_frame); in every other case (including
-    // !enable_tcq) the spec reads the f(1) flag in the else branch.
     let enable_parity_hiding = if enable_tcq && !choose_tcq_per_frame {
         false
     } else {
@@ -643,8 +633,6 @@ pub fn parse_sequence_transform_quant_entropy_config(
         base_uv_ac_delta_q = reader.read_bits_u8(5)?;
         uv_ac_delta_q_enabled = reader.read_flag()?;
         if equal_ac_dc_q {
-            // AV2 § 5.4.8: when equal_ac_dc_q, BaseUVDcDeltaQ = BaseUVAcDeltaQ.
-            // base_uv_dc_delta_q is not signalled here, so mirror the AC field.
             base_uv_dc_delta_q = base_uv_ac_delta_q;
         }
     }
@@ -744,8 +732,6 @@ pub fn parse_sequence_filter_config(
     let mut lr_wiener_nonsep_disabled = false;
     let mut lr_tools_uv_present = false;
     let mut lr_uv_wiener_nonsep_disabled = false;
-    // AV2 § 5.4.10: lr_tools_disable[1][RESTORE_PC_WIENER] is inferred to 1 when
-    // restoration is enabled (it is never signalled).
     let lr_uv_pc_wiener_disabled = enable_restoration;
     if enable_restoration {
         lr_pc_wiener_disabled = reader.read_flag()?;
@@ -754,7 +740,6 @@ pub fn parse_sequence_filter_config(
         lr_uv_wiener_nonsep_disabled = if lr_tools_uv_present {
             reader.read_flag()?
         } else {
-            // lr_tools_disable[1][RESTORE_WIENER_NONSEP] = lr_tools_disable[0][RESTORE_WIENER_NONSEP].
             lr_wiener_nonsep_disabled
         };
     }
@@ -867,10 +852,6 @@ pub fn parse_sequence_tile_config(
     }
 
     let allow_tile_info_change = reader.read_flag()?;
-    // AV2 § 5.4.2: tile_params(max_frame_width_minus_1 + 1, max_frame_height_minus_1 + 1,
-    // seqSbSize, seqSbSize, 0). A reserved seq_level_idx has no defined layout, so it is
-    // surfaced as a bounded residual rather than a hard parse error. The full layout
-    // keeps SeqSbColStarts / SeqSbRowStarts for the § 5.18.7.4 reuse path.
     let (params, seq_sb_col_starts, seq_sb_row_starts) =
         match parse_tile_layout(reader, tile_params_input) {
             Ok(layout) => (

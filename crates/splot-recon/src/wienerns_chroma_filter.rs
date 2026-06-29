@@ -461,7 +461,6 @@ mod tests {
         )
         .unwrap();
 
-        // m = 100, s = 100 << 7. The first UV tap adds (120 - 100) * 4.
         assert_eq!(output, [101]);
     }
 
@@ -482,8 +481,6 @@ mod tests {
         )
         .unwrap();
 
-        // Chroma taps are neutral. mLuma = 50 and the first luma tap is 70, so
-        // the luma contribution is (70 - 50) * 4.
         assert_eq!(output, [101]);
     }
 
@@ -517,8 +514,6 @@ mod tests {
         )
         .unwrap();
 
-        // Center luma is (10 + 14 + 18 + 22) >> 2 = 16. The first luma tap at
-        // chroma y+1 samples rows 2/3, yielding 36. Difference 20 * coeff 4.
         assert_eq!(output, [101]);
     }
 
@@ -548,8 +543,6 @@ mod tests {
         )
         .unwrap();
 
-        // Filter index 1 is ((2 * top-left) + (2 * bottom-left)) >> 2, so the
-        // center luma is 20 and the first luma tap is 60.
         assert_eq!(output, [101]);
     }
 
@@ -606,8 +599,6 @@ mod tests {
         )
         .unwrap();
 
-        // 4:2:2 does not enter the 4:2:0 downsample branch. The center luma is
-        // read directly at (0,0) and the first luma tap directly at (0,1).
         assert_eq!(output, [101]);
     }
 

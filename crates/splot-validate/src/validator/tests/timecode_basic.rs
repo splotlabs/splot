@@ -78,7 +78,6 @@ fn metadata_timecode_hours_out_of_range_is_flagged() {
 
 #[test]
 fn metadata_timecode_in_range_is_accepted() {
-    // Maximum valid full-timestamp values: 59 / 59 / 23.
     let payload = timecode_short_payload(59, 59, 23);
     let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
     assert!(
@@ -150,10 +149,6 @@ pub(in crate::validator::tests) fn timecode_unit_bits(
 
 #[test]
 fn metadata_timecode_inferred_seconds_without_previous_is_flagged() {
-    // AV2 § 6.16.7: the first timecode in scope omits seconds_value
-    // (full_timestamp_flag 0, seconds_flag 0), which is inferred from the previous
-    // set in decoding order — but no previous set exists, so the inference has no
-    // source and the field is required to have been present before.
     let payload = timecode_flagged_payload(0, None, None, None);
     let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
     assert!(
@@ -173,9 +168,6 @@ pub(in crate::validator::tests) fn global_metadata_short_obu(payload: &[u8]) -> 
 
 #[test]
 fn metadata_timecode_inference_after_present_value_passes() {
-    // AV2 § 6.16.7: a full-timestamp first timecode carries seconds/minutes/hours,
-    // so a following timecode that omits them all infers from that previous present
-    // set in decoding order — no inference diagnostic.
     let mut data = temporal_delimiter_obu();
     data.extend(global_metadata_short_obu(&timecode_short_payload(
         12, 34, 5,
@@ -194,7 +186,6 @@ fn metadata_timecode_inference_after_present_value_passes() {
 
 #[test]
 fn metadata_timecode_full_timestamp_first_passes() {
-    // A full-timestamp first timecode carries every field, so nothing is inferred.
     let payload = timecode_short_payload(0, 0, 0);
     let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
     assert!(
@@ -207,9 +198,6 @@ fn metadata_timecode_full_timestamp_first_passes() {
 
 #[test]
 fn metadata_timecode_inference_names_each_absent_field() {
-    // First timecode carries seconds only (seconds_flag 1, minutes_flag 0): minutes
-    // and hours are absent with no previous present value -> two diagnostics naming
-    // minutes_value and hours_value; seconds_value is present, so it is silent.
     let payload = timecode_flagged_payload(0, Some(30), None, None);
     let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
     let inferred: Vec<&str> = report
@@ -228,10 +216,6 @@ fn metadata_timecode_inference_names_each_absent_field() {
 
 #[test]
 fn metadata_timecode_inference_chain_resets_at_clk() {
-    // A full-timestamp timecode in CVS 1 carries every field. A CLK at the next
-    // temporal unit starts a new coded video sequence (§ 7.3.6), breaking the
-    // decoding-order inference chain — so a following timecode that omits seconds
-    // has no previous present value in the new sequence and is flagged.
     let mut data = global_metadata_short_stream(&timecode_short_payload(0, 0, 0));
     data.extend(temporal_delimiter_obu());
     data.extend(annex_b_obu(0x10, &[])); // OBU_CLOSED_LOOP_KEY, xlayer 0
@@ -254,9 +238,6 @@ fn metadata_timecode_inference_chain_resets_at_clk() {
 
 #[test]
 fn metadata_timecode_n_frames_exceeds_rate_is_flagged() {
-    // n_frames 15 == maxPicPerSecond 15, which violates "n_frames shall be less
-    // than maxPicPerSecond". The CI establishes timing at xlayer 0; the timecode is
-    // a global suffix unit (xlayer 31) describing every layer.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
     data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
@@ -273,7 +254,6 @@ fn metadata_timecode_n_frames_exceeds_rate_is_flagged() {
 
 #[test]
 fn metadata_timecode_n_frames_boundary_passes() {
-    // n_frames 14 == maxPicPerSecond - 1: the strict "less than" bound is satisfied.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
     data.extend(content_interpretation_obu(0, 0, Some(BASE_TIMING)));
@@ -290,8 +270,6 @@ fn metadata_timecode_n_frames_boundary_passes() {
 
 #[test]
 fn metadata_timecode_n_frames_without_timing_is_silent() {
-    // No content interpretation establishes ci_timing_info_present_flag, so the
-    // bound does not apply even for a large n_frames.
     let payload = timecode_flagged_payload(400, Some(0), Some(0), Some(0));
     let report = Validator::new(false).validate_bytes(&global_metadata_short_stream(&payload));
     assert!(
@@ -302,9 +280,6 @@ fn metadata_timecode_n_frames_without_timing_is_silent() {
 
 #[test]
 fn metadata_timecode_n_frames_ci_arrives_after_metadata_flagged() {
-    // Re-evaluation path: the timecode precedes the content interpretation that
-    // establishes its timing. A second identical CI must not re-report (the timing
-    // is unchanged, so the recheck is skipped, mirroring the scan-type dedup).
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu_with_header(
         &layer_obu_header(8, 0, 0, 31),
@@ -323,8 +298,6 @@ fn metadata_timecode_n_frames_ci_arrives_after_metadata_flagged() {
 
 #[test]
 fn metadata_timecode_n_frames_unequal_interval_bound() {
-    // equal_picture_interval 0: TicksPerPicture = num_units_in_display_tick = 1000,
-    // so maxPicPerSecond = ceil(30000 / 1000) = 30. n_frames 30 violates, 29 passes.
     let unequal = CiTiming {
         equal_picture_interval: false,
         ..BASE_TIMING
@@ -358,12 +331,6 @@ fn metadata_timecode_n_frames_unequal_interval_bound() {
 
 #[test]
 fn metadata_timecode_omitted_after_omitted_is_flagged() {
-    // Finding 1 (literal "present" reading): a full-timestamp first timecode carries
-    // every field; a second set omits seconds (inferred cleanly from the present
-    // first set); a THIRD set also omits seconds. Under the literal reading the
-    // second set's seconds_value is INFERRED, not present, so it does not satisfy the
-    // third set's "such a previous seconds_value shall have been present" requirement
-    // — the third omission fires. (A chained-inference reading would stay silent.)
     let mut data = temporal_delimiter_obu();
     data.extend(global_metadata_short_obu(&timecode_short_payload(
         12, 34, 5,
@@ -387,11 +354,6 @@ fn metadata_timecode_omitted_after_omitted_is_flagged() {
 
 #[test]
 fn metadata_timecode_omitted_then_clk_in_same_tu_seeds_from_new_cvs() {
-    // Finding 2 (same-TU CLK attribution): a prior-CVS timecode carries seconds
-    // (present). A new temporal unit holds, in decoding order, a timecode that omits
-    // seconds and THEN a CLK. Per § 7.3.6 the whole temporal unit containing the CLK
-    // joins the NEW coded video sequence, so the prior-CVS present seconds must not
-    // seed the omitting set's inference — the diagnostic fires.
     let mut data = global_metadata_short_stream(&timecode_short_payload(0, 0, 0));
     data.extend(temporal_delimiter_obu());
     data.extend(global_metadata_short_obu(&timecode_flagged_payload(
@@ -411,12 +373,7 @@ fn metadata_timecode_omitted_then_clk_in_same_tu_seeds_from_new_cvs() {
 
 #[test]
 fn metadata_timecode_n_frames_ci_after_metadata_anchors_at_metadata() {
-    // Finding 3: the CI-after re-evaluation path anchors the diagnostic at the
-    // offending timecode metadata OBU (which the message also names), not the later
-    // content interpretation OBU.
     let mut data = temporal_delimiter_obu();
-    // The timecode metadata OBU starts one Annex B leb128 size-prefix byte past the
-    // preceding OBUs.
     let timecode_offset = data.len() as u64 + 1;
     data.extend(annex_b_obu_with_header(
         &layer_obu_header(8, 0, 0, 31),

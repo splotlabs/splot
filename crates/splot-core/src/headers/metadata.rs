@@ -414,7 +414,6 @@ fn read_leb128_bytes(reader: &mut BitReader<'_>) -> Result<(u32, u8)> {
     let before = reader.byte_offset().get();
     let value = reader.read_leb128()?;
     let after = reader.byte_offset().get();
-    // leb128() consumes 1..=8 whole bytes, so the delta fits in u8.
     let bytes = after.saturating_sub(before) as u8;
     Ok((value, bytes))
 }
@@ -455,8 +454,6 @@ pub fn parse_metadata_short(
     let metadata_type = MetadataType::from_value(metadata_type_value);
 
     if muh_cancel_flag {
-        // AV2 § 5.17.2: a cancelled metadata OBU returns after metadata_type; the OBU
-        // trailing_bits() are parsed by the caller's finish logic.
         return Ok(MetadataShortObu {
             metadata_is_suffix,
             muh_layer_idc,
@@ -468,7 +465,6 @@ pub fn parse_metadata_short(
         });
     }
 
-    // AV2 § 5.17.2: metadataPayloadSize = obuPayloadSize - 2 - Leb128Bytes.
     let metadata_payload_size = obu_payload_size
         .checked_sub(2)
         .and_then(|value| value.checked_sub(usize::from(metadata_type_leb128_bytes)))
@@ -520,8 +516,6 @@ pub fn parse_metadata_group(
         ));
     }
 
-    // Count is bounded by 16383; grow the Vec as units actually parse so a malformed
-    // count over a tiny payload does not pre-allocate from an untrusted value.
     let unit_count = metadata_unit_cnt_minus_1 + 1;
     let mut units = Vec::new();
     for _ in 0..unit_count {
@@ -543,13 +537,10 @@ fn parse_metadata_group_unit(
     let (metadata_type_value, _) = read_leb128_bytes(reader)?;
     let metadata_type = MetadataType::from_value(metadata_type_value);
 
-    // muh_header_size f(7) then muh_cancel_flag f(1) within a single byte (MSB-first).
     let header_byte = reader.read_bits_u8(8)?;
     let muh_header_size = header_byte >> 1;
     let muh_cancel_flag = (header_byte & 0x01) != 0;
 
-    // headerRemainingBytes is computed in i64 so the spec's running subtraction can be
-    // detected when it would go negative (§ 6.16.3).
     let mut header_remaining = i64::from(muh_header_size);
     let mut muh_payload_size = None;
     let mut muh_layer_idc = None;
@@ -596,8 +587,6 @@ fn parse_metadata_group_unit(
         ));
     }
 
-    // header_remaining is non-negative; muh_header_size is f(7) (<= 127), so the
-    // remaining count fits in usize.
     let header_extension_len = header_remaining as usize;
     for _ in 0..header_extension_len {
         let _ = reader.read_bits_u8(8)?;
@@ -641,8 +630,6 @@ fn parse_metadata_unit(
 ) -> Result<MetadataUnit> {
     let payload = match parse_metadata_payload(reader, payload_size, metadata_type) {
         Ok(payload) => payload,
-        // The reader is bounded to metadataPayloadSize bytes, so an EOF means the child
-        // syntax would overrun the declared size (remainingMuPayloadBits < 0, § 6.16.1).
         Err(Error::UnexpectedEof { offset, .. }) => {
             return Err(Error::InvalidMetadata {
                 offset,
@@ -671,8 +658,6 @@ fn parse_metadata_payload(
         MetadataType::Timecode => MetadataPayload::Timecode(parse_timecode(reader)?),
         MetadataType::BandingHints => MetadataPayload::BandingHints(parse_banding_hints(reader)?),
         MetadataType::IccProfile => MetadataPayload::IccProfile(MetadataIccProfile {
-            // icc_profile_data_payload_bytes is le(metadataPayloadSize); the bounded
-            // sub-reader already guarantees these bytes exist, so summarize the length.
             payload_len: payload_size,
         }),
         MetadataType::ScanType => MetadataPayload::ScanType(parse_scan_type(reader)?),
@@ -687,7 +672,6 @@ fn parse_metadata_payload(
         MetadataType::UserDataUnregistered => MetadataPayload::UserDataUnregistered(
             parse_user_data_unregistered(reader, payload_size)?,
         ),
-        // AV2 § 6.16.1 NOTE: reserved / private types have undefined syntax; preserve raw.
         MetadataType::Reserved(_) => MetadataPayload::UnknownRaw(MetadataUnknownRaw {
             raw_len: payload_size,
         }),
@@ -728,9 +712,6 @@ fn parse_itut_t35(reader: &mut BitReader<'_>, payload_size: usize) -> Result<Met
     } else {
         None
     };
-    // t35PayloadSize = metadataPayloadSize - 1 (- 1 again for the extension byte). The
-    // reads above succeed only if those bytes exist within the bounded unit, so the
-    // subtraction does not underflow once they have been read.
     let payload_len = payload_size.saturating_sub(consumed);
     Ok(MetadataItutT35 {
         itu_t_t35_country_code,
@@ -843,8 +824,6 @@ fn parse_user_data_unregistered(
     for byte in &mut uuid_iso_iec_11578 {
         *byte = reader.read_bits_u8(8)?;
     }
-    // The 16-byte UUID read succeeds only if payload_size >= 16, so the subtraction does
-    // not underflow once the UUID has been read.
     let payload_len = payload_size.saturating_sub(16);
     Ok(MetadataUserDataUnregistered {
         uuid_iso_iec_11578,
@@ -971,7 +950,6 @@ mod tests {
 
     #[test]
     fn short_header_fields_decode() {
-        // 0b1_010_1_011: is_suffix=1, layer_idc=2, cancel=1, persistence=3.
         let payload = [0b1010_1011u8, 0x04, 0x80];
         let (parsed, _) = short_reader(&payload);
         assert!(parsed.metadata_is_suffix);
@@ -980,7 +958,6 @@ mod tests {
         assert_eq!(parsed.muh_persistence_idc, 3);
         assert_eq!(parsed.metadata_type, MetadataType::Timecode);
         assert_eq!(parsed.metadata_type_leb128_bytes, 1);
-        // Cancelled: no metadata unit is parsed.
         assert!(parsed.unit.is_none());
     }
 
@@ -1002,7 +979,6 @@ mod tests {
 
     #[test]
     fn short_hdr_mdcv_parses() {
-        // 3 * (x, y) f(16) + white x/y f(16) + lum max/min f(32) = 24 bytes.
         let mut unit = Vec::new();
         for v in [10u16, 20, 30, 40, 50, 60, 70, 80] {
             unit.extend_from_slice(&v.to_be_bytes());
@@ -1024,7 +1000,6 @@ mod tests {
 
     #[test]
     fn short_itut_t35_without_extension() {
-        // country_code 0x01, then 3 payload bytes.
         let unit = [0x01, 0xAA, 0xBB, 0xCC];
         let payload = short_payload(SHORT_HEADER, 3, &unit);
         let (parsed, _) = short_reader(&payload);
@@ -1038,7 +1013,6 @@ mod tests {
 
     #[test]
     fn short_itut_t35_with_extension_byte() {
-        // country_code 0xFF -> one extension byte, then 2 payload bytes.
         let unit = [0xFF, 0x42, 0xAA, 0xBB];
         let payload = short_payload(SHORT_HEADER, 3, &unit);
         let (parsed, _) = short_reader(&payload);
@@ -1052,7 +1026,6 @@ mod tests {
 
     #[test]
     fn short_itut_t35_too_small_is_underflow() {
-        // metadataPayloadSize == 0 (no country_code byte) -> underflow on the bounded read.
         let payload = short_payload(SHORT_HEADER, 3, &[]);
         let mut reader = BitReader::new(&payload, ByteOffset::new(0));
         assert!(matches!(
@@ -1120,7 +1093,6 @@ mod tests {
 
     #[test]
     fn short_scan_type_parses() {
-        // mps_pic_struct_type=12 (max valid), idc=1, dup=1: 0b01100_01_1 = 0x63.
         let payload = short_payload(SHORT_HEADER, 8, &[0x63]);
         let (parsed, _) = short_reader(&payload);
         let MetadataPayload::ScanType(scan) = parsed.unit.unwrap().payload else {
@@ -1133,8 +1105,6 @@ mod tests {
 
     #[test]
     fn short_temporal_point_info_parses() {
-        // frame_presentation_time leb128 = 300 -> 0xAC 0x02, plus one padding byte so
-        // metadataPayloadSize is a whole number of bytes.
         let payload = short_payload(SHORT_HEADER, 9, &[0xAC, 0x02, 0x00]);
         let (parsed, _) = short_reader(&payload);
         let MetadataPayload::TemporalPointInfo(tpi) = parsed.unit.unwrap().payload else {
@@ -1145,7 +1115,6 @@ mod tests {
 
     #[test]
     fn short_decoded_frame_hash_per_plane() {
-        // hash_type=0, per_plane=1, has_grain=0, is_monochrome=0, reserved=0 -> 0b0000_1000.
         let mut unit = vec![0b0000_1000u8];
         for plane in 0..3u8 {
             unit.extend_from_slice(&[plane; 16]);
@@ -1163,7 +1132,6 @@ mod tests {
 
     #[test]
     fn short_decoded_frame_hash_single() {
-        // per_plane=0 -> single frame_hash (16 bytes).
         let mut unit = vec![0b0000_0000u8];
         unit.extend_from_slice(&[0xAB; 16]);
         let payload = short_payload(SHORT_HEADER, 5, &unit);
@@ -1201,7 +1169,6 @@ mod tests {
 
     #[test]
     fn short_user_data_too_small_for_uuid_is_underflow() {
-        // metadataPayloadSize == 8 < 16 -> reading the UUID overruns the bounded unit.
         let payload = short_payload(SHORT_HEADER, 10, &[0u8; 8]);
         let mut reader = BitReader::new(&payload, ByteOffset::new(0));
         assert!(matches!(
@@ -1263,7 +1230,6 @@ mod tests {
 
     #[test]
     fn short_unknown_metadata_type_is_raw() {
-        // metadata_type 0 (reserved) -> UnknownRaw preserving the length.
         let payload = short_payload(SHORT_HEADER, 0, &[0xDE, 0xAD, 0xBE]);
         let (parsed, _) = short_reader(&payload);
         assert_eq!(parsed.metadata_type, MetadataType::Reserved(0));
@@ -1286,7 +1252,6 @@ mod tests {
 
     #[test]
     fn short_payload_underflow_when_obu_too_small() {
-        // obuPayloadSize = 2, leb128 bytes = 1 -> 2 - 2 - 1 underflows.
         let payload = [SHORT_HEADER, 0x01];
         let mut reader = BitReader::new(&payload, ByteOffset::new(0));
         assert!(matches!(
@@ -1307,8 +1272,6 @@ mod tests {
         ));
     }
 
-    // --- group OBU ---
-
     fn group_reader(payload: &[u8], xlayer: ExtendedLayerId) -> MetadataGroupObu {
         let mut reader = BitReader::new(payload, ByteOffset::new(0));
         parse_metadata_group(&mut reader, xlayer).unwrap()
@@ -1316,7 +1279,6 @@ mod tests {
 
     #[test]
     fn group_single_cancelled_unit() {
-        // first byte 0x00, cnt_minus_1 = 0, unit: type=4, header byte = (0<<1)|1 = 0x01.
         let payload = [0x00, 0x00, 0x04, 0x01, 0x80];
         let group = group_reader(&payload, ExtendedLayerId::from_bits(0));
         assert_eq!(group.units.len(), 1);
@@ -1328,8 +1290,6 @@ mod tests {
 
     #[test]
     fn group_single_hdr_cll_unit() {
-        // header byte for a non-cancel unit: muh_header_size accounts for payload_size
-        // leb (1) + fixed 2 bytes = 3 -> (3<<1)|0 = 0x06.
         let payload = [
             0x00, // is_suffix=0, necessity=0, app_id=0
             0x00, // metadata_unit_cnt_minus_1 = 0
@@ -1359,15 +1319,12 @@ mod tests {
 
     #[test]
     fn group_local_mlayer_map_is_parsed() {
-        // layer_idc = LAYER_VALUES (3) on a local OBU -> a single muh_mlayer_map byte.
-        // muh_header_size accounts for payload_size leb (1) + fixed 2 + 1 mlayer = 4.
         let mut middle = Bits::default();
         middle.f(3, 3); // muh_layer_idc = LAYER_VALUES
         middle.f(0, 3); // muh_persistence_idc
         middle.f(0, 8); // muh_priority
         middle.f(0, 2); // muh_reserved_zero_2bits
         let middle = middle.into_bytes(); // 2 bytes
-        // type=0 (Reserved -> UnknownRaw, no unit bytes), header_size=4, payload_size=0.
         let mut payload = vec![0x00, 0x00, 0x00, 0x08, 0x00];
         payload.extend_from_slice(&middle);
         payload.push(0b0000_0110); // muh_mlayer_map (bits 1 and 2 set)
@@ -1381,16 +1338,12 @@ mod tests {
 
     #[test]
     fn group_global_xlayer_map_is_parsed() {
-        // Global OBU, layer_idc = LAYER_VALUES -> muh_xlayer_map f(32) then one
-        // muh_mlayer_map per set bit. muh_header_size = payload_size leb (1) + 2 + 4
-        // (xlayer_map) + 1 (one set bit -> one mlayer map) = 8.
         let mut middle = Bits::default();
         middle.f(3, 3); // muh_layer_idc = LAYER_VALUES
         middle.f(0, 3);
         middle.f(0, 8);
         middle.f(0, 2);
         let middle = middle.into_bytes();
-        // type=0 (Reserved -> UnknownRaw), header_size = 8 -> (8<<1)=0x10, payload_size=0.
         let mut payload = vec![0x00, 0x00, 0x00, 0x10, 0x00];
         payload.extend_from_slice(&middle);
         payload.extend_from_slice(&1u32.to_be_bytes()); // muh_xlayer_map = bit 0 set
@@ -1404,7 +1357,6 @@ mod tests {
 
     #[test]
     fn group_two_units() {
-        // cnt_minus_1 = 1 -> two cancelled units (compact).
         let payload = [0x00, 0x01, 0x04, 0x01, 0x05, 0x01, 0x80];
         let group = group_reader(&payload, ExtendedLayerId::from_bits(0));
         assert_eq!(group.units.len(), 2);
@@ -1414,7 +1366,6 @@ mod tests {
 
     #[test]
     fn group_unit_count_too_large_is_rejected() {
-        // metadata_unit_cnt_minus_1 = 16383 (leb128 0xFF 0x7F) >= 16383.
         let payload = [0x00, 0xFF, 0x7F, 0x80];
         let mut reader = BitReader::new(&payload, ByteOffset::new(0));
         assert!(matches!(
@@ -1428,8 +1379,6 @@ mod tests {
 
     #[test]
     fn group_header_underflow_is_rejected() {
-        // Non-cancel unit with muh_header_size = 0: payload_size leb (1 byte) alone makes
-        // headerRemainingBytes negative.
         let payload = [0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x80];
         let mut reader = BitReader::new(&payload, ByteOffset::new(0));
         assert!(matches!(
@@ -1443,8 +1392,6 @@ mod tests {
 
     #[test]
     fn group_header_extension_bytes_are_consumed() {
-        // muh_header_size = 4 -> 1 extension byte after the fixed header (payload_size
-        // leb (1) + fixed 2 + 1 extension = 4), no layer maps (layer_idc=0).
         let payload = [
             0x00, 0x00, // group header + cnt
             0x00, // metadata_type = 0 (Reserved -> UnknownRaw, no unit bytes)

@@ -526,7 +526,5 @@ fn display_matches_pre_migration_messages() {
 
 #[test]
 fn variant_count_is_locked() {
-    // Tripwire: a new ReconError variant should be added to all_variants() and
-    // EXPECTED so its #[error(..)] message stays under round-trip cover.
     assert_eq!(all_variants().len(), 93);
 }

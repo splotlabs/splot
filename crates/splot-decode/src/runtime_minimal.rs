@@ -335,14 +335,6 @@ fn decode_minimal_key_frame(
             header,
         );
     }
-    // The non-general (frozen minimal-tier) reconstruction path
-    // (`reconstruct_minimal_traced_frame`) hard-codes `BitDepth::Eight` and wraps
-    // its result as `MinimalRuntimeDecodedFrame::Eight`. A 10-bit frame that falls
-    // through here (e.g. a `base_q_idx == 255` flat frame, which
-    // `route_general_minimal_intra` rejects) would reconstruct as 8-bit and emit a
-    // confident-but-wrong 8-bit hash — the cardinal sin. Only the general-intra
-    // path handles 10-bit; reject 10-bit on the frozen path before any
-    // reconstruction. (8-bit is unaffected.)
     if sequence.general.bit_depth_idc != BitDepthIdc::Eight {
         return Err(unsupported(
             "unsupported_10bit_frozen_minimal_tier",
@@ -422,8 +414,6 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     let (ivf, header) = require_multiframe_ivf(&parsed)?;
     preflight(header)?;
 
-    // The sequence header lives in the first IVF frame's OBU stream; it activates for
-    // every subsequent frame in the stream (AV2 § 7.2.1).
     let first_ivf_frame = ivf.frames.first().ok_or_else(|| {
         unsupported(
             "missing_first_ivf_frame",
@@ -452,9 +442,6 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     let sequence = parse_sequence(sequence_envelope)?;
     validate_sequence(&sequence, sequence_envelope.offset)?;
 
-    // Parse-only key-frame checks are safe before the 8-bit sample-storage boundary:
-    // they do not allocate `DecodedFrame<u8>` or emit output, and they let real mission
-    // streams fail at the next true header/tool frontier instead of at sequence flags.
     let key_core = parse_frame_core(key_envelope, &sequence)?;
     ensure_intra_header_complete(&key_core, key_envelope.offset)?;
     let mut candidates = plan.frame_candidates_all();
@@ -477,16 +464,8 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     )?;
     ensure_sequence_chroma_tools_before_tile_decode(&sequence, sequence_envelope.offset)?;
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
-    // This structural gate intentionally runs after the parse-only header/tool
-    // checks above: later leading OBUs are outside `key_envelope`, so malformed
-    // key headers report their true frontier while otherwise-supported streams
-    // still reject extra leading OBUs before allocation or output.
     reject_extra_leading_key_payload_obus(leading_obus)?;
 
-    // §7.23 reference-frame buffer over the sequence's NumRefFrames active slots. Each
-    // decoded frame's refresh_frame_flags refreshes the named slots (the key frame's
-    // §7.20 allFrames mask, then each inter frame's selected slot), so a later inter
-    // frame can rank up to two valid references via the §7.7 implicit map.
     let num_ref_frames = usize::from(
         sequence
             .inter
@@ -524,30 +503,11 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     retained_frame_bytes =
         ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
     frames.push(key_frame);
-    // §7.20 / §7.23: retain the decoded key frame in the slots its refresh_frame_flags
-    // names (a CLK key uses allFrames, so §7.23 :14100 marks only slot 0 valid).
     reference.update(
         0,
         frame_ref_update_from_core(&key_core, key_envelope.offset)?,
     );
 
-    // Decode each following inter `OBU_REGULAR_TILE_GROUP` frame in stream order,
-    // retaining each into the §7.23 buffer so a later frame can reference it. The
-    // verified subset admits the single-reference (non-compound) NEARMV / GLOBALMV /
-    // NEWMV path with NumTotalRefs ∈ {1, 2}; anything else (a second key frame, a
-    // compound or NumTotalRefs > 2 frame) is rejected with a structured diagnostic
-    // before any output. Tracked by `DECODE-INTER-MULTIREF-RUNTIME` (layered on
-    // `DECODE-FIRST-INTER-FRAME-FRONTIER`).
-    // VERIFIED-SUBSET DISCIPLINE (CDF inheritance): the decoder decodes every frame
-    // from the default (init_*_cdfs) entropy state and does NOT model the §7.23
-    // save_cdfs / §5 load_cdfs cross-frame CDF flow. Each refreshed slot records (per
-    // slot) whether its stored frame ADAPTED its CDFs (disable_cdf_update == 0) and its
-    // RefFrameType; decode_minimal_inter_frame resolves §5 set_primary_ref_frame_and_ctx
-    // (including the PRIMARY_REF_CHOOSE resolution) and rejects ONLY when the RESOLVED
-    // loaded slot adapted. The committed fixtures resolve to PRIMARY_REF_NONE or a
-    // non-adapted slot, so nothing is rejected.
-    // The key frame's §7.23 adaptation state is already recorded in the reference buffer
-    // by `reference.update(0, ...)` above (via `frame_ref_update_from_core`).
     for next_candidate in candidates {
         match next_candidate.obu_type() {
             ObuType::RegularTileGroup => {
@@ -559,10 +519,6 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                     next_candidate,
                     &mut next_unvalidated_following_ivf_record,
                 )?;
-                // VERIFIED-SUBSET DISCIPLINE: the §7.7 ranking + single_ref wiring is
-                // proven bit-exact only for up to TWO valid reference slots (NumTotalRefs
-                // ∈ {1, 2}). Reject before output if the buffer already holds more — a
-                // three-valid-slot §7.7 ranking / multi-decision single_ref is unfixtured.
                 if reference.valid_count() > 2 {
                     return Err(unsupported_at(
                         "inter_too_many_valid_references",
@@ -570,18 +526,6 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                         "minimal multi-reference decode is verified only for up to two valid reference slots; a third valid slot needs a richer §7.7 ranking / multi-decision single_ref that is not yet fixtured",
                     ));
                 }
-                // The P2 order-hint wrap guard (the stored RefOrderHint is the unwrapped
-                // OrderHint only while the GOP fits in one OrderHintBits window) is applied
-                // inside decode_minimal_inter_frame, which has the parsed order_hint_lsb and
-                // the reference history, and rejects BEFORE any output.
-                // The §7.23 cross-frame CDF-inheritance reject (a frame whose §5-resolved
-                // primary_ref_frame loads a prior adapted slot's CDFs, which the decoder
-                // does not model) is applied inside decode_minimal_inter_frame, which has the
-                // parsed primary_ref_frame / disable_cross_frame_cdf_init / ref_frame_idx and
-                // rejects BEFORE the tile entropy decode.
-                // Build the §7.23 reference store from the frames decoded so far, then
-                // decode this inter frame over it. `build_store` borrows `frames`; the
-                // borrow ends when the inter decode returns its owned frame.
                 let (store, meta) = reference.build_store(&frames)?;
                 let inter_state = inter::InterReferenceState {
                     store: &store,
@@ -857,9 +801,6 @@ fn ensure_retained_frame_byte_limits_for_core(
             "minimal runtime requires parsed frame dimensions before charging retained decoded-frame bytes",
         )
     })?;
-    // Reference-frame retention is 8-bit only (a 10-bit frame is rejected with
-    // `unsupported_10bit_reference_retention` before it can be retained), so the
-    // retained-byte budget charges 1 byte per sample.
     let frame_bytes = decoded_frame_byte_budget(frame_size, bytes_per_sample(BitDepth::Eight))
         .map(|budget| budget.decoded_bytes)?;
     ensure_retained_frame_byte_limits_for_bytes(limits, retained_frame_bytes, frame_bytes)
@@ -875,8 +816,6 @@ fn ensure_retained_frame_byte_limits_for_bytes(
         retained_frame_bytes,
         frame_bytes,
     )?;
-    // The runtime report retains every decoded frame, so this is a
-    // conservative upper bound for the live reference-store bytes.
     limits.ensure(
         DecodeLimitName::MaxReferenceStoreBytes,
         next_retained_frame_bytes,
@@ -925,7 +864,6 @@ fn decode_minimal_block_symbol_frontier_error(
     }
 }
 
-// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
 #[allow(clippy::needless_pass_by_value)]
 fn decode_minimal_block_symbol_error(
     error: MinimalBlockSymbolTraceError,
@@ -971,7 +909,6 @@ fn decode_minimal_block_symbol_error(
     }
 }
 
-// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
 #[allow(clippy::needless_pass_by_value)]
 fn decode_minimal_partition_frontier_error(
     error: MinimalRuntimePartitionFrontierError,
@@ -1102,13 +1039,6 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
             "minimal tier does not support sequence crop windows",
         ));
     }
-    // A multi-frame stream (key + inter) carries a non-single-picture sequence
-    // header (`single_picture_header_flag == 0`), so this is admitted here: the
-    // per-frame header parse and the frame-core validation downstream
-    // (`validate_frame_core` / `is_general_minimal_intra`) gate the actual decode
-    // shape, and a single-picture sequence is just the one-frame case. Frame-header
-    // bit layout differences (e.g. the `frame_size_override_flag` read) are handled
-    // by `parse_frame_header_core` and proven bit-exact by the per-frame decode.
     if sequence.intra.is_none() {
         return Err(unsupported_at(
             "missing_sequence_intra_config",
@@ -1165,17 +1095,8 @@ fn ensure_sequence_chroma_tools_before_tile_decode(
 /// `base_q_idx == 255` 8-bit fixture path) and fails there; the general intra
 /// path handles 10-bit DC and rejects 10-bit non-DC inside `decode_one_general
 /// _intra_block`.
-// Fail-closed §6.4.1 storage gate: the `Result` is the rejection point for unsupported
-// storage bit depths and the exhaustive match forces review when `BitDepthIdc` grows, so
-// the wrapper is intentional even though both current arms return `Ok`.
 #[allow(clippy::unnecessary_wraps)]
 fn ensure_runtime_storage_bit_depth(sequence: &SequenceHeader, _offset: ByteOffset) -> Result<()> {
-    // §6.4.1 bit_depth_idc resolves to exactly Eight or Ten in the parser. Both
-    // now have runtime sample storage: 8-bit (`u8`) for every supported tier, and
-    // 10-bit (`u16`) for the general-intra DC subset gated downstream
-    // (`DECODE-GENERAL-INTRA-10BIT`). Any richer 10-bit shape is rejected before
-    // output by `route_general_minimal_intra` / `decode_one_general_intra_block`,
-    // so admitting Ten here cannot emit a confident-but-wrong 10-bit hash.
     match sequence.general.bit_depth_idc {
         BitDepthIdc::Eight | BitDepthIdc::Ten => Ok(()),
     }
@@ -1239,9 +1160,6 @@ fn frame_ref_update_from_core(
             "minimal multi-frame decode requires a parsed refresh_frame_flags for the §7.23 update",
         )
     })?;
-    // The admitted (non-wrapping) subset makes OrderHint == OrderHintLsbs exactly; a
-    // wrapping history is rejected up front, so storing the LSBs here is the unwrapped
-    // OrderHint for every admitted stream.
     let order_hint = core.order_hint_lsb.unwrap_or(0);
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_at(
@@ -1260,13 +1178,7 @@ fn frame_ref_update_from_core(
                 "minimal multi-frame decode requires a parsed base_q_idx for the §7.23 update",
             )
         })?;
-    // §7.23 :14110 RefFrameType[i] = FrameType: the minimal subset stores either the CLK
-    // KEY_FRAME or an INTER_FRAME, so `!is_key_frame` is exactly RefFrameType == INTER_FRAME
-    // (the §5 choose_primary_secondary_ref_frame candidate filter). A SWITCH frame is not
-    // admitted here (the validators require a non-key inter frame or the CLK key).
     let is_inter = !core.is_key_frame;
-    // Whether this frame ADAPTED its CDFs (disable_cdf_update == 0): recorded per slot so a
-    // later frame's cross-frame CDF-load reject keys on the RESOLVED loaded slot.
     let adapted = core.disable_cdf_update != Some(true);
     Ok(reference_buffer::FrameRefUpdate {
         refresh_frame_flags,
@@ -1392,6 +1304,32 @@ fn incomplete_intra_header_error(
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod test_support {
+    use splot_recon::{
+        CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
+    };
+
+    use super::BitDepth;
+
+    pub(super) fn yuv420_workspace(
+        width: usize,
+        height: usize,
+        fill: u8,
+    ) -> CurrentFrameWorkspace<u8> {
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+            PlaneSize::new(width, height).unwrap(),
+            PlaneRect::new(0, 0, width, height).unwrap(),
+        )
+        .unwrap();
+        CurrentFrameWorkspace::<u8>::new(info, fill).unwrap()
+    }
+}
+
 mod cdef;
 mod deblock;
 mod general_intra;
@@ -1419,9 +1357,6 @@ enum TileFactsKind {
 /// the coeff/cdf facts and boundary input from the parsed §5.18.2 header, then plan
 /// the derived tile-payload boundary. The two entry points differ only in `kind`,
 /// which selects the intra vs inter tile-facts derivation.
-// Eight args: the seven shared frame-context inputs both entry points already pass
-// (each was at clippy's 7-arg limit) plus the intra/inter discriminator. Bundling
-// them would only move this argument list into a single-use struct.
 #[allow(clippy::too_many_arguments)]
 fn derive_tile_plan_with<'a>(
     plan: &'a DecodeStreamPlan,
@@ -1509,7 +1444,6 @@ fn derive_inter_tile_plan<'a>(
     )
 }
 
-// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
 #[allow(clippy::needless_pass_by_value)]
 fn decode_tile_boundary_error(error: FrameCandidateTileBoundaryError) -> DecodeError {
     match error {

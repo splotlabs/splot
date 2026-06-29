@@ -46,8 +46,6 @@ fn encode_transform_symbols(sequence: &[(TileCdfSelector, u8)]) -> Vec<u8> {
 
 #[test]
 fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
-    // A 4x4 block needs 16 prediction samples; a short buffer is rejected
-    // with a structured error (no panic) before reconstruction.
     let quant = vec![0i32; 16];
     let prediction = vec![128u8; 8];
     let result = reconstruct_general_intra_block_with_prediction(
@@ -56,7 +54,6 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
         64,
         PlaneId::Y,
         2,
-        // DCT_DCT (§3 PlaneTxType 0); rejected on length before the transform resolves.
         0,
         false,
         BitDepth::Eight,
@@ -72,27 +69,19 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
 
 #[test]
 fn txb_skip_tx_size_ctx_matches_spec_formula_for_square_sizes() {
-    // txSzCtx = (Tx_Size_Sqr[txSz] + Tx_Size_Sqr_Up[txSz] + 1) >> 1.
-    // TX_4X4 (0): (0 + 0 + 1) >> 1 == 0.
     assert_eq!(txb_skip_tx_size_ctx(0), 0);
-    // TX_8X8 (1): (1 + 1 + 1) >> 1 == 1.
     assert_eq!(txb_skip_tx_size_ctx(1), 1);
-    // TX_16X16 (2): (2 + 2 + 1) >> 1 == 2.
     assert_eq!(txb_skip_tx_size_ctx(2), 2);
-    // TX_32X32 (3): (3 + 3 + 1) >> 1 == 3.
     assert_eq!(txb_skip_tx_size_ctx(3), 3);
-    // TX_64X64 (4): (4 + 4 + 1) >> 1 == 4 (the q80 single-block luma size).
     assert_eq!(txb_skip_tx_size_ctx(TX_64X64), 4);
 }
 
 #[test]
 fn txb_skip_tx_size_ctx_is_total_for_out_of_range_tx_size() {
-    // Out-of-range indices saturate to 0 rather than panicking.
     assert_eq!(txb_skip_tx_size_ctx(usize::MAX), 0);
     assert_eq!(txb_skip_tx_size_ctx(TX_SIZE_SQR.len()), 0);
 }
 
-// Each bool is a distinct AV2 frame-level syntax flag the fixture toggles; bundling them would obscure the spec mapping.
 #[allow(clippy::fn_params_excessive_bools)]
 fn frame_facts(
     enable_idtx_intra: bool,
@@ -147,7 +136,6 @@ fn frame_facts_with_fsc() -> TileCoeffFrameFacts {
     })
 }
 
-// Consumes a throwaway decode `Result` to extract its reason; by-value matches the call sites that hand off ownership.
 #[allow(clippy::needless_pass_by_value)]
 fn unsupported_reason<T>(result: Result<T, GeneralIntraResidualError>) -> Option<&'static str> {
     match result {
@@ -417,8 +405,6 @@ fn dctonly_residual_maps_nonzero_intra_tx_type_to_non_dct() {
     assert_ne!(tx_type, DCT_DCT);
 }
 
-// The ac0ej3 inter tx-set block: TX_8X16 (Tx_Size_Sqr == 1), eob 10 →
-// `inter_tx_type_long_ctx` == 0 for every small-set read.
 const INTER_SET_TX_SIZE: usize = TX_8X16;
 const INTER_SET_EOB: usize = 10;
 
@@ -439,7 +425,6 @@ fn read_inter_tx_type_from_symbols(tx_set: usize, sequence: &[(TileCdfSelector, 
 
 #[test]
 fn inter_tx_set_ctx_for_ac0ej3_block_is_zero() {
-    // TX_8X16, eob 10: bwl 3, eoby 1, eobx 1, diag 2, max_diag 20 → ctx 0.
     assert_eq!(
         inter_tx_type_long_ctx(INTER_SET_TX_SIZE, INTER_SET_EOB).unwrap(),
         0
@@ -448,8 +433,6 @@ fn inter_tx_set_ctx_for_ac0ej3_block_is_zero() {
 
 #[test]
 fn inter_set1_index_branch_inverts_via_tx_type_inter_inv_set1() {
-    // §5.20.8.2 TX_SET_INTER_1, inter_tx_type == 0: tx_type_idx == offset.
-    // offset 7 → Tx_Type_Inter_Inv_Set1[7] == DCT_DCT.
     let tx_size_sqr = TX_SIZE_SQR[INTER_SET_TX_SIZE] as usize;
     let tx_type = read_inter_tx_type_from_symbols(
         TX_SET_INTER_1,
@@ -470,8 +453,6 @@ fn inter_set1_index_branch_inverts_via_tx_type_inter_inv_set1() {
 
 #[test]
 fn inter_set1_offset_branch_inverts_via_tx_type_inter_inv_set1() {
-    // §5.20.8.2 TX_SET_INTER_1, inter_tx_type == 1: tx_type_idx == 8 + offset.
-    // offset 0 → Tx_Type_Inter_Inv_Set1[8] == ADST_DCT.
     let tx_size_sqr = TX_SIZE_SQR[INTER_SET_TX_SIZE] as usize;
     let tx_type = read_inter_tx_type_from_symbols(
         TX_SET_INTER_1,
@@ -492,8 +473,6 @@ fn inter_set1_offset_branch_inverts_via_tx_type_inter_inv_set1() {
 
 #[test]
 fn inter_set2_index_branch_inverts_via_tx_type_inter_inv_set2() {
-    // §5.20.8.2 TX_SET_INTER_2 (Set2 has no sqrSz index): inter_tx_type == 0,
-    // offset 3 → Tx_Type_Inter_Inv_Set2[3] == DCT_DCT.
     let tx_type = read_inter_tx_type_from_symbols(
         TX_SET_INTER_2,
         &[
@@ -507,8 +486,6 @@ fn inter_set2_index_branch_inverts_via_tx_type_inter_inv_set2() {
 
 #[test]
 fn inter_set2_offset_branch_inverts_via_tx_type_inter_inv_set2() {
-    // §5.20.8.2 TX_SET_INTER_2, inter_tx_type == 1: tx_type_idx == 8 + offset.
-    // offset 0 → Tx_Type_Inter_Inv_Set2[8] == ADST_ADST.
     let tx_type = read_inter_tx_type_from_symbols(
         TX_SET_INTER_2,
         &[
@@ -522,7 +499,6 @@ fn inter_set2_offset_branch_inverts_via_tx_type_inter_inv_set2() {
 
 #[test]
 fn inter_dct_idtx_set3_inverts_idtx_and_dct_dct() {
-    // §5.20.8.2 TX_SET_DCT_IDTX: Tx_Type_Inter_Inv_Set3 == {IDTX, DCT_DCT}.
     let tx_size_sqr = TX_SIZE_SQR[INTER_SET_TX_SIZE] as usize;
     let idtx = read_inter_tx_type_from_symbols(
         TX_SET_DCT_IDTX,
@@ -550,7 +526,6 @@ fn inter_dct_idtx_set3_inverts_idtx_and_dct_dct() {
 
 #[test]
 fn inter_dct_idtx_iddct_set4_inverts_per_spec_table() {
-    // §5.20.8.2 TX_SET_DCT_IDTX_IDDCT: Set4 == {DCT_DCT, V_DCT, H_DCT, IDTX}.
     let tx_size_sqr = TX_SIZE_SQR[INTER_SET_TX_SIZE] as usize;
     for (symbol, expected) in [(0u8, DCT_DCT), (1, V_DCT), (2, H_DCT), (3, IDTX)] {
         let tx_type = read_inter_tx_type_from_symbols(
@@ -569,9 +544,6 @@ fn inter_dct_idtx_iddct_set4_inverts_per_spec_table() {
 
 #[test]
 fn read_active_inter_transform_type_rejects_unmodeled_set() {
-    // A transform set outside the eight §5.20.8.3 inter sets the dispatch
-    // models defers fail-closed rather than decoding garbage. (`transform_set`
-    // never produces such a value on the inter path; this pins the guard.)
     const UNMODELED_TX_SET: usize = 99;
     let mut cdfs = tile_cdfs();
     let mut symbols = symbol_decoder_for_payload(&PAYLOAD);

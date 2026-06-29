@@ -196,9 +196,6 @@ pub(crate) fn consume_minimal_block_symbol_trace<'payload>(
     }
 }
 
-// The traced symbols are decoded sequentially (not from a static table) so the
-// § 8.3.2 context of a later symbol can be derived from earlier decodes — the
-// `uv_mode` context depends on the reconstructed luma `YMode`.
 fn consume_trace(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
@@ -206,7 +203,6 @@ fn consume_trace(
     let mut coeff_context = minimal_tile_coeff_context(work_unit)?;
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
 
-    // y_mode_set (§ 8.3.2 `TileYModeSetCdf`, no context).
     let y_mode_set = decode_block_symbol(
         cdfs,
         symbols,
@@ -215,8 +211,6 @@ fn consume_trace(
         INTRA_Y_MODE_SET_REASON,
     )?;
 
-    // y_mode_index (§ 8.3.2 context from `get_joint_mode`; both neighbours are
-    // out of frame at the tile origin, so the context is 0).
     let y_mode_index = decode_block_symbol(
         cdfs,
         symbols,
@@ -227,8 +221,6 @@ fn consume_trace(
         INTRA_Y_MODE_INDEX_REASON,
     )?;
 
-    // Reconstruct the luma `YMode` from the decoded set/index (§ 5); the asserted
-    // trace values (set 0, index 0) resolve to `DC_PRED`.
     let y_mode = reconstruct_minimal_y_mode(y_mode_set, y_mode_index).ok_or(
         MinimalBlockSymbolTraceError::UnsupportedYMode {
             y_mode_set,
@@ -236,19 +228,7 @@ fn consume_trace(
         },
     )?;
 
-    // luma all-zero transform (txb_skip), § 8.3.2. The coefficient context state
-    // is freshly zeroed for this first transform block, so its above/left
-    // reductions are 0 and the context reduces to the transform-fills-block
-    // branch -> 0 (this is the CDF *context* index, not the decoded value).
-    //
-    // The decoded `all_zero` symbol is asserted to 1: AV2 § 5.20.7.27 / AVM
-    // `decodetxb.c` (`read_coeffs_txb`) read `all_zero = read_symbol(txb_skip_cdf)`
-    // and take the no-coefficient skip branch when `all_zero == 1`. An all-zero
-    // (skipped) transform block therefore carries `txb_skip == 1`.
-    //
     // TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): the `tx_fills_block`
-    // geometry comes from the § 5.20 transform-block syntax (not yet modelled);
-    // it is asserted here to the value the conformant fixture forces.
     let luma_txb_skip_ctx = luma_all_zero_context(
         &coeff_context,
         LumaAllZeroContextInput {
@@ -286,7 +266,6 @@ fn consume_trace(
         },
     )?;
 
-    // uv_mode (§ 8.3.2 context = `is_directional_mode(YMode)`; DC_PRED -> 0).
     decode_block_symbol(
         cdfs,
         symbols,
@@ -297,20 +276,7 @@ fn consume_trace(
         UV_MODE_INDEX_REASON,
     )?;
 
-    // V all-zero transform (v_txb_skip), § 8.3.2. The coefficient context state
-    // is freshly zeroed for this first transform block, and the U plane was
-    // decoded all-zero just above so EobU == 0; the context reduces to the
-    // chroma-block-larger-than-transform contribution -> 3 (CDF context index,
-    // not the decoded value).
-    //
-    // The decoded `all_zero` symbol is asserted to 1 for the same reason as the
-    // luma read above: per AV2 § 5.20.7.27 / AVM `decodetxb.c` an all-zero
-    // (skipped) V transform block carries `v_txb_skip == 1`.
-    //
     // TODO(spec: DECODE-TILE-CDF-SELECTION-BOUNDARY): the
-    // `chroma_block_larger_than_tx` geometry comes from the § 5.20
-    // transform-block syntax (not yet modelled); it is asserted here to the
-    // value the conformant fixture forces.
     let v_txb_skip_context = v_all_zero_context(
         &coeff_context,
         VAllZeroContextInput {
@@ -359,8 +325,6 @@ fn apply_all_zero_coeff_frame_entry_from_traced_geometry(
     apply_all_zero_coeff_frame_entry(coeff_context, cdfs, symbols, geometry)
 }
 
-// AV2 § 5.20.7.27 passes `txSz` into `coeffs()`, while AV2 § 9.2 maps each
-// generated transform-size enum to `Tx_Width` / `Tx_Height`.
 fn traced_all_zero_coeff_geometry(
     input: TracedAllZeroCoeffGeometry,
 ) -> Result<CoeffOrdinaryTxSizeGeometryConfig, MinimalBlockSymbolTraceError> {

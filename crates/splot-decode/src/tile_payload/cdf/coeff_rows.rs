@@ -261,9 +261,6 @@ impl CoeffCdfRows {
     }
 }
 
-// `row`/`row_mut` live in a second impl block below so this macro can be
-// declared between `from_defaults` and the accessors (a `macro_rules!` must
-// precede its use and cannot sit inside an `impl`).
 /// Expands the shared body of [`CoeffCdfRows::row`] and
 /// [`CoeffCdfRows::row_mut`].
 ///

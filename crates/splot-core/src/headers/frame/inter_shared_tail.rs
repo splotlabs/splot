@@ -149,29 +149,9 @@ pub(crate) fn parse_inter_shared_tail(
     control: &InterControl,
     frame_type: FrameType,
 ) -> Result<()> {
-    // The inter shared tail this phase models is the non-bridge, non-TIP-output,
-    // non-bru-inactive ordinary inter / switch path (the only one that reaches
-    // ReachedSharedTail). TipFrameMode == TIP_FRAME_DISABLED there, so tip_frame_as_output
-    // is false for tile_info() / quantization_params().
     let tip_frame_as_output = false;
     let num_total_refs = control.num_total_refs.unwrap_or(0);
 
-    // ADMISSION GATE — the verified minimal-tool subset. The shared structure cluster is
-    // reused from the INTRA-arm sub-parsers; two of them have inter-specific arms the intra
-    // parser does NOT model, which would mis-position every following field if they fired:
-    //   - lr_params() (§ 5.18.7.11): the temporal-prediction arm (`temporal_pred_flag[plane]`,
-    //     gated on `numRefFrames > 0`) is dead on the intra path but LIVE on the inter path
-    //     when restoration is enabled AND NumTotalRefs > 0.
-    //   - ccso_params() (§ 5.18.7.12 mirror :7491-7501): the `reuse_ccso` / `sb_reuse_ccso` /
-    //     `ccso_ref_idx` reads (gated on `!(FrameIsIntra || SWITCH_FRAME)`) are dead on the
-    //     intra path but LIVE on the inter path whenever a coded `ccso_planes[plane]` is set.
-    // Stop honestly BEFORE reading ANY shared-tail bit when either inter arm could fire, so
-    // the parser never exposes a possibly-mis-positioned `setup_qm` / `using_qmatrix` etc. to
-    // downstream checks (the "tighten admission to the verified subset" discipline). The
-    // verified minimal fixture has restoration and CCSO disabled, so both arms are dead and
-    // the intra sub-parsers are bit-identical. (gdf_params / cdef_params / deblocking — apart
-    // from its caller-gated `allow_df_sub_pu` arm — and tile_info / quant / segmentation /
-    // setup_qm / delta_q / lossless are all FrameIsIntra-arm-independent, so they stay sound.)
     let lr_inter_arm_possible = seq.restoration.enable_restoration && num_total_refs > 0;
     let ccso_inter_arm_possible = seq.ccso.enable_ccso;
     if lr_inter_arm_possible || ccso_inter_arm_possible {
@@ -181,12 +161,7 @@ pub(crate) fn parse_inter_shared_tail(
         return Ok(());
     }
 
-    // mirror :5183: tile_info() (§ 5.18.7.2). FrameIsIntra == false on the inter path; the
-    // ordinary inter path has IsBridge == 0 and TipFrameMode == TIP_FRAME_DISABLED.
     let Some(frame_size) = core.frame_size else {
-        // The reference-grounded frame size was unresolvable (a hit on an unmodeled ref
-        // slot left it None); tile_info()'s MiCols/MiRows derivation needs it, so stop
-        // honestly rather than guess.
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
             feature_id: FRAME_HEADER_INFO_FEATURE,
         };
@@ -203,22 +178,8 @@ pub(crate) fn parse_inter_shared_tail(
         Err(error) => return Err(error),
     };
 
-    // mirror :5185: quantization_params() (§ 5.18.6.1).
     let quantization = parse_quantization_params(reader, &seq.quant, tip_frame_as_output)?;
 
-    // mirror :5187: set_primary_ref_frame_and_ctx( 1 ) reads no bits.
-
-    // mirror :5189: segmentation_params() (§ 5.18.7.1). The whole structure is gated on
-    // `segmentation_enabled` (its FIRST bit, mirror :6262). On the inter path the enabled
-    // block's `segmentation_update_map` / `segmentation_temporal_update` reads depend on
-    // `DerivedPrimaryRefFrame` (§ 5.18.7.1 mirror :6337), which the shared
-    // `parse_segmentation_params` does NOT model (it assumes the
-    // `DerivedPrimaryRefFrame == PRIMARY_REF_NONE` arm), and the §5.18.2
-    // `DerivedPrimaryRefFrame` itself comes from `choose_primary_secondary_ref_frame()`'s
-    // unmodeled `RefBaseQIdx` ranking (mirror :5451). So read ONLY `segmentation_enabled`
-    // f(1) here: when it is 0 the structure is bit-identical to the disabled result (no
-    // further bits), and when it is 1 the enabled inter block is unmodeled — stop honestly
-    // BEFORE reading any of its bits rather than reuse the intra parser unsoundly.
     let segmentation_enabled = reader.read_flag()?;
     if segmentation_enabled {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
@@ -228,16 +189,10 @@ pub(crate) fn parse_inter_shared_tail(
     }
     let segmentation = crate::headers::frame::segmentation::SegmentationParams::disabled();
 
-    // mirror :5191: setup_qm_params() (§ 5.18.6.2), gated on the parsed segmentation_enabled.
     let qm = parse_setup_qm_params(reader, &seq.quant, segmentation.segmentation_enabled)?;
 
-    // mirror :5193: delta_q_params() (§ 5.18.7.8), gated on base_q_idx.
     let delta_q = parse_delta_q_params(reader, quantization.base_q_idx)?;
 
-    // mirror :5199-5295: init_coeff_cdfs() / load_previous_segment_ids() read no bits; the
-    // per-segment lossless/QM derivation loop (qm_index reads) + allow_tcq +
-    // allow_parity_hiding. The derivation is FrameIsIntra-independent (a pure function of
-    // base_q_idx / segmentation / quant deltas / sequence tcq+parity flags).
     let lossless = parse_lossless_info(
         reader,
         &seq.quant,
@@ -249,9 +204,6 @@ pub(crate) fn parse_inter_shared_tail(
     )?;
     let coded_lossless = lossless.coded_lossless;
 
-    // mirror :5297: deblocking_filter_params() (§ 5.18.5.2). The inter path reads the
-    // allow_df_sub_pu f(1) arm when enable_df_sub_pu && FrameType == INTER_FRAME
-    // (mirror :5935); on the cur_mfh_id == 0 direct path no MFH deblocking view is supplied.
     let read_allow_df_sub_pu = seq.filter.enable_df_sub_pu && frame_type == FrameType::Inter;
     core.deblocking_filter_params = Some(parse_deblocking_filter_params(
         reader,
@@ -262,12 +214,8 @@ pub(crate) fn parse_inter_shared_tail(
         None,
     )?);
 
-    // mirror :5299: gdf_params() (§ 5.18.7.9). The inter path SbSize is
-    // frame_sb_size(frame_is_intra == false). The tile_info() geometry was just parsed.
     let gdf = {
         let Some(tile_info) = core.tile_info.as_ref() else {
-            // tile_info was set to Some above on every reaching path; guard rather than
-            // unwrap for direct API misuse.
             core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
                 feature_id: FRAME_HEADER_INFO_FEATURE,
             };
@@ -286,7 +234,6 @@ pub(crate) fn parse_inter_shared_tail(
     };
     core.gdf_params = Some(gdf);
 
-    // mirror :5301: cdef_params() (§ 5.18.7.10).
     core.cdef_params = Some(parse_cdef_params(
         reader,
         coded_lossless,
@@ -294,10 +241,6 @@ pub(crate) fn parse_inter_shared_tail(
         &seq.filter,
     )?);
 
-    // mirror :5303: lr_params() (§ 5.18.7.11). The inter temporal-prediction arm was excluded
-    // by the admission gate above (restoration off OR NumTotalRefs == 0), so the shared
-    // intra-arm parser is bit-identical here. A plane signalling frame_filters_on consumes
-    // the fixed-coded read_wienerns_filter() bank and preserves it on the completed LR model.
     let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(false), seq.chroma_format_idc);
     match parse_lr_params(
         reader,
@@ -316,15 +259,11 @@ pub(crate) fn parse_inter_shared_tail(
         } => {
             core.lr_params_partial = Some(partial);
             core.status = FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id };
-            // Store the structure facts parsed so far before the honest stop.
             store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);
             return Ok(());
         }
     }
 
-    // mirror :5305: ccso_params() (§ 5.18.7.12). The inter reuse arm was excluded by the
-    // admission gate above (CCSO disabled), so the shared intra-arm parser returns with no
-    // bits (the `!enable_ccso` early return) and the reuse is sound for the verified subset.
     core.ccso_params = Some(parse_ccso_params(
         reader,
         coded_lossless,
@@ -332,10 +271,8 @@ pub(crate) fn parse_inter_shared_tail(
         &seq.ccso,
     )?);
 
-    // The shared structure cluster parsed; store its facts before the inter tail.
     store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);
 
-    // mirror :5307-5341: the inter tail.
     parse_inter_tail_arms(reader, core, seq, control, frame_type, coded_lossless)
 }
 
@@ -350,18 +287,10 @@ fn parse_inter_tail_arms(
     frame_type: FrameType,
     coded_lossless: bool,
 ) -> Result<()> {
-    // mirror :5307: read_tx_mode() (§ 5.18.8.1) — FrameIsIntra-independent.
     let tx_mode = read_tx_mode(reader, coded_lossless)?;
 
-    // mirror :5309 / § 5.18.8.3: frame_reference_mode() reads reference_select f(1) on the
-    // inter path (FrameIsIntra == false, mirror :7747).
     let reference_select = reader.read_flag()?;
 
-    // mirror :5311 / § 5.18.8.2: skip_mode_params(). skipModeAllowed = 0 only for
-    // FrameIsIntra || SWITCH_FRAME; on an ordinary inter frame skipModeAllowed = 1, so
-    // skip_mode_present f(1) is read. The SkipModeFrame[1] derivation (NumTotalRefs > 1)
-    // reads NO extra bits — it only sets the per-frame skip references — so the read width
-    // is unaffected by the unmodeled get_relative_dist / OrderHints state.
     let skip_mode_allowed = frame_type != FrameType::Switch;
     let skip_mode_present = if skip_mode_allowed {
         reader.read_flag()?
@@ -369,16 +298,12 @@ fn parse_inter_tail_arms(
         false
     };
 
-    // mirror :5313: if ( !FrameIsIntra && enable_bawp ) allow_bawp f(1).
     let allow_bawp = if seq.inter.enable_bawp {
         reader.read_flag()?
     } else {
         false
     };
 
-    // mirror :5327: if ( !FrameIsIntra && frame_enabled_motion_modes[DELTAWARP] )
-    // allow_warpmv_mode f(1). The frame_enabled_motion_modes were parsed by the inter
-    // control region.
     let delta_warp_enabled = control
         .frame_enabled_motion_modes
         .is_some_and(|modes| modes.get(DELTAWARP).copied().unwrap_or(false));
@@ -388,13 +313,8 @@ fn parse_inter_tail_arms(
         false
     };
 
-    // mirror :5337: reduced_tx_set f(2).
     let reduced_tx_set = reader.read_bits_u8(2)?;
 
-    // mirror :5339 / § 5.18.9.1: global_motion_params(). The inter arm reads
-    // use_global_motion f(1) and, when set, the per-reference warp models — those reach the
-    // honest cross-frame GlobalMotionStop. NumTotalRefs / ref_frame_idx come from the inter
-    // control region.
     let num_total_refs = control.num_total_refs.unwrap_or(0);
     let gm = parse_global_motion_params(
         reader,
@@ -407,17 +327,12 @@ fn parse_inter_tail_arms(
         },
     )?;
     if gm.stop.is_some() {
-        // use_global_motion == 1 with per-reference warp models needs the unmodeled
-        // cross-frame SavedGmParams / OrderHints; stop honestly with the facts preserved.
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
             feature_id: FRAME_HEADER_INFO_FEATURE,
         };
         return Ok(());
     }
 
-    // mirror :5341 / § 5.18.10.1: film_grain_config(). film_grain_params_present is the
-    // §5.4.1 apply_grain gate; when it is unknown (a bounded sequence-header stop) the flag
-    // is undecidable, so stop honestly before the grain read.
     let Some(film_grain_params_present) = seq.film_grain_params_present else {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
             feature_id: FRAME_HEADER_INFO_FEATURE,

@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Property tests for the §5.17 metadata-OBU writers. The round-trip strategy constructs arbitrary
-// valid (model, passthrough) pairs across all payload types and both OBU forms, writes them, and
-// reparses to assert semantic equality; a second family feeds arbitrary (possibly invalid)
-// constructed models to all four public writers and asserts they never panic and leave the writer
-// untouched on Err.
-
-// `include!`d into `crate::write::metadata` so `super::*` resolves to its writers and helpers.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -23,7 +16,6 @@ mod proptests {
     /// An arbitrary valid (payload, passthrough, payload_size) triple across all 11 variants.
     fn arbitrary_payload() -> impl Strategy<Value = (MetadataPayload, Vec<u8>, usize)> {
         prop_oneof![
-            // HdrCll: 4 bytes.
             (any::<u16>(), any::<u16>()).prop_map(|(max_cll, max_fall)| {
                 (
                     MetadataPayload::HdrCll(MetadataHdrCll { max_cll, max_fall }),
@@ -31,7 +23,6 @@ mod proptests {
                     4usize,
                 )
             }),
-            // HdrMdcv: 24 bytes.
             (
                 any::<[u16; 3]>(),
                 any::<[u16; 3]>(),
@@ -54,7 +45,6 @@ mod proptests {
                         24usize,
                     )
                 }),
-            // ItutT35: country code, optional extension, payload bytes.
             (
                 any::<bool>(),
                 proptest::collection::vec(any::<u8>(), 0..8),
@@ -76,7 +66,6 @@ mod proptests {
                         1 + ext_len + payload_len,
                     )
                 }),
-            // Timecode: a valid full-timestamp form (simple, in-domain).
             (0u8..32, any::<bool>(), any::<bool>(), 0u16..512, 0u8..64, 0u8..64, 0u8..32).prop_map(
                 |(counting_type, disc, dropped, n_frames, s, m, h)| {
                     (
@@ -97,7 +86,6 @@ mod proptests {
                     )
                 }
             ),
-            // ScanType: 1 byte.
             (0u8..32, 0u8..4, any::<bool>()).prop_map(|(pic, idc, dup)| {
                 (
                     MetadataPayload::ScanType(MetadataScanType {
@@ -109,7 +97,6 @@ mod proptests {
                     1usize,
                 )
             }),
-            // TemporalPointInfo: leb128, padded to enough bytes.
             any::<u32>().prop_map(|t| {
                 (
                     MetadataPayload::TemporalPointInfo(MetadataTemporalPointInfo {
@@ -119,7 +106,6 @@ mod proptests {
                     minimal_leb_len(t),
                 )
             }),
-            // DecodedFrameHash single: 1 + 16 = 17 bytes.
             (0u8..16, any::<bool>(), 0u8..2, any::<[u8; 16]>()).prop_map(
                 |(hash_type, has_grain, reserved, hash)| {
                     (
@@ -137,7 +123,6 @@ mod proptests {
                     )
                 }
             ),
-            // BandingHints: a simple no-detail form.
             any::<bool>().prop_map(|source| {
                 (
                     MetadataPayload::BandingHints(MetadataBandingHints {
@@ -149,7 +134,6 @@ mod proptests {
                     1usize,
                 )
             }),
-            // IccProfile: passthrough only.
             proptest::collection::vec(any::<u8>(), 0..16).prop_map(|bytes| {
                 let len = bytes.len();
                 (
@@ -158,7 +142,6 @@ mod proptests {
                     len,
                 )
             }),
-            // UserDataUnregistered: uuid + passthrough.
             (any::<[u8; 16]>(), proptest::collection::vec(any::<u8>(), 0..16)).prop_map(
                 |(uuid, bytes)| {
                     let len = bytes.len();
@@ -172,7 +155,6 @@ mod proptests {
                     )
                 }
             ),
-            // UnknownRaw: passthrough only.
             proptest::collection::vec(any::<u8>(), 0..16).prop_map(|bytes| {
                 let len = bytes.len();
                 (
@@ -234,7 +216,6 @@ mod proptests {
             global in any::<bool>(),
         ) {
             let metadata_type = type_of(&payload);
-            // payload_size_bytes is the minimal leb len of payload_size; header_size = that + 2.
             let payload_size_u32 = payload_size as u32;
             let header_size = (minimal_leb_len(payload_size_u32) + 2) as u8;
             let unit = MetadataGroupUnit {
@@ -311,7 +292,6 @@ mod proptests {
             hash_type in any::<u8>(),
             reserved in any::<u8>(),
         ) {
-            // A timecode with out-of-domain values must be rejected, never panic.
             let timecode = MetadataPayload::Timecode(MetadataTimecode {
                 counting_type,
                 full_timestamp_flag: false,
@@ -359,9 +339,6 @@ mod proptests {
         fn group_writer_never_panics(
             header_size in any::<u8>(),
             cancel in any::<bool>(),
-            // Bounded: the test allocates `vec![0u8; payload_size]` below, so an unbounded u32
-            // could OOM the runner. The u32-ceiling reject is covered directly by
-            // `unit_oversized_declared_payload_size_is_rejected`.
             payload_size in proptest::option::of(0u32..256),
             layer_idc in proptest::option::of(any::<u8>()),
             global in any::<bool>(),
@@ -411,13 +388,11 @@ mod proptests {
             xlayer_map in any::<u32>(),
             mlayer_seed in proptest::collection::vec(any::<u8>(), 31),
         ) {
-            // One mlayer byte per set bit in 0..31 (the writer's iteration range), in bit order.
             let mlayer_maps: Vec<u8> = (0..31u32)
                 .filter(|n| xlayer_map & (1 << n) != 0)
                 .map(|n| mlayer_seed[n as usize])
                 .collect();
             let set_bits = mlayer_maps.len();
-            // header_size = payload_size leb (1) + fixed 2 + xlayer (4) + one byte per set bit.
             let header = 1 + 2 + 4 + set_bits;
             prop_assume!(header <= 127);
             let header_size = header as u8;

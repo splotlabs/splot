@@ -199,7 +199,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         y: usize,
         value: T,
     ) -> Result<()> {
-        // A single sample is a 1x1 fill; reuse the checked rect path.
         self.fill_rect(plane, PlaneRect::new(x, y, 1, 1)?, value)
     }
 
@@ -863,7 +862,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 rect,
             });
         }
-        // Both subtractions are positive: the origin is strictly inside storage.
         let max_width = storage_width - rect.x();
         let max_height = storage_height - rect.y();
         let width = rect.width().min(max_width);

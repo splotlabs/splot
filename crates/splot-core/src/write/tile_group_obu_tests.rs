@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// End-to-end round-trip and reject tests for the composing first-tile-group `tile_group_obu()`
-// writer (§ 5.19). The round-trip test builds a valid `FrameHeaderCore` + `CoreSeqView` by PARSING a
-// real intra frame header (the same fixture-building approach as `frame_header_core_tests.rs`),
-// composes a whole OBU payload with `write_tile_group_obu`, then reparses it STAGE BY STAGE from a
-// single `BitReader` (prefix -> frame-header core -> structure -> framing) and asserts each stage's
-// syntax fields equal the inputs. The reject tests confirm reject-before-write (`bit_len() == 0`)
-// for the `continuation_unsupported` form and for a sub-writer reject propagating through the
-// scratch buffer.
-
-// `include!`d into `crate::write::tile_group` so `super::*` resolves to the composer + helpers.
 
 #[cfg(test)]
 #[allow(
@@ -35,11 +25,8 @@ mod obu_tests {
 
     use crate::test_bits::Bits;
 
-    // ---- sub-view builders (mirror frame_header_core_tests.rs::base_*) -----------------
 
     fn base_seq() -> CoreSeqView {
-        // Delegates to the public encoder writer-input constructor so this writer
-        // round-trip suite regresses CoreSeqView::new_minimal_intra.
         CoreSeqView::new_minimal_intra(4096, 2304).expect("4096x2304 is a valid maximum")
     }
 
@@ -54,7 +41,6 @@ mod obu_tests {
         bits.bit(0); // implicit_output_frame
         bits.bit(1); // frame_size_override_flag
         bits.f(5, 4); // order_hint
-        // refresh_frame_flags: CLK + max_mlayer_id == 0 -> allFrames (no bits)
         bits.f(1920 - 1, 12); // frame_width_minus_1
         bits.f(1080 - 1, 12); // frame_height_minus_1
         bits.bit(0); // allow_intrabc
@@ -123,17 +109,11 @@ mod obu_tests {
 
     #[test]
     fn whole_obu_round_trips_stage_by_stage() {
-        // Build a valid frame-header core by parsing the CLK fixture (the same fixture-building
-        // approach the frame_header_core writer tests use), then a single-tile structure + a
-        // single-tile framing whose lone tile is the (last) remainder tile carrying its coded bytes.
         let (core, seq) = valid_core();
         let layout = TileGroupLayout::new(1, 1, 0, 0);
         assert_eq!(layout.num_tiles, 1);
         let structure = single_tile_structure();
 
-        // A single-tile framing: tg_start == tg_end == 0, the lone tile reads no size field and
-        // takes the whole region. Build it parser-driven (as the payload tests do) over a 5-byte
-        // coded-tile region with a distinct marker per byte.
         let tile_bytes: Vec<u8> = (0u8..5).map(|b| b.wrapping_mul(37)).collect();
         let framing = parse_tile_group_framing(&tile_bytes, 0, 0, 1, false);
         assert_eq!(framing.defect, None);
@@ -141,7 +121,6 @@ mod obu_tests {
         assert_eq!(framing.tiles[0].tile_size, 5);
         let tile_data: &[&[u8]] = &[&tile_bytes];
 
-        // Compose the whole first-tile-group OBU payload.
         let mut writer = BitWriter::new();
         write_tile_group_obu(
             &mut writer,
@@ -157,9 +136,6 @@ mod obu_tests {
         .unwrap();
         let bytes = writer.into_bytes();
 
-        // --- Stage 0: the prefix round-trips is_first / frame_header_present on a fresh reader.
-        // parse_tile_group_prefix reads is_first_tile_group then the frame_header PREFIX (the
-        // activation fields), so confirm the flags here.
         {
             let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
             let prefix =
@@ -169,21 +145,15 @@ mod obu_tests {
             assert!(prefix.frame_header.is_some());
         }
 
-        // --- Stage-by-stage reparse from a single BitReader: read the is_first bit, then the FULL
-        // frame-header core, then the § 5.19 structure, then the § 5.20.1 framing.
         let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
 
-        // Stage 1: is_first_tile_group f(1) == 1.
         assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group == 1");
 
-        // Stage 2: the embedded frame_header() — reparse to a core and assert it equals the input.
         let reparsed_core = parse_core_from(&mut reader, ObuType::ClosedLoopKey, true, &seq);
         assert_eq!(
             reparsed_core.status,
             FrameHeaderParseStatus::IntraHeaderComplete
         );
-        // Compare the structural fields (consumed_bits differs: the original was parsed standalone,
-        // here the reader spans the is_first bit + the trailing tile group). Clear it on both.
         {
             let mut a = reparsed_core.clone();
             let mut b = core.clone();
@@ -193,10 +163,6 @@ mod obu_tests {
         }
         assert_eq!(reparsed_core.frame_type, Some(FrameType::Key));
 
-        // The frame_header() ended with byte_alignment() inside write_tile_group_structure, NOT
-        // here: the reader is now positioned right after frame_header(), mid-byte, exactly where the
-        // § 5.19 structure begins. parse_tile_group_structure consumes the (empty, single-tile)
-        // tg-range bits then byte_alignment(); sz is the remaining bytes from the OBU payload start.
         let sz = bytes.len() as u64;
         let parsed_structure = parse_tile_group_structure(&mut reader, layout, sz).unwrap();
         assert_eq!(parsed_structure.outcome, TileGroupStructureOutcome::Complete);
@@ -207,15 +173,12 @@ mod obu_tests {
         assert_eq!(parsed_structure.tg_start, structure.tg_start);
         assert_eq!(parsed_structure.tg_end, structure.tg_end);
 
-        // Stage 4: the § 5.20.1 framing over the payload region (payload_size bytes after the
-        // structure's byte_alignment(), at headerBytes into the OBU payload).
         let header_bytes = parsed_structure.header_bytes.unwrap() as usize;
         let payload_size = parsed_structure.payload_size.unwrap() as usize;
         let region = &bytes[header_bytes..header_bytes + payload_size];
         let parsed_framing = parse_tile_group_framing(region, 0, 0, 1, false);
         assert_eq!(parsed_framing.defect, None);
         assert_eq!(parsed_framing, framing, "reparsed framing != input framing");
-        // The lone tile's coded bytes round-trip byte-exact.
         let t = parsed_framing.tiles[0];
         let start = t.tile_data_offset as usize;
         let end = start + t.tile_size as usize;
@@ -224,8 +187,6 @@ mod obu_tests {
 
     #[test]
     fn reject_continuation_unsupported() {
-        // is_first_tile_group == false is the non-first frame_header_copy() continuation, out of
-        // scope: rejected before any bit, leaving the caller's writer untouched.
         let (core, seq) = valid_core();
         let structure = single_tile_structure();
         let tile_bytes = vec![0u8; 4];
@@ -256,9 +217,6 @@ mod obu_tests {
 
     #[test]
     fn reject_unaligned_writer() {
-        // An OBU payload begins byte-aligned; a mid-byte writer would shift the is_first bit and
-        // every following byte. The composer rejects before any draft, leaving the caller's stray
-        // bit untouched (bit_len() unchanged, nothing appended).
         let (core, seq) = valid_core();
         let structure = single_tile_structure();
         let tile_bytes = vec![0u8; 4];
@@ -285,9 +243,6 @@ mod obu_tests {
 
     #[test]
     fn reject_not_tile_group_obu() {
-        // Only a tile-group-carrying OBU type frames a tile_group_obu(). A SEF single-picture header
-        // is not a tile-group carrier, so the composer rejects it before any bit (write_frame_header_core
-        // would otherwise accept it as a frame-header OBU).
         let (mut core, seq) = valid_core();
         core.obu_type = ObuType::RegularSef; // is_tile_group() == false
         let structure = single_tile_structure();
@@ -319,8 +274,6 @@ mod obu_tests {
 
     #[test]
     fn reject_first_tg_start_not_zero() {
-        // § 6.18: the first tile group's tg_start must be 0. A non-zero first-group tg_start is a
-        // conformance violation the composer refuses before any bit.
         let (core, seq) = valid_core();
         let mut structure = single_tile_structure();
         structure.tg_start = 1;
@@ -357,8 +310,6 @@ mod obu_tests {
 
     #[test]
     fn reject_missing_tile_info() {
-        // The § 5.19 layout and § 5.20.1 TileSizeBytes are derived from core.tile_info; with it
-        // absent the composer cannot derive them and rejects before any bit.
         let (mut core, seq) = valid_core();
         core.tile_info = None;
         let structure = single_tile_structure();
@@ -394,14 +345,8 @@ mod obu_tests {
 
     #[test]
     fn reject_framing_range_mismatch() {
-        // The structure's tg range (single tile: tg_end == 0 -> 1 tile) must match
-        // framing.tiles.len(); a two-record framing is rejected before any bit, because a reparse
-        // frames the payload from the emitted single-tile range and would treat the first tile's
-        // size field as tile data.
         let (core, seq) = valid_core();
         let structure = single_tile_structure(); // tg_start == tg_end == 0 -> expects 1 tile
-        // A conformant 2-tile region: tile0 has a 1-byte size field (tile_size 3), tile1 the
-        // remainder (tile_size 4).
         let region: Vec<u8> = vec![0x02, 10, 11, 12, 20, 21, 22, 23];
         let framing = parse_tile_group_framing(&region, 0, 1, 1, false);
         assert_eq!(framing.tiles.len(), 2);
@@ -435,10 +380,6 @@ mod obu_tests {
 
     #[test]
     fn frame_header_sub_writer_reject_propagates() {
-        // A non-canonical frame-header core (mutated to a non-IntraHeaderComplete status) is
-        // rejected by write_frame_header_core; that reject must propagate through the scratch buffer
-        // and leave the caller's writer untouched (bit_len() == 0), even though the is_first bit was
-        // already drafted into the scratch.
         let (mut core, seq) = valid_core();
         core.status = FrameHeaderParseStatus::ActivationFieldsOnly;
         let structure = single_tile_structure();
@@ -468,9 +409,6 @@ mod obu_tests {
 
     #[test]
     fn structure_sub_writer_reject_propagates() {
-        // A Truncated structure is rejected by write_tile_group_structure; the reject propagates
-        // through the scratch (which already holds the is_first bit + the whole frame_header()) and
-        // the caller's writer stays untouched.
         let (core, seq) = valid_core();
         let mut structure = single_tile_structure();
         structure.outcome = TileGroupStructureOutcome::Truncated;
@@ -502,9 +440,6 @@ mod obu_tests {
 
     #[test]
     fn payload_sub_writer_reject_propagates() {
-        // A framing whose lone tile records tile_size == 0 is rejected by write_tile_group_payload
-        // (zero_size_tile); the reject propagates through the scratch (holding the is_first bit, the
-        // frame_header(), and the structure) and the caller's writer stays untouched.
         let (core, seq) = valid_core();
         let structure = single_tile_structure();
         let framing = TileGroupFraming {

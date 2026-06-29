@@ -84,25 +84,16 @@ fn conformance_corpus_matches_manifest() {
         manifest_path.display()
     );
 
-    // Anti-vacuity: the manifest must exercise both arms, so a regression in the
-    // diagnostics arm cannot hide behind an all-clean corpus.
     let mut saw_clean = false;
     let mut saw_diagnostics = false;
 
-    // The validator is stateless across vectors; a non-strict validator is the
-    // CLI default (errors fail, warnings do not).
     let validator = Validator::new(false);
 
-    // Track which committed vector files the manifest references, so we can fail
-    // on any committed vector that is NOT in the manifest (otherwise a committed
-    // vector would never be validated and the committed-corpus guarantee leaks).
     let mut manifest_paths: BTreeSet<PathBuf> = BTreeSet::new();
 
     for entry in &manifest.vector {
         let vector_path = root.join(&entry.path);
         manifest_paths.insert(vector_path.clone());
-        // `expect` takes a `&str`, so build the path-bearing message first to
-        // surface which committed vector is missing or unreadable.
         let read_msg = format!("read committed vector {}", vector_path.display());
         let bytes = std::fs::read(&vector_path).expect(&read_msg);
         let report = validator.validate_bytes(&bytes);
@@ -143,8 +134,6 @@ fn conformance_corpus_matches_manifest() {
         "manifest exercises no `diagnostics` vector; the diagnostics arm would be vacuous"
     );
 
-    // Every committed vector file must appear in the manifest — otherwise it is
-    // never validated and the committed-corpus guarantee silently leaks.
     let mut committed = Vec::new();
     collect_vector_files(&root.join("vectors"), &mut committed);
     let orphans: Vec<String> = committed

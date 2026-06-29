@@ -9,9 +9,6 @@
 //! `do_split == false` (`PARTITION_NONE`) symbol. This module models that one token; the
 //! `block_symbol_trace` module composes it with the mode and coefficient tokens.
 
-// The encoder runtime does not yet consume these emitters (it returns `NeedMoreData`); they
-// are exercised by the block-symbol-trace roundtrip tests, matching the sibling emission
-// modules' policy.
 #![allow(dead_code)]
 
 /// AV2 § 5.20.3.2 partition syntax covered by the current encoder subset.
@@ -183,7 +180,6 @@ mod tests {
         let token = emit_root_do_split_split();
         assert_eq!(token.syntax, PartitionSyntax::DoSplit);
         assert_eq!(token.symbol(), 1);
-        // Same scoped CDF row as `PARTITION_NONE` — only the symbol differs.
         assert_eq!(
             token.selector(),
             PartitionCdfRowSelector::DoSplit {

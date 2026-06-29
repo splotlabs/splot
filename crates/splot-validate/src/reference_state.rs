@@ -146,9 +146,6 @@ impl LayerReferenceState {
             if (refresh_frame_flags >> i) & 1 != 1 {
                 continue;
             }
-            // RefValid[ i ] = (FrameType == KEY_FRAME || FrameType == SWITCH_FRAME)
-            //                 ? first : 1   (mirror :14100). `first` is 1 only for the
-            // lowest refreshed slot, 0 thereafter (mirror :14093/:14101).
             let ref_valid = if is_key_or_switch { first } else { true };
             *slot = if ref_valid {
                 SlotState::Valid(facts)
@@ -229,8 +226,6 @@ impl ReferenceStateTracker {
                 facts,
             } => {
                 layer.clk_reset(num_ref_frames);
-                // A CLK is a key frame (FrameType == KEY_FRAME), so the § 7.23 `first`
-                // rule applies: only its lowest refreshed slot stays valid.
                 layer.apply_refresh(refresh_frame_flags, true, facts);
             }
             FrameRefUpdate::Refresh {
@@ -261,8 +256,6 @@ impl ReferenceStateTracker {
     /// a proven-valid non-long-term slot (the spec's `-1`). Returns `None` when the slot is
     /// `Unknown` or `ProvenInvalid` — the long-term id is then undecidable, so a dependent
     /// judgment must drop to silence (the Unknown invariant).
-    // Both `Option` levels are meaningful: the outer marks slot decidability and the inner
-    // distinguishes a long-term id (`Some`) from the spec's `-1` non-long-term slot (`None`).
     #[allow(clippy::option_option)]
     pub(crate) fn slot_long_term_id(
         &self,
@@ -386,7 +379,6 @@ mod tests {
         for i in 0..NUM_REF_FRAMES {
             assert_eq!(tracker.slot(XL, i), SlotState::Unknown);
         }
-        // An out-of-range slot index is Unknown, not a panic.
         assert_eq!(tracker.slot(XL, NUM_REF_FRAMES), SlotState::Unknown);
         assert_eq!(tracker.slot(XL, 999), SlotState::Unknown);
     }
@@ -394,7 +386,6 @@ mod tests {
     #[test]
     fn refresh_stores_facts_into_set_slots_only() {
         let mut tracker = ReferenceStateTracker::default();
-        // refresh slots 0 and 2 with an inter-ish refresh (not key/switch).
         tracker.apply(
             XL,
             FrameRefUpdate::Refresh {
@@ -412,8 +403,6 @@ mod tests {
     #[test]
     fn key_switch_first_rule_validates_only_lowest_refreshed_slot() {
         let mut tracker = ReferenceStateTracker::default();
-        // A key/switch frame refreshing slots 1, 3, 5: only the lowest (1) is valid,
-        // the others are RefValid = 0 (proven invalid) per the `first` rule.
         tracker.apply(
             XL,
             FrameRefUpdate::Refresh {
@@ -425,14 +414,12 @@ mod tests {
         assert_eq!(tracker.slot(XL, 1), SlotState::Valid(facts(3)));
         assert_eq!(tracker.slot(XL, 3), SlotState::ProvenInvalid);
         assert_eq!(tracker.slot(XL, 5), SlotState::ProvenInvalid);
-        // Untouched slots stay Unknown.
         assert_eq!(tracker.slot(XL, 0), SlotState::Unknown);
     }
 
     #[test]
     fn clk_reset_invalidates_then_refreshes() {
         let mut tracker = ReferenceStateTracker::default();
-        // Establish slots 0..4 valid via an inter refresh.
         tracker.apply(
             XL,
             FrameRefUpdate::Refresh {
@@ -441,8 +428,6 @@ mod tests {
                 facts: facts(1),
             },
         );
-        // CLK reset over NumRefFrames=8, then refresh slot 0 only (allFrames would set
-        // more, but a single-slot mask is enough to check the reset + first rule).
         tracker.apply(
             XL,
             FrameRefUpdate::ClkReset {
@@ -451,9 +436,7 @@ mod tests {
                 facts: facts(9),
             },
         );
-        // Slot 0 was reset then re-validated (lowest refreshed, first == true).
         assert_eq!(tracker.slot(XL, 0), SlotState::Valid(facts(9)));
-        // Slots 1..3 were reset and not refreshed: proven invalid.
         assert_eq!(tracker.slot(XL, 1), SlotState::ProvenInvalid);
         assert_eq!(tracker.slot(XL, 3), SlotState::ProvenInvalid);
     }
@@ -461,8 +444,6 @@ mod tests {
     #[test]
     fn clk_reset_with_all_frames_mask_validates_only_lowest() {
         let mut tracker = ReferenceStateTracker::default();
-        // CLK with allFrames mask (max_mlayer_id == 0): refresh every slot, but the
-        // key-frame `first` rule leaves only slot 0 valid.
         tracker.apply(
             XL,
             FrameRefUpdate::ClkReset {
@@ -489,7 +470,6 @@ mod tests {
             },
         );
         tracker.apply(XL, FrameRefUpdate::SefNoUpdate);
-        // The SEF refreshed nothing — slot 0 keeps its prior facts.
         assert_eq!(tracker.slot(XL, 0), SlotState::Valid(facts(5)));
     }
 
@@ -522,7 +502,6 @@ mod tests {
                 facts: facts(4),
             },
         );
-        // The other layer's buffer is untouched.
         assert_eq!(tracker.slot(xl1, 0), SlotState::Unknown);
         assert_eq!(tracker.slot(XL, 0), SlotState::Valid(facts(4)));
     }
@@ -560,7 +539,6 @@ mod tests {
         assert_eq!(ref_width[0], 64);
         assert_eq!(ref_height[0], 48);
         assert!(!ref_valid[1]);
-        // A layer with no buffer yields None.
         let absent = tracker.view_into(
             ExtendedLayerId::from_bits(2),
             &mut ref_valid,
@@ -577,21 +555,18 @@ mod tests {
         assert!(slot_facts(None, Some(2), Some(3), Some(-1)).is_none());
         assert!(slot_facts(Some(1), None, Some(3), Some(-1)).is_none());
         assert!(slot_facts(Some(1), Some(2), None, Some(-1)).is_none());
-        // A `-1` LongTermId (the non-long-term sentinel) maps to `None`, not poisoning.
         assert_eq!(
             slot_facts(Some(1), Some(2), Some(3), Some(-1))
                 .unwrap()
                 .long_term_id,
             None
         );
-        // A missing LongTermId also defaults to the non-long-term sentinel.
         assert_eq!(
             slot_facts(Some(1), Some(2), Some(3), None)
                 .unwrap()
                 .long_term_id,
             None
         );
-        // A non-negative LongTermId is retained as the slot's long-term id.
         assert_eq!(
             slot_facts(Some(1), Some(2), Some(3), Some(4))
                 .unwrap()
@@ -603,7 +578,6 @@ mod tests {
     #[test]
     fn slot_long_term_id_reads_only_valid_slots() {
         let mut tracker = ReferenceStateTracker::default();
-        // A long-term KEY refresh into slot 0 (LongTermId 5) and a plain refresh into slot 2.
         tracker.apply(
             XL,
             FrameRefUpdate::Refresh {
@@ -622,7 +596,6 @@ mod tests {
         );
         assert_eq!(tracker.slot_long_term_id(XL, 0), Some(Some(5)));
         assert_eq!(tracker.slot_long_term_id(XL, 2), Some(None));
-        // An Unknown slot is undecidable (None), not a proof of any long-term id.
         assert_eq!(tracker.slot_long_term_id(XL, 1), None);
     }
 
@@ -657,7 +630,6 @@ mod tests {
                 _ => FrameRefUpdate::PoisonAll,
             };
             tracker.apply(xl, update);
-            // Every slot index (including out of range) is queryable without panic.
             for i in 0..(NUM_REF_FRAMES + 4) {
                 let _ = tracker.slot(xl, i);
             }

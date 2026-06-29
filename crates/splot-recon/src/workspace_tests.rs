@@ -257,10 +257,6 @@ fn workspace_rect_writes_reject_invalid_shape_and_bounds() {
             actual: 31
         })
     ));
-    // A fill whose origin is IN-FRAME but whose extent overhangs the right edge
-    // writes only the in-frame columns (the overhang is dropped, modelling AVM's
-    // in-frame-only reconstruction) and does NOT error: column x=3 is filled, the
-    // out-of-frame column x=4 is dropped.
     workspace
         .fill_rect(PlaneId::Y, rect(3, 0, 2, 1), 4)
         .unwrap();
@@ -268,8 +264,6 @@ fn workspace_rect_writes_reject_invalid_shape_and_bounds() {
         workspace.samples(PlaneId::Y).unwrap(),
         &[0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     );
-    // A genuinely OUT-OF-FRAME origin (x == storage width) has no in-frame extent and
-    // still errors — AVM never produces such an origin, so it is a real geometry bug.
     assert!(matches!(
         workspace.fill_rect(PlaneId::Y, rect(4, 0, 1, 1), 4),
         Err(ReconError::WorkspaceRectOutOfBounds {
@@ -281,11 +275,6 @@ fn workspace_rect_writes_reject_invalid_shape_and_bounds() {
 
 #[test]
 fn workspace_write_rect_block_clamps_frame_edge_overhang_to_in_frame_samples() {
-    // A 1920x1080 luma plane is NOT superblock-padded: a bottom-edge transform whose
-    // MI footprint overhangs the frame writes only its in-frame rows/cols. Model the
-    // ac0ej3 MI(0,256) TX_64X64 case at a small scale: a 6x4 plane, a 4x4 block whose
-    // origin (4,2) is in-frame but whose 4-wide-by-4-tall extent overhangs the right
-    // edge by 2 columns and the bottom edge by 2 rows.
     let mut workspace = CurrentFrameWorkspace::<u8>::new(
         info(
             BitDepth::Eight,
@@ -297,8 +286,6 @@ fn workspace_write_rect_block_clamps_frame_edge_overhang_to_in_frame_samples() {
     )
     .unwrap();
 
-    // The caller still passes the FULL 4x4 = 16-sample block (row-major). Only the
-    // in-frame 2x2 sub-rect ([4,6) x [2,4)) is written; the overhang is dropped.
     let block: [u8; 16] = [
         10, 11, 12, 13, // row 0 (in-frame columns 10,11)
         14, 15, 16, 17, // row 1 (in-frame columns 14,15)
@@ -309,7 +296,6 @@ fn workspace_write_rect_block_clamps_frame_edge_overhang_to_in_frame_samples() {
         .write_rect_block(PlaneId::Y, 4, 2, rect_block(2, 2), &block)
         .unwrap();
 
-    // Only x[4,6) y[2,4) carries the in-frame samples; everything else stays 0.
     assert_eq!(
         workspace.samples(PlaneId::Y).unwrap(),
         &[
@@ -320,7 +306,6 @@ fn workspace_write_rect_block_clamps_frame_edge_overhang_to_in_frame_samples() {
         ]
     );
 
-    // A genuinely OUT-OF-FRAME origin still errors (AVM never produces one).
     assert!(matches!(
         workspace.write_rect_block(PlaneId::Y, 6, 0, rect_block(2, 2), &block),
         Err(ReconError::WorkspaceRectOutOfBounds {
@@ -339,14 +324,6 @@ fn workspace_write_rect_block_clamps_frame_edge_overhang_to_in_frame_samples() {
 
 #[test]
 fn workspace_intra_edge_extends_partial_bottom_left_with_last_in_frame_sample() {
-    // Model the ac0ej3 bottom-edge TX_64X64 case at a small scale: an 8-wide, 4-tall
-    // plane and a 4x4 block at origin (4,1). The block is 4 rows tall (y[1,5)) but the
-    // plane is only 4 rows, so the LEFT column (x=3) has just 3 IN-FRAME rows (y=1,2,3);
-    // the 4th block row overhangs the frame bottom. The block's above row (x[4,8)) is
-    // FULLY in-frame (width 8), so only the LEFT edge overhangs. AVM edge-extends the
-    // in-frame left column to the block's full 4-tall nominal height by replicating the
-    // LAST in-frame sample (`reconintra.c:1191-1195`). The left column is NON-FLAT so a
-    // wrong replication source (the FIRST in-frame sample instead of the LAST) fails.
     let mut workspace = CurrentFrameWorkspace::<u8>::new(
         info(
             BitDepth::Eight,
@@ -358,14 +335,10 @@ fn workspace_intra_edge_extends_partial_bottom_left_with_last_in_frame_sample() 
     )
     .unwrap();
 
-    // Write a distinct, strictly-increasing left column at x=3: y=1->50, y=2->60,
-    // y=3->70. The bottom-most in-frame left sample is 70 (y=3).
     workspace
         .write_rect(PlaneId::Y, rect(3, 1, 1, 3), &[50, 60, 70], 1)
         .unwrap();
 
-    // Write the FULLY in-frame above row at y=0 over x[4,8) (-> 80,90,100,110); it does
-    // NOT overhang, so it is a control that only the overhanging left edge is extended.
     workspace
         .write_rect(PlaneId::Y, rect(4, 0, 4, 1), &[80, 90, 100, 110], 4)
         .unwrap();
@@ -374,27 +347,16 @@ fn workspace_intra_edge_extends_partial_bottom_left_with_last_in_frame_sample() 
         .intra_dc_edges_for_rect(PlaneId::Y, 4, 1, rect_block(2, 2))
         .unwrap();
 
-    // The left edge is the FULL 4-tall nominal block height with the out-of-frame 4th
-    // row replicated from the LAST in-frame sample (70), NOT the first (50).
     assert_eq!(
         edges.left_samples().unwrap(),
         &[50, 60, 70, 70],
         "partial bottom-edge left column must extend with the LAST in-frame sample"
     );
-    // The above row is NOT extended (the block does not overhang the right edge): it is
-    // the in-frame 4-wide above row, proving only the overhanging edge is extended.
     assert_eq!(edges.above_samples().unwrap(), &[80, 90, 100, 110]);
 }
 
 #[test]
 fn workspace_intra_edge_extends_partial_right_above_with_last_in_frame_sample() {
-    // Symmetric to the bottom-left case: a 4-wide, 8-tall plane and a 4x4 block at
-    // origin (1,4). The block is 4 columns wide (x[1,5)) but the plane is only 4 wide,
-    // so the ABOVE row (y=3) has just 3 IN-FRAME columns (x=1,2,3); the 4th block column
-    // overhangs the frame right. The block's left column (x=0, y[4,8)) is FULLY in-frame
-    // (height 8), so only the ABOVE edge overhangs. AVM edge-extends the above row to the
-    // block's full 4-wide nominal width by replicating the LAST (right-most) in-frame
-    // sample.
     let mut workspace = CurrentFrameWorkspace::<u8>::new(
         info(
             BitDepth::Eight,
@@ -406,12 +368,9 @@ fn workspace_intra_edge_extends_partial_right_above_with_last_in_frame_sample() 
     )
     .unwrap();
 
-    // Above row at y=3, x[1,4): 50,60,70. Right-most in-frame above sample is 70 (x=3).
     workspace
         .write_rect(PlaneId::Y, rect(1, 3, 3, 1), &[50, 60, 70], 3)
         .unwrap();
-    // FULLY in-frame left column at x=0, y[4,8) -> 80,90,100,110 (control: the block does
-    // not overhang the bottom, so the left column stays its in-frame height).
     workspace
         .write_rect(PlaneId::Y, rect(0, 4, 1, 4), &[80, 90, 100, 110], 1)
         .unwrap();
@@ -632,21 +591,12 @@ fn workspace_rectangular_dc_clamps_overhang_and_rejects_out_of_frame_origin() {
     )
     .unwrap();
 
-    // Origin (5,1) is in-frame but the 4x8 block overhangs both edges. The edge read
-    // clamps to the in-frame sub-rect (3 wide x 7 tall): the left column reads the 7
-    // in-frame rows of x=4 and the above row reads the 3 in-frame columns of row 0
-    // (mirroring AVM's in-frame-only neighbour reads) instead of erroring. The §7.13.2.1
-    // edge extension then replicates the last in-frame sample back to the block's FULL
-    // nominal extent (left -> 8-tall, above -> 4-wide), per AVM `reconintra.c:1191-1195`,
-    // so the prediction primitives receive the full-length edge they expect.
     let edges = workspace
         .intra_dc_edges_for_rect(PlaneId::Y, 5, 1, rect_block(2, 3))
         .unwrap();
     assert_eq!(edges.left_samples().map(<[u8]>::len), Some(8));
     assert_eq!(edges.above_samples().map(<[u8]>::len), Some(4));
 
-    // A genuinely OUT-OF-FRAME origin (y == storage height) has no in-frame extent and
-    // still errors.
     assert!(matches!(
         workspace.intra_dc_edges_for_rect(PlaneId::Y, 0, 8, rect_block(2, 2)),
         Err(ReconError::WorkspaceRectOutOfBounds {
@@ -1279,8 +1229,6 @@ fn workspace_freezes_into_hash_y4m_and_reference_store_inputs() {
     let mut store = ReferenceFrameStore::with_capacity(1).unwrap();
     let slot = ReferenceSlot::new(0).unwrap();
     let expected_index = frame.output_index();
-    // Move the owned frame into the store (no clone): a reference store moves or
-    // shares handles and never duplicates frame storage.
     assert!(store.put(slot, frame).unwrap().is_none());
     assert_eq!(
         store.get(slot).unwrap().unwrap().output_index(),
@@ -1301,7 +1249,6 @@ fn workspace_reconstructed_sample_reads_arbitrary_in_storage_samples() {
     )
     .unwrap();
 
-    // Write a 2x2 block so a specific reconstructed sample is observable.
     workspace
         .write_rect(PlaneId::Y, rect(1, 1, 2, 2), &[9, 8, 7, 6], 2)
         .unwrap();
@@ -1324,7 +1271,6 @@ fn workspace_reconstructed_sample_rejects_out_of_bounds_and_missing_plane() {
     )
     .unwrap();
 
-    // Out-of-bounds column / row are rejected, not silently clamped.
     assert!(matches!(
         workspace.reconstructed_sample(PlaneId::Y, 4, 0),
         Err(ReconError::WorkspaceRectOutOfBounds { .. })
@@ -1333,7 +1279,6 @@ fn workspace_reconstructed_sample_rejects_out_of_bounds_and_missing_plane() {
         workspace.reconstructed_sample(PlaneId::Y, 0, 3),
         Err(ReconError::WorkspaceRectOutOfBounds { .. })
     ));
-    // Absent chroma plane on a monochrome workspace is rejected.
     assert!(matches!(
         workspace.reconstructed_sample(PlaneId::U, 0, 0),
         Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
@@ -1342,8 +1287,6 @@ fn workspace_reconstructed_sample_rejects_out_of_bounds_and_missing_plane() {
 
 #[test]
 fn workspace_set_reconstructed_sample_writes_and_validates() {
-    // The §7.17 deblocking edge loop writes single modified samples back across
-    // block boundaries via `set_reconstructed_sample`.
     let mut workspace = CurrentFrameWorkspace::<u8>::new(
         info(
             BitDepth::Eight,
@@ -1362,14 +1305,11 @@ fn workspace_set_reconstructed_sample_writes_and_validates() {
         workspace.reconstructed_sample(PlaneId::Y, 2, 1).unwrap(),
         200
     );
-    // An untouched neighbour keeps the fill value.
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 1, 1).unwrap(), 1);
-    // The 8-bit max is a valid value.
     workspace
         .set_reconstructed_sample(PlaneId::Y, 0, 0, 255)
         .unwrap();
 
-    // Out-of-bounds writes are rejected, not silently clamped.
     assert!(matches!(
         workspace.set_reconstructed_sample(PlaneId::Y, 4, 0, 5),
         Err(ReconError::WorkspaceRectOutOfBounds { .. })
@@ -1378,7 +1318,6 @@ fn workspace_set_reconstructed_sample_writes_and_validates() {
         workspace.set_reconstructed_sample(PlaneId::Y, 0, 3, 5),
         Err(ReconError::WorkspaceRectOutOfBounds { .. })
     ));
-    // Absent chroma plane on a monochrome workspace is rejected.
     assert!(matches!(
         workspace.set_reconstructed_sample(PlaneId::U, 0, 0, 5),
         Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })

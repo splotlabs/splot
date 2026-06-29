@@ -144,7 +144,6 @@ impl IntrabcRefMvBank {
         let sb_row_start = sb_row * self.mib_size;
         let sb_col_start = sb_col * self.mib_size;
         if self.current_sb_row != Some(sb_row_start) {
-            // Start of a new superblock row: zero the whole bank.
             self.queue.clear();
             self.remain_hits = 0;
             self.unit_hits = 0;
@@ -152,8 +151,6 @@ impl IntrabcRefMvBank {
             self.current_sb_row = Some(sb_row_start);
             self.current_sb_col = Some(sb_col_start);
         } else if self.current_sb_col != Some(sb_col_start) {
-            // A new superblock in the same row: reset the per-SB hit counters
-            // (the queue carries across superblocks within a row).
             self.sb_hits = 0;
             self.remain_hits = 0;
             self.unit_hits = 0;
@@ -202,9 +199,6 @@ impl IntrabcRefMvBank {
         use_intrabc: bool,
         block_mv: Option<Mv>,
     ) {
-        // Every block (IBC or not) runs `decide_rmb_unit_update_count`: a non-IBC
-        // block calls it directly (`decodemv.c:3204`); an IBC block calls it from
-        // inside `av2_update_ref_mv_bank` (`mvref_common.c:4621`).
         self.decide_unit_update_count(mi_row, mi_col, n4w, n4h);
         if let (true, Some(mv)) = (use_intrabc, block_mv) {
             self.update_within_sb(mv);
@@ -247,7 +241,6 @@ impl IntrabcRefMvBank {
     /// The dedup / move-to-end / append tail of AV2 § 7.12.2 `update_ref_mv_bank`.
     fn append_or_move_to_end(&mut self, mv: Mv) {
         if let Some(pos) = self.queue.iter().position(|&entry| entry == mv) {
-            // Move the existing entry to the end (most recent).
             let entry = self.queue.remove(pos);
             self.queue.push(entry);
             return;
@@ -255,7 +248,6 @@ impl IntrabcRefMvBank {
         if self.queue.len() < REF_MV_BANK_SIZE {
             self.queue.push(mv);
         } else {
-            // Full buffer: drop the oldest, append the new entry.
             self.queue.remove(0);
             self.queue.push(mv);
         }
@@ -287,7 +279,6 @@ fn check_rmb_cand(cand: Mv, stack: &[Mv], bounds: RmbCandBounds) -> bool {
     if stack.contains(&cand) {
         return false;
     }
-    // C integer division truncates toward zero; `i32` division matches.
     let ref_x = bounds.mi_col * MI_SIZE + cand.col / 8;
     let ref_y = bounds.mi_row * MI_SIZE + cand.row / 8;
     if ref_x <= -bounds.block_w
@@ -446,33 +437,20 @@ pub(super) fn spatial_intrabc_scan(
     let bh4 = geometry.n4h;
 
     let mut candidates: Vec<WeightedBv> = Vec::new();
-    // The above-row columns this decoder models faithfully (with each probe's
-    // availability): for a NON-SB-border block, the full within-SB scan (steps 8/10/
-    // 12/14 at 4x4 resolution); for an SB-border block, only the step-8 aligned
-    // column (#531). Columns NOT in this set stay unmodelled, so the over-scan keeps
-    // deferring on any above-row new BV outside them.
     let above = AboveRowScan::resolve(&geometry, &is_coded);
 
-    // Modelled positions in AV2 § 7.12.2.1 step order: step 7, step 8, step 9,
-    // then the remaining within-SB above-row probes (steps 10, 12, 14) interleaved
-    // with step 11 in AVM order. Step 11 (below-bottom-left) stays unmodelled. Each
-    // adjacent placement carries § 7.12.2.6 weight `ADJACENT_SMVP_WEIGHT`, except the
-    // step-14 above-left corner (`OTHER_SMVP_WEIGHT`).
-    if let Some(left_col) = col.checked_sub(1) {
-        // Step 7: (bh4 - 1, -1), gated left_available (col > 0 for the single tile).
-        if let Some(r) = row.checked_add(bh4.saturating_sub(1)) {
-            push_deduped(
-                &geometry,
-                &lookup,
-                &mut candidates,
-                r,
-                left_col,
-                ADJACENT_SMVP_WEIGHT,
-            );
-        }
+    if let Some(left_col) = col.checked_sub(1)
+        && let Some(r) = row.checked_add(bh4.saturating_sub(1))
+    {
+        push_deduped(
+            &geometry,
+            &lookup,
+            &mut candidates,
+            r,
+            left_col,
+            ADJACENT_SMVP_WEIGHT,
+        );
     }
-    // Step 8: row_smvp_state[0], before step 9 to match the AVM scan order
-    // (`mvref_common.c:2371` before `:2382`).
     push_above_probe(
         &geometry,
         &lookup,
@@ -480,7 +458,6 @@ pub(super) fn spatial_intrabc_scan(
         above.step8,
         ADJACENT_SMVP_WEIGHT,
     );
-    // Step 9: (0, -1) when bh4 >= 2.
     if bh4 >= 2
         && let Some(left_col) = col.checked_sub(1)
     {
@@ -493,7 +470,6 @@ pub(super) fn spatial_intrabc_scan(
             ADJACENT_SMVP_WEIGHT,
         );
     }
-    // Step 10: row_smvp_state[1] (above-row deltaCol = 0).
     push_above_probe(
         &geometry,
         &lookup,
@@ -501,8 +477,6 @@ pub(super) fn spatial_intrabc_scan(
         above.step10,
         ADJACENT_SMVP_WEIGHT,
     );
-    // Step 11 (below-bottom-left) stays unmodelled — handled by the over-scan defer.
-    // Step 12: row_smvp_state[2] (above-row top-right, deltaCol = bw4).
     push_above_probe(
         &geometry,
         &lookup,
@@ -510,8 +484,6 @@ pub(super) fn spatial_intrabc_scan(
         above.step12,
         ADJACENT_SMVP_WEIGHT,
     );
-    // Step 14: row_smvp_state[3] (above-left corner, deltaCol = -1 within-SB or
-    // aligned deltaCol = -2 SB-border): § 7.12.2.6 weight `OTHER_SMVP_WEIGHT` (0).
     push_above_probe(
         &geometry,
         &lookup,
@@ -520,8 +492,6 @@ pub(super) fn spatial_intrabc_scan(
         OTHER_SMVP_WEIGHT,
     );
 
-    // Unmodelled positions: defer only if one holds a NEW IntrABC block vector
-    // (excluding the above-row columns now placed exactly by the scan above).
     let defer = spatial_scan_unmodelled_has_new_bv(&geometry, &lookup, &candidates, &above);
 
     SpatialIntrabcScan { candidates, defer }
@@ -567,18 +537,12 @@ impl AboveRowScan {
             step14: None,
             is_sb_border,
         };
-        // No above row (frame/tile top): every above-row probe is unavailable, so
-        // nothing is modelled and nothing is over-scanned.
         if above_row.is_none() {
             return scan;
         }
         if is_sb_border {
-            // SB border: model the 8x8-aligned above-row scan when the alignment is a
-            // no-op (even MiCol); an odd MiCol shifts the aligned column and stays
-            // unmodelled (defer-as-before).
             scan.resolve_sb_border(geometry);
         } else {
-            // Within the superblock: model the full 4x4-resolution above-row scan.
             scan.resolve_within_sb(geometry, is_coded);
         }
         scan
@@ -634,31 +598,17 @@ impl AboveRowScan {
         let col = geometry.mi_col;
         let bw4 = geometry.n4w;
         let width_type = BlockWidthType::from_bw4(bw4);
-        // The 8x8 alignment `(MiCol >> 1) << 1` is a no-op iff MiCol is even; an odd
-        // MiCol shifts every aligned column, so leave all SB-border probes unmodelled.
         if col & 1 != 0 {
             return;
         }
-        // Step 8: aligned deltaCol = Max(0, bw4 - 2) (the existing #531 step-8 column;
-        // `step8_above_row_column` computes the same `col + (bw4 - 2)` floor and is 0
-        // for BLOCK_WIDTH_4/8, matching the table's hardcoded `col_offset = 0`).
         self.step8 = step8_above_row_column(geometry);
-        // Step 10: aligned deltaCol = 0, but DISABLED for BLOCK_WIDTH_4 and
-        // BLOCK_WIDTH_8 — AVM `row_smvp_all_states[1][BLOCK_WIDTH_4/8]` index 1 is the
-        // hardcoded `{0, -1, 0}` (`is_available == 0`, `mvref_common.c:2042`/`2053`),
-        // matching the § 7.12.2.1 step-10 SB-border gate `bw4 >= 4`. Only
-        // BLOCK_WIDTH_OTHERS (bw4 >= 4) reads the step-10 column.
         if width_type == BlockWidthType::Others {
             self.step10 = sb_border_above_col(geometry, 0);
         }
-        // Step 12: aligned deltaCol = Max(2, bw4) (BLOCK_WIDTH_4 uses 2; every wider
-        // width uses bw4), gated has_top_right (= 1 on the SB border) and the AVM
-        // `bw4 <= Num_4x4_Blocks_Wide[BLOCK_64X64]` cap (§ 7.12.2.1 step-12 `bw4<=16`).
         if bw4 <= MAX_SMVP_AXIS_MI {
             let raw = i64::try_from(bw4.max(2)).unwrap_or(i64::MAX);
             self.step12 = sb_border_above_col(geometry, raw);
         }
-        // Step 14: aligned deltaCol = -2 (all widths).
         self.step14 = sb_border_above_col(geometry, -2);
     }
 
@@ -676,27 +626,16 @@ impl AboveRowScan {
     ) {
         let col = geometry.mi_col;
         let bw4 = geometry.n4w;
-        // Step 8: deltaCol = bw4 - 1, gated up_available (the above row exists here).
         self.step8 = tile_above_col(geometry, col.checked_add(bw4.saturating_sub(1)));
-        // Step 10: deltaCol = 0, gated up_available, but DISABLED for BLOCK_WIDTH_4
-        // (bw4 == 1): AVM `row_smvp_all_states[0][BLOCK_WIDTH_4]` index 1 is
-        // `{0, -1, 0}` (the `is_available` flag is 0, `mvref_common.c:2015`), so a
-        // 4px-wide block reads no step-10 above-row candidate. BLOCK_WIDTH_8 and
-        // BLOCK_WIDTH_OTHERS both keep `{up_available, -1, 0}` (`mvref_common.c:2022`/
-        // `2029`) — matching the § 7.12.2.1 step-10 within-SB gate `bw4 >= 2`. Leaving
-        // it `None` makes the over-scan defer on any above-row new BV at that column.
         if BlockWidthType::from_bw4(bw4) != BlockWidthType::Width4 {
             self.step10 = tile_above_col(geometry, Some(col));
         }
-        // Step 12: deltaCol = bw4, the top-right probe, gated has_top_right (and the
-        // AVM `bw4 <= Num_4x4_Blocks_Wide[BLOCK_64X64]` cap, `mvref_common.c:1554`).
         if bw4 <= MAX_SMVP_AXIS_MI
             && self.has_top_right(geometry, is_coded)
             && let Some(c) = tile_above_col(geometry, col.checked_add(bw4))
         {
             self.step12 = Some(c);
         }
-        // Step 14: deltaCol = -1, gated up_available && left_available (MiCol > 0).
         self.step14 = col
             .checked_sub(1)
             .and_then(|c| tile_above_col(geometry, Some(c)));
@@ -724,12 +663,8 @@ impl AboveRowScan {
         let mask_col = geometry.mi_col % sb_size4;
         let tr_mask_col = mask_col + geometry.n4w;
         if tr_mask_col >= sb_size4 {
-            // The top-right 4x4 is in the superblock on the right: not coded yet.
             return false;
         }
-        // Within the current SB: consult the `is_mi_coded` decode-order signal at the
-        // top-right 4x4 (MiRow - 1, MiCol + bw4). `mask_row - 1 >= 0` here (the SB-top
-        // case is the SB-border branch), so the above MI is within the same SB.
         let Some(tr_col) = geometry.mi_col.checked_add(geometry.n4w) else {
             return false;
         };
@@ -815,26 +750,12 @@ fn push_above_probe(
 fn step8_above_row_column(geometry: &SpatialScanGeometry) -> Option<usize> {
     let row = geometry.mi_row;
     let col = geometry.mi_col;
-    // up_available: there is an above row at all (frame/tile top has none).
     if row == 0 {
         return None;
     }
-    // isSbBorder == 1: MiRow is a multiple of the SB side (Num_4x4_Blocks_High).
     if geometry.sb_size4 == 0 || !row.is_multiple_of(geometry.sb_size4) {
         return None;
     }
-    // § 7.12.2.6 floors the probe column: `mvCol = (MiCol + deltaCol) >> 1 << 1`.
-    // We model the case where that floor is a no-op (`aligned_col == MiCol +
-    // deltaCol`) by checking `MiCol` parity below, which is sufficient for the
-    // reachable set BECAUSE `deltaCol = Max(0, bw4 - 2)` is always EVEN here: IBC
-    // block widths are powers of two (`bw4 ∈ {1, 2, 4, 8, 16}`), and `Max(0, bw4 - 2)`
-    // is `0` for the narrow `bw4 ∈ {1, 2}` (`BLOCK_WIDTH_4`/`_8`) and `bw4 - 2` for the
-    // even `bw4 ∈ {4, 8, 16}` — even in every case. With an even `deltaCol`,
-    // `MiCol + deltaCol` is even iff `MiCol` is even, so the `col & 1` parity guard
-    // alone makes the floor a no-op. If a future odd `deltaCol` ever became reachable
-    // (an odd `bw4`), the parity guard would NOT suffice and the full floor
-    // `(MiCol + deltaCol) >> 1 << 1` would be required — assert it stays even so that
-    // case fails loudly in debug instead of silently mis-aligning.
     let delta_col = geometry.n4w.saturating_sub(2);
     debug_assert!(
         delta_col.is_multiple_of(2),
@@ -847,7 +768,6 @@ fn step8_above_row_column(geometry: &SpatialScanGeometry) -> Option<usize> {
         return None;
     }
     let aligned_col = col.checked_add(delta_col)?;
-    // is_inside: the neighbour column must lie inside the tile.
     if aligned_col >= geometry.mi_cols {
         return None;
     }
@@ -1498,7 +1418,6 @@ mod tests {
             },
             "the §7.12.2.19 sort must move the weight-1 candidate to slot 0 (not a passthrough)"
         );
-        // DRL index 1 then selects the displaced weight-0 candidate (now at slot 1).
         assert_eq!(
             intrabc_ref_stack_admission(
                 &bank,
@@ -1514,14 +1433,9 @@ mod tests {
         );
     }
 
-    // STRICT `>` tie-break: with EQUAL weights the lowest index wins, so the sort is a
-    // no-op (slot 0 keeps the first scan-order candidate). The MI(192,112) frontier
-    // case: [0](-1024,0 w=3)[1](-512,0 w=1) — slot 0 already holds the max, so the
-    // swap is a no-op and DRL index 1 selects (-512,0), matching avmdec.
     #[test]
     fn admission_no_op_swap_when_slot0_already_max() {
         let bank = IntrabcRefMvBank::new(32);
-        // Equal-weight tie: the lowest index stays in slot 0 (strict `>`).
         let tie = SpatialIntrabcScan {
             candidates: vec![
                 wbv(Mv { row: -1024, col: 0 }, 1),
@@ -1543,7 +1457,6 @@ mod tests {
             },
             "equal weights must keep the lowest index in slot 0 (strict `>` tie-break)"
         );
-        // The MI(192,112) no-op: slot 0 weight (3) already exceeds slot 1 (1).
         let frontier = SpatialIntrabcScan {
             candidates: vec![
                 wbv(Mv { row: -1024, col: 0 }, 3),
@@ -1567,9 +1480,6 @@ mod tests {
         );
     }
 
-    // The § 7.12.2.18 useSort gate is threaded, not hardcoded: with DRL_REORDER_
-    // DISABLED the sort never runs, so a higher-weight LATER candidate does NOT move
-    // to slot 0 (the stack keeps scan order). With DRL_REORDER_ALWAYS it does.
     #[test]
     fn admission_sort_respects_drl_reorder_mode() {
         let bank = IntrabcRefMvBank::new(32);
@@ -1581,8 +1491,6 @@ mod tests {
             candidates: candidates.clone(),
             defer: false,
         };
-        // DRL_REORDER_DISABLED: useSort = (nearest >= 4) only; nearest = 2 -> no sort,
-        // so slot 0 keeps the scan-order-first (weight-0) candidate.
         assert_eq!(
             intrabc_ref_stack_admission(
                 &bank,
@@ -1597,7 +1505,6 @@ mod tests {
             },
             "DRL_REORDER_DISABLED must NOT sort (slot 0 stays scan-order-first)"
         );
-        // DRL_REORDER_CONSTRAINT with nearest = 2 (< 4): useSort = 0 -> no sort either.
         assert_eq!(
             intrabc_ref_stack_admission(
                 &bank,
@@ -1612,7 +1519,6 @@ mod tests {
             },
             "DRL_REORDER_CONSTRAINT with nearest < 4 must NOT sort"
         );
-        // DRL_REORDER_ALWAYS: the sort runs and the weight-1 candidate reaches slot 0.
         assert_eq!(
             intrabc_ref_stack_admission(
                 &bank,
@@ -1629,7 +1535,6 @@ mod tests {
         );
     }
 
-    // A single nearest candidate is unaffected (the sort loop is a no-op for len 1).
     #[test]
     fn admission_admits_single_spatial_candidate() {
         let bank = IntrabcRefMvBank::new(32);
@@ -1650,34 +1555,23 @@ mod tests {
         ));
     }
 
-    // The pure-unit § 7.12.2.19 sort over the nearest prefix: a strict-`>` max-to-slot0
-    // single swap. A weight-0 entry at slot 0 with a weight-1 entry later swaps; an
-    // equal-weight pair does not (lowest index wins).
     #[test]
     fn sort_nearest_moves_max_weight_to_slot0_strict() {
         let mut swap = vec![wbv(Mv { row: 1, col: 1 }, 0), wbv(Mv { row: 2, col: 2 }, 1)];
         sort_nearest_max_weight_to_slot0(&mut swap);
         assert_eq!(swap[0], wbv(Mv { row: 2, col: 2 }, 1));
         assert_eq!(swap[1], wbv(Mv { row: 1, col: 1 }, 0));
-        // Equal weights: no swap (strict `>` keeps the lowest index).
         let mut tie = vec![wbv(Mv { row: 1, col: 1 }, 2), wbv(Mv { row: 2, col: 2 }, 2)];
         sort_nearest_max_weight_to_slot0(&mut tie);
         assert_eq!(tie[0], wbv(Mv { row: 1, col: 1 }, 2));
-        // Slot 0 already max: no swap.
         let mut already = vec![wbv(Mv { row: 1, col: 1 }, 3), wbv(Mv { row: 2, col: 2 }, 1)];
         sort_nearest_max_weight_to_slot0(&mut already);
         assert_eq!(already[0], wbv(Mv { row: 1, col: 1 }, 3));
-        // Empty / single: no-op.
         let mut empty: Vec<WeightedBv> = Vec::new();
         sort_nearest_max_weight_to_slot0(&mut empty);
         assert!(empty.is_empty());
     }
 
-    // The § 7.12.2 spatial scan: a left-column IntrABC neighbour at the bottom-left
-    // position (step 7) contributes its BV; a within-SB above-row IntrABC neighbour
-    // at a MODELLED column (step 10, deltaCol = 0) is admitted, but one at a column
-    // NO modelled step reaches (e.g. the § 7.12.2.5 deltaCol = -3 deep-left scan)
-    // forces a (safe) defer.
     #[test]
     fn spatial_scan_adds_left_neighbour_and_admits_modelled_above_neighbour() {
         let geom = SpatialScanGeometry {
@@ -1689,8 +1583,6 @@ mod tests {
             mi_cols: 64,
             sb_size4: 32,
         };
-        // Left neighbour at the bottom-left (step 7) position (mi_row+bh4-1, mi_col-1)
-        // = (7, 7) is IntrABC with BV (0, -64).
         let left_only = spatial_intrabc_scan(
             geom,
             |row, col| (row == 7 && col == 7).then_some(Mv { row: 0, col: -64 }),
@@ -1698,8 +1590,6 @@ mod tests {
         );
         assert_eq!(left_only.candidates, vec![adj(Mv { row: 0, col: -64 })]);
         assert!(!left_only.defer);
-        // A within-SB above-row IntrABC neighbour at the step-10 column (3, 8)
-        // (deltaCol = 0) is now MODELLED -> admitted, no defer.
         let above = spatial_intrabc_scan(
             geom,
             |row, col| (row == 3 && col == 8).then_some(Mv { row: -8, col: 0 }),
@@ -1707,8 +1597,6 @@ mod tests {
         );
         assert_eq!(above.candidates, vec![adj(Mv { row: -8, col: 0 })]);
         assert!(!above.defer);
-        // An IntrABC neighbour at the § 7.12.2.5 deltaCol = -3 deep-left scan position
-        // (mi_row, mi_col - 3) = (4, 5), which no modelled step reaches, still defers.
         let deep_left = spatial_intrabc_scan(
             geom,
             |row, col| (row == 4 && col == 5).then_some(Mv { row: 0, col: -512 }),
@@ -1731,12 +1619,6 @@ mod tests {
         }
     }
 
-    // The § 7.12.2.1 step-8 above-row SMVP candidate, SB-border + even-mi_col case:
-    // MI(32,56) on an SB border reads the SB-aligned above neighbour at
-    // (row-1, mi_col + Max(0,bw4-1-isSbBorder)) = (31, 56+6) = (31,62), which lies
-    // inside the SB-row-0 owner block MI(16,56) carrying its IntrABC BV (-512,0).
-    // The scan admits it (no defer), matching the avmdec SPLOT_IBC_DUMP
-    // `PREDEF count=1 : [0](-512,0 ro=-1 co=6)`.
     #[test]
     fn spatial_scan_admits_ac0ej3_mi_32_56_step8_above_neighbour() {
         let scan = spatial_intrabc_scan(
@@ -1748,12 +1630,6 @@ mod tests {
         assert!(!scan.defer);
     }
 
-    // The full MI(32,56) admission: with the modelled step-8 candidate (-512,0)
-    // first, the SB-row-1 bank is empty (zeroed at SB-row entry), so the stack is
-    // [(-512,0)] + the four § 7.12.2.20 defaults, capped at max_bvp_drl_bits_minus_1
-    // + 2 = 4 -> [(-512,0),(-1024,0),(0,-3072),(-512,0)]. DRL index 0 selects
-    // (-512,0), bit-exact vs the avmdec dump
-    // `FINAL [0](-512,0)[1](-1024,0)[2](0,-3072)[3](-512,0)` drl=0 decoded=(-512,0).
     #[test]
     fn admission_selects_ac0ej3_mi_32_56_step8_bv() {
         let bank = IntrabcRefMvBank::new(32); // freshly zeroed at the SB-row-1 entry.
@@ -1790,16 +1666,8 @@ mod tests {
         );
     }
 
-    // Narrowing precision: a still-unmodelled above-row column (NOT the modelled
-    // step-8 aligned column) holding a NEW IntrABC BV STILL defers. For MI(32,56)
-    // the modelled step-8 column is 62; a NEW BV at a DIFFERENT above-row column
-    // (e.g. the step-12 `Max(2,bw4)` probe at col 64, or the step-14 above-left)
-    // must keep deferring — proving the exclusion is precise, not a blanket open.
     #[test]
     fn spatial_scan_defers_on_other_above_row_column() {
-        // For SB-border even-MiCol MI(32,56) (bw4 8) the modelled above-row columns
-        // are step 8 = 62, step 10 = 56, step 12 = 64, step 14 = 54. A new BV at an
-        // above-row column NONE of those steps reach (e.g. col 60) still defers.
         let scan = spatial_intrabc_scan(
             ac0ej3_mi_32_56_scan_geometry(),
             |row, col| (row == 31 && col == 60).then_some(Mv { row: 7, col: -99 }),
@@ -1807,8 +1675,6 @@ mod tests {
         );
         assert!(scan.candidates.is_empty());
         assert!(scan.defer);
-        // The modelled step-8 column AND an unmodelled column together: the modelled
-        // BV is admitted, but the distinct unmodelled-column BV still forces a defer.
         let scan = spatial_intrabc_scan(
             ac0ej3_mi_32_56_scan_geometry(),
             |row, col| {
@@ -1826,9 +1692,6 @@ mod tests {
         assert!(scan.defer);
     }
 
-    // Asserts that a block whose step-8 above-row probe is unmodelled (an SB-border
-    // case) both reports no modelled step-8 column AND defers when its above row
-    // holds an IntrABC neighbour.
     fn assert_unmodelled_step8_defers(mi_row: usize, mi_col: usize, above_neighbour_col: usize) {
         let geom = SpatialScanGeometry {
             mi_row,
@@ -1851,9 +1714,6 @@ mod tests {
         assert!(scan.defer);
     }
 
-    // An odd-mi_col SB-border block does NOT model step 8 (the `(mvCol >> 1) << 1`
-    // alignment would shift the spec column), so an above-row IntrABC neighbour at
-    // any column forces a conservative defer.
     #[test]
     fn spatial_scan_defers_on_odd_mi_col_sb_border() {
         assert_unmodelled_step8_defers(32, 57, 63);
@@ -1874,47 +1734,19 @@ mod tests {
         }
     }
 
-    // The within-SB (non-SB-border) above-row scan now models step 8 at 4x4
-    // resolution: MI(48,56) reads the step-8 above neighbour at
-    // (MiRow - 1, MiCol + bw4 - 1) = (47, 63), inside the SB-row-1 owner block
-    // MI(32,56) carrying BV (-512,0). Steps 10/14 read (47,56)/(47,55); the step-10
-    // (47,56) duplicates (-512,0); step 12's top-right (47,64) is in the next SB
-    // (has_top_right = 0) so it is not read. The scan admits the single distinct
-    // candidate (-512,0), bit-exact vs the avmdec dump
-    // `PREDEF count=1 : [0](-512,0 ro=-1 co=7)` decoded=(-512,0).
     #[test]
     fn spatial_scan_admits_ac0ej3_mi_48_56_within_sb_step8() {
         let scan = spatial_intrabc_scan(
             ac0ej3_mi_48_56_scan_geometry(),
-            |row, col| {
-                // The whole SB-row-1 owner block MI(32,56) (rows 32..=47, cols 56..=63)
-                // carries BV (-512,0); the step-14 left col 55 and step-12 top-right
-                // col 64 belong to OTHER (non-IBC here) blocks.
-                (row == 47 && (56..=63).contains(&col)).then_some(Mv { row: -512, col: 0 })
-            },
-            // Within-SB top-right (47,64) is in the next SB, so has_top_right's
-            // tr_mask_col >= sb_size4 short-circuit returns 0 regardless of is_coded.
+            |row, col| (row == 47 && (56..=63).contains(&col)).then_some(Mv { row: -512, col: 0 }),
             |_, _| true,
         );
-        // Step 8 (47,63) places (-512,0) with weight 1; step 10 (47,56) reads the same
-        // value and ACCUMULATES weight (-> 2). Steps 12/14 read other (non-IBC) cols.
         assert_eq!(scan.candidates, vec![wbv(Mv { row: -512, col: 0 }, 2)]);
         assert!(!scan.defer);
     }
 
-    // The within-SB step-12 top-right probe (deltaCol = bw4) is gated by
-    // has_top_right (is_mi_coded at the within-SB top-right 4x4). In the real decode
-    // a not-yet-coded MI returns BOTH `is_coded == false` AND `lookup == None` (the
-    // `values` grid is filled at record time, so an uncoded MI has no recorded BV):
-    // the two signals are CONSISTENT. When the top-right is not coded, the step-12
-    // probe is unavailable AND `lookup` reads nothing there, so the position
-    // contributes no candidate and triggers no defer. When it IS coded (and within
-    // the same SB), the probe is modelled and its BV is admitted.
     #[test]
     fn spatial_scan_step12_top_right_respects_has_top_right() {
-        // A within-SB top-right at (MiRow-1, MiCol+bw4) that stays inside the SB.
-        // MI(20,8), bw4 = 4, sb_size4 = 32: mask_col = 8, tr_mask_col = 12 < 32 -> the
-        // top-right 4x4 is (19, 12), within the SB.
         let geom = SpatialScanGeometry {
             mi_row: 20,
             mi_col: 8,
@@ -1925,13 +1757,9 @@ mod tests {
             sb_size4: 32,
         };
         let bv = Mv { row: -8, col: -8 };
-        // Not coded: both `lookup` and `is_coded` are false at (19,12) (the real
-        // decode-order invariant) -> the probe is unavailable and reads nothing.
         let not_coded = spatial_intrabc_scan(geom, |_, _| None, |_, _| false);
         assert!(not_coded.candidates.is_empty());
         assert!(!not_coded.defer);
-        // Coded: `is_coded` = 1 -> has_top_right = 1, the step-12 probe is modelled and
-        // its distinct BV is admitted.
         let coded = spatial_intrabc_scan(
             geom,
             |row, col| (row == 19 && col == 12).then_some(bv),
@@ -1941,16 +1769,8 @@ mod tests {
         assert!(!coded.defer);
     }
 
-    // The step-10 above-row probe (deltaCol = 0) is DISABLED for BLOCK_WIDTH_4
-    // (bw4 == 1): AVM `row_smvp_all_states[*][BLOCK_WIDTH_4]` index 1 = `{0, -1, 0}`
-    // (the `is_available` flag is 0). For bw4 == 1 the step-8 column (deltaCol =
-    // bw4 - 1 = 0) ALIASES the step-10 column (deltaCol = 0), so the disable is
-    // observable through the ACCUMULATED WEIGHT: with step 10 disabled the above-row
-    // candidate carries weight 1 (step 8 only), not 2 (step 8 + a disabled step 10).
     #[test]
     fn spatial_scan_disables_step10_for_block_width_4_within_sb() {
-        // Within-SB (MiRow 20, sb_size4 32, 20 % 32 != 0), bw4 == 1: step 8 and the
-        // disabled step 10 both target (MiRow-1, MiCol) = (19, 8).
         let narrow = SpatialScanGeometry {
             mi_row: 20,
             mi_col: 8,
@@ -1966,20 +1786,15 @@ mod tests {
             |row, col| (row == 19 && col == 8).then_some(bv),
             |_, _| false,
         );
-        // Step 8 places weight 1; the DISABLED step 10 adds nothing -> total weight 1.
         assert_eq!(
             scan.candidates,
             vec![wbv(bv, 1)],
             "step 10 disabled for bw4 == 1: the above candidate keeps step-8 weight 1"
         );
         assert!(!scan.defer);
-        // Contrast: a bw4 >= 2 block's step 8 (col MiCol+1) and step 10 (col MiCol)
-        // read DIFFERENT columns; an owner spanning both accumulates weight 2.
         let wide = SpatialScanGeometry { n4w: 2, ..narrow };
         let wide_scan = spatial_intrabc_scan(
             wide,
-            // Owner block spans cols 8..=9 on the above row (step 8 -> (19,9), step 10
-            // -> (19,8)), so the same BV is read by both -> weight 2.
             |row, col| (row == 19 && (8..=9).contains(&col)).then_some(bv),
             |_, _| false,
         );
@@ -1991,18 +1806,8 @@ mod tests {
         assert!(!wide_scan.defer);
     }
 
-    // The SB-border step-10 above-row probe (8x8-aligned deltaCol = 0) is DISABLED for
-    // BLOCK_WIDTH_4 (bw4 == 1), just like the within-SB path: AVM
-    // `row_smvp_all_states[1][BLOCK_WIDTH_4]` index 1 = `{0, -1, 0}` (the `is_available`
-    // flag is hardcoded 0, `mvref_common.c:2042`). For bw4 == 1 the SB-border step-8
-    // column (aligned deltaCol = bw4 - 2 = 0) ALIASES the step-10 column (deltaCol = 0),
-    // so the disable is observable through the ACCUMULATED WEIGHT: with step 10 disabled
-    // the above-row candidate carries weight 1 (step 8 only), not 2.
     #[test]
     fn spatial_scan_disables_step10_for_block_width_4_sb_border() {
-        // SB border (MiRow 32, sb_size4 32, 32 % 32 == 0), even MiCol, bw4 == 1: the
-        // step-8 (aligned deltaCol 0) and the disabled step-10 (deltaCol 0) both target
-        // (MiRow - 1, MiCol) = (31, 8).
         let narrow = SpatialScanGeometry {
             mi_row: 32,
             mi_col: 8,
@@ -2018,18 +1823,12 @@ mod tests {
             |row, col| (row == 31 && col == 8).then_some(bv),
             |_, _| false,
         );
-        // Step 8 places weight 1; the DISABLED step 10 adds nothing -> total weight 1.
         assert_eq!(
             scan.candidates,
             vec![wbv(bv, 1)],
             "step 10 disabled for bw4 == 1 on the SB border: the above candidate keeps step-8 weight 1"
         );
         assert!(!scan.defer);
-        // Contrast: a BLOCK_WIDTH_OTHERS (bw4 >= 4) SB-border block ENABLES step 10
-        // (AVM `row_smvp_all_states[1][BLOCK_WIDTH_OTHERS]` index 1,
-        // `mvref_common.c:2063`), so step 8 (aligned deltaCol bw4 - 2 = 6 -> col 14) and
-        // step 10 (deltaCol 0 -> col 8) read DIFFERENT columns; an owner read at both
-        // accumulates weight 2.
         let wide = SpatialScanGeometry { n4w: 8, ..narrow };
         let wide_scan = spatial_intrabc_scan(
             wide,
@@ -2044,8 +1843,6 @@ mod tests {
         assert!(!wide_scan.defer);
     }
 
-    // The § 7.12.2 spatial scan dedups by value: the same neighbour read at both the
-    // step-7 (bh4-1,-1) and step-9 (0,-1) left-column positions contributes once.
     #[test]
     fn spatial_scan_dedups_same_left_neighbour() {
         let geom = SpatialScanGeometry {
@@ -2057,16 +1854,11 @@ mod tests {
             mi_cols: 64,
             sb_size4: 32,
         };
-        // The left column the block spans (rows 0..=15) holds the SAME IntrABC
-        // neighbour BV; the step-11 below-bottom-left position (16,7) is NOT IBC.
-        // MiRow 0 -> no above row, so the above-row scan reads nothing.
         let scan = spatial_intrabc_scan(
             geom,
             |row, col| (col == 7 && row < 16).then_some(Mv { row: 0, col: -3072 }),
             |_, _| false,
         );
-        // Step 7 (15,7) places (0,-3072) with weight 1; step 9 (0,7) reads the same
-        // value and ACCUMULATES weight (-> 2). MiRow 0 -> no above-row contribution.
         assert_eq!(scan.candidates, vec![wbv(Mv { row: 0, col: -3072 }, 2)]);
         assert!(!scan.defer);
     }
@@ -2086,23 +1878,11 @@ mod tests {
         }
     }
 
-    // MI(192,112) (the §7.12.2.19 weight-sort frontier) has TWO distinct spatial
-    // candidates: the left-column (-1024,0) owner (read by step 7 (199,111) AND step 9
-    // (192,111), accumulating weight 2), and the SB-border step-8 8x8-aligned
-    // (MiRow - 1, MiCol + bw4 - 2) = (191, 126) BV (-512,0) (weight 1). The scan
-    // returns both in step order, matching avmdec `PREDEF [0](-1024,0)[1](-512,0)`
-    // with slot-0 weight strictly greater than slot-1. The §7.12.2.19 sort is then a
-    // NO-OP (slot 0 already holds the max weight), so the FINAL stack keeps (-1024,0)
-    // at slot 0; DRL index 1 selects (-512,0) — bit-exact vs the avmdec decoded BV.
-    // This is the new admitted frontier (the IBC ref-stack no longer defers here).
     #[test]
     fn admission_admits_ac0ej3_mi_192_112_no_op_weight_sort() {
         let scan = spatial_intrabc_scan(
             ac0ej3_mi_192_112_scan_geometry(),
             |row, col| {
-                // The left-column owner block carries (-1024,0) across the rows the
-                // block spans (192..=199) at col 111; step 7 (199,111) + step 9
-                // (192,111) both read it (weight accumulates to 2).
                 if (192..=199).contains(&row) && col == 111 {
                     Some(Mv { row: -1024, col: 0 })
                 } else if row == 191 && col == 126 {
@@ -2135,8 +1915,6 @@ mod tests {
             frame_h: 1080,
             max_bvp_drl_bits_minus_1: 2,
         };
-        // The §7.12.2.19 sort is a no-op (slot 0 weight 2 > slot 1 weight 1), so the
-        // built stack keeps (-1024,0) at slot 0 and DRL index 1 selects (-512,0).
         assert_eq!(
             intrabc_ref_stack_admission(
                 &IntrabcRefMvBank::new(32),
@@ -2150,7 +1928,6 @@ mod tests {
                 selected: Mv { row: -512, col: 0 },
             },
         );
-        // DRL index 0 selects the (un-swapped) slot-0 (-1024,0).
         assert_eq!(
             intrabc_ref_stack_admission(
                 &IntrabcRefMvBank::new(32),
@@ -2166,11 +1943,6 @@ mod tests {
         );
     }
 
-    // The SB-border step-14 above-left probe (deltaCol = -2, 8x8-aligned) is now
-    // modelled for an even MiCol. ac0ej3 MI(32,320) (SB border, MiCol 320 even, bw4 8)
-    // reads its step-14 above-left at (MiRow - 1, MiCol - 2) = (31, 318) BV (0,-256),
-    // matching avmdec `PREDEF [0](0,-256 ro=-1 co=-2)`. The scan admits the single
-    // distinct candidate (steps 8/10/12 read other columns that hold nothing here).
     #[test]
     fn spatial_scan_admits_sb_border_even_mi_col_step14() {
         let geom = SpatialScanGeometry {
@@ -2187,15 +1959,10 @@ mod tests {
             |row, col| (row == 31 && col == 318).then_some(Mv { row: 0, col: -256 }),
             |_, _| false,
         );
-        // Step 14 (above-left corner) carries OTHER_SMVP_WEIGHT (0).
         assert_eq!(scan.candidates, vec![wbv(Mv { row: 0, col: -256 }, 0)]);
         assert!(!scan.defer);
     }
 
-    // A still-unmodelled SB-border ODD-MiCol above-row neighbour STILL defers: the
-    // 8x8 alignment `(MiCol >> 1) << 1` shifts every aligned column for an odd MiCol,
-    // so the SB-border path models nothing and the over-scan defers on any above-row
-    // new BV. MI(32,321) (SB border, MiCol odd) with a neighbour at the above row.
     #[test]
     fn spatial_scan_defers_on_sb_border_odd_mi_col_above_neighbour() {
         let geom = SpatialScanGeometry {
@@ -2215,21 +1982,6 @@ mod tests {
         assert!(scan.candidates.is_empty());
         assert!(scan.defer);
     }
-
-    // --- Genericity (§7.12.2.6 `row_smvp_all_states[2][BLOCK_WIDTH_TYPES][4]`) ---
-    //
-    // The following tests prove the above-row SMVP scan is FULLY GENERIC over the
-    // block width by asserting `AboveRowScan::resolve`'s per-state column choice and
-    // availability MATCH AVM `mvref_common.c:2008`-`2076` for every
-    // `[is_sb_boundary][block_width_type][state]`. They are SYNTHETIC: ac0ej3 IBC
-    // blocks are all bw4 >= 4 (BLOCK_WIDTH_OTHERS), so these narrow-width cases are
-    // INERT on ac0ej3 and exercise only the genericity, NOT ac0ej3 behavior.
-    //
-    // AV2 block widths are powers of two, so the reachable block_width_type set is
-    // {BLOCK_WIDTH_4 (bw4 == 1), BLOCK_WIDTH_8 (bw4 == 2), BLOCK_WIDTH_OTHERS
-    // (bw4 >= 4)}. There is no reachable bw4 == 3 — `BlockWidthType::from_bw4(3)`
-    // maps to `Others` (the `_` arm), identical to bw4 == 4, so the "width-3" case
-    // the audit names is covered by the bw4 == 4 OTHERS test below.
 
     /// A synthetic geometry at an even MiCol (so the SB-border 8x8 alignment is a
     /// no-op), large enough that every probe column stays inside the tile.
@@ -2275,14 +2027,8 @@ mod tests {
         assert_eq!(scan.is_sb_border, mi_row.is_multiple_of(geom.sb_size4));
     }
 
-    // WITHIN-SB (is_sb_boundary == 0): MiRow 20 (`20 % 32 != 0`), even MiCol 8. AVM
-    // `row_smvp_all_states[0][block_width_type]` (`mvref_common.c:2008`-`2032`), 4x4
-    // resolution (no alignment): step8 co = bw4-1, step10 co = 0 (DISABLED for
-    // BLOCK_WIDTH_4 only), step12 co = bw4 (gated has_top_right), step14 co = -1.
     #[test]
     fn within_sb_above_row_columns_match_avm_table_all_widths() {
-        // BLOCK_WIDTH_4 (bw4 1): row_smvp_all_states[0][0] = idx0 {up,-1,0} idx1
-        // {0,-1,0 DISABLED} idx2 {has_tr,-1,1} idx3 {up&&left,-1,-1}. MiCol 8, tr (19,9).
         assert_row_smvp_table(
             "within-SB BLOCK_WIDTH_4 row_smvp_all_states[0][0]",
             20,
@@ -2290,8 +2036,6 @@ mod tests {
             Some(9),
             [Some(8), None, Some(9), Some(7)],
         );
-        // BLOCK_WIDTH_8 (bw4 2): row_smvp_all_states[0][1] = idx0 {up,-1,1} idx1
-        // {up,-1,0 ENABLED} idx2 {has_tr,-1,2} idx3 {up&&left,-1,-1}. tr (19,10).
         assert_row_smvp_table(
             "within-SB BLOCK_WIDTH_8 row_smvp_all_states[0][1]",
             20,
@@ -2299,9 +2043,6 @@ mod tests {
             Some(10),
             [Some(9), Some(8), Some(10), Some(7)],
         );
-        // BLOCK_WIDTH_OTHERS (bw4 4, the smallest reachable OTHERS; bw4 == 3 maps here
-        // too): row_smvp_all_states[0][2] = idx0 {up,-1,3} idx1 {up,-1,0} idx2
-        // {has_tr,-1,4} idx3 {up&&left,-1,-1}. tr (19,12).
         assert_row_smvp_table(
             "within-SB BLOCK_WIDTH_OTHERS row_smvp_all_states[0][2]",
             20,
@@ -2311,17 +2052,8 @@ mod tests {
         );
     }
 
-    // SB-BORDER (is_sb_boundary == 1): MiRow 32 (`32 % 32 == 0`), even MiCol 8 (so
-    // `compute_aligned_offset` is a no-op). AVM
-    // `row_smvp_all_states[1][block_width_type]` (`mvref_common.c:2039`-`2069`),
-    // 8x8-aligned: step8 co = Max(0,bw4-2), step10 co = 0 (DISABLED for BLOCK_WIDTH_4
-    // AND BLOCK_WIDTH_8), step12 co = Max(2,bw4), step14 co = -2. `has_top_right`
-    // short-circuits to 1 on the border (tr in the SB above), so `tr_col` is unused.
     #[test]
     fn sb_border_above_row_columns_match_avm_table_all_widths() {
-        // BLOCK_WIDTH_4 (bw4 1): row_smvp_all_states[1][0] = idx0 {avail(0),-1,0} idx1
-        // {0,-1,0 DISABLED} idx2 {has_tr&&avail(2),-1,2} idx3 {avail(-2),-1,-2}. The
-        // step-12 co = Max(2,1) = 2 (the audit P3 fix; NOT bw4 = 1) -> col 10.
         assert_row_smvp_table(
             "SB-border BLOCK_WIDTH_4 row_smvp_all_states[1][0]",
             32,
@@ -2329,9 +2061,6 @@ mod tests {
             None,
             [Some(8), None, Some(10), Some(6)],
         );
-        // BLOCK_WIDTH_8 (bw4 2): row_smvp_all_states[1][1] = idx0 {avail(0),-1,0} idx1
-        // {0,-1,0 DISABLED} idx2 {has_tr&&avail(2),-1,2} idx3 {avail(-2),-1,-2}.
-        // step8 co = Max(0,0) = 0 -> col 8; step12 co = Max(2,2) = 2 -> col 10.
         assert_row_smvp_table(
             "SB-border BLOCK_WIDTH_8 row_smvp_all_states[1][1]",
             32,
@@ -2339,9 +2068,6 @@ mod tests {
             None,
             [Some(8), None, Some(10), Some(6)],
         );
-        // BLOCK_WIDTH_OTHERS (bw4 4): row_smvp_all_states[1][2] = idx0 {avail(2),-1,2}
-        // idx1 {avail(0),-1,0 ENABLED} idx2 {has_tr&&avail(4),-1,4} idx3 {avail(-2),
-        // -1,-2}. step8 co = bw4-2 = 2 -> 10; step10 ENABLED -> 8; step12 co = 4 -> 12.
         assert_row_smvp_table(
             "SB-border BLOCK_WIDTH_OTHERS row_smvp_all_states[1][2]",
             32,
@@ -2351,20 +2077,8 @@ mod tests {
         );
     }
 
-    // The disabled SB-border step-10 column (BLOCK_WIDTH_4/8) is NOT excluded from the
-    // over-scan: a NEW IntrABC BV there still forces a (safe) defer, exactly as AVM
-    // reads nothing (no phantom candidate, no missed column). Item 3 of the mandate.
     #[test]
     fn sb_border_narrow_disabled_step10_column_still_defers() {
-        // BLOCK_WIDTH_8 SB-border (bw4 == 2): the step-10 column is MiCol = 8
-        // (disabled). A NEW BV at (MiRow-1, 8) is not placed by any state, so the
-        // over-scan must defer. Step 8 (co=0) ALSO targets col 8, so to isolate the
-        // step-10 disable we put the BV at a column step 8 cannot read: use bw4 == 2
-        // where step8 co = Max(0,0) = 0 (col 8) too — instead probe a width where the
-        // step-10 column is distinct. For OTHERS the step-10 col is enabled, so the
-        // cleanest isolation is BLOCK_WIDTH_8 at the step-14 col -2 reach: assert a NEW
-        // BV at MiCol-1 (col 7), which NO SB-border state reaches (step14 is co=-2 ->
-        // col 6), defers.
         let geom = generic_scan_geom(32, 8, 2);
         let scan = spatial_intrabc_scan(
             geom,
@@ -2381,14 +2095,9 @@ mod tests {
         );
     }
 
-    // The SB-border step-12 `Max(2,bw4)` column for a narrow block (bw4 == 1, col +2)
-    // is READ by the scan (placed, deduped) — proving the audit P3 column choice is
-    // 2, not 1. A BV at MiCol+2 is admitted (not deferred); a BV at MiCol+1 (the WRONG
-    // `bw4` column the old code would have used) is NOT read by step 12 and defers.
     #[test]
     fn sb_border_block_width_4_step12_reads_max2_column() {
         let geom = generic_scan_geom(32, 8, 1);
-        // BV at the CORRECT step-12 column MiCol + Max(2,1) = 10: read + admitted.
         let at_10 = spatial_intrabc_scan(
             geom,
             |row, col| (row == 31 && col == 10).then_some(Mv { row: -8, col: -8 }),
@@ -2399,8 +2108,6 @@ mod tests {
             !at_10.defer,
             "step-12 Max(2,1)=2 column is modelled -> admitted"
         );
-        // BV at MiCol + 1 = 9 (the WRONG `bw4`-offset column): no state reaches it,
-        // so the over-scan defers — confirming step 12 does NOT use col_offset = 1.
         let at_9 = spatial_intrabc_scan(
             geom,
             |row, col| (row == 31 && col == 9).then_some(Mv { row: -8, col: -8 }),

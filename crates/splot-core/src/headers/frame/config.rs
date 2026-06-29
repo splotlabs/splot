@@ -45,7 +45,6 @@ pub(crate) fn parse_screen_content_params_full(
     seq_force_screen_content_tools: u8,
     seq_force_integer_mv: u8,
 ) -> Result<ScreenContentParams> {
-    // AV2 § 5.18.3.3.
     let allow_screen_content_tools =
         if seq_force_screen_content_tools == SELECT_SCREEN_CONTENT_TOOLS {
             reader.read_flag()?
@@ -53,8 +52,6 @@ pub(crate) fn parse_screen_content_params_full(
             seq_force_screen_content_tools != 0
         };
 
-    // AV2 § 5.18.3.3: force_integer_mv is read only when screen-content tools are on and
-    // the sequence selects it; otherwise it is forced (0, or the sequence value).
     let force_integer_mv = if allow_screen_content_tools {
         if seq_force_integer_mv == SELECT_INTEGER_MV {
             reader.read_flag()?
@@ -107,7 +104,6 @@ pub(crate) fn parse_intrabc_params_full(
     frame_is_intra: bool,
     allow_frame_max_bvp_drl_bits: bool,
 ) -> Result<IntrabcParams> {
-    // AV2 § 5.18.3.4.
     let allow_intrabc = reader.read_flag()?;
     let mut params = IntrabcParams {
         allow_intrabc,
@@ -123,7 +119,6 @@ pub(crate) fn parse_intrabc_params_full(
             if allow_global_intrabc {
                 params.allow_local_intrabc = Some(reader.read_flag()?);
             }
-            // else: allow_local_intrabc = 1 (inferred, no bit).
         }
 
         if allow_frame_max_bvp_drl_bits {
@@ -171,7 +166,6 @@ mod tests {
 
     #[test]
     fn screen_content_forced_reads_no_bits() {
-        // seq_force_screen_content_tools = 0 (forced off) -> no flag bit.
         let data = [0u8; 0];
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let allow = parse_screen_content_params_full(&mut reader, 0, 0)
@@ -183,7 +177,6 @@ mod tests {
 
     #[test]
     fn screen_content_select_reads_flag_and_force_integer_mv() {
-        // SELECT for both: allow_screen_content_tools=1 then force_integer_mv=1.
         let mut bits = Bits::default();
         bits.bit(1); // allow_screen_content_tools
         bits.bit(1); // force_integer_mv
@@ -202,7 +195,6 @@ mod tests {
 
     #[test]
     fn screen_content_select_tools_off_skips_force_integer_mv() {
-        // allow_screen_content_tools=0 -> force_integer_mv not read.
         let mut bits = Bits::default();
         bits.bit(0); // allow_screen_content_tools
         let data = bits.into_bytes();
@@ -231,7 +223,6 @@ mod tests {
 
     #[test]
     fn intrabc_intra_global_reads_local_flag() {
-        // allow_intrabc=1, FrameIsIntra: allow_global_intrabc=1 -> allow_local_intrabc f(1).
         let mut bits = Bits::default();
         bits.bit(1); // allow_intrabc
         bits.bit(1); // allow_global_intrabc
@@ -245,8 +236,6 @@ mod tests {
 
     #[test]
     fn intrabc_change_bvp_drl_reads_ns() {
-        // allow_intrabc=1, intra, allow_global=0; allow_frame_max_bvp_drl_bits=1,
-        // change_bvp_drl=1 -> max_bvp_drl_bits_minus_1 ns(2).
         let mut bits = Bits::default();
         bits.bit(1); // allow_intrabc
         bits.bit(0); // allow_global_intrabc (-> allow_local_intrabc inferred 1, no bit)
@@ -261,8 +250,6 @@ mod tests {
 
     #[test]
     fn intrabc_full_surfaces_every_read_field() {
-        // allow_intrabc=1, intra, allow_global_intrabc=1 -> allow_local_intrabc read;
-        // allow_frame_max_bvp_drl_bits=1, change_bvp_drl=1 -> max_bvp_drl_bits_minus_1 ns(2).
         let mut bits = Bits::default();
         bits.bit(1); // allow_intrabc
         bits.bit(1); // allow_global_intrabc
@@ -287,7 +274,6 @@ mod tests {
 
     #[test]
     fn intrabc_full_global_off_infers_local_no_bit() {
-        // allow_global_intrabc=0 -> allow_local_intrabc inferred (None, no bit); no DRL.
         let mut bits = Bits::default();
         bits.bit(1); // allow_intrabc
         bits.bit(0); // allow_global_intrabc -> allow_local_intrabc inferred 1, no bit

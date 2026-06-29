@@ -18,8 +18,6 @@ pub(super) fn validate_bytes_with_options(
     options: &ValidationOptions,
 ) -> ValidationReport {
     let mut report = ValidationReport::new();
-    // Parse the whole stream, keeping OBUs parsed before any later structural
-    // error so their conformance diagnostics are not lost.
     let parsed = parse_bitstream_partial(data);
     let checks = default_checks();
     let mut context = ValidatorContext::default();
@@ -29,9 +27,6 @@ pub(super) fn validate_bytes_with_options(
             for obu in &parsed.obus {
                 process_obu(&mut context, checks, obu, options, &mut report);
             }
-            // The end of the bitstream completes the final temporal unit, flushing
-            // the deferred coded-video-sequence-scoped diagnostics (AV2 § 7.3.6;
-            // see ValidatorContext::finish).
             context.finish(options, &mut report);
             if let Some(error) = parsed.error {
                 report.push(parse_error_diagnostic(&error));
@@ -46,8 +41,6 @@ pub(super) fn validate_bytes_with_options(
                     report.push(parse_error_diagnostic(error));
                 }
             }
-            // The end of the IVF input completes the final temporal unit just like
-            // the end of a raw Annex B bitstream.
             context.finish(options, &mut report);
             for warning in &parsed.warnings {
                 report.push(ivf_warning_diagnostic(warning));

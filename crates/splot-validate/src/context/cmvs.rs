@@ -89,7 +89,7 @@ pub(super) struct CmvsTracker {
     /// across continuation temporal units, and cleared when the CMVS ends. Everything
     /// observed at `tu_index >= cmvs_start_tu_index` lies within the current CMVS — the
     /// window the § 6.8.2 agreement / DOH requirement and the § 6.6 MSDO DOH requirement
-    /// scope their per-layer evaluation to (codex findings 3393129738 / 3393129745). A
+    /// scope their per-layer evaluation to. A
     /// temporal unit is the atomic § 7.3.6 attribution unit (a CLK-bearing TU and all its
     /// pre-CLK HLS belong to the same new coded video sequence), so a TU-index lower bound
     /// avoids the pre-CLK / post-CLK generation ambiguity and is a sound
@@ -100,7 +100,7 @@ pub(super) struct CmvsTracker {
     /// (`cmvs/boundary-set-mismatch`) needs the BOUNDARY temporal unit's own index — not the
     /// CMVS-window start — because end condition 2's divergence turns on whether THAT temporal
     /// unit "has an activated global layer configuration record", a property of the boundary
-    /// temporal unit alone (codex finding 3393274375). `None` before the first completion.
+    /// temporal unit alone. `None` before the first completion.
     pub(super) last_completed_tu_index: Option<u64>,
 }
 
@@ -177,16 +177,10 @@ impl CmvsTracker {
     /// and the committed state is returned unchanged.
     pub(super) fn state(&self) -> CmvsState {
         if self.current_tu.has_clk {
-            // § 7.3.7: an MSDO, if any, precedes the CLK's coded extended layer unit, so
-            // MSDO presence for this temporal unit is already final at activation time.
             if self.current_tu.msdo.is_some() {
-                // § 7.3.2 begin: a CLK temporal unit with an MSDO present is inside the
-                // CMVS it opens (or continues), regardless of the committed state.
                 return CmvsState::Inside;
             }
             if matches!(self.state, CmvsState::Inside) {
-                // § 7.3.2 end condition 2 is already decidable: an MSDO-less CLK temporal
-                // unit begins a new coded video sequence but carries no OBU_MSDO.
                 if self.current_tu.global_lcr_present {
                     return CmvsState::Unknown;
                 }
@@ -268,8 +262,7 @@ impl CmvsTracker {
     /// multistream video sequence began, or `None` when no CMVS is active. Observations
     /// (frame-confirmed activations, global-LCR OBUs) tagged with a `tu_index` at or after
     /// this value lie within the current CMVS; earlier ones belong to a prior CMVS and are
-    /// excluded from the § 6.8.2 / § 6.6 DOH evaluations (codex findings 3393129738 /
-    /// 3393129745).
+    /// excluded from the § 6.8.2 / § 6.6 DOH evaluations.
     pub(super) fn current_cmvs_start_tu_index(&self) -> Option<u64> {
         self.cmvs_start_tu_index
     }
@@ -308,18 +301,9 @@ impl CmvsTracker {
         });
         let (next, window_action) = self.next_state(&facts);
         self.state = next;
-        // The boundary temporal unit's own index, for the § 7.3.2 boundary-set check's
-        // boundary-TU-scoped activated-global-LCR resolution (codex finding 3393274375).
         self.last_completed_tu_index = Some(completed_tu_index);
-        // § 7.3.2 window bookkeeping: the live window for the *next* temporal unit. An Open
-        // starts a fresh window at this temporal unit's index; a Keep carries the existing
-        // start; a Close clears
-        // it. Capturing this lower bound at the authoritative temporal-unit-completion
-        // resolution lets the deferred § 6.8.2 / § 6.6 evaluations scope their per-layer
-        // loops to observations made at or after this temporal unit (the current CMVS).
         match window_action {
             CmvsWindowAction::Open => self.cmvs_start_tu_index = Some(completed_tu_index),
-            // Seed the start on the first-ever continuation if it was somehow never set.
             CmvsWindowAction::Keep => {
                 self.cmvs_start_tu_index.get_or_insert(completed_tu_index);
             }
@@ -364,43 +348,19 @@ impl CmvsTracker {
     /// which IS decidable, so an LCR-only CMVS still needs a window for those checks to scope
     /// to; if the chain finds no activated global LCR, nothing fires regardless of the window.
     pub(super) fn next_state(&self, facts: &CmvsTuFacts) -> (CmvsState, CmvsWindowAction) {
-        // AV2 § 7.3.2: "A coded multistream video sequence begins at a temporal unit
-        // that contains an OBU with obu_type equal to OBU_CLOSED_LOOP_KEY for at least
-        // one extended layer and satisfies one of the following conditions". Without a
-        // CLK in the temporal unit, no begin condition can fire.
         if facts.has_clk {
             let currently_active = matches!(self.state, CmvsState::Inside);
             match facts.msdo {
-                // AV2 § 7.3.2 begin condition 1: "No coded multistream video sequence is
-                // currently active and an OBU with obu_type equal to OBU_MSDO is present."
                 Some(_) if !currently_active => {
                     return (CmvsState::Inside, CmvsWindowAction::Open);
                 }
-                // AV2 § 7.3.2 begin condition 2: "A coded multistream video sequence is
-                // currently active, an OBU with obu_type equal to OBU_MSDO is present,
-                // and the value of multistream_profile_idc, multistream_level_idx,
-                // multistream_tier, num_streams_minus_2, multistream_even_allocation_flag,
-                // or multistream_large_picture_idc differs from the corresponding value
-                // in the previous OBU_MSDO." A changed MSDO begins a new CMVS (which is
-                // still Inside); an unchanged MSDO leaves the active CMVS intact.
                 Some(MsdoObservation::Changed) => {
                     return (CmvsState::Inside, CmvsWindowAction::Open);
                 }
                 Some(MsdoObservation::First | MsdoObservation::Unchanged) => {
-                    // Active CMVS (the `!currently_active` arm above already handled the
-                    // inactive case for any MSDO), MSDO present but unchanged: this temporal
-                    // unit neither begins a new CMVS (condition 2 needs a change) nor ends
-                    // the current one (end condition 2 excludes an MSDO-accompanied CVS
-                    // start), so the CMVS continues.
                     return (CmvsState::Inside, CmvsWindowAction::Keep);
                 }
                 None => {
-                    // AV2 § 7.3.2 begin condition 3: "No coded multistream video sequence
-                    // is currently active and a global layer configuration record is
-                    // activated." Exact § 7.3.8 global-LCR activation is not modeled, so the
-                    // membership cannot be soundly classified Inside — route to Unknown — but
-                    // the window opens at this temporal unit so the chain-decidable LCR-only
-                    // § 6.8.2 DOH/agreement checks can scope to it.
                     if facts.global_lcr_present && !currently_active {
                         return (CmvsState::Unknown, CmvsWindowAction::Open);
                     }
@@ -408,44 +368,16 @@ impl CmvsTracker {
             }
         }
 
-        // AV2 § 7.3.2: "A coded multistream video sequence ends at the earliest of:"
-        // (begin conditions above already handled end condition 1, "A temporal unit
-        // that begins a new coded multistream video sequence as defined above").
         if matches!(self.state, CmvsState::Inside) {
-            // AV2 § 7.3.2 end condition 2: "A temporal unit that begins a new coded
-            // video sequence for at least one extended layer but does not contain an OBU
-            // with obu_type equal to OBU_MSDO and does not have an activated global layer
-            // configuration record." A CLK temporal unit (§ 7.3.6: begins a new coded
-            // video sequence for its extended layer) with no MSDO ends the CMVS — unless
-            // a global LCR is present, whose activation (and thus whether this is really
-            // an end) is not modeled, so route that ambiguous case to Unknown.
             if facts.has_clk && facts.msdo.is_none() {
                 if facts.global_lcr_present {
                     return (CmvsState::Unknown, CmvsWindowAction::Close);
                 }
                 return (CmvsState::Outside, CmvsWindowAction::Close);
             }
-            // Otherwise the active CMVS continues across this temporal unit.
             return (CmvsState::Inside, CmvsWindowAction::Keep);
         }
 
-        // No begin condition fired and the state is not Inside (so this temporal unit
-        // contains no CLK — a CLK with an Inside committed state is handled by the
-        // end-condition block above, and a CLK from Outside/Unknown would have matched a
-        // begin arm). § 7.3.2 end conditions 1 and 2 both require a temporal unit that
-        // "begins a new coded video sequence" (a CLK, § 7.3.6); with no CLK, NO end
-        // condition can fire here, so an active window must be carried, not closed.
-        //
-        // - `Unknown` with an open window is an LCR-only CMVS (opened via begin condition 3,
-        //   which the membership router cannot soundly classify Inside) whose end is still
-        //   undecided: a non-CLK temporal unit cannot end it, so Keep preserves its window
-        //   for the chain-decidable § 6.8.2 LCR-DOH / agreement checks to scope to later
-        //   frame-confirmed activations (codex finding 3393274378). Without this the window
-        //   closed prematurely and those later activations were skipped.
-        // - `Outside`, or an `Unknown` whose window was already cleared (e.g. a divergence
-        //   candidate that ended the CMVS at line ~3024 with Close), has no live window;
-        //   Close keeps it cleared and avoids `complete_temporal_unit`'s Keep `get_or_insert`
-        //   seeding a bogus window at this non-CLK temporal unit.
         if matches!(self.state, CmvsState::Unknown) && self.cmvs_start_tu_index.is_some() {
             return (self.state, CmvsWindowAction::Keep);
         }
@@ -470,7 +402,7 @@ pub(super) enum CmvsWindowAction {
 impl ValidatorContext {
     /// Whether the § 7.3.7 / § 7.4.6 DOH constraints are active for the *just-completed*
     /// temporal unit at a global-temporal-delimiter boundary or at the end of the bitstream
-    /// (round-5 F1 / round-6 F1). Resolves the LCR side against the GOVERNING CMVS window of
+    /// Resolves the LCR side against the GOVERNING CMVS window of
     /// the completed unit rather than the live window the [`CmvsTracker`](CmvsTracker) has
     /// just mutated.
     ///
@@ -540,7 +472,7 @@ impl ValidatorContext {
     /// CMVS [`CmvsState::Inside`] ([`CmvsTracker::committed_inside`]). Deferring to this
     /// point — rather than evaluating eagerly at sequence-header activation as the
     /// original landing did — handles both arrival-order corner cases the eager check
-    /// missed (codex findings 3392940061 and 3392940072):
+    /// missed:
     ///
     /// - A same-id header redefinition with `monotonic_output_order_flag == 0` at the top
     ///   of a temporal unit that a later MSDO-less CLK ENDS (§ 7.3.2 end condition 2) sits
@@ -558,8 +490,7 @@ impl ValidatorContext {
     /// ([`Self::frame_confirmed_xlayers_in_current_cmvs`]), NOT the whole-history
     /// `frame_confirmed_xlayers` accumulator — so a non-monotonic header left active from an
     /// earlier, already-ended coded video sequence outside this CMVS does not trip the § 6.6
-    /// MSDO DOH requirement against this CMVS's MSDO (codex finding 3393129745, the same
-    /// whole-history scope bug the § 6.8.2 LCR DOH check had). The
+    /// MSDO DOH requirement against this CMVS's MSDO. The
     /// `(xlayer, seq_header_id, cvs_epoch)` dedup inside that method keeps a resolved
     /// evaluation from re-spamming a diagnostic across successive temporal units of the same
     /// CMVS.
@@ -583,7 +514,7 @@ impl ValidatorContext {
     /// (a temporal-delimiter boundary or the end-of-bitstream flush), *after* the
     /// [`CmvsTracker`] has applied the temporal unit's § 7.3.2 begin/end conditions.
     ///
-    /// The two checks have *different* presence preconditions (codex finding 3393129743):
+    /// The two checks have *different* presence preconditions:
     ///
     /// - The § 6.8.2 **agreement** constraints hold "when both an OBU with obu_type equal to
     ///   OBU_MSDO and an activated global layer configuration record OBU are present in the
@@ -621,37 +552,16 @@ impl ValidatorContext {
         if external_declares_sequence_header(options) {
             return;
         }
-        // The activated global LCR present in the current CMVS gates BOTH checks. This
-        // resolution is window-scoped (§ 6.8.2 "present in the same CMVS") and decided from
-        // the frame-confirmed association chain, so it fires even for an LCR-only CMVS the
-        // membership tracker routes to Unknown.
         let Some(cmvs_start) = self.cmvs.current_cmvs_start_tu_index() else {
             return;
         };
-        // CMVS-window starts only advance (TU indices are monotonic and a new CMVS opens at a
-        // later temporal unit), so an MSDO observed before the current window can never be
-        // in-window again — drop it to keep the accumulator bounded. Correctness rests on the
-        // in-window filter below, not this prune.
         self.msdo_agreement_snapshots
             .retain(|snapshot| snapshot.observed_tu_index >= cmvs_start);
         let Some((global_id, global)) = self.activated_global_lcr() else {
             return;
         };
-        // Snapshot the global record so the borrow on `self` is released before pushing
-        // diagnostics through `&mut self` dedup state.
         let global = global.clone();
 
-        // § 6.8.2 agreement: EVERY MSDO present in this CMVS must agree with the activated
-        // global LCR (mirror lines 1646-1648). Evaluate each accumulated MSDO whose
-        // observation temporal unit lies within the current CMVS window — a stale MSDO
-        // recorded only in an earlier CMVS (its observation temporal unit precedes this CMVS's
-        // window) is excluded. A per-MSDO last-wins overwrite of the live `msdo_substream_max`
-        // would let an earlier non-conforming MSDO escape when a later conforming one replaced
-        // it before this resolution; iterating the accumulator closes that hole (codex finding
-        // 3393274380). The `emitted_lcr_agreement` key carries each MSDO's offset, so distinct
-        // MSDOs fire distinctly and a re-resolution across the CMVS's temporal units does not
-        // re-spam. Snapshot the in-window MSDOs before the `&mut self` push loop so the borrow
-        // on `self.msdo_agreement_snapshots` is released.
         let in_window_msdos: Vec<(MsdoAggregate, ByteOffset)> = self
             .msdo_agreement_snapshots
             .iter()
@@ -662,7 +572,6 @@ impl ValidatorContext {
             self.check_lcr_msdo_agreement(global_id, &global, &msdo, msdo_offset, report);
         }
 
-        // § 6.8.2 LCR DOH requirement: LCR-only, runs regardless of MSDO presence.
         self.check_lcr_doh_constraint_required(global_id, &global, report);
     }
 
@@ -687,7 +596,7 @@ impl ValidatorContext {
     /// real, and decidable, only when the chain confirms the global LCR present *in the
     /// boundary temporal unit itself* is genuinely *activated*
     /// ([`Self::activated_global_lcr_in_tu`], scoped to the boundary TU index — not the whole
-    /// CMVS window, codex finding 3393274375) and the CMVS it ended contained an MSDO
+    /// CMVS window) and the CMVS it ended contained an MSDO
     /// (`msdo_substream_max`). End condition 2's "does not have an activated global layer
     /// configuration record" is a property of the BOUNDARY temporal unit, so an activated
     /// global LCR present only earlier in the CMVS keeps end condition 2 true at this boundary
@@ -711,26 +620,10 @@ impl ValidatorContext {
         if !self.cmvs.last_completed_is_boundary_divergence_candidate() {
             return;
         }
-        // The boundary-identity requirement applies only when both an OBU_MSDO and an
-        // activated global LCR are present in the CMVS (mirror line 351). The CMVS being
-        // divergently-ended was definitively Inside, so it was opened by an MSDO; require a
-        // recorded MSDO and a chain-confirmed activated global LCR.
         let Some(substream_max) = self.msdo_substream_max.as_ref() else {
             return;
         };
         let msdo_offset = substream_max.offset;
-        // § 7.3.2 end condition 2 verbatim: a temporal unit "that begins a new coded video
-        // sequence for at least one extended layer but does not contain an OBU with obu_type
-        // equal to OBU_MSDO and does not have an activated global layer configuration record"
-        // ends the CMVS. The MSDO-alone rules always end the CMVS at this CLK-with-no-MSDO
-        // boundary TU; the MSDO+LCR rules end it too UNLESS the boundary TU "has an activated
-        // global layer configuration record". The divergence — and the mismatch — therefore
-        // exists ONLY when the BOUNDARY temporal unit itself has an activated global LCR. An
-        // activated global LCR present only EARLIER in the CMVS does not make end condition 2
-        // false at this boundary TU, so the resolution is scoped to the boundary temporal unit
-        // (`activated_global_lcr_in_tu`), NOT the whole CMVS window (codex finding 3393274375):
-        // when the boundary TU carries no activated global LCR, both rule sets end the CMVS
-        // here and there is no mismatch.
         let Some(boundary_tu_index) = self.cmvs.last_completed_tu_index() else {
             return;
         };
@@ -798,27 +691,13 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        // An externally activated sequence header has an unmodeled
-        // monotonic_output_order_flag, so the cross-layer comparison is unreliable. Only a
-        // *declared* external sequence header suppresses it: `ExternalHlsSet` cannot
-        // declare external MSDO/LCR objects, but the CmvsTracker enters Inside only on
-        // definitive in-band evidence and missing external MSDO/LCR evidence errs toward
-        // Outside/Unknown (false-negative-only), so undeclared external objects cannot
-        // make Inside spurious — narrowing this gate to declares_any_sequence_header() (as
-        // the sibling gates and validate_active_sequence_limits do) is sound.
         if external_declares_sequence_header(options) {
             return;
         }
-        // § 6.4.1 scopes the agreement to a coded multistream video sequence. Decide
-        // whether the check fires now, is deferred (provisional Inside), or is skipped.
         let verdict = self.cmvs.monotonic_verdict();
         if matches!(verdict, MonotonicVerdict::Skip) {
             return;
         }
-        // The activating layer's flag, only when its activation is decidable (a
-        // frame-confirmed reference, or the sole in-band candidate). A first-seen
-        // OBU-order fallback that several headers could contradict is not yet an
-        // association (§ 7.3.6).
         let Some((_, general)) = self.agreement_activation_for(xlayer) else {
             return;
         };
@@ -828,10 +707,6 @@ impl ValidatorContext {
             if other_xlayer == xlayer {
                 continue;
             }
-            // Compare only against another extended layer whose activation is equally
-            // decidable; an unconfirmed first-seen guess for the other layer is not yet
-            // associated with a flag, so a disagreement against it could be retracted by
-            // a later frame and must not be emitted.
             let Some((_, other_general)) = self.agreement_activation_for(other_xlayer) else {
                 continue;
             };

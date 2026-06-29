@@ -162,9 +162,6 @@ fn child_positions_for(partition: PartitionType, b_size: usize) -> Vec<(usize, u
 
 #[test]
 fn chroma_ref_geometry_captures_own_block_until_chroma_offset() {
-    // AV2 § 5.20.4.1 (spec lines 9093-9103): a node with `!chromaOffset &&
-    // hasChroma` is its own chroma reference; `(ChromaMiRow, ChromaMiCol,
-    // ChromaMiSize) == (r, c, bSize)`.
     let call = root_call(BLOCK_64X64);
     let geometry = call.chroma_ref_geometry();
     assert_eq!(
@@ -175,14 +172,8 @@ fn chroma_ref_geometry_captures_own_block_until_chroma_offset() {
 
 #[test]
 fn child_calls_thread_chroma_reference_to_chroma_offset_descendants() {
-    // A PARTITION_HORZ on a `BLOCK_64X64` block with chroma offset forces the
-    // children's chroma reference to the parent's `(0, 0, BLOCK_64X64)` geometry,
-    // not the per-leaf luma sub-size — the §5.20.4.1 chroma MI-size footprint a
-    // chroma-offset leaf writes.
     let call = root_call(BLOCK_64X64);
     let sub_size = valid_subsize(PartitionType::Horz, call.b_size).unwrap();
-    // The second HORZ child inherits `chromaOffset` (its `hasChroma` is the parent
-    // `hasChroma`), so it must reference the parent block, not its own `BLOCK_64X32`.
     let children = child_calls(
         call,
         PartitionType::Horz,
@@ -218,14 +209,10 @@ fn sdp_cfl_allowed_state_tracks_top_luma_and_chroma_partitions() {
 
 #[test]
 fn sdp_chroma_partition_forced_from_luma_when_chroma_follows_luma() {
-    // AV2 §5.20.3.2 `partition_implied`: at a CHROMA_PART 64x64 whose collocated
-    // `ChromaPartitionKnown` holds, the chroma partition is forced to
-    // `LumaPartitions[r][c]` and no `read_partition` symbol is consumed.
     let frame = frame(BLOCK_64X64);
     let luma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::LumaPart);
     let chroma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::ChromaPart);
 
-    // Luma NONE -> chroma follows luma -> chroma forced to NONE.
     let mut state = SdpPartitionState::default();
     state.record_partition(frame, luma_root, PartitionType::None);
     assert_eq!(
@@ -233,7 +220,6 @@ fn sdp_chroma_partition_forced_from_luma_when_chroma_follows_luma() {
         Some(PartitionType::None)
     );
 
-    // Luma HORZ -> chroma follows luma -> chroma forced to HORZ.
     let mut state = SdpPartitionState::default();
     state.record_partition(frame, luma_root, PartitionType::Horz);
     assert_eq!(
@@ -244,9 +230,6 @@ fn sdp_chroma_partition_forced_from_luma_when_chroma_follows_luma() {
 
 #[test]
 fn sdp_chroma_partition_not_forced_when_trees_diverge_or_out_of_scope() {
-    // Negative: when the luma subtree's first splits diverge from a shared
-    // direction (`chroma_follows_luma == false`), the chroma 64x64 reads its own
-    // partition tree, so no forced partition is returned.
     let frame = frame(BLOCK_64X64);
     let luma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::LumaPart);
     let chroma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::ChromaPart);
@@ -255,8 +238,6 @@ fn sdp_chroma_partition_not_forced_when_trees_diverge_or_out_of_scope() {
     state.record_partition(frame, luma_root, PartitionType::Split);
     assert_eq!(state.forced_chroma_partition(frame, chroma_root), None);
 
-    // Out-of-scope calls never force: a LUMA_PART tree, a non-64x64 block, and an
-    // inter (non-intra) frame all read their own partition.
     let mut state = SdpPartitionState::default();
     state.record_partition(frame, luma_root, PartitionType::None);
     assert_eq!(state.forced_chroma_partition(frame, luma_root), None);
@@ -939,12 +920,6 @@ fn unsupported_gates_are_explicit() {
         )
     ));
 
-    // An inter frame (frame_is_intra == false) is now ADMITTED by the §5.20.3.1
-    // partition traversal (DECODE-FIRST-INTER-FRAME-FRONTIER): the partition syntax
-    // is frame-type agnostic, so the cursor walks the inter tile the same as an intra
-    // tile (the inter leaf reads §5.20.7.6 inter mode_info and the caller's §8.2.4
-    // exit_symbol() guards bit-exactness). The traversal therefore no longer rejects
-    // a non-intra frame here; it succeeds over this single-block flat payload.
     let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     let mut inter = frame(BLOCK_32X32);
     inter.frame_is_intra = false;
@@ -1033,13 +1008,6 @@ fn max_tile_count_limit_does_not_bound_frontier_steps() {
 
 #[test]
 fn partition_cdf_plane_matches_avm_chroma_part_plane_one() {
-    // §5.20.3.1 / §8.3.2: AVM `decodeframe.c` uses `plane = tree_type ==
-    // CHROMA_PART`. The shared and luma partition trees read the §8.3.2
-    // partition-entry CDFs (`do_split`, `do_square_split`, `rect_type`, ...) and
-    // their neighbor block-size context from plane 0; only the SDP chroma tree
-    // reads plane 1. Before this mapping the chroma tree wrongly reused the luma
-    // (plane 0) CDFs, desyncing the entropy stream right after the first
-    // superblock's luma columns.
     assert_eq!(partition_cdf_plane(PartitionTreeType::Shared), 0);
     assert_eq!(partition_cdf_plane(PartitionTreeType::LumaPart), 0);
     assert_eq!(partition_cdf_plane(PartitionTreeType::ChromaPart), 1);

@@ -124,16 +124,10 @@ pub fn write_atlas_segment(writer: &mut BitWriter, atlas: &AtlasSegment) -> Writ
         return Err(WriteError::WriterNotByteAligned);
     }
 
-    // § 5.9: the parser builds the AtlasModeInfo variant from ats_atlas_segment_mode_idc,
-    // so a variant that disagrees with `mode` could never have been parsed (and would
-    // reparse as the variant the mode selects, not the stored one). Reject it up front.
     if !mode_matches_info(atlas.mode, &atlas.mode_info) {
         return Err(non_canonical("mode_info_variant"));
     }
 
-    // § 5.9: numSegments is a parse-context value derived from the mode body, not a wire
-    // field. Re-derive it here; the writer rejects a stored value that disagrees (so the
-    // derived value round-trips) and the §6.9.6 bound the parser enforces.
     let derived_num_segments = derive_num_segments(&atlas.mode_info)?;
     if atlas.num_segments != derived_num_segments {
         return Err(non_canonical("num_segments"));
@@ -143,11 +137,7 @@ pub fn write_atlas_segment(writer: &mut BitWriter, atlas: &AtlasSegment) -> Writ
     }
 
     let mut scratch = BitWriter::new();
-    // § 5.9: atlas_segment_id f(3). §6.9.2: a descriptive id-assignment element with no
-    // bitstream-conformance requirement, so any value the parser preserved is reproduced.
     scratch.write_bits_u8(atlas.atlas_segment_id, ATLAS_SEGMENT_ID_BITS)?;
-    // § 5.9: ats_atlas_segment_mode_idc uvlc(), derived from the mode (the matching body
-    // follows). idc() returns 0..=4, all encodable.
     scratch.write_uvlc(atlas.mode.idc())?;
 
     match &atlas.mode_info {
@@ -218,27 +208,18 @@ fn write_enhanced_atlas_info(scratch: &mut BitWriter, info: &AtlasEnhancedInfo) 
 /// uniform-spacing flag, then either the uniform region width/height pair or the explicit
 /// per-column / per-row dimension lists.
 fn write_region_info(scratch: &mut BitWriter, region: &AtlasRegionInfo) -> WriteResult<()> {
-    // §6.9.3.1: the parser rejects columns_minus_1 >= MAX_ATLAS_COLS or
-    // rows_minus_1 >= MAX_ATLAS_ROWS, so such a model is parser-unproducible.
     if region.num_region_columns_minus_1 >= MAX_ATLAS_COLS
         || region.num_region_rows_minus_1 >= MAX_ATLAS_ROWS
     {
         return Err(non_canonical("region_dimension"));
     }
-    // The counts are bounded by MAX_ATLAS_COLS / MAX_ATLAS_ROWS, so `+ 1` and the product
-    // below cannot overflow u32.
     let columns = region.num_region_columns_minus_1 + 1;
     let rows = region.num_region_rows_minus_1 + 1;
 
-    // §5.9.2.1: NumRegionsInAtlas is derived from the counts; the parser stores the
-    // derivation, so a stored value that disagrees could not round-trip.
     if region.num_regions_in_atlas != columns.saturating_mul(rows) {
         return Err(non_canonical("num_regions_in_atlas"));
     }
 
-    // §5.9.2.1: the parser reads the uniform pair iff uniform_spacing, otherwise it reads
-    // `columns` column widths and `rows` row heights. Reject any other shape (a stored
-    // form that disagrees with the flag, or a list whose length disagrees with the count).
     if region.uniform_spacing {
         if region.region_width_minus_1.is_none()
             || region.region_height_minus_1.is_none()
@@ -259,7 +240,6 @@ fn write_region_info(scratch: &mut BitWriter, region: &AtlasRegionInfo) -> Write
     scratch.write_uvlc(region.num_region_rows_minus_1)?;
     scratch.write_flag(region.uniform_spacing)?;
     if region.uniform_spacing {
-        // Presence was validated above, so these `Option`s are `Some`.
         let width = region
             .region_width_minus_1
             .ok_or_else(|| non_canonical("region_uniform_dims"))?;
@@ -289,19 +269,13 @@ fn write_region_to_segment_mapping(
 ) -> WriteResult<()> {
     scratch.write_flag(mapping.single_region_per_atlas_segment)?;
     if mapping.single_region_per_atlas_segment {
-        // §5.9.2.2: in the single-region path the parser codes no count and no segment
-        // list — it derives num_atlas_segments_minus_1 = num_regions_in_atlas - 1 and
-        // leaves `segments` empty. Reject a stored count/list that disagrees.
         if !mapping.segments.is_empty() {
             return Err(non_canonical("single_region_segments"));
         }
         if mapping.num_atlas_segments_minus_1 != region.num_regions_in_atlas.saturating_sub(1) {
             return Err(non_canonical("single_region_segments"));
         }
-        // No bits are coded for the single-region path beyond the flag above.
     } else {
-        // §5.9.2.2: the parser rejects num_atlas_segments_minus_1 >= MAX_NUM_ATLAS_SEGMENTS,
-        // then reads num_atlas_segments_minus_1 + 1 region rectangles.
         if mapping.num_atlas_segments_minus_1 >= MAX_NUM_ATLAS_SEGMENTS {
             return Err(non_canonical("segment_count"));
         }
@@ -330,8 +304,6 @@ fn write_segment_region(scratch: &mut BitWriter, segment: &AtlasSegmentRegion) -
 /// atlas width/height, the coded `ats_num_atlas_segments_minus_1`, then the per-segment
 /// rectangles (each with an optional `ats_input_stream_id`).
 fn write_basic_info(scratch: &mut BitWriter, info: &AtlasBasicInfo) -> WriteResult<()> {
-    // §5.9.5: the parser rejects num_atlas_segments_minus_1 >= MAX_NUM_ATLAS_SEGMENTS and
-    // then reads num_atlas_segments_minus_1 + 1 segments. Reject a count/length mismatch.
     if info.num_atlas_segments_minus_1 >= MAX_NUM_ATLAS_SEGMENTS {
         return Err(non_canonical("segment_count"));
     }
@@ -357,8 +329,6 @@ fn write_basic_segment(
     stream_id_present: bool,
     segment: &AtlasBasicSegment,
 ) -> WriteResult<()> {
-    // §5.9.5: ats_input_stream_id is read iff ats_stream_id_present, so the parser ties
-    // Some(..) to the flag. Reject a model that stores one without the other.
     if stream_id_present {
         let stream_id = segment
             .input_stream_id
@@ -383,13 +353,9 @@ fn write_multistream_info(
     info: &AtlasMultistreamInfo,
     with_alpha: bool,
 ) -> WriteResult<()> {
-    // §5.9.3 / §5.9.4: the parser stores alpha_segments_present as Some only for the alpha
-    // variant; a presence that disagrees with the mode is parser-unproducible.
     if info.alpha_segments_present.is_some() != with_alpha {
         return Err(non_canonical("alpha_segments_gate"));
     }
-    // §5.9.3 / §5.9.4: the parser rejects num_atlas_segments_minus_1 >= MAX_NUM_ATLAS_SEGMENTS
-    // and reads num_atlas_segments_minus_1 + 1 segments. Reject a count/length mismatch.
     if info.num_atlas_segments_minus_1 >= MAX_NUM_ATLAS_SEGMENTS {
         return Err(non_canonical("segment_count"));
     }
@@ -401,12 +367,9 @@ fn write_multistream_info(
     scratch.write_uvlc(info.width)?;
     scratch.write_uvlc(info.height)?;
     scratch.write_uvlc(info.num_atlas_segments_minus_1)?;
-    // §5.9.4: ats_msi_alpha_segments_present_flag is coded only for the alpha variant.
     if let Some(alpha_present) = info.alpha_segments_present {
         scratch.write_flag(alpha_present)?;
     }
-    // §5.9.3 / §5.9.4: ats_msi_background_info_present_flag then the optional 3x f(8)
-    // background triple. The flag IS the model's `background` Option presence.
     scratch.write_flag(info.background.is_some())?;
     if let Some((red, green, blue)) = info.background {
         scratch.write_bits_u8(red, BACKGROUND_F8)?;
@@ -417,14 +380,9 @@ fn write_multistream_info(
     let alpha_coded = info.alpha_segments_present == Some(true);
     let last_index = info.num_atlas_segments_minus_1;
     for (i, segment) in info.segments.iter().enumerate() {
-        // §5.9.4 / §6.9.5: the per-segment alpha flag is coded only for the alpha variant
-        // and not for the last segment, whose flag is inferred 0. Reject a segment whose
-        // stored flag could not have been coded/inferred that way.
         let is_last = i as u32 == last_index;
         let codes_alpha = alpha_coded && !is_last;
         if !codes_alpha && segment.alpha_segment_flag {
-            // A non-alpha variant segment, or the inferred-0 last alpha segment, must hold
-            // alpha_segment_flag == false (the parser infers it).
             return Err(non_canonical("alpha_segments_gate"));
         }
         write_multistream_segment(scratch, segment, codes_alpha)?;
@@ -460,25 +418,16 @@ fn write_label_segment_info(
     label: &AtlasLabelSegmentInfo,
     num_segments: u32,
 ) -> WriteResult<()> {
-    // §5.9.1: the parser fills `segment_ids` with exactly numSegments entries (explicit
-    // when signaled, the identity indices otherwise). Reject a length mismatch.
     if label.segment_ids.len() != num_segments as usize {
         return Err(non_canonical("label_segment_count"));
     }
 
     scratch.write_flag(label.signaled_atlas_segment_ids)?;
     if label.signaled_atlas_segment_ids {
-        // §5.9.1: numSegments explicit ats_atlas_segment_id f(8) values. §6.9.2: these are
-        // descriptive id assignments with no conformance requirement, so reproduce them
-        // verbatim.
         for &id in &label.segment_ids {
             scratch.write_bits_u8(id, LABEL_SEGMENT_ID_BITS)?;
         }
     } else {
-        // §5.9.1: AtlasSegmentIndexToID[i] = i; the parser codes no bits and fills the
-        // identity indices. A stored unsignaled list that is not the identity is
-        // parser-unproducible (numSegments <= MAX_NUM_ATLAS_SEGMENTS == 256, so each
-        // index fits in u8).
         for (i, &id) in label.segment_ids.iter().enumerate() {
             let expected = u8::try_from(i).unwrap_or(u8::MAX);
             if id != expected {
@@ -495,8 +444,5 @@ fn non_canonical(what: &'static str) -> WriteError {
     WriteError::NonCanonicalAtlasSegment { what }
 }
 
-// The round-trip / reject tests live in a sibling file (kept under the advisory
-// source-line limit); `include!` pastes them into this module so their `super::*`
-// resolves to the writer above.
 #[cfg(test)]
 include!("atlas_segment_tests.rs");

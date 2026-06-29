@@ -7,8 +7,6 @@ use proptest::prelude::*;
 
 use super::*;
 
-// ENC-BITSTREAM-WRITER property evidence for the generic AV2 § 8.2 symbol encoder.
-
 #[derive(Debug, Clone)]
 enum Op {
     Bool(bool),

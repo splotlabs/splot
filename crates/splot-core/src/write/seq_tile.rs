@@ -122,10 +122,6 @@ fn check_field_width(value: u64, width_bits: u32) -> WriteResult<()> {
     }
 }
 
-// =============================================================================
-// § 5.4.10 sequence_filter_config()
-// =============================================================================
-
 /// Writes `sequence_filter_config()` (AV2 v1.0.0 § 5.4.10,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-10`), the exact inverse of
 /// [`crate::headers::sequence::parse_sequence_filter_config`].
@@ -169,7 +165,6 @@ pub fn write_sequence_filter_config(
     writer.write_flag(config.disable_loopfilters_across_tiles)?;
     writer.write_flag(config.enable_cdef)?;
     writer.write_flag(config.enable_gdf)?;
-    // gdf_unit_matches_sb_size: f(1), only when enable_gdf && seq_sb_size == Block64x64.
     if config.enable_gdf && seq_sb_size == SuperblockSize::Block64x64 {
         writer.write_flag(config.gdf_unit_matches_sb_size)?;
     }
@@ -178,19 +173,14 @@ pub fn write_sequence_filter_config(
         writer.write_flag(config.lr_pc_wiener_disabled)?;
         writer.write_flag(config.lr_wiener_nonsep_disabled)?;
         writer.write_flag(config.lr_tools_uv_present)?;
-        // lr_uv_wiener_nonsep_disabled: f(1), only when lr_tools_uv_present; otherwise the
-        // parser infers it = lr_wiener_nonsep_disabled (no bit).
         if config.lr_tools_uv_present {
             writer.write_flag(config.lr_uv_wiener_nonsep_disabled)?;
         }
     }
     writer.write_flag(config.enable_ccso)?;
-    // ccso_unit_matches_sb_size: f(1), only when enable_ccso.
     if config.enable_ccso {
         writer.write_flag(config.ccso_unit_matches_sb_size)?;
     }
-    // CdefOnSkipTxfm: inferred Adaptive (no bits) for a single-picture header; otherwise
-    // AlwaysOn -> 1; Disabled -> 0,1; Adaptive -> 0,0.
     if !single_picture {
         match config.cdef_on_skip_txfm {
             CdefOnSkipTxfm::AlwaysOn => writer.write_bit(1)?,
@@ -214,23 +204,18 @@ fn check_filter_encodable(
     single_picture: bool,
     seq_sb_size: SuperblockSize,
 ) -> WriteResult<()> {
-    // gdf_unit_matches_sb_size is inferred 0 unless enable_gdf && seq_sb_size == 64×64.
     let gdf_unit_signaled = config.enable_gdf && seq_sb_size == SuperblockSize::Block64x64;
     if !gdf_unit_signaled && config.gdf_unit_matches_sb_size {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "gdf_unit_matches_sb_size",
         });
     }
-    // lr_uv_pc_wiener_disabled is always inferred = enable_restoration (never signaled).
     if config.lr_uv_pc_wiener_disabled != config.enable_restoration {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "lr_uv_pc_wiener_disabled",
         });
     }
     if config.enable_restoration {
-        // lr_uv_wiener_nonsep_disabled is signaled only when lr_tools_uv_present; otherwise
-        // it mirrors lr_wiener_nonsep_disabled. A divergent stored value behind a disabled
-        // gate could never have been produced.
         if !config.lr_tools_uv_present
             && config.lr_uv_wiener_nonsep_disabled != config.lr_wiener_nonsep_disabled
         {
@@ -238,39 +223,28 @@ fn check_filter_encodable(
                 what: "lr_uv_wiener_nonsep_disabled",
             });
         }
-    } else {
-        // When restoration is disabled the parser reads none of the LR fields and leaves
-        // them all false. A stored non-default would have no bitstream home.
-        if config.lr_pc_wiener_disabled
-            || config.lr_wiener_nonsep_disabled
-            || config.lr_tools_uv_present
-            || config.lr_uv_wiener_nonsep_disabled
-        {
-            return Err(WriteError::NonCanonicalSequenceValue {
-                what: "restoration_subfields",
-            });
-        }
+    } else if config.lr_pc_wiener_disabled
+        || config.lr_wiener_nonsep_disabled
+        || config.lr_tools_uv_present
+        || config.lr_uv_wiener_nonsep_disabled
+    {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "restoration_subfields",
+        });
     }
-    // ccso_unit_matches_sb_size is inferred 0 unless enable_ccso.
     if !config.enable_ccso && config.ccso_unit_matches_sb_size {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "ccso_unit_matches_sb_size",
         });
     }
-    // CdefOnSkipTxfm is inferred Adaptive (no bits) for a single-picture header.
     if single_picture && config.cdef_on_skip_txfm != CdefOnSkipTxfm::Adaptive {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "cdef_on_skip_txfm",
         });
     }
-    // df_par_bits_minus_2: f(2).
     check_field_width(u64::from(config.df_par_bits_minus_2), 2)?;
     Ok(())
 }
-
-// =============================================================================
-// § 5.4.2 sequence_tile_config() + § 5.18.7.3 tile_params()
-// =============================================================================
 
 /// The level/tier-derived bounds `tile_params()` (AV2 § 5.18.7.3) computes from the
 /// frame dimensions before reading any bit: the superblock grid, the per-axis tile-count
@@ -367,8 +341,6 @@ pub fn write_sequence_tile_config(
     if !config.seq_tile_info_present_flag {
         return Ok(());
     }
-    // Both Options are present iff the flag is set and the level is non-reserved (checked
-    // up front in check_tile_encodable).
     let allow = config
         .allow_tile_info_change
         .ok_or(WriteError::NonCanonicalSequenceValue {
@@ -393,18 +365,11 @@ pub fn write_sequence_tile_config(
 /// Validates that `config` is a model the § 5.4.2 parser could have produced, including
 /// the reserved-level residual and the full `tile_params()` derivation.
 fn check_tile_encodable(config: &SequenceTileConfig, input: &TileParamsInput) -> WriteResult<()> {
-    // The § 5.4.2 sequence tile config always calls `tile_params(..., is_bridge = 0)`; a
-    // bridge layout is a § 5.18.7.4 frame-level concept. With `is_bridge = true` the parser
-    // (`parse_tile_layout`) infers `uniform_tile_spacing_flag = 1` and skips the flag and
-    // both increment loops (zero layout bits), which this sequence writer does not model, so
-    // such an input is not parser-reachable here. Reject it before any bit rather than emit
-    // bits the matching parse would never read.
     if input.is_bridge {
         return Err(WriteError::NonCanonicalSequenceValue { what: "is_bridge" });
     }
 
     if !config.seq_tile_info_present_flag {
-        // No tile info: every payload field is inferred absent / empty.
         if config.allow_tile_info_change.is_some()
             || config.params.is_some()
             || !config.seq_sb_col_starts.is_empty()
@@ -417,8 +382,6 @@ fn check_tile_encodable(config: &SequenceTileConfig, input: &TileParamsInput) ->
         return Ok(());
     }
 
-    // Tile info present but no params -> the reserved-level residual the parser left
-    // unmodeled. The tile bits were never parsed, so they cannot be written.
     let Some(params) = config.params.as_ref() else {
         return Err(WriteError::UnwritableSequenceHeader {
             feature: "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
@@ -430,7 +393,6 @@ fn check_tile_encodable(config: &SequenceTileConfig, input: &TileParamsInput) ->
         });
     }
 
-    // Re-derive the grid; a reserved level (None) carrying params is non-canonical.
     let Some(grid) = compute_tile_grid(input) else {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "tile_params_level",
@@ -474,18 +436,14 @@ pub(crate) fn write_tile_params(
     sb_col_starts: &[u32],
     sb_row_starts: &[u32],
     input: &TileParamsInput,
-    // grid is recomputed here (not threaded) so this stays a faithful forward replay.
 ) -> WriteResult<()> {
     let grid = compute_tile_grid(input).ok_or(WriteError::NonCanonicalSequenceValue {
         what: "tile_params_level",
     })?;
 
-    // uniform_tile_spacing_flag: f(1). The sequence call site is never a bridge, and an
-    // is_bridge=true input is already rejected by check_tile_encodable before any bit.
     writer.write_flag(params.uniform_spacing)?;
 
     if params.uniform_spacing {
-        // Column increment run.
         let cols_target = uniform_cols_log2_target(input, &grid, sb_col_starts)?;
         write_increment_run(
             writer,
@@ -493,11 +451,9 @@ pub(crate) fn write_tile_params(
             cols_target,
             grid.max_log2_tile_cols,
         )?;
-        // tileColsLog2 after uniform_spacing is re-derived from the produced count.
         let cols = uniform_spacing(cols_target, grid.mi_cols, input.uniform_sb_size);
         let tile_cols_log2 = tile_log2(1, cols.count);
 
-        // Row increment run, starting at Max(minLog2Tiles - tileColsLog2, 0).
         let min_log2_tile_rows = grid.min_log2_tiles.saturating_sub(tile_cols_log2);
         let rows_target =
             uniform_rows_log2_target(input, &grid, min_log2_tile_rows, sb_row_starts)?;
@@ -579,7 +535,6 @@ fn write_non_uniform_tile_params(
     sb_row_starts: &[u32],
     grid: &TileGrid,
 ) -> WriteResult<()> {
-    // Columns: ns(Min(sbCols - startSb, maxTileWidthSb)) per tile.
     let mut widest_tile_sb = 1u32;
     for (i, &start_sb) in sb_col_starts.iter().enumerate() {
         let next = sb_col_starts.get(i + 1).copied().unwrap_or(grid.sb_cols);
@@ -589,7 +544,6 @@ fn write_non_uniform_tile_params(
         writer.write_ns(size_sb - 1, n)?;
     }
 
-    // maxTileAreaSb recomputed from minLog2Tiles; maxTileHeightSb from the widest column.
     let max_tile_area_sb = if grid.min_log2_tiles > 0 {
         grid.sb_rows.saturating_mul(grid.sb_cols) >> (u32::from(grid.min_log2_tiles) + 1)
     } else {
@@ -597,7 +551,6 @@ fn write_non_uniform_tile_params(
     };
     let max_tile_height_sb = (max_tile_area_sb / widest_tile_sb).max(1);
 
-    // Rows: ns(Min(sbRows - startSb, maxTileHeightSb)) per tile.
     for (i, &start_sb) in sb_row_starts.iter().enumerate() {
         let next = sb_row_starts.get(i + 1).copied().unwrap_or(grid.sb_rows);
         let size_sb = next - start_sb;
@@ -617,16 +570,12 @@ fn check_tile_params_encodable(
     input: &TileParamsInput,
     grid: &TileGrid,
 ) -> WriteResult<()> {
-    // The grid dimensions are derived; a stored summary that disagrees could not have been
-    // produced from these frame dimensions / level.
     if params.sb_cols != grid.sb_cols || params.sb_rows != grid.sb_rows {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "tile_params_grid",
         });
     }
 
-    // The start arrays must be strictly increasing and bounded by the grid, starting at 0,
-    // so the delta sizes the writer recovers are all >= 1 and the runs terminate exactly.
     check_starts_monotonic(sb_col_starts, grid.sb_cols, "seq_sb_col_starts")?;
     check_starts_monotonic(sb_row_starts, grid.sb_rows, "seq_sb_row_starts")?;
     if sb_col_starts.len() != params.tile_cols as usize
@@ -638,15 +587,12 @@ fn check_tile_params_encodable(
     }
 
     if params.uniform_spacing {
-        // Recover both loop targets; failure means the starts are not a uniform layout the
-        // parser could have produced.
         let cols_target = uniform_cols_log2_target(input, grid, sb_col_starts)?;
         let cols = uniform_spacing(cols_target, grid.mi_cols, input.uniform_sb_size);
         let tile_cols_log2 = tile_log2(1, cols.count);
         let min_log2_tile_rows = grid.min_log2_tiles.saturating_sub(tile_cols_log2);
         let rows_target = uniform_rows_log2_target(input, grid, min_log2_tile_rows, sb_row_starts)?;
         let rows = uniform_spacing(rows_target, grid.mi_rows, input.uniform_sb_size);
-        // The recovered layout must match the stored derived summary exactly.
         if cols.count != params.tile_cols
             || rows.count != params.tile_rows
             || tile_cols_log2 != params.tile_cols_log2
@@ -659,8 +605,6 @@ fn check_tile_params_encodable(
             });
         }
     } else {
-        // Re-run the non-uniform forward derivation, validating every ns() domain and that
-        // the recovered counts / log2 / coverage match the stored summary.
         check_non_uniform_layout(params, sb_col_starts, sb_row_starts, grid)?;
     }
     Ok(())
@@ -674,14 +618,12 @@ fn check_non_uniform_layout(
     sb_row_starts: &[u32],
     grid: &TileGrid,
 ) -> WriteResult<()> {
-    // Columns: every width_in_sbs_minus_1 must satisfy size - 1 < Min(sbCols - start, maxW).
     let mut widest_tile_sb = 1u32;
     for (i, &start_sb) in sb_col_starts.iter().enumerate() {
         let next = sb_col_starts.get(i + 1).copied().unwrap_or(grid.sb_cols);
         let size_sb = next - start_sb;
         widest_tile_sb = widest_tile_sb.max(size_sb);
         let n = (grid.sb_cols - start_sb).min(grid.max_tile_width_sb);
-        // write_ns needs (size - 1) < n, i.e. size <= n; size >= 1 here (monotonic starts).
         if size_sb > n {
             return Err(WriteError::ValueOutOfRange {
                 descriptor: "ns",
@@ -702,7 +644,6 @@ fn check_non_uniform_layout(
         let next = sb_row_starts.get(i + 1).copied().unwrap_or(grid.sb_rows);
         let size_sb = next - start_sb;
         let max_height = (grid.sb_rows - start_sb).min(max_tile_height_sb);
-        // write_ns needs (size - 1) < max_height, i.e. size <= max_height.
         if size_sb > max_height {
             return Err(WriteError::ValueOutOfRange {
                 descriptor: "ns",
@@ -712,8 +653,6 @@ fn check_non_uniform_layout(
     }
     let tile_rows_log2 = tile_log2(1, sb_row_starts.len() as u32);
 
-    // The non-uniform start arrays always cover the frame exactly (the loop runs until
-    // startSb == sb*), so covers_cols / covers_rows must be true.
     if tile_cols_log2 != params.tile_cols_log2
         || tile_rows_log2 != params.tile_rows_log2
         || !params.covers_cols
@@ -745,10 +684,6 @@ fn check_starts_monotonic(starts: &[u32], bound: u32, what: &'static str) -> Wri
     Ok(())
 }
 
-// =============================================================================
-// § 5.4.1 sequence_header_obu() payload
-// =============================================================================
-
 /// Writes the `sequence_header_obu()` payload (AV2 v1.0.0 § 5.4.1,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-1`), the inverse of
 /// [`crate::headers::sequence::parse_sequence_header`].
@@ -778,12 +713,9 @@ fn check_starts_monotonic(starts: &[u32], bound: u32, what: &'static str) -> Wri
 /// - any child-config [`WriteError`] (field width, descriptor domain, or a non-canonical
 ///   derived/inferred value) — all raised before the first bit.
 pub fn write_sequence_header(writer: &mut BitWriter, header: &SequenceHeader) -> WriteResult<()> {
-    // The §5.4.1 payload starts byte-aligned (right after the byte-granular OBU header).
     if !writer.is_byte_aligned() {
         return Err(WriteError::WriterNotByteAligned);
     }
-    // Validate the whole header (including every child config) before emitting any bit, so
-    // a rejected model leaves the writer untouched (reject-before-write).
     check_sequence_header_encodable(header)?;
 
     let general = &header.general;
@@ -792,7 +724,6 @@ pub fn write_sequence_header(writer: &mut BitWriter, header: &SequenceHeader) ->
 
     write_sequence_header_general(writer, general)?;
 
-    // The child configs are all Some for a fully-parsed header (validated up front).
     let partition = unwrap_config(header.partition.as_ref(), "partition")?;
     write_sequence_partition_config(writer, partition, monochrome, single_picture)?;
     let seq_sb_size = partition.seq_sb_size();
@@ -845,8 +776,6 @@ pub fn write_sequence_header(writer: &mut BitWriter, header: &SequenceHeader) ->
         tile_params_input,
     )?;
 
-    // film_grain_params_present: f(1), the last payload field (Some for a fully-parsed
-    // header; validated up front).
     let film_grain =
         header
             .film_grain_params_present
@@ -872,14 +801,9 @@ fn unwrap_config<'a, T>(config: Option<&'a T>, what: &'static str) -> WriteResul
 /// the up-front face of reject-before-write for the composite § 5.4.1 structure: no bit
 /// is emitted for any header that any child would reject mid-stream.
 fn check_sequence_header_encodable(header: &SequenceHeader) -> WriteResult<()> {
-    // A header the parser could not fully parse (reserved-level tile residual) has an
-    // un-modeled bitstream tail; it cannot be re-emitted.
     if let Some(feature) = header.unimplemented_at {
         return Err(WriteError::UnwritableSequenceHeader { feature });
     }
-    // Defensive: a tile config carrying a reserved-level residual (params None behind a
-    // set present-flag) is likewise unwritable. `unimplemented_at` should already cover
-    // this, but the tile config is the authoritative source.
     if let Some(tile) = header.tile.as_ref()
         && let Some(feature) = tile.unimplemented_at()
     {
@@ -890,7 +814,6 @@ fn check_sequence_header_encodable(header: &SequenceHeader) -> WriteResult<()> {
     let monochrome = general.chroma_format_idc.is_monochrome();
     let single_picture = general.single_picture_header_flag;
 
-    // Every child config must be present for a fully-parsed header.
     let partition = unwrap_config(header.partition.as_ref(), "partition")?;
     let segment = unwrap_config(header.segment.as_ref(), "segment")?;
     let intra = unwrap_config(header.intra.as_ref(), "intra")?;
@@ -908,8 +831,6 @@ fn check_sequence_header_encodable(header: &SequenceHeader) -> WriteResult<()> {
         });
     }
 
-    // Run every child's own encodability check up front, mirroring the gating values the
-    // child writers will use, so no bit is written for a header any child would reject.
     check_general_encodable(general)?;
     check_partition_encodable(partition, monochrome, single_picture)?;
     let seq_sb_size = partition.seq_sb_size();
@@ -920,7 +841,6 @@ fn check_sequence_header_encodable(header: &SequenceHeader) -> WriteResult<()> {
     check_tq_entropy_encodable(tq_entropy, monochrome, single_picture)?;
     check_filter_encodable(filter, single_picture, seq_sb_size)?;
 
-    // AV2 § 5.4.2 tile_params input (same as the write path).
     let tile_params_input = TileParamsInput {
         frame_width: general.max_frame_width.get(),
         frame_height: general.max_frame_height.get(),
@@ -934,9 +854,6 @@ fn check_sequence_header_encodable(header: &SequenceHeader) -> WriteResult<()> {
     Ok(())
 }
 
-// The unit/byte-exact/reject tests and the property tests live in sibling files (each kept
-// under the advisory source-line limit); `include!` pastes them into this module so their
-// `super::*` resolves to the writers and private helpers above.
 #[cfg(test)]
 include!("seq_tile_tests.rs");
 #[cfg(test)]

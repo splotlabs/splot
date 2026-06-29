@@ -42,7 +42,6 @@ fn explain_unknown_id_exits_two_with_hint() {
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("unknown rule id"), "stderr: {stderr}");
-    // The hint suggests same-namespace ids.
     assert!(stderr.contains("did you mean"), "stderr: {stderr}");
     assert!(stderr.contains("obu-header/"), "stderr: {stderr}");
 }

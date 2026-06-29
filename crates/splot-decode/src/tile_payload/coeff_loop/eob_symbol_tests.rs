@@ -829,8 +829,6 @@ fn read_nonzero_coeff_eob_short_payload_literal_path_reaches_exit_symbol_error()
         1
     );
     assert!(symbols.symbol_max_bits() < 0);
-    // Short tile payloads fail at the final symbol boundary once the preloaded
-    // arithmetic state is exhausted; literal reads do not over-read the slice.
     assert!(symbols.finish().is_err());
 }
 

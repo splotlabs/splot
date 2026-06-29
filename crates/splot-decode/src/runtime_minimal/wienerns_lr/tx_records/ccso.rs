@@ -65,11 +65,6 @@ impl CcsoState {
         if !active {
             return Ok(Self::inactive());
         }
-        // AV2 § 5.18.7.12: CcsoLumaSizeLog2. Single tile -> a == 0, so the `(a & 63) == 0`
-        // branch (value 8) is taken unless ccso_unit_matches_sb_size. Intentional
-        // simplification (ceiling): the multi-tile value-7 (`(a & 63) == 32`) and value-6
-        // branches are not modelled — only single-tile streams reach this path (the route
-        // gate guarantees one tile); a multi-tile CCSO stream is the upgrade path.
         let matches_sb_size = filter.is_some_and(|f| f.ccso_unit_matches_sb_size);
         let luma_size_log2 = if matches_sb_size {
             ccso_mi_width_log2(sequence, tile_offset)? + MI_SIZE_LOG2
@@ -143,8 +138,6 @@ impl CcsoState {
             if !self.plane_enabled[plane] {
                 continue;
             }
-            // § 8.3.2: ctx = 2 * CcsoBlks[plane][row][colLeft] when a left CCSO unit
-            // exists within the tile (MiColStart == 0), else 0.
             let ctx = if unit_col > 0 {
                 let left = self.block_value(plane, unit_row, unit_col - 1);
                 2 * usize::from(left)
@@ -190,9 +183,6 @@ impl CcsoState {
         tile_offset: ByteOffset,
     ) -> Result<()> {
         let cols = self.grid_cols;
-        // Guard the column separately: the flattened `row * cols + col` index would
-        // otherwise alias a later row for an out-of-range column (e.g. `col == cols`
-        // maps to row+1 col 0), silently corrupting a valid cell.
         let cell = if unit_col >= cols {
             None
         } else {
@@ -245,29 +235,20 @@ mod tests {
 
     #[test]
     fn ccso_state_reads_only_at_aligned_origins() {
-        // ac0ej3: 1920x1080 -> 480x270 MI. CcsoLumaSizeLog2 = 8 -> 64-MI units -> 8x5.
         let state = ac0ej3_luma_ccso_state(270, 480);
         assert_eq!(state.shift, 6);
         assert_eq!((state.grid_rows, state.grid_cols), (5, 8));
         let unit_mask = (1usize << state.shift) - 1;
         let aligned = |mi: usize| mi & unit_mask == 0;
-        // Origin (0,0) of the first superblock is CCSO-aligned (read happens).
         assert!(aligned(0));
-        // Origins inside the first CCSO unit (e.g. the second SB at MI col 32) are NOT
-        // aligned, so no extra ccso_blk symbol is read there.
         assert!(!aligned(32));
-        // The next aligned column is MI col 64 (the start of the third 128x128 SB).
         assert!(aligned(64));
     }
 
     #[test]
     fn ccso_state_left_neighbour_context_matches_spec_8_3_2() {
-        // AV2 § 8.3.2 ccso_blk: ctx = 2 * CcsoBlks[plane][row][colLeft] when a left unit
-        // exists (MiColStart == 0), else 0.
         let mut state = ac0ej3_luma_ccso_state(270, 480);
-        // First unit column has no left neighbour -> ctx 0.
         assert_eq!(state.block_value(0, 0, 0), 0);
-        // Set the left unit's luma value to 1; the next unit's context becomes 2.
         state
             .set_block_value(0, 0, 0, 1, ByteOffset::new(0))
             .unwrap();
@@ -285,8 +266,6 @@ mod tests {
 
     #[test]
     fn ccso_state_rejects_out_of_grid_access() {
-        // AGENTS.md §8 negative case: a CCSO-grid write past the backing storage is
-        // a typed error (never a panic), and an out-of-grid read saturates to 0.
         let mut state = ac0ej3_luma_ccso_state(270, 480); // 5x8 unit grid (40 cells)
         assert!(
             state
@@ -294,8 +273,6 @@ mod tests {
                 .is_err(),
             "a write past the grid storage must error, not panic"
         );
-        // An out-of-range column must error too (not silently alias the next row via
-        // the flattened `row * cols + col` index).
         assert!(
             state
                 .set_block_value(0, 0, state.grid_cols, 1, ByteOffset::new(0))
@@ -314,11 +291,6 @@ mod tests {
         );
     }
 
-    // AV2 § 5.20.6.3: for the ac0ej3 first superblock the top-left BLOCK_16X64 (index 23,
-    // maxRectTxSize TX_16X64) derives four TX_16X16 leaves via TX_PARTITION_HORZ4
-    // (`tx_partition_type` symbol 3). The missing per-block CCSO `blk_idc` read previously
-    // desynced this into two TX_16X32 (HORZ); the AVM inspect oracle pins the whole
-    // BLOCK_16X64 footprint (MI rows 0..16, cols 0..4) to TX_16X16.
     #[test]
     fn first_sb_block_16x64_horz4_partition_matches_avm_tx_16x16() {
         use super::super::{
@@ -346,7 +318,6 @@ mod tests {
                 Some(TX_16X16)
             );
         }
-        // The previously-derived HORZ split (the desync this fix removes) is two TX_16X32.
         let mut wrong = SelectableLumaTxGrid::new(16, 4).unwrap();
         apply_tx_partition(&mut wrong, 0, 0, TX_16X64, TX_PARTITION_HORZ).unwrap();
         assert_eq!(wrong.records_for_region(0, 0, 16, 4).unwrap().len(), 2);

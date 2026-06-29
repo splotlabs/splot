@@ -82,8 +82,6 @@ fn seed_corpus(root: &Path, targets: &[String]) -> Result<SeedSummary> {
     let fixtures = load_fixtures(root)?;
     let conformance = load_conformance(root)?;
 
-    // Every target's corpus directory exists and receives a raw copy of each
-    // fixture (the former `mkdir -p` + `cp tests/fixtures/*.av2` loop).
     for target in targets {
         let dir = corpus_dir(root, target);
         std::fs::create_dir_all(&dir)
@@ -107,31 +105,21 @@ fn seed_corpus(root: &Path, targets: &[String]) -> Result<SeedSummary> {
 /// symbol-decoder, tile-payload, decode-runtime, and recon targets. The byte
 /// layouts are transcribed verbatim from the former workflow `printf` seeds.
 fn seed_static(root: &Path) -> Result<()> {
-    // symbol_decoder_bytes consumes a leading config byte, payload length,
-    // payload bytes, operation count, then operations. A minimal valid finish
-    // path over a two-byte symbol payload.
     write_seed(
         root,
         "symbol_decoder_bytes",
         "finish-valid-two-byte-payload",
         &[0x02, 0x02, 0x80, 0x00, 0x01, 0x05],
     )?;
-    // tile_payload_decode_bytes consumes flags, payload length, limit seed,
-    // detail seed, then payload bytes. The known-good minimal payload with
-    // frontier mode enabled and zero mutations.
     write_seed(
         root,
         "tile_payload_decode_bytes",
         "frontier-good-payload",
         &[0x06, 0x02, 0x7F, 0x00],
     )?;
-    // The decode-runtime targets reach their embedded minimal runtime fixture
-    // via fixture mode (0x80) with zero mutations.
     for target in RUNTIME_TARGETS {
         write_seed(root, target, "minimal-fixture-unmutated", &[0x80, 0x00])?;
     }
-    // recon_frame_hash_bytes consumes structured decoded-frame shape bytes before
-    // sample data: a tiny 8-bit monochrome visible-frame case.
     write_seed(
         root,
         "recon_frame_hash_bytes",
@@ -140,9 +128,6 @@ fn seed_static(root: &Path) -> Result<()> {
             0x00, 0x02, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
         ],
     )?;
-    // recon_frame_plane_types_bytes consumes idc probes, a type selector,
-    // structured frame shape bytes, then sample data: a tiny 8-bit monochrome
-    // frame/plane type case.
     write_seed(
         root,
         "recon_frame_plane_types_bytes",
@@ -151,9 +136,6 @@ fn seed_static(root: &Path) -> Result<()> {
             0x01, 0x00, 0x00, 0x03, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
         ],
     )?;
-    // recon_reference_frame_store_bytes consumes a capacity probe, initial
-    // capacity, operation count, then operation bytes: put/get/take/entries
-    // coverage over a small valid store.
     write_seed(
         root,
         "recon_reference_frame_store_bytes",
@@ -199,9 +181,6 @@ fn seed_fixtures(root: &Path, fixtures: &[Seed]) -> Result<()> {
                 &prefixed(RUNTIME_RAW_PREFIX, bytes),
             )?;
         }
-        // parse_ivf rejects non-DKIF input at the signature, so a raw Annex-B
-        // fixture only exercises the error path; wrap it in a minimal IVF
-        // container for a valid-path seed.
         write_seed(root, "parse_ivf", &format!("ivf-{name}"), &ivf_wrap(bytes))?;
     }
     Ok(())
@@ -241,8 +220,6 @@ fn seed_conformance(root: &Path, conformance: &[Seed]) -> Result<()> {
                 &prefixed(RUNTIME_RAW_PREFIX, bytes),
             )?;
         }
-        // The de-wrapped bytes are §5 low-overhead OBUs (not Annex B), strong
-        // coverage-guided seeds for the raw OBU-stream targets.
         if let Some(obu) = ivf_dewrap(bytes) {
             let tag = format!("conf-{name}.obu");
             write_seed(root, "parse_obu", &tag, &obu)?;
@@ -430,7 +407,6 @@ mod tests {
         assert_eq!(&wrapped[8..12], b"AV02");
         assert_eq!(u16::from_le_bytes([wrapped[12], wrapped[13]]), 64); // width
         assert_eq!(u16::from_le_bytes([wrapped[14], wrapped[15]]), 64); // height
-        // frame header: size then 8-byte timestamp, at offset 32.
         assert_eq!(
             u32::from_le_bytes([wrapped[32], wrapped[33], wrapped[34], wrapped[35]]),
             data.len() as u32
@@ -447,7 +423,6 @@ mod tests {
 
     #[test]
     fn ivf_dewrap_concatenates_multiple_frames_and_honors_header_len() {
-        // Hand-build a 32-byte-header IVF with two frames of differing payloads.
         let mut ivf = Vec::new();
         ivf.extend_from_slice(b"DKIF");
         ivf.extend_from_slice(&0u16.to_le_bytes());
@@ -475,7 +450,6 @@ mod tests {
         std::fs::write(root.join("tests/fixtures/sample.av2"), fixture).unwrap();
         let vector = [0u8; 44]; // 32-byte header + one zero-length frame header
         std::fs::create_dir_all(root.join("tests/conformance/vectors/valid")).unwrap();
-        // A valid 32-byte IVF header so de-wrap runs; header length 32, one frame.
         let mut ivf = Vec::new();
         ivf.extend_from_slice(b"DKIF");
         ivf.extend_from_slice(&0u16.to_le_bytes());
@@ -495,10 +469,8 @@ mod tests {
 
         let read = |rel: &str| std::fs::read(root.join("fuzz/corpus").join(rel)).unwrap();
 
-        // Raw fixture copied into every target's corpus dir, by basename.
         assert_eq!(read("parse_ivf/sample.av2"), fixture);
         assert_eq!(read("validate_bytes/sample.av2"), fixture);
-        // Per-fixture prefixed seeds.
         assert_eq!(
             read("validate_bytes/strict-sample.av2"),
             [0x01, 0x10, 0x20, 0x30]
@@ -516,7 +488,6 @@ mod tests {
             [0x00, 0x10, 0x20, 0x30]
         );
         assert_eq!(read("parse_ivf/ivf-sample.av2"), ivf_wrap(&fixture));
-        // Static, input-independent seeds.
         assert_eq!(
             read("symbol_decoder_bytes/finish-valid-two-byte-payload"),
             [0x02, 0x02, 0x80, 0x00, 0x01, 0x05]
@@ -525,14 +496,12 @@ mod tests {
             read("decode_runtime_y4m_bytes/minimal-fixture-unmutated"),
             [0x80, 0x00]
         );
-        // Conformance vector: name is the repo-relative path with `/` -> `-`.
         let conf = "tests-conformance-vectors-valid-v.ivf";
         assert_eq!(read(&format!("parse_ivf/conf-{conf}")), ivf);
         assert_eq!(
             read(&format!("validate_bytes/conf-hls-{conf}")),
             prefixed(&[0x03, 0xFF], &ivf)
         );
-        // De-wrapped raw OBU stream for the OBU-stream targets.
         assert_eq!(
             read(&format!("parse_obu/conf-{conf}.obu")),
             [0x77, 0x88, 0x99]

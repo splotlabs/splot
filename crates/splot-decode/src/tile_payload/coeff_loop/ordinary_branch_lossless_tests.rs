@@ -3,10 +3,8 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::symbol::SymbolBitPosition;
-
-use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::TileCoeffContextState;
+use super::super::cdf::FrameCdfSubset;
+use super::ordinary_pass::CoeffOrdinaryBranchError;
 use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryBranchLosslessInput,
     CoeffOrdinaryBranchLosslessNonZeroInput, CoeffOrdinaryBranchTxSetBaseConfig,
@@ -16,8 +14,9 @@ use super::ordinary_pass::geometry::{
     apply_coeff_ordinary_branch_from_lossless, apply_coeff_ordinary_branch_from_tx_set,
     apply_coeff_ordinary_branch_from_tx_size_dimensions,
 };
-use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
-use super::test_support::{seeded_context_state, symbol_decoder};
+use super::test_support::{
+    OrdinaryBranchRun, run_ordinary_branch, seeded_context_state, symbol_decoder,
+};
 
 const TX_8X8: usize = 1;
 const UV_SMOOTH_PRED: usize = 9;
@@ -186,87 +185,23 @@ fn lossless_inter_input(tx_size: usize) -> CoeffOrdinaryBranchLosslessInput {
 fn run_explicit(
     payload: &[u8],
     input: CoeffOrdinaryBranchTxSizeDimensionsInput,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_tx_size_dimensions(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_tx_size_dimensions(context_state, tile, symbols, input)
+            .unwrap()
+    })
 }
 
-fn run_tx_set(
-    payload: &[u8],
-    input: CoeffOrdinaryBranchTxSetInput,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch =
-        apply_coeff_ordinary_branch_from_tx_set(&mut context_state, &mut tile, &mut symbols, input)
-            .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+fn run_tx_set(payload: &[u8], input: CoeffOrdinaryBranchTxSetInput) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_tx_set(context_state, tile, symbols, input).unwrap()
+    })
 }
 
-fn run_lossless(
-    payload: &[u8],
-    input: CoeffOrdinaryBranchLosslessInput,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_lossless(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+fn run_lossless(payload: &[u8], input: CoeffOrdinaryBranchLosslessInput) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_lossless(context_state, tile, symbols, input).unwrap()
+    })
 }
 
 fn find_payload_for_explicit(tx_size: usize, plane_tx_type: usize, lossless: bool) -> [u8; 12] {

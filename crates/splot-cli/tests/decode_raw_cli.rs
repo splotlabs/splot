@@ -57,10 +57,6 @@ fn conformance_vector(name: &str) -> PathBuf {
         .join(name)
 }
 
-// The decoded raw planar output for the committed conformant luma-skip fixture
-// (luma is an all-zero/skip DC block at flat 128; chroma carries a real coded
-// residual). avmdec and dav2d both decode the fixture to these exact bytes (see
-// docs/LOCAL-REFERENCE-EVIDENCE.toml); the reference is committed alongside it.
 fn expected_minimal_raw() -> Vec<u8> {
     include_bytes!("../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw")
         .to_vec()

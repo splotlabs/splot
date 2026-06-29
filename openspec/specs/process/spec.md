@@ -7,7 +7,8 @@ contribution requirements.
 
 Tracked by Feature IDs: `DOC-ENCODER-REFERENCE-GATE`,
 `XTASK-CONVENTIONAL-COMMITS`, `DOC-AUDIT-PROTOCOLS`,
-`XTASK-AUDIT-SCOPE`, `XTASK-SOURCE-LINES`.
+`XTASK-AUDIT-SCOPE`, `XTASK-SOURCE-LINES`,
+`INFRA-COMMENT-DENSITY-RATCHET`.
 ## Requirements
 ### Requirement: encoder reference gate
 
@@ -354,6 +355,28 @@ the configured hard cap. `cargo xtask ci` SHALL run the check. Tracked by
 - **WHEN** `cargo xtask ci` runs
 - **THEN** it also runs `cargo xtask check-source-lines` as a deterministic
   repository check
+
+### Requirement: implementation-comment density ratchet
+
+The repository SHALL enforce a ratcheting budget for full-line implementation
+comments in Rust source under `crates`, `xtask`, and `fuzz/fuzz_targets`,
+tracked by `INFRA-COMMENT-DENSITY-RATCHET`. The gate SHALL exclude SPDX license
+lines, Rustdoc, and xtask-generated Rust sources, SHALL count untracked
+non-ignored Rust files during local runs, and SHALL run in both `cargo xtask ci`
+and GitHub CI. The budget SHALL live in `tools/comments/budget.toml` and SHALL
+only be raised with maintainer approval.
+
+#### Scenario: source comments stay within budget
+
+- **WHEN** `cargo xtask check-comment-density` runs with full-line
+  implementation comments at or below the configured budget
+- **THEN** the command succeeds and reports the current count
+
+#### Scenario: source comments exceed budget
+
+- **WHEN** `cargo xtask check-comment-density` runs with full-line
+  implementation comments above the configured budget
+- **THEN** the command fails and reports the current count, budget, and overage
 
 ### Requirement: generated decoder support document
 The repository SHALL provide a generated document

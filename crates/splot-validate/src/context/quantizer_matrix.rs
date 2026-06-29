@@ -133,14 +133,8 @@ impl QuantizerMatrixState {
                 continue;
             }
             let needs_reset = match self.available[level] {
-                // No available record: a reset is a no-op on the record but still re-grounds
-                // any poison, exactly as the `QmMLayerId == -1` arm did before.
                 None => true,
-                // `QmMLayerId == -1`: unconditionally reset (mirror :5351).
                 Some(record) if record.mlayer_id.is_none() => true,
-                // `QmMLayerId == m`: reset iff MLayerPresenceMap[m][obu_mlayer_id] (mirror
-                // :5352). Undecidable without the activated header's presence map -> leave
-                // available (no false unavailability).
                 Some(record) => record.mlayer_id.is_some_and(|m| {
                     presence
                         .is_some_and(|p| p.is_present(EmbeddedLayerId::from_bits(m), obu_mlayer_id))
@@ -239,26 +233,17 @@ pub(super) fn frame_qm_reference_checks(
     obu: &ObuEnvelope<'_>,
     report: &mut ValidationReport,
 ) -> Vec<u8> {
-    // The qm_y/qm_u/qm_v syntax (and its conformance bullets) exists only when
-    // using_qmatrix == 1 (AV2 § 5.18.6.2).
     if !setup_qm.using_qmatrix {
         return Vec::new();
     }
-    // AV2 § 6.4.1: NumPlanes = Monochrome ? 1 : 3.
     let num_planes: u8 = if active_sequence.general.chroma_format_idc.is_monochrome() {
         1
     } else {
         3
     };
     let qm_num = usize::from(setup_qm.pic_qm_num_minus_1) + 1;
-    // Distinct referenced custom slots: qm_uv_same_as_y / shared-UV copies and
-    // repeated levels across the qmNum sets reference the same slot, which violates
-    // (or satisfies) § 6.17.6.2 / § 7.3.8.9 once, not once per syntax element.
     let mut referenced = [false; NUM_CUSTOM_QMS];
     for set in setup_qm.levels.iter().take(qm_num) {
-        // qm_y[i] is always present; qm_u[i] / qm_v[i] exist only when NumPlanes > 1
-        // (AV2 § 5.18.6.2) — the parsed zeroed placeholders for a monochrome
-        // sequence are not bitstream references.
         if let Some(slot) = referenced.get_mut(usize::from(set.qm_y)) {
             *slot = true;
         }
@@ -271,35 +256,17 @@ pub(super) fn frame_qm_reference_checks(
             }
         }
     }
-    // AV2 § 7.3.8.9 availability fires only when external HLS cannot supply the levels
-    // (ExternalHlsSet cannot express QM OBUs, so any Provided mode means the levels MAY be
-    // external — the inexpressible-kind blanket suppression).
     let availability_decidable = matches!(options.external_hls, ExternalHlsMode::Disabled);
-    // The referenced custom levels that resolved linearly-available (under Disabled), buffered
-    // by the caller for the § 7.3.8.1 random-access-point replay — disjoint from the linear
-    // checks below (an unavailable/poisoned level is not replayed).
     let mut replay_levels = Vec::new();
     for (level, _) in referenced
         .iter()
         .enumerate()
         .filter(|(_, referenced)| **referenced)
     {
-        // A level POISONED by a SWITCH / RAS reset whose effect the validator could not
-        // confirm (a truncated header that never reached the § 5.18.2 reset call site, or a
-        // SWITCH whose restricted_prediction_switch gate the parse never read) has UNKNOWN
-        // availability: the reset may or may not have cleared it. Drop both the availability
-        // and the plane-count judgments — guessing either way would be a false positive
-        // (clear-to-fire) or a false negative (stale "available"). The poison is lifted by a
-        // QM OBU re-sending the level, or by a later confirmed reset
-        // (QuantizerMatrixState::availability_poisoned).
         if qm_state.availability_poisoned(level) {
             continue;
         }
         let Some(record) = qm_state.available[level] else {
-            // AV2 § 7.3.8.9: the referenced custom level has no available record (no QM OBU
-            // ever defined it, or a reset_qm() cleared it and it was not re-sent in the
-            // current temporal unit). Decidable only under external-disabled; a poisoned /
-            // externally-suppressed state stays silent (no guessing).
             if availability_decidable {
                 report.push(frame_header_error(
                     "frame-header/qm-level-unavailable",
@@ -328,22 +295,6 @@ pub(super) fn frame_qm_reference_checks(
                 ),
             ));
         }
-        // AV2 § 6.17.6.2 (mirror :5413-5419): when a referenced custom level's defining QM OBU
-        // recorded a layer identity (QmMLayerId[level] >= 0, i.e. record.mlayer_id == Some(m)),
-        // the frame's embedded/temporal layer must DEPEND on that defining layer —
-        // MLayerDependencyMap[obu_mlayer_id][QmMLayerId[level]] == 1 and
-        // TLayerDependencyMap[obu_mlayer_id][obu_tlayer_id][QmTLayerId[level]] == 1. A level
-        // reset to defaults (QmMLayerId == -1, record.mlayer_id == None) has no defining layer
-        // and is not subject to the constraint. Decidable from the recorded layer identity, the
-        // frame's obu_mlayer_id/obu_tlayer_id, and the activated header's § 5.4.1 maps — the
-        // proven pattern of frame-header/film-grain-{mlayer,tlayer}-dependency-missing.
-        //
-        // Suppressed under any Provided external-HLS mode (gated on `availability_decidable`,
-        // i.e. Disabled), exactly like the film-grain dependency check: QM OBUs cannot be
-        // expressed by `ExternalHlsSet`, so the level's recorded layer identity MAY be supplied
-        // externally, and the activated sequence header (whose § 5.4.1 maps this check reads)
-        // MAY itself be external with different maps — either makes the in-band join unsound
-        // (Codex P2). Only the external-disabled case is decidable from the bitstream alone.
         if availability_decidable && let Some(qm_mlayer) = record.mlayer_id {
             let general = &active_sequence.general;
             let frame_mlayer = obu.header.embedded_layer_id;
@@ -364,9 +315,6 @@ pub(super) fn frame_qm_reference_checks(
                     ),
                 ));
             }
-            // The § 6.17.6.2 TLayerDependencyMap constraint is gated on the SAME QmMLayerId >= 0
-            // condition (mirror :5417); QmTLayerId is recorded with QmMLayerId, so a Some
-            // mlayer_id implies a Some tlayer_id (a reset clears both to -1 together).
             if let Some(qm_tlayer) = record.tlayer_id {
                 let frame_tlayer = obu.header.temporal_layer_id;
                 if !general.tlayer_dependency_map.depends_on(
@@ -390,9 +338,6 @@ pub(super) fn frame_qm_reference_checks(
                 }
             }
         }
-        // The level is linearly available in-band: buffer it for the § 7.3.8.1 replay (only
-        // under Disabled — under any Provided mode the level MAY be external, and the QM
-        // family is inexpressible by ExternalHlsSet, so the replay would suppress anyway).
         if availability_decidable {
             replay_levels.push(level as u8);
         }
@@ -432,7 +377,7 @@ impl ValidatorContext {
     /// `QmMLayerId == -1` arm is provable; see
     /// [`QuantizerMatrixState::reset_qm_availability_for_switch_or_ras`]).
     ///
-    /// **Unconfirmed-effect discipline (the PR #63 § 7.23 staging gate, applied to QM
+    /// **Unconfirmed-effect discipline (§ 7.23 staging gate, applied to QM
     /// availability).** When the RAS / SWITCH reset is UNCONFIRMED, the validator must
     /// neither clear the level to `None` (that would falsely *fire*
     /// `frame-header/qm-level-unavailable` for a level the reset may have left available) nor
@@ -448,33 +393,10 @@ impl ValidatorContext {
         resolved: Option<SequenceHeaderId>,
     ) {
         match obu.header.obu_type {
-            // CLK / OLK reset_qm() runs at `keyFrame && FirstPictureInTU` (mirror :4106 /
-            // :4279-4283). It is decidable from `obu_type` + `FirstPictureInTU` ALONE — no
-            // sequence-dependent read precedes it — so it clears regardless of whether the
-            // frame's referenced sequence header resolves (codex F1(a)).
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey if first_picture_in_tu => {
                 self.qm.reset_qm_availability_for_key();
             }
-            // RAS / SWITCH reset_qm() sits at mirror :4279-4283, PAST sequence-dependent reads
-            // (`restricted_prediction_switch`, `num_key_ref_frames` / `ref_long_term_id[i]`),
-            // so confirming it needs the parsed bits. An unresolvable reference
-            // (`resolved == None`) cannot prove the reset fired -> POISON, never skip (codex
-            // F1(b)). A resolvable reference confirms from the parsed `reached_qm_reset` fact:
-            // the parse passes the :4283 call site with the trigger met. The fact survives a
-            // facts-preserving inter-control truncation (`StoppedInsideInterControl` keeps the
-            // core), so a RAS / restricted SWITCH that reaches the reset and then truncates
-            // inside the inter region (e.g. EOF in `ref_frame_idx`) still CONFIRMS — it no
-            // longer requires the whole core parse to complete (codex F2). A parse that stops
-            // BEFORE the call site leaves the fact `false` -> the reset stays unconfirmed ->
-            // poison. A SWITCH with `restricted_prediction_switch == 0` never sets the fact
-            // (its reset_qm() trigger is false), which is the confirmed NO-reset case the spec
-            // gate describes — the parse reaches the inter region but `reset_qm()` did not run.
             ObuType::RasFrame | ObuType::Switch => {
-                // The § 5.18.2 SWITCH/RAS reset_qm() presence arm reads
-                // MLayerPresenceMap[QmMLayerId[level]][obu_mlayer_id] (mirror :5352), where the
-                // presence map is the § 5.4.1 reflexive-transitive closure of the frame's
-                // ACTIVATED sequence header's MLayerDependencyMap. Derive it once (owned, so the
-                // immutable `sequence_headers` borrow ends before the mutable `self.qm` reset).
                 let presence = resolved
                     .and_then(|seq_id| self.sequence_headers.get(&seq_id))
                     .map(|header| header.general.mlayer_dependency_map.presence_map());
@@ -488,15 +410,9 @@ impl ValidatorContext {
                             presence.as_ref(),
                         );
                     }
-                    // A resolvable SWITCH whose parse reached the reset point but whose
-                    // `restricted_prediction_switch == 0` (so `reached_qm_reset == false`)
-                    // confirms NO reset — nothing to do.
                     Some(core)
                         if obu.header.obu_type == ObuType::Switch
                             && core.restricted_prediction_switch == Some(false) => {}
-                    // Unresolvable, or a resolvable core that stopped before the reset call
-                    // site (the SWITCH gate bit unread, or a RAS truncated mid-prefix /
-                    // mid-`ref_long_term_id`): the reset is unconfirmed.
                     _ => self.qm.poison_qm_availability_for_unconfirmed_reset(),
                 }
             }
@@ -526,8 +442,6 @@ impl ValidatorContext {
         {
             return;
         }
-        // Emit diagnostics against the window/availability captured before this OBU,
-        // then fold this OBU into the state.
         self.emit_quantizer_matrix_diagnostics(obu, &qm, report);
         self.check_quantizer_matrix(obu, &qm);
     }
@@ -541,8 +455,6 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         if qm.qm_bit_map == 0 {
-            // AV2 § 6.12: only the first quantizer matrix OBU between coded frames may
-            // have qm_bit_map == 0.
             if self.qm.qm_obu_seen_since_coded_frame {
                 report.push(
                     Diagnostic::error(
@@ -557,8 +469,6 @@ impl ValidatorContext {
             return;
         }
 
-        // AV2 § 6.12: the same quantizer matrix level must not be specified twice
-        // between coded frames.
         let overlap = self.qm.seen_levels_since_coded_frame & qm.qm_bit_map;
         for level in 0..NUM_CUSTOM_QMS {
             if overlap & (1 << level) == 0 {
@@ -568,7 +478,6 @@ impl ValidatorContext {
                 Some(record) => format!(
                     " (previously specified by a quantizer matrix OBU at embedded layer {}, \
                      temporal layer {}, data_present={}, num_planes={})",
-                    // QmMLayerId / QmTLayerId are -1 in the spec for a reset.
                     record
                         .mlayer_id
                         .map_or_else(|| "-1".to_owned(), |m| m.to_string()),
@@ -602,12 +511,6 @@ impl ValidatorContext {
     ) {
         self.qm.qm_obu_seen_since_coded_frame = true;
         if qm.qm_bit_map == 0 {
-            // AV2 § 5.13 reset path (mirror :3006-3018): every custom level returns to its
-            // defaults (QmDataPresent = 0, QmMLayerId = QmTLayerId = -1, QmNumPlanes =
-            // numPlanes) and `QmProtected[level] = 1` for every level. The reset makes the
-            // level "available as default" (a QM OBU was sent), so the availability record is
-            // a default record (not `None`); a frame-reference check after a reset must not
-            // see stale layer/data state from a previously defined matrix.
             for record in &mut self.qm.available {
                 *record = Some(QmLevelRecord {
                     mlayer_id: None,
@@ -616,15 +519,8 @@ impl ValidatorContext {
                     num_planes: qm.num_planes,
                 });
             }
-            // A QM OBU re-grounds availability: every level is now definitely available (as a
-            // default), so any prior unconfirmed-reset poison is lifted for all levels.
             self.qm.availability_poisoned = 0;
-            // AV2 § 5.13 mirror :3010: QmProtected[level] = 1 for every level.
             self.qm.qm_protected = (1u16 << NUM_CUSTOM_QMS) - 1;
-            // AV2 § 7.3.8.1 replay: a reset-to-defaults makes EVERY custom level available
-            // (as a default), so record a (re)send for all of them — a later frame reference
-            // to any level is satisfied at a random access point only if some QM OBU (this
-            // reset included) sent it in or after that start.
             for level in 0..NUM_CUSTOM_QMS {
                 self.rap_replay.note_resend(
                     RapHlsKey::QmLevel { level: level as u8 },
@@ -643,13 +539,8 @@ impl ValidatorContext {
                     data_present: !level.is_default,
                     num_planes: qm.num_planes,
                 });
-                // A QM OBU re-sending this level re-grounds its availability (definitely
-                // available again), lifting any prior unconfirmed-reset poison for it.
                 self.qm.availability_poisoned &= !(1u16 << index);
-                // AV2 § 5.13 mirror :3033: QmProtected[level] = 1 for each sent level, so a
-                // level (re)sent in this temporal unit survives a later reset_qm().
                 self.qm.qm_protected |= 1u16 << index;
-                // AV2 § 7.3.8.1 replay: record the (re)send of this custom level.
                 self.rap_replay.note_resend(
                     RapHlsKey::QmLevel { level: level.level },
                     obu.header.extended_layer_id,

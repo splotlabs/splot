@@ -155,16 +155,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
 impl<T: ReconSample> CurrentFramePlane<T> {
     fn intra_dc_edges_for_rect(&self, rect: PlaneRect) -> Result<CurrentFrameIntraEdges<T>> {
-        // A transform overhanging a partial frame-edge superblock reads only its
-        // in-frame neighbours (the out-of-frame rows/cols do not exist in AVM's frame
-        // buffer either): clamp the block rect to storage before reading the in-frame
-        // left column / above row, mirroring the in-frame-only reconstruction write.
-        // AVM then EDGE-EXTENDS that in-frame edge back to the block's full nominal
-        // height/width by replicating the LAST in-frame sample (the bottom-most for
-        // the left column, the right-most for the above row), so every prediction
-        // primitive (DC, cardinal, PAETH, directional) receives the full-length edge
-        // it expects (`av2/common/reconintra.c:1180-1195`: copy `n_left_px` in-frame
-        // samples, then `avm_memset16(&left_col[i], left_col[i-1], remainder)`).
         let nominal = rect;
         let rect = self.clamp_rect_to_storage(rect)?;
 

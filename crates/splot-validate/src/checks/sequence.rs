@@ -27,7 +27,6 @@ pub(super) struct SequenceHeaderSyntax;
 
 impl Check for SequenceHeaderSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier only; emitted diagnostics use syntax_error_diagnostic() rule ids.
         "sequence-header/syntax"
     }
 
@@ -43,14 +42,11 @@ impl Check for SequenceHeaderSyntax {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
         match parse_sequence_header(&mut reader) {
             Ok(header) => {
-                // Local §6.17.7 tile constraints on a parsed sequence tile config.
                 if let Some(tile) = header.tile.as_ref()
                     && let Some(params) = tile.params.as_ref()
                 {
                     check_tile_params(params, obu, report);
                 }
-                // A reserved-level tile config (bounded) is intentional, not an error;
-                // only validate the payload tail when fully parsed.
                 if header.is_fully_parsed() {
                     finish_payload_or_emit(
                         &mut reader,
@@ -245,8 +241,6 @@ mod tests {
 
     #[test]
     fn check_tile_params_ignores_coverage_for_uniform_layout() {
-        // covers_* are always true for uniform layouts; even if they were not, a
-        // uniform layout must not emit the non-uniform coverage diagnostics.
         let params = TileParams {
             uniform_spacing: true,
             covers_cols: false,

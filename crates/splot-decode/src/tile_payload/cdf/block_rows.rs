@@ -36,9 +36,6 @@ use super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_coun
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
 const Y_MODE_INDEX_CONTEXTS: usize = 3;
 const INTRA_MODE_CDF_ROW_LEN: usize = 9;
-// `Default_Y_Mode_Offset_Cdf[Y_MODE_CONTEXTS][MODE_OFFSET_COUNT + 1]` is
-// `[[i32; 7]; 3]`: 6 `y_mode_offset` symbols (MODE_OFFSET_COUNT) plus the count
-// slot, sharing the `y_mode_index` 3-context axis.
 const Y_MODE_OFFSET_CDF_ROW_LEN: usize = 7;
 const Y_MODE_OFFSET_CONTEXTS: usize = 3;
 const COEFF_CDF_Q_CONTEXTS: usize = 4;
@@ -56,25 +53,13 @@ const CFL_MH_DIR_CDF_ROW_LEN: usize = 4;
 const V_TXB_SKIP_CONTEXTS: usize = 12;
 const DC_SIGN_GROUPS: usize = 2;
 const DC_SIGN_CONTEXTS: usize = 3;
-// §3 IS_INTER_CONTEXTS / SKIP_CONTEXTS / SINGLE_MODE_CONTEXTS: the §8.3.2 inter
-// mode_info CDF banks consumed by the first-inter-frame decode.
 const IS_INTER_CONTEXTS: usize = 4;
 const SKIP_CONTEXTS: usize = 6;
 const SINGLE_MODE_CONTEXTS: usize = 5;
-// §9.3 `Default_Drl_Mode_Cdf[ 3 ][ DRL_MODE_CONTEXTS ][ 3 ]`: the first axis is the
-// §5.20.7.8 `read_drl_idx` `Min(idx, 2)` index; the second is `NewMvContext`.
 const DRL_MODE_IDX_BANKS: usize = 3;
 const DRL_MODE_CONTEXTS: usize = 5;
-// §9.3 `Default_Single_Ref_Cdf[ REF_CONTEXTS ][ REFS_PER_FRAME - 1 ][ 3 ]`: the
-// §5.20.7.12 `read_single_ref` binary `single_ref` symbol's CDF banks. The first
-// axis is the §8.3.2 neighbour-derived `ctx` (`av2_get_ref_pred_context`, the same
-// derivation as `comp_ref`); the second is the `read_single_ref` loop counter `ref`
-// (`0..NumTotalRefs - 1`).
 const REF_CONTEXTS: usize = 3;
 const REFS_PER_FRAME_MINUS_1: usize = 6;
-// §9.3 compound mode_info banks used by §5.20.7.10 / §5.20.7.6 for the
-// two-reference compound-average subset. `comp_mode` and `is_joint` are binary
-// rows; `compound_mode_non_joint` has five symbols plus a count slot.
 const COMP_MODE_CONTEXTS: usize = 5;
 const IS_JOINT_CONTEXTS: usize = 2;
 const COMPOUND_MODE_CONTEXTS: usize = 5;
@@ -82,48 +67,24 @@ const COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN: usize = 6;
 const COMP_GROUP_IDX_CONTEXTS: usize = 12;
 const CWP_IDX_CONTEXTS: usize = 4;
 const COMP_REF1_BIT_TYPES: usize = 2;
-// §8.3.2 `interp_filter`: `TileInterpFilterCdf[ctx]`, `[[i32; 4]; 16]` (3 filter
-// symbols + count). The verified single-ref no-neighbour block uses ctx == 3.
 const INTERP_FILTER_CONTEXTS: usize = 16;
-// §8.3.2 Wiener NS filter syntax CDFs used by §5.20.10.6.
 const WIENER_NS_LENGTH_CONTEXTS: usize = 2;
 const WIENER_NS_BASE_CDF_ROW_LEN: usize = 5;
-// §8.3.2 Table 8.2 intra transform-type CDFs, indexed by `Tx_Size_Sqr[txSz]`.
 const INTRA_TX_TYPE_LONG_SIZE_CONTEXTS: usize = 4;
 const INTRA_TX_TYPE_SIZE_CONTEXTS: usize = 3;
 const INTRA_TX_TYPE_LONG_ROW_LEN: usize = 5;
-// §8.3.2 Table 8.3 inter long-side transform-type CDF
-// `TileInterTxTypeLongCdf[ctx][Tx_Size_Sqr[txSz]]`: `EOB_TX_CTXS` eob contexts by
-// `EXT_TX_SIZES` square-size contexts.
 const INTER_TX_TYPE_LONG_EOB_CONTEXTS: usize = 3;
 const INTER_TX_TYPE_LONG_SIZE_CONTEXTS: usize = 4;
 const INTER_TX_TYPE_LONG_ROW_LEN: usize = 5;
-// §8.3.2 Table 8.3 inter `inter_tx_type`/`inter_tx_type_offset` CDFs for the
-// `TX_SET_INTER_1/2` and `TX_SET_DCT_IDTX*` transform sets. `Default_*` shapes
-// come verbatim from `all_tables.h` (§9.3): the `eob` context is the leading
-// dimension for every bank.
 const INTER_TX_TYPE_EOB_CONTEXTS: usize = 3;
-// `Default_Inter_Tx_Type_Set1_Cdf[3][2][3]`: `inter_tx_type` (2 symbols) by
-// `[eobCtx][Tx_Size_Sqr]`.
 const INTER_TX_TYPE_SET1_SIZE_CONTEXTS: usize = 2;
 const INTER_TX_TYPE_SET1_ROW_LEN: usize = 3;
-// `Default_Inter_Tx_Type_Set2_Cdf[3][3]`: `inter_tx_type` (2 symbols) by
-// `[eobCtx]` only (the §8.3.2 Set2 row has no `sqrSz` index).
 const INTER_TX_TYPE_SET2_ROW_LEN: usize = 3;
-// `Default_Inter_Tx_Type_Index_Set1/2_Cdf[3][8+1]` and
-// `Default_Inter_Tx_Type_Offset_Set1_Cdf[3][8+1]`: 8-symbol selections by
-// `[eobCtx]`.
 const INTER_TX_TYPE_INDEX_ROW_LEN: usize = 9;
 const INTER_TX_TYPE_OFFSET_SET1_ROW_LEN: usize = 9;
-// `Default_Inter_Tx_Type_Offset_Set2_Cdf[3][4+1]`: 4-symbol selection by
-// `[eobCtx]`.
 const INTER_TX_TYPE_OFFSET_SET2_ROW_LEN: usize = 5;
-// `Default_Inter_Tx_Type_Set3_Cdf[3][4][3]`: 2-symbol selection by
-// `[eobCtx][Tx_Size_Sqr]` (DCT_IDTX).
 const INTER_TX_TYPE_SET34_SIZE_CONTEXTS: usize = 4;
 const INTER_TX_TYPE_SET3_ROW_LEN: usize = 3;
-// `Default_Inter_Tx_Type_Set4_Cdf[3][4][5]`: 4-symbol selection by
-// `[eobCtx][Tx_Size_Sqr]` (DCT_IDTX_IDDCT).
 const INTER_TX_TYPE_SET4_ROW_LEN: usize = 5;
 const INTRA_TX_TYPE_SET1_ROW_LEN: usize = 8;
 const INTRA_TX_TYPE_SET2_ROW_LEN: usize = 3;
@@ -148,27 +109,14 @@ pub(crate) type CflAlphaCdfRows = [[i32; CFL_ALPHA_CDF_ROW_LEN]; CFL_ALPHA_CONTE
 pub(crate) type CflMhccpCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type CflMhDirCdfRows = [[i32; CFL_MH_DIR_CDF_ROW_LEN]; CFL_MH_DIR_GROUPS];
 pub(crate) type VTxbSkipCdfRows = [[[i32; CDF_ROW_LEN]; V_TXB_SKIP_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
-// `eob_extra` is a binary symbol, so its rows are width 3 — the same as the
-// generic `CDF_ROW_LEN`. `DEFAULT_EOB_EXTRA_CDF` is `[[i32; 3]; 4]`, so this alias
-// must keep an inner width of 3; if `CDF_ROW_LEN` ever changes, give `eob_extra`
-// its own width constant rather than over-allocating from the generic one.
 pub(crate) type EobExtraCdfRows = [[i32; CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS];
-// §9.3 `dc_sign`: `[coeff_cdf_q_ctx][plane_type][isHidden group][ctx][3]`. §8.3.2
-// reads `TileDcSignCdf[ptype][isHidden][ctx]`; `ctx` (0/1/2) is derived from the
-// Above/Left DC-context buffers (deferred with the coeffs() loop).
 pub(crate) type DcSignCdfRows =
     [[[[[i32; CDF_ROW_LEN]; DC_SIGN_CONTEXTS]; DC_SIGN_GROUPS]; PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
-// §9.3 inter mode_info banks. `is_inter` / `skip` are binary (width 3 ==
-// `CDF_ROW_LEN`); `single_mode` is the 3-ary (NEARMV/GLOBALMV/NEWMV) symbol whose
-// `[SINGLE_MODE_CONTEXTS][3 + 1]` row keeps the §9.3 width (3 symbols + count).
 pub(crate) type IsInterCdfRows = [[i32; CDF_ROW_LEN]; IS_INTER_CONTEXTS];
 pub(crate) type SkipCdfRows = [[i32; CDF_ROW_LEN]; SKIP_CONTEXTS];
 pub(crate) type SingleModeCdfRows = [[i32; 4]; SINGLE_MODE_CONTEXTS];
 pub(crate) type DrlModeCdfRows = [[[i32; CDF_ROW_LEN]; DRL_MODE_CONTEXTS]; DRL_MODE_IDX_BANKS];
-// §9.3 `Default_Single_Ref_Cdf[ REF_CONTEXTS ][ REFS_PER_FRAME - 1 ][ 3 ]`: the
-// binary §5.20.7.12 `single_ref` symbol keeps the generic width 3 (`CDF_ROW_LEN`).
 pub(crate) type SingleRefCdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
-// §9.3 compound inter mode_info banks.
 pub(crate) type CompModeCdfRows = [[i32; CDF_ROW_LEN]; COMP_MODE_CONTEXTS];
 pub(crate) type IsJointCdfRows = [[i32; CDF_ROW_LEN]; IS_JOINT_CONTEXTS];
 pub(crate) type CompoundModeNonJointCdfRows =
@@ -216,12 +164,8 @@ pub(crate) type SecTxTypeCdfRows =
 pub(crate) type MostProbableStxSetCdfRow = [i32; MOST_PROBABLE_STX_SET_ROW_LEN];
 pub(crate) type MostProbableStxSetAdstCdfRow = [i32; MOST_PROBABLE_STX_SET_ADST_ROW_LEN];
 pub(crate) type CctxTypeCdfRow = [i32; CCTX_TYPE_CDF_ROW_LEN];
-// §9.3 `interp_filter`: `[[i32; 4]; 16]` (3 symbols + count).
 pub(crate) type InterpFilterCdfRows = [[i32; 4]; INTERP_FILTER_CONTEXTS];
 
-// The §9.3 `eob_pt` CDF family: one bank per transform-size class, each
-// `[coeff_cdf_q_ctx][eobCtx][N]` with a class-specific symbol width N. §8.3.2
-// selects `TileEobPt<size>Cdf[eobCtx]` for the active q-context.
 pub(crate) type EobPt16CdfRows = [[[i32; 6]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type EobPt32CdfRows = [[[i32; 7]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type EobPt64CdfRows = [[[i32; 8]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];

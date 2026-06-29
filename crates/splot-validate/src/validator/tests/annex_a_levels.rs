@@ -22,8 +22,6 @@ pub(in crate::validator::tests) fn level_2_0_stream(width: u32, height: u32) -> 
 
 #[test]
 fn annex_a_frame_width_exceeds_max_h_size() {
-    // Level 2.0 (LevelIdx 0) MaxHSize is 640. FrameWidth 641 (> 640) with a short
-    // height stays under MaxPicSize 147456, isolating the MaxHSize limit (fail-past).
     let report = Validator::new(false).validate_bytes(&level_2_0_stream(641, 16));
     assert!(
         report.errors().any(|d| {
@@ -35,7 +33,6 @@ fn annex_a_frame_width_exceeds_max_h_size() {
 
 #[test]
 fn annex_a_frame_at_max_h_size_passes() {
-    // FrameWidth exactly 640 == MaxHSize passes (boundary, pass-at-limit).
     let report = Validator::new(false).validate_bytes(&level_2_0_stream(640, 16));
     assert!(
         !report
@@ -47,9 +44,6 @@ fn annex_a_frame_at_max_h_size_passes() {
 
 #[test]
 fn annex_a_frame_pic_size_exceeds_level() {
-    // Level 2.0 MaxPicSize is 147456. FrameWidth 640 x FrameHeight 640 = 409600 >
-    // 147456 (both dimensions are within MaxHSize/MaxVSize 640, isolating the
-    // pic-size limit).
     let report = Validator::new(false).validate_bytes(&level_2_0_stream(640, 640));
     assert!(
         report.errors().any(|d| {
@@ -61,8 +55,6 @@ fn annex_a_frame_pic_size_exceeds_level() {
 
 #[test]
 fn annex_a_frame_below_minimum_dimension() {
-    // FrameWidth < 16 violates the Annex A.4 minimum-dimension rule. An 8-wide frame
-    // has sbCols == 1 -> no increment bit.
     let report = Validator::new(false).validate_bytes(&level_2_0_stream(8, 16));
     assert!(
         report.errors().any(|d| {
@@ -75,7 +67,6 @@ fn annex_a_frame_below_minimum_dimension() {
 
 #[test]
 fn annex_a_frame_at_minimum_dimension_passes() {
-    // FrameWidth == FrameHeight == 16 is exactly the minimum (boundary).
     let report = Validator::new(false).validate_bytes(&level_2_0_stream(16, 16));
     assert!(
         !report
@@ -87,8 +78,6 @@ fn annex_a_frame_at_minimum_dimension_passes() {
 
 #[test]
 fn annex_a_level_31_disables_level_limits() {
-    // seq_level_idx 31 (Maximum parameters): no level-based constraints, so a huge
-    // frame that would blow past every level-2.0 limit must not be flagged.
     let seq = AnnexASeq {
         level_idx: 31,
         frame_dim_bits_minus_1: 11, // 12-bit dims (max 4096)
@@ -97,8 +86,6 @@ fn annex_a_level_31_disables_level_limits() {
         ..AnnexASeq::base()
     };
     let mut data = td_and_annex_a_seq(seq);
-    // Level 31 (NO_LEVEL) tile layout: max_tile_width_sb == sbCols, so a single tile
-    // reads one column and one row stop bit for a 4000x4000 (63x63 superblock) frame.
     data.extend(annex_a_frame_obu(0, 4000, 4000, 12, 1, 1));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
@@ -117,8 +104,6 @@ fn annex_a_level_31_disables_level_limits() {
 
 #[test]
 fn annex_a_reserved_level_disables_level_limits() {
-    // A reserved seq_level_idx (22-30) is not in Tables A.8/A.9, so the level-limit
-    // checks are disabled (the reserved-level value-space error still fires).
     let seq = AnnexASeq {
         level_idx: 22,
         frame_dim_bits_minus_1: 9,
@@ -127,9 +112,6 @@ fn annex_a_reserved_level_disables_level_limits() {
         ..AnnexASeq::base()
     };
     let mut data = td_and_annex_a_seq(seq);
-    // A reserved seq_level_idx has no defined tile scaling, so the frame's tile_info()
-    // parse stops as Unimplemented and the frame-core checks are skipped — the
-    // level-limit checks never run regardless of the (here unreached) tile bits.
     data.extend(annex_a_frame_obu(0, 640, 640, 10, 1, 1)); // would exceed level 2.0
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
@@ -146,11 +128,8 @@ fn annex_a_reserved_level_disables_level_limits() {
     );
 }
 
-// --- ops_level_idx reserved (Annex A.4 Table A.7) ---
-
 #[test]
 fn annex_a_flags_reserved_ops_level_idx() {
-    // A global OPS carrying ops_level_idx 25 (reserved 22-30) for one extended layer.
     let mut data = temporal_delimiter_obu();
     data.extend(ops_obu_with_level(25));
     let report = Validator::new(false).validate_bytes(&data);
@@ -166,7 +145,6 @@ fn annex_a_flags_reserved_ops_level_idx() {
 
 #[test]
 fn annex_a_accepts_valid_ops_level_idx() {
-    // ops_level_idx 4 (level 4.0) is a defined level — no level-reserved error.
     let mut data = temporal_delimiter_obu();
     data.extend(ops_obu_with_level(4));
     let report = Validator::new(false).validate_bytes(&data);
@@ -180,10 +158,6 @@ fn annex_a_accepts_valid_ops_level_idx() {
 
 #[test]
 fn annex_a_flags_high_tier_below_4_0_in_ops() {
-    // The reachable high-tier-below-4.0 arm (mirror lines 443-451 + the Table A.9
-    // NOTE): the OPS PTL signals ops_tier_flag unconditionally (§ 5.11.2), so a High
-    // tier (ops_tier_flag == 1) with ops_level_idx 3 (level 3.1, below 4.0) is a real
-    // case the seq-header arm cannot reach. Exactly one advisory warning fires.
     let mut data = temporal_delimiter_obu();
     data.extend(ops_obu_with_level_tier(3, true));
     let report = Validator::new(false).validate_bytes(&data);
@@ -206,8 +180,6 @@ fn annex_a_flags_high_tier_below_4_0_in_ops() {
 
 #[test]
 fn annex_a_accepts_high_tier_at_4_0_in_ops() {
-    // ops_tier_flag == 1 at ops_level_idx 4 (level 4.0) is allowed (Table A.9 NOTE:
-    // 4.0 and above) — no high-tier-below-4.0 diagnostic.
     let mut data = temporal_delimiter_obu();
     data.extend(ops_obu_with_level_tier(4, true));
     let report = Validator::new(false).validate_bytes(&data);
@@ -221,8 +193,6 @@ fn annex_a_accepts_high_tier_at_4_0_in_ops() {
 
 #[test]
 fn annex_a_accepts_main_tier_below_4_0_in_ops() {
-    // ops_tier_flag == 0 (Main) at ops_level_idx 3 (below 4.0) is fine — the NOTE
-    // only restricts the High tier — so no high-tier-below-4.0 diagnostic.
     let mut data = temporal_delimiter_obu();
     data.extend(ops_obu_with_level_tier(3, false));
     let report = Validator::new(false).validate_bytes(&data);
@@ -274,9 +244,7 @@ pub(in crate::validator::tests) fn ops_obu_with_profile_level_tier(
     bits.bit(1); // ops_ptl_present_flag
     bits.bit(0); // ops_color_info_present_flag
     bits.f(0, 2); // ops_reserved_2bits (local OPS)
-    // operating_point_payload(0):
     let mut body = Bits::default();
-    // ops_seq_profile_tier_level_info() (§ 5.11.2).
     body.f(profile_idc, 5); // ops_seq_profile_idc
     body.f(level_idx, 5); // ops_level_idx
     body.bit(u8::from(high_tier)); // ops_tier_flag
@@ -294,9 +262,6 @@ pub(in crate::validator::tests) fn ops_obu_with_profile_level_tier(
 
 #[test]
 fn annex_a_flags_reserved_ops_seq_profile_idc() {
-    // A local OPS carrying ops_seq_profile_idc 7 (reserved 5-30) for one extended
-    // layer must be flagged as a reserved profile (§ 6.10.4 maps the OPS-derived
-    // profile id onto Annex A.2 Table A.1).
     let mut data = temporal_delimiter_obu();
     data.extend(ops_obu_with_profile_level_tier(7, 4, false));
     let report = Validator::new(false).validate_bytes(&data);
@@ -312,7 +277,6 @@ fn annex_a_flags_reserved_ops_seq_profile_idc() {
 
 #[test]
 fn annex_a_accepts_valid_ops_seq_profile_idc() {
-    // ops_seq_profile_idc 0 is a defined profile — no profile-reserved error.
     let mut data = temporal_delimiter_obu();
     data.extend(ops_obu_with_profile_level_tier(0, 4, false));
     let report = Validator::new(false).validate_bytes(&data);

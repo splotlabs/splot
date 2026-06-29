@@ -521,11 +521,6 @@ pub(crate) fn validate_cdf_shape(
         if !(1..=CDF_PROB_MAX).contains(&value) {
             return Err(SymbolCdfErrorKind::ProbabilityOutOfRange { index, value });
         }
-        // AV2 § 8.2.6 (docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2) does
-        // not require strictly increasing cumulative entries: the adaptation
-        // step can drive adjacent entries equal, and `read_symbol` still
-        // separates the affected symbols through `Prob_Inc`. Only a strict
-        // decrease is rejected.
         if index > 0 && value < cdf[index - 1] {
             return Err(SymbolCdfErrorKind::DecreasingCumulative {
                 previous_index: index - 1,

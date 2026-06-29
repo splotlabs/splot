@@ -88,8 +88,6 @@ impl ResidualBlock {
             let prediction_row = &prediction[prediction_start..prediction_start + block.width()];
             for (&source_sample, &prediction_sample) in source.iter().zip(prediction_row) {
                 // splot-copy-ok: materialize signed residual samples as the
-                // future forward-transform input, not as duplicated media frame
-                // storage.
                 samples.push(i16::from(source_sample) - i16::from(prediction_sample));
             }
         }

@@ -59,10 +59,6 @@ fn grid_with_block0() -> NeighbourMvGrid {
 
 #[test]
 fn block0_has_no_inter_neighbours_so_context_is_zero() {
-    // Block 0 @ MI(0,0) is the top-left block with no decoded neighbours, so
-    // §7.11.2 nearestMatch == 0 and NewMvCount == 0 -> NewMvContext == 0, and
-    // §7.12.2 finds only the zero global-MV fallback candidate. The §5.20.7.2
-    // neighbour-buffer contexts (is_inter / skip) are also 0 (NNumBuf == 0).
     let grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
     let block0 = block_at(0, 0);
 
@@ -85,24 +81,13 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
 
 #[test]
 fn block1_predicts_block0_mv_via_left_neighbour() {
-    // Block 1 @ MI(0,8) (the right top block of the SPLIT) has block 0 as its left
-    // neighbour (an inter NEWMV block, ref 0, skip 1). §7.12.2 must place block 0's
-    // MV at the head of the stack so NEARMV/NEARESTMV (RefMvIdx 0) reconstructs
-    // (row 0, col 48).
     let grid = grid_with_block0();
     let block1 = block_at(0, N4_32); // MI(0, 8)
 
     let ctx = find_mode_ctx(&grid, &block1);
-    // §7.11.2: leftA = scan_point_ctx(bh4 - 1, -1) = MI(7, 7) -> block 0 (NEWMV,
-    // ref match), leftB = scan_point_ctx(0, -1) = MI(0, 7) -> block 0 too. Both
-    // probes hit the NEWMV block, so §7.11.3 increments NewMvCount per probe (= 2).
-    // nearestMatch = (above 0) + (left 1) = 1; NewMvContext = 1 + 2 = 3.
     assert_eq!(ctx.new_mv_count, 2, "both left probes hit the NEWMV block");
     assert_eq!(ctx.new_mv_context, 3, "left-NEWMV NewMvContext");
 
-    // §5.20.7.2: NPosBuf probes (bottom-left (7,7), top-right (-1,15), left (0,7),
-    // above (-1,8)) -> 2 inside (both block 0). Both inter -> is_inter ctx 0; both
-    // skip=1 -> skip ctx 2.
     let nctx = block_neighbour_ctx(&grid, &block1);
     assert_eq!(
         nctx.is_inter_ctx, 0,
@@ -122,17 +107,10 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
 
 #[test]
 fn block2_predicts_block0_mv_via_above_neighbour() {
-    // Block 2 @ MI(8,0) (the bottom-left block of the SPLIT) has block 0 as its
-    // ABOVE neighbour. §7.12.2 must again place block 0's MV at the head of the
-    // stack for the NEARMV reconstruction.
     let grid = grid_with_block0();
     let block2 = block_at(N4_32, 0); // MI(8, 0)
 
     let ctx = find_mode_ctx(&grid, &block2);
-    // §7.11.2: aboveA = scan_point_ctx(-1, bw4 - 1) = MI(7, 7) -> block 0,
-    // aboveB = scan_point_ctx(-1, 0) = MI(7, 0) -> block 0. Both probes hit the
-    // NEWMV block, so §7.11.3 increments NewMvCount per probe (= 2). nearestMatch =
-    // (above 1) + (left 0) = 1; NewMvContext = 1 + 2 = 3.
     assert_eq!(ctx.new_mv_count, 2, "both above probes hit the NEWMV block");
     assert_eq!(ctx.new_mv_context, 3, "above-NEWMV NewMvContext");
 
@@ -146,18 +124,12 @@ fn block2_predicts_block0_mv_via_above_neighbour() {
 
 #[test]
 fn block3_predicts_block0_mv_via_above_and_left() {
-    // Block 3 @ MI(8,8) (the bottom-right block) has blocks 1 (left, NEARMV) and
-    // 2 (above, NEARMV) as neighbours, both carrying block 0's MV (row 0, col 48).
-    // After blocks 1 and 2 decode, the stack for block 3 must still place that MV
-    // at the head.
     let mut grid = grid_with_block0();
     record_inter(&mut grid, 0, N4_32, NeighbourYMode::Other, BLOCK0_MV, true); // block 1
     record_inter(&mut grid, N4_32, 0, NeighbourYMode::Other, BLOCK0_MV, true); // block 2
     let block3 = block_at(N4_32, N4_32); // MI(8, 8)
 
     let ctx = find_mode_ctx(&grid, &block3);
-    // Neighbours are NEARMV (Other), not NEWMV, so NewMvCount stays 0; nearestMatch
-    // = (above 1) + (left 1) = 2; NewMvContext = 2 + 0 = 2.
     assert_eq!(ctx.new_mv_count, 0, "NEARMV neighbours are not NEW MVs");
     assert_eq!(ctx.new_mv_context, 2, "above+left NEARMV NewMvContext");
 
@@ -174,9 +146,6 @@ fn block3_predicts_block0_mv_via_above_and_left() {
 
 #[test]
 fn intra_neighbour_does_not_contribute() {
-    // An intra (is_inter == false) left neighbour must not be added to the stack
-    // or counted for the context (the §7.11.3 / §7.12.2.10 IsInters guard), and it
-    // makes the §8.3.2 is_inter ctx non-zero.
     let mut grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
     grid.record_block(
         0,
@@ -195,7 +164,6 @@ fn intra_neighbour_does_not_contribute() {
     assert_eq!(ctx.new_mv_context, 0, "intra neighbour gives mode ctx 0");
 
     let nctx = block_neighbour_ctx(&grid, &block1);
-    // Two intra neighbours (NNumBuf == 2, both NIntra) -> is_inter ctx 3.
     assert_eq!(
         nctx.is_inter_ctx, 3,
         "two intra neighbours -> is_inter ctx 3"
@@ -212,9 +180,6 @@ fn intra_neighbour_does_not_contribute() {
 
 #[test]
 fn mismatched_reference_neighbour_does_not_contribute() {
-    // A neighbour with a different reference frame must not match the MV stack
-    // (§7.12.2.10 / §7.11.3 RefFrames == RefFrame[0] guard), though it is still an
-    // inter neighbour for the §8.3.2 is_inter / skip contexts.
     let mut grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
     grid.record_block(
         0,
@@ -242,16 +207,12 @@ fn mismatched_reference_neighbour_does_not_contribute() {
 
 #[test]
 fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
-    // Two neighbours carrying the same MV merge to a single stack entry
-    // (§7.12.2.12 search-stack dedupe), with the global fallback appended only if
-    // distinct.
     let mut grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
     record_inter(&mut grid, 0, 0, NeighbourYMode::Other, BLOCK0_MV, true);
     record_inter(&mut grid, N4_32, 0, NeighbourYMode::Other, BLOCK0_MV, true);
     let block3 = block_at(N4_32, N4_32);
 
     let stack = find_mv_stack(&grid, &block3, Mv::ZERO);
-    // The single distinct neighbour MV (col 48) + the zero global fallback = 2.
     assert_eq!(
         stack.num_mv_found(),
         2,
@@ -263,20 +224,7 @@ fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
 
 #[test]
 fn distinct_left_and_above_mvs_order_left_before_above() {
-    // DECODE-INTER-MVORDER-SPATIAL: the discriminating case the identical-MV
-    // fixtures could not exercise. Block 3 @ MI(8,8) (the bottom-right 32x32 leaf)
-    // has a LEFT neighbour (block 2 @ MI(8,0)) carrying col 32 and an ABOVE
-    // neighbour (block 1 @ MI(0,8)) carrying a DIFFERENT col -32. The §7.12.2
-    // ordered scan visits the left probe (step 7, scan_point(bh4-1, -1) = MI(15,7),
-    // inside block 2) BEFORE the above probe (step 8, scan_point(-1, bw4-1) =
-    // MI(7,15), inside block 1), so the stack must place the LEFT MV (col 32) at
-    // slot 0 and the ABOVE MV (col -32) at slot 1. The committed
-    // syn-2frame-inter-mvorder-64x64.ivf decodes block 3 as NEARMV RefMvIdx 1 ->
-    // col -32 bit-exactly vs avmdec AND dav2d, so a reversed (above-before-left)
-    // order would mis-decode it. The §7.12.2.20 large-block step is inapplicable
-    // (Block_Width / Block_Height == 32, not > 32).
     let mut grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
-    // Block 0 @ MI(0,0): the (-1,-1) corner neighbour of block 3, col 64.
     record_inter(
         &mut grid,
         0,
@@ -285,7 +233,6 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
         Mv { row: 0, col: 64 },
         true,
     );
-    // Block 1 @ MI(0,8): block 3's ABOVE neighbour, col -32.
     record_inter(
         &mut grid,
         0,
@@ -294,7 +241,6 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
         Mv { row: 0, col: -32 },
         true,
     );
-    // Block 2 @ MI(8,0): block 3's LEFT neighbour, col 32.
     record_inter(
         &mut grid,
         N4_32,
@@ -306,8 +252,6 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
     let block3 = block_at(N4_32, N4_32); // MI(8, 8)
 
     let stack = find_mv_stack(&grid, &block3, Mv::ZERO);
-    // Slot 0 is the LEFT neighbour's MV (col 32), slot 1 is the ABOVE neighbour's
-    // (col -32) — left-before-above, the order the oracle-pinned fixture requires.
     assert_eq!(
         stack.candidate(0),
         Mv { row: 0, col: 32 },
@@ -318,8 +262,6 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
         Mv { row: 0, col: -32 },
         "slot 1 = the ABOVE neighbour (block 1) MV"
     );
-    // The (-1,-1) corner (block 0, col 64) follows as a distinct entry, then the
-    // zero global-MV fallback (distinct again), giving four candidates total.
     assert_eq!(
         stack.candidate(2),
         Mv { row: 0, col: 64 },
@@ -339,8 +281,6 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
 
 #[test]
 fn clamp_keeps_small_mvs_unchanged() {
-    // The fixture's MV (col 48 = +6 full pels) is far inside the §5.20.9.4 /
-    // §5.20.9.5 clamp bounds, so clamping is a no-op.
     let grid = grid_with_block0();
     let block1 = block_at(0, N4_32);
     let stack = find_mv_stack(&grid, &block1, Mv::ZERO);
@@ -353,17 +293,11 @@ fn clamp_keeps_small_mvs_unchanged() {
 
 #[test]
 fn record_block_marks_every_covered_cell() {
-    // The grid records the MV into every MI cell the block covers, so a probe at
-    // any cell of the neighbour returns the block.
     let grid = grid_with_block0();
     let block1 = block_at(0, N4_32);
-    // leftA probes (bh4 - 1, -1) = MI(7, 7), leftB probes (0, -1) = MI(0, 7); both
-    // must see block 0.
     let ctx = find_mode_ctx(&grid, &block1);
     assert_eq!(ctx.new_mv_context, 3, "both left probes see block 0");
 }
-
-// --- DECODE-INTER-GRID-SPATIAL: 2-D superblock-grid availability ---------------
 
 /// A full 64x64 superblock is 16 MI units wide / high.
 const N4_64: usize = 16;
@@ -399,22 +333,11 @@ fn record_sb(
 
 #[test]
 fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
-    // The 2-D-grid gap: a superblock in SB ROW 1 must predict an SB-ROW-0
-    // superblock's MV across the superblock-row boundary via the frame-wide
-    // §7.12.2 spatial stack. The §5.20.2.1 raster loop decodes SB row 0 fully
-    // before SB row 1, so SB0 @ MI(0,0) (NEWMV, col 48) is already recorded when
-    // SB2 @ MI(16,0) decodes; SB2's §7.12.2 above probes (deltaRow == -1) land in
-    // SB0's decoded bottom edge -> RefMvIdx 0 reconstructs SB0's MV. This is the
-    // exact case the single-SB-row brick (DECODE-INTER-MULTI-SB-SPATIAL) deferred.
     let mut grid = NeighbourMvGrid::new(GRID_MI_DIM, GRID_MI_DIM).unwrap();
     record_sb(&mut grid, 0, 0, NeighbourYMode::NewMv, BLOCK0_MV, true);
     let sb2 = sb_block_at(N4_64, 0); // MI(16, 0), SB row 1, col 0
 
     let ctx = find_mode_ctx(&grid, &sb2);
-    // §7.11.2: aboveA = scan_point_ctx(-1, bw4 - 1) = MI(15, 15) -> SB0,
-    // aboveB = scan_point_ctx(-1, 0) = MI(15, 0) -> SB0. Both above probes hit the
-    // NEWMV SB across the SB-row boundary -> NewMvCount 2, nearestMatch (above 1) =
-    // 1, NewMvContext = 1 + 2 = 3.
     assert_eq!(
         ctx.new_mv_count, 2,
         "both above probes hit SB0 across SB row"
@@ -437,14 +360,6 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
 
 #[test]
 fn undecoded_later_sb_column_yields_no_candidate() {
-    // §7.12.2.6 availability: the scan invokes the add-reference-MV step only when
-    // `is_inside(mvRow, mvCol)` AND `RefFrames[mvRow][mvCol][0] has been written for
-    // this frame`. A grid cell for a not-yet-decoded superblock returns `None`
-    // (unwritten) and must NOT contribute a candidate, so a non-top SB whose only
-    // would-be neighbour is a LATER (undecoded) SB column finds only the zero
-    // global-MV fallback. Here SB1 @ MI(0,16) (SB row 0, col 1) has its LEFT
-    // neighbour SB0 undecoded (empty grid) and the SB to its right (MI(0,16)+) also
-    // undecoded: the stack must be the zero fallback alone.
     let grid = NeighbourMvGrid::new(GRID_MI_DIM, GRID_MI_DIM).unwrap();
     let sb1 = sb_block_at(0, N4_64); // MI(0, 16), no decoded neighbour at all
 
@@ -469,12 +384,6 @@ fn undecoded_later_sb_column_yields_no_candidate() {
 
 #[test]
 fn bottom_right_sb_predicts_from_decoded_above_and_left() {
-    // The last superblock in the 2x2 grid, SB3 @ MI(16,16) (SB row 1, col 1),
-    // decodes after SB0/SB1/SB2 in raster order. Its left neighbour (SB2 @
-    // MI(16,0)) and above neighbour (SB1 @ MI(0,16)) are both decoded and carry
-    // SB0's MV (col 48), so the §7.12.2 stack heads with that MV — the full 2-D
-    // grid reconstruction has every later SB predicting from its already-decoded
-    // raster-order neighbours.
     let mut grid = NeighbourMvGrid::new(GRID_MI_DIM, GRID_MI_DIM).unwrap();
     record_sb(&mut grid, 0, 0, NeighbourYMode::NewMv, BLOCK0_MV, true); // SB0
     record_sb(&mut grid, 0, N4_64, NeighbourYMode::Other, BLOCK0_MV, true); // SB1

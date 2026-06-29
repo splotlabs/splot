@@ -136,8 +136,6 @@ pub(super) const fn golomb_x_max(params: GolombParams) -> u32 {
 /// `((x << lvlShift) + hrLevelAvg) >> 1`). Carried to the NEXT golomb coefficient in
 /// reverse-scan order. Shared with the recovery side so both thread identically.
 pub(super) const fn next_hr_level_avg(x: u32, hr_level_avg: u32) -> u32 {
-    // `x` and `hr_level_avg` are both bounded by the accepted golomb magnitude cap, so
-    // the sum stays well within `u32`; `>> 1` cannot overflow.
     (x + hr_level_avg) >> 1
 }
 
@@ -169,8 +167,6 @@ pub(super) fn push_read_quant_golomb_tail(
     params: GolombParams,
 ) {
     if x < params.prefix_x_min {
-        // Finite-q (`q < cMax`): q zeros, a terminating 1, then `coeff_rem = x mod 2^m`
-        // as one `L(m)` literal.
         let q = x >> params.m;
         for _ in 0..q {
             out.push(BlockSymbolToken::bypass(1, 0));
@@ -179,8 +175,6 @@ pub(super) fn push_read_quant_golomb_tail(
         let coeff_rem = x & ((1 << params.m) - 1);
         out.push(BlockSymbolToken::bypass(params.m, coeff_rem));
     } else {
-        // Golomb-prefix (`q == cMax`): `cMax` q-zeros (no terminator), the
-        // golomb-length unary, then `coeff_rem` as one `L(length)` literal.
         let xmbias = x - params.bias;
         let length = xmbias.ilog2();
         let golomb_zeros = length - params.k;
@@ -223,7 +217,6 @@ pub(super) fn recover_read_quant_golomb_tail(
     index: &mut usize,
     params: GolombParams,
 ) -> Result<u32> {
-    // q-length unary capped at `cMax`: count zeros until a terminating one or `cMax`.
     let mut q = 0u32;
     let mut terminated = false;
     while q < params.c_max {
@@ -235,13 +228,10 @@ pub(super) fn recover_read_quant_golomb_tail(
     }
 
     if terminated {
-        // Finite-q: `coeff_rem = L(m)`, `x = (q << m) + coeff_rem`.
         let coeff_rem = read_golomb_literal(tokens, index, params.m)?;
         return Ok((q << params.m) + coeff_rem);
     }
 
-    // Golomb-prefix (`q == cMax`): read the golomb-length unary (zeros + a 1) to get
-    // `length = golomb_zeros + k`, then `coeff_rem = L(length)`.
     let mut golomb_zeros = 0u32;
     while !read_golomb_bit(tokens, index)? {
         golomb_zeros += 1;
@@ -253,7 +243,6 @@ pub(super) fn recover_read_quant_golomb_tail(
     }
     let length = golomb_zeros + params.k;
     let coeff_rem = read_golomb_literal(tokens, index, length)?;
-    // `x = bias + 2^length + coeff_rem` (`bias = (cMax << m) - (1 << k)`).
     let x = params.bias + (1 << length) + coeff_rem;
     Ok(x)
 }

@@ -278,8 +278,6 @@ impl<R: Read> TemporalUnitReader<R> {
     fn next_annexb_unit(&mut self) -> Result<Option<StreamUnit<'_>>, ReaderError> {
         self.buf.clear();
         let unit_offset = self.pos;
-        // Read the leb128 length prefix one byte at a time (at most 8; longer is
-        // rejected by read_leb128 when the consumer reparses).
         loop {
             match self.read_one()? {
                 None => {
@@ -287,8 +285,6 @@ impl<R: Read> TemporalUnitReader<R> {
                         self.done = true;
                         return Ok(None);
                     }
-                    // Truncated leb128 at EOF: yield the partial prefix; the
-                    // consumer's parse reproduces UnexpectedEof / InvalidLeb128.
                     self.done = true;
                     return Ok(Some(StreamUnit::AnnexBObu {
                         offset: ByteOffset::new(unit_offset),
@@ -304,8 +300,6 @@ impl<R: Read> TemporalUnitReader<R> {
             }
         }
         let Ok(leb) = read_leb128(&self.buf, ByteOffset::new(0)) else {
-            // Invalid leb128 (e.g. 8-byte continuation): yield the prefix; the
-            // consumer's parse reproduces the InvalidLeb128 error.
             self.done = true;
             return Ok(Some(StreamUnit::AnnexBObu {
                 offset: ByteOffset::new(unit_offset),
@@ -324,8 +318,6 @@ impl<R: Read> TemporalUnitReader<R> {
         let want = size as usize;
         let got = self.read_into_buf(want)?;
         if got < want {
-            // Truncated OBU payload: the consumer's parse reports
-            // ObuPayloadOutOfRange with remaining == got.
             self.done = true;
         }
         Ok(Some(StreamUnit::AnnexBObu {
@@ -359,7 +351,6 @@ impl<R: Read> TemporalUnitReader<R> {
         if got < IVF_FRAME_HEADER_SIZE {
             self.done = true;
             if got == 0 {
-                // cursor == input length: a clean end, not a truncation.
                 return Ok(None);
             }
             let needed = IVF_FRAME_HEADER_SIZE - got;
@@ -437,7 +428,6 @@ mod tests {
     fn collect_annexb_units(data: &[u8]) -> Vec<(u64, Vec<u8>)> {
         let mut reader = TemporalUnitReader::new(data);
         let mut out = Vec::new();
-        // Raw Annex B yields only `AnnexBObu` units until the clean end.
         while let Some(StreamUnit::AnnexBObu { offset, bytes }) = reader.next_unit().unwrap() {
             out.push((offset.get(), bytes.to_vec()));
         }
@@ -446,7 +436,6 @@ mod tests {
 
     #[test]
     fn annexb_yields_each_obu_with_base_offset() {
-        // TD (size 1) then SequenceHeader (size 2: header 0x04 + payload 0xAB).
         let data = [0x01, 0x08, 0x02, 0x04, 0xAB];
         let units = collect_annexb_units(&data);
         assert_eq!(
@@ -463,9 +452,6 @@ mod tests {
 
     #[test]
     fn reused_buffer_stays_bounded_by_largest_unit() {
-        // 1000 one-byte OBUs: the stream dwarfs any single unit, but the reader
-        // reuses one buffer, so its capacity tracks the largest unit (a couple of
-        // bytes), not the stream length.
         let data: Vec<u8> = [0x01u8, 0x08].repeat(1000);
         let mut reader = TemporalUnitReader::new(&data[..]);
         let mut count = 0;
@@ -483,9 +469,6 @@ mod tests {
 
     #[test]
     fn declared_large_but_truncated_unit_does_not_eagerly_allocate() {
-        // An Annex-B OBU declaring ~200 MiB (under the 256 MiB cap) with only a few
-        // bytes present must not balloon the reused buffer toward the declared size
-        // before EOF: growth is bounded by READ_CHUNK_BYTES, not the declared size.
         let mut data = vec![0x80, 0x80, 0x80, 0x64]; // leb128(200 MiB)
         data.extend_from_slice(&[0x08; 4]);
         let mut reader = TemporalUnitReader::new(&data[..]);
@@ -499,9 +482,6 @@ mod tests {
 
     #[test]
     fn ivf_declared_large_but_truncated_frame_does_not_eagerly_allocate() {
-        // The IVF call site shares `read_into_buf`: a frame header declaring
-        // ~200 MiB (under the cap) with no payload present must not eagerly
-        // allocate the declared size before hitting EOF.
         let mut data = Vec::new();
         write_ivf_header(&mut data, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1)).unwrap();
         data.extend_from_slice(&(200u32 * 1024 * 1024).to_le_bytes()); // frame size ~200 MiB
@@ -537,10 +517,8 @@ mod tests {
 
     #[test]
     fn annexb_truncated_payload_yields_partial_tail() {
-        // size=5 declared, only one payload byte present.
         let data = [0x05, 0x08];
         let units = collect_annexb_units(&data);
-        // The reader yields the partial tail; the consumer's parse reports the error.
         assert_eq!(units, vec![(0, vec![0x05, 0x08])]);
     }
 
@@ -558,8 +536,6 @@ mod tests {
 
     #[test]
     fn ivf_one_byte_at_a_time_reassembles_frame() {
-        // The 32-byte file header, the 12-byte frame header, and the payload all
-        // arrive one byte per `read`; the frame must still reassemble.
         let data = ivf_with_frame(&[0x01, 0x08, 0x02, 0x04, 0xAB]);
         let mut reader = TemporalUnitReader::new(OneByteAtATime {
             data: &data,
@@ -613,9 +589,7 @@ mod tests {
 
     #[test]
     fn annexb_unit_over_cap_is_error() {
-        // OBU declares size 1000 with a small cap.
         let mut data = Vec::new();
-        // leb128(1000) = 0xE8 0x07
         data.extend_from_slice(&[0xE8, 0x07]);
         data.extend_from_slice(&[0u8; 8]);
         let mut reader = TemporalUnitReader::with_max_unit_bytes(&data[..], 16);
@@ -632,7 +606,6 @@ mod tests {
 
     #[test]
     fn ivf_truncated_frame_payload_is_error() {
-        // One good frame, then a frame header declaring 5 bytes with only 2 present.
         let mut data = ivf_with_frame(&[0x01, 0x08]);
         data.extend_from_slice(&5u32.to_le_bytes());
         data.extend_from_slice(&3u64.to_le_bytes());
@@ -656,8 +629,6 @@ mod tests {
 
     #[test]
     fn ivf_yields_each_obu_of_a_multi_obu_frame_as_one_payload() {
-        // One frame whose payload holds two OBUs; the reader yields the whole
-        // payload, leaving per-OBU parsing to the consumer.
         let data = ivf_with_frame(&[0x01, 0x08, 0x02, 0x04, 0xAB]);
         let mut reader = TemporalUnitReader::new(&data[..]);
         assert!(matches!(

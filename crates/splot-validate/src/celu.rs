@@ -48,9 +48,8 @@
 //! bridge**, or an unreadable tile-group delimiter, while a coded frame is open) means the
 //! segmenter could not decide whether the OBU opened a new unit or continued the open one. Its
 //! existence as a new unit is undecided, so it changes the embedded layer's **unit
-//! count / index** — but *only* that. The former "same-type-no-delimiter run is one unit"
-//! behaviour is replaced by this poison-on-ambiguity semantics, keeping zero false positives
-//! when in doubt. A same-type bridge adjacency is included here (round-7 F2): the unit count is
+//! count / index** — but *only* that. This poison-on-ambiguity semantics keeps zero false
+//! positives when in doubt. A same-type bridge adjacency is included here: the unit count is
 //! ambiguous even though the bridge's output class is type-decided non-output (the boundary
 //! ambiguity is about unit count, not class).
 //!
@@ -59,7 +58,7 @@
 //! An ambiguity changes the unit COUNT/INDEX, **not** the relative order of two *decided* units
 //! (an [`FrameBoundary::OpensNewUnit`] is the segmenter's decided split, which no resolution of
 //! the ambiguity can un-split or merge). So the poison is scoped to exactly what it can change
-//! (round-8 F1/F2):
+//!:
 //!
 //! - **Index-quantified judgments drop.** A judgment whose truth depends on an *exact* unit
 //!   index or count is dropped for the poisoned layer: the per-unit accounting / OrderHint
@@ -124,7 +123,7 @@
 //! Unknown-class one, since its mere existence after the slot is the violation — fires
 //! `celu/in-unit-order`. An Unknown-class *earlier* unit does not consume the slot (the
 //! validator cannot confirm it is the coded output frame unit), so a later unit does not fire.
-//! This is a **decided-pair-order** judgment, so it survives the ambiguity poison (round-8 F1):
+//! This is a **decided-pair-order** judgment, so it survives the ambiguity poison:
 //! both the slot-consuming output unit and the later unit are decided, and an intervening
 //! ambiguous OBU cannot reorder them.
 //!
@@ -144,7 +143,7 @@
 //! ## Disjointness with the existing § 7.3.6 / § 7.3.7 checks
 //!
 //! Two existing checks already cover parts of § 7.3.6 / § 7.3.7; the `celu/` predicates
-//! are kept disjoint from both (the PR #51 linear/replay disjointness precedent):
+//! are kept disjoint from both:
 //!
 //! - `obu-order/non-global-hls-before-coded-layer` (§ 7.3.6, [`crate::context`]) fires
 //!   when an HLS *header* OBU (LCR / OPS / atlas / sequence header) appears after the
@@ -183,7 +182,7 @@
 //! that keeps the rule silent on the CLK-plus-regular structure the § 7.3.6 CLK rule
 //! explicitly contemplates (mirror lines 541-549).
 //!
-//! ## The two § 7.3.7 DOH constraints are independently gated (round-6 F2)
+//! ## The two § 7.3.7 DOH constraints are independently gated
 //!
 //! When a DOH constraint flag is set (mirror lines 650-657), § 7.3.7 imposes **two distinct**
 //! requirements, each gated separately in [`DohTuAccumulator`]:
@@ -202,14 +201,14 @@
 //!    decidable constraint (2) mismatch between two output CELUs whose own bits are known and
 //!    equal — `celu/doh-order-hint-mismatch`. To realise the per-pair gate over *all* CELUs (not
 //!    just against the first sample), the output-CELU samples are **grouped by their known
-//!    `OrderHintBits` value** and each is compared to its own group's representative (round-8 F3):
+//!    `OrderHintBits` value** and each is compared to its own group's representative:
 //!    samples (bits, hint) = (4, 0), (5, 1), (5, 2) then prove the (5, 1)/(5, 2) within-group
 //!    mismatch that a compare-only-to-the-first-sample scheme would miss (both fail the equal-bits
 //!    gate against the (4, 0) representative). An unknown-bits output sample stays out of all
 //!    groups. When two output units have known but **unequal** bits they land in different groups,
 //!    so constraint (2) never compares them; constraint (1) fires the bits-mismatch instead.
 //!
-//! ## The § 7.3.6 first-CELU-of-the-sequence CI presence rule lives in `context` (round-6 F3)
+//! ## The § 7.3.6 first-CELU-of-the-sequence CI presence rule lives in `context`
 //!
 //! Mirror lines 560-562: "If an OBU_CONTENT_INTERPRETATION is present in any coded extended
 //! layer unit, this OBU shall also be present in the first coded extended layer unit of the
@@ -302,7 +301,7 @@ pub(crate) struct FrameFacts {
     /// (constraint 1), but here it is carried PER OUTPUT UNIT so the cross-CELU OrderHint
     /// comparison (constraint 2, mirror lines 656-657) can be gated on only the two COMPARED
     /// output units' bits being known and equal — independent of an unrelated non-output /
-    /// unknown-bits frame unit elsewhere in the temporal unit (round-6 F2). The cross-CELU
+    /// unknown-bits frame unit elsewhere in the temporal unit. The cross-CELU
     /// `order_hint` LSB proxy is sound exactly when the compared units share one known
     /// OrderHintBits (equal-width LSBs that differ imply different decoded OrderHints).
     pub order_hint_bits: Option<u32>,
@@ -384,7 +383,7 @@ struct EmbeddedLayerState {
     /// frame unit must be last), regardless of its own output class. An `Ambiguous` OBU
     /// neither consumes the slot nor itself triggers the grammar (its existence as a separate
     /// unit is undecided), but it does NOT suppress the grammar for a *later decided* unit
-    /// (round-8 F1): the slot-consuming output unit and the later decided unit are both decided,
+    /// the slot-consuming output unit and the later decided unit are both decided,
     /// so their relative order is a decided-pair-order fact the intervening ambiguity cannot
     /// change.
     output_slot_consumed: bool,
@@ -444,7 +443,7 @@ struct CeluState {
     missing_output_poisoned: bool,
     /// The shared `OrderHint` (an `order_hint` LSB proxy — see [`FrameFacts::order_hint`]) of
     /// the output units seen so far, the `OrderHintBits` of the first output unit (for the
-    /// cross-CELU §7.3.7 comparison gate, round-6 F2), and the offset of the first output
+    /// cross-CELU §7.3.7 comparison gate), and the offset of the first output
     /// unit; `None` until the first output unit with a readable `order_hint`. Within one CELU
     /// all frame units share one active header, hence one OrderHintBits, so the LSB comparison
     /// is a sound under-approximation here (no cross-width gate needed — unlike the cross-CELU
@@ -453,13 +452,13 @@ struct CeluState {
     /// `true` once an output unit's `order_hint` could not be read. The CELU's single
     /// "associated order hint" cannot then be confirmed, so the CELU is **not contributed** to
     /// the cross-CELU DOH accumulator (feeding the known units' value would be a guess —
-    /// round-7 F5). It does **not** suppress this CELU's own in-CELU
+    /// by the Unknown invariant). It does **not** suppress this CELU's own in-CELU
     /// [`Self::order_hint_mismatch`], which is already proven between two known output units.
     order_hint_undecidable: bool,
     /// The (first, found, anchor) of the first output unit whose `OrderHint` disagreed with
     /// [`Self::output_order_hint`], if any. Detected eagerly between two KNOWN output units and
     /// **emitted** at [`CodedExtendedLayerTracker::resolve_celu`] regardless of whether another
-    /// output unit's `order_hint` was undecidable (round-7 F3): an undecidable member can only
+    /// output unit's `order_hint` was undecidable: an undecidable member can only
     /// prevent proving agreement, never excuse a pair already proven to differ.
     order_hint_mismatch: Option<(u32, u32, ByteOffset)>,
     /// The leading-ness shared by the *decidable* frame units seen so far (`Some(true)` all
@@ -529,7 +528,7 @@ impl CeluState {
 /// COMPARED output units sharing one KNOWN OrderHintBits: across different bit widths equal
 /// decoded OrderHints can carry different-width LSB encodings, so the proxy would
 /// false-positive. The gate is over the *compared* output units' own bits (carried alongside
-/// each output sample, round-6 F2) — NOT the temporal-unit-wide same-bits judgment, which
+/// each output sample) — NOT the temporal-unit-wide same-bits judgment, which
 /// also covers non-output and unrelated frame units. §7.3.7 has two distinct constraints:
 /// (1) all frame units in the temporal unit share one OrderHintBits (the
 /// [`Self::bits_mismatch`] judgment over EVERY frame unit), and
@@ -538,7 +537,7 @@ impl CeluState {
 /// non-output frame unit drops constraint (1) but must NOT suppress a decidable constraint
 /// (2) mismatch between two output CELUs whose own bits are known and equal.
 ///
-/// **Proven mismatches ignore undecidable participants (round-7 F3/F4/F5).** Both
+/// **Proven mismatches ignore undecidable participants.** Both
 /// [`Self::bits_mismatch`] and [`Self::order_hint_mismatch`] are recorded ONLY between two
 /// KNOWN samples (constraint (2)'s additionally between a known-and-equal-bits pair). An
 /// undecidable frame / CELU is never recorded as a mismatch and no longer suppresses one
@@ -550,7 +549,7 @@ impl CeluState {
 struct DohTuAccumulator {
     /// The per-`OrderHintBits` representative output OrderHint of the CELUs seen so far, keyed
     /// by the KNOWN bits value: each group's first decidable output-CELU sample (its OrderHint
-    /// LSB proxy and anchor offset). Grouping is the round-8 F3 fix — the LSB proxy is sound
+    /// LSB proxy and anchor offset). The LSB proxy is sound
     /// only WITHIN one known OrderHintBits width, so a later output CELU is compared to its own
     /// group's representative rather than only to the very first sample of any width. An
     /// unknown-bits output CELU stays out of all groups (never compared, never recorded — the
@@ -610,7 +609,6 @@ impl CodedExtendedLayerTracker {
             return;
         }
         if matches!(role, CeluRole::Padding) {
-            // Padding is position-free within a CELU (mirror lines 531-532).
             return;
         }
 
@@ -635,27 +633,11 @@ impl CodedExtendedLayerTracker {
                 Self::advance_hls_phase(celu, CeluPhase::SequenceHeader, obu, report);
             }
             CeluRole::ContentInterpretation => {
-                // A content-interpretation OBU is the head of a frame unit (§ 7.3.3), so it
-                // is in the frame region; it does not open the coded frame, so it does not
-                // advance the embedded-layer unit count. The CELU-scoped first-frame-unit CI
-                // rule is judged against the embedded layer's already-opened unit count. As a
-                // frame-unit constituent it still participates in the ascending-`obu_mlayer_id`
-                // ordering accounting (mirror line 525): a CI heading a higher embedded layer's
-                // unit evidences that unit has begun, so a later lower-mlayer frame unit is out
-                // of order (F2).
                 celu.phase = CeluPhase::Frames;
                 Self::note_embedded_layer_ordering(celu, embedded, obu, report);
                 Self::observe_ci(celu, embedded, obu, report);
             }
             CeluRole::FrameInterior => {
-                // BRT / QM / FGM / metadata / MFH: the frame region has begun, but this OBU
-                // neither opens a coded frame nor is an HLS header. The within-frame-unit
-                // grammar is owned by the FrameUnitSegmenter. As a frame-unit constituent
-                // (§ 7.3.3 head / pre-frame OBU or suffix-metadata tail) it participates in the
-                // ascending-`obu_mlayer_id` ordering accounting with its own `obu_mlayer_id`
-                // (F2). A suffix metadata belongs to the just-closed unit of its own mlayer —
-                // the same mlayer as the frame it follows — so it never lowers
-                // `max_embedded_seen` and leaves monotonicity unaffected (no special-casing).
                 celu.phase = CeluPhase::Frames;
                 Self::note_embedded_layer_ordering(celu, embedded, obu, report);
             }
@@ -679,10 +661,6 @@ impl CodedExtendedLayerTracker {
         obu: &ObuEnvelope<'_>,
         report: &mut ValidationReport,
     ) {
-        // Only fire when the violation is between HLS-header phases (the current phase is an
-        // HLS-header phase strictly later than this OBU's). Once the frame region has begun
-        // (`CeluPhase::Frames`), an HLS header is out of order, but that is the existing
-        // `obu-order/non-global-hls-before-coded-layer` rule's territory — keep disjoint.
         let earlier_hls_phase = matches!(
             celu.phase,
             CeluPhase::LayerConfigurationRecord
@@ -825,9 +803,6 @@ impl CodedExtendedLayerTracker {
         obu: &ObuEnvelope<'_>,
         report: &mut ValidationReport,
     ) {
-        // A CI heads a frame unit (§ 7.3.3). It is in the first frame unit of its embedded
-        // layer iff no coded frame for that layer has opened yet (`units_opened == 0`); a
-        // CI after the layer's first coded frame has opened is heading a later unit.
         let units_opened = celu
             .embedded
             .get(&embedded)
@@ -868,57 +843,16 @@ impl CodedExtendedLayerTracker {
         report: &mut ValidationReport,
     ) {
         match facts.boundary {
-            // A decided continuation of the open coded frame: a later OBU of an
-            // already-counted coded frame unit. Transparent for the unit-count-dependent
-            // judgments, but it still belongs to its (already-begun) embedded-layer frame unit,
-            // so it participates in the ascending-mlayer ordering (F3): a continuation at a
-            // lower mlayer after a higher embedded layer's unit began is out of order. Like the
-            // Ambiguous arm below, the boundary-INDEPENDENT type-decided facts are still recorded
-            // before returning (round-5 F2): CLK/OLK identity and leading-ness are decided by
-            // `obu_type` alone, so a CELU containing a CLK and an OLK-typed continuation still
-            // mixes CLK+OLK, and a LEADING-/Regular-typed continuation still evidences a leading /
-            // regular frame unit — § 7.3.6 forbids both mixes regardless of unit structure. The
-            // segmenter reports ContinuesUnit for a non-first tile group of an already-open coded
-            // frame even when its `obu_type` differs (it also flags
-            // frame-unit/mixed-coded-frame-types), so these type-decided CELU mixes would
-            // otherwise be silently skipped. The unit-count-dependent accounting stays skipped (a
-            // continuation opens no new unit).
             FrameBoundary::ContinuesUnit => {
                 Self::note_embedded_layer_ordering(celu, embedded, obu, report);
                 Self::record_clk_olk_identity(celu, facts.obu_type, obu, report);
                 Self::record_leadingness(celu, facts.leadingness, obu, report);
                 return;
             }
-            // The segmenter could not decide whether this OBU opened a new coded frame unit
-            // or continued the open one (a same-type no-delimiter TIP, or an unreadable
-            // tile-group delimiter). Its existence as a new unit is undecided. The
-            // POISON-SCOPE RULE (round-8): the ambiguity changes only the unit COUNT/INDEX, so
-            // only INDEX-QUANTIFIED judgments drop here — the OUTPUT-PRESENCE judgments (which
-            // ask "is there NO output unit", i.e. whether this could be the missing/only output
-            // unit) — while DECIDED-PAIR-ORDER judgments survive (they ask "does a decided unit X
-            // precede a decided unit Y", which the ambiguous OBU cannot change: an `OpensNewUnit`
-            // is the segmenter's decided split). So the output-slot grammar (F1) and
-            // key-not-in-first-unit (F2) are NOT poisoned — they are decided-pair-order judgments
-            // evaluated on the surrounding decided units and no longer consult any per-layer
-            // poison. Boundary-INDEPENDENT type-decided facts are likewise recorded before
-            // returning (F5): the CLK/OLK identity and the leading-ness are decided by `obu_type`
-            // alone, so a CELU containing an OLK and an ambiguous CLK still mixes CLK+OLK, and a
-            // LEADING-/Regular-typed ambiguous OBU still evidences a leading / regular frame unit,
-            // whichever unit each belongs to. The ascending-mlayer ordering is likewise
-            // boundary-independent (F3): an ambiguous OBU belongs to some layer-m frame unit
-            // either way, so a lower mlayer after a higher one began is out of order. The
-            // remaining poisoned facts are the per-unit accounting and accumulators (this OBU
-            // opens no counted unit) and the output-presence judgments below.
             FrameBoundary::Ambiguous => {
                 Self::note_embedded_layer_ordering(celu, embedded, obu, report);
                 Self::record_clk_olk_identity(celu, facts.obu_type, obu, report);
                 Self::record_leadingness(celu, facts.leadingness, obu, report);
-                // An ambiguous OBU might open a new coded frame unit whose class could be OUTPUT,
-                // so it poisons the output-presence judgments — UNLESS its output class is
-                // type-decided non-output (`Some(false)`, e.g. a BRIDGE), which can never satisfy
-                // output presence whichever way the boundary resolves. Poison the CELU-scoped
-                // missing-output rule and the per-layer non-output-implies-output rule only when
-                // the ambiguous OBU could itself be an output unit.
                 if facts.output != Some(false) {
                     let layer = celu.embedded.entry(embedded).or_default();
                     layer.output_presence_poisoned = true;
@@ -926,27 +860,9 @@ impl CodedExtendedLayerTracker {
                 }
                 return;
             }
-            // A decided new coded frame unit opens for this embedded layer.
             FrameBoundary::OpensNewUnit => {}
         }
 
-        // --- per-embedded-layer output-slot presence grammar (mirror lines 528-529) ---
-        // Each embedded layer is "zero or more coded non-output frame units then zero or one
-        // coded output frame unit": the single coded output frame unit must be LAST. Once a
-        // decided-output unit has consumed the slot (`output_slot_consumed`), any later
-        // *decided* (`OpensNewUnit`) unit in the same layer violates the grammar — regardless
-        // of its own output class (even an Unknown-class later unit: its mere existence after
-        // the output slot is the violation). The slot is consumed only by a decided *output*
-        // unit below (an Unknown-class earlier unit does not consume it, so a later unit does
-        // not fire).
-        //
-        // This judgment does NOT check the per-layer ambiguous poison (round-8 F1): the poison
-        // changes only the unit COUNT/INDEX, never the relative order of two DECIDED units. Here
-        // both the slot-consuming output unit and this later unit are DECIDED (an `OpensNewUnit`
-        // is the segmenter's decided split), so this unit is decidedly separate from and after
-        // the decided output unit whatever the intervening ambiguous OBU was — no resolution of
-        // the ambiguity can merge them into one unit. The decided-pair-order judgment therefore
-        // survives the poison (an index-quantified judgment would drop; this one needs no index).
         {
             let layer = celu.embedded.entry(embedded).or_default();
             if layer.output_slot_consumed && !layer.output_slot_grammar_reported {
@@ -965,15 +881,12 @@ impl CodedExtendedLayerTracker {
             }
         }
 
-        // --- ascending-`obu_mlayer_id` frame-unit ordering (mirror line 525) ---
         Self::note_embedded_layer_ordering(celu, embedded, obu, report);
 
-        // --- CLK / OLK identity (type-decided) ---
         let is_clk = facts.obu_type == ObuType::ClosedLoopKey;
         let is_olk = facts.obu_type == ObuType::OpenLoopKey;
         Self::record_clk_olk_identity(celu, facts.obu_type, obu, report);
 
-        // --- per-embedded-layer unit accounting ---
         let layer = celu.embedded.entry(embedded).or_default();
         let unit_index = layer.units_opened;
         layer.units_opened = layer.units_opened.saturating_add(1);
@@ -981,9 +894,6 @@ impl CodedExtendedLayerTracker {
             Some(true) => {
                 layer.saw_output_unit = true;
                 celu.saw_any_output_unit = true;
-                // A *decided* output unit consumes the embedded layer's single output slot
-                // (mirror lines 528-529): a later decided unit then violates the per-layer
-                // presence grammar above. An Unknown-class unit does NOT consume the slot.
                 layer.output_slot_consumed = true;
             }
             Some(false) => layer.saw_nonoutput_unit = true,
@@ -993,7 +903,6 @@ impl CodedExtendedLayerTracker {
             }
         }
 
-        // --- lowest-embedded-layer first-unit kind (for the CLK/OLK lowest-layer rules) ---
         let is_first_unit_of_layer = unit_index == 0;
         if is_first_unit_of_layer {
             let replace = celu
@@ -1009,22 +918,6 @@ impl CodedExtendedLayerTracker {
             }
         }
 
-        // --- CLK/OLK only-first-frame-unit per embedded layer (mirror lines 543-545 /
-        // 551-553) --- a CLK/OLK OBU may only be in the FIRST coded frame unit of each
-        // embedded layer of the CELU. Type-decided, fires eagerly. The guard is "a DECIDED
-        // earlier unit exists in this layer" (`!is_first_unit_of_layer`, i.e. `units_opened >=
-        // 1`, where `units_opened` counts ONLY decided `OpensNewUnit` units) — NOT the blanket
-        // ambiguous poison (round-8 F2). When a decided earlier unit exists, this CLK/OLK opens a
-        // decidedly-later unit, so it is provably not the layer's first coded frame unit WHATEVER
-        // the intervening ambiguity was: a decided-pair-order judgment that needs no exact index,
-        // so it survives the poison. The poison-dropped case is instead `is_first_unit_of_layer`
-        // (the KEY ITSELF is the first DECIDED unit while an ambiguous OBU preceded it): the
-        // ambiguous OBU might or might not have been an earlier unit, so "not first" rests on a
-        // guess — that case is already silent here (the `!is_first_unit_of_layer` guard). The
-        // lowest-layer-not-key rule (resolve_celu) keeps the same asymmetry by construction: it
-        // is about the FIRST unit's identity, so an ambiguous OBU before the candidate first unit
-        // leaves the identity of "first" unknown and it stays dropped (no decided-pair-order
-        // reformulation exists for "first unit").
         if (is_clk || is_olk) && !is_first_unit_of_layer {
             let key = if is_clk {
                 "OBU_CLOSED_LOOP_KEY"
@@ -1042,19 +935,11 @@ impl CodedExtendedLayerTracker {
             ));
         }
 
-        // --- leading / non-leading (all-leading-or-none, mirror lines 555-556) ---
         Self::record_leadingness(celu, facts.leadingness, obu, report);
 
-        // --- same-OrderHint across the CELU's output units (mirror lines 539-540) --- the
-        // mismatch is detected here but emitted at resolve_celu, so a later undecidable
-        // output unit can still drop the whole judgment (the Unknown invariant).
         if facts.output == Some(true) {
             match facts.order_hint {
                 Some(order_hint) => match celu.output_order_hint {
-                    // The CELU's output OrderHint and the OrderHintBits of its first output
-                    // unit are captured together (round-6 F2): all output units of one CELU
-                    // share one active header, so the first output unit's bits represent the
-                    // CELU for the cross-CELU §7.3.7 comparison gate.
                     None => {
                         celu.output_order_hint =
                             Some((order_hint, facts.order_hint_bits, obu.offset));
@@ -1065,8 +950,6 @@ impl CodedExtendedLayerTracker {
                         }
                     }
                 },
-                // An output unit whose order_hint could not be read: drop the
-                // same-OrderHint judgment for this CELU (it would rest on a partial set).
                 None => celu.order_hint_undecidable = true,
             }
         }
@@ -1077,33 +960,11 @@ impl CodedExtendedLayerTracker {
     /// rules, the CLK/OLK lowest-layer-first rules, and the CELU's contribution to the
     /// cross-CELU DOH OrderHint accumulator.
     fn resolve_celu(celu: &CeluState, doh: &mut DohTuAccumulator, report: &mut ValidationReport) {
-        // --- at least one coded output frame unit (mirror line 536) --- this applies to
-        // *every* CELU. A CELU is only opened from a non-padding constituent OBU (padding and
-        // reserved types never open one), so two non-conforming shapes fire:
-        //
-        // - a **header-only CELU**: ≥ 1 non-padding constituent OBU (HLS header / CI /
-        //   frame-interior) and *zero* frame-bearing OBUs (`!saw_frame_bearing_obu`, a
-        //   type-decided fact). It has no coded output frame unit at all, so it fires
-        //   unconditionally — § 7.3.6 line 536 admits no exception for a frame-less CELU.
-        // - a **frame-bearing CELU** with at least one output-class-decided frame unit but no
-        //   coded output frame unit. Dropped when any unit's output class was Unknown (the
-        //   CELU might contain an unclassified output unit — the Unknown invariant) or when
-        //   the CELU has only Ambiguous (undecided) units and no decided one.
-        //
-        // A padding-only (or reserved-type-only) xlayer group never opens a CELU, so it is
-        // never reported here.
         let has_decided_unit = celu
             .embedded
             .values()
             .any(|l| l.saw_output_unit || l.saw_nonoutput_unit);
-        // A header-only CELU has no frame-bearing OBU at all (so no output unit and no
-        // Unknown class to consider); a frame-bearing CELU fires only with a decided unit,
-        // no output unit, and no Unknown class.
         let header_only = !celu.saw_frame_bearing_obu;
-        // F1: an ambiguous OBU that could itself be a coded output frame unit (its output class
-        // is not type-decided non-output) poisons the CELU-scoped presence judgment — the
-        // ambiguous OBU might be the missing output unit. A header-only CELU has no
-        // frame-bearing OBU at all, so it can carry no ambiguous boundary and still fires.
         let frame_bearing_without_output = has_decided_unit
             && !celu.saw_any_output_unit
             && !celu.any_output_class_unknown
@@ -1121,11 +982,6 @@ impl CodedExtendedLayerTracker {
             );
         }
 
-        // --- non-output-implies-output per embedded layer (mirror lines 537-538) --- if a
-        // layer has a coded non-output frame unit, it must also have a coded output one.
-        // Dropped for a layer whose output class was ever Unknown, or (F1) poisoned by an
-        // ambiguous OBU that could itself be the layer's coded output frame unit
-        // (`output_presence_poisoned`): the validator cannot then confirm the layer lacks one.
         for (embedded, layer) in &celu.embedded {
             if layer.saw_nonoutput_unit
                 && !layer.saw_output_unit
@@ -1149,10 +1005,6 @@ impl CodedExtendedLayerTracker {
             }
         }
 
-        // --- CLK / OLK lowest-embedded-layer-first (mirror lines 543-545 / 551-553) --- if
-        // the CELU contains a CLK, the lowest embedded layer's first frame unit shall be a
-        // CLK; likewise for OLK. Dropped when no CLK/OLK is present, or the two are mixed
-        // (already reported), since the lowest-layer rule's premise is the per-kind one.
         if let Some(lowest) = celu.lowest_embedded_first_unit
             && !(celu.saw_clk && celu.saw_olk)
         {
@@ -1184,15 +1036,6 @@ impl CodedExtendedLayerTracker {
             }
         }
 
-        // --- same-OrderHint across the CELU's output units (mirror lines 539-540) --- the
-        // mismatch was detected eagerly between two KNOWN output units; emit it now regardless
-        // of whether some other output unit's order_hint was undecidable (round-7 F3). An
-        // undecidable member can only prevent proving AGREEMENT (which the validator never
-        // reports); it cannot make a pair already proven to differ conforming, so it no longer
-        // gates emission. The comparison is over the `order_hint` LSB proxy
-        // ([`FrameFacts::order_hint`]); within one CELU all output units share one active
-        // header (one OrderHintBits), so it is a sound under-approximation with no cross-width
-        // gate needed (unlike the cross-CELU §7.3.7 check, which gates on equal known bits).
         if let Some((first, found, offset)) = celu.order_hint_mismatch {
             report.push(
                 Diagnostic::error(
@@ -1209,16 +1052,6 @@ impl CodedExtendedLayerTracker {
             );
         }
 
-        // --- contribute this CELU's output OrderHint to the cross-CELU DOH accumulator ---
-        // The CELU's "associated order hint" is the OrderHint shared by its coded output
-        // frame units (mirror lines 571-576). It is well-defined for the cross-CELU comparison
-        // only when the CELU had at least one output unit with a decidable order_hint AND no
-        // output unit's order_hint was undecidable: with an undecidable output unit the CELU's
-        // single associated hint cannot be confirmed, so feeding the known units' value to the
-        // cross-CELU comparison would be a GUESS that could false-positive. Such a CELU is
-        // therefore simply NOT contributed (round-7 F5): cross-CELU sees only fully-decidable
-        // CELUs, so any recorded cross-CELU mismatch is proven between two such CELUs and is
-        // emitted regardless of other, undecidable CELUs (see [`DohTuAccumulator::resolve`]).
         if !celu.order_hint_undecidable
             && let Some((order_hint, order_hint_bits, offset)) = celu.output_order_hint
         {
@@ -1231,7 +1064,7 @@ impl CodedExtendedLayerTracker {
     /// the validator for every frame-bearing OBU, since the bits come from the active
     /// sequence header rather than the per-frame parse and span CELUs. A `None` (undecidable)
     /// frame is simply not recorded: it cannot establish a mismatch (those are proven only
-    /// between two KNOWN values) and, round-7 F4, no longer suppresses a mismatch already
+    /// between two KNOWN values) and no longer suppresses a mismatch already
     /// proven between two known frames.
     pub(crate) fn note_order_hint_bits(
         &mut self,
@@ -1257,15 +1090,9 @@ impl CodedExtendedLayerTracker {
     /// temporal-unit boundary (a global temporal delimiter) and at the end of the
     /// bitstream.
     pub(crate) fn reset_temporal_unit(&mut self, report: &mut ValidationReport) {
-        // Resolve each CELU's whole-unit constraints (output presence, non-output-implies-
-        // output, lowest-layer key) and accumulate its output OrderHint for the cross-CELU
-        // DOH check.
         for celu in self.celus.values() {
             Self::resolve_celu(celu, &mut self.doh, report);
         }
-        // The § 7.3.7 / § 7.4.6 DOH OrderHint checks fire only when the temporal unit's DOH
-        // constraint flag is active (mirror lines 650-657). With the flag off they stay
-        // silent.
         if self.doh_flag_active {
             self.doh.resolve(report);
         }
@@ -1289,8 +1116,8 @@ impl DohTuAccumulator {
     /// flag-gated.
     ///
     /// The `order_hint` LSB comparison is a proxy for the decoded OrderHint and is sound only
-    /// when the two COMPARED output units share one KNOWN OrderHintBits (round-6 F2). So output
-    /// CELUs are GROUPED BY their known OrderHintBits value (round-8 F3) and each is compared to
+    /// when the two COMPARED output units share one KNOWN OrderHintBits. So output
+    /// CELUs are GROUPED BY their known OrderHintBits value and each is compared to
     /// its OWN group's representative (the group's first decidable sample), not only to the very
     /// first sample of any width: across different (or unknown) bit widths equal decoded
     /// OrderHints can carry different-width LSB encodings, so a cross-width comparison would
@@ -1302,7 +1129,7 @@ impl DohTuAccumulator {
     /// unit elsewhere in the temporal unit no longer suppresses a decidable within-group mismatch
     /// between two output CELUs. A CELU whose own output OrderHint is undecidable is never
     /// contributed here (see [`CodedExtendedLayerTracker::resolve_celu`]), so a recorded mismatch
-    /// is always proven between two fully-decidable CELUs (round-7 F5). At most one mismatch is
+    /// is always proven between two fully-decidable CELUs. At most one mismatch is
     /// recorded per temporal unit (the first within-group disagreement found), anchored at the
     /// offending later sample.
     fn note_celu_output_order_hint(
@@ -1311,20 +1138,14 @@ impl DohTuAccumulator {
         order_hint_bits: Option<u32>,
         offset: ByteOffset,
     ) {
-        // An unknown-bits output CELU is not in any group: the LSB proxy is unsound against a
-        // sample of an unknown (possibly different) width, so it is neither compared nor recorded.
         let Some(bits) = order_hint_bits else {
             return;
         };
         match self.output_order_hint_by_bits.get(&bits) {
-            // First sample of this OrderHintBits group becomes its representative.
             None => {
                 self.output_order_hint_by_bits
                     .insert(bits, (order_hint, offset));
             }
-            // A later same-bits output CELU: compare within the group (equal known bits -> sound
-            // proxy). Record the first within-group disagreement across all groups (dedup: one
-            // emission per temporal unit), anchored at this offending later sample.
             Some(&(representative, _)) => {
                 if representative != order_hint && self.order_hint_mismatch.is_none() {
                     self.order_hint_mismatch = Some((representative, order_hint, offset));
@@ -1350,14 +1171,10 @@ impl DohTuAccumulator {
     /// checks. The caller gates this on the active DOH constraint flag, so a mismatch under
     /// a flag-off temporal unit is never reported (the DOH constraints are flag-gated,
     /// mirror lines 650-657). Each recorded mismatch is a disagreement PROVEN between two
-    /// known samples, so it is emitted regardless of any undecidable frame / CELU (round-7
-    /// F3/F4/F5): an undecidable participant only prevents proving agreement, never excuses a
+    /// known samples, so it is emitted regardless of any undecidable frame / CELU: an undecidable
+    /// participant only prevents proving agreement, never excuses a
     /// proven mismatch.
     fn resolve(&mut self, report: &mut ValidationReport) {
-        // § 7.3.7: all frame units in the temporal unit shall use the same OrderHintBits. The
-        // mismatch was recorded between two KNOWN OrderHintBits; emit it regardless of whether
-        // another frame unit's bits were undecidable (round-7 F4). An undecidable participant
-        // only prevents proving agreement, never excuses a pair already proven to differ.
         if let Some((first, found, offset)) = self.bits_mismatch {
             report.push(
                 Diagnostic::error(
@@ -1372,32 +1189,6 @@ impl DohTuAccumulator {
                 .with_byte_offset(offset),
             );
         }
-        // § 7.3.7 / § 7.4.6: coded output frame units present in multiple CELUs within the
-        // temporal unit shall share the same OrderHint (constraint 2).
-        //
-        // The validator compares the raw `order_hint` LSB syntax as a proxy for the DECODED
-        // OrderHint (the §7.3.6/§7.3.7 quantity is `get_disp_order_hint`'s output, the MSB
-        // extension for non-CLK frames, which needs reference-state modelling — see
-        // AV2-5.18.2-FRAME-HEADER-INFO). The cross-CELU proxy is only sound when the two
-        // COMPARED output units share ONE KNOWN OrderHintBits: differing decoded OrderHints
-        // with equal-width LSBs still differ in the low bits, but EQUAL decoded OrderHints can
-        // be encoded with different-width LSBs when the bit widths differ, so a cross-width
-        // comparison can FALSE-POSITIVE.
-        //
-        // Round-6 F2: the soundness gate is applied PER COMPARED PAIR in
-        // [`Self::note_celu_output_order_hint`] (on the two output CELUs' own bits), NOT via
-        // the temporal-unit-wide `bits_mismatch` judgment — which also
-        // covers non-output and unrelated frame units (constraint 1). An unknown-bits non-
-        // output frame unit elsewhere in the temporal unit drops constraint (1) but must not
-        // suppress a decidable constraint (2) mismatch between two output CELUs whose own bits
-        // are known and equal. So `order_hint_mismatch` is recorded ONLY when its pair's bits
-        // were known and equal — a mismatch PROVEN between two known CELUs.
-        //
-        // Round-7 F5: that proven mismatch is emitted regardless of the cross-CELU
-        // `undecidable` signal. An undecidable CELU output OrderHint can only prevent proving
-        // AGREEMENT among the CELUs (which the validator never reports); it cannot make a pair
-        // already proven to differ conforming. The per-pair bits gate above still keeps an
-        // unknown-or-unequal-bits PAIR from recording a mismatch in the first place.
         if let Some((first, found, offset)) = self.order_hint_mismatch {
             report.push(
                 Diagnostic::error(

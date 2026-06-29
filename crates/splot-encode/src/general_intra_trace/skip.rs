@@ -108,10 +108,7 @@ pub(crate) fn emit_minimal_intra_skip_temporal_unit() -> Result<Vec<u8>> {
 /// quantizer field changes. The tile's coefficient CDF q-context stays
 /// [`SKIP_FRAME_COEFF_CDF_Q_CTX`] (`0`), which matches the decoder's current q-context for the
 /// supported `base_q_idx` range; callers (`Context`) restrict `base_q_idx` to that range.
-//
 // TODO(spec: ENC-CONFIG-QP-FIELD): derive the coefficient CDF q-context from `base_q_idx`
-// (the §8.3.2 `get_qctx` thresholds) so the full quantizer range is supported, co-evolving with
-// the decoder's q-context (currently a documented placeholder pinned to 0).
 pub(crate) fn emit_minimal_intra_skip_temporal_unit_with_base_q_idx(
     base_q_idx: u8,
 ) -> Result<Vec<u8>> {
@@ -131,8 +128,6 @@ mod tests {
 
     #[test]
     fn skip_temporal_unit_is_the_skip_ivf_frame_payload() {
-        // The access unit is exactly the bytes muxed into the IVF frame: an IVF made of the
-        // canonical AV02 64x64 header plus this temporal unit equals the standalone skip IVF.
         let temporal_unit = emit_minimal_intra_skip_temporal_unit().unwrap();
         let mut ivf = Vec::new();
         splot_core::ivf::write_ivf_header(
@@ -149,8 +144,6 @@ mod tests {
         let trace = compose_general_intra_dc_skip_block_trace().unwrap();
 
         assert_eq!(trace.len(), 7);
-        // do_split partition flag, mode prefix (Y set/index, UV), then per-plane
-        // all_zero (Y, U, V) in residual() order.
         assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
         assert!(matches!(trace[1], BlockSymbolToken::Mode(_)));
         assert!(matches!(trace[2], BlockSymbolToken::Mode(_)));
@@ -158,7 +151,6 @@ mod tests {
         assert!(matches!(trace[4], BlockSymbolToken::Coeff(_)));
         assert!(matches!(trace[5], BlockSymbolToken::Coeff(_)));
         assert!(matches!(trace[6], BlockSymbolToken::Coeff(_)));
-        // do_split=0, y_mode_set=0, y_mode_index=0, uv_mode=0, then luma/U/V all_zero=1.
         assert_eq!(
             trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
             vec![0, 0, 0, 0, 1, 1, 1]
@@ -188,13 +180,8 @@ mod tests {
     #[test]
     fn skip_tile_data_is_nonempty_and_equals_the_proven_trace_bytes() {
         let tile_data = encode_general_intra_dc_skip_tile_data().unwrap();
-        // A zero-size tile is a §8.2.2 defect; the §8.2.4 finalization always
-        // emits at least the exit-window bytes.
         assert!(!tile_data.is_empty());
 
-        // The emitted tile_data IS the finalized byte stream of the proven skip
-        // trace — identical to the bytes the roundtrip decodes back, so the
-        // standalone emission inherits that decodability proof.
         let trace = compose_general_intra_dc_skip_block_trace().unwrap();
         let proof = roundtrip_block_symbol_trace(&trace).unwrap();
         assert_eq!(tile_data, proof.bytes());
@@ -214,8 +201,6 @@ mod tests {
         let ivf = emit_minimal_intra_skip_ivf().unwrap();
         assert!(!ivf.is_empty());
 
-        // Structurally a single-frame AV02 64x64 IVF; the full decode-to-flat-128 proof is
-        // the cross-crate oracle in splot-cli.
         let parsed = splot_core::ivf::parse_ivf_partial(&ivf);
         assert!(parsed.error.is_none());
         let header = parsed.header.unwrap();

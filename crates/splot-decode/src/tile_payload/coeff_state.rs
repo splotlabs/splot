@@ -809,8 +809,6 @@ mod tests {
 
     #[test]
     fn update_after_coeffs_writes_above_and_left_ranges_only() {
-        // A fully-on-frame block writes its full span on both axes (the §5.20.7.27
-        // frame-edge clamp in `update_after_coeffs` is a no-op here).
         let mut state = TileCoeffContextState::new(5, 6).unwrap();
 
         state.update_after_coeffs(update(0, 2, 1, 3, 2)).unwrap();
@@ -847,8 +845,6 @@ mod tests {
         ));
         assert_eq!(state, before);
 
-        // An origin AT or beyond the line length is a genuine out-of-tile write
-        // AVM never produces; it stays a hard error (not an edge clamp).
         assert!(matches!(
             state
                 .update_after_coeffs(update(0, 2, 0, 1, 1))
@@ -878,12 +874,6 @@ mod tests {
 
     #[test]
     fn update_after_coeffs_clamps_bottom_edge_overhang_to_on_tile_rows() {
-        // Models the ac0ej3 frontier: a TX_64X64 luma block (h4 = 16) whose
-        // MI-row origin overhangs the tile bottom by 2 rows. AVM
-        // `av2_set_entropy_contexts` (av2/common/blockd.c:138-166) clamps the
-        // left write to `AVMMIN(txs_high, blocks_high - loff)`; splot writes
-        // cul_level over only the on-tile rows `y4 .. mi_rows` and never touches
-        // the overhang (which has no backing storage and the reads also clamp).
         let mi_rows = 270;
         let mi_cols = 480;
         let mut state = TileCoeffContextState::new(mi_rows, mi_cols).unwrap();
@@ -912,16 +902,12 @@ mod tests {
             let expected = if (y4..mi_rows).contains(&row) { 2 } else { 0 };
             assert_eq!(value, expected, "left_dc[{row}]");
         }
-        // The above axis is fully on-tile, so it is written unclamped.
         assert!(state.above_level(0).unwrap()[..16].iter().all(|&v| v == 3));
         assert_eq!(state.above_level(0).unwrap()[16], 0);
     }
 
     #[test]
     fn update_after_coeffs_clamps_right_edge_overhang_to_on_tile_cols() {
-        // Right-edge analogue: a wide transform whose column origin overhangs the
-        // tile right edge. AVM clamps the above write with
-        // `AVMMIN(txs_wide, blocks_wide - aoff)`.
         let mi_rows = 270;
         let mi_cols = 480;
         let mut state = TileCoeffContextState::new(mi_rows, mi_cols).unwrap();
@@ -945,7 +931,6 @@ mod tests {
             let expected = if (x4..mi_cols).contains(&col) { 4 } else { 0 };
             assert_eq!(value, expected, "above_level[{col}]");
         }
-        // The left axis is fully on-tile, so it is written unclamped.
         assert!(state.left_level(0).unwrap()[..16].iter().all(|&v| v == 4));
         assert_eq!(state.left_level(0).unwrap()[16], 0);
     }
@@ -1014,31 +999,20 @@ mod tests {
 
     #[test]
     fn reset_block_context_plane_clamps_bottom_and_right_edge_overhang() {
-        // Models the ac0ej3 §5.20.6.1 frontier: a skipped luma block at MI(256,0)
-        // whose nominal 16-wide / 16-tall footprint overhangs the 270-row MI grid on
-        // BOTH axes. AVM `av2_set_entropy_contexts` / `av2_reset_entropy_context`
-        // (av2/common/blockd.c) clamp the on-frame portion via the §5.20.3.2
-        // `block_coded` model; `reset_block_context_plane` zeros only the on-tile cells
-        // (`c >> subX .. mi_cols` / `r >> subY .. mi_rows`) and drops the overhang.
         let mi_rows = 270;
         let mi_cols = 16;
         let mut state = TileCoeffContextState::new(mi_rows, mi_cols).unwrap();
-        // Pre-fill plane 0's above + left lines so the clamp's footprint is visible.
         state.above_level[0].fill(7);
         state.above_dc[0].fill(3);
         state.left_level[0].fill(7);
         state.left_dc[0].fill(3);
 
-        // c=0,w4=16 -> above 0..16 (fully on-tile here). r=256,h4=16 -> left 256..272
-        // overhangs mi_rows=270 by 2; the clamp zeros only 256..270.
         state
             .reset_block_context_plane(reset(0, 0, 256, 16, 16, 0, 0))
             .unwrap();
 
-        // Above axis (no overhang) is fully zeroed.
         assert!(state.above_level(0).unwrap().iter().all(|&v| v == 0));
         assert!(state.above_dc(0).unwrap().iter().all(|&v| v == 0));
-        // Left axis: rows 256..270 zeroed, 0..256 untouched, no panic on the overhang.
         let left_level = state.left_level(0).unwrap();
         for (row, &value) in left_level.iter().enumerate() {
             let expected = if (256..mi_rows).contains(&row) { 0 } else { 7 };
@@ -1053,15 +1027,12 @@ mod tests {
 
     #[test]
     fn reset_block_context_plane_clamps_right_edge_only() {
-        // Right-edge analogue: a block whose column origin is on-tile but whose
-        // nominal width overhangs the right edge; only the in-frame columns are zeroed.
         let mi_rows = 8;
         let mi_cols = 8;
         let mut state = TileCoeffContextState::new(mi_rows, mi_cols).unwrap();
         state.above_level[0].fill(5);
         state.above_dc[0].fill(1);
 
-        // c=6,w4=4 -> above 6..10 overhangs mi_cols=8 by 2; the clamp zeros only 6..8.
         state
             .reset_block_context_plane(reset(0, 6, 0, 4, 1, 0, 0))
             .unwrap();
@@ -1072,10 +1043,6 @@ mod tests {
 
     #[test]
     fn reset_block_context_plane_rejects_out_of_frame_origin() {
-        // A genuine out-of-frame ORIGIN (`c >> subX >= mi_cols`) is rejected, matching
-        // the §5.20.3.2 `block_coded` model: AVM never emits such a write. This is the
-        // only remaining hard error after the edge clamp (mirroring `edge_clamped_range`
-        // in `update_after_coeffs`).
         let mut state = TileCoeffContextState::new(4, 4).unwrap();
         assert!(matches!(
             state

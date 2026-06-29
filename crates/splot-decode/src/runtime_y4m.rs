@@ -40,9 +40,6 @@ pub(crate) fn encode_y4m_stream_from_plan(
         plan,
         |header| preflight_y4m_minimal_header(header, limits),
     )?;
-    // Every displayed frame is written into one Y4M stream, in output order
-    // (AV2 § 6.18). The stream header is derived from the first frame; all frames in
-    // the minimal tier share the same dimensions and frame rate.
     let first = outputs
         .first()
         .ok_or_else(|| DecodeError::UnsupportedFeature {
@@ -61,11 +58,6 @@ pub(crate) fn encode_y4m_stream_from_plan(
     let frame_rate = Y4mFrameRate::new(first.frame_rate_numerator, first.frame_rate_denominator)
         .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
 
-    // §6.4.1: the stream header (and writer sample type) is fixed by the first
-    // frame's storage depth; the splot-recon Y4M writer is generic over the
-    // sample type and pins the per-frame format, so a frame whose depth differs
-    // from the first is rejected by the writer's `StreamParameterMismatch` before
-    // any payload byte. The runtime never mixes depths within one stream.
     let mut y4m = Vec::new();
     match &first.frame {
         MinimalRuntimeDecodedFrame::Eight(first_frame) => {
@@ -164,13 +156,6 @@ fn ensure_y4m_timebase(numerator: u32, denominator: u32) -> Result<()> {
     }
 }
 
-// Best-effort LOWER-BOUND early reject: this preflight sizes a single 64x64
-// 8-bit (1 byte/sample) 4:2:0 frame, which UNDER-estimates the real serialized
-// output for 10-bit (2 bytes/sample) or non-64x64 / multi-superblock frames. It
-// only fails fast when even this minimum already exceeds `MaxOutputBytes`; it is
-// NOT the soundness boundary. The authoritative cap is the post-decode
-// `limits.ensure(MaxOutputBytes, y4m.len())` check above, which measures the
-// actual serialized buffer for the decoded frame's true dimensions and bit depth.
 fn ensure_minimal_y4m_output_limit(limits: DecodeLimits, frame_rate: Y4mFrameRate) -> Result<()> {
     let luma_size = PlaneSize::new(MINIMAL_Y4M_LUMA_WIDTH, MINIMAL_Y4M_LUMA_HEIGHT)?;
     let frame_format = Y4mFrameFormat::new(luma_size, BitDepth::Eight, PixelFormat::Yuv420)
@@ -261,10 +246,6 @@ mod tests {
         DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
     }
 
-    // Y4M framing header (unchanged 64x64 4:2:0 at 30 fps) followed by the
-    // decoded raw planar output of the committed conformant luma-skip fixture
-    // (luma flat 128 skip block; chroma a real coded residual). The raw planar
-    // bytes are the committed avmdec/dav2d-agreed reference next to the fixture.
     fn expected_minimal_y4m() -> Vec<u8> {
         let mut bytes = b"YUV4MPEG2 W64 H64 F30:1 Ip A0:0 C420\nFRAME\n".to_vec();
         bytes.extend_from_slice(include_bytes!(

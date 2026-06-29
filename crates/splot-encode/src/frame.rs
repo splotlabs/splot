@@ -259,7 +259,6 @@ impl<'a> Frame<'a> {
             .chroma_size(info.visible_luma_size)
             .map_err(|source| Error::InputChromaGeometry { source })?
         else {
-            // Future non-subsampled input formats must not accept chroma planes.
             return Err(Error::UnexpectedInputPlane { plane: PlaneId::U });
         };
         validate_plane_size(PlaneId::U, chroma_visible_size, u.visible_size())?;

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Unit and property tests for `crate::write::seq_config`, split into a sibling file and
-// `include!`d so the writer source stays under the advisory source-line limit. All
-// `super::*` references resolve to the `seq_config` module that includes this file.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -65,9 +62,6 @@ mod tests {
         BitReader::new(bytes, ByteOffset::new(0))
     }
 
-    // ------------------------------------------------------------------
-    // § 5.4.3 partition
-    // ------------------------------------------------------------------
 
     fn parse_partition(bytes: &[u8], mono: bool, single: bool) -> SequencePartitionConfig {
         parse_sequence_partition_config(&mut reader(bytes), mono, single).unwrap()
@@ -86,11 +80,9 @@ mod tests {
 
     #[test]
     fn partition_byte_exact_all_off() {
-        // !256, !128, !sdp(mono), ext_part=0, reduce=0 -> 4 bits: 0 0 0 0.
         let mut bits = Bits::default();
         bits.bit(0); // use_256x256
         bits.bit(0); // use_128x128
-        // monochrome -> no enable_sdp bit
         bits.bit(0); // enable_ext_partitions
         bits.bit(0); // reduce_pb_aspect_ratio
         let data = bits.into_bytes();
@@ -103,7 +95,6 @@ mod tests {
 
     #[test]
     fn partition_all_conditionals_present() {
-        // Non-mono, non-single, with sdp + extended_sdp + ext_partitions + uneven + reduce.
         let mut bits = Bits::default();
         bits.bit(0); // use_256x256
         bits.bit(1); // use_128x128
@@ -126,7 +117,6 @@ mod tests {
         let mut bits = Bits::default();
         bits.bit(1); // use_256x256 -> no use_128x128 bit
         bits.bit(1); // enable_sdp
-        // single -> no enable_extended_sdp
         bits.bit(0); // enable_ext_partitions
         bits.bit(0); // reduce
         let data = bits.into_bytes();
@@ -180,7 +170,6 @@ mod tests {
 
     #[test]
     fn partition_rejects_extended_sdp_when_single() {
-        // sdp on, single -> extended_sdp must be inferred false.
         let mut bits = Bits::default();
         bits.bit(0);
         bits.bit(0);
@@ -262,9 +251,6 @@ mod tests {
         assert_eq!(w.bit_len(), 0);
     }
 
-    // ------------------------------------------------------------------
-    // § 5.4.4 segment (+ seg_info)
-    // ------------------------------------------------------------------
 
     fn parse_segment(bytes: &[u8]) -> SequenceSegmentConfig {
         parse_sequence_segment_config(&mut reader(bytes)).unwrap()
@@ -283,7 +269,6 @@ mod tests {
 
     #[test]
     fn segment_no_info_byte_exact() {
-        // enable_ext_seg=0, seq_seg_info_present_flag=0 -> 2 bits.
         let mut bits = Bits::default();
         bits.bit(0);
         bits.bit(0);
@@ -298,7 +283,6 @@ mod tests {
 
     #[test]
     fn segment_with_info_round_trips() {
-        // enable_ext_seg=1 (MaxSegments 16), present=1, allow=1, then 16*3 disabled bits.
         let mut bits = Bits::default();
         bits.bit(1); // enable_ext_seg -> 16 segments
         bits.bit(1); // seq_seg_info_present_flag
@@ -349,7 +333,6 @@ mod tests {
     #[test]
     fn segment_rejects_option_flag_mismatch() {
         let mut config = parse_segment(&Bits { bits: vec![0, 0] }.into_bytes());
-        // present flag clear but allow Option set.
         config.seq_allow_seg_info_change = Some(true);
         let mut w = BitWriter::new();
         assert!(matches!(
@@ -371,7 +354,6 @@ mod tests {
             bits.bit(0);
         }
         let mut config = parse_segment(&bits.into_bytes());
-        // Corrupt a disabled feature so write_seg_info rejects.
         if let Some(info) = config.segment_info.as_mut() {
             info.features[0][0] = SegmentFeature {
                 enabled: false,
@@ -388,9 +370,6 @@ mod tests {
         assert_eq!(w.bit_len(), 0);
     }
 
-    // ------------------------------------------------------------------
-    // § 5.4.5 intra
-    // ------------------------------------------------------------------
 
     fn parse_intra(bytes: &[u8], mono: bool) -> SequenceIntraConfig {
         parse_sequence_intra_config(&mut reader(bytes), mono).unwrap()
@@ -409,7 +388,6 @@ mod tests {
 
     #[test]
     fn intra_non_mono_byte_exact() {
-        // 4 bits + f(2) + 2 bits = 8 bits = exactly one byte.
         let mut bits = Bits::default();
         bits.bit(1); // enable_dip
         bits.bit(0); // enable_intra_edge_filter
@@ -461,9 +439,6 @@ mod tests {
         assert_eq!(w.bit_len(), 0);
     }
 
-    // ------------------------------------------------------------------
-    // § 5.4.6 inter
-    // ------------------------------------------------------------------
 
     fn parse_inter(bytes: &[u8], single: bool) -> SequenceInterConfig {
         parse_sequence_inter_config(&mut reader(bytes), single).unwrap()
@@ -482,7 +457,6 @@ mod tests {
 
     #[test]
     fn inter_single_picture_round_trips() {
-        // single branch: enable_refmvbank, drl_reorder, ns(3), allow_bvp, enable_bawp.
         let mut bits = Bits::default();
         bits.bit(1); // enable_refmvbank
         bits.bit(0); // disable_drl_reorder = 0
@@ -501,7 +475,6 @@ mod tests {
     #[test]
     fn inter_full_branch_round_trips() {
         let mut bits = Bits::default();
-        // seq_enabled_motion_modes[1..5] (4 bits): enable DELTAWARP (index 3 -> 3rd bit).
         bits.bit(0); // [1]
         bits.bit(0); // [2]
         bits.bit(1); // [3] DELTAWARP
@@ -555,13 +528,10 @@ mod tests {
 
     #[test]
     fn inter_full_branch_inferred_num_ref_frames() {
-        // explicit_num_ref_frames = 0 -> NumRefFrames inferred 8; no minus_1 bits.
         let mut bits = Bits::default();
         for _ in 0..4 {
             bits.bit(0); // motion modes off
         }
-        // motionModeEnabled false -> no seq_frame_motion_modes_present_flag bit
-        // DELTAWARP off -> no enable_six_param_warp_delta bit
         bits.bit(0); // enable_masked_compound
         bits.bit(0); // enable_ref_frame_mvs (false -> no reduced bit)
         bits.f(0, 4); // order_hint_bits_minus_1 = 0 -> 1
@@ -666,9 +636,6 @@ mod tests {
 
     #[test]
     fn inter_rejects_gated_off_non_default() {
-        // A field the parser infers behind a DISABLED gate (and does not read) must be
-        // rejected before any bit — a stored non-default would shift the rest of the
-        // stream and break read(write(x)) == x. (Codex review on PR #142.)
         fn rejects(mutate: impl FnOnce(&mut SequenceInterConfig), what: &'static str) {
             let mut config = inter_full_default();
             mutate(&mut config);
@@ -692,7 +659,6 @@ mod tests {
             |c| c.reduced_ref_frame_mvs_mode = true,
             "reduced_ref_frame_mvs_mode",
         );
-        // Codex's exact example: enable_tip = false but the tip subfields are set.
         rejects(
             |c| {
                 c.enable_tip_output = true;
@@ -715,7 +681,6 @@ mod tests {
     }
 
     fn inter_full_default() -> SequenceInterConfig {
-        // A parser-reachable full-branch config (all-zero motion modes, inferred refs).
         parse_inter(&inter_full_zero_fixture(), false)
     }
 
@@ -754,9 +719,6 @@ mod tests {
         bits.into_bytes()
     }
 
-    // ------------------------------------------------------------------
-    // § 5.4.7 scc
-    // ------------------------------------------------------------------
 
     fn parse_scc(bytes: &[u8], single: bool) -> SequenceSccConfig {
         parse_sequence_scc_config(&mut reader(bytes), single).unwrap()
@@ -790,7 +752,6 @@ mod tests {
     fn scc_choose_both() {
         let mut bits = Bits::default();
         bits.bit(1); // seq_choose_screen_content_tools -> force = 2
-        // force > 0 -> seq_choose_integer_mv
         bits.bit(1); // seq_choose_integer_mv -> integer_mv = 2
         let config = parse_scc(&bits.into_bytes(), false);
         assert_eq!(config.seq_force_screen_content_tools, 2);
@@ -865,9 +826,6 @@ mod tests {
         assert_eq!(w.bit_len(), 0);
     }
 
-    // ------------------------------------------------------------------
-    // § 5.4.8 transform/quant/entropy
-    // ------------------------------------------------------------------
 
     fn parse_tq(bytes: &[u8], mono: bool, single: bool) -> SequenceTqEntropyConfig {
         parse_sequence_transform_quant_entropy_config(&mut reader(bytes), mono, single).unwrap()
@@ -951,18 +909,11 @@ mod tests {
         bits.bit(1); // enable_idtx_intra
         bits.bit(0); // enable_intra_ist
         bits.bit(0); // enable_inter_ist
-        // mono -> no enable_chroma_dctonly
-        // single -> no enable_inter_ddt
         bits.bit(1); // reduced_tx_part_set
-        // mono -> no enable_cctx
         bits.bit(1); // enable_tcq
-        // tcq && single -> choose_tcq_per_frame inferred 0; (tcq && !choose) -> parity inferred 0
-        // single -> enable_avg_cdf inferred (1,1)
-        // mono -> no separate_uv_delta_q
         bits.bit(0); // equal_ac_dc_q = 0
         bits.f(3, 5); // base_y_dc_delta_q
         bits.bit(1); // y_dc_delta_q_enabled
-        // mono -> no chroma delta-q block
         let config = parse_tq(&bits.into_bytes(), true, true);
         assert!(config.enable_avg_cdf);
         assert_eq!(config.avg_cdf_type, 1);
@@ -1018,7 +969,6 @@ mod tests {
     #[test]
     fn tq_rejects_parity_hiding_when_tcq_no_choose() {
         let mut config = parse_tq(&tq_tcq_fixture(), false, false);
-        // tcq && !choose -> parity inferred 0.
         config.enable_tcq = true;
         config.choose_tcq_per_frame = false;
         config.enable_parity_hiding = true;
@@ -1050,7 +1000,6 @@ mod tests {
     #[test]
     fn tq_rejects_uv_dc_not_mirrored_when_equal_acdc() {
         let mut config = parse_tq(&tq_equal_fixture(), false, false);
-        // equal_ac_dc_q && !mono: base_uv_dc must mirror base_uv_ac.
         config.base_uv_dc_delta_q = config.base_uv_ac_delta_q.wrapping_add(1) & 0x1F;
         if config.base_uv_dc_delta_q == config.base_uv_ac_delta_q {
             config.base_uv_dc_delta_q = (config.base_uv_ac_delta_q + 2) & 0x1F;
@@ -1109,14 +1058,11 @@ mod tests {
         bits.bit(0); // enable_idtx_intra
         bits.bit(0); // enable_intra_ist
         bits.bit(0); // enable_inter_ist
-        // mono: no chroma_dctonly
         bits.bit(0); // enable_inter_ddt (!single)
         bits.bit(0); // reduced_tx_part_set
-        // mono: no cctx
         bits.bit(0); // enable_tcq
         bits.bit(0); // enable_parity_hiding
         bits.bit(0); // enable_avg_cdf (!single)
-        // mono: no separate_uv_delta_q
         bits.bit(0); // equal_ac_dc_q
         bits.f(0, 5); // base_y_dc_delta_q
         bits.bit(0); // y_dc_delta_q_enabled
@@ -1130,12 +1076,10 @@ mod tests {
         bits.bit(0); // enable_intra_ist
         bits.bit(0); // enable_inter_ist
         bits.bit(0); // enable_chroma_dctonly (!mono)
-        // single: no enable_inter_ddt
         bits.bit(0); // reduced_tx_part_set
         bits.bit(0); // enable_cctx (!mono)
         bits.bit(0); // enable_tcq
         bits.bit(0); // enable_parity_hiding
-        // single: enable_avg_cdf inferred (1,1)
         bits.bit(0); // separate_uv_delta_q (!mono)
         bits.bit(1); // equal_ac_dc_q
         bits.f(0, 5); // base_uv_ac_delta_q
@@ -1144,7 +1088,6 @@ mod tests {
     }
 
     fn tq_tcq_fixture() -> Vec<u8> {
-        // tcq on, choose off path, so parity inferred 0.
         let mut bits = Bits::default();
         bits.bit(0); // enable_fsc
         bits.bit(0); // enable_idtx_intra
@@ -1156,7 +1099,6 @@ mod tests {
         bits.bit(0); // enable_cctx
         bits.bit(1); // enable_tcq
         bits.bit(0); // choose_tcq_per_frame (tcq && !single)
-        // (tcq && !choose) -> enable_parity_hiding inferred 0
         bits.bit(0); // enable_avg_cdf
         bits.bit(0); // separate_uv_delta_q
         bits.bit(1); // equal_ac_dc_q
@@ -1166,7 +1108,6 @@ mod tests {
     }
 
     fn tq_equal_fixture() -> Vec<u8> {
-        // Non-mono, non-single, equal_ac_dc_q = 1 with non-zero uv_ac.
         let mut bits = Bits::default();
         bits.bit(0); // enable_fsc
         bits.bit(0); // enable_idtx_intra
@@ -1205,7 +1146,6 @@ mod proptests {
     }
 
     proptest! {
-        // --- § 5.4.3 partition ---
 
         /// Every parser-reachable partition config round-trips and is byte-stable.
         #[test]
@@ -1240,7 +1180,6 @@ mod proptests {
             }
         }
 
-        // --- § 5.4.4 segment ---
 
         #[test]
         fn roundtrip_segment(bytes in proptest::collection::vec(any::<u8>(), 0..16)) {
@@ -1264,7 +1203,6 @@ mod proptests {
             }
         }
 
-        // --- § 5.4.5 intra ---
 
         #[test]
         fn roundtrip_intra(
@@ -1294,7 +1232,6 @@ mod proptests {
             }
         }
 
-        // --- § 5.4.6 inter ---
 
         #[test]
         fn roundtrip_inter(
@@ -1324,7 +1261,6 @@ mod proptests {
             }
         }
 
-        // --- § 5.4.7 scc ---
 
         #[test]
         fn roundtrip_scc(
@@ -1354,7 +1290,6 @@ mod proptests {
             }
         }
 
-        // --- § 5.4.8 transform/quant/entropy ---
 
         #[test]
         fn roundtrip_tq(

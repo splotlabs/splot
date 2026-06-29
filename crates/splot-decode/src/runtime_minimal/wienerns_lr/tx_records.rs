@@ -96,7 +96,6 @@ pub(in crate::runtime_minimal) struct WienerNsLrTxSkipTransformRecord {
     pub(in crate::runtime_minimal) skip_flag: bool,
     pub(in crate::runtime_minimal) eob: usize,
     // TODO(spec: DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS): feed retained
-    // IST syntax into the next transform-record residual parser frontier.
     pub(in crate::runtime_minimal) intra_ist: Option<IntraIstSyntax>,
 }
 
@@ -234,7 +233,6 @@ fn selectable_unsupported_reason(reason: &'static str) -> &'static str {
     }
 }
 
-// Owned error-to-DecodeError conversion used through `map_err`; by-value ownership matches that consume-and-map design.
 #[allow(clippy::needless_pass_by_value)]
 fn selectable_transform_record_error(
     error: SelectableTransformRecordError,
@@ -560,11 +558,6 @@ impl SelectableLumaTxGrid {
         let tx_size = tx_size_from_dimensions(width, height)
             .ok_or(SelectableTransformRecordError::InvalidTxSize { width, height })?;
 
-        // §5.20.6.1 read_tx_size only runs at in-frame origins: decode_partition
-        // returns when `r >= MiRows || c >= MiCols` (05-syntax-structures.md:8855), so
-        // an out-of-frame ORIGIN is never a real placement. Return the computed
-        // geometry without recording it; the tx kind is still valid for any caller
-        // that reads it (only the write drops).
         if row >= self.rows || col >= self.cols {
             return Ok(tx_size);
         }
@@ -574,13 +567,6 @@ impl SelectableLumaTxGrid {
             .map_err(|_| SelectableTransformRecordError::Unsupported {
                 reason: "record-allocation",
             })?;
-        // §5.20.6.1 set_tx_size fills `LumaTxSizes[row+i][col+j]` for `i in 0..h4`,
-        // `j in 0..w4` with NO MiRows/MiCols clamp (05-syntax-structures.md:12061-12071);
-        // out-of-frame tx samples are dropped DOWNSTREAM via the §5.20.3.2
-        // `block_coded(r,c) { return r < MiRows && c < MiCols }`
-        // (05-syntax-structures.md:9621). Model that frame-edge drop here: skip cells
-        // past the frame extent in BOTH the overlap check and the fill so a partial-SB
-        // MI row at the frame edge stays spec-faithful instead of erroring OutOfBounds.
         for r in row..row.saturating_add(h4) {
             if r >= self.rows {
                 break;
@@ -631,11 +617,6 @@ impl SelectableLumaTxGrid {
         rows: usize,
         cols: usize,
     ) -> std::result::Result<Vec<SelectableLumaTxRecord>, SelectableTransformRecordError> {
-        // Clamp the region to the frame extent so the completeness check uses the
-        // SAME frame-edge drop as `set_tx_size`: out-of-frame cells are never filled
-        // (§5.20.3.2 block_coded), so the region's expected populated count is the
-        // in-frame sub-rectangle, not the full geometric `rows*cols`. Using a mismatched
-        // clamp would flip the (now spec-correct) edge drop into a false Incomplete.
         let region_rows = self.rows.saturating_sub(row).min(rows);
         let region_cols = self.cols.saturating_sub(col).min(cols);
         let expected = region_rows.checked_mul(region_cols).ok_or(
@@ -755,9 +736,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
             "unsupported_wienerns_lr_selectable_transform_records_lossless",
         ));
     }
-    // §7.14.4 luma TCQ `dqDenom` term applies to the luma DCT_DCT block; captured
-    // before the tile work unit is moved into the partition walk so the
-    // reconstruction sink can dequantize each luma transform.
     let luma_use_tcq = frame_facts.allow_tcq();
 
     let (tx_skip_rows, tx_skip_cols) = frame_mi_dimensions(core).map_err(|_| {
@@ -879,8 +857,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         WienerNsLrTransformRecordDiagnosticScope::Selectable,
                     )
                 })?;
-                // SDP chroma-only leaf: reconstruct the chroma DC (gated in the sink);
-                // it decodes no luma, so the luma-only gates are inert.
                 let sdp_recon = SelectableReconContext {
                     leaf_y_mode: Some(y_mode),
                     directional_luma: None,
@@ -891,7 +867,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     qindex: delta_q_state.qindex_u32(),
                     luma_use_tcq,
                     fsc_mode: false,
-                    // §5.20.5.3 use_intrabc is on the (TreeType != CHROMA_PART) path only.
                     is_intrabc: false,
                 };
                 decode_chroma_residual_chunks(
@@ -907,9 +882,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     sdp_recon,
                     tile_offset,
                 )?;
-                // AV2 § 5.20.5.3: record this chroma leaf's `is_cfl` (`UVCfls`)
-                // so later chroma blocks read it as the § 8.3.2 `is_cfl` above /
-                // left neighbour context.
                 return Ok(GeneralIntraLeafMode::chroma(uv_mode.is_cfl()));
             }
             let prelude = read_luma_shared_mode_info_prelude(
@@ -940,7 +912,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     GeneralIntraLeafMode::luma(0, IntraYMode::DC_PRED, 0, 0),
                     LumaTransformTypeContext::with_mrl_index(IntraYMode::DC_PRED, 0, 0),
                     0,
-                    // IntrABC is recon'd by a later brick; never recon it here.
                     None,
                     None,
                 )
@@ -979,8 +950,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         luma.mrl_index,
                     ),
                     luma.fsc_mode,
-                    // SDP luma-part leaf decodes no chroma here; chroma is a
-                    // separate `is_chroma_part` leaf reconstructed via its own mode.
                     None,
                     luma.supported_directional_luma(),
                 )
@@ -1045,7 +1014,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     "unsupported_wienerns_lr_selectable_transform_records_output_allocation",
                 )
             })?;
-            // Reconstruction-bridge context gating the DC + cardinal H/V subset.
             let recon_context = SelectableReconContext {
                 leaf_y_mode: leaf_mode.luma_y_mode(),
                 directional_luma,
@@ -1055,7 +1023,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 qindex: delta_q_state.qindex_u32(),
                 luma_use_tcq,
                 fsc_mode: fsc_mode != 0,
-                // An IntrABC leaf is reconstructed by the §7.13.3.18 sink (see field doc).
                 is_intrabc: prelude.use_intrabc,
             };
             decode_selectable_residual_chunks(
@@ -1085,10 +1052,6 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 prelude,
                 tile_offset,
             )?;
-            // §8.2.4 exit-budget guard: once a block reads past the tile payload end
-            // (`SymbolMaxBits < -14`) every later read is zero-padded phantom data
-            // from an upstream entropy-coder desync, so fail fast at the true
-            // exhaustion point instead of decoding ~3159 phantom blocks from padding.
             if symbols.is_past_payload_end() {
                 return Err(wienerns_lr_selectable_transform_record_error_reason(
                     tile_offset,
@@ -1174,10 +1137,6 @@ fn decode_selectable_residual_chunks(
     tile_offset: ByteOffset,
 ) -> Result<()> {
     if skip_flag {
-        // A skipped block has no coefficients; its samples are the bare DC
-        // prediction (zero residual). The sink reconstructs that flat prediction
-        // (gated to DC) so LATER blocks reading these as §7.13.2.1 neighbours see
-        // the spec-correct reconstructed samples, not the workspace fill value.
         return skip_records::record_skipped_selectable_residuals(
             coeff_ctx,
             frontier,
@@ -1411,11 +1370,6 @@ fn decode_luma_records_for_chunk(
         decoded_any = true;
         let residual_policy =
             luma_transform_tool_policy(transform_tool_residual_policy, luma_transform_type_context);
-        // AV2 § 5.20.7.23 uses `miSizeChunk` only for residual traversal bounds;
-        // § 8.3.2 still derives luma `all_zero` context from `MiSize`, the full
-        // luma residual block. Compare the transform record with that full block
-        // for `bw == w && bh == h`, while keeping § 5.20.7.27/§ 5.20.7.30
-        // coefficient spans and scan length record-local.
         let luma = decode_general_intra_plane_coeffs(
             work_unit,
             symbols,
@@ -1438,8 +1392,6 @@ fn decode_luma_records_for_chunk(
                 WienerNsLrTransformRecordDiagnosticScope::Selectable,
             )
         })?;
-        // Reconstruction bridge: reconstruct this luma transform in walk order before
-        // `luma.quant` is dropped (gated to the DC / cardinal subset in the sink).
         if let Some(sink) = sink.as_deref_mut() {
             sink.reconstruct_luma_transform(
                 record.col,
@@ -1567,7 +1519,6 @@ fn decode_chroma_group(
             WienerNsLrTransformRecordDiagnosticScope::Selectable,
         )
     })?;
-    // Reconstruction bridge: reconstruct the U/V DC blocks (gated in the sink).
     if let Some(sink) = sink {
         for (plane, block) in [(PlaneId::U, &u), (PlaneId::V, &v)] {
             sink.reconstruct_chroma_transform(
@@ -1710,9 +1661,6 @@ fn read_tx_size_selectable(
         return Ok(());
     }
 
-    // AV2 §5.20.6.1 still consumes §5.20.6.3 partition syntax here; the
-    // actual-extent fallback below only changes how empty narrow geometry is
-    // represented for this syntax-only LR tx-skip handoff.
     let Some(tx_partition) = read_tx_partition_symbols(
         work_unit,
         symbols,
@@ -1881,9 +1829,6 @@ fn read_luma_shared_mode_info_prelude(
     sink: Option<&mut WienerNsLrReconSink<u16>>,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcBlockPrelude> {
-    // AV2 § 7.12.2 `av2_reset_refmv_bank`: zero the IntrABC ref-MV bank at a new
-    // superblock row BEFORE this block's § 7.12.2.21 fill reads it (the post-block
-    // `record_block` updates the bank).
     intrabc_state.prepare_for_block(frontier.r, frontier.c);
     let use_skip = read_intrabc_use_and_skip(
         work_unit.cdf_mut().tile_cdfs_mut(),
@@ -1893,9 +1838,6 @@ fn read_luma_shared_mode_info_prelude(
         IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
         tile_offset,
     )?;
-    // AV2 § 5.20.5.3 intra_frame_mode_info order: read_gdf, read_cdef, read_ccso,
-    // read_delta_qindex (gdf_per_block is off for the admitted subset, so no read_gdf
-    // symbol). read_ccso (§ 5.20.10.2) sits between read_cdef and read_delta_qindex.
     cdef_state.read_for_block(work_unit, symbols, core, frontier, n4w, n4h, tile_offset)?;
     ccso_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     delta_q_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
@@ -2258,8 +2200,6 @@ fn updated_current_q_index(
 }
 
 fn intra_delta_q_sb_size4(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<usize> {
-    // AV2 § 5.18.2 caps intra frames with 256x256 sequence superblocks to
-    // 128x128 before tile partition traversal and `ReadDeltas` reset.
     Ok(match intra_capped_seq_sb_size(sequence, tile_offset)? {
         SuperblockSize::Block64x64 => 16,
         SuperblockSize::Block128x128 | SuperblockSize::Block256x256 => 32,

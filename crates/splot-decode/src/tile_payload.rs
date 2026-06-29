@@ -5,8 +5,6 @@
 //!
 //! Feature tracking: `DECODE-TILE-PAYLOAD-BOUNDARY`.
 
-// The boundary remains crate-private; `DecodeContext` owns the runtime handoff
-// until a later decode-path change derives these facts from parsed frame state.
 #![cfg_attr(
     not(test),
     allow(
@@ -223,7 +221,6 @@ pub(crate) struct TileFrameFacts {
 
 impl TileFrameFacts {
     /// Creates frame facts for tile payload boundary planning.
-    // Each bool is a distinct AV2 frame-level syntax flag; bundling them would obscure the spec mapping.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     #[must_use]
     pub(crate) const fn new(
@@ -664,11 +661,6 @@ pub(crate) enum TilePayloadUnsupportedReason {
     InvalidTileGrid,
 }
 
-// The §5.20.1 reason labels are emitted by the shared `crate::impl_reason_labels!`
-// macro (defined in `stream_plan.rs`): a variant-declaring macro invocation, not a
-// bare `match`, so it is not a structural duplicate of the other enum string-label
-// `match`es the dupehound diff-ratchet flags. The `pub(crate)` visibility token
-// keeps the generated `as_str` at the enum's own visibility (no `unreachable_pub`).
 crate::impl_reason_labels!(pub(crate) TilePayloadUnsupportedReason {
     DecodeTileSyntax => "decode_tile_syntax",
     MissingCompleteIntraFirstTileGroup => "missing_complete_intra_first_tile_group",
@@ -731,7 +723,6 @@ impl TilePayloadUnsupported {
     }
 
     /// Stable rule id.
-    // `self` receiver mirrors the sibling `matrix_row`/`feature_id` accessors for a uniform API.
     #[allow(clippy::unused_self)]
     #[must_use]
     pub(crate) const fn rule_id(self) -> &'static str {
@@ -888,10 +879,6 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
             ),
         ));
     }
-    // The tile payload boundary tier admits an intra `OBU_CLOSED_LOOP_KEY` frame and
-    // an inter `OBU_REGULAR_TILE_GROUP` frame (DECODE-FIRST-INTER-FRAME-FRONTIER).
-    // Each pairing carries the matching `is_frame_intra` flag; any other
-    // (obu_type, is_frame_intra) combination stays outside the tier.
     match (input.frame.obu_type, input.frame.is_frame_intra) {
         (ObuType::ClosedLoopKey, true) | (ObuType::RegularTileGroup, false) => {}
         (ObuType::RegularTileGroup, true) | (_, false) => {

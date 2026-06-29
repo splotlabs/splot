@@ -83,13 +83,8 @@ impl MLayerDependencyMap {
         let mut presence = [[false; MAX_NUM_MLAYERS]; MAX_NUM_MLAYERS];
         for mlayer_id in 0..MAX_NUM_MLAYERS {
             for ref_mlayer in 0..MAX_NUM_MLAYERS {
-                // presence[mlayer_id][ref_mlayer] starts `false` (zero-init above).
                 if mlayer_id == ref_mlayer || self.0[mlayer_id][ref_mlayer] {
                     presence[mlayer_id][ref_mlayer] = true;
-                    // Fold in everything refMlayer (transitively) requires over `dep < refMlayer`.
-                    // Rows with refMlayer < mlayer_id are already fully computed; snapshotting
-                    // the refMlayer row (a `Copy` `[bool; N]`) avoids aliasing the array on the
-                    // read and the write (and makes the refMlayer == mlayer_id case a no-op `x|=x`).
                     let inherited_row = presence[ref_mlayer];
                     for (curr, inherited) in presence[mlayer_id]
                         .iter_mut()
@@ -227,8 +222,6 @@ pub(super) fn parse_dependency_maps(
         mlayer_dependency_present_flag = reader.read_flag()?;
         if mlayer_dependency_present_flag {
             for curr_layer in 1..=max_mlayer_id.get() {
-                // AV2 § 5.4.1: refLayer iterates from currLayer down to 0, so the
-                // diagonal bit is signaled first (and may be 0).
                 for ref_layer in (0..=curr_layer).rev() {
                     let bit = reader.read_flag()?;
                     mlayer_dependency_map.set(curr_layer, ref_layer, bit);
@@ -254,9 +247,6 @@ pub(super) fn parse_dependency_maps(
                             let bit = reader.read_flag()?;
                             tlayer_dependency_map.set(m_layer, curr_tlayer, ref_tlayer, bit);
                         } else {
-                            // AV2 § 5.4.1: with the multi flag clear, embedded
-                            // layers 1..=max_mlayer_id copy embedded layer 0's
-                            // signaled values (not the default fill).
                             let bit = tlayer_dependency_map.depends_on(
                                 EmbeddedLayerId::from_bits(0),
                                 TemporalLayerId::from_bits(curr_tlayer),

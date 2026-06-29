@@ -14,6 +14,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 
 mod audit_scope;
+mod comment_density;
 mod concurrency_policy;
 mod conformance;
 mod decoder_conformance_coverage;
@@ -109,6 +110,8 @@ enum Task {
     CheckLicenseHeaders,
     /// Verify Rust source files stay within the repository source-line budget.
     CheckSourceLines,
+    /// Verify implementation comments stay within the repository comment budget.
+    CheckCommentDensity,
     /// Verify member crates honor the one-way dependency direction.
     CheckDependencyDirection,
     /// Verify the workspace honors the Rayon + crossbeam-channel concurrency policy.
@@ -248,6 +251,7 @@ fn main() -> Result<()> {
         Task::CheckConventionalTitle { title } => check_conventional_title(&title),
         Task::CheckLicenseHeaders => check_license_headers(&workspace_root()?),
         Task::CheckSourceLines => source_lines::check_source_lines(&workspace_root()?),
+        Task::CheckCommentDensity => comment_density::check_comment_density(&workspace_root()?),
         Task::CheckDependencyDirection => check_dependency_direction(&workspace_root()?),
         Task::CheckConcurrencyPolicy => {
             concurrency_policy::check_concurrency_policy(&workspace_root()?)
@@ -342,18 +346,12 @@ fn run_ci() -> Result<()> {
     ])?;
     run_cargo(&["build", "--workspace", "--all-targets", "--locked"])?;
     run_cargo(&["test", "--workspace", "--all-targets", "--locked"])?;
-    // `--all-targets` skips doctests, so run them explicitly: the workspace
-    // `missing_docs` lint implies doc examples that must keep compiling.
     run_cargo(&["test", "--doc", "--workspace", "--locked"])?;
-    // Docs gate: rustdoc warnings (broken/private/redundant intra-doc links) are
-    // denied, so a strict workspace doc build keeps public docs resolvable.
     run_cargo_with_env(
         &[("RUSTDOCFLAGS", "-D warnings")],
         &["doc", "--workspace", "--no-deps", "--locked"],
     )?;
 
-    // External-binary checks: mandatory in CI (the workflow installs each tool),
-    // run-if-present locally so a fresh checkout can still run `cargo xtask ci`.
     run_typos()?;
     run_cargo_machete()?;
     run_cargo_deny_offline()?;
@@ -362,6 +360,7 @@ fn run_ci() -> Result<()> {
     let root = workspace_root()?;
     check_license_headers(&root)?;
     source_lines::check_source_lines(&root)?;
+    comment_density::check_comment_density(&root)?;
     check_dependency_direction(&root)?;
     concurrency_policy::check_concurrency_policy(&root)?;
     zero_copy::check_zero_copy_policy(&root)?;
@@ -409,12 +408,7 @@ fn run_cargo(args: &[&str]) -> Result<()> {
 /// gate without mutating the parent environment.
 fn run_cargo_with_env(envs: &[(&str, &str)], args: &[&str]) -> Result<()> {
     let cargo = cargo();
-    // Echo the env assignments too, so a failing step is reproducible by
-    // copy-pasting the displayed line. Values are single-quoted: an unquoted
-    // space (e.g. `RUSTDOCFLAGS=-D warnings`) would bind the assignment to a
-    // command named `warnings` in a POSIX shell.
     let env_prefix: String = envs.iter().fold(String::new(), |mut out, (key, value)| {
-        // Writing to a `String` is infallible, so the `fmt::Result` is discarded.
         let _ = write!(out, "{key}='{value}' ");
         out
     });
@@ -516,9 +510,6 @@ fn nightly_available() -> bool {
 /// instruments the workspace; the follow-up `report` re-renders the same profile data
 /// scoped to `crates/splot-validate/` via `--ignore-filename-regex`.
 fn run_coverage() -> Result<()> {
-    // Probe with the `llvm-cov` subcommand: `cargo-llvm-cov` rejects a bare `--version`
-    // (it expects the subcommand first), so the plain `tool_available` probe would always
-    // report the tool absent and skip the report even when it is installed.
     if !tool_available_with_args("cargo-llvm-cov", &["llvm-cov", "--version"]) {
         eprintln!(
             "coverage: `cargo-llvm-cov` not installed; skipping.\n     \
@@ -534,8 +525,6 @@ fn run_coverage() -> Result<()> {
         "--locked",
         "--html",
     ])?;
-    // `--ignore-filename-regex` matches the full (absolute) path, so xtask/fuzz are
-    // excluded with a `(^|/)` boundary rather than a string anchor.
     run_cargo(&[
         "llvm-cov",
         "report",
@@ -564,9 +553,6 @@ fn run_fuzz(time: Option<u64>) -> Result<()> {
     }
     let secs = time.unwrap_or(30);
     let max_total_time = format!("-max_total_time={secs}");
-    // `+nightly` is resolved by the rustup cargo proxy, so invoke `cargo` by name.
-    // Mirror the CI fuzz-smoke guard flags so a local smoke catches the same classes
-    // of bug: `-timeout` flags a hanging input, `-rss_limit_mb` an allocation blowup.
     for target in &targets {
         run_program(
             "cargo",
@@ -678,8 +664,6 @@ fn check_conventional_commits(root: &Path, rev_range: Option<&str>) -> Result<()
         bail!("check-conventional-commits: no commits found for `{target}`");
     }
     if commits.is_empty() {
-        // Every listed commit was a merge commit (exempt from the subject
-        // rule); nothing is left to validate.
         eprintln!("check-conventional-commits: ok (only merge commit(s) in range)");
         return Ok(());
     }
@@ -777,14 +761,6 @@ fn parse_commit_subjects(output: &str) -> Result<ListedCommits> {
             bail!("git log output line did not contain a parents field: {line}");
         };
         raw_count += 1;
-        // A git-generated sync-merge commit (two or more parents AND the
-        // stock "Merge …" subject) is exempt from the Conventional Commits
-        // subject rule (docs/agents/workflow.md commit policy): syncing a pushed feature branch with
-        // main requires a merge commit (force-pushing a branch under review is
-        // not allowed), its subject cannot be rewritten afterwards, and the
-        // squash merge to main drops it from the default branch. A merge
-        // commit with a custom subject is still validated, and merges TO main
-        // stay squash/rebase-only.
         if parents.split_whitespace().count() >= 2 && subject.starts_with("Merge ") {
             continue;
         }
@@ -951,9 +927,6 @@ fn verify_spec_mirror_attachment(
         ));
     }
 
-    // The recorded sha256 in provenance.toml [attachments.*] must agree with the
-    // pin (and therefore the bytes). The table is keyed by a TOML-safe alias, so
-    // match on the `path` field rather than guessing the key.
     let provenance_path = dir.join("provenance.toml");
     let provenance = std::fs::read_to_string(&provenance_path)
         .with_context(|| format!("failed to read {}", provenance_path.display()))?;
@@ -1007,8 +980,6 @@ fn verify_spec_mirror_dir(
         );
     }
 
-    // 1. Parse the CHECKSUMS manifest: "<hex>  <relpath>" per line. The manifest
-    //    itself is pinned (step 3) so it cannot be edited to launder a file change.
     let checksums_path = dir.join("CHECKSUMS");
     let manifest = std::fs::read_to_string(&checksums_path)
         .with_context(|| format!("failed to read {}", checksums_path.display()))?;
@@ -1030,7 +1001,6 @@ fn verify_spec_mirror_dir(
         expected.insert(rel.to_string(), hash.to_string());
     }
 
-    // 2. Walk the mirror, hashing every file except CHECKSUMS itself.
     let mut problems: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -1069,9 +1039,6 @@ fn verify_spec_mirror_dir(
         }
     }
 
-    // 3. The CHECKSUMS manifest itself must match the hash pinned in source. This
-    //    anchors the whole mirror outside itself: editing a file forces an edit to
-    //    its CHECKSUMS line, which changes this hash and fails the gate.
     let manifest_sha = sha256_hex(manifest.as_bytes());
     if manifest_sha != pinned_checksums_sha {
         problems.push(format!(
@@ -1079,7 +1046,6 @@ fn verify_spec_mirror_dir(
         ));
     }
 
-    // 4. Provenance must pin the expected PDF sha256.
     let provenance_path = dir.join("provenance.toml");
     let provenance = std::fs::read_to_string(&provenance_path)
         .with_context(|| format!("failed to read {}", provenance_path.display()))?;
@@ -1246,7 +1212,6 @@ pub(crate) fn workspace_dep_names(root_manifest: &toml::Table) -> HashMap<String
 fn internal_deps(manifest: &toml::Table, workspace_deps: &HashMap<String, String>) -> Vec<String> {
     let mut deps = Vec::new();
     collect_internal_deps(manifest, workspace_deps, &mut deps);
-    // Also scan platform-specific `[target.'cfg(...)'.dependencies]` tables.
     if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
         for target in targets.values() {
             if let Some(table) = target.as_table() {
@@ -1254,7 +1219,6 @@ fn internal_deps(manifest: &toml::Table, workspace_deps: &HashMap<String, String
             }
         }
     }
-    // Report each internal dependency once even if it appears in several tables.
     deps.sort_unstable();
     deps.dedup();
     deps
@@ -1430,7 +1394,6 @@ mod tests {
         let write_mirror = |file_body: &str| -> Result<String> {
             std::fs::write(dir.join("01.md"), file_body)?;
             std::fs::write(dir.join("provenance.toml"), provenance)?;
-            // CHECKSUMS lists every generated file except itself.
             let manifest = format!(
                 "{}  01.md\n{}  provenance.toml\n",
                 sha256_hex(file_body.as_bytes()),
@@ -1442,20 +1405,14 @@ mod tests {
 
         let rel = "docs/spec/av2/1.0.0";
         let manifest_sha = write_mirror(body)?;
-        // Clean mirror passes.
         verify_spec_mirror_dir(&dir, rel, "PIN", &manifest_sha)?;
-        // Tampered content (CHECKSUMS not updated) fails on the file hash.
         std::fs::write(dir.join("01.md"), "tampered\n")?;
         assert!(verify_spec_mirror_dir(&dir, rel, "PIN", &manifest_sha).is_err());
-        // Content edited AND its CHECKSUMS line updated to match still fails,
-        // because the manifest hash no longer matches the pin (the codex P2 hole).
         let laundered_sha = write_mirror("tampered\n")?;
         assert_ne!(laundered_sha, manifest_sha);
         assert!(verify_spec_mirror_dir(&dir, rel, "PIN", &manifest_sha).is_err());
-        // Restored content, but a re-pointed PDF hash fails.
         let manifest_sha = write_mirror(body)?;
         assert!(verify_spec_mirror_dir(&dir, rel, "DIFFERENT", &manifest_sha).is_err());
-        // An extra file not listed in CHECKSUMS fails.
         std::fs::write(dir.join("sub/extra.md"), "x")?;
         assert!(verify_spec_mirror_dir(&dir, rel, "PIN", &manifest_sha).is_err());
 
@@ -1484,20 +1441,15 @@ mod tests {
             Ok(())
         };
 
-        // Bytes match the pin AND provenance records the same sha -> ok.
         write_provenance(&sha)?;
         verify_spec_mirror_attachment(&dir, rel, att_rel, &sha)?;
 
-        // Provenance records a different sha than the pin -> fails.
         write_provenance("0000")?;
         assert!(verify_spec_mirror_attachment(&dir, rel, att_rel, &sha).is_err());
 
-        // Provenance has no [attachments] entry -> fails.
         std::fs::write(dir.join("provenance.toml"), "pdf_sha256 = \"PIN\"\n")?;
         assert!(verify_spec_mirror_attachment(&dir, rel, att_rel, &sha).is_err());
 
-        // On-disk bytes no longer match the pin -> fails (even if provenance agrees
-        // with the pin), so the pinned sha and the bytes are coupled.
         write_provenance(&sha)?;
         std::fs::write(dir.join("attachments/all_tables.h"), b"tampered\n")?;
         assert!(verify_spec_mirror_attachment(&dir, rel, att_rel, &sha).is_err());

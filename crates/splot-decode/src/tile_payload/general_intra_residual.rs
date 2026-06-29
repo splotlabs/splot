@@ -487,7 +487,6 @@ fn coeff_ctx_err(source: TileCoeffStateError) -> GeneralIntraResidualError {
 /// always consumes the `all_zero` decision first, admits skipped transform
 /// blocks, and applies any transform-tool guard only before the nonzero
 /// coefficient branch.
-// Each bool is a distinct AV2 coefficient-branch syntax flag; bundling them would obscure the spec mapping.
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub(crate) fn decode_general_intra_plane_coeffs(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -506,12 +505,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let x4 = start_x >> 2;
     let y4 = start_y >> 2;
-    // AV2 § 5.20.7.27: the above (`txw4`) and left (`txh4`) context spans are the
-    // transform block's width / height in 4x4 units, `Tx_Width[txSz] >> 2` and
-    // `Tx_Height[txSz] >> 2`, read from the generated § 9.2 conversion tables. For
-    // a square transform `w4 == h4 == 1 << tx_size`; for a rectangular transform
-    // (e.g. TX_64X32) they differ, so the above context line is OR-reduced over the
-    // width span and the left context line over the height span.
     let w4 = usize::try_from(TX_WIDTH.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
     let h4 = usize::try_from(TX_HEIGHT.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
     let frame_facts = work_unit.coeff_frame_facts();
@@ -520,9 +513,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
 
     let above_level_or = or_u32(context.above_level(plane).map_err(coeff_ctx_err)?, x4, w4);
     let left_level_or = or_u32(context.left_level(plane).map_err(coeff_ctx_err)?, y4, h4);
-    // AV2 § 8.3.2 `all_zero` (txb_skip): for plane 0/1 the cdf is
-    // `TileTxbSkipCdf[is_inter || fsc_mode][txSzCtx][ctx]`. The V plane uses the
-    // separate `TileVTxbSkipCdf[ctx]`, which carries no inter/intra split.
     let txb_skip_intra_inter = usize::from(is_inter || fsc_mode);
     let selector = match plane {
         2 => {
@@ -585,8 +575,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             eob: 0,
             quant: Vec::new(),
             intra_ist: None,
-            // A skipped block has no residual to inverse-transform; the type is
-            // irrelevant, so carry the canonical `DCT_DCT`.
             plane_tx_type: DCT_DCT,
         });
     }
@@ -646,8 +634,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         eob: pass.eob_read().eob().eob(),
         quant: pass.block().quant().to_vec(),
         intra_ist: None,
-        // The simple non-staged path is the `DCTONLY`-forced subset (no
-        // transform-tool syntax was read), so the luma tx-type is `DCT_DCT`.
         plane_tx_type: DCT_DCT,
     })
 }
@@ -810,10 +796,7 @@ fn staged_transform_tool_lossless_base_config(
 struct TransformToolResidualMetadata {
     intra_ist: Option<IntraIstSyntax>,
     luma_tx_type: usize,
-    // Plane-1 CCTX syntax is intentionally retained only for bitstream sync here;
-    // luma tx-skip record derivation drops it until chroma records are consumed.
     // TODO(spec: DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS): hand this
-    // syntax metadata to the next transform-record residual parser frontier.
     cctx_type: Option<usize>,
 }
 
@@ -866,9 +849,6 @@ fn ensure_transform_tool_residual_handoff(
             && plane > 0
             && input.active_chroma_policy == ActiveChromaResidualPolicy::LrTxSkipRecordHandoff
         {
-            // Syntax-only handoff: the later coefficient branch derives the
-            // chroma PlaneTxType from UVMode and txSet, but no reconstruction
-            // or output consumes the Quant values in this LR-record path.
         } else if !is_inter && plane == 0 {
             let luma_tx_type = read_active_luma_transform_type(
                 cdfs,
@@ -887,25 +867,8 @@ fn ensure_transform_tool_residual_handoff(
             }
             metadata.luma_tx_type = luma_tx_type;
         } else if is_inter && plane == 0 {
-            // AV2 § 5.20.7.29 inter luma `transform_type`: the §7.13.3.18 IntrABC
-            // leaf is `is_inter == 1`, so its primary transform type is read on the
-            // inter path. Only the long-side sets (`TX_SET_WIDE_32/64`,
-            // `TX_SET_HIGH_32/64`) are proven here — the `inter_tx_type` symbol uses
-            // `TileInterTxTypeLongCdf[ctx][Tx_Size_Sqr[txSz]]` (§8.3.2 Table 8.3).
-            // The other inter sets (`TX_SET_INTER_1/2`, `TX_SET_DCT_IDTX*`) need the
-            // `inter_tx_type_offset` reads this brick has not proven, so they defer.
             let luma_tx_type =
                 read_active_inter_transform_type(cdfs, symbols, tx_size, tx_set, eob)?;
-            // A non-`DCT_DCT` inter luma transform type carries the same §5.20.7.27
-            // coefficient entropy as the DCT_DCT path — the coefficient loop is
-            // transform-type-agnostic (it parameterizes scan/class/parity/TCQ from
-            // `metadata.luma_tx_type`); only the §7.13.3 inverse transform differs.
-            // The §7.13.3.18 IntrABC leaf (`is_inter == 1`) already DEFERS its sample
-            // write at the reconstruction sink, so a syntax-only handoff caller can
-            // admit the non-DCT type, decode the residual to advance the entropy
-            // state, and defer the unsupported inverse transform. A reconstruction-safe
-            // caller still requires `DCT_DCT`: its sink would inverse-transform with the
-            // wrong (DCT_DCT) kernel, so it stays fail-closed.
             if luma_tx_type != DCT_DCT
                 && input.active_intra_ist_policy
                     != ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff
@@ -926,10 +889,6 @@ fn ensure_transform_tool_residual_handoff(
         && metadata.luma_tx_type == DCT_DCT
         && inter_ist_can_read_sec_tx(tx_size, eob)?
     {
-        // AV2 § 5.20.7.29 inter IST: read `sec_tx_type` (CDF
-        // `TileSecTxTypeCdf[is_inter == 1][Tx_Size_Sqr[txSz]]`). For inter,
-        // `most_probable_stx_set` is NOT read (the spec gates that on `!is_inter`),
-        // so the parse stays synced regardless of the value.
         let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
         let sec_tx_type = read_transform_symbol(
             cdfs,
@@ -1213,8 +1172,6 @@ fn read_active_inter_long_tx_type(
         TX_SET_WIDE_64 | TX_SET_WIDE_32 => 0,
         _ => 1,
     };
-    // §5.20.7.29 `is_long_side_dct` is read (CDF `TileIsLongSideDctCdf[is_inter]`)
-    // only for the 32 sets; the 64 sets force `is_long_side_dct = 1`.
     let is_long_side_dct = match tx_set {
         TX_SET_WIDE_32 | TX_SET_HIGH_32 => read_transform_symbol(
             cdfs,
@@ -1567,9 +1524,6 @@ pub(crate) fn reconstruct_general_intra_block_with_prediction<T: ReconSample>(
     use_tcq: bool,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
-    // A square block is the rectangular case with equal log2 dimensions; the
-    // §7.15.4 outer process collapses to the no-adjustment, no-√2-rescale,
-    // no-duplication path for `log2_width == log2_height <= 5`.
     reconstruct_general_intra_block_rect_with_prediction(
         quant,
         prediction,
@@ -1638,9 +1592,6 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSampl
         u_ac: 0,
         v_ac: 0,
     };
-    // AV2 §7.14.4: dqDenom = 1 << shift, shift = (pels > 256) + (pels > 1024) over
-    // the ORIGINAL (unadjusted) dimensions, plus 1 when TCQ applies (luma DCT_DCT
-    // non-lossless non-FSC with allow_tcq; chroma never).
     let pels = (orig_w * orig_h) as u32;
     let dq_shift = u32::from(pels > 256) + u32::from(pels > 1024) + u32::from(use_tcq);
     let dq_denom = 1u32 << dq_shift;
@@ -1652,10 +1603,6 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSampl
         dq_denom,
         bit_depth,
     };
-    // §7.15.4 / §7.15.4.1: the primary inverse transform resolves the per-pass
-    // `Transform_1d_Type[PlaneTxType]` kernels for the ACTUAL retained luma
-    // tx-type. Intra passes use `use_ddt == false`, so the inter-only DDT/DDTX
-    // substitution (transform_params.rs) never applies here.
     let transform = InverseTransform2dOuter::resolve(
         plane_tx_type,
         log2_width,

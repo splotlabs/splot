@@ -71,9 +71,7 @@ fn coeff_base_eob_ctx_for_scan_index_10_is_3() {
 /// `TX_CLASS_2D` luma (`row + col < 4`).
 #[test]
 fn raster_13_is_high_frequency_lf_prefix_is_low_frequency() {
-    // Raster 13 = row 3, col 1 → diagonal 4 → HF.
     assert!(!is_lf_position(13));
-    // Every scan-0..=9 raster is LF.
     for &raster in &SCAN_RASTER_0_10[..10] {
         assert!(is_lf_position(raster), "raster {raster} should be LF");
     }
@@ -81,37 +79,26 @@ fn raster_13_is_high_frequency_lf_prefix_is_low_frequency() {
 
 #[test]
 fn general_hf_eob11_all_mag1_exact_stream() {
-    // eob == 11, all eleven coefficients magnitude 1. The EOB coefficient is the HF
-    // coefficient at scan index 10 (raster 13).
     let quant = scan_block(11, &[1; 11]);
-    // Sanity: raster 13 carries the EOB coefficient (scan index 10, even → negative).
     assert_eq!(quant[13], -1);
 
     let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
 
-    // 5 header (all_zero, eob_pt_16, eob_extra, 2 eob_extra_bit) + 11 base + 11 sign +
-    // 2 chroma = 29 tokens.
     assert_eq!(trace.len(), 29);
 
-    // eob_pt_16 symbol 4 (eobPt 5; eob 11 in 9..=12).
     assert!(
         matches!(trace[1], BlockSymbolToken::Coeff(c)
             if matches!(c.syntax(), CoefficientTokenSyntax::EobPt16) && c.symbol() == 4),
         "eob_pt_16 symbol 4 (eobPt 5)"
     );
-    // eob_extra flag 0 (offset 2, width 2 → high bit (2 >> 2) & 1 = 0).
     assert!(
         matches!(trace[2], BlockSymbolToken::Coeff(c)
             if matches!(c.syntax(), CoefficientTokenSyntax::EobExtra) && c.symbol() == 0),
         "eob_extra flag 0"
     );
-    // Two eob_extra_bit bypass literals MSB-first: offset low bits = 2 = binary 10 →
-    // bit1 = 1, bit0 = 0.
     assert_eq!(trace[3], BlockSymbolToken::Bypass { width: 1, value: 1 });
     assert_eq!(trace[4], BlockSymbolToken::Bypass { width: 1, value: 0 });
 
-    // trace[5] is the HF EOB coeff_base: it MUST be the HF `CoeffBaseEob` selector (NOT
-    // the LF `CoeffBaseLfEob`), at the shared scan-band ctx 3, level 1 → symbol 0.
     assert!(
         matches!(trace[5], BlockSymbolToken::Coeff(c)
             if matches!(
@@ -121,7 +108,6 @@ fn general_hf_eob11_all_mag1_exact_stream() {
         "scan-10 HF coeff_base_eob at ctx 3, symbol 0; got {:?}",
         trace[5]
     );
-    // And it must NOT be the LF EOB selector.
     assert!(
         !matches!(trace[5], BlockSymbolToken::Coeff(c)
             if matches!(c.selector(), CoefficientCdfRowSelector::CoeffBaseLfEob { .. })),
@@ -146,11 +132,6 @@ fn general_hf_eob11_all_mag1_exact_stream() {
 
 #[test]
 fn general_hf_eob11_hf_eob_coeff_br_at_ctx0() {
-    // eob == 11, the HF EOB coefficient has magnitude 3 (> NUM_BASE_LEVELS = 2), so it
-    // emits an interleaved HF `coeff_br` at the constant empty-`Level[]` context 0 (the
-    // non-DC HF `else { mag }` branch with mag 0, NO `+7`). The HF base level saturates
-    // at `NUM_BASE_LEVELS + 1 = 3` (a 3-symbol CDF), so level 3 → symbol 2 and the
-    // br_symbol is `3 - (NUM_BASE_LEVELS + 1) = 0`. The LF coefficients are magnitude 1.
     let mut mags = [1u32; 11];
     mags[10] = 3;
     let quant = scan_block(11, &mags);
@@ -158,10 +139,8 @@ fn general_hf_eob11_hf_eob_coeff_br_at_ctx0() {
 
     let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
 
-    // 5 header + 11 base + 1 HF coeff_br + 11 sign + 2 chroma = 30 tokens.
     assert_eq!(trace.len(), 30);
 
-    // trace[5] = HF coeff_base_eob, level min(3, NUM_BASE_LEVELS+1=3) = 3 → symbol 2.
     assert!(
         matches!(trace[5], BlockSymbolToken::Coeff(c)
             if matches!(
@@ -171,8 +150,6 @@ fn general_hf_eob11_hf_eob_coeff_br_at_ctx0() {
         "HF coeff_base_eob level 3 → symbol 2; got {:?}",
         trace[5]
     );
-    // trace[6] = the interleaved HF coeff_br: it MUST be the HF `CoeffBr` selector at
-    // the constant ctx 0 (NOT the LF `CoeffBrLf`), symbol 3 - (2+1) = 0.
     assert!(
         matches!(trace[6], BlockSymbolToken::Coeff(c)
             if matches!(c.selector(), CoefficientCdfRowSelector::CoeffBr { ctx: 0, .. })
@@ -180,8 +157,6 @@ fn general_hf_eob11_hf_eob_coeff_br_at_ctx0() {
         "HF coeff_br at ctx 0, symbol 0; got {:?}",
         trace[6]
     );
-    // And it must NOT be the LF `CoeffBrLf` selector (the no-`+7` confirmation: an LF
-    // non-DC EOB coeff_br would be ctx 7 via `CoeffBrLf`).
     assert!(
         !matches!(trace[6], BlockSymbolToken::Coeff(c)
             if matches!(c.selector(), CoefficientCdfRowSelector::CoeffBrLf { .. })),
@@ -230,10 +205,6 @@ fn general_hf_eob11_hf_eob_coeff_br_max_magnitude() {
 
 #[test]
 fn general_hf_magnitude_at_hf_maxlevel_is_golomb() {
-    // An HF EOB coefficient at magnitude 6 (the HF `maxLevel`) is now the FIRST HF
-    // § 5.20.7.28 `read_quant` golomb coefficient (the `ENC-COEFF-GENERAL-WALK-GOLOMB`
-    // tier): it saturates its base+`coeff_br` level to `maxLevel` and carries the
-    // golomb tail. It tokenizes and roundtrips (a single golomb coefficient, `m = 1`).
     let mut mags = [1u32; 11];
     mags[10] = 6;
     let quant = scan_block(11, &mags);
@@ -241,7 +212,6 @@ fn general_hf_magnitude_at_hf_maxlevel_is_golomb() {
     let recovered = recover_quant_from_tokens(&trace, Q_CTX).unwrap();
     assert_eq!(recovered, quant);
 
-    // A magnitude above the HF golomb cap 523 at an HF position is still rejected.
     let mut mags = [1u32; 11];
     mags[10] = 526;
     let quant = scan_block(11, &mags);
@@ -305,14 +275,12 @@ fn assert_eob11_roundtrips(mags: &[u32]) {
 fn general_hf_eob11_bounded_routing_fuzz() {
     let mut covered = 0usize;
     for &hf_mag in &HF_EOB_TIERS {
-        // (a) all ten LF positions at one shared tier (including 0).
         for &tier in &LF_TIERS {
             let mut mags = [tier; 11];
             mags[10] = hf_mag;
             assert_eob11_roundtrips(&mags);
             covered += 1;
         }
-        // (b) one LF position swept across every tier, the rest fixed at 1.
         for pos in 0..10 {
             for &tier in &LF_TIERS {
                 let mut mags = [1u32; 11];
@@ -323,7 +291,6 @@ fn general_hf_eob11_bounded_routing_fuzz() {
             }
         }
     }
-    // 4 hf tiers * (5 shared + 10 positions * 5 tiers) = 4 * 55 = 220.
     assert_eq!(covered, 220, "expected 220 enumerated eob-11 blocks");
 }
 
@@ -334,10 +301,7 @@ fn general_hf_eob11_bounded_routing_fuzz() {
 #[test]
 fn hf_tokens_route_through_entropy_token_proof() {
     let tokens = [
-        // HF EOB coeff_base at the eob-11 shared ctx 3, level 3 → symbol 2 (the HF
-        // `coeff_base_eob` CDF is 3-symbol, so 2 is its max value).
         coeff_base_hf_eob_token(Q_CTX, 3, 3),
-        // HF coeff_br at the constant ctx 0, symbol 2 (magnitude 5: 5 - 3 = 2).
         coeff_br_hf_token(Q_CTX, 0, 2),
     ];
     let proof = roundtrip_entropy_tokens(&tokens).unwrap();
@@ -347,11 +311,6 @@ fn hf_tokens_route_through_entropy_token_proof() {
 
 #[test]
 fn general_hf_eob12_scan_index_11_now_in_scope() {
-    // A nonzero at scan index 11 (raster 10 in the order [..,13,10,..], row 2 + col 2 =
-    // diagonal 4) is the SECOND high-frequency coefficient, eob 12. The
-    // `ENC-COEFF-GENERAL-WALK-HF-MULTI` sub-brick lifted the gate to eob 16, so it is
-    // now in scope (its detailed non-EOB HF behaviour is covered in
-    // `general_walk_hf_multi_tests`). The boundary is the last 4x4 scan index 15.
     assert_eq!(MAX_GENERAL_SCAN_INDEX, 15);
     let mut quant = [0i32; TX_4X4_COEFF_COUNT];
     quant[10] = 1; // raster 10 is scan index 11 → eob 12.
@@ -359,8 +318,6 @@ fn general_hf_eob12_scan_index_11_now_in_scope() {
     let recovered = recover_quant_from_tokens(&trace, Q_CTX).unwrap();
     assert_eq!(recovered, quant);
 
-    // An eob-11 block whose HF EOB coefficient additionally has a nonzero at scan index
-    // 11 (eob 12) is likewise in scope and roundtrips.
     let mut quant = scan_block(11, &[1; 11]);
     quant[10] = 1; // adds scan index 11 → eob 12.
     let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();

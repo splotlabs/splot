@@ -1,14 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target: the current minimal runtime Y4M byte API must return a typed
-// result, never panic, on arbitrary raw Annex B/IVF input and bounded mutations
-// of the committed minimal IVF fixture. This target intentionally does not
-// create files, fuzz CLI publication, fuzz raw/hash output, or invoke
-// AVM/dav2d. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run decode_runtime_y4m_bytes
 #![no_main]
 
 use std::io;
@@ -35,9 +26,6 @@ const MINIMAL_LUMA_BYTES: usize = 64 * 64;
 const MINIMAL_CHROMA_BYTES: usize = 32 * 32;
 const MINIMAL_PAYLOAD_BYTES: usize = MINIMAL_LUMA_BYTES + MINIMAL_CHROMA_BYTES * 2;
 const MINIMAL_LUMA_SAMPLE: u8 = 128;
-// The committed fixture's avmdec/dav2d-agreed decoded raw planar output (the Y4M
-// frame payload): luma is the flat 128 (§5.20.7.27 all_zero == 1 skip block) and
-// chroma carries a real coded residual. See docs/LOCAL-REFERENCE-EVIDENCE.toml.
 const MINIMAL_EXPECTED_RAW: &[u8] =
     include_bytes!("../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw");
 
@@ -74,8 +62,6 @@ fuzz_target!(|data: &[u8]| {
             .decode_y4m_bytes(bitstream, options, &mut writer)
             .is_ok()
         {
-            // The exact decoded frame only holds for the pristine committed
-            // fixture; a mutation can route to a different (still valid) frame.
             if bitstream == MINIMAL_FIXTURE {
                 assert_minimal_y4m_shape(writer.bytes());
             }

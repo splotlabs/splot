@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Unit / reject tests for the §5.17 metadata-OBU writers. Round-trips construct a model (often by
-// parsing a hand-built byte vector and slicing out the passthrough region), re-emit it via the
-// writer, and assert the reparse equals the original model (and byte-exactness for canonical
-// inputs). Reject tests assert the typed error and that no bit was written (`bit_len() == 0`).
-
-// `include!`d into `crate::write::metadata` so `super::*` resolves to its writers and helpers.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -56,7 +50,6 @@ mod tests {
         }
     }
 
-    // ===== short OBU: per-payload round-trips =====
 
     #[test]
     fn short_hdr_cll_round_trips() {
@@ -89,7 +82,6 @@ mod tests {
             itu_t_t35_country_code_extension_byte: None,
             payload_len: 3,
         });
-        // payload_size = 1 (country code) + 3 (payload).
         let obu = short_obu(MetadataType::ItutT35, 1, Some(unit(MetadataType::ItutT35, 4, payload)), false);
         short_round_trip(&obu, &[0xAA, 0xBB, 0xCC]);
     }
@@ -101,7 +93,6 @@ mod tests {
             itu_t_t35_country_code_extension_byte: Some(0x42),
             payload_len: 2,
         });
-        // payload_size = 1 (country code) + 1 (extension) + 2 (payload).
         let obu = short_obu(MetadataType::ItutT35, 1, Some(unit(MetadataType::ItutT35, 4, payload)), false);
         short_round_trip(&obu, &[0xAA, 0xBB]);
     }
@@ -120,7 +111,6 @@ mod tests {
             time_offset_length: 0,
             time_offset_value: None,
         });
-        // 5+1+1+1+9 + 6+6+5 + 5 = 39 bits -> 5 bytes.
         let obu = short_obu(MetadataType::Timecode, 1, Some(unit(MetadataType::Timecode, 5, payload)), false);
         short_round_trip(&obu, &[]);
     }
@@ -159,7 +149,6 @@ mod tests {
         let payload = MetadataPayload::TemporalPointInfo(MetadataTemporalPointInfo {
             frame_presentation_time: 300,
         });
-        // leb128(300) is 2 bytes; pad to a 3-byte unit so padding is exercised.
         let obu = short_obu(
             MetadataType::TemporalPointInfo,
             1,
@@ -180,7 +169,6 @@ mod tests {
             plane_hashes: vec![[0u8; 16], [1u8; 16], [2u8; 16]],
             frame_hash: None,
         });
-        // 1 byte flags + 3*16 hash bytes = 49 bytes.
         let obu = short_obu(
             MetadataType::DecodedFrameHash,
             1,
@@ -283,7 +271,6 @@ mod tests {
             source_banding_present_flag: true,
             hints: Some(detail),
         });
-        // The exact unit size is whatever fits the bits; use a generous size (the writer pads).
         let obu = short_obu(MetadataType::BandingHints, 1, Some(unit(MetadataType::BandingHints, 8, payload)), false);
         short_round_trip(&obu, &[]);
     }
@@ -325,8 +312,6 @@ mod tests {
 
     #[test]
     fn short_canonical_bytes_are_exact() {
-        // is_suffix=0, layer_idc=0, cancel=0, persistence=0 -> 0x00; type=HdrCll leb128 = 0x01;
-        // unit = 0x12 0x34 0x56 0x78 (max_cll/max_fall).
         let payload = MetadataPayload::HdrCll(MetadataHdrCll {
             max_cll: 0x1234,
             max_fall: 0x5678,
@@ -339,7 +324,6 @@ mod tests {
 
     #[test]
     fn short_non_minimal_leb_type_round_trips_byte_exact() {
-        // metadata_type = 1 (HdrCll) but coded in 2 leb128 bytes (0x81 0x00): non-minimal.
         let payload = MetadataPayload::HdrCll(MetadataHdrCll {
             max_cll: 0,
             max_fall: 0,
@@ -348,13 +332,11 @@ mod tests {
         let mut writer = BitWriter::new();
         write_metadata_short_obu(&mut writer, &obu, &[]).unwrap();
         let bytes = writer.into_bytes();
-        // 0x00 header, 0x81 0x00 (non-minimal leb128 of 1), then the 4 unit bytes.
         assert_eq!(bytes, vec![0x00, 0x81, 0x00, 0x00, 0x00, 0x00, 0x00]);
         let reparsed = reparse_short(&bytes).unwrap();
         assert_eq!(reparsed, obu);
     }
 
-    // ===== short OBU: reject paths =====
 
     #[test]
     fn short_layer_idc_out_of_domain_is_rejected() {
@@ -404,7 +386,6 @@ mod tests {
 
     #[test]
     fn short_undersized_leb_len_is_rejected() {
-        // metadata_type = 200 needs 2 leb128 bytes; stored leb_bytes = 1 cannot encode it.
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
         let obu = short_obu(MetadataType::Reserved(200), 1, Some(unit(MetadataType::Reserved(200), 0, payload)), false);
         let mut writer = BitWriter::new();
@@ -417,7 +398,6 @@ mod tests {
 
     #[test]
     fn short_type_payload_mismatch_is_rejected() {
-        // OBU metadata_type HdrCll but the unit carries a ScanType payload.
         let payload = MetadataPayload::ScanType(MetadataScanType {
             mps_pic_struct_type: 0,
             mps_source_scan_type_idc: 0,
@@ -432,11 +412,9 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== metadata_unit reject paths =====
 
     #[test]
     fn unit_payload_overflows_size_is_rejected() {
-        // HdrCll needs 4 bytes but the declared payload_size is 2.
         let payload = MetadataPayload::HdrCll(MetadataHdrCll { max_cll: 0, max_fall: 0 });
         let u = unit(MetadataType::HdrCll, 2, payload);
         let mut writer = BitWriter::new();
@@ -449,7 +427,6 @@ mod tests {
 
     #[test]
     fn unit_inconsistent_payload_size_is_rejected() {
-        // ItutT35 payload_size must equal 1 + ext + payload_len = 1 + 0 + 3 = 4, but declared 5.
         let payload = MetadataPayload::ItutT35(MetadataItutT35 {
             itu_t_t35_country_code: 0x01,
             itu_t_t35_country_code_extension_byte: None,
@@ -476,7 +453,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== payload reject paths =====
 
     #[test]
     fn payload_non_empty_passthrough_for_modeled_is_rejected() {
@@ -502,7 +478,6 @@ mod tests {
 
     #[test]
     fn payload_itut_t35_extension_mismatch_is_rejected() {
-        // country code 0xFF but no extension byte modeled.
         let payload = MetadataPayload::ItutT35(MetadataItutT35 {
             itu_t_t35_country_code: 0xFF,
             itu_t_t35_country_code_extension_byte: None,
@@ -540,7 +515,6 @@ mod tests {
 
     #[test]
     fn payload_timecode_presence_is_rejected() {
-        // full_timestamp_flag but hours missing.
         let payload = MetadataPayload::Timecode(MetadataTimecode {
             counting_type: 0,
             full_timestamp_flag: true,
@@ -578,7 +552,6 @@ mod tests {
 
     #[test]
     fn payload_frame_hash_presence_is_rejected() {
-        // per_plane but a frame_hash is also present.
         let payload = MetadataPayload::DecodedFrameHash(MetadataDecodedFrameHash {
             hash_type: 0,
             per_plane: true,
@@ -617,7 +590,6 @@ mod tests {
 
     #[test]
     fn payload_banding_hints_presence_is_rejected() {
-        // coding_banding_present_flag = false but hints present.
         let payload = MetadataPayload::BandingHints(MetadataBandingHints {
             coding_banding_present_flag: false,
             source_banding_present_flag: false,
@@ -641,7 +613,6 @@ mod tests {
 
     #[test]
     fn payload_banding_component_count_is_rejected() {
-        // three_color_components_flag implies 3 components but only 1 modeled.
         let payload = MetadataPayload::BandingHints(MetadataBandingHints {
             coding_banding_present_flag: true,
             source_banding_present_flag: false,
@@ -665,7 +636,6 @@ mod tests {
 
     #[test]
     fn payload_band_units_present_count_is_rejected() {
-        // 2 rows * 1 col = 2 band units but only 1 present flag modeled.
         let payload = MetadataPayload::BandingHints(MetadataBandingHints {
             coding_banding_present_flag: true,
             source_banding_present_flag: false,
@@ -692,7 +662,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== group OBU round-trips =====
 
     fn group_round_trip(obu: &MetadataGroupObu, xlayer: ExtendedLayerId, passthrough: &[&[u8]]) {
         let mut writer = BitWriter::new();
@@ -774,8 +743,6 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         write_metadata_group_obu(&mut writer, &obu, ExtendedLayerId::from_bits(0), &[&[]]).unwrap();
-        // group header 0x00, cnt_minus_1 0x00, type 0x01, header byte (3<<1)=0x06, payload_size
-        // 0x04, fixed 0x00 0x00, hdr_cll 0x12 0x34 0x56 0x78.
         assert_eq!(
             writer.into_bytes(),
             vec![0x00, 0x00, 0x01, 0x06, 0x04, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78]
@@ -784,8 +751,6 @@ mod tests {
 
     #[test]
     fn group_local_mlayer_map_round_trips() {
-        // layer_idc = LAYER_VALUES on a local OBU -> a single mlayer map byte. header_size =
-        // payload_size leb (1) + fixed 2 + 1 mlayer = 4. type=Reserved(0) -> UnknownRaw, size 0.
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
         let unit = MetadataGroupUnit {
             metadata_type: MetadataType::Reserved(0),
@@ -812,8 +777,6 @@ mod tests {
 
     #[test]
     fn group_global_xlayer_map_round_trips() {
-        // Global OBU, layer_idc = LAYER_VALUES -> xlayer_map f(32) + one mlayer per set bit.
-        // header_size = payload_size leb (1) + 2 + 4 (xlayer) + 1 (one set bit) = 8.
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
         let unit = MetadataGroupUnit {
             metadata_type: MetadataType::Reserved(0),
@@ -840,8 +803,6 @@ mod tests {
 
     #[test]
     fn group_header_extension_bytes_round_trip() {
-        // header_size = 4 -> 1 extension byte after the fixed header (payload_size leb (1) +
-        // fixed 2 + 1 extension), no layer maps.
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
         let unit = MetadataGroupUnit {
             metadata_type: MetadataType::Reserved(0),
@@ -902,10 +863,6 @@ mod tests {
 
     #[test]
     fn group_flat_passthrough_splits_per_unit_blob_len() {
-        // Two units: a length-summarized UnknownRaw unit (3-byte blob) then a cancelled unit (no
-        // blob). write_metadata_group_obu_flat must split the single flat passthrough into
-        // [blob, empty] by each unit's modeled length and produce exactly the same bytes as the
-        // pre-split write_metadata_group_obu — and the result round-trips.
         let obu = MetadataGroupObu {
             metadata_is_suffix: false,
             metadata_necessity_idc: 0,
@@ -926,15 +883,12 @@ mod tests {
         write_metadata_group_obu(&mut split, &obu, xlayer, &[&blob[..], &[]]).unwrap();
         assert_eq!(flat_bytes, split.into_bytes(), "flat split != pre-split output");
 
-        // The blob bytes are opaque (captured only as raw_len), so the reparsed model equals obu.
         let reparsed = reparse_group(&flat_bytes, xlayer).unwrap();
         assert_eq!(&reparsed, &obu);
     }
 
     #[test]
     fn group_flat_passthrough_total_mismatch_is_rejected() {
-        // One unit declares a 3-byte blob but only 2 flat bytes are supplied: the per-unit lengths
-        // do not sum to passthrough.len(), so the split rejects before any bit is written.
         let obu = MetadataGroupObu {
             metadata_is_suffix: false,
             metadata_necessity_idc: 0,
@@ -952,7 +906,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== group OBU reject paths =====
 
     #[test]
     fn group_passthrough_count_mismatch_is_rejected() {
@@ -1022,7 +975,6 @@ mod tests {
 
     #[test]
     fn group_cancel_header_size_mismatch_is_rejected() {
-        // header_extension_len must equal muh_header_size on cancel.
         let mut unit = cancel_group_unit(MetadataType::Timecode, 2);
         unit.header_extension_len = 1;
         let obu = MetadataGroupObu {
@@ -1041,7 +993,6 @@ mod tests {
 
     #[test]
     fn group_header_size_underflow_is_rejected() {
-        // header_size too small to cover payload_size leb (1) + fixed 2.
         let mut unit = hdr_cll_group_unit();
         unit.muh_header_size = 1; // needs >= 3
         let obu = MetadataGroupObu {
@@ -1060,7 +1011,6 @@ mod tests {
 
     #[test]
     fn group_payload_size_leb_len_is_rejected() {
-        // payload_size = 200 needs 2 leb bytes, but header_size only budgets 1 for it (3 = 1 + 2).
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 200 });
         let unit = MetadataGroupUnit {
             metadata_type: MetadataType::Reserved(0),
@@ -1092,7 +1042,6 @@ mod tests {
 
     #[test]
     fn group_layer_map_count_is_rejected() {
-        // local LAYER_VALUES requires exactly 1 mlayer map; supply 2.
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
         let unit = MetadataGroupUnit {
             metadata_type: MetadataType::Reserved(0),
@@ -1124,7 +1073,6 @@ mod tests {
 
     #[test]
     fn group_muh_payload_size_mismatch_is_rejected() {
-        // unit.payload_size disagrees with muh_payload_size.
         let mut unit = hdr_cll_group_unit();
         unit.muh_payload_size = Some(6); // unit payload_size is 4
         let obu = MetadataGroupObu {
@@ -1143,7 +1091,6 @@ mod tests {
 
     #[test]
     fn leb128_with_len_pads_and_reparses() {
-        // value 1 in 1..=5 byte encodings reparses to 1 and consumes exactly `len` bytes.
         for len in 1usize..=5 {
             let mut writer = BitWriter::new();
             write_leb128_with_len(&mut writer, 1, len, "test").unwrap();
@@ -1157,7 +1104,6 @@ mod tests {
 
     #[test]
     fn leb128_with_len_rejects_undersized() {
-        // value 200 needs 2 groups; len 1 is too small.
         let mut writer = BitWriter::new();
         assert!(matches!(
             write_leb128_with_len(&mut writer, 200, 1, "test"),
@@ -1166,11 +1112,9 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== group OBU: additional reject paths (adversarial coverage) =====
 
     #[test]
     fn group_noncancel_missing_field_is_rejected() {
-        // A non-cancel unit with one required muh_* field absent is rejected before any write.
         let mut unit = hdr_cll_group_unit();
         unit.muh_priority = None;
         let obu = MetadataGroupObu {
@@ -1191,7 +1135,6 @@ mod tests {
 
     #[test]
     fn group_muh_header_size_domain_is_rejected() {
-        // muh_header_size is f(7); 200 overflows the field and is rejected up front.
         let mut unit = cancel_group_unit(MetadataType::Timecode, 0);
         unit.muh_header_size = 200;
         unit.header_extension_len = 200;
@@ -1213,8 +1156,6 @@ mod tests {
 
     #[test]
     fn group_global_missing_xlayer_map_is_rejected() {
-        // Global OBU, LAYER_VALUES, but no muh_xlayer_map: the global branch rejects the missing
-        // map (layer_map_presence) before the header-size arithmetic runs.
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
         let unit = MetadataGroupUnit {
             metadata_type: MetadataType::Reserved(0),
@@ -1248,7 +1189,6 @@ mod tests {
 
     #[test]
     fn group_reserved_named_metadata_type_is_rejected() {
-        // Reserved(7) re-maps to IccProfile on reparse, so the group unit type is non-canonical.
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
         let unit = MetadataGroupUnit {
             metadata_type: MetadataType::Reserved(7),
@@ -1280,11 +1220,9 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== short OBU: additional reject paths (adversarial coverage) =====
 
     #[test]
     fn short_reserved_named_metadata_type_is_rejected() {
-        // Reserved(5) re-maps to DecodedFrameHash on reparse, so it could never have been parsed.
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
         let obu = short_obu(
             MetadataType::Reserved(5),
@@ -1302,12 +1240,9 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== payload: additional reject paths (adversarial coverage) =====
 
     #[test]
     fn payload_itut_t35_unexpected_extension_is_rejected() {
-        // The other direction of itut_t35_extension: a non-0xFF country code with an extension
-        // byte modeled.
         let payload = MetadataPayload::ItutT35(MetadataItutT35 {
             itu_t_t35_country_code: 0x01,
             itu_t_t35_country_code_extension_byte: Some(0x42),
@@ -1325,7 +1260,6 @@ mod tests {
 
     #[test]
     fn payload_banding_component_fields_missing_is_rejected() {
-        // banding_in_component_present_flag set but the gated fields are absent.
         let payload = MetadataPayload::BandingHints(MetadataBandingHints {
             coding_banding_present_flag: true,
             source_banding_present_flag: false,
@@ -1351,7 +1285,6 @@ mod tests {
 
     #[test]
     fn payload_banding_component_domain_is_rejected() {
-        // max_band_width_minus_4 = 64 is out of the f(6) domain (0..=63).
         let payload = MetadataPayload::BandingHints(MetadataBandingHints {
             coding_banding_present_flag: true,
             source_banding_present_flag: false,
@@ -1377,7 +1310,6 @@ mod tests {
 
     #[test]
     fn payload_band_units_domain_is_rejected() {
-        // num_band_units_rows_minus_1 = 32 is out of the f(5) domain (0..=31).
         let payload = MetadataPayload::BandingHints(MetadataBandingHints {
             coding_banding_present_flag: true,
             source_banding_present_flag: false,
@@ -1437,7 +1369,6 @@ mod tests {
 
     #[test]
     fn payload_band_units_varying_wrong_length_is_rejected() {
-        // vert vector length (3) disagrees with rows (2).
         let payload = banding_hints_with_varying(
             1,
             0,
@@ -1459,7 +1390,6 @@ mod tests {
 
     #[test]
     fn payload_band_units_varying_element_domain_is_rejected() {
-        // A varying element of 32 is out of the f(5) domain (0..=31).
         let payload = banding_hints_with_varying(
             0,
             0,
@@ -1481,7 +1411,6 @@ mod tests {
 
     #[test]
     fn payload_band_units_varying_block_domain_is_rejected() {
-        // band_block_in_luma_samples = 8 is out of the f(3) domain (0..=7).
         let payload = banding_hints_with_varying(
             0,
             0,
@@ -1501,13 +1430,10 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== metadata_unit: over-large declared size cap (no hang) =====
 
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn unit_oversized_declared_payload_size_is_rejected() {
-        // A declared payload_size beyond u32::MAX could never have been parsed; it must be
-        // rejected before the pad loop (proving no unbounded padding is attempted).
         let payload = MetadataPayload::HdrCll(MetadataHdrCll {
             max_cll: 0,
             max_fall: 0,
@@ -1525,9 +1451,6 @@ mod tests {
 
     #[test]
     fn unit_large_payload_size_pads_without_hang() {
-        // A 100_000-byte declared size with a 4-byte typed payload pads to exactly the declared
-        // size; the padding is bounded by the u32 payload_size cap, so a constructed model can
-        // never drive it unbounded.
         let payload = MetadataPayload::HdrCll(MetadataHdrCll {
             max_cll: 0x1234,
             max_fall: 0x5678,
@@ -1538,11 +1461,9 @@ mod tests {
         assert_eq!(writer.into_bytes().len(), 100_000);
     }
 
-    // ===== group OBU: additional round-trips (adversarial coverage) =====
 
     #[test]
     fn group_timecode_unit_round_trips() {
-        // A non-cancel group unit carrying a full-timestamp Timecode (39 bits = 5 bytes).
         let payload = MetadataPayload::Timecode(MetadataTimecode {
             counting_type: 0,
             full_timestamp_flag: true,
@@ -1581,8 +1502,6 @@ mod tests {
 
     #[test]
     fn group_varying_band_units_round_trips() {
-        // Reuse the varying-size BandingHints detail from the short round-trip test inside a
-        // non-cancel group unit. payload_size is over-declared; the writer pads to it.
         let detail = BandingHintsDetail {
             three_color_components_flag: true,
             components: vec![
@@ -1645,8 +1564,6 @@ mod tests {
 
     #[test]
     fn group_multi_bit_global_xlayer_map_round_trips() {
-        // Global OBU, LAYER_VALUES, xlayer_map with bits 0, 1, 3 set -> 3 mlayer map bytes.
-        // header_size = payload_size leb (1) + fixed 2 + xlayer (4) + 3 mlayer = 10.
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
         let unit = MetadataGroupUnit {
             metadata_type: MetadataType::Reserved(0),
@@ -1673,8 +1590,6 @@ mod tests {
 
     #[test]
     fn group_global_xlayer_map_high_bit_round_trips() {
-        // Bit 30 is the highest bit the writer iterates (0..31), so it still yields one mlayer
-        // byte; bit 31 would be ignored. header_size = 1 + 2 + 4 (xlayer) + 1 (one set bit) = 8.
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
         let unit = MetadataGroupUnit {
             metadata_type: MetadataType::Reserved(0),
@@ -1701,8 +1616,6 @@ mod tests {
 
     #[test]
     fn group_non_minimal_muh_payload_size_byte_exact() {
-        // muh_header_size = 4 with no layer maps / extension forces payload_size_bytes = 2, a
-        // NON-minimal 2-byte leb for the value 4 (0x84 0x00).
         let mut unit = hdr_cll_group_unit();
         unit.muh_header_size = 4; // payload_size_bytes = 4 - 2 - 0 - 0 = 2
         let obu = MetadataGroupObu {
@@ -1715,24 +1628,18 @@ mod tests {
         let mut writer = BitWriter::new();
         write_metadata_group_obu(&mut writer, &obu, xlayer, &[&[]]).unwrap();
         let bytes = writer.into_bytes();
-        // group header 0x00, cnt_minus_1 0x00, type 0x01, header byte (4<<1)=0x08, then the
-        // non-minimal 2-byte muh_payload_size leb 0x84 0x00, fixed 0x00 0x00, hdr_cll bytes.
         assert_eq!(
             bytes,
             vec![0x00, 0x00, 0x01, 0x08, 0x84, 0x00, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78]
         );
-        // The muh_payload_size leb sits at indices 4..6.
         assert_eq!(&bytes[4..6], &[0x84, 0x00]);
         let reparsed = reparse_group(&bytes, xlayer).unwrap();
         assert_eq!(&reparsed, &obu);
     }
 
-    // ===== review-driven reject guards =====
 
     #[test]
     fn short_unaligned_writer_is_rejected() {
-        // The metadata OBU payload must start byte-aligned; a mid-byte writer is rejected and the
-        // writer is left untouched (still holding only the pre-existing partial bit).
         let obu = short_obu(MetadataType::Timecode, 1, None, true);
         let mut writer = BitWriter::new();
         writer.write_bit(1).unwrap();
@@ -1762,8 +1669,6 @@ mod tests {
 
     #[test]
     fn group_cancel_with_passthrough_is_rejected() {
-        // A cancelled group unit carries no metadata_unit, so supplied opaque bytes are rejected
-        // rather than silently dropped (matching the short OBU's cancel arm).
         let obu = MetadataGroupObu {
             metadata_is_suffix: false,
             metadata_necessity_idc: 0,
@@ -1782,8 +1687,6 @@ mod tests {
 
     #[test]
     fn unit_reserved_named_type_is_rejected() {
-        // A direct write_metadata_unit caller must also be guarded: Reserved(5) re-maps to a named
-        // type on reparse, so it could never have been parsed.
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
         let u = unit(MetadataType::Reserved(5), 0, payload);
         let mut writer = BitWriter::new();

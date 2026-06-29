@@ -202,7 +202,6 @@ pub fn parse_deblocking_filter_params(
     read_allow_df_sub_pu: bool,
     mfh: Option<&MfhDeblockingView>,
 ) -> Result<DeblockingFilterParams> {
-    // AV2 § 5.18.5.2: if ( CodedLossless ) apply_deblocking_filter[0..4] = 0; return.
     if coded_lossless {
         return Ok(DeblockingFilterParams {
             apply_deblocking_filter: [false; 4],
@@ -211,19 +210,11 @@ pub fn parse_deblocking_filter_params(
         });
     }
 
-    // AV2 § 5.18.5.2 (mirror :5935): if ( enable_df_sub_pu && FrameType == INTER_FRAME )
-    // allow_df_sub_pu f(1); else allow_df_sub_pu = 0 (no bit). The caller folds the
-    // sequence `enable_df_sub_pu` and the `FrameType == INTER_FRAME` test into
-    // `read_allow_df_sub_pu`. The parsed value feeds the deblocking reconstruction this
-    // phase does not model, so it is consumed for alignment only.
     if read_allow_df_sub_pu {
         let _allow_df_sub_pu = reader.read_flag()?;
     }
 
     let mut apply_deblocking_filter = [false; 4];
-    // AV2 § 5.18.5.2: if ( mfh_deblocking_filter_update[cur_mfh_id] ) copy the MFH's
-    // apply_deblocking_filter; else read apply_deblocking_filter[0]/[1] (and the chroma
-    // pair when NumPlanes > 1 and either luma flag is set). Indices [2]/[3] default 0.
     let use_mfh_update = mfh.is_some_and(|view| view.mfh_deblocking_filter_update);
     if let Some(view) = mfh.filter(|view| view.mfh_deblocking_filter_update) {
         apply_deblocking_filter[0] = view.mfh_apply_deblocking_filter[0];
@@ -242,13 +233,6 @@ pub fn parse_deblocking_filter_params(
         }
     }
 
-    // AV2 § 5.18.5.2: dfParBits = df_par_bits_minus_2 + 2. The sequence parser reads
-    // df_par_bits_minus_2 as f(2) (§ 5.4.10), so the conformant range is 0..=3 (dfParBits
-    // 2..=5). A direct/fuzz caller is not bound by that read, so guard the read width here:
-    // `df_delta_q[i]` is `f(dfParBits)` and `read_bits` rejects `n > 32`, so a dfParBits
-    // beyond 32 is an impossible width. Reject it with the same structured
-    // `BitWidthTooLarge` before the `DfDeltaQ` derivation. This mirrors `frame_size()`'s
-    // reliance on `read_bits` to reject an over-wide `frame_width_bits`.
     let df_par_bits = u32::from(df_par_bits_minus_2) + 2;
     if df_par_bits > 32 {
         return Err(Error::BitWidthTooLarge {
@@ -256,30 +240,20 @@ pub fn parse_deblocking_filter_params(
             max: 32,
         });
     }
-    // `1 << (dfParBits - 1)` and `df_delta_q[i] - half` are computed in i64 — like
-    // `BitReader::read_su` — and narrowed: for dfParBits up to 32 the i32 forms would
-    // shift past / overflow i32 and panic in debug. The conformant DfDeltaQ (dfParBits
-    // 2..=5) always fits; the wider non-conformant inputs stay panic-free and produce a
-    // bounded value rather than an unwind. `dfParBits >= 1` here, so the shift is valid.
     let half = 1i64 << (df_par_bits - 1);
 
     let mut df_delta_q_present = [false; 4];
     let mut df_delta_q = [0i32; 4];
     for i in 0..4 {
-        // AV2 § 5.18.5.2: for ( i = 0; i < 4; i++ ).
         if apply_deblocking_filter[i] {
             df_delta_q_present[i] = reader.read_flag()?;
             if df_delta_q_present[i] {
-                // AV2 § 5.18.5.2: df_delta_q[i] f(dfParBits);
-                // DfDeltaQ[i] = df_delta_q[i] - (1 << (dfParBits - 1)).
                 let raw = i64::from(reader.read_bits(df_par_bits)?);
                 df_delta_q[i] = (raw - half) as i32;
             } else {
-                // AV2 § 5.18.5.2: DfDeltaQ[i] = (i == 1) ? DfDeltaQ[0] : 0.
                 df_delta_q[i] = if i == 1 { df_delta_q[0] } else { 0 };
             }
         } else {
-            // AV2 § 5.18.5.2: DfDeltaQ[i] = 0.
             df_delta_q[i] = 0;
         }
     }
@@ -333,7 +307,6 @@ impl InterpolationFilter {
             0 => Self::Eighttap,
             1 => Self::EighttapSmooth,
             2 => Self::EighttapSharp,
-            // The mask restricts `code` to `0..=3`; `3` is the only remaining value.
             _ => Self::Bilinear,
         }
     }
@@ -360,12 +333,10 @@ impl InterpolationFilter {
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
 /// ends before the `is_filter_switchable` bit or the `interpolation_filter` `f(2)` value.
 pub fn read_interpolation_filter(reader: &mut BitReader<'_>) -> Result<InterpolationFilter> {
-    // AV2 § 5.18.5.1: is_filter_switchable f(1).
     let is_filter_switchable = reader.read_flag()?;
     if is_filter_switchable {
         Ok(InterpolationFilter::Switchable)
     } else {
-        // AV2 § 5.18.5.1: interpolation_filter f(2).
         let code = reader.read_bits(2)?;
         Ok(InterpolationFilter::from_fixed_code(code))
     }
@@ -403,16 +374,11 @@ pub struct GdfGeometry<'a> {
 /// (`crate::write::frame_filters::write_gdf_params`) share one source of truth and never
 /// drift. `gdf_frame_enable` must already be `1` for this gate to be consulted.
 pub(crate) fn gdf_per_block_is_coded(filter: CoreSeqFilterView, geometry: GdfGeometry<'_>) -> bool {
-    // § 5.18.7.9: gdfBlkSize derivation.
     let sb_block_width = block_width(geometry.sb_size);
-    // gdfBlkSize = Max(Block_Width[SbSize], GDF_MIN_SIZE).
     let mut gdf_blk_size = sb_block_width.max(GDF_MIN_SIZE);
     if filter.gdf_unit_matches_sb_size {
-        // gdfBlkSize = Block_Width[SbSize].
         gdf_blk_size = sb_block_width;
     } else if geometry.sb_size == SuperblockSize::Block64x64 {
-        // Scan tile-start alignment: a |= MiColStarts[i] for i < TileCols, then
-        // a |= MiRowStarts[i] for i < TileRows; if ( a & 16 ) gdfBlkSize = 64.
         let mut a = 0u32;
         for &start in geometry
             .mi_col_starts
@@ -433,9 +399,6 @@ pub(crate) fn gdf_per_block_is_coded(filter: CoreSeqFilterView, geometry: GdfGeo
         }
     }
 
-    // § 5.18.7.9: gdf_per_block f(1) when MiCols*MI_SIZE > gdfBlkSize ||
-    // MiRows*MI_SIZE > gdfBlkSize || (disable_loopfilters_across_tiles &&
-    // (TileRows > 1 || TileCols > 1)); else gdf_per_block = 0.
     let frame_exceeds_block = geometry.mi_cols.saturating_mul(MI_SIZE) > gdf_blk_size
         || geometry.mi_rows.saturating_mul(MI_SIZE) > gdf_blk_size;
     let multi_tile = geometry.tile_rows > 1 || geometry.tile_cols > 1;
@@ -459,7 +422,6 @@ pub fn parse_gdf_params(
     filter: &CoreSeqFilterView,
     geometry: GdfGeometry<'_>,
 ) -> Result<GdfParams> {
-    // AV2 § 5.18.7.9: if ( CodedLossless || !enable_gdf ) gdf_frame_enable = 0.
     if coded_lossless || !filter.enable_gdf {
         return Ok(GdfParams {
             gdf_frame_enable: false,
@@ -469,14 +431,12 @@ pub fn parse_gdf_params(
         });
     }
 
-    // AV2 § 5.18.7.9: single picture infers gdf_frame_enable = 1; else f(1).
     let gdf_frame_enable = if filter.single_picture_header_flag {
         true
     } else {
         reader.read_flag()?
     };
     if !gdf_frame_enable {
-        // AV2 § 5.18.7.9: if ( !gdf_frame_enable ) return.
         return Ok(GdfParams {
             gdf_frame_enable: false,
             gdf_per_block: None,
@@ -485,15 +445,12 @@ pub fn parse_gdf_params(
         });
     }
 
-    // AV2 § 5.18.7.9: gdf_per_block f(1) when coded (the gdfBlkSize / tile gate, shared
-    // with the writer via gdf_per_block_is_coded); else inferred 0.
     let gdf_per_block = if gdf_per_block_is_coded(*filter, geometry) {
         reader.read_flag()?
     } else {
         false
     };
 
-    // AV2 § 5.18.7.9: gdf_pic_qc_idx f(2); gdf_pic_scale_idx f(2).
     let gdf_pic_qc_idx = reader.read_bits_u8(2)?;
     let gdf_pic_scale_idx = reader.read_bits_u8(2)?;
 
@@ -521,7 +478,6 @@ pub fn parse_cdef_params(
     num_planes: u8,
     filter: &CoreSeqFilterView,
 ) -> Result<CdefParams> {
-    // AV2 § 5.18.7.10: if ( CodedLossless || !enable_cdef ) cdef_frame_enable = 0; return.
     if coded_lossless || !filter.enable_cdef {
         return Ok(CdefParams {
             cdef_frame_enable: false,
@@ -532,14 +488,12 @@ pub fn parse_cdef_params(
         });
     }
 
-    // AV2 § 5.18.7.10: single picture infers cdef_frame_enable = 1; else f(1).
     let cdef_frame_enable = if filter.single_picture_header_flag {
         true
     } else {
         reader.read_flag()?
     };
     if !cdef_frame_enable {
-        // AV2 § 5.18.7.10: if ( !cdef_frame_enable ) return.
         return Ok(CdefParams {
             cdef_frame_enable: false,
             cdef_damping: None,
@@ -549,40 +503,32 @@ pub fn parse_cdef_params(
         });
     }
 
-    // AV2 § 5.18.7.10: cdef_damping_minus_3 f(2); CdefDamping = cdef_damping_minus_3 + 3.
     let cdef_damping = reader.read_bits_u8(2)? + 3;
-    // cdef_strengths_minus_1 f(3); CdefStrengths = cdef_strengths_minus_1 + 1 (1..=8).
     let cdef_strengths = reader.read_bits_u8(3)? + 1;
 
-    // AV2 § 5.18.7.10: cdef_on_skip_txfm_frame_enable per CdefOnSkipTxfm.
     let cdef_on_skip_txfm_frame_enable = match filter.cdef_on_skip_txfm {
         CdefOnSkipTxfm::Adaptive => reader.read_flag()?,
         CdefOnSkipTxfm::AlwaysOn => true,
         CdefOnSkipTxfm::Disabled => false,
     };
 
-    // AV2 § 5.18.7.10: for ( i = 0; i < CdefStrengths; i++ ). CdefStrengths <= 8.
     let mut strengths = Vec::with_capacity(usize::from(cdef_strengths).min(MAX_CDEF_STRENGTHS));
     for _ in 0..cdef_strengths {
-        // cdef_y_pri_zero f(1); cdef_y_pri_strength[i] = 0 or f(4).
         let y_pri_strength = if reader.read_flag()? {
             0
         } else {
             reader.read_bits_u8(4)?
         };
-        // cdef_y_sec_strength[i] f(2); if ( == 3 ) += 1.
         let mut y_sec_strength = reader.read_bits_u8(2)?;
         if y_sec_strength == 3 {
             y_sec_strength += 1;
         }
         let (uv_pri_strength, uv_sec_strength) = if num_planes > 1 {
-            // cdef_uv_pri_zero f(1); cdef_uv_pri_strength[i] = 0 or f(4).
             let uv_pri = if reader.read_flag()? {
                 0
             } else {
                 reader.read_bits_u8(4)?
             };
-            // cdef_uv_sec_strength[i] f(2); if ( == 3 ) += 1.
             let mut uv_sec = reader.read_bits_u8(2)?;
             if uv_sec == 3 {
                 uv_sec += 1;
@@ -634,8 +580,6 @@ mod tests {
         }
     }
 
-    // ---- deblocking ----
-
     #[test]
     fn deblocking_coded_lossless_reads_no_bits() {
         let mut r = reader(&[]);
@@ -647,21 +591,15 @@ mod tests {
 
     #[test]
     fn deblocking_direct_reads_apply_and_delta_q() {
-        // NumPlanes == 3, df_par_bits_minus_2 == 0 -> dfParBits = 2.
         let mut bits = Bits::default();
         bits.bit(1); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
-        // luma flag set -> chroma pair read.
         bits.bit(1); // apply_deblocking_filter[2]
         bits.bit(0); // apply_deblocking_filter[3]
-        // i == 0: present, df_delta_q[0] f(2) == 3 -> 3 - 2 == 1.
         bits.bit(1); // df_delta_q_present[0]
         bits.f(3, 2); // df_delta_q[0]
-        // i == 1: apply == 0 -> outer else: DfDeltaQ[1] = 0 (no bits).
-        // i == 2: present, df_delta_q[2] f(2) == 0 -> 0 - 2 == -2.
         bits.bit(1); // df_delta_q_present[2]
         bits.f(0, 2); // df_delta_q[2]
-        // i == 3: apply == 0 -> DfDeltaQ[3] = 0.
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_deblocking_filter_params(&mut r, false, 3, 0, false, None).unwrap();
@@ -672,32 +610,22 @@ mod tests {
 
     #[test]
     fn deblocking_inter_reads_allow_df_sub_pu_before_apply() {
-        // AV2 § 5.18.5.2 (mirror :5935): on the inter path (read_allow_df_sub_pu == true)
-        // allow_df_sub_pu f(1) is read FIRST, then apply_deblocking_filter[0]/[1]. The
-        // parsed allow_df_sub_pu drives reconstruction, not the returned struct, so the
-        // proof is the bit ALIGNMENT: with allow_df_sub_pu == 1 consumed first, the
-        // following apply bits land where expected.
         let mut bits = Bits::default();
         bits.bit(1); // allow_df_sub_pu (consumed, not surfaced)
         bits.bit(1); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
-        // luma flag set -> chroma pair read.
         bits.bit(0); // apply_deblocking_filter[2]
         bits.bit(0); // apply_deblocking_filter[3]
-        // i == 0: present == 0 -> DfDeltaQ[0] = 0.
         bits.bit(0); // df_delta_q_present[0]
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_deblocking_filter_params(&mut r, false, 3, 0, true, None).unwrap();
         assert_eq!(params.apply_deblocking_filter, [true, false, false, false]);
-        // 1 (allow_df_sub_pu) + 2 (apply[0]/[1]) + 2 (chroma pair) + 1 (df_delta_q_present[0]).
         assert_eq!(r.consumed_bits(), 6);
     }
 
     #[test]
     fn deblocking_intra_skips_allow_df_sub_pu() {
-        // read_allow_df_sub_pu == false (intra / switch path): no allow_df_sub_pu bit; the
-        // first read IS apply_deblocking_filter[0].
         let mut bits = Bits::default();
         bits.bit(1); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
@@ -708,18 +636,14 @@ mod tests {
         let mut r = reader(&data);
         let params = parse_deblocking_filter_params(&mut r, false, 3, 0, false, None).unwrap();
         assert_eq!(params.apply_deblocking_filter, [true, false, false, false]);
-        // No allow_df_sub_pu bit: 2 (apply[0]/[1]) + 2 (chroma pair) + 1 (present[0]).
         assert_eq!(r.consumed_bits(), 5);
     }
 
     #[test]
     fn deblocking_index_one_absent_delta_inherits_index_zero() {
-        // apply[0]==1, apply[1]==1, both present so the i==1 absent-inference path is
-        // exercised: present[1]==0 -> DfDeltaQ[1] = DfDeltaQ[0] (the (i==1) ? branch).
         let mut bits = Bits::default();
         bits.bit(1); // apply[0]
         bits.bit(1); // apply[1]
-        // monochrome (NumPlanes == 1) -> no chroma pair.
         bits.bit(1); // df_delta_q_present[0]
         bits.f(3, 2); // df_delta_q[0] f(2) == 3 -> 3 - 2 == 1
         bits.bit(0); // df_delta_q_present[1] == 0 -> DfDeltaQ[1] = DfDeltaQ[0] == 1
@@ -733,11 +657,9 @@ mod tests {
 
     #[test]
     fn deblocking_monochrome_skips_chroma_pair() {
-        // NumPlanes == 1 -> apply[2]/[3] stay 0 even with luma flags set.
         let mut bits = Bits::default();
         bits.bit(1); // apply[0]
         bits.bit(1); // apply[1]
-        // no chroma pair (monochrome)
         bits.bit(0); // df_delta_q_present[0]
         bits.bit(0); // df_delta_q_present[1]
         let data = bits.into_bytes();
@@ -749,16 +671,12 @@ mod tests {
 
     #[test]
     fn deblocking_mfh_update_copies_apply_no_bits() {
-        // MFH update set: apply comes from the record, only delta-Q present bits read.
         let mfh = MfhDeblockingView {
             mfh_deblocking_filter_update: true,
             mfh_apply_deblocking_filter: [true, false, true, true],
         };
         let mut bits = Bits::default();
-        // apply == [true, false, true, false-or-true]: chroma pair copied because
-        // apply[0] is set and NumPlanes > 1 -> apply[2]=true, apply[3]=true.
         bits.bit(0); // df_delta_q_present[0]
-        // i == 1: apply == 0, DfDeltaQ[1] = DfDeltaQ[0] = 0.
         bits.bit(0); // df_delta_q_present[2]
         bits.bit(0); // df_delta_q_present[3]
         let data = bits.into_bytes();
@@ -767,13 +685,11 @@ mod tests {
             parse_deblocking_filter_params(&mut r, false, 3, 0, false, Some(&mfh)).unwrap();
         assert_eq!(params.apply_deblocking_filter, [true, false, true, true]);
         assert_eq!(params.df_delta_q, [0; 4]);
-        // 3 present bits read, no apply bits.
         assert_eq!(r.consumed_bits(), 3);
     }
 
     #[test]
     fn deblocking_mfh_update_zero_reads_apply_from_bitstream() {
-        // Record present but update == 0 -> apply bits are read from the bitstream.
         let mfh = MfhDeblockingView {
             mfh_deblocking_filter_update: false,
             mfh_apply_deblocking_filter: [true, true, true, true],
@@ -781,7 +697,6 @@ mod tests {
         let mut bits = Bits::default();
         bits.bit(0); // apply[0]
         bits.bit(0); // apply[1]
-        // both luma flags 0 -> no chroma pair.
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params =
@@ -801,11 +716,9 @@ mod tests {
 
     #[test]
     fn deblocking_df_par_bits_widens_delta_q_read() {
-        // df_par_bits_minus_2 == 3 -> dfParBits = 5, half = 16.
         let mut bits = Bits::default();
         bits.bit(1); // apply[0]
         bits.bit(0); // apply[1]
-        // monochrome to keep it simple: NumPlanes == 1.
         bits.bit(1); // df_delta_q_present[0]
         bits.f(20, 5); // df_delta_q[0] == 20 -> 20 - 16 == 4
         let data = bits.into_bytes();
@@ -816,16 +729,6 @@ mod tests {
 
     #[test]
     fn deblocking_oversized_df_par_bits_is_structured_error_not_panic() {
-        // The in-tree sequence parser reads df_par_bits_minus_2 as f(2) (0..=3), but a
-        // direct/fuzz caller can construct a CoreSeqFilterView (or pass the field) outside
-        // that range. dfParBits = df_par_bits_minus_2 + 2 then exceeds the 32-bit
-        // `df_delta_q[i]` read width, which the workspace's no-reachable-panic rule requires
-        // be rejected with a structured BitWidthTooLarge rather than letting `read_bits`
-        // attempt an impossible width. A buffer of 0xFF bytes large enough to satisfy the
-        // apply reads keeps the failure the width, not EOF. df_par_bits_minus_2 == 31 ->
-        // dfParBits = 33 (> 32) is the first value the read width rejects; everything larger
-        // does too. (The in-range-but-wide boundary dfParBits == 32 is covered separately,
-        // where the i64 DfDeltaQ derivation keeps the shift/subtraction panic-free.)
         let data = [0xFFu8; 16];
         for df_par_bits_minus_2 in [31u8, 32, 200, u8::MAX] {
             let mut r = reader(&data);
@@ -840,16 +743,9 @@ mod tests {
 
     #[test]
     fn deblocking_max_width_df_par_bits_reads_without_overflow_panic() {
-        // df_par_bits_minus_2 == 30 -> dfParBits = 32: the read width is in range (<= 32),
-        // but the `1 << (dfParBits - 1)` half (2^31) and the `df_delta_q[i] - half`
-        // subtraction would overflow i32 and panic in debug if computed in i32. They are
-        // computed in i64 and narrowed (the result always fits i32), so a constructed view
-        // at the boundary returns Ok with a bounded value rather than panicking. apply[0] set
-        // + present so the f(32) read and the subtraction both fire.
         let mut bits = Bits::default();
         bits.bit(1); // apply[0]
         bits.bit(0); // apply[1]
-        // monochrome (NumPlanes == 1) -> no chroma pair.
         bits.bit(1); // df_delta_q_present[0]
         bits.f(1, 32); // df_delta_q[0] == 1 -> 1 - 2^31 == i32::MIN + 1
         let data = bits.into_bytes();
@@ -858,11 +754,8 @@ mod tests {
         assert_eq!(params.df_delta_q[0], (1i64 - (1i64 << 31)) as i32);
     }
 
-    // ---- interpolation filter (§ 5.18.5.1) ----
-
     #[test]
     fn interpolation_filter_switchable_reads_one_bit() {
-        // is_filter_switchable == 1 -> SWITCHABLE (no interpolation_filter f(2)).
         let mut bits = Bits::default();
         bits.bit(1); // is_filter_switchable
         let data = bits.into_bytes();
@@ -874,8 +767,6 @@ mod tests {
 
     #[test]
     fn interpolation_filter_fixed_reads_two_bit_code() {
-        // is_filter_switchable == 0 -> interpolation_filter f(2). Each code maps to its
-        // fixed filter.
         for (code, expected) in [
             (0u32, InterpolationFilter::Eighttap),
             (1, InterpolationFilter::EighttapSmooth),
@@ -895,7 +786,6 @@ mod tests {
 
     #[test]
     fn interpolation_filter_eof_is_structured_error() {
-        // No bits -> EOF before is_filter_switchable.
         let data: [u8; 0] = [];
         let mut r = reader(&data);
         assert!(matches!(
@@ -903,8 +793,6 @@ mod tests {
             Err(Error::UnexpectedEof { .. })
         ));
     }
-
-    // ---- gdf ----
 
     #[test]
     fn gdf_coded_lossless_disables_no_bits() {
@@ -928,7 +816,6 @@ mod tests {
     fn gdf_single_picture_infers_enable() {
         let mut filter = base_filter();
         filter.single_picture_header_flag = true;
-        // gdf_frame_enable inferred 1 (no bit). Frame exceeds block -> gdf_per_block f(1).
         let mut bits = Bits::default();
         bits.bit(1); // gdf_per_block
         bits.f(2, 2); // gdf_pic_qc_idx
@@ -944,7 +831,6 @@ mod tests {
 
     #[test]
     fn gdf_frame_enable_false_returns_early() {
-        // Not single picture, read gdf_frame_enable == 0 -> return.
         let mut bits = Bits::default();
         bits.bit(0); // gdf_frame_enable
         let data = bits.into_bytes();
@@ -957,9 +843,6 @@ mod tests {
 
     #[test]
     fn gdf_small_single_tile_infers_per_block_zero() {
-        // A frame at or below gdfBlkSize in a single tile -> gdf_per_block inferred 0.
-        // SbSize 128x128 -> gdfBlkSize = Max(128, 128) = 128. MiCols*4 == 128, so the
-        // frame does not exceed the block; single tile, loopfilters allowed across.
         let geom = GdfGeometry {
             sb_size: SuperblockSize::Block128x128,
             mi_cols: 32, // 32 * 4 == 128, not > 128
@@ -971,28 +854,23 @@ mod tests {
         };
         let mut bits = Bits::default();
         bits.bit(1); // gdf_frame_enable (read; not single picture)
-        // no gdf_per_block bit (inferred 0)
         bits.f(0, 2); // gdf_pic_qc_idx
         bits.f(0, 2); // gdf_pic_scale_idx
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_gdf_params(&mut r, false, &base_filter(), geom).unwrap();
         assert_eq!(params.gdf_per_block, Some(false));
-        // 1 enable + 4 qc/scale, no per-block bit.
         assert_eq!(r.consumed_bits(), 5);
     }
 
     #[test]
     fn gdf_eof_is_structured_error() {
         let mut r = reader(&[]);
-        // not single picture -> must read gdf_frame_enable, but no data.
         assert!(matches!(
             parse_gdf_params(&mut r, false, &base_filter(), base_geometry()),
             Err(Error::UnexpectedEof { .. })
         ));
     }
-
-    // ---- cdef ----
 
     #[test]
     fn cdef_coded_lossless_disables_no_bits() {
@@ -1014,19 +892,16 @@ mod tests {
 
     #[test]
     fn cdef_reads_strength_sets() {
-        // Not single picture; cdef_frame_enable read; 2 strengths; adaptive skip-txfm.
         let mut bits = Bits::default();
         bits.bit(1); // cdef_frame_enable
         bits.f(1, 2); // cdef_damping_minus_3 -> CdefDamping = 4
         bits.f(1, 3); // cdef_strengths_minus_1 -> CdefStrengths = 2
         bits.bit(1); // cdef_on_skip_txfm_frame_enable (adaptive -> read)
-        // strength 0
         bits.bit(0); // cdef_y_pri_zero == 0 -> read f(4)
         bits.f(9, 4); // cdef_y_pri_strength[0]
         bits.f(3, 2); // cdef_y_sec_strength[0] == 3 -> 4
         bits.bit(1); // cdef_uv_pri_zero == 1 -> 0
         bits.f(2, 2); // cdef_uv_sec_strength[0]
-        // strength 1
         bits.bit(1); // cdef_y_pri_zero == 1 -> 0
         bits.f(1, 2); // cdef_y_sec_strength[1]
         bits.bit(0); // cdef_uv_pri_zero == 0 -> read f(4)
@@ -1060,7 +935,6 @@ mod tests {
         bits.bit(0); // cdef_y_pri_zero
         bits.f(7, 4); // cdef_y_pri_strength[0]
         bits.f(1, 2); // cdef_y_sec_strength[0]
-        // no UV reads (monochrome)
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_cdef_params(&mut r, false, 1, &base_filter()).unwrap();
@@ -1072,14 +946,12 @@ mod tests {
 
     #[test]
     fn cdef_skip_txfm_always_on_and_disabled_infer_no_bit() {
-        // always-on -> cdef_on_skip_txfm_frame_enable = 1 with no bit.
         let mut filter = base_filter();
         filter.cdef_on_skip_txfm = CdefOnSkipTxfm::AlwaysOn;
         let mut bits = Bits::default();
         bits.bit(1); // cdef_frame_enable
         bits.f(0, 2); // damping
         bits.f(0, 3); // strengths -> 1
-        // no skip-txfm bit
         bits.bit(1); // cdef_y_pri_zero
         bits.f(0, 2); // cdef_y_sec_strength
         bits.bit(1); // cdef_uv_pri_zero
@@ -1109,7 +981,6 @@ mod tests {
         let mut filter = base_filter();
         filter.single_picture_header_flag = true;
         let mut bits = Bits::default();
-        // no cdef_frame_enable bit (inferred 1)
         bits.f(0, 2); // damping
         bits.f(0, 3); // strengths -> 1
         bits.bit(1); // cdef_on_skip_txfm (adaptive -> read)
@@ -1164,12 +1035,7 @@ mod proptests {
             data in proptest::collection::vec(any::<u8>(), 0..32),
             coded_lossless in any::<bool>(),
             num_planes in prop_oneof![Just(1u8), Just(3u8)],
-            // Widened to the full u8 range: a direct/fuzz caller is not bound by the
-            // sequence parser's f(2) read, so df_par_bits_minus_2 outside 0..=3 must not
-            // panic (it returns a structured BitWidthTooLarge instead).
             df_par_bits_minus_2 in any::<u8>(),
-            // The inter-path allow_df_sub_pu gate (enable_df_sub_pu && INTER): both arms
-            // must stay panic-free.
             read_allow_df_sub_pu in any::<bool>(),
             mfh in proptest::option::of((any::<bool>(), any::<[bool; 4]>())),
         ) {

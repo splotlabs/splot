@@ -3,8 +3,6 @@
 
 use super::*;
 
-// --- Frame-header prefix activation / HLS reference checks ---
-
 /// A frame-bearing OBU (`header` byte) whose first tile group carries a frame
 /// header with `cur_mfh_id == 0` and the given `seq_header_id_in_frame_header`.
 pub(in crate::validator::tests) fn frame_obu_direct_seq_ref(
@@ -41,7 +39,6 @@ pub(in crate::validator::tests) fn td_and_seq_header(
     data
 }
 
-// 0x10 = OBU_CLOSED_LOOP_KEY (type 4), no extension, tlayer 0.
 pub(in crate::validator::tests) const CLK_HEADER: u8 = 0x10;
 
 #[test]
@@ -73,7 +70,6 @@ fn hls_frame_header_sequence_header_available_inband_is_accepted() {
 #[test]
 fn hls_frame_header_sequence_header_available_external_is_accepted() {
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-    // No in-band sequence header with id 5; external HLS supplies it.
     let mut data = temporal_delimiter_obu();
     data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 5));
     let options = ValidationOptions {
@@ -103,7 +99,6 @@ fn hls_frame_header_missing_mfh_is_flagged() {
 
 #[test]
 fn hls_frame_header_mfh_available_is_accepted() {
-    // TD, seq(0), MFH (mfh_seq_header_id 0, mfhId 1), CLK with cur_mfh_id 1.
     let mut data = td_and_seq_header(0, 1, 1);
     data.extend(multi_frame_header_obu(0)); // mfh_seq_header_id 0 -> mfhId 1
     data.extend(frame_obu_mfh_ref(CLK_HEADER, 1)); // resolves MFH 1 -> seq 0
@@ -122,11 +117,7 @@ fn hls_frame_header_mfh_available_is_accepted() {
     );
 }
 
-// --- § 7.3.8.1 random-access-point HLS availability replay ---
-
-// 0x18 = OBU_LEADING_TILE_GROUP (type 6), no extension, tlayer 0.
 pub(in crate::validator::tests) const LEADING_TILE_GROUP_HEADER: u8 = 0x18;
-// 0x1C = OBU_REGULAR_TILE_GROUP (type 7), no extension, tlayer 0.
 pub(in crate::validator::tests) const REGULAR_TILE_GROUP_HEADER: u8 = 0x1C;
 
 /// A global temporal delimiter followed by a sequence header with `seq_header_id`

@@ -158,7 +158,6 @@ pub struct UserDefinedQmPlane {
 /// [`Error::InvalidQuantizerMatrix`] when a
 /// `quant_delta` is outside the conformant `-128..=127` range (AV2 § 6.4.11).
 pub fn parse_quantizer_matrix(reader: &mut BitReader<'_>) -> Result<QuantizerMatrixObu> {
-    // qm_bit_map fits in 15 bits, so the u32 read never exceeds u16::MAX.
     let qm_bit_map = reader.read_bits(QM_BIT_MAP_BITS)? as u16;
     let chroma_info_present = reader.read_flag()?;
     let num_planes: u8 = if chroma_info_present { 3 } else { 1 };
@@ -175,7 +174,6 @@ pub fn parse_quantizer_matrix(reader: &mut BitReader<'_>) -> Result<QuantizerMat
             } else {
                 Some(parse_user_defined_qm_level(reader, num_planes)?)
             };
-            // level < NUM_CUSTOM_QMS (15), so it fits in u8.
             levels.push(QuantizerMatrixLevel {
                 level: level as u8,
                 is_default,
@@ -233,8 +231,6 @@ fn user_defined_qm(
     let (width, height) = transform.dimensions();
     let (w, h) = (width as usize, height as usize);
 
-    // AV2 § 5.4.11: plane > 0 may copy the previously parsed plane of the same
-    // transform (qm_copy_from_previous_plane).
     if plane > 0 {
         let copy_from_previous_plane = reader.read_flag()?;
         if copy_from_previous_plane {
@@ -250,11 +246,8 @@ fn user_defined_qm(
 
     let mut symmetric = false;
     if t == 0 {
-        // AV2 § 5.4.11: TX_8X8 may signal a symmetric matrix.
         symmetric = reader.read_flag()?;
     } else if t == 2 {
-        // AV2 § 5.4.11: TX_4X8 may be the transpose of the same plane's TX_8X4
-        // matrix: UserQm[level][2][plane][i][j] = UserQm[level][1][plane][j][i].
         let is_transpose_of_8x4 = reader.read_flag()?;
         if is_transpose_of_8x4 {
             let source = &transforms[1].planes[plane];
@@ -274,8 +267,6 @@ fn user_defined_qm(
         }
     }
 
-    // AV2 § 5.4.11: scan = get_scan(txSz, TX_CLASS_2D); fill coefficients in scan
-    // order with svlc() deltas and the quant2 == 0 coefficient-repeat behavior.
     let scan = diagonal_scan_2d(w, h);
     let mut values = vec![0u8; w * h];
     let mut quant = INITIAL_QM_QUANT;
@@ -284,8 +275,6 @@ fn user_defined_qm(
         let row = pos / w;
         let col = pos % w;
         if t == 0 && symmetric && col > row {
-            // Mirror the already-filled lower-triangle coefficient (same anti-diagonal,
-            // visited earlier in the 2D scan).
             quant = values[col * w + row];
             values[pos] = quant;
         } else if coef_repeat {
@@ -294,8 +283,6 @@ fn user_defined_qm(
             let delta_offset = reader.byte_offset();
             let delta_bit_offset = reader.bit_offset();
             let quant_delta = reader.read_svlc()?;
-            // AV2 § 6.4.11: it is a requirement of bitstream conformance that
-            // quant_delta is in -128..=127.
             if !(QUANT_DELTA_MIN..=QUANT_DELTA_MAX).contains(&quant_delta) {
                 return Err(Error::InvalidQuantizerMatrix {
                     offset: delta_offset,
@@ -305,8 +292,6 @@ fn user_defined_qm(
                     ),
                 });
             }
-            // AV2 § 5.4.11: quant2 = (quant + quant_delta) & 255. The mask gives the
-            // low byte (mathematical mod 256 in 0..=255) even for a negative sum.
             let quant2 = (i32::from(quant) + quant_delta) & 0xFF;
             if quant2 == 0 {
                 coef_repeat = true;
@@ -331,14 +316,12 @@ fn user_defined_qm(
 /// Returns the raster positions `row * width + col` in scan order. The fundamental
 /// quantizer-matrix transforms are at most 8x8, so the spec's `Min(.., 32)` width/
 /// height clamps never apply.
-// w/h/x/y/s mirror the AV2 § 5.20.7.30 up-right diagonal scan derivation notation.
 #[allow(clippy::many_single_char_names)]
 fn diagonal_scan_2d(width: usize, height: usize) -> Vec<usize> {
     let mut out = vec![0usize; width * height];
     let (w, h) = (width as i64, height as i64);
     let (mut x, mut y) = (0i64, 0i64);
     for slot in &mut out {
-        // Loop invariant (AV2 § 5.20.7.30): 0 <= x < w and 0 <= y < h at each step.
         *slot = (y as usize) * width + (x as usize);
         x += 1;
         y -= 1;
@@ -434,19 +417,14 @@ mod tests {
         bits.bit(0); // qm_chroma_info_present_flag = 0 -> 1 plane (Y only)
         bits.bit(0); // qm_is_default_flag = 0 -> user-defined
 
-        // t == 0 (TX_8X8), plane 0: symmetric, flat deltas (all 0 -> all 32).
         bits.bit(1); // qm_8x8_is_symmetric
-        // Only lower-triangle-or-diagonal cells (col <= row) read a delta; the rest
-        // mirror. For a flat all-32 matrix every read delta is 0.
         let lower_tri_8x8 = (0..8).map(|r| r + 1).sum::<usize>(); // 36 cells
         for _ in 0..lower_tri_8x8 {
             bits.svlc(0);
         }
 
-        // t == 1 (TX_8X4), plane 0: flat, no symmetry/transpose flags.
         write_flat_plane(&mut bits, 8, 4);
 
-        // t == 2 (TX_4X8), plane 0: transpose of the TX_8X4 matrix.
         bits.bit(1); // qm_4x8_is_transpose_of_8x4
 
         let data = bits.into_bytes();
@@ -455,14 +433,12 @@ mod tests {
         let matrices = level.matrices.as_ref().expect("user-defined matrices");
         assert_eq!(matrices.len(), 3);
 
-        // TX_8X8 symmetric: all coefficients equal the running quant (32).
         let tx8x8 = &matrices[0];
         assert_eq!(tx8x8.transform, FundamentalQmTransform::Tx8x8);
         assert_eq!(tx8x8.planes.len(), 1);
         assert!(tx8x8.planes[0].values.iter().all(|&v| v == 32));
         assert_eq!(tx8x8.planes[0].values.len(), 64);
 
-        // TX_4X8 is the transpose of TX_8X4 (also flat 32), so still all 32.
         let tx4x8 = &matrices[2];
         assert_eq!(tx4x8.transform, FundamentalQmTransform::Tx4x8);
         assert_eq!(tx4x8.planes[0].width, 4);
@@ -477,24 +453,17 @@ mod tests {
         bits.bit(1); // qm_chroma_info_present_flag = 1 -> 3 planes
         bits.bit(0); // qm_is_default_flag = 0
 
-        // t == 0 (TX_8X8), plane 0 (Y): non-symmetric. First delta sets quant to a
-        // distinct value, the next delta drives quant2 to 0 to trigger coef repeat.
         bits.bit(0); // qm_8x8_is_symmetric = 0
         bits.svlc(8); // 32 + 8 = 40 at scan position 0
         bits.svlc(-40); // (40 - 40) & 255 = 0 -> coefficient repeat starts; cell keeps 40
-        // remaining 62 cells of the 8x8 repeat 40 (no further reads).
 
-        // t == 0, plane 1 (U): copy previous plane.
         bits.bit(1); // qm_copy_from_previous_plane
-        // t == 0, plane 2 (V): copy previous plane.
         bits.bit(1); // qm_copy_from_previous_plane
 
-        // t == 1 (TX_8X4), planes 0..3: flat, plane 1/2 copy plane 0.
         write_flat_plane(&mut bits, 8, 4); // plane 0
         bits.bit(1); // plane 1 copies plane 0
         bits.bit(1); // plane 2 copies plane 0
 
-        // t == 2 (TX_4X8), planes 0..3: transpose of TX_8X4, then copies.
         bits.bit(1); // plane 0 transpose of 8x4
         bits.bit(1); // plane 1 copies plane 0
         bits.bit(1); // plane 2 copies plane 0
@@ -504,19 +473,13 @@ mod tests {
         let matrices = qm.levels[0].matrices.as_ref().unwrap();
         let tx8x8 = &matrices[0];
         assert_eq!(tx8x8.planes.len(), 3);
-        // Position 0 in the 8x8 is the first coefficient: 40, then coefficient repeat
-        // keeps 40 for the rest.
         assert!(tx8x8.planes[0].values.iter().all(|&v| v == 40));
-        // Planes 1 and 2 are exact copies of plane 0.
         assert_eq!(tx8x8.planes[1].values, tx8x8.planes[0].values);
         assert_eq!(tx8x8.planes[2].values, tx8x8.planes[0].values);
     }
 
     #[test]
     fn diagonal_scan_matches_av2_oracle_order() {
-        // Golden up-right (TX_CLASS_2D) scan order, derived from AV2 § 5.20.7.30 and
-        // cross-checked against AVM get_scan(txSz, DCT_DCT) (obu_qm.c). Positions are
-        // raster indices row * width + col.
         assert_eq!(
             diagonal_scan_2d(8, 8)[..10],
             [0, 8, 1, 16, 9, 2, 24, 17, 10, 3]
@@ -530,8 +493,6 @@ mod tests {
 
     #[test]
     fn quant_delta_out_of_range_is_rejected() {
-        // AV2 § 6.4.11: quant_delta must be in -128..=127. A user-defined matrix whose
-        // first quant_delta is 128 must be rejected.
         let mut bits = Bits::default();
         bits.f(1, 15); // qm_bit_map: level 0
         bits.bit(0); // 1 plane

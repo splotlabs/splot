@@ -29,7 +29,6 @@ use super::ordinary_pass::geometry::{
 };
 use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
 
-// AV2 § 3 `IDTX` transform type value.
 const IDTX: usize = 9;
 
 /// Caller-selected coefficient branch before the AV2 `useFsc` split.

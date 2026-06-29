@@ -171,8 +171,6 @@ impl CoreSeqRestorationView {
             (false, 2) => self.lr_wiener_nonsep_disabled,
             (true, 1) => self.lr_uv_pc_wiener_disabled,
             (true, 2) => self.lr_uv_wiener_nonsep_disabled,
-            // No other RESTORE_* index is scanned (RESTORE_SWITCHABLE_TYPES == 3, and the
-            // scan runs i in 1..3). Treat any other index as not-disabled defensively.
             _ => false,
         }
     }
@@ -208,7 +206,6 @@ impl LrGeometry {
     #[must_use]
     pub const fn new(sb_size: SuperblockSize, chroma: ChromaFormatIdc) -> Self {
         let (subsampling_x, subsampling_y) = match chroma {
-            // CHROMA_FORMAT_420 / CHROMA_FORMAT_400 -> (1, 1); _444 -> (0, 0); _422 -> (1, 0).
             ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (1, 1),
             ChromaFormatIdc::Yuv444 => (0, 0),
             ChromaFormatIdc::Yuv422 => (1, 0),
@@ -319,8 +316,6 @@ pub fn parse_lr_params(
     geometry: LrGeometry,
     base_q_idx: u32,
 ) -> Result<LrParseOutcome> {
-    // AV2 § 5.18.7.11: if ( CodedLossless || !enable_restoration ) all planes RESTORE_NONE,
-    // UsesLr = 0, frame_filters_on[i] = 0; return (no bits).
     let _ = base_q_idx; // `get_filter_set_index(base_q_idx)` signals no bits (SubclassLookup only).
     if coded_lossless || !view.enable_restoration {
         return Ok(LrParseOutcome::Parsed(LrParams {
@@ -334,14 +329,10 @@ pub fn parse_lr_params(
     let mut uses_chroma_lr = false;
     let mut planes: Vec<LrPlaneParams> = Vec::with_capacity(usize::from(num_planes));
 
-    // AV2 § 5.18.7.11: for ( plane = 0; plane < NumPlanes; plane++ ).
     for plane in 0..usize::from(num_planes) {
         let is_chroma = plane > 0;
-        // indexToTool / toolsCount / n derivation, shared with the writer (see
-        // `lr_plane_tool_table`). tool_index ns(n).
         let (index_to_tool, _tools_count, n) = lr_plane_tool_table(*view, is_chroma);
         let tool_index = reader.read_ns(n)?;
-        // FrameRestorationType[plane] = indexToTool[tool_index].
         let tool = index_to_tool.get(tool_index as usize).copied().unwrap_or(0);
         let restoration_type = FrameRestorationType::from_tool(tool);
 
@@ -353,34 +344,21 @@ pub fn parse_lr_params(
             }
         }
 
-        // frame_filters_on[plane] = 0; temporal_pred_flag[plane] = 0.
         let mut frame_filters_on = false;
         let mut num_filter_classes: Option<u8> = None;
 
-        // r == RESTORE_WIENER_NONSEP || r == RESTORE_SWITCHABLE.
         if matches!(
             restoration_type,
             FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
         ) {
-            // frame_filters_on[plane] f(1).
             frame_filters_on = reader.read_flag()?;
-            if frame_filters_on {
-                // AV2 § 5.18.7.11: numRefFrames = (FrameIsIntra || FrameType == SWITCH_FRAME)
-                // ? 0 : NumTotalRefs. On the intra path FrameIsIntra, so numRefFrames == 0:
-                // temporal_pred_flag[plane] is NOT read (gated on numRefFrames > 0) and the
-                // whole temporal-copy branch (rst_ref_pic_idx, RefFrameLrWienerNs copy) is dead.
-
-                // if ( plane == 0 && frame_filters_on[0] ): temporal_pred_flag == 0 here, so
-                // num_filter_classes_idx f(3); NumFilterClasses = Decode_Num_Filter_Classes[idx].
-                if plane == 0 {
-                    let idx = reader.read_bits_u8(3)?;
-                    // idx is f(3) -> 0..=7, always in range of the 8-entry table.
-                    let classes = DECODE_NUM_FILTER_CLASSES
-                        .get(usize::from(idx))
-                        .copied()
-                        .unwrap_or(1);
-                    num_filter_classes = Some(classes);
-                }
+            if frame_filters_on && plane == 0 {
+                let idx = reader.read_bits_u8(3)?;
+                let classes = DECODE_NUM_FILTER_CLASSES
+                    .get(usize::from(idx))
+                    .copied()
+                    .unwrap_or(1);
+                num_filter_classes = Some(classes);
             }
         }
 
@@ -392,8 +370,6 @@ pub fn parse_lr_params(
         });
     }
 
-    // AV2 § 5.18.7.11: UsesLr = usesLumaLr || usesChromaLr; the per-plane LoopRestorationSize
-    // derivation. shift selection reads luma/chroma size flags.
     let uses_lr = uses_luma_lr || uses_chroma_lr;
     let max_subsampling = u32::from(geometry.subsampling_x.max(geometry.subsampling_y));
     let mut loop_restoration_size = [
@@ -403,26 +379,18 @@ pub fn parse_lr_params(
     ];
 
     if uses_luma_lr {
-        // lr_luma_use_half_size f(1); else if SbSize == BLOCK_256X256 shift = 0; else read
-        // lr_luma_use_max_size f(1); ...; else lr_luma_use_quarter_size f(1).
         let shift = read_lr_size_shift(reader, geometry.sb_size)?;
         loop_restoration_size[0] = RESTORATION_TILESIZE_MAX >> shift;
     }
 
     if uses_chroma_lr {
-        // LoopRestorationSize[1] = RESTORATION_TILESIZE_MAX >> Max(SubsamplingX, SubsamplingY).
         let base = RESTORATION_TILESIZE_MAX >> max_subsampling;
         let shift = read_lr_size_shift(reader, geometry.sb_size)?;
         loop_restoration_size[1] = base >> shift;
     }
 
-    // LoopRestorationSize[2] = LoopRestorationSize[1].
     loop_restoration_size[2] = loop_restoration_size[1];
 
-    // AV2 § 5.18.7.11 (mirror :7373-7381): for each plane with frame_filters_on[plane] &&
-    // !temporal_pred_flag[plane], read_wienerns_filter(plane, 0, 0, 1). On the intra path
-    // temporal_pred_flag is always 0. The fixed-coded readFrameFilters path is modeled in
-    // the Wiener NS submodule and preserved on the per-plane state.
     for (plane, plane_params) in planes.iter_mut().enumerate() {
         if plane_params.frame_filters_on {
             let classes = if plane == 0 {
@@ -447,25 +415,18 @@ pub fn parse_lr_params(
 /// `*_use_max_size`, `*_use_quarter_size`) with the same `SbSize`-dependent inferences, so
 /// they share one helper.
 fn read_lr_size_shift(reader: &mut BitReader<'_>, sb_size: SuperblockSize) -> Result<u32> {
-    // *_use_half_size f(1).
     if reader.read_flag()? {
-        // shift = 1.
         return Ok(1);
     }
     if sb_size == SuperblockSize::Block256x256 {
-        // shift = 0.
         return Ok(0);
     }
-    // *_use_max_size f(1).
     if reader.read_flag()? {
-        // shift = 0.
         return Ok(0);
     }
     if sb_size == SuperblockSize::Block128x128 {
-        // shift = 2.
         return Ok(2);
     }
-    // *_use_quarter_size f(1); shift = quarter ? 2 : 3.
     if reader.read_flag()? { Ok(2) } else { Ok(3) }
 }
 
@@ -482,8 +443,6 @@ pub(crate) fn lr_plane_tool_table(
     view: CoreSeqRestorationView,
     is_chroma: bool,
 ) -> ([u8; RESTORE_SWITCHABLE_TYPES + 1], usize, u32) {
-    // indexToTool[0] = RESTORE_NONE; for i in 1..RESTORE_SWITCHABLE_TYPES add enabled tools;
-    // indexToTool[toolsCount] = RESTORE_SWITCHABLE.
     let mut index_to_tool = [0u8; RESTORE_SWITCHABLE_TYPES + 1];
     let mut tools_count = 1usize; // indexToTool[0] = RESTORE_NONE.
     for i in 1..RESTORE_SWITCHABLE_TYPES {
@@ -492,10 +451,8 @@ pub(crate) fn lr_plane_tool_table(
             tools_count += 1;
         }
     }
-    // indexToTool[toolsCount] = RESTORE_SWITCHABLE (3).
     index_to_tool[tools_count] = RESTORE_SWITCHABLE_TYPES as u8;
     let allow_switchable = tools_count > 2;
-    // n = toolsCount + allowSwitchable.
     let n = tools_count as u32 + u32::from(allow_switchable);
     (index_to_tool, tools_count, n)
 }
@@ -573,8 +530,6 @@ pub fn parse_ccso_params(
     num_planes: u8,
     view: &CoreSeqCcsoView,
 ) -> Result<CcsoParams> {
-    // AV2 § 5.18.7.12: ccso_planes[plane] = 0 for all planes; if ( CodedLossless ||
-    // !enable_ccso ) return (no bits).
     if coded_lossless || !view.enable_ccso {
         return Ok(CcsoParams {
             ccso_frame_flag: None,
@@ -582,16 +537,11 @@ pub fn parse_ccso_params(
         });
     }
 
-    // AV2 § 5.18.7.12: the `a` tile-alignment scan and CcsoLumaSizeLog2 derivation signal
-    // no bits (pure derivations of CcsoLumaSizeLog2), so they are not modeled here.
-
-    // if ( single_picture_header_flag ) ccso_frame_flag = 1; else ccso_frame_flag f(1).
     let ccso_frame_flag = if view.single_picture_header_flag {
         true
     } else {
         reader.read_flag()?
     };
-    // if ( !ccso_frame_flag ) return.
     if !ccso_frame_flag {
         return Ok(CcsoParams {
             ccso_frame_flag: Some(false),
@@ -600,9 +550,7 @@ pub fn parse_ccso_params(
     }
 
     let mut planes: Vec<CcsoPlaneParams> = Vec::with_capacity(usize::from(num_planes));
-    // AV2 § 5.18.7.12: for ( plane = 0; plane < NumPlanes; plane++ ).
     for _plane in 0..usize::from(num_planes) {
-        // ccso_planes[plane] f(1).
         let ccso_planes = reader.read_flag()?;
         let mut plane_params = CcsoPlaneParams {
             ccso_planes,
@@ -615,59 +563,38 @@ pub fn parse_ccso_params(
             ccso_offset_idx: Vec::new(),
         };
 
-        // AV2 § 5.18.7.12: the reuse arm (reuse_ccso / sb_reuse_ccso / ccso_ref_idx /
-        // load_ccso_params) is gated on !(FrameIsIntra || FrameType == SWITCH_FRAME); on the
-        // intra path FrameIsIntra, so reuse_ccso[plane] == 0 and the arm is dead.
-
-        // if ( ccso_planes[plane] && !reuse_ccso[plane] ) -> on intra reuse_ccso == 0.
         if ccso_planes {
-            // ccso_bo_only[plane] f(1); ccso_scale_idx[plane] f(2).
             let ccso_bo_only = reader.read_flag()?;
             let ccso_scale_idx = reader.read_bits_u8(2)?;
             let (ccso_quant_idx, ccso_ext_filter, ccso_edge_clf) = if ccso_bo_only {
-                // ccso_quant_idx = 0; ccso_ext_filter = 0; ccso_edge_clf = 0 (no bits).
                 (0u8, 0u8, false)
             } else {
-                // ccso_quant_idx[plane] f(2); ccso_ext_filter[plane] f(3).
                 let ccso_quant_idx = reader.read_bits_u8(2)?;
                 let ccso_ext_filter = reader.read_bits_u8(3)?;
-                // quantStep = CCSO_Quant_Sz[ccso_scale_idx][ccso_quant_idx].
                 let quant_step = ccso_quant_step(ccso_scale_idx, ccso_quant_idx);
                 let ccso_edge_clf = if quant_step == 0 {
-                    // ccso_edge_clf = 0 (no bit).
                     false
                 } else {
-                    // ccso_edge_clf[plane] f(1).
                     reader.read_flag()?
                 };
                 (ccso_quant_idx, ccso_ext_filter, ccso_edge_clf)
             };
 
-            // n = 2 + ccso_bo_only; ccso_max_band_log2[plane] f(n).
             let band_bits = 2 + u32::from(ccso_bo_only);
             let ccso_max_band_log2 = reader.read_bits_u8(band_bits)?;
 
-            // maxEdgeInterval = CCSO_INPUT_INTERVAL - ccso_edge_clf; if ( ccso_bo_only )
-            // maxEdgeInterval = 1. maxBand = 1 << ccso_max_band_log2.
             let max_edge_interval = if ccso_bo_only {
                 1u32
             } else {
                 CCSO_INPUT_INTERVAL - u32::from(ccso_edge_clf)
             };
-            // maxBand uses a widened shift: ccso_max_band_log2 is f(2..=3) (0..=7), so the
-            // shift never exceeds 7 and `1u32 << 7` cannot overflow.
             let max_band = 1u32 << u32::from(ccso_max_band_log2);
 
-            // for d0 in 0..maxEdgeInterval, d1 in 0..maxEdgeInterval, band in 0..maxBand:
-            // ccso_offset_idx tu(7). Surface the values (in (d0, d1, band) order) so the
-            // §5.18.7.12 writer can reproduce them byte-exactly; the count
-            // maxEdgeInterval * maxEdgeInterval * maxBand fits a usize (<= 3 * 3 * 128).
             let offset_count = (max_edge_interval * max_edge_interval * max_band) as usize;
             let mut ccso_offset_idx = Vec::with_capacity(offset_count);
             for _d0 in 0..max_edge_interval {
                 for _d1 in 0..max_edge_interval {
                     for _band in 0..max_band {
-                        // ccso_offset_idx tu(7): truncated unary in 0..=7 (§ 4.11.9).
                         ccso_offset_idx.push(read_tu(reader, 7)? as u8);
                     }
                 }
@@ -715,8 +642,6 @@ mod tests {
     }
 
     fn restoration_enabled() -> CoreSeqRestorationView {
-        // enable_restoration with both luma switchable tools enabled (so the per-plane scan
-        // can produce SWITCHABLE) and the inferred chroma PC-Wiener disable.
         CoreSeqRestorationView {
             enable_restoration: true,
             lr_pc_wiener_disabled: false,
@@ -735,8 +660,6 @@ mod tests {
     fn geom_128_420() -> LrGeometry {
         LrGeometry::new(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420)
     }
-
-    // ---- lr_params ----
 
     #[test]
     fn lr_coded_lossless_reads_no_bits() {
@@ -767,10 +690,6 @@ mod tests {
 
     #[test]
     fn lr_all_planes_restore_none_completes_no_size_bits() {
-        // Both switchable tools enabled for luma -> toolsCount = 3, allowSwitchable = true,
-        // n = 4. tool_index = 0 -> RESTORE_NONE for every plane. Chroma: PC-Wiener disabled
-        // (inferred), WIENER_NONSEP enabled -> toolsCount = 2, allowSwitchable = false, n = 2,
-        // tool_index 0 -> RESTORE_NONE. No frame_filters_on, no size flags.
         let mut bits = Bits::default();
         bits.ns(0, 4); // plane 0 tool_index ns(4) == 0 -> RESTORE_NONE
         bits.ns(0, 2); // plane 1 tool_index ns(2) == 0 -> RESTORE_NONE
@@ -794,7 +713,6 @@ mod tests {
                     assert_eq!(plane.restoration_type, FrameRestorationType::None);
                     assert!(!plane.frame_filters_on);
                 }
-                // Default sizes: luma 512>>3 == 64, chroma 512>>(3+1) == 32.
                 assert_eq!(params.loop_restoration_size, [64, 32, 32]);
             }
             other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
@@ -805,15 +723,10 @@ mod tests {
 
     #[test]
     fn lr_luma_pc_wiener_no_frame_filters_reads_no_size_bits() {
-        // Luma tool_index selects RESTORE_PC_WIENER (1) -> usesLumaLr, but PC_WIENER does NOT
-        // read frame_filters_on (only WIENER_NONSEP/SWITCHABLE do). usesLumaLr -> luma size
-        // flags read. indexToTool for luma (both enabled) = [NONE, PC_WIENER, WIENER_NONSEP,
-        // SWITCHABLE]; tool_index 1 -> PC_WIENER.
         let mut bits = Bits::default();
         bits.ns(1, 4); // plane 0 tool_index == 1 -> RESTORE_PC_WIENER
         bits.ns(0, 2); // plane 1 -> RESTORE_NONE
         bits.ns(0, 2); // plane 2 -> RESTORE_NONE
-        // usesLumaLr -> luma size: lr_luma_use_half_size == 1 -> shift 1, no more flags.
         bits.bit(1);
         let data = bits.into_bytes();
         let mut r = reader(&data);
@@ -834,7 +747,6 @@ mod tests {
                     FrameRestorationType::PcWiener
                 );
                 assert!(!params.planes[0].frame_filters_on);
-                // luma half size: 512 >> 1 == 256.
                 assert_eq!(params.loop_restoration_size[0], 256);
             }
             other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
@@ -845,19 +757,13 @@ mod tests {
 
     #[test]
     fn lr_frame_filters_on_parses_wienerns_bank() {
-        // Luma PC-Wiener is disabled, so the luma tool table is [NONE, WIENER_NONSEP].
-        // The frame-level Wiener NS bank takes the fixed-coded readFrameFilters path and
-        // parses to completion after the size-signaling phase.
         let mut bits = Bits::default();
         bits.ns(1, 2); // plane 0 tool_index == 1 -> RESTORE_WIENER_NONSEP
         bits.bit(1); // frame_filters_on[0] == 1
         bits.f(1, 3); // num_filter_classes_idx == 1 -> Decode_Num_Filter_Classes[1] == 2
         bits.ns(0, 2); // plane 1 -> RESTORE_NONE
         bits.ns(0, 2); // plane 2 -> RESTORE_NONE
-        // usesLumaLr -> luma size flag (half size).
         bits.bit(1);
-        // read_wienerns_filter(0, 0, 0, 1): class 0 match is inferred zero; class 1
-        // matches prior class 0 with a one-bit subexp value; both classes are merged.
         bits.bit(0); // class 1 match_index == 1
         bits.bit(1); // merged[0]
         bits.bit(1); // merged[1]
@@ -916,8 +822,6 @@ mod tests {
 
     #[test]
     fn lr_256x256_luma_size_single_flag() {
-        // SbSize == BLOCK_256X256: after lr_luma_use_half_size == 0 the size is fixed
-        // (shift 0) with no further flag. Luma PC_WIENER -> usesLumaLr.
         let geom = LrGeometry::new(SuperblockSize::Block256x256, ChromaFormatIdc::Yuv420);
         let mut bits = Bits::default();
         bits.ns(1, 4); // plane 0 -> PC_WIENER
@@ -929,7 +833,6 @@ mod tests {
         let outcome = parse_lr_params(&mut r, false, 3, &restoration_enabled(), geom, 100).unwrap();
         match outcome {
             LrParseOutcome::Parsed(params) => {
-                // shift 0 -> 512 >> 0 == 512.
                 assert_eq!(params.loop_restoration_size[0], 512);
             }
             other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
@@ -940,7 +843,6 @@ mod tests {
 
     #[test]
     fn lr_monochrome_skips_chroma_planes() {
-        // NumPlanes == 1: only the luma plane is scanned.
         let mut bits = Bits::default();
         bits.ns(0, 4); // plane 0 -> NONE
         let data = bits.into_bytes();
@@ -956,8 +858,6 @@ mod tests {
         .unwrap();
         assert!(matches!(outcome, LrParseOutcome::Parsed(p) if p.planes.len() == 1));
     }
-
-    // ---- ccso_params ----
 
     fn ccso_enabled() -> CoreSeqCcsoView {
         CoreSeqCcsoView {
@@ -1001,7 +901,6 @@ mod tests {
     fn ccso_single_picture_infers_frame_flag() {
         let mut view = ccso_enabled();
         view.single_picture_header_flag = true;
-        // ccso_frame_flag inferred 1 (no bit). All planes ccso_planes == 0.
         let mut bits = Bits::default();
         bits.bit(0); // ccso_planes[0]
         bits.bit(0); // ccso_planes[1]
@@ -1014,22 +913,17 @@ mod tests {
         for plane in &params.planes {
             assert!(!plane.ccso_planes);
         }
-        // 3 ccso_planes bits, no frame-flag bit.
         assert_eq!(r.consumed_bits(), 3);
     }
 
     #[test]
     fn ccso_plane_bo_only_reads_offsets() {
-        // ccso_frame_flag read == 1; plane 0 enabled, ccso_bo_only == 1 -> quant/ext/edge_clf
-        // all 0, maxEdgeInterval = 1, n = 3 band bits. maxBand = 1 << ccso_max_band_log2.
         let mut bits = Bits::default();
         bits.bit(1); // ccso_frame_flag
         bits.bit(1); // ccso_planes[0]
         bits.bit(1); // ccso_bo_only[0]
         bits.f(0, 2); // ccso_scale_idx[0]
-        // bo_only -> no quant/ext/edge_clf reads. n = 2 + 1 = 3.
         bits.f(0, 3); // ccso_max_band_log2[0] == 0 -> maxBand = 1
-        // d0 in 0..1, d1 in 0..1, band in 0..1 -> one ccso_offset_idx tu(7).
         bits.tu(0, 7); // ccso_offset_idx == 0
         bits.bit(0); // ccso_planes[1]
         bits.bit(0); // ccso_planes[2]
@@ -1043,17 +937,13 @@ mod tests {
         assert_eq!(params.planes[0].ccso_ext_filter, Some(0));
         assert_eq!(params.planes[0].ccso_edge_clf, Some(false));
         assert_eq!(params.planes[0].ccso_max_band_log2, Some(0));
-        // One ccso_offset_idx (maxEdgeInterval 1 * 1 * maxBand 1), surfaced.
         assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
         assert!(!params.planes[1].ccso_planes);
-        // A disabled plane codes no offsets.
         assert!(params.planes[1].ccso_offset_idx.is_empty());
     }
 
     #[test]
     fn ccso_plane_full_arm_reads_ext_filter_and_edge_clf() {
-        // ccso_bo_only == 0 -> quant_idx f(2), ext_filter f(3) read. quantStep = CCSO_Quant_Sz
-        // [scale_idx 1][quant_idx 0] == 56 != 0 -> ccso_edge_clf f(1). n = 2 band bits.
         let mut bits = Bits::default();
         bits.bit(1); // ccso_frame_flag
         bits.bit(1); // ccso_planes[0]
@@ -1063,8 +953,6 @@ mod tests {
         bits.f(5, 3); // ccso_ext_filter[0] == 5
         bits.bit(1); // ccso_edge_clf[0] == 1 (quantStep != 0)
         bits.f(0, 2); // ccso_max_band_log2[0] == 0 (n = 2) -> maxBand 1
-        // maxEdgeInterval = CCSO_INPUT_INTERVAL - edge_clf = 3 - 1 = 2. d0 0..2, d1 0..2,
-        // band 0..1 -> 4 ccso_offset_idx tu(7).
         for _ in 0..4 {
             bits.tu(1, 7); // ccso_offset_idx == 1
         }
@@ -1077,13 +965,11 @@ mod tests {
         assert_eq!(params.planes[0].ccso_scale_idx, Some(1));
         assert_eq!(params.planes[0].ccso_ext_filter, Some(5));
         assert_eq!(params.planes[0].ccso_edge_clf, Some(true));
-        // 4 ccso_offset_idx (maxEdgeInterval 2 * 2 * maxBand 1), each tu == 1, surfaced.
         assert_eq!(params.planes[0].ccso_offset_idx, vec![1, 1, 1, 1]);
     }
 
     #[test]
     fn ccso_quant_step_zero_suppresses_edge_clf() {
-        // CCSO_Quant_Sz[0][3] == 0 -> ccso_edge_clf inferred 0 with no bit.
         let mut bits = Bits::default();
         bits.bit(1); // ccso_frame_flag
         bits.bit(1); // ccso_planes[0]
@@ -1091,9 +977,7 @@ mod tests {
         bits.f(0, 2); // ccso_scale_idx == 0
         bits.f(3, 2); // ccso_quant_idx == 3 -> CCSO_Quant_Sz[0][3] == 0
         bits.f(0, 3); // ccso_ext_filter
-        // no ccso_edge_clf bit (quantStep == 0). n = 2.
         bits.f(0, 2); // ccso_max_band_log2 == 0 -> maxBand 1
-        // maxEdgeInterval = 3 - 0 = 3 (edge_clf == 0). 3*3*1 = 9 offsets.
         for _ in 0..9 {
             bits.tu(0, 7);
         }
@@ -1103,15 +987,11 @@ mod tests {
         let mut r = reader(&data);
         let params = parse_ccso_params(&mut r, false, 3, &ccso_enabled()).unwrap();
         assert_eq!(params.planes[0].ccso_edge_clf, Some(false));
-        // 9 ccso_offset_idx (maxEdgeInterval 3 * 3 * maxBand 1), all tu == 0, surfaced.
         assert_eq!(params.planes[0].ccso_offset_idx, vec![0u8; 9]);
     }
 
     #[test]
     fn ccso_offset_idx_values_surface_in_iteration_order() {
-        // bo_only == 1 -> maxEdgeInterval 1; ccso_max_band_log2 == 2 -> maxBand 4. So 1*1*4 = 4
-        // ccso_offset_idx values, read in (d0, d1, band) order. Use distinct tu(7) values to
-        // pin the ordering: the surfaced Vec must be exactly [0, 1, 2, 7].
         let mut bits = Bits::default();
         bits.bit(1); // ccso_frame_flag
         bits.bit(1); // ccso_planes[0]

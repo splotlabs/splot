@@ -40,26 +40,14 @@ impl ValidatorContext {
             return;
         };
         match boundary {
-            FrameBoundary::ContinuesUnit => {
-                // Same coded frame as its first tile group; its pending update already
-                // captured the §7.23 effect. Nothing to commit or re-derive.
-            }
+            FrameBoundary::ContinuesUnit => {}
             FrameBoundary::OpensNewUnit => {
-                // The previous coded frame completed: commit its deferred §7.23 update so
-                // this frame's reference checks see the post-decode buffer.
                 self.commit_pending_ref_update();
-                // Run this frame's reference-state checks against the committed buffer
-                // (the §6.17.2 show-existing-frame slot-validity diagnostic).
                 self.reference_state_checks(obu, first_picture_in_tu, report);
-                // Derive and stage this frame's own §7.23 update (committed at the NEXT
-                // frame boundary or the end-of-bitstream flush).
                 let update = self.derive_ref_update(obu, first_picture_in_tu);
                 self.pending_ref_update = Some((obu.header.extended_layer_id, update));
             }
             FrameBoundary::Ambiguous => {
-                // The prior frame is done; commit its update. This frame's own refresh
-                // effect is unknowable, so stage a poison-all (no reference checks fire —
-                // a poisoned buffer proves nothing).
                 self.commit_pending_ref_update();
                 self.pending_ref_update =
                     Some((obu.header.extended_layer_id, FrameRefUpdate::PoisonAll));
@@ -110,20 +98,10 @@ impl ValidatorContext {
         obu: &ObuEnvelope<'_>,
         first_picture_in_tu: bool,
     ) -> FrameRefUpdate {
-        // The core must resolve to the active (== referenced) sequence header, exactly as
-        // the output-class / order-hint derivation requires — otherwise the parsed fields
-        // were read against a stale header and cannot be trusted (the same guard
-        // `frame_celu_facts` uses).
         let Some(core) = self.frame_core_against_referenced_header(obu, first_picture_in_tu) else {
             return FrameRefUpdate::PoisonAll;
         };
 
-        // Only a completed parse may stage a § 7.23 update (see the doc above). An
-        // incomplete / unsupported / truncated parse — every inter / TIP / bridge path lands
-        // on `UnsupportedUntilFeature` past the prefix — has unestablished decodability and
-        // possibly mis-positioned `refresh_frame_flags` / dims, so it poisons even though
-        // those fields may be `Some` on the core. This is the gate that stops a normal
-        // §7.23 Refresh from an inter frame whose parse never completed.
         if !matches!(
             core.status,
             FrameHeaderParseStatus::IntraHeaderComplete
@@ -132,14 +110,10 @@ impl ValidatorContext {
             return FrameRefUpdate::PoisonAll;
         }
 
-        // A completed show-existing-frame updates no slot (§ 5.18.2 :4180).
         if core.show_existing_frame == Some(true) {
             return FrameRefUpdate::SefNoUpdate;
         }
 
-        // Every grounded update needs the refresh mask, the frame type (for the §7.23
-        // RefValid `first` rule), and the stored facts (OrderHint + dims). Any missing
-        // fact poisons (the mask could refresh any slot, and a partial store is a guess).
         let (Some(refresh_frame_flags), Some(frame_type)) =
             (core.refresh_frame_flags, core.frame_type)
         else {
@@ -149,20 +123,11 @@ impl ValidatorContext {
             core.order_hint_lsb,
             core.frame_size.map(|size| size.width),
             core.frame_size.map(|size| size.height),
-            // AV2 § 7.23 (mirror :14113): RefLongTermId[i] = LongTermId. A KEY frame's
-            // LongTermId comes from long_term_id_plus_1 (§5.18.2 mirror :4231-4239); every
-            // other frame infers LongTermId == -1 (the "not a long-term frame" sentinel).
-            // `core.long_term_id` is `Some(-1)` once the long-term field was reached, so a
-            // completed-parse frame always grounds this (the `slot_facts` helper maps a
-            // negative or `None` value to the `None` non-long-term sentinel without poisoning).
             core.long_term_id,
         ) else {
             return FrameRefUpdate::PoisonAll;
         };
 
-        // The §5.18.2 CLK reset (`OBU_CLOSED_LOOP_KEY && FirstPictureInTU`) clears
-        // RefValid[i] over 0..NumRefFrames before the refresh (mirror :4449-4455). The
-        // core records `starts_cvs` for exactly this condition.
         if core.starts_cvs && obu.header.obu_type == ObuType::ClosedLoopKey {
             let num_ref_frames = self
                 .active_sequence_by_xlayer
@@ -205,11 +170,6 @@ impl ValidatorContext {
         let Some(core) = self.frame_core_against_referenced_header(obu, first_picture_in_tu) else {
             return;
         };
-        // AV2 § 6.17.2 (mirror :4178-4179) / § 7.23: a show-existing-frame outputs the
-        // frame stored at `frame_to_show_map_idx`; that reference frame must be valid
-        // (`RefValid[ frame_to_show_map_idx ] == 1`). The buffer fires ONLY when it
-        // PROVES the slot invalid (a CLK reset with no re-validating refresh since); a
-        // poisoned (Unknown) slot stays silent.
         if core.show_existing_frame == Some(true)
             && let Some(idx) = core.frame_to_show_map_idx
             && self
@@ -229,12 +189,6 @@ impl ValidatorContext {
             ));
         }
 
-        // AV2 § 6.17.2 / § 7.23: an inter frame's explicit-reference-map ref_frame_idx[i]
-        // (§5.18.2 mirror :4611-4625) names a reference slot that must be valid
-        // (`RefValid[ ref_frame_idx[i] ] == 1`). Fire ONLY where the §7.23 buffer PROVES
-        // the slot invalid (a CLK reset with no re-validating refresh since); a poisoned
-        // (Unknown) slot, or the implicit reference map (`get_ref_frames()`, unmodeled),
-        // stays silent.
         if let Some(inter) = core.inter.as_ref() {
             for &idx in &inter.ref_frame_idx {
                 if self
@@ -252,33 +206,11 @@ impl ValidatorContext {
                              was invalidated by a CLK reset and not refreshed since)"
                         ),
                     ));
-                    // One diagnostic per frame is enough to flag the defect.
                     break;
                 }
             }
         }
 
-        // AV2 § 6.17.2 (mirror :4638-4644): "Once the frame size has been determined, it is a
-        // requirement of bitstream conformance that all the following conditions are satisfied
-        // for i=0..NumTotalRefs-1:
-        //   2 * FrameWidth  >= RefFrameWidth [ ref_frame_idx[ i ] ]
-        //   2 * FrameHeight >= RefFrameHeight[ ref_frame_idx[ i ] ]
-        //       FrameWidth  <= 16 * RefFrameWidth [ ref_frame_idx[ i ] ]
-        //       FrameHeight <= 16 * RefFrameHeight[ ref_frame_idx[ i ] ]"
-        // (§6.17.4.3 mirror :5251-5258 restates the same four inequalities over the full
-        // 0..REFS_PER_FRAME-1 reference set; the validator models only the explicit map's
-        // ref_frame_idx[0..NumTotalRefs], so the implicit-map slots beyond NumTotalRefs — which
-        // need the unmodeled get_ref_frames() derivation — are a named residual.)
-        //
-        // Decidable once the frame size has been determined — §6.17.2 (mirror :4638) gates the
-        // constraint on exactly that — so the resolved FrameWidth/FrameHeight on `core.frame_size`
-        // (parsed via the §5.18.4 frame-size syntax) AND the referenced slot being PROVEN valid so
-        // RefFrameWidth/RefFrameHeight are known (`SlotState::Valid`) are both required. An
-        // Unknown / ProvenInvalid slot has no proven dims and drops to silence (the Unknown
-        // invariant; a ProvenInvalid slot is already flagged by the ref-frame-idx check above).
-        // The implicit reference map (get_ref_frames(), unmodeled) records no ref_frame_idx and
-        // is silent. A reference used to *derive* the size satisfies the bounds trivially
-        // (FrameWidth == RefFrameWidth there); the constraint bites the other references.
         if let Some(inter) = core.inter.as_ref()
             && let Some(size) = core.frame_size
         {
@@ -289,11 +221,6 @@ impl ValidatorContext {
                 else {
                     continue;
                 };
-                // RefFrame*/FrameWidth are u32; the 2x and 16x products can overflow. Saturate:
-                // a saturated lower bound (2*FrameWidth -> u32::MAX) still dominates any u32 ref
-                // (no violation), and a saturated upper bound (16*RefFrame* -> u32::MAX) still
-                // dominates any u32 frame dim (no violation) — so saturation never invents a
-                // violation, it only suppresses one that overflow would otherwise misjudge.
                 let two_width = size.width.saturating_mul(2);
                 let two_height = size.height.saturating_mul(2);
                 let max_width = facts.width.saturating_mul(16);
@@ -337,25 +264,11 @@ impl ValidatorContext {
                              height, once the frame size is determined)"
                         ),
                     ));
-                    // One diagnostic per frame is enough to flag the defect.
                     break;
                 }
             }
         }
 
-        // AV2 § 6.17.2 (mirror :4594-4595): when use_bru == 1, "RefFrameWidth[ ref_frame_idx[
-        // bru_ref ] ] is equal to FrameWidth" and "RefFrameHeight[ ref_frame_idx[ bru_ref ] ] is
-        // equal to FrameHeight" — a backward-reference-update frame must match the dimensions of
-        // the reference it updates. Decidable from the same modeled state as the scaling ratio:
-        // the resolved current size (`core.frame_size`) and the proven-valid bru_ref slot's stored
-        // dims (`SlotState::Valid`). The other use_bru == 1 conformance items are either already
-        // checked (immediate_output_frame == 1 -> frame-header/bru-without-immediate-output;
-        // bru_ref < NumTotalRefs -> frame-header/bru-ref-out-of-range; the refresh-mask-bit ->
-        // frame-header/bru-ref-refresh-flag-unset below) or need the unmodeled get_ref_frames()
-        // RefOrderHint derivation (OrderHint >= RefOrderHint[i], the RESTRICTED_OH item) and stay
-        // residual. An Unknown / ProvenInvalid bru_ref slot has no proven dims and drops to
-        // silence; bru_ref is
-        // bounds-checked against the recorded ref_frame_idx (a separate bru-ref-out-of-range home).
         if let Some(inter) = core.inter.as_ref()
             && inter.use_bru == Some(true)
             && let Some(size) = core.frame_size
@@ -380,14 +293,6 @@ impl ValidatorContext {
             ));
         }
 
-        // AV2 § 6.17.2 (mirror :4596): when use_bru == 1, "The value of refresh_frame_flags &
-        // (1 << ref_frame_idx[ bru_ref ]) must be non-zero" — a backward-reference-update frame
-        // must refresh the very slot it updates. Decidable from parsed header state alone:
-        // refresh_frame_flags (read on the inter path, inter.rs:477), bru_ref, and
-        // ref_frame_idx[bru_ref] — no reference-state lookup (unlike the dims / RefOrderHint
-        // clauses). bru_ref is bounds-checked against the recorded ref_frame_idx, and the shift
-        // is guarded against an out-of-range slot index (one already flagged by
-        // frame-header/ref-frame-idx-invalid-slot), so it cannot panic.
         if let Some(inter) = core.inter.as_ref()
             && inter.use_bru == Some(true)
             && let Some(refresh_frame_flags) = inter.refresh_frame_flags
@@ -410,48 +315,16 @@ impl ValidatorContext {
             ));
         }
 
-        // AV2 § 6.17.2 (mirror :4615-4616): "If obu_type is equal to OBU_RAS_FRAME, it is a
-        // requirement of bitstream conformance that
-        // long_term_id_in_use( RefLongTermId[ ref_frame_idx[ i ] ] ) is equal to 1." A RAS
-        // frame may reference ONLY long-term reference frames whose RefLongTermId appears in
-        // its own ref_long_term_id list (§7.4.5). `long_term_id_in_use(longTermId)` (mirror
-        // :5529-5536) returns 1 iff `longTermId` equals some `ref_long_term_id[j]`.
-        //
-        // Decidable when: (1) this is a RAS frame; (2) the explicit reference map recorded
-        // `ref_frame_idx`; (3) the selected slot is PROVEN valid in the §7.23 buffer so its
-        // RefLongTermId is known. A slot the buffer cannot prove valid (Unknown /
-        // ProvenInvalid) yields `None` from `slot_long_term_id` and DROPS to silence (the
-        // Unknown invariant — and a ProvenInvalid slot is already flagged by the
-        // ref-frame-idx check above).
-        //
-        // REACHABILITY RESIDUAL: condition (2) holds only for a RAS frame with
-        // `max_mlayer_id != 0`. For `max_mlayer_id == 0` (a single-embedded-layer stream) the
-        // §5.18.2 RAS `refresh_frame_flags` derivation reads RefValid/RefLongTermId (mirror
-        // :4493), which the inter parser cannot ground, so it stops with
-        // InterStop::UnmodeledDerivation BEFORE `ref_frame_idx` (inter.rs) — `core.inter`
-        // then records no `ref_frame_idx` and this check is silent. So the rule fires only for
-        // the multistream (`max_mlayer_id != 0`) RAS case; the single-layer case is an honest
-        // under-report (no false positive — the loop simply has nothing to evaluate).
-        //
-        // A proven-valid slot whose RefLongTermId is the `-1`
-        // sentinel (`Some(None)`: refreshed by a non-KEY frame, so not a long-term frame) is
-        // never `long_term_id_in_use`, since every `ref_long_term_id[j]` is `>= 0` — a RAS
-        // selecting it is a defect. A proven-valid long-term slot (`Some(Some(id))`) must
-        // have its `id` listed. Anchored at the RAS frame's OBU, one diagnostic per frame.
         if obu.header.obu_type == ObuType::RasFrame
             && let Some(inter) = core.inter.as_ref()
         {
             for &idx in &inter.ref_frame_idx {
-                // Only a PROVEN-valid slot's RefLongTermId is decidable; Unknown /
-                // ProvenInvalid drops to silence.
                 let Some(slot_long_term_id) = self
                     .reference_state
                     .slot_long_term_id(obu.header.extended_layer_id, idx as usize)
                 else {
                     continue;
                 };
-                // long_term_id_in_use: the slot's RefLongTermId must equal some listed
-                // ref_long_term_id[j]. A `-1` (None) sentinel is never in the list.
                 let in_use =
                     slot_long_term_id.is_some_and(|id| core.ref_long_term_ids.contains(&id));
                 if !in_use {
@@ -472,7 +345,6 @@ impl ValidatorContext {
                             core.ref_long_term_ids
                         ),
                     ));
-                    // One diagnostic per frame is enough to flag the defect.
                     break;
                 }
             }

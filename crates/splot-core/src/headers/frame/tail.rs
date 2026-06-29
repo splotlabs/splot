@@ -158,7 +158,6 @@ pub struct FrameTailInput {
 /// ends before `tx_mode_select` can be read.
 pub fn read_tx_mode(reader: &mut BitReader<'_>, coded_lossless: bool) -> Result<TxMode> {
     if coded_lossless {
-        // AV2 § 5.18.8.1: CodedLossless == 1 -> TxMode = ONLY_4X4 (no bits).
         Ok(TxMode::Only4x4)
     } else {
         let tx_mode_select = reader.read_flag()?; // tx_mode_select f(1)
@@ -183,24 +182,18 @@ pub fn parse_film_grain_config(
     reader: &mut BitReader<'_>,
     input: &FrameTailInput,
 ) -> Result<FilmGrainConfig> {
-    // AV2 § 5.18.10.1 (mirror :8165): apply_grain = 0 unless grain is present AND a
-    // frame that is output (immediate or implicit).
     let apply_grain = if !input.film_grain_params_present
         || (!input.immediate_output_frame && !input.implicit_output_frame)
     {
         false
     } else if input.single_picture_header_flag {
-        // AV2 § 5.18.10.1 (mirror :8169): a single-picture header infers apply_grain = 1
-        // with no bit read.
         true
     } else {
         reader.read_flag()? // apply_grain f(1)
     };
 
     let (fgm_id, grain_seed) = if apply_grain {
-        // fgm_id f(3); load_grain_model( fgm_id ) reads no bits (§ 6.17.10.1).
         let fgm_id = reader.read_bits_u8(3)?;
-        // grain_seed f(16); at most 65535, so `as u16` is exact.
         let grain_seed = reader.read_bits(16)? as u16;
         (Some(fgm_id), Some(grain_seed))
     } else {
@@ -229,19 +222,13 @@ pub fn parse_intra_tail(
     reader: &mut BitReader<'_>,
     input: &FrameTailInput,
 ) -> Result<FrameHeaderTail> {
-    // AV2 § 5.18.8.1: read_tx_mode().
     let tx_mode = read_tx_mode(reader, input.coded_lossless)?;
-    // AV2 § 5.18.8.3 / § 5.18.8.2 / mirror :5313 / :5327: intra inferences (no bits).
     let reference_select = false;
     let skip_mode_present = false;
     let allow_bawp = false;
     let allow_warpmv_mode = false;
-    // AV2 § 5.18.2 (mirror :5337): reduced_tx_set f(2) is always read.
-    // f(2) is at most 3, so `as u8` is exact.
     let reduced_tx_set = reader.read_bits_u8(2)?;
-    // AV2 § 5.18.9.1 (mirror :7792): the intra arm returns before use_global_motion.
     let use_global_motion = false;
-    // AV2 § 5.18.10.1: film_grain_config().
     let film_grain = parse_film_grain_config(reader, input)?;
 
     Ok(FrameHeaderTail {
@@ -339,7 +326,6 @@ mod tests {
     fn film_grain_config_single_picture_infers_apply_grain_one_then_reads_id_and_seed() {
         let mut input = base_input();
         input.single_picture_header_flag = true;
-        // apply_grain inferred 1 (no bit); then fgm_id f(3) + grain_seed f(16).
         let mut bits = Bits::default();
         bits.f(5, 3); // fgm_id = 5
         bits.f(0xBEEF, 16); // grain_seed = 0xBEEF
@@ -418,7 +404,6 @@ mod tests {
         assert!(tail.film_grain.apply_grain);
         assert_eq!(tail.film_grain.fgm_id, Some(7));
         assert_eq!(tail.film_grain.grain_seed, Some(0xABCD));
-        // 1 (tx) + 2 (reduced_tx_set) + 1 (apply_grain) + 3 + 16.
         assert_eq!(r.consumed_bits(), 23);
     }
 
@@ -435,14 +420,11 @@ mod tests {
         assert_eq!(tail.tx_mode, TxMode::Only4x4);
         assert_eq!(tail.reduced_tx_set, 0);
         assert!(!tail.film_grain.apply_grain);
-        // No tx bit (lossless), no apply_grain bit (no grain): just reduced_tx_set f(2).
         assert_eq!(r.consumed_bits(), 2);
     }
 
     #[test]
     fn parse_intra_tail_eof_at_tx_mode_select_is_error() {
-        // Lossy frame: read_tx_mode() reads tx_mode_select f(1) first. An empty payload
-        // makes that first read overrun.
         let input = base_input(); // coded_lossless == false
         let mut empty = reader(&[]);
         assert!(matches!(
@@ -453,8 +435,6 @@ mod tests {
 
     #[test]
     fn parse_intra_tail_eof_at_reduced_tx_set_is_error() {
-        // CodedLossless == 1 -> read_tx_mode() reads no bit, so reduced_tx_set f(2) is the
-        // first tail read. An empty payload makes it overrun immediately.
         let mut input = base_input();
         input.coded_lossless = true;
         let mut empty = reader(&[]);

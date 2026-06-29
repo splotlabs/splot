@@ -795,14 +795,11 @@ mod tests {
     fn reference_store_holds_shared_frames_without_clone() {
         use crate::SharedFrame;
 
-        // `SharedFrame` does not implement `Clone`, so this store proves the
-        // reference store moves/shares handles without requiring `F: Clone`.
         let mut store = ReferenceFrameStore::with_capacity(2).unwrap();
         let shared = SharedFrame::new(frame(4, 41));
         let slot0 = ReferenceSlot::new(0).unwrap();
         let slot1 = ReferenceSlot::new(1).unwrap();
 
-        // Share one frame into two slots without copying pixels.
         assert!(store.put(slot0, shared.share()).unwrap().is_none());
         assert!(store.put(slot1, shared.share()).unwrap().is_none());
         assert_eq!(shared.handle_count(), 3); // original + two stored handles

@@ -472,8 +472,6 @@ fn unexpected<T>(reason: &'static str) -> Result<T, MinimalRuntimePartitionFront
 }
 
 fn frame_sb_size_index(seq_sb_size: SuperblockSize, frame_is_intra: bool) -> usize {
-    // AV2 §5.18.2 caps intra frames signaled with BLOCK_256X256 superblocks to
-    // BLOCK_128X128 before tile partition traversal.
     match (seq_sb_size, frame_is_intra) {
         (SuperblockSize::Block256x256, true) | (SuperblockSize::Block128x128, _) => {
             BLOCK_128X128_INDEX
@@ -528,15 +526,6 @@ mod tests {
         DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeOptions, DecodeRuntimeConfig,
     };
 
-    // The retired pre-AVM "minimal" frozen-tier payload. It coded the luma/V
-    // all_zero (skip) symbol as 0, which is inverted vs AV2 § 5.20.7.27 / AVM
-    // (`decodetxb.c`), where a skipped transform block carries all_zero == 1.
-    // This payload is no longer a committed conformance vector (avmdec rejects
-    // it); it is kept here only to exercise the frozen partition frontier's
-    // pre-allocation limit guards and to prove the AVM-honest block-symbol trace
-    // now rejects the inverted-polarity skip. The committed conformance fixture
-    // is the avmdec/dav2d-agreed luma-skip stream decoded by the general intra
-    // path (see runtime_minimal::general_intra_tests).
     const LEGACY_INVERTED_SKIP_TRACE: &[u8] = &[
         0x44, 0x4b, 0x49, 0x46, 0x00, 0x00, 0x20, 0x00, 0x41, 0x56, 0x30, 0x32, 0x40, 0x00, 0x40,
         0x00, 0x1e, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -547,11 +536,6 @@ mod tests {
 
     #[test]
     fn legacy_inverted_skip_trace_fails_closed_before_output() {
-        // Honesty regression: the retired pre-AVM payload is still rejected before
-        // any output can be materialized. The current partition/frontier bridge
-        // reaches an unsupported frontier shape before the old inverted luma
-        // txb_skip mismatch; that is still the intended fail-closed behavior for
-        // this non-conformant fixture.
         with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
             let Err(err) = plan_minimal_runtime_partition_frontier(
                 work_unit,

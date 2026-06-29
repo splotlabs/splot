@@ -88,31 +88,19 @@ fn compute_tile_info_grid(
     frame_is_intra: bool,
     is_bridge: bool,
 ) -> WriteResult<TileInfoGrid> {
-    // § 5.18.2: SbSize for this frame (intra frames cap 256x256 superblocks at 128).
     let sb_size = tile.frame_sb_size(frame_is_intra);
-    // § 5.18.7.2: sb4x4 = Num_4x4_Blocks_Wide[SbSize]; sbShift = Mi_Width_Log2[SbSize].
     let sb4x4 = num_4x4_blocks_wide(sb_size);
     let sb_shift = mi_width_log2(sb_size);
-    // § 5.18.4.4 compute_image_size(): MiCols = 2 * ((FrameWidth + 7) >> 3),
-    // MiRows = 2 * ((FrameHeight + 7) >> 3).
     let mi_cols = 2 * (frame_size.width.saturating_add(7) >> 3);
     let mi_rows = 2 * (frame_size.height.saturating_add(7) >> 3);
-    // § 5.18.7.2: sbCols = (MiCols + sb4x4 - 1) >> sbShift (and likewise for rows).
     let sb_cols = mi_cols.saturating_add(sb4x4 - 1) >> sb_shift;
     let sb_rows = mi_rows.saturating_add(sb4x4 - 1) >> sb_shift;
 
-    // § 5.18.7.2: haveTileParams = IsBridge ? 0 : seq_tile_info_present_flag.
     let have_tile_params = !is_bridge && tile.seq_tile_info_present_flag;
 
-    // § 5.18.7.2 reuse eligibility: uniform sequence spacing requires
-    // uniform_eligible(SeqTileRowsLog2, sbRows) && uniform_eligible(SeqTileColsLog2,
-    // sbCols); non-uniform requires SeqSbCols == sbCols && SeqSbRows == sbRows.
     let eligible = match (have_tile_params, tile.seq_tile_params.as_ref()) {
         (false, _) => false,
         (true, None) => {
-            // seq_tile_info_present_flag is set but the stored sequence layout is unknown
-            // (reserved seq_level_idx). The parser returns Error::Unimplemented here, so
-            // the eligibility condition cannot be evaluated and the bits cannot be emitted.
             return Err(WriteError::UnwritableSequenceHeader {
                 feature: "AV2-5.18.7-SEGMENTATION-TILING",
             });
@@ -184,22 +172,11 @@ pub fn write_tile_info(
         tip_frame_as_output,
     )?;
 
-    // § 5.18.7.2: reuse_tile_info f(1) only when eligible && allow_tile_info_change;
-    // otherwise the value is inferred (1 when eligible, 0 when not) and no bit is written.
     if grid.eligible && tile.allow_tile_info_change {
         writer.write_flag(info.reuse_tile_info)?;
     }
 
-    if info.reuse_tile_info {
-        // § 5.18.7.2 reuse branch -> reuse_tile_params() (§ 5.18.7.4): no layout bits. The
-        // stored counts / starts were validated against the re-derivation up front.
-    } else if is_bridge {
-        // § 5.18.7.3 bridge call site: tile_params() infers uniform_tile_spacing_flag = 1
-        // and skips both increment loops, so it writes ZERO layout bits. The stored layout
-        // was validated against parse_tile_layout(is_bridge=true) up front.
-    } else {
-        // § 5.18.7.2 explicit branch -> tile_params() (§ 5.18.7.3). The surfaced
-        // TileParams + the sb_*_starts recovered from mi_*_starts drive the forward replay.
+    if !info.reuse_tile_info && !is_bridge {
         let params = info
             .tile_params
             .as_ref()
@@ -217,18 +194,12 @@ pub fn write_tile_info(
         )?;
     }
 
-    // § 5.18.7.2: the trailing fields are read only when
-    // (TileCols > 1 || TileRows > 1) && !IsBridge && TipFrameMode != TIP_FRAME_AS_OUTPUT.
     let multi_tile = info.tile_cols > 1 || info.tile_rows > 1;
     if multi_tile && !is_bridge && !tip_frame_as_output {
-        // § 5.18.7.2: context_update_tile_id f(n) with n = TileRowsLog2 + TileColsLog2,
-        // written only when !enable_avg_cdf || !avg_cdf_type (else inferred 0, no bit).
         if !tile.enable_avg_cdf || tile.avg_cdf_type == 0 {
             let n = u32::from(info.tile_rows_log2) + u32::from(info.tile_cols_log2);
             writer.write_bits(info.context_update_tile_id, n)?;
         }
-        // § 5.18.7.2: tile_size_bytes_minus_1 f(2); TileSizeBytes = tile_size_bytes_minus_1
-        // + 1. Presence + range were validated up front.
         let tile_size_bytes = info
             .tile_size_bytes
             .ok_or(WriteError::NonCanonicalFrameHeader {
@@ -311,9 +282,6 @@ fn check_tile_info_encodable(
 ) -> WriteResult<TileInfoGrid> {
     let grid = compute_tile_info_grid(tile, frame_size, frame_is_intra, is_bridge)?;
 
-    // § 5.18.7.2: reuse_tile_info is inferred (no bit) unless eligible &&
-    // allow_tile_info_change. When inferred, the stored value must match the inferred one:
-    // 1 when eligible (without allow_tile_info_change), 0 when not eligible.
     let reuse_signaled = grid.eligible && tile.allow_tile_info_change;
     if !reuse_signaled {
         let inferred = grid.eligible;
@@ -344,15 +312,11 @@ fn check_reuse_layout(
     tile: &CoreSeqTileView,
     grid: &TileInfoGrid,
 ) -> WriteResult<()> {
-    // The reuse branch writes no tile_params() bits, so the parser leaves tile_params None;
-    // a stored Some could not have been produced and would reparse to None.
     if info.tile_params.is_some() {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "tile_params",
         });
     }
-    // reuse_tile_info is only set when eligible, which the None (reserved-level) case
-    // already rejected in compute_tile_info_grid; seq is always Some here.
     let seq = tile
         .seq_tile_params
         .as_ref()
@@ -361,8 +325,6 @@ fn check_reuse_layout(
         })?;
 
     let reused = if seq.uniform_spacing {
-        // § 5.18.7.2 uniform reuse arm: the uniform branch recomputes the starts at the
-        // frame MiCols/MiRows, so the unrecorded SeqSbColStarts/SeqSbRowStarts are empty.
         reuse_tile_params(ReuseTileParamsInput {
             uniform_spacing: true,
             seq_sb_row_starts: &[],
@@ -377,8 +339,6 @@ fn check_reuse_layout(
             mi_rows: grid.mi_rows,
         })
     } else {
-        // § 5.18.7.2 non-uniform reuse arm: the recorded SeqSbColStarts / SeqSbRowStarts
-        // and tile counts pass through.
         reuse_tile_params(ReuseTileParamsInput {
             uniform_spacing: false,
             seq_sb_row_starts: &tile.seq_sb_row_starts,
@@ -394,8 +354,6 @@ fn check_reuse_layout(
         })
     };
 
-    // § 5.18.7.2: MiColStarts[i] = sbColStarts[i] << sbShift2, then MiColStarts[TileCols]
-    // = MiCols (and likewise for rows). sbShift2 is the reuse arm's returned shift.
     let sb_shift2 = branch_sb_shift2(seq.uniform_spacing, tile.seq_sb_size, grid.sb_size);
     let mut mi_col_starts: Vec<u32> = reused
         .sb_col_starts
@@ -449,9 +407,6 @@ fn check_explicit_layout(
     if is_bridge {
         return check_bridge_layout(info, params, &input, grid);
     }
-    // Re-derive the § 5.18.7.3 grid for the early reserved-level guard; None means a
-    // reserved level (no defined scaling) that could not have been parsed here, surfaced as
-    // a frame-typed error before any scratch write.
     if compute_tile_grid(&input).is_none() {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "tile_params_level",
@@ -460,13 +415,6 @@ fn check_explicit_layout(
     let sb_shift2 = branch_sb_shift2(params.uniform_spacing, tile.seq_sb_size, grid.sb_size);
     let (sb_col_starts, sb_row_starts) = explicit_sb_starts(info, sb_shift2);
 
-    // Reject a non-canonical model BEFORE the forward replay so `write_tile_params` returns a
-    // typed error instead of panicking. The non-uniform branch subtracts grid-relative /
-    // consecutive starts, so it needs fully parser-reachable starts (non-empty, first `0`,
-    // strictly increasing, every start below the superblock-grid bound); the recovered starts
-    // are in frame-`SbSize` units there (the non-uniform `sbShift2`), matching `sb_dims`. The
-    // uniform branch searches for a reproducing `tileColsLog2` and returns a typed error on a
-    // bad layout (no subtraction), so a basic monotonicity guard suffices there.
     if params.uniform_spacing {
         if !sb_col_starts.windows(2).all(|w| w[1] > w[0]) {
             return Err(WriteError::NonCanonicalFrameHeader {
@@ -492,13 +440,6 @@ fn check_explicit_layout(
         }
     }
 
-    // Forward-replay the § 5.18.7.3 bits to a scratch writer, then reparse them with
-    // `parse_tile_layout` and compare. This keeps the real `writer` untouched
-    // (reject-before-write) while validating against the actual round-trip. Unlike the
-    // sequence-call-site `check_tile_params_encodable`, this is correct even when the frame
-    // `SbSize` differs from `seqSbSize` (the uniform branch's start grid then uses a
-    // different superblock size than the increment-loop grid), because it replays the exact
-    // parser derivation rather than re-checking against a single grid's `sbCols` / `sbRows`.
     let mut scratch = BitWriter::new();
     write_tile_params(&mut scratch, params, &sb_col_starts, &sb_row_starts, &input)?;
     let scratch_bytes = scratch.into_bytes();
@@ -508,8 +449,6 @@ fn check_explicit_layout(
             what: "tile_params_level",
         })?;
 
-    // The reparsed layout must reproduce the stored summary + the derived MiColStarts /
-    // MiRowStarts exactly, so `parse_tile_info(write_tile_info(info)) == info`.
     let layout_sb_shift2 = layout.sb_shift2.min(31);
     let mut mi_col_starts: Vec<u32> = layout
         .sb_col_starts
@@ -551,11 +490,8 @@ fn check_bridge_layout(
     input: &TileParamsInput,
     grid: &TileInfoGrid,
 ) -> WriteResult<()> {
-    // The bridge path reads no bits, so an empty reader re-derives the inferred layout.
     let mut reader = BitReader::new(&[], ByteOffset::new(0));
     let layout = parse_tile_layout(&mut reader, *input).map_err(|_| {
-        // The only error parse_tile_layout returns without reading bits is the reserved
-        // level (no defined scaling), which this frame's layout could not have come from.
         WriteError::NonCanonicalFrameHeader {
             what: "tile_params_level",
         }
@@ -606,13 +542,8 @@ fn check_trailing_fields(
     let multi_tile = info.tile_cols > 1 || info.tile_rows > 1;
     let trailing_read = multi_tile && !is_bridge && !tip_frame_as_output;
     if trailing_read {
-        // context_update_tile_id f(n) is signalled only when !enable_avg_cdf ||
-        // !avg_cdf_type; otherwise the syntax leaves it 0.
         if !tile.enable_avg_cdf || tile.avg_cdf_type == 0 {
             let n = u32::from(info.tile_rows_log2) + u32::from(info.tile_cols_log2);
-            // context_update_tile_id is f(n); the descriptor accepts n <= 32. A malformed
-            // layout could drive TileRowsLog2 + TileColsLog2 above 32 — reject it before any
-            // bit rather than let write_bits fail mid-write.
             if n > u32::BITS {
                 return Err(WriteError::BitWidthTooLarge {
                     requested: n,
@@ -627,12 +558,10 @@ fn check_trailing_fields(
                 });
             }
         } else if info.context_update_tile_id != 0 {
-            // Gated off by the avg-CDF gate: a stored non-zero value has no bitstream home.
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "context_update_tile_id",
             });
         }
-        // tile_size_bytes must be Some in 1..=4 (tile_size_bytes_minus_1 f(2) -> 1..=4).
         let tile_size_bytes = info
             .tile_size_bytes
             .ok_or(WriteError::NonCanonicalFrameHeader {
@@ -644,8 +573,6 @@ fn check_trailing_fields(
             });
         }
     } else {
-        // No trailing fields: context_update_tile_id is inferred 0 and tile_size_bytes is
-        // absent.
         if info.context_update_tile_id != 0 {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "context_update_tile_id",
@@ -660,9 +587,6 @@ fn check_trailing_fields(
     Ok(())
 }
 
-// The unit/byte-exact/reject tests and the property tests live in sibling files (each kept
-// under the advisory source-line limit); `include!` pastes them into this module so their
-// `super::*` resolves to the writers and private helpers above.
 #[cfg(test)]
 include!("frame_tiling_tests.rs");
 #[cfg(test)]

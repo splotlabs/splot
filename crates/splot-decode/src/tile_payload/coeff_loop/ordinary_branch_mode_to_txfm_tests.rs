@@ -3,11 +3,9 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::symbol::SymbolBitPosition;
-
-use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::TileCoeffContextState;
+use super::super::cdf::FrameCdfSubset;
 use super::branch::NonZeroCoeffBlockStartInput;
+use super::ordinary_pass::CoeffOrdinaryBranchError;
 use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchModeToTxfmBaseConfig, CoeffOrdinaryBranchModeToTxfmInput,
     CoeffOrdinaryBranchModeToTxfmNonZeroInput, CoeffOrdinaryBranchTxSizeDimensionsBaseConfig,
@@ -15,8 +13,9 @@ use super::ordinary_pass::geometry::{
     CoeffOrdinaryTxSizeGeometryConfig, apply_coeff_ordinary_branch_from_mode_to_txfm,
     apply_coeff_ordinary_branch_from_tx_size_dimensions,
 };
-use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
-use super::test_support::{seeded_context_state, symbol_decoder};
+use super::test_support::{
+    OrdinaryBranchRun, run_ordinary_branch, seeded_context_state, symbol_decoder,
+};
 use super::{AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput};
 
 const TX_8X8: usize = 3;
@@ -250,61 +249,20 @@ fn chroma_inter_start_input() -> NonZeroCoeffBlockStartInput {
 fn run_explicit(
     payload: &[u8],
     input: CoeffOrdinaryBranchTxSizeDimensionsInput,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_tx_size_dimensions(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_tx_size_dimensions(context_state, tile, symbols, input)
+            .unwrap()
+    })
 }
 
 fn run_mode_to_txfm(
     payload: &[u8],
     input: CoeffOrdinaryBranchModeToTxfmInput,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_mode_to_txfm(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_mode_to_txfm(context_state, tile, symbols, input).unwrap()
+    })
 }
 
 fn find_payload_for_explicit(plane_tx_type: usize) -> [u8; 12] {
@@ -341,8 +299,6 @@ fn find_payload_for_explicit_start(
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_accepts_mapped_transform() {
-    // UV_SMOOTH_PRED maps through Mode_To_Txfm to ADST_ADST, and intra set 1
-    // allows every TxType in AV2 §5.20.7.29.
     let start = start_input();
     let payload = find_payload_for_explicit(ADST_ADST);
 
@@ -357,8 +313,6 @@ fn coefficient_ordinary_branch_mode_to_txfm_accepts_mapped_transform() {
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_uses_second_mapped_transform() {
-    // UV_SMOOTH_V_PRED maps through Mode_To_Txfm to ADST_DCT, proving the
-    // wrapper is not hardwired to DCT_DCT or ADST_ADST.
     let start = start_input();
     let payload = find_payload_for_explicit(ADST_DCT);
 
@@ -373,8 +327,6 @@ fn coefficient_ordinary_branch_mode_to_txfm_uses_second_mapped_transform() {
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_falls_back_to_dct() {
-    // UV_SMOOTH_PRED maps to ADST_ADST, but TX_SET_DCTONLY rejects it, so
-    // §5.20.7.29 falls back to DCT_DCT.
     let start = start_input();
     let payload = find_payload_for_explicit(DCT_DCT);
 
@@ -389,9 +341,6 @@ fn coefficient_ordinary_branch_mode_to_txfm_falls_back_to_dct() {
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_chroma_dctonly_short_circuits() {
-    // AV2 §5.20.7.29 returns DCT_DCT before the Mode_To_Txfm lookup when
-    // enable_chroma_dctonly is set, even though TX_SET_INTRA_2 accepts all
-    // TxType values.
     let start = start_input();
     let payload = find_payload_for_explicit(DCT_DCT);
     let input =
@@ -414,8 +363,6 @@ fn coefficient_ordinary_branch_mode_to_txfm_chroma_dctonly_short_circuits() {
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_maps_directional_uv_without_remap() {
-    // Square transforms do not trigger AV2 §5.20.7.29 wide_angle_mapping, so
-    // V_PRED maps directly through Mode_To_Txfm to ADST_DCT.
     let start = start_input();
     let payload = find_payload_for_explicit(ADST_DCT);
 
@@ -430,9 +377,6 @@ fn coefficient_ordinary_branch_mode_to_txfm_maps_directional_uv_without_remap() 
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_maps_directional_uv_with_wide_angle_remap() {
-    // TX_4X8 has h == 2*w. D45_PRED has pAngle 45, below
-    // WAIP_WH_RATIO_2_THRES, so wide_angle_mapping remaps it to D203_PRED,
-    // which maps through Mode_To_Txfm to DCT_ADST.
     let start = start_input();
     let payload = find_payload_for_explicit_tx_size(TX_4X8, DCT_ADST);
 
@@ -478,8 +422,6 @@ fn coefficient_ordinary_branch_mode_to_txfm_maps_luma_txtypes() {
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_luma_ignores_chroma_dctonly() {
-    // AV2 §5.20.7.29 returns luma TxTypes before the chroma-only
-    // enable_chroma_dctonly shortcut.
     let start = luma_start_input(false);
     let payload = find_payload_for_explicit_start(start, TX_8X8, DCT_ADST);
 
@@ -502,8 +444,6 @@ fn coefficient_ordinary_branch_mode_to_txfm_luma_inter_uses_txtypes() {
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_chroma_inter_dctonly_short_circuits() {
-    // AV2 §5.20.7.29 applies the chroma-DCT-only shortcut before chroma inter
-    // TxTypes lookup.
     let start = chroma_inter_start_input();
     let payload = find_payload_for_explicit_start(start, TX_8X8, DCT_DCT);
 

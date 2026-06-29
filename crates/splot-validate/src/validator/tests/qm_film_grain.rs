@@ -3,8 +3,6 @@
 
 use super::*;
 
-// --- Quantizer matrix (§5.13 / §6.12) and film grain (§5.14 / §6.13) ---
-
 /// `OBU_QUANTIZATION_MATRIX` header byte: ext=0, type=22, tlayer=0.
 pub(in crate::validator::tests) const QM_HEADER: u8 = 0x58;
 /// `OBU_FILM_GRAIN` header byte: ext=0, type=23, tlayer=0.
@@ -76,8 +74,6 @@ pub(in crate::validator::tests) fn has_error(report: &ValidationReport, rule: &s
 
 #[test]
 fn qm_duplicate_reset_between_frames_is_flagged() {
-    // Two reset (qm_bit_map == 0) QM OBUs between coded frames: only the first may
-    // be a reset (§6.12).
     let mut data = temporal_delimiter_obu();
     data.extend(active_sequence_header_obu());
     data.extend(qm_reset_obu());
@@ -103,7 +99,6 @@ fn qm_single_reset_between_frames_is_conformant() {
 
 #[test]
 fn qm_duplicate_level_between_frames_is_flagged() {
-    // Two QM OBUs both specifying level 0 between coded frames (§6.12).
     let mut data = temporal_delimiter_obu();
     data.extend(active_sequence_header_obu());
     data.extend(qm_default_level_obu(0));
@@ -130,8 +125,6 @@ fn qm_distinct_levels_between_frames_is_conformant() {
 
 #[test]
 fn qm_duplicate_level_across_coded_frame_is_not_flagged() {
-    // The same level on either side of a coded frame is in two different
-    // "between coded frames" windows, so it is not a duplicate.
     let mut data = temporal_delimiter_obu();
     data.extend(active_sequence_header_obu());
     data.extend(qm_default_level_obu(0));
@@ -170,7 +163,6 @@ fn film_grain_chroma_idc_out_of_range_is_flagged() {
 
 #[test]
 fn film_grain_duplicate_slot_in_coded_frame_unit_is_flagged() {
-    // Two film grain OBUs both updating slot 0 in the same coded frame unit (§6.13).
     let mut data = temporal_delimiter_obu();
     data.extend(active_sequence_header_obu());
     data.extend(film_grain_obu_bytes(0b0000_0001, 0));
@@ -199,8 +191,6 @@ fn film_grain_distinct_slots_are_conformant() {
 
 #[test]
 fn qm_malformed_payload_is_flagged() {
-    // A quantizer matrix payload too short for qm_bit_map f(15): the
-    // QuantizerMatrixSyntax check must report the parse error.
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(QM_HEADER, &[0xFF]));
     let report = Validator::new(false).validate_bytes(&data);
@@ -212,9 +202,6 @@ fn qm_malformed_payload_is_flagged() {
 
 #[test]
 fn film_grain_malformed_payload_is_flagged() {
-    // fgm_update_flags sets slot 0, but the film_grain_model is truncated
-    // (num_y_points = 5 with no point payload): the FilmGrainSyntax check must
-    // report the parse error.
     let mut bits = Bits::default();
     bits.f(0b0000_0001, 8); // fgm_update_flags: slot 0
     bits.uvlc(2); // fgm_chroma_idc = 444 (non-monochrome)
@@ -231,8 +218,6 @@ fn film_grain_malformed_payload_is_flagged() {
 
 #[test]
 fn qm_quant_delta_out_of_range_is_flagged() {
-    // AV2 §6.4.11: quant_delta must be in -128..=127. A user-defined QM whose first
-    // delta is 128 (svlc encoded as uvlc(255)) must be flagged.
     let mut bits = Bits::default();
     bits.f(1, 15); // qm_bit_map: level 0
     bits.bit(0); // 1 plane
@@ -327,8 +312,6 @@ pub(in crate::validator::tests) fn film_grain_model_obu(
 
 #[test]
 fn film_grain_too_many_scaling_points_is_flagged() {
-    // AV2 §6.17.10.2: num_y_points must be <= 14. A model with num_y_points = 15
-    // must be flagged.
     let mut data = temporal_delimiter_obu();
     data.extend(active_sequence_header_obu());
     data.extend(film_grain_model_obu(2, 15, 0, 0)); // 4:4:4, 15 luma points
@@ -341,7 +324,6 @@ fn film_grain_too_many_scaling_points_is_flagged() {
 
 #[test]
 fn film_grain_420_unpaired_chroma_points_is_flagged() {
-    // AV2 §6.17.10.2: in 4:2:0, cb and cr points must be both zero or both nonzero.
     let mut data = temporal_delimiter_obu();
     data.extend(active_sequence_header_obu());
     data.extend(film_grain_model_obu(0, 1, 0, 1)); // 4:2:0, cb=0 but cr=1
@@ -354,7 +336,6 @@ fn film_grain_420_unpaired_chroma_points_is_flagged() {
 
 #[test]
 fn film_grain_paired_chroma_points_are_conformant() {
-    // 4:2:0 with both cb and cr nonzero is conformant.
     let mut data = temporal_delimiter_obu();
     data.extend(active_sequence_header_obu());
     data.extend(film_grain_model_obu(0, 1, 1, 1)); // 4:2:0, cb=1 and cr=1
@@ -375,8 +356,6 @@ fn film_grain_paired_chroma_points_are_conformant() {
 
 #[test]
 fn film_grain_non_increasing_scaling_point_is_flagged() {
-    // AV2 §6.17.10.2: point_y_value[i] must be strictly greater than the previous.
-    // Two luma points with increments [1, 0] -> values [1, 1] (not increasing).
     let mut bits = Bits::default();
     bits.f(0b0000_0001, 8); // slot 0
     bits.uvlc(2); // 4:4:4 (no chroma pairing constraint)
@@ -412,10 +391,6 @@ fn film_grain_non_increasing_scaling_point_is_flagged() {
 
 #[test]
 fn qm_reset_then_level_definition_is_conformant() {
-    // A reset (qm_bit_map == 0) followed by a level definition is the canonical
-    // §5.13 sequence: the reset is the first QM OBU, and the subsequent level is
-    // not a duplicate. This exercises the reset path (which also clears per-level
-    // availability) without a false positive.
     let mut data = temporal_delimiter_obu();
     data.extend(active_sequence_header_obu());
     data.extend(qm_reset_obu());
@@ -430,9 +405,6 @@ fn qm_reset_then_level_definition_is_conformant() {
 
 #[test]
 fn qm_duplicate_level_across_temporal_delimiter_is_flagged() {
-    // AV2 §6.12: the duplicate-level window closes at a coded frame, NOT at a
-    // temporal-unit boundary. The same level on either side of a bare temporal
-    // delimiter (no intervening frame) is still a duplicate.
     let mut data = temporal_delimiter_obu();
     data.extend(active_sequence_header_obu());
     data.extend(qm_default_level_obu(0));
@@ -447,8 +419,6 @@ fn qm_duplicate_level_across_temporal_delimiter_is_flagged() {
 
 #[test]
 fn film_grain_duplicate_slot_across_temporal_delimiter_is_flagged() {
-    // AV2 §6.13: the duplicate-slot window closes at a coded frame, NOT at a
-    // temporal-unit boundary.
     let mut data = temporal_delimiter_obu();
     data.extend(active_sequence_header_obu());
     data.extend(film_grain_obu_bytes(0b0000_0001, 0)); // slot 0
@@ -464,8 +434,6 @@ fn film_grain_duplicate_slot_across_temporal_delimiter_is_flagged() {
 pub(in crate::validator::tests) fn has_warning(report: &ValidationReport, rule: &str) -> bool {
     report.warnings().any(|d| d.rule_id == rule)
 }
-
-// --- padding OBU (AV2 § 5.16 / § 6.15) ---
 
 /// A global `OBU_PADDING` (xlayer 31) carrying `payload`, after a temporal delimiter.
 pub(in crate::validator::tests) fn global_padding_stream(payload: &[u8]) -> Vec<u8> {
@@ -488,7 +456,6 @@ fn padding_all_zero_payload_is_flagged() {
 
 #[test]
 fn padding_invalid_trailing_bits_is_flagged() {
-    // 0x40 = 0b0100_0000: trailing_one_bit must be 1 but the first bit is 0.
     let report = Validator::new(false).validate_bytes(&global_padding_stream(&[0x40]));
     assert!(
         has_error(&report, "padding/invalid-trailing-bits"),
@@ -498,7 +465,6 @@ fn padding_invalid_trailing_bits_is_flagged() {
 
 #[test]
 fn padding_valid_payload_is_accepted() {
-    // One arbitrary padding byte then a trailing-bits byte.
     let report = Validator::new(false).validate_bytes(&global_padding_stream(&[0xFF, 0x80]));
     assert!(
         !report.errors().any(|d| d.rule_id.starts_with("padding/")),
@@ -514,5 +480,3 @@ fn padding_empty_payload_is_accepted() {
         "report was: {report}"
     );
 }
-
-// --- metadata OBUs (AV2 § 5.17 / § 6.16) ---

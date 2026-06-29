@@ -154,9 +154,6 @@ pub fn secondary_inverse_transform(
     }
     let stx = sec_tx_type - 1;
 
-    // § 7.15.3 gather: coefs[i] = Dequant[scanIn[i]] for the first n positions,
-    // zeroing each. `scanIn[i] = y * w + x` (`w == 1 << bwl`), so the position is
-    // the row-major index directly.
     let mut scan = [0u16; MAX_DIM * MAX_DIM];
     let scan = &mut scan[..expected];
     coefficient_scan_order(w, h, TransformClass::TwoD, scan)?;
@@ -167,7 +164,6 @@ pub fn secondary_inverse_transform(
         dequant[index] = 0;
     }
 
-    // § 7.15.3 matrix transform + scatter.
     let (scan_bwl, scan_w) = if large {
         (3u32, 8usize)
     } else {
@@ -200,9 +196,7 @@ pub fn secondary_inverse_transform(
         };
         let x = pos & (scan_w - 1);
         let y = pos >> scan_bwl;
-        // x, y < scan_w <= 8 <= w, so both fit the w-wide block.
         let out_index = if transpose { x * w + y } else { y * w + x };
-        // `v` is `Clip3`-bounded to the active bit depth and fits `i32`.
         dequant[out_index] = v as i32;
     }
     Ok(())
@@ -237,11 +231,6 @@ mod tests {
         }
     }
 
-    // Independent in-place reference: gather the first `n` 2D-scan coefficients,
-    // multiply by the IST kernel, Round2Signed/Clip3, and scatter via the spec
-    // scan-order (and scan-map for large), honoring transpose. Mirrors § 7.15.3
-    // directly so the test is a re-trace, not a call of the function under test.
-    // `i`/`j`/`c`/`t`/`v`/`x`/`y` mirror the § 7.15.3 IST pseudocode notation.
     #[allow(clippy::many_single_char_names)]
     fn reference(dequant: &mut [i32], p: &SecondaryInverseTransform) {
         let large = p.w >= 8 && p.h >= 8;
@@ -288,8 +277,6 @@ mod tests {
         }
     }
 
-    // Runs the production transform and the in-place reference over identical
-    // `Copy` snapshots of `base` and asserts they agree (no slice copies).
     fn assert_matches_reference<const N: usize>(base: [i32; N], p: &SecondaryInverseTransform) {
         let mut produced = base;
         secondary_inverse_transform(&mut produced, p).unwrap();
@@ -300,8 +287,6 @@ mod tests {
 
     #[test]
     fn small_4x4_matches_independent_reference() {
-        // A 4x4 block (small path): non-DCT-trivial coefficients across the first
-        // IST_4X4_HEIGHT scan positions, kernel set 3, sec_tx_type 2, no transpose.
         let base: [i32; 16] = core::array::from_fn(|i| (i as i32 - 7) * 11);
         assert_matches_reference(base, &params(4, 4, IST_4X4_HEIGHT, 3, 2, false));
     }
@@ -318,22 +303,17 @@ mod tests {
         secondary_inverse_transform(&mut plain, &p_plain).unwrap();
         let mut transposed = base;
         secondary_inverse_transform(&mut transposed, &p_transposed).unwrap();
-        // Transpose actually changes the layout for this asymmetric input.
         assert_ne!(plain, transposed);
     }
 
     #[test]
     fn large_8x8_matches_independent_reference() {
-        // An 8x8 block (large path): exercises Ist_8x8_Kernel + Stx_Scan_Map +
-        // Stx_Scan_Order_8x8 over the full IST_8X8_HEIGHT input.
         let base: [i32; 64] = core::array::from_fn(|i| (i as i32 % 9 - 4) * 13);
         assert_matches_reference(base, &params(8, 8, IST_8X8_HEIGHT, 7, 3, false));
     }
 
     #[test]
     fn large_8x8_reduced_height_uses_only_n_inputs() {
-        // The reduced 8x8 case (IST_8X8_HEIGHT_RED = 20) reads only the first 20
-        // scan coefficients; the reference uses the same n.
         let base: [i32; 64] = core::array::from_fn(|i| (i as i32 % 5 - 2) * 7);
         assert_matches_reference(base, &params(8, 8, 20, 2, 1, false));
     }
@@ -354,32 +334,23 @@ mod tests {
             })
         ));
         let mut block = [0i32; 16];
-        // n too large for the 4x4 kernel height.
         assert!(matches!(
             secondary_inverse_transform(&mut block, &params(4, 4, 9, 0, 1, false)),
             Err(ReconError::SecondaryTransformInvalidParams { .. })
         ));
-        // sec_tx_type 0 (no secondary transform) is not valid for this primitive.
         assert!(matches!(
             secondary_inverse_transform(&mut block, &params(4, 4, 8, 0, 0, false)),
             Err(ReconError::SecondaryTransformInvalidParams { .. })
         ));
-        // kernel out of range for the 4x4 set size (14).
         assert!(matches!(
             secondary_inverse_transform(&mut block, &params(4, 4, 8, 14, 1, false)),
             Err(ReconError::SecondaryTransformInvalidParams { .. })
         ));
-        // Output untouched on a rejected input.
         assert_eq!(block, [0i32; 16]);
     }
 
     #[test]
     fn is_total_for_extreme_coefficients() {
-        // i32::MIN / i32::MAX coefficients through the kernel must not overflow
-        // the i64 accumulation or panic, across the small and large paths and
-        // both transpose layouts. (Positions the transform neither gathers nor
-        // scatters keep their original extreme value, which is correct, so we
-        // assert success rather than a global bound.)
         for &(w, h, n, kernel) in &[
             (4usize, 4usize, IST_4X4_HEIGHT, 13usize),
             (32, 32, IST_8X8_HEIGHT, 0),
@@ -394,11 +365,6 @@ mod tests {
 
     #[test]
     fn small_4x4_dc_only_matches_hand_computed_kernel_values() {
-        // Independent of the reference: a single DC coefficient (scan position 0)
-        // multiplies the kernel's first row. With Ist_4x4_Kernel[0][0][0] =
-        // [102, -45, -53, ...] and coefs[0] = 128, t = 128 * weight, and
-        // Round2Signed(t, 7) = (t + 64) >> 7 for positive (mirrored for negative).
-        // Those land at Stx_Scan_Order_4x4[0..3] = positions 0, 1, 4.
         let mut dequant = [0i32; 16];
         dequant[0] = 128; // scan position 0 is the DC for a 4x4 2D scan
         secondary_inverse_transform(&mut dequant, &params(4, 4, IST_4X4_HEIGHT, 0, 1, false))

@@ -109,8 +109,6 @@ pub fn inverse_transform_1d(
 /// width, so an out-of-contract `shift` saturates to the arithmetic-shift limit
 /// instead of panicking (spec-conformant callers use shift 0 or 3). The result
 /// is returned as `i32` (lossless residuals are bounded well within `i32`).
-// `a`/`b`/`c`/`d`/`e` are the AV2 § 7.15.2.2 Walsh-Hadamard butterfly registers,
-// named after the spec pseudocode's intermediate variables.
 #[allow(clippy::many_single_char_names)]
 #[must_use]
 pub fn inverse_walsh_hadamard(src: [i32; 4], shift: u8) -> [i32; 4] {
@@ -181,7 +179,6 @@ fn kernel_sum(src: &[i32], tx_type: InverseTransform1dType, sz: usize, i: usize)
                 let k = match tx_type {
                     Dct => DCT_KERNEL4[j][i],
                     Adst => ADST_KERNEL4[j][i],
-                    // Spec § 7.15.2.1 length-4 `else`: FDST/DDTX/FDDT use Fdst4.
                     Fdst | Ddtx | Fddt => FDST_KERNEL4[j][i],
                 };
                 s += i64::from(k) * i64::from(coeff);
@@ -211,7 +208,6 @@ fn kernel_sum(src: &[i32], tx_type: InverseTransform1dType, sz: usize, i: usize)
                 s += i64::from(k) * i64::from(coeff);
             }
         }
-        // Spec § 7.15.2.1 length-32: the DCT kernel is used for every type.
         _ => {
             for (j, &coeff) in src.iter().enumerate() {
                 s += i64::from(DCT_KERNEL32[j][i]) * i64::from(coeff);
@@ -260,8 +256,6 @@ mod tests {
 
     #[test]
     fn dc_only_dct4_is_flat() {
-        // DCT_KERNEL4 row 0 (the DC basis) is [64, 64, 64, 64], so a DC-only
-        // input yields a constant field: Round2(64 * 2, 0) = 128 everywhere.
         assert_eq!(
             run(
                 &[2, 0, 0, 0],
@@ -276,8 +270,6 @@ mod tests {
 
     #[test]
     fn dct4_single_coefficient_matches_kernel_row() {
-        // Only j = 1 is non-zero, so out[i] = DCT_KERNEL4[1][i] * 2; row 1 is
-        // [83, 35, -35, -83], all within the col_tx 8-bit range [-256, 255].
         assert_eq!(
             run(
                 &[0, 2, 0, 0],
@@ -292,8 +284,6 @@ mod tests {
 
     #[test]
     fn round2_applies_arithmetic_downshift() {
-        // Same dot products [166, 70, -70, -166] with shift 1:
-        // Round2(166,1)=83, Round2(70,1)=35, Round2(-70,1)=-35, Round2(-166,1)=-83.
         assert_eq!(
             run(
                 &[0, 2, 0, 0],
@@ -308,9 +298,6 @@ mod tests {
 
     #[test]
     fn col_tx_flag_selects_clamp_range() {
-        // DCT_KERNEL4[1] * 100 = [8300, 3500, -3500, -8300].
-        // col_tx = true (8-bit) clamps to [-256, 255]; col_tx = false uses the
-        // wider [-32768, 32767] range and leaves the values unclamped.
         assert_eq!(
             run(
                 &[0, 100, 0, 0],
@@ -335,8 +322,6 @@ mod tests {
 
     #[test]
     fn fddt_is_the_column_reverse_of_ddtx() {
-        // Per the spec, FDDT indexes the DDTX kernel column in reverse, so
-        // FDDT output[i] == DDTX output[sz - 1 - i].
         let src = [3, -7, 11, -2, 9, 4, -5, 1];
         let ddtx = run(&src, InverseTransform1dType::Ddtx, 2, false, BitDepth::Ten);
         let fddt = run(&src, InverseTransform1dType::Fddt, 2, false, BitDepth::Ten);
@@ -346,7 +331,6 @@ mod tests {
 
     #[test]
     fn length_4_maps_fdst_ddtx_and_fddt_to_the_fdst_kernel() {
-        // At length 4 the spec `else` routes FDST, DDTX, and FDDT to Fdst4.
         let src = [5, -3, 8, 2];
         let fdst = run(
             &src,
@@ -375,7 +359,6 @@ mod tests {
 
     #[test]
     fn length_32_uses_dct_kernel_for_every_type() {
-        // At length 32 the spec uses the DCT kernel regardless of type.
         let src: Vec<i32> = (0..32).map(|j| j - 16).collect();
         let dct = run(&src, InverseTransform1dType::Dct, 2, false, BitDepth::Ten);
         let adst = run(&src, InverseTransform1dType::Adst, 2, false, BitDepth::Ten);
@@ -421,37 +404,27 @@ mod tests {
 
     #[test]
     fn round2_matches_spec_and_is_total_for_large_shift() {
-        // In-contract: Round2(x, n) = (x + (1 << (n - 1))) >> n.
         assert_eq!(round2(0, 0), 0);
         assert_eq!(round2(7, 0), 7);
         assert_eq!(round2(6, 2), 2); // (6 + 2) >> 2
         assert_eq!(round2(-6, 2), -1); // (-6 + 2) >> 2 = -4 >> 2
-        // Out-of-contract huge shift saturates to the arithmetic limit, no panic.
         assert_eq!(round2(1_000, 64), 0);
         assert_eq!(round2(-1_000, 200), -1);
     }
 
     #[test]
     fn walsh_hadamard_matches_spec_butterfly() {
-        // src = [4,0,0,0], shift 0: a=4,c=d=b=0 -> a=4, d=0, e=2, b=2, c=2,
-        // a=2, d=2 => [2, 2, 2, 2].
         assert_eq!(inverse_walsh_hadamard([4, 0, 0, 0], 0), [2, 2, 2, 2]);
-        // src = [0,0,0,4], shift 0: a=0,c=0,d=0,b=4 -> d=-4, e=2, b=-2, c=2,
-        // a=2, d=-2 => [2, -2, 2, -2].
         assert_eq!(inverse_walsh_hadamard([0, 0, 0, 4], 0), [2, -2, 2, -2]);
     }
 
     #[test]
     fn walsh_hadamard_applies_pre_shift() {
-        // src = [8,0,0,0], shift 1 pre-scales src[0] to 4, then the [4,0,0,0]
-        // butterfly gives [2, 2, 2, 2].
         assert_eq!(inverse_walsh_hadamard([8, 0, 0, 0], 1), [2, 2, 2, 2]);
     }
 
     #[test]
     fn walsh_hadamard_is_total_for_large_shift() {
-        // Out-of-contract shift is clamped below the i64 width: non-negative
-        // inputs shift out to 0, so the butterfly is all-zero, with no panic.
         assert_eq!(inverse_walsh_hadamard([4, 0, 0, 0], 64), [0, 0, 0, 0]);
         assert_eq!(inverse_walsh_hadamard([7, 3, 1, 5], 200), [0, 0, 0, 0]);
     }
@@ -464,15 +437,11 @@ mod tests {
 
     #[test]
     fn identity_scales_rounds_and_clamps() {
-        // Round2(10*181, 8) = (1810 + 128) >> 8 = 7; Round2(-4*181, 8) =
-        // (-724 + 128) >> 8 = -596 >> 8 = -3; both within the col_tx=false range.
         assert_eq!(identity(&[10, -4], 181, 8, false, BitDepth::Eight), [7, -3]);
     }
 
     #[test]
     fn identity_clamp_uses_col_tx_range() {
-        // 1000 * 256 = 256000. col_tx=true (8-bit) clamps to 255; col_tx=false
-        // clamps to the wider 32767.
         assert_eq!(identity(&[1000], 256, 0, true, BitDepth::Eight), [255]);
         assert_eq!(identity(&[1000], 256, 0, false, BitDepth::Eight), [32767]);
     }
@@ -491,9 +460,6 @@ mod tests {
 
     #[test]
     fn identity_is_total_for_extreme_inputs() {
-        // coeff * scale = i32::MIN * i32::MIN = 2^62; Round2(2^62, 63) is done in
-        // i128 (= 1), then clamped — no overflow panic on this out-of-contract
-        // extreme.
         assert_eq!(
             identity(&[i32::MIN], i32::MIN, 63, false, BitDepth::Ten),
             [1]

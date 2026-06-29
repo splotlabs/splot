@@ -114,6 +114,13 @@ Only for encoder or encoder-facing syntax PRs.
 
 - [ ] SPDX header on every `.rs` file (`cargo xtask check-license-headers`)?
 - [ ] Public items documented?
+- [ ] Does each source comment explain an invariant or exception?
+- [ ] Could a clearer name, helper, type, or smaller function replace the comment?
+- [ ] Does the comment duplicate AV2 spec prose instead of using a short section
+      anchor?
+- [ ] Does the comment mention history that belongs in an ADR or design doc?
+- [ ] Would the comment remain true after a small refactor?
+- [ ] Is this Rustdoc required for public API users, or just filler?
 - [ ] PR title and commit subjects follow Conventional Commits
       (`cargo xtask check-conventional-title` /
       `cargo xtask check-conventional-commits`)?

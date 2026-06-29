@@ -89,7 +89,6 @@ pub(crate) const TILE_PARTITION_TRAVERSAL_FEATURE_ID: &str =
     "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY";
 
 /// AV2 partition-context state read by the traversal frontier.
-// `*mi_sizes` names mirror the AV2 MiSizes/LeftMiSizes/AboveMiSizes context arrays; the suffix preserves that mapping.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionContextState<'a> {
@@ -180,7 +179,6 @@ pub(crate) struct TilePartitionFrameFacts {
 
 impl TilePartitionFrameFacts {
     /// Creates checked frame facts for the traversal frontier.
-    // Each bool is a distinct AV2 frame-level syntax flag; bundling them would obscure the spec mapping.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub(crate) fn new(
         mi_rows: usize,
@@ -379,7 +377,6 @@ impl TilePartitionCall {
 }
 
 /// AV2 tile-local MI bounds used by § 5.20.9.1 `is_inside`.
-// `mi_*` fields mirror the AV2 MiRowStart/MiRowEnd/MiColStart/MiColEnd tile bounds; the prefix preserves that mapping.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TilePartitionBounds {
@@ -994,14 +991,6 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
             TilePartitionTraversalUnsupported::ExtendedSdp,
         ));
     }
-    // The §5.20.3.1 partition syntax (`read_partition` -> `do_split` / `rect_type` /
-    // …) is frame-type agnostic: the CDF contexts carry `frame_is_intra` via the
-    // partition-structure `PlaneStart`, so the same traversal walks an intra
-    // `OBU_CLOSED_LOOP_KEY` tile and an inter `OBU_REGULAR_TILE_GROUP` tile. The
-    // inter path is admitted here (DECODE-FIRST-INTER-FRAME-FRONTIER); the inter leaf
-    // callback reads the §5.20.7.6 inter `mode_info` instead of intra modes, and the
-    // §8.2.4 `exit_symbol()` check the caller runs guards bit-exactness so a wrong
-    // partition read for an unverified inter shape is rejected, never confident-wrong.
     if frame.loop_restoration == TilePartitionLoopRestorationState::UnsupportedReadLrSyntax {
         return Err(TilePartitionTraversalError::Unsupported(
             TilePartitionTraversalUnsupported::ReadLoopRestoration,
@@ -1094,7 +1083,6 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
                     r: call.r,
                     c: call.c,
                     b_size: sub_size,
-                    // AV2 §5.20.3.1 decode_block() excludes LUMA_PART from HasChroma.
                     has_chroma: call.has_chroma
                         && frame.num_planes > 1
                         && tree_type != PartitionTreeType::LumaPart,
@@ -1175,11 +1163,6 @@ where
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
 {
-    // The §5.20.3.1 partition tree walk is frame-type agnostic (see the cursor
-    // planner's note): it walks an intra `OBU_CLOSED_LOOP_KEY` tile and an inter
-    // `OBU_REGULAR_TILE_GROUP` tile (DECODE-FIRST-INTER-FRAME-FRONTIER). The inter
-    // leaf callback reads the §5.20.7.6 inter `mode_info`, and the caller's §8.2.4
-    // `exit_symbol()` check guards bit-exactness.
     if frame.loop_restoration == TilePartitionLoopRestorationState::UnsupportedReadLrSyntax {
         return Err(TilePartitionTraversalError::Unsupported(
             TilePartitionTraversalUnsupported::ReadLoopRestoration,
@@ -1204,13 +1187,6 @@ where
     let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
     let mut y_modes = TileIntraYModeState::new(frame.mi_rows, frame.mi_cols)
         .map_err(TilePartitionTraversalError::from)?;
-    // AV2 § 5.20.2.1 decode_tile(): iterate the tile's MI range as a raster grid
-    // of superblocks, `sbSize4 = Num_4x4_Blocks_Wide[SbSize]` MI units apart.
-    // Each superblock is one `decode_partition(r, c, SbSize, ...)` root; the
-    // shared symbol decoder, tile CDFs, and MI-size context carry across them so
-    // later superblocks read the already-decoded left/above neighbours.
-    // `frame.sb_size` is a validated BlockSize, so `num_4x4_wide()` is >= 1; the
-    // `max(1)` is a belt-and-braces guard that keeps the loop progressing.
     let sb_size4 = frame
         .sb_size
         .num_4x4_wide()
@@ -1220,10 +1196,6 @@ where
     let mi_row_end = (work_unit.mi_row_range().end as usize).min(frame.mi_rows);
     let mi_col_start = work_unit.mi_col_range().start as usize;
     let mi_col_end = (work_unit.mi_col_range().end as usize).min(frame.mi_cols);
-    // AV2 § 5.20.2.3 BlockDecoded state: a superblock-relative per-plane decoded
-    // flag grid, re-initialized by clear_block_decoded_flags at each superblock
-    // and updated after each transform block, so a later sub-block reads the
-    // §7.13.2.1 above-right / below-left sentinel availability correctly.
     let mut block_decoded = TileBlockDecodedState::new(
         frame.num_planes,
         usize::from(frame.subsampling_x),
@@ -1239,16 +1211,10 @@ where
 
     let mut sb_row = mi_row_start;
     while sb_row < mi_row_end {
-        // § 5.20.2.1 clear_left_context() runs at the start of every superblock
-        // row; the above context persists across rows.
         mi_size_state.clear_left_context();
         let mut sb_col = mi_col_start;
         while sb_col < mi_col_end {
-            // § 5.20.2.1 / § 5.20.2.3: clear_block_decoded_flags(r, c, sbSize4)
-            // re-initializes the superblock-relative BlockDecoded grid before the
-            // superblock's partition DFS.
             block_decoded.clear_superblock(sb_row, sb_col);
-            // One superblock-rooted § 5.20.3.1 partition DFS.
             let root = TilePartitionCall::root(sb_row, sb_col, frame.sb_size, frame.has_chroma);
             let mut stack = vec![root];
             while let Some(call) = stack.pop() {
@@ -1315,10 +1281,6 @@ where
                         symbol_count_before_block: symbols.symbol_count(),
                         symbol_checkpoint_before_block: symbols.checkpoint(),
                     };
-                    // AV2 § 8.3.2 `is_cfl` CDF context from the chroma above/left
-                    // neighbours' `UVCfls`, gated by § 5.20.9.1 `AvailUChroma` /
-                    // `AvailLChroma` (`is_inside`). Only chroma leaves read
-                    // `is_cfl`; the ctx is computed here once and passed down.
                     let avail_u_chroma = call
                         .r
                         .checked_sub(1)
@@ -1344,18 +1306,12 @@ where
                         &block_decoded,
                     )
                     .map_err(GeneralIntraTreeWalkError::Leaf)?;
-                    // AV2 § 5.20.5.3: store the block's IntraJointMode and
-                    // UsesMrls into every MI cell it covers, so later blocks'
-                    // § 8.3.2 mode/MRL contexts see them as left/above neighbours.
                     let block_n4w = sub_size
                         .num_4x4_wide()
                         .map_err(TilePartitionTraversalError::from)?;
                     let block_n4h = sub_size
                         .num_4x4_high()
                         .map_err(TilePartitionTraversalError::from)?;
-                    // AV2 § 5.20.5.3: chroma leaves write their decoded `is_cfl`
-                    // (`UVCfls`) into every chroma MI cell they cover, so later
-                    // chroma blocks read it as the above/left `is_cfl` neighbour.
                     if let Some(uv_cfl) = leaf_mode.uv_cfl {
                         uv_cfls.record_block(call.r, call.c, block_n4w, block_n4h, uv_cfl);
                     }
@@ -1395,14 +1351,6 @@ where
                         );
                         y_modes.record_block(call.r, call.c, block_n4w, block_n4h, y_mode);
                     }
-                    // AV2 § 5.20.4: mark every plane 4x4 unit of the decoded block
-                    // (BlockDecoded[plane][(subBlockMiRow >> subY) + i]
-                    // [(subBlockMiCol >> subX) + j] = 1). The superblock-relative MI
-                    // position is `row & sbMask` / `col & sbMask`. The minimal-tier
-                    // subset uses a single full-block transform (TX_MODE_LARGEST),
-                    // so each plane's transform-block 4x4 extent is the block's
-                    // plane 4x4 width / height. Luma (plane 0) is never subsampled;
-                    // chroma uses the frame subsampling.
                     let sub_block_mi_row = call.r & sb_mask;
                     let sub_block_mi_col = call.c & sb_mask;
                     let (plane_start, plane_end) =
@@ -1424,18 +1372,6 @@ where
                             block_n4h >> sub_y,
                         );
                     }
-                    // AV2 § 5.20.4.1 `decode_block` MI-size writes. A luma/shared
-                    // leaf writes `MiSizes[0]` over its own `(r, c, subSize)`
-                    // footprint; a chroma-bearing leaf ALSO writes `MiSizes[1]`
-                    // over the `ChromaMiSize` footprint anchored at
-                    // `(ChromaMiRow, ChromaMiCol)` — the chroma-reference
-                    // geometry, not the per-leaf luma geometry. They coincide
-                    // when chroma follows luma to this leaf, and diverge under
-                    // chroma offset (SDP CHROMA_PART or a sub-4 chroma split);
-                    // using luma geometry for the chroma plane desyncs the next
-                    // block's § 8.3.2 `do_split` left/above context. The SDP
-                    // CHROMA_PART tree carries only the chroma plane, so it skips
-                    // the luma write.
                     if tree_type != PartitionTreeType::ChromaPart {
                         mi_size_state
                             .update_luma_block(call.r, call.c, sub_size)
@@ -1462,9 +1398,6 @@ where
     Ok(symbols)
 }
 
-// Fail-closed partition-call gate invoked with `?` at every traversal step: the `Result`
-// is the designated rejection point for unsupported calls (the `frame`/`call` args feed the
-// future check), so the wrapper is intentional even though the body cannot error yet.
 #[allow(clippy::unnecessary_wraps)]
 fn ensure_supported_call(
     _frame: TilePartitionFrameFacts,
@@ -1482,8 +1415,6 @@ fn read_loop_restoration_for_call(
     lr_activity: &mut WienerNsLrUnitActivity,
     limits: DecodeLimits,
 ) -> Result<(), TilePartitionTraversalError> {
-    // AV2 §5.20.3.1 invokes §5.20.10.4 `read_lr()` only for superblock-root
-    // partition calls (`SbSize == bSize`), before `read_partition`.
     if call.b_size != frame.sb_size {
         return Ok(());
     }
@@ -1644,8 +1575,6 @@ fn read_wiener_ns_lr_unit(
         .get()
         != 0;
     lr_activity.record(plane, unit_row, unit_col, use_wiener_ns)?;
-    // AV2 §5.20.10.5 maps `use_wiener_ns == 0` to `RESTORE_NONE`; active
-    // units immediately invoke §5.20.10.6 with `readFrameFilters == 0`.
     if use_wiener_ns && !frame_filters_on {
         read_wiener_ns_unit_filter(plane, cdfs, symbols, &mut lr_activity.unit_filter_state)?;
     }
@@ -1658,10 +1587,6 @@ fn read_wiener_ns_unit_filter(
     symbols: &mut SymbolDecoder<'_>,
     state: &mut WienerNsUnitFilterState,
 ) -> Result<(), TilePartitionTraversalError> {
-    // This is the entropy-coded `readFrameFilters == 0` branch of AV2
-    // §5.20.10.6. The current frontier consumes syntax and CDF updates only; the
-    // decoded coefficients stay outside runtime reconstruction until §7.20.3 is
-    // implemented.
     let merged = symbols.read_literal(1)? != 0;
     let previous_bank_size = state.bank_size[plane];
     for _ in 0..previous_bank_size.saturating_sub(1) {
@@ -1976,9 +1901,6 @@ fn read_frontier_partition_decision(
         forced_chroma_partition,
     )?;
     let facts = partition_decision_facts(allowed)?;
-    // §5.20.3.1 / §8.3.2: the SDP chroma partition tree reads its partition-entry
-    // CDFs and neighbor block-size context from plane 1; the luma / shared tree
-    // uses plane 0 (AVM `plane = tree_type == CHROMA_PART`).
     let partition_plane = partition_cdf_plane(call.tree_type);
     let partition_context = PartitionContextInput::new(
         call.b_size.index(),
@@ -1990,9 +1912,6 @@ fn read_frontier_partition_decision(
     )?;
     let avail_u = tile_bounds.avail_u(call);
     let avail_l = tile_bounds.avail_l(call);
-    // §8.3.2 NOTE: `PlaneStart` is fixed at 0 for `do_square_split` (the chroma
-    // partition is forced for large block sizes), so the square-split context and
-    // its `MiSizes[PlaneStart]` always use plane 0 — never the chroma SDP plane.
     let square_context = SquareSplitContextInput::new(
         call.b_size.index(),
         0,
@@ -2073,9 +1992,6 @@ impl SdpPartitionState {
                 matches!(partition, PartitionType::Vert4A | PartitionType::Vert4B);
             self.chroma_follows_luma =
                 partition == PartitionType::None || self.top_luma_horz || self.top_luma_vert;
-            // AV2 §5.20.3.1: `LumaPartitions[r][c] = partition` at the LUMA_PART
-            // 64x64 root; the collocated CHROMA_PART 64x64 inherits it when
-            // `ChromaPartitionKnown` (`chroma_follows_luma`) holds.
             self.luma_64x64_partition = Some(partition);
         }
 

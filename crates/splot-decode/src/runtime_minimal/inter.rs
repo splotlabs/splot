@@ -119,22 +119,6 @@ pub(super) fn decode_minimal_inter_frame(
         ));
     }
 
-    // VERIFIED-SUBSET DISCIPLINE (§7.23 cross-frame CDF save/load): the decoder
-    // decodes every frame from the default (init_*_cdfs) entropy state and does NOT
-    // model the §7.23 save_cdfs / §5 load_cdfs cross-frame CDF flow. A conformant
-    // decoder loads a prior frame's SAVED (post-decode — adapted when
-    // disable_cdf_update == 0) CDFs from `ref_frame_idx[primary_ref_frame]` iff §5
-    // `set_primary_ref_frame_and_ctx` resolves `primary_ref_frame` to a real reference
-    // AND `disable_cross_frame_cdf_init == 0` (mirror :5411-5430). The resolution RESOLVES
-    // `PRIMARY_REF_CHOOSE` (the unsignalled placeholder) to `DerivedPrimaryRefFrame` via
-    // `choose_primary_secondary_ref_frame` — so a CHOOSE frame can name a real ADAPTED
-    // inter reference, which the prior `CHOOSE -> no load` shortcut wrongly let bypass the
-    // guard. Resolve the actual loaded slot and reject (rather than confidently
-    // mis-decode from defaults) ONLY when THAT slot's saved CDFs were adapted. This is
-    // PER-SLOT (not "any prior frame adapted"): the committed fixtures resolve CHOOSE to
-    // PRIMARY_REF_NONE (their valid slots hold the KEY frame, which the inter-only
-    // resolution skips) or to a NON-adapted inter slot, so they stay byte-identical; a
-    // stream loading an adapted slot's CDFs is rejected, not mis-decoded.
     let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
     let current_order_hint = i32::try_from(core.order_hint_lsb.unwrap_or(0)).unwrap_or(i32::MAX);
     if let Some(inter_ctrl) = core.inter.as_ref() {
@@ -174,13 +158,6 @@ pub(super) fn decode_minimal_inter_frame(
                     SPEC_HEADER,
                 ));
             }
-            // §5 :5431-5439: the load_cdfs arm ALSO blend_cdfs(ref_frame_idx[blendFrame]) the
-            // SECONDARY slot when enable_avg_cdf && !avg_cdf_type && blendFrame != NONE. The
-            // minimal decoder models no blend_cdfs, but blend_cdfs(default, default) == default,
-            // so a blend of two NON-adapted slots == splot's default (harmless); only an
-            // ADAPTED blend slot desyncs. resolve_cdf_load reports the blend slot only when a
-            // blend actually occurs (a frame with no second loadable reference -> None -> the
-            // committed multiref, one inter reference, stays admitted). Reject an adapted blend.
             if let Some(blend_slot) = blend
                 && reference.ref_adapted.get(blend_slot as usize).copied() == Some(true)
             {
@@ -194,14 +171,6 @@ pub(super) fn decode_minimal_inter_frame(
         }
     }
 
-    // P2 ORDER-HINT WRAP GUARD: §7.7 / choose_primary_secondary_ref_frame rank by
-    // RefOrderHint, which must be the UNWRAPPED OrderHint (get_disp_order_hint(), mirror
-    // :4375 / :5368-5381). The minimal buffer stores OrderHintLsbs, which equals OrderHint
-    // only while the distinct GOP order hints span LESS than one OrderHintBits window.
-    // Reject before output when the history (the prior valid slots' RefOrderHint plus this
-    // frame's order_hint_lsb) is not provably non-wrapping, so a wrapped LSB never
-    // mis-orders the ranking. The committed fixtures have small monotonic order hints
-    // (0,1,2) with OrderHintBits 4/7, so this never fires for them.
     let order_hint_bits = sequence
         .inter
         .as_ref()
@@ -221,20 +190,6 @@ pub(super) fn decode_minimal_inter_frame(
         ));
     }
 
-    // VERIFIED-SUBSET DISCIPLINE (§7.12 temporal motion-vector prediction): the §7.12.2
-    // find_mv_stack temporal candidate process (use_ref_frame_mvs == 1) reads a prior
-    // frame's SAVED motion field (SavedMvs / SavedRefFrames, §7.23). The minimal reference
-    // buffer stores DECODED PLANES only — no SavedMvs — so a NEARMV / NEWMV block that
-    // draws a temporal candidate (even at the top-left block) would predict its MV from an
-    // empty (wrong) stack and confidently mis-decode. The first inter frame over a KEY-only
-    // history has no inter reference's motion field to draw from (a key stores none), but
-    // once an INTER reference has been retained a later use_ref_frame_mvs frame could. Reject
-    // such a frame before any output. (The committed fixtures all carry
-    // enable_ref_frame_mvs == 0 / use_ref_frame_mvs == 0, so this never fires for them.)
-    // Key on the PARSED per-frame use_ref_frame_mvs bit (§5.18.2): a TMVP-capable sequence
-    // (enable_ref_frame_mvs == 1) whose frame parsed use_ref_frame_mvs == 0 draws no temporal
-    // candidate and is admitted; the bit is inferred 0 (None here) when the sequence does not
-    // enable it. (The committed fixtures parse use_ref_frame_mvs == 0.)
     let uses_temporal_mvs = core
         .inter
         .as_ref()
@@ -261,9 +216,6 @@ pub(super) fn decode_minimal_inter_frame(
     let frame_width = frame_size.width;
     let frame_height = frame_size.height;
 
-    // §5.20.7.10 read_ref_frames: the single-reference subset reads single_ref
-    // when NumTotalRefs == 2; the compound-average subset reads comp_mode and then
-    // takes the NumTotalRefs == 2 implicit compound ref pair [0, 1].
     let inter = core.inter.as_ref().ok_or_else(|| {
         unsupported_at(
             "inter_missing_control_region",
@@ -280,11 +232,6 @@ pub(super) fn decode_minimal_inter_frame(
             SPEC_HEADER,
         )
     })?;
-    // §5.20.7.10 read_ref_frames / §5.20.7.12 read_single_ref / §5.20.7.11
-    // read_compound_ref: the verified single-reference subset admits NumTotalRefs
-    // ∈ {1, 2}. The verified compound-average subset admits only NumTotalRefs == 2
-    // so RefFrame[0] == 0 / RefFrame[1] == 1 are implicit and no comp_ref symbol is
-    // read.
     let num_total_refs = inter.num_total_refs.unwrap_or(0);
     if tail.reference_select {
         if num_total_refs != 2 {
@@ -303,8 +250,6 @@ pub(super) fn decode_minimal_inter_frame(
             SPEC_MODE_INFO,
         ));
     }
-    // The §7.7-derived reference map: ref_frame_idx[r] is the buffer slot the block's
-    // RefFrame[0] == r selects. The block decode reads single_ref to pick `r`.
     let ref_frame_idx = inter.ref_frame_idx.clone();
     if ref_frame_idx.len() != num_total_refs as usize || ref_frame_idx.is_empty() {
         return Err(unsupported_at(
@@ -326,9 +271,6 @@ pub(super) fn decode_minimal_inter_frame(
     } else {
         None
     };
-    // §5.18.9 global motion: the verified subset is identity global motion, so
-    // GLOBALMV yields a zero MV. use_global_motion == 0 means GmType == IDENTITY for
-    // every reference (the parser does not model warp global-motion params).
     if tail.use_global_motion {
         return Err(unsupported_at(
             "inter_use_global_motion",
@@ -364,7 +306,6 @@ pub(super) fn decode_minimal_inter_frame(
         }
     }
 
-    // Enforce the configured decode limits before allocating the output frame.
     let limits = options.limits();
     let tile_size = {
         let mut tile_plan = super::derive_inter_tile_plan(
@@ -386,9 +327,6 @@ pub(super) fn decode_minimal_inter_frame(
         };
         tile.tile_size()
     };
-    // The inter runtime reconstructs 8-bit only (a 10-bit frame is rejected for
-    // reference retention before reaching here), so the byte budget charges
-    // 1 byte per sample.
     ensure_runtime_limits(
         limits,
         frame_width,
@@ -397,10 +335,6 @@ pub(super) fn decode_minimal_inter_frame(
         BitDepth::Eight,
     )?;
 
-    // §5.20.7.6: the block's interpolation filter. For the SWITCHABLE frame filter
-    // the block reads an `interp_filter` symbol; for a fixed frame filter the block
-    // inherits it. The block decode resolves this and returns the recon-side filter
-    // selector.
     let interpolation_filter = inter.interpolation_filter.ok_or_else(|| {
         unsupported_at(
             "inter_missing_interpolation_filter",
@@ -410,12 +344,6 @@ pub(super) fn decode_minimal_inter_frame(
         )
     })?;
 
-    // Decode the §5.20 inter mode info from the tile arithmetic stream and confirm
-    // §8.2.4 exit_symbol(); the partition walk + per-block symbol reads + exit check
-    // make this a real decode, not a canned copy. Returns each §5.20.3 leaf block's
-    // §7.11/§7.12 motion vector (predicted from its spatial neighbours via the
-    // find_mv_stack kernel) and the §5.20.7.6 block interpolation filter, in decode
-    // order.
     let blocks = decode_inter_blocks(
         plan,
         candidate,
@@ -434,20 +362,11 @@ pub(super) fn decode_minimal_inter_frame(
             .map_or(0, |seq_inter| seq_inter.num_same_ref_compound),
     )?;
 
-    // §7.13.3.17 motion-vector scaling + §7.13.3.18 block inter prediction over the
-    // unscaled reference, per placed block. The zero-fraction (zero-MV) case reduces
-    // inside the kernel to a straight reference-sample copy. Each block writes its
-    // own luma-space rectangle, so the multi-block partition reconstructs the whole
-    // frame from its per-block MVs.
-    // The inter / reference path is 8-bit only (§6.4.1); the workspace and the
-    // §7.14.3 residual reconstruction use `u8` / `BitDepth::Eight`.
     let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace::<u8>(
         frame_width as usize,
         frame_height as usize,
         splot_recon::BitDepth::Eight,
     )?;
-    // §7.14.2 qindex == base_q_idx (no segmentation / delta-Q in this subset);
-    // resolved once and reused for any skip == 0 block.
     let qindex = core
         .quantization_params
         .map(|quant| quant.base_q_idx)
@@ -459,8 +378,6 @@ pub(super) fn decode_minimal_inter_frame(
                 SPEC_HEADER,
             )
         })?;
-    // §7.14.4 TCQ dqDenom term: applies to the luma DCT_DCT (TX_CLASS_2D)
-    // non-lossless non-FSC block when the frame's `allow_tcq` is set; chroma never.
     let luma_use_tcq = core
         .lossless_info
         .as_ref()
@@ -473,10 +390,6 @@ pub(super) fn decode_minimal_inter_frame(
             luma_w: placed.luma_w,
             luma_h: placed.luma_h,
         };
-        // §5.20.7.12: the block's RefFrame[0] indexes ref_frame_idx[] to its §7.23 store
-        // slot. For NumTotalRefs == 1 this is always ref_frame_idx[0]; for NumTotalRefs ==
-        // 2 the block's single_ref read selected RefFrame[0] ∈ {0, 1}. Resolve the actual
-        // decoded reference frame per block (all slots were validated present + unscaled).
         let ref_frame0 = resolve_block_reference_frame(
             &ref_frame_idx,
             reference,
@@ -499,7 +412,6 @@ pub(super) fn decode_minimal_inter_frame(
                 offset,
             )?;
         } else {
-            // §7.13.3.18 motion-compensate the block into its frame position.
             mc::motion_compensate_block_into(
                 &mut workspace,
                 ref_frame0,
@@ -509,8 +421,6 @@ pub(super) fn decode_minimal_inter_frame(
                 offset,
             )?;
         }
-        // skip == 0: add the §5.20.7.27 residual over the MC prediction
-        // (§7.14.4 dequant + §7.15.4 inverse transform + §7.14.3 residual add).
         if let Some(residual) = placed.block.residual.as_ref() {
             add_inter_residual_to_workspace(
                 &mut workspace,
@@ -526,13 +436,8 @@ pub(super) fn decode_minimal_inter_frame(
 
     let frame = workspace.freeze()?;
 
-    // Return the parsed §5.18.2 core alongside the decoded frame so the multi-frame
-    // driver can apply the §7.23 reference frame update (refresh_frame_flags / OrderHint
-    // / base_q_idx / dims) without re-parsing the header.
     Ok((
         MinimalRuntimeFrame {
-            // The inter / reference path is 8-bit only (§6.4.1); 10-bit is the
-            // single-frame general-intra DC subset, which never reaches here.
             frame: MinimalRuntimeDecodedFrame::Eight(frame),
             frame_rate_numerator: header.timebase_denominator,
             frame_rate_denominator: header.timebase_numerator,
@@ -696,20 +601,11 @@ fn compound_is_joint_context_from_order_hints(
     let second_dist = get_relative_dist(second_order_hint, current_order_hint).abs();
     let first_side = get_relative_dist(first_order_hint, current_order_hint);
     let second_side = get_relative_dist(second_order_hint, current_order_hint);
-    // §8.3.2 `is_same_side()` is strict: references at the current frame's order hint
-    // are neither before nor after it, so zero-distance references are not same-side.
     let same_side = (first_side < 0 && second_side < 0) || (first_side > 0 && second_side > 0);
-    // §8.3.2 also ORs the `RESTRICTED_OH` mismatch term. The verified subset does not
-    // model restricted references here; omitting that term is over-reject-only because it
-    // can only raise the context to 1, and the compound gate admits only context 1.
     usize::from(same_side || first_dist != second_dist)
 }
 
 fn get_relative_dist(a: i32, b: i32) -> i32 {
-    // The compound-average subset is admitted only after `order_hint_history_unwrapped`
-    // proves no §5.18.2 order-hint wrap correction occurred, so the simplified clamped
-    // distance is exact for the currently verified streams. Full modular
-    // `get_relative_dist` is deferred to a broader order-hint/reference-state brick.
     (a - b).clamp(-127, 127)
 }
 
@@ -747,11 +643,8 @@ fn add_inter_residual_to_workspace(
             SPEC_MC,
         )
     };
-    // 4:2:0 chroma plane position is the luma position halved.
     let chroma_x = luma_x >> 1;
     let chroma_y = luma_y >> 1;
-    // §7.14.4: the luma DCT_DCT block adds the TCQ dqDenom term when allow_tcq;
-    // chroma never does.
     crate::runtime_minimal_recon::reconstruct_inter_block_residual_into(
         workspace,
         &residual.luma,
@@ -924,9 +817,6 @@ fn parse_inter_frame_core(
     reference: &InterReferenceState<'_>,
 ) -> Result<FrameHeaderCore> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
-    // §5.19 tile_group_obu: the inter OBU_REGULAR_TILE_GROUP carries the frame
-    // header in its first tile group (tile_start_and_end_present == 0 -> is_first ==
-    // 1). Read the leading bit and require the first-tile-group form.
     let is_first_tile_group = reader.read_bit().map_err(|_| {
         unsupported_at(
             "inter_tile_group_prefix_parse",
@@ -993,25 +883,6 @@ fn validate_inter_frame_core(
             SPEC_HEADER,
         ));
     }
-    // §5.18.3 / §5.20.2.1: the inter decode tiles the frame into 64x64 superblocks
-    // (the verified subset is sb_size 64), iterating them in the §5.20.2.1 raster
-    // loop (sb_row outer, sb_col inner) with later superblocks predicting their MV
-    // from the already-decoded left/above neighbour blocks (the frame-wide §7.12.2
-    // find_mv_stack grid). The admitted geometry is now a full 2-D superblock GRID:
-    // width AND height each a positive multiple of 64. The §7.12.2.6 Scan point
-    // process invokes the add-reference-MV step only when `is_inside(mvRow, mvCol)`
-    // AND `RefFrames[mvRow][mvCol][0] has been written for this frame (this checks
-    // that the candidate location has been decoded)` — both conditions are modelled
-    // by `find_mv_stack`'s `NeighbourMvGrid::get`, which returns `None` for an
-    // out-of-bounds position (`is_inside == 0`) OR an undecoded MI cell (RefFrames
-    // not yet written). Because the §5.20.2.1 loop decodes every superblock in raster
-    // order and `record_block` writes each block's MI cells before the next block's
-    // scan, a later superblock's above / above-right / below-left probe that lands in
-    // a not-yet-decoded superblock reads an unwritten cell -> `None` -> no candidate,
-    // exactly as the spec's "has been written for this frame" gate prescribes. (A
-    // probe to the right within the SAME superblock row reaches a later SB column,
-    // which is undecoded -> `None`; a probe above reaches the prior, decoded SB row.)
-    // The single-64x64 frame is the degenerate 1x1 grid and stays admitted.
     let Some(frame_size) = core.frame_size else {
         return Err(unsupported_at(
             "inter_unsupported_frame_size",
@@ -1022,10 +893,6 @@ fn validate_inter_frame_core(
     };
     let width = frame_size.width;
     let height = frame_size.height;
-    // Admit the committed 2-D superblock GRID: width and height each a positive
-    // multiple of 64 (so the §5.20.2.1 raster loop tiles the frame into whole 64x64
-    // superblocks with no boundary clipping). The single-SB row (height 64) and the
-    // single-SB column (width 64) are the degenerate 1-D cases of the same grid.
     let superblock_grid = width != 0
         && height != 0
         && width.is_multiple_of(super::MINIMAL_WIDTH)
@@ -1038,12 +905,6 @@ fn validate_inter_frame_core(
             SPEC_HEADER,
         ));
     }
-    // The dimension gate above assumes 64x64 superblocks (the verified fixtures use
-    // --sb-size 64): a `width` multiple of 64 is the SB count only when each SB is
-    // 64 wide. A stream signalled with 128x128 / 256x256 superblocks would make a
-    // 128x64 frame ONE boundary-clipped superblock (not the verified row of two
-    // 64x64 SBs), with unfixtured block geometry / MV-stack behaviour, so reject
-    // unless seq_sb_size (§5.18.7.6) is 64x64.
     if sequence
         .partition
         .is_none_or(|partition| partition.seq_sb_size() != SuperblockSize::Block64x64)
@@ -1071,8 +932,6 @@ fn validate_inter_frame_core(
             SPEC_HEADER,
         ));
     }
-    // No-tool, no-filter, no-grain inter frame: the verified subset has every
-    // §5.18 tool disabled, matching the flat synthetic fixture.
     if core
         .quantization_params
         .is_none_or(|quant| quant.base_q_idx == 0)
@@ -1102,40 +961,15 @@ fn validate_inter_frame_core(
             .as_ref()
             .is_none_or(|ccso| ccso.ccso_frame_flag.is_some() || !ccso.planes.is_empty())
         || core.inter_tail.as_ref().is_none_or(|tail| {
-            // §5.20.7.1 calls `read_skip_mode()` (which reads a `skip_mode` symbol when
-            // `skip_mode_present` and compound refs are allowed) BEFORE `read_is_inter()`.
-            // The verified subset's block decode reads `is_inter` first, so a frame with
-            // `skip_mode_present` set would desync — reject it here.
             tail.apply_grain || tail.tx_mode != TxMode::Largest || tail.skip_mode_present
         })
-        // §5.20.7.6: any frame-enabled motion mode makes the block read a motion-mode
-        // (`inter_intra` / warp / local-warp) symbol the verified SIMPLE-mode block does
-        // not read. A SWITCHABLE interpolation filter IS admitted (the block decode reads
-        // the per-block `interp_filter` symbol); a fixed frame filter supplies it with no
-        // symbol. Reject so an admitted inter frame can never silently desync the §8.2
-        // arithmetic decoder past the `exit_symbol()` bit-count backstop.
-        || core
-            .inter
-            .as_ref()
-            .is_none_or(|inter| {
-                inter
-                    .frame_enabled_motion_modes
-                    .is_some_and(|modes| modes.iter().any(|&enabled| enabled))
-            })
-        // §5.20.7.6 MvPrecision derivation: `enable_flex_mvres && UsePerBlockMvPrecision
-        // && has_newmv` reads `use_most_probable_precision` (and maybe `pb_mv_precision`)
-        // before assign_mv; `enable_adaptive_mvd` allows `use_amvd` after single_mode. The
-        // verified NEWMV block reads neither, so reject a frame whose sequence enables
-        // flexible MV resolution or adaptive MVD. `enable_bawp` (-> `allow_bawp` per §5.18.2)
-        // makes §5.20.7.6 read a `use_bawp` symbol after single_mode for an unscaled
-        // single-ref block with Min(w,h) >= 8 and YMode != GLOBALMV (i.e. exactly the
-        // verified NEARMV/NEWMV 64x64 block) that this decoder does not read — reject it so
-        // an admitted frame can never desync the §8.2 decoder past the bit-count-only
-        // `exit_symbol()` backstop.
+        || core.inter.as_ref().is_none_or(|inter| {
+            inter
+                .frame_enabled_motion_modes
+                .is_some_and(|modes| modes.iter().any(|&enabled| enabled))
+        })
         || sequence.inter.as_ref().is_none_or(|seq_inter| {
-            seq_inter.enable_flex_mvres
-                || seq_inter.enable_adaptive_mvd
-                || seq_inter.enable_bawp
+            seq_inter.enable_flex_mvres || seq_inter.enable_adaptive_mvd || seq_inter.enable_bawp
         })
     {
         return Err(unsupported_at(

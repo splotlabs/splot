@@ -16,11 +16,6 @@ pub(crate) fn encode_raw_stream_from_plan(
     options: DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<u8>> {
-    // Decode every displayed frame in output order and concatenate their raw visible
-    // sample bytes (AV2 § 6.18). A single-frame intra stream emits one frame,
-    // byte-identical to the prior single-frame behavior. The §6.4.1 sample depth
-    // selects the storage arm; the splot-recon raw serializer packs each visible
-    // sample 16-bit-LE for 10-bit and one byte for 8-bit.
     let outputs =
         crate::runtime_minimal::decode_minimal_frames_from_plan(bitstream, options, plan)?;
     let mut bytes = Vec::new();
@@ -74,12 +69,6 @@ mod tests {
         DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
     }
 
-    // The decoded raw planar output for the committed conformant luma-skip
-    // fixture: luma is an all-zero (skipped) DC block (flat 128) while chroma
-    // carries a real coded residual, so it is no longer flat. avmdec and dav2d
-    // both decode the fixture to these exact bytes (see
-    // docs/LOCAL-REFERENCE-EVIDENCE.toml); the reference is committed alongside
-    // the fixture.
     fn expected_minimal_raw() -> Vec<u8> {
         include_bytes!("../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw")
             .to_vec()

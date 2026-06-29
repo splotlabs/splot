@@ -3,11 +3,9 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::symbol::SymbolBitPosition;
 use splot_core::tables::conversion::{ADJUSTED_TX_SIZE, TX_SIZE_SQR, TX_SIZE_SQR_UP};
 
-use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::TileCoeffContextState;
+use super::super::cdf::FrameCdfSubset;
 use super::base_level_pass::{CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError};
 use super::branch::NonZeroCoeffBlockStartInput;
 use super::max_level::CoeffTransformClass;
@@ -23,13 +21,15 @@ use super::ordinary_pass::geometry::{
     apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables, tx_size_scan_for_test,
 };
 use super::ordinary_pass::{
-    CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput,
-    CoeffOrdinaryBranchPlaneTxTypeBaseConfig, CoeffOrdinaryPassError,
-    CoeffOrdinaryStateContextConfig, CoeffOrdinaryStateContextPassInput,
+    CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput, CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
+    CoeffOrdinaryPassError, CoeffOrdinaryStateContextConfig, CoeffOrdinaryStateContextPassInput,
     NonZeroCoeffOrdinaryDerivedBasePass, apply_coeff_ordinary_branch,
     apply_nonzero_coeff_ordinary_pass_with_state_context,
 };
-use super::test_support::{seeded_context_state, setup_start_with_input, symbol_decoder};
+use super::test_support::{
+    OrdinaryBranchRun, run_ordinary_branch, seeded_context_state, setup_start_with_input,
+    symbol_decoder,
+};
 use super::{AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput};
 
 const DC_ONLY_SCAN: [u16; 1] = [0];
@@ -295,119 +295,39 @@ fn branch_tx_size_dimensions_nonzero_input(
     )
 }
 
-fn run_direct_branch(
-    payload: &[u8],
-    input: CoeffOrdinaryBranchInput<'_>,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch =
-        apply_coeff_ordinary_branch(&mut context_state, &mut tile, &mut symbols, input).unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+fn run_direct_branch(payload: &[u8], input: CoeffOrdinaryBranchInput<'_>) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch(context_state, tile, symbols, input).unwrap()
+    })
 }
 
 fn run_geometry_branch(
     payload: &[u8],
     input: CoeffOrdinaryBranchGeometryInput<'_>,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_geometry(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_geometry(context_state, tile, symbols, input).unwrap()
+    })
 }
 
 fn run_coeffs_geometry_branch(
     payload: &[u8],
     input: CoeffOrdinaryBranchCoeffsGeometryInput<'_>,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_coeffs_geometry(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_coeffs_geometry(context_state, tile, symbols, input)
+            .unwrap()
+    })
 }
 
 fn run_tx_size_dimensions_branch(
     payload: &[u8],
     input: CoeffOrdinaryBranchTxSizeDimensionsInput,
-) -> (
-    CoeffOrdinaryBranch,
-    TileCoeffContextState,
-    TileCdfSubset,
-    SymbolBitPosition,
-    u64,
-) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply_coeff_ordinary_branch_from_tx_size_dimensions(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-    )
-    .unwrap();
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+) -> OrdinaryBranchRun {
+    run_ordinary_branch(payload, |context_state, tile, symbols| {
+        apply_coeff_ordinary_branch_from_tx_size_dimensions(context_state, tile, symbols, input)
+            .unwrap()
+    })
 }
 
 #[test]
@@ -509,9 +429,6 @@ fn coefficient_ordinary_branch_tx_size_dimensions_nonzero_matches_explicit_dimen
 
 #[test]
 fn coefficient_ordinary_branch_tx_size_dimensions_uses_adjusted_base_dimensions() {
-    // TX_64X32 has raw geometry 64x32 for § 5.20.7.27 block/EOB facts, but
-    // Adjusted_Tx_Size[TX_64X32] is TX_32X32 for § 8.3.2 base contexts and
-    // Tx_Size_Sqr/Up derive txSzCtx 4.
     let tx_64x32 = 12;
     let tx_size_ctx = 4;
     let start = nonzero_start_input_for_plane_geometry_and_log2(0, 0, 0, 16, 8, 6, 5);
@@ -578,8 +495,6 @@ fn coefficient_ordinary_branch_tx_size_dimensions_uses_adjusted_base_dimensions(
 
 #[test]
 fn coefficient_ordinary_branch_tx_size_dimensions_uses_derived_tx_size_context() {
-    // TX_64X32 keeps raw 64x32 geometry while deriving txSzCtx from the square
-    // transform-size tables, so context and dimensions differ in one path.
     let tx_64x32 = 12;
     let derived_tx_size_ctx = 4;
     let start = nonzero_start_input_for_plane_geometry_and_log2(0, 0, 0, 16, 8, 6, 5);

@@ -291,15 +291,7 @@ pub(crate) fn roundtrip_intra_mode_tokens(tokens: &[IntraModeToken]) -> Result<I
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct IntraModeCdfRows {
     y_mode_set: [i32; Y_MODE_SET_CDF_ROW_LEN],
-    // Only the tile-origin `y_mode_index` context (0) is in scope; non-origin
-    // contexts need neighbour-derived `get_joint_mode` support that does not
-    // exist yet, so this holds the single tile-origin row and `row_mut` rejects
-    // any other context.
     y_mode_index_tile_origin: [i32; Y_MODE_INDEX_CDF_ROW_LEN],
-    // Only the non-directional `uv_mode` context (0) is in scope; the directional
-    // context needs a directional luma mode, which the DC minimal tier never
-    // emits, so this holds the single non-directional row and `row_mut` rejects
-    // any other context.
     uv_mode_cfl_not_allowed_non_directional: [i32; UV_MODE_CDF_ROW_LEN],
 }
 
@@ -386,9 +378,6 @@ mod tests {
             cdfs.row_mut(IntraModeCdfRowSelector::YModeIndex { ctx: 0 })
                 .is_ok()
         );
-        // Non-origin contexts (1, 2) are in-table but outside the declared
-        // tile-origin scope, and the out-of-table context (3) — all rejected
-        // until neighbour-derived context derivation exists.
         for ctx in [1usize, 2, 3] {
             let err = cdfs
                 .row_mut(IntraModeCdfRowSelector::YModeIndex { ctx })
@@ -434,9 +423,6 @@ mod tests {
             cdfs.row_mut(IntraModeCdfRowSelector::UvModeCflNotAllowed { ctx: 0 })
                 .is_ok()
         );
-        // The directional context (1) is in-table but needs a directional luma
-        // mode the DC minimal tier never emits; the out-of-table context (2) is
-        // also rejected.
         for ctx in [1usize, 2] {
             let err = cdfs
                 .row_mut(IntraModeCdfRowSelector::UvModeCflNotAllowed { ctx })

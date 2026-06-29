@@ -67,13 +67,11 @@ mod tests {
     fn constant_qp_returns_the_configured_quantizer() {
         let rc = ConstantQp::new(80);
         assert_eq!(rc.frame_base_q_idx(), 80);
-        // A second value confirms it is not hardcoded.
         assert_eq!(ConstantQp::new(40).frame_base_q_idx(), 40);
     }
 
     #[test]
     fn constant_qp_is_used_through_the_rate_controller_trait() {
-        // Exercise the decision through the seam (trait object), the way callers consume it.
         let rc = ConstantQp::new(55);
         let seam: &dyn RateController = &rc;
         assert_eq!(seam.frame_base_q_idx(), 55);

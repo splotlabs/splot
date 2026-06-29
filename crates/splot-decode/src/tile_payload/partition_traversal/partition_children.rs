@@ -61,11 +61,6 @@ pub(super) fn child_calls(
     let half_w = num4x4wide >> 1;
     let half_h = num4x4high >> 1;
     let parent = Some(call.b_size);
-    // AV2 § 5.20.4.1 chroma reference inherited by chroma-offset descendants: the
-    // geometry captured by this node (or an ancestor) where chroma last followed
-    // luma. Children that re-enter `!chromaOffset && hasChroma` recompute their
-    // own reference via `chroma_ref_geometry`, so passing this down is only
-    // load-bearing for the chroma-offset (`chromaOffset == true`) children.
     let inherited_chroma_ref = Some(call.chroma_ref_geometry());
     let mut children = TilePartitionChildCalls::new(call);
     match partition {
@@ -165,8 +160,6 @@ pub(super) fn child_calls(
             )?;
             let middle_chroma =
                 call.b_size.index() == BLOCK_8X32 && call.has_chroma && frame.subsampling_x;
-            // AV2 § 5.20.4.1 HORZ_3 middleChroma override (spec lines 9145-9149):
-            // the two middle children reference the half-height HORZ sub-block.
             let middle_chroma_ref = if middle_chroma {
                 Some(ChromaRefGeometry::new(
                     checked_add("r", call.r, half_h >> 1)?,

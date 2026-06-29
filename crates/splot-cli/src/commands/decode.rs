@@ -497,8 +497,6 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
             let context = DecodeContext::new(DecodeRuntimeConfig::new(args.threads))?;
             match target {
                 DecodeOutputTarget::Hash { path } => {
-                    // Hash mode derives its filename from the input; any `--output` path is
-                    // intentionally ignored (carried on the target only for variant symmetry).
                     let _ = path;
                     match context.decode_hash_report_bytes(&bytes, options) {
                         Ok(report) => {
@@ -680,9 +678,6 @@ fn replace_output(
     final_path: &Path,
     artifact: OutputArtifact,
 ) -> core::result::Result<(), DecodeError> {
-    // Rust documents `std::fs::rename` as replacing an existing destination
-    // when `from` and `to` are files, including on Windows, so this stays the
-    // single publication step after temp write, flush, and sync succeed.
     fs::rename(temp_path, final_path)
         .map_err(|source| output_io(artifact.rename_operation(), source))
         .map_err(|error| cleanup_temp_file(temp_path, artifact, error))

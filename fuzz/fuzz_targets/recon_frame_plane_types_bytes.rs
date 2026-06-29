@@ -1,14 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-//
-// Fuzz target for CONF-RECON-FRAME-PLANE-TYPES-FUZZ: source-backed
-// decoded-frame and plane runtime types must validate bounded model inputs with
-// typed returns and no panic. This target intentionally does not parse AV2
-// bitstreams, invoke splot-decode, serialize frame hashes/Y4M, write filesystem
-// paths, or invoke AVM/dav2d. Run with:
-//
-//     cargo install cargo-fuzz --locked
-//     cargo +nightly fuzz run recon_frame_plane_types_bytes
 #![no_main]
 
 use core::mem;

@@ -46,7 +46,6 @@ pub struct PaddingObu {
 /// non-empty all-zero payload, or [`PaddingErrorKind::InvalidTrailingBits`] if the bytes
 /// from the last non-zero byte are not a valid `trailing_bits()` pattern.
 pub fn parse_padding_obu(payload: &[u8], payload_offset: ByteOffset) -> Result<PaddingObu> {
-    // AV2 § 5.16: an obuPayloadSize of 0 is legal and contains no trailing bits.
     if payload.is_empty() {
         return Ok(PaddingObu {
             padding_len: 0,
@@ -54,8 +53,6 @@ pub fn parse_padding_obu(payload: &[u8], payload_offset: ByteOffset) -> Result<P
         });
     }
 
-    // AV2 § 5.16 / § 6.15: the last byte of valid content is the last non-zero byte. A
-    // payload with no non-zero byte has no trailing_bits() byte, which the spec forbids.
     let Some(last_nonzero) = payload.iter().rposition(|&byte| byte != 0) else {
         return Err(Error::InvalidPadding {
             offset: payload_offset,
@@ -69,9 +66,6 @@ pub fn parse_padding_obu(payload: &[u8], payload_offset: ByteOffset) -> Result<P
     let trailing_len = trailing.len();
     let trailing_offset = payload_offset.saturating_add(padding_len as u64);
 
-    // The trailing region starts at the last non-zero byte and runs to the payload end.
-    // Its bytes are present (sliced from payload), so trailing_bits() never reports EOF
-    // here; only a malformed pattern is possible.
     let mut reader = BitReader::new(trailing, trailing_offset);
     let nb_bits = (trailing_len as u64).saturating_mul(8);
     if let Err(error) = parse_trailing_bits(&mut reader, nb_bits) {
@@ -79,7 +73,6 @@ pub fn parse_padding_obu(payload: &[u8], payload_offset: ByteOffset) -> Result<P
             Error::InvalidTrailingBits {
                 offset, bit_offset, ..
             } => (offset, bit_offset),
-            // trailing_bits() over a non-empty slice can only fail with InvalidTrailingBits.
             other => return Err(other),
         };
         return Err(Error::InvalidPadding {
@@ -109,7 +102,6 @@ mod tests {
 
     #[test]
     fn padding_one_byte_trailing_only_is_valid() {
-        // A single 0x80 byte is valid trailing_bits() (trailing_one_bit then zeros).
         let padding = parse_padding_obu(&[0x80], ByteOffset::new(1)).unwrap();
         assert_eq!(padding.padding_len, 0);
         assert_eq!(padding.trailing_len, 1);
@@ -117,7 +109,6 @@ mod tests {
 
     #[test]
     fn padding_arbitrary_bytes_before_trailing_bits_are_valid() {
-        // Three arbitrary padding bytes, then a trailing-bits byte (0x80).
         let padding = parse_padding_obu(&[0xDE, 0xAD, 0xBE, 0x80], ByteOffset::new(1)).unwrap();
         assert_eq!(padding.padding_len, 3);
         assert_eq!(padding.trailing_len, 1);
@@ -125,8 +116,6 @@ mod tests {
 
     #[test]
     fn padding_trailing_byte_may_be_followed_by_zero_padding_bytes() {
-        // The last non-zero byte is the trailing-bits byte; zero bytes after it would be
-        // dropped, so the last non-zero byte (0x80) must itself be valid trailing_bits.
         let padding = parse_padding_obu(&[0xFF, 0x80], ByteOffset::new(1)).unwrap();
         assert_eq!(padding.padding_len, 1);
         assert_eq!(padding.trailing_len, 1);
@@ -145,8 +134,6 @@ mod tests {
 
     #[test]
     fn padding_invalid_trailing_bits_is_rejected() {
-        // Last non-zero byte 0x40 = 0b0100_0000: trailing_one_bit must be 1, but the
-        // first bit is 0.
         assert!(matches!(
             parse_padding_obu(&[0x40], ByteOffset::new(1)),
             Err(Error::InvalidPadding {
@@ -154,7 +141,6 @@ mod tests {
                 ..
             })
         ));
-        // A trailing region whose later bits are not zero: 0xC0 = 0b1100_0000.
         assert!(matches!(
             parse_padding_obu(&[0xC0], ByteOffset::new(1)),
             Err(Error::InvalidPadding {

@@ -60,11 +60,8 @@ const DR_INTRA_DERIVATIVE: [u16; 90] = [
     3,    2,    1,
 ];
 
-// AV2 v1.0.0 §9.2 `Dr_Intra_Derivative[23]`.
 const DR_INTRA_DERIVATIVE_23: u16 = DR_INTRA_DERIVATIVE[23];
-// AV2 v1.0.0 §9.2 `Dr_Intra_Derivative[45]`.
 const DR_INTRA_DERIVATIVE_45: u16 = DR_INTRA_DERIVATIVE[45];
-// AV2 v1.0.0 §9.2 `Dr_Intra_Derivative[67]`.
 const DR_INTRA_DERIVATIVE_67: u16 = DR_INTRA_DERIVATIVE[67];
 
 /// AV2 §7.13.2.8 zone boundary: a `pAngle` strictly below `ZONE_1_MAX` reads the
@@ -153,11 +150,9 @@ impl IntraDirectionalAngle {
     /// (`180 < pAngle < 270`) uses `Dr_Intra_Derivative[270 - pAngle]`.
     const fn derivative_for(p_angle: u16) -> Option<u16> {
         if p_angle > 0 && p_angle < ZONE_1_MAX {
-            // zone-1: dx = Dr_Intra_Derivative[pAngle].
             return Some(DR_INTRA_DERIVATIVE[p_angle as usize]);
         }
         if p_angle > ZONE_3_MIN && p_angle < ZONE_3_INDEX_BASE {
-            // zone-3: dy = Dr_Intra_Derivative[270 - pAngle].
             let index = (ZONE_3_INDEX_BASE - p_angle) as usize;
             return Some(DR_INTRA_DERIVATIVE[index]);
         }
@@ -198,8 +193,6 @@ impl IntraDirectionalAngle {
         for row in 0..size.height() {
             for column in 0..size.width() {
                 let reference = one_sided_idif_reference(branch, row, column, derivative)?;
-                // §7.13.2.8 luma: for `base <= maxBase` the 4-tap reads up to
-                // `Edge[base + 2]`; otherwise it reads the single `Edge[maxBase]`.
                 let read = if reference.base <= max_base {
                     reference
                         .base
@@ -220,9 +213,6 @@ impl IntraDirectionalAngle {
     }
 
     const fn branch(self) -> DirectionalAngleBranch {
-        // `try_from_p_angle` admitted only one-sided pAngles, so `derivative_for`
-        // is `Some`; fall back to a zero derivative if it is not (the bounds
-        // checks in the predictor then error rather than read junk).
         let derivative = match Self::derivative_for(self.p_angle) {
             Some(derivative) => derivative,
             None => 0,
@@ -982,7 +972,6 @@ fn validate_middle_idif_index_bounds(
                 IntraDirectionalAngleEdge::Left => left_len,
                 IntraDirectionalAngleEdge::Above => above_len,
             };
-            // The §7.13.2.8 IDIF 4-tap reads `Edge[base - 1 ..= base + 2]`.
             for tap in 0..(DR_INTERP_FILTER_TAPS as i64) {
                 let logical =
                     reference
@@ -1217,8 +1206,6 @@ fn validate_one_sided_idif_inputs<T: ReconSample>(
         stride_samples,
         "intra prediction output buffer length",
     )?;
-    // The ABOVE-reading zone-1 angles (D45/D67) and the LEFT-reading zone-3 angle
-    // (D203) are supported; the caller-supplied edge must match the angle's edge.
     let direction = match angle.branch() {
         DirectionalAngleBranch::Above { .. } => IntraDirectionalAngleEdge::Above,
         DirectionalAngleBranch::Left { .. } => IntraDirectionalAngleEdge::Left,
@@ -1256,10 +1243,6 @@ fn validate_one_sided_idif_index_bounds(
     for row in 0..size.height() {
         for column in 0..size.width() {
             let reference = one_sided_idif_reference(branch, row, column, derivative)?;
-            // §7.13.2.8: for `base < maxBase + enableIdif` (== `maxBase + 1` for
-            // luma) the IDIF 4-tap reads `Edge[base - 1 ..= base + 2]`; otherwise
-            // the spec reads the single clamp `Edge[maxBase]`. Validate whichever
-            // index range the write path will actually touch.
             if reference.base <= max_base {
                 for tap in 0..(DR_INTERP_FILTER_TAPS as i64) {
                     let logical = reference.base.checked_add(tap - 1).ok_or(
@@ -1317,8 +1300,6 @@ fn one_sided_idif_reference(
     column: usize,
     derivative: i64,
 ) -> Result<OneSidedReference> {
-    // The zone-1 above projection scales `(i + 1)` and offsets by `j`; the
-    // symmetric zone-3 left projection scales `(j + 1)` and offsets by `i`.
     let (scaled, offset) = match branch {
         DirectionalAngleBranch::Above { .. } => (row, column),
         DirectionalAngleBranch::Left { .. } => (column, row),
@@ -1360,11 +1341,8 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
         for column in 0..size.width() {
             let reference = one_sided_idif_reference(branch, row, column, derivative)?;
             let value = if reference.base <= max_base {
-                // §7.13.2.8: `base < maxBase + enableIdif` (== `maxBase + 1` for
-                // luma), i.e. `base <= maxBase`. The 4-tap IDIF interpolates.
                 idif_tap(edge, reference.base, reference.shift, bit_depth)?
             } else {
-                // `base >= maxBase + enableIdif`: `pred = Edge[maxBase]`.
                 logical_idif_edge_sample(edge, max_base)?.to_u16()
             };
             output[row_start + column] = T::try_from_u16(value)?;
@@ -1477,7 +1455,6 @@ fn idif_round2_clip(sum: i64, bit_depth: BitDepth) -> u16 {
     }
     let max = i64::from(bit_depth.max_sample());
     let clamped = rounded.min(max);
-    // `clamped` is in `0..=max_sample`, so the cast and clip1 are exact.
     clip1(clamped as u16, bit_depth)
 }
 
@@ -1655,17 +1632,11 @@ pub fn apply_intra_edge_filter<T: ReconSample>(
             context: "intra edge filter strength out of range",
         });
     };
-    // Snapshot the unfiltered window: each output reads the ORIGINAL neighbours
-    // (the §7.13.2.18 `edge[]` copy), so an in-place sweep cannot feed an already
-    // filtered sample into a later tap.
     let original: Vec<u16> = edge[..sz].iter().map(|s| s.to_u16()).collect();
     let last = sz - 1;
-    // The §7.13.2.18 sweep writes `edge[i]` for `i = 1..sz-1` (the `i == 0` corner
-    // is read but never overwritten).
     for (i, slot) in edge.iter_mut().enumerate().take(sz).skip(1) {
         let mut s: i32 = 0;
         for (j, &tap) in kernel.iter().enumerate() {
-            // k = Clip3(0, sz - 1, i - 2 + j).
             let raw = i as i64 - 2 + j as i64;
             let k = raw.clamp(0, last as i64) as usize;
             s += tap * i32::from(original[k]);

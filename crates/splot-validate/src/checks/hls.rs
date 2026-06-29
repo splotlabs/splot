@@ -36,7 +36,6 @@ pub(super) struct MsdoSyntax;
 
 impl Check for MsdoSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier; emitted diagnostics use their own rule ids.
         "msdo/syntax"
     }
 
@@ -86,13 +85,6 @@ impl Check for MsdoSyntax {
                         .with_byte_offset(obu.offset),
                     );
                 }
-                // AV2 § 6.6 (mirror `06-syntax-structures-semantics.md` line 1347):
-                // "It is a requirement of bitstream conformance that
-                // multistream_profile_idc is greater than or equal to
-                // sub_stream_max_profile[i] for all i in the range 0 to
-                // num_streams_minus_2 + 1, inclusive." Locally decidable from the
-                // in-band MSDO alone — it is never suppressed by external HLS (an
-                // external HLS set cannot redefine the in-band MSDO's own fields).
                 for (i, sub) in msdo.sub_streams().iter().enumerate() {
                     if msdo.multistream_profile_idc.get() < sub.sub_stream_max_profile {
                         report.push(
@@ -112,16 +104,6 @@ impl Check for MsdoSyntax {
                         );
                     }
                 }
-                // AV2 § 6.6 (mirror `06-syntax-structures-semantics.md` lines 1339-1341):
-                // "The allowed values for multistream_profile_idc are the same as those
-                // for seq_profile_idc as defined in Table A.4." The "Table A.4" reference
-                // is a spec erratum: the seq_profile_idc value space is defined by
-                // Annex A.2 Table A.1 (Table A.4 holds interoperability-point rows). The
-                // value space is all this sentence constrains — there is no claim beyond
-                // it — so a reserved (5..=30) value is flagged with the shared
-                // `annex-a/profile-reserved` id (the same value-space verdict the
-                // activated-header check emits for seq_profile_idc). Locally decidable;
-                // not suppressed by external HLS.
                 if crate::annex_a::is_reserved_profile(msdo.multistream_profile_idc.get()) {
                     report.push(
                         Diagnostic::error(
@@ -139,8 +121,6 @@ impl Check for MsdoSyntax {
                         .with_byte_offset(obu.offset),
                     );
                 }
-                // AV2 § 5.2.1: OBU_MSDO is non-extensible, so the remaining payload
-                // bits must form valid trailing_bits().
                 finish_payload_or_emit(&mut reader, obu.payload, false, report);
             }
             Err(error) => report.push(payload_parse_error_diagnostic(&error, "5.6")),
@@ -153,7 +133,6 @@ pub(super) struct MultiFrameHeaderSyntax;
 
 impl Check for MultiFrameHeaderSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier; emitted diagnostics use their own rule ids.
         "mfh/syntax"
     }
 
@@ -192,9 +171,6 @@ impl Check for MultiFrameHeaderSyntax {
                         .with_byte_offset(obu.offset),
                     );
                 }
-                // AV2 § 5.2.1: the multi-frame header is extensible, so a fully
-                // parsed MFH (now including seg_info()) must have a valid
-                // obu_extension_flag / trailing_bits tail.
                 finish_payload_or_emit(&mut reader, obu.payload, true, report);
             }
             Err(error) => report.push(payload_parse_error_diagnostic(&error, "5.7")),
@@ -209,7 +185,6 @@ pub(super) struct LayerConfigRecordSyntax;
 
 impl Check for LayerConfigRecordSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier; emitted diagnostics use their own rule ids.
         "lcr/syntax"
     }
 
@@ -218,7 +193,6 @@ impl Check for LayerConfigRecordSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        // AV2 § 5.2.1: the layer configuration record is extensible.
         run_payload_syntax_check(
             obu,
             report,
@@ -228,9 +202,6 @@ impl Check for LayerConfigRecordSyntax {
             |reader| parse_layer_config_record(reader, obu.header.extended_layer_id),
             |record, obu, report| {
                 if record.has_nonzero_reserved_bits() {
-                    // AV2 § 6.8: the lcr_*_reserved_zero_* fields must be 0, but a
-                    // decoder ignores the value, so a non-zero value is a producer
-                    // anomaly (warning) rather than a decode-breaking error.
                     report.push(
                         Diagnostic::warning(
                             "lcr/reserved-bits-nonzero",
@@ -258,7 +229,6 @@ fn check_layer_config_record_semantics(
     match record {
         LayerConfigurationRecord::Global(global) => {
             if global.global_config_record_id == 0 {
-                // AV2 § 6.8.2: lcr_global_config_record_id is in the range 1..7.
                 report.push(
                     Diagnostic::error(
                         "lcr/global-id-out-of-range",
@@ -269,7 +239,6 @@ fn check_layer_config_record_semantics(
                 );
             }
             if global.xlayer_map == 0 {
-                // AV2 § 6.8.2: lcr_xlayer_map is in the range 1..(1 << 31) - 1.
                 report.push(
                     Diagnostic::error(
                         "lcr/xlayer-map-empty",
@@ -280,8 +249,6 @@ fn check_layer_config_record_semantics(
                 );
             }
             if global.dependent_xlayers_flag {
-                // AV2 § 6.8.2: lcr_dependent_xlayers_flag must be 0, but a decoder
-                // ignores the value, so a set flag is a producer anomaly (warning).
                 report.push(
                     Diagnostic::warning(
                         "lcr/dependent-xlayers-flag-nonzero",
@@ -292,16 +259,7 @@ fn check_layer_config_record_semantics(
                 );
             }
             if let Some(aggregate) = global.aggregate_info.as_ref() {
-                // AV2 § 6.8.4 (mirror `06-syntax-structures-semantics.md` lines 1744-1759)
-                // gives three "shall not contain values outside Annex A" requirements on the
-                // aggregate info fields. Each is decidable from the parsed global LCR's
-                // lcr_aggregate_info() alone (no activation — the requirement is on the
-                // bitstream *containing* the value), so these are local value-space checks
-                // like `annex-a/profile-reserved`. lcr_max_tier_flag is a 1-bit field with no
-                // such clause, so it has no value-space check.
                 if !crate::annex_a::is_defined_config_idc(aggregate.config_idc) {
-                    // Mirror lines 1744-1747: Annex A.3 Table A.5 defines configurations 0..=2;
-                    // 3..=63 are reserved for future extensions.
                     report.push(
                         Diagnostic::error(
                             "lcr/config-idc-reserved",
@@ -317,10 +275,6 @@ fn check_layer_config_record_semantics(
                     );
                 }
                 if crate::annex_a::is_reserved_level(aggregate.aggregate_level_idx) {
-                    // Mirror lines 1749-1752: lcr_aggregate_level_idx shall not be outside
-                    // Annex A. Annex A.4 Table A.7 (mirror line 321) reserves level indices
-                    // 22..=30; the 5-bit field's other values are defined levels (0..=21) or
-                    // "Maximum parameters" (31).
                     report.push(
                         Diagnostic::error(
                             "lcr/aggregate-level-idx-reserved",
@@ -335,9 +289,6 @@ fn check_layer_config_record_semantics(
                     );
                 }
                 if !crate::annex_a::is_defined_max_interop(aggregate.max_interop) {
-                    // Mirror lines 1757-1759: lcr_max_interop shall not be outside Annex A.
-                    // Annex A.3 Table A.3 (mirror lines 125-138) defines interoperability
-                    // points 0, 1, 2, and 15 ("max"); 3..=14 are reserved.
                     report.push(
                         Diagnostic::error(
                             "lcr/max-interop-reserved",
@@ -353,7 +304,6 @@ fn check_layer_config_record_semantics(
                 }
             }
         }
-        // AV2 § 6.8.3: lcr_local_id is not equal to 0.
         LayerConfigurationRecord::Local(local) if local.local_id == 0 => {
             report.push(
                 Diagnostic::error("lcr/local-id-zero", "lcr_local_id must not be equal to 0")
@@ -361,8 +311,6 @@ fn check_layer_config_record_semantics(
                     .with_byte_offset(obu.offset),
             );
         }
-        // A conformant local record, or (since `LayerConfigurationRecord` is
-        // `#[non_exhaustive]`) a future scope variant, is left unchecked here.
         _ => {}
     }
 }
@@ -375,7 +323,6 @@ pub(super) struct AtlasSegmentSyntax;
 
 impl Check for AtlasSegmentSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier; emitted diagnostics use their own rule ids.
         "atlas/syntax"
     }
 
@@ -384,7 +331,6 @@ impl Check for AtlasSegmentSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        // AV2 § 5.2.1: the atlas segment info OBU is extensible.
         run_payload_syntax_check(
             obu,
             report,
@@ -404,8 +350,6 @@ fn check_atlas_segment_semantics(
     obu: &ObuEnvelope<'_>,
     report: &mut ValidationReport,
 ) {
-    // AV2 § 6.9: MULTISTREAM_ATLAS / MULTISTREAM_ALPHA_ATLAS require obu_xlayer_id to
-    // equal GLOBAL_XLAYER_ID.
     if matches!(
         atlas.mode,
         AtlasSegmentMode::Multistream | AtlasSegmentMode::MultistreamAlpha
@@ -426,9 +370,6 @@ fn check_atlas_segment_semantics(
         );
     }
 
-    // AV2 § 6.9.6: ats_input_stream_id values of a basic atlas must be unique; AV2
-    // § 6.9.4 gives ats_msi_input_stream_id the same semantics, so the multistream
-    // modes share the requirement.
     let input_stream_ids: Vec<u8> = match &atlas.mode_info {
         AtlasModeInfo::Basic(basic) => basic
             .segments
@@ -463,7 +404,6 @@ pub(super) struct OperatingPointSetSyntax;
 
 impl Check for OperatingPointSetSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier; emitted diagnostics use their own rule ids.
         "ops/syntax"
     }
 
@@ -472,8 +412,6 @@ impl Check for OperatingPointSetSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        // AV2 § 5.2.1: the operating point set OBU is extensible. The locally
-        // decidable § 6.10 semantics are stateful, so there is no per-OBU `check`.
         run_payload_syntax_check(
             obu,
             report,
@@ -493,7 +431,6 @@ pub(super) struct BufferRemovalTimingSyntax;
 
 impl Check for BufferRemovalTimingSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier; emitted diagnostics use their own rule ids.
         "brt/syntax"
     }
 
@@ -502,9 +439,6 @@ impl Check for BufferRemovalTimingSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        // AV2 § 5.2.1: OBU_BUFFER_REMOVAL_TIMING is not extensible (trailing_bits()
-        // only). The cross-OBU OPS reference checks are stateful, so there is no
-        // per-OBU `check`.
         run_payload_syntax_check(
             obu,
             report,
@@ -524,7 +458,6 @@ pub(super) struct QuantizerMatrixSyntax;
 
 impl Check for QuantizerMatrixSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier; emitted diagnostics use their own rule ids.
         "qm/syntax"
     }
 
@@ -533,9 +466,6 @@ impl Check for QuantizerMatrixSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        // AV2 § 5.2.1: OBU_QUANTIZATION_MATRIX is not extensible (trailing_bits()
-        // only). The cross-OBU § 6.12 duplicate checks are stateful, so there is no
-        // per-OBU `check`.
         run_payload_syntax_check(
             obu,
             report,
@@ -556,7 +486,6 @@ pub(super) struct FilmGrainSyntax;
 
 impl Check for FilmGrainSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier; emitted diagnostics use their own rule ids.
         "film-grain/syntax"
     }
 
@@ -565,8 +494,6 @@ impl Check for FilmGrainSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        // AV2 § 5.2.1: OBU_FILM_GRAIN is not extensible (trailing_bits() only). The
-        // cross-OBU § 6.13 checks are stateful, so there is no per-OBU `check`.
         run_payload_syntax_check(
             obu,
             report,
@@ -586,7 +513,6 @@ pub(super) struct ContentInterpretationSyntax;
 
 impl Check for ContentInterpretationSyntax {
     fn id(&self) -> &'static str {
-        // Registry identifier; emitted diagnostics use their own rule ids.
         "content-interpretation/syntax"
     }
 
@@ -595,7 +521,6 @@ impl Check for ContentInterpretationSyntax {
     }
 
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport) {
-        // AV2 § 5.2.1: OBU_CONTENT_INTERPRETATION is extensible.
         run_payload_syntax_check(
             obu,
             report,
@@ -605,9 +530,6 @@ impl Check for ContentInterpretationSyntax {
             parse_content_interpretation,
             |content_interpretation, obu, report| {
                 if content_interpretation.reserved_2bit != 0 {
-                    // AV2 § 6.14: ci_reserved_2bit must be 0, but a decoder ignores
-                    // the value, so a non-zero value is a producer anomaly (warning)
-                    // rather than a hard, decode-breaking conformance error.
                     report.push(
                         Diagnostic::warning(
                             "content-interpretation/reserved-bits-nonzero",
@@ -621,9 +543,6 @@ impl Check for ContentInterpretationSyntax {
                         .with_byte_offset(obu.offset),
                     );
                 }
-                // AV2 § 6.14: when present, ci_chroma_sample_position_top and
-                // ci_chroma_sample_position_bottom must each be <= 5 (6 is the
-                // inferred CSP_UNSPECIFIED, which is not coded).
                 if let Some(chroma) = content_interpretation.chroma_sample_position
                     && (chroma.top > 5 || chroma.bottom > 5)
                 {
@@ -639,8 +558,6 @@ impl Check for ContentInterpretationSyntax {
                         .with_byte_offset(obu.offset),
                     );
                 }
-                // AV2 § 6.14: when ci_aspect_ratio_idc is not 255 (the extended-SAR
-                // marker), it must be <= 16.
                 if let Some(aspect_ratio) = content_interpretation.aspect_ratio
                     && aspect_ratio.aspect_ratio_idc != 255
                     && aspect_ratio.aspect_ratio_idc > 16

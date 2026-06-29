@@ -74,9 +74,6 @@ mod tests {
     use super::*;
     use crate::{BitDepth, PlaneId, QuantizerDeltas, ReconError, ac_quantizer, dc_quantizer};
 
-    // DCT_DCT (PlaneTxType 0) luma dequant params for an 8-bit transform block of
-    // the given adjusted dimensions, mirroring the encoder closed-loop reference
-    // (`dq_denom == 1`, zero quantizer deltas).
     fn dct_dequant_params(tx_width: usize, tx_height: usize, qindex: u32) -> DequantBlockParams {
         let deltas = QuantizerDeltas {
             y_dc: 0,
@@ -102,9 +99,6 @@ mod tests {
 
     #[test]
     fn all_zero_quant_preserves_prediction_4x4() {
-        // An all-zero quantized block dequantizes to zero, inverse-transforms to a
-        // zero residual, and adds nothing: the reconstruction equals the
-        // prediction exactly.
         let transform = dct_transform(2);
         let params = dct_dequant_params(4, 4, 100);
         let prediction: [u8; 16] = core::array::from_fn(|i| 120 + (i as u8 % 7));
@@ -126,9 +120,6 @@ mod tests {
 
     #[test]
     fn nonzero_dc_produces_uniform_signed_residual_4x4() {
-        // A single nonzero DC coefficient inverse-transforms to a *flat* residual:
-        // a positive DC raises every sample above the flat prediction and a
-        // negative DC lowers every sample, with no per-sample variation.
         let transform = dct_transform(2);
         let params = dct_dequant_params(4, 4, 100);
         let prediction = [128u8; 16];
@@ -175,9 +166,6 @@ mod tests {
 
     #[test]
     fn all_zero_quant_preserves_prediction_tx_64x64() {
-        // TX_64X64: the adjusted 32x32 dequant block expands to a 64x64 residual.
-        // An all-zero block reproduces the original-size prediction exactly,
-        // exercising the adjusted-to-original sample-duplication geometry.
         let transform = dct_transform(6);
         let params = dct_dequant_params(32, 32, 100);
         let prediction: [u8; 64 * 64] = core::array::from_fn(|i| 100 + (i as u8 % 11));
@@ -201,9 +189,6 @@ mod tests {
 
     #[test]
     fn nonzero_dc_is_uniform_after_expansion_tx_64x64() {
-        // A single DC coefficient on a TX_64X64 block yields a flat 64x64
-        // reconstruction (uniform after the inverse transform and sample
-        // duplication), strictly above a flat prediction for a positive DC.
         let transform = dct_transform(6);
         let params = dct_dequant_params(32, 32, 100);
         let prediction = [128u8; 64 * 64];
@@ -233,8 +218,6 @@ mod tests {
 
     #[test]
     fn rejects_inconsistent_buffers_before_writing_output() {
-        // A dequant-scratch length that disagrees with the dequant params is
-        // rejected by the first step; `out` is left untouched.
         let transform = dct_transform(2);
         let params = dct_dequant_params(4, 4, 100);
         let prediction = [50u8; 16];

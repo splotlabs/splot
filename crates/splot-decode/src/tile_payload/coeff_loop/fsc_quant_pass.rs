@@ -60,7 +60,6 @@ struct CoeffFscBranchScanOrderTables<'a> {
     tx_height: &'a [i32],
 }
 
-// `tx_*` fields mirror the AV2 txWidth/txHeight/txWidthLog2/txHeightLog2 transform dimensions; the prefix preserves that mapping.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CoeffFscBranchTxSizeDimensions {

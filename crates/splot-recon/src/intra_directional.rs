@@ -215,51 +215,47 @@ mod tests {
         IntraRectBlockSize::new(log2_width, log2_height).unwrap()
     }
 
-    #[test]
-    fn vertical_cardinal_prediction_copies_above_edge() {
-        let above = [10, 20, 30, 40];
+    fn assert_cardinal_prediction(
+        direction: IntraCardinalDirection,
+        edges: IntraCardinalEdges<'_, u8>,
+        expected: [u8; 32],
+    ) {
         let mut output = [0u8; 32];
-
         predict_intra_cardinal_directional_rect_into(
             BitDepth::Eight,
             rect_size(2, 3),
-            IntraCardinalDirection::Vertical,
-            IntraCardinalEdges::above(&above),
+            direction,
+            edges,
             &mut output,
             4,
         )
         .unwrap();
+        assert_eq!(output, expected);
+    }
 
-        assert_eq!(
-            output,
+    #[test]
+    fn vertical_cardinal_prediction_copies_above_edge() {
+        let above = [10, 20, 30, 40];
+        assert_cardinal_prediction(
+            IntraCardinalDirection::Vertical,
+            IntraCardinalEdges::above(&above),
             [
                 10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40, 10,
-                20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40
-            ]
+                20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40,
+            ],
         );
     }
 
     #[test]
     fn horizontal_cardinal_prediction_copies_left_edge() {
         let left = [1, 3, 5, 7, 9, 11, 13, 15];
-        let mut output = [0u8; 32];
-
-        predict_intra_cardinal_directional_rect_into(
-            BitDepth::Eight,
-            rect_size(2, 3),
+        assert_cardinal_prediction(
             IntraCardinalDirection::Horizontal,
             IntraCardinalEdges::left(&left),
-            &mut output,
-            4,
-        )
-        .unwrap();
-
-        assert_eq!(
-            output,
             [
                 1, 1, 1, 1, 3, 3, 3, 3, 5, 5, 5, 5, 7, 7, 7, 7, 9, 9, 9, 9, 11, 11, 11, 11, 13, 13,
-                13, 13, 15, 15, 15, 15
-            ]
+                13, 13, 15, 15, 15, 15,
+            ],
         );
     }
 

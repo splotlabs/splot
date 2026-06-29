@@ -10,9 +10,6 @@
 //! transform contexts. The composed traces are driven through the shared § 8.2
 //! coder by `block_symbol_trace::roundtrip_block_symbol_trace`.
 
-// The encoder runtime does not yet consume these composers (it returns
-// `NeedMoreData`); they are exercised by the block-symbol-trace roundtrip tests,
-// matching the sibling emission modules' policy.
 #![allow(dead_code)]
 
 mod chroma;
@@ -20,9 +17,6 @@ mod coded_dc;
 mod multi_coeff;
 mod skip;
 
-// These crate-private composers are kept reachable at `crate::general_intra_trace::...`
-// for follow-up bricks; no in-crate consumer reads them yet (matching the module's
-// `#![allow(dead_code)]` policy).
 #[allow(unused_imports)]
 pub(crate) use skip::{
     compose_general_intra_dc_skip_block_trace, emit_minimal_intra_skip_temporal_unit,

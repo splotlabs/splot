@@ -62,8 +62,6 @@ pub fn run(args: &ValidateArgs) -> Result<ExitCode> {
             .with_context(|| format!("failed to validate input file: {}", args.input.display()))?
     };
 
-    // The single pass/fail decision (honors --strict) drives both the exit code and
-    // the reported conformance, so the summary never contradicts the exit code.
     let acceptable = validator.is_acceptable(&report);
     let render = RenderOptions {
         max_diagnostics: args.max_diagnostics,

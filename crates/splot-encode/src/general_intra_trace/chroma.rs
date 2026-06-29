@@ -233,13 +233,10 @@ mod tests {
 
     #[test]
     fn composes_general_coded_chroma_block_trace_in_order() {
-        // Magnitude 4: U coeff_base_eob = 3 (level 4), no coeff_br/golomb.
         let trace =
             compose_general_intra_coded_chroma_u_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)
                 .unwrap();
 
-        // do_split, 3 modes, luma txb_skip (skip), 3 coded-U symbols, U sign bypass,
-        // V txb_skip (skip) = 10 tokens.
         assert_eq!(trace.len(), 10);
         assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
         for token in &trace[1..4] {
@@ -249,8 +246,6 @@ mod tests {
             trace[8],
             BlockSymbolToken::Bypass { width: 1, value: 1 }
         ));
-        // do_split=0, modes 0/0/0, luma txb_skip=1 (skip), U txb_skip=0, U eob_pt=0,
-        // U coeff_base_eob=3, U sign_bit=1 (negative), V txb_skip=1 (skip).
         assert_eq!(
             trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
             vec![0, 0, 0, 0, 1, 0, 0, 3, 1, 1]
@@ -285,16 +280,12 @@ mod tests {
             compose_general_intra_coded_chroma_v_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)
                 .unwrap();
 
-        // do_split, 3 modes, luma txb_skip (skip), U txb_skip (skip), 3 coded-V symbols,
-        // V sign bypass = 10 tokens.
         assert_eq!(trace.len(), 10);
         assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
         assert!(matches!(
             trace[9],
             BlockSymbolToken::Bypass { width: 1, value: 1 }
         ));
-        // do_split=0, modes 0/0/0, luma txb_skip=1, U txb_skip=1, V txb_skip=0, V eob_pt=0,
-        // V coeff_base_eob=3, V sign_bit=1 (negative).
         assert_eq!(
             trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
             vec![0, 0, 0, 0, 1, 1, 0, 0, 3, 1]
@@ -332,7 +323,6 @@ mod tests {
         )
         .unwrap();
 
-        // do_split, 3 modes, 5 coded-luma, 3 coded-U, U sign, 3 coded-V, V sign = 17 tokens.
         assert_eq!(trace.len(), 17);
         assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
         assert!(matches!(
@@ -343,8 +333,6 @@ mod tests {
             trace[16],
             BlockSymbolToken::Bypass { width: 1, value: 1 }
         ));
-        // do_split, modes 0/0/0; luma txb_skip=0,eob_pt=0,base=4,br=1,dc_sign=1;
-        // U txb_skip=0,eob_pt=0,base=3; U sign=1; V txb_skip=0,eob_pt=0,base=3; V sign=1.
         assert_eq!(
             trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
             vec![0, 0, 0, 0, 0, 0, 4, 1, 1, 0, 0, 3, 1, 0, 0, 3, 1]

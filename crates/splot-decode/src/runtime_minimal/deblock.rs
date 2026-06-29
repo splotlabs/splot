@@ -97,20 +97,14 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     base_q_idx: u32,
     bit_depth: BitDepth,
 ) -> Result<(), DeblockError> {
-    // Nothing to do if no pass is enabled.
     if apply == [false; 4] {
         return Ok(());
     }
 
-    // Build the luma-MI-indexed covering-block grid. Every MI position the loop
-    // visits must be covered by exactly one decoded block; an uncovered position
-    // is an internal inconsistency.
     let grid = build_mi_grid(blocks, mi_rows, mi_cols)?;
 
-    // 4:2:0 subsampling (the general intra frontier is 4:2:0 only).
     let sub_x = 1usize;
     let sub_y = 1usize;
-    // The frontier admits 4:2:0 with chroma planes, so NumPlanes == 3.
     let num_planes = 3usize;
 
     for plane in 0..num_planes {
@@ -123,14 +117,7 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
             let row_step = if plane == 0 { 1 } else { 1 << sub_y };
             let col_step = if plane == 0 { 1 } else { 1 << sub_x };
 
-            // § 7.17.6 filter LEVEL for this (plane, pass): segmentation disabled
-            // and `df_delta_q` all zero make `lvl = q_clamped(base_q_idx, 0)` for
-            // every plane (the chroma base offsets resolve to zero in the admitted
-            // subset). `q_clamped(qindex, 0)` is `0` iff `qindex == 0`, else
-            // `Clip3(1, MaxQ, qindex)`; `base_q_idx` is already in `0..=MaxQ`.
             let lvl = q_clamped_zero_delta(base_q_idx);
-            // § 7.17.5 strengths from the level (same for curr and prev: every
-            // block shares the frame quantizer and the segment is 0).
             let (q_thr, side) = adaptive_strength(lvl, bit_depth);
 
             let plane_id = plane_index_to_id(plane);
@@ -204,19 +191,13 @@ fn deblock_filter_edge<T: ReconSample>(
         bit_depth,
     } = ctx;
 
-    // § 7.17.2: (dx, dy) is the filter direction (perpendicular to the edge).
     let (dx, dy) = if pass == 0 { (1usize, 0usize) } else { (0, 1) };
 
     let x = col * MI_SIZE;
     let y = row * MI_SIZE;
 
-    // sbEdge: a horizontal edge on the 64x64 grid, or a vertical tile edge. The
-    // single full-frame tile has only one tile, so the tile-edge terms reduce to
-    // the frame edge (x == 0 / y == 0), which `onScreen` already drops. So sbEdge
-    // is the horizontal 64-grid edge only.
     let sb_edge = pass == 1 && y.is_multiple_of(SB_SIZE);
 
-    // onScreen: drop the leading frame edge (no previous samples there).
     let on_screen = !((pass == 0 && x == 0) || (pass == 1 && y == 0));
     if !on_screen {
         return Ok(());
@@ -225,12 +206,9 @@ fn deblock_filter_edge<T: ReconSample>(
     let x_p = x >> plane_sub_x;
     let y_p = y >> plane_sub_y;
 
-    // prevRow / prevCol: the MI block on the other side of the boundary.
     let prev_row = row - (dy << plane_sub_y);
     let prev_col = col - (dx << plane_sub_x);
 
-    // Resolve the covering blocks (luma-MI indexed). The grid is built so every
-    // visited MI is covered.
     let curr = grid
         .get(row, col)
         .ok_or(DeblockError::UncoveredMi { row, col })?;
@@ -241,28 +219,19 @@ fn deblock_filter_edge<T: ReconSample>(
             col: prev_col,
         })?;
 
-    // baseRow / baseCol / baseY / baseX of the current block.
     let base_row = curr.base_row;
     let base_col = curr.base_col;
     let base_y = (base_row * MI_SIZE) >> plane_sub_y;
     let base_x = (base_col * MI_SIZE) >> plane_sub_x;
 
-    // txSz / prevTxSz from DeblockingTxSizes[plane].
     let tx_sz = plane_tx(plane, curr).ok_or(DeblockError::MissingTx { plane })?;
     let prev_tx_sz = plane_tx(plane, prev).ok_or(DeblockError::MissingTx { plane })?;
 
-    // TxColBase / TxRowBase: for TX_MODE_LARGEST a block holds a single transform,
-    // so the transform base is the block base (in plane MI units).
     let tx_col_base = base_col >> plane_sub_x;
     let tx_row_base = base_row >> plane_sub_y;
     let prev_tx_col_base = prev.base_col >> plane_sub_x;
     let prev_tx_row_base = prev.base_row >> plane_sub_y;
 
-    // § 7.17.2 chroma adjustment: chroma info is held in the bottom-right mode
-    // info. This only shifts `row` / `col` used for the `Skips` lookup; the
-    // verified subset has `skip == 0` everywhere (intra residual blocks; chroma
-    // `skip` is forced to 0 for INTRA_REGION / FrameIsIntra). isSubPuEdge == 0
-    // (`allow_df_sub_pu == 0` for the intra key frame).
     let skip = false;
     let is_sub_pu_edge = false;
 
@@ -271,12 +240,7 @@ fn deblock_filter_edge<T: ReconSample>(
     let is_block_edge = (pass == 0 && x_r == 0) || (pass == 1 && y_r == 0);
     let is_tx_edge = tx_col_base != prev_tx_col_base || tx_row_base != prev_tx_row_base;
 
-    // § 7.17.2 applyFilter cascade (with isSubPuEdge == 0). The spec's three
-    // early-return-false rungs combine to: filter iff the edge crosses a tx (or
-    // sub-PU) boundary AND at least one side has nonzero strength AND it is a
-    // block edge / non-skip / sub-PU edge.
     let curr_strong = curr_q != 0 && curr_side != 0;
-    // prev strengths equal curr strengths in the admitted subset (same lvl).
     let prev_strong = curr_strong;
     let apply_filter = (is_tx_edge || is_sub_pu_edge)
         && (curr_strong || prev_strong)
@@ -285,7 +249,6 @@ fn deblock_filter_edge<T: ReconSample>(
         return Ok(());
     }
 
-    // § 7.17.4 filter size: Min over the two transform dims in the pass direction.
     let filter_size = if pass == 0 {
         TX_WIDTH[tx_sz].min(TX_WIDTH[prev_tx_sz])
     } else {
@@ -293,12 +256,6 @@ fn deblock_filter_edge<T: ReconSample>(
     };
     let mut filter_size = usize::try_from(filter_size).unwrap_or(0);
 
-    // § 7.17.4: clip the filter size at the screen edge so a near-edge filter
-    // never reaches off-frame samples. Defensive in the admitted subset: leaf
-    // blocks tile the frame and `filter_size` is bounded by the covering
-    // transform dimension, so for every admitted geometry the filtered span is
-    // already in-frame and this clamp never actually reduces `filter_size`. Kept
-    // for spec fidelity and so a future wider-geometry admission stays correct.
     let plane_width = (mi_cols * MI_SIZE) >> plane_sub_x;
     let plane_height = (mi_rows * MI_SIZE) >> plane_sub_y;
     if plane == 0 {
@@ -309,23 +266,17 @@ fn deblock_filter_edge<T: ReconSample>(
         filter_size = filter_size.min(8);
     }
 
-    // qThr / side combine (curr == prev in the admitted subset).
     let (mut q_thr, mut side) = combine_strengths(curr_q, curr_q, curr_side, curr_side);
     if is_sub_pu_edge && !is_tx_edge {
         q_thr >>= 3;
         side >>= 3;
     }
 
-    // prevLossless && currLossless terminate (segmentation disabled → all false).
-    // (No lossless segment in the admitted subset.)
-
-    // § 7.17.3 per-side maximum widths.
     let (max_width_neg, max_width_pos) = deblock_filter_max_width(filter_size, plane != 0, sb_edge);
     if max_width_neg == 0 || max_width_pos == 0 {
         return Ok(());
     }
 
-    // § 7.17.7.2 filter choice over the s / t perpendicular lines.
     let width = choose_filter_width(
         workspace,
         plane_id,
@@ -342,7 +293,6 @@ fn deblock_filter_edge<T: ReconSample>(
         return Ok(());
     }
 
-    // § 7.17.7.1 sample filtering for each of the MI_SIZE edge positions.
     let eff_neg = width.min(max_width_neg);
     let eff_pos = width.min(max_width_pos);
     #[cfg(debug_assertions)]
@@ -397,15 +347,9 @@ fn choose_filter_width<T: ReconSample>(
     if q_thr == 0 || side == 0 {
         return Ok(0);
     }
-    // The choice cascade reads from -maxSamplesNeg to maxSamplesPos - 1 (with
-    // maxSamples = Clip3(3, 8, maxWidth + 1)); the positive span also reads s[3]
-    // when maxWidthPos > 1. Gather a generous window of 8 + 8 around the boundary.
     let boundary = GATHER_HALF;
 
-    // s: line perpendicular to the edge through (x_p, y_p).
     let s = gather_line(workspace, plane_id, PerpLine::new(x_p, y_p, dx, dy))?;
-    // t: line through the far end of the MI_SIZE-long edge. The edge runs along
-    // (dy, dx); its last position is offset (count - 1) along the boundary.
     let end = MI_SIZE - 1;
     let t_x = x_p + dy * end;
     let t_y = y_p + dx * end;
@@ -478,8 +422,6 @@ fn apply_sample_filter<T: ReconSample>(
     deblock_sample_filter(&mut line, &DeblockSampleFilter { boundary, ..params })
         .map_err(|_| DeblockError::SampleFilter)?;
 
-    // Write back only the samples that changed (their original frame positions
-    // are `(x + (idx - boundary) * dx, y + (idx - boundary) * dy)`).
     for (idx, (&new, &old)) in line.iter().zip(before.iter()).enumerate() {
         if new.to_u16() == old.to_u16() {
             continue;
@@ -647,13 +589,28 @@ pub(crate) enum DeblockError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use super::super::test_support::yuv420_workspace;
     use super::*;
+
+    fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock> {
+        let mut blocks = Vec::new();
+        for r in (0..mi_rows).step_by(8) {
+            for c in (0..mi_cols).step_by(8) {
+                blocks.push(DeblockBlock {
+                    r,
+                    c,
+                    n4w: 8,
+                    n4h: 8,
+                    luma_tx: 3,
+                    chroma_tx: Some(2),
+                });
+            }
+        }
+        blocks
+    }
 
     #[test]
     fn q_clamped_zero_delta_matches_spec() {
-        // §7.17.6 q_clamped(qindex, 0) is the identity on 0..=MaxQ (0 maps to 0,
-        // every other qindex maps to itself), so a deblock-active frame's filter
-        // level equals base_q_idx.
         for q in [0u32, 1, 100, 255] {
             assert_eq!(q_clamped_zero_delta(q), q, "q_clamped_zero_delta({q})");
         }
@@ -661,9 +618,6 @@ mod tests {
 
     #[test]
     fn adaptive_strength_for_lvl_100_8bit() {
-        // §7.17.5: lvl 100, 8-bit -> qInd 100, Side_Thresholds[100] == 46,
-        // side = Max(46 + (1 << 4), 0) >> 5 = (62) >> 5 = 1. qThr is the
-        // get_q-composed threshold (positive for a nonzero level).
         let (q_thr, side) = adaptive_strength(100, BitDepth::Eight);
         assert_eq!(side, 1, "side threshold for lvl 100 (8-bit)");
         assert!(q_thr > 0, "qThr must be positive for a nonzero level");
@@ -671,7 +625,6 @@ mod tests {
 
     #[test]
     fn combine_strengths_averages_then_maxes() {
-        // §7.17.2: average when both nonzero, else max.
         assert_eq!(
             combine_strengths(3, 5, 2, 4),
             ((3 + 5 + 1) >> 1, (2 + 4 + 1) >> 1)
@@ -682,22 +635,7 @@ mod tests {
 
     #[test]
     fn empty_apply_pattern_is_a_no_op() {
-        // §7.17.1: with no pass enabled, the orchestration returns immediately
-        // and never touches the workspace (or the empty block grid).
-        use splot_recon::{
-            CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
-        };
-        let info = DecodedFrameInfo::new(
-            OutputIndex::new(0),
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            PlaneSize::new(64, 64).unwrap(),
-            PlaneRect::new(0, 0, 64, 64).unwrap(),
-        )
-        .unwrap();
-        let mut workspace = CurrentFrameWorkspace::<u8>::new(info, 100).unwrap();
-        // An empty block grid would error if the loop ran, but the all-false
-        // apply pattern returns before building or iterating it.
+        let mut workspace = yuv420_workspace(64, 64, 100);
         deblock_general_intra_frame(
             &mut workspace,
             &[],
@@ -720,7 +658,6 @@ mod tests {
 
     #[test]
     fn mi_grid_covers_decoded_blocks() {
-        // A 32x32 DC block (n4w == n4h == 8) covers its 8x8 MI footprint.
         let blocks = [DeblockBlock {
             r: 0,
             c: 0,
@@ -747,47 +684,13 @@ mod tests {
 
     #[test]
     fn luma_vertical_pass_filters_the_x64_block_edge() {
-        // §7.17.1/2 pass 0 (vertical), luma: a clean small vertical step at the
-        // x=64 boundary is smoothed, while the flat interior and the x=32 / x=96
-        // within-region edges (no step) stay untouched. This deterministically
-        // pins the luma-VERTICAL path (apply[0]) — admitted and reachable, but
-        // never sample-changing in any avmenc-producible DC-multi-block oracle
-        // fixture (the encoder leaves the DC subset before luma-vertical fires),
-        // so it cannot be pinned by a decode-hash fixture alone (DEBLOCK-001).
-        use splot_recon::{
-            CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
-        };
-        let info = DecodedFrameInfo::new(
-            OutputIndex::new(0),
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            PlaneSize::new(128, 64).unwrap(),
-            PlaneRect::new(0, 0, 128, 64).unwrap(),
-        )
-        .unwrap();
-        let mut ws = CurrentFrameWorkspace::<u8>::new(info, 100).unwrap();
-        // Vertical step at x=64: left half luma 100, right half 108.
+        let mut ws = yuv420_workspace(128, 64, 100);
         for y in 0..64 {
             for x in 64..128 {
                 ws.set_reconstructed_sample(PlaneId::Y, x, y, 108).unwrap();
             }
         }
-        // Eight decoded 32x32 DC blocks tile the 128x64 frame (luma tx 32x32 =
-        // TX_SIZES_ALL index 3, 4:2:0 chroma tx 16x16 = index 2).
-        let mut blocks = Vec::new();
-        for r in [0usize, 8] {
-            for c in [0usize, 8, 16, 24] {
-                blocks.push(DeblockBlock {
-                    r,
-                    c,
-                    n4w: 8,
-                    n4h: 8,
-                    luma_tx: 3,
-                    chroma_tx: Some(2),
-                });
-            }
-        }
-        // Luma-vertical pass only.
+        let blocks = deblock_blocks(16, 32);
         deblock_general_intra_frame(
             &mut ws,
             &blocks,
@@ -799,17 +702,12 @@ mod tests {
         )
         .unwrap();
         let at = |x, y| ws.reconstructed_sample(PlaneId::Y, x, y).unwrap();
-        // Deep interior (far from any step) is untouched.
         assert_eq!(at(10, 32), 100, "left interior untouched");
         assert_eq!(at(120, 32), 108, "right interior untouched");
-        // The x=32 and x=96 transform edges sit inside flat regions (no step),
-        // so the filter computes a zero offset and changes nothing.
         assert_eq!(at(31, 32), 100, "x=32 within-region edge untouched");
         assert_eq!(at(32, 32), 100, "x=32 within-region edge untouched");
         assert_eq!(at(95, 32), 108, "x=96 within-region edge untouched");
         assert_eq!(at(96, 32), 108, "x=96 within-region edge untouched");
-        // The x=64 vertical edge fired and smoothed the step toward the middle
-        // (p0 rises, q0 falls), staying within the original [100, 108] band.
         let p0 = at(63, 32);
         let q0 = at(64, 32);
         assert!(
@@ -824,47 +722,13 @@ mod tests {
 
     #[test]
     fn luma_horizontal_pass_filters_the_y64_superblock_edge() {
-        // §7.17.1/2 pass 1 (horizontal), luma, at y=64: the 64-sample grid row
-        // (`horz64Edge`, y % 64 == 0) is an `sbEdge`, which caps the negative-side
-        // (upward, cross-superblock) max width in §7.17.3. A clean small step at
-        // y=64 is smoothed; the flat interior and the y=32 / y=96 non-sbEdge
-        // within-region edges stay untouched. This pins the sample-changing
-        // y=64 `sbEdge` path (DEBLOCK-001) — exercised end-to-end by the
-        // 128x128 grid fixture's iteration, but flat there, so the cap math
-        // needs a deterministic step to be pinned.
-        use splot_recon::{
-            CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
-        };
-        let info = DecodedFrameInfo::new(
-            OutputIndex::new(0),
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            PlaneSize::new(128, 128).unwrap(),
-            PlaneRect::new(0, 0, 128, 128).unwrap(),
-        )
-        .unwrap();
-        let mut ws = CurrentFrameWorkspace::<u8>::new(info, 100).unwrap();
-        // Horizontal step at y=64: top half luma 100, bottom half 108.
+        let mut ws = yuv420_workspace(128, 128, 100);
         for y in 64..128 {
             for x in 0..128 {
                 ws.set_reconstructed_sample(PlaneId::Y, x, y, 108).unwrap();
             }
         }
-        // Sixteen decoded 32x32 DC blocks tile the 128x128 frame.
-        let mut blocks = Vec::new();
-        for r in [0usize, 8, 16, 24] {
-            for c in [0usize, 8, 16, 24] {
-                blocks.push(DeblockBlock {
-                    r,
-                    c,
-                    n4w: 8,
-                    n4h: 8,
-                    luma_tx: 3,
-                    chroma_tx: Some(2),
-                });
-            }
-        }
-        // Luma-horizontal pass only.
+        let blocks = deblock_blocks(32, 32);
         deblock_general_intra_frame(
             &mut ws,
             &blocks,
@@ -876,14 +740,10 @@ mod tests {
         )
         .unwrap();
         let at = |x, y| ws.reconstructed_sample(PlaneId::Y, x, y).unwrap();
-        // Deep interior (far from any step) is untouched.
         assert_eq!(at(64, 10), 100, "top interior untouched");
         assert_eq!(at(64, 120), 108, "bottom interior untouched");
-        // The y=32 and y=96 transform edges sit inside flat regions (no step),
-        // so the filter changes nothing there.
         assert_eq!(at(64, 31), 100, "y=32 within-region edge untouched");
         assert_eq!(at(64, 96), 108, "y=96 within-region edge untouched");
-        // The y=64 sbEdge fired and smoothed the step toward the middle.
         let p0 = at(64, 63);
         let q0 = at(64, 64);
         assert!(
@@ -894,8 +754,6 @@ mod tests {
             p0 > 100 || q0 < 108,
             "luma-horizontal sbEdge pass must change the y=64 edge: p0={p0} q0={q0}"
         );
-        // §7.17.3 sbEdge negative-side cap: the upward (cross-superblock) extent
-        // is bounded, so a sample well above the edge stays at the original value.
         assert_eq!(
             at(64, 59),
             100,
@@ -905,45 +763,13 @@ mod tests {
 
     #[test]
     fn chroma_pass_filters_the_chroma_block_edge() {
-        // §7.17.1/2 chroma: the U/V planes are gated by `apply[plane + 1]` (one
-        // flag drives BOTH passes). A clean small step at the chroma x=32 boundary
-        // (= luma x=64) is smoothed by the U vertical pass; the flat interior and
-        // the unenabled V plane stay untouched. This pins the chroma deblock path,
-        // which runs over flat chroma (zero delta) in every avmenc-producible
-        // DC-multi-block oracle fixture, mirroring the luma DEBLOCK-001 pins.
-        use splot_recon::{
-            CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
-        };
-        let info = DecodedFrameInfo::new(
-            OutputIndex::new(0),
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            PlaneSize::new(128, 64).unwrap(),
-            PlaneRect::new(0, 0, 128, 64).unwrap(),
-        )
-        .unwrap();
-        let mut ws = CurrentFrameWorkspace::<u8>::new(info, 100).unwrap();
-        // Vertical step in the 4:2:0 U plane (64x32) at chroma x=32 (= luma x=64):
-        // left 100, right 108.
+        let mut ws = yuv420_workspace(128, 64, 100);
         for y in 0..32 {
             for x in 32..64 {
                 ws.set_reconstructed_sample(PlaneId::U, x, y, 108).unwrap();
             }
         }
-        let mut blocks = Vec::new();
-        for r in [0usize, 8] {
-            for c in [0usize, 8, 16, 24] {
-                blocks.push(DeblockBlock {
-                    r,
-                    c,
-                    n4w: 8,
-                    n4h: 8,
-                    luma_tx: 3,
-                    chroma_tx: Some(2),
-                });
-            }
-        }
-        // U plane only (apply index 2 gates both U passes; V index 3 stays off).
+        let blocks = deblock_blocks(16, 32);
         deblock_general_intra_frame(
             &mut ws,
             &blocks,
@@ -955,10 +781,8 @@ mod tests {
         )
         .unwrap();
         let u = |x, y| ws.reconstructed_sample(PlaneId::U, x, y).unwrap();
-        // Deep chroma interior untouched.
         assert_eq!(u(8, 16), 100, "left chroma interior untouched");
         assert_eq!(u(60, 16), 108, "right chroma interior untouched");
-        // The chroma x=32 edge fired and smoothed the step toward the middle.
         let p0 = u(31, 16);
         let q0 = u(32, 16);
         assert!(
@@ -969,7 +793,6 @@ mod tests {
             p0 > 100 || q0 < 108,
             "chroma pass must change the chroma x=32 edge: p0={p0} q0={q0}"
         );
-        // The V plane was never enabled and stays flat.
         assert_eq!(
             ws.reconstructed_sample(PlaneId::V, 31, 16).unwrap(),
             100,

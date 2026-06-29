@@ -7,10 +7,6 @@
 
 use std::collections::TryReserveError;
 
-// `COEFF_BASE_RANGE`, `LF_NUM_BASE_LEVELS`, and `NUM_BASE_LEVELS` are shared AV2 § 3
-// constants; re-export them from their canonical home so the coeff_loop subtree's
-// `super::max_level::…` imports keep resolving against a single definition (the encoder
-// also consumes `NUM_BASE_LEVELS` from `splot_core::coefficient`).
 pub(crate) use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 
 use super::quant_pass::CoeffQuantPassInput;
@@ -37,9 +33,7 @@ impl CoeffTransformClass {
     #[must_use]
     pub(crate) const fn from_plane_tx_type(plane_tx_type: usize) -> Self {
         match plane_tx_type {
-            // V_DCT, V_ADST, V_FLIPADST.
             10 | 12 | 14 => Self::Vertical,
-            // H_DCT, H_ADST, H_FLIPADST.
             11 | 13 | 15 => Self::Horizontal,
             _ => Self::TwoD,
         }

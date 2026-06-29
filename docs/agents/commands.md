@@ -44,6 +44,7 @@ openspec validate --all --no-interactive   # run when openspec is installed
 ```bash
 cargo xtask check-license-headers
 cargo xtask check-source-lines
+cargo xtask check-comment-density
 cargo xtask check-dependency-direction
 cargo xtask check-concurrency-policy
 cargo xtask check-zero-copy-policy
@@ -59,6 +60,12 @@ cargo xtask check-diagnostic-registry
 cargo xtask check-fixtures
 cargo xtask check-duplication   # needs the `dupehound` binary; run-if-present locally
 ```
+
+`check-comment-density` enforces the implementation-comment ceiling in
+`tools/comments/budget.toml`. It counts tracked Rust files under `crates`,
+`xtask`, and `fuzz/fuzz_targets`, excludes SPDX, Rustdoc, and xtask-generated
+source, and fails when full-line implementation comments exceed the budget. Lower
+the budget in the same commit that removes comments.
 
 `check-duplication` enforces the absolute *production*-duplication ceiling in
 `tools/dupehound/budget.toml` using

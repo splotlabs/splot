@@ -32,18 +32,12 @@ use splot_core::tables::cdf::{
 };
 
 use self::block_rows::{BlockCdfRows, BlockCdfSelector};
-// Re-export the CDF math/validation helpers from the `util` submodule. Sibling
-// modules (`block_rows`, `coeff_rows`, `block_rows::mv`) import `avg_cdf_row` /
-// `scale_cdf_count` via `super::`/`super::super::`, so they stay reachable here.
+pub(crate) use self::block_rows::{EobPtSize, MvCdfSelector};
 pub(crate) use self::coeff_rows::CoeffCdfSelector;
 pub(in crate::tile_payload::cdf) use self::util::{avg_cdf_row, scale_cdf_count};
 use self::util::{
     checked_context, checked_plane, checked_square_split_plane, floor_log2, tx_partition_type_array,
 };
-// Re-exported at crate visibility so sibling decode code (e.g. the future
-// `coeffs()` consumer in `block_symbol.rs`) can name the `eob_pt` size class to
-// construct the `pub(crate)` `TileCdfSelector::EobPt` variant.
-pub(crate) use self::block_rows::{EobPtSize, MvCdfSelector};
 
 pub(super) const CDF_PROB_SCALE: i32 = 1 << 15;
 pub(super) const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
@@ -873,9 +867,6 @@ pub(crate) enum TileCdfArray {
     WienerNsLength,
 }
 
-// `TileCdfArray::as_str` via the variant-declaring macro (a macro invocation,
-// not a bare `match`), so it is not a structural duplicate of other enum
-// string-label `match`es (the dupehound diff-ratchet flags those).
 crate::impl_reason_labels!(TileCdfArray {
     DoSplit => "TileDoSplitCdf",
     DoExtPartition => "TileDoExtPartitionCdf",

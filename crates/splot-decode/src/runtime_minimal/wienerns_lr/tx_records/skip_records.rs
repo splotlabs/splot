@@ -24,7 +24,6 @@ fn skipped_coeff_block() -> LumaCoeffBlock {
         eob: 0,
         quant: Vec::new(),
         intra_ist: None,
-        // §3 `DCT_DCT` index 0; a skip block inverts no residual.
         plane_tx_type: 0,
     }
 }
@@ -48,13 +47,6 @@ pub(super) fn record_skipped_selectable_residuals(
         ));
     }
     reset_skipped_block_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
-    // Reconstruct each skipped luma transform as a flat §7.13.2 prediction (zero
-    // residual) so later blocks' neighbour reads are spec-correct (gated to the
-    // proven DC / cardinal subset inside the sink). A skipped block carries no
-    // coefficients. An IntrABC leaf is EXEMPT: its luma/chroma samples are already
-    // reconstructed by the §7.13.3.18 displaced-copy sink (its `leaf_y_mode` is a
-    // §5.20.5.3 placeholder `DC_PRED`, so a flat-DC re-reconstruction here would
-    // overwrite the correct IntrABC copy with the wrong samples).
     if let Some(sink) = sink
         && !recon.is_intrabc
     {
@@ -72,8 +64,6 @@ pub(super) fn record_skipped_selectable_residuals(
                 recon.qindex,
                 recon.luma_use_tcq,
                 recon.fsc_mode,
-                // This arm is only reached for non-IntrABC leaves (the `!recon.is_intrabc`
-                // guard above), so the IntrABC residual-deferral path never applies here.
                 false,
                 tile_offset,
             )?;
@@ -122,7 +112,6 @@ fn reconstruct_skipped_chroma(
     let Some(chroma_tx) = fixed_largest_420_chroma_tx_size_from_luma_4x4(n4w, n4h) else {
         return Ok(());
     };
-    // §6.4.1 4:2:0 chroma origin: half the luma sample origin.
     let chroma_x = mi_to_sample(frontier.c, tile_offset)? / 2;
     let chroma_y = mi_to_sample(frontier.r, tile_offset)? / 2;
     let zero = skipped_coeff_block();

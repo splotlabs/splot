@@ -72,9 +72,6 @@ fn is_banned_runtime_crate(name: &str) -> bool {
     if name == "futures" || name.starts_with("futures-") {
         return true;
     }
-    // The async executor/runtime family: `smol` and every `async-*` crate
-    // (`async-std`, `async-channel`, `async-executor`, `async-io`, `async-task`,
-    // `async-global-executor`, …). splot is sync-only, so none of these belong here.
     if name == "smol" || name.starts_with("async-") {
         return true;
     }
@@ -94,12 +91,6 @@ const CORE_CRATE: &str = "splot-core";
 /// The validator crate: parser-driven and single-threaded; it must not depend on
 /// `splot-parallel` or any restricted parallel crate.
 const VALIDATE_CRATE: &str = "splot-validate";
-
-// The banned *source* needles below are assembled with `concat!` from fragments so
-// the literal token never appears verbatim in this file. The source scanner only
-// walks `crates/`, never `xtask/`, so this is belt-and-suspenders: it guarantees
-// that even if the scan root ever widened to include this module, the gate would
-// not flag its own constant definitions as policy violations.
 
 /// Global Rayon pool initialization is banned: splot uses a local owned pool only.
 const BUILD_GLOBAL: &str = concat!("build", "_global");
@@ -261,10 +252,6 @@ fn rayon_global_needle(text: &str) -> Option<&'static str> {
                 .copied()
                 .find(|item| contains_braced_use_item(text, "rayon_core::{", item))
         })
-        // A multi-line `use rayon::{` group whose `}` lands on a later line cannot be
-        // item-checked here, so flag the opening line conservatively. The prelude uses
-        // `rayon::iter::{` / `rayon::slice::{` (deeper paths), which do not contain the
-        // bare `rayon::{` prefix and are not matched.
         .or_else(|| open_braced_group(text, "rayon::{").then_some("rayon::{ (open import group)"))
         .or_else(|| {
             open_braced_group(text, "rayon_core::{").then_some("rayon_core::{ (open import group)")
@@ -333,7 +320,6 @@ pub(crate) fn evaluate_concurrency_policy(
 
     for krate in crates {
         for dep in &krate.direct_deps {
-            // Rule 1: only `splot-parallel` may depend on a restricted parallel crate.
             if RESTRICTED_PARALLEL_CRATES.contains(&dep.as_str()) && krate.name != PARALLEL_CRATE {
                 violations.push(format!(
                     "{}: must not depend on restricted parallel crate `{}` (only {} may); route parallelism through {}",
@@ -341,9 +327,6 @@ pub(crate) fn evaluate_concurrency_policy(
                 ));
             }
 
-            // Rule 2: no crate (including `splot-parallel`) may depend on a banned
-            // runtime crate (async runtimes, alternative pools, rival channels, the
-            // whole `futures` family).
             if is_banned_runtime_crate(dep) {
                 violations.push(format!(
                     "{}: must not depend on banned runtime crate `{}` (no async runtime or competing thread/channel library)",
@@ -351,7 +334,6 @@ pub(crate) fn evaluate_concurrency_policy(
                 ));
             }
 
-            // Rule 3: `splot-core` must remain runtime-free.
             if krate.name == CORE_CRATE
                 && (dep == PARALLEL_CRATE
                     || RESTRICTED_PARALLEL_CRATES.contains(&dep.as_str())
@@ -363,8 +345,6 @@ pub(crate) fn evaluate_concurrency_policy(
                 ));
             }
 
-            // Rule 4: `splot-validate` stays single-threaded — no `splot-parallel`
-            // or restricted parallel crate.
             if krate.name == VALIDATE_CRATE
                 && (dep == PARALLEL_CRATE || RESTRICTED_PARALLEL_CRATES.contains(&dep.as_str()))
             {
@@ -379,30 +359,24 @@ pub(crate) fn evaluate_concurrency_policy(
     for line in sources {
         let where_at = format!("{}:{}", line.path, line.line_no);
 
-        // Rule 5: banned global Rayon pool initialization.
         if line.text.contains(BUILD_GLOBAL) {
             violations.push(format!(
                 "{where_at}: global Rayon pool init (`{BUILD_GLOBAL}`) is banned; use a local owned worker pool"
             ));
         }
 
-        // Rule 6: banned unbounded channels — any import/call/alias/helper form.
         if let Some(needle) = unbounded_channel_needle(&line.text) {
             violations.push(format!(
                 "{where_at}: unbounded channels (`{needle}`) are banned; use a bounded crossbeam queue"
             ));
         }
 
-        // Rule 7: banned `std::sync::mpsc` pipelines (any import/alias/call form).
         if let Some(needle) = STD_MPSC_NEEDLES.iter().find(|n| line.text.contains(**n)) {
             violations.push(format!(
                 "{where_at}: `std::sync::mpsc` pipelines (`{needle}`) are banned; use a bounded crossbeam queue"
             ));
         }
 
-        // Rule 8: ad-hoc OS-thread spawning (call, `thread::Builder`, or `std::thread`
-        // alias forms) is banned outside tests; the local `WorkerPool` owns every
-        // worker thread. Test lines are exempt.
         if !line.in_test
             && let Some(needle) = thread_spawn_needle(&line.text)
         {
@@ -411,8 +385,6 @@ pub(crate) fn evaluate_concurrency_policy(
             ));
         }
 
-        // Rule 9: aliasing the `crossbeam_channel` crate (everywhere) — an extra guard
-        // against hiding `cc::unbounded()` behind a rename declaration.
         if line.text.contains(CROSSBEAM_ALIAS) {
             violations.push(format!(
                 "{where_at}: aliasing `crossbeam_channel` (`{CROSSBEAM_ALIAS}…`) is banned; it can hide an unbounded channel from the policy scanner"
@@ -429,16 +401,6 @@ pub(crate) fn evaluate_concurrency_policy(
         }
     }
 
-    // Rule 10: outside `splot-parallel`, a Rayon parallel-iteration call must run
-    // *inside* a `WorkerPool::install` closure, or it runs on Rayon's global pool and
-    // will not scale with `--threads`. `sources` is sorted by (path, line), so we scan
-    // each file in order and track whether the current line is lexically inside an
-    // `install(...)` closure with a brace-depth tracker (same heuristic as the
-    // cfg(test) detector): an `install(` that opens a net brace pushes a scope until
-    // the matching `}`; a multi-line `install(` whose closure body lands on a later
-    // line arms a pending scope until the call's parentheses close. `splot-parallel`,
-    // test lines, and allowlisted files are exempt; a par-iter on the same line as
-    // the `install(` counts as inside.
     let mut current_path: &str = "";
     let mut depth: i32 = 0;
     let mut install_stack: Vec<i32> = Vec::new();
@@ -474,7 +436,6 @@ pub(crate) fn evaluate_concurrency_policy(
                 pending_install = false;
                 pending_install_paren_depth = 0;
             } else {
-                // A multi-line `install(` whose closure `{` lands on a later line.
                 pending_install_paren_depth = paren_change.max(0);
                 pending_install = pending_install_paren_depth > 0;
             }
@@ -566,7 +527,6 @@ fn direct_dependency_names(
 ) -> Vec<String> {
     let mut names = Vec::new();
     collect_dependency_names(manifest, workspace_deps, &mut names);
-    // Platform-specific `[target.'cfg(...)'.dependencies]` tables count as direct deps.
     if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
         for target in targets.values() {
             if let Some(table) = target.as_table() {
@@ -671,8 +631,6 @@ fn scan_source_text(
             text,
             in_test,
         } = line;
-        // Skip comment-only lines so policy prose (doc comments, `//` notes that
-        // *name* a banned construct to forbid it) is never flagged as a use.
         if text.trim_start().starts_with("//") {
             continue;
         }
@@ -702,7 +660,6 @@ struct ScannedLine {
 /// flagging legitimate test code.
 fn scan_source_lines(contents: &str, file_in_tests: bool) -> Vec<ScannedLine> {
     let mut out = Vec::new();
-    // cfg(test) region tracker state:
     let mut pending_cfg_test = false; // saw `#[cfg(test)]`, awaiting its `mod ... {`
     let mut in_cfg_test = false; // currently inside a cfg(test) module body
     let mut depth: i32 = 0; // running brace depth since the region opener
@@ -712,8 +669,6 @@ fn scan_source_lines(contents: &str, file_in_tests: bool) -> Vec<ScannedLine> {
         let trimmed = line.trim();
 
         if in_cfg_test {
-            // Already inside a test module: this line is test code. Maintain the brace
-            // depth and close the region when it returns to zero (the matching `}`).
             depth += brace_delta(&line);
             out.push(ScannedLine {
                 line_no: index + 1,
@@ -727,21 +682,14 @@ fn scan_source_lines(contents: &str, file_in_tests: bool) -> Vec<ScannedLine> {
             continue;
         }
 
-        // A `#[cfg(test)]` attribute (alone, or inline with its item) opens a test
-        // region spanning the annotated item's body — `mod`, `fn`, `impl`, etc. — not
-        // just `mod`, so a test-only helper `#[cfg(test)] fn h() { thread::spawn(...) }`
-        // is treated as test code.
         if trimmed.starts_with("#[cfg(test)]") {
             pending_cfg_test = true;
         }
         if pending_cfg_test {
-            // Inspect the item on this line, skipping an inline `#[cfg(test)]` prefix.
             let item = trimmed
                 .strip_prefix("#[cfg(test)]")
                 .map_or(trimmed, str::trim_start);
             if item.contains('{') {
-                // The annotated item opens its body here: this line through its matching
-                // `}` is test code (covers `mod tests {`, `fn helper() {`, `impl X {`).
                 pending_cfg_test = false;
                 depth = brace_delta(&line);
                 let one_liner = depth <= 0; // a self-closing `… { … }` on one line
@@ -756,9 +704,6 @@ fn scan_source_lines(contents: &str, file_in_tests: bool) -> Vec<ScannedLine> {
                 });
                 continue;
             }
-            // No `{` yet. A `;`-terminated item (external `mod tests;`, `use`, `const`)
-            // has no inline body to exempt and is classified elsewhere — disarm. A bare
-            // attribute, blank line, or signature awaiting its `{` keeps the region armed.
             if item.ends_with(';') {
                 pending_cfg_test = false;
             }
@@ -928,8 +873,6 @@ mod tests {
 
     #[test]
     fn braced_and_aliased_mpsc_imports_are_violations() {
-        // `use std::sync::{mpsc};` / `{mpsc as chan};` then `mpsc::channel()` /
-        // `chan::sync_channel()` must be caught despite the missing qualified path.
         for code in [
             "    use std::sync::{mpsc};",
             "    use std::sync::{mpsc as chan};",
@@ -946,7 +889,6 @@ mod tests {
 
     #[test]
     fn rayon_core_is_restricted_to_splot_parallel() {
-        // Only splot-parallel may depend on rayon-core (like rayon itself).
         let offender = [krate("splot-decode", &["rayon-core"])];
         assert!(
             evaluate_concurrency_policy(&offender, &[])
@@ -975,7 +917,6 @@ mod tests {
                 .any(|v| v.contains("crossbeam-utils")),
             "a crate depending on crossbeam-utils must be flagged"
         );
-        // splot-parallel may still depend on the approved crossbeam-channel.
         assert!(
             evaluate_concurrency_policy(&[krate(PARALLEL_CRATE, &["crossbeam-channel"])], &[])
                 .is_empty(),
@@ -985,9 +926,6 @@ mod tests {
 
     #[test]
     fn par_iter_after_install_closure_closes_is_a_violation() {
-        // install closure on lines 10-12, then a top-level par_iter at line 20 — the
-        // later iterator is outside install and must be flagged (file-level `has_install`
-        // would have missed it).
         let src = [
             line_at(
                 "crates/splot-encode/src/x.rs",
@@ -1106,7 +1044,6 @@ mod tests {
             "fn prod() {{}}\n#[cfg(test)]\nmod tests {{\n    fn helper() {{ {token}(|| ()); }}\n}}\n"
         );
         let scanned = scan_source_lines(&contents, false);
-        // Line 4 holds the thread-spawn call inside the cfg(test) module.
         let spawn_line = scanned
             .iter()
             .find(|l| l.text.contains(token))
@@ -1139,7 +1076,6 @@ mod tests {
 
     #[test]
     fn comment_lines_naming_banned_tokens_are_not_flagged() {
-        // A doc comment that *names* build_global to forbid it must not be a use.
         let token = concat!("build", "_global");
         let mut sources = Vec::new();
         scan_source_text(
@@ -1157,7 +1093,6 @@ mod tests {
 
     #[test]
     fn unbounded_queue_identifier_is_a_violation() {
-        // The `unbounded_queue` helper-identifier needle (Rule 6, second form).
         let src = [line("    let queue = unbounded_queue();", false)];
         let violations = evaluate_concurrency_policy(&[], &src);
         assert!(
@@ -1168,8 +1103,6 @@ mod tests {
 
     #[test]
     fn aliased_thread_import_is_a_violation_outside_tests_but_exempt_in_tests() {
-        // `use std::thread as t;` then `t::spawn()` would evade THREAD_SPAWN; the
-        // rename declaration is caught instead, and is test-exempt like Rule 8.
         let code = "    use std::thread as t;";
         let outside = [line(code, false)];
         assert!(
@@ -1185,7 +1118,6 @@ mod tests {
 
     #[test]
     fn aliased_crossbeam_import_is_a_violation() {
-        // `use crossbeam_channel as cc;` then `cc::unbounded()` would evade UNBOUNDED.
         let src = [line("    use crossbeam_channel as cc;", false)];
         let violations = evaluate_concurrency_policy(&[], &src);
         assert!(
@@ -1279,8 +1211,6 @@ mod tests {
 
     #[test]
     fn unbounded_bare_call_is_a_violation() {
-        // `use crossbeam_channel::{unbounded}; let (s, r) = unbounded();` — the call
-        // form must be caught regardless of how `unbounded` was imported.
         let src = [line("    let (s, r) = unbounded();", false)];
         let violations = evaluate_concurrency_policy(&[], &src);
         assert!(
@@ -1395,9 +1325,6 @@ mod tests {
 
     #[test]
     fn workspace_aliased_banned_dependency_is_resolved() {
-        // A member inheriting a workspace dependency aliased to a banned crate
-        // (`rt.workspace = true`, root maps `rt = { package = "tokio" }`) must resolve
-        // to the real package name, not the alias.
         let manifest: toml::Table = toml::from_str(
             "[package]\nname = \"splot-decode\"\n[dependencies]\nrt.workspace = true\n",
         )
@@ -1434,7 +1361,6 @@ mod tests {
             evaluate_concurrency_policy(&[], &[line(code, true)]).is_empty(),
             "scoped spawn inside tests is exempt"
         );
-        // Braced import form is also caught.
         assert!(
             !evaluate_concurrency_policy(&[], &[line("    use std::thread::{scope};", false)])
                 .is_empty(),
@@ -1460,8 +1386,6 @@ mod tests {
 
     #[test]
     fn multiline_rayon_import_group_is_a_violation() {
-        // The opening line of a multi-line `use rayon::{ … }` group is flagged, since
-        // its `}` (and any banned item) lands on a later line the item check can't see.
         let src = [line("    use rayon::{", false)];
         assert!(
             evaluate_concurrency_policy(&[], &src)
@@ -1473,8 +1397,6 @@ mod tests {
 
     #[test]
     fn par_iter_in_non_pool_install_is_a_violation() {
-        // A bare `install(...)` free function (no `.install(` method shape) does not
-        // count as a WorkerPool scope, so a par-iter inside it is still flagged.
         let src = [line(
             "    let n = install(|| items.par_iter().count());",
             false,
@@ -1485,7 +1407,6 @@ mod tests {
                 .any(|v| v.contains("WorkerPool::install")),
             "par-iter inside a non-pool bare install() must be flagged"
         );
-        // The real `pool.install(|| …)` method shape IS a scope.
         assert!(
             evaluate_concurrency_policy(
                 &[],
@@ -1501,8 +1422,6 @@ mod tests {
 
     #[test]
     fn cfg_test_helper_fn_body_is_marked_as_test() {
-        // A test-only helper *function* (not module) must be test code, so its spawn
-        // is exempt rather than scanned as production.
         let token = concat!("thread::", "spawn");
         let contents = format!("fn prod() {{}}\n#[cfg(test)]\nfn helper() {{ {token}(|| ()); }}\n");
         let scanned = scan_source_lines(&contents, false);
@@ -1533,7 +1452,6 @@ mod tests {
 
     #[test]
     fn real_repo_passes_concurrency_policy() {
-        // Guards against self-flagging and proves the clean repo passes the gate.
         let root = crate::workspace_root().unwrap();
         check_concurrency_policy(&root)
             .expect("the current repo must satisfy the concurrency policy");

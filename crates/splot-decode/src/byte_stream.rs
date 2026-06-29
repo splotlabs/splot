@@ -212,9 +212,6 @@ fn parse_bounded_ivf(input: &[u8], limits: DecodeLimits) -> Result<ParsedIvfBits
 
 fn is_selected_frame_candidate(header: ObuHeader) -> bool {
     let selected_layer = DecodeLayerSelection::base();
-    // AV2 § 5.2.1: a key frame (`OBU_CLOSED_LOOP_KEY`) and non-key frames carried in
-    // `OBU_REGULAR_TILE_GROUP` or `OBU_REGULAR_TIP` count as selected-layer frame
-    // candidates for the `MaxFramesToDecode` limit, mirroring `classify_obu`.
     matches!(
         header.obu_type,
         ObuType::ClosedLoopKey | ObuType::RegularTileGroup | ObuType::RegularTip

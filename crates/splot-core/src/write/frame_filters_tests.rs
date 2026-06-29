@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Unit, byte-exact, and rejection tests for the § 5.18.5.2 / § 5.18.7.9 / § 5.18.7.10 frame
-// loop-filter writers.
-
-// `include!`d into `crate::write::frame_filters` so `super::*` resolves to its writers and
-// private helpers (the property tests live in the sibling `frame_filters_proptests.rs`).
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
@@ -38,7 +33,6 @@ mod tests {
         }
     }
 
-    // ===== deblocking (§ 5.18.5.2) =====
 
     /// Parse the hand-built bits, write the parsed model back, assert byte-exact round-trip
     /// against the parser-consumed bit length, then reparse the written bytes to the same
@@ -52,8 +46,6 @@ mod tests {
     ) {
         let data = bits.into_bytes();
         let mut rd = reader(&data);
-        // The writer inverts the intra deblocking arm (FrameType != INTER_FRAME), so the
-        // round-trip drives parse with `read_allow_df_sub_pu == false` (no inter bit).
         let params = parse_deblocking_filter_params(
             &mut rd,
             coded_lossless,
@@ -190,7 +182,6 @@ mod tests {
             df_delta_q: [0; 4],
         };
         let mut writer = BitWriter::new();
-        // df_par_bits_minus_2 == 31 -> dfParBits = 33 > 32.
         let err =
             write_deblocking_filter_params(&mut writer, &params, false, 1, 31, None).unwrap_err();
         assert_eq!(
@@ -205,11 +196,6 @@ mod tests {
 
     #[test]
     fn deblocking_coded_lossless_ignores_oversized_df_par_bits() {
-        // Regression (#4f adversarial review): on the coded_lossless path the parser returns
-        // the all-default structure before deriving dfParBits, so it never raises
-        // BitWidthTooLarge there. The writer must match — an out-of-range df_par_bits_minus_2
-        // (a non-conformant § 5.4.10 field) must NOT reject a model the parser accepted; it
-        // round-trips with zero bits.
         for df_par_bits_minus_2 in [31u8, 255] {
             roundtrip_deblocking(Bits::default(), true, 1, df_par_bits_minus_2, None);
         }
@@ -221,7 +207,6 @@ mod tests {
             mfh_deblocking_filter_update: true,
             mfh_apply_deblocking_filter: [true, false, false, false],
         };
-        // Derived array is [true, false, false, false]; a model with apply[1] set disagrees.
         let params = DeblockingFilterParams {
             apply_deblocking_filter: [true, true, false, false],
             df_delta_q_present: [false; 4],
@@ -261,7 +246,6 @@ mod tests {
 
     #[test]
     fn deblocking_gated_off_delta_q_rejected() {
-        // apply[0] false -> df_delta_q_present[0]/df_delta_q[0] must be default.
         let params = DeblockingFilterParams {
             apply_deblocking_filter: [false; 4],
             df_delta_q_present: [true, false, false, false],
@@ -279,7 +263,6 @@ mod tests {
 
     #[test]
     fn deblocking_inferred_index_one_mismatch_rejected() {
-        // apply[1] set, absent present[1] -> DfDeltaQ[1] must equal DfDeltaQ[0]; mismatch bad.
         let params = DeblockingFilterParams {
             apply_deblocking_filter: [true, true, false, false],
             df_delta_q_present: [true, false, false, false],
@@ -297,7 +280,6 @@ mod tests {
 
     #[test]
     fn deblocking_coded_delta_q_out_of_domain_rejected() {
-        // dfParBits = 2 -> raw = DfDeltaQ + 2 must be in 0..=3; DfDeltaQ = 5 -> raw 7 > 3.
         let params = DeblockingFilterParams {
             apply_deblocking_filter: [true, false, false, false],
             df_delta_q_present: [true, false, false, false],
@@ -313,7 +295,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== gdf (§ 5.18.7.9) =====
 
     fn roundtrip_gdf(bits: Bits, coded_lossless: bool, filter: CoreSeqFilterView, geometry: GdfGeometry<'_>) {
         let data = bits.into_bytes();
@@ -461,7 +442,6 @@ mod tests {
 
     #[test]
     fn gdf_per_block_inferred_true_rejected() {
-        // Frame at gdfBlkSize -> per-block bit inferred 0; Some(true) could not be produced.
         let geom = GdfGeometry {
             sb_size: SuperblockSize::Block128x128,
             mi_cols: 32,
@@ -528,7 +508,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== cdef (§ 5.18.7.10) =====
 
     fn roundtrip_cdef(bits: Bits, coded_lossless: bool, num_planes: u8, filter: CoreSeqFilterView) {
         let data = bits.into_bytes();
@@ -920,9 +899,6 @@ mod tests {
 
     #[test]
     fn cdef_y_pri_zero_canonicalization_collapses_explicit_form() {
-        // A parser fed the explicit y_pri_zero == 0 with a coded f(4) zero produces
-        // y_pri_strength == 0; the writer re-emits the shorter y_pri_zero == 1 form (semantic
-        // round-trip), which is fewer bits but reparses identically.
         let mut bits = Bits::default();
         bits.bit(1); // cdef_frame_enable
         bits.f(0, 2); // damping
@@ -938,9 +914,6 @@ mod tests {
         assert_eq!(params.strengths[0].y_pri_strength, 0);
         let mut writer = BitWriter::new();
         write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap();
-        // The canonical form drops the explicit f(4): 1 (zero flag) instead of 1 + 4 bits.
-        // enable(1) + damping(2) + strengths(3) + onskip(1) + y_pri_zero(1) + y_sec(2)
-        //   + uv_pri_zero(1) + uv_sec(2) = 13 bits.
         assert_eq!(writer.bit_len(), 13);
         let bytes = writer.into_bytes();
         let reparsed = parse_cdef_params(&mut reader(&bytes), false, 3, &base_filter()).unwrap();

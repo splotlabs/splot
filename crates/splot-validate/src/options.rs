@@ -175,8 +175,6 @@ mod tests {
 
     #[test]
     fn external_hls_set_ignores_out_of_range_ids() {
-        // MAX_SEQ_NUM (16) and above cannot be a valid seq_header_id, so declaring
-        // one is ignored and does not make the set non-empty.
         let set = ExternalHlsSet::new().with_sequence_header_id(MAX_SEQ_NUM);
         assert!(!set.has_sequence_header(MAX_SEQ_NUM));
         assert!(!set.declares_any_sequence_header());
@@ -189,7 +187,6 @@ mod tests {
             .with_operating_point_set(2, 0);
         assert!(set.has_operating_point_set(31, 5));
         assert!(set.has_operating_point_set(2, 0));
-        // A different xlayer or ops_id, and out-of-range keys, are not present.
         assert!(!set.has_operating_point_set(31, 4));
         assert!(!set.has_operating_point_set(3, 5));
         let out_of_range = ExternalHlsSet::new().with_operating_point_set(32, 16);

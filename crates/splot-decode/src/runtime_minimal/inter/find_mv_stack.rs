@@ -235,13 +235,6 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
     let is_sb_border = block.is_sb_border();
     let mut new_mv_count = 0usize;
 
-    // §7.11.2 ordered scan-point context probes (warp probes omitted):
-    //   leftA  = scan_point_ctx(bh4 - 1, -1)
-    //   aboveA = scan_point_ctx(-1, bw4 - 1)
-    //   leftB  = scan_point_ctx(0, -1)
-    //   aboveB = scan_point_ctx(-1, 0)   (aboveB always probed; the warp probe
-    //            at (-1, 0) is gated on bw4 >= (isSbBorder ? 4 : 2), but the
-    //            aboveB context probe itself is unconditional).
     let left_a = scan_point_ctx(grid, block, bh4 - 1, -1, &mut new_mv_count);
     let above_a = scan_point_ctx(grid, block, -1, bw4 - 1, &mut new_mv_count);
     let left_b = scan_point_ctx(grid, block, 0, -1, &mut new_mv_count);
@@ -332,9 +325,6 @@ pub(super) fn block_neighbour_ctx(
     let bw4 = block.bw4 as i32;
     let bh4 = block.bh4 as i32;
 
-    // §5.20.7.2 add_neighbor probes, in order. NPosBuf collects up to 2 inside
-    // positions (the `aboveSbBoundary` restriction only gates the separate NPos
-    // list, not NPosBuf). `grid.get` returning Some means is_inside + decoded.
     let probes = [
         (r + bh4 - 1, c - 1), // bottom-left
         (r - 1, c + bw4 - 1), // top-right
@@ -359,7 +349,6 @@ pub(super) fn block_neighbour_ctx(
         }
     }
 
-    // §8.3.2 is_inter ctx over NIntra[] = !IsInters[NPosBuf[n]].
     let n_intra_0 = num_buf >= 1 && !buf[0].is_inter;
     let n_intra_1 = num_buf >= 2 && !buf[1].is_inter;
     let is_inter_ctx = if num_buf == 2 {
@@ -374,16 +363,11 @@ pub(super) fn block_neighbour_ctx(
         0
     };
 
-    // §8.3.2 skip_flag ctx = sum of neighbour Skips[] (skip_mode == 0).
     let mut skip_ctx = 0usize;
     for cell in buf.iter().take(num_buf) {
         skip_ctx += usize::from(cell.skip);
     }
 
-    // §8.3.2 single_ref / comp_ref neighbour reference counts (AVM
-    // `av2_collect_neighbors_ref_counts`): tally each inter single-reference
-    // neighbour's RefFrame[0] into ref_counts[r]. The verified subset has no compound
-    // neighbour (no RefFrame[1] term) and a non-inter cell (ref_frame0 < 0) is skipped.
     let mut ref_counts = [0u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS];
     for cell in buf.iter().take(num_buf) {
         if cell.is_inter && cell.ref_frame0 >= 0 {
@@ -420,11 +404,8 @@ fn scan_point_ctx(
     if !cell.is_inter {
         return false;
     }
-    // Single prediction, no intrabc: candList = 0..1 (one list). The single
-    // modelled reference list is candList == 0.
     if cell.ref_frame0 == block.ref_frame0 {
         if matches!(cell.y_mode, NeighbourYMode::NewMv) {
-            // §7.11.2 NewMvCount = Min(3, NewMvCount + 1).
             *new_mv_count = (*new_mv_count + 1).min(3);
         }
         return true;
@@ -481,16 +462,9 @@ pub(super) fn find_mv_stack(
     let bh4 = block.bh4 as i32;
     let is_sb_border_adj = i32::from(block.is_sb_border());
 
-    // §7.12.2 step 1: NumMvFound = 0.
     let mut entries: Vec<MvStackEntry> = Vec::new();
 
-    // §7.12.2 steps 7-14: the ordered spatial scan-point probes (single
-    // prediction; warp + temporal omitted). Each scan_point invokes the §7.12.2.6
-    // Scan point process -> §7.12.2.10 Add reference motion vector process ->
-    // §7.12.2.12 Search stack process.
-    //  7.  scan_point(bh4 - 1, -1)
     scan_point(grid, block, bh4 - 1, -1, &mut entries);
-    //  8.  scan_point(-1, Max(0, bw4 - 1 - isSbBorder))
     scan_point(
         grid,
         block,
@@ -498,19 +472,15 @@ pub(super) fn find_mv_stack(
         (bw4 - 1 - is_sb_border_adj).max(0),
         &mut entries,
     );
-    //  9.  if bh4 >= 2: scan_point(0, -1)
     if bh4 >= 2 {
         scan_point(grid, block, 0, -1, &mut entries);
     }
-    // 10.  if bw4 >= (isSbBorder ? 4 : 2): scan_point(-1, 0)
     if bw4 >= if is_sb_border_adj == 1 { 4 } else { 2 } {
         scan_point(grid, block, -1, 0, &mut entries);
     }
-    // 11.  if bh4 <= 16: scan_point(bh4, -1)
     if bh4 <= 16 {
         scan_point(grid, block, bh4, -1, &mut entries);
     }
-    // 12.  if bw4 <= 16: scan_point(-1, isSbBorder ? Max(2, bw4) : bw4)
     if bw4 <= 16 {
         let dc = if is_sb_border_adj == 1 {
             bw4.max(2)
@@ -519,48 +489,15 @@ pub(super) fn find_mv_stack(
         };
         scan_point(grid, block, -1, dc, &mut entries);
     }
-    // 14.  scan_point(-1, -1 - isSbBorder)
     scan_point(grid, block, -1, -1 - is_sb_border_adj, &mut entries);
 
-    // §7.12.2 step 15: numNearest = NumMvFound (the immediate-neighbour count). It
-    // feeds only the deferred conditional sort (steps 17-18), so it is not retained.
-
-    // §7.12.2 step 16 (scan_col, deltaCol = -3) is omitted: it only adds
-    // candidates from blocks 3 MI columns to the left, none of which exist for
-    // the verified two-block fixture (the left neighbour is at deltaCol == -1).
     // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.5 Scan col process
-    // for wider neighbour reach.
 
-    // §7.12.2 steps 17-18: useSort. The caller's DrlReorder == DRL_REORDER_NONE
-    // (enable_drl_reorder == 0) makes useSort = (numNearest >= 4) only when
-    // DrlReorder == DRL_REORDER_CONSTRAINT, which is not this path; for
-    // DRL_REORDER_NONE useSort is 0. Modelled faithfully: no sort.
     // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.19 Sorting process
-    // for the DRL_REORDER_CONSTRAINT / DRL_REORDER_ALWAYS paths.
 
-    // §7.12.2 steps 19-21 (compound / ref-mv-bank / derived-SMVP) are deferred
-    // (the caller rejects enable_refmvbank and compound).
-
-    // §7.12.2 step 22: the Extra search process (§7.12.2.20). Clamp the existing
-    // candidates, then add the global MV candidate if not already present. The
-    // large-block (Block_Width > 32 AND Block_Height > 32) MVP combinations
-    // (insert_mvp_candidate(0,1)/(1,0)/(0,2)/(2,0)/(1,2)/(2,1)) and the warp /
-    // intrabc candidates are DEFERRED. NB: the admitted leaves are >= 32x32 with NO
-    // upper bound (block.rs MIN_INTER_LEAF_N4 gates only the lower edge), so the
-    // verified 64x64 grid / superblock blocks ARE > 32x32 and the §7.12.2.20
-    // large-block step DOES apply to them. It is currently kept safe only because
-    // (a) every committed-fixture neighbour MV is identical, so the mixed MVP
-    // candidates coincide with existing stack entries (nothing appended, NumMvFound
-    // unchanged), and (b) the §7.12.2.20 candidates would be appended AFTER the
-    // spatial + global entries, so a RefMvIdx selecting a mixed-only slot lands past
-    // this shorter stack and is rejected by the §5.20.7.8
-    // inter_block_drl_idx_out_of_range guard rather than mis-decoding. A committed
-    // distinct-neighbour-MV fixture is required to verify the large-block step.
     // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): §7.12.2.20 large-block (>32x32) MVP
-    // combinations + warp / intrabc candidates.
     extra_search(block, global_mv, &mut entries);
 
-    // §7.12.2 step 23: the Clamping process (§7.12.2.23). Clamp every candidate.
     let stack: Vec<Mv> = entries
         .iter()
         .map(|entry| clamp_mv(block, entry.mv))
@@ -589,27 +526,19 @@ fn scan_point(
     let mv_row = block.mi_row as i32 + delta_row;
     let mut mv_col = block.mi_col as i32 + delta_col;
 
-    // §7.12.2.6: superblock-border alignment for an above probe.
     if delta_row < 0 && block.is_sb_border() {
         mv_col = (mv_col >> 1) << 1;
         delta_col = mv_col - block.mi_col as i32;
     }
 
-    // §7.12.2.6 weight:
-    //   (-1, -1) -> 0; deltaCol < -1 -> 0; otherwise 1.
     let zero_weight = (delta_row == -1 && delta_col == -1) || delta_col < -1;
     let weight: u32 = u32::from(!zero_weight);
 
     let Some(cell) = grid.get(mv_row, mv_col) else {
         return;
     };
-    // §7.12.2.6: the candidate location must have been decoded (RefFrames written).
-    // `grid.get` returning Some means the cell was written for this frame.
-
-    // §7.12.2.9 Add warp motion vector process is deferred (DeriveWrl == 0).
 
     if entries.len() >= MAX_REF_MV_STACK_SIZE {
-        // §7.12.2.6: terminate before the add reference MV process.
         return;
     }
 
@@ -626,16 +555,12 @@ fn add_reference_mv(
     weight: u32,
     entries: &mut Vec<MvStackEntry>,
 ) {
-    // §7.12.2.10: if IsInters[mvRow][mvCol] == 0, terminate.
     if !cell.is_inter {
         return;
     }
-    // Single prediction, non-intrabc: candList = 0..1 (one list, candList == 0).
-    // §7.12.2.10: if RefFrames[...][candList] == RefFrame[0], search_stack.
     if cell.ref_frame0 == block.ref_frame0 {
         search_stack(cell.mv, weight, entries);
     }
-    // The TIP / single-add-derived branches (§7.12.2.16–§7.12.2.18) are deferred.
 }
 
 /// AV2 § 7.12.2.12 Search stack process for single prediction. If `cand_mv` is
@@ -665,12 +590,10 @@ fn search_stack(cand_mv: Mv, weight: u32, entries: &mut Vec<MvStackEntry>) {
 /// only by the identical-MV fixtures and the §5.20.7.8 DRL-out-of-range reject
 /// (see the call-site note in [`find_mv_stack`]).
 fn extra_search(block: &MvBlockContext, global_mv: Mv, entries: &mut Vec<MvStackEntry>) {
-    // §7.12.2.20: clamp each candidate (the per-list clamp, single list here).
     for entry in entries.iter_mut() {
         entry.mv = clamp_mv(block, entry.mv);
     }
 
-    // §7.12.2.20: add the global MV candidate if not already present.
     if entries.len() < MAX_REF_MV_STACK_SIZE {
         let already_present = entries.iter().any(|entry| entry.mv == global_mv);
         if !already_present {
@@ -693,10 +616,8 @@ fn clamp_mv(block: &MvBlockContext, mv: Mv) -> Mv {
     let mi_rows = block.mi_rows as i32;
     let mi_cols = block.mi_cols as i32;
 
-    // §5.20.9.4 clamp_mv_row.
     let row_low = -(mi_row + bh4) * MI_SIZE * 8 - MV_BORDER;
     let row_high = (mi_rows - mi_row) * MI_SIZE * 8 + MV_BORDER;
-    // §5.20.9.5 clamp_mv_col.
     let col_low = -(mi_col + bw4) * MI_SIZE * 8 - MV_BORDER;
     let col_high = (mi_cols - mi_col) * MI_SIZE * 8 + MV_BORDER;
 

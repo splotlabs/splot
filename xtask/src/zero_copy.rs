@@ -52,17 +52,13 @@ const BANNED_BYTE_CRATES: &[&str] = &[
 /// `DecodedFrameInfo`, `BitDepth`, `PixelFormat`, `ReferenceSlot`, `OutputIndex`)
 /// and borrow views (`PlaneRef`, `FrameRef`, …) are never caught.
 const MEDIA_TYPE_NAMES: &[&str] = &[
-    // Concrete splot-recon storage types.
     "Plane",
     "FramePlanes",
     "DecodedFrame",
     "CurrentFrameWorkspace",
     "CurrentFramePlane",
     "ReferenceFrameStore",
-    // The explicit share handle: it MUST NOT derive Clone (sharing is the visible
-    // `.share()` Arc::clone only), so a Clone derive/impl on it is banned.
     "SharedFrame",
-    // Forward-looking generic media-storage names from docs/ZERO_COPY.md.
     "Frame",
     "CurrentFrame",
     "ReferenceFrame",
@@ -381,7 +377,6 @@ pub(crate) fn evaluate_zero_copy_policy(
 ) -> Vec<String> {
     let mut violations: Vec<String> = Vec::new();
 
-    // Dependency rules (all manifests).
     for krate in crates {
         for dep in &krate.deps {
             let approved = ZEROCOPY_APPROVED_CRATES.contains(&krate.name.as_str());
@@ -392,9 +387,6 @@ pub(crate) fn evaluate_zero_copy_policy(
                     ZEROCOPY_APPROVED_CRATES.join(" or ")
                 ));
             } else if dep.name == "zerocopy" && !dep.workspace_inherited {
-                // An approved crate that pins zerocopy locally (a bare version) or
-                // adds local `features`/`default-features` escapes the centrally
-                // pinned, narrow workspace surface.
                 violations.push(format!(
                     "{}: `zerocopy` must be inherited via the workspace dependency (`zerocopy.workspace = true`) with no local `features`/`default-features` override",
                     krate.name
@@ -409,22 +401,16 @@ pub(crate) fn evaluate_zero_copy_policy(
         }
     }
 
-    // Source rules.
     for (i, line) in sources.iter().enumerate() {
         let text = &line.text;
         let trimmed = text.trim_start();
-        // Comment-only lines are never copies; they may carry `splot-copy-ok`
-        // markers (used by the lookback) or prose naming a banned construct.
         if trimmed.starts_with("//") {
             continue;
         }
         let where_at = format!("{}:{}", line.path, line.line_no);
-        // Whitespace before `(` is collapsed so a call cannot evade the needles
-        // with formatting alone (e.g. `samples.to_vec ()`).
         let scan = collapse_space_before_parens(text);
 
         if is_clone_scan_src(&line.path) {
-            // Rule: `Clone` derive on a media-storage type.
             if let Some(name) = declared_type_name(text)
                 && MEDIA_TYPE_NAMES.contains(&name)
                 && derive_has_clone(&attribute_block_above(sources, i))
@@ -433,7 +419,6 @@ pub(crate) fn evaluate_zero_copy_policy(
                     "{where_at}: `Clone` derive on media-storage type `{name}`; remove it (borrow a view or share via `SharedFrame` instead)"
                 ));
             }
-            // Rule: zerocopy wire-view types must stay private (never a public API).
             if is_zerocopy_approved_src(&line.path)
                 && let Some(name) = declared_type_name(text)
                 && is_fully_public_type_decl(text)
@@ -443,7 +428,6 @@ pub(crate) fn evaluate_zero_copy_policy(
                     "{where_at}: public type `{name}` derives zerocopy layout traits; wire-view structs must be private (never a public API)"
                 ));
             }
-            // Rule: `impl Clone for` a media-storage type.
             if let Some(name) = clone_impl_target(text)
                 && MEDIA_TYPE_NAMES.contains(&name)
             {
@@ -451,7 +435,6 @@ pub(crate) fn evaluate_zero_copy_policy(
                     "{where_at}: `impl Clone for {name}` duplicates media storage; remove it (share via `SharedFrame` instead)"
                 ));
             }
-            // Rule: suspicious `.clone()` on a media-named binding.
             for (pos, _) in scan.match_indices(".clone(") {
                 let receiver = clone_receiver(&scan, pos);
                 if SUSPICIOUS_CLONE_BINDINGS.contains(&receiver) {
@@ -463,13 +446,11 @@ pub(crate) fn evaluate_zero_copy_policy(
                     );
                 }
             }
-            // Rule: copy-on-write on shared frame storage.
             if text.contains("make_mut") {
                 violations.push(format!(
                     "{where_at}: `make_mut` copy-on-write on shared storage is banned; never mutate shared frame storage in place"
                 ));
             }
-            // Rule: no unsafe byte reinterpretation.
             if uses_unsafe_keyword(text) {
                 violations.push(format!(
                     "{where_at}: `unsafe` is banned (workspace `unsafe_code = \"forbid\"`); do not reinterpret bytes as samples"
@@ -485,7 +466,6 @@ pub(crate) fn evaluate_zero_copy_policy(
                     "{where_at}: `from_raw_parts` is banned; build views from safe slices"
                 ));
             }
-            // Rule: `read_from_bytes` copies unless marked a tiny wire-header copy.
             if text.contains("read_from_bytes") {
                 check_marked_copy(
                     sources,
@@ -496,7 +476,6 @@ pub(crate) fn evaluate_zero_copy_policy(
             }
         }
 
-        // Rule: bulk sample copies (splot-recon/src only).
         if is_recon_src(&line.path) {
             for (needle, shown) in SAMPLE_COPY_NEEDLES {
                 if scan.contains(needle) {
@@ -510,7 +489,6 @@ pub(crate) fn evaluate_zero_copy_policy(
             }
         }
 
-        // Rule: `include!` bypass in the media crates (could hide a copy).
         if is_media_crate_src(&line.path) && scan.contains("include!(") {
             violations.push(format!(
                 "{where_at}: `include!` is banned in media crates (it can hide a copy from this scan)"
@@ -532,8 +510,6 @@ pub(crate) fn evaluate_zero_copy_policy(
 fn attribute_block_above(sources: &[ZcSourceLine], i: usize) -> String {
     let path = &sources[i].path;
     let mut lines: Vec<&str> = Vec::new();
-    // `depth` counts unmatched closers seen on lower lines: while it is positive we
-    // are inside a multi-line attribute and the current line is a continuation.
     let mut depth: i32 = 0;
     let mut j = i;
     while j > 0 {
@@ -884,8 +860,6 @@ mod tests {
 
     #[test]
     fn multiline_media_clone_derive_is_a_violation() {
-        // rustfmt wraps long derive lists; the `Clone` token then lives on its own
-        // line. The block-aware lookback must still catch it.
         let src = file(
             RECON,
             &[
@@ -905,7 +879,6 @@ mod tests {
 
     #[test]
     fn shared_frame_clone_derive_is_a_violation() {
-        // SharedFrame is the type most explicitly forbidden from deriving Clone.
         let src = file(
             RECON,
             &["#[derive(Clone, Debug)]", "pub struct SharedFrame<T> {"],
@@ -915,7 +888,6 @@ mod tests {
             v.iter().any(|m| m.contains("SharedFrame")),
             "Clone on SharedFrame must be flagged, got {v:?}"
         );
-        // Debug-only on SharedFrame (the real code) must NOT be flagged.
         let ok = file(RECON, &["#[derive(Debug)]", "pub struct SharedFrame<T> {"]);
         assert!(
             run_src(&ok).is_empty(),
@@ -925,8 +897,6 @@ mod tests {
 
     #[test]
     fn doc_comment_naming_clone_above_a_media_type_is_not_flagged() {
-        // The real code documents "Does not implement `Clone`" above a Debug-only
-        // derive; the comment must not create a false positive.
         let src = file(
             RECON,
             &[
@@ -952,15 +922,12 @@ mod tests {
 
     #[test]
     fn zerocopy_locally_pinned_in_approved_crate_is_a_violation() {
-        // An approved crate that pins zerocopy locally (not `zerocopy.workspace = true`)
-        // escapes the centralized workspace shape.
         let pinned = krate_deps("splot-core", &[("zerocopy", false)]);
         let v = evaluate_zero_copy_policy(&[pinned], &[]);
         assert!(
             v.iter().any(|m| m.contains("workspace dependency")),
             "locally-pinned zerocopy must be flagged, got {v:?}"
         );
-        // Workspace-inherited zerocopy in an approved crate is fine.
         let inherited = krate_deps("splot-core", &[("zerocopy", true)]);
         assert!(
             evaluate_zero_copy_policy(&[inherited], &[]).is_empty(),
@@ -970,7 +937,6 @@ mod tests {
 
     #[test]
     fn small_metadata_clone_derive_is_ok() {
-        // `DecodedFrameInfo` is small metadata: exact-name matching must not flag it.
         let src = file(
             RECON,
             &[
@@ -986,7 +952,6 @@ mod tests {
 
     #[test]
     fn view_type_clone_derive_is_ok() {
-        // Borrow views are cheap and may be Copy/Clone; their names are not media names.
         let src = file(
             RECON,
             &[
@@ -1015,7 +980,6 @@ mod tests {
 
     #[test]
     fn clone_on_non_media_binding_is_ok() {
-        // `frame.rows.clone()` clones `rows`, not `frame`; `digest.clone()` is unrelated.
         let src = file(
             CORE,
             &[
@@ -1080,7 +1044,6 @@ mod tests {
 
     #[test]
     fn sample_copy_outside_recon_is_not_flagged() {
-        // splot-decode/core copy compressed bytes, not samples; not scanned for these.
         for path in [CORE, DECODE] {
             let src = file(
                 path,
@@ -1160,7 +1123,6 @@ mod tests {
             recon.iter().any(|m| m.contains("include!")),
             "got {recon:?}"
         );
-        // splot-core legitimately includes test modules under src/write/.
         let core = run_src(&file(CORE, &["include!(\"x_tests.rs\");"]));
         assert!(core.is_empty(), "core include! must not be flagged");
     }
@@ -1186,7 +1148,6 @@ mod tests {
     #[test]
     fn pure_workspace_inheritance_excludes_local_overrides() {
         assert!(is_workspace_inherited(&dep_value("{ workspace = true }")));
-        // Cargo features are additive: a local feature add widens the surface.
         assert!(!is_workspace_inherited(&dep_value(
             "{ workspace = true, features = [\"alloc\"] }"
         )));
@@ -1198,7 +1159,6 @@ mod tests {
 
     #[test]
     fn marker_in_string_literal_does_not_suppress() {
-        // A string/test-data line containing the token (no comment) must NOT mark.
         let src = file(
             RECON,
             &[
@@ -1210,7 +1170,6 @@ mod tests {
             !run_src(&src).is_empty(),
             "a string-literal token must not suppress a copy"
         );
-        // A genuine comment marker still suppresses.
         let ok = file(
             RECON,
             &[
@@ -1252,7 +1211,6 @@ mod tests {
             v.iter().any(|m| m.contains("wire-view")),
             "a public zerocopy wire type must be flagged, got {v:?}"
         );
-        // The real IVF pattern is a private wire struct — allowed.
         let private = file(
             CORE,
             &[
@@ -1268,7 +1226,6 @@ mod tests {
 
     #[test]
     fn real_repo_passes_zero_copy_policy() {
-        // Guards against self-flagging and proves the clean repo passes the gate.
         let root = crate::workspace_root().unwrap();
         check_zero_copy_policy(&root).expect("the current repo must satisfy the zero-copy policy");
     }

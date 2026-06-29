@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Property tests for the §5.18.8.1 / §5.18.10.1 / §5.18.2 intra-tail writers: each parser is
-// driven on random bits + gating, then the parsed model is re-emitted and reparsed to assert the
-// universal semantic round-trip; plus a "never panics" property over arbitrary constructed
-// models.
-
-// `include!`d into `crate::write::frame_tail` so `super::*` resolves to its writers and helpers.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

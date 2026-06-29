@@ -34,7 +34,6 @@ fn scan_block(eob: usize, mags: &[u32]) -> [i32; TX_4X4_COEFF_COUNT] {
             continue;
         }
         let raster = SCAN_RASTER_0_9[c];
-        // Asymmetric: even scan index negative, odd positive.
         let value = if c % 2 == 0 {
             -(mag as i32)
         } else {
@@ -47,9 +46,6 @@ fn scan_block(eob: usize, mags: &[u32]) -> [i32; TX_4X4_COEFF_COUNT] {
 
 #[test]
 fn general_lf_eob3_all_mag1_exact_stream() {
-    // eob == 3, all three coefficients magnitude 1. Scan positions raster [0, 4, 1].
-    // Signs: scan 0 (DC) negative, scan 1 (AC raster 4) positive, scan 2 (AC raster 1)
-    // negative.
     let quant = scan_block(3, &[1, 1, 1]);
     assert_eq!(quant[0], -1);
     assert_eq!(quant[4], 1);
@@ -57,26 +53,18 @@ fn general_lf_eob3_all_mag1_exact_stream() {
 
     let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
 
-    // all_zero(0), eob_pt_16(2), eob_extra(0), then the reverse-scan base pass over
-    // c = 2,1,0: scan-2 EOB coeff_base_eob, scan-1 coeff_base, DC coeff_base; then the
-    // reverse-scan sign pass (scan-2 bypass, scan-1 bypass, DC dc_sign); then U/V
-    // all_zero(1). No coeff_br (all magnitudes 1 < the base tier).
-    // = 3 header + 3 base + 3 sign + 2 chroma = 11 tokens.
     assert_eq!(trace.len(), 11);
 
-    // eob_pt_16 symbol 2 (eobPt 3).
     assert!(
         matches!(trace[1], BlockSymbolToken::Coeff(c)
             if matches!(c.syntax(), CoefficientTokenSyntax::EobPt16) && c.symbol() == 2),
         "eob_pt_16 symbol 2 (eobPt 3)"
     );
-    // eob_extra flag 0 (eob 3 = 3 + 0).
     assert!(
         matches!(trace[2], BlockSymbolToken::Coeff(c)
             if matches!(c.syntax(), CoefficientTokenSyntax::EobExtra) && c.symbol() == 0),
         "eob_extra flag 0 (eob 3)"
     );
-    // Scan-2 EOB coeff_base_eob at coeff_base_eob_ctx(c=2) = 1, level 1 → symbol 0.
     assert!(
         matches!(trace[3], BlockSymbolToken::Coeff(c)
             if matches!(c.selector(), CoefficientCdfRowSelector::CoeffBaseLfEob { ctx: 1, .. })
@@ -84,11 +72,6 @@ fn general_lf_eob3_all_mag1_exact_stream() {
         "scan-2 coeff_base_eob at ctx 1 (coeff_base_eob_ctx(c=2)), symbol 0"
     );
 
-    // Full ordered symbol stream:
-    // all_zero(0), eob_pt(2), eob_extra(0),
-    // base: scan-2 eob(0), scan-1 base(1), DC base(1),
-    // sign: scan-2 bypass(neg→1), scan-1 bypass(pos→0), DC dc_sign(neg→1),
-    // chroma U(1), V(1).
     assert_eq!(
         trace.iter().map(|t| t.symbol()).collect::<Vec<_>>(),
         vec![0, 2, 0, 0, 1, 1, 1, 0, 1, 1, 1]
@@ -102,7 +85,6 @@ fn general_lf_eob3_all_mag1_exact_stream() {
 
 #[test]
 fn general_lf_eob4_all_mag1_exact_stream() {
-    // eob == 4, all four coefficients magnitude 1. Scan positions raster [0, 4, 1, 8].
     let quant = scan_block(4, &[1, 1, 1, 1]);
     assert_eq!(quant[0], -1);
     assert_eq!(quant[4], 1);
@@ -111,22 +93,18 @@ fn general_lf_eob4_all_mag1_exact_stream() {
 
     let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
 
-    // 3 header + 4 base + 4 sign + 2 chroma = 13 tokens.
     assert_eq!(trace.len(), 13);
 
-    // eob_pt_16 symbol 2 (eobPt 3).
     assert!(
         matches!(trace[1], BlockSymbolToken::Coeff(c)
             if matches!(c.syntax(), CoefficientTokenSyntax::EobPt16) && c.symbol() == 2),
         "eob_pt_16 symbol 2 (eobPt 3)"
     );
-    // eob_extra flag 1 (eob 4 = 3 + 1).
     assert!(
         matches!(trace[2], BlockSymbolToken::Coeff(c)
             if matches!(c.syntax(), CoefficientTokenSyntax::EobExtra) && c.symbol() == 1),
         "eob_extra flag 1 (eob 4)"
     );
-    // Scan-3 EOB coeff_base_eob at coeff_base_eob_ctx(c=3) = 2, level 1 → symbol 0.
     assert!(
         matches!(trace[3], BlockSymbolToken::Coeff(c)
             if matches!(c.selector(), CoefficientCdfRowSelector::CoeffBaseLfEob { ctx: 2, .. })
@@ -190,9 +168,7 @@ fn assert_block_roundtrips(eob: usize, mags: &[u32]) {
 fn general_lf_eob3_4_exhaustive_routing_fuzz() {
     let mut covered = 0usize;
     for eob in 3..=4usize {
-        // The EOB coefficient (scan index eob-1) must be nonzero.
         for &eob_mag in &NONZERO_TIERS {
-            // Lower positions (scan 0..eob-1) range over the full tier set (incl. 0).
             let lower = eob - 1;
             let combos = TIERS.len().pow(lower as u32);
             for combo in 0..combos {
@@ -208,41 +184,31 @@ fn general_lf_eob3_4_exhaustive_routing_fuzz() {
             }
         }
     }
-    // eob 3: 4 eob-mags * 5^2 lower = 100; eob 4: 4 * 5^3 = 500. Total 600.
     assert_eq!(covered, 600, "expected 600 enumerated in-scope blocks");
 }
 
 #[test]
 fn general_lf_eob6_eobpt4_exact_eob_signaling() {
-    // eob == 6 → eobPt 4 (base 5). offset = 6 - 5 = 1; width = eobPt - 3 = 1.
-    // eob_extra = (1 >> 1) & 1 = 0; eob_extra_bits = 1 & 1 = 1 → one `eob_extra_bit`
-    // bypass = (1 >> 0) & 1 = 1.
     let quant = scan_block(6, &[1, 1, 1, 1, 1, 1]);
     let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
 
-    // 4 header (all_zero, eob_pt_16, eob_extra, 1 eob_extra_bit) + 6 base + 6 sign +
-    // 2 chroma = 18 tokens.
     assert_eq!(trace.len(), 18);
 
-    // all_zero == 0.
     assert!(matches!(
         trace[0],
         BlockSymbolToken::Coeff(c)
             if matches!(c.syntax(), CoefficientTokenSyntax::AllZero) && c.symbol() == 0
     ));
-    // eob_pt_16 symbol 3 (eobPt 4).
     assert!(
         matches!(trace[1], BlockSymbolToken::Coeff(c)
             if matches!(c.syntax(), CoefficientTokenSyntax::EobPt16) && c.symbol() == 3),
         "eob_pt_16 symbol 3 (eobPt 4)"
     );
-    // eob_extra flag 0 (the HIGH refinement bit of offset 1, width 1).
     assert!(
         matches!(trace[2], BlockSymbolToken::Coeff(c)
             if matches!(c.syntax(), CoefficientTokenSyntax::EobExtra) && c.symbol() == 0),
         "eob_extra flag 0"
     );
-    // One `eob_extra_bit` bypass literal = 1 (the LOW bit of offset 1).
     assert_eq!(
         trace[3],
         BlockSymbolToken::Bypass { width: 1, value: 1 },
@@ -257,30 +223,21 @@ fn general_lf_eob6_eobpt4_exact_eob_signaling() {
 
 #[test]
 fn general_lf_eob10_eobpt5_exact_eob_signaling() {
-    // eob == 10 → eobPt 5 (base 9). offset = 10 - 9 = 1; width = eobPt - 3 = 2.
-    // eob_extra = (1 >> 2) & 1 = 0; eob_extra_bits = 1 & 3 = 1 (binary 01) → two
-    // `eob_extra_bit` bypass literals emitted MSB-first: bit1 = (1 >> 1) & 1 = 0,
-    // then bit0 = (1 >> 0) & 1 = 1.
     let quant = scan_block(10, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
     let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
 
-    // 5 header (all_zero, eob_pt_16, eob_extra, 2 eob_extra_bit) + 10 base + 10 sign +
-    // 2 chroma = 27 tokens.
     assert_eq!(trace.len(), 27);
 
-    // eob_pt_16 symbol 4 (eobPt 5).
     assert!(
         matches!(trace[1], BlockSymbolToken::Coeff(c)
             if matches!(c.syntax(), CoefficientTokenSyntax::EobPt16) && c.symbol() == 4),
         "eob_pt_16 symbol 4 (eobPt 5)"
     );
-    // eob_extra flag 0 (the HIGH refinement bit of offset 1, width 2).
     assert!(
         matches!(trace[2], BlockSymbolToken::Coeff(c)
             if matches!(c.syntax(), CoefficientTokenSyntax::EobExtra) && c.symbol() == 0),
         "eob_extra flag 0"
     );
-    // The two `eob_extra_bit` bypass literals, MSB-first: 0 then 1.
     assert_eq!(
         trace[3],
         BlockSymbolToken::Bypass { width: 1, value: 0 },
@@ -300,18 +257,6 @@ fn general_lf_eob10_eobpt5_exact_eob_signaling() {
 
 #[test]
 fn general_lf_eob_extra_bits_cover_every_refined_eob() {
-    // Drive every refined eob 3..=10 with all-magnitude-1 coefficients and assert the
-    // emitted (eob_pt_16, eob_extra, eob_extra_bit*) header matches the decoder
-    // mapping, and the block roundtrips + recovers. The (eob_pt symbol, eob_extra
-    // flag, MSB-first eob_extra_bit literals) per eob (base 3/5/9 for eobPt 3/4/5):
-    //   eob 3  eobPt3 off0 w0 -> sym2 extra0 []
-    //   eob 4  eobPt3 off1 w0 -> sym2 extra1 []
-    //   eob 5  eobPt4 off0 w1 -> sym3 extra0 [0]
-    //   eob 6  eobPt4 off1 w1 -> sym3 extra0 [1]
-    //   eob 7  eobPt4 off2 w1 -> sym3 extra1 [0]
-    //   eob 8  eobPt4 off3 w1 -> sym3 extra1 [1]
-    //   eob 9  eobPt5 off0 w2 -> sym4 extra0 [0,0]
-    //   eob 10 eobPt5 off1 w2 -> sym4 extra0 [0,1]
     let expected: [(usize, u8, bool, &[u32]); 8] = [
         (3, 2, false, &[]),
         (4, 2, true, &[]),
@@ -327,21 +272,18 @@ fn general_lf_eob_extra_bits_cover_every_refined_eob() {
         let quant = scan_block(eob, &mags);
         let trace = tokenize_general_lf_luma_block(&quant, Q_CTX).unwrap();
 
-        // trace[1] = eob_pt_16.
         assert!(
             matches!(trace[1], BlockSymbolToken::Coeff(c)
                 if matches!(c.syntax(), CoefficientTokenSyntax::EobPt16)
                     && c.symbol() == eob_pt_sym),
             "eob {eob}: eob_pt_16 symbol {eob_pt_sym}"
         );
-        // trace[2] = eob_extra flag.
         assert!(
             matches!(trace[2], BlockSymbolToken::Coeff(c)
                 if matches!(c.syntax(), CoefficientTokenSyntax::EobExtra)
                     && c.symbol() == u8::from(eob_extra)),
             "eob {eob}: eob_extra flag {eob_extra}"
         );
-        // trace[3..3+width] = the MSB-first eob_extra_bit bypass literals.
         for (offset, &bit) in extra_bits.iter().enumerate() {
             assert_eq!(
                 trace[3 + offset],
@@ -352,7 +294,6 @@ fn general_lf_eob_extra_bits_cover_every_refined_eob() {
                 "eob {eob}: eob_extra_bit[{offset}] == {bit}"
             );
         }
-        // The base pass must start right after the header.
         let header_len = 3 + extra_bits.len();
         assert!(
             matches!(trace[header_len], BlockSymbolToken::Coeff(c)
@@ -414,9 +355,6 @@ fn general_lf_eob5_10_bounded_routing_fuzz() {
 
 #[test]
 fn recover_rejects_out_of_range_eob_pt_without_panicking() {
-    // A malformed trace whose `eob_pt_16` symbol selects an eobPt far beyond the
-    // supported range (the symbol is a `u8`) must return a typed error, NOT panic on
-    // the `1 << (eobPt - 3)` shift in `read_eob_from_tokens`.
     let trace = vec![
         BlockSymbolToken::Coeff(coded_luma_all_zero_token(Q_CTX)),
         BlockSymbolToken::Coeff(eob_pt_16_token(Q_CTX, EOB_CTX_LUMA_INTRA, 200)),

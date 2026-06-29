@@ -189,7 +189,6 @@ impl<'a> BitReader<'a> {
                 max: 8,
             });
         }
-        // `n <= 8` guarantees the value fits in a `u8` without truncation.
         Ok(self.read_bits(n)? as u8)
     }
 
@@ -204,8 +203,6 @@ impl<'a> BitReader<'a> {
     /// [`Error::UnexpectedEof`] if fewer than `n` bits remain.
     pub fn read_su(&mut self, n: u32) -> Result<i32> {
         if n == 0 || n > 32 {
-            // su(n) requires n in 1..=32: n == 0 has no sign bit, and n > 32 exceeds
-            // the 32-bit fixed-width read path. Both are reported as BitWidthTooLarge.
             return Err(Error::BitWidthTooLarge {
                 requested: n,
                 max: 32,
@@ -213,16 +210,11 @@ impl<'a> BitReader<'a> {
         }
 
         let value = self.read_bits(n)?;
-        // AV2 § 4.11.7: signMask = 1 << (n - 1); if set, value -= 2 * signMask.
-        // Compute in i64 to keep the n == 32 case panic-free, then narrow: the
-        // sign-extended result of an n-bit (n <= 32) two's-complement value always
-        // fits in i32.
         let sign_mask = 1i64 << (n - 1);
         let mut signed = i64::from(value);
         if signed & sign_mask != 0 {
             signed -= 2 * sign_mask;
         }
-        // n <= 32, so the sign-extended value is in [-2^31, 2^31 - 1] and fits i32.
         Ok(signed as i32)
     }
 
@@ -270,10 +262,6 @@ impl<'a> BitReader<'a> {
     /// [`Self::read_uvlc`] (the only failure paths; `svlc()` reads no further bits).
     pub fn read_svlc(&mut self) -> Result<i32> {
         let value = self.read_uvlc()?;
-        // AV2 § 4.11.4: half = (value + 1) >> 1; svlc = (value & 1) ? half : -half.
-        // read_uvlc bounds value to at most (1 << 32) - 2 (leadingZeros < 32), so
-        // value + 1 does not overflow u32 and half is at most i32::MAX; -half then
-        // stays within i32 (>= i32::MIN + 1).
         let half = ((value + 1) >> 1) as i32;
         if value & 1 == 1 { Ok(half) } else { Ok(-half) }
     }
@@ -405,9 +393,6 @@ impl<'a> BitReader<'a> {
         for q in 0u32..32 {
             if self.read_bit()? == 0 {
                 let remainder = self.read_bits(n)?;
-                // `q < 32` and `n <= 32`, so the shift is computed in u64 to avoid
-                // overflow; the spec only ever uses small `n` (e.g. rg(2)), but the
-                // u64 path keeps the general descriptor panic-free.
                 let value = (u64::from(q) << n) + u64::from(remainder);
                 return u32::try_from(value).map_err(|_| Error::InvalidRg {
                     offset: start_offset,
@@ -559,11 +544,9 @@ mod tests {
         let mut reader = BitReader::new(&[0b1000_0000], ByteOffset::new(0));
         assert!(reader.read_flag().unwrap());
         assert!(!reader.read_flag().unwrap());
-        // Remaining six zero bits all read false.
         for _ in 0..6 {
             assert!(!reader.read_flag().unwrap());
         }
-        // Past end of input is EOF, not a panic.
         assert!(matches!(
             reader.read_flag(),
             Err(Error::UnexpectedEof { .. })
@@ -602,7 +585,6 @@ mod tests {
                 max: 32
             })
         ));
-        // The guard rejects before consuming any bits.
         assert_eq!(reader.byte_offset(), ByteOffset::new(0));
     }
 
@@ -660,8 +642,6 @@ mod tests {
 
     #[test]
     fn read_svlc_maps_uvlc_to_signed_values() {
-        // AV2 § 4.11.4: uvlc 0,1,2,3,4 -> svlc 0,1,-1,2,-2.
-        // uvlc encodings (MSB-first): 0 -> 1, 1 -> 010, 2 -> 011, 3 -> 00100, 4 -> 00101.
         let cases: [(&[u8], i32); 5] = [
             (&[0b1000_0000], 0),
             (&[0b0100_0000], 1),
@@ -680,7 +660,6 @@ mod tests {
         let mut eof = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(eof.read_svlc(), Err(Error::UnexpectedEof { .. })));
 
-        // The underlying uvlc() leading-zero conformance bound propagates unchanged.
         let mut too_many_zeros = BitReader::new(&[0x00, 0x00, 0x00, 0x00], ByteOffset::new(0));
         assert!(matches!(
             too_many_zeros.read_svlc(),
@@ -735,42 +714,35 @@ mod tests {
 
     #[test]
     fn read_leb128_decodes_single_and_multi_byte() {
-        // 0x00 -> 0 (one byte, continuation clear).
         let mut zero = BitReader::new(&[0x00], ByteOffset::new(0));
         assert_eq!(zero.read_leb128().unwrap(), 0);
         assert_eq!(zero.byte_offset(), ByteOffset::new(1));
 
-        // 0x7F -> 127 (one byte).
         let mut max1 = BitReader::new(&[0x7F], ByteOffset::new(0));
         assert_eq!(max1.read_leb128().unwrap(), 127);
 
-        // 0x80 0x01 -> (0 | (1 << 7)) = 128 (two bytes, low group continues).
         let mut two = BitReader::new(&[0x80, 0x01], ByteOffset::new(0));
         assert_eq!(two.read_leb128().unwrap(), 128);
         assert_eq!(two.byte_offset(), ByteOffset::new(2));
 
-        // 0xE5 0x8E 0x26 -> 624485 (the canonical LEB128 example).
         let mut example = BitReader::new(&[0xE5, 0x8E, 0x26], ByteOffset::new(0));
         assert_eq!(example.read_leb128().unwrap(), 624_485);
     }
 
     #[test]
     fn read_leb128_reports_eof_and_overflow() {
-        // Truncated: continuation bit set but no following byte.
         let mut eof = BitReader::new(&[0x80], ByteOffset::new(0));
         assert!(matches!(
             eof.read_leb128(),
             Err(Error::UnexpectedEof { .. })
         ));
 
-        // Nine continuation bytes -> more than eight bytes is invalid.
         let mut too_long = BitReader::new(&[0x80; 9], ByteOffset::new(0));
         assert!(matches!(
             too_long.read_leb128(),
             Err(Error::InvalidLeb128 { .. })
         ));
 
-        // A value that does not fit in u32 (5 groups of 0x7f = 35 bits set).
         let mut overflow = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0x7F], ByteOffset::new(0));
         assert!(matches!(
             overflow.read_leb128(),
@@ -814,42 +786,30 @@ mod tests {
 
     #[test]
     fn read_rg_decodes_unary_prefix_and_remainder() {
-        // q = 0: prefix bit 0, remainder 0b10 -> (0 << 2) + 2 = 2.
-        // Bits: 0 10 00000 -> 0b0100_0000.
         let mut zero_prefix = BitReader::new(&[0b0100_0000], ByteOffset::new(0));
         assert_eq!(zero_prefix.read_rg(2).unwrap(), 2);
 
-        // q = 1: prefix 1,0, remainder 0b11 -> (1 << 2) + 3 = 7.
-        // Bits: 1 0 11 0000 -> 0b1011_0000.
         let mut one_prefix = BitReader::new(&[0b1011_0000], ByteOffset::new(0));
         assert_eq!(one_prefix.read_rg(2).unwrap(), 7);
 
-        // value 0: prefix bit 0, remainder 0b00 -> 0b0000_0000.
         let mut value_zero = BitReader::new(&[0b0000_0000], ByteOffset::new(0));
         assert_eq!(value_zero.read_rg(2).unwrap(), 0);
     }
 
     #[test]
     fn read_rg_two_caps_at_127() {
-        // rg(2)'s largest encodable value is (31 << 2) + 3 = 127: 31 one bits, the
-        // terminating zero bit, then the 2-bit remainder 0b11. This is exactly the
-        // §6.14 / Table 6.13 upper bound for ci_color_description_idc, so the
-        // descriptor enforces the range structurally.
-        // Bits: thirty-one 1s, 0, 1, 1 -> 0xFF 0xFF 0xFF 0xFE 0xC0.
         let mut reader = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFE, 0xC0], ByteOffset::new(0));
         assert_eq!(reader.read_rg(2).unwrap(), 127);
     }
 
     #[test]
     fn read_rg_rejects_non_terminating_prefix_and_reports_eof() {
-        // 32 one bits with no terminating zero -> InvalidRg, not a panic.
         let mut non_terminating = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));
         assert!(matches!(
             non_terminating.read_rg(2),
             Err(Error::InvalidRg { .. })
         ));
 
-        // Truncated before the prefix can be read.
         let mut eof = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(eof.read_rg(2), Err(Error::UnexpectedEof { .. })));
     }
@@ -864,13 +824,11 @@ mod tests {
                 max: 32
             })
         ));
-        // The guard rejects before consuming any bits.
         assert_eq!(reader.byte_offset(), ByteOffset::new(0));
     }
 
     #[test]
     fn read_su_decodes_single_bit_sign() {
-        // su(1): 0 -> 0, 1 -> -1 (signMask = 1, value - 2 = -1).
         let mut zero = BitReader::new(&[0b0000_0000], ByteOffset::new(0));
         assert_eq!(zero.read_su(1).unwrap(), 0);
 
@@ -880,36 +838,27 @@ mod tests {
 
     #[test]
     fn read_su_decodes_positive_and_negative_multi_bit() {
-        // su(4): 0b0101 = 5 (top bit clear -> positive).
         let mut positive = BitReader::new(&[0b0101_0000], ByteOffset::new(0));
         assert_eq!(positive.read_su(4).unwrap(), 5);
 
-        // su(4): 0b1011 = 11, signMask = 8, set -> 11 - 16 = -5.
         let mut negative = BitReader::new(&[0b1011_0000], ByteOffset::new(0));
         assert_eq!(negative.read_su(4).unwrap(), -5);
 
-        // su(10): 0b10_0000_0000 = 512, signMask = 512, set -> 512 - 1024 = -512.
         let mut min10 = BitReader::new(&[0b1000_0000, 0b0000_0000], ByteOffset::new(0));
         assert_eq!(min10.read_su(10).unwrap(), -512);
 
-        // su(10): 0b01_1111_1111 = 511 (top bit clear -> max positive).
         let mut max10 = BitReader::new(&[0b0111_1111, 0b1100_0000], ByteOffset::new(0));
         assert_eq!(max10.read_su(10).unwrap(), 511);
     }
 
     #[test]
     fn read_su_handles_full_width_boundary() {
-        // su(32) is the boundary where the i64 intermediate is load-bearing: without
-        // it, `read_bits(32) as i32` would skip the sign adjustment for the top bit.
-        // 0x8000_0000 -> 2147483648, sign set -> 2147483648 - 4294967296 = i32::MIN.
         let mut min32 = BitReader::new(&[0x80, 0x00, 0x00, 0x00], ByteOffset::new(0));
         assert_eq!(min32.read_su(32).unwrap(), i32::MIN);
 
-        // 0x7FFF_FFFF -> sign clear -> i32::MAX.
         let mut max32 = BitReader::new(&[0x7F, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));
         assert_eq!(max32.read_su(32).unwrap(), i32::MAX);
 
-        // 0xFFFF_FFFF -> all bits set -> -1.
         let mut neg_one = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));
         assert_eq!(neg_one.read_su(32).unwrap(), -1);
     }
@@ -919,16 +868,13 @@ mod tests {
         let mut eof = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(eof.read_su(4), Err(Error::UnexpectedEof { .. })));
 
-        // width == 0 is invalid for su(n).
         let mut zero_width = BitReader::new(&[0xFF], ByteOffset::new(0));
         assert!(matches!(
             zero_width.read_su(0),
             Err(Error::BitWidthTooLarge { .. })
         ));
-        // The guard rejects before consuming any bits.
         assert_eq!(zero_width.byte_offset(), ByteOffset::new(0));
 
-        // width > 32 is rejected (su reads via the 32-bit fixed-width path).
         let mut wide = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));
         assert!(matches!(
             wide.read_su(33),
@@ -942,18 +888,14 @@ mod tests {
         let data = [0x11, 0x22, 0x33, 0x44];
         let mut reader = BitReader::new(&data, ByteOffset::new(10));
         let mut sub = reader.take_bytes(2).unwrap();
-        // The parent advanced past the two taken bytes.
         assert_eq!(reader.byte_offset(), ByteOffset::new(12));
-        // The sub-reader sees exactly the taken bytes, with the absolute base offset.
         assert_eq!(sub.byte_offset(), ByteOffset::new(10));
         assert_eq!(sub.read_bits_u8(8).unwrap(), 0x11);
         assert_eq!(sub.read_bits_u8(8).unwrap(), 0x22);
-        // Reading past the bound is EOF, not a read into the parent's remaining bytes.
         assert!(matches!(
             sub.read_bits_u8(8),
             Err(Error::UnexpectedEof { .. })
         ));
-        // The parent continues from where it advanced to.
         assert_eq!(reader.read_bits_u8(8).unwrap(), 0x33);
     }
 
@@ -964,7 +906,6 @@ mod tests {
         let mut sub = reader.take_bytes(0).unwrap();
         assert_eq!(sub.remaining_bits(), 0);
         assert!(matches!(sub.read_bit(), Err(Error::UnexpectedEof { .. })));
-        // The parent did not advance.
         assert_eq!(reader.read_bits_u8(8).unwrap(), 0xAB);
     }
 
@@ -976,7 +917,6 @@ mod tests {
             reader.take_bytes(3),
             Err(Error::UnexpectedEof { .. })
         ));
-        // A failed take must not advance the reader.
         assert_eq!(reader.byte_offset(), ByteOffset::new(0));
     }
 

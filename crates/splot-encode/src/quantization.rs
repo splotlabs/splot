@@ -28,11 +28,6 @@ use crate::error::{Error, Result};
 use crate::forward_transform::ForwardTransformBlock;
 use crate::quantization_shared::{dequant_visible_range, zero_deltas};
 
-// Re-export the sibling 16x16 quantizer (`ENC-FORWARD-TRANSFORM-DCT-16X16`), split
-// into `quantization_16x16` only to keep each source file under the project's
-// 1000-line budget, so callers reach both block sizes through this module. The
-// re-export is not yet consumed inside the crate (the 16x16 path has no production
-// caller wired in this brick), so it is allowed-unused like the modules' `dead_code`.
 #[allow(unused_imports)]
 pub(crate) use crate::quantization_16x16::QuantizedTransformBlock16x16;
 
@@ -540,26 +535,16 @@ mod tests {
         ));
     }
 
-    // --- Full 4x4 DCT_DCT per-coefficient quant over real AC (`ENC-FWD-QUANT-PER-COEFF-AC`) ---
-
     fn full_transform(residual: &[i32; DCT_DCT_4X4_COEFF_COUNT]) -> ForwardTransformBlock {
         ForwardTransformBlock::dct_dct_4x4(PlaneId::Y, rect(4, 4), residual).unwrap()
     }
 
-    // An asymmetric, non-uniform residual whose forward DCT carries real non-zero
-    // AC (distinct +/- magnitudes so a sign-order bug cannot be masked).
     const AC_RESIDUAL: [i32; DCT_DCT_4X4_COEFF_COUNT] = [
         40, -12, 7, -3, 18, 5, -22, 9, -30, 14, 2, -8, 11, -6, 25, -17,
     ];
 
     #[test]
     fn full_block_quantizes_real_ac_per_coefficient() {
-        // Every one of the 16 coefficients is quantized by the round-to-nearest
-        // policy with its selected quantizer (index 0 the DC quantizer, the rest the
-        // AC quantizer). For zero-delta luma the DC and AC quantizers coincide, so
-        // the selection is structural here — it differentiates the levels only with
-        // chroma / DC-delta quantizers (a later brick). The point this proves is
-        // that real non-zero AC coefficients now quantize correctly, not just DC.
         let transformed = full_transform(&AC_RESIDUAL);
         let block = QuantizedTransformBlock::dct_dct_4x4(&transformed, params(1)).unwrap();
         let coeffs = transformed.coefficients();
@@ -571,7 +556,6 @@ mod tests {
             expected[k] = expected_level(coeffs[k], acq);
         }
         assert_eq!(block.quantized(), &expected);
-        // The block genuinely exercises AC quant, not a DC-only degenerate case.
         assert!(
             block.quantized()[1..].iter().any(|&level| level != 0),
             "expected non-zero AC levels for a non-uniform residual"
@@ -580,9 +564,6 @@ mod tests {
 
     #[test]
     fn full_block_dequantized_equals_independent_recon_dequant() {
-        // The stored `dequantized` array is exactly what the decoder reconstructs
-        // from the emitted levels: an independent `splot-recon` dequantize_block of
-        // the quantized levels reproduces it bit-for-bit.
         let transformed = full_transform(&AC_RESIDUAL);
         let block = QuantizedTransformBlock::dct_dct_4x4(&transformed, params(2)).unwrap();
         let dequant_params = DequantBlockParams {
@@ -600,8 +581,6 @@ mod tests {
 
     #[test]
     fn full_block_emitted_levels_satisfy_dequant_product_guard() {
-        // Every emitted level dequantizes within the AV2 24-bit product limit, so
-        // the § 5.20.7.28 dequant product mask is provably a no-op for this block.
         let transformed = full_transform(&AC_RESIDUAL);
         let block = QuantizedTransformBlock::dct_dct_4x4(&transformed, params(0)).unwrap();
         let (dcq, acq) = (block.dc_quantizer(), block.ac_quantizer());
@@ -614,9 +593,6 @@ mod tests {
 
     #[test]
     fn full_block_decode_verifies_close_to_residual_at_low_q() {
-        // Decode-verify: the decoder reconstruction of the emitted coefficients
-        // (recon dequant + inverse) stays close to the source residual at qindex 0.
-        // Bounded, not exact — quant rounding plus the DCT non-orthogonality residue.
         let transformed = full_transform(&AC_RESIDUAL);
         let block = QuantizedTransformBlock::dct_dct_4x4(&transformed, params(0)).unwrap();
         let reconstructed = inverse_4x4_dct_dct(block.dequantized());
@@ -627,8 +603,6 @@ mod tests {
 
     #[test]
     fn full_block_dc_only_alias_matches_general_entry_point() {
-        // The closed loop's `dct_dct_4x4_dc_only` alias is identical to the general
-        // entry point on the same input.
         let transformed = transform(9);
         let general = QuantizedTransformBlock::dct_dct_4x4(&transformed, params(3)).unwrap();
         let alias = QuantizedTransformBlock::dct_dct_4x4_dc_only(&transformed, params(3)).unwrap();

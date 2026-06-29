@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Property round-trip tests for the §5.18.6 / §5.18.7.8 / §5.18.2 frame quantization
-// writers: each parser is driven on random bits + gating, then the parsed model is
-// re-emitted and reparsed to assert the universal semantic round-trip.
-
-// `include!`d into `crate::write::frame_quant` so `super::*` resolves to its writers
-// and private helpers (the unit/reject tests live in the sibling `frame_quant_tests.rs`).
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -26,7 +20,6 @@ mod proptests {
             prop_oneof![Just(8u8), Just(10u8)],
             prop_oneof![Just(1u8), Just(3u8)],
             any::<[bool; 5]>(),
-            // Keep base offsets small so the lossless formula exercises both branches.
             (-4i32..=4, -4i32..=4, -4i32..=4),
             any::<[bool; 3]>(),
         )
@@ -154,13 +147,6 @@ mod proptests {
                 delta_q_v_ac: deltas.4,
                 diff_uv_delta: false,
             };
-            // Build levels respecting the parser's chroma copy/zero rules AND its
-            // "levels beyond qmNum are zeroed" invariant, so the model is exactly what
-            // `parse_setup_qm_params` would produce (the qm_index reverse-lookup over the
-            // full coded f-field domain then always finds the stored triple).
-            // Keep the (qm, segmentation) pairing parser-reachable: parse_setup_qm_params
-            // reads pic_qm_num_minus_1 only when using_qmatrix && segmentation_enabled
-            // (otherwise inferred 0), and leaves every level zeroed when !using_qmatrix.
             let pic_qm_num_minus_1 = if using_qmatrix && seg_enabled {
                 pic_qm_num_minus_1
             } else {

@@ -1121,16 +1121,12 @@ mod tests {
 
     #[test]
     fn non_directional_left_neighbour_keeps_ctx_zero_and_decodes() {
-        // The verified mbvg case: a left neighbour storing a non-directional
-        // IntraJointMode (SMOOTH_V, modeDelta 2 < 5) keeps the § 8.3.2 context 0,
-        // so the right block decodes exactly as the top-left does (same CDF row).
         let mut work_unit = make_work_unit(&PAYLOAD);
         let mut symbols = symbols_at_block_frontier(&mut work_unit);
         let mut joint_modes = empty_joint_modes();
         let uses_mrls = empty_uses_mrls();
         joint_modes.record_block(0, 0, SB_N4, SB_N4, SMOOTH_V_JOINT_MODE);
 
-        // The right superblock at (0, 16) reads the non-directional left neighbour.
         let modes = decode_general_intra_block_modes(
             &mut work_unit,
             &mut symbols,
@@ -1151,11 +1147,6 @@ mod tests {
 
     #[test]
     fn directional_neighbour_ctx_reads_with_the_real_context() {
-        // A left neighbour storing a directional IntraJointMode (D135, modeDelta
-        // 36 >= 5) makes the § 8.3.2 `y_mode_index` context 1. The decode no longer
-        // rejects ctx != 0: it reads `y_mode_set` / `y_mode_index` from the real
-        // `TileYModeIndexCdf[1]` row (verified bit-exact by the
-        // `syn-dirneigh-intra-128x64-q80` oracle fixture), consuming symbols.
         let mut work_unit = make_work_unit(&PAYLOAD);
         let mut symbols = symbols_at_block_frontier(&mut work_unit);
         let symbol_count_before = symbols.symbol_count();
@@ -1179,10 +1170,7 @@ mod tests {
         )
         .unwrap();
 
-        // Symbols were consumed (the ctx != 0 read is no longer short-circuited).
         assert!(symbols.symbol_count() > symbol_count_before);
-        // The reconstructed mode is a valid luma intra mode and (for this trace) a
-        // non-directional one — the verified neighbour-reading subset.
         assert!(!modes.y_mode.is_directional());
     }
 
@@ -1334,10 +1322,7 @@ mod tests {
         let mhccp = GeneralIntraChromaToolConfig::new(false, true);
         assert!(mhccp_allowed_for_non_lossless_420(mhccp, 4, 4));
         assert!(mhccp_allowed_for_non_lossless_420(mhccp, 16, 16));
-        // 4x4 chroma residual in 4:2:0 corresponds to 8x8 luma (`n4 == 2`), so
-        // `(w > 4 || h > 4)` is false.
         assert!(!mhccp_allowed_for_non_lossless_420(mhccp, 2, 2));
-        // More than 32x32 chroma residual in 4:2:0 corresponds to luma `n4 > 16`.
         assert!(!mhccp_allowed_for_non_lossless_420(mhccp, 17, 16));
         assert!(!mhccp_allowed_for_non_lossless_420(
             GeneralIntraChromaToolConfig::disabled(),

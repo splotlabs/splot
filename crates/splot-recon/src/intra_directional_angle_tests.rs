@@ -9,88 +9,78 @@ fn rect_size(log2_width: u8, log2_height: u8) -> IntraRectBlockSize {
     IntraRectBlockSize::new(log2_width, log2_height).unwrap()
 }
 
-#[test]
-fn d45_prediction_uses_above_edge_and_edge_end_fallback() {
-    let above = [10, 20, 30, 40, 50, 60, 70, 80];
+fn assert_angle_prediction(
+    angle: IntraDirectionalAngle,
+    edges: IntraDirectionalAngleEdges<'_, u8>,
+    expected: [u8; 16],
+) {
     let mut output = [0u8; 16];
-
     predict_intra_directional_angle_rect_into(
         BitDepth::Eight,
         rect_size(2, 2),
-        IntraDirectionalAngle::D45,
-        IntraDirectionalAngleEdges::above(&above),
+        angle,
+        edges,
         &mut output,
         4,
     )
     .unwrap();
+    assert_eq!(output, expected);
+}
 
-    assert_eq!(
-        output,
+fn assert_idif_prediction(
+    angle: IntraDirectionalAngle,
+    edges: IntraDirectionalAngleIdifEdges<'_, u8>,
+    expected: [u8; 16],
+) {
+    let mut output = [0u8; 16];
+    predict_intra_directional_angle_rect_one_sided_idif_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        angle,
+        edges,
+        &mut output,
+        4,
+    )
+    .unwrap();
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn d45_prediction_uses_above_edge_and_edge_end_fallback() {
+    let above = [10, 20, 30, 40, 50, 60, 70, 80];
+    assert_angle_prediction(
+        IntraDirectionalAngle::D45,
+        IntraDirectionalAngleEdges::above(&above),
         [
-            20, 30, 40, 50, 30, 40, 50, 60, 40, 50, 60, 70, 50, 60, 70, 80
-        ]
+            20, 30, 40, 50, 30, 40, 50, 60, 40, 50, 60, 70, 50, 60, 70, 80,
+        ],
     );
 }
 
 #[test]
 fn d45_one_sided_idif_matches_bilinear_copy_for_shift_zero() {
-    // pAngle 45 has `shift == 0` for every projection, so the §7.13.2.8 IDIF
-    // 4-tap (`Dr_Interp_Filter[0] == {0, 128, 0, 0}`) reduces to the sample copy
-    // `AboveRow[base]`, bit-identical to the bilinear one-sided branch. The IDIF
-    // above edge spans logical `-2 ..= w + h + 1` (length `w + h + 4 == 12` for
-    // 4x4): slice[0] = logical -2 (corner ext), slice[1] = logical -1 (corner),
-    // slice[2 + k] = logical k. The logical samples 0..=7 mirror the bilinear
-    // `d45_prediction_uses_above_edge_and_edge_end_fallback` test (10..80), so the
-    // output must match it exactly.
     let above_idif = [5, 5, 10, 20, 30, 40, 50, 60, 70, 80, 80, 80];
-    let mut output = [0u8; 16];
-
-    predict_intra_directional_angle_rect_one_sided_idif_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
+    assert_idif_prediction(
         IntraDirectionalAngle::D45,
         IntraDirectionalAngleIdifEdges::above(&above_idif),
-        &mut output,
-        4,
-    )
-    .unwrap();
-
-    assert_eq!(
-        output,
         [
-            20, 30, 40, 50, 30, 40, 50, 60, 40, 50, 60, 70, 50, 60, 70, 80
-        ]
+            20, 30, 40, 50, 30, 40, 50, 60, 40, 50, 60, 70, 50, 60, 70, 80,
+        ],
     );
 }
 
 #[test]
 fn d45_one_sided_idif_clamps_base_at_max_base_x() {
-    // The bottom-right sample of a 4x4 D45 block projects `base = (3 + 1) + 3 = 7
-    // == maxBaseX`, still within the IDIF range; `base == maxBaseX + 1` would clamp
-    // to `AboveRow[maxBaseX]`. Use a strictly-increasing edge so the clamp is
-    // observable: `AboveRow[7] == 80`, and the extension slots `AboveRow[8] ==
-    // AboveRow[9] == 80` (so even at the boundary the copy stays 80).
     let above_idif = [0, 0, 1, 2, 3, 4, 5, 6, 7, 80, 80, 80];
-    let mut output = [0u8; 16];
-
-    predict_intra_directional_angle_rect_one_sided_idif_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
+    assert_idif_prediction(
         IntraDirectionalAngle::D45,
         IntraDirectionalAngleIdifEdges::above(&above_idif),
-        &mut output,
-        4,
-    )
-    .unwrap();
-
-    // pred[i][j] = AboveRow[i + 1 + j], logical 1..=7 -> slice 3..=9.
-    assert_eq!(output, [2, 3, 4, 5, 3, 4, 5, 6, 4, 5, 6, 7, 5, 6, 7, 80]);
+        [2, 3, 4, 5, 3, 4, 5, 6, 4, 5, 6, 7, 5, 6, 7, 80],
+    );
 }
 
 #[test]
 fn d45_one_sided_idif_rejects_wrong_length_edge() {
-    // The IDIF above edge must be `w + h + 4` samples (12 for 4x4); a shorter edge
-    // is rejected before any output mutation.
     let above_idif = [0u8; 8];
     let mut output = [0u8; 16];
 
@@ -108,51 +98,18 @@ fn d45_one_sided_idif_rejects_wrong_length_edge() {
 
 #[test]
 fn d203_one_sided_idif_interpolates_real_left_column() {
-    // §7.13.2.8 step 3 (zone-3, pAngle 203): the symmetric mirror of D45.
-    // `dy = Dr_Intra_Derivative[270 - 203] = Dr_Intra_Derivative[67] = 24`,
-    // `idx = (j + 1) * dy`, `base = (idx >> 6) + i`, `shift = (idx >> 1) & 0x1F`.
-    // For 4x4 the shifts (j = 0..3) are {12, 24, 4, 16} — genuinely nonzero, so
-    // the IDIF 4-tap `Dr_Interp_Filter` interpolates over the left column (NOT a
-    // degenerate copy like D45). The left IDIF edge spans logical `-2 ..= w + h + 1`
-    // (length 12 for 4x4): slice[0] = logical -2, slice[1] = logical -1 (corner),
-    // slice[2 + k] = logical k. The reference output is computed by the §7.13.2.8
-    // step-3 formula over the strictly-increasing edge 10..80.
     let left_idif = [5, 5, 10, 20, 30, 40, 50, 60, 70, 80, 80, 80];
-    let mut output = [0u8; 16];
-
-    predict_intra_directional_angle_rect_one_sided_idif_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
+    assert_idif_prediction(
         IntraDirectionalAngle::D203,
         IntraDirectionalAngleIdifEdges::left(&left_idif),
-        &mut output,
-        4,
-    )
-    .unwrap();
-
-    assert_eq!(
-        output,
         [
-            13, 17, 21, 25, 24, 28, 31, 35, 34, 38, 41, 45, 44, 48, 51, 55
-        ]
+            13, 17, 21, 25, 24, 28, 31, 35, 34, 38, 41, 45, 44, 48, 51, 55,
+        ],
     );
 }
 
 #[test]
 fn widened_zone1_one_sided_idif_interpolates_with_nonzero_shift() {
-    // §7.13.2.8 step 1 over a WIDENED zone-1 pAngle (81, admitted by the §9.2
-    // range check, not the legacy D45/D67 whitelist): `dx = Dr_Intra_Derivative[81]
-    // = 8`, `idx = (i + 1) * dx`, `base = idx >> 6`, `shift = (idx >> 1) & 0x1F`.
-    // For 4x4 the per-row shifts are {4, 9, 13, 18} — all genuinely nonzero, so the
-    // IDIF 4-tap `Dr_Interp_Filter` interpolates over the above row (NOT a
-    // degenerate `shift == 0` copy like D45). This guards a silent filter-phase
-    // regression: a wrong `Dr_Interp_Filter` row or a wrong `shift` derivation
-    // changes the output. The above IDIF edge spans logical `-2 ..= w + h + 1`
-    // (length 12 for 4x4): slice[0] = logical -2, slice[1] = logical -1 (corner),
-    // slice[2 + k] = logical k; the trailing two repeat `maxBaseX`. The ASYMMETRIC
-    // strictly-increasing edge makes a symbol/phase swap detectable (per the
-    // decode-verify asymmetry lesson). Reference output hand-derived from the
-    // §7.13.2.8 step-1 formula.
     let above_idif = [10, 10, 25, 33, 48, 60, 77, 90, 110, 130, 130, 130];
     let mut output = [0u8; 16];
 
@@ -176,8 +133,6 @@ fn widened_zone1_one_sided_idif_interpolates_with_nonzero_shift() {
 
 #[test]
 fn d203_one_sided_idif_rejects_above_edge() {
-    // D203 is a LEFT-reading zone-3 angle; an above-edge set does not match its
-    // required edge and is rejected before any output mutation.
     let above_idif = [5, 5, 10, 20, 30, 40, 50, 60, 70, 80, 80, 80];
     let mut output = [0u8; 16];
 
@@ -195,8 +150,6 @@ fn d203_one_sided_idif_rejects_above_edge() {
 
 #[test]
 fn d203_one_sided_idif_rejects_wrong_length_edge() {
-    // The IDIF left edge must be `w + h + 4` samples (12 for 4x4); a shorter edge
-    // is rejected before any output mutation.
     let left_idif = [0u8; 8];
     let mut output = [0u8; 16];
 
@@ -214,10 +167,6 @@ fn d203_one_sided_idif_rejects_wrong_length_edge() {
 
 #[test]
 fn d203_one_sided_idif_matches_bilinear_for_flat_left_column() {
-    // Over a FLAT left column the §7.13.2.8 step-3 IDIF (luma) and the bilinear
-    // one-sided branch (chroma) both reduce to the flat value (the filter taps sum
-    // to 128, `Round2(128 * v, 7) == v`). This mirrors the flat-chroma D203-follow
-    // path in the committed fixture.
     let flat_idif = [120u8; 12];
     let flat_bilinear = [120u8; 8];
     let mut idif_output = [0u8; 16];
@@ -249,46 +198,24 @@ fn d203_one_sided_idif_matches_bilinear_for_flat_left_column() {
 #[test]
 fn d67_prediction_matches_non_idif_bilinear_formula() {
     let above = [0, 32, 64, 96, 128, 160, 192, 224];
-    let mut output = [0u8; 16];
-
-    predict_intra_directional_angle_rect_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
+    assert_angle_prediction(
         IntraDirectionalAngle::D67,
         IntraDirectionalAngleEdges::above(&above),
-        &mut output,
-        4,
-    )
-    .unwrap();
-
-    assert_eq!(
-        output,
         [
-            12, 44, 76, 108, 24, 56, 88, 120, 36, 68, 100, 132, 48, 80, 112, 144
-        ]
+            12, 44, 76, 108, 24, 56, 88, 120, 36, 68, 100, 132, 48, 80, 112, 144,
+        ],
     );
 }
 
 #[test]
 fn d203_prediction_matches_non_idif_bilinear_formula() {
     let left = [0, 32, 64, 96, 128, 160, 192, 224];
-    let mut output = [0u8; 16];
-
-    predict_intra_directional_angle_rect_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
+    assert_angle_prediction(
         IntraDirectionalAngle::D203,
         IntraDirectionalAngleEdges::left(&left),
-        &mut output,
-        4,
-    )
-    .unwrap();
-
-    assert_eq!(
-        output,
         [
-            12, 24, 36, 48, 44, 56, 68, 80, 76, 88, 100, 112, 108, 120, 132, 144
-        ]
+            12, 24, 36, 48, 44, 56, 68, 80, 76, 88, 100, 112, 108, 120, 132, 144,
+        ],
     );
 }
 
@@ -584,16 +511,6 @@ fn middle_directional_angle_prediction_accepts_10_bit_u16_samples() {
 
 #[test]
 fn d135_idif_middle_prediction_is_a_sample_copy_identical_to_bilinear() {
-    // §7.13.2.8 D135 (`dx == dy == 64`) projects every sample with `shift == 0`,
-    // so `Dr_Interp_Filter[0] == {0, 128, 0, 0}` reduces the IDIF 4-tap to
-    // `Clip1(Round2(128 * Edge[base], 7)) == Edge[base]`. The result must be
-    // bit-identical to the `enableIdif == 0` bilinear branch over the same edges.
-    //
-    // IDIF edges span logical `-2..=side+1` (length `side + 4`): index 0 is `-2`,
-    // index 1 the `-1` corner. The extension repeats `Edge[-2] = Edge[-1]` and
-    // `Edge[side] = Edge[side+1] = Edge[side-1]`.
-    // Bilinear edges (logical -1..side, the d135 test): above [100,10,20,30,40],
-    // left [110,50,60,70,80].
     let above_idif = [100, 100, 10, 20, 30, 40, 40, 40];
     let left_idif = [110, 110, 50, 60, 70, 80, 80, 80];
     let mut output = [0u8; 16];
@@ -608,8 +525,6 @@ fn d135_idif_middle_prediction_is_a_sample_copy_identical_to_bilinear() {
     )
     .unwrap();
 
-    // Identical to the bilinear D135 copy
-    // (`d135_middle_prediction_uses_above_and_left_negative_logical_edges`).
     assert_eq!(
         output,
         [
@@ -620,11 +535,6 @@ fn d135_idif_middle_prediction_is_a_sample_copy_identical_to_bilinear() {
 
 #[test]
 fn d157_idif_middle_prediction_applies_the_4_tap_filter_and_differs_from_bilinear() {
-    // §7.13.2.8 D157 (`dx == Dr_Intra_Derivative[23] == 170`,
-    // `dy == Dr_Intra_Derivative[67] == 24`) projects with nonzero `shift`, so the
-    // IDIF 4-tap genuinely interpolates and the output differs from the bilinear
-    // branch over the same edges. Expected values computed directly from
-    // `s = Σ Dr_Interp_Filter[shift][t] * Edge[base + t - 1]; Clip1(Round2(s, 7))`.
     let above_idif = [100, 100, 10, 30, 50, 70, 70, 70];
     let left_idif = [110, 110, 20, 40, 60, 80, 80, 80];
     let mut idif_output = [0u8; 16];
@@ -646,7 +556,6 @@ fn d157_idif_middle_prediction_applies_the_4_tap_filter_and_differs_from_bilinea
         ]
     );
 
-    // The bilinear branch over the inner (logical -1..side) edges differs.
     let above = [100, 10, 30, 50, 70];
     let left = [110, 20, 40, 60, 80];
     let mut bilinear_output = [0u8; 16];
@@ -664,12 +573,6 @@ fn d157_idif_middle_prediction_applies_the_4_tap_filter_and_differs_from_bilinea
 
 #[test]
 fn idif_middle_prediction_clamps_negative_4_tap_sum_to_zero() {
-    // The §7.13.2.8 IDIF 4-tap has negative taps (e.g. `{-12, 81, 71, -12}`), so a
-    // sharp edge — large values at the negative-tap positions (`base - 1`,
-    // `base + 2`) and zeros at the positive-tap positions — drives the 4-tap sum
-    // NEGATIVE; `Clip1(Round2(s, 7))` must clamp it to 0 (not wrap to a large u8).
-    // This left edge (logical -2..=5 = [255, 255, 0, 0, 255, 255, 0, 0]) produces
-    // four negative sums that must reconstruct as 0.
     let above_idif = [0, 0, 0, 0, 0, 0, 0, 0];
     let left_idif = [255, 255, 0, 0, 255, 255, 0, 0];
     let mut output = [9u8; 16];
@@ -684,8 +587,6 @@ fn idif_middle_prediction_clamps_negative_4_tap_sum_to_zero() {
     )
     .unwrap();
 
-    // Negative 4-tap sums clamp to exactly 0 (not a wrapped large value); the
-    // positive sums interpolate normally. Computed directly from the spec formula.
     assert_eq!(
         output,
         [
@@ -710,9 +611,7 @@ fn idif_middle_prediction_accepts_10_bit_u16_samples_and_clips_to_bit_depth() {
     )
     .unwrap();
 
-    // D135 (`shift == 0`) is a copy; every value stays within the 10-bit range.
     assert!(output.iter().all(|&v| v <= 1023));
-    // Top-left projects to the corner sample `AboveRow[-1] == 900`.
     assert_eq!(output[0], 900);
 }
 
@@ -741,8 +640,6 @@ fn idif_middle_prediction_rejects_unsupported_pangles_without_mutation() {
 
 #[test]
 fn idif_middle_prediction_validates_idif_edge_lengths() {
-    // IDIF edges must be `side + 4` long; a `side + 1` (bilinear-width) edge is
-    // rejected before mutation.
     let above_short = [100u8, 10, 20, 30, 40];
     let left_idif = [110u8; 8];
     let mut output = [9u8; 16];
@@ -981,7 +878,6 @@ fn middle_directional_angle_prediction_validates_output_shape() {
 
 #[test]
 fn intra_edge_filter_strength_zero_is_a_no_op() {
-    // §7.13.2.18: strength 0 returns without touching the edge.
     let mut edge = [10u16, 200, 30, 180, 50, 160, 70, 140];
     let original = edge;
     apply_intra_edge_filter(&mut edge, 8, 0).unwrap();
@@ -990,9 +886,6 @@ fn intra_edge_filter_strength_zero_is_a_no_op() {
 
 #[test]
 fn intra_edge_filter_kernels_match_spec_verbatim() {
-    // §7.13.2.18 over an ASYMMETRIC edge (`edge[0]` is the corner, never written;
-    // `i = 1..sz-1` with `k = Clip3(0, sz-1, i-2+j)` and `(s + 8) >> 4`). Expected
-    // values computed directly from the three Intra_Edge_Kernel rows.
     let base = [10u16, 200, 30, 180, 50, 160, 70, 140];
 
     let mut s1 = base;
@@ -1016,8 +909,6 @@ fn intra_edge_filter_rejects_size_beyond_edge() {
 
 #[test]
 fn filter_intra_edge_corner_matches_spec_verbatim() {
-    // §7.13.2.14: s = LeftCol[0]*5 + AboveRow[-1]*6 + AboveRow[0]*5, Round2(s, 4).
-    // ASYMMETRIC inputs so a swapped tap would change the result.
     assert_eq!(filter_intra_edge_corner(40, 200, 80), 113);
     assert_eq!(filter_intra_edge_corner(7, 255, 3), 99);
 }

@@ -17,10 +17,7 @@ use crate::write::{WriteError, WriteResult};
 
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 1 << 20;
 const DEFAULT_MAX_OPERATIONS: usize = 1 << 20;
-// AV2 §8.2.2 initializes `symbol_value` from 15 inverted input bits.
 const SYMBOL_VALUE_BITS: u32 = 15;
-// AV2 §8.2.4 accepts a trailing one bit followed by zero padding; in the
-// non-inverted `symbol_value` bit stream that terminal 15-bit window is 0x3fff.
 const EXIT_Y_WINDOW: u32 = (1 << (SYMBOL_VALUE_BITS - 1)) - 1;
 const INITIAL_CODE_BITS: u64 = SYMBOL_VALUE_BITS as u64;
 
@@ -286,8 +283,6 @@ impl SymbolEncoder {
         let low = if value { 0 } else { half };
         self.steps.push(RangeStep { low, bits: 1 });
         self.step_bits = self.step_bits.saturating_add(1);
-        // Both AV2 §8.2.3 boolean branches have width `range >> 1`, then
-        // renormalize by one bit, so the normalized range is unchanged.
     }
 
     fn symbol_step(&self, cdf: &[i32], n: usize, target: usize) -> WriteResult<SymbolStep> {
@@ -370,9 +365,6 @@ impl SymbolEncoder {
             }
         })?;
         // TODO(spec: ENC-BITSTREAM-WRITER): Replace this correctness-first
-        // O(range * operations) final-value search with direct carry-propagating
-        // arithmetic finalization before using SymbolEncoder for large coded
-        // tile payloads.
         for candidate in 0..self.range {
             suffixes.clear();
             let initial = self.backward_candidate(candidate, &mut suffixes);
@@ -399,8 +391,6 @@ impl SymbolEncoder {
             return Ok(bytes);
         }
 
-        // The full normalized range is searched and covers at least one 15-bit
-        // exit window, so this is a defensive typed error for arithmetic bugs.
         Err(WriteError::SymbolFinalizationFailed)
     }
 

@@ -145,11 +145,6 @@ pub fn write_layer_config_record(
     }
 
     let mut scratch = BitWriter::new();
-    // § 5.8: the parser selects the Global vs Local branch SOLELY from obu_xlayer_id, so the
-    // model variant must agree with the header the dispatch threads in — a (header, record) pair
-    // whose scope disagrees is parser-unproducible and would reparse as the other variant (like
-    // the sibling §5.10 OPS writer, which the dispatch passes obu_xlayer_id and which rejects an
-    // ops.xlayer_id mismatch).
     match record {
         LayerConfigurationRecord::Global(info) => {
             if !obu_xlayer_id.is_global() {
@@ -169,7 +164,6 @@ pub fn write_layer_config_record(
 
 /// Writes `lcr_global_info()` (AV2 v1.0.0 § 5.8.1).
 fn write_lcr_global_info(scratch: &mut BitWriter, info: &LcrGlobalInfo) -> WriteResult<()> {
-    // The `f(31)` map domain rejects bit 31; derive_xlayer_ids matches the parser's loop.
     let xlayer_ids = derive_xlayer_ids(info.xlayer_map);
 
     scratch.write_bits_u8(info.global_config_record_id, F3)?;
@@ -183,8 +177,6 @@ fn write_lcr_global_info(scratch: &mut BitWriter, info: &LcrGlobalInfo) -> Write
     scratch.write_flag(info.doh_constraint_flag)?;
     scratch.write_flag(info.enforce_tile_alignment_flag)?;
 
-    // § 5.8.1: lcr_global_atlas_id f(3) when present, else lcr_global_reserved_zero_3bits
-    // f(3) — the parser forces the reserved field to 0 in the atlas-present branch.
     write_atlas_or_reserved_3bits(
         scratch,
         info.global_atlas_id_present,
@@ -193,14 +185,12 @@ fn write_lcr_global_info(scratch: &mut BitWriter, info: &LcrGlobalInfo) -> Write
     )?;
     scratch.write_bits_u8(info.reserved_zero_5bits, F5)?;
 
-    // § 5.8.1: lcr_aggregate_info() iff lcr_aggregate_info_present_flag.
     match (info.aggregate_info_present, &info.aggregate_info) {
         (true, Some(agg)) => write_lcr_aggregate_info(scratch, agg)?,
         (false, None) => {}
         _ => return Err(non_canonical("aggregate_info_gate")),
     }
 
-    // § 5.8.1: one lcr_seq_profile_tier_level_info(xId) per set bit of the map, iff present.
     if info.seq_ptl_info_present {
         if info.seq_ptl_infos.len() != xlayer_ids.len() {
             return Err(non_canonical("seq_ptl_info_count"));
@@ -215,7 +205,6 @@ fn write_lcr_global_info(scratch: &mut BitWriter, info: &LcrGlobalInfo) -> Write
         return Err(non_canonical("seq_ptl_info_count"));
     }
 
-    // § 5.8.1: lcr_data_size[i] leb128() + lcr_global_payload(xId, sz) per set bit, iff present.
     if info.global_payload_present {
         if info.payloads.len() != xlayer_ids.len() {
             return Err(non_canonical("payload_count"));
@@ -258,9 +247,6 @@ fn write_lcr_local_info(
     scratch.write_flag(info.profile_tier_level_info_present)?;
     scratch.write_flag(info.local_atlas_id_present)?;
 
-    // § 5.8.2: lcr_seq_profile_tier_level_info(xId) iff lcr_profile_tier_level_info_present_flag.
-    // The parser passes this record's xId in, so a PTL targeting a different xlayer is
-    // parser-unproducible (its xlayer_id is parse-context, dropped on write, so it must match).
     match (info.profile_tier_level_info_present, &info.seq_ptl_info) {
         (true, Some(ptl)) => {
             if ptl.xlayer_id != info.xlayer_id {
@@ -272,7 +258,6 @@ fn write_lcr_local_info(
         _ => return Err(non_canonical("local_ptl_gate")),
     }
 
-    // § 5.8.2: lcr_local_atlas_id f(3) when present, else lcr_local_reserved_zero_3bits f(3).
     write_atlas_or_reserved_3bits(
         scratch,
         info.local_atlas_id_present,
@@ -302,8 +287,6 @@ fn write_atlas_or_reserved_3bits(
     if present {
         let atlas_id = atlas_id.ok_or_else(|| non_canonical("global_atlas_id_gate"))?;
         if reserved_zero_3bits != 0 {
-            // The parser reads no reserved field in the atlas branch, so a non-zero value
-            // here is parser-unproducible (it would not round-trip).
             return Err(non_canonical("atlas_reserved_3bits"));
         }
         scratch.write_bits_u8(atlas_id, F3)
@@ -361,7 +344,6 @@ fn write_lcr_global_payload(
 
     let content_start = scratch.bit_len();
 
-    // § 5.8.5: lcr_num_dependent_xlayer_map f(n) iff lcr_dependent_xlayers_flag && n > 0.
     let map_present = dependent_xlayers_flag && payload.xlayer_id > 0;
     match (map_present, payload.num_dependent_xlayer_map) {
         (true, Some(map)) => scratch.write_bits(map, u32::from(payload.xlayer_id))?,
@@ -376,8 +358,6 @@ fn write_lcr_global_payload(
     };
     write_lcr_xlayer_info(scratch, &payload.xlayer_info, &ctx)?;
 
-    // § 5.8.5: the payload spans sz * 8 bits; the remainder is reserved filler. data_size is
-    // u32 so total_bits fits u64; checked_sub avoids underflow on an over-large content.
     let content_bits = scratch.bit_len() - content_start;
     let total_bits = u64::from(payload.data_size) * 8;
     let expected_remaining = total_bits
@@ -413,17 +393,14 @@ fn write_lcr_xlayer_info(
         write_lcr_xlayer_color_info(scratch, color)?;
     }
 
-    // § 5.8.6: byte_alignment() before the embedded-layer / atlas block.
     scratch.align_to_byte();
 
     if let Some(embedded) = &info.embedded_layer_info {
         if info.xlayer_atlas.is_some() {
-            // The parser takes the embedded branch xor the atlas else-branch, never both.
             return Err(non_canonical("embedded_atlas_exclusive"));
         }
         write_lcr_embedded_layer_info(scratch, embedded, ctx.atlas_segment_present())
     } else if ctx.is_global && ctx.global_atlas_id_present {
-        // § 5.8.6 else-branch: the f(8) atlas triple for a global record with an atlas id.
         let atlas = info
             .xlayer_atlas
             .as_ref()
@@ -432,7 +409,6 @@ fn write_lcr_xlayer_info(
         scratch.write_bits_u8(atlas.priority_order, F8)?;
         scratch.write_bits_u8(atlas.rendering_method, F8)
     } else {
-        // Neither branch is taken; an else-branch atlas reference is parser-unproducible.
         if info.xlayer_atlas.is_some() {
             return Err(non_canonical("embedded_atlas_exclusive"));
         }
@@ -489,8 +465,6 @@ fn write_lcr_embedded_layer_info(
 ) -> WriteResult<()> {
     scratch.write_bits_u8(embedded.mlayer_map, F8)?;
 
-    // The set bits of lcr_mlayer_map are the layer indices, ascending; the stored layers
-    // must match them exactly (count and per-element mlayer_index).
     let set_bits: Vec<u8> = (0u8..8)
         .filter(|&j| embedded.mlayer_map & (1u8 << j) != 0)
         .collect();
@@ -505,7 +479,6 @@ fn write_lcr_embedded_layer_info(
 
         scratch.write_bits_u8(layer.tlayer_map, MAX_NUM_TLAYERS)?;
 
-        // § 5.8.8: the f(8) atlas triple iff atlasSegmentPresent.
         match (
             atlas_segment_present,
             layer.atlas_segment_id,
@@ -522,7 +495,6 @@ fn write_lcr_embedded_layer_info(
         }
 
         scratch.write_bits_u8(layer.layer_type, F8)?;
-        // § 5.8.8: lcr_auxiliary_type iff lcr_layer_type == AUX_LAYER.
         match (layer.layer_type == AUX_LAYER, layer.auxiliary_type) {
             (true, Some(aux)) => scratch.write_bits_u8(aux, F8)?,
             (false, None) => {}
@@ -530,14 +502,12 @@ fn write_lcr_embedded_layer_info(
         }
 
         scratch.write_bits_u8(layer.view_type, F8)?;
-        // § 5.8.8: lcr_view_id iff lcr_view_type == VIEW_EXPLICIT.
         match (layer.view_type == VIEW_EXPLICIT, layer.view_id) {
             (true, Some(view)) => scratch.write_bits_u8(view, F8)?,
             (false, None) => {}
             _ => return Err(non_canonical("view_id_gate")),
         }
 
-        // § 5.8.8: lcr_dependent_layer_map f(j) iff j > 0.
         match (j > 0, layer.dependent_layer_map) {
             (true, Some(map)) => scratch.write_bits(map, u32::from(j))?,
             (false, None) => {}
@@ -545,7 +515,6 @@ fn write_lcr_embedded_layer_info(
         }
 
         scratch.write_flag(layer.same_sh_max_resolution_flag)?;
-        // § 5.8.8: lcr_max_expected_width / _height uvlc() iff !lcr_same_sh_max_resolution_flag.
         match (
             layer.same_sh_max_resolution_flag,
             layer.max_expected_width,
@@ -559,7 +528,6 @@ fn write_lcr_embedded_layer_info(
             _ => return Err(non_canonical("max_expected_gate")),
         }
 
-        // § 5.8.8: byte_alignment() at the end of each set-bit iteration.
         scratch.align_to_byte();
     }
 
@@ -583,7 +551,6 @@ fn write_zero_bits(scratch: &mut BitWriter, mut n: u64) -> WriteResult<()> {
         n -= 32;
     }
     if n > 0 {
-        // n < 32, so the cast is exact and the f(n) write is in range.
         scratch.write_bits(0, n as u32)?;
     }
     Ok(())
@@ -595,8 +562,5 @@ fn non_canonical(what: &'static str) -> WriteError {
     WriteError::NonCanonicalLayerConfigRecord { what }
 }
 
-// The round-trip / reject tests live in a sibling file (kept under the advisory source-line
-// limit); `include!` pastes them into this module so their `super::*` resolves to the writer
-// above.
 #[cfg(test)]
 include!("layer_config_record_tests.rs");

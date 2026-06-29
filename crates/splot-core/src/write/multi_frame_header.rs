@@ -80,23 +80,14 @@ pub fn write_multi_frame_header(writer: &mut BitWriter, mfh: &MultiFrameHeader) 
 
     let mut scratch = BitWriter::new();
 
-    // § 5.7: mfh_seq_header_id uvlc(), mfh_id_minus_1 uvlc(). The parser applies no range
-    // check beyond the descriptor (read_uvlc's domain), so an out-of-conformance-range id
-    // is tolerated and reproduced verbatim; write_uvlc caps only at u32::MAX (which the
-    // reader could never produce).
     scratch.write_uvlc(mfh.mfh_seq_header_id)?;
     scratch.write_uvlc(mfh.mfh_id_minus_1)?;
 
-    // § 5.7: mfh_frame_size_present_flag f(1). The present flag is not stored separately;
-    // it IS the Option's presence, so derive it here.
     scratch.write_flag(mfh.mfh_frame_size.is_some())?;
     if let Some(frame_size) = &mfh.mfh_frame_size {
         write_frame_size(&mut scratch, frame_size)?;
     }
 
-    // § 5.7: mfh_deblocking_filter_update f(1), then four mfh_apply_deblocking_filter[i]
-    // f(1) iff the update is set. When NOT set the parser leaves the array all-false, so a
-    // model whose array is not all-false (without an update) is parser-unproducible.
     scratch.write_flag(mfh.mfh_deblocking_filter_update)?;
     if mfh.mfh_deblocking_filter_update {
         for &apply in &mfh.mfh_apply_deblocking_filter {
@@ -106,9 +97,6 @@ pub fn write_multi_frame_header(writer: &mut BitWriter, mfh: &MultiFrameHeader) 
         return Err(non_canonical("deblocking_apply_forced_false"));
     }
 
-    // § 5.7: mfh_seg_info_present_flag f(1). Unlike the frame-size flag, this IS a stored
-    // bool field, so write it verbatim; the three segment-info Options are read iff it is
-    // set, so reject any disagreement.
     scratch.write_flag(mfh.mfh_seg_info_present_flag)?;
     write_seg_info_section(&mut scratch, mfh)?;
 
@@ -122,17 +110,10 @@ pub fn write_multi_frame_header(writer: &mut BitWriter, mfh: &MultiFrameHeader) 
 /// (`mfh_frame_*_bits_minus_1 + 1`), so they must lie in `1..=16` to be written back as
 /// `f(4) + 1`.
 fn write_frame_size(scratch: &mut BitWriter, frame_size: &MfhFrameSize) -> WriteResult<()> {
-    // width_bits = mfh_frame_width_bits_minus_1 + 1, with the minus_1 an f(4) value
-    // 0..=15, so width_bits is 1..=16. A stored 0 (no minus_1 underflow possible) or > 16
-    // could not have come from `f(4) + 1`; reject before the subtraction (no panic) and
-    // before the f(width_bits) width is used.
     let width_minus_1_bits = checked_bits_minus_1(frame_size.width_bits, "frame_width_bits")?;
     let height_minus_1_bits = checked_bits_minus_1(frame_size.height_bits, "frame_height_bits")?;
     scratch.write_bits_u8(width_minus_1_bits, FRAME_SIZE_BITS_F4)?;
     scratch.write_bits_u8(height_minus_1_bits, FRAME_SIZE_BITS_F4)?;
-    // mfh_frame_width_minus_1 f(width_bits): the f(n) primitive rejects a value that does
-    // not fit in `width_bits` bits, catching a too-large stored value (e.g. a width that
-    // exceeds 2^width_bits).
     scratch.write_bits(frame_size.width_minus_1, u32::from(frame_size.width_bits))?;
     scratch.write_bits(frame_size.height_minus_1, u32::from(frame_size.height_bits))
 }
@@ -144,8 +125,6 @@ fn checked_bits_minus_1(bits: u8, what: &'static str) -> WriteResult<u8> {
     if !(1..=16).contains(&bits) {
         return Err(non_canonical(what));
     }
-    // `bits >= 1`, so `bits - 1` cannot underflow; `bits <= 16`, so `bits - 1 <= 15` fits
-    // an f(4) field.
     Ok(bits - 1)
 }
 
@@ -155,7 +134,6 @@ fn checked_bits_minus_1(bits: u8, what: &'static str) -> WriteResult<u8> {
 /// flag is set, so a flag-vs-`Option` disagreement is rejected.
 fn write_seg_info_section(scratch: &mut BitWriter, mfh: &MultiFrameHeader) -> WriteResult<()> {
     if mfh.mfh_seg_info_present_flag {
-        // All three Options are read together iff the flag is set.
         let ext_seg = mfh
             .mfh_ext_seg_flag
             .ok_or_else(|| non_canonical("seg_info_present_flag"))?;
@@ -168,7 +146,6 @@ fn write_seg_info_section(scratch: &mut BitWriter, mfh: &MultiFrameHeader) -> Wr
             .ok_or_else(|| non_canonical("seg_info_present_flag"))?;
         scratch.write_flag(ext_seg)?;
         scratch.write_flag(allow_change)?;
-        // § 5.7: seg_info(mfh_ext_seg_flag ? 16 : 8).
         let num_segments = if ext_seg {
             EXT_SEG_NUM_SEGMENTS
         } else {
@@ -179,8 +156,6 @@ fn write_seg_info_section(scratch: &mut BitWriter, mfh: &MultiFrameHeader) -> Wr
         || mfh.mfh_allow_seg_info_change.is_some()
         || mfh.segment_info.is_some()
     {
-        // The parser leaves all three None when the flag is clear, so any present Option
-        // here is parser-unproducible.
         return Err(non_canonical("seg_info_present_flag"));
     }
     Ok(())
@@ -192,8 +167,5 @@ fn non_canonical(what: &'static str) -> WriteError {
     WriteError::NonCanonicalMultiFrameHeader { what }
 }
 
-// The round-trip / reject tests live in a sibling file (kept under the advisory
-// source-line limit); `include!` pastes them into this module so their `super::*`
-// resolves to the writer above.
 #[cfg(test)]
 include!("multi_frame_header_tests.rs");

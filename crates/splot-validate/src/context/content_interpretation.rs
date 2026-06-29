@@ -123,8 +123,6 @@ pub(super) fn compare_timing_across_embedded_layers(
             ),
         ));
     }
-    // num_ticks_per_picture_minus_1 is only present when equal_picture_interval is
-    // set; compare it only when both layers carry it (AV2 § 6.4.12).
     if let (Some(existing_ticks), Some(new_ticks)) = (
         existing.num_ticks_per_picture_minus_1,
         new.num_ticks_per_picture_minus_1,
@@ -219,11 +217,6 @@ impl ValidatorContext {
             &[
                 "metadata/scan-type-ci-scan-type-mismatch",
                 "metadata/scan-type-equal-picture-interval-required",
-                // § 6.16.7 / § 7.3.8.11: the n_frames bound is established by a CI's
-                // ci_timing_info_present_flag, which a random access point reinitializes
-                // to 0 (finding 5). A deferred n_frames pairing against a prior-TU CI
-                // pairs that pre-epoch timing with post-epoch pictures, so this reinit
-                // invalidates it exactly as it does the scan-type pairings above.
                 "metadata/timecode-n-frames-exceeds-rate",
             ],
         );
@@ -274,22 +267,11 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         let epoch = self.ci_rap_epoch(clk_xlayer);
-        // Idempotent within a temporal unit: a malformed temporal unit with two CLK/OLK
-        // random access points for the SAME extended layer calls this twice. The second
-        // observe_ci_rap leaves the epoch at this temporal unit and drops nothing new, so
-        // a second re-pair would replay the same post-epoch CI snapshot and duplicate
-        // every repaired diagnostic. Run once per (extended layer, temporal unit).
         let tu_index = self.cvs.tu_index;
         if self.repaired_post_rap_in_tu.get(&clk_xlayer) == Some(&tu_index) {
             return;
         }
         self.repaired_post_rap_in_tu.insert(clk_xlayer, tu_index);
-        // Snapshot the re-sent (post-epoch) CI records for this extended layer to avoid
-        // holding the content_interpretations borrow across the rechecks (which mutate
-        // the deferral state). ContentInterpretation is Copy, so this is cheap. The
-        // two suppression flags select which recheck to replay (finding 1): only a
-        // recheck the dedup guard skipped at CI-time is re-paired here, so a re-send
-        // that changed the content (already rechecked eagerly) is not re-reported.
         let resent: Vec<(
             ExtendedLayerId,
             EmbeddedLayerId,
@@ -318,26 +300,11 @@ impl ValidatorContext {
             resent
         {
             if scan_suppressed {
-                // Re-pair (`repair = true`): a `(observation, this CI)` pair already
-                // paired-and-emitted eagerly against an in-scope same-RAP-TU CI (one
-                // re-sent BEFORE the observation) is skipped to avoid duplicating the
-                // diagnostic (the scan-type analogue of the round-7 timecode finding 2).
-                // The skip is per-CI, so a pair whose eager pairing was deferred against
-                // the stale pre-RAP CI — dropped by observe_ci_rap at the RAP — is
-                // re-paired, even when the SAME observation already emitted eagerly
-                // against a DIFFERENT CI.
                 self.recheck_scan_type_after_ci(
                     ci_xlayer, ci_mlayer, &content, ci_offset, true, report,
                 );
             }
             if timecode_suppressed {
-                // Re-pair (`repair = true`): a `(observation, this CI)` pair already
-                // paired-and-emitted eagerly against an in-scope same-RAP-TU CI (one
-                // re-sent BEFORE the observation) is skipped to avoid duplicating the
-                // diagnostic (round-7 finding 2). The skip is per-CI, so a pair whose
-                // eager pairing was deferred against the stale pre-RAP CI — dropped by
-                // observe_ci_rap at the RAP — is re-paired, even when the SAME observation
-                // already emitted eagerly against a DIFFERENT CI.
                 self.recheck_timecode_n_frames_after_ci(
                     ci_xlayer, ci_mlayer, &content, ci_offset, true, report,
                 );
@@ -365,8 +332,6 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        // Parse failures are reported by the stateless ContentInterpretationSyntax
-        // check; here we only act on a successful parse.
         let Ok(content_interpretation) = parse_content_interpretation(&mut reader) else {
             return;
         };
@@ -375,21 +340,12 @@ impl ValidatorContext {
         let mlayer = obu.header.embedded_layer_id;
         let tu_index = self.cvs.tu_index;
 
-        // AV2 § 7.3.6 (mirror lines 560-562): record this CI's `(xlayer, mlayer)` presence in
-        // the current temporal unit for the first-CELU-of-the-sequence presence judgment,
-        // resolved at the temporal-unit boundary (round-6 F3). A CI belongs to a coded
-        // extended layer unit, which is per non-global extended layer (§ 7.3.6); a global CI
-        // is not part of any CELU, so it is excluded. The first appearance's offset anchors
-        // the diagnostic.
         if !xlayer.is_global() {
             self.ci_observed_in_tu
                 .entry((xlayer, mlayer))
                 .or_insert(obu.offset);
         }
 
-        // Cross-embedded-layer timing consistency: compare this layer's timing
-        // against the first other embedded layer (same extended layer) that already
-        // carries present timing within this CVS scope.
         if let Some(new_timing) = content_interpretation.timing_info
             && let Some((existing_mlayer, existing_timing, existing_tu)) = self
                 .content_interpretations
@@ -412,40 +368,6 @@ impl ValidatorContext {
             }
         }
 
-        // A content interpretation can arrive after the scan-type metadata whose
-        // Table 6.18 restrictions it decides (AV2 § 6.16.10); re-evaluate the stored
-        // observations of this scope and the global bucket — unless an existing record
-        // at the same (xlayer, mlayer) key already carries identical Table 6.18-decisive
-        // content AND is still the post-epoch authority for it. In that case every
-        // stored observation has already been paired against that content (at
-        // metadata-observation time by check_scan_type_consistency, or by the recheck
-        // that ran when the record's decisive content last changed), so re-evaluating
-        // would only duplicate reports for the identical repeats § 6.14 explicitly
-        // allows. A content interpretation for a NEW key, or one whose decisive content
-        // changed (itself flagged by content-interpretation/repeated-ci-not-identical
-        // below), forms genuinely new (observation, CI-content) pairs and is
-        // re-evaluated.
-        //
-        // EPOCH-AWARE dedup (finding 1, unified model). The predicate is
-        // content-identical AND no § 7.3.8.11 random-access-point reinit occurred
-        // *after* the existing record's temporal unit (`existing.tu_index >=
-        // ci_rap_epoch`). Two cases the prior temporal-unit-identity predicate got
-        // wrong:
-        //
-        //   - An ORDINARY identical repeat in a LATER temporal unit with no intervening
-        //     RAP: the existing record is still the post-epoch authority that already
-        //     paired (and reported) the observations, so re-running the recheck would
-        //     re-report them. `existing.tu_index >= ci_rap_epoch` holds (no RAP since),
-        //     so this dedups — the over-correction the temporal-unit-only predicate
-        //     caused is gone.
-        //   - A RAP temporal unit re-sends an identical CI BEFORE its CLK: the pre-RAP
-        //     record is stale (its observations belong to the ending epoch). At CI-time
-        //     the epoch has not advanced yet (the CLK follows), so this predicate ALSO
-        //     dedups here — but the re-pair of the new epoch's observations is then done
-        //     at the CLK, once observe_ci_rap has advanced the epoch and dropped the
-        //     stale deferred pairings (see repair_post_rap_ci_pairings). That keeps the
-        //     RAP-resent re-pair correct without an eager re-pair that the lagging epoch
-        //     cannot soundly authorize.
         let decisive_content_unchanged = self
             .content_interpretations
             .get(&(xlayer, mlayer))
@@ -455,9 +377,6 @@ impl ValidatorContext {
                         == scan_type_decisive_content(&content_interpretation)
             });
         if !decisive_content_unchanged {
-            // Eager CI-after-metadata re-pair (`repair = false`): the eager-emission skip
-            // (the scan-type analogue of the round-7 timecode finding 2) applies only to
-            // the RAP re-pair.
             self.recheck_scan_type_after_ci(
                 xlayer,
                 mlayer,
@@ -467,32 +386,8 @@ impl ValidatorContext {
                 report,
             );
         }
-        // Finding 1 (CLK re-pair filter): record whether the scan-type recheck was
-        // SUPPRESSED here. Only a suppressed re-send (a pre-RAP-identical copy whose
-        // recheck the lagging epoch skipped) is re-paired at the CLK/OLK by
-        // repair_post_rap_ci_pairings; a re-send that CHANGED the decisive content
-        // rechecked eagerly just above, so re-pairing it would duplicate the diagnostic.
         let scan_type_recheck_suppressed = decisive_content_unchanged;
 
-        // AV2 § 6.16.7: a content interpretation establishing ci_timing_info_present_flag
-        // / timing may arrive after the timecode metadata whose n_frames bound it
-        // decides; re-evaluate the stored timecode observations — but only when the
-        // n_frames-decisive content (the timing_info) differs from the record this CI
-        // replaces OR the existing record is no longer the post-epoch authority,
-        // mirroring the scan-type dedup so a repeated identical CI (the only legal
-        // repeat, § 6.14) never re-reports.
-        //
-        // EPOCH-AWARE dedup (finding 1, unified model — identical to the scan-type guard
-        // above). `existing.tu_index >= ci_rap_epoch` means no § 7.3.8.11 random access
-        // point reinitialized the parameters after the existing record's temporal unit,
-        // so the existing record is still the authority that already paired (and
-        // reported) every observation against this timing: re-running the recheck would
-        // duplicate those reports for an ordinary identical repeat in a later temporal
-        // unit (the over-correction the temporal-unit-only predicate caused). When a RAP
-        // re-sends an identical CI BEFORE its CLK the epoch has not advanced yet, so this
-        // dedups at CI-time too; the new epoch's observations are re-paired at the CLK
-        // (see repair_post_rap_ci_pairings) after observe_ci_rap advances the epoch and
-        // drops the stale deferred pairings.
         let timing_unchanged = self
             .content_interpretations
             .get(&(xlayer, mlayer))
@@ -501,8 +396,6 @@ impl ValidatorContext {
                     && existing.content.timing_info == content_interpretation.timing_info
             });
         if !timing_unchanged {
-            // Eager CI-after-timecode re-pair (`repair = false`): the round-7 finding 2
-            // eager-emission skip applies only to the RAP re-pair below.
             self.recheck_timecode_n_frames_after_ci(
                 xlayer,
                 mlayer,
@@ -512,11 +405,6 @@ impl ValidatorContext {
                 report,
             );
         }
-        // Finding 1 (CLK re-pair filter, the n_frames analogue of
-        // `scan_type_recheck_suppressed`): a re-send whose timing CHANGED rechecked
-        // eagerly just above, so repair_post_rap_ci_pairings must NOT re-pair it (that
-        // would duplicate the diagnostic); only a suppressed identical re-send is
-        // re-paired at the CLK/OLK.
         let timecode_recheck_suppressed = timing_unchanged;
 
         match self.content_interpretations.entry((xlayer, mlayer)) {
@@ -531,12 +419,6 @@ impl ValidatorContext {
             }
             Entry::Occupied(mut slot) => {
                 let existing = slot.get();
-                // AV2 § 6.14: a repeated CI OBU for the same embedded layer within a
-                // CVS must carry the same *information* (a weaker requirement than the
-                // sequence header's bit-identity in § 7.3.6). Each compared field
-                // resolves to a canonical value (incl. unspecified defaults for absent
-                // color/aspect), so any observation is a complete baseline; the
-                // decoder-ignored ci_reserved_2bit is excluded.
                 if content_interpretation_information_differs(
                     &existing.content,
                     &content_interpretation,
@@ -557,13 +439,6 @@ impl ValidatorContext {
                     self.cvs
                         .defer_or_emit(xlayer, existing.tu_index, diagnostic, report);
                 }
-                // Refresh the record to this latest appearance: § 7.3.6 starts a new
-                // coded video sequence *at the temporal unit*, so a copy re-sent in a
-                // CLK temporal unit must survive the CLK pruning as the new coded
-                // video sequence's baseline (a differing repeat also becomes the new
-                // baseline after being routed above). The suppression flags carry
-                // whether THIS appearance's rechecks were skipped by the dedup guard
-                // (finding 1), so the CLK/OLK re-pair touches only an identical re-send.
                 slot.insert(ContentInterpretationRecord {
                     content: content_interpretation,
                     offset: obu.offset,
@@ -576,7 +451,7 @@ impl ValidatorContext {
     }
 
     /// Resolves the § 7.3.6 first-CELU-of-the-sequence CI PRESENCE judgment (mirror lines
-    /// 560-562, round-6 F3) for the just-completed temporal unit `completed_tu_index`. Called
+    /// 560-562) for the just-completed temporal unit `completed_tu_index`. Called
     /// at each global-temporal-delimiter boundary and at the end of the bitstream, after the
     /// CLK boundary events of the temporal unit have been applied (so the CVS the temporal
     /// unit belongs to is final — the whole temporal unit containing a CLK belongs to the new
@@ -603,30 +478,19 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         let observed = std::mem::take(&mut self.ci_observed_in_tu);
-        // External HLS (any Provided mode): an external CI the set cannot enumerate may be the
-        // first CELU's CI, so the presence judgment is not decidable — drop wholesale. The
-        // per-TU buffer is still drained above so it does not leak into the next temporal unit.
         if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
         for ((xlayer, mlayer), offset) in observed {
             let state = self.ci_first_celu.entry(xlayer).or_default();
             let Some(first_celu_tu) = state.first_celu_tu else {
-                // No CLK established the CVS start for this layer (mid-CVS join): the first
-                // coded extended layer unit of the sequence was not observed, so the presence
-                // judgment is undecidable — drop (documented Unknown-first-CELU drop).
                 continue;
             };
             if completed_tu_index == first_celu_tu {
-                // This temporal unit is the CVS's first temporal unit, so this CI is in the
-                // first coded extended layer unit of the sequence — record the embedded layer.
                 state.first_celu_ci_mlayers.insert(mlayer);
             } else if !state.first_celu_ci_mlayers.contains(&mlayer)
                 && state.reported.insert(mlayer)
             {
-                // A later coded extended layer unit carries a CI for an embedded layer the
-                // sequence's first CELU lacked (§ 7.3.6 lines 560-562). Dedup per
-                // (xlayer, mlayer, CVS epoch) via `reported`.
                 report.push(
                     Diagnostic::error(
                         "celu/content-interpretation-not-in-first-celu",

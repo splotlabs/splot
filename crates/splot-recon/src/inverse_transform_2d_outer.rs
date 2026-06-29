@@ -142,16 +142,10 @@ impl InverseTransform2dOuter {
         bit_depth: BitDepth,
         dpcm: Option<DpcmDirection>,
     ) -> Result<Self> {
-        // `transform_shift` validates the (log2_width, log2_height) shape against
-        // the 25 TX_SIZES_ALL shapes, so a bad shape fails here before any
-        // adjusted-size arithmetic runs.
         let (row_shift, col_shift) = match transform_shift(log2_width, log2_height) {
             Ok(shifts) => shifts,
             Err(error) => return Err(error),
         };
-        // § 7.15.4.1 `w` / `h`: each side's log2 is capped at 5 (`Adjusted_Tx_Size`)
-        // before `1 << adjLog2`. The cap keeps the shift in `0..=5`, so the
-        // adjusted size is at most 32 and never overflows `usize`.
         let adj_w = 1usize << cap_adjusted_log2(log2_width);
         let adj_h = 1usize << cap_adjusted_log2(log2_height);
         let row_type =
@@ -189,10 +183,6 @@ const fn cap_adjusted_log2(log2_dim: u32) -> u32 {
     }
 }
 
-// `resolve` is a `const fn`: a fixed transform shape resolves at compile time.
-// This pins TX_4X4 DCT_DCT (PlaneTxType 0) to the § 7.15.4 (rowShift, colShift) =
-// (7, 10), both passes to a kernel transform, and a non-IDTX flag, exercising
-// const evaluation of the helper as a compile-time spec contract.
 const _RESOLVE_CONST_EVAL_CHECK: () = assert!(matches!(
     InverseTransform2dOuter::resolve(0, 2, 2, false, false, BitDepth::Eight, None),
     Ok(InverseTransform2dOuter {
@@ -247,7 +237,6 @@ pub fn inverse_transform_2d_outer(
         });
     }
 
-    // Adjusted operating size (capped at 32) and original size.
     let adj_w = 1usize << log2_w.min(5);
     let adj_h = 1usize << log2_h.min(5);
     let orig_w = 1usize << log2_w;
@@ -263,13 +252,10 @@ pub fn inverse_transform_2d_outer(
         });
     }
 
-    // Adjusted-size residual scratch; sample duplication expands it into the
-    // caller's original-size `residual`.
     let mut scratch = [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM];
     let adj = &mut scratch[..adj_pels];
 
     if params.lossless && params.plane_tx_type_is_idtx {
-        // § 7.15.4 lossless IDTX shortcut: Residual = Dequant >> (3 - shift).
         let shift = u32::from(adj_pels > 256) + u32::from(adj_pels > 1024);
         let down = 3 - shift; // shift is 0..=2, so down is 1..=3.
         for (out, &coeff) in adj.iter_mut().zip(dequant.iter()) {
@@ -293,9 +279,6 @@ pub fn inverse_transform_2d_outer(
         apply_dpcm(adj, adj_w, adj_h, direction);
     }
 
-    // Sample duplication (§ 7.15.4): nearest-neighbour 2x along any dimension
-    // whose original size exceeds the adjusted size. `w_factor`/`h_factor` are
-    // 1 or 2; when both are 1 this is a straight copy.
     let w_factor = orig_w / adj_w;
     let h_factor = orig_h / adj_h;
     for oi in 0..orig_h {
@@ -314,7 +297,6 @@ pub fn inverse_transform_2d_outer(
 fn apply_dpcm(res: &mut [i32], w: usize, h: usize, direction: DpcmDirection) {
     match direction {
         DpcmDirection::Vertical => {
-            // V_PRED: accumulate down each column.
             for i in 1..h {
                 for j in 0..w {
                     res[i * w + j] = res[i * w + j].wrapping_add(res[(i - 1) * w + j]);
@@ -322,7 +304,6 @@ fn apply_dpcm(res: &mut [i32], w: usize, h: usize, direction: DpcmDirection) {
             }
         }
         DpcmDirection::Horizontal => {
-            // Otherwise: accumulate across each row.
             for i in 0..h {
                 for j in 1..w {
                     res[i * w + j] = res[i * w + j].wrapping_add(res[i * w + j - 1]);
@@ -370,8 +351,6 @@ mod tests {
 
     #[test]
     fn non_adjusted_block_matches_core_transform() {
-        // For a non-64 shape with no shortcut/DPCM, the outer process is exactly
-        // the § 7.15.4.1 core (no adjustment, no duplication).
         let mut dequant = [0i32; 16];
         dequant[0] = 128;
         dequant[5] = 20;
@@ -397,8 +376,6 @@ mod tests {
 
     #[test]
     fn lossless_idtx_shortcut_is_dequant_shifted() {
-        // 4x4 lossless IDTX: shift = (16>256)+(16>1024) = 0, so Residual =
-        // Dequant >> 3, bypassing the matrix transform entirely.
         let mut dequant = [0i32; 16];
         dequant[0] = 64; // >> 3 = 8
         dequant[7] = -32; // >> 3 = -4
@@ -420,14 +397,7 @@ mod tests {
 
     #[test]
     fn vertical_dpcm_accumulates_down_columns() {
-        // With the identity transform (so the residual mirrors the input) and a
-        // single-column impulse, V_PRED DPCM turns a unit step into a ramp down
-        // the column. Use identity row+col, zero shifts: residual == dequant,
-        // then cumulative sum.
         let id = InverseTransform2dDim::Identity;
-        // Column 0 holds [a, b, c, d]; after vertical DPCM: [a, a+b, a+b+c, ...].
-        // First run WITHOUT dpcm to learn the post-identity column values, then
-        // assert the dpcm run is their running sum.
         let mut dequant = [0i32; 16];
         dequant[0] = 4; // (0,0)
         dequant[4] = 1; // (1,0)
@@ -452,7 +422,6 @@ mod tests {
         let mut summed = [0i32; 16];
         inverse_transform_2d_outer(&vp, &dequant, &mut summed).unwrap();
 
-        // Each column of `summed` is the running top-to-bottom sum of `plain`.
         for j in 0..4 {
             let mut acc = 0i32;
             for i in 0..4 {
@@ -500,9 +469,6 @@ mod tests {
 
     #[test]
     fn sample_duplication_expands_64_wide_block() {
-        // TX_64X8 (log2 6x3): adjusted is 32x8, original is 64x8, so each adjusted
-        // column is duplicated horizontally (orig[i][2j] == orig[i][2j+1] ==
-        // adj[i][j]). Compare against the adjusted core result.
         const ADJ_W: usize = 32;
         const ADJ_H: usize = 8;
         const ORIG_W: usize = 64;
@@ -511,7 +477,6 @@ mod tests {
         dequant[ADJ_W + 1] = -40;
         dequant[3 * ADJ_W + 7] = 11;
 
-        // Adjusted-core reference (log2 derives adjusted 32x8 internally).
         let inner = InverseTransform2d {
             log2_width: 6,
             log2_height: 3,
@@ -544,8 +509,6 @@ mod tests {
 
     #[test]
     fn sample_duplication_expands_both_dimensions_for_64x64() {
-        // TX_64X64 (log2 6x6): adjusted 32x32, original 64x64; every adjusted
-        // sample maps to a 2x2 original block: orig[2i+di][2j+dj] == adj[i][j].
         const ADJ: usize = 32;
         const ORIG: usize = 64;
         let mut dequant = [0i32; ADJ * ADJ];
@@ -587,8 +550,6 @@ mod tests {
 
     #[test]
     fn sample_duplication_expands_64_tall_block() {
-        // TX_8X64 (log2 3x6): adjusted is 8x32, original is 8x64, so each adjusted
-        // row is duplicated vertically (orig[2i][j] == orig[2i+1][j] == adj[i][j]).
         const ADJ_W: usize = 8;
         const ADJ_H: usize = 32;
         const ORIG_H: usize = 64;
@@ -629,10 +590,6 @@ mod tests {
 
     #[test]
     fn dpcm_applies_to_adjusted_block_before_duplication() {
-        // TX_64X8 (log2 6x3) with vertical DPCM: the cumulative sum runs on the
-        // adjusted 32x8 block, and the duplicated original-size output mirrors
-        // the post-DPCM adjusted samples (orig[i][2j] == orig[i][2j+1] ==
-        // dpcm(adj)[i][j]). Proves the DPCM-then-duplicate order and interaction.
         const ADJ_W: usize = 32;
         const ADJ_H: usize = 8;
         const ORIG_W: usize = 64;
@@ -653,7 +610,6 @@ mod tests {
         };
         let mut adj = [0i32; ADJ_W * ADJ_H];
         inverse_transform_2d(&inner, &dequant, &mut adj).unwrap();
-        // Manual vertical DPCM down each adjusted column.
         for j in 0..ADJ_W {
             for i in 1..ADJ_H {
                 adj[i * ADJ_W + j] += adj[(i - 1) * ADJ_W + j];
@@ -689,9 +645,6 @@ mod tests {
 
     #[test]
     fn dpcm_applies_after_lossless_idtx_shortcut() {
-        // Lossless IDTX shortcut feeds the DPCM cumulative sum: the 4x4 result is
-        // the vertical running sum of (Dequant >> 3), bypassing the matrix
-        // transform. Proves the shortcut-then-DPCM order.
         let mut dequant = [0i32; 16];
         dequant[0] = 64; // >> 3 = 8
         dequant[4] = 16; // >> 3 = 2
@@ -713,7 +666,6 @@ mod tests {
         let mut residual = [0i32; 16];
         inverse_transform_2d_outer(&p, &dequant, &mut residual).unwrap();
 
-        // Expected: shifted, then vertical cumulative sum down each column.
         let mut expected = [0i32; 16];
         for (e, &d) in expected.iter_mut().zip(dequant.iter()) {
             *e = d >> 3;
@@ -724,7 +676,6 @@ mod tests {
             }
         }
         assert_eq!(residual, expected);
-        // Column 0 spot check: [8, 2, 3, -1] -> [8, 10, 13, 12].
         assert_eq!(
             [residual[0], residual[4], residual[8], residual[12]],
             [8, 10, 13, 12]
@@ -733,12 +684,8 @@ mod tests {
 
     #[test]
     fn dpcm_is_total_for_extreme_values() {
-        // Vertical DPCM over i32::MAX-heavy identity output must not panic
-        // (wrapping_add keeps it total even past i32 range).
         let id = InverseTransform2dDim::Identity;
         let mut dequant = [0i32; 16];
-        // Identity at zero shift with a large coefficient; the identity clamp in
-        // the 1D primitive bounds it, but exercise the DPCM totality path.
         dequant.fill(i32::MAX);
         let vp = params(
             2,
@@ -791,7 +738,6 @@ mod tests {
 
     #[test]
     fn rejects_buffer_length_mismatch() {
-        // TX_64X8: dequant must be adjusted 32*8=256, residual original 64*8=512.
         let mut residual = [0i32; 512];
         assert!(matches!(
             inverse_transform_2d_outer(
@@ -808,8 +754,6 @@ mod tests {
         ));
     }
 
-    // The 8 valid distinct (log2_width, log2_height) shapes used by the resolve
-    // tests; each is a real AV2 `TX_SIZES_ALL` shape accepted by `transform_shift`.
     const RESOLVE_SHAPES: [(u32, u32); 8] = [
         (2, 2),
         (3, 3),
@@ -823,11 +767,6 @@ mod tests {
 
     #[test]
     fn resolve_wires_the_shift_and_type_helpers_with_the_right_arguments() {
-        // The substance of `resolve` is *which* arguments it threads into the two
-        // helper rows: the original log2 dims into `transform_shift`, and the
-        // adjusted per-pass sample sizes into `get_transform_1d_type`. Prove that
-        // wiring against the helpers directly for several PlaneTxType / shape /
-        // use_ddt combinations.
         for &(log2_w, log2_h) in &RESOLVE_SHAPES {
             for plane_tx_type in [0usize, 3, 9, 13, 15] {
                 for use_ddt in [false, true] {
@@ -874,11 +813,6 @@ mod tests {
 
     #[test]
     fn resolve_applies_ddt_substitution_per_pass_on_the_adjusted_size() {
-        // TX_8X4 (log2 3x2): adjusted row size 8 (DDT-eligible) but adjusted col
-        // size 4 (the `sz != 4` guard blocks substitution). With an ADST_ADST
-        // PlaneTxType (3) and useDdt, the row pass becomes DDTX while the column
-        // pass stays ADST — proving the substitution keys off the per-pass
-        // *adjusted* size, not a single shared size.
         let resolved =
             InverseTransform2dOuter::resolve(3, 3, 2, true, false, BitDepth::Eight, None).unwrap();
         assert_eq!(
@@ -890,7 +824,6 @@ mod tests {
             InverseTransform2dDim::Kernel(InverseTransform1dType::Adst)
         );
 
-        // Without useDdt the same shape keeps both passes ADST.
         let no_ddt =
             InverseTransform2dOuter::resolve(3, 3, 2, false, false, BitDepth::Eight, None).unwrap();
         assert_eq!(
@@ -905,10 +838,6 @@ mod tests {
 
     #[test]
     fn resolve_produces_params_that_drive_the_outer_transform() {
-        // TX_64X32 (log2 6x5): adjusted 32x32, original 64x32. A resolved
-        // DCT_DCT block must drive `inverse_transform_2d_outer` exactly like a
-        // hand-built params struct, proving the resolved fields are self-consistent
-        // for the apply step (original dims stored, adjusted dims implied).
         let resolved =
             InverseTransform2dOuter::resolve(0, 6, 5, false, false, BitDepth::Eight, None).unwrap();
         let (row_shift, col_shift) = transform_shift(6, 5).unwrap();
@@ -927,7 +856,6 @@ mod tests {
 
     #[test]
     fn resolve_rejects_invalid_shape_and_plane_tx_type_without_partial_state() {
-        // A non-`TX_SIZES_ALL` shape fails on the shift lookup.
         assert!(matches!(
             InverseTransform2dOuter::resolve(0, 7, 7, false, false, BitDepth::Eight, None),
             Err(ReconError::InvalidTransformShiftShape {
@@ -935,7 +863,6 @@ mod tests {
                 log2_height: 7
             })
         ));
-        // An out-of-range PlaneTxType fails on the type lookup (after a valid shape).
         assert!(matches!(
             InverseTransform2dOuter::resolve(16, 2, 2, false, false, BitDepth::Eight, None),
             Err(ReconError::InvalidPlaneTxType { plane_tx_type: 16 })
@@ -944,10 +871,6 @@ mod tests {
 
     #[test]
     fn resolve_is_total_for_every_valid_shape_and_tx_type() {
-        // Pathological sweep: every (log2_width, log2_height) in 2..=6 and every
-        // PlaneTxType in 0..16 with both useDdt values either resolves cleanly or
-        // returns a typed error — never panics. For accepted shapes the stored
-        // dims and idtx flag echo the inputs.
         for log2_w in 0..=8u32 {
             for log2_h in 0..=8u32 {
                 for plane_tx_type in 0..18usize {

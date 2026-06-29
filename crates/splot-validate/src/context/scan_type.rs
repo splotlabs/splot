@@ -91,7 +91,7 @@ pub(super) struct ScanTypeObservation {
     /// The content-interpretation identities `(obu_xlayer_id, obu_mlayer_id)` whose
     /// Table 6.18 restriction this observation already paired-and-emitted *eagerly*
     /// against, in its OWN temporal unit, at observation time (the scan-type analogue of
-    /// the round-7 timecode finding 2). A CI key lands here when, at
+    /// the timecode eager-pairing path). A CI key lands here when, at
     /// [`ValidatorContext::check_scan_type_consistency`], that already-recorded in-scope
     /// CI in this temporal unit decided a Table 6.18 restriction and the diagnostic was
     /// emitted (not deferred) — i.e. an identical CI was re-sent BEFORE the scan-type
@@ -270,8 +270,6 @@ impl ValidatorContext {
         let scope_key = obu.header.extended_layer_id;
         let tu_index = self.cvs.tu_index;
 
-        // Group consistency against the unit's own scope plus the paired
-        // global / concrete scopes.
         for (key, scope) in &self.scan_type.scopes {
             if !(*key == scope_key || key.is_global() || scope_key.is_global()) {
                 continue;
@@ -299,21 +297,6 @@ impl ValidatorContext {
             }
         }
 
-        // Table 6.18 CI cross-check against the in-scope content-interpretation
-        // records already observed (a CI arriving later re-evaluates instead; see
-        // recheck_scan_type_after_ci). Each record applies its own extended
-        // layer's § 7.3.8.11 epoch (for the global bucket too — an epoch only
-        // resets the CI parameters of its own extended layer).
-        //
-        // `eagerly_emitted` collects the CI identities whose same-temporal-unit in-scope
-        // Table 6.18 restriction was decided HERE and emitted (not deferred) — i.e. an
-        // identical CI was re-sent BEFORE this scan-type metadata in the same § 7.3.8.11
-        // RAP temporal unit. The RAP re-pair (repair_post_rap_ci_pairings) skips exactly
-        // those `(observation, CI)` pairs so the diagnostic is not emitted twice (the
-        // scan-type analogue of the round-7 timecode finding 2), while still re-pairing
-        // any OTHER CI for this observation. A pairing DEFERRED against an
-        // earlier-temporal-unit (stale pre-RAP) CI does NOT enter the set: that deferred
-        // diagnostic is dropped at the RAP, so the re-pair must still cover it.
         let required = group.required_ci_scan_type_idc();
         let mut eagerly_emitted = BTreeSet::new();
         for ((ci_xlayer, ci_mlayer), record) in &self.content_interpretations {
@@ -330,9 +313,6 @@ impl ValidatorContext {
                 ci_offset: record.offset,
                 at: obu.offset,
             };
-            // defer_or_emit emits eagerly iff the CI is in this temporal unit; a
-            // same-temporal-unit emission is the case to skip in the RAP re-pair, keyed
-            // by the CI's identity so only this exact pairing is skipped.
             let same_tu = record.tu_index == tu_index;
             let established = record.content.scan_type_idc.get();
             if established != 0 && established != required {
@@ -356,9 +336,6 @@ impl ValidatorContext {
             }
         }
 
-        // Push the observation after the loop so `eagerly_emitted` is final, tagged with
-        // whether its Table 6.18 restriction was already emitted eagerly above (the
-        // scan-type analogue of the round-7 timecode finding 2).
         self.scan_type
             .scopes
             .entry(scope_key)
@@ -391,8 +368,8 @@ impl ValidatorContext {
     /// [`CvsTracker::defer_or_emit`] routes on its temporal unit.
     ///
     /// `repair` flags the call as the § 7.3.8.11 RAP re-pair from
-    /// [`Self::repair_post_rap_ci_pairings`] (the scan-type analogue of the round-7
-    /// timecode finding 2). The eager CI-after-metadata caller passes `false`; the RAP
+    /// [`Self::repair_post_rap_ci_pairings`] (the scan-type analogue of the timecode
+    /// eager-pairing path). The eager CI-after-metadata caller passes `false`; the RAP
     /// re-pair passes `true`, which skips an `(observation, CI)` pair that already
     /// paired-and-emitted eagerly against this in-scope same-temporal-unit CI at
     /// observation time (the [`ScanTypeObservation::eagerly_emitted`] set contains the
@@ -429,11 +406,6 @@ impl ValidatorContext {
                 if observation.tu_index < epoch {
                     continue;
                 }
-                // The RAP re-pair additionally skips a `(observation, CI)` pair already
-                // paired-and-emitted eagerly at observation time (the scan-type analogue
-                // of the round-7 timecode finding 2). The skip is keyed by THIS CI's
-                // identity, so an eager emission against a different CI does not suppress
-                // re-pairing this one (the multi-layer opposite-ordering case).
                 if repair
                     && observation
                         .eagerly_emitted

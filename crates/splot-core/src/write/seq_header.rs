@@ -55,7 +55,6 @@ const fn seq_tier_bit(tier: Tier) -> u8 {
 /// — the same bound the `f(n)` write enforces, checked up front so a rejected header
 /// never leaves a partial encoding in the writer.
 fn check_field_width(value: u64, width_bits: u32) -> WriteResult<()> {
-    // `width_bits` is always small here (<= 32 for these fields); guard the shift.
     let fits = width_bits >= 64 || value < (1u64 << width_bits);
     if fits {
         Ok(())
@@ -95,39 +94,26 @@ pub fn write_sequence_header_general(
     writer: &mut BitWriter,
     general: &SequenceHeaderGeneral,
 ) -> WriteResult<()> {
-    // The §5.4.1 payload starts byte-aligned (right after the byte-granular OBU header);
-    // reject a mid-byte writer up front rather than producing an unreadable prefix.
     if !writer.is_byte_aligned() {
         return Err(WriteError::WriterNotByteAligned);
     }
-    // Validate the whole model before emitting any bit, so a rejected model leaves the
-    // writer untouched (reject-before-write).
     check_general_encodable(general)?;
 
-    // seq_header_id: uvlc. `try_new` bounds it below `MAX_SEQ_NUM == 16`, always encodable.
     writer.write_uvlc(u32::from(general.seq_header_id.get()))?;
-    // seq_profile_idc: f(5).
     writer.write_bits_u8(general.seq_profile_idc.get(), 5)?;
-    // single_picture_header_flag: f(1).
     writer.write_flag(general.single_picture_header_flag)?;
-    // seq_level_idx: f(5).
     writer.write_bits_u8(general.seq_level_idx.get(), 5)?;
-    // seq_tier: f(1), read only when seq_level_idx > 3 && !single_picture_header_flag.
     if seq_tier_is_signaled(general) {
         writer.write_bit(seq_tier_bit(general.seq_tier))?;
     }
-    // chroma_format_idc / bit_depth_idc: uvlc each (the enums hold canonical 0..=3 / 0..=1).
     writer.write_uvlc(u32::from(general.chroma_format_idc.get()))?;
     writer.write_uvlc(u32::from(general.bit_depth_idc.get()))?;
 
-    // The six-field layer block is signaled only for a non-single-picture header; a
-    // single-picture header infers all six (checked in `check_general_encodable`).
     if !general.single_picture_header_flag {
         writer.write_bits_u8(general.seq_lcr_id.get(), 3)?; // seq_lcr_id: f(3)
         writer.write_flag(general.still_picture)?; // still_picture: f(1)
         writer.write_bits_u8(general.max_tlayer_id.get(), 2)?; // max_tlayer_id: f(2)
         writer.write_bits_u8(general.max_mlayer_id.get(), 3)?; // max_mlayer_id: f(3)
-        // seq_max_mlayer_cnt_minus_1: f(CeilLog2(max_mlayer_id + 1)), only when max_mlayer_id > 0.
         if general.max_mlayer_id.get() > 0 {
             let n = ceil_log2(u32::from(general.max_mlayer_id.get()) + 1);
             let minus_1 = u32::from(general.seq_max_mlayer_count.get()) - 1;
@@ -136,10 +122,8 @@ pub fn write_sequence_header_general(
         writer.write_flag(general.monotonic_output_order_flag)?; // monotonic_output_order_flag: f(1)
     }
 
-    // frame_width_bits_minus_1 / frame_height_bits_minus_1: f(4) of (bits - 1).
     writer.write_bits_u8(general.frame_width_bits.get() - 1, 4)?;
     writer.write_bits_u8(general.frame_height_bits.get() - 1, 4)?;
-    // max_frame_width_minus_1: f(frame_width_bits); max_frame_height_minus_1: f(frame_height_bits).
     writer.write_bits(
         general.max_frame_width.minus_1(),
         u32::from(general.frame_width_bits.get()),
@@ -151,25 +135,20 @@ pub fn write_sequence_header_general(
 
     write_cropping_window(writer, general)?;
 
-    // The decoder-model cascade is signaled only for a non-single-picture header.
     if !general.single_picture_header_flag {
-        // seq_initial_display_delay_present_flag: f(1) = the Option's presence.
         let initial_delay_present = general.seq_initial_display_delay_minus_1.is_some();
         writer.write_flag(initial_delay_present)?;
         if let Some(minus_1) = general.seq_initial_display_delay_minus_1 {
             writer.write_bits_u8(minus_1, 4)?; // seq_initial_display_delay_minus_1: f(4)
         }
-        // decoder_model_info_present_flag: f(1).
         writer.write_flag(general.decoder_model_info_present_flag)?;
         if general.decoder_model_info_present_flag {
-            // num_units_in_decoding_tick: f(32) (validated > 0 in the check pass).
             let num_units = general.num_units_in_decoding_tick.ok_or(
                 WriteError::NonCanonicalSequenceValue {
                     what: "num_units_in_decoding_tick",
                 },
             )?;
             writer.write_bits(num_units, 32)?;
-            // seq_decoder_model_info_present_flag: f(1).
             writer.write_flag(general.seq_decoder_model_info_present_flag)?;
             if general.seq_decoder_model_info_present_flag {
                 let model =
@@ -199,12 +178,9 @@ const fn seq_tier_is_signaled(general: &SequenceHeaderGeneral) -> bool {
 /// the `seq_tier` gate, the `minus_1`/present-flag pairings, the cropping-window present
 /// flag, the decoder-model `Option`/flag agreement, and dependency-map canonicality.
 pub(crate) fn check_general_encodable(general: &SequenceHeaderGeneral) -> WriteResult<()> {
-    // f(5) fields.
     check_field_width(u64::from(general.seq_profile_idc.get()), 5)?;
     check_field_width(u64::from(general.seq_level_idx.get()), 5)?;
 
-    // seq_tier inference loss: when the gate is false, the parser infers Main, so a stored
-    // High could never have been signaled.
     if !seq_tier_is_signaled(general) && matches!(general.seq_tier, Tier::High) {
         return Err(WriteError::NonCanonicalSequenceValue { what: "seq_tier" });
     }
@@ -235,13 +211,10 @@ pub(crate) fn check_general_encodable(general: &SequenceHeaderGeneral) -> WriteR
             });
         }
     } else {
-        // Non-single-picture layer-block field widths.
         check_field_width(u64::from(general.seq_lcr_id.get()), 3)?;
         check_field_width(u64::from(general.max_tlayer_id.get()), 2)?;
         check_field_width(u64::from(general.max_mlayer_id.get()), 3)?;
         if general.max_mlayer_id.get() > 0 {
-            // seq_max_mlayer_cnt_minus_1: must satisfy `count - 1 <= max_mlayer_id` (the
-            // parser's `try_from_minus_1` bound) and fit f(CeilLog2(max_mlayer_id + 1)).
             let count = general.seq_max_mlayer_count.get();
             if count == 0 {
                 return Err(WriteError::NonCanonicalSequenceValue {
@@ -257,20 +230,16 @@ pub(crate) fn check_general_encodable(general: &SequenceHeaderGeneral) -> WriteR
             let n = ceil_log2(u32::from(general.max_mlayer_id.get()) + 1);
             check_field_width(u64::from(minus_1), n)?;
         } else if general.seq_max_mlayer_count.get() != 1 {
-            // max_mlayer_id == 0 infers SeqMaxMlayerCnt == 1 (no bits read).
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "seq_max_mlayer_count",
             });
         }
 
-        // seq_initial_display_delay_minus_1 is coded f(4) when present.
         if let Some(delay) = general.seq_initial_display_delay_minus_1 {
             check_field_width(u64::from(delay), 4)?;
         }
 
-        // Decoder-model cascade: each Option's presence must agree with its gating flag.
         if general.decoder_model_info_present_flag {
-            // num_units_in_decoding_tick is present and > 0 (the parser rejects 0).
             match general.num_units_in_decoding_tick {
                 Some(0) | None => {
                     return Err(WriteError::NonCanonicalSequenceValue {
@@ -284,31 +253,23 @@ pub(crate) fn check_general_encodable(general: &SequenceHeaderGeneral) -> WriteR
                     what: "decoder_model_info",
                 });
             }
-            // The §5.4.13 `uvlc` delays must be encodable before any bit is written.
             if let Some(info) = &general.decoder_model_info {
                 check_decoder_model_info_encodable(info)?;
             }
-        } else {
-            // decoder_model_info_present_flag == 0 infers no inner state.
-            if general.num_units_in_decoding_tick.is_some()
-                || general.seq_decoder_model_info_present_flag
-                || general.decoder_model_info.is_some()
-            {
-                return Err(WriteError::NonCanonicalSequenceValue {
-                    what: "decoder_model_info",
-                });
-            }
+        } else if general.num_units_in_decoding_tick.is_some()
+            || general.seq_decoder_model_info_present_flag
+            || general.decoder_model_info.is_some()
+        {
+            return Err(WriteError::NonCanonicalSequenceValue {
+                what: "decoder_model_info",
+            });
         }
     }
 
-    // Frame-dimension widths.
     let frame_width_bits = general.frame_width_bits.get();
     let frame_height_bits = general.frame_height_bits.get();
-    // The model stores `minus_1 + 1`; the coded `frame_*_bits_minus_1` is f(4), so the
-    // stored width is in 1..=16.
     check_field_width(u64::from(frame_width_bits - 1), 4)?;
     check_field_width(u64::from(frame_height_bits - 1), 4)?;
-    // max_frame_*_minus_1 must fit in frame_*_bits (width loss).
     check_field_width(
         u64::from(general.max_frame_width.minus_1()),
         u32::from(frame_width_bits),
@@ -354,7 +315,6 @@ pub fn write_cropping_window(
 /// implies the default window, and each present offset is `<= max_frame_*_minus_1`.
 fn check_cropping_window_encodable(general: &SequenceHeaderGeneral) -> WriteResult<()> {
     if !general.seq_cropping_window_present_flag {
-        // A clear flag infers an all-zero window; any other window is unrepresentable.
         if general.cropping_window != CroppingWindow::default() {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "cropping_window",
@@ -362,7 +322,6 @@ fn check_cropping_window_encodable(general: &SequenceHeaderGeneral) -> WriteResu
         }
         return Ok(());
     }
-    // §6.4.1: each offset <= the corresponding max_frame_*_minus_1.
     let w = &general.cropping_window;
     let max_w = general.max_frame_width.minus_1();
     let max_h = general.max_frame_height.minus_1();
@@ -388,8 +347,6 @@ pub fn write_sequence_decoder_model_info(
     writer: &mut BitWriter,
     info: &SequenceDecoderModelInfo,
 ) -> WriteResult<()> {
-    // Validate both `uvlc` delays before writing either, so a rejected delay leaves the
-    // writer unchanged (neither value already emitted).
     check_decoder_model_info_encodable(info)?;
     writer.write_uvlc(info.decoder_buffer_delay)?;
     writer.write_uvlc(info.encoder_buffer_delay)?;
@@ -446,12 +403,10 @@ pub fn write_dependency_maps(
     let max_mlayer = general.max_mlayer_id.get();
     let max_tlayer = general.max_tlayer_id.get();
 
-    // mlayer_dependency_present_flag: f(1), only when max_mlayer_id > 0.
     if max_mlayer > 0 {
         writer.write_flag(general.mlayer_dependency_present_flag)?;
         if general.mlayer_dependency_present_flag {
             for curr in 1..=max_mlayer {
-                // §5.4.1: refLayer runs from currLayer down to 0 (diagonal first).
                 for reference in (0..=curr).rev() {
                     let bit = general.mlayer_dependency_map.depends_on(
                         EmbeddedLayerId::from_bits(curr),
@@ -463,11 +418,9 @@ pub fn write_dependency_maps(
         }
     }
 
-    // tlayer_dependency_present_flag: f(1), only when max_tlayer_id > 0.
     if max_tlayer > 0 {
         writer.write_flag(general.tlayer_dependency_present_flag)?;
         if general.tlayer_dependency_present_flag {
-            // multi_tlayer_dependency_map_present_flag: f(1), only when max_mlayer_id > 0.
             if max_mlayer > 0 {
                 writer.write_flag(general.multi_tlayer_dependency_map_present_flag)?;
             }
@@ -475,8 +428,6 @@ pub fn write_dependency_maps(
             for m in 0..=max_mlayer {
                 for curr in 1..=max_tlayer {
                     for reference in (0..=curr).rev() {
-                        // §5.4.1: a bit is signaled only for embedded layer 0, or for every
-                        // layer when `multi`; with `!multi`, layers >0 copy layer 0 (no bit).
                         if multi || m == 0 {
                             let bit = general.tlayer_dependency_map.depends_on(
                                 EmbeddedLayerId::from_bits(m),
@@ -509,10 +460,8 @@ fn check_dependency_maps_encodable(general: &SequenceHeaderGeneral) -> WriteResu
     let max_mlayer = general.max_mlayer_id.get();
     let max_tlayer = general.max_tlayer_id.get();
 
-    // --- mlayer map ---
     let m_default = MLayerDependencyMap::default_for(general.max_mlayer_id);
     if max_mlayer == 0 {
-        // No mlayer bits are read; the present flag is inferred 0 and the map is the default.
         if general.mlayer_dependency_present_flag {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "mlayer_dependency_present_flag",
@@ -524,14 +473,12 @@ fn check_dependency_maps_encodable(general: &SequenceHeaderGeneral) -> WriteResu
             });
         }
     } else if !general.mlayer_dependency_present_flag {
-        // Guard 1: a clear present-flag means the map equals the default fill.
         if !mlayer_maps_equal(&general.mlayer_dependency_map, &m_default) {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "mlayer_dependency_map",
             });
         }
     } else {
-        // Guard 2: row 0 is never signaled; it must equal the default row 0.
         for reference in 0..MAX_NUM_MLAYERS {
             let stored = general.mlayer_dependency_map.depends_on(
                 EmbeddedLayerId::from_bits(0),
@@ -547,15 +494,9 @@ fn check_dependency_maps_encodable(general: &SequenceHeaderGeneral) -> WriteResu
                 });
             }
         }
-        // Entries outside the signaled triangle (currLayer > max_mlayer, or refLayer >
-        // currLayer) are never overwritten by the parser; they must equal the default fill,
-        // else reparse would diverge. `mlayer_maps_equal` over the full grid combined with the
-        // signaled-region reconstruction below is unnecessary: the writer emits exactly the
-        // signaled triangle, so only the *unsignaled* entries need to match the default.
         check_mlayer_unsignaled_matches_default(general, &m_default)?;
     }
 
-    // --- tlayer map ---
     let t_default = TLayerDependencyMap::default_for(general.max_tlayer_id, general.max_mlayer_id);
     if max_tlayer == 0 {
         if general.tlayer_dependency_present_flag
@@ -571,7 +512,6 @@ fn check_dependency_maps_encodable(general: &SequenceHeaderGeneral) -> WriteResu
             });
         }
     } else if !general.tlayer_dependency_present_flag {
-        // Guard 1: clear present-flag means the default fill. The multi flag is inferred 0.
         if general.multi_tlayer_dependency_map_present_flag {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "multi_tlayer_dependency_map_present_flag",
@@ -583,14 +523,11 @@ fn check_dependency_maps_encodable(general: &SequenceHeaderGeneral) -> WriteResu
             });
         }
     } else {
-        // The multi flag is only signaled when max_mlayer > 0; otherwise it is inferred 0.
         if max_mlayer == 0 && general.multi_tlayer_dependency_map_present_flag {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "multi_tlayer_dependency_map_present_flag",
             });
         }
-        // Guard 3: with !multi, layers 1..=max_mlayer must already copy layer 0's values
-        // (over the signaled triangle), and unsignaled entries must equal the default fill.
         check_tlayer_canonical_when_present(general, &t_default)?;
     }
 
@@ -654,8 +591,6 @@ fn check_mlayer_unsignaled_matches_default(
     let map = &general.mlayer_dependency_map;
     for curr in 0..MAX_NUM_MLAYERS {
         for reference in 0..MAX_NUM_MLAYERS {
-            // The parser signals (and so can reproduce) only currLayer in 1..=max_mlayer and
-            // refLayer in 0..=currLayer. Everything else stays at the default fill.
             let signaled = curr >= 1 && curr <= max_mlayer && reference <= curr;
             if signaled {
                 continue;
@@ -709,8 +644,6 @@ fn check_tlayer_canonical_when_present(
     for m in 0..MAX_NUM_MLAYERS {
         for curr in 0..MAX_NUM_TLAYERS {
             for reference in 0..MAX_NUM_TLAYERS {
-                // The signaled/replicated region is m in 0..=max_mlayer, curr in 1..=max_tlayer,
-                // ref in 0..=curr. Everything else keeps the default fill.
                 let in_region =
                     m <= max_mlayer && (1..=max_tlayer).contains(&curr) && reference <= curr;
                 if !in_region {
@@ -721,7 +654,6 @@ fn check_tlayer_canonical_when_present(
                     }
                     continue;
                 }
-                // With !multi, layers >0 are a verbatim copy of layer 0's signaled values.
                 if !multi && m > 0 {
                     let layer0 = depends(0, curr, reference);
                     if depends(m, curr, reference) != layer0 {
@@ -730,7 +662,6 @@ fn check_tlayer_canonical_when_present(
                         });
                     }
                 }
-                // Signaled layer-0 entries (and `multi` layers) are free — any bool is encodable.
             }
         }
     }
@@ -805,11 +736,8 @@ mod tests {
         let bytes = write(general);
         let reparsed = parse(&bytes);
         assert_eq!(&reparsed, general, "parse(write(g)) != g");
-        // Byte-stability: re-emitting the reparsed model produces identical bytes.
         assert_eq!(write(&reparsed), bytes, "write not idempotent");
     }
-
-    // ----- Byte-exact tests against the parser's own hand-built fixtures -----
 
     /// A single-picture general header is byte-exact: the fixture ends on a byte
     /// boundary (the parser test `valid_single_picture_prefix` is byte-aligned),
@@ -828,9 +756,6 @@ mod tests {
         bits.f(15, 4); // max_frame_width_minus_1
         bits.f(7, 4); // max_frame_height_minus_1
         bits.bit(0); // seq_cropping_window_present_flag
-        // The general fields end mid-byte (41 bits). Both `Bits::into_bytes` and the
-        // writer's `into_bytes` zero-pad the trailing partial byte identically, so the
-        // produced byte vector is byte-exact against the fixture for the whole region.
         let data = bits.into_bytes();
         let general = parse(&data);
         let written = write(&general);
@@ -979,7 +904,6 @@ mod tests {
         let mut bits = Bits::default();
         push_general_until_deps(&mut bits, 3, 7);
         bits.bit(1); // mlayer_dependency_present_flag
-        // mlayer signaled triangle: curr 1..=7, ref curr..=0 -> sum(2..=8) = 35 bits.
         for curr in 1u32..=7 {
             for reference in (0..=curr).rev() {
                 bits.bit(((curr + reference) % 2) as u8);
@@ -987,7 +911,6 @@ mod tests {
         }
         bits.bit(1); // tlayer_dependency_present_flag
         bits.bit(1); // multi
-        // tlayer: m 0..=7, curr 1..=3, ref curr..=0 -> 8 * (2+3+4) = 72 bits.
         for m in 0u32..=7 {
             for curr in 1u32..=3 {
                 for reference in (0..=curr).rev() {
@@ -1029,8 +952,6 @@ mod tests {
         bits.bit(0); // decoder_model_info_present_flag
     }
 
-    // ----- Rejection tests (one per WriteError reject path) -----
-
     /// An unaligned writer is rejected before any bit (WriterNotByteAligned).
     #[test]
     fn rejects_unaligned_writer() {
@@ -1041,7 +962,6 @@ mod tests {
             write_sequence_header_general(&mut writer, &general),
             Err(WriteError::WriterNotByteAligned)
         ));
-        // The writer kept its single pre-existing bit; the helper wrote nothing.
         assert_eq!(writer.bit_len(), 1);
     }
 
@@ -1102,7 +1022,6 @@ mod tests {
             })
         ));
         assert_eq!(writer.bit_len(), 0);
-        // The dedicated helper rejects identically.
         let mut w2 = BitWriter::new();
         assert!(matches!(
             write_cropping_window(&mut w2, &general),
@@ -1116,8 +1035,6 @@ mod tests {
     /// A cropping offset exceeding `max_frame_*_minus_1` is non-canonical.
     #[test]
     fn rejects_cropping_offset_out_of_range() {
-        // Build a non-single-picture header WITH a present cropping window, then
-        // push an offset past max_frame_width_minus_1.
         let mut bits = Bits::default();
         push_general_until_crop_present(&mut bits);
         bits.uvlc(0); // left
@@ -1129,7 +1046,6 @@ mod tests {
         let data = bits.into_bytes();
         let mut general = parse(&data);
         assert!(general.seq_cropping_window_present_flag);
-        // max_frame_width_minus_1 is 15; 16 is out of range.
         general.cropping_window.left = general.max_frame_width.minus_1() + 1;
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -1151,9 +1067,6 @@ mod tests {
         let data = bits.into_bytes();
         let mut general = parse(&data);
         assert!(!general.mlayer_dependency_present_flag);
-        // Replace the map with a different default fill (built for max_mlayer_id 1): its
-        // `[2][0]` entry is false where the stored max_mlayer_id 2 expects true, so it can
-        // no longer be reproduced from the clear present-flag.
         general.mlayer_dependency_map =
             MLayerDependencyMap::default_for(crate::types::EmbeddedLayerId::from_bits(1));
         let mut writer = BitWriter::new();
@@ -1171,9 +1084,6 @@ mod tests {
     #[test]
     fn rejects_inconsistent_present_flag() {
         let mut general = parse(&single_picture_fixture());
-        // single-picture infers max_mlayer_id 0 and the present-flag 0; setting it true
-        // is unrepresentable. The single-picture layer-block check fires first only if a
-        // layer-block field changed; here we keep the block valid and just flip the flag.
         general.mlayer_dependency_present_flag = true;
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -1209,7 +1119,6 @@ mod tests {
     /// `num_units_in_decoding_tick == Some(0)` is rejected (the parser rejects 0).
     #[test]
     fn rejects_zero_num_units() {
-        // A non-single-picture model (so the decoder-model cascade is reachable).
         let mut bits = Bits::default();
         push_general_until_deps(&mut bits, 0, 0);
         let mut general = parse(&bits.into_bytes());
@@ -1241,8 +1150,6 @@ mod tests {
         ));
         assert_eq!(writer.bit_len(), 0);
     }
-
-    // ----- Fixtures -----
 
     fn single_picture_fixture() -> Vec<u8> {
         let mut bits = Bits::default();
@@ -1290,8 +1197,6 @@ mod tests {
 
     #[test]
     fn rejects_display_delay_field_width() {
-        // seq_initial_display_delay_minus_1 is coded f(4); 16+ overflows and must be
-        // rejected before any bit (not mid-write after the prefix + present flag).
         let mut bits = Bits::default();
         push_general_until_deps(&mut bits, 0, 0);
         bits.bit(0); // deps: max ids 0 -> no bits
@@ -1310,8 +1215,6 @@ mod tests {
 
     #[test]
     fn rejects_decoder_model_delay_uvlc_max() {
-        // A decoder-model `uvlc` delay of u32::MAX is unencodable; reject before any bit
-        // (not mid-write after decoder_buffer_delay is already emitted).
         let mut bits = Bits::default();
         bits.uvlc(1); // seq_header_id
         bits.f(0, 5); // seq_profile_idc
@@ -1352,7 +1255,6 @@ mod tests {
         ));
         assert_eq!(writer.bit_len(), 0);
 
-        // The standalone helper also rejects before emitting either delay.
         let mut w2 = BitWriter::new();
         assert!(matches!(
             write_sequence_decoder_model_info(&mut w2, &model),
@@ -1445,7 +1347,6 @@ mod proptests {
         bits.f(profile, 5);
         bits.bit(u8::from(single_picture));
         bits.f(level, 5);
-        // seq_tier is signaled iff level > 3 && !single_picture.
         if level > 3 && !single_picture {
             bits.bit(tier_bit);
         }
@@ -1461,7 +1362,6 @@ mod proptests {
             bits.f(max_mlayer, 3);
             if max_mlayer > 0 {
                 let n = u32::BITS - (max_mlayer + 1 - 1).leading_zeros();
-                // seq_max_mlayer_cnt_minus_1 in 0..=max_mlayer; pick max_mlayer (valid).
                 bits.f(max_mlayer, n);
             }
             bits.bit(monotonic);
@@ -1493,7 +1393,6 @@ mod proptests {
             }
         }
 
-        // Dependency maps.
         let mut idx = 0usize;
         let mut next = || {
             let b = dep_bits.get(idx).copied().unwrap_or(0) & 1;
@@ -1569,8 +1468,6 @@ mod proptests {
                 lcr, still, max_tlayer, max_mlayer, monotonic, crop_present, delay_present,
                 delay_minus_1, decoder_model, mlayer_present, tlayer_present, multi, &dep_bits,
             );
-            // The fixture is parser-reachable by construction; if a chosen combination
-            // happens to truncate (e.g. dep_bits short), skip non-parsing inputs.
             let Some(general) = parse_ok(&fixture) else { return Ok(()); };
 
             let mut writer = BitWriter::new();
@@ -1578,7 +1475,6 @@ mod proptests {
             let bytes = writer.into_bytes();
             let reparsed = parse_ok(&bytes).expect("written bytes must reparse");
             prop_assert_eq!(&reparsed, &general);
-            // Byte-stable re-emission.
             let mut w2 = BitWriter::new();
             write_sequence_header_general(&mut w2, &reparsed).unwrap();
             prop_assert_eq!(w2.into_bytes(), bytes);

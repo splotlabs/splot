@@ -152,9 +152,6 @@ impl TransformPass {
     }
 }
 
-// Short aliases for the verbatim § 7.15.4 `Transform_1d_Type` table below; the
-// table holds only the four base types (DDTX / FDDT arise solely from the
-// `useDdt` substitution in `get_transform_1d_type`, never from the table).
 const DCT: InverseTransform2dDim = InverseTransform2dDim::Kernel(InverseTransform1dType::Dct);
 const ADST: InverseTransform2dDim = InverseTransform2dDim::Kernel(InverseTransform1dType::Adst);
 const FDST: InverseTransform2dDim = InverseTransform2dDim::Kernel(InverseTransform1dType::Fdst);
@@ -214,8 +211,6 @@ pub const fn get_transform_1d_type(
     }
     let base = TRANSFORM_1D_TYPE[plane_tx_type][pass.dir_index()];
     if use_ddt && size != 4 {
-        // useDdt && (t == ADST || t == FDST) && sz != 4 -> ADST becomes DDTX and
-        // FDST becomes FDDT; every other type (incl. DCT and IDT) is unchanged.
         match base {
             InverseTransform2dDim::Kernel(InverseTransform1dType::Adst) => {
                 return Ok(InverseTransform2dDim::Kernel(InverseTransform1dType::Ddtx));
@@ -261,8 +256,6 @@ pub const fn dpcm_direction(use_dpcm: bool, mode_is_v_pred: bool) -> Option<Dpcm
 mod tests {
     use super::*;
 
-    // `dpcm_direction` is a `const fn`: the spec's four cases resolve at compile
-    // time. None when DPCM is off; Vertical for V_PRED, Horizontal otherwise.
     const _DPCM_NONE: () = assert!(dpcm_direction(false, true).is_none());
     const _DPCM_VERTICAL: () = assert!(matches!(
         dpcm_direction(true, true),
@@ -273,14 +266,10 @@ mod tests {
         Some(DpcmDirection::Horizontal)
     ));
 
-    // The lookup is a `const fn`: a fixed shape resolves at compile time. This
-    // const item both exercises const evaluation and pins TX_4X4 -> (7, 10).
     const _CONST_EVAL_CHECK: () = assert!(matches!(transform_shift(2, 2), Ok((7, 10))));
 
     #[test]
     fn transform_shift_returns_the_parallel_table_entry_for_every_shape() {
-        // Each (log2W, log2H) key maps to the Transform_Shift row at the same
-        // txSz index — the search must find each of the 25 ordinals exactly.
         for (i, &(w, h)) in TX_SIZE_LOG2_DIMS.iter().enumerate() {
             assert_eq!(
                 transform_shift(w, h).unwrap(),
@@ -292,8 +281,6 @@ mod tests {
 
     #[test]
     fn tx_size_log2_dims_keys_are_distinct() {
-        // The (log2W, log2H) lookup key is only valid if it uniquely identifies
-        // each TX_SIZES_ALL ordinal (Tx_Width_Log2/Tx_Height_Log2 prove this).
         for (i, &a) in TX_SIZE_LOG2_DIMS.iter().enumerate() {
             for (j, &b) in TX_SIZE_LOG2_DIMS.iter().enumerate().skip(i + 1) {
                 assert_ne!(a, b, "duplicate key at txSz {i} and {j}");
@@ -303,9 +290,6 @@ mod tests {
 
     #[test]
     fn transform_shift_matches_independently_transcribed_spec_values() {
-        // Spot values transcribed directly from the spec table (NOT from the
-        // module constants): 07-decoding-process.md#s-7-15-4 lines 10610-10636,
-        // paired with Tx_Width_Log2/Tx_Height_Log2. (rowShift = [0], colShift = [1].)
         assert_eq!(transform_shift(2, 2).unwrap(), (7, 10)); // TX_4X4
         assert_eq!(transform_shift(3, 3).unwrap(), (7, 11)); // TX_8X8
         assert_eq!(transform_shift(4, 4).unwrap(), (6, 13)); // TX_16X16
@@ -317,8 +301,6 @@ mod tests {
 
     #[test]
     fn transform_shift_is_symmetric_under_transpose() {
-        // Every TX_WxH and its TX_HxW transpose share the same shifts (the spec
-        // table is transpose-symmetric); verify on the rectangular shapes.
         for &(w, h) in &TX_SIZE_LOG2_DIMS {
             if w != h {
                 assert_eq!(
@@ -332,8 +314,6 @@ mod tests {
 
     #[test]
     fn transform_shift_rejects_non_av2_shapes() {
-        // A (log2W, log2H) that is not one of the 25 AV2 transform shapes is a
-        // typed error, never a panic.
         assert!(matches!(
             transform_shift(1, 1),
             Err(ReconError::InvalidTransformShiftShape {
@@ -348,7 +328,6 @@ mod tests {
                 log2_height: 7
             })
         ));
-        // A 3x6/6x3 exists, but 3x7 does not.
         assert!(matches!(
             transform_shift(3, 7),
             Err(ReconError::InvalidTransformShiftShape { .. })
@@ -358,8 +337,6 @@ mod tests {
     use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
     use InverseTransform2dDim::{Identity, Kernel};
 
-    // `get_transform_1d_type` is a `const fn`: a fixed (plane_tx_type, pass)
-    // resolves at compile time. Pins PlaneTxType 1 row -> DCT (no DDT).
     const _CONST_TYPE_CHECK: () = assert!(matches!(
         get_transform_1d_type(1, TransformPass::Row, 8, false),
         Ok(Kernel(Dct))
@@ -367,9 +344,6 @@ mod tests {
 
     #[test]
     fn get_transform_1d_type_matches_the_spec_table_without_ddt() {
-        // Independently transcribed (rowType, colType) per PlaneTxType from
-        // 07-decoding-process.md#s-7-15-4 lines 10679-10696, with use_ddt = false
-        // so the base table is returned verbatim. IDT -> Identity.
         let expected: [(InverseTransform2dDim, InverseTransform2dDim); 16] = [
             (Kernel(Dct), Kernel(Dct)),
             (Kernel(Dct), Kernel(Adst)),
@@ -404,8 +378,6 @@ mod tests {
 
     #[test]
     fn get_transform_1d_type_applies_ddt_substitution_only_when_eligible() {
-        // useDdt && size != 4: ADST -> DDTX, FDST -> FDDT. PlaneTxType 3 is
-        // (ADST, ADST); PlaneTxType 6 is (FDST, FDST).
         assert_eq!(
             get_transform_1d_type(3, TransformPass::Row, 8, true).unwrap(),
             Kernel(Ddtx)
@@ -414,18 +386,14 @@ mod tests {
             get_transform_1d_type(6, TransformPass::Col, 16, true).unwrap(),
             Kernel(Fddt)
         );
-        // size == 4 disables the substitution (ADST stays ADST).
         assert_eq!(
             get_transform_1d_type(3, TransformPass::Row, 4, true).unwrap(),
             Kernel(Adst)
         );
-        // use_ddt == false disables it too.
         assert_eq!(
             get_transform_1d_type(6, TransformPass::Row, 16, false).unwrap(),
             Kernel(Fdst)
         );
-        // DCT and IDT are never substituted, even when eligible. PlaneTxType 0 is
-        // (DCT, DCT); PlaneTxType 9 is (IDT, IDT).
         assert_eq!(
             get_transform_1d_type(0, TransformPass::Row, 16, true).unwrap(),
             Kernel(Dct)
@@ -460,11 +428,6 @@ mod tests {
     fn selected_direction_drives_the_outer_cumulative_sum() {
         use crate::{BitDepth, InverseTransform2dOuter, inverse_transform_2d_outer};
 
-        // A 4x4 lossless IDTX block takes the § 7.15.4 shortcut
-        // `Residual = Dequant >> (3 - shift)` (shift 0 here), so a flat
-        // `Dequant == 8` yields a flat pre-DPCM `Residual == 1`. With the
-        // Vertical direction from `dpcm_direction(true, true)`, the column
-        // cumulative sum turns each column into `1, 2, 3, 4`.
         let dequant = [8i32; 16];
         let resolve = |dpcm| {
             InverseTransform2dOuter::resolve(9, 2, 2, false, true, BitDepth::Eight, dpcm).unwrap()
@@ -483,7 +446,6 @@ mod tests {
             "Vertical DPCM accumulates down each column"
         );
 
-        // With no DPCM (`use_dpcm == false`), the residual stays the flat 1s.
         let mut none = [0i32; 16];
         inverse_transform_2d_outer(&resolve(dpcm_direction(false, true)), &dequant, &mut none)
             .unwrap();

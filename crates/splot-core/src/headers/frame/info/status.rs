@@ -194,7 +194,7 @@ pub enum FrameHeaderParseStatus {
     /// status records the EOF case. The fields parsed before the EOF are intact and exposed on
     /// `inter` (preserved via the caller-owned `control`), and earlier core facts survive.
     /// Like the other `StoppedInside*` statuses, the truncation is a payload-bounds condition
-    /// reported through this status rather than a hard parse error (codex F2) — it is on the
+    /// reported through this status rather than a hard parse error — it is on the
     /// truncated-in-modeled-region side of the partition, distinct from the silent
     /// unsupported-coverage [`Self::UnsupportedUntilFeature`] a clean coverage stop sets.
     StoppedInsideInterControl,

@@ -75,18 +75,12 @@ pub fn write_seg_info(
     let count = (num_segments as usize).min(MAX_SEGMENTS);
     for segment in info.features.iter().take(count) {
         for (j, feature) in segment.iter().enumerate() {
-            // feature_enabled: f(1).
             writer.write_flag(feature.enabled)?;
             if feature.enabled {
                 let bits_to_read = SEGMENTATION_FEATURE_BITS[j];
                 if SEGMENTATION_FEATURE_SIGNED[j] {
-                    // AV2 § 5.4.9: n = 1 + bitsToRead; feature_value = su(n).
                     writer.write_su(feature.data, 1 + bits_to_read)?;
                 } else {
-                    // f(bitsToRead); for j = 1, 2 bitsToRead is 0 and `write_bits` emits
-                    // nothing, matching the parser (the value can only decode to 0).
-                    // `data` is validated `>= 0` and within the `f(bitsToRead)` width by
-                    // `check_seg_info_encodable`, so the cast is lossless.
                     writer.write_bits(feature.data as u32, bits_to_read)?;
                 }
             }
@@ -106,8 +100,6 @@ pub fn write_seg_info(
 /// rejected a bad body, breaking reject-before-write for the composite structure.
 pub(crate) fn check_seg_info_encodable(info: &SegmentInfo, num_segments: u8) -> WriteResult<()> {
     let count = (num_segments as usize).min(MAX_SEGMENTS);
-    // The parser stores `num_segments = count`; a model claiming a different count could
-    // not have come from this call site.
     if info.num_segments as usize != count {
         return Err(WriteError::NonCanonicalSequenceValue {
             what: "seg_info_num_segments",
@@ -117,8 +109,6 @@ pub(crate) fn check_seg_info_encodable(info: &SegmentInfo, num_segments: u8) -> 
     for (i, segment) in info.features.iter().enumerate() {
         for (j, feature) in segment.iter().enumerate() {
             if i >= count {
-                // Segments beyond numSegments are never signaled; the parser leaves them
-                // disabled with zero data.
                 if *feature != SegmentFeature::DISABLED {
                     return Err(WriteError::NonCanonicalSequenceValue {
                         what: "seg_info_unsignaled_segment",
@@ -136,7 +126,6 @@ pub(crate) fn check_seg_info_encodable(info: &SegmentInfo, num_segments: u8) -> 
 /// feature index `j`.
 fn check_feature_encodable(feature: SegmentFeature, j: usize) -> WriteResult<()> {
     if !feature.enabled {
-        // A disabled feature is `data = 0` (the parser never reads its value).
         if feature.data != 0 {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "seg_info_disabled_data",
@@ -146,25 +135,18 @@ fn check_feature_encodable(feature: SegmentFeature, j: usize) -> WriteResult<()>
     }
     let limit = SEGMENTATION_FEATURE_MAX[j];
     if SEGMENTATION_FEATURE_SIGNED[j] {
-        // The parser stores `Clip3(-limit, limit, su(n))`; only values already in the
-        // clip window round-trip (Clip3 is idempotent in-window).
         if feature.data < -limit || feature.data > limit {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "seg_info_signed_data",
             });
         }
     } else {
-        // The parser stores `Clip3(0, limit, f(bitsToRead))`. For features 1 and 2
-        // `bitsToRead == 0` and `limit == 0`, so the only reproducible value is 0.
         let bits = SEGMENTATION_FEATURE_BITS[j];
         if feature.data < 0 || feature.data > limit {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "seg_info_unsigned_data",
             });
         }
-        // Also reject a value that would not fit the `f(bitsToRead)` field (defensive;
-        // `limit <= (1 << bits) - 1` holds for the spec table, so the clip check above is
-        // sufficient, but this guards against future table changes).
         if bits < 32 && (feature.data as u32) >= (1u32 << bits) {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "seg_info_unsigned_data",
@@ -209,7 +191,6 @@ mod tests {
 
     #[test]
     fn all_disabled_eight_segments_byte_exact() {
-        // 8 segments * SEG_LVL_MAX (3) enabled bits, all 0 (24 bits = 3 bytes).
         let mut bits = Bits::default();
         for _ in 0..(8 * SEG_LVL_MAX) {
             bits.bit(0);
@@ -234,7 +215,6 @@ mod tests {
 
     #[test]
     fn signed_quantizer_feature_round_trips() {
-        // Segment 0 feature 0 enabled with su(10) = 100 (within +/-351, unclipped).
         let mut bits = Bits::default();
         bits.bit(1); // feature_enabled[0][0]
         bits.f(100, 10); // su(10) value 100
@@ -248,13 +228,11 @@ mod tests {
 
     #[test]
     fn clipped_negative_quantizer_round_trips_at_the_clip_limit() {
-        // su(10) = -512 parses to clipped -351; re-writing -351 (in-window) round-trips.
         let mut bits = Bits::default();
         bits.bit(1); // feature_enabled[0][0]
         bits.f(0b10_0000_0000, 10); // su(10) = -512 -> clipped -351
         bits.bit(0);
         bits.bit(0);
-        // segment 1 all-disabled
         bits.bit(0);
         bits.bit(0);
         bits.bit(0);
@@ -265,7 +243,6 @@ mod tests {
 
     #[test]
     fn enabled_zero_width_feature_round_trips() {
-        // Feature 1 (bitsToRead == 0) enabled emits only the enable bit; data is 0.
         let mut bits = Bits::default();
         bits.bit(0); // [0][0]
         bits.bit(1); // [0][1] enabled, no value bits
@@ -276,13 +253,10 @@ mod tests {
         assert_roundtrip(&info, 1);
     }
 
-    // ----- Rejection tests (one per WriteError reject path) -----
-
     #[test]
     fn rejects_wrong_num_segments() {
         let info = parse(&[0u8; 6], 8);
         let mut writer = BitWriter::new();
-        // Claim 16 while the model holds num_segments 8.
         assert!(matches!(
             write_seg_info(&mut writer, &info, 16),
             Err(WriteError::NonCanonicalSequenceValue {
@@ -295,7 +269,6 @@ mod tests {
     #[test]
     fn rejects_non_disabled_segment_beyond_count() {
         let mut info = parse(&[0u8; 3], 8);
-        // Segment 8 is beyond num_segments (8); the parser leaves it disabled.
         info.features[8][0] = SegmentFeature {
             enabled: true,
             data: 0,
@@ -382,8 +355,6 @@ mod proptests {
         #[test]
         fn roundtrip_seg_info(
             num_segments in prop_oneof![Just(8u8), Just(16u8)],
-            // One bit per (segment, feature) enable decision, plus a 10-bit su value per
-            // enabled signed feature; build raw bytes long enough to cover the worst case.
             data in proptest::collection::vec(any::<u8>(), 0..64),
         ) {
             let Some(info) = parse_ok(&data, num_segments) else { return Ok(()); };

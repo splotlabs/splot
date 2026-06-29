@@ -69,11 +69,9 @@ fn fixture_manifest_outcomes_match_validator() {
         "MANIFEST.toml has no [[fixture]] entries"
     );
 
-    // Anti-vacuity: the corpus must exercise both arms.
     let mut saw_clean = false;
     let mut saw_diagnostics = false;
 
-    // The validator is stateless across fixtures; non-strict matches the CLI default.
     let validator = Validator::new(false);
 
     let mut manifest_paths: BTreeSet<String> = BTreeSet::new();
@@ -118,8 +116,6 @@ fn fixture_manifest_outcomes_match_validator() {
         "manifest exercises no `diagnostics` fixture; the diagnostics arm would be vacuous"
     );
 
-    // Every committed `.av2` fixture must appear in the manifest (the same orphan
-    // guard cargo xtask check-fixtures enforces, mirrored here under cargo test).
     let mut orphans = Vec::new();
     for entry in std::fs::read_dir(&root)
         .expect("read tests/fixtures/")

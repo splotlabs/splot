@@ -82,18 +82,11 @@ pub enum RoundtripOutcome {
 /// from this payload (this also bounds the allocation).
 pub fn recover_roundtrip_passthrough(payload: &[u8], parsed: &ParsedObu) -> WriteResult<Vec<u8>> {
     match parsed {
-        // § 5.16: the obu_padding_byte run is the bytes before the last non-zero byte; recover them
-        // verbatim so the parser's split reproduces.
         ParsedObu::Padding(pad) => slice_recover(payload, pad.padding_len),
-        // § 5.17.2: the short OBU's single unit (absent on cancel).
         ParsedObu::MetadataShort(obu) => {
             let len = obu.unit.as_ref().map_or(0, metadata_unit_passthrough_len);
             zero_fill_recover(payload, len)
         }
-        // § 5.17.3: the group's flat passthrough is each unit's modeled blob length concatenated.
-        // Fold with checked_add (like write_metadata_group_obu_flat) so a constructed model whose
-        // blob lengths overflow usize rejects rather than panicking under overflow-checks — the
-        // unchecked `Iterator::sum()` would trap before the zero_fill_recover payload bound runs.
         ParsedObu::MetadataGroup(obu) => {
             let len = obu
                 .units
@@ -106,8 +99,6 @@ pub fn recover_roundtrip_passthrough(payload: &[u8], parsed: &ParsedObu) -> Writ
                 })?;
             zero_fill_recover(payload, len)
         }
-        // Temporal delimiter, sequence header, and the OBU types with no body writer carry no
-        // passthrough (the latter are surfaced as Unwritable by write_complete_obu).
         _ => Ok(Vec::new()),
     }
 }
@@ -152,8 +143,6 @@ pub fn roundtrip_obu(header: &ObuHeader, payload: &[u8], parsed: &ParsedObu) -> 
         };
     };
 
-    // Write header + payload + tail; an unwritten type is honestly Unwritable, any other reject of a
-    // parser-produced model is a defect.
     let mut complete_writer = BitWriter::new();
     match write_complete_obu(&mut complete_writer, header, parsed, &passthrough) {
         Ok(()) => {}
@@ -168,8 +157,6 @@ pub fn roundtrip_obu(header: &ObuHeader, payload: &[u8], parsed: &ParsedObu) -> 
     }
     let complete = complete_writer.into_bytes();
 
-    // Frame as one Annex B OBU: leb128(num_bytes_in_obu) ++ (header ++ payload). The complete-OBU
-    // bytes are exactly what the size prefix wraps.
     let Ok(total) = u32::try_from(complete.len()) else {
         return RoundtripOutcome::Failed {
             reason: "oversize_obu",

@@ -3,11 +3,6 @@
 
 use super::*;
 
-// ----------------------------------------------------------------------------------
-// § 6.8.5 PTL ceilings and § 6.8.8 rep-info equality
-// (lcr-ptl-activated-sequence-agreement)
-// ----------------------------------------------------------------------------------
-
 /// Parameters for a § 6.8.5 PTL-bearing sequence header.
 #[derive(Clone, Copy)]
 pub(in crate::validator::tests) struct SeqPtl {
@@ -142,7 +137,6 @@ pub(in crate::validator::tests) fn local_lcr_obu_with_ptl(
     bits.f(local_id, 3); // lcr_local_id
     bits.bit(1); // lcr_profile_tier_level_info_present_flag
     bits.bit(0); // lcr_local_atlas_id_present_flag
-    // lcr_seq_profile_tier_level_info(xId)
     bits.f(max_profile, 5); // lcr_seq_profile_idc
     bits.f(max_level, 5); // lcr_max_level_idx
     bits.bit(max_tier as u8); // lcr_tier_flag
@@ -150,7 +144,6 @@ pub(in crate::validator::tests) fn local_lcr_obu_with_ptl(
     bits.f(0, 2); // lsptli_reserved_2bits
     bits.f(0, 3); // reserved_zero_3bits (no atlas)
     bits.f(0, 5); // lcr_local_reserved_zero_5bits
-    // lcr_xlayer_info(0, xId): all present flags clear.
     bits.bit(0); // lcr_rep_info_present_flag
     bits.bit(0); // lcr_xlayer_purpose_present_flag
     bits.bit(0); // lcr_xlayer_color_info_present_flag
@@ -203,7 +196,6 @@ pub(in crate::validator::tests) fn local_lcr_obu_with_rep_info(
     bits.bit(0); // lcr_local_atlas_id_present_flag
     bits.f(0, 3); // reserved_zero_3bits
     bits.f(0, 5); // lcr_local_reserved_zero_5bits
-    // lcr_xlayer_info(0, xId): only rep info present.
     bits.bit(1); // lcr_rep_info_present_flag
     bits.bit(0); // lcr_xlayer_purpose_present_flag
     bits.bit(0); // lcr_xlayer_color_info_present_flag
@@ -238,7 +230,6 @@ pub(in crate::validator::tests) fn global_lcr_obu_with_rep_info(
     bits.bit(0); // lcr_enforce_tile_alignment_flag
     bits.f(0, 3); // reserved_zero_3bits
     bits.f(0, 5); // lcr_global_reserved_zero_5bits
-    // One lcr_global_payload for target_xlayer: lcr_xlayer_info(1, xId).
     let mut body = Bits::default();
     body.bit(1); // lcr_rep_info_present_flag
     body.bit(0); // lcr_xlayer_purpose_present_flag
@@ -281,7 +272,6 @@ pub(in crate::validator::tests) fn global_lcr_obu_with_ptl(
     bits.bit(0); // lcr_enforce_tile_alignment_flag
     bits.f(0, 3); // reserved_zero_3bits
     bits.f(0, 5); // lcr_global_reserved_zero_5bits
-    // One lcr_seq_profile_tier_level_info per set bit of lcr_xlayer_map.
     bits.f(max_profile, 5); // lcr_seq_profile_idc
     bits.f(max_level, 5); // lcr_max_level_idx
     bits.bit(max_tier as u8); // lcr_tier_flag
@@ -291,12 +281,8 @@ pub(in crate::validator::tests) fn global_lcr_obu_with_ptl(
     annex_b_obu_with_header(&layer_obu_header(16, 0, 0, 31), &bits.into_bytes())
 }
 
-// --- § 6.8.5 PTL ceilings ---------------------------------------------------------
-
 #[test]
 fn lcr_ptl_level_exceeds_max_is_flagged() {
-    // Header seq_level_idx 8 > local LCR lcr_max_level_idx 4. The trailing CLK frame
-    // frame-confirms the xlayer-0 activation (§ 6.8.5 uses the strict gate).
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
     data.extend(seq_header_ptl_payload(SeqPtl {
@@ -317,7 +303,6 @@ fn lcr_ptl_level_exceeds_max_is_flagged() {
 
 #[test]
 fn lcr_ptl_profile_exceeds_max_is_flagged() {
-    // Header seq_profile_idc 3 > local LCR lcr_seq_profile_idc 1.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu_with_ptl(0, 5, 1, 31, 0, 7));
     data.extend(seq_header_ptl_payload(SeqPtl {
@@ -338,7 +323,6 @@ fn lcr_ptl_profile_exceeds_max_is_flagged() {
 
 #[test]
 fn lcr_ptl_tier_exceeds_max_is_flagged() {
-    // Header seq_tier 1 (High, level 5 > 3) > local LCR lcr_tier_flag 0.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu_with_ptl(0, 5, 0, 31, 0, 7));
     data.extend(seq_header_ptl_payload(SeqPtl {
@@ -359,7 +343,6 @@ fn lcr_ptl_tier_exceeds_max_is_flagged() {
 
 #[test]
 fn lcr_ptl_mlayer_count_exceeds_max_is_flagged() {
-    // Header SeqMaxMlayerCnt = max_mlayer_id 1 + 1 = 2 > lcr_max_mlayer_count 1.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu_with_ptl(0, 5, 0, 31, 0, 1));
     data.extend(seq_header_ptl_payload(SeqPtl {
@@ -380,9 +363,7 @@ fn lcr_ptl_mlayer_count_exceeds_max_is_flagged() {
 
 #[test]
 fn lcr_ptl_equality_passes() {
-    // Every header value equals its LCR-declared maximum: <= passes, no finding.
     let mut data = temporal_delimiter_obu();
-    // lcr_max_mlayer_count 2 == SeqMaxMlayerCnt (max_mlayer_id 1 + 1).
     data.extend(local_lcr_obu_with_ptl(0, 5, 2, 5, 1, 2));
     data.extend(seq_header_ptl_payload(SeqPtl {
         seq_header_id: 0,
@@ -404,9 +385,6 @@ fn lcr_ptl_equality_passes() {
 
 #[test]
 fn lcr_ptl_absent_info_compares_nothing() {
-    // The associated local LCR carries no PTL info (present flag 0): § 6.8.5 gates
-    // on "lcr_seq_profile_tier_level_info(i) present", so nothing is compared even
-    // though the header level would exceed any plausible ceiling.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu(0, 0, 5, None)); // no PTL, no rep info
     data.extend(seq_header_ptl_payload(SeqPtl {
@@ -427,9 +405,6 @@ fn lcr_ptl_absent_info_compares_nothing() {
 
 #[test]
 fn lcr_ptl_unconfirmed_activation_is_silent_then_fires_on_frame() {
-    // Two staged headers for xlayer 0: the OBU-order fallback is a guess (§ 7.3.6),
-    // so nothing fires until a frame confirms one. The violating header (id 1) is
-    // the one the frame loads.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
     data.extend(seq_header_ptl_payload(SeqPtl {
@@ -448,13 +423,11 @@ fn lcr_ptl_unconfirmed_activation_is_silent_then_fires_on_frame() {
         tier: 0,
         max_mlayer_id: 0,
     }));
-    // Before any frame, the fallback is ambiguous: silent.
     let staged = Validator::new(false).validate_bytes(&data);
     assert!(
         !has_error(&staged, "lcr/ptl-level-exceeds-max"),
         "an unconfirmed activation must be silent; report was: {staged}"
     );
-    // A frame confirming header 1 makes the violation decidable.
     data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 1));
     let confirmed = Validator::new(false).validate_bytes(&data);
     assert!(
@@ -465,9 +438,6 @@ fn lcr_ptl_unconfirmed_activation_is_silent_then_fires_on_frame() {
 
 #[test]
 fn lcr_ptl_global_record_ceiling_is_checked() {
-    // The association resolves a global LCR carrying PTL for xlayer 0; its
-    // lcr_max_level_idx 4 < header seq_level_idx 8. The trailing CLK frame
-    // frame-confirms the xlayer-0 activation.
     let mut data = temporal_delimiter_obu();
     data.extend(global_lcr_obu_with_ptl(5, 0, 0, 4, 0, 1));
     data.extend(seq_header_ptl_payload(SeqPtl {
@@ -488,8 +458,6 @@ fn lcr_ptl_global_record_ceiling_is_checked() {
 
 #[test]
 fn lcr_ptl_not_duplicated_across_reactivation() {
-    // The activation-driven re-check (frame re-references the same header) must not
-    // duplicate the finding.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
     data.extend(seq_header_ptl_payload(SeqPtl {
@@ -511,10 +479,6 @@ fn lcr_ptl_not_duplicated_across_reactivation() {
 
 #[test]
 fn lcr_ptl_redefinition_rechecks_affected_layer() {
-    // First LCR 5 is conformant (ceiling 31); a non-identical redefinition lowers
-    // lcr_max_level_idx to 4, and the bit-identical repeated header re-associates
-    // to the new revision. The trailing CLK frame frame-confirms the activation
-    // against the ceiling-4 revision and is flagged exactly once.
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu_with_ptl(0, 5, 0, 31, 0, 7));
     data.extend(seq_header_ptl_payload(SeqPtl {
@@ -545,9 +509,6 @@ fn lcr_ptl_redefinition_rechecks_affected_layer() {
 
 #[test]
 fn lcr_ptl_diagnostic_points_at_lcr_obu() {
-    // The diagnostic anchors at the LCR OBU (its declared maxima are the source),
-    // which precedes the activating sequence header here. The CLK frame appended
-    // after the header frame-confirms the activation without moving the offsets.
     let td = temporal_delimiter_obu();
     let lcr = local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1);
     let seq_start = (td.len() + lcr.len()) as u64;
@@ -576,13 +537,6 @@ fn lcr_ptl_diagnostic_points_at_lcr_obu() {
 
 #[test]
 fn lcr_ptl_suppressed_under_external_hls_provided() {
-    // The § 6.8.5 ceiling pairs the in-band activated header against the LCR its
-    // seq_lcr_id resolves to under § 6.4.1. A Provided declaration is PARTIAL (it
-    // cannot enumerate external LCRs), so an unmodeled external *local* LCR could win
-    // the local-first resolution ahead of the in-band record; the check is suppressed
-    // under any Provided mode (even an empty set) to avoid a false positive against an
-    // association a real decoder may not use. The stream WOULD fire under Disabled (the
-    // trailing CLK frame frame-confirms the activation).
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
@@ -615,12 +569,6 @@ fn lcr_ptl_suppressed_under_external_hls_provided() {
 
 #[test]
 fn lcr_ptl_suppressed_under_ops_only_external_hls_provided() {
-    // An OPS-only Provided set (operating point sets declared but no sequence headers)
-    // also suppresses the § 6.8.5 ceiling. This is the key cycle-2/cycle-3 point: the
-    // suppression is NOT about declared sequence headers — ANY Provided mode may imply
-    // unenumerated external LCRs (the set cannot express them), so an external local
-    // LCR could still shadow the in-band § 6.4.1 association even when only OPS are
-    // declared. The gate is `!Disabled`, not `declares_any_sequence_header`.
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu_with_ptl(0, 5, 0, 4, 0, 1));
@@ -645,5 +593,3 @@ fn lcr_ptl_suppressed_under_ops_only_external_hls_provided() {
          check; report was: {report}"
     );
 }
-
-// --- § 6.8.8 rep-info equality ----------------------------------------------------

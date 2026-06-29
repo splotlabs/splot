@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Unit, byte-exact, and rejection tests for the § 5.18.7.11 / § 5.18.7.12 loop-restoration and
-// CCSO writers.
-
-// `include!`d into `crate::write::frame_restoration` so `super::*` resolves to its writers and
-// private helpers (the property tests live in the sibling `frame_restoration_proptests.rs`).
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::too_many_lines)]
@@ -78,11 +73,56 @@ mod tests {
         parsed
     }
 
-    // ---- lr_params: disabled / coded_lossless ----
+    fn lr_plane(restoration_type: FrameRestorationType) -> LrPlaneParams {
+        LrPlaneParams {
+            restoration_type,
+            frame_filters_on: false,
+            num_filter_classes: None,
+            frame_filter_bank: None,
+        }
+    }
+
+    fn lr_params(
+        uses_lr: bool,
+        planes: Vec<LrPlaneParams>,
+        loop_restoration_size: [u32; 3],
+    ) -> LrParams {
+        LrParams {
+            uses_lr,
+            planes,
+            loop_restoration_size,
+        }
+    }
+
+    fn assert_lr_rejected(
+        params: &LrParams,
+        num_planes: u8,
+        geometry: LrGeometry,
+        expected: &'static str,
+    ) {
+        let mut writer = BitWriter::new();
+        let result = write_lr_params(
+            &mut writer,
+            params,
+            false,
+            num_planes,
+            &restoration_enabled(),
+            geometry,
+            0,
+        );
+        assert!(
+            matches!(
+                &result,
+                Err(WriteError::NonCanonicalFrameHeader { what }) if *what == expected
+            ),
+            "expected {expected}, got {result:?}"
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
 
     #[test]
     fn lr_disabled_writes_no_bits() {
-        // coded_lossless and !enable_restoration are both no-bits disabled arms.
         for (coded_lossless, enable) in [(true, true), (false, false)] {
             let mut view = restoration_enabled();
             view.enable_restoration = enable;
@@ -123,7 +163,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ---- lr_params: all RESTORE_NONE ----
 
     #[test]
     fn lr_all_restore_none_round_trips() {
@@ -137,15 +176,11 @@ mod tests {
         assert!(!p.uses_lr);
     }
 
-    // ---- lr_params: per-SbSize size signaling exercising every shift ----
 
     #[test]
     fn lr_luma_size_shifts_round_trip_each_sb_size() {
-        // For each SbSize, drive luma PC_WIENER and every reachable size-shift flag pattern.
-        // The flag sequences mirror read_lr_size_shift exactly.
         struct Case {
             sb: SuperblockSize,
-            // (half, max, quarter) flag bits actually coded for this shift, in order.
             flags: &'static [u8],
         }
         let block256 = [
@@ -188,15 +223,11 @@ mod tests {
 
     #[test]
     fn lr_chroma_only_round_trips() {
-        // Luma NONE, chroma (plane 1) WIENER_NONSEP -> usesChromaLr only. Chroma indexToTool:
-        // PC_WIENER disabled (inferred), WIENER_NONSEP enabled -> [NONE, WIENER_NONSEP,
-        // SWITCHABLE, _]; n = 3. tool_index 1 -> WIENER_NONSEP. frame_filters_on f(1) = 0.
         let mut bits = Bits::default();
         bits.ns(0, 4); // plane 0 NONE (luma)
         bits.ns(1, 3); // plane 1 WIENER_NONSEP (chroma)
         bits.bit(0); // frame_filters_on[1] = 0
         bits.ns(0, 3); // plane 2 NONE (chroma)
-        // usesChromaLr -> one chroma size-shift flag (half size, shift 1).
         bits.bit(1);
         let data = bits.into_bytes();
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
@@ -211,7 +242,6 @@ mod tests {
 
     #[test]
     fn lr_luma_and_chroma_round_trips() {
-        // Both luma and chroma use LR -> both size-shift fields coded.
         let mut bits = Bits::default();
         bits.ns(1, 4); // plane 0 PC_WIENER
         bits.ns(1, 3); // plane 1 WIENER_NONSEP (chroma indexToTool n = 3)
@@ -238,7 +268,6 @@ mod tests {
 
     #[test]
     fn lr_switchable_writes_frame_filters_zero_bit() {
-        // RESTORE_SWITCHABLE reads frame_filters_on f(1); with it 0 the structure completes.
         let mut bits = Bits::default();
         bits.ns(3, 4); // plane 0 SWITCHABLE (indexToTool[3])
         bits.bit(0); // frame_filters_on[0] = 0
@@ -254,43 +283,22 @@ mod tests {
         );
     }
 
-    // ---- lr_params: HARD RESIDUAL + reject paths ----
 
     #[test]
     fn lr_frame_filters_on_is_rejected_hard_residual() {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
-        let params = LrParams {
-            uses_lr: true,
-            planes: vec![
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::WienerNonsep,
-                    frame_filters_on: true,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
+        let mut plane = lr_plane(FrameRestorationType::WienerNonsep);
+        plane.frame_filters_on = true;
+        let params = lr_params(
+            true,
+            vec![
+                plane,
+                lr_plane(FrameRestorationType::None),
+                lr_plane(FrameRestorationType::None),
             ],
-            loop_restoration_size: [256, 32, 32],
-        };
-        let mut writer = BitWriter::new();
-        assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry, 0),
-            Err(WriteError::NonCanonicalFrameHeader {
-                what: "lr_frame_filters_on"
-            })
-        ));
-        assert_eq!(writer.bit_len(), 0);
+            [256, 32, 32],
+        );
+        assert_lr_rejected(&params, 3, geometry, "lr_frame_filters_on");
     }
 
     #[test]
@@ -334,7 +342,7 @@ mod tests {
                 restoration_type: FrameRestorationType::None,
                 frame_filters_on: false,
                 num_filter_classes: None,
-                    frame_filter_bank: None,
+                frame_filter_bank: None,
             }],
             loop_restoration_size: [64, 32, 32],
         };
@@ -350,94 +358,36 @@ mod tests {
 
     #[test]
     fn lr_tool_not_in_table_is_rejected() {
-        // Chroma plane selects PC_WIENER, but chroma PC_WIENER is disabled (inferred), so it is
-        // not in the chroma indexToTool table.
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
-        let params = LrParams {
-            uses_lr: true,
-            planes: vec![
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::PcWiener,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
+        let params = lr_params(
+            true,
+            vec![
+                lr_plane(FrameRestorationType::None),
+                lr_plane(FrameRestorationType::PcWiener),
+                lr_plane(FrameRestorationType::None),
             ],
-            loop_restoration_size: [64, 32, 32],
-        };
-        let mut writer = BitWriter::new();
-        assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry, 0),
-            Err(WriteError::NonCanonicalFrameHeader {
-                what: "lr_tool_index"
-            })
-        ));
-        assert_eq!(writer.bit_len(), 0);
+            [64, 32, 32],
+        );
+        assert_lr_rejected(&params, 3, geometry, "lr_tool_index");
     }
 
     #[test]
     fn lr_switchable_when_not_allowed_is_rejected() {
-        // Regression (#4g adversarial review, LR-PANIC-1): chroma enables only WIENER_NONSEP
-        // (PC_WIENER inferred-disabled), so toolsCount == 2, allowSwitchable == false, n == 2 —
-        // RESTORE_SWITCHABLE sits at indexToTool[2] but is UNREACHABLE by tool_index ns(2). A
-        // chroma plane selecting Switchable is not parser-producible; the writer must reject it
-        // up front (not let write_ns(2, 2) fail mid-write, which — with a preceding luma plane
-        // already emitted — would leave bit_len() > 0, a partial buffer).
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
-        let params = LrParams {
-            uses_lr: true,
-            planes: vec![
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::Switchable,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
+        let params = lr_params(
+            true,
+            vec![
+                lr_plane(FrameRestorationType::None),
+                lr_plane(FrameRestorationType::Switchable),
+                lr_plane(FrameRestorationType::None),
             ],
-            loop_restoration_size: [64, 32, 32],
-        };
-        let mut writer = BitWriter::new();
-        assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry, 0),
-            Err(WriteError::NonCanonicalFrameHeader {
-                what: "lr_tool_index"
-            })
-        ));
-        // The defect manifested as a partial buffer; assert reject-before-write holds.
-        assert_eq!(writer.bit_len(), 0);
+            [64, 32, 32],
+        );
+        assert_lr_rejected(&params, 3, geometry, "lr_tool_index");
     }
 
     #[test]
     fn lr_out_of_range_subsampling_geometry_is_rejected() {
-        // Regression (#4g adversarial review, LR-PANIC-2): LrGeometry's fields are public and it
-        // is not #[non_exhaustive], so a caller can construct a subsampling outside the §6.4.1
-        // {0,1} domain, bypassing LrGeometry::new's clamp. The LoopRestorationSize shift
-        // RESTORATION_TILESIZE_MAX >> (3 + maxSubsampling) would shift past u32 and panic in
-        // debug; the writer must reject it cleanly instead.
         let geometry = LrGeometry {
             sb_size: SuperblockSize::Block128x128,
             subsampling_x: 200,
@@ -478,150 +428,63 @@ mod tests {
     #[test]
     fn lr_num_filter_classes_some_is_rejected() {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
-        let params = LrParams {
-            uses_lr: true,
-            planes: vec![
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::WienerNonsep,
-                    frame_filters_on: false,
-                    num_filter_classes: Some(6),
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
+        let mut plane = lr_plane(FrameRestorationType::WienerNonsep);
+        plane.num_filter_classes = Some(6);
+        let params = lr_params(
+            true,
+            vec![
+                plane,
+                lr_plane(FrameRestorationType::None),
+                lr_plane(FrameRestorationType::None),
             ],
-            loop_restoration_size: [256, 32, 32],
-        };
-        let mut writer = BitWriter::new();
-        assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry, 0),
-            Err(WriteError::NonCanonicalFrameHeader {
-                what: "lr_num_filter_classes"
-            })
-        ));
-        assert_eq!(writer.bit_len(), 0);
+            [256, 32, 32],
+        );
+        assert_lr_rejected(&params, 3, geometry, "lr_num_filter_classes");
     }
 
     #[test]
     fn lr_unreachable_shift_for_sb_size_is_rejected() {
-        // BLOCK_256X256 can only reach shifts 0/1. A loop_restoration_size of 512>>2 == 128 (shift
-        // 2) is unreachable -> lr_size reject.
         let geometry = geom(SuperblockSize::Block256x256, ChromaFormatIdc::Yuv420);
-        let params = LrParams {
-            uses_lr: true,
-            planes: vec![
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::PcWiener,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
+        let params = lr_params(
+            true,
+            vec![
+                lr_plane(FrameRestorationType::PcWiener),
+                lr_plane(FrameRestorationType::None),
+                lr_plane(FrameRestorationType::None),
             ],
-            // luma 512 >> 2 == 128 (shift 2, unreachable for 256x256); chroma default 32.
-            loop_restoration_size: [128, 32, 32],
-        };
-        let mut writer = BitWriter::new();
-        assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry, 0),
-            Err(WriteError::NonCanonicalFrameHeader { what: "lr_size" })
-        ));
-        assert_eq!(writer.bit_len(), 0);
+            [128, 32, 32],
+        );
+        assert_lr_rejected(&params, 3, geometry, "lr_size");
     }
 
     #[test]
     fn lr_non_power_of_two_size_is_rejected() {
-        // A luma size of 300 is not RESTORATION_TILESIZE_MAX >> shift for any shift.
         let geometry = geom(SuperblockSize::Block64x64, ChromaFormatIdc::Yuv420);
-        let params = LrParams {
-            uses_lr: true,
-            planes: vec![
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::PcWiener,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
+        let params = lr_params(
+            true,
+            vec![
+                lr_plane(FrameRestorationType::PcWiener),
+                lr_plane(FrameRestorationType::None),
+                lr_plane(FrameRestorationType::None),
             ],
-            loop_restoration_size: [300, 32, 32],
-        };
-        let mut writer = BitWriter::new();
-        assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry, 0),
-            Err(WriteError::NonCanonicalFrameHeader { what: "lr_size" })
-        ));
-        assert_eq!(writer.bit_len(), 0);
+            [300, 32, 32],
+        );
+        assert_lr_rejected(&params, 3, geometry, "lr_size");
     }
 
     #[test]
     fn lr_uses_lr_mismatch_is_rejected() {
-        // uses_lr disagrees with the per-plane derivation (all NONE but uses_lr == true).
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
-        let params = LrParams {
-            uses_lr: true,
-            planes: vec![
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
+        let params = lr_params(
+            true,
+            vec![
+                lr_plane(FrameRestorationType::None),
+                lr_plane(FrameRestorationType::None),
+                lr_plane(FrameRestorationType::None),
             ],
-            loop_restoration_size: [64, 32, 32],
-        };
-        let mut writer = BitWriter::new();
-        assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry, 0),
-            Err(WriteError::NonCanonicalFrameHeader {
-                what: "lr_uses_lr"
-            })
-        ));
-        assert_eq!(writer.bit_len(), 0);
+            [64, 32, 32],
+        );
+        assert_lr_rejected(&params, 3, geometry, "lr_uses_lr");
     }
 
     #[test]
@@ -660,7 +523,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ---- ccso_params: round trips ----
 
     /// Parse `data` as `ccso_params()`, re-emit, and reparse — asserting the model round-trips.
     fn ccso_round_trip(
@@ -713,7 +575,6 @@ mod tests {
         let data = bits.into_bytes();
         let p = ccso_round_trip(&data, 3, view);
         assert_eq!(p.ccso_frame_flag, Some(true));
-        // No frame-flag bit was written (single-picture inference).
         let mut writer = BitWriter::new();
         write_ccso_params(&mut writer, &p, false, 3, &view).unwrap();
         assert_eq!(writer.bit_len(), 3);
@@ -751,7 +612,6 @@ mod tests {
 
     #[test]
     fn ccso_full_arm_plane_round_trips() {
-        // ext_filter + edge_clf (quantStep != 0).
         let mut bits = Bits::default();
         bits.bit(1); // ccso_frame_flag
         bits.bit(1); // ccso_planes[0]
@@ -774,7 +634,6 @@ mod tests {
 
     #[test]
     fn ccso_quant_step_zero_suppresses_edge_clf_round_trips() {
-        // CCSO_Quant_Sz[0][3] == 0 -> no edge_clf bit, maxEdgeInterval 3.
         let mut bits = Bits::default();
         bits.bit(1); // ccso_frame_flag
         bits.bit(1); // ccso_planes[0]
@@ -808,7 +667,6 @@ mod tests {
         assert_eq!(p.planes.len(), 1);
     }
 
-    // ---- ccso_params: reject paths ----
 
     fn ccso_off_plane() -> CcsoPlaneParams {
         CcsoPlaneParams {
@@ -960,7 +818,6 @@ mod tests {
 
     #[test]
     fn ccso_offset_idx_len_mismatch_is_rejected() {
-        // bo_only, max_band_log2 == 0 -> maxBand 1, expected 1 offset; supply 2.
         let plane = ccso_bo_plane(0, vec![0, 1]);
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
@@ -1011,9 +868,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // A valid non-bo_only (full-arm) plane: scale 0 / quant 0 (CCSO_Quant_Sz[0][0] == 16 != 0, so
-    // ccso_edge_clf is coded), ext_filter 0, edge_clf false -> maxEdgeInterval 3, max_band_log2 0
-    // -> maxBand 1, so 3 * 3 * 1 == 9 ccso_offset_idx values.
     fn ccso_full_plane() -> CcsoPlaneParams {
         CcsoPlaneParams {
             ccso_planes: true,
@@ -1029,8 +883,6 @@ mod tests {
 
     #[test]
     fn ccso_frame_disabled_with_planes_is_rejected() {
-        // ccso_frame_flag == Some(false) returns with no per-plane state; a non-empty planes
-        // vector could not have been produced (distinct from the ccso_frame_flag label).
         let params = CcsoParams {
             ccso_frame_flag: Some(false),
             planes: vec![ccso_off_plane(); 3],
@@ -1104,7 +956,6 @@ mod tests {
 
     #[test]
     fn ccso_out_of_domain_max_band_log2_is_rejected() {
-        // bo_only -> max_band_log2 is f(3), domain 0..=7; 8 is unrepresentable.
         let plane = ccso_bo_plane(8, vec![0]);
         let params = CcsoParams {
             ccso_frame_flag: Some(true),

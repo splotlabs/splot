@@ -35,8 +35,6 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
-        // Writing to a `String` is infallible; discard the `Result` (the
-        // workspace denies `unwrap`).
         let _ = write!(hex, "{byte:02x}");
     }
     hex

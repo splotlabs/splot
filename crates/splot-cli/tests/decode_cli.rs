@@ -271,17 +271,6 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    // The §5.20.6.1 IntrABC `record_block` mode-info fill is now clamped to the frame
-    // edge (modelling AVM §5.20.3.2 `block_coded(r,c) { r < MiRows && c < MiCols }`,
-    // 05-syntax-structures.md:9621): the non-IntrABC BLOCK_128X64 leaf at MI(256,0)
-    // whose nominal 16-tall MI footprint overhangs the 270-row MI grid by 2 MI rows
-    // records only its 14 in-frame MI rows instead of erroring on the overhang, so the
-    // walk advances past that former §5.20.6.1 block-bounds frontier (the ref-MV bank
-    // `update_after_block` still uses the NOMINAL block size, so the §7.12.2
-    // `remain_hits` budget stays synced — no re-introduced desync). The walk now stops
-    // at the GENUINE next mechanism — the §6.19.7.12 IntrABC `intrabc_target_bounds`
-    // prediction-geometry subcase outside the bounded ac0ej3 prediction subset. The
-    // decode still emits NO frame (exit 1).
     assert_eq!(json["spec_section"], "6.19.7.12");
     assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
@@ -451,9 +440,6 @@ fn decode_hash_json_success_for_minimal_fixture() {
         frame["hashes"][0]["byte_stream_id"],
         "av2-output-samples-v1"
     );
-    // SHA-256 of the decoded raw planar output. The conformant luma-skip fixture
-    // routes through the general intra path; avmdec and dav2d both decode it to
-    // this output (docs/LOCAL-REFERENCE-EVIDENCE.toml).
     assert_eq!(
         frame["hashes"][0]["digest_hex"],
         "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af"
@@ -462,15 +448,6 @@ fn decode_hash_json_success_for_minimal_fixture() {
 
 #[test]
 fn decode_general_intra_fixture_reconstructs_full_frame() {
-    // A real AVM-generated minimal-tool intra key frame (base_q_idx 80, one
-    // 64x64 block carrying a nonzero DC residual). splot routes it off the
-    // frozen base_q_idx==255 hash tier into the general intra path, runs the
-    // real AV2 §5.20.3.1 partition traversal, decodes the §5.20.5.3 block
-    // mode-info symbols, decodes the §5.20.7.27 luma + chroma transform-block
-    // coefficients, then dequantizes / inverse-transforms / residual-adds each
-    // plane and reconstructs the full frame. avmdec and dav2d both decode this
-    // fixture to flat planes Y=100, U=120, V=130; the splot hash of that frame is
-    // pinned here as the first oracle-anchored full-frame decode.
     let input = conformance_vector("syn-flat-intra-64x64-q80.ivf");
 
     let out = splot(&[
@@ -491,12 +468,6 @@ fn decode_general_intra_fixture_reconstructs_full_frame() {
 
 #[test]
 fn general_intra_fixtures_decode_to_distinct_pinned_hashes() {
-    // Both committed minimal-tool intra fixtures route through the general intra
-    // path: the former frozen base_q_idx==255 minimal fixture was retired (its
-    // hand-retimed tile payload was inverted vs the AVM all_zero skip polarity
-    // and rejected by avmdec) and replaced with an avmdec/dav2d-conformant
-    // luma-skip stream. Each must decode to its own pinned hash with no
-    // cross-fixture state bleed.
     let cases = [
         (
             "syn-flat-intra-64x64-minimal.ivf",
@@ -529,19 +500,6 @@ fn general_intra_fixtures_decode_to_distinct_pinned_hashes() {
 
 #[test]
 fn decode_two_frame_inter_fixture_decodes_both_frames_bit_exact() {
-    // DECODE-FIRST-INTER-FRAME-FRONTIER: the committed syn-2frame-inter-64x64.ivf is
-    // the verified first-inter decode target. Frame 0 is an OBU_CLOSED_LOOP_KEY intra
-    // key frame; frame 1 is an OBU_REGULAR_TILE_GROUP inter frame (single reference,
-    // is_inter == 1, skip == 1, the single-reference zero-MV NEARMV mode, no
-    // residual, so §7.13.3.18 zero-fraction motion compensation reduces to a straight
-    // copy of the co-located key block). avmdec --rawvideo --i420 and
-    // dav2d --demuxer ivf decode the whole stream byte-for-byte identically:
-    // decoded-output md5 4e1bd39f0b541ef1f479cff049e6985c over 12288 bytes (two flat
-    // 64x64 4:2:0 frames; frame 1 == a copy of frame 0). The runtime now decodes both
-    // frames: the key frame via the general-intra frontier, then the inter frame via
-    // the new inter frontier (real §5.18.2 header parse, §5.20 inter mode_info symbol
-    // reads, §7.11 zero-MV derivation, §7.13.3.18 copy, validated by §8.2.4
-    // exit_symbol()). This replaces the prior inter_frame_decode_unimplemented reject.
     let input = conformance_vector("syn-2frame-inter-64x64.ivf");
     let output = temp_output("yuv");
 
@@ -561,10 +519,7 @@ fn decode_two_frame_inter_fixture_decodes_both_frames_bit_exact() {
         String::from_utf8_lossy(&out.stderr)
     );
     let decoded = std::fs::read(&output).expect("decoded raw output");
-    // 2 frames * 64x64 luma + 2 * 32x32 (U + V) = 2 * (4096 + 2 * 1024) = 12288 bytes.
     assert_eq!(decoded.len(), 12288, "two flat 8-bit 4:2:0 64x64 frames");
-    // avmdec / dav2d oracle: both frames are flat (Y=100, U=120, V=130), and frame 1
-    // is a byte-exact copy of frame 0 (the zero-MV motion-compensation copy).
     let frame_bytes = 6144;
     let (frame0, frame1) = decoded.split_at(frame_bytes);
     assert_eq!(frame0, frame1, "inter frame 1 is a copy of key frame 0");
@@ -575,18 +530,6 @@ fn decode_two_frame_inter_fixture_decodes_both_frames_bit_exact() {
 
 #[test]
 fn decode_two_frame_inter_residual_fixture_decodes_bit_exact() {
-    // DECODE-INTER-RESIDUAL-DCT: the committed syn-2frame-inter-residual-64x64.ivf is
-    // the verified first inter-residual (skip == 0) target. Frame 0 is an
-    // OBU_CLOSED_LOOP_KEY flat-100 intra key frame; frame 1 is an
-    // OBU_REGULAR_TILE_GROUP inter frame (single reference, is_inter == 1, skip == 0,
-    // zero-MV NEARMV, a §5.20.7.27 luma DCT_DCT residual added over the §7.13.3.18
-    // zero-fraction copy of frame 0; flat chroma carries no residual). avmdec
-    // --rawvideo --i420 and dav2d --demuxer ivf decode the whole stream byte-for-byte
-    // identically (decoded-output md5 ab2b067aed48cf46035fa031cefb3ab1 over 12288
-    // bytes). The runtime decodes the residual coefficients (§5.20.7.27 with the
-    // is_inter txb_skip / eob contexts), dequantizes (§7.14.4), inverse-transforms
-    // (§7.15.4), and adds the residual (§7.14.3) over the MC prediction, all guarded
-    // by §8.2.4 exit_symbol() (NO hardcoding; a wrong residual symbol read rejects).
     let input = conformance_vector("syn-2frame-inter-residual-64x64.ivf");
     let output = temp_output("yuv");
 
@@ -609,8 +552,6 @@ fn decode_two_frame_inter_residual_fixture_decodes_bit_exact() {
     assert_eq!(decoded.len(), 12288, "two 8-bit 4:2:0 64x64 frames");
     let frame_bytes = 6144;
     let (frame0, frame1) = decoded.split_at(frame_bytes);
-    // Frame 0 (key) is flat per the oracle; frame 1's luma differs (a real residual)
-    // while its chroma stays flat (luma-only residual).
     assert!(
         frame0[..4096].iter().all(|&s| s == 100),
         "key luma flat 100"
@@ -634,18 +575,6 @@ fn decode_two_frame_inter_residual_fixture_decodes_bit_exact() {
 
 #[test]
 fn decode_two_frame_inter_mvstack_fixture_decodes_bit_exact() {
-    // DECODE-INTER-MVSTACK-SPATIAL: the committed syn-2frame-inter-mvstack-64x64.ivf
-    // is the verified first MULTI-BLOCK neighbour-predicted-MV target. Frame 0 is a
-    // general-intra DC_PRED key frame; frame 1 is an OBU_REGULAR_TILE_GROUP inter
-    // frame whose 64x64 superblock is §5.20.3 SPLIT into four 32x32 single-reference
-    // inter blocks: block 0 @ MI(0,0) is NEWMV with a non-zero MV (col 48 = +6 full
-    // pels) and the later three blocks are NEARMV that predict block 0's MV from the
-    // §7.11/§7.12 spatial-neighbour MV stack (find_mv_stack); all skip=1. avmdec
-    // --rawvideo --i420 and dav2d --demuxer ivf decode the whole stream byte-for-byte
-    // identically (decoded-output md5 e5b581a55433785c0071b635d5642083 over 12288
-    // bytes). The OLD single-block inter decoder rejected this fixture. NO step is
-    // hardcoded: the §8.2.4 exit_symbol() check guards bit-exactness, so a wrong
-    // mode / DRL / MV / context read rejects rather than emitting a wrong frame.
     let input = conformance_vector("syn-2frame-inter-mvstack-64x64.ivf");
     let output = temp_output("yuv");
 
@@ -668,9 +597,6 @@ fn decode_two_frame_inter_mvstack_fixture_decodes_bit_exact() {
     assert_eq!(decoded.len(), 12288, "two 8-bit 4:2:0 64x64 frames");
     let frame_bytes = 6144;
     let (frame0, frame1) = decoded.split_at(frame_bytes);
-    // Frame 1's luma differs from frame 0 (the +6-pel horizontal motion shifts the
-    // quadrant content), proving the inter MVs are genuinely applied (not a copy);
-    // the chroma is flat and unchanged.
     assert_ne!(
         &frame0[..4096],
         &frame1[..4096],
@@ -685,20 +611,6 @@ fn decode_two_frame_inter_mvstack_fixture_decodes_bit_exact() {
 
 #[test]
 fn decode_multi_sb_inter_fixture_decodes_bit_exact() {
-    // DECODE-INTER-MULTI-SB-SPATIAL: the committed syn-2sb-inter-128x64-q80.ivf is the
-    // verified first MULTI-SUPERBLOCK inter target. The 128x64 frame is two
-    // horizontally-adjacent 64x64 superblocks. Frame 0 is a general-intra DC_PRED key
-    // frame (left SB flat 100, right SB flat 150); frame 1 is an OBU_REGULAR_TILE_GROUP
-    // inter frame whose two superblocks are each a single 64x64 inter block: SB0 @
-    // MI(0,0) is NEWMV with a non-zero MV (col 48 = +6 full pels), and SB1 @ MI(0,16)
-    // — in the SECOND superblock — is NEARMV that predicts SB0's MV across the
-    // superblock boundary from the frame-wide §7.11/§7.12 spatial-neighbour MV stack
-    // (find_mv_stack); both skip=1. avmdec --rawvideo --i420 and dav2d --demuxer ivf
-    // decode the whole stream byte-for-byte identically (decoded-output md5
-    // 477a993d671e93d37b92a0d368c238ff over 24576 bytes). The OLD single-64x64 inter
-    // decoder rejected this fixture ("currently accepts only the verified 64x64 frame
-    // size"). NO step is hardcoded: the §8.2.4 exit_symbol() check guards
-    // bit-exactness.
     let input = conformance_vector("syn-2sb-inter-128x64-q80.ivf");
     let output = temp_output("yuv");
 
@@ -722,10 +634,6 @@ fn decode_multi_sb_inter_fixture_decodes_bit_exact() {
     let frame_bytes = 12288;
     let (frame0, frame1) = decoded.split_at(frame_bytes);
     let luma_bytes = 8192;
-    // Frame 1's luma differs from frame 0 (the +6-pel horizontal motion shifts the
-    // 100/150 superblock content left across the superblock boundary), proving the
-    // cross-superblock neighbour-predicted MVs are genuinely applied; chroma is flat
-    // and unchanged.
     assert_ne!(
         &frame0[..luma_bytes],
         &frame1[..luma_bytes],
@@ -740,20 +648,6 @@ fn decode_multi_sb_inter_fixture_decodes_bit_exact() {
 
 #[test]
 fn decode_grid_inter_fixture_decodes_bit_exact() {
-    // DECODE-INTER-GRID-SPATIAL: the committed syn-grid-inter-128x128-q80.ivf is the
-    // verified first 2-D-GRID inter target. The 128x128 frame is a 2x2 grid of 64x64
-    // superblocks. Frame 0 is a general-intra DC_PRED key frame (four flat 64x64
-    // superblocks 100/150/80/200); frame 1 is an OBU_REGULAR_TILE_GROUP inter frame
-    // whose four superblocks are each a single 64x64 inter block, all skip=1: SB0 @
-    // MI(0,0) is NEWMV with a non-zero MV (col 48 = +6 full pels), and SB1 @ MI(0,16),
-    // SB2 @ MI(16,0), SB3 @ MI(16,16) are NEARMV that predict SB0's MV via the
-    // frame-wide §7.11/§7.12 spatial-neighbour MV stack — SB2 and SB3 (in the SECOND
-    // superblock ROW) predict across the SB-ROW boundary, the case the single-SB-row
-    // brick deferred. avmdec --rawvideo --i420 and dav2d --demuxer ivf decode the whole
-    // stream byte-for-byte identically (decoded-output md5
-    // 897bf67e72ec04cb7275fae08eab700c over 49152 bytes). The single-SB-row inter
-    // decoder rejected this fixture (inter_unsupported_frame_size). NO step is
-    // hardcoded: the §8.2.4 exit_symbol() check guards bit-exactness.
     let input = conformance_vector("syn-grid-inter-128x128-q80.ivf");
     let output = temp_output("yuv");
 
@@ -777,10 +671,6 @@ fn decode_grid_inter_fixture_decodes_bit_exact() {
     let frame_bytes = 24576;
     let (frame0, frame1) = decoded.split_at(frame_bytes);
     let luma_bytes = 16384;
-    // Frame 1's luma differs from frame 0 (the +6-pel horizontal motion shifts the
-    // superblock content left across the superblock boundaries), proving the
-    // cross-superblock neighbour-predicted MVs are genuinely applied; chroma is flat
-    // and unchanged.
     assert_ne!(
         &frame0[..luma_bytes],
         &frame1[..luma_bytes],
@@ -795,24 +685,6 @@ fn decode_grid_inter_fixture_decodes_bit_exact() {
 
 #[test]
 fn decode_distinct_mv_inter_fixture_decodes_bit_exact() {
-    // DECODE-INTER-MVORDER-SPATIAL: the committed syn-2frame-inter-mvorder-64x64.ivf
-    // CLOSES the verified-subset honesty gap left by the identical-MV inter fixtures
-    // (mvstack / multi-SB / grid all propagated ONE col-48 MV, so the §7.12.2 stack
-    // collapsed and the per-neighbour ORDERING was exercised-but-not-discriminated).
-    // Frame 0 is a general-intra DC_PRED key frame (four flat 32x32 quadrants
-    // 100/150/60/200); frame 1 is an OBU_REGULAR_TILE_GROUP inter frame whose 64x64
-    // superblock is §5.20.3 SPLIT into four 32x32 single-reference inter blocks, all
-    // skip=1, each carrying a DISTINCT MV: block 0 @ MI(0,0) NEWMV col 64, block 1 @
-    // MI(0,8) NEWMV col -32, block 2 @ MI(8,0) NEWMV col 32, and the INTERIOR block 3
-    // @ MI(8,8) NEARMV RefMvIdx 1 over a stack whose slot 0 is the LEFT neighbour
-    // (col 32) and slot 1 is the ABOVE neighbour (col -32), reconstructing col -32 —
-    // pinning the §7.12.2 left-before-above ordering and the §5.20.7.8 DRL slot-1
-    // selection (a reversed order would reconstruct from col 32 and mismatch). Every
-    // leaf is 32x32 (not > 32), so the §7.12.2.20 large-block MVP step is
-    // inapplicable. avmdec --rawvideo --i420 and dav2d --demuxer ivf decode the whole
-    // stream byte-for-byte identically (decoded-output md5
-    // 284e1450b42180f02de7415ab0367bfe over 12288 bytes). NO step is hardcoded: the
-    // §8.2.4 exit_symbol() check guards bit-exactness.
     let input = conformance_vector("syn-2frame-inter-mvorder-64x64.ivf");
     let output = temp_output("yuv");
 
@@ -835,9 +707,6 @@ fn decode_distinct_mv_inter_fixture_decodes_bit_exact() {
     assert_eq!(decoded.len(), 12288, "two 8-bit 4:2:0 64x64 frames");
     let frame_bytes = 6144;
     let (frame0, frame1) = decoded.split_at(frame_bytes);
-    // Frame 1's luma differs from frame 0 (the distinct per-quadrant horizontal
-    // motion shifts the quadrant content), proving the distinct neighbour-predicted
-    // MVs are genuinely applied; the chroma is flat 128 and unchanged.
     assert_ne!(
         &frame0[..4096],
         &frame1[..4096],
@@ -852,17 +721,6 @@ fn decode_distinct_mv_inter_fixture_decodes_bit_exact() {
 
 #[test]
 fn decode_multiref_three_frame_fixture_is_bit_exact() {
-    // DECODE-INTER-MULTIREF-RUNTIME: the committed syn-3frame-multiref-64x64.ivf is the
-    // verified multi-reference target. Frame 0 is an OBU_CLOSED_LOOP_KEY flat intra key
-    // (luma 100); frame 1 is an OBU_REGULAR_TILE_GROUP single-reference inter block
-    // (§7.7 NumTotalRefs == 1, the key) reconstructing luma 160 and refreshing a SECOND
-    // reference slot; frame 2 is an OBU_REGULAR_TILE_GROUP inter block over TWO valid
-    // references (§7.7 ref_frame_idx [0, 1]) whose §5.20.7.12 single_ref selects slot 1
-    // (the RETAINED frame 1, luma 160), NOT the key (luma 100). Encoded with
-    // --cdf-update-mode=0 so no CDF adaptation propagates. avmdec --rawvideo --i420 and
-    // dav2d --demuxer ivf --muxer yuv decode the whole stream byte-for-byte identically
-    // (decoded-output md5 861078138ab514bd847ccfe22ac44fa1 over 18432 bytes: three flat
-    // 8-bit 4:2:0 64x64 frames).
     let input = conformance_vector("syn-3frame-multiref-64x64.ivf");
     let output = temp_output("yuv");
 
@@ -882,13 +740,11 @@ fn decode_multiref_three_frame_fixture_is_bit_exact() {
         String::from_utf8_lossy(&out.stderr)
     );
     let decoded = std::fs::read(&output).expect("decoded raw output");
-    // 3 frames * (64x64 luma + 2 * 32x32 chroma) = 3 * 6144 = 18432 bytes.
     assert_eq!(decoded.len(), 18432, "three flat 8-bit 4:2:0 64x64 frames");
     let frame_bytes = 6144;
     let frame0 = &decoded[..frame_bytes];
     let frame1 = &decoded[frame_bytes..2 * frame_bytes];
     let frame2 = &decoded[2 * frame_bytes..];
-    // Frame 0 (key) is flat luma 100; frames 1 and 2 are flat luma 160.
     assert!(
         frame0[..4096].iter().all(|&s| s == 100),
         "key luma flat 100"
@@ -901,8 +757,6 @@ fn decode_multiref_three_frame_fixture_is_bit_exact() {
         frame2[..4096].iter().all(|&s| s == 160),
         "frame 2 luma flat 160"
     );
-    // ASYMMETRIC PROOF: frame 2 reads the retained frame 1 (slot 1, luma 160), NOT the
-    // key (slot 0, luma 100). Frame 2 == frame 1 and frame 2 != frame 0.
     assert_eq!(
         frame2, frame1,
         "frame 2 reads the retained inter frame (slot 1)"
@@ -915,16 +769,6 @@ fn decode_multiref_three_frame_fixture_is_bit_exact() {
 
 #[test]
 fn decode_compound_average_three_frame_fixture_is_bit_exact() {
-    // DECODE-INTER-COMPOUND-AVERAGE: the committed
-    // syn-3frame-compound-average-64x64.ivf is the verified two-reference
-    // COMPOUND_AVERAGE target. Frame 0 is a general-intra low-frequency key frame,
-    // frame 1 is a single-reference NEWMV inter frame, and frame 2 is a
-    // `reference_select` compound block over refs [0, 1] with non-joint NEAR_NEARMV,
-    // zero MVs, skip=1, COMPOUND_AVERAGE, and CWP/masks disabled. avmdec
-    // --rawvideo --i420 and dav2d --demuxer ivf --muxer yuv decode the whole stream
-    // byte-for-byte identically (raw SHA-256
-    // 2b4f716243d9f5c30a244ecc6f7fdcb5bef804d2ba353a21d670d686cfe63ff4; raw MD5
-    // 34074c6945348b146f84551a20d9affd).
     let input = conformance_vector("syn-3frame-compound-average-64x64.ivf");
     let output = temp_output("yuv");
 
@@ -944,7 +788,6 @@ fn decode_compound_average_three_frame_fixture_is_bit_exact() {
         String::from_utf8_lossy(&out.stderr)
     );
     let decoded = std::fs::read(&output).expect("decoded raw output");
-    // 3 frames * (64x64 luma + 2 * 32x32 chroma) = 3 * 6144 = 18432 bytes.
     assert_eq!(decoded.len(), 18432, "three 8-bit 4:2:0 64x64 frames");
     let frame_bytes = 6144;
     let frame0 = &decoded[..frame_bytes];

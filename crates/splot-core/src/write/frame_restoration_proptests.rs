@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Property tests for the § 5.18.7.11 / § 5.18.7.12 loop-restoration and CCSO writers: each
-// parser is driven on random bits + gating, then the parsed model is re-emitted and reparsed to
-// assert the universal semantic round-trip; plus a "never panics" property over arbitrary
-// (possibly invalid) constructed models.
-
-// `include!`d into `crate::write::frame_restoration` so `super::*` resolves to its writers and
-// private helpers (the unit/reject tests live in the sibling `frame_restoration_tests.rs`).
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -56,7 +49,6 @@ mod proptests {
     }
 
     proptest! {
-        // ===== lr_params (§ 5.18.7.11) =====
 
         /// Every parser-reachable lr_params on the writer-supported surface round-trips: parse
         /// random bits + gating, then re-emit and reparse to the same model. Parsed
@@ -189,7 +181,6 @@ mod proptests {
             }
         }
 
-        // ===== ccso_params (§ 5.18.7.12) =====
 
         /// Every parser-reachable ccso_params round-trips: parse random bits + gating, then
         /// re-emit and reparse to the same model.

@@ -244,8 +244,6 @@ fn tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record() {
 /// §5.20.3.2 `block_coded` clamp. The full grid stays populated by the in-frame cells.
 #[test]
 fn tx_skip_grid_retention_clamps_bottom_edge_overhang() {
-    // A small analogue: a 4-row grid with two records. The bottom record at row=2 has
-    // a NOMINAL height of 4 (overhangs the 4-row grid by 2); it fills only rows 2..4.
     let records = [
         WienerNsLrTxSkipTransformRecord {
             row: 0,
@@ -267,11 +265,8 @@ fn tx_skip_grid_retention_clamps_bottom_edge_overhang() {
         },
     ];
 
-    // Without the clamp this would error `LrTxSkip transform record bounds`.
     let tx_skip = derive_wienerns_lr_tx_skip_grid_retention(4, 1, &records).unwrap();
 
-    // Every in-frame cell is populated: rows 0,1 are skip (1), rows 2,3 are non-skip
-    // with eob>0 (0). The off-frame rows 4,5 of the second record are dropped.
     let column: Vec<i32> = (0..4)
         .map(|row| {
             tx_skip
@@ -375,22 +370,12 @@ fn selectable_tx_records_populate_live_tx_skip_grid() {
     );
 }
 
-// §5.20.6.1 frame-edge cell drop: the spec `LumaTxSizes` fill (set_tx_size,
-// 05-syntax-structures.md:12061-12071) has no MiRows/MiCols clamp; out-of-frame
-// tx samples are dropped downstream via §5.20.3.2 `block_coded`
-// (05-syntax-structures.md:9621). The ac0ej3 trigger is a `BLOCK_128X64` at
-// MI(256,0) in a 480x270 MI grid whose chunked path writes two 16x16 MI tiles at
-// rows 256..272, overshooting MiRows=270 by 2 rows (rows 270,271) across the
-// full 32-MI width.
-
 /// The bottom-edge block's in-frame tx records match the geometric placement:
 /// each 16x16 chunk tile is `TX_64X64`, only the in-frame rows are filled, and
 /// the record origins stay in-frame (rows 256..272 drops the past-edge rows
 /// 270,271 without erroring `OutOfBounds`).
 #[test]
 fn set_tx_size_drops_bottom_edge_cells_past_frame_extent() {
-    // Minimal grid reproducing the ac0ej3 partial-SB bottom row: 272 cols, 270
-    // rows, origin MI(256,0), two 16x16 chunk tiles side by side.
     let mut grid = SelectableLumaTxGrid::new(270, 272).unwrap();
     assert_eq!(
         grid.set_tx_size(256, 0, 16, 16, false, false).unwrap(),
@@ -401,8 +386,6 @@ fn set_tx_size_drops_bottom_edge_cells_past_frame_extent() {
         TX_64X64
     );
 
-    // The records keep the full geometric extent (16x16) at their in-frame
-    // origins, so tx kind / middle / scan_order stay AVM-exact.
     assert_eq!(
         grid.records_for_region(256, 0, 16, 32)
             .unwrap()
@@ -417,9 +400,6 @@ fn set_tx_size_drops_bottom_edge_cells_past_frame_extent() {
             .collect::<Vec<_>>(),
         vec![(256, 0, 16, 16, TX_64X64), (256, 16, 16, 16, TX_64X64)]
     );
-    // The two out-of-frame rows (270,271) are never filled, and `index()` still
-    // errors `OutOfBounds` for the genuinely-out-of-frame coord — the drop happens
-    // in `set_tx_size`, not by weakening the grid-index invariant.
     assert_eq!(
         grid.cell(270, 0).unwrap_err(),
         SelectableTransformRecordError::OutOfBounds {
@@ -443,13 +423,11 @@ fn interior_block_records_match_edge_block_minus_dropped_cells() {
         grid.records_for_region(0, 0, 16, 32).unwrap()
     };
     let edge = {
-        // Identical geometry, but the grid ends 2 rows short of the block.
         let mut grid = SelectableLumaTxGrid::new(14, 64).unwrap();
         grid.set_tx_size(0, 0, 16, 16, false, false).unwrap();
         grid.set_tx_size(0, 16, 16, 16, false, false).unwrap();
         grid.records_for_region(0, 0, 16, 32).unwrap()
     };
-    // Same record count, tx_size, and order — the in-frame record set is identical.
     let shape = |records: &[SelectableLumaTxRecord]| {
         records
             .iter()
@@ -472,8 +450,6 @@ fn interior_block_records_match_edge_block_minus_dropped_cells() {
 /// frame 0 exercises only the bottom edge, so this is tested, not assumed.
 #[test]
 fn set_tx_size_drops_right_edge_cells_past_frame_extent() {
-    // 32 rows, 30 cols, two stacked 16x16 chunk tiles whose 32-col extent
-    // overshoots MiCols=30 by 2 columns (cols 30,31).
     let mut grid = SelectableLumaTxGrid::new(32, 30).unwrap();
     grid.set_tx_size(0, 16, 16, 16, false, false).unwrap();
     grid.set_tx_size(16, 16, 16, 16, false, false).unwrap();
@@ -485,8 +461,6 @@ fn set_tx_size_drops_right_edge_cells_past_frame_extent() {
             .collect::<Vec<_>>(),
         vec![(0, 16, TX_64X64), (16, 16, TX_64X64)]
     );
-    // Columns 30,31 past MiCols are never filled; `index()` still errors
-    // `OutOfBounds` for the out-of-frame coord (the drop is in `set_tx_size`).
     assert_eq!(
         grid.cell(0, 30).unwrap_err(),
         SelectableTransformRecordError::OutOfBounds {
@@ -507,13 +481,9 @@ fn records_for_region_is_complete_for_clamped_edge_region() {
     let mut grid = SelectableLumaTxGrid::new(270, 272).unwrap();
     grid.set_tx_size(256, 0, 16, 16, false, false).unwrap();
     grid.set_tx_size(256, 16, 16, 16, false, false).unwrap();
-    // The block's geometric region is 16 rows x 32 cols at MI(256,0), but rows
-    // 270,271 are out of frame; the clamped region is still Complete.
     let records = grid.records_for_region(256, 0, 16, 32).unwrap();
     assert_eq!(records.len(), 2);
 
-    // A single-tile interior `TX_16X16` region stays Complete without the clamp,
-    // confirming the clamp does not loosen the in-frame completeness check.
     let mut interior = SelectableLumaTxGrid::new(8, 8).unwrap();
     interior.set_tx_size(0, 0, 4, 4, false, false).unwrap();
     assert_eq!(

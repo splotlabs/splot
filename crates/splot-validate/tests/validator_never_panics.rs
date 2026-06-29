@@ -42,7 +42,6 @@ proptest! {
         let (strict, options) = options_from_bytes(flags, keys);
         let validator = Validator::new(strict);
         let report = validator.validate_bytes_with_options(&data, &options);
-        // Touch the report so the call result is observed, not optimized away.
         let _ = report.diagnostics.len();
     }
 }

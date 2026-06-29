@@ -9,12 +9,22 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use splot_core::span::ByteOffset;
-use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::{CdfUpdateMode, SymbolBitPosition, SymbolDecoder, SymbolDecoderConfig};
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
 use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
 use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
+use super::ordinary_pass::CoeffOrdinaryBranch;
 use super::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
+
+pub(crate) type BranchRun<T> = (
+    T,
+    TileCoeffContextState,
+    TileCdfSubset,
+    SymbolBitPosition,
+    u64,
+);
+pub(crate) type OrdinaryBranchRun = BranchRun<CoeffOrdinaryBranch>;
 
 /// Builds a CDF-update-enabled symbol decoder over `payload` at offset 0.
 pub(crate) fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
@@ -41,6 +51,50 @@ pub(crate) fn seeded_context_state() -> TileCoeffContextState {
         })
         .unwrap();
     state
+}
+
+pub(crate) fn run_ordinary_branch<'a>(
+    payload: &'a [u8],
+    apply: impl FnOnce(
+        &mut TileCoeffContextState,
+        &mut TileCdfSubset,
+        &mut SymbolDecoder<'a>,
+    ) -> CoeffOrdinaryBranch,
+) -> OrdinaryBranchRun {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context_state = seeded_context_state();
+    let branch = apply(&mut context_state, &mut tile, &mut symbols);
+    (
+        branch,
+        context_state,
+        tile,
+        symbols.consumed_bits(),
+        symbols.symbol_count(),
+    )
+}
+
+pub(crate) fn run_optional_branch<'a, T>(
+    payload: &'a [u8],
+    apply: impl FnOnce(
+        &mut TileCoeffContextState,
+        &mut TileCdfSubset,
+        &mut SymbolDecoder<'a>,
+    ) -> Option<T>,
+) -> Option<BranchRun<T>> {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context_state = seeded_context_state();
+    let branch = apply(&mut context_state, &mut tile, &mut symbols)?;
+    Some((
+        branch,
+        context_state,
+        tile,
+        symbols.consumed_bits(),
+        symbols.symbol_count(),
+    ))
 }
 
 /// Narrows an EOB branch to its non-zero start, or `None` for the all-zero arm.

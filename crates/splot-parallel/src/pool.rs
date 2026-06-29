@@ -118,10 +118,6 @@ mod tests {
     #[test]
     fn install_runs_work_on_local_pool() {
         let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
-        // Every parallel work item runs on a thread that belongs to this pool,
-        // so `current_thread_index` is always `Some(_)` and the worker thread is
-        // named with the `splot-worker-` prefix. Both assertions are
-        // deterministic regardless of the actual scheduling.
         let all_on_pool = pool.install(|| {
             (0..256u64)
                 .into_par_iter()

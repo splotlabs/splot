@@ -17,8 +17,6 @@ use splot_tables::tables;
 
 #[test]
 fn transform_1d_adst_kernel4_matches_mirror() {
-    // docs/spec/av2/1.0.0/09-additional-tables/09-06-1d-transform-tables.md
-    // lines 195-202 (Adst_Kernel4[4][4]).
     assert_eq!(
         tables::transform_1d::ADST_KERNEL4,
         [
@@ -32,21 +30,14 @@ fn transform_1d_adst_kernel4_matches_mirror() {
 
 #[test]
 fn quantizer_qm_offset_matches_mirror() {
-    // docs/spec/av2/1.0.0/09-additional-tables/09-04-quantizer-matrix-tables.md
-    // lines 90-97 (Qm_Offset[ TX_SIZES_ALL ]).
     let t = &tables::quantizer::QM_OFFSET;
     assert_eq!(t.len(), 25);
-    // line 92: "0, 16, 80, 336, 336, 1360, 1392, 1424,".
     assert_eq!(&t[..8], &[0, 16, 80, 336, 336, 1360, 1392, 1424]);
-    // line 95: "3472," (the final element).
     assert_eq!(t[24], 3472);
 }
 
 #[test]
 fn quantizer_matrix_luma_4x4_matches_mirror() {
-    // 09-04-quantizer-matrix-tables.md line 107, the first (lvl 0) luma matrix,
-    // "Size 4x4" run: "32, 43, 73, 97, 43, 67, 94, 110, 73, 94, 137, 150, 97,
-    // 110, 150, 200, ...".
     let m = &tables::quantizer::QUANTIZER_MATRIX; // [15][2][3600]
     assert_eq!(m.len(), 15);
     assert_eq!(m[0].len(), 2);
@@ -61,8 +52,6 @@ fn quantizer_matrix_luma_4x4_matches_mirror() {
 
 #[test]
 fn loop_restoration_pc_wiener_tables_match_mirror() {
-    // docs/spec/av2/1.0.0/09-additional-tables/09-08-loop-restoration-tables.md
-    // lines 12149-12152 (Pc_Wiener_Lut_To_Class[4096]).
     let lut = &tables::loop_restoration::PC_WIENER_LUT_TO_CLASS;
     assert_eq!(lut.len(), 4096);
     assert_eq!(
@@ -72,8 +61,6 @@ fn loop_restoration_pc_wiener_tables_match_mirror() {
         ]
     );
 
-    // docs/spec/av2/1.0.0/09-additional-tables/09-08-loop-restoration-tables.md
-    // lines 12518-12523 (Pc_Wiener_Filters[4][64][13], first filter).
     assert_eq!(
         tables::loop_restoration::PC_WIENER_FILTERS[0][0],
         [73, 127, -20, -30, -38, -29, 10, 7, -1, -3, 1, 7, -208]

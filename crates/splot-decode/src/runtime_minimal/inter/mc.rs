@@ -29,7 +29,6 @@ use splot_core::span::ByteOffset;
 /// A motion-compensated block's luma-space rectangle (the § 7.13.3.18 region the
 /// block covers). For the full-frame single block this is the whole frame; for a
 /// multi-block partition each leaf block carries its own rect.
-// `luma_*` prefix distinguishes luma-space coordinates from chroma-space; dropping it would lose that AV2 distinction.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct McBlockRect {
@@ -73,7 +72,6 @@ pub(super) fn motion_compensate_block_into(
     interp: InterpolationFilter,
     offset: ByteOffset,
 ) -> Result<()> {
-    // 4:2:0 luma full-resolution; chroma half-resolution (subsampling 1/1).
     predict_plane(
         workspace,
         reference,
@@ -181,7 +179,6 @@ fn predict_plane(
         reference_plane_samples(reference, plane, offset)?;
     let view = ReferencePlaneView::new(&samples, ref_width, ref_height)?;
 
-    // The block's plane-space position + size (luma rect subsampled per plane).
     let plane_x = rect.luma_x >> sub_x;
     let plane_y = rect.luma_y >> sub_y;
     let block_w = rect.luma_w >> sub_x;
@@ -216,9 +213,6 @@ fn predict_plane(
     };
     let predicted = subpel_predict_block(&view, &params)?;
 
-    // §7.13.3 single-reference write: CurrFrame[plane][y][x] = Clip1(Preds[0]). The
-    // kernel already applied Clip1 to 8-bit, so narrow back to u8 (every value is in
-    // 0..=255 by construction).
     let packed: Vec<u8> = predicted
         .iter()
         .map(|&v| u8::try_from(v).unwrap_or(u8::MAX))
@@ -338,19 +332,12 @@ fn reference_plane_samples(
     let ref_width = visible.width();
     let ref_height = visible.height();
 
-    // Gather the reference's visible rows (storage padding excluded) into a packed
-    // u16 buffer for the §7.13.3.18 convolution view (the whole reference plane;
-    // the kernel clips block sampling to it).
     let mut samples: Vec<u16> = Vec::with_capacity(ref_width.saturating_mul(ref_height));
     let rows: VisibleRows<'_, u8> = ref_plane.visible_rows();
     for row in rows {
         samples.extend(row.iter().map(|&s| u16::from(s)));
     }
 
-    // The reference MI grid: luma MI units of the (square) frame. RefMiCols/Rows are
-    // the luma mode-info dimensions, used by §7.13.3.18 to derive lastX/lastY with
-    // the plane subsampling. For the same-size reference, that is the luma plane
-    // dimensions in 4-sample MI units.
     let luma_visible = reference.y().visible_size();
     let ref_mi_cols = (luma_visible.width() as i64) / 4;
     let ref_mi_rows = (luma_visible.height() as i64) / 4;

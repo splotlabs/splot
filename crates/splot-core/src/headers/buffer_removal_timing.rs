@@ -195,8 +195,6 @@ mod tests {
 
     #[test]
     fn brt_truncated_is_error_not_panic() {
-        // dependent=1, ops_id=0, ops_cnt=1 fills exactly one byte, so the per-op
-        // br_decoder_model_present_op_flag read runs past the input.
         let mut bits = Bits::default();
         bits.bit(1); // br_ops_dependent_flag
         bits.f(0, 4); // br_ops_id

@@ -96,8 +96,6 @@ fn physical_line_count(text: &str) -> usize {
     if text.is_empty() {
         0
     } else {
-        // Plain newline count: the `bytecount` crate would be a new dependency
-        // (gated) for a once-per-file count where speed is irrelevant.
         #[allow(clippy::naive_bytecount)]
         let newlines = text.as_bytes().iter().filter(|&&b| b == b'\n').count();
         newlines + usize::from(!text.ends_with('\n'))
@@ -262,9 +260,6 @@ mod tests {
 
     #[test]
     fn allowance_lookup_normalizes_backslash_paths() {
-        // `HARD_LINE_ALLOWANCES` is empty in production; use a local fixture so the
-        // backslash-normalization machinery stays covered regardless of whether any
-        // file currently carries an allowance.
         let allowance = SourceLineAllowance {
             path: "crates/foo/src/large.rs",
             max_lines: 2_700,

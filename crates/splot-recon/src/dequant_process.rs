@@ -171,9 +171,6 @@ pub struct QmWeightIndex {
 /// outside the `tx_width * tx_height` sub-block, or if `seg_level` or the derived
 /// position is out of range for the generated `Quantizer_Matrix`.
 pub fn quantization_matrix_weight(index: &QmWeightIndex) -> Result<i32> {
-    // The coefficient must lie inside the selected transform's sub-block; a
-    // larger row/col would otherwise index a later transform's region of the
-    // flattened matrix row.
     if index.row >= index.tx_height || index.col >= index.tx_width {
         return Err(ReconError::InvalidQuantizerMatrixIndex {
             seg_level: index.seg_level,
@@ -193,8 +190,6 @@ pub fn quantization_matrix_weight(index: &QmWeightIndex) -> Result<i32> {
                 position: 0,
             })?;
     let plane = &level[usize::from(index.plane_is_chroma)];
-    // `qm_offset` is the caller-resolved region start; widen the in-region offset
-    // and bounds-check the flattened position against the matrix row.
     let position = index
         .qm_offset
         .saturating_add(index.row.saturating_mul(index.tx_width))
@@ -228,62 +223,42 @@ mod tests {
 
     #[test]
     fn dequant_coefficient_applies_round2_mask_and_denom() {
-        // dq_denom = 1 (shift 0): Dequant = sign * Round2(Abs(qc)*q2 & 0xFFFFFF, 3).
-        // qc = 4, q2 = 16 -> dqHigh = 64 -> Round2(64,3) = (64+4)>>3 = 8.
         assert_eq!(dequant_coefficient(4, 16, 1, BitDepth::Eight), 8);
-        // Negative coefficient keeps the sign.
         assert_eq!(dequant_coefficient(-4, 16, 1, BitDepth::Eight), -8);
-        // Zero coefficient -> 0.
         assert_eq!(dequant_coefficient(0, 16, 1, BitDepth::Eight), 0);
     }
 
     #[test]
     fn dequant_coefficient_divides_by_dq_denom() {
-        // dq_denom = 4 (shift 2): the rounded product is divided by 4.
-        // qc = 8, q2 = 16 -> dqHigh = 128 -> Round2(128,3) = (128+4)>>3 = 16;
-        // 16 / 4 = 4.
         assert_eq!(dequant_coefficient(8, 16, 4, BitDepth::Eight), 4);
     }
 
     #[test]
     fn dequant_coefficient_masks_to_24_bits() {
-        // The product is masked with 0xFFFFFF before rounding. A product whose
-        // low 24 bits are 0 rounds to 0 regardless of the high bits.
-        // qc such that Abs(qc)*q2 == 0x1000000 (16777216): low 24 bits are 0.
-        // 0x1000000 = 4096 * 4096.
         assert_eq!(dequant_coefficient(4096, 4096, 1, BitDepth::Eight), 0);
-        // One more (0x1000008) keeps only the low 24 bits (8) -> Round2(8,3)=1.
         assert_eq!(dequant_coefficient(0x100_0008, 1, 1, BitDepth::Eight), 1);
     }
 
     #[test]
     fn dequant_coefficient_clips_to_bit_depth_bound() {
-        // The result is clamped to [-(1<<(7+BitDepth)), (1<<(7+BitDepth))-1].
-        // 8-bit bound is 1<<15 = 32768. A huge product clamps to 32767 / -32768.
         let max = dequant_coefficient(0xFF_FFFF, 1, 1, BitDepth::Eight);
         assert_eq!(max, 32767);
         let min = dequant_coefficient(-0xFF_FFFF, 1, 1, BitDepth::Eight);
         assert_eq!(min, -32768);
-        // 10-bit widens the bound to 1<<17 = 131072, so the same large product
-        // clamps to 131071 instead of 32767.
         let wide = dequant_coefficient(0xFF_FFFF, 1, 1, BitDepth::Ten);
         assert_eq!(wide, 131_071);
     }
 
     #[test]
     fn dequant_coefficient_is_total_for_extreme_inputs() {
-        // i32::MIN coefficient and the maximum quantizer must not panic/overflow.
         let _ = dequant_coefficient(i32::MIN, u32::MAX, 0, BitDepth::Eight);
         let _ = dequant_coefficient(i32::MAX, u32::MAX, 8, BitDepth::Ten);
     }
 
     #[test]
     fn dequantize_block_uses_dc_quant_for_origin_and_ac_elsewhere() {
-        // 4x4 block: DC (0,0) uses dc_quant, all others ac_quant. Use distinct
-        // quantizers and a unit coefficient everywhere to observe the selection.
         let quant = [1i32; 16];
         let mut out = [0i32; 16];
-        // dc_quant = 16 -> Round2(16,3)=2; ac_quant = 32 -> Round2(32,3)=4.
         let params = DequantBlockParams {
             dc_quant: 16,
             ac_quant: 32,
@@ -337,25 +312,18 @@ mod tests {
 
     #[test]
     fn qm_weighted_quantizer_applies_round2_shift5() {
-        // q2 = Round2(q*m, 5). q=8, m=64 -> (512+16)>>5 = 16.
         assert_eq!(qm_weighted_quantizer(8, 64), 16);
-        // A neutral weight of 32 (= 1<<5) round-trips q within rounding:
-        // Round2(q*32, 5) = q.
         assert_eq!(qm_weighted_quantizer(40, 32), 40);
-        // Zero weight -> 0.
         assert_eq!(qm_weighted_quantizer(100, 0), 0);
     }
 
     #[test]
     fn qm_weighted_quantizer_is_total_for_extreme_inputs() {
-        // u32::MAX * a large weight must not panic/overflow (i64 + clamp).
         let _ = qm_weighted_quantizer(u32::MAX, i32::MAX);
     }
 
     #[test]
     fn quantization_matrix_weight_matches_the_generated_table() {
-        // The (0,0) coefficient of seg_level 0, luma, tx_size 0 is
-        // Quantizer_Matrix[0][0][Qm_Offset[0] + 0] = Quantizer_Matrix[0][0][0].
         let index = QmWeightIndex {
             seg_level: 0,
             plane_is_chroma: false,
@@ -367,7 +335,6 @@ mod tests {
         };
         let m = quantization_matrix_weight(&index).unwrap();
         assert_eq!(m, QUANTIZER_MATRIX[0][0][0]);
-        // Chroma selects the second plane row.
         let chroma = QmWeightIndex {
             plane_is_chroma: true,
             ..index
@@ -376,8 +343,6 @@ mod tests {
             quantization_matrix_weight(&chroma).unwrap(),
             QUANTIZER_MATRIX[0][1][0]
         );
-        // A non-origin coefficient uses Qm_Offset[txSz] + row*tw + col, with the
-        // offset and the stride both resolved from tx_size 1 (an 8x8 transform).
         let off = QM_OFFSET[1] as usize;
         let pos = QmWeightIndex {
             qm_offset: off,
@@ -395,7 +360,6 @@ mod tests {
 
     #[test]
     fn quantization_matrix_weight_rejects_out_of_range_indices() {
-        // seg_level beyond the matrix (row/col inside the sub-block).
         let bad_level = QmWeightIndex {
             seg_level: 99,
             plane_is_chroma: false,
@@ -413,11 +377,6 @@ mod tests {
 
     #[test]
     fn quantization_matrix_weight_rejects_coords_outside_the_transform_sub_block() {
-        // A coordinate outside the selected transform's sub-block must be
-        // rejected, not silently read from a neighbouring transform's region.
-        // tx_size 0 is 4x4: row == 4 is outside, even though Qm_Offset[0] + 4*4
-        // = 16 still lands inside the 3600-entry matrix row (the start of the
-        // 8x8 region).
         let outside_row = QmWeightIndex {
             seg_level: 0,
             plane_is_chroma: false,
@@ -431,7 +390,6 @@ mod tests {
             quantization_matrix_weight(&outside_row),
             Err(ReconError::InvalidQuantizerMatrixIndex { qm_offset: 0, .. })
         ));
-        // A column outside the width is rejected too.
         let outside_col = QmWeightIndex {
             col: 4,
             row: 0,

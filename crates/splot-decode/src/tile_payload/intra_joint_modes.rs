@@ -97,13 +97,11 @@ impl TileIntraJointModeState {
     /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3`).
     fn get_joint_mode(&self, dir: usize, r: usize, c: usize, n4w: usize, n4h: usize) -> u8 {
         let (mv_row, mv_col) = if dir == 1 {
-            // Above neighbour: mvRow = MiRow - 1, mvCol = MiCol + n4w - 1.
             let Some(mv_row) = r.checked_sub(1) else {
                 return DC_PRED_JOINT_MODE;
             };
             (mv_row, c.saturating_add(n4w.saturating_sub(1)))
         } else {
-            // Left neighbour: mvCol = MiCol - 1, mvRow = MiRow + n4h - 1.
             let Some(mv_col) = c.checked_sub(1) else {
                 return DC_PRED_JOINT_MODE;
             };
@@ -310,8 +308,6 @@ impl TileUsesMrlsState {
         let (Some(row), Some(col)) = (row, col) else {
             return;
         };
-        // AV2 § 5.20.4.1 `add_neighbor`: NPos only keeps same-superblock-row
-        // locations, while NPosBuf may keep cross-row buffered neighbours.
         if current_row / self.sb_size4 != row / self.sb_size4 {
             return;
         }
@@ -852,31 +848,19 @@ mod tests {
 
     #[test]
     fn out_of_frame_neighbours_give_context_zero() {
-        // The single-block tile origin: left (MiCol - 1) and above (MiRow - 1)
-        // are both out of frame, so get_joint_mode returns DC_PRED (0), which is
-        // non-directional -> ctx 0 (matches the hardcoded tile-origin literal).
         let state = TileIntraJointModeState::new(16, 16).unwrap();
         assert_eq!(state.y_mode_index_ctx(0, 0, 16, 16), 0);
     }
 
     #[test]
     fn non_directional_neighbour_keeps_context_zero() {
-        // A left neighbour whose IntraJointMode is non-directional (SMOOTH_V,
-        // modeDelta 2 < 5) contributes 0 to the context: the verified mbvg
-        // neighbour-SMOOTH case.
         let mut state = TileIntraJointModeState::new(16, 32).unwrap();
-        // Left 64x64 superblock (16x16 MIs) at (0, 0) stores SMOOTH_V.
         state.record_block(0, 0, 16, 16, SMOOTH_V_JOINT_MODE);
-        // The right superblock at (0, 16) reads the left neighbour -> still ctx 0.
         assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
     }
 
     #[test]
     fn directional_left_neighbour_raises_context_to_one() {
-        // A left neighbour storing a directional IntraJointMode (D135, modeDelta
-        // 36 >= 5) raises get_joint_mode(0) >= 5 -> ctx 1. This is the latent
-        // #383 case the codex P2 finding flagged: a DC block to the right of a
-        // D135 top-left block needs ctx 1, not the hardcoded 0.
         let mut state = TileIntraJointModeState::new(16, 32).unwrap();
         state.record_block(0, 0, 16, 16, D135_JOINT_MODE);
         assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 1);
@@ -884,8 +868,6 @@ mod tests {
 
     #[test]
     fn directional_above_neighbour_raises_context_to_one() {
-        // A directional above neighbour (D135) likewise raises ctx to 1 via
-        // get_joint_mode(1).
         let mut state = TileIntraJointModeState::new(32, 16).unwrap();
         state.record_block(0, 0, 16, 16, D135_JOINT_MODE);
         assert_eq!(state.y_mode_index_ctx(16, 0, 16, 16), 1);
@@ -893,35 +875,23 @@ mod tests {
 
     #[test]
     fn directional_both_neighbours_raise_context_to_two() {
-        // Directional left AND above neighbours sum to ctx 2 (the § 8.3.2 sum of
-        // two indicators).
         let mut state = TileIntraJointModeState::new(32, 32).unwrap();
-        // Above neighbour of the block at (16, 16): get_joint_mode(1) reads
-        // IntraJointModes[15][16 + 16 - 1] = [15][31].
         state.record_block(0, 16, 16, 16, D135_JOINT_MODE);
-        // Left neighbour: get_joint_mode(0) reads IntraJointModes[16 + 16 - 1][15]
-        // = [31][15].
         state.record_block(16, 0, 16, 16, D135_JOINT_MODE);
         assert_eq!(state.y_mode_index_ctx(16, 16, 16, 16), 2);
     }
 
     #[test]
     fn get_joint_mode_uses_the_spec_neighbour_positions() {
-        // get_joint_mode(0) (left): mvCol = c - 1, mvRow = r + n4h - 1.
-        // get_joint_mode(1) (above): mvRow = r - 1, mvCol = c + n4w - 1.
         let mut state = TileIntraJointModeState::new(8, 8).unwrap();
-        // Mark the exact left-neighbour cell for a 2x2 block at (2, 2):
-        // mvRow = 2 + 2 - 1 = 3, mvCol = 2 - 1 = 1.
         state.record_block(3, 1, 1, 1, D135_JOINT_MODE);
         assert_eq!(state.get_joint_mode(0, 2, 2, 2, 2), D135_JOINT_MODE);
-        // Mark the exact above-neighbour cell: mvRow = 2 - 1 = 1, mvCol = 2 + 2 - 1 = 3.
         state.record_block(1, 3, 1, 1, D135_JOINT_MODE);
         assert_eq!(state.get_joint_mode(1, 2, 2, 2, 2), D135_JOINT_MODE);
     }
 
     #[test]
     fn last_non_directional_mode_does_not_raise_the_context() {
-        // modeDelta == NON_DIRECTIONAL_MODES_COUNT - 1 is still non-directional.
         let mut state = TileIntraJointModeState::new(16, 32).unwrap();
         state.record_block(0, 0, 16, 16, NON_DIRECTIONAL_MODES_COUNT - 1);
         assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
@@ -941,11 +911,8 @@ mod tests {
 
     #[test]
     fn record_block_clips_to_the_grid() {
-        // A block straddling the frame edge writes only its in-frame MIs; the
-        // out-of-grid cells are skipped without panicking.
         let mut state = TileIntraJointModeState::new(4, 4).unwrap();
         state.record_block(2, 2, 16, 16, D135_JOINT_MODE);
-        // In-frame neighbour read still resolves the written cell.
         assert_eq!(state.get_joint_mode(0, 2, 3, 1, 1), D135_JOINT_MODE);
     }
 
@@ -960,9 +927,7 @@ mod tests {
     #[test]
     fn uses_mrls_neighbours_select_index_and_secondary_contexts() {
         let mut state = TileUsesMrlsState::new(32, 32, SB_N4).unwrap();
-        // Above neighbour of the block at (8, 8): NPos first probes [7][11].
         state.record_block(7, 11, 1, 1, 2);
-        // Left neighbour: NPos first probes [11][7].
         state.record_block(11, 7, 1, 1, 1);
 
         assert_eq!(state.neighbour_uses_mrls(8, 8, 4, 4), [1, 2]);
@@ -1066,17 +1031,12 @@ mod tests {
 
     #[test]
     fn uv_cfl_out_of_frame_neighbours_give_context_zero() {
-        // The tile-origin chroma block: above (MiRow - 1) and left (MiCol - 1)
-        // are out of frame (`AvailUChroma`/`AvailLChroma` false), so § 8.3.2 ctx
-        // is 0 even though the (unavailable) cells are 0 anyway.
         let state = TileUvCflState::new(16, 16).unwrap();
         assert_eq!(state.is_cfl_ctx(0, 0, false, false), 0);
     }
 
     #[test]
     fn uv_cfl_non_cfl_neighbour_keeps_context_zero() {
-        // A left chroma neighbour that did NOT use CfL (`UVCfls == 0`) contributes
-        // 0 to the context even when AvailLChroma is true.
         let mut state = TileUvCflState::new(16, 32).unwrap();
         state.record_block(0, 0, 16, 16, false);
         assert_eq!(state.is_cfl_ctx(0, 16, false, true), 0);
@@ -1084,9 +1044,6 @@ mod tests {
 
     #[test]
     fn uv_cfl_left_neighbour_raises_context_to_one() {
-        // The ac0ej3 regression: a CfL left chroma neighbour (`UVCfls == 1`,
-        // AvailLChroma true) raises the § 8.3.2 `is_cfl` ctx to 1, selecting
-        // `TileIsCflCdf[1]` instead of the hardcoded `[0]`.
         let mut state = TileUvCflState::new(16, 32).unwrap();
         state.record_block(0, 0, 16, 16, true);
         assert_eq!(state.is_cfl_ctx(0, 16, false, true), 1);
@@ -1101,7 +1058,6 @@ mod tests {
 
     #[test]
     fn uv_cfl_both_neighbours_raise_context_to_two() {
-        // CfL above AND left chroma neighbours sum to ctx 2.
         let mut state = TileUvCflState::new(32, 32).unwrap();
         state.record_block(0, 0, 16, 16, true); // above-left fills above (16, *)
         state.record_block(16, 0, 16, 16, true); // left of (16, 16)
@@ -1111,8 +1067,6 @@ mod tests {
 
     #[test]
     fn uv_cfl_availability_gate_overrides_a_cfl_neighbour() {
-        // Even with a CfL-marked neighbour cell, a false `AvailUChroma` /
-        // `AvailLChroma` (§ 5.20.9.1 `is_inside`) contributes 0.
         let mut state = TileUvCflState::new(16, 32).unwrap();
         state.record_block(0, 0, 16, 16, true);
         assert_eq!(state.is_cfl_ctx(0, 16, false, false), 0);
@@ -1120,13 +1074,10 @@ mod tests {
 
     #[test]
     fn uv_cfl_record_block_clips_to_the_grid_and_rejects_empty_dimensions() {
-        // A block straddling the frame edge writes only its in-frame chroma MIs
-        // without panicking; the in-frame cell still reads back as CfL.
         let mut state = TileUvCflState::new(4, 4).unwrap();
         state.record_block(2, 2, 16, 16, true);
         assert_eq!(state.is_cfl_ctx(3, 3, true, true), 2);
         assert_eq!(state.is_cfl_ctx(2, 3, false, true), 1);
-        // Empty MI dimensions are rejected on either axis.
         assert!(TileUvCflState::new(0, 4).is_err());
         assert!(TileUvCflState::new(4, 0).is_err());
     }

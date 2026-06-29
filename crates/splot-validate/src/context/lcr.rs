@@ -40,8 +40,7 @@ pub(super) struct GlobalLcrRecord {
     /// snapshot of this record taken at association time carries its observation temporal
     /// unit, and the deferred resolution requires that temporal unit to lie within the
     /// current CMVS window (`>= cmvs_start_tu_index`) so a record observed only in an
-    /// earlier CMVS does not leak into a later MSDO-only CMVS's evaluation (codex finding
-    /// 3393129738).
+    /// earlier CMVS does not leak into a later MSDO-only CMVS's evaluation.
     pub(super) observed_tu_index: u64,
 }
 
@@ -74,7 +73,7 @@ pub(super) struct LcrAssociation {
     /// or `None` when the association is local. The § 6.8.2 MSDO↔global-LCR agreement and
     /// DOH requirement read this snapshot rather than the live `global_lcr_records` map, so
     /// a same-id global-LCR redefinition *after* this header associated does not retarget
-    /// the agreement at the later revision (codex finding 3393129741) — mirroring the
+    /// the agreement at the later revision — mirroring the
     /// existing § 6.8.9 dependency path, which also snapshots its associated maps.
     pub(super) global_record: Option<GlobalLcrRecord>,
     /// The § 5.8.4 PTL declared maxima of the associated LCR for this extended layer,
@@ -387,8 +386,6 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        // Parse failures and syntax diagnostics are handled by the stateless
-        // LayerConfigRecordSyntax check; here we only act on a successful parse.
         let Ok(record) = parse_layer_config_record(&mut reader, obu.header.extended_layer_id)
         else {
             return;
@@ -407,26 +404,10 @@ impl ValidatorContext {
         let external_disabled = matches!(options.external_hls, ExternalHlsMode::Disabled);
         match record {
             LayerConfigurationRecord::Global(info) => {
-                // AV2 § 7.3.2 condition 3 / end condition 2: a global layer
-                // configuration record OBU is present in this temporal unit. Whether it
-                // is *activated* needs § 7.3.8 activation state the validator does not
-                // model, so the CMVS tracker only treats this as an "activation cannot
-                // be ruled out" signal and routes the affected boundary transitions to
-                // CmvsState::Unknown rather than guessing.
                 self.cmvs.note_global_lcr_present();
-                // Annex A Table A.4: a global LCR OBU is present in this temporal unit
-                // (raw presence; the *activated*-global-LCR distinction needed by the
-                // Table A.4 global-LCR arms is resolved from the association chain at the
-                // window flush, not here).
                 self.annex_a_iop.note_global_lcr(obu.offset);
-                // AV2 § 7.3.8.3: record the global LCR's id and xlayer map for later
-                // local-LCR and sequence-header references.
                 self.hls
                     .record_global_lcr(info.global_config_record_id, info.xlayer_map);
-                // AV2 § 7.3.8.1: note this global LCR's in-band (re)send (global extended
-                // layer) for the random-access-point availability replay, so a local LCR's
-                // lcr_global_id or a sequence header's seq_lcr_id referencing it at a
-                // random access point must find it resent there.
                 self.rap_replay.note_resend(
                     RapHlsKey::LayerConfigurationRecord {
                         xlayer: GLOBAL_XLAYER_ID.get(),
@@ -434,11 +415,6 @@ impl ValidatorContext {
                     },
                     obu.header.extended_layer_id,
                 );
-                // AV2 § 6.8.2: keep the full aggregate / per-substream PTL / DOH fields of
-                // this global LCR (keyed by id, redefinition overwrites) so the
-                // MSDO↔global-LCR agreement can read whichever record the association chain
-                // later resolves as *activated*. LcrXLayerID[] / LcrMaxNumXLayerCount come
-                // from the set bits of lcr_xlayer_map (§ 5.8.1, mirror lines 382-384).
                 let xlayer_ids: BTreeSet<u8> = (0u8..31)
                     .filter(|i| info.xlayer_map & (1 << i) != 0)
                     .collect();
@@ -463,27 +439,13 @@ impl ValidatorContext {
                         seq_ptl_present: info.seq_ptl_info_present,
                         doh_constraint_flag: info.doh_constraint_flag,
                         offset: obu.offset,
-                        // The temporal unit of this observation, for the § 6.8.2 "present in
-                        // the same CMVS" window check (codex finding 3393129738). A temporal
-                        // unit is atomic for § 7.3.6 attribution, so this is unambiguous even
-                        // for a global LCR observed before the CLK of its own temporal unit.
-                        // Stamped on every (re)definition.
                         observed_tu_index: self.cvs.tu_index,
                     },
                 );
-                // AV2 § 6.8.9: retain each payload's embedded-layer maps for the
-                // dependency-map agreement checks. A redefinition replaces the maps
-                // wholesale so a dropped payload cannot leave stale entries.
                 self.hls
                     .clear_global_lcr_embedded(info.global_config_record_id);
-                // AV2 § 6.8.5/§ 6.8.8: retain this global LCR's per-xlayer PTL declared
-                // maxima and rep info for the ceiling / equality agreement checks. A
-                // redefinition clears and re-records so a dropped PTL/rep-info cannot
-                // leave stale entries.
                 self.hls
                     .clear_global_lcr_extras(info.global_config_record_id);
-                // § 5.8.4: lcr_seq_profile_tier_level_info(i) is present per xlayer in
-                // the map only when lcr_seq_profile_tier_level_info_present_flag == 1.
                 for ptl in &info.seq_ptl_infos {
                     self.hls.record_global_lcr_ptl(
                         info.global_config_record_id,
@@ -525,7 +487,6 @@ impl ValidatorContext {
                             },
                         );
                     }
-                    // § 5.8.7: lcr_rep_info(1, xId) is present only when its flag is set.
                     if let Some(rep_info) = &payload.xlayer_info.rep_info {
                         self.hls.record_global_lcr_rep_info(
                             info.global_config_record_id,
@@ -536,16 +497,9 @@ impl ValidatorContext {
                 }
             }
             LayerConfigurationRecord::Local(info) => {
-                // Annex A Table A.4: a local LCR OBU is present in this temporal unit (the
-                // IOP1 `!e && m` / IOP2 LCR arms can be satisfied by a local LCR).
                 self.annex_a_iop.note_local_lcr();
-                // AV2 § 7.3.8.3: a local LCR's lcr_global_id (when non-zero) must
-                // resolve to an available global LCR.
                 if info.global_id != 0 {
                     if self.hls.global_lcr_xlayer_map(info.global_id).is_some() {
-                        // Resolved in-band (linear check did not fire) -> buffer the
-                        // § 7.3.8.3 reference for the random-access-point availability
-                        // replay, governed by this local LCR's own extended layer.
                         self.note_rap_reference(
                             RapHlsKey::LayerConfigurationRecord {
                                 xlayer: GLOBAL_XLAYER_ID.get(),
@@ -572,13 +526,8 @@ impl ValidatorContext {
                         );
                     }
                 }
-                // AV2 § 7.3.8.4: a local LCR's lcr_local_atlas_id must resolve to an
-                // available local atlas segment OBU in the same extended layer.
                 if let Some(atlas_id) = info.local_atlas_id {
                     if self.hls.has_local_atlas(xlayer, atlas_id) {
-                        // Resolved in-band (linear check did not fire) -> buffer the
-                        // § 7.3.8.4 *local* atlas reference for the replay (a global atlas
-                        // "can be available" and is excluded, matching the linear check).
                         self.note_rap_reference(
                             RapHlsKey::Atlas {
                                 xlayer: xlayer.get(),
@@ -606,10 +555,6 @@ impl ValidatorContext {
                     }
                 }
                 self.hls.record_local_lcr(xlayer, info.local_id);
-                // AV2 § 7.3.8.1: note this local LCR's in-band (re)send (its own extended
-                // layer) for the random-access-point availability replay, so a sequence
-                // header's seq_lcr_id resolving to it at a random access point must find it
-                // resent there.
                 self.rap_replay.note_resend(
                     RapHlsKey::LayerConfigurationRecord {
                         xlayer: xlayer.get(),
@@ -617,14 +562,7 @@ impl ValidatorContext {
                     },
                     xlayer,
                 );
-                // AV2 § 6.8.9: retain the embedded-layer maps for the dependency-map
-                // agreement checks. A redefinition replaces the maps wholesale so a
-                // re-sent record without embedded info cannot leave stale entries.
                 self.hls.clear_local_lcr_embedded(xlayer, info.local_id);
-                // AV2 § 6.8.5/§ 6.8.8: retain this local LCR's PTL declared maxima and
-                // rep info for the ceiling / equality agreement checks (the § 6.8.5
-                // sentences key the ceiling on the local LCR). Cleared first so a
-                // re-sent record that drops them cannot leave stale entries.
                 self.hls.clear_local_lcr_extras(xlayer, info.local_id);
                 if let Some(embedded) = &info.xlayer_info.embedded_layer_info {
                     self.hls.record_local_lcr_embedded(
@@ -652,8 +590,6 @@ impl ValidatorContext {
                         },
                     );
                 }
-                // § 5.8.4: lcr_seq_profile_tier_level_info(xlayerId) is present only when
-                // lcr_profile_tier_level_info_present_flag[xlayerId] == 1.
                 if let Some(ptl) = &info.seq_ptl_info {
                     self.hls.record_local_lcr_ptl(
                         xlayer,
@@ -667,7 +603,6 @@ impl ValidatorContext {
                         },
                     );
                 }
-                // § 5.8.7: lcr_rep_info(0, xId) is present only when its flag is set.
                 if let Some(rep_info) = &info.xlayer_info.rep_info {
                     self.hls.record_local_lcr_rep_info(
                         xlayer,
@@ -676,18 +611,8 @@ impl ValidatorContext {
                     );
                 }
             }
-            // `LayerConfigurationRecord` is `#[non_exhaustive]`; only global and local
-            // scopes exist in AV2 v1.0.0, so any future variant is ignored here.
             _ => {}
         }
-
-        // Deliberately NO § 6.8.9 re-evaluation here: § 6.4.1 associates a sequence
-        // header only with an LCR "present prior to this sequence header" (or
-        // provided externally), so a later-arriving LCR must not be retroactively
-        // paired with an earlier activation — the agreement checks run only from
-        // on_sequence_activation. An LCR redefinition between activations is
-        // likewise evaluated at the next activation event only (sound over
-        // complete).
     }
 
     /// Resolves a sequence header's `seq_lcr_id` reference (AV2 § 6.4.1 / § 7.3.8.3 /
@@ -704,27 +629,14 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         if seq_lcr_id == 0 {
-            // AV2 § 6.4.1: seq_lcr_id == 0 means no LCR is associated.
             return;
         }
         let xlayer = obu.header.extended_layer_id;
 
-        // Resolution order (AV2 § 6.4.1): a local LCR in this xlayer first, then a
-        // global LCR.
         if self.hls.has_local_lcr(xlayer, seq_lcr_id) {
             return;
         }
         if let Some(xlayer_map) = self.hls.global_lcr_xlayer_map(seq_lcr_id) {
-            // AV2 § 6.4.1: the activated global LCR's lcr_xlayer_map must include the
-            // sequence header's obu_xlayer_id. Suppressed under any Provided external-HLS
-            // mode: a Provided declaration is *partial* (`ExternalHlsMode::Provided` —
-            // unenumerated external LCRs MAY exist), so an externally-provided local LCR
-            // with this seq_lcr_id could resolve ahead of this in-band global by the
-            // local-first § 6.4.1 order, making the global's map irrelevant; flagging it
-            // would be a false positive. This is the same local-first-shadowing reasoning
-            // that suppresses the § 6.8.5 / § 6.8.8 / § 6.8.9 association-dependent
-            // agreement checks (`check_lcr_dependency_agreement` and friends) — consistent
-            // with the unavailable branch below and the multi-frame-header precedent.
             let xlayer_bit = xlayer.get();
             if matches!(options.external_hls, ExternalHlsMode::Disabled)
                 && xlayer_bit < 31
@@ -747,7 +659,6 @@ impl ValidatorContext {
             return;
         }
 
-        // Unresolved: neither a local nor a global LCR with this id is available.
         if matches!(options.external_hls, ExternalHlsMode::Disabled) {
             report.push(
                 Diagnostic::error(

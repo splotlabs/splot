@@ -143,10 +143,6 @@ pub fn deblock_sample_filter<T: ReconSample>(
         });
     }
     let width = max_width_neg.max(max_width_pos);
-    // Previous side reads `p1 = line[boundary - 2]` and writes down to
-    // `line[boundary - max_width_neg]`; current side reads `q1 = line[boundary +
-    // 1]` and writes up to `line[boundary + width - 1]`. `boundary` must leave
-    // room for both (with `.max(2)` covering the `p1` / `q1` reads).
     let low_extent = max_width_neg.max(2);
     let high_extent = width.max(2);
     if boundary < low_extent || boundary + high_extent > line.len() {
@@ -163,8 +159,6 @@ pub fn deblock_sample_filter<T: ReconSample>(
     let p0 = i64::from(line[boundary - 1].to_u16());
     let p1 = i64::from(line[boundary - 2].to_u16());
 
-    // § 7.17.7.1 `deltaM2`. `qThrClamp` is non-negative for conformant inputs;
-    // `.max(0)` keeps `Clip3` well-formed (and the filter inert) otherwise.
     let q_thr_clamp = (i64::from(q_thr) * i64::from(q_thresh_mult)).max(0);
     let delta_m2 = ((p1 - q1 + 3 * (q0 - p0)) * 4).clamp(-q_thr_clamp, q_thr_clamp);
     let delta_m2_neg = delta_m2 * i64::from(w_mult_neg);
@@ -233,9 +227,6 @@ pub const fn deblock_filter_max_width(
     (max_width_neg, max_width_pos)
 }
 
-// `deblock_filter_max_width` is a `const fn`: a fixed configuration resolves at
-// compile time. This pins luma `filter_size == 32` to `maxWidthPos == 8` and the
-// non-super-block `maxWidthNeg == 8`, as a compile-time § 7.17.3 spec contract.
 const _MAX_WIDTH_CONST_CHECK: () =
     assert!(matches!(deblock_filter_max_width(32, false, false), (8, 8)));
 
@@ -281,10 +272,8 @@ pub fn deblock_adaptive_filter_strength(
     bit_depth: BitDepth,
 ) -> (i32, i32) {
     let bits = i64::from(bit_depth.bits());
-    // qThr = Round2(get_q(lvl, 0), QUANT_TABLE_BITS) >> 6.
     let get_q = i64::from(quantizer_value(lvl, 0, bit_depth));
     let q_thr = ((get_q + (1 << (QUANT_TABLE_BITS - 1))) >> QUANT_TABLE_BITS) >> 6;
-    // side = Max(Side_Thresholds[qInd] + (1 << (12 - BitDepth)), 0) >> (13 - BitDepth).
     let side = (i64::from(side_threshold) + (1i64 << (12 - bits))).max(0) >> (13 - bits);
     (q_thr as i32, side as i32)
 }
@@ -360,7 +349,6 @@ pub fn deblock_filter_choice<T: ReconSample>(
         q_first,
     } = *params;
 
-    // § 7.17.7.2: terminate immediately if either threshold is zero.
     if q_thr == 0 || side_thr == 0 {
         return Ok(0);
     }
@@ -374,13 +362,8 @@ pub fn deblock_filter_choice<T: ReconSample>(
         });
     }
 
-    // maxSamplesPos = Clip3(3, 8, maxWidthPos + 1); maxSamplesNeg likewise.
     let max_samples_neg = (max_width_neg + 1).clamp(3, MAX_DBL_FLT_LEN);
     let max_samples_pos = (max_width_pos + 1).clamp(3, MAX_DBL_FLT_LEN);
-    // The cascade reads `s[3]` / `t[3]` unconditionally once `maxWidthPos != 1`
-    // (the § 7.17.3 widths are `{1, 3, 4, 6, 8}`, so `s[3]` never exceeds
-    // `maxSamplesPos - 1` there); require the positive span to cover index `3`
-    // for every `maxWidthPos > 1` so the read is in bounds for any caller input.
     let pos_span = if max_width_pos == 1 {
         max_samples_pos
     } else {
@@ -400,11 +383,8 @@ pub fn deblock_filter_choice<T: ReconSample>(
     let q_thr = i64::from(q_thr);
     let side_thr = i64::from(side_thr);
 
-    // `s[k]` / `t[k]`: the sample at signed offset `k` from `boundary`. Every
-    // access below is within the validated window, so the cast never wraps.
     let sample =
         |line: &[T], k: i64| -> i64 { i64::from(line[(boundary as i64 + k) as usize].to_u16()) };
-    // The § 7.17.7.2 estimated second derivative of `s` and `t` at offset `k`.
     let second_deriv_at = |k: i64| -> i64 {
         let deriv_s = (sample(s, k - 1) - (sample(s, k) << 1) + sample(s, k + 1)).abs();
         let deriv_t = (sample(t, k - 1) - (sample(t, k) << 1) + sample(t, k + 1)).abs();
@@ -439,10 +419,6 @@ pub fn deblock_filter_choice<T: ReconSample>(
         return Ok(2);
     }
 
-    // The § 7.17.7.2 directional derivative `Abs(a[i] - a[j] - n*(a[i] - a[g]))`
-    // for line `a`, estimated over both lines and rounded. `g` is the gradient
-    // neighbour: the spec uses `s[-2]` (`g = i - 1`) on the negative side and
-    // `s[1]` (`g = i + 1`) on the positive side.
     let directional = |i: i64, j: i64, g: i64, n: i64| -> i64 {
         let deriv_s = (sample(s, i) - sample(s, j) - n * (sample(s, i) - sample(s, g))).abs();
         let deriv_t = (sample(t, i) - sample(t, j) - n * (sample(t, i) - sample(t, g))).abs();
@@ -450,7 +426,6 @@ pub fn deblock_filter_choice<T: ReconSample>(
     };
 
     let end_thr = (side_thr * 3) >> 4;
-    // Abs(s[-1] - s[-4] - 3*(s[-1] - s[-2])) and Abs(s[0] - s[3] - 3*(s[0] - s[1])).
     if max_width_neg > 2 && directional(-1, -4, -2, 3) > end_thr {
         return Ok(2);
     }
@@ -472,11 +447,9 @@ pub fn deblock_filter_choice<T: ReconSample>(
         }
         let dist2 = dist.min(7);
         let n = dist2 as i64;
-        // Abs(s[-1] - s[-dist2-1] - dist2*(s[-1] - s[-2])).
         if max_width_neg >= dist2 && directional(-1, -(n + 1), -2, n) > end_thr4 {
             return Ok(prev_dist);
         }
-        // Abs(s[0] - s[dist2] - dist2*(s[0] - s[1])).
         if directional(0, n, 1, n) > end_thr4 {
             return Ok(prev_dist);
         }
@@ -517,8 +490,6 @@ mod tests {
         }
     }
 
-    // Independent in-place re-trace of § 7.17.7.1 (mirrors the spec directly, not
-    // a call of the function under test).
     fn reference(line: &mut [u8], p: &DeblockSampleFilter) {
         let width = p.max_width_neg.max(p.max_width_pos);
         let q0 = i64::from(line[p.boundary]);
@@ -546,13 +517,6 @@ mod tests {
 
     #[test]
     fn matches_hand_computed_symmetric_width_2() {
-        // line = [p1, p0, q0, q1] with boundary = 2, width 2, q_thr 100,
-        // q_thresh_mult = Q_Thresh_Mults[1] = 25, w_mult = W_Mult[1] = 51.
-        // deltaM2 = (10 - 50 + 3*(60-20)) * 4 = 320 (< qThrClamp = 2500).
-        // i=0: diff = Round2(320*51*2, 11) = Round2(32640, 11) = 16
-        //   -> q0' = Clip1(60-16)=44, p0' = Clip1(20+16)=36
-        // i=1: diff = Round2(320*51*1, 11) = Round2(16320, 11) = 8
-        //   -> q1' = Clip1(50-8)=42, p1' = Clip1(10+8)=18
         let mut line = [10u8, 20, 60, 50];
         deblock_sample_filter(&mut line, &params(2, 100, 2, 2, 25, 51, 51, false, false)).unwrap();
         assert_eq!(line, [18, 36, 44, 42]);
@@ -560,8 +524,6 @@ mod tests {
 
     #[test]
     fn matches_reference_across_configs() {
-        // Asymmetric widths, lossless gating, and clamped deltaM2 all match the
-        // independent re-trace.
         let base = [40u8, 60, 50, 70, 55, 80, 45, 90, 35, 100];
         let configs = [
             params(4, 80, 3, 2, 19, 37, 51, false, false),
@@ -582,7 +544,6 @@ mod tests {
     #[test]
     fn lossless_sides_are_untouched() {
         let base = [40u8, 60, 50, 70, 55, 80];
-        // Both sides lossless: the line is unchanged.
         let mut both = base;
         deblock_sample_filter(&mut both, &params(3, 100, 2, 2, 25, 51, 51, true, true)).unwrap();
         assert_eq!(both, base);
@@ -590,23 +551,18 @@ mod tests {
 
     #[test]
     fn clip1_clamps_to_bit_depth() {
-        // A large deltaM2 must clamp the current side to 0 and the previous side
-        // to the 8-bit max (255) rather than overflow.
         let mut line = [10u8, 250, 5, 240, 0, 255];
         deblock_sample_filter(
             &mut line,
             &params(3, 10_000, 2, 2, 32, 85, 85, false, false),
         )
         .unwrap();
-        // A huge positive deltaM2 drives the current side toward 0 and the
-        // previous side toward 255 (every value stays a valid clamped u8).
         let mut reference_line = [10u8, 250, 5, 240, 0, 255];
         reference(
             &mut reference_line,
             &params(3, 10_000, 2, 2, 32, 85, 85, false, false),
         );
         assert_eq!(line, reference_line);
-        // 10-bit path: a u16 line clamps to 1023.
         let mut wide = [10u16, 1000, 5, 1020, 0, 1023];
         deblock_sample_filter(
             &mut wide,
@@ -633,12 +589,10 @@ mod tests {
             deblock_sample_filter(&mut line, &params(4, 0, 2, 9, 19, 51, 51, false, false)),
             Err(ReconError::DeblockFilterInvalidWidth { .. })
         ));
-        // boundary too close to the start (needs boundary >= max(max_width_neg, 2)).
         assert!(matches!(
             deblock_sample_filter(&mut line, &params(1, 0, 2, 2, 19, 51, 51, false, false)),
             Err(ReconError::DeblockFilterLineTooShort { .. })
         ));
-        // boundary too close to the end (needs boundary + max(width, 2) <= len).
         let mut short = [0u8; 5];
         assert!(matches!(
             deblock_sample_filter(&mut short, &params(4, 0, 2, 2, 19, 51, 51, false, false)),
@@ -648,8 +602,6 @@ mod tests {
 
     #[test]
     fn is_total_for_extreme_inputs() {
-        // Extreme samples, thresholds, and weights must not overflow the i64 ramp
-        // or panic, across symmetric and asymmetric widths and lossless gating.
         for &(neg, pos) in &[(1usize, 8usize), (8, 1), (8, 8)] {
             let mut line = [0u8; 24];
             for (i, s) in line.iter_mut().enumerate() {
@@ -665,7 +617,6 @@ mod tests {
 
     #[test]
     fn max_width_covers_every_spec_branch() {
-        // maxWidthPos by filter_size (no super-block edge -> maxWidthNeg == pos):
         assert_eq!(deblock_filter_max_width(4, false, false), (1, 1));
         assert_eq!(deblock_filter_max_width(2, true, false), (1, 1)); // <= 4
         assert_eq!(deblock_filter_max_width(8, false, false), (3, 3));
@@ -675,7 +626,6 @@ mod tests {
         assert_eq!(deblock_filter_max_width(32, false, false), (8, 8)); // luma > 16
         assert_eq!(deblock_filter_max_width(64, true, false), (4, 4)); // chroma > 16
 
-        // Super-block edge caps maxWidthNeg at Min(maxWidthPos, chroma ? 2 : 6):
         assert_eq!(deblock_filter_max_width(32, false, true), (6, 8)); // luma: cap 6
         assert_eq!(deblock_filter_max_width(64, true, true), (2, 4)); // chroma: cap 2
         assert_eq!(deblock_filter_max_width(8, true, true), (2, 3)); // chroma: cap 2 < 3
@@ -684,19 +634,15 @@ mod tests {
 
     #[test]
     fn side_threshold_index_clips_to_table_range() {
-        // 8-bit: qInd = lvl (no offset), clamped to 0..=295.
         assert_eq!(deblock_side_threshold_index(10, BitDepth::Eight), 10);
         assert_eq!(deblock_side_threshold_index(0, BitDepth::Eight), 0);
         assert_eq!(deblock_side_threshold_index(400, BitDepth::Eight), 295);
-        // 10-bit: qInd = lvl - 48, clamped (negative -> 0).
         assert_eq!(deblock_side_threshold_index(10, BitDepth::Ten), 0); // 10 - 48 < 0
         assert_eq!(deblock_side_threshold_index(100, BitDepth::Ten), 52); // 100 - 48
     }
 
     #[test]
     fn adaptive_filter_strength_matches_spec() {
-        // `side` is independent of get_q: Max(threshold + (1 << (12 - bits)), 0)
-        // >> (13 - bits). 8-bit: +16 >> 5; 10-bit: +4 >> 3.
         assert_eq!(
             deblock_adaptive_filter_strength(40, 100, BitDepth::Eight).1,
             3
@@ -714,8 +660,6 @@ mod tests {
             13
         ); // (104)>>3
 
-        // `qThr` composes get_q with Round2(_, 3) >> 6; verify against the
-        // independently-tested quantizer_value for several levels and depths.
         for &(lvl, bd) in &[
             (40u32, BitDepth::Eight),
             (128, BitDepth::Eight),
@@ -746,8 +690,6 @@ mod tests {
         }
     }
 
-    // Independent re-trace of § 7.17.7.2 (mirrors the spec pseudocode directly,
-    // not a call of the function under test), used as the property-test oracle.
     #[allow(clippy::too_many_arguments)]
     fn reference_choice(
         s: &[u16],
@@ -847,8 +789,6 @@ mod tests {
 
     #[test]
     fn filter_choice_flat_returns_full_width() {
-        // Flat samples have zero curvature everywhere, so the cascade widens to
-        // the full `maxWidthPos` for every width.
         let line = [128u16; 17];
         for pos in [1usize, 3, 4, 6, 8] {
             let neg = pos.min(6);
@@ -859,10 +799,8 @@ mod tests {
 
     #[test]
     fn filter_choice_high_curvature_returns_zero() {
-        // A spike at `s[-2]` makes secondDeriv[-2] exceed sideThr, the first gate.
         let mut line = [128u16; 17];
         line[8 - 2] = 320; // boundary = 8 -> index 6 is s[-2]
-        // secondDeriv[-2] = |128 - 640 + 128| = 384 -> (384+384+1)>>1 = 384 > 100.
         assert_eq!(
             deblock_filter_choice(&line, &line, &choice(8, 50, 100, 8, 8)).unwrap(),
             0
@@ -894,8 +832,6 @@ mod tests {
 
     #[test]
     fn filter_choice_matches_independent_reference() {
-        // Deterministic LCG over many sample patterns, widths, and thresholds;
-        // the function under test must equal the independent spec re-trace.
         let mut state = 0x0123_4567_89ab_cdefu64;
         let mut next = |bound: u32| -> u32 {
             state = state

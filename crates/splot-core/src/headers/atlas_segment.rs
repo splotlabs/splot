@@ -298,10 +298,6 @@ pub fn parse_atlas_segment(reader: &mut BitReader<'_>) -> Result<AtlasSegment> {
         }
     };
 
-    // numSegments drives the label loop. This is unreachable via the per-mode parsers
-    // (each caps its count: the single-region path checks num_regions_in_atlas, the
-    // others check minus_1 >= MAX_NUM_ATLAS_SEGMENTS); kept as a safety net in case a
-    // future mode derives numSegments differently.
     if num_segments > MAX_NUM_ATLAS_SEGMENTS {
         return Err(Error::InvalidAtlasSegment {
             offset: reader.byte_offset(),
@@ -333,8 +329,6 @@ fn parse_ats_label_segment_info(
             segment_ids.push(reader.read_bits_u8(8)?);
         }
     } else {
-        // AV2 § 5.9.1: AtlasSegmentIndexToID[i] = i. numSegments is bounded by
-        // MAX_NUM_ATLAS_SEGMENTS, so each index fits in u8.
         for i in 0..num_segments {
             segment_ids.push(u8::try_from(i).unwrap_or(u8::MAX));
         }
@@ -385,7 +379,6 @@ fn parse_ats_region_info(reader: &mut BitReader<'_>) -> Result<AtlasRegionInfo> 
         }
     }
 
-    // Bounded by MAX_ATLAS_COLS * MAX_ATLAS_ROWS, so the product cannot overflow u32.
     let num_regions_in_atlas =
         (num_region_columns_minus_1 + 1).saturating_mul(num_region_rows_minus_1 + 1);
 
@@ -532,8 +525,6 @@ fn parse_ats_multistream_info(
         let top_left_pos_y = reader.read_uvlc()?;
         let seg_width = reader.read_uvlc()?;
         let seg_height = reader.read_uvlc()?;
-        // AV2 § 5.9.4: the per-segment alpha flag is coded only for the alpha variant
-        // and not for the last segment, which is inferred 0 (AV2 § 6.9.5).
         let alpha_segment_flag =
             if alpha_segments_present == Some(true) && i != num_atlas_segments_minus_1 {
                 reader.read_flag()?
@@ -635,13 +626,11 @@ mod tests {
         let mut bits = Bits::default();
         bits.f(1, 3); // atlas_segment_id
         bits.uvlc(0); // mode_idc = ENHANCED_ATLAS
-        // ats_region_info:
         bits.uvlc(0); // num_region_columns_minus_1 = 0
         bits.uvlc(0); // num_region_rows_minus_1 = 0 -> NumRegionsInAtlas = 1
         bits.bit(1); // ats_uniform_spacing_flag
         bits.uvlc(63); // ats_region_width_minus_1
         bits.uvlc(63); // ats_region_height_minus_1
-        // ats_region_to_segment_mapping:
         bits.bit(1); // ats_single_region_per_atlas_segment_flag -> numSegments = 1
         bits.bit(0); // ats_signaled_atlas_segment_ids_flag
         let record = parse(&bits.into_bytes()).unwrap();
@@ -665,7 +654,6 @@ mod tests {
         bits.uvlc(2160); // ats_msi_height
         bits.uvlc(0); // ats_msi_num_atlas_segments_minus_1 = 0 -> 1 segment
         bits.bit(0); // ats_msi_background_info_present_flag
-        // segment 0:
         bits.f(1, 5); // ats_msi_input_stream_id
         bits.uvlc(0); // pos_x
         bits.uvlc(0); // pos_y
@@ -698,14 +686,12 @@ mod tests {
         bits.f(255, 8); // red
         bits.f(0, 8); // green
         bits.f(0, 8); // blue
-        // segment 0 (not last -> alpha flag coded):
         bits.f(0, 5); // input_stream_id
         bits.uvlc(0);
         bits.uvlc(0);
         bits.uvlc(50);
         bits.uvlc(50);
         bits.bit(1); // ats_msi_alpha_segment_flag[0]
-        // segment 1 (last -> alpha flag inferred 0):
         bits.f(1, 5);
         bits.uvlc(50);
         bits.uvlc(0);
@@ -775,7 +761,6 @@ mod tests {
 
     #[test]
     fn reports_eof_in_mode_body() {
-        // Mode SINGLE but no nominal dimensions follow.
         let mut bits = Bits::default();
         bits.f(0, 3);
         bits.uvlc(2);

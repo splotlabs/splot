@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-// Unit / reject tests for the §5.18.8.1 / §5.18.10.1 / §5.18.2 intra-tail writers. Round-trips
-// drive the parser on hand-built bits, re-emit via the writer, and reparse; reject tests assert
-// the typed error and that no bit was written (`bit_len() == 0`).
-
-// `include!`d into `crate::write::frame_tail` so `super::*` resolves to its writers and helpers.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -30,14 +25,12 @@ mod tests {
         }
     }
 
-    // ===== tx_mode (§ 5.18.8.1) =====
 
     #[test]
     fn tx_mode_lossless_only_4x4_writes_no_bit() {
         let mut writer = BitWriter::new();
         write_tx_mode(&mut writer, TxMode::Only4x4, true).unwrap();
         assert_eq!(writer.bit_len(), 0);
-        // ONLY_4X4 reparses (lossless reads no bit).
         assert_eq!(read_tx_mode(&mut reader(&[]), true).unwrap(), TxMode::Only4x4);
     }
 
@@ -71,7 +64,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== film_grain_config (§ 5.18.10.1) =====
 
     fn fg_round_trip(fg: FilmGrainConfig, input: FrameTailInput) {
         let mut writer = BitWriter::new();
@@ -83,7 +75,6 @@ mod tests {
 
     #[test]
     fn film_grain_gated_off_round_trips() {
-        // Grain not present -> apply_grain inferred 0, no bit.
         let input = FrameTailInput {
             film_grain_params_present: false,
             ..base_input()
@@ -101,7 +92,6 @@ mod tests {
 
     #[test]
     fn film_grain_not_output_frame_round_trips() {
-        // Neither output flag set -> apply_grain inferred 0.
         let input = FrameTailInput {
             immediate_output_frame: false,
             implicit_output_frame: false,
@@ -242,7 +232,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-    // ===== intra tail (§ 5.18.2) =====
 
     fn tail_round_trip(tail: &FrameHeaderTail, input: FrameTailInput) {
         let mut writer = BitWriter::new();
@@ -338,7 +327,6 @@ mod tests {
 
     #[test]
     fn intra_tail_tx_mode_mismatch_is_rejected_before_any_bit() {
-        // Non-lossless model carrying ONLY_4X4 — the intra-tail check must reject before any bit.
         let tail = FrameHeaderTail {
             tx_mode: TxMode::Only4x4,
             ..base_tail()
@@ -353,10 +341,6 @@ mod tests {
 
     #[test]
     fn intra_tail_bad_film_grain_rejects_before_any_bit() {
-        // The tx_mode and reduced_tx_set are valid, but the film_grain model is not (apply_grain
-        // with a missing fgm_id). check_intra_tail_encodable must reject the whole tail BEFORE
-        // write_intra_tail emits the tx_mode / reduced_tx_set bits — otherwise this would be a
-        // partial buffer (bit_len() > 0 on Err).
         let tail = FrameHeaderTail {
             film_grain: FilmGrainConfig {
                 apply_grain: true,

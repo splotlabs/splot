@@ -97,7 +97,6 @@ const SMALL_BLOCK_DIM: u32 = 4;
 /// FIR coefficient. All coefficients are even and each row sums to 128
 /// (`1 << FILTER_BITS`).
 pub const SUBPEL_FILTERS: [[[i32; NUM_TAPS]; NUM_PHASES]; NUM_FILTER_TYPES] = [
-    // 0: EIGHTTAP
     [
         [0, 0, 0, 128, 0, 0, 0, 0],
         [0, 2, -6, 126, 8, -2, 0, 0],
@@ -116,7 +115,6 @@ pub const SUBPEL_FILTERS: [[[i32; NUM_TAPS]; NUM_PHASES]; NUM_FILTER_TYPES] = [
         [0, 0, -4, 18, 122, -10, 2, 0],
         [0, 0, -2, 8, 126, -6, 2, 0],
     ],
-    // 1: EIGHTTAP_SMOOTH
     [
         [0, 0, 0, 128, 0, 0, 0, 0],
         [0, 2, 28, 62, 34, 2, 0, 0],
@@ -135,7 +133,6 @@ pub const SUBPEL_FILTERS: [[[i32; NUM_TAPS]; NUM_PHASES]; NUM_FILTER_TYPES] = [
         [0, 0, 4, 36, 62, 26, 0, 0],
         [0, 0, 2, 34, 62, 28, 2, 0],
     ],
-    // 2: EIGHTTAP_SHARP
     [
         [0, 0, 0, 128, 0, 0, 0, 0],
         [-2, 2, -6, 126, 8, -2, 2, 0],
@@ -154,7 +151,6 @@ pub const SUBPEL_FILTERS: [[[i32; NUM_TAPS]; NUM_PHASES]; NUM_FILTER_TYPES] = [
         [-2, 4, -6, 16, 124, -12, 6, -2],
         [0, 2, -2, 8, 126, -6, 2, -2],
     ],
-    // 3: bilinear (the spec's index-3 filter; two non-zero taps at the centre)
     [
         [0, 0, 0, 128, 0, 0, 0, 0],
         [0, 0, 0, 120, 8, 0, 0, 0],
@@ -173,7 +169,6 @@ pub const SUBPEL_FILTERS: [[[i32; NUM_TAPS]; NUM_PHASES]; NUM_FILTER_TYPES] = [
         [0, 0, 0, 16, 112, 0, 0, 0],
         [0, 0, 0, 8, 120, 0, 0, 0],
     ],
-    // 4: 4-tap EIGHTTAP (small-block substitution)
     [
         [0, 0, 0, 128, 0, 0, 0, 0],
         [0, 0, -4, 126, 8, -2, 0, 0],
@@ -192,7 +187,6 @@ pub const SUBPEL_FILTERS: [[[i32; NUM_TAPS]; NUM_PHASES]; NUM_FILTER_TYPES] = [
         [0, 0, -4, 18, 122, -8, 0, 0],
         [0, 0, -2, 8, 126, -4, 0, 0],
     ],
-    // 5: 4-tap EIGHTTAP_SMOOTH (small-block substitution)
     [
         [0, 0, 0, 128, 0, 0, 0, 0],
         [0, 0, 30, 62, 34, 2, 0, 0],
@@ -319,8 +313,6 @@ impl<'a> ReferencePlaneView<'a> {
     fn sample(&self, row: usize, col: usize) -> i64 {
         let row = row.min(self.height - 1);
         let col = col.min(self.width - 1);
-        // `width` and `height` are non-zero (validated in `new`) and
-        // `samples.len() == width * height`, so this index is always in bounds.
         i64::from(self.samples[row * self.width + col])
     }
 }
@@ -490,20 +482,10 @@ fn subpel_predict_block_internal(
     if w > MAX_BLOCK_DIM || h > MAX_BLOCK_DIM {
         return Err(ReconError::SubpelBlockDimensionUnsupported { w, h });
     }
-    // The two-pass convolution and the intermediateHeight derivation assume
-    // non-negative steps (the §7.13.3.17 scaling factors are non-negative). A
-    // negative step would make the vertical-pass `base` index negative; reject it
-    // rather than risk an out-of-bounds intermediate read.
     if step_x < 0 || step_y < 0 {
         return Err(ReconError::SubpelNegativeStep { step_x, step_y });
     }
 
-    // §7.13.3.18 intermediateHeight =
-    //   (((h - 1) * yStep + (1 << SCALE_SUBPEL_BITS) - 1) >> SCALE_SUBPEL_BITS) + 8.
-    // Use checked arithmetic so a caller-supplied (e.g. fuzzed) `step_y` can never
-    // overflow i64 before the typed-error path runs — keeping this public API
-    // panic-free. This also bounds the vertical-pass `step_y * r` (r < h), since
-    // `(h - 1) * step_y` is its maximum.
     let h_i64 = h as i64;
     let intermediate_height_i64 = (h_i64 - 1)
         .checked_mul(step_y)
@@ -517,9 +499,6 @@ fn subpel_predict_block_internal(
         usize::try_from(intermediate_height_i64).map_err(|_| ReconError::ArithmeticOverflow {
             context: "subpel intermediate height",
         })?;
-    // The horizontal pass reads `p = start_x + step_x * c` for `c` in `0..w`; bound
-    // the maximum (`c == w - 1`) with checked arithmetic so the inner loop cannot
-    // overflow for caller-supplied `start_x` / `step_x`.
     (w as i64 - 1)
         .checked_mul(step_x)
         .and_then(|m| start_x.checked_add(m))
@@ -527,7 +506,6 @@ fn subpel_predict_block_internal(
             context: "subpel horizontal coordinate",
         })?;
 
-    // Horizontal pass: §7.13.3.18 small-block substitution keys on w.
     let h_filter = interp.pass_index(w as u32);
     let h_filter_rows = &SUBPEL_FILTERS[h_filter as usize];
 
@@ -548,12 +526,10 @@ fn subpel_predict_block_internal(
                 let ref_col = clip3(first_x, last_x, (p >> SCALE_SUBPEL_BITS) + t as i64 - 3);
                 s += i64::from(tap) * reference.sample(ref_row, ref_col as usize);
             }
-            // The §7.13.3.18 NOTE: the InterRound0 shift keeps this in 16 bits.
             intermediate[r * w + c] = round2(s, INTER_ROUND0) as i32;
         }
     }
 
-    // Vertical pass: §7.13.3.18 small-block substitution keys on h.
     let v_filter = interp.pass_index(h as u32);
     let v_filter_rows = &SUBPEL_FILTERS[v_filter as usize];
 
@@ -562,10 +538,6 @@ fn subpel_predict_block_internal(
         let p = (start_y & 1023) + step_y * r as i64;
         let phase = ((p >> 6) & SUBPEL_MASK) as usize;
         let taps = &v_filter_rows[phase];
-        // `p >= 0` (step_y >= 0 and `start_y & 1023` in 0..=1023), so base >= 0.
-        // The §7.13.3.18 intermediateHeight derivation guarantees
-        // `base + NUM_TAPS - 1 < intermediate_height`; the explicit check keeps the
-        // function panic-free for any caller step/start combination.
         let base = (p >> SCALE_SUBPEL_BITS) as usize;
         if base + NUM_TAPS > intermediate_height {
             return Err(ReconError::SubpelIntermediateOutOfRange {
@@ -576,7 +548,6 @@ fn subpel_predict_block_internal(
         for c in 0..w {
             let mut s: i64 = 0;
             for (t, &tap) in taps.iter().enumerate() {
-                // §7.13.3.18 vertical pass reads intermediate[(p >> 10) + t][c].
                 let row = base + t;
                 s += i64::from(tap) * i64::from(intermediate[row * w + c]);
             }

@@ -8,8 +8,6 @@
 use core::fmt;
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024;
-// Keep defaults finite, but size traversal counts so the current ac0ej3 mission
-// target can reach the runtime's honest unsupported-feature gates.
 const DEFAULT_MAX_OBUS: u64 = 16_384;
 const DEFAULT_MAX_IVF_FRAME_RECORDS: u64 = 4_096;
 const DEFAULT_MAX_FRAMES_TO_DECODE: u64 = 8_192;
@@ -65,7 +63,6 @@ impl Default for DecodeOptions {
 }
 
 /// Caller-provided resource limits for future decode planning.
-// Each `max_*` field is a distinct maximum threshold; the prefix names the bound and dropping it would lose that meaning.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLimits {

@@ -136,7 +136,6 @@ impl ActiveMetadataUnit {
         self.layer_idc == LAYER_VALUES
             && self
                 .mlayer_map
-                // EmbeddedLayerId is 3-bit (0..=7), so the u8 shift stays in range.
                 .is_some_and(|map| map >> target.get() & 1 == 1)
     }
 
@@ -255,8 +254,6 @@ impl MetadataLifetimeStore {
     /// `metadata-semantic-validation` change will scope the expiry to the consuming
     /// layer's frame when they land.
     // TODO(spec: AV2-5.17-METADATA): scope the NO_PERSISTENCE expiry to the
-    // record's own layer's coded frame (per-(xlayer,mlayer) granularity) when the
-    // deferred per-frame applicability checks (tasks 8-9) consume the store.
     pub(crate) fn expire_no_persistence(&mut self) {
         for records in self.active.values_mut() {
             records.retain(|record| !matches!(record.persistence, PersistenceMode::No));
@@ -345,13 +342,9 @@ impl MetadataLifetimeStore {
         let source_mlayer = record.source_mlayer; // K
         let source_tlayer = record.source_tlayer; // T
         if target_mlayer == source_mlayer {
-            // Temporal persistence within embedded layer K.
             return t_map.depends_on(source_mlayer, target_tlayer, source_tlayer);
         }
         if target_mlayer > source_mlayer {
-            // Multi-layer persistence (K -> M) plus combined persistence for C:
-            // bit M of muh_mlayer_map must explicitly target M (see
-            // ActiveMetadataUnit::explicitly_targets).
             return record.explicitly_targets(target_mlayer)
                 && m_map.depends_on(target_mlayer, source_mlayer)
                 && t_map.depends_on(target_mlayer, target_tlayer, source_tlayer);
