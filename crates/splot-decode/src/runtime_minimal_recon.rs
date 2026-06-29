@@ -268,6 +268,67 @@ pub(crate) fn reconstruct_inter_block_residual_into<T: ReconSample>(
     Ok(())
 }
 
+/// Adds a decoded §5.20.7.27 IntrABC residual onto the §7.13.3.18 displaced-copy
+/// prediction already written into the workspace plane, the **rectangular**
+/// generalisation of [`reconstruct_inter_block_residual_into`].
+///
+/// An IntrABC leaf's predictor is the displaced `CurrFrame` copy
+/// ([`crate::runtime_minimal::wienerns_lr::WienerNsLrReconSink::reconstruct_intrabc_block`]
+/// wrote it into `workspace` over the whole block before this per-transform leaf
+/// runs), NOT a §7.13.2 intra prediction — IntrABC reads no intra Y mode. This
+/// reads the predicted samples of the `1<<log2_width` x `1<<log2_height` transform
+/// at `(x, y)`, composes the §7.14.4 dequantization, §7.15.4 inverse transform, and
+/// §7.14.3 residual addition over them (via
+/// [`reconstruct_general_intra_block_rect_with_prediction`] — the §7.14.3
+/// reconstruction over an arbitrary per-sample prediction, identical for the
+/// displaced IntrABC predictor), then writes the reconstructed block back. An
+/// `all_zero` transform leaves the copied predictor untouched (the residual is
+/// zero). `use_tcq` adds the §7.14.4 TCQ `dqDenom` term (luma `DCT_DCT` only);
+/// IntrABC is an inter (`is_inter == 1`) leaf, so it never carries it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_intrabc_block_residual_rect_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    use_tcq: bool,
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    if block.all_zero {
+        // §5.20.7.27 all_zero == 1: no residual, the displaced copy IS the
+        // reconstruction. Leave the workspace prediction in place.
+        return Ok(());
+    }
+    let rect = PlaneRect::new(x, y, width, height)?;
+    // Gather the §7.13.3.18 displaced-copy prediction for this transform.
+    let mut prediction = Vec::with_capacity(width * height);
+    for row in workspace.rect_rows(plane_id, rect)? {
+        prediction.extend_from_slice(row);
+    }
+    let out = reconstruct_general_intra_block_rect_with_prediction(
+        &block.quant,
+        &prediction,
+        qindex,
+        plane_id,
+        log2_width,
+        log2_height,
+        block.plane_tx_type,
+        use_tcq,
+        bit_depth,
+    )?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
+    Ok(())
+}
+
 /// Reconstructs one square chroma plane block in decode order into the
 /// workspace, dispatching on the resolved § 5.20.5.3 `UVMode`:
 ///
