@@ -184,19 +184,74 @@ fn count_comment_lines(text: &str) -> CommentCounts {
 
 fn update_string_state(line: &str, in_string: &mut bool) {
     let mut escaped = false;
-    for byte in line.bytes() {
-        if escaped {
-            escaped = false;
+    let mut chars = line.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if *in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                *in_string = false;
+            }
             continue;
         }
-        if byte == b'\\' {
-            escaped = true;
-            continue;
-        }
-        if byte == b'"' {
-            *in_string = !*in_string;
+
+        if ch == '"' {
+            *in_string = true;
+        } else if ch == '\''
+            && let Some(end) = char_literal_end(line, idx)
+        {
+            while chars.peek().is_some_and(|(next_idx, _)| *next_idx <= end) {
+                chars.next();
+            }
         }
     }
+}
+
+fn char_literal_end(line: &str, start: usize) -> Option<usize> {
+    let mut chars = line.get(start + 1..)?.char_indices();
+    let (_, first) = chars.next()?;
+    if first == '\'' {
+        return None;
+    }
+
+    let content_end = if first == '\\' {
+        let (escape_idx, escaped) = chars.next()?;
+        match escaped {
+            'x' => {
+                let mut after_escape = start + 1 + escape_idx + escaped.len_utf8();
+                for _ in 0..2 {
+                    let hex = line.get(after_escape..)?.chars().next()?;
+                    if !hex.is_ascii_hexdigit() {
+                        return None;
+                    }
+                    after_escape += hex.len_utf8();
+                }
+                after_escape
+            }
+            'u' => {
+                let mut after_escape = start + 1 + escape_idx + escaped.len_utf8();
+                if !line.get(after_escape..)?.starts_with('{') {
+                    return None;
+                }
+                after_escape += 1;
+                after_escape += line.get(after_escape..)?.find('}')? + 1;
+                after_escape
+            }
+            _ => start + 1 + escape_idx + escaped.len_utf8(),
+        }
+    } else {
+        start + 1 + first.len_utf8()
+    };
+
+    line.get(content_end..)?
+        .starts_with('\'')
+        .then_some(content_end)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +290,16 @@ mod tests {
         assert_eq!(counts.spdx_lines, 1);
         assert_eq!(counts.doc_comment_lines, 2);
         assert_eq!(counts.implementation_comment_lines, 4);
+    }
+
+    #[test]
+    fn double_quote_char_literal_does_not_hide_following_comments() {
+        let counts = count_comment_lines(concat!(
+            "fn main() { let quote = '\"'; }\n",
+            "// counted after the char literal\n",
+        ));
+
+        assert_eq!(counts.implementation_comment_lines, 1);
     }
 
     #[test]
