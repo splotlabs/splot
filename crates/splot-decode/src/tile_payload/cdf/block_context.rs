@@ -161,6 +161,16 @@ impl IntraYMode {
         self.0 == Self::PAETH_PRED
     }
 
+    /// AV2 § 7.13.2.15/16 `is_smooth(mode)`: true when this luma mode is one of the
+    /// § 7.13.2.13 smooth predictors (`SMOOTH_PRED`, `SMOOTH_V_PRED`,
+    /// `SMOOTH_H_PRED`). Drives the § 7.13.2.7 `get_filter_type_above` /
+    /// `get_filter_type_left` neighbour-smooth filter-type pick.
+    pub(crate) const fn is_smooth(self) -> bool {
+        self.0 == Self::SMOOTH_PRED
+            || self.0 == Self::SMOOTH_V_PRED
+            || self.0 == Self::SMOOTH_H_PRED
+    }
+
     /// Canonical AV2 intra-mode value used by § 9.2 conversion tables.
     pub(crate) const fn value(self) -> usize {
         self.0 as usize

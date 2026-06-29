@@ -1599,6 +1599,98 @@ fn bilinear<T: ReconSample>(a: T, b: T, shift: u16) -> u16 {
     round2(weighted, 5)
 }
 
+/// Number of §7.13.2.18 intra edge filter kernel rows (`INTRA_EDGE_KERNELS`).
+const INTRA_EDGE_KERNELS: usize = 3;
+/// Number of taps per §7.13.2.18 intra edge filter kernel (`INTRA_EDGE_TAPS`).
+const INTRA_EDGE_TAPS: usize = 5;
+
+/// AV2 §7.13.2.18 `Intra_Edge_Kernel[INTRA_EDGE_KERNELS][INTRA_EDGE_TAPS]`,
+/// transcribed VERBATIM from the committed spec mirror
+/// `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-18`. Indexed by
+/// `strength - 1` (strength `1..=3`).
+const INTRA_EDGE_KERNEL: [[i32; INTRA_EDGE_TAPS]; INTRA_EDGE_KERNELS] =
+    [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
+
+/// AV2 §7.13.2.18 Intra edge filter process. Filters the first `sz` samples of
+/// `edge` in place with the given `strength` (`0..=3`). `strength == 0` is a
+/// no-op (the process returns without modifying the edge). Transcribed VERBATIM
+/// from the committed spec mirror (`av2_filter_intra_edge_high_c`,
+/// `~/Devel/avm/av2/common/reconintra.c:997-1018`):
+///
+/// `edge` holds the §7.13.2.1 reference samples with `edge[i]` the §7.13.2.18
+/// array element (the caller positions the slice so `edge[0]` is the logical
+/// `AboveRow[-1]` / `LeftCol[-1]` corner, `edge[1]` the logical `[0]`, etc). For
+/// `i = 1..sz-1`: `s = Σ(j=0..4) Intra_Edge_Kernel[strength-1][j] *
+/// edge[Clip3(0, sz-1, i-2+j)]`, then `edge[i] = (s + 8) >> 4`. The `i == 0`
+/// corner sample is read but never overwritten (matching the §7.13.2.18
+/// `AboveRow[-1]` / `LeftCol[-1]` invariance), so a preceding §7.13.2.14 corner
+/// rewrite survives into the §7.13.2.8 prediction.
+///
+/// # Errors
+/// Returns [`ReconError::ArithmeticOverflow`] when `sz` exceeds `edge.len()`, or
+/// a filtered sample falls outside the representable range (the `(s + 8) >> 4`
+/// average of in-range samples is always representable, so this cannot fire for
+/// valid edges, but the conversion is checked rather than truncating).
+pub fn apply_intra_edge_filter<T: ReconSample>(
+    edge: &mut [T],
+    sz: usize,
+    strength: u8,
+) -> Result<()> {
+    if strength == 0 {
+        return Ok(());
+    }
+    if sz == 0 {
+        return Ok(());
+    }
+    if sz > edge.len() {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "intra edge filter size exceeds edge length",
+        });
+    }
+    let Some(filt) = usize::from(strength).checked_sub(1) else {
+        return Ok(());
+    };
+    let Some(kernel) = INTRA_EDGE_KERNEL.get(filt) else {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "intra edge filter strength out of range",
+        });
+    };
+    // Snapshot the unfiltered window: each output reads the ORIGINAL neighbours
+    // (the §7.13.2.18 `edge[]` copy), so an in-place sweep cannot feed an already
+    // filtered sample into a later tap.
+    let original: Vec<u16> = edge[..sz].iter().map(|s| s.to_u16()).collect();
+    let last = sz - 1;
+    // The §7.13.2.18 sweep writes `edge[i]` for `i = 1..sz-1` (the `i == 0` corner
+    // is read but never overwritten).
+    for (i, slot) in edge.iter_mut().enumerate().take(sz).skip(1) {
+        let mut s: i32 = 0;
+        for (j, &tap) in kernel.iter().enumerate() {
+            // k = Clip3(0, sz - 1, i - 2 + j).
+            let raw = i as i64 - 2 + j as i64;
+            let k = raw.clamp(0, last as i64) as usize;
+            s += tap * i32::from(original[k]);
+        }
+        let value = (s + 8) >> 4;
+        let value = u16::try_from(value).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "intra edge filter output out of range",
+        })?;
+        *slot = T::try_from_u16(value)?;
+    }
+    Ok(())
+}
+
+/// AV2 §7.13.2.14 Filter corner process. Returns the three-tap top-left corner
+/// value `Round2(LeftCol[0] * 5 + AboveRow[-1] * 6 + AboveRow[0] * 5, 4)`,
+/// written by the caller into BOTH `AboveRow[-1]` and `LeftCol[-1]`. Transcribed
+/// VERBATIM from the committed spec mirror
+/// (`filter_intra_edge_corner_high`, `~/Devel/avm/av2/common/reconintra.c:1020-1028`):
+/// `s = left0 * 5 + above_neg1 * 6 + above0 * 5; out = (s + 8) >> 4`.
+#[must_use]
+pub fn filter_intra_edge_corner(left0: u16, above_neg1: u16, above0: u16) -> u16 {
+    let s = i32::from(left0) * 5 + i32::from(above_neg1) * 6 + i32::from(above0) * 5;
+    ((s + 8) >> 4) as u16
+}
+
 #[cfg(test)]
 #[path = "intra_directional_angle_tests.rs"]
 mod tests;

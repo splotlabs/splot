@@ -11,8 +11,9 @@ use splot_recon::{
     IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraPaethEdges, IntraRectBlockSize, IntraSmoothEdges,
     IntraSmoothMode, IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
-    ReconSample, apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
-    predict_intra_dc_rect_value, predict_intra_directional_angle_rect_into,
+    ReconSample, apply_intra_edge_filter, apply_intra_ibp_dc_rect, filter_intra_edge_corner,
+    predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
+    predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_into,
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_into, predict_intra_paeth_rect_into,
@@ -1003,6 +1004,29 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
     Ok(())
 }
 
+/// The § 7.13.2.7 step-1 edge-filter / corner-filter inputs the caller resolved
+/// for a one-sided IDIF leaf (the gate derived them from the neighbour modes and
+/// the § 7.13.2.17 strength selection). Threaded into the edge builder so the raw
+/// § 7.13.2.1 reference edge is rewritten in place before the § 7.13.2.8
+/// prediction reads it.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct OneSidedEdgeFilter {
+    /// § 7.13.2.17 `intra_edge_filter_strength_selection` result (`0..=3`) for the
+    /// read edge (`angleAbove` zone-1 / `angleLeft` zone-3, with the neighbour
+    /// `filterType`). `0` is a § 7.13.2.18 no-op.
+    pub strength: u8,
+    /// § 7.13.2.7 `numPx` for the read edge: `Min(w, maxX - x + 1) + (needRight ?
+    /// h : 0) + 1` (zone-1) / `Min(h, maxY - y + 1) + (needBottom ? w : 0) + 1`
+    /// (zone-3). The § 7.13.2.18 filter runs over the corner + this many samples.
+    pub num_px: usize,
+    /// `Some(oppositeEdge[0])` when the § 7.13.2.14 corner filter fires (`needAbove
+    /// && needLeft && (w + h) >= 24`): the reconstructed OPPOSITE-edge `[0]` sample
+    /// the corner blend reads (`LeftCol[0]` for zone-1, `AboveRow[0]` for zone-3).
+    /// `None` when the corner filter does not fire (`AboveRow[-1]` / `LeftCol[-1]`
+    /// stay the raw § 7.13.2.1 corner).
+    pub corner_opposite: Option<u16>,
+}
+
 /// Reconstructs one neighbour-having ZONE-1 ONE-SIDED directional block — D45
 /// (§ 7.13.2.8 step 1, pAngle 45) — over the § 7.13.2.1 above row PLUS the real
 /// reconstructed above-right read from the partially-built frame, adds the
@@ -1045,15 +1069,25 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
     num4_above_right: usize,
     use_tcq: bool,
     bit_depth: BitDepth,
+    edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
     // §7.13.2.1 above row + above-right; the corner is the real diagonally-above-
     // left sample. The zone-1 block is gated to a row>0, non-first-column position
-    // (`haveLeft && haveAbove`), so both the above row and the corner are real.
-    let above_idif =
-        build_one_sided_above_idif_edge(workspace, plane_id, x, y, side, num4_above_right)?;
+    // (`haveLeft && haveAbove`), so both the above row and the corner are real. The
+    // §7.13.2.7 corner / edge filter (when `edge_filter` is non-default) rewrites
+    // the raw edge in place before the §7.13.2.8 prediction reads it.
+    let above_idif = build_one_sided_above_idif_edge(
+        workspace,
+        plane_id,
+        x,
+        y,
+        side,
+        num4_above_right,
+        edge_filter,
+    )?;
     let mut prediction = vec![T::default(); side * side];
     // §7.13.2.8 `enableIdif = plane == 0`: luma uses the IDIF 4-tap; chroma uses
     // the `enableIdif == 0` bilinear one-sided branch. For D45 (`shift == 0`) both
@@ -1106,7 +1140,11 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
 ///
 /// Per § 7.13.2.1: the in-row samples `AboveRow[i]` for `i in 0..w + h` are
 /// `CurrFrame[plane][y - 1][Min(aboveLimit, x + i)]`, the corner `AboveRow[-1]` is
-/// `CurrFrame[plane][y - 1][x - 1]`. Per § 7.13.2.8 the edge is then extended:
+/// `CurrFrame[plane][y - 1][x - 1]`. When `edge_filter` is non-default the
+/// § 7.13.2.7 step 1 corner / edge filter rewrites the raw edge IN PLACE before
+/// the spec extension: the § 7.13.2.14 corner blend rewrites `AboveRow[-1]`
+/// (slice 1), then the § 7.13.2.18 edge filter sweeps the corner + `numPx`
+/// samples. Per § 7.13.2.8 the edge is then extended FROM the filtered values:
 /// `AboveRow[minBase - 1] = AboveRow[minBase]` (here `AboveRow[-2] = AboveRow[-1]`)
 /// and `AboveRow[maxBase + 1] = AboveRow[maxBase + 2] = AboveRow[maxBase]` (the
 /// two trailing samples repeat the clamped last in-row sample). `aboveLimit =
@@ -1118,6 +1156,7 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
     y: usize,
     side: usize,
     num4_above_right: usize,
+    edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let above_row = y
         .checked_sub(1)
@@ -1152,9 +1191,8 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
         .checked_add(5)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let mut above = vec![T::default(); edge_len];
-    // Logical -1 corner -> slice index 1; -2 -> slice index 0.
+    // Logical -1 corner -> slice index 1.
     let corner = workspace.reconstructed_sample(plane_id, corner_col, above_row)?;
-    above[0] = corner; // logical -2 = AboveRow[-1] (spec extension)
     above[1] = corner; // logical -1
     // In-row samples logical 0..=maxBaseX -> slice indices 2..=maxBaseX+2.
     for i in 0..=max_base_x {
@@ -1165,17 +1203,70 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
             .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
         above[slot] = sample;
     }
-    // §7.13.2.8 trailing extension: AboveRow[maxBaseX+1] = AboveRow[maxBaseX+2] =
-    // AboveRow[maxBaseX]; copy the clamped last in-row sample into both trailing
-    // slots (maxBaseX+3, maxBaseX+4).
-    let last_in_row = above[max_base_x + 2];
-    if let Some(slot) = above.get_mut(max_base_x + 3) {
-        *slot = last_in_row;
-    }
-    if let Some(slot) = above.get_mut(max_base_x + 4) {
-        *slot = last_in_row;
-    }
+    // §7.13.2.7 step 1 corner / edge filter over the raw §7.13.2.1 edge (zone-1
+    // reads the above edge; `corner_opposite` is the reconstructed `LeftCol[0]`),
+    // then the §7.13.2.8 `-2` / trailing extension from the filtered edge.
+    finalize_one_sided_idif_edge(&mut above, max_base_x, edge_filter)?;
     Ok(above)
+}
+
+/// Finalizes a one-sided IDIF read edge slice (zone-1 above edge or zone-3 left
+/// edge — the slice layout is identical: `slice[1]` is the logical `[-1]` corner,
+/// `slice[2]` the logical `[0]`, `slice[2 + maxBase]` the logical `maxBase`):
+/// applies the § 7.13.2.7 step-1 corner / edge filter, then the § 7.13.2.8 `-2` /
+/// trailing extension FROM the (possibly filtered) edge. Shared by the zone-1 and
+/// zone-3 builders so the symmetric tail is written once.
+///
+/// First the § 7.13.2.14 corner filter (when `corner_opposite` is `Some`): the
+/// blend `s = LeftCol[0] * 5 + AboveRow[-1] * 6 + AboveRow[0] * 5`, `Round2(s, 4)`
+/// is symmetric in its two `*5` terms, so passing `(corner_opposite, slice[1],
+/// slice[2])` reproduces it for BOTH zones (zone-1 `LeftCol[0]` / zone-3
+/// `AboveRow[0]` is the opposite sample). The result is written into the shared
+/// corner `slice[1]` (= both `AboveRow[-1]` and `LeftCol[-1]`).
+///
+/// Then the § 7.13.2.18 edge filter over the corner + `num_px` samples
+/// (`slice[1..]`, so `edge[0]` is the just-rewritten corner, never overwritten):
+/// a `strength == 0` no-op leaves the raw edge unchanged.
+///
+/// Finally the § 7.13.2.8 extension: `slice[0]` (logical `-2`) = `slice[1]`
+/// (logical `-1`), and the two trailing samples `slice[maxBase + 3]` /
+/// `slice[maxBase + 4]` (logical `maxBase + 1` / `maxBase + 2`) repeat the clamped
+/// last in-edge sample `slice[maxBase + 2]`.
+fn finalize_one_sided_idif_edge<T: ReconSample>(
+    edge: &mut [T],
+    max_base: usize,
+    filter: OneSidedEdgeFilter,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    if let Some(opposite) = filter.corner_opposite {
+        let corner = edge
+            .get(1)
+            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
+            .to_u16();
+        let own0 = edge
+            .get(2)
+            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
+            .to_u16();
+        let filtered = filter_intra_edge_corner(opposite, corner, own0);
+        edge[1] = T::try_from_u16(filtered)?;
+    }
+    // §7.13.2.18 filters the corner + `num_px` reference samples starting at the
+    // logical `[-1]` corner (`slice[1]`); `apply_intra_edge_filter` treats its
+    // `edge[0]` as the corner (read, never written).
+    if filter.num_px > 0
+        && let Some(window) = edge.get_mut(1..)
+    {
+        apply_intra_edge_filter(window, filter.num_px, filter.strength)?;
+    }
+    // §7.13.2.8 extension from the (possibly filtered) edge.
+    edge[0] = edge[1];
+    let last_in_edge = edge[max_base + 2];
+    if let Some(slot) = edge.get_mut(max_base + 3) {
+        *slot = last_in_edge;
+    }
+    if let Some(slot) = edge.get_mut(max_base + 4) {
+        *slot = last_in_edge;
+    }
+    Ok(())
 }
 
 /// Reconstructs one neighbour-having ZONE-3 ONE-SIDED directional block — D203
@@ -1224,6 +1315,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     num4_below_left: usize,
     use_tcq: bool,
     bit_depth: BitDepth,
+    edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
@@ -1232,9 +1324,18 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     // §7.13.2.1 left column + below-left; at the gated first-superblock-row,
     // non-first-column position (`haveAbove == 0 && haveLeft == 1`) the corner is
     // `CurrFrame[plane][y][x-1]` and the left column is the real reconstructed
-    // right column of the already-decoded left superblock.
-    let left_idif =
-        build_one_sided_left_idif_edge(workspace, plane_id, x, y, side, num4_below_left)?;
+    // right column of the already-decoded left superblock. The §7.13.2.7 corner /
+    // edge filter (when `edge_filter` is non-default) rewrites the raw edge in
+    // place before the §7.13.2.8 prediction reads it.
+    let left_idif = build_one_sided_left_idif_edge(
+        workspace,
+        plane_id,
+        x,
+        y,
+        side,
+        num4_below_left,
+        edge_filter,
+    )?;
     let mut prediction = vec![T::default(); side * side];
     // §7.13.2.8 `enableIdif = plane == 0`: luma uses the zone-3 IDIF 4-tap; chroma
     // uses the `enableIdif == 0` bilinear one-sided branch (the spec-mandated
@@ -1301,6 +1402,7 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     y: usize,
     side: usize,
     num4_below_left: usize,
+    edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let left_col = x
         .checked_sub(1)
@@ -1333,9 +1435,8 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let mut left = vec![T::default(); edge_len];
     // §7.13.2.1 (haveAbove == 0 && haveLeft == 1): corner LeftCol[-1] =
-    // CurrFrame[plane][y][x-1]. Logical -1 -> slice index 1; -2 -> slice index 0.
+    // CurrFrame[plane][y][x-1]. Logical -1 -> slice index 1.
     let corner = workspace.reconstructed_sample(plane_id, left_col, y)?;
-    left[0] = corner; // logical -2 = LeftCol[-1] (spec extension)
     left[1] = corner; // logical -1
     // In-column samples logical 0..=maxBaseY -> slice indices 2..=maxBaseY+2.
     for i in 0..=max_base_y {
@@ -1346,16 +1447,10 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
             .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
         left[slot] = sample;
     }
-    // §7.13.2.8 trailing extension: LeftCol[maxBaseY+1] = LeftCol[maxBaseY+2] =
-    // LeftCol[maxBaseY]; copy the clamped last in-column sample into both trailing
-    // slots (maxBaseY+3, maxBaseY+4).
-    let last_in_col = left[max_base_y + 2];
-    if let Some(slot) = left.get_mut(max_base_y + 3) {
-        *slot = last_in_col;
-    }
-    if let Some(slot) = left.get_mut(max_base_y + 4) {
-        *slot = last_in_col;
-    }
+    // §7.13.2.7 step 1 corner / edge filter over the raw §7.13.2.1 edge (zone-3
+    // reads the left edge; `corner_opposite` is the reconstructed `AboveRow[0]`),
+    // then the §7.13.2.8 `-2` / trailing extension from the filtered edge.
+    finalize_one_sided_idif_edge(&mut left, max_base_y, edge_filter)?;
     Ok(left)
 }
 

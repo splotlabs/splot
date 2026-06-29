@@ -216,6 +216,10 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             num4_above_right,
             false,
             bit_depth,
+            // The chroma follow path is the no-edge-filter subset (this sink does
+            // not model the §7.13.2.7 chroma `UVSmooth` filter-type state): a
+            // default no-op leaves the raw §7.13.2.1 edge unchanged.
+            OneSidedEdgeFilter::default(),
         ),
         // Directional-follow D203 chroma (§7.13.2.8 ZONE-3 step 3, pAngle 203) over
         // the real reconstructed §7.13.2.1 chroma left column + below-left. Chroma
@@ -239,6 +243,8 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 num4_below_left,
                 false,
                 bit_depth,
+                // No-edge-filter chroma follow subset (see D45Follow above).
+                OneSidedEdgeFilter::default(),
             )
         }
     }
