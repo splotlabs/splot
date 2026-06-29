@@ -589,22 +589,8 @@ pub(crate) enum DeblockError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use super::super::test_support::yuv420_workspace;
     use super::*;
-    use splot_recon::{
-        CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
-    };
-
-    fn yuv420_workspace(width: usize, height: usize, fill: u8) -> CurrentFrameWorkspace<u8> {
-        let info = DecodedFrameInfo::new(
-            OutputIndex::new(0),
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            PlaneSize::new(width, height).unwrap(),
-            PlaneRect::new(0, 0, width, height).unwrap(),
-        )
-        .unwrap();
-        CurrentFrameWorkspace::<u8>::new(info, fill).unwrap()
-    }
 
     fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock> {
         let mut blocks = Vec::new();

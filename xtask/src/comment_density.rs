@@ -3,6 +3,7 @@
 
 //! Implementation-comment budget gate (`cargo xtask check-comment-density`).
 
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
@@ -85,21 +86,22 @@ fn rust_source_files(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn enforce_budget(actual: usize, ceiling: usize) -> Result<String> {
-    if actual > ceiling {
-        bail!(
-            "check-comment-density: {actual} implementation comment line(s) exceed the budget of {ceiling} (+{} over)",
-            actual - ceiling
-        );
-    }
-    if actual < ceiling {
-        Ok(format!(
-            "check-comment-density: ok ({actual} implementation comment line(s), {} under the {ceiling} budget). Ratchet down {BUDGET_PATH} to {actual}",
-            ceiling - actual
-        ))
-    } else {
-        Ok(format!(
+    match actual.cmp(&ceiling) {
+        Ordering::Greater => {
+            let over = actual - ceiling;
+            bail!(
+                "check-comment-density: {actual} implementation comment line(s) exceed the budget of {ceiling} (+{over} over)"
+            );
+        }
+        Ordering::Less => {
+            let under = ceiling - actual;
+            Ok(format!(
+                "check-comment-density: ok ({actual} implementation comment line(s), {under} under the {ceiling} budget). Ratchet down {BUDGET_PATH} to {actual}"
+            ))
+        }
+        Ordering::Equal => Ok(format!(
             "check-comment-density: ok ({actual} implementation comment line(s), at budget)"
-        ))
+        )),
     }
 }
 

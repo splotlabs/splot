@@ -431,20 +431,8 @@ pub(crate) enum CdefError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use super::super::test_support::yuv420_workspace as workspace_8bit;
     use super::*;
-    use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
-
-    fn workspace_8bit(width: usize, height: usize, fill: u8) -> CurrentFrameWorkspace<u8> {
-        let info = DecodedFrameInfo::new(
-            OutputIndex::new(0),
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            PlaneSize::new(width, height).unwrap(),
-            PlaneRect::new(0, 0, width, height).unwrap(),
-        )
-        .unwrap();
-        CurrentFrameWorkspace::<u8>::new(info, fill).unwrap()
-    }
 
     #[test]
     fn flat_frame_is_unchanged() {

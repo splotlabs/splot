@@ -1304,6 +1304,32 @@ fn incomplete_intra_header_error(
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod test_support {
+    use splot_recon::{
+        CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
+    };
+
+    use super::BitDepth;
+
+    pub(super) fn yuv420_workspace(
+        width: usize,
+        height: usize,
+        fill: u8,
+    ) -> CurrentFrameWorkspace<u8> {
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+            PlaneSize::new(width, height).unwrap(),
+            PlaneRect::new(0, 0, width, height).unwrap(),
+        )
+        .unwrap();
+        CurrentFrameWorkspace::<u8>::new(info, fill).unwrap()
+    }
+}
+
 mod cdef;
 mod deblock;
 mod general_intra;
