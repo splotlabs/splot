@@ -210,8 +210,10 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
 /// [`WienerNsLrReconSink::full_recon_luma_log`]): sample-space origin `(x, y)`, MI
 /// origin `(mi_col, mi_row)`, sample `(width, height)`, a §7.13.2 mode label, and
 /// `written` (a real predictor vs. the workspace fill value left for an unwired mode).
-#[cfg(test)]
+/// Only the test harness reads the fields; production records but never inspects them
+/// (the log stays empty since `full_recon` is always `false`).
 #[derive(Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(in crate::runtime_minimal) struct FullReconLumaLeaf {
     pub mi_col: usize,
     pub mi_row: usize,
@@ -278,7 +280,6 @@ impl FarEdgeAvailGrid {
     /// The recorded per-transform §7.13.2.1 far-edge availability
     /// (`num4AboveRight`, `num4BelowLeft`) for the luma MI unit at `(mi_col,
     /// mi_row)`, or `None` when no transform has been recorded there yet.
-    #[cfg(test)]
     fn get(&self, mi_col: usize, mi_row: usize) -> Option<(u32, u32)> {
         if self.off_grid(mi_col, mi_row) {
             return None;
@@ -2476,9 +2477,7 @@ fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool) -> bool {
     !(real_ist || fsc_mode)
 }
 
-#[cfg(test)]
 mod full_recon;
-#[cfg(test)]
 use full_recon::{FarEdgeSide, full_recon_mode_label};
 
 #[cfg(test)]

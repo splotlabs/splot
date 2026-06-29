@@ -35,6 +35,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// harness, which reconstructs every luma leaf in decode order and diffs the whole
     /// frame against the AVM pre-filter oracle. The shipped oracle-pin tests never call
     /// this, so the gated path is untouched.
+    #[cfg(test)]
     pub(in crate::runtime_minimal) fn into_full_recon(mut self) -> Self {
         self.full_recon = true;
         self
@@ -101,6 +102,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// The decode-order luma leaf log captured in full-reconstruction mode (empty for
     /// a gated sink). The `SPLOT_AC0EJ3_FULL_RECON` harness replays this to locate the
     /// FIRST decode-order block whose samples diverge from the AVM oracle.
+    #[cfg(test)]
     pub(in crate::runtime_minimal) fn full_recon_luma_log(&self) -> &[FullReconLumaLeaf] {
         &self.full_recon_luma_log
     }
