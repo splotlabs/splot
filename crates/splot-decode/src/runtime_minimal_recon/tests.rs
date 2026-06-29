@@ -316,6 +316,153 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
     assert_eq!(row0, [39, 48, 61, 65, 69, 72, 76, 80]);
 }
 
+/// §7.13.2 ZONE-3 MULTI-REFERENCE-LINE DIAGNOSTIC — a D203 (`dy ==
+/// dr_intra_derivative[270 - 203] == 24`) 8x8 zone-3 leaf at interior `(16, 16)`
+/// with `MrlIndex == 1`. The §7.13.2.1 left column is read from the offset column
+/// `CurrFrame[..][x - 1 - MrlIndex] == 14`, the corner from `CurrFrame[y - 1][14]`.
+/// The expected samples are computed INLINE from the VERBATIM AVM
+/// `av2_highbd_dr_prediction_z3_idif_c` over the same prepared edge, where `y_c ==
+/// dy * (1 + MrlIndex + c)`, `base == (y_c >> 6) + r`, `shift == (y_c >> 1) & 0x1F`,
+/// the 4-tap `Dr_Interp_Filter`, and the clamp `maxBase == w + h - 1 +
+/// (MrlIndex << 1) == 17`. This pins the zone-3 MRL geometry and edge independently
+/// of any partial-frame reconstruction; a primitive that read the immediate column
+/// (15), the wrong base shift, or the wrong maxBase would diverge from the reference.
+#[test]
+fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
+    // §7.13.2.8 Dr_Interp_Filter rows used by D203 mrl=1 (shifts the projection hits).
+    const FILTER: [[i32; 4]; 32] = [
+        [0, 128, 0, 0],
+        [-2, 127, 4, -1],
+        [-3, 125, 8, -2],
+        [-5, 123, 13, -3],
+        [-6, 121, 17, -4],
+        [-7, 118, 22, -5],
+        [-9, 116, 27, -6],
+        [-9, 112, 32, -7],
+        [-10, 109, 37, -8],
+        [-11, 106, 41, -8],
+        [-11, 102, 46, -9],
+        [-12, 98, 52, -10],
+        [-12, 94, 56, -10],
+        [-12, 90, 61, -11],
+        [-12, 85, 66, -11],
+        [-12, 81, 71, -12],
+        [-12, 76, 76, -12],
+        [-12, 71, 81, -12],
+        [-11, 66, 85, -12],
+        [-11, 61, 90, -12],
+        [-10, 56, 94, -12],
+        [-10, 52, 98, -12],
+        [-9, 46, 102, -11],
+        [-8, 41, 106, -11],
+        [-8, 37, 109, -10],
+        [-7, 32, 112, -9],
+        [-6, 27, 116, -9],
+        [-5, 22, 118, -7],
+        [-4, 17, 121, -6],
+        [-3, 13, 123, -5],
+        [-2, 8, 125, -3],
+        [-1, 4, 127, -2],
+    ];
+    const DY: i64 = 24; // dr_intra_derivative[270 - 203]
+    const MRL: i64 = 1;
+    const W: usize = 8;
+    const H: usize = 8;
+    let corner: i64 = 200;
+    // The left column at col 14 over rows 16.. (the in-block 8 + below-left up to
+    // maxBase); ascending and distinct so a wrong column / base is observable.
+    let left_col: Vec<i64> = (0..32).map(|i| 40 + 3 * i as i64).collect();
+
+    // Build the logical edge slice `Edge[-2 ..= w + h + 1 + (mrl << 1)]` exactly as
+    // the primitive does: slot 0 = logical -2, slot 1 = corner (-1), slot i+2 =
+    // logical i. maxBase = w + h - 1 + (mrl << 1).
+    let max_base = W + H - 1 + (MRL as usize) * 2;
+    let mut edge = vec![0i64; max_base + 5];
+    edge[1] = corner;
+    for i in 0..=max_base {
+        edge[i + 2] = *left_col.get(i).unwrap_or(left_col.last().unwrap());
+    }
+    edge[0] = edge[1];
+    edge[max_base + 3] = edge[max_base + 2];
+    edge[max_base + 4] = edge[max_base + 2];
+    let edge_at = |logical: i64| edge[(logical + 2) as usize];
+
+    let reference: Vec<u8> = (0..H)
+        .flat_map(|r| (0..W).map(move |c| (r, c)))
+        .map(|(r, c)| {
+            let y_c = DY * (1 + MRL + c as i64);
+            let base = (y_c >> 6) + r as i64;
+            let shift = ((y_c >> 1) & 0x1F) as usize;
+            if base <= max_base as i64 {
+                let taps = FILTER[shift];
+                let mut sum = 0i64;
+                for (t, &tap) in taps.iter().enumerate() {
+                    sum += i64::from(tap) * edge_at(base + t as i64 - 1);
+                }
+                (((sum + 64) >> 7).clamp(0, 255)) as u8
+            } else {
+                edge_at(max_base as i64) as u8
+            }
+        })
+        .collect();
+
+    // Lay the workspace so col 14 over rows 16..40 is `left_col`, the corner
+    // (14, 15) is 200, then run the primitive at (16, 16) with mrl=1.
+    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    // corner block at (12, 12) carrying 200 at (14, 15).
+    ws.write_rect_block(
+        PlaneId::Y,
+        12,
+        12,
+        IntraRectBlockSize::new(2, 2).unwrap(),
+        &[200u8; 16],
+    )
+    .unwrap();
+    // left column at col 14 over rows 16..48 (a 4x32 block at (12, 16); col index 2
+    // within the block == col 14).
+    let mut col_block = vec![0u8; 4 * 32];
+    for (r, &v) in left_col.iter().enumerate() {
+        for c in 0..4 {
+            col_block[r * 4 + c] = v as u8;
+        }
+    }
+    ws.write_rect_block(
+        PlaneId::Y,
+        12,
+        16,
+        IntraRectBlockSize::new(2, 5).unwrap(),
+        &col_block,
+    )
+    .unwrap();
+    assert_eq!(ws.reconstructed_sample(PlaneId::Y, 14, 15).unwrap(), 200);
+    assert_eq!(ws.reconstructed_sample(PlaneId::Y, 14, 16).unwrap(), 40);
+
+    reconstruct_general_intra_one_sided_left_neighbour_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        203,
+        PlaneId::Y,
+        16,
+        16,
+        3,
+        3,
+        0,
+        2, // num4_below_left: cover the maxBase = 17 below-left reads (rows up to 39)
+        true,
+        1, // mrl_index
+        false,
+        BitDepth::Eight,
+        OneSidedEdgeFilter::default(),
+    )
+    .unwrap();
+
+    let got: Vec<u8> = (0..H)
+        .flat_map(|r| (0..W).map(move |c| (r, c)))
+        .map(|(r, c)| ws.reconstructed_sample(PlaneId::Y, 16 + c, 16 + r).unwrap())
+        .collect();
+    assert_eq!(got, reference);
+}
+
 /// STRIDE/TRANSPOSE GUARD — V_PRED over a NON-SQUARE 64x32 (`W == 64`,
 /// `H == 32`) block with a REAL, NON-FLAT above row. §7.13.2.8 V_PRED copies the
 /// 64-wide above row into every one of the 32 rows; a width/height swap or a

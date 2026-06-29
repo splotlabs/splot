@@ -1012,11 +1012,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 })?;
             }
             IntraDirectionalAngleEdge::Left => {
-                // DEFER the zone-3 (left-reading) MRL projection: against the AVM
-                // oracle it is not yet bit-exact (a clean-neighbour mismatch at
-                // p_angle 181 interior leaves), so admitting it would claim an
-                // unproven predictor. The zone-1 (above-reading) MRL projection above
-                // is verified; zone-3 MRL is the next root to wire.
+                // DEFER the zone-3 (left-reading) MRL projection. The primitive's edge
+                // construction and IDIF geometry are AVM-exact in isolation (proven by
+                // `zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference`), but
+                // against the AVM stream oracle a near-cardinal `pAngle == 181` (dy ==
+                // 1) interior leaf is off by 1 in its LAST projected row even when every
+                // §7.13.2.1 edge input is bit-exact — an unresolved discrepancy. Admitting
+                // it would claim an unproven predictor, so zone-3 MRL stays deferred until
+                // the dy == 1 last-row case is reconciled with avmdec. Zone-1 (above) MRL
+                // above is verified.
                 if mrl != 0 {
                     return Ok(false);
                 }
@@ -2466,7 +2470,7 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         .is_some_and(|intra| intra.enable_intra_edge_filter);
     let sb_size = sequence.partition.as_ref().map_or(
         splot_core::headers::sequence::SuperblockSize::Block64x64,
-        |partition| partition.seq_sb_size(),
+        splot_core::headers::sequence::SequencePartitionConfig::seq_sb_size,
     );
     let sb_mib = splot_core::tile::num_4x4_blocks_wide(sb_size) as usize;
     let base_sink = WienerNsLrReconSink::<u16>::new(
