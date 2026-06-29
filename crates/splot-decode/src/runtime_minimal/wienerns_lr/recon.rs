@@ -17,11 +17,17 @@
 //! primitives — exactly the prediction→residual→write pattern `general_intra.rs`
 //! uses, but driven from the live ac0ej3 walk instead of a synthetic fixture.
 //!
+//! The bridge also reconstructs the verified §7.13.3.18 IntrABC subset: a `skip`
+//! block's displaced copy IS the reconstruction, and a NON-skip integer-DV block's
+//! displaced copy is the §7.13.2 prediction onto which each §5.20.7.27 residual
+//! transform leaf adds its decoded residual (the same §7.14.4 / §7.15.4 / §7.14.3
+//! path the DC / cardinal intra leaves use, over the IntrABC predictor).
+//!
 //! The bridge is a TEST instrument: the public `splot decode` path runs the walk
-//! WITHOUT a sink, so it still fails closed at the first active IntrABC block and
-//! emits no frame. A region-verification test attaches a sink, lets the walk run
-//! until it rejects at IntrABC, and asserts the populated workspace region is
-//! bit-exact against the AVM pre-filter reconstruction oracle.
+//! WITHOUT a sink, so it still fails closed at the §7.20.4 unpopulated-samples gate
+//! and emits no frame. A region-verification test attaches a sink, runs the whole
+//! walk, and asserts the populated workspace region is bit-exact against the AVM
+//! pre-filter reconstruction oracle.
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{
@@ -35,6 +41,7 @@ use crate::runtime_minimal_recon::{
     reconstruct_general_intra_block_rect_into,
     reconstruct_general_intra_cardinal_neighbour_block_into,
     reconstruct_general_intra_luma_paeth_neighbour_block_into,
+    reconstruct_intrabc_block_residual_rect_into,
 };
 use crate::tile_payload::{
     IntraYMode, LumaCoeffBlock, SupportedChromaMode, SupportedDirectionalLumaMode,
@@ -74,14 +81,16 @@ pub(in crate::runtime_minimal) struct SelectableReconContext {
     pub(in crate::runtime_minimal) luma_use_tcq: bool,
     pub(in crate::runtime_minimal) fsc_mode: bool,
     /// Whether this leaf is a §5.20.5.3 `use_intrabc` block. An IntrABC leaf's
-    /// luma samples are reconstructed by
-    /// [`WienerNsLrReconSink::reconstruct_intrabc_block`] (a §7.13.3.18 displaced
-    /// `CurrFrame` copy) inside `read_intrabc_info`, BEFORE the skip-residual path
-    /// runs. The residual path's flat §7.13.2 DC/cardinal prediction must NOT then
-    /// overwrite that copy with a spurious `DC_PRED` block (an IntrABC leaf's
-    /// `leaf_y_mode` is a placeholder `DC_PRED`, §5.20.5.3 reads no intra Y mode), so
-    /// the skip-residual reconstruction is skipped for an IntrABC leaf — the IntrABC
-    /// sink already owns its samples.
+    /// §7.13.2 PREDICTION is the §7.13.3.18 displaced `CurrFrame` copy
+    /// [`WienerNsLrReconSink::reconstruct_intrabc_block`] performs inside
+    /// `read_intrabc_info`, BEFORE the residual leaves run — NOT a §7.13.2 intra
+    /// prediction (an IntrABC leaf's `leaf_y_mode` is a placeholder `DC_PRED`,
+    /// §5.20.5.3 reads no intra Y mode). So the residual path must NOT run its flat
+    /// DC/cardinal intra prediction for an IntrABC leaf. Instead, for a NON-skip
+    /// IntrABC block, the residual leaf adds its §5.20.7.27 residual onto the copied
+    /// predictor ([`WienerNsLrReconSink::reconstruct_luma_transform`]'s `is_intrabc`
+    /// branch); a `skip` IntrABC block carries no residual leaf (its copy already marked
+    /// coverage).
     pub(in crate::runtime_minimal) is_intrabc: bool,
 }
 
@@ -129,6 +138,18 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
     coverage: [PlaneCoverage; 3],
     reconstructed_luma_4x4: usize,
     reconstructed_chroma_4x4: usize,
+    /// Luma TARGET rectangles of NON-skip §7.13.3.18 IntrABC blocks whose displaced
+    /// copy this sink has already written into the workspace as the §7.13.2
+    /// prediction, but whose §5.20.7.27 residual is added later by the per-transform
+    /// [`Self::reconstruct_luma_transform`] leaves (in decode order, AFTER this
+    /// prelude copy). A residual leaf is admitted as an IntrABC residual-add ONLY
+    /// when its transform rect lies within one of these rects: that proves the copied
+    /// prediction underneath it is the spec-correct displaced source (the
+    /// `reconstruct_intrabc_block` integer-DV / source-covered gate already held), so
+    /// the leaf adds its residual onto a real predictor rather than a fill value. A
+    /// SKIP IntrABC block (no residual) marks its coverage at copy time and records
+    /// nothing here.
+    pending_intrabc_predictions: Vec<PlaneRect>,
 }
 
 /// Row-major MI-unit reconstruction coverage for one plane grid.
@@ -233,6 +254,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             ],
             reconstructed_luma_4x4: 0,
             reconstructed_chroma_4x4: 0,
+            pending_intrabc_predictions: Vec::new(),
         })
     }
 
@@ -245,6 +267,37 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             PlaneId::U => 1,
             PlaneId::V => 2,
         }
+    }
+
+    /// Whether the transform rect `[x, x+width) x [y, y+height)` lies entirely
+    /// within a NON-skip §7.13.3.18 IntrABC block whose displaced-copy prediction
+    /// this sink already wrote into the workspace (recorded in
+    /// [`Self::pending_intrabc_predictions`]). When `true`, the copied samples under
+    /// the transform are the spec-correct displaced predictor (the
+    /// `reconstruct_intrabc_block` integer-DV / source-covered gate held at copy
+    /// time), so a residual leaf may add its §5.20.7.27 residual onto them. A leaf
+    /// whose rect is NOT inside any pending prediction (the copy was deferred —
+    /// fractional DV, uncovered source, or non-reconstructable quant) DEFERS, never
+    /// adding a residual onto a fill value.
+    fn rect_within_pending_intrabc_prediction(
+        &self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) -> bool {
+        let (Some(right), Some(bottom)) = (x.checked_add(width), y.checked_add(height)) else {
+            return false;
+        };
+        self.pending_intrabc_predictions.iter().any(|rect| {
+            let (Some(rect_right), Some(rect_bottom)) = (
+                rect.x().checked_add(rect.width()),
+                rect.y().checked_add(rect.height()),
+            ) else {
+                return false;
+            };
+            x >= rect.x() && y >= rect.y() && right <= rect_right && bottom <= rect_bottom
+        })
     }
 
     /// Whether the §7.13.2.12 IBP DC modifier is invoked for a DC_PRED block of the
@@ -460,23 +513,35 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             // Defer a frame whose dequant the primitive cannot honor.
             return Ok(());
         }
-        if is_intrabc {
-            // A §7.13.3.18 IntrABC leaf's luma prediction is the displaced `CurrFrame`
-            // copy `reconstruct_intrabc_block` performs from the block vector, NOT a
-            // §7.13.2 intra prediction — the `leaf_y_mode` is a §5.20.5.3 placeholder
-            // `DC_PRED` (no intra Y mode is read for IntrABC). Reconstructing here via
-            // that placeholder would overwrite the correct IntrABC copy with a spurious
-            // DC block. The non-skip IntrABC residual add (copy + inverse-transform of
-            // this transform's coefficients) is a separate proven brick, so the sink
-            // defers the residual write — the entropy coefficients were already
-            // consumed AVM-faithfully by the caller; only the sample write is deferred.
-            return Ok(());
-        }
         let Some((log2_width, log2_height)) = tx_size_log2(tx_size) else {
             return Ok(());
         };
         if !residual_is_reconstructable(block, fsc_mode) {
             return Ok(());
+        }
+        if is_intrabc {
+            // A §7.13.3.18 IntrABC leaf's luma prediction is the displaced `CurrFrame`
+            // copy `reconstruct_intrabc_block` already wrote into the workspace (for a
+            // non-skip block, recorded in `pending_intrabc_predictions`), NOT a §7.13.2
+            // intra prediction — the `leaf_y_mode` is a §5.20.5.3 placeholder `DC_PRED`
+            // (no intra Y mode is read for IntrABC). This leaf adds its §5.20.7.27
+            // residual onto that copied predictor and marks its own coverage. The
+            // residual is gated by `residual_is_reconstructable` above (no real IST, no
+            // FSC); a skip IntrABC block carries no residual leaf here (its copy already
+            // marked coverage). The copy must have landed: the leaf's rect must lie
+            // inside a pending IntrABC prediction — otherwise the copy was deferred
+            // (fractional DV / uncovered source / non-reconstructable quant) and adding
+            // a residual onto the fill value would be the cardinal sin, so DEFER.
+            return self.reconstruct_intrabc_residual_leaf(
+                mi_col,
+                mi_row,
+                log2_width,
+                log2_height,
+                block,
+                qindex,
+                use_tcq,
+                tile_offset,
+            );
         }
         let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
         // The cardinal direction the sink can predict bit-exact, or `None` for DC /
@@ -611,6 +676,66 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Ok(())
     }
 
+    /// Reconstructs one §7.13.3.18 NON-skip IntrABC luma residual transform leaf: adds
+    /// the decoded §5.20.7.27 residual onto the displaced-copy prediction
+    /// [`Self::reconstruct_intrabc_block`] already wrote into the workspace for this
+    /// block, then marks the leaf's coverage.
+    ///
+    /// DEFERRED (returns `Ok(())` without writing) when the leaf's transform rect is
+    /// NOT inside a pending IntrABC prediction: that means the whole-block copy was
+    /// itself deferred (a fractional DV, an uncovered source, or a non-reconstructable
+    /// quant), so the samples under the transform are the workspace fill value, and
+    /// adding a residual onto them would claim an unreconstructed predictor as correct.
+    /// The caller has already cleared the §5.20.7.29 real-IST / FSC residual gates
+    /// ([`residual_is_reconstructable`]) and the integer-DV gate (the copy only records
+    /// a pending prediction for an integer-DV, source-covered block), so the residual is
+    /// the proven primitive kind over a real predictor.
+    #[allow(clippy::too_many_arguments)]
+    fn reconstruct_intrabc_residual_leaf(
+        &mut self,
+        mi_col: usize,
+        mi_row: usize,
+        log2_width: u32,
+        log2_height: u32,
+        block: &LumaCoeffBlock,
+        qindex: u32,
+        use_tcq: bool,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
+        let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+        let width = 1usize << log2_width;
+        let height = 1usize << log2_height;
+        if !self.rect_within_pending_intrabc_prediction(x, y, width, height) {
+            // The whole-block IntrABC copy was deferred (or this leaf overhangs it),
+            // so the predictor under the transform is the fill value — never add a
+            // residual onto it.
+            return Ok(());
+        }
+        reconstruct_intrabc_block_residual_rect_into(
+            &mut self.workspace,
+            block,
+            PlaneId::Y,
+            x,
+            y,
+            log2_width,
+            log2_height,
+            qindex,
+            use_tcq,
+            self.bit_depth,
+        )
+        .map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_recon_intrabc_residual_write",
+            )
+        })?;
+        let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
+        let marked =
+            self.coverage[Self::coverage_index(PlaneId::Y)].mark(mi_col, mi_row, mi_w, mi_h);
+        self.reconstructed_luma_4x4 = self.reconstructed_luma_4x4.saturating_add(marked);
+        Ok(())
+    }
+
     /// Reconstructs one chroma (U or V) transform block at the given chroma-plane
     /// sample position into the workspace. The block is DEFERRED unless ALL of the
     /// proven subset holds: `chroma_mode` is `DC_PRED` (chroma never uses the
@@ -687,13 +812,19 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// [`CurrentFrameWorkspace::copy_rect_within_plane`] integer-vector primitive
     /// performs (snapshotting the source before the target write).
     ///
+    /// For a `skip` block (zero residual) the displaced copy IS the reconstruction:
+    /// it marks coverage final. For a NON-skip block the displaced copy is only the
+    /// §7.13.2 PREDICTION; this records the target rect in
+    /// [`Self::pending_intrabc_predictions`] WITHOUT marking coverage, and the
+    /// per-transform [`Self::reconstruct_luma_transform`] leaves (decoded AFTER this
+    /// prelude copy, in decode order) add the §5.20.7.27 residual onto the copied
+    /// predictor and mark their own coverage. So the displaced copy runs for both
+    /// skip and non-skip; only coverage timing differs.
+    ///
     /// The block is DEFERRED (returns `Ok(())` without writing — never wrong samples
     /// claimed correct) unless ALL of the proven subset holds:
     /// * the frame dequant matches the zero-`QuantizerDeltas` assumption
     ///   (`quant_reconstructable`);
-    /// * the block is a `skip` block (zero residual) — a non-skip IntrABC residual
-    ///   needs the dequant / inverse-transform / residual-add path this brick has not
-    ///   proven for the IntrABC tx type, so it is deferred;
     /// * the block vector is INTEGER (`source` and `target` have the same shape) — a
     ///   fractional BILINEAR IntrABC predictor needs a convolution path, not a copy;
     /// * EVERY source MI unit is already reconstructed by this sink — copying an
@@ -707,9 +838,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         skip_flag: bool,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        if !self.quant_reconstructable || !skip_flag {
-            // Defer a frame whose dequant the primitive cannot honor, or a non-skip
-            // IntrABC block whose residual this brick has not proven bit-exact.
+        if !self.quant_reconstructable {
+            // Defer a frame whose dequant the primitive cannot honor.
             return Ok(());
         }
         // An integer block vector keeps the predictor a same-shape copy; a fractional
@@ -743,6 +873,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     "unsupported_wienerns_lr_selectable_transform_records_recon_intrabc_copy",
                 )
             })?;
+        if !skip_flag {
+            // The copy is only the §7.13.2 prediction; the §5.20.7.27 residual leaves
+            // (decoded after this prelude, in decode order) own the coverage. Record
+            // the target rect so a residual leaf can prove its predictor is the real
+            // displaced copy before adding its residual.
+            self.pending_intrabc_predictions.push(target);
+            return Ok(());
+        }
         let (tgt_mi_col, tgt_mi_row) = (target.x() / MI_SIZE, target.y() / MI_SIZE);
         let (tgt_mi_w, tgt_mi_h) = (target.width() / MI_SIZE, target.height() / MI_SIZE);
         let marked = self.coverage[Self::coverage_index(PlaneId::Y)]
@@ -1951,10 +2089,14 @@ mod tests {
         assert_eq!(sink.reconstructed_counts().0, before);
     }
 
-    /// A non-skip IntrABC block (non-zero residual) is DEFERRED even with a fully
-    /// reconstructed integer-vector source — its residual is not yet proven bit-exact.
+    /// A non-skip IntrABC block's displaced copy writes the §7.13.2 PREDICTION into
+    /// the workspace target but does NOT mark coverage: the §5.20.7.27 residual leaf
+    /// (decoded after this prelude, in decode order) adds the residual onto the copied
+    /// predictor and marks coverage. So after the copy alone, the target carries the
+    /// copied source samples (the prediction) but the 4x4 count is unchanged — only
+    /// the residual leaf finalises the block.
     #[test]
-    fn intrabc_non_skip_block_is_deferred() {
+    fn intrabc_non_skip_copy_writes_prediction_without_marking_coverage() {
         let mut sink = sink();
         recon_luma(
             &mut sink,
@@ -1970,7 +2112,165 @@ mod tests {
         let target = PlaneRect::new(0, 32, 16, 16).unwrap();
         sink.reconstruct_intrabc_block(source, target, false, ByteOffset::new(0))
             .unwrap();
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 0);
+        // The copy wrote the predictor (the flat 512 source) into the target, but the
+        // count is unchanged: a non-skip block's coverage is owned by its residual leaf.
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 512);
+        assert_eq!(sink.reconstructed_counts().0, before);
+    }
+
+    /// The full non-skip IntrABC residual path: the displaced copy writes the
+    /// prediction (the flat 512 source), then the residual leaf adds an ASYMMETRIC
+    /// `eob > 1` residual onto it and marks coverage. The reconstruction must equal
+    /// `Clip1(prediction + inverse-transform(residual))`, verified against the
+    /// equivalent intra `DC_PRED` reconstruction over the SAME flat-512 prediction.
+    #[test]
+    fn intrabc_non_skip_residual_leaf_adds_residual_onto_copied_prediction() {
+        // Reference: a DC_PRED leaf at the frame origin over a flat-512 no-neighbour
+        // prediction with the same asymmetric residual. (DC_PRED at (0,0) is the flat
+        // 512 fallback, identical to the IntrABC predictor copied from a flat-512
+        // source, so the two reconstructions must agree sample-for-sample.)
+        let mut residual = coeff_block_16x16();
+        residual.quant[0] = -3;
+        residual.quant[1] = 9;
+        residual.quant[16] = -7;
+        residual.eob = 3;
+
+        let mut reference_sink = sink();
+        recon_luma(
+            &mut reference_sink,
+            0,
+            0,
+            TX_16X16,
+            &residual,
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+
+        // IntrABC: reconstruct a flat-512 source, copy it down to a target (the
+        // prediction), then add the SAME residual via the IntrABC residual leaf.
+        let mut sink = sink();
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        let before = sink.reconstructed_counts().0;
+        let source = PlaneRect::new(0, 0, 16, 16).unwrap();
+        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
+        sink.reconstruct_intrabc_block(source, target, false, ByteOffset::new(0))
+            .unwrap();
+        // The residual leaf at the target (mi 0,8 == x0,y32) adds the residual.
+        sink.reconstruct_luma_transform(
+            0,
+            8,
+            TX_16X16,
+            &residual,
+            Some(IntraYMode::DC_PRED),
+            None,
+            0,
+            149,
+            true,
+            false,
+            true, // is_intrabc
+            ByteOffset::new(0),
+        )
+        .unwrap();
+        // The residual leaf marked the 16x16 == 16 4x4 units.
+        assert_eq!(sink.reconstructed_counts().0, before + 16);
+        // Every sample equals the reference DC reconstruction over the flat-512 pred.
+        for y in 0..16 {
+            for x in 0..16 {
+                let got = sink.reconstructed_sample(PlaneId::Y, x, 32 + y).unwrap();
+                let want = reference_sink
+                    .reconstructed_sample(PlaneId::Y, x, y)
+                    .unwrap();
+                assert_eq!(
+                    got,
+                    want,
+                    "IntrABC residual ({x},{}) must equal pred+residual {want}, got {got}",
+                    32 + y
+                );
+            }
+        }
+    }
+
+    /// A non-skip IntrABC residual leaf whose transform rect is NOT inside any pending
+    /// IntrABC prediction (the whole-block copy was deferred — fractional DV / uncovered
+    /// source / non-reconstructable quant) is DEFERRED: never adds a residual onto the
+    /// workspace fill value.
+    #[test]
+    fn intrabc_non_skip_residual_leaf_without_pending_prediction_is_deferred() {
+        let mut sink = sink();
+        let mut residual = coeff_block_16x16();
+        residual.eob = 2;
+        residual.quant[1] = 7;
+        // No `reconstruct_intrabc_block` ran, so no pending prediction is recorded.
+        sink.reconstruct_luma_transform(
+            0,
+            0,
+            TX_16X16,
+            &residual,
+            Some(IntraYMode::DC_PRED),
+            None,
+            0,
+            149,
+            true,
+            false,
+            true, // is_intrabc
+            ByteOffset::new(0),
+        )
+        .unwrap();
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
+        assert_eq!(sink.reconstructed_counts().0, 0);
+    }
+
+    /// A non-skip IntrABC residual leaf carrying a REAL §5.20.7.29 IST secondary
+    /// transform (`sec_tx_type != 0`) is DEFERRED even with a pending prediction: the
+    /// §7.15.3 secondary transform is unmodelled, so the residual is not proven.
+    #[test]
+    fn intrabc_non_skip_residual_leaf_with_real_ist_is_deferred() {
+        let mut sink = sink();
+        recon_luma(
+            &mut sink,
+            0,
+            0,
+            TX_16X16,
+            &zero_block(),
+            Some(IntraYMode::DC_PRED),
+            false,
+        );
+        let before = sink.reconstructed_counts().0;
+        let source = PlaneRect::new(0, 0, 16, 16).unwrap();
+        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
+        sink.reconstruct_intrabc_block(source, target, false, ByteOffset::new(0))
+            .unwrap();
+        let mut residual = coeff_block_16x16();
+        residual.intra_ist = Some(crate::tile_payload::IntraIstSyntax {
+            sec_tx_type: 1,
+            most_probable_stx_set: Some(0),
+        });
+        sink.reconstruct_luma_transform(
+            0,
+            8,
+            TX_16X16,
+            &residual,
+            Some(IntraYMode::DC_PRED),
+            None,
+            0,
+            149,
+            true,
+            false,
+            true, // is_intrabc
+            ByteOffset::new(0),
+        )
+        .unwrap();
+        // The real-IST residual deferred: the target keeps the bare prediction copy
+        // (flat 512) and the count is unchanged (no residual leaf coverage marked).
+        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 512);
         assert_eq!(sink.reconstructed_counts().0, before);
     }
 

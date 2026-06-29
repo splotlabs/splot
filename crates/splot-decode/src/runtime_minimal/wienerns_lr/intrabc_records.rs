@@ -618,9 +618,11 @@ pub(super) fn read_intrabc_info(
     // returns. Returning the parsed mode-info for BOTH cases lets that machinery
     // advance the partition/superblock walk AVM-faithfully to the next leaf — the
     // entropy state after the block is exactly where AVM leaves it. For a non-skip
-    // leaf the sink's `reconstruct_intrabc_block` copied only the prediction; the
-    // residual add is gated/deferred inside the sink's transform-record path until the
-    // displaced-copy + inverse-transform residual reconstruction is proven bit-exact.
+    // leaf the sink's `reconstruct_intrabc_block` wrote the displaced copy as the
+    // §7.13.2 PREDICTION and recorded the target as pending; each §5.20.7.27 residual
+    // transform leaf then adds its decoded residual onto that predictor inside the
+    // sink's transform-record path (gated to the proven integer-DV / no-real-IST
+    // subset), so the IntrABC reconstruction is prediction + residual, bit-exact.
     Ok(info)
 }
 

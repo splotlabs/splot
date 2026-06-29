@@ -218,19 +218,30 @@ const MI40_IBP_STEP: u16 = 65;
 /// longer mis-parsed but not yet reconstructable through this sink) stay UNCOVERED at
 /// their fill value — the sink never claims a sample it has not proven bit-exact.
 ///
+/// The §7.13.3.18 NON-skip integer-DV IntrABC RESIDUAL leaves are now reconstructed:
+/// the displaced copy lands as the §7.13.2 prediction, then each §5.20.7.27 residual
+/// transform leaf adds its decoded residual onto the copied predictor (the §7.14.4 /
+/// §7.15.4 / §7.14.3 dequant → inverse → Clip1-add path the DC / cardinal intra leaves
+/// already use, over the IntrABC predictor instead of an intra prediction). Admitted
+/// only for an integer DV, a fully-reconstructed source, no real §5.20.7.29 IST
+/// (`sec_tx_type == 0`), and a reconstructable residual; a fractional DV, a real IST,
+/// an uncovered source, or chroma still DEFER. This grew the region `670976` →
+/// `743456` (the 13 reachable non-skip integer-DV IntrABC blocks plus the regular-intra
+/// + IntrABC cascade their reconstructed targets re-ignite through the coverage guards).
+///
 /// Verified ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
 /// pre-filter reconstruction oracle (the `inspect --dump-prefiltered` luma plane,
 /// 1920x1080 u16-LE, stride 3840), aggregated by count + sum + FNV-1a-64 in
 /// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
-const LUMA_RECON_SAMPLE_TOTAL: usize = 670_976;
+const LUMA_RECON_SAMPLE_TOTAL: usize = 743_456;
 /// Sum of every reconstructed luma sample in the verified region (derived from the AVM
 /// pre-filter oracle over the sink's covered MI units, zero mismatch vs splot).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 44_697_248;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 49_943_520;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0x4faf_a8c7_1271_6fc8;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0x3924_fcd0_5bb0_5dcb;
 
 /// The bottom-edge `TX_64X64 DC_PRED` block at MI(16,256), x[64,128) y[1024,1080):
 /// its 56 in-frame rows (the 64-tall block overhangs the 1080-tall frame by 8). The
@@ -309,6 +320,28 @@ const STEP8_ADMITTED_FLAT: u16 = 64;
 const STEP8_ADMITTED_SAMPLE_SUM: u64 = 393_216;
 /// FNV-1a-64 over the newly-admitted region (row-major, sample-major u16 LE).
 const STEP8_ADMITTED_FNV1A64: u64 = 0xa61d_8c75_326d_e325;
+
+/// The first NON-skip §7.13.3.18 IntrABC RESIDUAL block: the `BLOCK_32X64` luma TARGET
+/// at MI(0,112) → x[448,480) x y[0,64). Its §5.20.5.4 block vector is integer (row `0`,
+/// col `-256` eighth-pel == `-32` samples), so §7.13.3.18 reduces to a plain copy of the
+/// displaced SOURCE rectangle x[416,448) y[0,64) (the flat-`68` right half of the SB
+/// column DC region) AS THE PREDICTION; the block is NON-skip, so each §5.20.7.27
+/// residual transform leaf then ADDS its decoded residual onto that copied predictor (the
+/// first leaf has `eob == 11`). The result is the per-sample `Clip1(prediction +
+/// inverse-transform(residual))` — a genuine NON-flat block (oracle values 64..73, not a
+/// flat copy), proving the residual-add ran. Derived offline from `ac0_prefiltered.yuv`.
+const INTRABC_RESIDUAL_TARGET_X: usize = 448;
+const INTRABC_RESIDUAL_TARGET_Y: usize = 0;
+const INTRABC_RESIDUAL_TARGET_WIDTH: usize = 32;
+const INTRABC_RESIDUAL_TARGET_HEIGHT: usize = 64;
+const INTRABC_RESIDUAL_SAMPLE_COUNT: usize =
+    INTRABC_RESIDUAL_TARGET_WIDTH * INTRABC_RESIDUAL_TARGET_HEIGHT;
+/// Sum of the IntrABC residual target (the §7.14.3 prediction+residual reconstruction).
+const INTRABC_RESIDUAL_TARGET_SAMPLE_SUM: u64 = 142_016;
+/// FNV-1a-64 over the IntrABC residual target (row-major, sample-major u16 LE): a wrong
+/// composition (a flat copy with no residual, or a residual onto the wrong predictor)
+/// changes this checksum even at the same sample count.
+const INTRABC_RESIDUAL_TARGET_FNV1A64: u64 = 0x1b9c_a7cf_eaad_e9a5;
 
 /// The frame-origin chroma `DC_PRED` transform side (a 32x32 §5.20.6 `TxSize` in
 /// the 4:2:0 chroma plane, the chroma leaf covering the §5.20.3.1 SDP chroma tree
@@ -939,6 +972,61 @@ fn ac0ej3_first_intrabc_block_reconstructs_bit_exact_against_prefilter_oracle() 
         fnv.finish(),
         INTRABC_TARGET_FNV1A64,
         "IntrABC target FNV-1a-64 must match the pre-filter reconstruction oracle (bit-exact)"
+    );
+}
+
+/// Bit-exact verification of the first NON-skip §7.13.3.18 IntrABC RESIDUAL block —
+/// the `BLOCK_32X64` target at MI(0,112) → x[448,480) x y[0,64) — against the AVM
+/// pre-filter oracle. The block's integer DV (col `-32` samples) copies the flat-`68`
+/// displaced SOURCE x[416,448) y[0,64) as the §7.13.2 PREDICTION, then each §5.20.7.27
+/// residual transform leaf (the first `eob == 11`) ADDS its decoded residual onto that
+/// predictor via the §7.14.4 / §7.15.4 / §7.14.3 dequant → inverse → Clip1-add path. The
+/// reconstruction is therefore a genuine NON-FLAT block (it must NOT equal the flat-`68`
+/// source copy alone): this test asserts (1) the region is non-flat — so the residual
+/// actually ran — and (2) the target's count + sum + FNV-1a-64 match the oracle, pinning
+/// the prediction+residual composition per value. A confident-wrong composition (the
+/// wrong predictor, a missing residual, or a residual onto a fill value) changes the
+/// sum / FNV even at the same sample count.
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn ac0ej3_first_intrabc_residual_block_reconstructs_bit_exact_against_prefilter_oracle() {
+    let sink = reconstruct_ac0ej3_sink();
+
+    let mut fnv = Fnv1a64::new();
+    let mut sum: u64 = 0;
+    let mut count = 0usize;
+    let mut distinct = std::collections::BTreeSet::new();
+    for row in 0..INTRABC_RESIDUAL_TARGET_HEIGHT {
+        for col in 0..INTRABC_RESIDUAL_TARGET_WIDTH {
+            let tx = INTRABC_RESIDUAL_TARGET_X + col;
+            let ty = INTRABC_RESIDUAL_TARGET_Y + row;
+            let sample = sink.reconstructed_sample(PlaneId::Y, tx, ty).unwrap();
+            distinct.insert(sample);
+            fnv.update_u16(sample);
+            sum += u64::from(sample);
+            count += 1;
+        }
+    }
+
+    // The residual genuinely ran: the reconstruction is NOT a flat copy of the
+    // flat-68 displaced source — it varies per sample (the eob=11 residual).
+    assert!(
+        distinct.len() > 1,
+        "IntrABC residual target must be NON-flat (the residual must have been added), \
+         got a single value {distinct:?}"
+    );
+    assert_eq!(
+        count, INTRABC_RESIDUAL_SAMPLE_COUNT,
+        "IntrABC residual target sample count"
+    );
+    assert_eq!(
+        sum, INTRABC_RESIDUAL_TARGET_SAMPLE_SUM,
+        "IntrABC residual target sum must match the pre-filter oracle (prediction+residual)"
+    );
+    assert_eq!(
+        fnv.finish(),
+        INTRABC_RESIDUAL_TARGET_FNV1A64,
+        "IntrABC residual target FNV-1a-64 must match the pre-filter oracle (bit-exact)"
     );
 }
 
