@@ -1036,7 +1036,7 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
 pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
-    mode: SupportedDirectionalLumaMode,
+    p_angle: u16,
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -1049,7 +1049,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
-    let p_angle = one_sided_p_angle(mode)?;
     // §7.13.2.1 above row + above-right; the corner is the real diagonally-above-
     // left sample. The zone-1 block is gated to a row>0, non-first-column position
     // (`haveLeft && haveAbove`), so both the above row and the corner are real.
@@ -1099,25 +1098,6 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
     };
     workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
-}
-
-/// Maps a supported ZONE-1 above-reading one-sided directional mode to its § 9.2
-/// pAngle. Only D45 (pAngle 45) is supported here; the other modes use dedicated
-/// predictors and are rejected (defensive: the dispatch routes them away first).
-fn one_sided_p_angle(
-    mode: SupportedDirectionalLumaMode,
-) -> core::result::Result<u16, GeneralIntraResidualError> {
-    match mode {
-        SupportedDirectionalLumaMode::D45 => Ok(45),
-        SupportedDirectionalLumaMode::D203
-        | SupportedDirectionalLumaMode::D113
-        | SupportedDirectionalLumaMode::D135
-        | SupportedDirectionalLumaMode::D157
-        | SupportedDirectionalLumaMode::Vertical
-        | SupportedDirectionalLumaMode::Horizontal => {
-            Err(GeneralIntraResidualError::CardinalModeInMiddleAnglePath)
-        }
-    }
 }
 
 /// Builds the § 7.13.2.8 ZONE-1 IDIF above edge `AboveRow[-2 ..= w + h + 1]`
@@ -1235,6 +1215,7 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
 pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
+    p_angle: u16,
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -1247,6 +1228,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
+    let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
     // §7.13.2.1 left column + below-left; at the gated first-superblock-row,
     // non-first-column position (`haveAbove == 0 && haveLeft == 1`) the corner is
     // `CurrFrame[plane][y][x-1]` and the left column is the real reconstructed
@@ -1261,7 +1243,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         predict_intra_directional_angle_rect_one_sided_idif_into(
             bit_depth,
             block_size,
-            IntraDirectionalAngle::D203,
+            angle,
             IntraDirectionalAngleIdifEdges::left(&left_idif),
             &mut prediction,
             side,
@@ -1274,7 +1256,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         predict_intra_directional_angle_rect_into(
             bit_depth,
             block_size,
-            IntraDirectionalAngle::D203,
+            angle,
             IntraDirectionalAngleEdges::left(left_bilinear),
             &mut prediction,
             side,

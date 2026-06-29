@@ -68,6 +68,7 @@ pub(super) fn record_skipped_selectable_residuals(
                 recon.leaf_y_mode,
                 recon.directional_luma,
                 recon.mrl_index,
+                recon.angle_delta_y,
                 recon.qindex,
                 recon.luma_use_tcq,
                 recon.fsc_mode,

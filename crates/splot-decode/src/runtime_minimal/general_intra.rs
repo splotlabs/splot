@@ -1458,7 +1458,8 @@ fn decode_one_general_intra_block<T: ReconSample>(
             crate::runtime_minimal_recon::reconstruct_general_intra_one_sided_neighbour_block_into(
                 workspace,
                 &luma,
-                SupportedDirectionalLumaMode::D45,
+                // D45 (`AngleDeltaY == 0`): pAngle == Mode_To_Angle[D45_PRED] == 45.
+                45,
                 PlaneId::Y,
                 luma_x,
                 luma_y,
@@ -1482,6 +1483,8 @@ fn decode_one_general_intra_block<T: ReconSample>(
             crate::runtime_minimal_recon::reconstruct_general_intra_one_sided_left_neighbour_block_into(
                 workspace,
                 &luma,
+                // D203 (`AngleDeltaY == 0`): pAngle == Mode_To_Angle[D203_PRED] == 203.
+                203,
                 PlaneId::Y,
                 luma_x,
                 luma_y,

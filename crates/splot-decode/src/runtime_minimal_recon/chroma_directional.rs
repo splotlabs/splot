@@ -206,7 +206,8 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         SupportedChromaMode::D45Follow => reconstruct_general_intra_one_sided_neighbour_block_into(
             workspace,
             block,
-            SupportedDirectionalLumaMode::D45,
+            // D45-follow (`AngleDeltaUV == AngleDeltaY == 0`): pAngle 45.
+            45,
             plane_id,
             x,
             y,
@@ -228,6 +229,8 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             reconstruct_general_intra_one_sided_left_neighbour_block_into(
                 workspace,
                 block,
+                // D203-follow (`AngleDeltaUV == AngleDeltaY == 0`): pAngle 203.
+                203,
                 plane_id,
                 x,
                 y,

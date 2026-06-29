@@ -17,12 +17,65 @@ const ANGLE_D157: u16 = 157;
 const ANGLE_D203: u16 = 203;
 const INTERP_SCALE: u16 = 32;
 
+/// AV2 v1.0.0 §9.2 `Dr_Intra_Derivative[90]` conversion table, transcribed
+/// VERBATIM from the committed spec mirror
+/// `docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md` (the
+/// `Dr_Intra_Derivative[ 90 ]` array). `Dr_Intra_Derivative[a]` is the projection
+/// derivative for a directional angle whose §9.2 index is `a` (the angle in
+/// roughly `0.9°` steps): the §7.13.2.8 zone-1 step reads
+/// `dx = Dr_Intra_Derivative[pAngle]` (`pAngle < 90`), the zone-3 step reads
+/// `dy = Dr_Intra_Derivative[270 - pAngle]` (`pAngle > 180`), and the zone-2
+/// middle step reads `Dr_Intra_Derivative[180 - pAngle]` /
+/// `Dr_Intra_Derivative[pAngle - 90]`. Several entries (indices 0, 11, 12, 34,
+/// 56, 78, 79 — the spec's starred values) are unused by any reachable angle.
+#[rustfmt::skip]
+const DR_INTRA_DERIVATIVE: [u16; 90] = [
+    0,    4096, 2048,
+    1365, 1024, 819,
+    682,  585,  512,
+    455,  409,  409,  409, 372,
+    341,  292,  273,
+    256,  227,  215,
+    204,  186,  178,
+    170,  157,  151,
+    146,  136,  132,
+    128,  117,  110,
+    107,  99,   97,   97,
+    93,   87,   83,
+    81,   77,   74,
+    73,   69,   66,
+    64,   62,   59,
+    56,   55,   53,
+    50,   49,   47,
+    44,   42,   42,   41,
+    38,   37,   35,
+    32,   31,   30,
+    28,   27,   26,
+    24,   23,   22,
+    20,   19,   18,
+    16,   15,   14,
+    12,   11,   10,   10,  10,
+    9,    8,    7,
+    6,    5,    4,
+    3,    2,    1,
+];
+
 // AV2 v1.0.0 §9.2 `Dr_Intra_Derivative[23]`.
-const DR_INTRA_DERIVATIVE_23: u16 = 170;
+const DR_INTRA_DERIVATIVE_23: u16 = DR_INTRA_DERIVATIVE[23];
 // AV2 v1.0.0 §9.2 `Dr_Intra_Derivative[45]`.
-const DR_INTRA_DERIVATIVE_45: u16 = 64;
+const DR_INTRA_DERIVATIVE_45: u16 = DR_INTRA_DERIVATIVE[45];
 // AV2 v1.0.0 §9.2 `Dr_Intra_Derivative[67]`.
-const DR_INTRA_DERIVATIVE_67: u16 = 24;
+const DR_INTRA_DERIVATIVE_67: u16 = DR_INTRA_DERIVATIVE[67];
+
+/// AV2 §7.13.2.8 zone boundary: a `pAngle` strictly below `ZONE_1_MAX` reads the
+/// above row (step 1, zone-1), strictly above `ZONE_3_MIN` reads the left column
+/// (step 3, zone-3). `90`/`180` are the cardinals (steps 4/5) and `90 < pAngle <
+/// 180` is the zone-2 middle band (step 2).
+const ZONE_1_MAX: u16 = 90;
+const ZONE_3_MIN: u16 = 180;
+/// AV2 §7.13.2.8 zone-3 derivative index base: `dy = Dr_Intra_Derivative[270 -
+/// pAngle]`.
+const ZONE_3_INDEX_BASE: u16 = 270;
 
 /// Number of `shift` rows in the §7.13.2.8 IDIF filter table.
 const DR_INTERP_FILTER_SHIFTS: usize = 32;
@@ -74,16 +127,41 @@ impl IntraDirectionalAngle {
 
     /// Creates a supported one-sided directional angle from an AV2 pAngle.
     ///
+    /// Admits ANY pAngle in the §7.13.2.8 one-sided ranges that has a §9.2
+    /// derivative entry: zone-1 (`0 < pAngle < 90`, reads `AboveRow` with
+    /// `dx = Dr_Intra_Derivative[pAngle]`) and zone-3 (`180 < pAngle < 270`,
+    /// reads `LeftCol` with `dy = Dr_Intra_Derivative[270 - pAngle]`). This is a
+    /// RANGE check over the §9.2 table, not a per-angle whitelist; the
+    /// `shift`/`base`/`maxBase` projection in the predictor is angle-agnostic.
+    ///
     /// # Errors
-    /// Returns [`ReconError::UnsupportedIntraDirectionalAngle`] for pAngles
-    /// outside this primitive's narrow pAngle `45`, `67`, and `203` scope.
+    /// Returns [`ReconError::UnsupportedIntraDirectionalAngle`] for a `pAngle`
+    /// outside the one-sided ranges (the cardinals `90`/`180` and the zone-2
+    /// middle band `90 < pAngle < 180` use dedicated primitives), or for a
+    /// `pAngle` whose §9.2 derivative index falls outside the table.
     pub const fn try_from_p_angle(p_angle: u16) -> Result<Self> {
-        match p_angle {
-            ANGLE_D45 => Ok(Self::D45),
-            ANGLE_D67 => Ok(Self::D67),
-            ANGLE_D203 => Ok(Self::D203),
-            _ => Err(ReconError::UnsupportedIntraDirectionalAngle { p_angle }),
+        if Self::derivative_for(p_angle).is_some() {
+            Ok(Self { p_angle })
+        } else {
+            Err(ReconError::UnsupportedIntraDirectionalAngle { p_angle })
         }
+    }
+
+    /// Returns the §7.13.2.8 one-sided projection derivative for `p_angle`, or
+    /// `None` when `p_angle` is not a one-sided angle with a §9.2 entry. Zone-1
+    /// (`0 < pAngle < 90`) uses `Dr_Intra_Derivative[pAngle]`; zone-3
+    /// (`180 < pAngle < 270`) uses `Dr_Intra_Derivative[270 - pAngle]`.
+    const fn derivative_for(p_angle: u16) -> Option<u16> {
+        if p_angle > 0 && p_angle < ZONE_1_MAX {
+            // zone-1: dx = Dr_Intra_Derivative[pAngle].
+            return Some(DR_INTRA_DERIVATIVE[p_angle as usize]);
+        }
+        if p_angle > ZONE_3_MIN && p_angle < ZONE_3_INDEX_BASE {
+            // zone-3: dy = Dr_Intra_Derivative[270 - pAngle].
+            let index = (ZONE_3_INDEX_BASE - p_angle) as usize;
+            return Some(DR_INTRA_DERIVATIVE[index]);
+        }
+        None
     }
 
     /// Returns the AV2 pAngle value.
@@ -91,30 +169,68 @@ impl IntraDirectionalAngle {
         self.p_angle
     }
 
-    /// Returns the required prepared edge for this pAngle.
+    /// Returns the required prepared edge for this pAngle: zone-1 (`pAngle < 90`)
+    /// reads the above row; zone-3 (`pAngle > 180`) reads the left column.
     pub const fn required_edge(self) -> IntraDirectionalAngleEdge {
-        // The explicit D45/D67 arm and the `u16` exhaustiveness wildcard share a body but are
-        // kept distinct to document the AV2 pAngle→edge mapping for each supported angle.
-        #[allow(clippy::match_same_arms)]
-        match self.p_angle {
-            ANGLE_D45 | ANGLE_D67 => IntraDirectionalAngleEdge::Above,
-            ANGLE_D203 => IntraDirectionalAngleEdge::Left,
-            _ => IntraDirectionalAngleEdge::Above,
+        if self.p_angle < ZONE_1_MAX {
+            IntraDirectionalAngleEdge::Above
+        } else {
+            IntraDirectionalAngleEdge::Left
         }
     }
 
+    /// Returns the furthest logical edge index this one-sided §7.13.2.8 IDIF
+    /// projection reads for a `size` block (`mrlIndex == 0`), i.e. the largest
+    /// `base + 2` the 4-tap reads while `base <= maxBase`, capped at `maxBase`
+    /// (`= w + h - 1`). Beyond the block's own in-edge span (`side - 1`) this is
+    /// how far into the above-right (zone-1) / below-left (zone-3) the prediction
+    /// reaches. A caller verifies those neighbour samples are reconstructed before
+    /// admitting the block. Returns `None` only on arithmetic overflow.
+    ///
+    /// # Errors
+    /// Returns [`ReconError::ArithmeticOverflow`] when the block dimensions
+    /// overflow the index arithmetic.
+    pub fn max_one_sided_edge_read_index(self, size: IntraRectBlockSize) -> Result<usize> {
+        let derivative = one_sided_idif_derivative(self);
+        let branch = self.branch();
+        let max_base = one_sided_max_base(size)?;
+        let mut furthest: i64 = 0;
+        for row in 0..size.height() {
+            for column in 0..size.width() {
+                let reference = one_sided_idif_reference(branch, row, column, derivative)?;
+                // §7.13.2.8 luma: for `base <= maxBase` the 4-tap reads up to
+                // `Edge[base + 2]`; otherwise it reads the single `Edge[maxBase]`.
+                let read = if reference.base <= max_base {
+                    reference
+                        .base
+                        .checked_add(2)
+                        .filter(|&v| v <= max_base)
+                        .unwrap_or(max_base)
+                } else {
+                    max_base
+                };
+                if read > furthest {
+                    furthest = read;
+                }
+            }
+        }
+        usize::try_from(furthest).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "one-sided directional angle furthest edge read index",
+        })
+    }
+
     const fn branch(self) -> DirectionalAngleBranch {
-        match self.p_angle {
-            ANGLE_D45 => DirectionalAngleBranch::Above {
-                derivative: DR_INTRA_DERIVATIVE_45,
-            },
-            ANGLE_D67 => DirectionalAngleBranch::Above {
-                derivative: DR_INTRA_DERIVATIVE_67,
-            },
-            ANGLE_D203 => DirectionalAngleBranch::Left {
-                derivative: DR_INTRA_DERIVATIVE_67,
-            },
-            _ => DirectionalAngleBranch::Above { derivative: 0 },
+        // `try_from_p_angle` admitted only one-sided pAngles, so `derivative_for`
+        // is `Some`; fall back to a zero derivative if it is not (the bounds
+        // checks in the predictor then error rather than read junk).
+        let derivative = match Self::derivative_for(self.p_angle) {
+            Some(derivative) => derivative,
+            None => 0,
+        };
+        if self.p_angle < ZONE_1_MAX {
+            DirectionalAngleBranch::Above { derivative }
+        } else {
+            DirectionalAngleBranch::Left { derivative }
         }
     }
 }
