@@ -1063,6 +1063,167 @@ fn proven_valid_admits_inferred_local_intrabc_frame() {
     );
 }
 
+// AV2 §5.18.3.4 `allow_global_intrabc` resolves to `true` ONLY for the explicitly-read
+// `Some(true)` value — never the inferred `None` (inferred `0`) and never `Some(false)`,
+// unlike `allow_local_intrabc` which infers to `1`.
+#[test]
+fn resolve_allow_global_intrabc_only_admits_explicit_true() {
+    fn check(allow_intrabc: bool, global: Option<bool>) -> bool {
+        let (_, mut core) = selectable_large_frame_fixture();
+        core.intrabc = Some(IntrabcParams {
+            allow_intrabc,
+            allow_global_intrabc: global,
+            allow_local_intrabc: None,
+            change_bvp_drl: Some(false),
+            max_bvp_drl_bits_minus_1: None,
+        });
+        resolve_allow_global_intrabc(&core)
+    }
+    assert!(check(true, Some(true)));
+    assert!(!check(true, Some(false)));
+    assert!(!check(true, None));
+    // `allow_intrabc == false` always disables it.
+    assert!(!check(false, Some(true)));
+}
+
+// `global_superblock_samples` returns the TRUE §5.18.7.6 SB size (it must NOT collapse
+// 256 to 128 the way `superblock_samples` does — the global wavefront `gradient` /
+// `mib_size_log2` depend on the real size).
+#[test]
+fn global_superblock_samples_returns_true_sb_size() {
+    let (sequence, _core) = selectable_fixture();
+    // The minimal intra fixture is a 64x64 SB; `global_superblock_samples` returns the
+    // true §5.18.7.6 sample size (it would return 256 for the 256x256 tier, where
+    // `superblock_samples` collapses to 128).
+    assert_eq!(global_superblock_samples(&sequence, no_off()).unwrap(), 64);
+}
+
+// The `total_sb64_per_row` matches AVM's
+// `(((mi_col_end - mi_col_start - 1) >> mi_size_high_log2[BLOCK_64X64]) + 1)`. For the
+// 480-MI-wide ac0ej3 single tile this is `((480-1)>>4)+1 == 30`.
+#[test]
+fn intrabc_tile_total_sb64_per_row_matches_avm() {
+    let (_, mut core) = selectable_large_frame_fixture();
+    // A 480-MI-wide single tile (the whole ac0ej3 frame).
+    let tile_info = core.tile_info.as_mut().unwrap();
+    tile_info.mi_col_starts = vec![0, 480];
+    tile_info.mi_row_starts = vec![0, 272];
+    let geometry =
+        IntrabcBlockGeometry::new(IntrabcBlockContext::new(256, 56, BLOCK_16X16, false), 4, 16);
+    assert_eq!(
+        intrabc_tile_total_sb64_per_row(&core, geometry, no_off()).unwrap(),
+        30
+    );
+}
+
+// AVM `av2_is_dv_valid` GLOBAL wavefront branch (`av2/common/mvref_common.h:954-993`),
+// modelled in `global_intrabc_range_valid`. Every vector is derived from an exact i64
+// replica of the AVM predicate (single-tile `total_sb64_per_row == 30`, 128x128 SB except
+// the unsupported-SB row). Each row is `(label, (mi_row, mi_col), (bw, bh), (dv_row,
+// dv_col), sb_size, expect_admit)`.
+#[test]
+fn global_intrabc_range_matches_avm_wavefront_vectors() {
+    type Vector = (
+        &'static str,
+        (usize, usize),
+        (usize, usize),
+        (i32, i32),
+        usize,
+        bool,
+    );
+    let vectors: &[Vector] = &[
+        // ac0ej3 MI(256,56) DV(-1024,0) BLOCK_16X64: a -128px VERTICAL source in the
+        // PREVIOUS 128x128 SB row (src_sb_row 7, active 8), wavefront-valid. The same-SB
+        // local branch rejects it (different SB row); the global branch admits.
+        (
+            "prev-SB-row wavefront source",
+            (256, 56),
+            (16, 64),
+            (-1024, 0),
+            128,
+            true,
+        ),
+        // MI(0,256) DV(0,-2560): src_sb64 11 < active_sb64 16 - INTRABC_DELAY_SB64 4.
+        (
+            "same-row far-enough source",
+            (0, 256),
+            (16, 16),
+            (0, -2560),
+            128,
+            true,
+        ),
+        // MI(0,256) DV(0,-2048): src_sb64 == active_sb64 - INTRABC_DELAY_SB64 (12 == 16-4);
+        // AVM's guard is `>=`, so the boundary REJECTS (one SB64 too close).
+        (
+            "one SB64 too close",
+            (0, 256),
+            (16, 16),
+            (0, -2048),
+            128,
+            false,
+        ),
+        // MI(0,256) DV(+1024,...): the source is 128px BELOW the active block, so
+        // src_sb_row 1 > active_sb_row 0 — AVM's `src_sb_row > active_sb_row` reject.
+        (
+            "source in a later SB row",
+            (0, 256),
+            (16, 16),
+            (1024, -2560),
+            128,
+            false,
+        ),
+        // MI(16,0) DV(0,-2168): a bottom-left-128 position (sb128, active_sb64_col even,
+        // active_sb64_row odd) whose source clears the RELAXED `sb_64_residual == -1`
+        // horizon but NOT the strict `residual == 0` horizon. Without `sb_root_partition_info`
+        // the fail-closed model requires BOTH horizons, so this DEFERS — never admitting a
+        // DV a non-`SB_HORZ_OR_QUAD` partition would reject.
+        (
+            "bottom-left-128 residual-sensitive",
+            (16, 0),
+            (16, 16),
+            (0, -2168),
+            128,
+            false,
+        ),
+        // MI(16,0) DV(0,-3584): same bottom-left-128 position but a source far enough left
+        // to clear BOTH horizons, so it is admitted regardless of the untracked partition.
+        (
+            "bottom-left-128 both horizons clear",
+            (16, 0),
+            (16, 16),
+            (0, -3584),
+            128,
+            true,
+        ),
+        // A non-{64,128,256} SB size is rejected fail-closed.
+        (
+            "unsupported SB size",
+            (0, 256),
+            (16, 16),
+            (0, -2560),
+            96,
+            false,
+        ),
+    ];
+    for &(label, (mi_row, mi_col), (block_w, block_h), (dv_row, dv_col), sb_size, expect) in vectors
+    {
+        let got = global_intrabc_range_valid(IntrabcGlobalRangeInputs {
+            mi_row,
+            mi_col,
+            block_w,
+            block_h,
+            dv_row,
+            dv_col,
+            sb_size,
+            total_sb64_per_row: 30,
+        });
+        assert_eq!(
+            got, expect,
+            "global wavefront vector {label}: want {expect}, got {got}"
+        );
+    }
+}
+
 // §5.20.6.1 `record_block` clamps its per-MI mode-info fill to the frame edge
 // (modelling AVM §5.20.3.2 `block_coded(r,c) { r < MiRows && c < MiCols }`,
 // 05-syntax-structures.md:9621): a leaf whose NOMINAL MI footprint overhangs the
