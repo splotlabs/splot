@@ -31,7 +31,8 @@
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, PlaneId, PlaneRect, ReconSample,
+    BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, IntraDirectionalAngle,
+    IntraDirectionalAngleEdge, IntraRectBlockSize, PlaneId, PlaneRect, ReconSample,
 };
 
 use crate::Result;
@@ -41,6 +42,8 @@ use crate::runtime_minimal_recon::{
     reconstruct_general_intra_block_rect_into,
     reconstruct_general_intra_cardinal_neighbour_block_into,
     reconstruct_general_intra_luma_paeth_neighbour_block_into,
+    reconstruct_general_intra_one_sided_left_neighbour_block_into,
+    reconstruct_general_intra_one_sided_neighbour_block_into,
     reconstruct_intrabc_block_residual_rect_into,
 };
 use crate::tile_payload::{
@@ -76,6 +79,15 @@ pub(in crate::runtime_minimal) struct SelectableReconContext {
     /// DEFERS a cardinal leaf whose `mrl_index > 0` (it would otherwise copy the
     /// adjacent samples instead of the selected MRL reference line).
     pub(in crate::runtime_minimal) mrl_index: u8,
+    /// The leaf's §5.20.5.3 `AngleDeltaY` (the signed angle-delta count, range
+    /// `-MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA`). The sink combines it with the raw
+    /// `leaf_y_mode`'s §9.2 `Mode_To_Angle` and `Mrl_Index_To_Delta[mrl_index]`
+    /// (and the §5.20.7.29 wide-angle remap) to recover the §7.13.2.8 `pAngle` for
+    /// the one-sided angular admission — UNLIKE `directional_luma`, which the
+    /// upstream `supported_directional_luma` zeroes out for any non-zero
+    /// `AngleDeltaY`. Carried separately so the sink can admit a one-sided angle
+    /// whose `AngleDeltaY != 0` (e.g. the §9.2 D67/D203 seeds).
+    pub(in crate::runtime_minimal) angle_delta_y: i8,
     pub(in crate::runtime_minimal) chroma_mode: Option<SupportedChromaMode>,
     pub(in crate::runtime_minimal) qindex: u32,
     pub(in crate::runtime_minimal) luma_use_tcq: bool,
@@ -130,6 +142,16 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
     /// columns toward the reconstructed neighbours via the §7.13.2.12 IBP DC
     /// modifier when this is set. (ac0ej3's sequence enables IBP.)
     enable_ibp: bool,
+    /// The §5.4.5 `enable_intra_edge_filter` sequence flag. When set, the §7.13.2.7
+    /// intra edge-filter / corner-filter step runs before the §7.13.2.8 single
+    /// directional prediction for any non-cardinal angle (`pAngle != 90 && pAngle
+    /// != 180`, `MrlIndex == 0`). The sink models only the §7.13.2.8 prediction
+    /// over the UNFILTERED edge, so it admits a one-sided angular leaf with this
+    /// flag set ONLY when the §7.13.2.17 edge-filter strength is `0` (a genuine
+    /// no-op: `av2_filter_intra_edge` returns early) AND no §7.13.2.7 corner filter
+    /// applies; otherwise the filtered edge is unmodelled and the leaf DEFERS.
+    /// (ac0ej3's sequence sets this flag.)
+    enable_intra_edge_filter: bool,
     /// Per-plane MI-unit coverage (`coverage[plane]`, row-major over the plane's MI
     /// grid): luma plane 0, chroma U plane 1, chroma V plane 2. U and V are tracked
     /// SEPARATELY — a reconstructed U must not let a deferred V block pass the
@@ -225,6 +247,109 @@ impl PlaneCoverage {
     }
 }
 
+/// AV2 §5 `ANGLE_STEP`: degrees of angle change per unit `AngleDeltaY`.
+const ANGLE_STEP: i32 = 3;
+/// AV2 §5.20.7.27 `Mrl_Index_To_Delta[4]` (the multi-reference-line angle nudge).
+const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
+/// AV2 §5.20.7.29 WAIP wide-angle remap thresholds (`WAIP_WH_RATIO_*_THRES`), from
+/// the §3 symbol table.
+const WAIP_WH_RATIO_2_THRES: i32 = 61;
+const WAIP_WH_RATIO_4_THRES: i32 = 73;
+const WAIP_WH_RATIO_8_THRES: i32 = 82;
+const WAIP_WH_RATIO_16_THRES: i32 = 86;
+
+/// AV2 §5.20.7.29 `wide_angle_mapping(mode, w, h, pAngle)`: for `is_inter == 0`,
+/// remaps a directional `pAngle` whose block is sufficiently tall (add 180) or
+/// wide (subtract 180) so the projection points into the longer edge. Returns the
+/// (possibly remapped) `pAngle`. `w`/`h` are the §5.20.5.3 `Tx_Width`/`Tx_Height`
+/// (transform dimensions in samples), matching AVM `wide_angle_mapping`
+/// (`reconintra.h`) which keys on `tx_size_wide`/`tx_size_high`. A square block is
+/// never remapped.
+fn wide_angle_mapping(w: u32, h: u32, p_angle: i32) -> i32 {
+    let w = w as i32;
+    let h = h as i32;
+    if (h == 2 * w && p_angle < WAIP_WH_RATIO_2_THRES)
+        || (h == 4 * w && p_angle < WAIP_WH_RATIO_4_THRES)
+        || (h == 8 * w && p_angle < WAIP_WH_RATIO_8_THRES)
+        || (h == 16 * w && p_angle < WAIP_WH_RATIO_16_THRES)
+    {
+        return 180 + p_angle;
+    }
+    if (w == 2 * h && p_angle > 270 - WAIP_WH_RATIO_2_THRES)
+        || (w == 4 * h && p_angle > 270 - WAIP_WH_RATIO_4_THRES)
+        || (w == 8 * h && p_angle > 270 - WAIP_WH_RATIO_8_THRES)
+        || (w == 16 * h && p_angle > 270 - WAIP_WH_RATIO_16_THRES)
+    {
+        return p_angle - 180;
+    }
+    p_angle
+}
+
+/// AV2 §7.13.2.17 intra edge filter strength selection process. Returns the
+/// edge-filter strength `0..=3` for a `w` x `h` transform, `filter_type` (0 or 1,
+/// from §7.13.2.15/16 — `1` when the relevant neighbour uses a smooth mode), and
+/// `delta` (the §7.13.2.7 `angleAbove = pAngle - 90` / `angleLeft = pAngle - 180`).
+/// Strength `0` means `av2_filter_intra_edge` is a no-op, so the §7.13.2.8
+/// prediction over the UNFILTERED edge is bit-exact. Transcribed VERBATIM from the
+/// committed spec mirror `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-17`.
+fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta: i32) -> u8 {
+    let d = delta.unsigned_abs();
+    let blk_wh = w + h;
+    let mut strength = 0u8;
+    if filter_type == 0 {
+        if blk_wh <= 8 {
+            if d >= 56 {
+                strength = 1;
+            }
+        } else if blk_wh <= 16 {
+            if d >= 40 {
+                strength = 1;
+            }
+        } else if blk_wh <= 24 {
+            if d >= 8 {
+                strength = 1;
+            }
+            if d >= 16 {
+                strength = 2;
+            }
+            if d >= 32 {
+                strength = 3;
+            }
+        } else if blk_wh <= 32 {
+            strength = 1;
+            if d >= 4 {
+                strength = 2;
+            }
+            if d >= 32 {
+                strength = 3;
+            }
+        } else {
+            strength = 3;
+        }
+    } else if blk_wh <= 8 {
+        if d >= 40 {
+            strength = 1;
+        }
+        if d >= 64 {
+            strength = 2;
+        }
+    } else if blk_wh <= 16 {
+        if d >= 20 {
+            strength = 1;
+        }
+        if d >= 48 {
+            strength = 2;
+        }
+    } else if blk_wh <= 24 {
+        if d >= 4 {
+            strength = 3;
+        }
+    } else {
+        strength = 3;
+    }
+    strength
+}
+
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// Allocates a sink whose workspace is sized to the ac0ej3 frame (a positive
     /// multiple of 64 in both dimensions for the gated tier), with 4:2:0 chroma
@@ -238,6 +363,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         bit_depth: BitDepth,
         quant_reconstructable: bool,
         enable_ibp: bool,
+        enable_intra_edge_filter: bool,
     ) -> Result<Self> {
         // 4:2:0 chroma planes are half the luma dimensions in each axis.
         let chroma_width = luma_width.div_ceil(2);
@@ -247,6 +373,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             bit_depth,
             quant_reconstructable,
             enable_ibp,
+            enable_intra_edge_filter,
             coverage: [
                 PlaneCoverage::new(luma_width, luma_height),
                 PlaneCoverage::new(chroma_width, chroma_height),
@@ -448,6 +575,286 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         covered(left, above)
     }
 
+    /// Attempts to reconstruct a §7.13.2.8 ONE-SIDED angular luma leaf (zone-1
+    /// `pAngle < 90`, reads the above row + above-right; zone-3 `pAngle > 180`,
+    /// reads the left column + below-left). Returns `Ok(true)` when the leaf was
+    /// reconstructed bit-exact, `Ok(false)` when it was DEFERRED (the caller then
+    /// falls through to the `_ => Ok(())` defer). NEVER writes an unproven
+    /// prediction.
+    ///
+    /// The §5.20.5.3 `pAngle` is recovered from the raw directional `mode`'s §9.2
+    /// `Mode_To_Angle`, `angle_delta_y`, and `Mrl_Index_To_Delta[mrl_index]`, then
+    /// the §5.20.7.29 `wide_angle_mapping` remap (for `is_inter == 0`). A leaf is
+    /// ADMITTED only when ALL hold (otherwise DEFER):
+    /// * the recovered `pAngle` is one-sided (`0 < pAngle < 90` or
+    ///   `180 < pAngle < 270`) with a §9.2 derivative entry;
+    /// * the transform is SQUARE (`log2_width == log2_height`) — the one-sided
+    ///   reconstructor is square-only;
+    /// * `mrl_index == 0` (the IDIF edge is the immediate reference line);
+    /// * `useIBP == 0` (§7.13.2.7 gates the IBP secondary blend on `applyIbp &&
+    ///   even angleDelta && plane 0 && one-sided pAngle && MrlIndex == 0`; the blend
+    ///   is unmodelled, so any leaf where it fires DEFERS);
+    /// * the §7.13.2.7 corner filter does NOT fire (`!(applyIbp && (w + h) >= 24)`)
+    ///   — the corner-filtered `AboveRow[-1]` / `LeftCol[-1]` is unmodelled;
+    /// * the §7.13.2.7 edge filter is a §7.13.2.17 strength-`0` no-op for BOTH
+    ///   filter types (when `enable_intra_edge_filter == 1`) — the filtered edge is
+    ///   unmodelled, so only a no-op-filter angle is reproducible over the raw edge;
+    /// * EVERY §7.13.2.1 edge sample the projection reads is reconstructed by this
+    ///   sink: the corner, the in-block edge, AND the above-right (zone-1) /
+    ///   below-left (zone-3) the projection walks into — counted EXACTLY from
+    ///   `IntraDirectionalAngle::max_one_sided_edge_read_index`, so an under-covered
+    ///   neighbour DEFERS rather than reading a fill sentinel.
+    #[allow(clippy::too_many_arguments)]
+    fn try_reconstruct_one_sided_angular(
+        &mut self,
+        mi_col: usize,
+        mi_row: usize,
+        log2_width: u32,
+        log2_height: u32,
+        mode: IntraYMode,
+        angle_delta_y: i8,
+        mrl_index: u8,
+        block: &LumaCoeffBlock,
+        qindex: u32,
+        use_tcq: bool,
+        mi_w: usize,
+        mi_h: usize,
+        tile_offset: ByteOffset,
+    ) -> Result<bool> {
+        // The one-sided reconstructor is SQUARE-only.
+        if log2_width != log2_height {
+            return Ok(false);
+        }
+        // §5.20.5.5 multi-reference line: the IDIF edge is the immediate line only.
+        if mrl_index != 0 {
+            return Ok(false);
+        }
+        let Some(nominal) = mode.mode_to_angle() else {
+            return Ok(false);
+        };
+        let w = 1u32 << log2_width;
+        let h = 1u32 << log2_height;
+        // §5.20.5.3 / §7.13.2.8 pAngle = Mode_To_Angle[mode] + AngleDeltaY *
+        // ANGLE_STEP + Mrl_Index_To_Delta[MrlIndex], then §5.20.7.29 wide-angle
+        // remap (is_inter == 0 for a general-intra leaf).
+        let mrl_delta = MRL_INDEX_TO_DELTA[usize::from(mrl_index).min(3)];
+        let nominal_angle = i32::from(nominal) + i32::from(angle_delta_y) * ANGLE_STEP + mrl_delta;
+        let p_angle = wide_angle_mapping(w, h, nominal_angle);
+        // One-sided range (zone-1 reads above, zone-3 reads left). The cardinals
+        // (90/180) and the zone-2 middle band (90 < p < 180) are handled elsewhere.
+        let one_sided = (0 < p_angle && p_angle < 90) || (180 < p_angle && p_angle < 270);
+        if !one_sided {
+            return Ok(false);
+        }
+        let Ok(p_angle_u16) = u16::try_from(p_angle) else {
+            return Ok(false);
+        };
+        let Ok(angle) = IntraDirectionalAngle::try_from_p_angle(p_angle_u16) else {
+            return Ok(false);
+        };
+        // §7.13.2.7 applyIbp = enable_ibp && not4x4; useIBP additionally needs an
+        // EVEN angleDelta, plane 0, a one-sided pAngle, and MrlIndex == 0. When
+        // useIBP fires, the §7.13.2.9 IBP secondary blend (unmodelled) changes the
+        // output — DEFER. (angleDelta is the SIGNED AngleDeltaY count.)
+        let not4x4 = !(w == 4 && h == 4);
+        let apply_ibp = self.enable_ibp && not4x4;
+        let angle_delta_even = angle_delta_y % 2 == 0;
+        if apply_ibp && angle_delta_even {
+            // useIBP == 1 (one-sided pAngle + MrlIndex == 0 already hold).
+            return Ok(false);
+        }
+        // §7.13.2.7 corner filter: `(applyIbp || (90 < p < 180)) && (w + h) >= 24`
+        // rewrites `AboveRow[-1]` / `LeftCol[-1]`. For a one-sided angle the trigger
+        // is `applyIbp && (w + h) >= 24`; the corner-filtered sample is unmodelled.
+        if apply_ibp && (w + h) >= 24 {
+            return Ok(false);
+        }
+        // §7.13.2.7 edge filter (runs for non-cardinal angles when
+        // enable_intra_edge_filter == 1 && MrlIndex == 0): the §7.13.2.17 strength
+        // must be 0 (a genuine `av2_filter_intra_edge` no-op) for the relevant edge,
+        // for BOTH §7.13.2.15/16 filter types (so the result is independent of the
+        // unmodelled neighbour-smooth state). zone-1 filters the above edge with
+        // `angleAbove = pAngle - 90`; zone-3 the left edge with `angleLeft =
+        // pAngle - 180`.
+        if self.enable_intra_edge_filter {
+            let delta = if p_angle < 90 {
+                p_angle - 90
+            } else {
+                p_angle - 180
+            };
+            if intra_edge_filter_strength(w, h, 0, delta) != 0
+                || intra_edge_filter_strength(w, h, 1, delta) != 0
+            {
+                return Ok(false);
+            }
+        }
+        let Ok(block_size) = IntraRectBlockSize::new(
+            u8::try_from(log2_width).unwrap_or(u8::MAX),
+            u8::try_from(log2_height).unwrap_or(u8::MAX),
+        ) else {
+            return Ok(false);
+        };
+        // The furthest logical edge index the projection reads (`base + 2`, capped at
+        // maxBase). The above-right (zone-1) / below-left (zone-3) it walks into must
+        // be reconstructed.
+        let Ok(max_read) = angle.max_one_sided_edge_read_index(block_size) else {
+            return Ok(false);
+        };
+        let side = 1usize << log2_width;
+        let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+        match angle.required_edge() {
+            IntraDirectionalAngleEdge::Above => {
+                // zone-1: verify the corner + above row + above-right are covered, and
+                // count the above-right 4x4 units that span up to `max_read`.
+                let Some(num4_above_right) =
+                    self.one_sided_above_coverage(mi_col, mi_row, mi_w, side, max_read)
+                else {
+                    return Ok(false);
+                };
+                reconstruct_general_intra_one_sided_neighbour_block_into(
+                    &mut self.workspace,
+                    block,
+                    p_angle_u16,
+                    PlaneId::Y,
+                    x,
+                    y,
+                    log2_width,
+                    qindex,
+                    num4_above_right,
+                    use_tcq,
+                    self.bit_depth,
+                )
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        tile_offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_recon_luma_one_sided_above_write",
+                    )
+                })?;
+            }
+            IntraDirectionalAngleEdge::Left => {
+                let Some(num4_below_left) =
+                    self.one_sided_left_coverage(mi_col, mi_row, mi_h, side, max_read)
+                else {
+                    return Ok(false);
+                };
+                reconstruct_general_intra_one_sided_left_neighbour_block_into(
+                    &mut self.workspace,
+                    block,
+                    p_angle_u16,
+                    PlaneId::Y,
+                    x,
+                    y,
+                    log2_width,
+                    qindex,
+                    num4_below_left,
+                    use_tcq,
+                    self.bit_depth,
+                )
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        tile_offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_recon_luma_one_sided_left_write",
+                    )
+                })?;
+            }
+        }
+        Ok(true)
+    }
+
+    /// zone-1 above-edge coverage guard. Verifies the §7.13.2.1 corner unit
+    /// `(mi_col - 1, mi_row - 1)`, the above row `mi_row - 1` over the block's
+    /// `mi_w` columns, AND the above-right units the projection walks into are all
+    /// reconstructed by this sink, then returns the §7.13.2.1 `num4AboveRight` (in
+    /// luma 4x4 units) to pass to the reconstructor. Returns `None` (defer) when any
+    /// required unit is off-grid or uncovered.
+    ///
+    /// `max_read` is the furthest logical edge index the projection reads (sample
+    /// `x + max_read`); the above-right span is the units from the block's right
+    /// edge up to (and including) the one containing `x + max_read`. Because every
+    /// returned unit is COVERED (hence §5.20.2.3 `BlockDecoded`), the real
+    /// §5.20.7.25 `count_top_right_avail` is at least this count, so the §7.13.2.1
+    /// `aboveLimit` (real and ours) both reach `x + max_read` without the spec clamp
+    /// — the read stays inside the verified region and is bit-exact.
+    fn one_sided_above_coverage(
+        &self,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        side: usize,
+        max_read: usize,
+    ) -> Option<usize> {
+        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+        let above = mi_row.checked_sub(1)?;
+        let corner = mi_col.checked_sub(1)?;
+        let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
+        // Corner `AboveRow[-1]` and the in-block above row.
+        if !covered(corner, above) {
+            return None;
+        }
+        if !(mi_col..mi_col.saturating_add(mi_w)).all(|c| covered(c, above)) {
+            return None;
+        }
+        // Above-right: the units from the block's right edge (`mi_col + mi_w`) up to
+        // the MI unit containing the furthest read sample column `x + max_read`
+        // (`x = mi_col * MI_SIZE`). `max_read` beyond the in-block span `side - 1` is
+        // the above-right reach.
+        let right_edge_mi = mi_col.checked_add(mi_w)?;
+        if max_read < side {
+            // The projection never reads past the block's own above row.
+            return Some(0);
+        }
+        let furthest_col = mi_col.checked_mul(MI_SIZE)?.checked_add(max_read)?;
+        let furthest_unit = furthest_col / MI_SIZE;
+        let mut num4_above_right = 0usize;
+        for unit in right_edge_mi..=furthest_unit {
+            if !covered(unit, above) {
+                return None;
+            }
+            num4_above_right += 1;
+        }
+        Some(num4_above_right)
+    }
+
+    /// zone-3 left-edge coverage guard, the symmetric mirror of
+    /// [`Self::one_sided_above_coverage`]. Verifies the §7.13.2.1 corner unit
+    /// `(mi_col - 1, mi_row)` (the top of the left column for a `haveAbove == 0`
+    /// position, or the diagonal corner generally — both reduce to the left-column
+    /// reconstructed sample), the left column `mi_col - 1` over the block's `mi_h`
+    /// rows, AND the below-left units the projection walks into, then returns the
+    /// §7.13.2.1 `num4BelowLeft`. Returns `None` (defer) when any required unit is
+    /// off-grid or uncovered.
+    fn one_sided_left_coverage(
+        &self,
+        mi_col: usize,
+        mi_row: usize,
+        mi_h: usize,
+        side: usize,
+        max_read: usize,
+    ) -> Option<usize> {
+        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+        let left = mi_col.checked_sub(1)?;
+        let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
+        // The in-block left column (the corner `LeftCol[-1]` is its top sample for a
+        // `haveAbove == 0` block; verifying the full column covers it).
+        if !(mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(left, r)) {
+            return None;
+        }
+        let bottom_edge_mi = mi_row.checked_add(mi_h)?;
+        if max_read < side {
+            return Some(0);
+        }
+        let furthest_row = mi_row.checked_mul(MI_SIZE)?.checked_add(max_read)?;
+        let furthest_unit = furthest_row / MI_SIZE;
+        let mut num4_below_left = 0usize;
+        for unit in bottom_edge_mi..=furthest_unit {
+            if !covered(left, unit) {
+                return None;
+            }
+            num4_below_left += 1;
+        }
+        Some(num4_below_left)
+    }
+
     /// Reconstructs one luma transform block at the given MI position into the
     /// workspace, reading the §7.13.2 prediction from the partially-built frame's
     /// reconstructed neighbours and adding the decoded residual (a flat prediction
@@ -503,6 +910,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         leaf_y_mode: Option<IntraYMode>,
         directional: Option<SupportedDirectionalLumaMode>,
         mrl_index: u8,
+        angle_delta_y: i8,
         qindex: u32,
         use_tcq: bool,
         fsc_mode: bool,
@@ -662,8 +1070,32 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     )
                 })?;
             }
+            // §7.13.2.8 ONE-SIDED angular luma (zone-1 `pAngle < 90`, reads the above
+            // row + above-right; zone-3 `pAngle > 180`, reads the left column +
+            // below-left), admitted ONLY for the proven no-IDIF-edge-filter,
+            // no-useIBP, neighbour-covered subset. Every other angular leaf (the
+            // zone-2 middle band, a filtered-edge angle, a `useIBP` blend, a non-zero
+            // `MrlIndex`, or an uncovered neighbour) DEFERS.
+            (Some(mode), None)
+                if mode.is_directional()
+                    && self.try_reconstruct_one_sided_angular(
+                        mi_col,
+                        mi_row,
+                        log2_width,
+                        log2_height,
+                        mode,
+                        angle_delta_y,
+                        mrl_index,
+                        block,
+                        qindex,
+                        use_tcq,
+                        mi_w,
+                        mi_h,
+                        tile_offset,
+                    )? => {}
             // Non-DC, non-cardinal luma (SMOOTH / non-admitted PAETH / angular /
-            // non-zero AngleDeltaY): defer rather than emit an unproven prediction.
+            // a one-sided angle the guard could not prove): defer rather than emit
+            // an unproven prediction.
             _ => return Ok(()),
         }
         // Count only the IN-FRAME 4x4 units `mark` actually covered: a frame-edge
@@ -972,12 +1404,21 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         .intra
         .as_ref()
         .is_some_and(|intra| intra.enable_ibp);
+    // §5.4.5 `enable_intra_edge_filter`: when set, the §7.13.2.7 edge / corner
+    // filter runs for non-cardinal angles; the sink admits a one-sided angular leaf
+    // only when that filter is a §7.13.2.17 strength-0 no-op (and no corner filter).
+    // ac0ej3's sequence sets this flag.
+    let enable_intra_edge_filter = sequence
+        .intra
+        .as_ref()
+        .is_some_and(|intra| intra.enable_intra_edge_filter);
     let mut sink = WienerNsLrReconSink::<u16>::new(
         frame_size.width as usize,
         frame_size.height as usize,
         bit_depth,
         frame_quant_reconstructable(core),
         enable_ibp,
+        enable_intra_edge_filter,
     )?;
     // The walk reconstructs into the sink in decode order. With the AVM-faithful
     // §5.20.3.1 SDP chroma partition plane (plane 1 for the chroma tree) and the
@@ -1202,1100 +1643,5 @@ fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-    use splot_core::span::ByteOffset;
-
-    /// §3 `TxSize` index for TX_16X16 (`Tx_Width[2] == Tx_Height[2] == 16`).
-    const TX_16X16: usize = 2;
-    /// §3 `TxSize` index for TX_16X64 (`Tx_Width[17] == 16`, `Tx_Height[17] == 64`):
-    /// a NON-SQUARE transform.
-    const TX_16X64: usize = 17;
-    /// §3 `TX_TYPES` index for `DCT_DCT` (`Transform_1d_Type[0] == (DCT, DCT)`).
-    const DCT_DCT: usize = 0;
-    /// §3 `TX_TYPES` index for `ADST_ADST` (`Transform_1d_Type[3] == (ADST, ADST)`).
-    const ADST_ADST: usize = 3;
-
-    /// An `all_zero` (`txb_skip`) DC block: reconstruction writes the bare §7.13.2
-    /// DC prediction (zero residual).
-    fn zero_block() -> LumaCoeffBlock {
-        LumaCoeffBlock {
-            all_zero: true,
-            eob: 0,
-            quant: Vec::new(),
-            intra_ist: None,
-            plane_tx_type: DCT_DCT,
-        }
-    }
-
-    /// A non-`all_zero` `DCT_DCT` block with a single decoded DC coefficient `dc`
-    /// over an `adjusted`-entry coefficient grid (the §7.15.4.1 `Min(w,32) x
-    /// Min(h,32)` adjusted-size), used to exercise the non-skip reconstruction path.
-    fn dc_coeff_block(adjusted: usize, dc: i32) -> LumaCoeffBlock {
-        let mut quant = vec![0i32; adjusted];
-        quant[0] = dc;
-        LumaCoeffBlock {
-            all_zero: false,
-            eob: 1,
-            quant,
-            intra_ist: None,
-            plane_tx_type: DCT_DCT,
-        }
-    }
-
-    /// A non-`all_zero` block sized for a 16x16 adjusted transform (256 entries).
-    fn coeff_block_16x16() -> LumaCoeffBlock {
-        dc_coeff_block(256, -355)
-    }
-
-    fn sink() -> WienerNsLrReconSink<u16> {
-        // 64x64 luma frame (a positive multiple of 64), 10-bit 4:2:0 — matching
-        // the ac0ej3 sample type. `quant_reconstructable = true` (no delta-q / qm).
-        // `enable_ibp = false` keeps these flat-DC gate tests on the §7.13.2.10
-        // prediction; the §7.13.2.12 IBP DC path has its own focused test.
-        WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, true, false).unwrap()
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn recon_luma(
-        sink: &mut WienerNsLrReconSink<u16>,
-        mi_col: usize,
-        mi_row: usize,
-        tx_size: usize,
-        block: &LumaCoeffBlock,
-        mode: Option<IntraYMode>,
-        fsc_mode: bool,
-    ) {
-        sink.reconstruct_luma_transform(
-            mi_col,
-            mi_row,
-            tx_size,
-            block,
-            mode,
-            None,
-            0,
-            149,
-            true,
-            fsc_mode,
-            false,
-            ByteOffset::new(0),
-        )
-        .unwrap();
-    }
-
-    /// Drives a CARDINAL (`H_PRED` / `V_PRED`) directional luma transform through
-    /// the sink: `leaf_y_mode` is the directional mode, `directional` the resolved
-    /// cardinal predictor, and `mrl_index` the §5.20.5.5 multi-reference-line index
-    /// (`0` for the immediate edge the cardinal primitive reads).
-    #[allow(clippy::too_many_arguments)]
-    fn recon_luma_cardinal(
-        sink: &mut WienerNsLrReconSink<u16>,
-        mi_col: usize,
-        mi_row: usize,
-        tx_size: usize,
-        block: &LumaCoeffBlock,
-        mode: IntraYMode,
-        directional: SupportedDirectionalLumaMode,
-        mrl_index: u8,
-    ) {
-        sink.reconstruct_luma_transform(
-            mi_col,
-            mi_row,
-            tx_size,
-            block,
-            Some(mode),
-            Some(directional),
-            mrl_index,
-            149,
-            true,
-            false,
-            false,
-            ByteOffset::new(0),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn dc_all_zero_top_left_writes_the_10bit_no_neighbour_fallback() {
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        // §7.13.2.1 no-neighbour DC fallback for 10-bit is `1 << (10 - 1)` == 512.
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 512);
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 15, 15).unwrap(), 512);
-        let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
-        // TX_16X16 == 4x4 luma 4x4 units.
-        assert_eq!(luma4x4, 16);
-    }
-
-    #[test]
-    fn non_dc_luma_mode_leaves_the_region_unreconstructed() {
-        let mut sink = sink();
-        // A leaf without a DC_PRED luma mode (here `None`, an SDP chroma / inter
-        // leaf) is deferred: only DC_PRED luma is in the verified subset.
-        recon_luma(&mut sink, 0, 0, TX_16X16, &zero_block(), None, false);
-        // The default 10-bit workspace fill is 0 (not the DC fallback): the sink
-        // did not write the non-DC block, so the region stays at the fill value.
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-    }
-
-    // SMOOTH chroma is DEFERRED, never reconstructed. This is load-bearing for the
-    // ac0ej3 mission: splot resolves the SB0 chroma leaf (and every reachable chroma
-    // leaf past the first BLOCK_16X64 luma column) as `SMOOTH`, but AVM's mode oracle
-    // resolves them as `DC` / `H` / `CfL` and its prediction-only buffer is flat 512
-    // (no-neighbour DC). The §7.13.2.13 SMOOTH primitive over the §7.13.2.1
-    // no-neighbour fallback edges (above 511, left 513) instead produces a 511..513
-    // gradient, so admitting SMOOTH here would write confidently-wrong samples. The
-    // sink DEFERS until the upstream mode resolution is reconciled with AVM.
-    #[test]
-    fn dc_chroma_non_dc_mode_leaves_the_region_unreconstructed() {
-        let mut sink = sink();
-        // SMOOTH chroma is not in the verified DC subset, so it is deferred.
-        sink.reconstruct_chroma_transform(
-            PlaneId::U,
-            TX_16X16,
-            0,
-            0,
-            &zero_block(),
-            Some(SupportedChromaMode::Smooth),
-            149,
-            ByteOffset::new(0),
-        )
-        .unwrap();
-        assert_eq!(sink.reconstructed_sample(PlaneId::U, 0, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().1, 0);
-        // DC chroma reconstructs the bare DC fallback.
-        sink.reconstruct_chroma_transform(
-            PlaneId::U,
-            TX_16X16,
-            0,
-            0,
-            &zero_block(),
-            Some(SupportedChromaMode::Dc),
-            149,
-            ByteOffset::new(0),
-        )
-        .unwrap();
-        assert_eq!(sink.reconstructed_sample(PlaneId::U, 0, 0).unwrap(), 512);
-        assert_eq!(sink.reconstructed_counts().1, 16);
-    }
-
-    #[test]
-    fn second_block_dc_reads_first_block_reconstructed_neighbour() {
-        let mut sink = sink();
-        // First block at (0,0): no-neighbour DC -> 512.
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        // Second block to the right at mi_col=4 (x=16): its DC reads the left
-        // neighbour (the reconstructed 512 column), so the flat DC is again 512 —
-        // proving the neighbour read path runs over the partially-built frame.
-        recon_luma(
-            &mut sink,
-            4,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 512);
-        assert_eq!(sink.reconstructed_counts().0, 32);
-    }
-
-    #[test]
-    fn out_of_range_tx_size_leaves_the_region_unreconstructed() {
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            999,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-    }
-
-    /// A non-`all_zero` DC block sized for a 16x64 adjusted transform (the
-    /// `Min(16,32) x Min(64,32) == 16x32 == 512`-entry coefficient grid), with a
-    /// single DC coefficient, used to exercise the non-square residual path.
-    fn coeff_block_16x64() -> LumaCoeffBlock {
-        dc_coeff_block(512, -2)
-    }
-
-    // A non-`all_zero`, non-square DC leaf (e.g. TX_16X64) is now ADMITTED: the
-    // §7.15.4 outer process drives the rectangular-residual inverse transform
-    // (proven bit-exact for the ac0ej3 mi(4,0) leaf). The frame-origin no-neighbour
-    // DC fallback (512) plus a flat DC-only residual reconstructs a flat block.
-    #[test]
-    fn non_square_nonzero_dc_leaf_is_reconstructed() {
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X64,
-            &coeff_block_16x64(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        // The origin block has no reconstructed neighbour (off-frame edges), so the
-        // §7.13.2.1 DC fallback is 512 (10-bit); the DC-only residual is applied
-        // over the whole 16x64 block, so the sink wrote a real (non-fill) region.
-        assert!(sink.reconstructed_counts().0 > 0);
-        // 16x64 == 4 MI cols x 16 MI rows == 64 4x4 units.
-        assert_eq!(sink.reconstructed_counts().0, 64);
-    }
-
-    // Finding #1: a non-`all_zero` DC leaf carrying §5.20.7.29 IST secondary
-    // transform syntax is DEFERRED (the primitive is DCT_DCT-only). A REAL IST
-    // (`sec_tx_type != 0`) stays deferred even after no-op IST is admitted.
-    #[test]
-    fn ist_nonzero_dc_leaf_is_deferred() {
-        let mut sink = sink();
-        let mut block = coeff_block_16x16();
-        block.intra_ist = Some(crate::tile_payload::IntraIstSyntax {
-            sec_tx_type: 1,
-            most_probable_stx_set: Some(0),
-        });
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &block,
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-    }
-
-    // A non-`all_zero` DC leaf carrying §5.20.7.29 IST syntax with `sec_tx_type == 0`
-    // applies NO §7.15.3 secondary transform — it reconstructs through the identical
-    // DCT_DCT residual path as a non-IST leaf, so it is ADMITTED when it also
-    // satisfies the normal residual + proven-neighbour conditions. It must produce
-    // the byte-identical result to the same block WITHOUT IST syntax.
-    #[test]
-    fn ist_noop_sec_tx_dc_leaf_reconstructs_identically_to_non_ist() {
-        // Reference: the same DC-only square leaf with NO IST syntax.
-        let mut reference_sink = sink();
-        recon_luma(
-            &mut reference_sink,
-            0,
-            0,
-            TX_16X16,
-            &coeff_block_16x16(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        let reference = reference_sink
-            .reconstructed_sample(PlaneId::Y, 0, 0)
-            .unwrap();
-        assert!(
-            reference_sink.reconstructed_counts().0 > 0,
-            "the non-IST reference leaf must reconstruct"
-        );
-
-        // The same leaf carrying a `sec_tx_type == 0` no-op IST: admitted, identical.
-        let mut sink = sink();
-        let mut block = coeff_block_16x16();
-        block.intra_ist = Some(crate::tile_payload::IntraIstSyntax {
-            sec_tx_type: 0,
-            most_probable_stx_set: None,
-        });
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &block,
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        assert_eq!(
-            sink.reconstructed_counts().0,
-            reference_sink.reconstructed_counts().0,
-            "a no-op-IST leaf must reconstruct the same sample count as its non-IST twin"
-        );
-        assert_eq!(
-            sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(),
-            reference,
-            "a no-op-IST leaf must reconstruct byte-identically to its non-IST twin"
-        );
-    }
-
-    // A `sec_tx_type == 0` no-op IST leaf is still subject to EVERY other residual
-    // gate. An FSC no-op-IST leaf still DEFERS (the non-FSC primitive), proving the
-    // IST relaxation did not widen the FSC gate.
-    #[test]
-    fn ist_noop_sec_tx_fsc_leaf_still_defers() {
-        let mut sink = sink();
-        let mut block = coeff_block_16x16();
-        block.intra_ist = Some(crate::tile_payload::IntraIstSyntax {
-            sec_tx_type: 0,
-            most_probable_stx_set: None,
-        });
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &block,
-            Some(IntraYMode::DC_PRED),
-            true,
-        );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-    }
-
-    // A non-`all_zero`, NON-square DC leaf with `eob > 1` is now ADMITTED: the
-    // retained `block.plane_tx_type` flows to the §7.15.4 primary inverse, so the
-    // former "unretained non-`DCT_DCT` type" defer is gone. The whole 16x64 block
-    // reconstructs (64 4x4 units), and the non-DC coefficient produces a real (non
-    // flat-DC) residual variation that distinguishes the tx-type — see
-    // `non_square_eob_gt1_threads_real_tx_type` for the per-type correctness proof.
-    #[test]
-    fn non_square_multi_coeff_dc_leaf_is_reconstructed() {
-        let mut sink = sink();
-        let mut block = coeff_block_16x64();
-        block.eob = 2;
-        block.quant[1] = 7;
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X64,
-            &block,
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        // 16x64 == 4 MI cols x 16 MI rows == 64 4x4 units, all reconstructed.
-        assert_eq!(sink.reconstructed_counts().0, 64);
-    }
-
-    /// Reconstructs `base` (its asymmetric `eob > 1` coefficients) twice — once as
-    /// `DCT_DCT` and once as `ADST_ADST` — over the no-neighbour frame origin, and
-    /// asserts both fully reconstruct (`expected_count` 4x4 units) AND the two
-    /// reconstructions DIFFER somewhere over the `width x height` block. Under the
-    /// former hardcoded `DCT_DCT` argument BOTH types reconstructed identically (as
-    /// `DCT_DCT`), so a per-sample difference proves the retained `plane_tx_type`
-    /// now drives the §7.15.4 inverse — the latent confident-wrong is removed.
-    fn assert_tx_type_threads(
-        base: &LumaCoeffBlock,
-        tx_size: usize,
-        (width, height): (usize, usize),
-        expected_count: usize,
-    ) {
-        let recon_with = |tx_type: usize| {
-            let mut block = base.clone();
-            block.plane_tx_type = tx_type;
-            let mut sink = sink();
-            recon_luma(
-                &mut sink,
-                0,
-                0,
-                tx_size,
-                &block,
-                Some(IntraYMode::DC_PRED),
-                false,
-            );
-            sink
-        };
-        let sink_dct = recon_with(DCT_DCT);
-        let sink_adst = recon_with(ADST_ADST);
-        assert_eq!(sink_dct.reconstructed_counts().0, expected_count);
-        assert_eq!(sink_adst.reconstructed_counts().0, expected_count);
-        let differs = (0..height).any(|y| {
-            (0..width).any(|x| {
-                sink_dct.reconstructed_sample(PlaneId::Y, x, y).unwrap()
-                    != sink_adst.reconstructed_sample(PlaneId::Y, x, y).unwrap()
-            })
-        });
-        assert!(
-            differs,
-            "ADST_ADST must reconstruct differently from DCT_DCT for the same eob>1 coeffs (tx {tx_size})"
-        );
-    }
-
-    // Correctness proof (removes the latent confident-wrong): an `eob > 1` leaf —
-    // both the SQUARE (`TX_16X16`) and NON-square (`TX_16X64`) case — reconstructs
-    // with its REAL tx-type, NOT the former hardcoded `DCT_DCT`. Under the old
-    // hardcoded argument an `ADST_ADST` leaf reconstructed identically to `DCT_DCT`
-    // (a latent confident-wrong, safe only because every prior-admitted block
-    // happened to be `DCT_DCT`). Asymmetric coefficients (per the decode-verify
-    // lesson: symmetric/zero values can mask a kernel difference) sit in distinct
-    // row/col positions so both 1-D types matter.
-    #[test]
-    fn eob_gt1_threads_real_tx_type_square_and_non_square() {
-        for (mut block, tx_size, dims, count) in [
-            (coeff_block_16x16(), TX_16X16, (16, 16), 16),
-            (coeff_block_16x64(), TX_16X64, (16, 64), 64),
-        ] {
-            block.quant[0] = -3;
-            block.quant[1] = 9;
-            block.quant[16] = -7;
-            block.eob = 3;
-            assert_tx_type_threads(&block, tx_size, dims, count);
-        }
-    }
-
-    // Finding #1: an FSC DC leaf is DEFERRED (non-FSC primitive).
-    #[test]
-    fn fsc_nonzero_dc_leaf_is_deferred() {
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &coeff_block_16x16(),
-            Some(IntraYMode::DC_PRED),
-            true,
-        );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-    }
-
-    // Finding #2: a DC block bordering a DEFERRED (skipped) neighbour is deferred —
-    // its DC prediction would read the workspace fill value, not reconstruction.
-    #[test]
-    fn dc_block_with_deferred_neighbour_is_deferred() {
-        let mut sink = sink();
-        // Block at (0,0) is deferred (non-DC leaf -> `None`). It is NOT reconstructed.
-        recon_luma(&mut sink, 0, 0, TX_16X16, &zero_block(), None, false);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-        // Block at (4,0) is DC_PRED but its LEFT neighbour (0,0) exists on-grid and
-        // was deferred, so this block defers too (no wrong prediction from fill).
-        recon_luma(
-            &mut sink,
-            4,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-    }
-
-    // Finding #2 (re-review): U and V chroma coverage are tracked SEPARATELY. A
-    // reconstructed U block must not let a deferred-neighbour V block pass the
-    // DC-edge guard (4:2:0 U and V share MI dimensions but not reconstruction
-    // state); otherwise V would predict from its own workspace fill value.
-    #[test]
-    fn chroma_u_coverage_does_not_satisfy_v_edge_guard() {
-        let mut sink = sink();
-        // A U DC block at the chroma origin reconstructs (off-grid edges) and marks
-        // U coverage across MI columns 0..4.
-        sink.reconstruct_chroma_transform(
-            PlaneId::U,
-            TX_16X16,
-            0,
-            0,
-            &zero_block(),
-            Some(SupportedChromaMode::Dc),
-            149,
-            ByteOffset::new(0),
-        )
-        .unwrap();
-        let chroma_after_u = sink.reconstructed_counts().1;
-        assert!(chroma_after_u > 0, "U origin block should reconstruct");
-        // A V DC block whose left neighbour (MI column 3) is covered ONLY on the U
-        // plane must DEFER — it cannot borrow U's coverage to satisfy its own guard.
-        sink.reconstruct_chroma_transform(
-            PlaneId::V,
-            TX_16X16,
-            16,
-            0,
-            &zero_block(),
-            Some(SupportedChromaMode::Dc),
-            149,
-            ByteOffset::new(0),
-        )
-        .unwrap();
-        assert_eq!(
-            sink.reconstructed_counts().1,
-            chroma_after_u,
-            "deferred-neighbour V block must not reconstruct via U's coverage",
-        );
-    }
-
-    // Finding #3: when the frame signals a non-zero quantizer delta / qmatrix
-    // (`quant_reconstructable == false`), the sink reconstructs NOTHING.
-    #[test]
-    fn non_reconstructable_quant_defers_everything() {
-        let mut sink =
-            WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, false, false).unwrap();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        sink.reconstruct_chroma_transform(
-            PlaneId::U,
-            TX_16X16,
-            0,
-            0,
-            &zero_block(),
-            Some(SupportedChromaMode::Dc),
-            149,
-            ByteOffset::new(0),
-        )
-        .unwrap();
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_sample(PlaneId::U, 0, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts(), (0, 0));
-    }
-
-    // Cardinal H_PRED (§7.13.2.8 step 5, pAngle 180) over a REAL reconstructed left
-    // column: a pure horizontal copy `pred[i][j] = LeftCol[i]`. The first DC block
-    // at (0,0) reconstructs the flat `512` no-neighbour fallback; an `all_zero`
-    // H_PRED block to its right copies that left column, so it is again flat `512` —
-    // proving the cardinal copy reads the partially-built frame's real neighbour.
-    #[test]
-    fn cardinal_hpred_copies_reconstructed_left_column() {
-        let mut sink = sink();
-        // Left DC neighbour at (0,0): flat 512.
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        // H_PRED block to the right at mi_col=4 (x=16): its left column (x=15) is the
-        // reconstructed 512, so the horizontal copy is flat 512.
-        recon_luma_cardinal(
-            &mut sink,
-            4,
-            0,
-            TX_16X16,
-            &zero_block(),
-            IntraYMode::H_PRED_FOR_TEST,
-            SupportedDirectionalLumaMode::Horizontal,
-            0,
-        );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 512);
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 31, 15).unwrap(), 512);
-        // 16 (left DC) + 16 (H_PRED) == 32 4x4 units.
-        assert_eq!(sink.reconstructed_counts().0, 32);
-    }
-
-    // Cardinal V_PRED (§7.13.2.8 step 4, pAngle 90) over a REAL reconstructed above
-    // row: a pure vertical copy `pred[i][j] = AboveRow[j]`. The first DC block at
-    // (0,0) reconstructs flat `512`; a V_PRED block below it copies that above row,
-    // flat `512` — proving the cardinal copy reads the real above neighbour.
-    #[test]
-    fn cardinal_vpred_copies_reconstructed_above_row() {
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        // V_PRED block below at mi_row=4 (y=16): its above row (y=15) is the
-        // reconstructed 512, so the vertical copy is flat 512.
-        recon_luma_cardinal(
-            &mut sink,
-            0,
-            4,
-            TX_16X16,
-            &zero_block(),
-            IntraYMode::V_PRED_FOR_TEST,
-            SupportedDirectionalLumaMode::Vertical,
-            0,
-        );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 16).unwrap(), 512);
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 15, 31).unwrap(), 512);
-        assert_eq!(sink.reconstructed_counts().0, 32);
-    }
-
-    // A cardinal block at the frame ORIGIN has no required edge to copy — H_PRED
-    // has no left column (mi_col == 0), V_PRED has no above row (mi_row == 0) — so
-    // the sink DEFERS both (the §7.13.2.1 no-neighbour fallback is a separate,
-    // here-unmodelled path; never predict from the fill value). The V_PRED case
-    // pins the exact ac0ej3 SB-column-4 V_PRED-at-y=0 deferral.
-    #[test]
-    fn cardinal_at_frame_edge_with_no_required_neighbour_is_deferred() {
-        for (mode, direction) in [
-            (
-                IntraYMode::H_PRED_FOR_TEST,
-                SupportedDirectionalLumaMode::Horizontal,
-            ),
-            (
-                IntraYMode::V_PRED_FOR_TEST,
-                SupportedDirectionalLumaMode::Vertical,
-            ),
-        ] {
-            let mut sink = sink();
-            recon_luma_cardinal(&mut sink, 0, 0, TX_16X16, &zero_block(), mode, direction, 0);
-            assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
-            assert_eq!(sink.reconstructed_counts().0, 0);
-        }
-    }
-
-    // A cardinal H_PRED block whose LEFT neighbour exists on-grid but was DEFERRED
-    // (still the fill value) must defer too — never copy a fill-value left column.
-    #[test]
-    fn cardinal_hpred_with_deferred_left_neighbour_is_deferred() {
-        let mut sink = sink();
-        // (0,0) is deferred (non-DC `None` leaf), so it is NOT reconstructed.
-        recon_luma(&mut sink, 0, 0, TX_16X16, &zero_block(), None, false);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-        // H_PRED at mi_col=4: its left neighbour (0,0) is on-grid but uncovered.
-        recon_luma_cardinal(
-            &mut sink,
-            4,
-            0,
-            TX_16X16,
-            &zero_block(),
-            IntraYMode::H_PRED_FOR_TEST,
-            SupportedDirectionalLumaMode::Horizontal,
-            0,
-        );
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-    }
-
-    // A NON-SQUARE cardinal transform is DEFERRED: the cardinal recon primitive is
-    // square-only. (TX_16X64 H_PRED with a covered left column still defers.)
-    #[test]
-    fn cardinal_nonsquare_transform_is_deferred() {
-        let mut sink = sink();
-        // Reconstruct a left DC neighbour column first so coverage is not the gate.
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        let before = sink.reconstructed_counts().0;
-        recon_luma_cardinal(
-            &mut sink,
-            4,
-            0,
-            TX_16X64,
-            &zero_block(),
-            IntraYMode::H_PRED_FOR_TEST,
-            SupportedDirectionalLumaMode::Horizontal,
-            0,
-        );
-        // Non-square cardinal deferred: count unchanged, region stays fill.
-        assert_eq!(sink.reconstructed_counts().0, before);
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
-    }
-
-    // An ANGULAR directional mode (e.g. D135) is DEFERRED by the sink even when its
-    // neighbours are covered: only the cardinal V/H copy subset is admitted here.
-    #[test]
-    fn angular_directional_mode_is_deferred() {
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        let before = sink.reconstructed_counts().0;
-        recon_luma_cardinal(
-            &mut sink,
-            4,
-            0,
-            TX_16X16,
-            &zero_block(),
-            IntraYMode::D135_PRED_FOR_TEST,
-            SupportedDirectionalLumaMode::D135,
-            0,
-        );
-        assert_eq!(sink.reconstructed_counts().0, before);
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
-    }
-
-    // Finding 1: a cardinal H_PRED leaf using a §5.20.5.5 multi-reference line
-    // (`mrl_index > 0`) is DEFERRED. The cardinal recon primitive copies the
-    // IMMEDIATE left/above edge (`MrlIndex == 0`); for `mrl_index > 0` it would
-    // copy the adjacent samples instead of the selected reference line — wrong.
-    // The left neighbour is covered, so only the MRL gate causes the deferral.
-    #[test]
-    fn cardinal_with_active_mrl_index_is_deferred() {
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        let before = sink.reconstructed_counts().0;
-        // H_PRED at mi_col=4 with a covered left column but `mrl_index == 1`: defer.
-        recon_luma_cardinal(
-            &mut sink,
-            4,
-            0,
-            TX_16X16,
-            &zero_block(),
-            IntraYMode::H_PRED_FOR_TEST,
-            SupportedDirectionalLumaMode::Horizontal,
-            1,
-        );
-        assert_eq!(sink.reconstructed_counts().0, before);
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
-    }
-
-    // A cardinal H_PRED leaf with a NON-`all_zero`, non-DC-only residual (`eob > 1`)
-    // is now ADMITTED: the retained `block.plane_tx_type` flows to the §7.15.4
-    // primary inverse, so the cardinal recon primitive applies the REAL tx-type
-    // residual rather than a hardcoded `DCT_DCT`. The left neighbour is covered
-    // (the same-size DC block at (0,0)), so the block reconstructs.
-    #[test]
-    fn cardinal_with_multi_coeff_residual_is_reconstructed() {
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        let before = sink.reconstructed_counts().0;
-        // A non-`all_zero` block with two decoded coefficients (`eob == 2`).
-        let mut block = coeff_block_16x16();
-        block.eob = 2;
-        block.quant[1] = 7;
-        recon_luma_cardinal(
-            &mut sink,
-            4,
-            0,
-            TX_16X16,
-            &block,
-            IntraYMode::H_PRED_FOR_TEST,
-            SupportedDirectionalLumaMode::Horizontal,
-            0,
-        );
-        // TX_16X16 == 16 4x4 units, now reconstructed on top of the DC block.
-        assert_eq!(sink.reconstructed_counts().0, before + 16);
-    }
-
-    /// A §7.13.3.18 IntrABC integer-vector skip copy whose source rectangle is fully
-    /// reconstructed copies the source samples into the target (target == source).
-    #[test]
-    fn intrabc_integer_skip_copy_reconstructs_target_from_reconstructed_source() {
-        let mut sink = sink();
-        // Reconstruct a DC source block at the origin (16x16, flat 512), then copy a
-        // 16x16 region of it down to a non-overlapping target.
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        let before = sink.reconstructed_counts().0;
-        let source = PlaneRect::new(0, 0, 16, 16).unwrap();
-        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-        sink.reconstruct_intrabc_block(source, target, true, ByteOffset::new(0))
-            .unwrap();
-        // The whole 16x16 target now carries the copied source samples (flat 512).
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 512);
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 15, 47).unwrap(), 512);
-        // 16x16 == 16 4x4 luma units added.
-        assert_eq!(sink.reconstructed_counts().0, before + 16);
-    }
-
-    /// A §7.13.3.18 IntrABC block whose source rectangle is NOT fully reconstructed
-    /// is DEFERRED — never copies a workspace fill value as if it were a real sample.
-    #[test]
-    fn intrabc_copy_with_unreconstructed_source_is_deferred() {
-        let mut sink = sink();
-        // No block reconstructed yet: the source region (0,0,16,16) is all fill.
-        let source = PlaneRect::new(0, 0, 16, 16).unwrap();
-        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-        sink.reconstruct_intrabc_block(source, target, true, ByteOffset::new(0))
-            .unwrap();
-        // The target stays at the unreconstructed fill value, and nothing is counted.
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-    }
-
-    /// Codex finding 1: a NON-4x4-aligned integer source whose CEIL'd MI span includes
-    /// an unreconstructed trailing MI is DEFERRED. The covered-MI span must be computed
-    /// from the source's actual sample extent (`ceil((x+width)/4) - floor(x/4)`), not a
-    /// floored `width / 4` that would drop the trailing partial MI and copy its fill.
-    #[test]
-    fn intrabc_unaligned_source_with_uncovered_trailing_mi_is_deferred() {
-        let mut sink = sink();
-        // Reconstruct a 16x16 DC block at the origin: covers luma x[0,16) == MI cols
-        // 0..4. MI col 4 (x[16,20)) stays unreconstructed.
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        let before = sink.reconstructed_counts().0;
-        // A 16px source at x=2 spans x[2,18) == MI cols 0..=4 (ceil(18/4)==5): MI col 4
-        // is uncovered, so the copy must DEFER. (A floored `16/4==4` span would wrongly
-        // see only cols 0..4 and copy the trailing fill.)
-        let source = PlaneRect::new(2, 0, 16, 16).unwrap();
-        let target = PlaneRect::new(2, 32, 16, 16).unwrap();
-        sink.reconstruct_intrabc_block(source, target, true, ByteOffset::new(0))
-            .unwrap();
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 2, 32).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, before);
-    }
-
-    /// A non-skip IntrABC block's displaced copy writes the §7.13.2 PREDICTION into
-    /// the workspace target but does NOT mark coverage: the §5.20.7.27 residual leaf
-    /// (decoded after this prelude, in decode order) adds the residual onto the copied
-    /// predictor and marks coverage. So after the copy alone, the target carries the
-    /// copied source samples (the prediction) but the 4x4 count is unchanged — only
-    /// the residual leaf finalises the block.
-    #[test]
-    fn intrabc_non_skip_copy_writes_prediction_without_marking_coverage() {
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        let before = sink.reconstructed_counts().0;
-        let source = PlaneRect::new(0, 0, 16, 16).unwrap();
-        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-        sink.reconstruct_intrabc_block(source, target, false, ByteOffset::new(0))
-            .unwrap();
-        // The copy wrote the predictor (the flat 512 source) into the target, but the
-        // count is unchanged: a non-skip block's coverage is owned by its residual leaf.
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 512);
-        assert_eq!(sink.reconstructed_counts().0, before);
-    }
-
-    /// The full non-skip IntrABC residual path: the displaced copy writes the
-    /// prediction (the flat 512 source), then the residual leaf adds an ASYMMETRIC
-    /// `eob > 1` residual onto it and marks coverage. The reconstruction must equal
-    /// `Clip1(prediction + inverse-transform(residual))`, verified against the
-    /// equivalent intra `DC_PRED` reconstruction over the SAME flat-512 prediction.
-    #[test]
-    fn intrabc_non_skip_residual_leaf_adds_residual_onto_copied_prediction() {
-        // Reference: a DC_PRED leaf at the frame origin over a flat-512 no-neighbour
-        // prediction with the same asymmetric residual. (DC_PRED at (0,0) is the flat
-        // 512 fallback, identical to the IntrABC predictor copied from a flat-512
-        // source, so the two reconstructions must agree sample-for-sample.)
-        let mut residual = coeff_block_16x16();
-        residual.quant[0] = -3;
-        residual.quant[1] = 9;
-        residual.quant[16] = -7;
-        residual.eob = 3;
-
-        let mut reference_sink = sink();
-        recon_luma(
-            &mut reference_sink,
-            0,
-            0,
-            TX_16X16,
-            &residual,
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-
-        // IntrABC: reconstruct a flat-512 source, copy it down to a target (the
-        // prediction), then add the SAME residual via the IntrABC residual leaf.
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        let before = sink.reconstructed_counts().0;
-        let source = PlaneRect::new(0, 0, 16, 16).unwrap();
-        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-        sink.reconstruct_intrabc_block(source, target, false, ByteOffset::new(0))
-            .unwrap();
-        // The residual leaf at the target (mi 0,8 == x0,y32) adds the residual.
-        sink.reconstruct_luma_transform(
-            0,
-            8,
-            TX_16X16,
-            &residual,
-            Some(IntraYMode::DC_PRED),
-            None,
-            0,
-            149,
-            true,
-            false,
-            true, // is_intrabc
-            ByteOffset::new(0),
-        )
-        .unwrap();
-        // The residual leaf marked the 16x16 == 16 4x4 units.
-        assert_eq!(sink.reconstructed_counts().0, before + 16);
-        // Every sample equals the reference DC reconstruction over the flat-512 pred.
-        for y in 0..16 {
-            for x in 0..16 {
-                let got = sink.reconstructed_sample(PlaneId::Y, x, 32 + y).unwrap();
-                let want = reference_sink
-                    .reconstructed_sample(PlaneId::Y, x, y)
-                    .unwrap();
-                assert_eq!(
-                    got,
-                    want,
-                    "IntrABC residual ({x},{}) must equal pred+residual {want}, got {got}",
-                    32 + y
-                );
-            }
-        }
-    }
-
-    /// A non-skip IntrABC residual leaf whose transform rect is NOT inside any pending
-    /// IntrABC prediction (the whole-block copy was deferred — fractional DV / uncovered
-    /// source / non-reconstructable quant) is DEFERRED: never adds a residual onto the
-    /// workspace fill value.
-    #[test]
-    fn intrabc_non_skip_residual_leaf_without_pending_prediction_is_deferred() {
-        let mut sink = sink();
-        let mut residual = coeff_block_16x16();
-        residual.eob = 2;
-        residual.quant[1] = 7;
-        // No `reconstruct_intrabc_block` ran, so no pending prediction is recorded.
-        sink.reconstruct_luma_transform(
-            0,
-            0,
-            TX_16X16,
-            &residual,
-            Some(IntraYMode::DC_PRED),
-            None,
-            0,
-            149,
-            true,
-            false,
-            true, // is_intrabc
-            ByteOffset::new(0),
-        )
-        .unwrap();
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, 0);
-    }
-
-    /// A non-skip IntrABC residual leaf carrying a REAL §5.20.7.29 IST secondary
-    /// transform (`sec_tx_type != 0`) is DEFERRED even with a pending prediction: the
-    /// §7.15.3 secondary transform is unmodelled, so the residual is not proven.
-    #[test]
-    fn intrabc_non_skip_residual_leaf_with_real_ist_is_deferred() {
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        let before = sink.reconstructed_counts().0;
-        let source = PlaneRect::new(0, 0, 16, 16).unwrap();
-        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-        sink.reconstruct_intrabc_block(source, target, false, ByteOffset::new(0))
-            .unwrap();
-        let mut residual = coeff_block_16x16();
-        residual.intra_ist = Some(crate::tile_payload::IntraIstSyntax {
-            sec_tx_type: 1,
-            most_probable_stx_set: Some(0),
-        });
-        sink.reconstruct_luma_transform(
-            0,
-            8,
-            TX_16X16,
-            &residual,
-            Some(IntraYMode::DC_PRED),
-            None,
-            0,
-            149,
-            true,
-            false,
-            true, // is_intrabc
-            ByteOffset::new(0),
-        )
-        .unwrap();
-        // The real-IST residual deferred: the target keeps the bare prediction copy
-        // (flat 512) and the count is unchanged (no residual leaf coverage marked).
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 512);
-        assert_eq!(sink.reconstructed_counts().0, before);
-    }
-
-    /// A fractional-vector IntrABC block (source and target differ in shape — the
-    /// BILINEAR border) is DEFERRED: the copy primitive only models the integer copy.
-    #[test]
-    fn intrabc_fractional_vector_block_is_deferred() {
-        let mut sink = sink();
-        recon_luma(
-            &mut sink,
-            0,
-            0,
-            TX_16X16,
-            &zero_block(),
-            Some(IntraYMode::DC_PRED),
-            false,
-        );
-        let before = sink.reconstructed_counts().0;
-        // A fractional vector widens the source by a one-sample BILINEAR border, so
-        // source.size() != target.size().
-        let source = PlaneRect::new(0, 0, 17, 17).unwrap();
-        let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-        sink.reconstruct_intrabc_block(source, target, true, ByteOffset::new(0))
-            .unwrap();
-        assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 0);
-        assert_eq!(sink.reconstructed_counts().0, before);
-    }
-}
+#[path = "recon_tests.rs"]
+mod tests;

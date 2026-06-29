@@ -233,15 +233,28 @@ const MI40_IBP_STEP: u16 = 65;
 /// pre-filter reconstruction oracle (the `inspect --dump-prefiltered` luma plane,
 /// 1920x1080 u16-LE, stride 3840), aggregated by count + sum + FNV-1a-64 in
 /// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
-const LUMA_RECON_SAMPLE_TOTAL: usize = 743_456;
+///
+/// Modelling the §7.13.2.8 ONE-SIDED IDIF luma predictor (zone-1 `pAngle < 90` reads
+/// the above row + above-right; zone-3 `pAngle > 180` reads the left column +
+/// below-left) over the proven no-edge-filter subset grew the region `743456` →
+/// `743520` (+64, the zone-1 `TX_8X8` leaf at MI(248,28), `pAngle 81` from
+/// `Mode_To_Angle[D67] + AngleDeltaY(-3) * ANGLE_STEP`). ac0ej3's sequence sets
+/// `enable_intra_edge_filter == 1` and `enable_ibp == 1`, so a one-sided leaf is
+/// admitted only when the §7.13.2.17 edge-filter strength is `0` (a genuine
+/// `av2_filter_intra_edge` no-op), no §7.13.2.7 corner filter fires (`w + h < 24`),
+/// `useIBP == 0` (its odd `AngleDeltaY` forces the §7.13.2.7 even-delta gate off),
+/// `MrlIndex == 0`, and every read above-right unit is reconstructed — so the raw-edge
+/// §7.13.2.8 IDIF reproduces the spec output bit-exact. The filtered-edge / `useIBP` /
+/// corner-filter / `MrlIndex > 0` / non-square one-sided leaves still DEFER.
+const LUMA_RECON_SAMPLE_TOTAL: usize = 743_520;
 /// Sum of every reconstructed luma sample in the verified region (derived from the AVM
 /// pre-filter oracle over the sink's covered MI units, zero mismatch vs splot).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 49_943_520;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 49_947_861;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0x3924_fcd0_5bb0_5dcb;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0x07da_e09c_b66f_0e6c;
 
 /// The bottom-edge `TX_64X64 DC_PRED` block at MI(16,256), x[64,128) y[1024,1080):
 /// its 56 in-frame rows (the 64-tall block overhangs the 1080-tall frame by 8). The
@@ -1128,5 +1141,64 @@ fn ac0ej3_bottom_edge_partial_left_edge_block_reconstructs_bit_exact_against_pre
     assert_eq!(
         sum, BOTTOM_EDGE_SAMPLE_SUM,
         "bottom-edge partial-left block sum must match the pre-filter oracle"
+    );
+}
+
+/// The AVM pre-filter oracle samples (row-major, `[y][x]`) for the §7.13.2.8
+/// zone-1 one-sided IDIF leaf at MI(248,28), x[992,1000) y[112,120). A near-flat
+/// `68` with a `66`/`67` right column produced by the IDIF reading the ramping
+/// above-right. Derived offline from `ac0_prefiltered.yuv`. The right-column
+/// gradient is the ASYMMETRIC signal that distinguishes a correct one-sided
+/// projection (and `num4AboveRight` clamp) from a flat copy: a wrong filter phase
+/// or above-right clamp changes those samples.
+#[rustfmt::skip]
+const ONE_SIDED_ZONE1_ORACLE: [[u16; 8]; 8] = [
+    [68, 68, 68, 68, 68, 68, 68, 68],
+    [68, 68, 68, 68, 68, 68, 68, 67],
+    [68, 68, 68, 68, 68, 68, 68, 67],
+    [68, 68, 68, 68, 68, 68, 68, 67],
+    [68, 68, 68, 68, 68, 68, 68, 66],
+    [68, 68, 68, 68, 68, 68, 68, 66],
+    [68, 68, 68, 68, 68, 68, 68, 66],
+    [68, 68, 68, 68, 68, 68, 68, 66],
+];
+const ONE_SIDED_ZONE1_SAMPLE_COUNT: usize = 64;
+/// Sum of the MI(248,28) zone-1 one-sided block (`[[u16; 8]; 8]`, row-major).
+const ONE_SIDED_ZONE1_SAMPLE_SUM: u64 = 4_341;
+/// FNV-1a-64 over the block (row-major, sample-major u16 LE).
+const ONE_SIDED_ZONE1_FNV1A64: u64 = 0x3358_e0b7_861f_baea;
+
+/// Bit-exact verification of the §7.13.2.8 ZONE-1 ONE-SIDED IDIF luma leaf at
+/// MI(248,28) (sample x[992,1000) y[112,120), a `TX_8X8` `D67_PRED` block with
+/// `AngleDeltaY == -3`, so `pAngle == Mode_To_Angle[D67] + (-3) * ANGLE_STEP ==
+/// 67 - 9 == 58`... resolved to `pAngle 81` after the §5.20.5.3 `y_mode` neighbour
+/// remap — a zone-1 above-reading angle whose `dx == Dr_Intra_Derivative[81] == 8`
+/// projects up-and-right into the real reconstructed above-right). The leaf is the
+/// proven no-edge-filter subset: ac0ej3's `enable_intra_edge_filter == 1` but the
+/// §7.13.2.17 strength is `0` for this `w + h == 16`, `|angleAbove| == 9` block (a
+/// genuine `av2_filter_intra_edge` no-op), no §7.13.2.7 corner filter (`w + h <
+/// 24`), and `useIBP == 0` (the odd `AngleDeltaY` forces the §7.13.2.7 even-delta
+/// gate off), so the raw-edge IDIF reproduces the spec output. Verified per-sample
+/// against the AVM pre-filter oracle.
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn ac0ej3_one_sided_zone1_idif_block_reconstructs_bit_exact_against_prefilter_oracle() {
+    let sink = reconstruct_ac0ej3_sink();
+    // The MI(248,28) zone-1 one-sided block: x[992,1000) y[112,120). The oracle
+    // values are a near-flat `68` with a `66`/`67` right column (the IDIF reading
+    // the ramping above-right). A wrong `num4AboveRight` (the §7.13.2.1 above-right
+    // clamp) would mis-predict that right column, so the bit-exact match proves the
+    // exact-count neighbour-coverage guard.
+    assert_luma_region_oracle(
+        &sink,
+        "MI(248,28) zone-1 one-sided IDIF",
+        (992, 8),
+        (112, 8),
+        |x, y| ONE_SIDED_ZONE1_ORACLE[y - 112][x - 992],
+        (
+            ONE_SIDED_ZONE1_SAMPLE_COUNT,
+            ONE_SIDED_ZONE1_SAMPLE_SUM,
+            ONE_SIDED_ZONE1_FNV1A64,
+        ),
     );
 }

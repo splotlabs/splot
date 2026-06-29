@@ -139,6 +139,42 @@ fn d203_one_sided_idif_interpolates_real_left_column() {
 }
 
 #[test]
+fn widened_zone1_one_sided_idif_interpolates_with_nonzero_shift() {
+    // §7.13.2.8 step 1 over a WIDENED zone-1 pAngle (81, admitted by the §9.2
+    // range check, not the legacy D45/D67 whitelist): `dx = Dr_Intra_Derivative[81]
+    // = 8`, `idx = (i + 1) * dx`, `base = idx >> 6`, `shift = (idx >> 1) & 0x1F`.
+    // For 4x4 the per-row shifts are {4, 9, 13, 18} — all genuinely nonzero, so the
+    // IDIF 4-tap `Dr_Interp_Filter` interpolates over the above row (NOT a
+    // degenerate `shift == 0` copy like D45). This guards a silent filter-phase
+    // regression: a wrong `Dr_Interp_Filter` row or a wrong `shift` derivation
+    // changes the output. The above IDIF edge spans logical `-2 ..= w + h + 1`
+    // (length 12 for 4x4): slice[0] = logical -2, slice[1] = logical -1 (corner),
+    // slice[2 + k] = logical k; the trailing two repeat `maxBaseX`. The ASYMMETRIC
+    // strictly-increasing edge makes a symbol/phase swap detectable (per the
+    // decode-verify asymmetry lesson). Reference output hand-derived from the
+    // §7.13.2.8 step-1 formula.
+    let above_idif = [10, 10, 25, 33, 48, 60, 77, 90, 110, 130, 130, 130];
+    let mut output = [0u8; 16];
+
+    predict_intra_directional_angle_rect_one_sided_idif_from_p_angle_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        81,
+        IntraDirectionalAngleIdifEdges::above(&above_idif),
+        &mut output,
+        4,
+    )
+    .unwrap();
+
+    assert_eq!(
+        output,
+        [
+            26, 35, 49, 62, 27, 37, 51, 65, 28, 39, 53, 67, 29, 41, 55, 70
+        ]
+    );
+}
+
+#[test]
 fn d203_one_sided_idif_rejects_above_edge() {
     // D203 is a LEFT-reading zone-3 angle; an above-edge set does not match its
     // required edge and is rejected before any output mutation.

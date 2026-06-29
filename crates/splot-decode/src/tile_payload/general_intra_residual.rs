@@ -254,6 +254,15 @@ impl LumaTransformTypeContext {
     pub(crate) const fn mrl_index(self) -> u8 {
         self.mrl_index
     }
+
+    /// The leaf's § 5.20.5.3 `AngleDeltaY` (the signed angle-delta count). The
+    /// ac0ej3 recon sink combines it with the §9.2 `Mode_To_Angle[y_mode]` and
+    /// `Mrl_Index_To_Delta[mrl_index]` to recover the §7.13.2.8 `pAngle` for the
+    /// one-sided angular admission.
+    #[must_use]
+    pub(crate) const fn angle_delta_y(self) -> i8 {
+        self.angle_delta_y
+    }
 }
 
 /// Caller-selected policy for nonzero residuals when transform tools are active.

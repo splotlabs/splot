@@ -135,6 +135,27 @@ impl IntraYMode {
         self.0 >= Self::V_PRED && self.0 <= Self::D67_PRED
     }
 
+    /// AV2 § 9.2 `Mode_To_Angle[mode]` for a directional luma mode, or `None` for a
+    /// non-directional mode (`DC_PRED` / `SMOOTH*` / `PAETH_PRED`, whose
+    /// `Mode_To_Angle` entry is `0`). The §7.13.2.8 nominal angle the §5.20.5.3
+    /// `pAngle = Mode_To_Angle[mode] + AngleDeltaY * ANGLE_STEP +
+    /// Mrl_Index_To_Delta[MrlIndex]` derivation starts from. Values transcribed
+    /// from the §9.2 `Mode_To_Angle[INTRA_MODES]` table:
+    /// `{0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0}`.
+    pub(crate) const fn mode_to_angle(self) -> Option<u16> {
+        match self.0 {
+            Self::V_PRED => Some(90),
+            Self::H_PRED => Some(180),
+            Self::D45_PRED => Some(45),
+            Self::D135_PRED => Some(135),
+            Self::D113_PRED => Some(113),
+            Self::D157_PRED => Some(157),
+            Self::D203_PRED => Some(203),
+            Self::D67_PRED => Some(67),
+            _ => None,
+        }
+    }
+
     /// Returns true when this mode is AV2 § 9.2 `PAETH_PRED`.
     pub(crate) const fn is_paeth(self) -> bool {
         self.0 == Self::PAETH_PRED
