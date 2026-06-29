@@ -39,9 +39,10 @@ use crate::Result;
 #[cfg(test)]
 use crate::runtime_minimal_recon::new_general_intra_workspace;
 use crate::runtime_minimal_recon::{
-    OneSidedEdgeFilter, reconstruct_general_intra_block_rect_into,
+    IbpSecondary, OneSidedEdgeFilter, reconstruct_general_intra_block_rect_into,
     reconstruct_general_intra_cardinal_neighbour_block_into,
     reconstruct_general_intra_luma_paeth_neighbour_block_into,
+    reconstruct_general_intra_one_sided_ibp_luma_block_into,
     reconstruct_general_intra_one_sided_left_neighbour_block_into,
     reconstruct_general_intra_one_sided_neighbour_block_into,
     reconstruct_intrabc_block_residual_rect_into,
@@ -707,8 +708,23 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let not4x4 = !(w == 4 && h == 4);
         let apply_ibp = self.enable_ibp && not4x4;
         let angle_delta_even = angle_delta_y % 2 == 0;
-        if apply_ibp && angle_delta_even {
-            return Ok(false);
+        let use_ibp = apply_ibp && angle_delta_even;
+        if use_ibp {
+            return self.try_reconstruct_one_sided_ibp_angular(
+                mi_col,
+                mi_row,
+                log2_width,
+                log2_height,
+                angle,
+                p_angle,
+                p_angle_u16,
+                block,
+                qindex,
+                use_tcq,
+                mi_w,
+                mi_h,
+                tile_offset,
+            );
         }
         let Some(edge_filter) = self.resolve_one_sided_edge_filter(
             mi_col,
@@ -806,6 +822,150 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Ok(true)
     }
 
+    /// Attempts to reconstruct a §7.13.2.9 `useIBP` one-sided angular luma leaf:
+    /// the §7.13.2.8 primary prediction at `pAngle` blended with the secondary
+    /// prediction at `secondAngle = pAngle ± 180` (the OPPOSITE edge), per the
+    /// §7.13.2.9 IBP weights. Returns `Ok(true)` when reconstructed bit-exact,
+    /// `Ok(false)` when DEFERRED. The caller has already established `useIBP`
+    /// (`applyIbp && even angleDelta && plane 0 && one-sided pAngle && MrlIndex 0`).
+    ///
+    /// A useIBP leaf reads BOTH the primary edge (zone-1 above + above-right /
+    /// zone-3 left + below-left) AND the OPPOSITE edge for the secondary prediction
+    /// (zone-1 left + below-left / zone-3 above + above-right). Both edges + the
+    /// shared corner must be reconstructed; an under-covered edge DEFERS. The
+    /// §7.13.2.9 blend is a validated no-op when the leaf's mode is not in the
+    /// `is_ibp_enabled` set, but AVM still reads/filters BOTH edges, so the dual
+    /// coverage requirement holds regardless.
+    #[allow(clippy::too_many_arguments)]
+    fn try_reconstruct_one_sided_ibp_angular(
+        &mut self,
+        mi_col: usize,
+        mi_row: usize,
+        log2_width: u32,
+        log2_height: u32,
+        angle: IntraDirectionalAngle,
+        p_angle: i32,
+        p_angle_u16: u16,
+        block: &LumaCoeffBlock,
+        qindex: u32,
+        use_tcq: bool,
+        mi_w: usize,
+        mi_h: usize,
+        tile_offset: ByteOffset,
+    ) -> Result<bool> {
+        let w = 1u32 << log2_width;
+        let h = 1u32 << log2_height;
+        let zone1 = p_angle < 90;
+        let second_angle_i = if zone1 { p_angle + 180 } else { p_angle - 180 };
+        let Ok(second_angle) = u16::try_from(second_angle_i) else {
+            return Ok(false);
+        };
+        let Ok(second_dir_angle) = IntraDirectionalAngle::try_from_p_angle(second_angle) else {
+            return Ok(false);
+        };
+        let Ok(block_size) = IntraRectBlockSize::new(
+            u8::try_from(log2_width).unwrap_or(u8::MAX),
+            u8::try_from(log2_height).unwrap_or(u8::MAX),
+        ) else {
+            return Ok(false);
+        };
+        let Some(primary_edge_filter) =
+            self.resolve_one_sided_edge_filter(mi_col, mi_row, w, h, p_angle, true, tile_offset)?
+        else {
+            return Ok(false);
+        };
+        let Some(secondary_edge_filter) =
+            self.resolve_ibp_secondary_edge_filter(mi_col, mi_row, w, h, p_angle, tile_offset)?
+        else {
+            return Ok(false);
+        };
+        let Ok(primary_max_read) = angle.max_one_sided_edge_read_index(block_size) else {
+            return Ok(false);
+        };
+        let Ok(secondary_max_read) = second_dir_angle.max_one_sided_edge_read_index(block_size)
+        else {
+            return Ok(false);
+        };
+        let w_us = w as usize;
+        let h_us = h as usize;
+        let primary_active =
+            primary_edge_filter.strength != 0 || primary_edge_filter.corner_opposite.is_some();
+        let secondary_active =
+            secondary_edge_filter.strength != 0 || secondary_edge_filter.corner_opposite.is_some();
+        let (primary_num4, secondary_num4) = if zone1 {
+            let Some(primary_num4) = self.one_sided_above_coverage(
+                mi_col,
+                mi_row,
+                mi_w,
+                w_us,
+                primary_max_read,
+                primary_active,
+            ) else {
+                return Ok(false);
+            };
+            let Some(secondary_num4) = self.one_sided_left_coverage(
+                mi_col,
+                mi_row,
+                mi_h,
+                h_us,
+                secondary_max_read,
+                secondary_active,
+            ) else {
+                return Ok(false);
+            };
+            (primary_num4, secondary_num4)
+        } else {
+            let Some(primary_num4) = self.one_sided_left_coverage(
+                mi_col,
+                mi_row,
+                mi_h,
+                h_us,
+                primary_max_read,
+                primary_active,
+            ) else {
+                return Ok(false);
+            };
+            let Some(secondary_num4) = self.one_sided_above_coverage(
+                mi_col,
+                mi_row,
+                mi_w,
+                w_us,
+                secondary_max_read,
+                secondary_active,
+            ) else {
+                return Ok(false);
+            };
+            (primary_num4, secondary_num4)
+        };
+        let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+        reconstruct_general_intra_one_sided_ibp_luma_block_into(
+            &mut self.workspace,
+            block,
+            p_angle_u16,
+            x,
+            y,
+            log2_width,
+            log2_height,
+            qindex,
+            primary_num4,
+            primary_edge_filter,
+            IbpSecondary {
+                second_angle,
+                edge_filter: secondary_edge_filter,
+                num4_far: secondary_num4,
+            },
+            use_tcq,
+            self.bit_depth,
+        )
+        .map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_recon_luma_one_sided_ibp_write",
+            )
+        })?;
+        Ok(true)
+    }
+
     /// Resolves the §7.13.2.7 step-1 edge-filter / corner-filter inputs for a
     /// one-sided IDIF leaf into an [`OneSidedEdgeFilter`], or `None` to DEFER.
     ///
@@ -877,11 +1037,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             filter_type_left = filter_type;
         }
         let corner_applies = need_above && need_left && (w + h) >= 24;
-        // §7.13.2.8 reads ONLY the above edge (zone-1) or the left edge (zone-3); the
-        // strength/numPx/corner are computed for that read edge.
         let read_edge = if zone1 {
-            // zone-1: read above. numPx = Min(w, maxX - x + 1) + (needRight ? h : 0)
-            // + 1. The §7.13.2.14 corner reads LeftCol[0] = CurrFrame[y][x-1].
             OneSidedEdgeSpec {
                 orientation: EdgeOrientation::Above,
                 filter_type: filter_type_above,
@@ -889,8 +1045,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 need_far: need_right,
             }
         } else {
-            // zone-3: read left. numPx = Min(h, maxY - y + 1) + (needBottom ? w : 0)
-            // + 1. The §7.13.2.14 corner reads AboveRow[0] = CurrFrame[y-1][x].
             OneSidedEdgeSpec {
                 orientation: EdgeOrientation::Left,
                 filter_type: filter_type_left,
@@ -941,10 +1095,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 .checked_sub(1)
                 .and_then(|c| coverage.y_mode_at(c, mi_row)),
         );
-        // §7.13.2.7 applyIbp branch (already gated): both edges are needed, the
-        // per-edge filter types are independent, and `needRight`/`needBottom` get
-        // the IBP ORs. The corner gate is `needAbove && needLeft && (w + h) >= 24`,
-        // identical for the primary and secondary edge.
         let zone1 = p_angle < 90;
         let mut angle_above = p_angle - 90;
         let mut angle_left = p_angle - 180;
@@ -957,8 +1107,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let need_right = zone1 || p_angle > 180;
         let need_bottom = !zone1 || p_angle < 90;
         let corner_applies = (w + h) >= 24;
-        // The SECONDARY edge is the OPPOSITE of the read edge: zone-1's secondary is
-        // the LEFT edge; zone-3's secondary is the ABOVE edge.
         let secondary_edge = if zone1 {
             OneSidedEdgeSpec {
                 orientation: EdgeOrientation::Left,
@@ -987,11 +1135,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
     /// Assembles a [`OneSidedEdgeFilter`] for one edge (above or left) from its
     /// resolved §7.13.2.7 spec: the §7.13.2.17 strength, the §7.13.2.7 `numPx`
-    /// storage clamp, and the §7.13.2.14 corner's opposite-edge `[0]` sample.
+    /// storage clamp, and the §7.13.2.14 corner's opposite-edge `[0]` sample read
+    /// diagonally — an above edge reads `LeftCol[0] = CurrFrame[y][x-1]`, a left
+    /// edge reads `AboveRow[0] = CurrFrame[y-1][x]`.
     /// Shared by the read-edge ([`Self::resolve_one_sided_edge_filter`]) and the
     /// IBP secondary-edge ([`Self::resolve_ibp_secondary_edge_filter`]) resolution.
     /// Returns `None` (defer) when the corner fires but its opposite sample is
     /// off-grid or uncovered.
+    #[allow(clippy::too_many_arguments)]
     fn assemble_one_sided_edge_filter(
         &self,
         edge: OneSidedEdgeSpec,
@@ -1003,16 +1154,16 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         tile_offset: ByteOffset,
     ) -> Result<Option<OneSidedEdgeFilter>> {
         let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
-        // §7.13.2.17 strength: the above edge keys on (w, h, angleAbove); the left
-        // edge keys on (h, w, angleLeft) (the AVM `intra_edge_filter_strength(txhpx,
-        // txwpx, …)` axis swap). `primary`/`secondary` are the in-edge / far extension
-        // dimensions for that edge.
         let (strength_a, strength_b, primary, secondary) = match edge.orientation {
             EdgeOrientation::Above => (w, h, w, h),
             EdgeOrientation::Left => (h, w, h, w),
         };
-        let strength =
-            intra_edge_filter_strength(strength_a, strength_b, u8::from(edge.filter_type), edge.angle_delta);
+        let strength = intra_edge_filter_strength(
+            strength_a,
+            strength_b,
+            u8::from(edge.filter_type),
+            edge.angle_delta,
+        );
         let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
         let plane = self.workspace.plane(PlaneId::Y)?;
         let storage = plane.storage_size();
@@ -1031,16 +1182,19 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         let corner_opposite = if corner_applies {
-            // The corner reads the sample diagonally adjacent on the OTHER axis from
-            // this edge: an above edge's corner reads LeftCol[0] = CurrFrame[y][x-1];
-            // a left edge's corner reads AboveRow[0] = CurrFrame[y-1][x].
             let (opp_col, opp_row, sample_x, sample_y) = match edge.orientation {
-                EdgeOrientation::Above => {
-                    (mi_col.checked_sub(1), Some(mi_row), x.checked_sub(1), Some(y))
-                }
-                EdgeOrientation::Left => {
-                    (Some(mi_col), mi_row.checked_sub(1), Some(x), y.checked_sub(1))
-                }
+                EdgeOrientation::Above => (
+                    mi_col.checked_sub(1),
+                    Some(mi_row),
+                    x.checked_sub(1),
+                    Some(y),
+                ),
+                EdgeOrientation::Left => (
+                    Some(mi_col),
+                    mi_row.checked_sub(1),
+                    Some(x),
+                    y.checked_sub(1),
+                ),
             };
             let (Some(opp_col), Some(opp_row)) = (opp_col, opp_row) else {
                 return Ok(None);

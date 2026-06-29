@@ -23,12 +23,11 @@ fn blend(primary: u16, second: u16, s: u16) -> u16 {
 
 #[test]
 fn ibp_blend_fires_matches_avm_enabled_set() {
-    // The one-sided even-AngleDelta seeds (D45/D67/D203 and V/H deltas) are all in
-    // the enabled set; the cardinals and zone-2 are not one-sided.
-    for p in [39u16, 45, 51, 61, 67, 73, 84, 186, 197, 203, 209, 219, 225, 231] {
+    for p in [
+        39u16, 45, 51, 61, 67, 73, 84, 186, 197, 203, 209, 219, 225, 231,
+    ] {
         assert!(ibp_blend_fires(p), "p_angle {p} should fire IBP");
     }
-    // Non-one-sided angles never fire.
     for p in [0u16, 90, 135, 180, 270] {
         assert!(!ibp_blend_fires(p), "p_angle {p} must not fire IBP");
     }
@@ -36,38 +35,40 @@ fn ibp_blend_fires_matches_avm_enabled_set() {
 
 #[test]
 fn ibp_weights_zone1_p45_match_avm_reference() {
-    // 32x32 zone-1 p45: cShift = rShift = 32 >> 5 = 1, so s = weights[r>>1][c>>1].
-    // weights[0][0] = 64, weights[1][2] = 77 (from the AVM ibp_weights(45) grid).
     let size = rect(5, 5);
     let mut primary = vec![200u16; 32 * 32];
     let second = vec![50u16; 32 * 32];
     apply_ibp_dr_blend_rect(size, 45, &mut primary, &second).unwrap();
-    // (r,c)=(0,0): s = weights[0][0] = 64.
-    assert_eq!(primary[0], blend(200, 50, 64));
+    assert_eq!(
+        primary[0],
+        blend(200, 50, 64),
+        "(0,0) must use weights45[0][0]=64"
+    );
     assert_eq!(primary[0], 125);
-    // (r,c)=(3,5): r>>1=1, c>>1=2 -> s = weights[1][2] = 77.
-    assert_eq!(primary[3 * 32 + 5], blend(200, 50, 77));
+    assert_eq!(
+        primary[3 * 32 + 5],
+        blend(200, 50, 77),
+        "(3,5) must use weights45[1][2]=77"
+    );
     assert_eq!(primary[3 * 32 + 5], 140);
 }
 
 #[test]
 fn ibp_weights_zone3_p203_transpose_match_avm_reference() {
-    // 16x16 zone-3 p203: weight angle = 270 - 203 = 67, cShift = rShift = 16>>5 = 0,
-    // and the zone-3 path transposes the lookup: s = weights[c][r].
-    // weights67[3][2] = 85.
     let size = rect(4, 4);
     let mut primary = vec![80u16; 16 * 16];
     let second = vec![240u16; 16 * 16];
     apply_ibp_dr_blend_rect(size, 203, &mut primary, &second).unwrap();
-    // (r,c)=(2,3): s = weights[c>>0][r>>0] = weights[3][2] = 85.
-    assert_eq!(primary[2 * 16 + 3], blend(80, 240, 85));
+    assert_eq!(
+        primary[2 * 16 + 3],
+        blend(80, 240, 85),
+        "zone-3 p203 (weight angle 67) transposes the lookup: s=weights67[3][2]=85"
+    );
     assert_eq!(primary[2 * 16 + 3], 134);
 }
 
 #[test]
 fn ibp_blend_asymmetric_primary_second_is_order_sensitive() {
-    // Asymmetric primary/second so a transposed or swapped blend would change the
-    // pinned value (guards against a primary<->second swap or a row/col mixup).
     let size = rect(5, 4); // 32 wide, 16 tall -> cShift=1, rShift=0.
     let mut primary = vec![0u16; 32 * 16];
     let mut second = vec![0u16; 32 * 16];
@@ -79,31 +80,29 @@ fn ibp_blend_asymmetric_primary_second_is_order_sensitive() {
     }
     let primary_before = primary.clone();
     apply_ibp_dr_blend_rect(size, 67, &mut primary, &second).unwrap();
-    // p67 zone-1: cShift = 32>>5 = 1, rShift = 16>>5 = 0. s = weights67[r][c>>1].
-    // Recompute weights67 inline to pin (row0 from the AVM reference).
-    // weights67 row0 = [93,108,113,117,...]; (r,c)=(0,2): c>>1=1 -> s=108.
-    let idx = 0 * 32 + 2;
+    let idx = 2; // row 0, column 2 -> c>>1=1 -> s=weights67[0][1]=108.
     assert_eq!(
         primary[idx],
         blend(primary_before[idx], second[idx], 108),
         "asymmetric blend at (0,2) must use weights67[0][1]=108"
     );
-    // (r,c)=(0,0): c>>1=0 -> s = weights67[0][0] = 93.
     assert_eq!(primary[0], blend(primary_before[0], second[0], 93));
 }
 
 #[test]
 fn ibp_disabled_mode_is_no_op() {
-    // A one-sided angle whose mode_index is NOT enabled leaves primary untouched.
-    // angle 40 -> angle_to_mode_index[40]=0 (enabled), but 47 -> index 0? Use a
-    // disabled slot: angle_to_mode_index[40]=0 is enabled; pick angle 88 ->
-    // index 0 (disabled? is_ibp_enabled[0]=false). 88 maps to mode 0 -> disabled.
-    assert!(!ibp_blend_fires(88));
+    assert!(
+        !ibp_blend_fires(88),
+        "angle 88 -> mode_index 0 -> is_ibp_enabled[0]=false"
+    );
     let size = rect(4, 4);
     let mut primary = vec![123u16; 16 * 16];
     let second = vec![45u16; 16 * 16];
     apply_ibp_dr_blend_rect(size, 88, &mut primary, &second).unwrap();
-    assert!(primary.iter().all(|&v| v == 123), "disabled mode must not blend");
+    assert!(
+        primary.iter().all(|&v| v == 123),
+        "disabled mode must not blend"
+    );
 }
 
 #[test]

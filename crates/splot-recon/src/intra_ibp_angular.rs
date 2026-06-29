@@ -142,17 +142,24 @@ fn weight_angle_and_mode_index(p_angle: u16) -> Option<(u16, u8)> {
 /// AVM `av2_dr_prediction_z1_info`).
 fn ibp_weights(p_angle: u16) -> Result<[[u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE]> {
     let p_angle = p_angle.max(IBP_WEIGHT_MIN_ANGLE);
-    let index = usize::from(90u16.checked_sub(p_angle).ok_or(ReconError::ArithmeticOverflow {
-        context: "IBP angular weight angle index",
-    })?);
-    let dy = i64::from(*DR_INTRA_DERIVATIVE.get(index).ok_or(ReconError::ArithmeticOverflow {
-        context: "IBP angular weight derivative lookup",
-    })?);
+    let index = usize::from(
+        90u16
+            .checked_sub(p_angle)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "IBP angular weight angle index",
+            })?,
+    );
+    let dy = i64::from(
+        *DR_INTRA_DERIVATIVE
+            .get(index)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "IBP angular weight derivative lookup",
+            })?,
+    );
     let mut weights = [[0u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE];
     for (r, row) in weights.iter_mut().enumerate() {
         let mut y = dy;
         for slot in row.iter_mut() {
-            // dist = ((r + 1) << 6) + y; both terms are non-negative.
             let dist = ((i64::try_from(r).map_err(|_| ReconError::ArithmeticOverflow {
                 context: "IBP angular weight row index",
             })? + 1)
@@ -162,12 +169,12 @@ fn ibp_weights(p_angle: u16) -> Result<[[u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE]
                 context: "IBP angular weight distance range",
             })?;
             let (shift_raw, div) = resolve_divisor(dist_u64)?;
-            // §7.13.2.9: shift -= DIV_LUT_BITS, then weight0 = Round2(y * div, shift).
-            let shift = shift_raw
-                .checked_sub(DIV_LUT_BITS)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "IBP angular weight shift",
-                })?;
+            let shift =
+                shift_raw
+                    .checked_sub(DIV_LUT_BITS)
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "IBP angular weight shift",
+                    })?;
             let product = y
                 .checked_mul(i64::from(div))
                 .and_then(|p| u64::try_from(p).ok())
@@ -221,8 +228,6 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
         .copied()
         .unwrap_or(false)
     {
-        // §7.13.2.9: the leaf's mode is not in the enabled set; AVM keeps the bare
-        // primary prediction. No blend, no mutation.
         return Ok(());
     }
     let width = size.width();
@@ -239,7 +244,6 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
     }
     let weights = ibp_weights(weight_angle)?;
     let zone1 = p_angle < 90;
-    // cShift = w >> (IBP_WEIGHT_SIZE_LOG2 + 1); rShift = h >> (…+1).
     let shift = IBP_WEIGHT_SIZE_LOG2 + 1;
     let c_shift = (width as u32) >> shift;
     let r_shift = (height as u32) >> shift;
@@ -247,7 +251,6 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
         let row_idx = (row as u32 >> r_shift) as usize;
         for column in 0..width {
             let col_idx = (column as u32 >> c_shift) as usize;
-            // Zone-1 indexes [row][col]; zone-3 transposes to [col][row].
             let s = if zone1 {
                 weight_at(&weights, row_idx, col_idx)?
             } else {
