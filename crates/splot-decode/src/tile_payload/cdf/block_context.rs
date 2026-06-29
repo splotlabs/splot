@@ -798,7 +798,7 @@ fn get_intra_y_mode_set(
     let mut dir_modes = [0usize; 2];
     let mut count = 0usize;
 
-    if block_n4w >= 2 && block_n4h >= 2 {
+    if mi_size_at_least_block_8x8(block_n4w, block_n4h) {
         for joint_mode in neighbour_joint_modes {
             if usize::from(joint_mode) >= NON_DIRECTIONAL_MODES_COUNT {
                 let mode = usize::from(joint_mode) - NON_DIRECTIONAL_MODES_COUNT;
@@ -844,6 +844,23 @@ fn get_intra_y_mode_set(
         }
     }
     None
+}
+
+/// AV2 § 5.20.5.3 `get_intra_y_mode_set` neighbour-reorder gate
+/// (`05-syntax-structures.md` line 11128: `if ( MiSize >= BLOCK_8X8 )`).
+///
+/// In the § 5.20.6 `BLOCK_SIZE` enum, `BLOCK_8X8` is the fourth value, so
+/// `MiSize >= BLOCK_8X8` excludes exactly `{BLOCK_4X4, BLOCK_4X8, BLOCK_8X4}` —
+/// the three sub-8x8 leaves with `Num_4x4_Blocks_Wide * Num_4x4_Blocks_High`
+/// (`block_n4w * block_n4h`) of `1`, `2`, and `2`. Every other `MiSize`
+/// (including `BLOCK_4X16` / `BLOCK_16X4`, which have a single-MI dimension but
+/// are NOT `< BLOCK_8X8`) has area `> 2` and runs the directional-neighbour
+/// reorder. The earlier `block_n4w >= 2 && block_n4h >= 2` gate wrongly skipped
+/// the reorder for `BLOCK_4X16` / `BLOCK_16X4` (and the wider 4x32/32x4/4x64/64x4
+/// shapes), deriving the wrong `YMode` for those leaves when a left/above
+/// directional joint-mode neighbour pre-selects modes ahead of `Default_Mode_List_Y`.
+fn mi_size_at_least_block_8x8(block_n4w: usize, block_n4h: usize) -> bool {
+    block_n4w.checked_mul(block_n4h).is_none_or(|area| area > 2)
 }
 
 fn block_area_exceeds_64_samples(block_n4w: usize, block_n4h: usize) -> bool {
@@ -1362,6 +1379,41 @@ mod tests {
             .expect("small block directional neighbour reconstructs");
         assert_eq!(result.intra_joint_mode, 22);
         assert_eq!(result.y_mode, IntraYMode(IntraYMode::V_PRED));
+    }
+
+    #[test]
+    fn neighbour_reorder_runs_for_wide_tall_sub_8x8_blocks() {
+        // §5.20.5.3 line 11128 gates the directional-neighbour reorder on
+        // `MiSize >= BLOCK_8X8`, which excludes ONLY {BLOCK_4X4, BLOCK_4X8,
+        // BLOCK_8X4} (`block_n4w * block_n4h <= 2`). `BLOCK_4X16` (n4w=1, n4h=4,
+        // area 4) and `BLOCK_16X4` (n4w=4, n4h=1) are `>= BLOCK_8X8` and MUST run
+        // the reorder — the earlier `n4w >= 2 && n4h >= 2` gate wrongly skipped
+        // them, deriving the wrong YMode (the ac0ej3 MI(32,225) bug: the first
+        // directional neighbour 18 -> D67_PRED was lost to Default_Mode_List_Y[0]
+        // -> V_PRED). Their single-MI dimension is `>= 2` only in the other axis.
+        for (n4w, n4h) in [(1usize, 4usize), (4, 1)] {
+            let result = reconstruct_y_mode_with_neighbours(5, [18, 19], n4w, n4h)
+                .expect("wide/tall sub-8x8 directional neighbour reconstructs");
+            // mode_idx 5 selects the first directional neighbour (joint mode 18 ==
+            // D67_PRED + reorder bias) instead of the default-list head.
+            assert_eq!(result.intra_joint_mode, 18, "{n4w}x{n4h} stored joint mode");
+            assert_eq!(
+                result.y_mode,
+                IntraYMode(IntraYMode::D67_PRED),
+                "{n4w}x{n4h} reconstructed YMode"
+            );
+        }
+        // The genuinely-small {4x4, 4x8, 8x4} blocks (area <= 2) still skip the
+        // reorder: mode_idx 5 falls straight to Default_Mode_List_Y[0] == 17 (joint
+        // mode 22 -> V_PRED), unchanged by the fix.
+        for (n4w, n4h) in [(1usize, 1usize), (1, 2), (2, 1)] {
+            let result = reconstruct_y_mode_with_neighbours(5, [18, 19], n4w, n4h)
+                .expect("sub-8x8 small block reconstructs via the default list");
+            assert_eq!(
+                result.intra_joint_mode, 22,
+                "{n4w}x{n4h} stays on default list"
+            );
+        }
     }
 
     #[test]
