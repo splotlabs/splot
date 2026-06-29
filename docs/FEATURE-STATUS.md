@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 449 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 450 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -321,6 +321,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `INFRA-RECON-FRAME-PLANE-TYPES` | Decoded frame and plane runtime types | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/lib.rs` |
 | `INFRA-ZERO-COPY-MEDIA-POLICY` | Zero-copy media-buffer ownership policy | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/lib.rs` |
 | `INFRA-COMMENT-DENSITY-RATCHET` | Comment-density ratchet | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/comment_density.rs` |
+| `INFRA-AI-SLOP-GATE` | AI-slop comment gate | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/ai_slop.rs` |
 | `INFRA-DUPEHOUND-DUPLICATION-GATE` | Duplicate-code budget gate | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/dupehound.rs` |
 | `INFRA-FUZZ-CORPUS-SEEDING` | Fuzz corpus seeding xtask | infrastructure | infrastructure | done | done | n/a | done | n/a | n/a | n/a | done | n/a | `xtask/src/seed_fuzz_corpus.rs` |
 | `RECON-REFERENCE-FRAME-STORE` | Reference frame store runtime model | infrastructure | infrastructure | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-recon/src/reference.rs` |

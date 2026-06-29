@@ -19,20 +19,22 @@ use crate::comment_density::{
 };
 use crate::feature_status::display_path;
 
-/// Banned phrases, matched case-insensitively at a leading word boundary.
-const BANNED_PHRASES: &[&str] = &[
+/// Banned phrases matched between word boundaries (a leading AND trailing
+/// boundary), so suffixing one into a different word does not trip the gate
+/// (`old behavioral`, `this refactored`). Lowercase ASCII.
+const BANNED_WORD_PHRASES: &[&str] = &[
     "formerly",
-    "oracle fixture",
-    "verified fixture",
-    "pinned by fixture",
-    "not yet fixtured",
     "this refactor",
     "this used to",
     "used to be",
     "old behavior",
     "old behaviour",
-    "introduced by",
+    "not yet fixtured",
 ];
+
+/// Banned phrases matched at a leading word boundary only (no trailing
+/// boundary), so plurals and inflections are still caught. Lowercase ASCII.
+const BANNED_PREFIX_PHRASES: &[&str] = &["oracle fixture", "verified fixture", "pinned by fixture"];
 
 /// Verifies no banned slop phrase appears in a tracked-source comment.
 ///
@@ -80,7 +82,12 @@ pub(crate) fn check_ai_slop(root: &Path) -> Result<()> {
 /// Returns a label for the first banned phrase in `comment`, or `None`.
 fn banned_marker(comment: &str) -> Option<&'static str> {
     let lower = comment.to_ascii_lowercase();
-    for phrase in BANNED_PHRASES {
+    for phrase in BANNED_WORD_PHRASES {
+        if contains_at_word_boundary(&lower, phrase, is_word_boundary_end) {
+            return Some(phrase);
+        }
+    }
+    for phrase in BANNED_PREFIX_PHRASES {
         if contains_at_word_boundary(&lower, phrase, |_| true) {
             return Some(phrase);
         }
@@ -92,6 +99,14 @@ fn banned_marker(comment: &str) -> Option<&'static str> {
         return Some("PR #<n> (pull-request reference)");
     }
     None
+}
+
+/// Whether `tail` does not begin with a word character, so a phrase match ends
+/// at a word boundary rather than inside a longer word.
+fn is_word_boundary_end(tail: &str) -> bool {
+    tail.chars()
+        .next()
+        .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
 }
 
 /// Tests whether `needle` occurs in `haystack_lower` preceded by a word boundary
@@ -196,8 +211,8 @@ mod tests {
             vec!["formerly"]
         );
         assert_eq!(
-            markers("fn f() {} // introduced by the old path\n"),
-            vec!["introduced by"]
+            markers("fn f() {} // this refactor split it\n"),
+            vec!["this refactor"]
         );
     }
 
@@ -208,7 +223,7 @@ mod tests {
 
     #[test]
     fn banned_phrases_are_lowercase_ascii() {
-        for phrase in BANNED_PHRASES {
+        for phrase in BANNED_WORD_PHRASES.iter().chain(BANNED_PREFIX_PHRASES) {
             assert!(phrase.is_ascii(), "{phrase} must be ASCII");
             assert_eq!(
                 *phrase,
@@ -216,5 +231,36 @@ mod tests {
                 "{phrase} must be lowercase"
             );
         }
+    }
+
+    #[test]
+    fn word_phrases_require_a_trailing_boundary() {
+        assert!(markers("/// the old behavioral model is fine\n").is_empty());
+        assert!(markers("/// this refactored cleanly\n").is_empty());
+        assert_eq!(
+            markers("/// the old behavior was wrong\n"),
+            vec!["old behavior"]
+        );
+    }
+
+    #[test]
+    fn prefix_phrases_still_catch_plurals() {
+        assert_eq!(
+            markers("/// lacks oracle fixtures\n"),
+            vec!["oracle fixture"]
+        );
+    }
+
+    #[test]
+    fn flags_trailing_block_comments() {
+        assert_eq!(markers("let x = 0; /* formerly 1 */\n"), vec!["formerly"]);
+    }
+
+    #[test]
+    fn flags_multiline_block_comment_interior() {
+        assert_eq!(
+            markers("/* note:\nthis used to panic\n*/\n"),
+            vec!["this used to"]
+        );
     }
 }

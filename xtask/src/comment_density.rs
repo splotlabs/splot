@@ -160,7 +160,7 @@ pub(crate) fn scan_comment_lines<'a>(
     text: &'a str,
     mut on_comment: impl FnMut(CommentKind, usize, &'a str),
 ) {
-    let mut block = BlockComment::None;
+    let mut block: Option<BlockState> = None;
     let mut string = StringState::None;
 
     for (idx, line) in text.lines().enumerate() {
@@ -170,33 +170,26 @@ pub(crate) fn scan_comment_lines<'a>(
             continue;
         }
 
+        if let Some(open) = block {
+            on_comment(open.kind, line_no, stripped);
+            let depth = scan_block_tail(stripped, open.depth);
+            block = (depth > 0).then_some(BlockState {
+                kind: open.kind,
+                depth,
+            });
+            continue;
+        }
+
         if string.is_active() {
-            if let Some(at) = line_comment_start(stripped, &mut string) {
+            if let Some((at, is_block)) = first_comment(stripped, &mut string) {
                 on_comment(
                     CommentKind::TrailingImplementation,
                     line_no,
                     &stripped[at..],
                 );
+                block = open_trailing_block(is_block, &stripped[at..]);
             }
             continue;
-        }
-
-        match block {
-            BlockComment::Doc => {
-                on_comment(CommentKind::Doc, line_no, stripped);
-                if stripped.contains("*/") {
-                    block = BlockComment::None;
-                }
-                continue;
-            }
-            BlockComment::Implementation => {
-                on_comment(CommentKind::Implementation, line_no, stripped);
-                if stripped.contains("*/") {
-                    block = BlockComment::None;
-                }
-                continue;
-            }
-            BlockComment::None => {}
         }
 
         if stripped.starts_with("// SPDX-") {
@@ -205,35 +198,82 @@ pub(crate) fn scan_comment_lines<'a>(
             on_comment(CommentKind::Doc, line_no, stripped);
         } else if stripped.starts_with("/**") || stripped.starts_with("/*!") {
             on_comment(CommentKind::Doc, line_no, stripped);
-            if !stripped.contains("*/") {
-                block = BlockComment::Doc;
-            }
+            block = open_leading_block(CommentKind::Doc, stripped);
         } else if stripped.starts_with("/*") {
             on_comment(CommentKind::Implementation, line_no, stripped);
-            if !stripped.contains("*/") {
-                block = BlockComment::Implementation;
-            }
+            block = open_leading_block(CommentKind::Implementation, stripped);
         } else if stripped.starts_with("//") {
             on_comment(CommentKind::Implementation, line_no, stripped);
-        } else if let Some(at) = line_comment_start(stripped, &mut string) {
+        } else if let Some((at, is_block)) = first_comment(stripped, &mut string) {
             on_comment(
                 CommentKind::TrailingImplementation,
                 line_no,
                 &stripped[at..],
             );
+            block = open_trailing_block(is_block, &stripped[at..]);
         }
     }
 }
 
-fn line_comment_start(line: &str, state: &mut StringState) -> Option<usize> {
+/// Opens a block-comment state from a leading `/*` / `/**` / `/*!` line, or
+/// `None` when the block closes on the same line.
+fn open_leading_block(kind: CommentKind, stripped: &str) -> Option<BlockState> {
+    let depth = scan_block_tail(&stripped[2..], 1);
+    (depth > 0).then_some(BlockState { kind, depth })
+}
+
+/// Opens a trailing block-comment state from a `code /* ...` line, or `None`
+/// when the trailing comment is a `//` line comment or a `/* ... */` that closes
+/// inline. Trailing block interiors stay out of the comment-density budget.
+fn open_trailing_block(is_block: bool, comment: &str) -> Option<BlockState> {
+    if !is_block {
+        return None;
+    }
+    let depth = scan_block_tail(&comment[2..], 1);
+    (depth > 0).then_some(BlockState {
+        kind: CommentKind::TrailingImplementation,
+        depth,
+    })
+}
+
+/// Scans a block-comment tail for nested `/*` / `*/` and returns the nesting
+/// depth after the line (`0` once the outermost block has closed). `depth` is
+/// the depth on entry (at least `1`).
+fn scan_block_tail(tail: &str, mut depth: usize) -> usize {
+    let bytes = tail.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        match (bytes[i], bytes[i + 1]) {
+            (b'/', b'*') => {
+                depth += 1;
+                i += 2;
+            }
+            (b'*', b'/') => {
+                depth -= 1;
+                i += 2;
+                if depth == 0 {
+                    return 0;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    depth
+}
+
+fn first_comment(line: &str, state: &mut StringState) -> Option<(usize, bool)> {
     let bytes = line.as_bytes();
     let mut escaped = false;
     let mut chars = line.char_indices().peekable();
     while let Some((idx, ch)) = chars.next() {
         match *state {
             StringState::None => {
-                if ch == '/' && bytes.get(idx + 1) == Some(&b'/') {
-                    return Some(idx);
+                if ch == '/' {
+                    match bytes.get(idx + 1) {
+                        Some(&b'/') => return Some((idx, false)),
+                        Some(&b'*') => return Some((idx, true)),
+                        _ => {}
+                    }
                 }
                 if let Some((end, hashes)) = raw_string_start(line, idx) {
                     *state = StringState::Raw { hashes };
@@ -352,11 +392,11 @@ fn char_literal_end(line: &str, start: usize) -> Option<usize> {
         .then_some(content_end)
 }
 
+/// An open block comment: its classification and current nesting depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BlockComment {
-    None,
-    Doc,
-    Implementation,
+struct BlockState {
+    kind: CommentKind,
+    depth: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -424,6 +464,29 @@ mod tests {
         ));
 
         assert_eq!(counts.implementation_comment_lines, 1);
+    }
+
+    #[test]
+    fn nested_block_comment_tracks_depth_until_outer_close() {
+        let counts = count_comment_lines(concat!(
+            "/* outer /* inner */\n",
+            "still in the outer block\n",
+            "*/\n",
+            "fn f() {}\n",
+        ));
+
+        assert_eq!(counts.implementation_comment_lines, 3);
+    }
+
+    #[test]
+    fn trailing_block_comment_is_not_counted() {
+        let counts = count_comment_lines(concat!(
+            "let x = 0; /* trailing one-liner */\n",
+            "let y = 0; /* trailing\n",
+            "spanning two lines */\n",
+        ));
+
+        assert_eq!(counts.implementation_comment_lines, 0);
     }
 
     #[test]

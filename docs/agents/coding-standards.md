@@ -81,7 +81,7 @@ Beyond the comment diet, two patterns are banned outright.
 zero by `cargo xtask check-ai-slop`:
 
 - process history: `formerly`, `round-<n>`, `PR #<n>`, `this refactor`,
-  `this used to`, `used to be`, `old behavior`/`old behaviour`, `introduced by`;
+  `this used to`, `used to be`, `old behavior`/`old behaviour`;
 - fixture diary: `oracle fixture`, `verified fixture`, `pinned by fixture`,
   `not yet fixtured`.
 
