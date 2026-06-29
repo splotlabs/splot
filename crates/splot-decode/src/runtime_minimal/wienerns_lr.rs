@@ -51,7 +51,9 @@ mod source_read_math;
 mod tx_records;
 
 #[cfg(test)]
-pub(super) use self::recon::{WienerNsLrReconSink, reconstruct_ac0ej3_selectable_intra_region};
+pub(super) use self::recon::{
+    FullReconLumaLeaf, WienerNsLrReconSink, reconstruct_ac0ej3_selectable_intra_region,
+};
 use self::tx_records::WienerNsLrLiveTransformRecordHandoff;
 pub(super) use self::tx_records::WienerNsLrTxSkipTransformRecord;
 

@@ -1453,6 +1453,7 @@ fn ac0ej3_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
     }
 
     let mut first_block: Option<(usize, usize)> = None;
+    let mut first_clean_block: Option<(usize, usize)> = None;
     let mut first_unwritten: Option<usize> = None;
     let mut covered_samples = 0usize;
     let mut unwired: std::collections::BTreeMap<&'static str, usize> =
@@ -1481,6 +1482,32 @@ fn ac0ej3_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
         }
         if block_mismatch > 0 && first_block.is_none() {
             first_block = Some((idx, block_mismatch));
+        }
+        if block_mismatch > 0 && first_clean_block.is_none() {
+            let neighbours_exact = |leaf: &super::wienerns_lr::FullReconLumaLeaf| {
+                let above_ok = leaf.y == 0
+                    || (0..leaf.width).all(|dx| {
+                        let x = leaf.x + dx;
+                        x >= FULL_FRAME_WIDTH
+                            || sink
+                                .reconstructed_sample(PlaneId::Y, x, leaf.y - 1)
+                                .unwrap()
+                                == oracle_at(x, leaf.y - 1)
+                    });
+                let left_ok = leaf.x == 0
+                    || (0..leaf.height).all(|dy| {
+                        let y = leaf.y + dy;
+                        y >= FULL_FRAME_HEIGHT
+                            || sink
+                                .reconstructed_sample(PlaneId::Y, leaf.x - 1, y)
+                                .unwrap()
+                                == oracle_at(leaf.x - 1, y)
+                    });
+                above_ok && left_ok
+            };
+            if neighbours_exact(leaf) {
+                first_clean_block = Some((idx, block_mismatch));
+            }
         }
     }
 
@@ -1538,6 +1565,23 @@ fn ac0ej3_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
         eprintln!(
             "FIRST decode-order UNWRITTEN (fill root) leaf: #{idx} {} {}x{} MI({},{}) \
              x[{},{}) y[{},{})",
+            leaf.mode,
+            leaf.width,
+            leaf.height,
+            leaf.mi_col,
+            leaf.mi_row,
+            leaf.x,
+            leaf.x + leaf.width,
+            leaf.y,
+            leaf.y + leaf.height,
+        );
+    }
+    if let Some((idx, n)) = first_clean_block {
+        let leaf = sink.full_recon_luma_log()[idx];
+        eprintln!(
+            "FIRST clean-neighbour predictor mismatch: #{idx} {} {}x{} MI({},{}) \
+             x[{},{}) y[{},{}) — {n} mismatched samples (neighbours bit-exact, so a real \
+             predictor bug)",
             leaf.mode,
             leaf.width,
             leaf.height,
