@@ -1594,8 +1594,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         max_read: usize,
         edge_filter_active: bool,
     ) -> Option<usize> {
-        if self.full_recon {
-            return Some(self.far_edge_above_right(mi_col, mi_row));
+        if let Some(num4) = self.full_recon_far_edge(mi_col, mi_row, FarEdgeSide::AboveRight) {
+            return Some(num4);
         }
         let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
         let above = mi_row.checked_sub(1)?;
@@ -1617,17 +1617,33 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 break;
             }
         }
+        Self::one_sided_num4_or_defer(num4_above_right, mi_w, width, max_read, edge_filter_active)
+    }
+
+    /// Shared §7.13.2.1 tail for the symmetric one-sided coverage guards: given the
+    /// counted far-edge `num4` (above-right or below-left) plus the leaf's `mi_span`
+    /// (`mi_w` / `mi_h`) and sample `dim` (`width` / `height`), DEFERS (`None`) when an
+    /// ACTIVE edge filter lacks the full `mi_span` span, or when a no-op-filter leaf's
+    /// projection `max_read` reaches past the covered extent; otherwise returns the
+    /// `num4`. Both axes share this exactly, so it lives once.
+    fn one_sided_num4_or_defer(
+        num4: usize,
+        mi_span: usize,
+        dim: usize,
+        max_read: usize,
+        edge_filter_active: bool,
+    ) -> Option<usize> {
         if edge_filter_active {
-            if num4_above_right < mi_w {
+            if num4 < mi_span {
                 return None;
             }
         } else {
-            let covered_extent = width.checked_add(num4_above_right.checked_mul(MI_SIZE)?)?;
-            if max_read >= width && max_read >= covered_extent {
+            let covered_extent = dim.checked_add(num4.checked_mul(MI_SIZE)?)?;
+            if max_read >= dim && max_read >= covered_extent {
                 return None;
             }
         }
-        Some(num4_above_right)
+        Some(num4)
     }
 
     /// zone-3 left-edge coverage guard, the symmetric mirror of
@@ -1670,8 +1686,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         max_read: usize,
         edge_filter_active: bool,
     ) -> Option<usize> {
-        if self.full_recon {
-            return Some(self.far_edge_below_left(mi_col, mi_row));
+        if let Some(num4) = self.full_recon_far_edge(mi_col, mi_row, FarEdgeSide::BelowLeft) {
+            return Some(num4);
         }
         let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
         let left = mi_col.checked_sub(1)?;
@@ -1689,17 +1705,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 break;
             }
         }
-        if edge_filter_active {
-            if num4_below_left < mi_h {
-                return None;
-            }
-        } else {
-            let covered_extent = height.checked_add(num4_below_left.checked_mul(MI_SIZE)?)?;
-            if max_read >= height && max_read >= covered_extent {
-                return None;
-            }
-        }
-        Some(num4_below_left)
+        Self::one_sided_num4_or_defer(num4_below_left, mi_h, height, max_read, edge_filter_active)
     }
 
     /// Records the AV2 §7.13.2.1 PER-TRANSFORM far-edge availability
@@ -1823,15 +1829,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 .record_y_mode(mi_col, mi_row, mi_w, mi_h, mode);
         }
         if !residual_is_reconstructable(block, fsc_mode) {
-            self.record_full_recon_leaf(
+            return self.defer_full_recon_leaf(
                 mi_col,
                 mi_row,
                 log2_width,
                 log2_height,
                 full_recon_mode_label(leaf_y_mode, directional, is_intrabc),
-                false,
             );
-            return Ok(());
         }
         if is_intrabc {
             return self.reconstruct_intrabc_residual_leaf(
@@ -1857,15 +1861,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 if !self.full_recon
                     && !self.dc_edges_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h)
                 {
-                    self.record_full_recon_leaf(
+                    return self.defer_full_recon_leaf(
                         mi_col,
                         mi_row,
                         log2_width,
                         log2_height,
                         "DC_PRED",
-                        false,
                     );
-                    return Ok(());
                 }
                 let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
                 let ibp_dc = self.ibp_dc_applies(log2_width, log2_height);
@@ -1901,15 +1903,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     IntraCardinalDirection::Horizontal => "H_PRED",
                 };
                 if mrl_index != 0 {
-                    self.record_full_recon_leaf(
+                    return self.defer_full_recon_leaf(
                         mi_col,
                         mi_row,
                         log2_width,
                         log2_height,
                         cardinal_label,
-                        false,
                     );
-                    return Ok(());
                 }
                 if !self.full_recon
                     && !self.cardinal_edge_reconstructed(
@@ -1921,15 +1921,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         mi_h,
                     )
                 {
-                    self.record_full_recon_leaf(
+                    return self.defer_full_recon_leaf(
                         mi_col,
                         mi_row,
                         log2_width,
                         log2_height,
                         cardinal_label,
-                        false,
                     );
-                    return Ok(());
                 }
                 let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
                 let result = reconstruct_general_intra_cardinal_neighbour_block_into(
@@ -1962,15 +1960,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 if !self.full_recon
                     && !self.paeth_neighbours_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h)
                 {
-                    self.record_full_recon_leaf(
+                    return self.defer_full_recon_leaf(
                         mi_col,
                         mi_row,
                         log2_width,
                         log2_height,
                         "PAETH_PRED",
-                        false,
                     );
-                    return Ok(());
                 }
                 let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
                 let result = reconstruct_general_intra_luma_paeth_neighbour_block_into(
@@ -2026,27 +2022,23 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     }
                 };
                 if !wrote {
-                    self.record_full_recon_leaf(
+                    return self.defer_full_recon_leaf(
                         mi_col,
                         mi_row,
                         log2_width,
                         log2_height,
                         label,
-                        false,
                     );
-                    return Ok(());
                 }
             }
             _ => {
-                self.record_full_recon_leaf(
+                return self.defer_full_recon_leaf(
                     mi_col,
                     mi_row,
                     log2_width,
                     log2_height,
                     full_recon_mode_label(leaf_y_mode, directional, is_intrabc),
-                    false,
                 );
-                return Ok(());
             }
         }
         let marked =
@@ -2093,8 +2085,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let width = 1usize << log2_width;
         let height = 1usize << log2_height;
         if !self.rect_within_pending_intrabc_prediction(x, y, width, height) {
-            self.record_full_recon_leaf(mi_col, mi_row, log2_width, log2_height, "INTRABC", false);
-            return Ok(());
+            return self.defer_full_recon_leaf(mi_col, mi_row, log2_width, log2_height, "INTRABC");
         }
         reconstruct_intrabc_block_residual_rect_into(
             &mut self.workspace,
@@ -2488,7 +2479,7 @@ fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool) -> bool {
 #[cfg(test)]
 mod full_recon;
 #[cfg(test)]
-use full_recon::full_recon_mode_label;
+use full_recon::{FarEdgeSide, full_recon_mode_label};
 
 #[cfg(test)]
 #[path = "recon_tests.rs"]

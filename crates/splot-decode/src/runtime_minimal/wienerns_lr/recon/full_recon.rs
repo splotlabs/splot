@@ -13,6 +13,17 @@
 
 use super::{FullReconLumaLeaf, MI_SIZE, WienerNsLrReconSink};
 use crate::Result;
+
+/// Which §7.13.2.1 far edge a directional one-sided leaf reads: zone-1 above-right or
+/// zone-3 below-left. Selects the [`WienerNsLrReconSink::full_recon_far_edge`] override
+/// component for the symmetric coverage helpers.
+#[derive(Clone, Copy)]
+pub(super) enum FarEdgeSide {
+    /// `num4AboveRight` (AVM `has_top_right`) for a zone-1 above-reading leaf.
+    AboveRight,
+    /// `num4BelowLeft` (AVM `has_bottom_left`) for a zone-3 left-reading leaf.
+    BelowLeft,
+}
 use crate::runtime_minimal::wienerns_lr::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
 use crate::tile_payload::{GeneralIntraResidualError, IntraYMode, SupportedDirectionalLumaMode};
 use splot_core::span::ByteOffset;
@@ -29,23 +40,30 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self
     }
 
-    /// The recorded per-transform §7.13.2.1 `num4AboveRight` for the luma MI unit at
-    /// `(mi_col, mi_row)` (the AVM `has_top_right` count, in 4x4 units), or `0` when no
-    /// transform has been recorded there. Full-recon-only: the directional read-or-pad
-    /// bound replacing the conservative coverage count.
-    pub(super) fn far_edge_above_right(&self, mi_col: usize, mi_row: usize) -> usize {
-        self.far_edge_avail
+    /// The full-recon directional read-or-pad `num4` for one far edge of the luma MI
+    /// unit at `(mi_col, mi_row)`, or `None` for the GATED sink (the coverage-counting
+    /// path then runs). In full-recon this is the recorded per-transform §7.13.2.1
+    /// availability (AVM `has_top_right` / `has_bottom_left`, in 4x4 units), `0` when no
+    /// transform was recorded — replacing the conservative coverage count. Shared by
+    /// the symmetric above-right / below-left coverage helpers so the override lives
+    /// once.
+    pub(super) fn full_recon_far_edge(
+        &self,
+        mi_col: usize,
+        mi_row: usize,
+        side: FarEdgeSide,
+    ) -> Option<usize> {
+        if !self.full_recon {
+            return None;
+        }
+        let (above_right, below_left) = self
+            .far_edge_avail
             .get(mi_col, mi_row)
-            .map_or(0, |(above_right, _)| above_right as usize)
-    }
-
-    /// The recorded per-transform §7.13.2.1 `num4BelowLeft` for the luma MI unit at
-    /// `(mi_col, mi_row)` (the AVM `has_bottom_left` count, in 4x4 units), or `0` when
-    /// no transform has been recorded there. Full-recon-only.
-    pub(super) fn far_edge_below_left(&self, mi_col: usize, mi_row: usize) -> usize {
-        self.far_edge_avail
-            .get(mi_col, mi_row)
-            .map_or(0, |(_, below_left)| below_left as usize)
+            .map_or((0, 0), |(ar, bl)| (ar as usize, bl as usize));
+        Some(match side {
+            FarEdgeSide::AboveRight => above_right,
+            FarEdgeSide::BelowLeft => below_left,
+        })
     }
 
     /// Appends one decode-order luma leaf to the full-reconstruction diagnostic log.
@@ -85,6 +103,24 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// FIRST decode-order block whose samples diverge from the AVM oracle.
     pub(in crate::runtime_minimal) fn full_recon_luma_log(&self) -> &[FullReconLumaLeaf] {
         &self.full_recon_luma_log
+    }
+
+    /// Records a DEFERRED (unwritten) luma leaf and returns `Ok(())` — the shared
+    /// "this dispatch arm could not reconstruct the leaf" exit. A NO-OP record for the
+    /// gated sink (so the shipped early-return behaviour is unchanged), it folds the
+    /// repeated record-then-return at every defer site into one `return self.defer…(…)`.
+    /// The `Result` return is what lets the callers tail-return it.
+    #[allow(clippy::unnecessary_wraps)]
+    pub(super) fn defer_full_recon_leaf(
+        &mut self,
+        mi_col: usize,
+        mi_row: usize,
+        log2_width: u32,
+        log2_height: u32,
+        mode: &'static str,
+    ) -> Result<()> {
+        self.record_full_recon_leaf(mi_col, mi_row, log2_width, log2_height, mode, false);
+        Ok(())
     }
 
     /// Resolves a §7.13.2 luma predictor primitive result. Returns `Ok(true)` when the

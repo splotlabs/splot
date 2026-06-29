@@ -1536,21 +1536,28 @@ fn ac0ej3_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
             eprintln!("    {mode}: {n} leaves");
         }
     }
+    let log = sink.full_recon_luma_log();
+    let describe = |idx: usize| {
+        let l = log[idx];
+        format!(
+            "#{idx} {} {}x{} MI({},{}) x[{},{}) y[{},{})",
+            l.mode,
+            l.width,
+            l.height,
+            l.mi_col,
+            l.mi_row,
+            l.x,
+            l.x + l.width,
+            l.y,
+            l.y + l.height,
+        )
+    };
     match (first_block, first_mismatch) {
         (Some((idx, block_mismatch)), Some((mx, my, got, want))) => {
-            let leaf = sink.full_recon_luma_log()[idx];
             eprintln!(
-                "FIRST decode-order mismatch: leaf #{idx} {} {}x{} MI({},{}) x[{},{}) y[{},{}) — \
-                 {block_mismatch} mismatched samples; first at ({mx},{my}) splot={got} oracle={want}",
-                leaf.mode,
-                leaf.width,
-                leaf.height,
-                leaf.mi_col,
-                leaf.mi_row,
-                leaf.x,
-                leaf.x + leaf.width,
-                leaf.y,
-                leaf.y + leaf.height,
+                "FIRST decode-order mismatch: leaf {} — {block_mismatch} mismatched samples; \
+                 first at ({mx},{my}) splot={got} oracle={want}",
+                describe(idx)
             );
         }
         _ => {
@@ -1558,36 +1565,16 @@ fn ac0ej3_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
         }
     }
     if let Some(idx) = first_unwritten {
-        let leaf = sink.full_recon_luma_log()[idx];
         eprintln!(
-            "FIRST decode-order UNWRITTEN (fill root) leaf: #{idx} {} {}x{} MI({},{}) \
-             x[{},{}) y[{},{})",
-            leaf.mode,
-            leaf.width,
-            leaf.height,
-            leaf.mi_col,
-            leaf.mi_row,
-            leaf.x,
-            leaf.x + leaf.width,
-            leaf.y,
-            leaf.y + leaf.height,
+            "FIRST decode-order UNWRITTEN (fill root) leaf: {}",
+            describe(idx)
         );
     }
     if let Some((idx, n)) = first_clean_block {
-        let leaf = sink.full_recon_luma_log()[idx];
         eprintln!(
-            "FIRST clean-neighbour predictor mismatch: #{idx} {} {}x{} MI({},{}) \
-             x[{},{}) y[{},{}) — {n} mismatched samples (neighbours bit-exact, so a real \
-             predictor bug)",
-            leaf.mode,
-            leaf.width,
-            leaf.height,
-            leaf.mi_col,
-            leaf.mi_row,
-            leaf.x,
-            leaf.x + leaf.width,
-            leaf.y,
-            leaf.y + leaf.height,
+            "FIRST clean-neighbour predictor mismatch: {} — {n} mismatched samples \
+             (neighbours bit-exact, so a real predictor bug)",
+            describe(idx)
         );
     }
     eprintln!("================================================================================");
