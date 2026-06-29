@@ -2093,6 +2093,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let width = 1usize << log2_width;
         let height = 1usize << log2_height;
         if !self.rect_within_pending_intrabc_prediction(x, y, width, height) {
+            self.record_full_recon_leaf(mi_col, mi_row, log2_width, log2_height, "INTRABC", false);
             return Ok(());
         }
         reconstruct_intrabc_block_residual_rect_into(
@@ -2117,6 +2118,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let marked =
             self.coverage[Self::coverage_index(PlaneId::Y)].mark(mi_col, mi_row, mi_w, mi_h);
         self.reconstructed_luma_4x4 = self.reconstructed_luma_4x4.saturating_add(marked);
+        self.record_full_recon_leaf(mi_col, mi_row, log2_width, log2_height, "INTRABC", true);
         Ok(())
     }
 
@@ -2208,7 +2210,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// * the block vector is INTEGER (`source` and `target` have the same shape) — a
     ///   fractional BILINEAR IntrABC predictor needs a convolution path, not a copy;
     /// * EVERY source MI unit is already reconstructed by this sink — copying an
-    ///   unreconstructed (fill) source sample is the cardinal sin.
+    ///   unreconstructed (fill) source sample is the cardinal sin. (Full-recon drops
+    ///   this conservative coverage gate: it reconstructs every block in decode order,
+    ///   so the integer-DV source — always above-left of the target — is written.)
     ///
     /// `source` / `target` are the §7.13.3.18 luma copy rectangles (sample units).
     pub(in crate::runtime_minimal) fn reconstruct_intrabc_block(
@@ -2229,7 +2233,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let src_mi_row = source.y() / MI_SIZE;
         let src_mi_w = (source.x() + source.width()).div_ceil(MI_SIZE) - src_mi_col;
         let src_mi_h = (source.y() + source.height()).div_ceil(MI_SIZE) - src_mi_row;
-        if !coverage.region_fully_covered(src_mi_col, src_mi_row, src_mi_w, src_mi_h) {
+        if !self.full_recon
+            && !coverage.region_fully_covered(src_mi_col, src_mi_row, src_mi_w, src_mi_h)
+        {
             return Ok(());
         }
         self.workspace

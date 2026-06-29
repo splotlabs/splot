@@ -1453,12 +1453,16 @@ fn ac0ej3_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
     }
 
     let mut first_block: Option<(usize, usize)> = None;
+    let mut first_unwritten: Option<usize> = None;
     let mut covered_samples = 0usize;
     let mut unwired: std::collections::BTreeMap<&'static str, usize> =
         std::collections::BTreeMap::new();
     for (idx, leaf) in sink.full_recon_luma_log().iter().enumerate() {
         if !leaf.written {
             *unwired.entry(leaf.mode).or_default() += 1;
+            if first_unwritten.is_none() {
+                first_unwritten = Some(idx);
+            }
             continue;
         }
         let mut block_mismatch = 0usize;
@@ -1528,6 +1532,22 @@ fn ac0ej3_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
         _ => {
             eprintln!("NO decode-order mismatch found among written leaves (full bit-exact!)");
         }
+    }
+    if let Some(idx) = first_unwritten {
+        let leaf = sink.full_recon_luma_log()[idx];
+        eprintln!(
+            "FIRST decode-order UNWRITTEN (fill root) leaf: #{idx} {} {}x{} MI({},{}) \
+             x[{},{}) y[{},{})",
+            leaf.mode,
+            leaf.width,
+            leaf.height,
+            leaf.mi_col,
+            leaf.mi_row,
+            leaf.x,
+            leaf.x + leaf.width,
+            leaf.y,
+            leaf.y + leaf.height,
+        );
     }
     eprintln!("================================================================================");
 }
