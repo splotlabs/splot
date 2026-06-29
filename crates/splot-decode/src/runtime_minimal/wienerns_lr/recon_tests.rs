@@ -1106,3 +1106,36 @@ fn intrabc_fractional_vector_block_is_deferred() {
     assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 0);
     assert_eq!(sink.reconstructed_counts().0, before);
 }
+
+/// The §5.20.7.29 `wide_angle_mapping` wrap branches FIRE only for non-square
+/// transforms (`h == k*w` tall / `w == k*h` wide), and are inert for square blocks.
+/// This pins the wrap behaviour VERBATIM against AVM `wide_angle_mapping`
+/// (`reconintra.h`): a tall block (`h == k*w` with `pAngle < WAIP_WH_RATIO_k_THRES`)
+/// adds 180 (zone-1 → zone-3 D203 wrap); a wide block (`w == k*h` with `pAngle >
+/// 270 - WAIP_WH_RATIO_k_THRES`) subtracts 180 (zone-3 → zone-1 D45 wrap); a square
+/// block never remaps; and an out-of-threshold non-square angle is unchanged.
+#[test]
+fn wide_angle_mapping_wraps_non_square_blocks_verbatim_vs_avm() {
+    // Square: never remapped, regardless of angle (asymmetric probe angles).
+    assert_eq!(wide_angle_mapping(16, 16, 35), 35);
+    assert_eq!(wide_angle_mapping(16, 16, 215), 215);
+
+    // Tall `h == 2*w` (BLOCK_8X16): the `h == 2*w && pAngle < WAIP_WH_RATIO_2_THRES
+    // (61)` branch adds 180. pAngle 58 wraps to 238; pAngle 81 (>= 61) does NOT.
+    assert_eq!(wide_angle_mapping(8, 16, 58), 58 + 180);
+    assert_eq!(wide_angle_mapping(8, 16, 81), 81);
+    // Tall `h == 4*w` (BLOCK_8X32): threshold WAIP_WH_RATIO_4_THRES (73). pAngle 70
+    // wraps; pAngle 76 (>= 73) does not.
+    assert_eq!(wide_angle_mapping(8, 32, 70), 70 + 180);
+    assert_eq!(wide_angle_mapping(8, 32, 76), 76);
+
+    // Wide `w == 2*h` (BLOCK_16X8): the `w == 2*h && pAngle > 270 - WAIP_WH_RATIO_2
+    // (209)` branch subtracts 180. pAngle 212 wraps to 32; pAngle 189 (<= 209) does
+    // not.
+    assert_eq!(wide_angle_mapping(16, 8, 212), 212 - 180);
+    assert_eq!(wide_angle_mapping(16, 8, 189), 189);
+    // Wide `w == 4*h` (BLOCK_32X8): threshold 270 - WAIP_WH_RATIO_4 (197). pAngle 200
+    // wraps; pAngle 194 (<= 197) does not.
+    assert_eq!(wide_angle_mapping(32, 8, 200), 200 - 180);
+    assert_eq!(wide_angle_mapping(32, 8, 194), 194);
+}

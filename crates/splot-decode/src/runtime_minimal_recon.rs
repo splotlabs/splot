@@ -1027,11 +1027,18 @@ pub(crate) struct OneSidedEdgeFilter {
     pub corner_opposite: Option<u16>,
 }
 
-/// Reconstructs one neighbour-having ZONE-1 ONE-SIDED directional block — D45
-/// (§ 7.13.2.8 step 1, pAngle 45) — over the § 7.13.2.1 above row PLUS the real
-/// reconstructed above-right read from the partially-built frame, adds the
-/// decoded residual (or writes the bare prediction for an `all_zero` block), and
-/// stores the result so later blocks read it as a neighbour.
+/// Reconstructs one neighbour-having ZONE-1 ONE-SIDED directional luma/chroma
+/// block (any `pAngle < 90`, e.g. D45 § 7.13.2.8 step 1) over the § 7.13.2.1 above
+/// row PLUS the real reconstructed above-right read from the partially-built
+/// frame, adds the decoded residual (or writes the bare prediction for an
+/// `all_zero` block), and stores the result so later blocks read it as a
+/// neighbour.
+///
+/// SQUARE OR NON-SQUARE: `log2_width`/`log2_height` are the independent § 5.20.5.3
+/// `Tx_Width`/`Tx_Height` log2s. The § 7.13.2.8 projection, the `maxBaseX == w + h
+/// - 1` edge, and the `aboveLimit == x + w + 4*num4AboveRight - 1` above-right
+/// extent all key on the real `(w, h)`; the IDIF predictor iterates `h` rows x `w`
+/// columns. A square block is the `log2_width == log2_height` case.
 ///
 /// Zone-1 (`pAngle < 90`, `needRight`) projects UP-AND-RIGHT into the above-right:
 /// `pred[i][j]` reads `AboveRow[base]` with `base = (i + 1 + j)` (D45,
@@ -1064,16 +1071,22 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
     plane_id: PlaneId,
     x: usize,
     y: usize,
-    log2_side: u32,
+    log2_width: u32,
+    log2_height: u32,
     qindex: u32,
     num4_above_right: usize,
     use_tcq: bool,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let side = 1usize << log2_side;
-    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2)?;
+    // §7.13.2.8 is non-square-aware: `w == Tx_Width`, `h == Tx_Height` are
+    // independent. The zone-1 above edge has length `w + h` (numPx) and the
+    // above-right extent `aboveLimit = x + w + 4*num4AboveRight - 1` keys on `w`.
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     // §7.13.2.1 above row + above-right; the corner is the real diagonally-above-
     // left sample. The zone-1 block is gated to a row>0, non-first-column position
     // (`haveLeft && haveAbove`), so both the above row and the corner are real. The
@@ -1084,11 +1097,12 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         plane_id,
         x,
         y,
-        side,
+        width,
+        height,
         num4_above_right,
         edge_filter,
     )?;
-    let mut prediction = vec![T::default(); side * side];
+    let mut prediction = vec![T::default(); width * height];
     // §7.13.2.8 `enableIdif = plane == 0`: luma uses the IDIF 4-tap; chroma uses
     // the `enableIdif == 0` bilinear one-sided branch. For D45 (`shift == 0`) both
     // reduce to the same sample copy `AboveRow[base]`, so the result is bit-exact
@@ -1100,31 +1114,32 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
             IntraDirectionalAngle::try_from_p_angle(p_angle)?,
             IntraDirectionalAngleIdifEdges::above(&above_idif),
             &mut prediction,
-            side,
+            width,
         )?;
     } else {
         // The chroma bilinear one-sided predictor reads the logical above edge
         // `AboveRow[0..w+h)` (length `w + h`); drop the IDIF `-2`/`-1` corner
         // prefix (slice indices 0,1) to recover that view.
-        let above_bilinear = &above_idif[2..2 + side + side];
+        let above_bilinear = &above_idif[2..2 + width + height];
         predict_intra_directional_angle_rect_into(
             bit_depth,
             block_size,
             IntraDirectionalAngle::try_from_p_angle(p_angle)?,
             IntraDirectionalAngleEdges::above(above_bilinear),
             &mut prediction,
-            side,
+            width,
         )?;
     }
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_with_prediction(
+        reconstruct_general_intra_block_rect_with_prediction(
             &block.quant,
             &prediction,
             qindex,
             plane_id,
-            log2_side,
+            log2_width,
+            log2_height,
             block.plane_tx_type,
             use_tcq,
             bit_depth,
@@ -1149,65 +1164,88 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
 /// and `AboveRow[maxBase + 1] = AboveRow[maxBase + 2] = AboveRow[maxBase]` (the
 /// two trailing samples repeat the clamped last in-row sample). `aboveLimit =
 /// Min(maxX, x + w + 4 * num4AboveRight - 1)`.
+#[allow(clippy::too_many_arguments)]
 fn build_one_sided_above_idif_edge<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
-    side: usize,
+    width: usize,
+    height: usize,
     num4_above_right: usize,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let above_row = y
         .checked_sub(1)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    // §7.13.2.1 maxX = ((MiCols * MI_SIZE) >> SubsamplingX) - 1, i.e. the plane's
+    // last reconstructed column. aboveLimit = Min(maxX, x + w + 4*num4AboveRight - 1)
+    // (AVM reconintra.c `num_top_pixels_needed = txwpx + (need_right ? txhpx : 0)`;
+    // the in-block span is `w == txwpx`, the above-right extension `4 * num4`). The
+    // corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]`, and the in-row samples
+    // walk the above row `CurrFrame[plane][y-1][Min(aboveLimit, x + i)]`.
+    let max_x = workspace
+        .plane(plane_id)?
+        .storage_size()
+        .width()
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let above_limit = width
+        .checked_add(num4_above_right.saturating_mul(4))
+        .and_then(|v| v.checked_sub(1))
+        .and_then(|v| x.checked_add(v))
+        .map_or(max_x, |limit| limit.min(max_x));
     let corner_col = x
         .checked_sub(1)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    // §7.13.2.1 maxX = ((MiCols * MI_SIZE) >> SubsamplingX) - 1, i.e. the plane's
-    // last reconstructed column. The plane storage width equals the plane frame
-    // width for these multiple-of-64 frames.
-    let plane = workspace.plane(plane_id)?;
-    let storage_width = plane.storage_size().width();
-    let max_x = storage_width
-        .checked_sub(1)
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    // aboveLimit = Min(maxX, x + w + 4 * num4AboveRight - 1).
-    let above_right_extent = side
-        .checked_add(num4_above_right.saturating_mul(4))
-        .and_then(|v| v.checked_sub(1))
-        .and_then(|v| x.checked_add(v));
-    let above_limit = above_right_extent.map_or(max_x, |limit| limit.min(max_x));
+    build_one_sided_idif_edge(
+        width,
+        height,
+        edge_filter,
+        || workspace.reconstructed_sample(plane_id, corner_col, above_row),
+        |i| {
+            let column = x.saturating_add(i).min(above_limit);
+            workspace.reconstructed_sample(plane_id, column, above_row)
+        },
+    )
+}
 
-    // maxBaseX = w + h - 1 (mrlIndex 0). The IDIF logical range is -2..=maxBaseX+2
-    // (slice length maxBaseX + 5 = w + h + 4): logical -2 (slice 0), -1 corner
-    // (slice 1), 0..=maxBaseX (slices 2..=maxBaseX+2), and the two trailing
-    // extension samples maxBaseX+1 (slice maxBaseX+3), maxBaseX+2 (slice maxBaseX+4).
-    let max_base_x = side
-        .checked_add(side)
+/// Builds the §7.13.2.8 one-sided IDIF read edge `Edge[-2 ..= w + h + 1]` (length
+/// `w + h + 4` for `MrlIndex == 0`) shared by the zone-1 above and zone-3 left
+/// builders, which differ only in the per-axis sample fetch. `corner` returns the
+/// logical `[-1]` corner; `in_edge(i)` returns the logical `[i]` in-edge sample
+/// (already §7.13.2.1 frame-edge / above-right / below-left clamped). The §7.13.2.7
+/// corner / edge filter then runs over the raw edge, followed by the §7.13.2.8 `-2`
+/// / trailing extension ([`finalize_one_sided_idif_edge`]).
+///
+/// maxBase = w + h - 1 (AVM `max_base = (bw + bh) - 1`). The slice layout: logical
+/// -2 (slice 0), -1 corner (slice 1), 0..=maxBase (slices 2..=maxBase+2), and the
+/// two trailing extension samples maxBase+1 / maxBase+2.
+fn build_one_sided_idif_edge<T: ReconSample>(
+    width: usize,
+    height: usize,
+    edge_filter: OneSidedEdgeFilter,
+    corner: impl FnOnce() -> core::result::Result<T, splot_recon::ReconError>,
+    in_edge: impl Fn(usize) -> core::result::Result<T, splot_recon::ReconError>,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    let max_base = width
+        .checked_add(height)
         .and_then(|v| v.checked_sub(1))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let edge_len = max_base_x
+    let edge_len = max_base
         .checked_add(5)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let mut above = vec![T::default(); edge_len];
-    // Logical -1 corner -> slice index 1.
-    let corner = workspace.reconstructed_sample(plane_id, corner_col, above_row)?;
-    above[1] = corner; // logical -1
-    // In-row samples logical 0..=maxBaseX -> slice indices 2..=maxBaseX+2.
-    for i in 0..=max_base_x {
-        let column = x.saturating_add(i).min(above_limit);
-        let sample = workspace.reconstructed_sample(plane_id, column, above_row)?;
+    let mut edge = vec![T::default(); edge_len];
+    edge[1] = corner()?; // logical -1
+    // In-edge samples logical 0..=maxBase -> slice indices 2..=maxBase+2.
+    for i in 0..=max_base {
         let slot = i
             .checked_add(2)
             .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-        above[slot] = sample;
+        edge[slot] = in_edge(i)?;
     }
-    // §7.13.2.7 step 1 corner / edge filter over the raw §7.13.2.1 edge (zone-1
-    // reads the above edge; `corner_opposite` is the reconstructed `LeftCol[0]`),
-    // then the §7.13.2.8 `-2` / trailing extension from the filtered edge.
-    finalize_one_sided_idif_edge(&mut above, max_base_x, edge_filter)?;
-    Ok(above)
+    finalize_one_sided_idif_edge(&mut edge, max_base, edge_filter)?;
+    Ok(edge)
 }
 
 /// Finalizes a one-sided IDIF read edge slice (zone-1 above edge or zone-3 left
@@ -1310,16 +1348,22 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     plane_id: PlaneId,
     x: usize,
     y: usize,
-    log2_side: u32,
+    log2_width: u32,
+    log2_height: u32,
     qindex: u32,
     num4_below_left: usize,
     use_tcq: bool,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let side = 1usize << log2_side;
-    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2)?;
+    // §7.13.2.8 is non-square-aware: `w == Tx_Width`, `h == Tx_Height` are
+    // independent. The zone-3 left edge has length `w + h` (numPx) and the
+    // below-left extent `leftLimit = y + h + 4*num4BelowLeft - 1` keys on `h`.
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
     // §7.13.2.1 left column + below-left; at the gated first-superblock-row,
     // non-first-column position (`haveAbove == 0 && haveLeft == 1`) the corner is
@@ -1332,11 +1376,12 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         plane_id,
         x,
         y,
-        side,
+        width,
+        height,
         num4_below_left,
         edge_filter,
     )?;
-    let mut prediction = vec![T::default(); side * side];
+    let mut prediction = vec![T::default(); width * height];
     // §7.13.2.8 `enableIdif = plane == 0`: luma uses the zone-3 IDIF 4-tap; chroma
     // uses the `enableIdif == 0` bilinear one-sided branch (the spec-mandated
     // chroma branch). Both read the same prepared left edge.
@@ -1347,31 +1392,32 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             angle,
             IntraDirectionalAngleIdifEdges::left(&left_idif),
             &mut prediction,
-            side,
+            width,
         )?;
     } else {
         // The chroma bilinear one-sided predictor reads the logical left edge
         // `LeftCol[0..w+h)` (length `w + h`); drop the IDIF `-2`/`-1` corner
         // prefix (slice indices 0,1) to recover that view.
-        let left_bilinear = &left_idif[2..2 + side + side];
+        let left_bilinear = &left_idif[2..2 + width + height];
         predict_intra_directional_angle_rect_into(
             bit_depth,
             block_size,
             angle,
             IntraDirectionalAngleEdges::left(left_bilinear),
             &mut prediction,
-            side,
+            width,
         )?;
     }
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_with_prediction(
+        reconstruct_general_intra_block_rect_with_prediction(
             &block.quant,
             &prediction,
             qindex,
             plane_id,
-            log2_side,
+            log2_width,
+            log2_height,
             block.plane_tx_type,
             use_tcq,
             bit_depth,
@@ -1395,12 +1441,14 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
 /// `LeftCol[-2] = LeftCol[-1]`) and `LeftCol[maxBase + 1] = LeftCol[maxBase + 2]
 /// = LeftCol[maxBase]` (the two trailing samples repeat the clamped last in-column
 /// sample).
+#[allow(clippy::too_many_arguments)]
 fn build_one_sided_left_idif_edge<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
-    side: usize,
+    width: usize,
+    height: usize,
     num4_below_left: usize,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
@@ -1408,52 +1456,39 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
         .checked_sub(1)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     // §7.13.2.1 maxY = ((MiRows * MI_SIZE) >> SubsamplingY) - 1, i.e. the plane's
-    // last reconstructed row. The plane storage height equals the plane frame
-    // height for these multiple-of-64 frames.
-    let plane = workspace.plane(plane_id)?;
-    let storage_height = plane.storage_size().height();
-    let max_y = storage_height
+    // last reconstructed row. leftLimit = Min(maxY, y + h + 4*num4BelowLeft - 1)
+    // (AVM reconintra.c `num_left_pixels_needed = txhpx + (need_bottom ? txwpx : 3)`;
+    // the in-block span is `h == txhpx`, the below-left extension `4 * num4`). At
+    // `haveAbove == 0 && haveLeft == 1` the corner `LeftCol[-1] = CurrFrame[y][x-1]`,
+    // and the in-column samples walk `CurrFrame[Min(leftLimit, y + i)][x-1]`.
+    let max_y = workspace
+        .plane(plane_id)?
+        .storage_size()
+        .height()
         .checked_sub(1)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    // leftLimit = Min(maxY, y + h + 4 * num4BelowLeft - 1).
-    let below_left_extent = side
+    let left_limit = height
         .checked_add(num4_below_left.saturating_mul(4))
         .and_then(|v| v.checked_sub(1))
-        .and_then(|v| y.checked_add(v));
-    let left_limit = below_left_extent.map_or(max_y, |limit| limit.min(max_y));
-
-    // maxBaseY = w + h - 1 (mrlIndex 0). The IDIF logical range is -2..=maxBaseY+2
-    // (slice length maxBaseY + 5 = w + h + 4): logical -2 (slice 0), -1 corner
-    // (slice 1), 0..=maxBaseY (slices 2..=maxBaseY+2), and the two trailing
-    // extension samples maxBaseY+1 (slice maxBaseY+3), maxBaseY+2 (slice maxBaseY+4).
-    let max_base_y = side
-        .checked_add(side)
-        .and_then(|v| v.checked_sub(1))
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let edge_len = max_base_y
-        .checked_add(5)
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let mut left = vec![T::default(); edge_len];
-    // §7.13.2.1 (haveAbove == 0 && haveLeft == 1): corner LeftCol[-1] =
-    // CurrFrame[plane][y][x-1]. Logical -1 -> slice index 1.
-    let corner = workspace.reconstructed_sample(plane_id, left_col, y)?;
-    left[1] = corner; // logical -1
-    // In-column samples logical 0..=maxBaseY -> slice indices 2..=maxBaseY+2.
-    for i in 0..=max_base_y {
-        let row = y.saturating_add(i).min(left_limit);
-        let sample = workspace.reconstructed_sample(plane_id, left_col, row)?;
-        let slot = i
-            .checked_add(2)
-            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-        left[slot] = sample;
-    }
-    // §7.13.2.7 step 1 corner / edge filter over the raw §7.13.2.1 edge (zone-3
-    // reads the left edge; `corner_opposite` is the reconstructed `AboveRow[0]`),
-    // then the §7.13.2.8 `-2` / trailing extension from the filtered edge.
-    finalize_one_sided_idif_edge(&mut left, max_base_y, edge_filter)?;
-    Ok(left)
+        .and_then(|v| y.checked_add(v))
+        .map_or(max_y, |limit| limit.min(max_y));
+    build_one_sided_idif_edge(
+        width,
+        height,
+        edge_filter,
+        || workspace.reconstructed_sample(plane_id, left_col, y),
+        |i| {
+            let row = y.saturating_add(i).min(left_limit);
+            workspace.reconstructed_sample(plane_id, left_col, row)
+        },
+    )
 }
 
+// (zone-3 reconstructor `reconstruct_general_intra_one_sided_left_neighbour_block_into`
+// is SQUARE OR NON-SQUARE: `log2_width`/`log2_height` are independent
+// `Tx_Width`/`Tx_Height` log2s; `maxBaseY == w + h - 1`, `leftLimit == y + h +
+// 4*num4BelowLeft - 1` keys on `h`, and the IDIF predictor iterates `h` rows x `w`
+// columns.)
 /// Reconstructs one neighbour-having CARDINAL directional luma block — `V_PRED`
 /// (§ 7.13.2.8 step 4, pAngle 90) or `H_PRED` (step 5, pAngle 180) — over the
 /// § 7.13.2.1 edge read from the partially-built frame's **real reconstructed

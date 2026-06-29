@@ -211,6 +211,8 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             plane_id,
             x,
             y,
+            // The chroma-follow path is gated to a square chroma transform.
+            log2_side,
             log2_side,
             qindex,
             num4_above_right,
@@ -238,6 +240,8 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 plane_id,
                 x,
                 y,
+                // The chroma-follow path is gated to a square chroma transform.
+                log2_side,
                 log2_side,
                 qindex,
                 num4_below_left,

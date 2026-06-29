@@ -254,17 +254,30 @@ const MI40_IBP_STEP: u16 = 65;
 /// reconstructed, AND (when the corner fires) the opposite-edge `[0]` sample is
 /// reconstructed — otherwise the leaf DEFERS rather than reading a fill value (so the
 /// prompt's named MI(232,28) seed DEFERS until its left neighbour MI(231,28) is
-/// reconstructed by the decode-order cascade). The `useIBP` / `MrlIndex > 0` /
-/// non-square one-sided leaves still DEFER.
-const LUMA_RECON_SAMPLE_TOTAL: usize = 743_776;
+/// reconstructed by the decode-order cascade). The `useIBP` / `MrlIndex > 0` one-sided
+/// leaves still DEFER.
+///
+/// Generalising the one-sided IDIF reconstructors + edge builders to NON-SQUARE
+/// transforms (`log2_width != log2_height`) then admitted the non-square one-sided
+/// sub-class (`743776` → `743904`, +128). §7.13.2.8 is non-square-aware: `maxBase ==
+/// w + h - 1`, the §5.20.7.29 wide-angle remap's tall-block (`h == k*w`) / wide-block
+/// (`w == k*h`) wrap branches now fire (verified VERBATIM vs AVM `wide_angle_mapping`,
+/// `reconintra.h`), the §7.13.2.1 `aboveLimit` keys on `w` (above-right capped at
+/// `tx_size_wide_unit == mi_w`), and `leftLimit` keys on `h` (below-left capped at
+/// `tx_size_high_unit == mi_h`). When the §7.13.2.18 edge filter is active it consumes
+/// the full padded `mi_w`/`mi_h` above-right/below-left span, so the coverage guard
+/// requires that whole span covered to match AVM's pad boundary (`has_top_right` /
+/// `has_bottom_left`); a no-op filter only needs the projection's `max_read` reads.
+/// The `useIBP` / `MrlIndex > 0` / zone-2 one-sided leaves still DEFER.
+const LUMA_RECON_SAMPLE_TOTAL: usize = 743_904;
 /// Sum of every reconstructed luma sample in the verified region (derived from the AVM
 /// pre-filter oracle over the sink's covered MI units, zero mismatch vs splot).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 49_975_135;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 49_983_867;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0xf09c_77ad_631e_2b56;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0x7bfe_d408_2c2a_f058;
 
 /// The bottom-edge `TX_64X64 DC_PRED` block at MI(16,256), x[64,128) y[1024,1080):
 /// its 56 in-frame rows (the 64-tall block overhangs the 1080-tall frame by 8). The
@@ -1257,6 +1270,17 @@ const ONE_SIDED_EDGEFILT_FNV1A64: u64 = 0xfae6_cc1f_cfe6_6327;
 /// `numPx` drive `av2_filter_intra_edge`, and the corner blend rewrites the shared
 /// corner from the reconstructed `LeftCol[0]`. Verified per-sample against the AVM
 /// pre-filter oracle — a wrong filter/corner/numPx changes the strong gradient.
+///
+/// The same test also pins the §7.13.2.8 NON-SQUARE zone-1 one-sided IDIF leaf at
+/// MI(220,44) (sample x[880,888) y[176,192)), an `8x16` `TX_8X16` block
+/// (`log2_width == 3 != log2_height == 4`) — the FIRST non-square one-sided leaf the
+/// sink admits after generalising the one-sided reconstructors + edge builders to
+/// independent `Tx_Width`/`Tx_Height`. The §7.13.2.8 `maxBase == w + h - 1 == 23`,
+/// the §7.13.2.1 `aboveLimit` keys on `w == 8` with the above-right capped at
+/// `tx_size_wide_unit == mi_w == 2` MI units, and the active §7.13.2.18 edge filter
+/// (`strength 1`) + §7.13.2.14 corner filter consume that full padded span. A wrong
+/// non-square geometry, a `max_read`-bounded above-right undercount (mis-pad), or a
+/// wrong wide-angle remap would shift the block's bottom-right ramp.
 #[test]
 #[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
 fn ac0ej3_one_sided_edge_filter_corner_block_reconstructs_bit_exact_against_prefilter_oracle() {
@@ -1273,4 +1297,54 @@ fn ac0ej3_one_sided_edge_filter_corner_block_reconstructs_bit_exact_against_pref
             ONE_SIDED_EDGEFILT_FNV1A64,
         ),
     );
+    // NON-SQUARE `8x16` zone-1 one-sided leaf (edge-filter + corner active).
+    assert_luma_region_oracle(
+        &sink,
+        "MI(220,44) non-square 8x16 zone-1 one-sided IDIF",
+        (880, 8),
+        (176, 16),
+        |x, y| NONSQ_ZONE1_TALL_ORACLE[y - 176][x - 880],
+        (
+            NONSQ_ZONE1_TALL_SAMPLE_COUNT,
+            NONSQ_ZONE1_TALL_SAMPLE_SUM,
+            NONSQ_ZONE1_TALL_FNV1A64,
+        ),
+    );
 }
+
+/// The AVM pre-filter oracle samples (row-major, `[y][x]`) for the §7.13.2.8
+/// NON-SQUARE zone-1 one-sided IDIF leaf at MI(220,44), x[880,888) y[176,192): an
+/// `8x16` TALL `TX_8X16` block, `pAngle 81` (zone-1 above, `dx ==
+/// Dr_Intra_Derivative[81] == 9`), `all_zero`, with the §7.13.2.18 edge filter
+/// ACTIVE (`strength 1`, `|angleAbove| == 9`, `w + h == 24`) AND the §7.13.2.14
+/// corner filter (`needAbove && needLeft && (w + h) >= 24`). The block is flat `68`
+/// except its bottom-right ramp (69→74) where the projection reads the real
+/// reconstructed above-right (capped at `tx_size_wide_unit == mi_w == 2` MI units,
+/// `n_topright == 8` px) the active edge filter pads/smooths. This ASYMMETRIC ramp
+/// is the signal that distinguishes the correct non-square `(w, h)` geometry — a
+/// `max_read`-bounded above-right undercount would mis-pad the filtered edge and
+/// shift the bottom rows. Derived offline from `/tmp/pref.yuv`.
+#[rustfmt::skip]
+const NONSQ_ZONE1_TALL_ORACLE: [[u16; 8]; 16] = [
+    [68, 68, 68, 68, 68, 68, 68, 68],
+    [68, 68, 68, 68, 68, 68, 68, 68],
+    [68, 68, 68, 68, 68, 68, 68, 68],
+    [68, 68, 68, 68, 68, 68, 68, 68],
+    [68, 68, 68, 68, 68, 68, 68, 68],
+    [68, 68, 68, 68, 68, 68, 68, 68],
+    [68, 68, 68, 68, 68, 68, 68, 68],
+    [68, 68, 68, 68, 68, 68, 68, 68],
+    [68, 68, 68, 68, 68, 68, 68, 69],
+    [68, 68, 68, 68, 68, 68, 68, 69],
+    [68, 68, 68, 68, 68, 68, 68, 70],
+    [68, 68, 68, 68, 68, 68, 68, 71],
+    [68, 68, 68, 68, 68, 68, 68, 72],
+    [68, 68, 68, 68, 68, 68, 68, 73],
+    [68, 68, 68, 68, 68, 68, 68, 73],
+    [68, 68, 68, 68, 68, 68, 69, 74],
+];
+const NONSQ_ZONE1_TALL_SAMPLE_COUNT: usize = 128;
+/// Sum of the MI(220,44) non-square `8x16` one-sided block (`[[u16; 8]; 16]`).
+const NONSQ_ZONE1_TALL_SAMPLE_SUM: u64 = 8_732;
+/// FNV-1a-64 over the block (row-major, sample-major u16 LE).
+const NONSQ_ZONE1_TALL_FNV1A64: u64 = 0xc62f_e673_751d_4e4f;

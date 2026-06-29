@@ -1463,6 +1463,8 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 PlaneId::Y,
                 luma_x,
                 luma_y,
+                // This D45 fast path is gated to a square luma transform.
+                luma_log2,
                 luma_log2,
                 qindex,
                 num4_above_right,
@@ -1491,6 +1493,8 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 PlaneId::Y,
                 luma_x,
                 luma_y,
+                // This D203 fast path is gated to a square luma transform.
+                luma_log2,
                 luma_log2,
                 qindex,
                 num4_below_left,

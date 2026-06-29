@@ -641,9 +641,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// the §5.20.7.29 `wide_angle_mapping` remap (for `is_inter == 0`). A leaf is
     /// ADMITTED only when ALL hold (otherwise DEFER):
     /// * the recovered `pAngle` is one-sided (`0 < pAngle < 90` or
-    ///   `180 < pAngle < 270`) with a §9.2 derivative entry;
-    /// * the transform is SQUARE (`log2_width == log2_height`) — the one-sided
-    ///   reconstructor is square-only;
+    ///   `180 < pAngle < 270`) with a §9.2 derivative entry — recovered AFTER the
+    ///   §5.20.7.29 wide-angle remap, whose tall-block (`h == k*w`) / wide-block
+    ///   (`w == k*h`) wrap branches FIRE for non-square transforms (inert for
+    ///   square), so a leaf can become one-sided only after the remap;
+    /// * the transform is SQUARE OR NON-SQUARE — §7.13.2.8 is non-square-aware
+    ///   (`w == Tx_Width`, `h == Tx_Height` independent; `maxBase == w + h - 1`,
+    ///   `aboveLimit` keys on `w`, `leftLimit` keys on `h`), so the IDIF predictor
+    ///   and edge builders consume the real `(w, h)`;
     /// * `mrl_index == 0` (the IDIF edge is the immediate reference line);
     /// * `useIBP == 0` (§7.13.2.7 gates the IBP secondary blend on `applyIbp &&
     ///   even angleDelta && plane 0 && one-sided pAngle && MrlIndex == 0`; the blend
@@ -675,10 +680,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         mi_h: usize,
         tile_offset: ByteOffset,
     ) -> Result<bool> {
-        // The one-sided reconstructor is SQUARE-only.
-        if log2_width != log2_height {
-            return Ok(false);
-        }
         // §5.20.5.5 multi-reference line: the IDIF edge is the immediate line only.
         if mrl_index != 0 {
             return Ok(false);
@@ -751,15 +752,32 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Ok(max_read) = angle.max_one_sided_edge_read_index(block_size) else {
             return Ok(false);
         };
-        let side = 1usize << log2_width;
+        // §7.13.2.1 in-block read spans: the zone-1 above row covers `AboveRow[0..w)`
+        // (the above-right begins at sample column `x + w`); the zone-3 left column
+        // covers `LeftCol[0..h)` (the below-left begins at sample row `y + h`). The
+        // coverage guards convert `max_read` (a logical edge index) relative to that
+        // in-block span, so the threshold is the WIDTH for zone-1 / the HEIGHT for
+        // zone-3 — NOT a single square `side`.
+        let w = w as usize;
+        let h = h as usize;
+        // The §7.13.2.7 edge filter is a no-op only when BOTH the §7.13.2.18 edge
+        // filter (`strength == 0`) AND the §7.13.2.14 corner filter (`corner_opposite
+        // == None`) do nothing. An active filter consumes the full `mi_w`/`mi_h`
+        // above-right/below-left span (padded), so the coverage guard must require it.
+        let edge_filter_active = edge_filter.strength != 0 || edge_filter.corner_opposite.is_some();
         let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
         match angle.required_edge() {
             IntraDirectionalAngleEdge::Above => {
-                // zone-1: verify the corner + above row + above-right are covered, and
-                // count the above-right 4x4 units that span up to `max_read`.
-                let Some(num4_above_right) =
-                    self.one_sided_above_coverage(mi_col, mi_row, mi_w, side, max_read)
-                else {
+                // zone-1: verify the corner + above row + above-right coverage, and
+                // count the §7.13.2.1 above-right 4x4 units (capped at `mi_w`).
+                let Some(num4_above_right) = self.one_sided_above_coverage(
+                    mi_col,
+                    mi_row,
+                    mi_w,
+                    w,
+                    max_read,
+                    edge_filter_active,
+                ) else {
                     return Ok(false);
                 };
                 reconstruct_general_intra_one_sided_neighbour_block_into(
@@ -770,6 +788,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     x,
                     y,
                     log2_width,
+                    log2_height,
                     qindex,
                     num4_above_right,
                     use_tcq,
@@ -784,9 +803,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 })?;
             }
             IntraDirectionalAngleEdge::Left => {
-                let Some(num4_below_left) =
-                    self.one_sided_left_coverage(mi_col, mi_row, mi_h, side, max_read)
-                else {
+                let Some(num4_below_left) = self.one_sided_left_coverage(
+                    mi_col,
+                    mi_row,
+                    mi_h,
+                    h,
+                    max_read,
+                    edge_filter_active,
+                ) else {
                     return Ok(false);
                 };
                 reconstruct_general_intra_one_sided_left_neighbour_block_into(
@@ -797,6 +821,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     x,
                     y,
                     log2_width,
+                    log2_height,
                     qindex,
                     num4_below_left,
                     use_tcq,
@@ -966,25 +991,33 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
     /// zone-1 above-edge coverage guard. Verifies the §7.13.2.1 corner unit
     /// `(mi_col - 1, mi_row - 1)`, the above row `mi_row - 1` over the block's
-    /// `mi_w` columns, AND the above-right units the projection walks into are all
-    /// reconstructed by this sink, then returns the §7.13.2.1 `num4AboveRight` (in
-    /// luma 4x4 units) to pass to the reconstructor. Returns `None` (defer) when any
-    /// required unit is off-grid or uncovered.
+    /// `mi_w` columns, AND every above-right sample the §7.13.2.7 edge filter /
+    /// §7.13.2.8 projection consume are all reconstructed by this sink, then returns
+    /// the §7.13.2.1 `num4AboveRight` (in luma 4x4 units) to pass to the
+    /// reconstructor. Returns `None` (defer) when any required unit is off-grid or
+    /// uncovered.
     ///
-    /// `max_read` is the furthest logical edge index the projection reads (sample
-    /// `x + max_read`); the above-right span is the units from the block's right
-    /// edge up to (and including) the one containing `x + max_read`. Because every
-    /// returned unit is COVERED (hence §5.20.2.3 `BlockDecoded`), the real
-    /// §5.20.7.25 `count_top_right_avail` is at least this count, so the §7.13.2.1
-    /// `aboveLimit` (real and ours) both reach `x + max_read` without the spec clamp
-    /// — the read stays inside the verified region and is bit-exact.
+    /// AVM `has_top_right` (`reconintra.c`) caps the available above-right at
+    /// `px_top_right = Min(consecutively-coded MI units, tx_size_wide_unit)`, where
+    /// `tx_size_wide_unit == mi_w`, then `build_intra_predictors` PADS the remaining
+    /// above-right slots (up to `txwpx + txhpx`) with the last real sample BEFORE the
+    /// §7.13.2.18 edge filter smooths them. So when the edge filter is active it
+    /// consumes the FULL `mi_w` above-right span (NOT just the `max_read` projection
+    /// reach): we then require ALL `mi_w` above-right units COVERED so our real
+    /// above-right and pad boundary match AVM's exactly (`edge_filter_active`).
+    /// When the edge filter is a no-op, only the §7.13.2.8 projection reads matter,
+    /// so the `max_read`-bounded covered span suffices.
+    ///
+    /// `width` is the block's sample WIDTH (`Tx_Width`): the in-block above row is
+    /// `AboveRow[0..width)`; `max_read < width` means the projection stays in-block.
     fn one_sided_above_coverage(
         &self,
         mi_col: usize,
         mi_row: usize,
         mi_w: usize,
-        side: usize,
+        width: usize,
         max_read: usize,
+        edge_filter_active: bool,
     ) -> Option<usize> {
         let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
         let above = mi_row.checked_sub(1)?;
@@ -997,23 +1030,33 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if !(mi_col..mi_col.saturating_add(mi_w)).all(|c| covered(c, above)) {
             return None;
         }
-        // Above-right: the units from the block's right edge (`mi_col + mi_w`) up to
-        // the MI unit containing the furthest read sample column `x + max_read`
-        // (`x = mi_col * MI_SIZE`). `max_read` beyond the in-block span `side - 1` is
-        // the above-right reach.
+        // Above-right: AVM provides up to `tx_size_wide_unit == mi_w` consecutive
+        // coded MI units (`px_top_right <= Min(txwpx, ...)`), then pads the rest.
         let right_edge_mi = mi_col.checked_add(mi_w)?;
-        if max_read < side {
-            // The projection never reads past the block's own above row.
-            return Some(0);
-        }
-        let furthest_col = mi_col.checked_mul(MI_SIZE)?.checked_add(max_read)?;
-        let furthest_unit = furthest_col / MI_SIZE;
         let mut num4_above_right = 0usize;
-        for unit in right_edge_mi..=furthest_unit {
-            if !covered(unit, above) {
+        for offset in 0..mi_w {
+            let unit = right_edge_mi.checked_add(offset)?;
+            if covered(unit, above) {
+                num4_above_right += 1;
+            } else {
+                break;
+            }
+        }
+        if edge_filter_active {
+            // The active §7.13.2.18 edge filter consumes the full `mi_w` above-right
+            // span (padded beyond the real samples); to match AVM's pad boundary we
+            // need every `mi_w` unit covered — DEFER otherwise.
+            if num4_above_right < mi_w {
                 return None;
             }
-            num4_above_right += 1;
+        } else {
+            // No-op edge filter: only the §7.13.2.8 projection reads matter. Its
+            // furthest REAL above-right read (`x + width + 4*num4 - 1`) must lie in
+            // the covered span; a deeper real read would hit an uncovered sample.
+            let covered_extent = width.checked_add(num4_above_right.checked_mul(MI_SIZE)?)?;
+            if max_read >= width && max_read >= covered_extent {
+                return None;
+            }
         }
         Some(num4_above_right)
     }
@@ -1023,16 +1066,27 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// `(mi_col - 1, mi_row)` (the top of the left column for a `haveAbove == 0`
     /// position, or the diagonal corner generally — both reduce to the left-column
     /// reconstructed sample), the left column `mi_col - 1` over the block's `mi_h`
-    /// rows, AND the below-left units the projection walks into, then returns the
-    /// §7.13.2.1 `num4BelowLeft`. Returns `None` (defer) when any required unit is
-    /// off-grid or uncovered.
+    /// rows, AND the below-left samples the §7.13.2.7 edge filter / §7.13.2.8
+    /// projection consume, then returns the §7.13.2.1 `num4BelowLeft`. Returns `None`
+    /// (defer) when any required unit is off-grid or uncovered.
+    ///
+    /// AVM `has_bottom_left` caps the below-left at `px_bottom_left = Min(coded MI
+    /// units, tx_size_high_unit == mi_h)`, then pads; the active §7.13.2.18 edge
+    /// filter consumes the full `mi_h` below-left span. So when the edge filter is
+    /// active we require ALL `mi_h` below-left units COVERED (pad boundary matches
+    /// AVM); when it is a no-op only the `max_read`-bounded projection reads matter.
+    ///
+    /// `height` is the block's sample HEIGHT (`Tx_Height`): the in-block left column
+    /// is `LeftCol[0..height)`; `max_read < height` means the projection stays
+    /// in-block.
     fn one_sided_left_coverage(
         &self,
         mi_col: usize,
         mi_row: usize,
         mi_h: usize,
-        side: usize,
+        height: usize,
         max_read: usize,
+        edge_filter_active: bool,
     ) -> Option<usize> {
         let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
         let left = mi_col.checked_sub(1)?;
@@ -1042,18 +1096,27 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if !(mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(left, r)) {
             return None;
         }
+        // Below-left: AVM provides up to `tx_size_high_unit == mi_h` consecutive
+        // coded MI units, then pads.
         let bottom_edge_mi = mi_row.checked_add(mi_h)?;
-        if max_read < side {
-            return Some(0);
-        }
-        let furthest_row = mi_row.checked_mul(MI_SIZE)?.checked_add(max_read)?;
-        let furthest_unit = furthest_row / MI_SIZE;
         let mut num4_below_left = 0usize;
-        for unit in bottom_edge_mi..=furthest_unit {
-            if !covered(left, unit) {
+        for offset in 0..mi_h {
+            let unit = bottom_edge_mi.checked_add(offset)?;
+            if covered(left, unit) {
+                num4_below_left += 1;
+            } else {
+                break;
+            }
+        }
+        if edge_filter_active {
+            if num4_below_left < mi_h {
                 return None;
             }
-            num4_below_left += 1;
+        } else {
+            let covered_extent = height.checked_add(num4_below_left.checked_mul(MI_SIZE)?)?;
+            if max_read >= height && max_read >= covered_extent {
+                return None;
+            }
         }
         Some(num4_below_left)
     }
