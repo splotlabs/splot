@@ -496,6 +496,49 @@ fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
     }
 }
 
+/// FRAME-EDGE FALLBACK GUARD — §7.13.2.1 `haveAbove == 0 && haveLeft == 1` PAETH
+/// over an 8x16 block at the TOP frame edge (`y == 0`, so there is no above row)
+/// with `x > 0` (a real, NON-FLAT reconstructed left column). The §7.13.2.1
+/// reference build synthesizes every `AboveRow[j]` and the corner `AboveRow[-1]`
+/// from `CurrFrame[plane][y][x-1] == left[0]`, so the Paeth reference is
+/// `ref_paeth(left[i], left[0], left[0])` for each row. An ASYMMETRIC left column
+/// (`left[0] != left[i]`) is load-bearing: a flat column would mask reading the
+/// wrong synthesized above/corner value. Matches AVM `av2_build_intra_predictors_high`
+/// (`above_row[i] = above_row[-1] = left_ref[0]` when `n_top_px == 0`).
+#[test]
+fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
+    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+
+    let left: Vec<u8> = (0..16).map(|i| 40 + 5 * i as u8).collect();
+    lay_left_col(&mut ws, 15, 4, &left);
+    assert_eq!(ws.reconstructed_sample(PlaneId::Y, 15, 0).unwrap(), left[0]);
+
+    reconstruct_general_intra_luma_paeth_neighbour_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        PlaneId::Y,
+        16,
+        0,
+        3, // log2_width = 3 -> 8
+        4, // log2_height = 4 -> 16
+        0,
+        false,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    for (i, &left_i) in left.iter().enumerate() {
+        let want = ref_paeth(i32::from(left_i), i32::from(left[0]), i32::from(left[0]));
+        for j in 0..8 {
+            assert_eq!(
+                ws.reconstructed_sample(PlaneId::Y, 16 + j, i).unwrap(),
+                want,
+                "top-edge PAETH sample (col {j}, row {i}) must be Paeth(left[{i}], left[0], left[0])"
+            );
+        }
+    }
+}
+
 /// RESIDUAL-ADD GUARD — §7.13.2.2 PAETH over a NON-SQUARE 8x16 block with REAL,
 /// NON-FLAT above row / left column / DISTINCT corner (so the Paeth prediction is
 /// itself NON-FLAT), carrying a NON-`all_zero` `ADST_ADST` residual with several

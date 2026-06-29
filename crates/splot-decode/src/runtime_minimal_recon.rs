@@ -864,6 +864,72 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     Ok(())
 }
 
+/// Builds the § 7.13.2.1 PAETH reference edges (`AboveRow[0..w)`, `LeftCol[0..h)`,
+/// and the shared corner `AboveRow[-1]`) for a block at `(x, y)`, applying the
+/// spec's `haveAbove` / `haveLeft` availability fallback.
+///
+/// `above_in` / `left_in` are the workspace's in-storage edges (`Some` when the
+/// block has a decoded above row / left column; `None` only at the `y == 0` /
+/// `x == 0` frame edge, which equals `haveAbove == 0` / `haveLeft == 0` for the
+/// single-tile decode-order walk). The § 7.13.2.1 reference build is:
+/// * above row — real above when `haveAbove`; else `CurrFrame[plane][y][x-1]` (the
+///   left column's top sample, `left_in[0]`) when `haveLeft`; else the
+///   `(1 << (BitDepth-1)) - 1` no-above constant;
+/// * left column — real left when `haveLeft`; else `CurrFrame[plane][y-1][x]` (the
+///   above row's first sample, `above_in[0]`) when `haveAbove`; else the
+///   `(1 << (BitDepth-1)) + 1` no-left constant;
+/// * corner `AboveRow[-1]` — `CurrFrame[plane][y-1][x-1]` when both neighbours
+///   exist; else the available edge's first sample (`above_in[0]` / `left_in[0]`);
+///   else the `1 << (BitDepth-1)` no-neighbour constant.
+///
+/// This mirrors AVM `av2_build_intra_predictors_high`
+/// (`av2/common/reconintra.c`): `above_row[i] = left_ref[0]` / `left_col[i] =
+/// above_ref[0]` for the single-missing edge and `above_row[-1] = left_ref[0]` /
+/// `above_ref[0]` for the corner. `MrlIndex == 0` (PAETH is dispatched only for the
+/// immediate edge), so `aboveMrlIndex == 0`.
+#[allow(clippy::too_many_arguments)]
+fn paeth_reference_edges<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    bit_depth: BitDepth,
+    above_in: Option<&[T]>,
+    left_in: Option<&[T]>,
+) -> core::result::Result<(Vec<T>, Vec<T>, T), GeneralIntraResidualError> {
+    let above = match (above_in, left_in) {
+        (Some(above), _) => above.iter().take(width).copied().collect::<Vec<T>>(),
+        (None, Some(left)) => {
+            vec![*left.first().unwrap_or(&noneighbour_above::<T>(bit_depth)); width]
+        }
+        (None, None) => vec![noneighbour_above::<T>(bit_depth); width],
+    };
+    let left = match (left_in, above_in) {
+        (Some(left), _) => left.iter().take(height).copied().collect::<Vec<T>>(),
+        (None, Some(above)) => {
+            vec![*above.first().unwrap_or(&noneighbour_left::<T>(bit_depth)); height]
+        }
+        (None, None) => vec![noneighbour_left::<T>(bit_depth); height],
+    };
+    if above.len() != width || left.len() != height {
+        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+    }
+    let top_left = match (above_in, left_in) {
+        (Some(_), Some(_)) => {
+            let (Some(corner_x), Some(corner_y)) = (x.checked_sub(1), y.checked_sub(1)) else {
+                return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+            };
+            workspace.reconstructed_sample(plane_id, corner_x, corner_y)?
+        }
+        (Some(above), None) => *above.first().unwrap_or(&noneighbour_corner::<T>(bit_depth)),
+        (None, Some(left)) => *left.first().unwrap_or(&noneighbour_corner::<T>(bit_depth)),
+        (None, None) => noneighbour_corner::<T>(bit_depth),
+    };
+    Ok((above, left, top_left))
+}
+
 /// Reconstructs one neighbour-having § 7.13.2.2 PAETH (`PAETH_PRED`,
 /// non-directional) luma block over the § 7.13.2.1 above row / left column / corner
 /// read from the partially-built frame's **real reconstructed neighbours**. For an
@@ -880,16 +946,12 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
 /// rectangular (independent `w` x `h`) and needs no IDIF / edge-filter / above-right
 /// / bottom-left synthesis.
 ///
-/// The caller admits ONLY the § 7.13.2.1 `haveAbove == 1 && haveLeft == 1` config,
-/// so:
-/// * `AboveRow[0..w)` is the real reconstructed above row
-///   (`intra_dc_edges_for_rect` above edge);
-/// * `LeftCol[0..h)` is the real reconstructed left column (its left edge);
-/// * the corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]` (the diagonal
-///   above-left sample, `MrlIndex == 0`, `aboveMrlIndex == 0`), read explicitly
-///   here exactly as the § 7.13.2.8 directional-middle neighbour path reads it
-///   (`intra_dc_edges_for_rect` does not return the corner). No single-sided
-///   § 7.13.2.1 fallback is taken — those PAETH configs DEFER upstream.
+/// The § 7.13.2.1 reference edges (above row, left column, shared corner) are built
+/// by [`paeth_reference_edges`], which applies the spec's full `haveAbove` /
+/// `haveLeft` fallback: when a frame-edge block has no above row (or no left column)
+/// the missing edge is synthesized from the available perpendicular edge's first
+/// sample (or the § 7.13.2.1 mid-grey constant when neither neighbour exists), so a
+/// top-row / left-column PAETH leaf reconstructs instead of deferring.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -909,20 +971,17 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
-    let (Some(above_neighbour), Some(left_neighbour)) =
-        (edges.above_samples(), edges.left_samples())
-    else {
-        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
-    };
-    let (Some(corner_x), Some(corner_y)) = (x.checked_sub(1), y.checked_sub(1)) else {
-        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
-    };
-    let top_left = workspace.reconstructed_sample(plane_id, corner_x, corner_y)?;
-    let above: Vec<T> = above_neighbour.iter().take(width).copied().collect();
-    let left: Vec<T> = left_neighbour.iter().take(height).copied().collect();
-    if above.len() != width || left.len() != height {
-        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
-    }
+    let (above, left, top_left) = paeth_reference_edges(
+        workspace,
+        plane_id,
+        x,
+        y,
+        width,
+        height,
+        bit_depth,
+        edges.above_samples(),
+        edges.left_samples(),
+    )?;
     let mut prediction = vec![T::default(); width * height];
     predict_intra_paeth_rect_into(
         bit_depth,
