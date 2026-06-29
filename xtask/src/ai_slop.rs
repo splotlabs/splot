@@ -263,4 +263,10 @@ mod tests {
             vec!["this used to"]
         );
     }
+
+    #[test]
+    fn ignores_code_and_strings_after_an_inline_block_close() {
+        assert!(markers("let _ = /* ok */ \"formerly\";\n").is_empty());
+        assert_eq!(markers("let _ = /* ok */ // formerly\n"), vec!["formerly"]);
+    }
 }

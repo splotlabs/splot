@@ -160,8 +160,8 @@ pub(crate) fn scan_comment_lines<'a>(
     text: &'a str,
     mut on_comment: impl FnMut(CommentKind, usize, &'a str),
 ) {
-    let mut block: Option<BlockState> = None;
     let mut string = StringState::None;
+    let mut block: Option<BlockState> = None;
 
     for (idx, line) in text.lines().enumerate() {
         let line_no = idx + 1;
@@ -169,77 +169,78 @@ pub(crate) fn scan_comment_lines<'a>(
         if stripped.is_empty() {
             continue;
         }
-
-        if let Some(open) = block {
-            on_comment(open.kind, line_no, stripped);
-            let depth = scan_block_tail(stripped, open.depth);
-            block = (depth > 0).then_some(BlockState {
-                kind: open.kind,
-                depth,
-            });
-            continue;
-        }
-
-        if string.is_active() {
-            if let Some((at, is_block)) = first_comment(stripped, &mut string) {
-                on_comment(
-                    CommentKind::TrailingImplementation,
-                    line_no,
-                    &stripped[at..],
-                );
-                block = open_trailing_block(is_block, &stripped[at..]);
-            }
-            continue;
-        }
-
-        if stripped.starts_with("// SPDX-") {
-            on_comment(CommentKind::Spdx, line_no, stripped);
-        } else if stripped.starts_with("///") || stripped.starts_with("//!") {
-            on_comment(CommentKind::Doc, line_no, stripped);
-        } else if stripped.starts_with("/**") || stripped.starts_with("/*!") {
-            on_comment(CommentKind::Doc, line_no, stripped);
-            block = open_leading_block(CommentKind::Doc, stripped);
-        } else if stripped.starts_with("/*") {
-            on_comment(CommentKind::Implementation, line_no, stripped);
-            block = open_leading_block(CommentKind::Implementation, stripped);
-        } else if stripped.starts_with("//") {
-            on_comment(CommentKind::Implementation, line_no, stripped);
-        } else if let Some((at, is_block)) = first_comment(stripped, &mut string) {
-            on_comment(
-                CommentKind::TrailingImplementation,
-                line_no,
-                &stripped[at..],
-            );
-            block = open_trailing_block(is_block, &stripped[at..]);
-        }
+        scan_line(stripped, line_no, &mut string, &mut block, &mut on_comment);
     }
 }
 
-/// Opens a block-comment state from a leading `/*` / `/**` / `/*!` line, or
-/// `None` when the block closes on the same line.
-fn open_leading_block(kind: CommentKind, stripped: &str) -> Option<BlockState> {
-    let depth = scan_block_tail(&stripped[2..], 1);
-    (depth > 0).then_some(BlockState { kind, depth })
-}
+/// Emits every comment span on one trimmed `line`, carrying string- and
+/// block-comment state across lines. Only comment text reaches `on_comment`;
+/// code and string literals between or after comments are skipped, so a banned
+/// phrase outside a comment cannot reach the slop gate.
+fn scan_line<'a>(
+    line: &'a str,
+    line_no: usize,
+    string: &mut StringState,
+    block: &mut Option<BlockState>,
+    on_comment: &mut impl FnMut(CommentKind, usize, &'a str),
+) {
+    let mut cursor = 0;
+    let mut leading = true;
 
-/// Opens a trailing block-comment state from a `code /* ...` line, or `None`
-/// when the trailing comment is a `//` line comment or a `/* ... */` that closes
-/// inline. Trailing block interiors stay out of the comment-density budget.
-fn open_trailing_block(is_block: bool, comment: &str) -> Option<BlockState> {
-    if !is_block {
-        return None;
+    if let Some(open) = *block {
+        let (end, depth) = consume_block(line, open.depth);
+        on_comment(open.kind, line_no, &line[..end]);
+        if depth > 0 {
+            return;
+        }
+        *block = None;
+        cursor = end;
+        leading = false;
     }
-    let depth = scan_block_tail(&comment[2..], 1);
-    (depth > 0).then_some(BlockState {
-        kind: CommentKind::TrailingImplementation,
-        depth,
-    })
+
+    while let Some((at, is_block)) = first_comment(line, cursor, string) {
+        let kind = span_kind(line, at, leading);
+        leading = false;
+        if !is_block {
+            on_comment(kind, line_no, &line[at..]);
+            return;
+        }
+        let (consumed, depth) = consume_block(&line[at + 2..], 1);
+        let end = at + 2 + consumed;
+        on_comment(kind, line_no, &line[at..end]);
+        if depth > 0 {
+            *block = Some(BlockState { kind, depth });
+            return;
+        }
+        cursor = end;
+    }
 }
 
-/// Scans a block-comment tail for nested `/*` / `*/` and returns the nesting
-/// depth after the line (`0` once the outermost block has closed). `depth` is
-/// the depth on entry (at least `1`).
-fn scan_block_tail(tail: &str, mut depth: usize) -> usize {
+/// Classifies a comment span by its opening marker, or `TrailingImplementation`
+/// when it is not the line's leading token (preceded by code or an earlier span).
+fn span_kind(line: &str, at: usize, leading: bool) -> CommentKind {
+    if !(leading && at == 0) {
+        return CommentKind::TrailingImplementation;
+    }
+    let span = &line[at..];
+    if span.starts_with("// SPDX-") {
+        CommentKind::Spdx
+    } else if span.starts_with("///")
+        || span.starts_with("//!")
+        || span.starts_with("/**")
+        || span.starts_with("/*!")
+    {
+        CommentKind::Doc
+    } else {
+        CommentKind::Implementation
+    }
+}
+
+/// Scans a block-comment body for nested `/*` / `*/`, returning the byte length
+/// consumed within `tail` (up to and including the closing `*/`, or all of
+/// `tail` when the block stays open) and the nesting depth afterwards (`0` once
+/// the outermost block closes). `depth` is the depth on entry (at least `1`).
+fn consume_block(tail: &str, mut depth: usize) -> (usize, usize) {
     let bytes = tail.as_bytes();
     let mut i = 0;
     while i + 1 < bytes.len() {
@@ -252,19 +253,22 @@ fn scan_block_tail(tail: &str, mut depth: usize) -> usize {
                 depth -= 1;
                 i += 2;
                 if depth == 0 {
-                    return 0;
+                    return (i, 0);
                 }
             }
             _ => i += 1,
         }
     }
-    depth
+    (tail.len(), depth)
 }
 
-fn first_comment(line: &str, state: &mut StringState) -> Option<(usize, bool)> {
+fn first_comment(line: &str, start: usize, state: &mut StringState) -> Option<(usize, bool)> {
     let bytes = line.as_bytes();
     let mut escaped = false;
-    let mut chars = line.char_indices().peekable();
+    let mut chars = line[start..]
+        .char_indices()
+        .map(|(rel, ch)| (start + rel, ch))
+        .peekable();
     while let Some((idx, ch)) = chars.next() {
         match *state {
             StringState::None => {
@@ -406,12 +410,6 @@ enum StringState {
     Raw { hashes: usize },
 }
 
-impl StringState {
-    fn is_active(self) -> bool {
-        !matches!(self, Self::None)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +484,12 @@ mod tests {
             "spanning two lines */\n",
         ));
 
+        assert_eq!(counts.implementation_comment_lines, 0);
+    }
+
+    #[test]
+    fn inline_block_close_then_trailing_comment_not_counted() {
+        let counts = count_comment_lines("let _ = /* a */ x; // b\n");
         assert_eq!(counts.implementation_comment_lines, 0);
     }
 
