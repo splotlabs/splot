@@ -107,22 +107,6 @@ pub(in crate::runtime_minimal) struct SelectableReconContext {
     /// branch); a `skip` IntrABC block carries no residual leaf (its copy already marked
     /// coverage).
     pub(in crate::runtime_minimal) is_intrabc: bool,
-    /// The §7.13.2.1 `num4AboveRight` for THIS partition block's luma plane (in luma
-    /// 4x4 units), derived from the live §5.20.2.3 `BlockDecoded` state at the
-    /// callback via §5.20.7.25 `count_top_right_avail` — the SAME AVM-faithful
-    /// far-edge availability the `general_intra.rs` path reads through
-    /// `luma_num4_above_right_from_block_decoded`. Threaded from the tree-walk
-    /// callback (where `BlockDecoded` is live, reflecting exactly the decode-order
-    /// availability for this block's edges BEFORE the walk marks this block) down to
-    /// the sink, so the sink can query the real AVM above-right count per block
-    /// instead of re-deriving it from its conservative coverage map. Recorded but not
-    /// yet consumed by the (coverage-gated) admission path.
-    pub(in crate::runtime_minimal) block_num4_above_right: usize,
-    /// The §7.13.2.1 `num4BelowLeft` for THIS partition block's luma plane (in luma
-    /// 4x4 units), derived from the live §5.20.2.3 `BlockDecoded` state at the
-    /// callback via §5.20.7.25 `count_bottom_left_avail`. The below-left mirror of
-    /// [`Self::block_num4_above_right`]; see its note for the threading rationale.
-    pub(in crate::runtime_minimal) block_num4_below_left: usize,
 }
 
 /// Reconstructs the verified NON-IntrABC general-intra DC subset of the ac0ej3
@@ -192,16 +176,19 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
     /// nothing here.
     pending_intrabc_predictions: Vec<PlaneRect>,
     /// Per-luma-MI-unit AV2 §7.13.2.1 far-edge availability (`num4AboveRight`,
-    /// `num4BelowLeft`, in luma 4x4 units) derived from the live §5.20.2.3
-    /// `BlockDecoded` state at the tree-walk callback (the AVM-faithful counts the
-    /// `general_intra.rs` path reads), recorded over each decoded block's MI footprint
-    /// by [`Self::record_block_decoded_far_edge`]. `far_edge_avail[mi_row * cols +
-    /// mi_col]` is `None` until a block is decoded into that unit. This is the durable
-    /// `BlockDecoded`-availability infrastructure: the sink can query the real AVM
-    /// above-right / below-left count per block (see
-    /// [`Self::block_decoded_far_edge`]) instead of re-deriving it from the
+    /// `num4BelowLeft`, in luma 4x4 units), recorded at PER-TRANSFORM granularity by
+    /// [`Self::record_block_decoded_far_edge`] — each transform's own
+    /// `tx_size_wide_unit` / `tx_size_high_unit` and `(row_off, col_off)` within the
+    /// coding block, faithful to AVM `has_top_right` / `has_bottom_left`
+    /// (`av2/common/reconintra.c`), NOT the enclosing partition block's counts.
+    /// `far_edge_avail[mi_row * cols + mi_col]` is `None` until a transform is
+    /// recorded into that unit. This is the durable AVM-availability infrastructure:
+    /// the sink can query the real AVM above-right / below-left count per transform
+    /// (see [`Self::block_decoded_far_edge`]) instead of re-deriving it from the
     /// conservative coverage map. Recorded for EVERY luma transform the walk decodes;
-    /// the (still coverage-gated) admission path does not yet consume it.
+    /// the (still coverage-gated) directional admission path does not yet consume it
+    /// (the `num4AboveRight > 0` read-or-pad is not yet proven bit-exact against the
+    /// AVM oracle, so admitting on it alone would risk a confident-wrong sample).
     far_edge_avail: FarEdgeAvailGrid,
 }
 
@@ -232,10 +219,11 @@ impl FarEdgeAvailGrid {
         mi_col >= self.cols || mi_row >= self.rows
     }
 
-    /// Records the block-level §7.13.2.1 far-edge counts over every IN-GRID MI unit of
-    /// the `mi_w` x `mi_h` block at `(mi_col, mi_row)`. The counts are the same value
-    /// for every unit of the block (they are a per-block §5.20.7.25 read), so a later
-    /// query at any covered unit returns the deciding block's availability.
+    /// Records the §7.13.2.1 far-edge counts over every IN-GRID MI unit of the
+    /// `mi_w` x `mi_h` TRANSFORM at `(mi_col, mi_row)`. The counts are the same value
+    /// for every unit of the transform (a per-transform AVM `has_top_right` /
+    /// `has_bottom_left` read), so a later query at any covered unit returns the
+    /// transform's availability.
     fn record(
         &mut self,
         mi_col: usize,
@@ -256,6 +244,9 @@ impl FarEdgeAvailGrid {
         }
     }
 
+    /// The recorded per-transform §7.13.2.1 far-edge availability
+    /// (`num4AboveRight`, `num4BelowLeft`) for the luma MI unit at `(mi_col,
+    /// mi_row)`, or `None` when no transform has been recorded there yet.
     #[cfg(test)]
     fn get(&self, mi_col: usize, mi_row: usize) -> Option<(u32, u32)> {
         if self.off_grid(mi_col, mi_row) {
@@ -1665,14 +1656,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Some(num4_below_left)
     }
 
-    /// Records the AV2 §7.13.2.1 far-edge availability (`num4AboveRight`,
-    /// `num4BelowLeft`, in luma 4x4 units) for the luma transform at `(mi_col,
-    /// mi_row)` of `mi_w` x `mi_h` MI units, as derived from the live §5.20.2.3
-    /// `BlockDecoded` state threaded through the tree-walk callback (the AVM-faithful
-    /// counts `general_intra.rs` reads through `count_top_right_avail` /
-    /// `count_bottom_left_avail`). This is the durable `BlockDecoded`-availability
-    /// infrastructure: it populates [`Self::far_edge_avail`] so any predictor path can
-    /// query the real AVM far-edge availability per block (via
+    /// Records the AV2 §7.13.2.1 PER-TRANSFORM far-edge availability
+    /// (`num4AboveRight`, `num4BelowLeft`, in luma 4x4 units) for the luma transform
+    /// at `(mi_col, mi_row)` of `tx_size`, as derived by the caller from the live
+    /// §5.20.2.3 `BlockDecoded` state and the transform's `(row_off, col_off)` within
+    /// its coding block — the AVM `has_top_right` / `has_bottom_left` counts at the
+    /// transform's own `tx_size_wide_unit` / `tx_size_high_unit`. This is the durable
+    /// AVM-availability infrastructure: it populates [`Self::far_edge_avail`] so any
+    /// predictor path can query the real per-transform far-edge availability (via
     /// [`Self::block_decoded_far_edge`]) rather than re-deriving it from the
     /// conservative coverage map. Behavior-neutral: the coverage-gated admission path
     /// does not consume the recorded data yet.

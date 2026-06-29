@@ -558,6 +558,36 @@ fn ac0ej3_reconstruction_bridge_populates_a_workspace_region() {
     }
 }
 
+/// The §7.13.2.1 PER-TRANSFORM far-edge availability the bridge records for the live
+/// ac0ej3 stream matches AVM `has_top_right` (`av2/common/reconintra.c:59`) at the
+/// transform granularity, not the partition granularity that under-counted before.
+///
+/// * MI(224,30) is the LEFT `TX_16X8` of a `BLOCK_32X8` `V_PRED` coding block. AVM
+///   `has_top_right` short-circuits on `col_off + tx_size_wide_unit < plane_bw_unit`
+///   (`0 + 4 < 8`), reading the already-decoded row above the WHOLE 32x8 block, so
+///   `num4AboveRight == 4`. The old block-granularity `count_top_right_avail(w4 ==
+///   n4w == 8)` scanned PAST the coding block into the next, undecoded block and
+///   recorded `0` (the #566 bug).
+/// * MI(216,72) is a NON-top `TX_8X32` of a `BLOCK_16X64` `V_PRED` block (`row_off >
+///   0`, `col_off == 0`). AVM `reconintra.c:110` returns `tx_size_wide_unit == 2`
+///   for the in-block above-right; the raw §5.20.7.25 scan would have returned `0`
+///   (the in-block above transform is not yet `BlockDecoded`-marked at the callback).
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn ac0ej3_per_transform_far_edge_matches_avm_has_top_right() {
+    let sink = reconstruct_ac0ej3_sink();
+    assert_eq!(
+        sink.block_decoded_far_edge(224, 30),
+        Some((4, 0)),
+        "LEFT TX_16X8 of the 32x8 V_PRED block reads its above-right within the coding block (num4AboveRight == 4, not the partition-granularity 0)"
+    );
+    assert_eq!(
+        sink.block_decoded_far_edge(216, 72),
+        Some((2, 0)),
+        "in-block non-top TX_8X32 of the 16x64 V_PRED block reads its above-right within the coding block (num4AboveRight == 2)"
+    );
+}
+
 /// Bit-exact verification against the AVM pre-filter reconstruction oracle for the
 /// frame-origin `DC_PRED` luma block. With the now-AVM-faithful first-superblock
 /// parse, including the CCSO read, the bridge reconstructs this block bit-exact: every
