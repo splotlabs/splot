@@ -889,6 +889,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 luma_log2,
                 qindex,
                 num4_above_right,
+                crate::runtime_minimal_recon::OneSidedAboveMrl::default(),
                 luma_use_tcq,
                 bit_depth,
                 crate::runtime_minimal_recon::OneSidedEdgeFilter::default(),
@@ -909,6 +910,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 qindex,
                 num4_below_left,
                 false, // have_above: first-SB-row no-above leaf, corner `CurrFrame[y][x-1]`
+                0,     // mrl_index: this committed D203 leaf uses the immediate edge
                 luma_use_tcq,
                 bit_depth,
                 crate::runtime_minimal_recon::OneSidedEdgeFilter::default(),

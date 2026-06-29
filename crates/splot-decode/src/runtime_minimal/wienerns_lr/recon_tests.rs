@@ -73,7 +73,7 @@ fn coeff_block_16x16() -> LumaCoeffBlock {
 }
 
 fn sink() -> WienerNsLrReconSink<u16> {
-    WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, true, false, false).unwrap()
+    WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, true, false, false, 16).unwrap()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -492,7 +492,7 @@ fn chroma_u_coverage_does_not_satisfy_v_edge_guard() {
 #[test]
 fn non_reconstructable_quant_defers_everything() {
     let mut sink =
-        WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, false, false, false).unwrap();
+        WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, false, false, false, 16).unwrap();
     recon_luma(
         &mut sink,
         0,
@@ -973,7 +973,7 @@ fn intrabc_fractional_dv_runs_bilinear_subpel_predictor() {
     use crate::runtime_minimal::inter::mv_scaling::derive_plane_scaling;
     use splot_recon::{ReferencePlaneView, subpel_predict_block};
 
-    let mut sink = WienerNsLrReconSink::<u16>::new(128, 128, BitDepth::Ten, true, false, false)
+    let mut sink = WienerNsLrReconSink::<u16>::new(128, 128, BitDepth::Ten, true, false, false, 16)
         .unwrap()
         .into_full_recon();
     for col in 0..4 {

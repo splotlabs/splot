@@ -40,7 +40,7 @@ use crate::runtime_minimal::inter::mv_scaling::PlaneScaling;
 #[cfg(test)]
 use crate::runtime_minimal_recon::new_general_intra_workspace;
 use crate::runtime_minimal_recon::{
-    IbpSecondary, OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters,
+    IbpSecondary, OneSidedAboveMrl, OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters,
     reconstruct_general_intra_block_rect_into,
     reconstruct_general_intra_cardinal_neighbour_block_into,
     reconstruct_general_intra_luma_paeth_neighbour_block_into,
@@ -78,10 +78,15 @@ pub(in crate::runtime_minimal) struct SelectableReconContext {
     /// §7.13.2.7 gates on `pAngle < 90 || pAngle > 180`, excluding both cardinals).
     pub(in crate::runtime_minimal) directional_luma: Option<SupportedDirectionalLumaMode>,
     /// The leaf's §5.20.5.5 `MrlIndex` (the multi-reference-line distance). `0` for
-    /// the immediate edge; `> 0` selects a farther reference line. The cardinal
-    /// recon primitive is the `MrlIndex == 0` immediate-edge copy, so the sink
-    /// DEFERS a cardinal leaf whose `mrl_index > 0` (it would otherwise copy the
-    /// adjacent samples instead of the selected MRL reference line).
+    /// the immediate edge; `> 0` selects a farther reference line. A non-zero
+    /// `MrlIndex` nudges the §7.13.2.8 `pAngle` off the raw `Mode_To_Angle` by
+    /// `Mrl_Index_To_Delta[MrlIndex]`, so a cardinal `V_PRED` / `H_PRED` leaf with
+    /// `MrlIndex != 0` becomes a genuine directional projection on the offset
+    /// reference line — routed to the §7.13.2.8 one-sided angular path, which threads
+    /// the MRL above-row / left-column offset and the widened `maxBase`. The verified
+    /// MRL admission is the ZONE-1 (above-reading) one-sided projection; the zone-3
+    /// (left-reading), zone-2 middle, and `MrlIndex`-3 exact-cardinal MRL cases still
+    /// DEFER.
     pub(in crate::runtime_minimal) mrl_index: u8,
     /// The leaf's §5.20.5.3 `AngleDeltaY` (the signed angle-delta count, range
     /// `-MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA`). The sink combines it with the raw
@@ -156,6 +161,11 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
     /// applies; otherwise the filtered edge is unmodelled and the leaf DEFERS.
     /// (ac0ej3's sequence sets this flag.)
     enable_intra_edge_filter: bool,
+    /// The §5.20.5.5 superblock side in luma 4x4 MI units (`mib_size`: 16 for a
+    /// 64x64 superblock, 32 for 128x128, 64 for 256x256). Used to derive the
+    /// §7.13.2.1 `is_sb_boundary == (mi_row % mib_size == 0)` MRL above-line rule
+    /// (`aboveMrlIndex == sbBoundary ? 0 : MrlIndex`).
+    sb_mib: usize,
     /// Per-plane MI-unit coverage (`coverage[plane]`, row-major over the plane's MI
     /// grid): luma plane 0, chroma U plane 1, chroma V plane 2. U and V are tracked
     /// SEPARATELY — a reconstructed U must not let a deferred V block pass the
@@ -584,6 +594,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         quant_reconstructable: bool,
         enable_ibp: bool,
         enable_intra_edge_filter: bool,
+        sb_mib: usize,
     ) -> Result<Self> {
         let chroma_width = luma_width.div_ceil(2);
         let chroma_height = luma_height.div_ceil(2);
@@ -593,6 +604,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             quant_reconstructable,
             enable_ibp,
             enable_intra_edge_filter,
+            sb_mib,
             coverage: [
                 PlaneCoverage::new(luma_width, luma_height),
                 PlaneCoverage::new(chroma_width, chroma_height),
@@ -760,6 +772,20 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
     }
 
+    /// AV2 §7.13.2.1 `aboveMrlIndex == sbBoundary ? 0 : MrlIndex`, where
+    /// `sbBoundary == (mi_row % mib_size == 0)` (AVM `is_sb_boundary == (mi_row %
+    /// cm->mib_size == 0 && row_off == 0)`; for a per-transform leaf `mi_row` is the
+    /// transform's absolute MI row, so the `row_off == 0` term folds in). At a
+    /// superblock-row boundary the above reference line is forced to the immediate
+    /// edge (`0`) because the lines above belong to a different superblock.
+    fn above_mrl_index(&self, mi_row: usize, mrl_index: usize) -> usize {
+        if self.sb_mib != 0 && mi_row.is_multiple_of(self.sb_mib) {
+            0
+        } else {
+            mrl_index
+        }
+    }
+
     /// Whether the §7.13.2.2 PAETH prediction a block at `(mi_col, mi_row)` of
     /// `mi_w` x `mi_h` MI units reads is reconstructable bit-exact. PAETH reads the
     /// §7.13.2.1 above row `AboveRow[0..w)`, the left column `LeftCol[0..h)`, AND the
@@ -844,18 +870,23 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         mi_h: usize,
         tile_offset: ByteOffset,
     ) -> Result<bool> {
-        if mrl_index != 0 {
-            return Ok(false);
-        }
+        let mrl = usize::from(mrl_index);
         let Some(nominal) = mode.mode_to_angle() else {
             return Ok(false);
         };
         let w = 1u32 << log2_width;
         let h = 1u32 << log2_height;
-        let mrl_delta = MRL_INDEX_TO_DELTA[usize::from(mrl_index).min(3)];
+        let mrl_delta = MRL_INDEX_TO_DELTA[mrl.min(3)];
         let nominal_angle = i32::from(nominal) + i32::from(angle_delta_y) * ANGLE_STEP + mrl_delta;
         let p_angle = wide_angle_mapping(w, h, nominal_angle);
-        if mrl_index == 0 && 90 < p_angle && p_angle < 180 {
+        if 90 < p_angle && p_angle < 180 {
+            // The §7.13.2.8 zone-2 middle band with a non-zero MrlIndex is not yet
+            // modelled (the MRL middle edge / minBase shift differs from the zone-1 /
+            // zone-3 one-sided projection); DEFER it. MrlIndex == 0 routes to the
+            // verified two-sided middle path.
+            if mrl != 0 {
+                return Ok(false);
+            }
             return self.try_reconstruct_two_sided_middle(
                 mi_col,
                 mi_row,
@@ -883,7 +914,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let not4x4 = !(w == 4 && h == 4);
         let apply_ibp = self.enable_ibp && not4x4;
         let angle_delta_even = angle_delta_y % 2 == 0;
-        let use_ibp = apply_ibp && angle_delta_even;
+        // §7.13.2.7 gates the IBP secondary blend on `MrlIndex == 0` (AVM
+        // `mrl_index == 0 && angle_delta % 2 == 0`), so a non-zero MrlIndex never
+        // applies IBP — it is a bare one-sided projection on the offset edge.
+        let use_ibp = apply_ibp && angle_delta_even && mrl == 0;
         if use_ibp {
             return self.try_reconstruct_one_sided_ibp_angular(
                 mi_col,
@@ -901,17 +935,25 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 tile_offset,
             );
         }
-        let Some(edge_filter) = self.resolve_one_sided_edge_filter(
-            mi_col,
-            mi_row,
-            w,
-            h,
-            p_angle,
-            apply_ibp,
-            tile_offset,
-        )?
-        else {
-            return Ok(false);
+        // §7.13.2.7 / AVM `if (!disable_edge_filter && mrl_index == 0)`: the edge
+        // and corner filter run ONLY at the immediate reference line. A non-zero
+        // MrlIndex reads the raw offset edge with no §7.13.2.7 filtering.
+        let edge_filter = if mrl == 0 {
+            let Some(filter) = self.resolve_one_sided_edge_filter(
+                mi_col,
+                mi_row,
+                w,
+                h,
+                p_angle,
+                apply_ibp,
+                tile_offset,
+            )?
+            else {
+                return Ok(false);
+            };
+            filter
+        } else {
+            OneSidedEdgeFilter::default()
         };
         let Ok(block_size) = IntraRectBlockSize::new(
             u8::try_from(log2_width).unwrap_or(u8::MAX),
@@ -919,7 +961,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         ) else {
             return Ok(false);
         };
-        let Ok(max_read) = angle.max_one_sided_edge_read_index(block_size) else {
+        let Ok(max_read) = angle.max_one_sided_edge_read_index(block_size, mrl) else {
             return Ok(false);
         };
         let w = w as usize;
@@ -938,6 +980,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 ) else {
                     return Ok(false);
                 };
+                // §7.13.2.1 `aboveMrlIndex == sbBoundary ? 0 : MrlIndex`: at the
+                // superblock-row boundary the above line is forced to the immediate
+                // edge; otherwise it reads `MrlIndex` lines up.
+                let above_mrl = self.above_mrl_index(mi_row, mrl);
+                let above_mrl_inputs = OneSidedAboveMrl {
+                    mrl_index: mrl,
+                    above_mrl_index: above_mrl,
+                };
                 reconstruct_general_intra_one_sided_neighbour_block_into(
                     &mut self.workspace,
                     block,
@@ -949,6 +999,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     log2_height,
                     qindex,
                     num4_above_right,
+                    above_mrl_inputs,
                     use_tcq,
                     self.bit_depth,
                     edge_filter,
@@ -961,6 +1012,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 })?;
             }
             IntraDirectionalAngleEdge::Left => {
+                // DEFER the zone-3 (left-reading) MRL projection: against the AVM
+                // oracle it is not yet bit-exact (a clean-neighbour mismatch at
+                // p_angle 181 interior leaves), so admitting it would claim an
+                // unproven predictor. The zone-1 (above-reading) MRL projection above
+                // is verified; zone-3 MRL is the next root to wire.
+                if mrl != 0 {
+                    return Ok(false);
+                }
                 let Some(num4_below_left) = self.one_sided_left_coverage(
                     mi_col,
                     mi_row,
@@ -984,6 +1043,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     qindex,
                     num4_below_left,
                     have_above,
+                    mrl,
                     use_tcq,
                     self.bit_depth,
                     edge_filter,
@@ -1056,10 +1116,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         else {
             return Ok(false);
         };
-        let Ok(primary_max_read) = angle.max_one_sided_edge_read_index(block_size) else {
+        // The IBP one-sided path is gated to `MrlIndex == 0` (the §7.13.2.7 IBP
+        // blend never fires with a non-zero MrlIndex), so the read extent uses the
+        // immediate reference line.
+        let Ok(primary_max_read) = angle.max_one_sided_edge_read_index(block_size, 0) else {
             return Ok(false);
         };
-        let Ok(secondary_max_read) = second_dir_angle.max_one_sided_edge_read_index(block_size)
+        let Ok(secondary_max_read) = second_dir_angle.max_one_sided_edge_read_index(block_size, 0)
         else {
             return Ok(false);
         };
@@ -1905,13 +1968,65 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     IntraCardinalDirection::Horizontal => "H_PRED",
                 };
                 if mrl_index != 0 {
-                    return self.defer_full_recon_leaf(
+                    // §7.13.2.8 `pAngle = Mode_To_Angle + AngleDeltaY * step +
+                    // Mrl_Index_To_Delta[MrlIndex]`: a non-zero MrlIndex nudges the
+                    // cardinal V_PRED (90) / H_PRED (180) off the cardinal (MrlIndex 1
+                    // -> 91/181, MrlIndex 2 -> 89/179), so the leaf is a genuine
+                    // directional projection on the offset reference line. Route it to
+                    // the angular path (which recovers the real pAngle and threads the
+                    // MRL edge offset); it DEFERS the still-unmodelled cases (the
+                    // zone-2 middle band and the MrlIndex-3 exact-cardinal).
+                    let routed = if let Some(mode) = leaf_y_mode {
+                        self.try_reconstruct_one_sided_angular(
+                            mi_col,
+                            mi_row,
+                            log2_width,
+                            log2_height,
+                            mode,
+                            angle_delta_y,
+                            mrl_index,
+                            block,
+                            qindex,
+                            use_tcq,
+                            mi_w,
+                            mi_h,
+                            tile_offset,
+                        )
+                    } else {
+                        Ok(false)
+                    };
+                    let wrote = match routed {
+                        Ok(true) => true,
+                        Ok(false) => false,
+                        Err(error) => {
+                            if !self.full_recon {
+                                return Err(error);
+                            }
+                            false
+                        }
+                    };
+                    if !wrote {
+                        return self.defer_full_recon_leaf(
+                            mi_col,
+                            mi_row,
+                            log2_width,
+                            log2_height,
+                            cardinal_label,
+                        );
+                    }
+                    let marked = self.coverage[Self::coverage_index(PlaneId::Y)]
+                        .mark(mi_col, mi_row, mi_w, mi_h);
+                    self.reconstructed_luma_4x4 =
+                        self.reconstructed_luma_4x4.saturating_add(marked);
+                    self.record_full_recon_leaf(
                         mi_col,
                         mi_row,
                         log2_width,
                         log2_height,
                         cardinal_label,
+                        true,
                     );
+                    return Ok(());
                 }
                 if !self.full_recon
                     && !self.cardinal_edge_reconstructed(
@@ -2349,6 +2464,11 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         .intra
         .as_ref()
         .is_some_and(|intra| intra.enable_intra_edge_filter);
+    let sb_size = sequence.partition.as_ref().map_or(
+        splot_core::headers::sequence::SuperblockSize::Block64x64,
+        |partition| partition.seq_sb_size(),
+    );
+    let sb_mib = splot_core::tile::num_4x4_blocks_wide(sb_size) as usize;
     let base_sink = WienerNsLrReconSink::<u16>::new(
         frame_size.width as usize,
         frame_size.height as usize,
@@ -2356,6 +2476,7 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         frame_quant_reconstructable(core),
         enable_ibp,
         enable_intra_edge_filter,
+        sb_mib,
     )?;
     let mut sink = if full_recon {
         base_sink.into_full_recon()

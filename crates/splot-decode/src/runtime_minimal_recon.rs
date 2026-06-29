@@ -15,6 +15,7 @@ use splot_recon::{
     filter_intra_edge_corner, predict_intra_cardinal_directional_rect_into,
     predict_intra_dc_rect_value, predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_into,
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into,
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_into, predict_intra_paeth_rect_into,
     predict_intra_smooth_rect_into,
@@ -1032,6 +1033,21 @@ pub(crate) struct OneSidedEdgeFilter {
     pub corner_opposite: Option<u16>,
 }
 
+/// The §7.13.2.1 / §5.20.5.5 MULTI-REFERENCE-LINE offsets for a ZONE-1 one-sided
+/// above-reading leaf. The §7.13.2.8 projection geometry (`maxBase = w + h - 1 +
+/// (mrlIndex << 1)`, `idx = (i + 1 + mrlIndex) * dx`) keys on the full `mrl_index`,
+/// but the above ROW is read from `CurrFrame[y - 1 - aboveMrlIndex]` where
+/// `aboveMrlIndex == sbBoundary ? 0 : mrlIndex` (AVM `above_ref_1st = ref -
+/// ref_stride * (above_mrl_idx + 1)` with `above_mrl_idx = is_sb_boundary ? 0 :
+/// mrl_index`). At the immediate edge both are `0`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct OneSidedAboveMrl {
+    /// §5.20.5.5 `MrlIndex` — the projection-geometry reference-line distance.
+    pub mrl_index: usize,
+    /// `aboveMrlIndex == sbBoundary ? 0 : MrlIndex` — the above-row read offset.
+    pub above_mrl_index: usize,
+}
+
 /// Reconstructs one neighbour-having ZONE-1 ONE-SIDED directional luma/chroma
 /// block (any `pAngle < 90`, e.g. D45 § 7.13.2.8 step 1) over the § 7.13.2.1 above
 /// row PLUS the real reconstructed above-right read from the partially-built
@@ -1080,6 +1096,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
     log2_height: u32,
     qindex: u32,
     num4_above_right: usize,
+    mrl: OneSidedAboveMrl,
     use_tcq: bool,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
@@ -1097,19 +1114,27 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         width,
         height,
         num4_above_right,
+        mrl.mrl_index,
+        mrl.above_mrl_index,
         edge_filter,
     )?;
     let mut prediction = vec![T::default(); width * height];
     if matches!(plane_id, PlaneId::Y) {
-        predict_intra_directional_angle_rect_one_sided_idif_into(
+        predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
             bit_depth,
             block_size,
             IntraDirectionalAngle::try_from_p_angle(p_angle)?,
             IntraDirectionalAngleIdifEdges::above(&above_idif),
+            mrl.mrl_index,
             &mut prediction,
             width,
         )?;
     } else {
+        // The chroma bilinear branch is `MrlIndex == 0` only (chroma MRL is not
+        // modelled here); reject a non-zero MRL rather than read the wrong edge.
+        if mrl.mrl_index != 0 {
+            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+        }
         let above_bilinear = &above_idif[2..2 + width + height];
         predict_intra_directional_angle_rect_into(
             bit_depth,
@@ -1163,10 +1188,16 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
     width: usize,
     height: usize,
     num4_above_right: usize,
+    mrl_index: usize,
+    above_mrl_index: usize,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    // §7.13.2.1 / AVM `above_ref_1st = ref - ref_stride * (aboveMrlIndex + 1)`:
+    // the above row is read `aboveMrlIndex` lines further up than the immediate
+    // edge. `aboveMrlIndex == sbBoundary ? 0 : MrlIndex` is resolved by the caller.
     let above_row = y
         .checked_sub(1)
+        .and_then(|row| row.checked_sub(above_mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let max_x = workspace
         .plane(plane_id)?
@@ -1185,6 +1216,7 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
     build_one_sided_idif_edge(
         width,
         height,
+        mrl_index,
         edge_filter,
         || workspace.reconstructed_sample(plane_id, corner_col, above_row),
         |i| {
@@ -1208,6 +1240,7 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
 fn build_one_sided_idif_edge<T: ReconSample>(
     width: usize,
     height: usize,
+    mrl_index: usize,
     edge_filter: OneSidedEdgeFilter,
     corner: impl FnOnce() -> core::result::Result<T, splot_recon::ReconError>,
     in_edge: impl Fn(usize) -> core::result::Result<T, splot_recon::ReconError>,
@@ -1215,6 +1248,7 @@ fn build_one_sided_idif_edge<T: ReconSample>(
     let max_base = width
         .checked_add(height)
         .and_then(|v| v.checked_sub(1))
+        .and_then(|v| v.checked_add(mrl_index << 1))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let edge_len = max_base
         .checked_add(5)
@@ -1332,6 +1366,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     qindex: u32,
     num4_below_left: usize,
     have_above: bool,
+    mrl_index: usize,
     use_tcq: bool,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
@@ -1351,19 +1386,26 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         height,
         num4_below_left,
         have_above,
+        mrl_index,
         edge_filter,
     )?;
     let mut prediction = vec![T::default(); width * height];
     if matches!(plane_id, PlaneId::Y) {
-        predict_intra_directional_angle_rect_one_sided_idif_into(
+        predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
             bit_depth,
             block_size,
             angle,
             IntraDirectionalAngleIdifEdges::left(&left_idif),
+            mrl_index,
             &mut prediction,
             width,
         )?;
     } else {
+        // The chroma bilinear branch is `MrlIndex == 0` only (chroma MRL is not
+        // modelled here); reject a non-zero MRL rather than read the wrong edge.
+        if mrl_index != 0 {
+            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+        }
         let left_bilinear = &left_idif[2..2 + width + height];
         predict_intra_directional_angle_rect_into(
             bit_depth,
@@ -1420,10 +1462,15 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     height: usize,
     num4_below_left: usize,
     have_above: bool,
+    mrl_index: usize,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    // §7.13.2.1 / AVM `left_ref_1st = ref - 1 - MrlIndex`: the left column is read
+    // `MrlIndex` columns further left than the immediate edge (the left axis has no
+    // sbBoundary special case — only the above axis does).
     let left_col = x
         .checked_sub(1)
+        .and_then(|col| col.checked_sub(mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let max_y = workspace
         .plane(plane_id)?
@@ -1445,6 +1492,7 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     build_one_sided_idif_edge(
         width,
         height,
+        mrl_index,
         edge_filter,
         || workspace.reconstructed_sample(plane_id, left_col, corner_row),
         |i| {
@@ -1515,6 +1563,8 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             width,
             height,
             primary_num4_far,
+            0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
+            0, // above_mrl_index
             primary_edge_filter,
         )?;
         predict_intra_directional_angle_rect_one_sided_idif_into(
@@ -1535,6 +1585,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             height,
             primary_num4_far,
             true,
+            0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
             primary_edge_filter,
         )?;
         predict_intra_directional_angle_rect_one_sided_idif_into(
@@ -1558,6 +1609,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             height,
             secondary.num4_far,
             true,
+            0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
             secondary.edge_filter,
         )?;
         predict_intra_directional_angle_rect_one_sided_idif_into(
@@ -1577,6 +1629,8 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             width,
             height,
             secondary.num4_far,
+            0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
+            0, // above_mrl_index
             secondary.edge_filter,
         )?;
         predict_intra_directional_angle_rect_one_sided_idif_into(

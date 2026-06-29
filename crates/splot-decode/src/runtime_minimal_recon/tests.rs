@@ -105,6 +105,74 @@ fn lay_left_col(ws: &mut CurrentFrameWorkspace<u8>, edge_x: usize, log2_h: u8, p
         .unwrap();
 }
 
+/// §7.13.2 ZONE-1 MULTI-REFERENCE-LINE GUARD — a D45 (`shift == 0`, the IDIF
+/// reduces to the copy `AboveRow[base]`) 4x4 zone-1 leaf at interior `(8, 8)` with
+/// `MrlIndex == 2`. The §7.13.2.1 above row is read from `CurrFrame[y - 1 -
+/// aboveMrlIndex] == CurrFrame[5]` (`aboveMrlIndex == MrlIndex == 2`, not a
+/// superblock-row boundary), NOT the immediate `CurrFrame[y - 1] == CurrFrame[7]`.
+/// Row 5 carries an ASCENDING pattern and rows 6/7 a DISTINCT constant (`200`), so a
+/// read of the adjacent line would copy `200` while the offset-line read copies the
+/// ascending values — making the reference-line offset observable. With D45 the
+/// projection `base = (i + 1 + MrlIndex) + j` so `pred[i][j] == AboveRow[i + 3 + j]`
+/// at the offset row.
+#[test]
+fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
+    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    // A 32x4 block at (0, 4) spans rows 4..8. Row 5 (the `MrlIndex == 2` offset
+    // reference line for a block at y == 8) carries an ASCENDING pattern; the other
+    // rows — including the immediate-adjacent row 7 — carry a DISTINCT constant
+    // (`200`) a faithful offset read must NOT pick up.
+    let mut block = vec![200u8; 32 * 4];
+    for c in 0..32 {
+        block[32 + c] = 10 + 4 * c as u8; // row index 1 within the block == row 5
+    }
+    ws.write_rect_block(
+        PlaneId::Y,
+        0,
+        4,
+        IntraRectBlockSize::new(5, 2).unwrap(),
+        &block,
+    )
+    .unwrap();
+    assert_eq!(ws.reconstructed_sample(PlaneId::Y, 8, 5).unwrap(), 42);
+    assert_eq!(ws.reconstructed_sample(PlaneId::Y, 8, 7).unwrap(), 200);
+
+    reconstruct_general_intra_one_sided_neighbour_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        45,
+        PlaneId::Y,
+        8,
+        8,
+        2,
+        2,
+        0,
+        2, // num4_above_right: cover the maxBase = 11 above-right reads (x up to 19)
+        OneSidedAboveMrl {
+            mrl_index: 2,
+            above_mrl_index: 2,
+        },
+        false,
+        BitDepth::Eight,
+        OneSidedEdgeFilter::default(),
+    )
+    .unwrap();
+
+    // pred[i][j] = AboveRow_row5[base] with base = (i + 1 + 2) + j = i + j + 3, where
+    // AboveRow_row5[k] = CurrFrame[5][8 + k] = 10 + 4 * (8 + k) = 42 + 4k. So
+    // pred[i][j] = 42 + 4 * (i + j + 3) = 54 + 4 * (i + j). NONE is the constant 200,
+    // proving the offset (row 5) line was read, not the adjacent (row 7) line.
+    let got: Vec<u8> = (0..4)
+        .flat_map(|r| (0..4).map(move |c| (r, c)))
+        .map(|(r, c)| ws.reconstructed_sample(PlaneId::Y, 8 + c, 8 + r).unwrap())
+        .collect();
+    let expected: Vec<u8> = (0..4)
+        .flat_map(|i| (0..4).map(move |j| 54 + 4 * (i + j) as u8))
+        .collect();
+    assert_eq!(got, expected);
+    assert!(!got.contains(&200));
+}
+
 /// §7.13.2.8 ZONE-2 TWO-SIDED GUARD — a non-canonical `pAngle == 132` middle leaf
 /// over an 8x8 block at interior (8, 8) with a REAL, NON-FLAT above row + left
 /// column + DISTINCT diagonal corner, the §7.13.2.7 edge filter a NO-OP
@@ -235,6 +303,7 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
         0,
         0,
         true,
+        0,
         false,
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
