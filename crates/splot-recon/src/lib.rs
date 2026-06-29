@@ -159,6 +159,7 @@ mod intra_dc_math;
 mod intra_dc_subsampled;
 mod intra_directional;
 mod intra_directional_angle;
+mod intra_ibp_angular;
 mod intra_ibp_dc;
 mod intra_smooth;
 mod inverse_transform;
@@ -230,6 +231,7 @@ pub use intra_directional_angle::{
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_into,
 };
+pub use intra_ibp_angular::{apply_ibp_dr_blend_rect, ibp_blend_fires};
 pub use intra_ibp_dc::apply_intra_ibp_dc_rect;
 pub use intra_smooth::{
     IntraSmoothEdge, IntraSmoothEdges, IntraSmoothMode, predict_intra_smooth_rect_into,

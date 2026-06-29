@@ -11,9 +11,9 @@ use splot_recon::{
     IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraPaethEdges, IntraRectBlockSize, IntraSmoothEdges,
     IntraSmoothMode, IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
-    ReconSample, apply_intra_edge_filter, apply_intra_ibp_dc_rect, filter_intra_edge_corner,
-    predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
-    predict_intra_directional_angle_rect_into,
+    ReconSample, apply_ibp_dr_blend_rect, apply_intra_edge_filter, apply_intra_ibp_dc_rect,
+    filter_intra_edge_corner, predict_intra_cardinal_directional_rect_into,
+    predict_intra_dc_rect_value, predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_into,
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_into, predict_intra_paeth_rect_into,
@@ -1361,6 +1361,158 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     )
 }
 
+/// The §7.13.2.7/§7.13.2.9 inputs for the IBP SECONDARY one-sided prediction: the
+/// `secondAngle` (`pAngle ± 180`), the opposite-edge §7.13.2.7 filter, and the
+/// opposite-edge far-extension count (the §5.20.7.25 below-left / above-right 4x4
+/// units the secondary projection walks into).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IbpSecondary {
+    /// `secondAngle = pAngle + 180` (zone-1 primary) / `pAngle - 180` (zone-3),
+    /// in the opposite one-sided zone — its §7.13.2.8 prediction reads the opposite
+    /// edge.
+    pub second_angle: u16,
+    /// The §7.13.2.7 step-1 corner/edge filter for the secondary (opposite) edge.
+    pub edge_filter: OneSidedEdgeFilter,
+    /// The §5.20.7.25 `num4` for the secondary edge's far extension: below-left 4x4
+    /// units (zone-1 secondary reads the left column) / above-right 4x4 units
+    /// (zone-3 secondary reads the above row).
+    pub num4_far: usize,
+}
+
+/// Reconstructs one §7.13.2.9 `useIBP` one-sided directional LUMA leaf: the
+/// §7.13.2.8 primary prediction at `p_angle` (zone-1 above / zone-3 left) blended
+/// with the secondary §7.13.2.8 prediction at `secondary.second_angle` (the
+/// OPPOSITE edge), then the decoded residual added (or the bare blended prediction
+/// for an `all_zero` block).
+///
+/// The blend weights and the `cShift`/`rShift` indexing come from the §7.13.2.9
+/// IBP weights process; [`apply_ibp_dr_blend_rect`] is a validated no-op when the
+/// leaf's mode is not in the `is_ibp_enabled` set (so the bare primary survives).
+/// The caller has already verified BOTH the primary edge (above + above-right /
+/// left + below-left) AND the secondary/opposite edge are reconstructed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    p_angle: u16,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    primary_num4_far: usize,
+    primary_edge_filter: OneSidedEdgeFilter,
+    secondary: IbpSecondary,
+    use_tcq: bool,
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let zone1 = p_angle < 90;
+    let mut primary = vec![T::default(); width * height];
+    if zone1 {
+        let above_idif = build_one_sided_above_idif_edge(
+            workspace,
+            PlaneId::Y,
+            x,
+            y,
+            width,
+            height,
+            primary_num4_far,
+            primary_edge_filter,
+        )?;
+        predict_intra_directional_angle_rect_one_sided_idif_into(
+            bit_depth,
+            block_size,
+            IntraDirectionalAngle::try_from_p_angle(p_angle)?,
+            IntraDirectionalAngleIdifEdges::above(&above_idif),
+            &mut primary,
+            width,
+        )?;
+    } else {
+        let left_idif = build_one_sided_left_idif_edge(
+            workspace,
+            PlaneId::Y,
+            x,
+            y,
+            width,
+            height,
+            primary_num4_far,
+            primary_edge_filter,
+        )?;
+        predict_intra_directional_angle_rect_one_sided_idif_into(
+            bit_depth,
+            block_size,
+            IntraDirectionalAngle::try_from_p_angle(p_angle)?,
+            IntraDirectionalAngleIdifEdges::left(&left_idif),
+            &mut primary,
+            width,
+        )?;
+    }
+    let mut second = vec![T::default(); width * height];
+    let second_angle = IntraDirectionalAngle::try_from_p_angle(secondary.second_angle)?;
+    if zone1 {
+        let left_idif = build_one_sided_left_idif_edge(
+            workspace,
+            PlaneId::Y,
+            x,
+            y,
+            width,
+            height,
+            secondary.num4_far,
+            secondary.edge_filter,
+        )?;
+        predict_intra_directional_angle_rect_one_sided_idif_into(
+            bit_depth,
+            block_size,
+            second_angle,
+            IntraDirectionalAngleIdifEdges::left(&left_idif),
+            &mut second,
+            width,
+        )?;
+    } else {
+        let above_idif = build_one_sided_above_idif_edge(
+            workspace,
+            PlaneId::Y,
+            x,
+            y,
+            width,
+            height,
+            secondary.num4_far,
+            secondary.edge_filter,
+        )?;
+        predict_intra_directional_angle_rect_one_sided_idif_into(
+            bit_depth,
+            block_size,
+            second_angle,
+            IntraDirectionalAngleIdifEdges::above(&above_idif),
+            &mut second,
+            width,
+        )?;
+    }
+    apply_ibp_dr_blend_rect(block_size, p_angle, &mut primary, &second)?;
+    let out = if block.all_zero {
+        primary
+    } else {
+        reconstruct_general_intra_block_rect_with_prediction(
+            &block.quant,
+            &primary,
+            qindex,
+            PlaneId::Y,
+            log2_width,
+            log2_height,
+            block.plane_tx_type,
+            use_tcq,
+            bit_depth,
+        )?
+    };
+    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
+    Ok(())
+}
+
 /// Reconstructs one neighbour-having CARDINAL directional luma block — `V_PRED`
 /// (§ 7.13.2.8 step 4, pAngle 90) or `H_PRED` (step 5, pAngle 180) — over the
 /// § 7.13.2.1 edge read from the partially-built frame's **real reconstructed
@@ -2006,6 +2158,96 @@ mod tests {
                     ws.reconstructed_sample(PlaneId::Y, 16 + j, 16 + i).unwrap(),
                     want,
                     "PAETH 8x16 sample (col {j}, row {i}) must be Paeth(left[{i}], above[{j}], corner)"
+                );
+            }
+        }
+    }
+
+    /// END-TO-END §7.13.2.9 useIBP — an 8x8 zone-1 `pAngle=45` `all_zero` leaf at
+    /// (8, 8) with a REAL, NON-FLAT above row, left column, and a DISTINCT corner,
+    /// the §7.13.2.7 edge filter a NO-OP (`OneSidedEdgeFilter::default()` on BOTH
+    /// edges), `num4_far == 0`. The output is the §7.13.2.8 primary (zone-1 above)
+    /// blended with the secondary (`secondAngle = 225`, zone-3 left) per §7.13.2.9.
+    /// The expected 8x8 samples are computed offline from the VERBATIM AVM IDIF
+    /// primary + secondary predictors and the §7.13.2.9 weights/blend (asymmetric
+    /// above/left values, so a primary<->secondary swap, a missing transpose, or a
+    /// wrong secondAngle changes the pinned bytes). This exercises the whole IBP
+    /// reconstructor end to end, since no ac0ej3 leaf reaches it (the decode-order
+    /// cascade is config-blocked; see the recon-region tests).
+    ///
+    /// Neighbour layout: above row `y=7` over `x[8,16)` is `100+i` (laid via an 8x4
+    /// block at `(8,4)`); left column `x=7` is `corner(7,7)=200` then `50+2i` over
+    /// `y[8,16)` (laid via a 4x16 block at `(4,0)`).
+    #[test]
+    fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
+        let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+        let above_in: Vec<u8> = (0..8).map(|i| 100 + i as u8).collect();
+        let above_block: Vec<u8> = (0..4).flat_map(|_| above_in.iter().copied()).collect();
+        ws.write_rect_block(
+            PlaneId::Y,
+            8,
+            4,
+            IntraRectBlockSize::new(3, 2).unwrap(),
+            &above_block,
+        )
+        .unwrap();
+        let corner: u8 = 200;
+        let left_in: Vec<u8> = (0..8).map(|i| 50 + 2 * i as u8).collect();
+        let mut left_block = vec![1u8; 4 * 16];
+        for col in 0..4 {
+            left_block[7 * 4 + col] = corner;
+            for (i, &v) in left_in.iter().enumerate() {
+                left_block[(8 + i) * 4 + col] = v;
+            }
+        }
+        ws.write_rect_block(
+            PlaneId::Y,
+            4,
+            0,
+            IntraRectBlockSize::new(2, 4).unwrap(),
+            &left_block,
+        )
+        .unwrap();
+
+        reconstruct_general_intra_one_sided_ibp_luma_block_into(
+            &mut ws,
+            &all_zero_luma_block(),
+            45, // pAngle (zone-1)
+            8,
+            8,
+            3, // log2_width = 3 -> 8
+            3, // log2_height = 3 -> 8
+            0, // qindex (unused for all_zero)
+            0, // primary_num4_far (above-right clamps to above_in[7])
+            OneSidedEdgeFilter::default(),
+            IbpSecondary {
+                second_angle: 225,
+                edge_filter: OneSidedEdgeFilter::default(),
+                num4_far: 0, // below-left clamps to left_in[7]
+            },
+            false,
+            BitDepth::Eight,
+        )
+        .unwrap();
+
+        #[rustfmt::skip]
+        let expected: [u8; 64] = [
+            77, 86, 91, 95, 98, 100, 102, 102,
+            70, 80, 86, 90, 94,  96,  98,  99,
+            68, 76, 83, 87, 91,  93,  94,  95,
+            67, 75, 81, 86, 88,  90,  91,  93,
+            67, 75, 80, 83, 86,  88,  89,  91,
+            68, 75, 78, 81, 83,  86,  87,  89,
+            69, 73, 77, 80, 82,  84,  86,  87,
+            69, 73, 76, 78, 80,  82,  84,  86,
+        ];
+        for row in 0..8 {
+            for col in 0..8 {
+                assert_eq!(
+                    ws.reconstructed_sample(PlaneId::Y, 8 + col, 8 + row)
+                        .unwrap(),
+                    expected[row * 8 + col],
+                    "IBP 8x8 p45 sample (col {col}, row {row}) must match the AVM blend"
                 );
             }
         }
