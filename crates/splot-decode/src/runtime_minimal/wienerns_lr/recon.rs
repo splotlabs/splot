@@ -1885,79 +1885,11 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 
 /// The single fail-closed reason the ac0ej3 selectable walk is expected to stop on
 /// after reconstructing the verified region; the test driver swallows only this one
-/// and propagates every other error. The §7.12.2.19 IntrABC ref-MV weight sort is
-/// now modelled (per-candidate §7.12.2.6 weights + the max-weight-to-slot-0 reorder,
-/// threading the real `enable_drl_reorder` flag), so the `BLOCK_64X32` MI(192,112)
-/// block — which has TWO distinct spatial candidates ((-1024,0) step 7 + (-512,0)
-/// step 8) and so triggers the §7.12.2.19 sort — admits its ref-MV stack faithfully
-/// (a no-op swap; slot 0 keeps (-1024,0), drl=1 selects (-512,0), bit-exact vs
-/// avmdec) instead of deferring, as do its downstream IntrABC siblings. The IntrABC
-/// ref-stack wall is now fully cleared and the §5.20.6.1 `LumaTxSizes` frame-array
-/// fill drops out-of-frame tx cells (no more MI(256,0) `out_of_bounds`). The
-/// §5.20.4.1 SDP chroma-reference MI-size write (chroma leaves and the chroma plane
-/// of shared luma+chroma leaves now write `MiSizes[1]` over the `ChromaMiSize`
-/// footprint, not the per-leaf luma geometry) removed the former MI(240,240) §8.3.2
-/// `do_split` left-context desync, so the over-read `bitstream_desync` is gone. The
-/// §5.20.7.27 coefficient context-line WRITE is now clamped to the frame edge
-/// (modelling AVM `av2_set_entropy_contexts`, `av2/common/blockd.c:138-166`): the
-/// skipped TX_64X64 luma transforms on the tile bottom edge — whose 16-tall left
-/// span overhangs the tile by up to one transform extent — write `culLevel` /
-/// `dcCategory` over only their on-tile rows instead of erroring on the overhang,
-/// matching AVM's SB-local entropy lines (the OR-reduce reads already clamp). The
-/// walk now advances bit-exact through those bottom-edge transforms. The §7.13.2.1
-/// edge extension (a transform overhanging the frame bottom/right edge-extends its
-/// clamped in-frame left column / above row to the block's full nominal height/width
-/// by replicating the last in-frame sample, per AVM `av2/common/reconintra.c:1191-1195`)
-/// lets the bottom-edge `TX_64X64` `DC_PRED` blocks — whose 56-row in-frame left
-/// column previously errored `IntraPredictionEdgeLengthMismatch{expected:64,actual:56}`
-/// — reconstruct their in-frame samples bit-exact. The §5.20.6.1 IntrABC
-/// `record_block` mode-info fill is now ALSO clamped to the frame edge (modelling AVM
-/// §5.20.3.2 `block_coded(r,c) { r < MiRows && c < MiCols }`,
-/// 05-syntax-structures.md:9621): the non-IntrABC `BLOCK_128X64` leaf at MI(256,0)
-/// whose nominal 16-tall MI footprint overhangs the 270-row MI grid by 2 MI rows
-/// records only its 14 in-frame MI rows instead of erroring `..._intrabc_block_bounds`,
-/// so the walk advances past that former frontier and the bottom partial-SB row's
-/// in-frame samples reconstruct (region grows `267776` → `273152`). The ref-MV bank
-/// `update_after_block` still uses the NOMINAL block size, NOT the frame-clamped
-/// extent, so the §7.12.2 `remain_hits` budget stays synced (no re-introduced EC
-/// desync).
-///
-/// The §6.19.7.12 IntrABC PREDICTION-GEOMETRY target is now ALSO clamped to the
-/// visible region (modelling the same AVM §5.20.3.2 `block_coded`): the bottom-edge
-/// `BLOCK_16X64` IntrABC block at MI(256,56) — whose nominal 64-tall target overhangs
-/// the 1080-row luma frame by 8 rows — derives an EFFECTIVE 16x56 in-frame target
-/// (and a congruent 16x56 source) instead of erroring `intrabc_target_bounds`, so the
-/// parse advances past that former frontier. The block's own RECONSTRUCTION is now
-/// ADMITTED: its real DV `(row=-1024, col=0)` (an integer -128px VERTICAL displacement
-/// whose source sits in the PREVIOUS superblock row) is validated by AVM
-/// `av2_is_dv_valid` via the §7.13.3.18 `allow_global_intrabc` wavefront branch
-/// (ac0ej3 sets `allow_global_intrabc==1`), NOT the same-superblock
-/// `av2_is_dv_in_local_range` branch. That global wavefront branch is now WIRED into
-/// [`super::intrabc_records`]'s `intrabc_dv_proven_valid` (the local same-SB subset is
-/// tried first, then the intra-only global branch), and with the upstream §5.20.5.5
-/// y-mode reorder gate fixed the admitted copy plus the regular-intra cascade it
-/// re-ignites is per-sample bit-exact vs the oracle. A source the global branch cannot
-/// prove still defers — never a confident-wrong sample. The §5.20 `reset_block_context`
-/// write is now ALSO clamped to the frame edge
-/// (modelling AVM `av2_set_entropy_contexts` / `av2_reset_entropy_context`,
-/// `av2/common/blockd.c`, and the §5.20.3.2 `block_coded` model): the bottom-edge
-/// SKIPPED transforms at MI(256,0) — whose nominal 16-tall MI footprint overhangs the
-/// 270-row MI grid by 2 — zero only their on-frame context cells instead of erroring
-/// `skipped_context_reset`, and the §5.20.6.1 PC-Wiener `LrTxSkip` FilterClass grid
-/// retention drops those same off-frame MI cells. With both clamps the reconstruction
-/// sink walk now runs the selectable transform-record handoff to COMPLETION (`Ok`) —
-/// every block in the verified subset is reconstructed in decode order and the
-/// remaining IntrABC/general-intra blocks outside the subset are conservatively
-/// deferred (their fill value, never a confident-wrong sample), so the handoff no
-/// longer raises a per-block frontier. The parse-only public-decode path advances
-/// PAST this same point and stops at the §7.20.4 `live_frame_samples_unpopulated`
-/// gate (decoded CurrFrame / CdefFrame samples are still unpopulated for
-/// storage-backed FilterClass retention). `EXPECTED_RECON_FRONTIER_REASON` stays as a
-/// DEFENSIVE net: if a regression re-introduces an earlier frontier or desync inside
-/// the handoff, the swallow matches ONLY this one reason and every other error (and
-/// the now-expected `Ok`) is handled distinctly, so the test fails loudly rather than
-/// silently passing on a partial walk. The verified region is committed regardless, so
-/// it stays bit-exact vs the oracle.
+/// and propagates every other error (including the now-expected `Ok` when the walk
+/// runs to completion), so a regression that re-introduces an earlier frontier fails
+/// the test loudly. The §7.20.4 `live_frame_samples_unpopulated` gate is where the
+/// parse-only public-decode path stops (decoded CurrFrame / CdefFrame samples are
+/// still unpopulated for storage-backed FilterClass retention).
 #[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
     "unsupported_wienerns_lr_selectable_live_frame_samples_unpopulated";

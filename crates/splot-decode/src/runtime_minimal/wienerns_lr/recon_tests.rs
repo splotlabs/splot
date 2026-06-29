@@ -352,10 +352,8 @@ fn non_square_multi_coeff_dc_leaf_is_reconstructed() {
 /// Reconstructs `base` (its asymmetric `eob > 1` coefficients) twice — once as
 /// `DCT_DCT` and once as `ADST_ADST` — over the no-neighbour frame origin, and
 /// asserts both fully reconstruct (`expected_count` 4x4 units) AND the two
-/// reconstructions DIFFER somewhere over the `width x height` block. Under the
-/// former hardcoded `DCT_DCT` argument BOTH types reconstructed identically (as
-/// `DCT_DCT`), so a per-sample difference proves the retained `plane_tx_type`
-/// now drives the §7.15.4 inverse — the latent confident-wrong is removed.
+/// reconstructions DIFFER somewhere over the `width x height` block, proving the
+/// retained `plane_tx_type` drives the §7.15.4 inverse.
 fn assert_tx_type_threads(
     base: &LumaCoeffBlock,
     tx_size: usize,

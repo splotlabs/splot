@@ -554,10 +554,8 @@ struct FilmGrainModelView {
 ///
 /// [`InspectRecord::new`] builds this once per OBU; the prefix, core, and tile-group
 /// structure views read its cached results. Resolving the active sequence and
-/// multi-frame header from the single cached prefix replaces the per-view `BitReader`
-/// re-parses that previously let the JSON views drift independently — the activation
-/// prefix was re-parsed up to five times and the frame-header core twice per OBU (once
-/// in [`frame_header_core_view`], again in [`tile_group_structure_view`]).
+/// multi-frame header from the single cached prefix keeps every JSON view on one parse
+/// path so they cannot drift independently.
 ///
 /// Every field is `None` for an OBU that carries no parseable first-header prefix; the
 /// prefix only resolves for the first tile group of the tile-group family and for the
@@ -623,7 +621,7 @@ fn parse_inspect_prefix(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderPrefix> {
 /// reader is why these parse together: the structure read starts exactly where
 /// [`parse_frame_header_core`] stops. The active sequence / multi-frame header are passed
 /// in already resolved (see [`FrameInspectCache::new`]); `None` inputs leave the core at
-/// its activation-only stop, matching the former per-view behavior.
+/// its activation-only stop.
 fn parse_inspect_core_and_structure(
     obu: &ObuEnvelope<'_>,
     active_sequence: Option<&SequenceHeader>,

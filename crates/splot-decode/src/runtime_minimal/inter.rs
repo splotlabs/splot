@@ -1003,17 +1003,15 @@ mod block;
 mod compound;
 // AV2 § 5 / § 7.7 cross-frame reference-state resolution (CDF-load decision incl. the
 // PRIMARY_REF_CHOOSE resolution, and the order-hint wrap check) used by the
-// verified-subset rejects below; split out by `DECODE-INTER-MULTIREF-RUNTIME` follow-up.
+// verified-subset rejects below (`DECODE-INTER-MULTIREF-RUNTIME`).
 mod cross_frame;
 mod find_mv_stack;
 mod mc;
 pub(in crate::runtime_minimal) mod mv_scaling;
 pub(super) mod read_mv;
-// AV2 § 5.20.7.12 `read_single_ref` entropy element, WIRED by
-// `DECODE-INTER-MULTIREF-RUNTIME`: the block decode reads `single_ref` when § 7.7
-// yields `NumTotalRefs == 2` (the § 8.3.2 ctx comes from
-// `find_mv_stack::BlockNeighbourContext::single_ref_ctx`). Still proven bit-exact by a
-// `SymbolEncoder` round-trip (`DECODE-INTER-SINGLE-REF-SYMBOL`).
+// AV2 § 5.20.7.12 `read_single_ref` entropy element (`DECODE-INTER-MULTIREF-RUNTIME`):
+// the block decode reads `single_ref` when § 7.7 yields `NumTotalRefs == 2` (the
+// § 8.3.2 ctx comes from `find_mv_stack::BlockNeighbourContext::single_ref_ctx`).
 mod single_ref;
 
 use block::decode_inter_blocks;

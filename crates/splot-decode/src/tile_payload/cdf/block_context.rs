@@ -827,10 +827,7 @@ fn get_intra_y_mode_set(
 /// (`block_n4w * block_n4h`) of `1`, `2`, and `2`. Every other `MiSize`
 /// (including `BLOCK_4X16` / `BLOCK_16X4`, which have a single-MI dimension but
 /// are NOT `< BLOCK_8X8`) has area `> 2` and runs the directional-neighbour
-/// reorder. The earlier `block_n4w >= 2 && block_n4h >= 2` gate wrongly skipped
-/// the reorder for `BLOCK_4X16` / `BLOCK_16X4` (and the wider 4x32/32x4/4x64/64x4
-/// shapes), deriving the wrong `YMode` for those leaves when a left/above
-/// directional joint-mode neighbour pre-selects modes ahead of `Default_Mode_List_Y`.
+/// reorder.
 fn mi_size_at_least_block_8x8(block_n4w: usize, block_n4h: usize) -> bool {
     block_n4w.checked_mul(block_n4h).is_none_or(|area| area > 2)
 }

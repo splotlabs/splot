@@ -105,26 +105,13 @@ pub(super) fn frame_header_core_checks(
     let max_width = active_sequence.general.max_frame_width.get();
     let max_height = active_sequence.general.max_frame_height.get();
 
-    // AV2 § 6.17.2: after load_sequence_header(), for every `cur_mfh_id > 0` frame it is a
-    // requirement of bitstream conformance that the *referenced multi-frame header's stored*
-    // dimensions satisfy mfh_frame_width_minus_1[ cur_mfh_id ] <= max_frame_width_minus_1 and
-    // mfh_frame_height_minus_1[ cur_mfh_id ] <= max_frame_height_minus_1
-    // (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2, mirror :4348-4349).
-    // This bounds the MFH's *stored* dims and is INDEPENDENT of frame_size_override_flag and
-    // of how far the referencing frame header parses: it is decidable from the resolved MFH
-    // record and the active sequence maxima alone, at the load_sequence_header point. So it
-    // runs here, BEFORE (and independent of) the `parse_frame_core` outcome below — a
-    // truncated / malformed frame-header remainder (`core == None`) must not silence this
-    // decidable diagnostic. A frame overriding to in-range dims (so `core.frame_size` is
-    // conformant) still must not reference an out-of-range MFH. The predicate (stored MFH
-    // dims) differs from the §6.17.4.1 derived-FrameWidth check below, so it has its own
-    // rule id. An MFH with no `mfh_frame_size` payload infers its default dims to the
-    // sequence maxima (§5.18.2, mirror :4101) and is trivially in range, so the omitted-size
-    // case is silent here. Anchored at `obu` (the referencing frame's OBU) and emitted once
-    // per referencing frame header. On this resolution path `record.mfh_id == cur_mfh_id`
-    // (`resolve_frame_mfh_record` looks the record up by the prefix's `cur_mfh_id`), so the
-    // message's id matches the referencing frame's `cur_mfh_id`. An unresolvable MFH leaves
-    // `mfh_record == None` (the shared guard) and stays silent.
+    // AV2 § 6.17.2 (mirror :4348-4349): a `cur_mfh_id > 0` frame's referenced MFH stored dims
+    // must satisfy mfh_frame_width/height_minus_1 <= max_frame_width/height_minus_1. Decidable
+    // from the resolved MFH record and the sequence maxima alone, so it runs before
+    // `parse_frame_core` — a truncated frame header must not silence it. Distinct rule id from
+    // the §6.17.4.1 derived-FrameWidth check below (different predicate). An MFH with no
+    // `mfh_frame_size` defaults to the sequence maxima (§5.18.2 :4101) and is trivially in
+    // range; an unresolvable MFH (`mfh_record == None`) stays silent.
     let mfh_stored_dims = if let Some(record) = mfh_record
         && let Some(mfh_size) = record.mfh_frame_size
     {
@@ -290,23 +277,12 @@ pub(super) fn frame_header_core_checks(
         ));
     }
 
-    // FrameWidth/FrameHeight do not exceed the active sequence maximum
-    // (FrameWidth <= MaxFrameWidth, FrameHeight <= MaxFrameHeight). On the explicit
-    // override path this is AV2 § 6.17.4.1 (frame_width_minus_1 <= max_frame_width_minus_1,
-    // frame_height_minus_1 <= max_frame_height_minus_1,
-    // docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1, mirror :5200-5205).
-    // On the `cur_mfh_id > 0` non-override path FrameWidth = mfh_frame_width_minus_1 + 1
-    // (mirror :5767), so `core.frame_size` carries the MFH's stored dims verbatim — that
-    // exact case is already the §6.17.2 stored-MFH check above, the single home for
-    // stored-MFH dims. To avoid double-reporting the identical numbers, the derived check
-    // defers ONLY on that parsed PATH — `frame_size_override_flag == 0` on a resolved
-    // `cur_mfh_id > 0` frame (§5.18.4 / §5.18.2, mirror :5767), where FrameWidth/Height are
-    // the MFH default dimensions and carry no explicit fields of their own. The suppression
-    // keys on provenance (the override flag), NOT on dimension equality: an override==1 frame
-    // that explicitly codes the same out-of-range dims the MFH stores commits a genuine,
-    // separate §6.17.4.1 violation through its own frame_width/height_minus_1 fields, so both
-    // checks legitimately fire even when the numbers coincide. (`mfh_stored_dims.is_some()`
-    // bounds the deferral to the case the §6.17.2 home actually examined those dims.)
+    // AV2 § 6.17.4.1 (mirror :5200-5205): derived FrameWidth/Height must not exceed the
+    // sequence maximum. The `cur_mfh_id > 0` non-override path carries the MFH's stored dims
+    // verbatim (mirror :5767), already covered by the §6.17.2 check above, so the derived
+    // check defers on that parsed path to avoid double-reporting. The suppression keys on
+    // provenance (the override flag), not on dimension equality: an override==1 frame coding
+    // the same out-of-range dims commits a separate §6.17.4.1 violation through its own fields.
     let derived_is_mfh_default = core.frame_size_override_flag == Some(false)
         && !core.cur_mfh_id.is_zero()
         && mfh_stored_dims.is_some();
