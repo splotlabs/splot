@@ -77,16 +77,13 @@ pub(in crate::runtime_minimal) struct SelectableReconContext {
     /// step-4/step-5 sample copy with no IDIF, no corner, and no `useIBP` (which
     /// §7.13.2.7 gates on `pAngle < 90 || pAngle > 180`, excluding both cardinals).
     pub(in crate::runtime_minimal) directional_luma: Option<SupportedDirectionalLumaMode>,
-    /// The leaf's §5.20.5.5 `MrlIndex` (the multi-reference-line distance). `0` for
-    /// the immediate edge; `> 0` selects a farther reference line. A non-zero
-    /// `MrlIndex` nudges the §7.13.2.8 `pAngle` off the raw `Mode_To_Angle` by
-    /// `Mrl_Index_To_Delta[MrlIndex]`, so a cardinal `V_PRED` / `H_PRED` leaf with
-    /// `MrlIndex != 0` becomes a genuine directional projection on the offset
-    /// reference line — routed to the §7.13.2.8 one-sided angular path, which threads
-    /// the MRL above-row / left-column offset and the widened `maxBase`. The verified
-    /// MRL admission is the ZONE-1 (above-reading) one-sided projection; the zone-3
-    /// (left-reading), zone-2 middle, and `MrlIndex`-3 exact-cardinal MRL cases still
-    /// DEFER.
+    /// The leaf's §5.20.5.5 `MrlIndex` (the multi-reference-line distance). `0` is the
+    /// immediate edge; `> 0` selects a farther reference line. A non-zero `MrlIndex`
+    /// nudges the §7.13.2.8 `pAngle` off the raw `Mode_To_Angle` by
+    /// `Mrl_Index_To_Delta[MrlIndex]`, so a cardinal `V_PRED` / `H_PRED` leaf becomes a
+    /// genuine directional projection on the offset line — routed to the one-sided
+    /// angular path. The verified MRL admission is the ZONE-1 (above) projection; the
+    /// zone-3, zone-2 middle, and `MrlIndex`-3 exact-cardinal MRL cases still DEFER.
     pub(in crate::runtime_minimal) mrl_index: u8,
     /// The leaf's §5.20.5.3 `AngleDeltaY` (the signed angle-delta count, range
     /// `-MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA`). The sink combines it with the raw
@@ -161,10 +158,9 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
     /// applies; otherwise the filtered edge is unmodelled and the leaf DEFERS.
     /// (ac0ej3's sequence sets this flag.)
     enable_intra_edge_filter: bool,
-    /// The §5.20.5.5 superblock side in luma 4x4 MI units (`mib_size`: 16 for a
-    /// 64x64 superblock, 32 for 128x128, 64 for 256x256). Used to derive the
-    /// §7.13.2.1 `is_sb_boundary == (mi_row % mib_size == 0)` MRL above-line rule
-    /// (`aboveMrlIndex == sbBoundary ? 0 : MrlIndex`).
+    /// The §5.20.5.5 superblock side in luma 4x4 MI units (`mib_size`: 16/32/64 for a
+    /// 64/128/256 superblock). Drives the §7.13.2.1 `is_sb_boundary == (mi_row %
+    /// mib_size == 0)` MRL above-line rule (`aboveMrlIndex == sbBoundary ? 0 : MrlIndex`).
     sb_mib: usize,
     /// Per-plane MI-unit coverage (`coverage[plane]`, row-major over the plane's MI
     /// grid): luma plane 0, chroma U plane 1, chroma V plane 2. U and V are tracked
@@ -450,66 +446,6 @@ impl PlaneCoverage {
     }
 }
 
-/// Which §7.13.2.1 reference edge a one-sided filter is being assembled for.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EdgeOrientation {
-    /// The above row `AboveRow[..]` (zone-1 read edge / zone-3 IBP secondary edge).
-    Above,
-    /// The left column `LeftCol[..]` (zone-3 read edge / zone-1 IBP secondary edge).
-    Left,
-}
-
-/// The resolved §7.13.2.7 inputs for ONE one-sided reference edge, fed to
-/// [`WienerNsLrReconSink::assemble_one_sided_edge_filter`]: the edge orientation,
-/// the §7.13.2.15/16 `filterType` (smooth-neighbour flag), the §7.13.2.7
-/// `angleAbove`/`angleLeft` delta, and whether the far extension (above-right /
-/// below-left) is needed for the §7.13.2.18 sweep span.
-#[derive(Clone, Copy, Debug)]
-struct OneSidedEdgeSpec {
-    orientation: EdgeOrientation,
-    filter_type: bool,
-    angle_delta: i32,
-    need_far: bool,
-}
-
-/// AV2 §5 `ANGLE_STEP`: degrees of angle change per unit `AngleDeltaY`.
-const ANGLE_STEP: i32 = 3;
-/// AV2 §5.20.7.27 `Mrl_Index_To_Delta[4]` (the multi-reference-line angle nudge).
-const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
-/// AV2 §5.20.7.29 WAIP wide-angle remap thresholds (`WAIP_WH_RATIO_*_THRES`), from
-/// the §3 symbol table.
-const WAIP_WH_RATIO_2_THRES: i32 = 61;
-const WAIP_WH_RATIO_4_THRES: i32 = 73;
-const WAIP_WH_RATIO_8_THRES: i32 = 82;
-const WAIP_WH_RATIO_16_THRES: i32 = 86;
-
-/// AV2 §5.20.7.29 `wide_angle_mapping(mode, w, h, pAngle)`: for `is_inter == 0`,
-/// remaps a directional `pAngle` whose block is sufficiently tall (add 180) or
-/// wide (subtract 180) so the projection points into the longer edge. Returns the
-/// (possibly remapped) `pAngle`. `w`/`h` are the §5.20.5.3 `Tx_Width`/`Tx_Height`
-/// (transform dimensions in samples), matching AVM `wide_angle_mapping`
-/// (`reconintra.h`) which keys on `tx_size_wide`/`tx_size_high`. A square block is
-/// never remapped.
-fn wide_angle_mapping(w: u32, h: u32, p_angle: i32) -> i32 {
-    let w = w as i32;
-    let h = h as i32;
-    if (h == 2 * w && p_angle < WAIP_WH_RATIO_2_THRES)
-        || (h == 4 * w && p_angle < WAIP_WH_RATIO_4_THRES)
-        || (h == 8 * w && p_angle < WAIP_WH_RATIO_8_THRES)
-        || (h == 16 * w && p_angle < WAIP_WH_RATIO_16_THRES)
-    {
-        return 180 + p_angle;
-    }
-    if (w == 2 * h && p_angle > 270 - WAIP_WH_RATIO_2_THRES)
-        || (w == 4 * h && p_angle > 270 - WAIP_WH_RATIO_4_THRES)
-        || (w == 8 * h && p_angle > 270 - WAIP_WH_RATIO_8_THRES)
-        || (w == 16 * h && p_angle > 270 - WAIP_WH_RATIO_16_THRES)
-    {
-        return p_angle - 180;
-    }
-    p_angle
-}
-
 /// AV2 §7.13.2.17 intra edge filter strength selection process. Returns the
 /// edge-filter strength `0..=3` for a `w` x `h` transform, `filter_type` (0 or 1,
 /// from §7.13.2.15/16 — `1` when the relevant neighbour uses a smooth mode), and
@@ -518,7 +454,7 @@ fn wide_angle_mapping(w: u32, h: u32, p_angle: i32) -> i32 {
 /// prediction over the UNFILTERED edge is bit-exact. Transcribed VERBATIM from the
 /// committed spec mirror `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-17`.
 #[allow(clippy::if_same_then_else)]
-fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta: i32) -> u8 {
+pub(super) fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta: i32) -> u8 {
     let d = delta.unsigned_abs();
     let blk_wh = w + h;
     let mut strength = 0u8;
@@ -772,12 +708,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
     }
 
-    /// AV2 §7.13.2.1 `aboveMrlIndex == sbBoundary ? 0 : MrlIndex`, where
-    /// `sbBoundary == (mi_row % mib_size == 0)` (AVM `is_sb_boundary == (mi_row %
-    /// cm->mib_size == 0 && row_off == 0)`; for a per-transform leaf `mi_row` is the
-    /// transform's absolute MI row, so the `row_off == 0` term folds in). At a
-    /// superblock-row boundary the above reference line is forced to the immediate
-    /// edge (`0`) because the lines above belong to a different superblock.
+    /// AV2 §7.13.2.1 `aboveMrlIndex == sbBoundary ? 0 : MrlIndex`, where `sbBoundary
+    /// == (mi_row % mib_size == 0)` (AVM `is_sb_boundary == (mi_row % cm->mib_size ==
+    /// 0 && row_off == 0)`; for a per-transform leaf `mi_row` is the transform's
+    /// absolute MI row, so `row_off == 0` folds in). At a superblock-row boundary the
+    /// above line is forced to the immediate edge — the lines above are a different SB.
     fn above_mrl_index(&self, mi_row: usize, mrl_index: usize) -> usize {
         if self.sb_mib != 0 && mi_row.is_multiple_of(self.sb_mib) {
             0
@@ -880,10 +815,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let nominal_angle = i32::from(nominal) + i32::from(angle_delta_y) * ANGLE_STEP + mrl_delta;
         let p_angle = wide_angle_mapping(w, h, nominal_angle);
         if 90 < p_angle && p_angle < 180 {
-            // The §7.13.2.8 zone-2 middle band with a non-zero MrlIndex is not yet
-            // modelled (the MRL middle edge / minBase shift differs from the zone-1 /
-            // zone-3 one-sided projection); DEFER it. MrlIndex == 0 routes to the
-            // verified two-sided middle path.
+            // The §7.13.2.8 zone-2 middle band at a non-zero MrlIndex is not yet
+            // modelled (the MRL middle minBase shift differs); DEFER it. MrlIndex == 0
+            // routes to the verified two-sided middle path.
             if mrl != 0 {
                 return Ok(false);
             }
@@ -915,8 +849,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let apply_ibp = self.enable_ibp && not4x4;
         let angle_delta_even = angle_delta_y % 2 == 0;
         // §7.13.2.7 gates the IBP secondary blend on `MrlIndex == 0` (AVM
-        // `mrl_index == 0 && angle_delta % 2 == 0`), so a non-zero MrlIndex never
-        // applies IBP — it is a bare one-sided projection on the offset edge.
+        // `mrl_index == 0 && angle_delta % 2 == 0`), so a non-zero MrlIndex never IBPs.
         let use_ibp = apply_ibp && angle_delta_even && mrl == 0;
         if use_ibp {
             return self.try_reconstruct_one_sided_ibp_angular(
@@ -935,11 +868,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 tile_offset,
             );
         }
-        // §7.13.2.7 / AVM `if (!disable_edge_filter && mrl_index == 0)`: the edge
-        // and corner filter run ONLY at the immediate reference line. A non-zero
-        // MrlIndex reads the raw offset edge with no §7.13.2.7 filtering.
+        // §7.13.2.7 / AVM `if (!disable_edge_filter && mrl_index == 0)`: the edge and
+        // corner filter run ONLY at the immediate line; a non-zero MrlIndex reads the
+        // raw offset edge unfiltered.
         let edge_filter = if mrl == 0 {
-            let Some(filter) = self.resolve_one_sided_edge_filter(
+            match self.resolve_one_sided_edge_filter(
                 mi_col,
                 mi_row,
                 w,
@@ -947,11 +880,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 p_angle,
                 apply_ibp,
                 tile_offset,
-            )?
-            else {
-                return Ok(false);
-            };
-            filter
+            )? {
+                Some(filter) => filter,
+                None => return Ok(false),
+            }
         } else {
             OneSidedEdgeFilter::default()
         };
@@ -980,13 +912,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 ) else {
                     return Ok(false);
                 };
-                // §7.13.2.1 `aboveMrlIndex == sbBoundary ? 0 : MrlIndex`: at the
-                // superblock-row boundary the above line is forced to the immediate
-                // edge; otherwise it reads `MrlIndex` lines up.
-                let above_mrl = self.above_mrl_index(mi_row, mrl);
+                // §7.13.2.1 `aboveMrlIndex == sbBoundary ? 0 : MrlIndex` (the SB-row
+                // boundary forces the above line to the immediate edge).
                 let above_mrl_inputs = OneSidedAboveMrl {
                     mrl_index: mrl,
-                    above_mrl_index: above_mrl,
+                    above_mrl_index: self.above_mrl_index(mi_row, mrl),
                 };
                 reconstruct_general_intra_one_sided_neighbour_block_into(
                     &mut self.workspace,
@@ -1012,15 +942,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 })?;
             }
             IntraDirectionalAngleEdge::Left => {
-                // DEFER the zone-3 (left-reading) MRL projection. The primitive's edge
-                // construction and IDIF geometry are AVM-exact in isolation (proven by
+                // DEFER the zone-3 (left-reading) MRL projection. The primitive is
+                // AVM-exact in isolation (proven by
                 // `zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference`), but
-                // against the AVM stream oracle a near-cardinal `pAngle == 181` (dy ==
-                // 1) interior leaf is off by 1 in its LAST projected row even when every
-                // §7.13.2.1 edge input is bit-exact — an unresolved discrepancy. Admitting
-                // it would claim an unproven predictor, so zone-3 MRL stays deferred until
-                // the dy == 1 last-row case is reconciled with avmdec. Zone-1 (above) MRL
-                // above is verified.
+                // against the stream oracle a near-cardinal `pAngle == 181` (dy == 1)
+                // interior leaf is off by 1 in its LAST projected row even with every
+                // §7.13.2.1 edge input bit-exact — an unresolved discrepancy, so it stays
+                // deferred until reconciled with avmdec. Zone-1 (above) MRL is verified.
                 if mrl != 0 {
                     return Ok(false);
                 }
@@ -1298,339 +1226,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             return false;
         }
         (mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(left, r))
-    }
-
-    /// Resolves the §7.13.2.7 step-1 filters for BOTH edges of a zone-2 leaf into a
-    /// [`TwoSidedMiddleEdgeFilters`], or `None` to DEFER. For zone-2 `applyIbp == 0`
-    /// (IBP only fires for `p_angle < 90 || p_angle > 180`), so `filterType =
-    /// is_smooth(above) | is_smooth(left)` seeds BOTH edges, `angleAbove = p_angle -
-    /// 90`, `angleLeft = p_angle - 180`, and `need_right == need_bottom == false` (no
-    /// far span in the filter). The §7.13.2.14 corner fires when `(w + h) >= 24`.
-    fn resolve_two_sided_middle_edge_filters(
-        &self,
-        mi_col: usize,
-        mi_row: usize,
-        w: u32,
-        h: u32,
-        p_angle: i32,
-        tile_offset: ByteOffset,
-    ) -> Result<Option<TwoSidedMiddleEdgeFilters>> {
-        if !self.enable_intra_edge_filter {
-            return Ok(Some(TwoSidedMiddleEdgeFilters {
-                above: OneSidedEdgeFilter::default(),
-                left: OneSidedEdgeFilter::default(),
-            }));
-        }
-        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
-        let smooth = |mode: Option<IntraYMode>| mode.is_some_and(IntraYMode::is_smooth);
-        let above_smooth = smooth(
-            mi_row
-                .checked_sub(1)
-                .and_then(|r| coverage.y_mode_at(mi_col, r)),
-        );
-        let left_smooth = smooth(
-            mi_col
-                .checked_sub(1)
-                .and_then(|c| coverage.y_mode_at(c, mi_row)),
-        );
-        let filter_type = above_smooth || left_smooth;
-        let corner_applies = (w + h) >= 24;
-        let above_spec = OneSidedEdgeSpec {
-            orientation: EdgeOrientation::Above,
-            filter_type,
-            angle_delta: p_angle - 90,
-            need_far: false,
-        };
-        let left_spec = OneSidedEdgeSpec {
-            orientation: EdgeOrientation::Left,
-            filter_type,
-            angle_delta: p_angle - 180,
-            need_far: false,
-        };
-        let Some(above) = self.assemble_one_sided_edge_filter(
-            above_spec,
-            corner_applies,
-            w,
-            h,
-            mi_col,
-            mi_row,
-            tile_offset,
-        )?
-        else {
-            return Ok(None);
-        };
-        let Some(left) = self.assemble_one_sided_edge_filter(
-            left_spec,
-            corner_applies,
-            w,
-            h,
-            mi_col,
-            mi_row,
-            tile_offset,
-        )?
-        else {
-            return Ok(None);
-        };
-        Ok(Some(TwoSidedMiddleEdgeFilters { above, left }))
-    }
-
-    /// Resolves the §7.13.2.7 step-1 edge-filter / corner-filter inputs for a
-    /// one-sided IDIF leaf into an [`OneSidedEdgeFilter`], or `None` to DEFER.
-    ///
-    /// When `enable_intra_edge_filter == 0` the §7.13.2.7 step is entirely skipped,
-    /// so the default no-op filter is returned (the raw §7.13.2.1 edge feeds the
-    /// §7.13.2.8 prediction unchanged). Otherwise the per-edge §7.13.2.17 strength
-    /// is derived from the REAL §7.13.2.15/16 `is_smooth` neighbour modes recorded
-    /// in the coverage map:
-    /// * `applyIbp == 1`: `filterTypeAbove = is_smooth(above)`, `filterTypeLeft =
-    ///   is_smooth(left)` (the per-edge pick), with the apply-IBP `angleAbove`/
-    ///   `angleLeft` ±180 wrap and the `needRight`/`needBottom` ORs;
-    /// * `applyIbp == 0`: `filterType = is_smooth(above) | is_smooth(left)` seeded
-    ///   into both edges.
-    ///
-    /// An off-grid neighbour contributes `is_smooth == 0` (matching AVM's `ab ?
-    /// is_smooth : 0`). The §7.13.2.14 corner filter fires when `needAbove &&
-    /// needLeft && (w + h) >= 24`; its `corner_opposite` is the reconstructed
-    /// OPPOSITE-edge `[0]` sample (`LeftCol[0]` zone-1 / `AboveRow[0]` zone-3), which
-    /// MUST be covered — DEFER when it is off-grid or uncovered (the corner would
-    /// read a fill value). `numPx` clamps the read span to the plane storage
-    /// (`Min(w, maxX - x + 1)` / `Min(h, maxY - y + 1)`).
-    #[allow(clippy::too_many_arguments)]
-    fn resolve_one_sided_edge_filter(
-        &self,
-        mi_col: usize,
-        mi_row: usize,
-        w: u32,
-        h: u32,
-        p_angle: i32,
-        apply_ibp: bool,
-        tile_offset: ByteOffset,
-    ) -> Result<Option<OneSidedEdgeFilter>> {
-        if !self.enable_intra_edge_filter {
-            return Ok(Some(OneSidedEdgeFilter::default()));
-        }
-        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
-        let smooth = |mode: Option<IntraYMode>| mode.is_some_and(IntraYMode::is_smooth);
-        let above_smooth = smooth(
-            mi_row
-                .checked_sub(1)
-                .and_then(|r| coverage.y_mode_at(mi_col, r)),
-        );
-        let left_smooth = smooth(
-            mi_col
-                .checked_sub(1)
-                .and_then(|c| coverage.y_mode_at(c, mi_row)),
-        );
-        let zone1 = p_angle < 90;
-        let (mut need_above, mut need_left) = if zone1 { (true, false) } else { (false, true) };
-        let (mut filter_type_above, mut filter_type_left) = (above_smooth, left_smooth);
-        let mut angle_above = p_angle - 90;
-        let mut angle_left = p_angle - 180;
-        let mut need_right = zone1;
-        let mut need_bottom = !zone1;
-        if apply_ibp {
-            need_above = true;
-            need_left = true;
-            need_right |= p_angle > 180;
-            need_bottom |= p_angle < 90;
-            if angle_above > 90 {
-                angle_above -= 180;
-            }
-            if angle_left < -90 {
-                angle_left += 180;
-            }
-        } else {
-            let filter_type = above_smooth || left_smooth;
-            filter_type_above = filter_type;
-            filter_type_left = filter_type;
-        }
-        let corner_applies = need_above && need_left && (w + h) >= 24;
-        let read_edge = if zone1 {
-            OneSidedEdgeSpec {
-                orientation: EdgeOrientation::Above,
-                filter_type: filter_type_above,
-                angle_delta: angle_above,
-                need_far: need_right,
-            }
-        } else {
-            OneSidedEdgeSpec {
-                orientation: EdgeOrientation::Left,
-                filter_type: filter_type_left,
-                angle_delta: angle_left,
-                need_far: need_bottom,
-            }
-        };
-        self.assemble_one_sided_edge_filter(
-            read_edge,
-            corner_applies,
-            w,
-            h,
-            mi_col,
-            mi_row,
-            tile_offset,
-        )
-    }
-
-    /// Resolves the §7.13.2.7 step-1 filter for the IBP SECONDARY (opposite) edge of
-    /// a `useIBP` one-sided leaf: a zone-1 leaf (primary reads above) blends with a
-    /// secondary §7.13.2.8 prediction at `secondAngle = pAngle + 180` reading the
-    /// LEFT edge, so the left edge must be filtered with `filterTypeLeft` / `angleLeft`
-    /// / `needBottom` — and symmetrically for zone-3. Mirrors the per-edge AVM filter
-    /// (`av2_build_intra_predictors_high`, the `apply_ibp` branch filtering BOTH
-    /// edges) so the secondary predictor reads the same filtered opposite column AVM
-    /// does. Returns `None` (defer) when the corner's opposite sample is uncovered.
-    fn resolve_ibp_secondary_edge_filter(
-        &self,
-        mi_col: usize,
-        mi_row: usize,
-        w: u32,
-        h: u32,
-        p_angle: i32,
-        tile_offset: ByteOffset,
-    ) -> Result<Option<OneSidedEdgeFilter>> {
-        if !self.enable_intra_edge_filter {
-            return Ok(Some(OneSidedEdgeFilter::default()));
-        }
-        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
-        let smooth = |mode: Option<IntraYMode>| mode.is_some_and(IntraYMode::is_smooth);
-        let above_smooth = smooth(
-            mi_row
-                .checked_sub(1)
-                .and_then(|r| coverage.y_mode_at(mi_col, r)),
-        );
-        let left_smooth = smooth(
-            mi_col
-                .checked_sub(1)
-                .and_then(|c| coverage.y_mode_at(c, mi_row)),
-        );
-        let zone1 = p_angle < 90;
-        let mut angle_above = p_angle - 90;
-        let mut angle_left = p_angle - 180;
-        if angle_above > 90 {
-            angle_above -= 180;
-        }
-        if angle_left < -90 {
-            angle_left += 180;
-        }
-        let need_right = zone1 || p_angle > 180;
-        let need_bottom = !zone1 || p_angle < 90;
-        let corner_applies = (w + h) >= 24;
-        let secondary_edge = if zone1 {
-            OneSidedEdgeSpec {
-                orientation: EdgeOrientation::Left,
-                filter_type: left_smooth,
-                angle_delta: angle_left,
-                need_far: need_bottom,
-            }
-        } else {
-            OneSidedEdgeSpec {
-                orientation: EdgeOrientation::Above,
-                filter_type: above_smooth,
-                angle_delta: angle_above,
-                need_far: need_right,
-            }
-        };
-        self.assemble_one_sided_edge_filter(
-            secondary_edge,
-            corner_applies,
-            w,
-            h,
-            mi_col,
-            mi_row,
-            tile_offset,
-        )
-    }
-
-    /// Assembles a [`OneSidedEdgeFilter`] for one edge (above or left) from its
-    /// resolved §7.13.2.7 spec: the §7.13.2.17 strength, the §7.13.2.7 `numPx`
-    /// storage clamp, and the §7.13.2.14 corner's opposite-edge `[0]` sample read
-    /// diagonally — an above edge reads `LeftCol[0] = CurrFrame[y][x-1]`, a left
-    /// edge reads `AboveRow[0] = CurrFrame[y-1][x]`.
-    /// Shared by the read-edge ([`Self::resolve_one_sided_edge_filter`]) and the
-    /// IBP secondary-edge ([`Self::resolve_ibp_secondary_edge_filter`]) resolution.
-    /// Returns `None` (defer) when the corner fires but its opposite sample is
-    /// off-grid or uncovered. In full-recon mode the "uncovered by this sink" half of
-    /// that gate is dropped (a genuinely off-frame corner still defers): the
-    /// decode-order-prior opposite sample is always written, so only the gated path's
-    /// conservative coverage check is skipped.
-    #[allow(clippy::too_many_arguments)]
-    fn assemble_one_sided_edge_filter(
-        &self,
-        edge: OneSidedEdgeSpec,
-        corner_applies: bool,
-        w: u32,
-        h: u32,
-        mi_col: usize,
-        mi_row: usize,
-        tile_offset: ByteOffset,
-    ) -> Result<Option<OneSidedEdgeFilter>> {
-        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
-        let (strength_a, strength_b, primary, secondary) = match edge.orientation {
-            EdgeOrientation::Above => (w, h, w, h),
-            EdgeOrientation::Left => (h, w, h, w),
-        };
-        let strength = intra_edge_filter_strength(
-            strength_a,
-            strength_b,
-            u8::from(edge.filter_type),
-            edge.angle_delta,
-        );
-        let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
-        let plane = self.workspace.plane(PlaneId::Y)?;
-        let storage = plane.storage_size();
-        let (origin, max_axis) = match edge.orientation {
-            EdgeOrientation::Above => (x, storage.width()),
-            EdgeOrientation::Left => (y, storage.height()),
-        };
-        let in_block = (max_axis.saturating_sub(origin)).min(primary as usize);
-        let num_px = in_block
-            .checked_add(if edge.need_far { secondary as usize } else { 0 })
-            .and_then(|v| v.checked_add(1))
-            .ok_or_else(|| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
-                    "unsupported_wienerns_lr_one_sided_edge_filter_numpx_overflow",
-                )
-            })?;
-        let corner_opposite = if corner_applies {
-            let (opp_col, opp_row, sample_x, sample_y) = match edge.orientation {
-                EdgeOrientation::Above => (
-                    mi_col.checked_sub(1),
-                    Some(mi_row),
-                    x.checked_sub(1),
-                    Some(y),
-                ),
-                EdgeOrientation::Left => (
-                    Some(mi_col),
-                    mi_row.checked_sub(1),
-                    Some(x),
-                    y.checked_sub(1),
-                ),
-            };
-            let (Some(opp_col), Some(opp_row)) = (opp_col, opp_row) else {
-                return Ok(None);
-            };
-            if coverage.off_grid(opp_col, opp_row)
-                || (!self.full_recon && !coverage.is_covered(opp_col, opp_row))
-            {
-                return Ok(None);
-            }
-            let (Some(sx), Some(sy)) = (sample_x, sample_y) else {
-                return Ok(None);
-            };
-            Some(
-                self.workspace
-                    .reconstructed_sample(PlaneId::Y, sx, sy)?
-                    .to_u16(),
-            )
-        } else {
-            None
-        };
-        Ok(Some(OneSidedEdgeFilter {
-            strength,
-            num_px,
-            corner_opposite,
-        }))
     }
 
     /// zone-1 above-edge coverage guard. Verifies the §7.13.2.1 corner unit
@@ -1972,16 +1567,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     IntraCardinalDirection::Horizontal => "H_PRED",
                 };
                 if mrl_index != 0 {
-                    // §7.13.2.8 `pAngle = Mode_To_Angle + AngleDeltaY * step +
-                    // Mrl_Index_To_Delta[MrlIndex]`: a non-zero MrlIndex nudges the
-                    // cardinal V_PRED (90) / H_PRED (180) off the cardinal (MrlIndex 1
-                    // -> 91/181, MrlIndex 2 -> 89/179), so the leaf is a genuine
-                    // directional projection on the offset reference line. Route it to
-                    // the angular path (which recovers the real pAngle and threads the
-                    // MRL edge offset); it DEFERS the still-unmodelled cases (the
-                    // zone-2 middle band and the MrlIndex-3 exact-cardinal).
-                    let routed = if let Some(mode) = leaf_y_mode {
-                        self.try_reconstruct_one_sided_angular(
+                    // A non-zero MrlIndex nudges the cardinal V_PRED (90) / H_PRED
+                    // (180) off the cardinal via §7.13.2.8 `Mrl_Index_To_Delta`, so the
+                    // leaf is a genuine directional projection on the offset reference
+                    // line — route it to the angular path (which threads the MRL edge
+                    // offset and DEFERS the still-unmodelled zone-2 / zone-3 / MrlIndex-3
+                    // cases). The shared tail marks/records on success.
+                    let routed = match leaf_y_mode {
+                        Some(mode) => self.try_reconstruct_one_sided_angular(
                             mi_col,
                             mi_row,
                             log2_width,
@@ -1995,21 +1588,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                             mi_w,
                             mi_h,
                             tile_offset,
-                        )
-                    } else {
-                        Ok(false)
+                        ),
+                        None => Ok(false),
                     };
-                    let wrote = match routed {
-                        Ok(true) => true,
-                        Ok(false) => false,
-                        Err(error) => {
-                            if !self.full_recon {
-                                return Err(error);
-                            }
-                            false
-                        }
-                    };
-                    if !wrote {
+                    if !self.routed_angular_wrote(routed)? {
                         return self.defer_full_recon_leaf(
                             mi_col,
                             mi_row,
@@ -2018,63 +1600,52 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                             cardinal_label,
                         );
                     }
-                    let marked = self.coverage[Self::coverage_index(PlaneId::Y)]
-                        .mark(mi_col, mi_row, mi_w, mi_h);
-                    self.reconstructed_luma_4x4 =
-                        self.reconstructed_luma_4x4.saturating_add(marked);
-                    self.record_full_recon_leaf(
-                        mi_col,
-                        mi_row,
-                        log2_width,
-                        log2_height,
-                        cardinal_label,
-                        true,
-                    );
-                    return Ok(());
-                }
-                if !self.full_recon
-                    && !self.cardinal_edge_reconstructed(
+                } else {
+                    // MrlIndex == 0: the immediate-edge §7.13.2.8 cardinal copy.
+                    if !self.full_recon
+                        && !self.cardinal_edge_reconstructed(
+                            direction,
+                            PlaneId::Y,
+                            mi_col,
+                            mi_row,
+                            mi_w,
+                            mi_h,
+                        )
+                    {
+                        return self.defer_full_recon_leaf(
+                            mi_col,
+                            mi_row,
+                            log2_width,
+                            log2_height,
+                            cardinal_label,
+                        );
+                    }
+                    let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+                    let result = reconstruct_general_intra_cardinal_neighbour_block_into(
+                        &mut self.workspace,
+                        block,
                         direction,
                         PlaneId::Y,
-                        mi_col,
-                        mi_row,
-                        mi_w,
-                        mi_h,
-                    )
-                {
-                    return self.defer_full_recon_leaf(
+                        x,
+                        y,
+                        log2_width,
+                        log2_height,
+                        qindex,
+                        use_tcq,
+                        self.bit_depth,
+                    );
+                    if !self.finish_luma_predict(
+                        &result,
                         mi_col,
                         mi_row,
                         log2_width,
                         log2_height,
                         cardinal_label,
-                    );
-                }
-                let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
-                let result = reconstruct_general_intra_cardinal_neighbour_block_into(
-                    &mut self.workspace,
-                    block,
-                    direction,
-                    PlaneId::Y,
-                    x,
-                    y,
-                    log2_width,
-                    log2_height,
-                    qindex,
-                    use_tcq,
-                    self.bit_depth,
-                );
-                if !self.finish_luma_predict(
-                    &result,
-                    mi_col,
-                    mi_row,
-                    log2_width,
-                    log2_height,
-                    cardinal_label,
-                    tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_recon_luma_cardinal_write",
-                )? {
-                    return Ok(());
+                        tile_offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_recon_luma_cardinal_write",
+                    )? {
+                        return Ok(());
+                    }
                 }
             }
             (Some(mode), None) if mode.is_paeth() && mrl_index == 0 => {
@@ -2131,18 +1702,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     mi_h,
                     tile_offset,
                 );
-                let label = full_recon_mode_label(leaf_y_mode, directional, is_intrabc);
-                let wrote = match result {
-                    Ok(true) => true,
-                    Ok(false) => false,
-                    Err(error) => {
-                        if !self.full_recon {
-                            return Err(error);
-                        }
-                        false
-                    }
-                };
-                if !wrote {
+                if !self.routed_angular_wrote(result)? {
+                    let label = full_recon_mode_label(leaf_y_mode, directional, is_intrabc);
                     return self.defer_full_recon_leaf(
                         mi_col,
                         mi_row,
@@ -2549,7 +2110,7 @@ fn tx_size_log2(tx_size: usize) -> Option<(u32, u32)> {
 }
 
 /// The §3 sample-space `(x, y)` origin of a luma MI position, overflow-checked.
-fn luma_sample_origin(
+pub(super) fn luma_sample_origin(
     mi_col: usize,
     mi_row: usize,
     tile_offset: ByteOffset,
@@ -2615,8 +2176,11 @@ fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool) -> bool {
     !(real_ist || fsc_mode)
 }
 
+mod edge_filter;
 mod full_recon;
-use full_recon::{FarEdgeSide, full_recon_mode_label};
+use full_recon::{
+    ANGLE_STEP, FarEdgeSide, MRL_INDEX_TO_DELTA, full_recon_mode_label, wide_angle_mapping,
+};
 
 #[cfg(test)]
 #[path = "recon_tests.rs"]

@@ -257,6 +257,78 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             reason,
         ))
     }
+
+    /// Collapses a [`Self::try_reconstruct_one_sided_angular`] routing outcome into
+    /// "did the angular path write the leaf". `Ok(true)` reconstructed it; `Ok(false)`
+    /// DEFERRED it (the caller records the unwritten leaf and falls through). A primitive
+    /// error propagates in the GATED sink (shipped fail-closed) but is treated as a defer
+    /// in FULL-RECON so one unwired case does not abort the whole-frame differential.
+    pub(super) fn routed_angular_wrote(&self, routed: Result<bool>) -> Result<bool> {
+        match routed {
+            Ok(wrote) => Ok(wrote),
+            Err(_) if self.full_recon => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Which §7.13.2.1 reference edge a one-sided filter is being assembled for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum EdgeOrientation {
+    /// The above row `AboveRow[..]` (zone-1 read edge / zone-3 IBP secondary edge).
+    Above,
+    /// The left column `LeftCol[..]` (zone-3 read edge / zone-1 IBP secondary edge).
+    Left,
+}
+
+/// The resolved §7.13.2.7 inputs for ONE one-sided reference edge: the edge
+/// orientation, the §7.13.2.15/16 `filterType` (smooth-neighbour flag), the
+/// §7.13.2.7 `angleAbove`/`angleLeft` delta, and whether the far extension
+/// (above-right / below-left) is needed for the §7.13.2.18 sweep span.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct OneSidedEdgeSpec {
+    pub orientation: EdgeOrientation,
+    pub filter_type: bool,
+    pub angle_delta: i32,
+    pub need_far: bool,
+}
+
+/// AV2 §5 `ANGLE_STEP`: degrees of angle change per unit `AngleDeltaY`.
+pub(super) const ANGLE_STEP: i32 = 3;
+/// AV2 §5.20.7.27 `Mrl_Index_To_Delta[4]` (the multi-reference-line angle nudge).
+pub(super) const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
+/// AV2 §5.20.7.29 WAIP wide-angle remap thresholds (`WAIP_WH_RATIO_*_THRES`), from
+/// the §3 symbol table.
+const WAIP_WH_RATIO_2_THRES: i32 = 61;
+const WAIP_WH_RATIO_4_THRES: i32 = 73;
+const WAIP_WH_RATIO_8_THRES: i32 = 82;
+const WAIP_WH_RATIO_16_THRES: i32 = 86;
+
+/// AV2 §5.20.7.29 `wide_angle_mapping(mode, w, h, pAngle)`: for `is_inter == 0`,
+/// remaps a directional `pAngle` whose block is sufficiently tall (add 180) or
+/// wide (subtract 180) so the projection points into the longer edge. Returns the
+/// (possibly remapped) `pAngle`. `w`/`h` are the §5.20.5.3 `Tx_Width`/`Tx_Height`
+/// (transform dimensions in samples), matching AVM `wide_angle_mapping`
+/// (`reconintra.h`) which keys on `tx_size_wide`/`tx_size_high`. A square block is
+/// never remapped.
+pub(super) fn wide_angle_mapping(w: u32, h: u32, p_angle: i32) -> i32 {
+    let w = w as i32;
+    let h = h as i32;
+    if (h == 2 * w && p_angle < WAIP_WH_RATIO_2_THRES)
+        || (h == 4 * w && p_angle < WAIP_WH_RATIO_4_THRES)
+        || (h == 8 * w && p_angle < WAIP_WH_RATIO_8_THRES)
+        || (h == 16 * w && p_angle < WAIP_WH_RATIO_16_THRES)
+    {
+        return 180 + p_angle;
+    }
+    if (w == 2 * h && p_angle > 270 - WAIP_WH_RATIO_2_THRES)
+        || (w == 4 * h && p_angle > 270 - WAIP_WH_RATIO_4_THRES)
+        || (w == 8 * h && p_angle > 270 - WAIP_WH_RATIO_8_THRES)
+        || (w == 16 * h && p_angle > 270 - WAIP_WH_RATIO_16_THRES)
+    {
+        return p_angle - 180;
+    }
+    p_angle
 }
 
 /// Human label for a luma leaf's §7.13.2 prediction mode, for the full-reconstruction
