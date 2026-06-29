@@ -283,15 +283,40 @@ const MI40_IBP_STEP: u16 = 65;
 /// decode-order neighbours. Zero mismatch vs the AVM prefilter oracle over the
 /// whole grown region. The NO-neighbour midpoint fallback (both edges off-grid,
 /// e.g. the frame origin) still DEFERS.
-const LUMA_RECON_SAMPLE_TOTAL: usize = 772_576;
+///
+/// Admitting the §7.13.2.2 PAETH RESIDUAL leaves (dropping the old `all_zero` gate
+/// — the PAETH predictor reads the same real reconstructed above row / left column /
+/// corner, then the §5.20.7.27 residual is ADDED via the standard §7.14.3
+/// `Clip1(pred + inverse-transform(residual))`, exactly as the directional paths do)
+/// re-ignited the decode-order cascade: the region grew `772576` → `775904` (+3328).
+/// A residual-bearing PAETH leaf reconstructs in decode order once its
+/// `haveAbove && haveLeft` neighbours (the above row, left column, AND diagonal
+/// corner unit) are covered; admitting them unblocks their downstream neighbours.
+/// Zero mismatch vs the AVM prefilter oracle over the whole grown region (verified
+/// per sample against `/tmp/pref.yuv` frame-0, md5 `f7959cb8…`). PAETH leaves whose
+/// neighbours are still deferred, and `mrl_index > 0` PAETH, still DEFER.
+///
+/// Wiring the §7.13.2.8 ZONE-2 (middle, `90 < pAngle < 180`) two-sided IDIF
+/// predictor — the generalized middle primitive over the in-block above row + left
+/// column + shared corner, with the §7.13.2.18 edge filter on BOTH edges and the
+/// §7.13.2.14 corner blend — grew the region `775904` → `791776` (+15872). The same
+/// commit fixed a latent §7.13.2.1 zone-3 (left-reading) corner bug the zone-2
+/// cascade EXPOSED: a `haveAbove == 1` interior zone-3 leaf must read the corner
+/// `LeftCol[-1]` from the DIAGONAL above-left `CurrFrame[y - 1][x - 1]`, not the
+/// left-column top `CurrFrame[y][x - 1]` (the prior code, correct only for the
+/// frame-top `haveAbove == 0` leaves that were previously reachable). With both, the
+/// whole grown region is bit-exact (the off-by-one at MI(64,240)/(256,960) — the
+/// D203+`AngleDeltaY` zone-3 leaf unblocked by a zone-2 neighbour — is resolved).
+/// Zone-2 leaves whose above row / left column / corner are still deferred DEFER.
+const LUMA_RECON_SAMPLE_TOTAL: usize = 791_776;
 /// Sum of every reconstructed luma sample in the verified region (derived from the AVM
 /// pre-filter oracle over the sink's covered MI units, zero mismatch vs splot).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 51_935_379;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 53_847_203;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0xbb99_ea7b_d81a_aef8;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0x093f_7fdd_63fd_ae46;
 
 /// The bottom-edge `TX_64X64 DC_PRED` block at MI(16,256), x[64,128) y[1024,1080):
 /// its 56 in-frame rows (the 64-tall block overhangs the 1080-tall frame by 8). The
