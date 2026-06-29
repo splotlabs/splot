@@ -47,6 +47,7 @@ cargo xtask check-source-lines
 cargo xtask check-dependency-direction
 cargo xtask check-concurrency-policy
 cargo xtask check-zero-copy-policy
+cargo xtask check-lint-policy
 cargo xtask check-spec-mirror
 cargo xtask check-fuzz-targets
 cargo xtask gen-tables --check

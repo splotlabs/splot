@@ -25,6 +25,7 @@ mod feature_status;
 mod fixtures;
 mod gen_tables;
 mod git_util;
+mod lint_policy;
 mod reference_evidence;
 mod seed_fuzz_corpus;
 mod source_lines;
@@ -115,6 +116,8 @@ enum Task {
     CheckConcurrencyPolicy,
     /// Verify the workspace honors the zero-copy media-buffer policy.
     CheckZeroCopyPolicy,
+    /// Verify workspace Clippy allows stay ratcheted and reviewable.
+    CheckLintPolicy,
     /// Verify the committed AV2 spec mirror matches its CHECKSUMS and provenance.
     CheckSpecMirror,
     /// Verify diagnostic registry docs list exactly the emitted diagnostic rule ids.
@@ -253,6 +256,7 @@ fn main() -> Result<()> {
             concurrency_policy::check_concurrency_policy(&workspace_root()?)
         }
         Task::CheckZeroCopyPolicy => zero_copy::check_zero_copy_policy(&workspace_root()?),
+        Task::CheckLintPolicy => lint_policy::check_lint_policy(&workspace_root()?),
         Task::CheckSpecMirror => check_spec_mirror(&workspace_root()?),
         Task::CheckDiagnosticRegistry => {
             diagnostic_registry::check_diagnostic_registry(&workspace_root()?)
@@ -365,6 +369,7 @@ fn run_ci() -> Result<()> {
     check_dependency_direction(&root)?;
     concurrency_policy::check_concurrency_policy(&root)?;
     zero_copy::check_zero_copy_policy(&root)?;
+    lint_policy::check_lint_policy(&root)?;
     check_spec_mirror(&root)?;
     check_fuzz_targets(&root)?;
     gen_tables::run_gen_tables(&root, true)?;

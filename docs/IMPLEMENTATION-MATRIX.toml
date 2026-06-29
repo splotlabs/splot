@@ -19929,6 +19929,48 @@ fixtures = ["docs/DECODER-DIAGNOSTICS.md"]
 diagnostics = []
 
 [[feature]]
+id = "XTASK-LINT-POLICY"
+name = "Workspace lint policy ratchet"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/lint_policy.rs"
+openspec_change = "workspace-lint-policy"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Adds `cargo xtask check-lint-policy` and wires it into `cargo xtask ci`. The gate parses `[workspace.lints.clippy]`, keeps `clippy::all` and `clippy::pedantic` enabled with lower lint-group priority, keeps high-signal development lints denied, and rejects any new workspace-level Clippy `allow` unless it is added to the reviewed `XTASK-LINT-POLICY` baseline. The current broad allows remain accepted so casts, public-API `must_use_candidate`, wildcard import hubs, source-length policy, and style-only families can be tightened crate by crate without a mass transcription churn."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "xtask/src/lint_policy.rs::tests::approved_workspace_allows_pass",
+    "xtask/src/lint_policy.rs::tests::unknown_workspace_allow_is_rejected",
+    "xtask/src/lint_policy.rs::tests::removing_debt_allows_is_accepted",
+    "xtask/src/lint_policy.rs::tests::required_deny_lints_are_enforced",
+    "xtask/src/lint_policy.rs::tests::clippy_groups_must_keep_low_priority",
+]
+commands = [
+    "cargo test -p xtask lint_policy --locked",
+    "cargo xtask check-lint-policy",
+]
+fixtures = ["Cargo.toml"]
+diagnostics = []
+
+[[feature]]
 id = "CLI-DECODE"
 name = "splot decode command"
 category = "cli"

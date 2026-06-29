@@ -76,7 +76,10 @@ missing_docs = "warn"
 all = { level = "warn", priority = -1 }
 # `pedantic` is enforced workspace-wide (CI runs clippy with `-D warnings`),
 # minus the families below that are noise for a cast-heavy codec or pure
-# formatting nits. Re-evaluate the allow-list as the code matures.
+# formatting nits. `cargo xtask check-lint-policy` ratchets this global
+# allow-list: do not add a workspace-level allow without adding an explicit
+# xtask policy entry and rationale. Prefer narrower module or crate scopes when
+# retiring these exceptions.
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
