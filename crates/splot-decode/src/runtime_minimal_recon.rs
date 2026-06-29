@@ -1272,6 +1272,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     log2_height: u32,
     qindex: u32,
     num4_below_left: usize,
+    have_above: bool,
     use_tcq: bool,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
@@ -1290,6 +1291,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         width,
         height,
         num4_below_left,
+        have_above,
         edge_filter,
     )?;
     let mut prediction = vec![T::default(); width * height];
@@ -1339,12 +1341,15 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
 ///
 /// Per § 7.13.2.1 (the `haveLeft == 1` left-column branch): the in-column samples
 /// `LeftCol[i]` for `i in 0..w + h` are `CurrFrame[plane][Min(leftLimit, y + i)]
-/// [x - 1]` with `leftLimit = Min(maxY, y + h + 4 * num4BelowLeft - 1)`. At
-/// `haveAbove == 0 && haveLeft == 1` the corner `LeftCol[-1] = AboveRow[-1] =
-/// CurrFrame[plane][y][x - 1]` (the top of the left column). Per § 7.13.2.8 the
-/// edge is then extended: `LeftCol[minBase - 1] = LeftCol[minBase]` (here
-/// `LeftCol[-2] = LeftCol[-1]`) and `LeftCol[maxBase + 1] = LeftCol[maxBase + 2]
-/// = LeftCol[maxBase]` (the two trailing samples repeat the clamped last in-column
+/// [x - 1]` with `leftLimit = Min(maxY, y + h + 4 * num4BelowLeft - 1)`. The corner
+/// `LeftCol[-1] = AboveRow[-1]` follows § 7.13.2.1 / AVM `need_above_left`: when the
+/// above row is available (`have_above`, AVM `n_top_px > 0 && n_left_px > 0`) it is
+/// the DIAGONAL above-left `CurrFrame[plane][y - 1][x - 1]`; when the above row is
+/// off-grid (`!have_above`, the frame-top `n_top_px == 0` case) it is the TOP of the
+/// left column `CurrFrame[plane][y][x - 1]` (AVM `left_col[-i] = left_ref[0]`). Per
+/// § 7.13.2.8 the edge is then extended: `LeftCol[minBase - 1] = LeftCol[minBase]`
+/// (here `LeftCol[-2] = LeftCol[-1]`) and `LeftCol[maxBase + 1] = LeftCol[maxBase +
+/// 2] = LeftCol[maxBase]` (the two trailing samples repeat the clamped last in-column
 /// sample).
 #[allow(clippy::too_many_arguments)]
 fn build_one_sided_left_idif_edge<T: ReconSample>(
@@ -1355,6 +1360,7 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     width: usize,
     height: usize,
     num4_below_left: usize,
+    have_above: bool,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let left_col = x
@@ -1371,11 +1377,17 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
         .and_then(|v| v.checked_sub(1))
         .and_then(|v| y.checked_add(v))
         .map_or(max_y, |limit| limit.min(max_y));
+    let corner_row = if have_above {
+        y.checked_sub(1)
+            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
+    } else {
+        y
+    };
     build_one_sided_idif_edge(
         width,
         height,
         edge_filter,
-        || workspace.reconstructed_sample(plane_id, left_col, y),
+        || workspace.reconstructed_sample(plane_id, left_col, corner_row),
         |i| {
             let row = y.saturating_add(i).min(left_limit);
             workspace.reconstructed_sample(plane_id, left_col, row)
@@ -1463,6 +1475,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             width,
             height,
             primary_num4_far,
+            true,
             primary_edge_filter,
         )?;
         predict_intra_directional_angle_rect_one_sided_idif_into(
@@ -1485,6 +1498,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             width,
             height,
             secondary.num4_far,
+            true,
             secondary.edge_filter,
         )?;
         predict_intra_directional_angle_rect_one_sided_idif_into(
@@ -1533,6 +1547,133 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
     };
     workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
     Ok(())
+}
+
+/// The § 7.13.2.7 step-1 filters for the TWO edges of a § 7.13.2.8 ZONE-2 (middle,
+/// `90 < pAngle < 180`) leaf: the above edge (filtered with `angleAbove = pAngle -
+/// 90`) and the left edge (filtered with `angleLeft = pAngle - 180`). Both carry the
+/// SHARED § 7.13.2.14 corner blend in `corner_opposite` (the above edge's opposite is
+/// `LeftCol[0]`, the left edge's is `AboveRow[0]`; the blend is symmetric in the two
+/// `*5` terms, so both reproduce the same rewritten corner). For zone-2 AVM sets
+/// `need_right == need_bottom == 0`, so neither edge filter spans a far extent — the
+/// above filter sweeps `n_top_px + 1` samples, the left filter `n_left_px + 1`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TwoSidedMiddleEdgeFilters {
+    /// § 7.13.2.7 filter for the above edge (`angleAbove`, `filterTypeAbove`).
+    pub above: OneSidedEdgeFilter,
+    /// § 7.13.2.7 filter for the left edge (`angleLeft`, `filterTypeLeft`).
+    pub left: OneSidedEdgeFilter,
+}
+
+/// Reconstructs one neighbour-having § 7.13.2.8 ZONE-2 (middle, `90 < pAngle < 180`)
+/// directional LUMA leaf over BOTH the above row and the left column read from the
+/// partially-built frame, adds the decoded residual (or writes the bare prediction
+/// for an `all_zero` block), and stores the result for later neighbours.
+///
+/// Zone-2 (`needAbove && needLeft && needAboveLeft`) reads the in-block above row
+/// `AboveRow[0..w)`, the in-block left column `LeftCol[0..h)`, and the shared corner
+/// `AboveRow[-1] = LeftCol[-1] = CurrFrame[plane][y - 1][x - 1]`. The z2 IDIF
+/// projection stays within those edges (`base_x in [-1, w-1]`, `base_y in [-1, h-1]`),
+/// so NO above-right / below-left far samples are read (unlike zone-1/zone-3). The
+/// caller has verified the whole above row, left column, and corner are reconstructed.
+///
+/// The § 7.13.2.7 step-1 filter rewrites the edges in place before the § 7.13.2.8
+/// prediction: the § 7.13.2.14 corner blend (`(w + h) >= 24`) rewrites the shared
+/// corner, then the § 7.13.2.18 edge filter sweeps each edge with its per-edge
+/// § 7.13.2.17 strength. The edges are then spec-extended (`Edge[-2] = Edge[-1]`,
+/// `Edge[side] = Edge[side + 1] = Edge[side - 1]`) into the IDIF logical range
+/// `[-2 ..= side + 1]` and the generalized middle IDIF runs at the leaf's `pAngle`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    p_angle: u16,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    use_tcq: bool,
+    bit_depth: BitDepth,
+    filters: TwoSidedMiddleEdgeFilters,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
+
+    let above_row = y
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let left_col = x
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let corner = workspace.reconstructed_sample(PlaneId::Y, left_col, above_row)?;
+
+    let above_idif = build_two_sided_middle_idif_edge(width, filters.above, corner, |i| {
+        workspace.reconstructed_sample(PlaneId::Y, x.saturating_add(i), above_row)
+    })?;
+    let left_idif = build_two_sided_middle_idif_edge(height, filters.left, corner, |i| {
+        workspace.reconstructed_sample(PlaneId::Y, left_col, y.saturating_add(i))
+    })?;
+
+    let mut prediction = vec![T::default(); width * height];
+    predict_intra_middle_directional_angle_rect_idif_into(
+        bit_depth,
+        block_size,
+        angle,
+        IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
+        &mut prediction,
+        width,
+    )?;
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_rect_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            PlaneId::Y,
+            log2_width,
+            log2_height,
+            block.plane_tx_type,
+            use_tcq,
+            bit_depth,
+        )?
+    };
+    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
+    Ok(())
+}
+
+/// Builds one § 7.13.2.8 ZONE-2 IDIF edge `Edge[-2 ..= side + 1]` (length `side + 4`,
+/// `slice[0]` = logical `-2`, `slice[1]` the `-1` corner, `slice[i + 2]` logical `i`).
+/// The in-block samples `Edge[0..side)` come from `in_edge`, the corner from the
+/// caller's shared `corner`. The § 7.13.2.7 corner / edge filter then rewrites the
+/// edge in place ([`finalize_one_sided_idif_edge`] handles the § 7.13.2.14 corner
+/// blend, the § 7.13.2.18 sweep, and the § 7.13.2.8 `-2` / trailing extension — its
+/// `max_base == side - 1` for zone-2, so the trailing slots `side + 2` / `side + 3`
+/// repeat `Edge[side - 1]`, matching AVM `above[bw] = above[bw - 1]`).
+fn build_two_sided_middle_idif_edge<T: ReconSample>(
+    side: usize,
+    edge_filter: OneSidedEdgeFilter,
+    corner: T,
+    in_edge: impl Fn(usize) -> core::result::Result<T, splot_recon::ReconError>,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    let max_base = side
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let edge_len = side
+        .checked_add(4)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let mut edge = vec![T::default(); edge_len];
+    edge[1] = corner;
+    for i in 0..side {
+        edge[i + 2] = in_edge(i)?;
+    }
+    finalize_one_sided_idif_edge(&mut edge, max_base, edge_filter)?;
+    Ok(edge)
 }
 
 /// Reconstructs one neighbour-having CARDINAL directional luma block — `V_PRED`
@@ -1830,564 +1971,5 @@ fn extend_one_middle_idif_edge<T: ReconSample>(edge: &[T], bit_depth: BitDepth) 
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-
-    use splot_recon::DecodedFrameHashInput;
-
-    use super::*;
-
-    const EXPECTED_DIGEST: &str =
-        "dd244844938e78b226240de27e9c0acd39fc7ec2c1631319d13250fbe5f08496";
-
-    fn reconstruct() -> DecodedFrame<u8> {
-        reconstruct_minimal_traced_frame(
-            MinimalRuntimeReconstructionTrace::LumaDcNoResidual8Bit420_64x64,
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn traced_luma_dc_chroma_h_pred_reconstruction_predicts_visible_samples() {
-        let frame = reconstruct();
-
-        assert_eq!(frame.bit_depth(), BitDepth::Eight);
-        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
-        assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
-        assert_eq!(
-            frame.u().unwrap().visible_size(),
-            PlaneSize::new(32, 32).unwrap()
-        );
-        assert_eq!(
-            frame.v().unwrap().visible_size(),
-            PlaneSize::new(32, 32).unwrap()
-        );
-        assert!(frame.y().samples().iter().all(|sample| *sample == 128));
-        assert!(
-            frame
-                .u()
-                .unwrap()
-                .samples()
-                .iter()
-                .all(|sample| *sample == TOP_LEFT_CHROMA_H_PRED_LEFT_FALLBACK_SAMPLE)
-        );
-        assert!(
-            frame
-                .v()
-                .unwrap()
-                .samples()
-                .iter()
-                .all(|sample| *sample == TOP_LEFT_CHROMA_H_PRED_LEFT_FALLBACK_SAMPLE)
-        );
-        assert!(!frame.y().samples().contains(&0));
-        assert!(!frame.u().unwrap().samples().contains(&0));
-        assert!(!frame.v().unwrap().samples().contains(&0));
-    }
-
-    #[test]
-    fn traced_luma_dc_chroma_h_pred_reconstruction_hash_matches_minimal_contract() {
-        let frame = reconstruct();
-        let hash = DecodedFrameHashInput::new(&frame).compute_hash();
-
-        assert_eq!(hash.to_hex(), EXPECTED_DIGEST);
-    }
-
-    /// An `all_zero` (`txb_skip`) luma block: reconstruction writes the bare
-    /// §7.13.2 prediction (zero residual), the only kind these cardinal
-    /// rect/transpose guards exercise.
-    fn all_zero_luma_block() -> LumaCoeffBlock {
-        LumaCoeffBlock {
-            all_zero: true,
-            eob: 0,
-            quant: Vec::new(),
-            intra_ist: None,
-            plane_tx_type: 0,
-        }
-    }
-
-    /// Lays an `above_row` pattern (length `width`) so that workspace row `edge_y` is
-    /// that pattern over `x[0, width)`. Writes a `width x 4` block at `(0, edge_y-3)`
-    /// whose every row carries the pattern (so its bottom row `edge_y` does too).
-    fn lay_above_row(
-        ws: &mut CurrentFrameWorkspace<u8>,
-        edge_y: usize,
-        log2_w: u8,
-        pattern: &[u8],
-    ) {
-        let width = 1usize << log2_w;
-        let samples: Vec<u8> = (0..4).flat_map(|_| pattern.iter().copied()).collect();
-        let size = IntraRectBlockSize::new(log2_w, 2).unwrap();
-        ws.write_rect_block(PlaneId::Y, 0, edge_y - 3, size, &samples)
-            .unwrap();
-        debug_assert_eq!(width, pattern.len());
-    }
-
-    /// Lays a `left_col` pattern (length `height`) so that workspace column `edge_x`
-    /// is that pattern over `y[0, height)`. Writes a `4 x height` block at
-    /// `(edge_x-3, 0)` whose every column carries the pattern (so its rightmost
-    /// column `edge_x` does too).
-    fn lay_left_col(ws: &mut CurrentFrameWorkspace<u8>, edge_x: usize, log2_h: u8, pattern: &[u8]) {
-        let height = 1usize << log2_h;
-        let mut samples = vec![0u8; 4 * height];
-        for (row, &v) in pattern.iter().enumerate() {
-            for col in 0..4 {
-                samples[row * 4 + col] = v;
-            }
-        }
-        let size = IntraRectBlockSize::new(2, log2_h).unwrap();
-        ws.write_rect_block(PlaneId::Y, edge_x - 3, 0, size, &samples)
-            .unwrap();
-    }
-
-    /// STRIDE/TRANSPOSE GUARD — V_PRED over a NON-SQUARE 64x32 (`W == 64`,
-    /// `H == 32`) block with a REAL, NON-FLAT above row. §7.13.2.8 V_PRED copies the
-    /// 64-wide above row into every one of the 32 rows; a width/height swap or a
-    /// `stride == height`-instead-of-`width` bug would corrupt the layout and fail.
-    /// The asymmetric edge is the key: a flat block (the ac0ej3 all-68 oracle) would
-    /// MASK a transpose.
-    #[test]
-    fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
-        let mut ws = new_general_intra_workspace::<u8>(64, 128, BitDepth::Eight).unwrap();
-        let above_row: Vec<u8> = (0..64).map(|x| 100 + x as u8).collect();
-        lay_above_row(&mut ws, 63, 6, &above_row);
-
-        reconstruct_general_intra_cardinal_neighbour_block_into(
-            &mut ws,
-            &all_zero_luma_block(),
-            IntraCardinalDirection::Vertical,
-            PlaneId::Y,
-            0,
-            64,
-            6, // log2_width = 6 -> 64
-            5, // log2_height = 5 -> 32
-            0,
-            false,
-            BitDepth::Eight,
-        )
-        .unwrap();
-
-        for row in 0..32 {
-            for col in 0..64 {
-                assert_eq!(
-                    ws.reconstructed_sample(PlaneId::Y, col, 64 + row).unwrap(),
-                    100 + col as u8,
-                    "V_PRED 64x32 sample ({col},{}) must copy above_row[{col}]",
-                    64 + row,
-                );
-            }
-        }
-    }
-
-    /// STRIDE/TRANSPOSE GUARD — H_PRED over a NON-SQUARE 32x64 (`W == 32`,
-    /// `H == 64`) block with a REAL, NON-FLAT left column. §7.13.2.8 H_PRED fills
-    /// each of the 64 rows with one of the 64 left samples; a width/height swap would
-    /// read past the 64-tall left column or mis-stride and fail.
-    #[test]
-    fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
-        let mut ws = new_general_intra_workspace::<u8>(128, 64, BitDepth::Eight).unwrap();
-        let left_col: Vec<u8> = (0..64).map(|y| 50 + y as u8).collect();
-        lay_left_col(&mut ws, 63, 6, &left_col);
-
-        reconstruct_general_intra_cardinal_neighbour_block_into(
-            &mut ws,
-            &all_zero_luma_block(),
-            IntraCardinalDirection::Horizontal,
-            PlaneId::Y,
-            64,
-            0,
-            5, // log2_width = 5 -> 32
-            6, // log2_height = 6 -> 64
-            0,
-            false,
-            BitDepth::Eight,
-        )
-        .unwrap();
-
-        for row in 0..64 {
-            for col in 0..32 {
-                assert_eq!(
-                    ws.reconstructed_sample(PlaneId::Y, 64 + col, row).unwrap(),
-                    50 + row as u8,
-                    "H_PRED 32x64 sample ({},{row}) must fill row from left_col[{row}]",
-                    64 + col,
-                );
-            }
-        }
-    }
-
-    /// §7.13.2.1 NO-ABOVE FALLBACK GUARD — the ac0ej3 MI(64,0) case: a NON-SQUARE
-    /// 64x32 V_PRED block at the frame TOP (`y == 0`, `haveAbove == 0`) with a
-    /// NON-FLAT reconstructed left column. §7.13.2.1 synthesizes
-    /// `AboveRow[i] = CurrFrame[plane][y][x-1]` — the block's top-left left neighbour
-    /// (`left[0]`), repeated across the whole synthesized above row — so the V_PRED
-    /// copy is a FLAT block equal to `left[0]`, NOT `left[i]`. A non-flat left column
-    /// proves the fallback reads ONLY `left[0]` (a bug reading `left[i]` row-wise
-    /// would produce a vertical gradient and fail).
-    #[test]
-    fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
-        let mut ws = new_general_intra_workspace::<u8>(128, 64, BitDepth::Eight).unwrap();
-        let left_col: Vec<u8> = (0..32).map(|y| 70 + y as u8).collect();
-        lay_left_col(&mut ws, 63, 5, &left_col);
-
-        reconstruct_general_intra_cardinal_neighbour_block_into(
-            &mut ws,
-            &all_zero_luma_block(),
-            IntraCardinalDirection::Vertical,
-            PlaneId::Y,
-            64,
-            0,
-            6, // log2_width = 6 -> 64
-            5, // log2_height = 5 -> 32
-            0,
-            false,
-            BitDepth::Eight,
-        )
-        .unwrap();
-
-        for row in 0..32 {
-            for col in 0..64 {
-                assert_eq!(
-                    ws.reconstructed_sample(PlaneId::Y, 64 + col, row).unwrap(),
-                    70,
-                    "no-above V_PRED 64x32 sample ({},{row}) must be the flat left corner left[0]=70",
-                    64 + col,
-                );
-            }
-        }
-    }
-
-    /// §7.13.2.1 NO-LEFT FALLBACK GUARD — the symmetric H_PRED case at the frame
-    /// LEFT edge (`x == 0`, `haveLeft == 0`) with a NON-FLAT reconstructed above row.
-    /// §7.13.2.1 synthesizes `LeftCol[i] = CurrFrame[plane][y-1][x]` (`above[0]`),
-    /// so the H_PRED copy is FLAT equal to `above[0]`, NOT `above[j]`.
-    #[test]
-    fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
-        let mut ws = new_general_intra_workspace::<u8>(64, 128, BitDepth::Eight).unwrap();
-        let above_row: Vec<u8> = (0..32).map(|x| 80 + x as u8).collect();
-        lay_above_row(&mut ws, 63, 5, &above_row);
-
-        reconstruct_general_intra_cardinal_neighbour_block_into(
-            &mut ws,
-            &all_zero_luma_block(),
-            IntraCardinalDirection::Horizontal,
-            PlaneId::Y,
-            0,
-            64,
-            5, // log2_width = 5 -> 32
-            6, // log2_height = 6 -> 64
-            0,
-            false,
-            BitDepth::Eight,
-        )
-        .unwrap();
-
-        for row in 0..64 {
-            for col in 0..32 {
-                assert_eq!(
-                    ws.reconstructed_sample(PlaneId::Y, col, 64 + row).unwrap(),
-                    80,
-                    "no-left H_PRED 32x64 sample ({col},{}) must be the flat above corner above[0]=80",
-                    64 + row,
-                );
-            }
-        }
-    }
-
-    /// Reference §7.13.2.2 Paeth sample (independent of the splot-recon primitive):
-    /// pick whichever of `left` / `above` / `top_left` is closest to
-    /// `above + left - top_left`, ties favouring left then above.
-    fn ref_paeth(left: i32, above: i32, top_left: i32) -> u8 {
-        let base = above + left - top_left;
-        let p_left = (base - left).abs();
-        let p_top = (base - above).abs();
-        let p_top_left = (base - top_left).abs();
-        let v = if p_left <= p_top && p_left <= p_top_left {
-            left
-        } else if p_top <= p_top_left {
-            above
-        } else {
-            top_left
-        };
-        u8::try_from(v).unwrap()
-    }
-
-    /// STRIDE / CORNER GUARD — §7.13.2.2 PAETH over a NON-SQUARE 8x16 (`W == 8`,
-    /// `H == 16`) block with a REAL, NON-FLAT above row, a REAL, NON-FLAT left
-    /// column, AND a DISTINCT corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]`.
-    /// Paeth genuinely depends on all three (`base = AboveRow[j] + LeftCol[i] -
-    /// AboveRow[-1]`), so a width/height swap, a wrong stride, or reading the corner
-    /// from the above row / left column instead of `CurrFrame[y-1][x-1]` would
-    /// corrupt the output and fail. The asymmetric edges are the key: the flat
-    /// ac0ej3 oracle (all `68`) would MASK every one of those mix-ups.
-    #[test]
-    fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
-        let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
-
-        let above: Vec<u8> = (0..8).map(|j| 30 + 7 * j as u8).collect();
-        let above_block: Vec<u8> = (0..4).flat_map(|_| above.iter().copied()).collect();
-        ws.write_rect_block(
-            PlaneId::Y,
-            16,
-            12,
-            IntraRectBlockSize::new(3, 2).unwrap(),
-            &above_block,
-        )
-        .unwrap();
-
-        let corner: u8 = 200;
-        let left: Vec<u8> = (0..16).map(|i| 40 + 5 * i as u8).collect();
-        let mut left_block = vec![0u8; 4 * 32];
-        for col in 0..4 {
-            left_block[15 * 4 + col] = corner;
-            for (i, &v) in left.iter().enumerate() {
-                left_block[(16 + i) * 4 + col] = v;
-            }
-        }
-        ws.write_rect_block(
-            PlaneId::Y,
-            12,
-            0,
-            IntraRectBlockSize::new(2, 5).unwrap(),
-            &left_block,
-        )
-        .unwrap();
-
-        assert_eq!(ws.reconstructed_sample(PlaneId::Y, 15, 15).unwrap(), corner);
-        assert_eq!(
-            ws.reconstructed_sample(PlaneId::Y, 16, 15).unwrap(),
-            above[0]
-        );
-        assert_eq!(
-            ws.reconstructed_sample(PlaneId::Y, 15, 16).unwrap(),
-            left[0]
-        );
-
-        reconstruct_general_intra_luma_paeth_neighbour_block_into(
-            &mut ws,
-            &all_zero_luma_block(),
-            PlaneId::Y,
-            16,
-            16,
-            3, // log2_width = 3 -> 8
-            4, // log2_height = 4 -> 16
-            0,
-            false,
-            BitDepth::Eight,
-        )
-        .unwrap();
-
-        for (i, &left_i) in left.iter().enumerate() {
-            for (j, &above_j) in above.iter().enumerate() {
-                let want = ref_paeth(i32::from(left_i), i32::from(above_j), i32::from(corner));
-                assert_eq!(
-                    ws.reconstructed_sample(PlaneId::Y, 16 + j, 16 + i).unwrap(),
-                    want,
-                    "PAETH 8x16 sample (col {j}, row {i}) must be Paeth(left[{i}], above[{j}], corner)"
-                );
-            }
-        }
-    }
-
-    /// RESIDUAL-ADD GUARD — §7.13.2.2 PAETH over a NON-SQUARE 8x16 block with REAL,
-    /// NON-FLAT above row / left column / DISTINCT corner (so the Paeth prediction is
-    /// itself NON-FLAT), carrying a NON-`all_zero` `ADST_ADST` residual with several
-    /// asymmetric coefficients. The reconstructed output must equal the §7.14.3
-    /// `Clip1(paethPred + inverse-transform(residual))` — proven by independently
-    /// computing the Paeth prediction (the verbatim `ref_paeth` over the laid edges)
-    /// and reconstructing the SAME residual onto it through the shared
-    /// `reconstruct_general_intra_block_rect_with_prediction` (the §7.14.3 helper every
-    /// residual path uses). A path that dropped the residual (writing the bare
-    /// prediction) or added it onto the wrong predictor would diverge from this
-    /// reference; the asymmetric coeffs + non-flat prediction make any such mix-up
-    /// observable (a flat prediction or DC-only residual would MASK it).
-    #[test]
-    fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
-        let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
-
-        let above: Vec<u8> = (0..8).map(|j| 30 + 7 * j as u8).collect();
-        let above_block: Vec<u8> = (0..4).flat_map(|_| above.iter().copied()).collect();
-        ws.write_rect_block(
-            PlaneId::Y,
-            16,
-            12,
-            IntraRectBlockSize::new(3, 2).unwrap(),
-            &above_block,
-        )
-        .unwrap();
-
-        let corner: u8 = 200;
-        let left: Vec<u8> = (0..16).map(|i| 40 + 5 * i as u8).collect();
-        let mut left_block = vec![0u8; 4 * 32];
-        for col in 0..4 {
-            left_block[15 * 4 + col] = corner;
-            for (i, &v) in left.iter().enumerate() {
-                left_block[(16 + i) * 4 + col] = v;
-            }
-        }
-        ws.write_rect_block(
-            PlaneId::Y,
-            12,
-            0,
-            IntraRectBlockSize::new(2, 5).unwrap(),
-            &left_block,
-        )
-        .unwrap();
-
-        let mut paeth_pred = vec![0u8; 8 * 16];
-        for (i, &left_i) in left.iter().enumerate() {
-            for (j, &above_j) in above.iter().enumerate() {
-                paeth_pred[i * 8 + j] =
-                    ref_paeth(i32::from(left_i), i32::from(above_j), i32::from(corner));
-            }
-        }
-
-        let mut quant = vec![0i32; 128];
-        quant[0] = -96;
-        quant[1] = 41;
-        quant[8] = -23;
-        quant[9] = 12;
-        let block = LumaCoeffBlock {
-            all_zero: false,
-            eob: 10,
-            quant,
-            intra_ist: None,
-            plane_tx_type: 3, // ADST_ADST
-        };
-
-        let want = reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
-            &paeth_pred,
-            149,
-            PlaneId::Y,
-            3,
-            4,
-            block.plane_tx_type,
-            true,
-            BitDepth::Eight,
-        )
-        .unwrap();
-
-        reconstruct_general_intra_luma_paeth_neighbour_block_into(
-            &mut ws,
-            &block,
-            PlaneId::Y,
-            16,
-            16,
-            3,
-            4,
-            149,
-            true,
-            BitDepth::Eight,
-        )
-        .unwrap();
-
-        let mut differs_from_prediction = false;
-        for i in 0..16 {
-            for j in 0..8 {
-                let got = ws.reconstructed_sample(PlaneId::Y, 16 + j, 16 + i).unwrap();
-                assert_eq!(
-                    got,
-                    want[i * 8 + j],
-                    "PAETH+residual 8x16 sample (col {j}, row {i}) must be Clip1(paethPred + residual)"
-                );
-                if u32::from(got) != u32::from(paeth_pred[i * 8 + j]) {
-                    differs_from_prediction = true;
-                }
-            }
-        }
-        assert!(
-            differs_from_prediction,
-            "the residual must actually move samples off the bare Paeth prediction"
-        );
-    }
-
-    /// END-TO-END §7.13.2.9 useIBP — an 8x8 zone-1 `pAngle=45` `all_zero` leaf at
-    /// (8, 8) with a REAL, NON-FLAT above row, left column, and a DISTINCT corner,
-    /// the §7.13.2.7 edge filter a NO-OP (`OneSidedEdgeFilter::default()` on BOTH
-    /// edges), `num4_far == 0`. The output is the §7.13.2.8 primary (zone-1 above)
-    /// blended with the secondary (`secondAngle = 225`, zone-3 left) per §7.13.2.9.
-    /// The expected 8x8 samples are computed offline from the VERBATIM AVM IDIF
-    /// primary + secondary predictors and the §7.13.2.9 weights/blend (asymmetric
-    /// above/left values, so a primary<->secondary swap, a missing transpose, or a
-    /// wrong secondAngle changes the pinned bytes). This exercises the whole IBP
-    /// reconstructor end to end, since no ac0ej3 leaf reaches it (the decode-order
-    /// cascade is config-blocked; see the recon-region tests).
-    ///
-    /// Neighbour layout: above row `y=7` over `x[8,16)` is `100+i` (laid via an 8x4
-    /// block at `(8,4)`); left column `x=7` is `corner(7,7)=200` then `50+2i` over
-    /// `y[8,16)` (laid via a 4x16 block at `(4,0)`).
-    #[test]
-    fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
-        let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
-        let above_in: Vec<u8> = (0..8).map(|i| 100 + i as u8).collect();
-        let above_block: Vec<u8> = (0..4).flat_map(|_| above_in.iter().copied()).collect();
-        ws.write_rect_block(
-            PlaneId::Y,
-            8,
-            4,
-            IntraRectBlockSize::new(3, 2).unwrap(),
-            &above_block,
-        )
-        .unwrap();
-        let corner: u8 = 200;
-        let left_in: Vec<u8> = (0..8).map(|i| 50 + 2 * i as u8).collect();
-        let mut left_block = vec![1u8; 4 * 16];
-        for col in 0..4 {
-            left_block[7 * 4 + col] = corner;
-            for (i, &v) in left_in.iter().enumerate() {
-                left_block[(8 + i) * 4 + col] = v;
-            }
-        }
-        ws.write_rect_block(
-            PlaneId::Y,
-            4,
-            0,
-            IntraRectBlockSize::new(2, 4).unwrap(),
-            &left_block,
-        )
-        .unwrap();
-
-        reconstruct_general_intra_one_sided_ibp_luma_block_into(
-            &mut ws,
-            &all_zero_luma_block(),
-            45, // pAngle (zone-1)
-            8,
-            8,
-            3, // log2_width = 3 -> 8
-            3, // log2_height = 3 -> 8
-            0, // qindex (unused for all_zero)
-            0, // primary_num4_far (above-right clamps to above_in[7])
-            OneSidedEdgeFilter::default(),
-            IbpSecondary {
-                second_angle: 225,
-                edge_filter: OneSidedEdgeFilter::default(),
-                num4_far: 0, // below-left clamps to left_in[7]
-            },
-            false,
-            BitDepth::Eight,
-        )
-        .unwrap();
-
-        #[rustfmt::skip]
-        let expected: [u8; 64] = [
-            77, 86, 91, 95, 98, 100, 102, 102,
-            70, 80, 86, 90, 94,  96,  98,  99,
-            68, 76, 83, 87, 91,  93,  94,  95,
-            67, 75, 81, 86, 88,  90,  91,  93,
-            67, 75, 80, 83, 86,  88,  89,  91,
-            68, 75, 78, 81, 83,  86,  87,  89,
-            69, 73, 77, 80, 82,  84,  86,  87,
-            69, 73, 76, 78, 80,  82,  84,  86,
-        ];
-        for row in 0..8 {
-            for col in 0..8 {
-                assert_eq!(
-                    ws.reconstructed_sample(PlaneId::Y, 8 + col, 8 + row)
-                        .unwrap(),
-                    expected[row * 8 + col],
-                    "IBP 8x8 p45 sample (col {col}, row {row}) must match the AVM blend"
-                );
-            }
-        }
-    }
-}
+#[path = "runtime_minimal_recon/tests.rs"]
+mod tests;

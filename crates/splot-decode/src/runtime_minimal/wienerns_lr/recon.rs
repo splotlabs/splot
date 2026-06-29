@@ -39,12 +39,14 @@ use crate::Result;
 #[cfg(test)]
 use crate::runtime_minimal_recon::new_general_intra_workspace;
 use crate::runtime_minimal_recon::{
-    IbpSecondary, OneSidedEdgeFilter, reconstruct_general_intra_block_rect_into,
+    IbpSecondary, OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters,
+    reconstruct_general_intra_block_rect_into,
     reconstruct_general_intra_cardinal_neighbour_block_into,
     reconstruct_general_intra_luma_paeth_neighbour_block_into,
     reconstruct_general_intra_one_sided_ibp_luma_block_into,
     reconstruct_general_intra_one_sided_left_neighbour_block_into,
     reconstruct_general_intra_one_sided_neighbour_block_into,
+    reconstruct_general_intra_two_sided_middle_luma_block_into,
     reconstruct_intrabc_block_residual_rect_into,
 };
 use crate::tile_payload::{
@@ -735,6 +737,21 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let mrl_delta = MRL_INDEX_TO_DELTA[usize::from(mrl_index).min(3)];
         let nominal_angle = i32::from(nominal) + i32::from(angle_delta_y) * ANGLE_STEP + mrl_delta;
         let p_angle = wide_angle_mapping(w, h, nominal_angle);
+        if mrl_index == 0 && 90 < p_angle && p_angle < 180 {
+            return self.try_reconstruct_two_sided_middle(
+                mi_col,
+                mi_row,
+                log2_width,
+                log2_height,
+                p_angle,
+                block,
+                qindex,
+                use_tcq,
+                mi_w,
+                mi_h,
+                tile_offset,
+            );
+        }
         let one_sided = (0 < p_angle && p_angle < 90) || (180 < p_angle && p_angle < 270);
         if !one_sided {
             return Ok(false);
@@ -836,6 +853,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 ) else {
                     return Ok(false);
                 };
+                let have_above = self.left_leaf_has_above_row(mi_col, mi_row);
                 reconstruct_general_intra_one_sided_left_neighbour_block_into(
                     &mut self.workspace,
                     block,
@@ -847,6 +865,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     log2_height,
                     qindex,
                     num4_below_left,
+                    have_above,
                     use_tcq,
                     self.bit_depth,
                     edge_filter,
@@ -1004,6 +1023,168 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             )
         })?;
         Ok(true)
+    }
+
+    /// Attempts to reconstruct a §7.13.2.8 ZONE-2 (middle, `90 < p_angle < 180`)
+    /// directional luma leaf over BOTH the above row and the left column. Returns
+    /// `Ok(true)` when reconstructed bit-exact, `Ok(false)` when DEFERRED.
+    ///
+    /// A zone-2 leaf reads the in-block above row `AboveRow[0..w)`, the in-block left
+    /// column `LeftCol[0..h)`, and the shared corner — NO above-right / below-left far
+    /// samples (the z2 projection's `base_x in [-1, w-1]`, `base_y in [-1, h-1]` stay
+    /// in-block, AVM `need_right == need_bottom == 0`). A leaf is ADMITTED only when
+    /// the whole above row, left column, and corner unit are reconstructed by this
+    /// sink ([`Self::two_sided_middle_neighbours_reconstructed`]) and the §7.13.2.7
+    /// two-edge filter resolves (its corner-opposite samples are covered); otherwise
+    /// DEFER. `MrlIndex == 0` is enforced by the caller.
+    #[allow(clippy::too_many_arguments)]
+    fn try_reconstruct_two_sided_middle(
+        &mut self,
+        mi_col: usize,
+        mi_row: usize,
+        log2_width: u32,
+        log2_height: u32,
+        p_angle: i32,
+        block: &LumaCoeffBlock,
+        qindex: u32,
+        use_tcq: bool,
+        mi_w: usize,
+        mi_h: usize,
+        tile_offset: ByteOffset,
+    ) -> Result<bool> {
+        let Ok(p_angle_u16) = u16::try_from(p_angle) else {
+            return Ok(false);
+        };
+        let w = 1u32 << log2_width;
+        let h = 1u32 << log2_height;
+        if !self.two_sided_middle_neighbours_reconstructed(mi_col, mi_row, mi_w, mi_h) {
+            return Ok(false);
+        }
+        let Some(filters) =
+            self.resolve_two_sided_middle_edge_filters(mi_col, mi_row, w, h, p_angle, tile_offset)?
+        else {
+            return Ok(false);
+        };
+        let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+        reconstruct_general_intra_two_sided_middle_luma_block_into(
+            &mut self.workspace,
+            block,
+            p_angle_u16,
+            x,
+            y,
+            log2_width,
+            log2_height,
+            qindex,
+            use_tcq,
+            self.bit_depth,
+            filters,
+        )
+        .map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_recon_luma_two_sided_middle_write",
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// Whether the §7.13.2.8 zone-2 above row (`mi_row - 1` over the block's `mi_w`
+    /// columns), left column (`mi_col - 1` over `mi_h` rows), AND the diagonal corner
+    /// unit `(mi_col - 1, mi_row - 1)` are all reconstructed by this sink. Zone-2
+    /// reads no above-right / below-left, so only the in-block edges + corner matter.
+    fn two_sided_middle_neighbours_reconstructed(
+        &self,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+    ) -> bool {
+        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+        let (Some(above), Some(left)) = (mi_row.checked_sub(1), mi_col.checked_sub(1)) else {
+            return false;
+        };
+        let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
+        if !covered(left, above) {
+            return false;
+        }
+        if !(mi_col..mi_col.saturating_add(mi_w)).all(|c| covered(c, above)) {
+            return false;
+        }
+        (mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(left, r))
+    }
+
+    /// Resolves the §7.13.2.7 step-1 filters for BOTH edges of a zone-2 leaf into a
+    /// [`TwoSidedMiddleEdgeFilters`], or `None` to DEFER. For zone-2 `applyIbp == 0`
+    /// (IBP only fires for `p_angle < 90 || p_angle > 180`), so `filterType =
+    /// is_smooth(above) | is_smooth(left)` seeds BOTH edges, `angleAbove = p_angle -
+    /// 90`, `angleLeft = p_angle - 180`, and `need_right == need_bottom == false` (no
+    /// far span in the filter). The §7.13.2.14 corner fires when `(w + h) >= 24`.
+    fn resolve_two_sided_middle_edge_filters(
+        &self,
+        mi_col: usize,
+        mi_row: usize,
+        w: u32,
+        h: u32,
+        p_angle: i32,
+        tile_offset: ByteOffset,
+    ) -> Result<Option<TwoSidedMiddleEdgeFilters>> {
+        if !self.enable_intra_edge_filter {
+            return Ok(Some(TwoSidedMiddleEdgeFilters {
+                above: OneSidedEdgeFilter::default(),
+                left: OneSidedEdgeFilter::default(),
+            }));
+        }
+        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+        let smooth = |mode: Option<IntraYMode>| mode.is_some_and(IntraYMode::is_smooth);
+        let above_smooth = smooth(
+            mi_row
+                .checked_sub(1)
+                .and_then(|r| coverage.y_mode_at(mi_col, r)),
+        );
+        let left_smooth = smooth(
+            mi_col
+                .checked_sub(1)
+                .and_then(|c| coverage.y_mode_at(c, mi_row)),
+        );
+        let filter_type = above_smooth || left_smooth;
+        let corner_applies = (w + h) >= 24;
+        let above_spec = OneSidedEdgeSpec {
+            orientation: EdgeOrientation::Above,
+            filter_type,
+            angle_delta: p_angle - 90,
+            need_far: false,
+        };
+        let left_spec = OneSidedEdgeSpec {
+            orientation: EdgeOrientation::Left,
+            filter_type,
+            angle_delta: p_angle - 180,
+            need_far: false,
+        };
+        let Some(above) = self.assemble_one_sided_edge_filter(
+            above_spec,
+            corner_applies,
+            w,
+            h,
+            mi_col,
+            mi_row,
+            tile_offset,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(left) = self.assemble_one_sided_edge_filter(
+            left_spec,
+            corner_applies,
+            w,
+            h,
+            mi_col,
+            mi_row,
+            tile_offset,
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(TwoSidedMiddleEdgeFilters { above, left }))
     }
 
     /// Resolves the §7.13.2.7 step-1 edge-filter / corner-filter inputs for a
@@ -1338,6 +1519,19 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// active we require ALL `mi_h` below-left units COVERED (pad boundary matches
     /// AVM); when it is a no-op only the `max_read`-bounded projection reads matter.
     ///
+    /// Whether a zone-3 (left-reading) leaf's above row is AVAILABLE (§7.13.2.1
+    /// `haveAbove` / AVM `n_top_px > 0`): the above MI unit `(mi_col, mi_row - 1)`
+    /// is in-grid. This drives the §7.13.2.1 corner `LeftCol[-1]` selection — the
+    /// DIAGONAL above-left `CurrFrame[y - 1][x - 1]` when available, else the top of
+    /// the left column `CurrFrame[y][x - 1]`. A frame-top leaf (`mi_row == 0`) has
+    /// no above row, so the corner is the left-column top.
+    fn left_leaf_has_above_row(&self, mi_col: usize, mi_row: usize) -> bool {
+        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+        mi_row
+            .checked_sub(1)
+            .is_some_and(|above| !coverage.off_grid(mi_col, above))
+    }
+
     /// `height` is the block's sample HEIGHT (`Tx_Height`): the in-block left column
     /// is `LeftCol[0..height)`; `max_read < height` means the projection stays
     /// in-block.

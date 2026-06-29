@@ -908,6 +908,7 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 luma_log2,
                 qindex,
                 num4_below_left,
+                false, // have_above: first-SB-row no-above leaf, corner `CurrFrame[y][x-1]`
                 luma_use_tcq,
                 bit_depth,
                 crate::runtime_minimal_recon::OneSidedEdgeFilter::default(),
