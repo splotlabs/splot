@@ -238,23 +238,33 @@ const MI40_IBP_STEP: u16 = 65;
 /// the above row + above-right; zone-3 `pAngle > 180` reads the left column +
 /// below-left) over the proven no-edge-filter subset grew the region `743456` →
 /// `743520` (+64, the zone-1 `TX_8X8` leaf at MI(248,28), `pAngle 81` from
-/// `Mode_To_Angle[D67] + AngleDeltaY(-3) * ANGLE_STEP`). ac0ej3's sequence sets
-/// `enable_intra_edge_filter == 1` and `enable_ibp == 1`, so a one-sided leaf is
-/// admitted only when the §7.13.2.17 edge-filter strength is `0` (a genuine
-/// `av2_filter_intra_edge` no-op), no §7.13.2.7 corner filter fires (`w + h < 24`),
-/// `useIBP == 0` (its odd `AngleDeltaY` forces the §7.13.2.7 even-delta gate off),
-/// `MrlIndex == 0`, and every read above-right unit is reconstructed — so the raw-edge
-/// §7.13.2.8 IDIF reproduces the spec output bit-exact. The filtered-edge / `useIBP` /
-/// corner-filter / `MrlIndex > 0` / non-square one-sided leaves still DEFER.
-const LUMA_RECON_SAMPLE_TOTAL: usize = 743_520;
+/// `Mode_To_Angle[D67] + AngleDeltaY(-3) * ANGLE_STEP`).
+///
+/// Wiring the §7.13.2.18 intra edge filter + §7.13.2.14 corner filter into the
+/// one-sided IDIF reconstructors then admitted the corner-filter + edge-filter-active
+/// one-sided sub-class (`743520` → `743776`, +256, the zone-1 16x16 `D45`-seed leaf at
+/// MI(148,168), `pAngle 58`, `strength 3`, corner active). The §7.13.2.15/16 per-edge
+/// `filterType` is derived from the REAL decoded neighbour `is_smooth` modes recorded
+/// in the coverage map; the §7.13.2.17 strength + §7.13.2.7 `numPx` drive the
+/// `av2_filter_intra_edge` sweep, and the §7.13.2.14 corner blend
+/// (`needAbove && needLeft && (w + h) >= 24`) rewrites the shared corner from the
+/// reconstructed opposite-edge `[0]` sample. A leaf is admitted only when `useIBP == 0`
+/// (`applyIbp && EVEN AngleDeltaY` DEFERS — the §7.13.2.9 IBP secondary blend is
+/// unmodelled), `MrlIndex == 0`, square, the read edge + above-right/below-left are
+/// reconstructed, AND (when the corner fires) the opposite-edge `[0]` sample is
+/// reconstructed — otherwise the leaf DEFERS rather than reading a fill value (so the
+/// prompt's named MI(232,28) seed DEFERS until its left neighbour MI(231,28) is
+/// reconstructed by the decode-order cascade). The `useIBP` / `MrlIndex > 0` /
+/// non-square one-sided leaves still DEFER.
+const LUMA_RECON_SAMPLE_TOTAL: usize = 743_776;
 /// Sum of every reconstructed luma sample in the verified region (derived from the AVM
 /// pre-filter oracle over the sink's covered MI units, zero mismatch vs splot).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 49_947_861;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 49_975_135;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0x07da_e09c_b66f_0e6c;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0xf09c_77ad_631e_2b56;
 
 /// The bottom-edge `TX_64X64 DC_PRED` block at MI(16,256), x[64,128) y[1024,1080):
 /// its 56 in-frame rows (the 64-tall block overhangs the 1080-tall frame by 8). The
@@ -1199,6 +1209,68 @@ fn ac0ej3_one_sided_zone1_idif_block_reconstructs_bit_exact_against_prefilter_or
             ONE_SIDED_ZONE1_SAMPLE_COUNT,
             ONE_SIDED_ZONE1_SAMPLE_SUM,
             ONE_SIDED_ZONE1_FNV1A64,
+        ),
+    );
+}
+
+/// The AVM pre-filter oracle samples (row-major, `[y][x]`) for the §7.13.2.8
+/// zone-1 one-sided IDIF leaf at MI(148,168), x[592,608) y[672,688), with the
+/// §7.13.2.18 edge filter AND §7.13.2.14 corner filter ACTIVE. A 16x16 `D45`-seed
+/// leaf, `pAngle 58` (`AngleDeltaY` resolves the one-sided zone-1 angle whose
+/// `dx == Dr_Intra_Derivative[58]` projects up-and-right), §7.13.2.17 `strength 3`
+/// over the above edge (`filterType` from the real neighbour modes), corner filter
+/// fires (`w + h == 32 >= 24`). The strong up-and-right GRADIENT (a 69→281 ramp) is
+/// the ASYMMETRIC signal that distinguishes the correct filtered-edge projection
+/// from the raw-edge one: a wrong strength, kernel phase, corner blend, or `numPx`
+/// changes these samples. Derived offline from `/tmp/pref.yuv`.
+#[rustfmt::skip]
+const ONE_SIDED_EDGEFILT_ORACLE: [[u16; 16]; 16] = [
+    [69, 70, 71, 72, 73, 74, 74, 75, 75, 75, 75, 75, 75, 75, 78, 84],
+    [70, 72, 74, 76, 78, 79, 80, 81, 81, 81, 81, 81, 81, 83, 88, 97],
+    [71, 74, 77, 79, 81, 83, 84, 85, 86, 86, 86, 86, 87, 90, 97, 108],
+    [71, 75, 78, 81, 83, 85, 87, 88, 89, 89, 89, 89, 92, 97, 106, 120],
+    [72, 75, 79, 82, 84, 86, 88, 90, 90, 91, 91, 93, 97, 105, 117, 132],
+    [71, 75, 78, 81, 84, 86, 88, 90, 90, 91, 93, 96, 102, 112, 127, 143],
+    [71, 74, 77, 80, 83, 85, 87, 89, 90, 91, 94, 99, 107, 121, 137, 155],
+    [71, 73, 76, 79, 81, 83, 85, 88, 89, 92, 97, 105, 117, 133, 150, 168],
+    [70, 72, 75, 77, 79, 81, 84, 86, 88, 93, 100, 111, 126, 145, 162, 183],
+    [70, 72, 73, 75, 78, 80, 83, 86, 91, 98, 107, 122, 140, 159, 179, 199],
+    [69, 71, 72, 74, 77, 79, 83, 87, 94, 104, 117, 134, 154, 175, 196, 216],
+    [69, 70, 72, 74, 76, 79, 83, 90, 99, 112, 129, 149, 170, 192, 214, 233],
+    [69, 70, 71, 74, 77, 80, 85, 93, 105, 122, 142, 164, 187, 211, 232, 249],
+    [69, 70, 71, 74, 77, 81, 89, 100, 114, 134, 157, 181, 205, 229, 249, 264],
+    [69, 70, 71, 74, 77, 83, 92, 106, 124, 146, 170, 195, 221, 244, 263, 274],
+    [69, 70, 72, 74, 79, 85, 96, 113, 134, 158, 183, 209, 234, 256, 272, 281],
+];
+const ONE_SIDED_EDGEFILT_SAMPLE_COUNT: usize = 256;
+/// Sum of the MI(148,168) edge-filter-active one-sided block (`[[u16; 16]; 16]`).
+const ONE_SIDED_EDGEFILT_SAMPLE_SUM: u64 = 27_274;
+/// FNV-1a-64 over the block (row-major, sample-major u16 LE).
+const ONE_SIDED_EDGEFILT_FNV1A64: u64 = 0xfae6_cc1f_cfe6_6327;
+
+/// Bit-exact verification of the §7.13.2.8 ZONE-1 ONE-SIDED IDIF luma leaf at
+/// MI(148,168) (sample x[592,608) y[672,688)) whose §7.13.2.7 step-1 path runs the
+/// §7.13.2.14 corner filter AND the §7.13.2.18 edge filter (`strength 3`) before
+/// the prediction. This is the FIRST corner-filter + edge-filter-active one-sided
+/// leaf the sink admits: the §7.13.2.15/16 per-edge `filterType` is derived from the
+/// real decoded neighbour `is_smooth` modes, the §7.13.2.17 strength + §7.13.2.7
+/// `numPx` drive `av2_filter_intra_edge`, and the corner blend rewrites the shared
+/// corner from the reconstructed `LeftCol[0]`. Verified per-sample against the AVM
+/// pre-filter oracle — a wrong filter/corner/numPx changes the strong gradient.
+#[test]
+#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
+fn ac0ej3_one_sided_edge_filter_corner_block_reconstructs_bit_exact_against_prefilter_oracle() {
+    let sink = reconstruct_ac0ej3_sink();
+    assert_luma_region_oracle(
+        &sink,
+        "MI(148,168) zone-1 one-sided edge-filter + corner IDIF",
+        (592, 16),
+        (672, 16),
+        |x, y| ONE_SIDED_EDGEFILT_ORACLE[y - 672][x - 592],
+        (
+            ONE_SIDED_EDGEFILT_SAMPLE_COUNT,
+            ONE_SIDED_EDGEFILT_SAMPLE_SUM,
+            ONE_SIDED_EDGEFILT_FNV1A64,
         ),
     );
 }

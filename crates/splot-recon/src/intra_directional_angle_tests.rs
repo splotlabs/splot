@@ -978,3 +978,46 @@ fn middle_directional_angle_prediction_validates_output_shape() {
     );
     assert_eq!(short_output, [9u8; 15]);
 }
+
+#[test]
+fn intra_edge_filter_strength_zero_is_a_no_op() {
+    // §7.13.2.18: strength 0 returns without touching the edge.
+    let mut edge = [10u16, 200, 30, 180, 50, 160, 70, 140];
+    let original = edge;
+    apply_intra_edge_filter(&mut edge, 8, 0).unwrap();
+    assert_eq!(edge, original, "strength 0 must leave the edge unchanged");
+}
+
+#[test]
+fn intra_edge_filter_kernels_match_spec_verbatim() {
+    // §7.13.2.18 over an ASYMMETRIC edge (`edge[0]` is the corner, never written;
+    // `i = 1..sz-1` with `k = Clip3(0, sz-1, i-2+j)` and `(s + 8) >> 4`). Expected
+    // values computed directly from the three Intra_Edge_Kernel rows.
+    let base = [10u16, 200, 30, 180, 50, 160, 70, 140];
+
+    let mut s1 = base;
+    apply_intra_edge_filter(&mut s1, 8, 1).unwrap();
+    assert_eq!(s1, [10, 110, 110, 110, 110, 110, 110, 123]);
+
+    let mut s2 = base;
+    apply_intra_edge_filter(&mut s2, 8, 2).unwrap();
+    assert_eq!(s2, [10, 88, 130, 93, 125, 98, 120, 118]);
+
+    let mut s3 = base;
+    apply_intra_edge_filter(&mut s3, 8, 3).unwrap();
+    assert_eq!(s3, [10, 84, 110, 110, 110, 110, 116, 125]);
+}
+
+#[test]
+fn intra_edge_filter_rejects_size_beyond_edge() {
+    let mut edge = [1u16, 2, 3, 4];
+    assert!(apply_intra_edge_filter(&mut edge, 5, 1).is_err());
+}
+
+#[test]
+fn filter_intra_edge_corner_matches_spec_verbatim() {
+    // §7.13.2.14: s = LeftCol[0]*5 + AboveRow[-1]*6 + AboveRow[0]*5, Round2(s, 4).
+    // ASYMMETRIC inputs so a swapped tap would change the result.
+    assert_eq!(filter_intra_edge_corner(40, 200, 80), 113);
+    assert_eq!(filter_intra_edge_corner(7, 255, 3), 99);
+}

@@ -220,7 +220,8 @@ pub use intra_directional::{
 pub use intra_directional_angle::{
     IntraDirectionalAngle, IntraDirectionalAngleEdge, IntraDirectionalAngleEdges,
     IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
-    IntraMiddleDirectionalAngleIdifEdges, predict_intra_directional_angle_rect_from_p_angle_into,
+    IntraMiddleDirectionalAngleIdifEdges, apply_intra_edge_filter, filter_intra_edge_corner,
+    predict_intra_directional_angle_rect_from_p_angle_into,
     predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_from_p_angle_into,
     predict_intra_directional_angle_rect_one_sided_idif_into,

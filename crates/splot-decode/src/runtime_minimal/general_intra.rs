@@ -1468,6 +1468,9 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 num4_above_right,
                 luma_use_tcq,
                 bit_depth,
+                // This minimal-tool path is the no-edge-filter subset: a default
+                // no-op leaves the raw §7.13.2.1 edge unchanged.
+                crate::runtime_minimal_recon::OneSidedEdgeFilter::default(),
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         }
@@ -1493,6 +1496,8 @@ fn decode_one_general_intra_block<T: ReconSample>(
                 num4_below_left,
                 luma_use_tcq,
                 bit_depth,
+                // No-edge-filter minimal-tool subset (see the D45 path above).
+                crate::runtime_minimal_recon::OneSidedEdgeFilter::default(),
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))?;
         }
