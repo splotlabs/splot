@@ -866,9 +866,13 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
 
 /// Reconstructs one neighbour-having § 7.13.2.2 PAETH (`PAETH_PRED`,
 /// non-directional) luma block over the § 7.13.2.1 above row / left column / corner
-/// read from the partially-built frame's **real reconstructed neighbours**, writing
-/// the bare prediction (this helper is gated by the caller to an `all_zero` leaf —
-/// a residual-bearing PAETH stays deferred).
+/// read from the partially-built frame's **real reconstructed neighbours**. For an
+/// `all_zero` leaf this writes the bare § 7.13.2.2 prediction; for a residual-bearing
+/// leaf it adds the § 5.20.7.27 decoded residual onto the prediction via the standard
+/// § 7.14.3 `Clip1(pred + inverse-transform(residual))` reconstruction (the same
+/// `reconstruct_general_intra_block_rect_with_prediction` the directional paths use).
+/// PAETH is non-directional, so the residual add is plane-independent of the
+/// predictor: no IDIF / edge-filter / above-right synthesis interacts with it.
 ///
 /// § 7.13.2.2 generates `pred[i][j]` from `LeftCol[i]`, `AboveRow[j]`, and the
 /// shared corner `AboveRow[-1]` (the Paeth predictor: pick whichever of left /
@@ -889,11 +893,14 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,
     y: usize,
     log2_width: u32,
     log2_height: u32,
+    qindex: u32,
+    use_tcq: bool,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
@@ -924,7 +931,22 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
         &mut prediction,
         width,
     )?;
-    workspace.write_rect_block(plane_id, x, y, block_size, &prediction)?;
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_rect_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            plane_id,
+            log2_width,
+            log2_height,
+            block.plane_tx_type,
+            use_tcq,
+            bit_depth,
+        )?
+    };
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -2142,11 +2164,14 @@ mod tests {
 
         reconstruct_general_intra_luma_paeth_neighbour_block_into(
             &mut ws,
+            &all_zero_luma_block(),
             PlaneId::Y,
             16,
             16,
             3, // log2_width = 3 -> 8
             4, // log2_height = 4 -> 16
+            0,
+            false,
             BitDepth::Eight,
         )
         .unwrap();
@@ -2161,6 +2186,119 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// RESIDUAL-ADD GUARD — §7.13.2.2 PAETH over a NON-SQUARE 8x16 block with REAL,
+    /// NON-FLAT above row / left column / DISTINCT corner (so the Paeth prediction is
+    /// itself NON-FLAT), carrying a NON-`all_zero` `ADST_ADST` residual with several
+    /// asymmetric coefficients. The reconstructed output must equal the §7.14.3
+    /// `Clip1(paethPred + inverse-transform(residual))` — proven by independently
+    /// computing the Paeth prediction (the verbatim `ref_paeth` over the laid edges)
+    /// and reconstructing the SAME residual onto it through the shared
+    /// `reconstruct_general_intra_block_rect_with_prediction` (the §7.14.3 helper every
+    /// residual path uses). A path that dropped the residual (writing the bare
+    /// prediction) or added it onto the wrong predictor would diverge from this
+    /// reference; the asymmetric coeffs + non-flat prediction make any such mix-up
+    /// observable (a flat prediction or DC-only residual would MASK it).
+    #[test]
+    fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
+        let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+
+        let above: Vec<u8> = (0..8).map(|j| 30 + 7 * j as u8).collect();
+        let above_block: Vec<u8> = (0..4).flat_map(|_| above.iter().copied()).collect();
+        ws.write_rect_block(
+            PlaneId::Y,
+            16,
+            12,
+            IntraRectBlockSize::new(3, 2).unwrap(),
+            &above_block,
+        )
+        .unwrap();
+
+        let corner: u8 = 200;
+        let left: Vec<u8> = (0..16).map(|i| 40 + 5 * i as u8).collect();
+        let mut left_block = vec![0u8; 4 * 32];
+        for col in 0..4 {
+            left_block[15 * 4 + col] = corner;
+            for (i, &v) in left.iter().enumerate() {
+                left_block[(16 + i) * 4 + col] = v;
+            }
+        }
+        ws.write_rect_block(
+            PlaneId::Y,
+            12,
+            0,
+            IntraRectBlockSize::new(2, 5).unwrap(),
+            &left_block,
+        )
+        .unwrap();
+
+        let mut paeth_pred = vec![0u8; 8 * 16];
+        for (i, &left_i) in left.iter().enumerate() {
+            for (j, &above_j) in above.iter().enumerate() {
+                paeth_pred[i * 8 + j] =
+                    ref_paeth(i32::from(left_i), i32::from(above_j), i32::from(corner));
+            }
+        }
+
+        let mut quant = vec![0i32; 128];
+        quant[0] = -96;
+        quant[1] = 41;
+        quant[8] = -23;
+        quant[9] = 12;
+        let block = LumaCoeffBlock {
+            all_zero: false,
+            eob: 10,
+            quant,
+            intra_ist: None,
+            plane_tx_type: 3, // ADST_ADST
+        };
+
+        let want = reconstruct_general_intra_block_rect_with_prediction(
+            &block.quant,
+            &paeth_pred,
+            149,
+            PlaneId::Y,
+            3,
+            4,
+            block.plane_tx_type,
+            true,
+            BitDepth::Eight,
+        )
+        .unwrap();
+
+        reconstruct_general_intra_luma_paeth_neighbour_block_into(
+            &mut ws,
+            &block,
+            PlaneId::Y,
+            16,
+            16,
+            3,
+            4,
+            149,
+            true,
+            BitDepth::Eight,
+        )
+        .unwrap();
+
+        let mut differs_from_prediction = false;
+        for i in 0..16 {
+            for j in 0..8 {
+                let got = ws.reconstructed_sample(PlaneId::Y, 16 + j, 16 + i).unwrap();
+                assert_eq!(
+                    got,
+                    want[i * 8 + j],
+                    "PAETH+residual 8x16 sample (col {j}, row {i}) must be Clip1(paethPred + residual)"
+                );
+                if u32::from(got) != u32::from(paeth_pred[i * 8 + j]) {
+                    differs_from_prediction = true;
+                }
+            }
+        }
+        assert!(
+            differs_from_prediction,
+            "the residual must actually move samples off the bare Paeth prediction"
+        );
     }
 
     /// END-TO-END §7.13.2.9 useIBP — an 8x8 zone-1 `pAngle=45` `all_zero` leaf at

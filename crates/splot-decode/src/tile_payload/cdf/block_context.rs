@@ -186,6 +186,11 @@ impl IntraYMode {
     #[cfg(test)]
     pub(crate) const D135_PRED_FOR_TEST: Self = Self(Self::D135_PRED);
 
+    /// AV2 § 9.2 `PAETH_PRED` luma mode (non-directional § 7.13.2.2). Test-only: the
+    /// sink tests exercise the PAETH prediction + residual reconstruction path.
+    #[cfg(test)]
+    pub(crate) const PAETH_PRED_FOR_TEST: Self = Self(Self::PAETH_PRED);
+
     /// Maps this luma mode to the non-DC predictor the general intra decode
     /// currently reconstructs (§ 7.13.2.13 smooth prediction), or `None` for
     /// `DC_PRED` and the not-yet-supported non-DC modes (`PAETH_PRED` and the

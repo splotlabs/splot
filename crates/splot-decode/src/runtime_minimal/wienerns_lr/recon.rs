@@ -1413,9 +1413,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ///     ([`Self::cardinal_above_reconstructed`]); same rectangular-aware
     ///     `mrl_index == 0` gate.
     ///
-    /// Every OTHER mode (the §7.13.2.8 angular modes D45/D67/D113/D135/D157/D203,
-    /// PAETH, SMOOTH, and any directional mode with a non-zero `AngleDeltaY` — which
-    /// the upstream `supported_directional_luma` already maps to `None`) is DEFERRED.
+    /// PAETH (`PAETH_PRED`, `mrl_index == 0`) is dispatched to the §7.13.2.2
+    /// predictor + §7.14.3 residual add when its `haveAbove && haveLeft` neighbours
+    /// (above row, left column, diagonal corner) are covered; otherwise it DEFERS.
+    /// The remaining unsupported modes (the §7.13.2.8 angular modes whose one-sided
+    /// / middle path the directional arm cannot yet prove, SMOOTH) are DEFERRED.
     ///
     /// `use_tcq` carries the §7.14.4 luma TCQ `dqDenom` term; `qindex` is the
     /// per-block dequant index (the §5.20.6.5 `DeltaQState.current_q_index`);
@@ -1536,18 +1538,21 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     )
                 })?;
             }
-            (Some(mode), None) if mode.is_paeth() && block.all_zero && mrl_index == 0 => {
+            (Some(mode), None) if mode.is_paeth() && mrl_index == 0 => {
                 if !self.paeth_neighbours_reconstructed(PlaneId::Y, mi_col, mi_row, mi_w, mi_h) {
                     return Ok(());
                 }
                 let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
                 reconstruct_general_intra_luma_paeth_neighbour_block_into(
                     &mut self.workspace,
+                    block,
                     PlaneId::Y,
                     x,
                     y,
                     log2_width,
                     log2_height,
+                    qindex,
+                    use_tcq,
                     self.bit_depth,
                 )
                 .map_err(|_| {
