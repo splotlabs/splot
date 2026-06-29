@@ -29,9 +29,35 @@ use crate::runtime_minimal::wienerns_lr::diagnostics::wienerns_lr_selectable_tra
 use crate::tile_payload::{GeneralIntraResidualError, IntraYMode, SupportedDirectionalLumaMode};
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    InterpolationFilter, PlaneId, PlaneRect, ReconSample, ReferencePlaneView, SubpelPredictParams,
-    subpel_predict_block,
+    BitDepth, InterpolationFilter, PlaneId, PlaneRect, ReconSample, ReferencePlaneView,
+    SubpelPredictParams, subpel_predict_block,
 };
+
+/// Builds the §7.13.3.18 `BILINEAR` IntrABC sub-pel parameters for a `w` x `h`
+/// target from its §7.13.3.17 `scaling` (`startX` / `startY` / `stepX` / `stepY`
+/// and the `firstX..lastX` clip bounds). Shared by the full-recon fractional
+/// predictor and its unit test so the reference is the same parameter mapping.
+pub(in crate::runtime_minimal) fn intrabc_bilinear_params(
+    scaling: PlaneScaling,
+    w: usize,
+    h: usize,
+    bit_depth: BitDepth,
+) -> SubpelPredictParams {
+    SubpelPredictParams {
+        interp: InterpolationFilter::Bilinear,
+        w,
+        h,
+        start_x: scaling.start_x,
+        start_y: scaling.start_y,
+        step_x: scaling.step_x,
+        step_y: scaling.step_y,
+        first_x: scaling.first_x,
+        first_y: scaling.first_y,
+        last_x: scaling.last_x,
+        last_y: scaling.last_y,
+        bit_depth,
+    }
+}
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// Switches this sink into the DIAGNOSTIC-ONLY full-reconstruction mode (see the
@@ -90,20 +116,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 "unsupported_wienerns_lr_selectable_transform_records_intrabc_copy",
             )
         })?;
-        let params = SubpelPredictParams {
-            interp: InterpolationFilter::Bilinear,
-            w: target.width(),
-            h: target.height(),
-            start_x: scaling.start_x,
-            start_y: scaling.start_y,
-            step_x: scaling.step_x,
-            step_y: scaling.step_y,
-            first_x: scaling.first_x,
-            first_y: scaling.first_y,
-            last_x: scaling.last_x,
-            last_y: scaling.last_y,
-            bit_depth: self.bit_depth,
-        };
+        let params =
+            intrabc_bilinear_params(scaling, target.width(), target.height(), self.bit_depth);
         let predicted = subpel_predict_block(&view, &params).map_err(|_| {
             wienerns_lr_selectable_transform_record_error_reason(
                 tile_offset,
