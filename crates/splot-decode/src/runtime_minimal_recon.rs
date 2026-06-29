@@ -138,6 +138,7 @@ pub(crate) fn reconstruct_general_intra_block_into<T: ReconSample>(
             qindex,
             plane_id,
             log2_side,
+            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -204,6 +205,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
             plane_id,
             log2_width,
             log2_height,
+            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -258,6 +260,7 @@ pub(crate) fn reconstruct_inter_block_residual_into<T: ReconSample>(
         qindex,
         plane_id,
         log2_side,
+        block.plane_tx_type,
         use_tcq,
         bit_depth,
     )?;
@@ -526,6 +529,7 @@ fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
             qindex,
             plane_id,
             log2_side,
+            block.plane_tx_type,
             false,
             bit_depth,
         )?
@@ -581,6 +585,7 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
             qindex,
             plane_id,
             log2_side,
+            block.plane_tx_type,
             // Chroma never uses the §7.14.4 TCQ dqDenom term (luma DCT_DCT only).
             false,
             bit_depth,
@@ -753,6 +758,7 @@ fn reconstruct_general_intra_smooth_over_edges_into<T: ReconSample>(
             qindex,
             plane_id,
             log2_side,
+            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -934,6 +940,42 @@ fn noneighbour_sample<T: ReconSample>(value: u16) -> T {
     T::try_from_u16(value).unwrap_or_default()
 }
 
+/// Shared tail for the no-neighbour (top-left) luma first-block reconstructors:
+/// given the already-built § 7.13.2 prediction, adds the decoded AC residual (or
+/// writes the bare prediction for an `all_zero` block) and stores the result into
+/// the workspace.
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_general_intra_luma_first_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    prediction: Vec<T>,
+    x: usize,
+    y: usize,
+    log2_side: u32,
+    qindex: u32,
+    use_tcq: bool,
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2, log2)?;
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_block_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            PlaneId::Y,
+            log2_side,
+            block.plane_tx_type,
+            use_tcq,
+            bit_depth,
+        )?
+    };
+    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
+    Ok(())
+}
+
 /// Reconstructs one no-neighbour (top-left) non-DC luma block: builds the
 /// § 7.13.2.13 smooth prediction over the § 7.13.2.1 no-neighbour fallback edges,
 /// adds the decoded AC residual (or writes the bare prediction for an all-zero
@@ -958,21 +1000,9 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_first_block_into<T: ReconSamp
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
     let prediction = predict_nondc_noneighbour_smooth(mode, block_size, side, bit_depth)?;
-    let out = if block.all_zero {
-        prediction
-    } else {
-        reconstruct_general_intra_block_with_prediction(
-            &block.quant,
-            &prediction,
-            qindex,
-            PlaneId::Y,
-            log2_side,
-            use_tcq,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
-    Ok(())
+    reconstruct_general_intra_luma_first_block_into(
+        workspace, block, prediction, x, y, log2_side, qindex, use_tcq, bit_depth,
+    )
 }
 
 /// Builds the § 7.13.2.13 smooth prediction for a no-neighbour square block over
@@ -1031,21 +1061,9 @@ pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into<T: Rec
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
     let prediction = predict_directional_noneighbour(mode, block_size, side, bit_depth)?;
-    let out = if block.all_zero {
-        prediction
-    } else {
-        reconstruct_general_intra_block_with_prediction(
-            &block.quant,
-            &prediction,
-            qindex,
-            PlaneId::Y,
-            log2_side,
-            use_tcq,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
-    Ok(())
+    reconstruct_general_intra_luma_first_block_into(
+        workspace, block, prediction, x, y, log2_side, qindex, use_tcq, bit_depth,
+    )
 }
 
 /// Builds the § 7.13.2.8 directional prediction for a no-neighbour square block
@@ -1190,6 +1208,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
             qindex,
             plane_id,
             log2_side,
+            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -1365,6 +1384,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
             qindex,
             plane_id,
             log2_side,
+            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -1561,6 +1581,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             qindex,
             plane_id,
             log2_side,
+            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -1773,6 +1794,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
             plane_id,
             log2_width,
             log2_height,
+            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -2058,6 +2080,8 @@ mod tests {
             eob: 0,
             quant: Vec::new(),
             intra_ist: None,
+            // §3 `DCT_DCT` index 0; a skip block inverts no residual.
+            plane_tx_type: 0,
         }
     }
 
