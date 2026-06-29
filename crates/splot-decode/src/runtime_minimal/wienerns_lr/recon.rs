@@ -256,6 +256,37 @@ impl PlaneCoverage {
         true
     }
 
+    /// The length of the contiguous run of reconstructed MI units starting at the
+    /// origin-adjacent cell of a §7.13.2.1 reference edge, stopping at the first
+    /// uncovered (or off-grid) cell — the §5.20.2.3 / AVM `count_top_right_avail` /
+    /// `count_bottom_left_avail` contiguous-availability scan (BREAK on the first
+    /// uncovered cell; an interior hole truncates the run, it is NOT skipped).
+    ///
+    /// The edge starts at `(start_col, start_row)` and advances by `(step_col,
+    /// step_row)` per cell for `len` cells (`step_row == 1, step_col == 0` for a
+    /// left column read top-to-bottom; `step_col == 1, step_row == 0` for an above
+    /// row read left-to-right). The returned count is in `0..=len`: `0` means even
+    /// the origin-adjacent cell is uncovered.
+    fn covered_run_len(
+        &self,
+        start_col: usize,
+        start_row: usize,
+        step_col: usize,
+        step_row: usize,
+        len: usize,
+    ) -> usize {
+        let mut run = 0usize;
+        for i in 0..len {
+            let c = start_col + i * step_col;
+            let r = start_row + i * step_row;
+            if !self.is_covered(c, r) {
+                break;
+            }
+            run += 1;
+        }
+        run
+    }
+
     /// Records the §5.20.5.3 decoded `YModes` value for every IN-GRID MI unit of the
     /// `mi_w` x `mi_h` block at `(mi_col, mi_row)`. Called for EVERY luma block the
     /// walk decodes (admitted or deferred), so a later block's §7.13.2.15/16
@@ -556,10 +587,16 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ///   by this sink;
     /// * the §7.13.2.1 single-neighbour FALLBACK: the read edge is off-grid
     ///   (`haveAbove == 0` for V at `mi_row == 0`, `haveLeft == 0` for H at
-    ///   `mi_col == 0`) but the ORTHOGONAL neighbour is reconstructed, so §7.13.2.1
-    ///   synthesizes the missing edge as a flat repeat of one orthogonal sample
-    ///   (`AboveRow[i] = CurrFrame[y][x-1]` for V; `LeftCol[i] = CurrFrame[y-1][x]`
-    ///   for H — bit-exact, as the wrapper performs).
+    ///   `mi_col == 0`) and the cardinal predictor fills the WHOLE block with ONE
+    ///   orthogonal sample — the origin-adjacent reference `left_ref[0] =
+    ///   CurrFrame[y][x-1]` for V, `above_ref[0] = CurrFrame[y-1][x]` for H. This is
+    ///   AVM `av2_build_intra_predictors_high`'s `(!need_left && n_top_px == 0)` /
+    ///   `(!need_above && n_left_px == 0)` fast path (`reconintra.c:1150-1163`), which
+    ///   reads ONLY `left_ref[0]`/`above_ref[0]` (V_PRED has `need_left == 0`, H_PRED
+    ///   has `need_above == 0`, so the rest of the orthogonal edge is never read). The
+    ///   fallback therefore admits as soon as the ORIGIN-ADJACENT orthogonal cell is
+    ///   reconstructed, even when the rest of that edge is still deferred (the
+    ///   over-strict full-edge gate would defer the partial-edge case spuriously).
     ///
     /// It still DEFERS the §7.13.2.1 NO-neighbour midpoint fallback (both edges
     /// off-grid, e.g. the frame-origin block): that emits a synthetic midpoint, not a
@@ -582,18 +619,21 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             (mi_row..mi_row.saturating_add(mi_h))
                 .all(|r| !coverage.off_grid(col_left, r) && coverage.is_covered(col_left, r))
         };
+        let fallback_origin_covered = |start_col: usize, start_row: usize| {
+            coverage.covered_run_len(start_col, start_row, 0, 0, 1) >= 1
+        };
         match direction {
             IntraCardinalDirection::Horizontal => match mi_col.checked_sub(1) {
                 Some(left) => left_col_covered(left),
                 None => match mi_row.checked_sub(1) {
-                    Some(above) => above_row_covered(above),
+                    Some(above) => fallback_origin_covered(mi_col, above),
                     None => false,
                 },
             },
             IntraCardinalDirection::Vertical => match mi_row.checked_sub(1) {
                 Some(above) => above_row_covered(above),
                 None => match mi_col.checked_sub(1) {
-                    Some(left) => left_col_covered(left),
+                    Some(left) => fallback_origin_covered(left, mi_row),
                     None => false,
                 },
             },

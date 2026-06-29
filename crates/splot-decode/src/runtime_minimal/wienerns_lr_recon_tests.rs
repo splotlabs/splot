@@ -268,15 +268,30 @@ const MI40_IBP_STEP: u16 = 65;
 /// requires that whole span covered to match AVM's pad boundary (`has_top_right` /
 /// `has_bottom_left`); a no-op filter only needs the projection's `max_read` reads.
 /// The `useIBP` / `MrlIndex > 0` / zone-2 one-sided leaves still DEFER.
-const LUMA_RECON_SAMPLE_TOTAL: usize = 743_904;
+///
+/// Relaxing the §7.13.2.1 single-neighbour cardinal fallback gate to the
+/// origin-adjacent orthogonal sample (the AVM `(!need_left && n_top_px == 0)` /
+/// `(!need_above && n_left_px == 0)` fast path that fills the whole block with
+/// `left_ref[0]`/`above_ref[0]`, `reconintra.c:1150-1163`) admitted the PARTIAL
+/// cardinal-fallback sub-class (`743904` → `772576`, +28672). The seed is the
+/// `TX_16X8 V_PRED` leaf MI(272,0), x[1088,1152) y[0,32): `mi_row == 0` so
+/// `haveAbove == 0`, and the left neighbour column at MI col 271 is only PARTIALLY
+/// reconstructed (rows 0-1 covered by an earlier IntrABC copy, rows 2-7 deferred).
+/// V_PRED reads ONLY `left_ref[0] = CurrFrame[0][1087]` (`= 68`), so the block is
+/// flat `68` and the deferred deeper rows are never read — the old full-edge gate
+/// deferred it spuriously. Admitting it cascades into its downstream
+/// decode-order neighbours. Zero mismatch vs the AVM prefilter oracle over the
+/// whole grown region. The NO-neighbour midpoint fallback (both edges off-grid,
+/// e.g. the frame origin) still DEFERS.
+const LUMA_RECON_SAMPLE_TOTAL: usize = 772_576;
 /// Sum of every reconstructed luma sample in the verified region (derived from the AVM
 /// pre-filter oracle over the sink's covered MI units, zero mismatch vs splot).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 49_983_867;
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 51_935_379;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0x7bfe_d408_2c2a_f058;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0xbb99_ea7b_d81a_aef8;
 
 /// The bottom-edge `TX_64X64 DC_PRED` block at MI(16,256), x[64,128) y[1024,1080):
 /// its 56 in-frame rows (the 64-tall block overhangs the 1080-tall frame by 8). The
@@ -672,7 +687,7 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "verified luma region is the 670976-sample bit-exact DC + cardinal + IntrABC region"
+        "verified luma region is the bit-exact DC + cardinal + IntrABC region"
     );
     assert_eq!(
         chroma4x4 * 16,
@@ -806,7 +821,7 @@ fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "the parse-advanced walk reconstructs 670976 bit-exact luma samples"
+        "the parse-advanced walk reconstructs the bit-exact luma region"
     );
 }
 
