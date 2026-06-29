@@ -13,6 +13,12 @@ const TX_16X16: usize = 2;
 /// §3 `TxSize` index for TX_16X64 (`Tx_Width[17] == 16`, `Tx_Height[17] == 64`):
 /// a NON-SQUARE transform.
 const TX_16X64: usize = 17;
+/// §3 `TxSize` index for TX_16X4 (`Tx_Width[14] == 16`, `Tx_Height[14] == 4`): a
+/// single-MI-row-tall block, used to build a PARTIALLY covered reference column.
+const TX_16X4: usize = 14;
+/// §3 `TxSize` index for TX_16X32 (`Tx_Width[9] == 16`, `Tx_Height[9] == 32`): an
+/// 8-MI-row-tall block whose left reference column spans 8 MI rows.
+const TX_16X32: usize = 9;
 /// §3 `TX_TYPES` index for `DCT_DCT` (`Transform_1d_Type[0] == (DCT, DCT)`).
 const DCT_DCT: usize = 0;
 /// §3 `TX_TYPES` index for `ADST_ADST` (`Transform_1d_Type[3] == (ADST, ADST)`).
@@ -569,6 +575,105 @@ fn cardinal_at_frame_edge_with_no_required_neighbour_is_deferred() {
         assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
         assert_eq!(sink.reconstructed_counts().0, 0);
     }
+}
+
+/// An ASYMMETRIC partially-covered edge: the §5.20.2.3 contiguous-availability scan
+/// counts the leading covered run and BREAKS at the first hole (a covered cell after
+/// a hole is NOT skipped into the run).
+#[test]
+fn covered_run_len_counts_the_leading_run_and_breaks_on_the_first_hole() {
+    let mut coverage = PlaneCoverage::new(64, 64);
+    coverage.mark(0, 0, 1, 1);
+    coverage.mark(0, 1, 1, 1);
+    coverage.mark(0, 4, 1, 1);
+    assert_eq!(coverage.covered_run_len(0, 0, 0, 1, 8), 2);
+    assert_eq!(coverage.covered_run_len(0, 0, 0, 1, 1), 1);
+    assert_eq!(coverage.covered_run_len(0, 2, 0, 1, 8), 0);
+    coverage.mark(0, 0, 3, 1);
+    assert_eq!(coverage.covered_run_len(0, 0, 1, 0, 5), 3);
+}
+
+/// The §7.13.2.1 single-neighbour cardinal fallback (V_PRED, `haveAbove == 0`) fills
+/// the whole block with the ORIGIN-ADJACENT `left_ref[0]` (AVM `reconintra.c:1150`),
+/// not a deeper sample. Row 0 of the left column holds a value DISTINCT from row 1
+/// (so a deeper read would be detectable), rows 2-7 deferred: the block must be flat
+/// to the row-0 value.
+#[test]
+fn cardinal_vpred_partial_left_fallback_reads_origin_adjacent_sample_not_deeper() {
+    let mut sink = sink();
+    recon_luma(
+        &mut sink,
+        0,
+        0,
+        TX_16X4,
+        &zero_block(),
+        Some(IntraYMode::DC_PRED),
+        false,
+    );
+    recon_luma(
+        &mut sink,
+        0,
+        1,
+        TX_16X4,
+        &dc_coeff_block(64, 200),
+        Some(IntraYMode::DC_PRED),
+        false,
+    );
+    let row0 = sink.reconstructed_sample(PlaneId::Y, 15, 0).unwrap();
+    let row1 = sink.reconstructed_sample(PlaneId::Y, 15, 4).unwrap();
+    assert_ne!(
+        row0, row1,
+        "the two left-column rows must differ to discriminate origin-adjacent vs deeper reads"
+    );
+    let before = sink.reconstructed_counts().0;
+    recon_luma_cardinal(
+        &mut sink,
+        4,
+        0,
+        TX_16X32,
+        &zero_block(),
+        IntraYMode::V_PRED_FOR_TEST,
+        SupportedDirectionalLumaMode::Vertical,
+        0,
+    );
+    assert!(
+        sink.reconstructed_counts().0 > before,
+        "the partial-left V_PRED fallback must be ADMITTED, not deferred"
+    );
+    for y in [0usize, 16, 31] {
+        for x in [16usize, 24, 31] {
+            assert_eq!(
+                sink.reconstructed_sample(PlaneId::Y, x, y).unwrap(),
+                row0,
+                "V_PRED partial fallback ({x},{y}) must replicate the origin-adjacent left sample"
+            );
+        }
+    }
+}
+
+/// The partial-vs-midpoint boundary: when the ORIGIN-ADJACENT left cell of the
+/// §7.13.2.1 fallback is itself uncovered (the no-neighbour midpoint case), the
+/// cardinal block must DEFER — the gate admits only a leading covered run >= 1.
+#[test]
+fn cardinal_vpred_fallback_with_uncovered_origin_left_cell_is_deferred() {
+    let mut sink = sink();
+    let before = sink.reconstructed_counts().0;
+    recon_luma_cardinal(
+        &mut sink,
+        4,
+        0,
+        TX_16X16,
+        &zero_block(),
+        IntraYMode::V_PRED_FOR_TEST,
+        SupportedDirectionalLumaMode::Vertical,
+        0,
+    );
+    assert_eq!(
+        sink.reconstructed_counts().0,
+        before,
+        "a V_PRED fallback with an uncovered origin-adjacent left cell must DEFER"
+    );
+    assert_eq!(sink.reconstructed_sample(PlaneId::Y, 16, 0).unwrap(), 0);
 }
 
 #[test]

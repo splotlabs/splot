@@ -271,7 +271,7 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "6.19.7.12");
+    assert_eq!(json["spec_section"], "7.20.4");
     assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
     assert_eq!(
         json["feature_id"],
@@ -280,16 +280,22 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds"
+        "unsupported_wienerns_lr_selectable_live_frame_samples_unpopulated"
     );
     assert!(
         json["message"]
             .as_str()
             .unwrap()
-            .contains("outside the bounded ac0ej3 prediction subset"),
-        "diagnostic must describe the §6.19.7.12 IntrABC prediction-geometry frontier"
+            .contains("decoded CurrFrame and CdefFrame samples are still unpopulated"),
+        "diagnostic must describe the §7.20.4 unpopulated live-frame-samples frontier"
     );
-    assert_eq!(json["byte_offset"], 110);
+    assert_eq!(json["byte_offset"], 74);
+    assert_ne!(
+        json["unsupported_reason"],
+        "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds",
+        "modelling the §7.13.2.1 single-neighbour cardinal fallback (origin-adjacent \
+         orthogonal sample) advanced ac0ej3 past the IntrABC prediction-geometry wall"
+    );
     assert_ne!(
         json["unsupported_reason"],
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_block_bounds",
