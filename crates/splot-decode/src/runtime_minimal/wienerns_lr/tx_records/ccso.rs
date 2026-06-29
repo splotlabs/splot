@@ -7,8 +7,7 @@
 //! `read_delta_qindex` (AV2 § 5.20.5.3 intra_frame_mode_info order). On the intra path
 //! `sb_reuse_ccso[plane] == 0`, so each CCSO-unit-aligned block reads one `ccso_blk`
 //! symbol per enabled plane. Omitting this read desynchronises every later symbol in
-//! the superblock (it was the root cause of the BLOCK_16X64 transform-partition
-//! mismatch versus the AVM reference for the ac0ej3 stream).
+//! the superblock.
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};

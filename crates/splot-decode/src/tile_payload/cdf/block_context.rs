@@ -193,8 +193,8 @@ impl IntraYMode {
 
     /// Maps this luma mode to the non-DC predictor the general intra decode
     /// currently reconstructs (§ 7.13.2.13 smooth prediction), or `None` for
-    /// `DC_PRED` and the not-yet-supported non-DC modes (`PAETH_PRED` and the
-    /// directional modes, which lack oracle fixtures).
+    /// `DC_PRED`, the unsupported `PAETH_PRED`, and the directional modes (which
+    /// `supported_directional` maps instead).
     pub(crate) const fn supported_nondc(self) -> Option<SupportedNonDcLumaMode> {
         match self.0 {
             Self::SMOOTH_PRED => Some(SupportedNonDcLumaMode::Smooth),
@@ -237,9 +237,9 @@ impl IntraYMode {
 
 /// The non-DC non-directional luma intra modes the general intra decode can
 /// reconstruct today — a strict subset of the § 9.2 modes, gated to those proven
-/// bit-exact against the AVM/dav2d oracle. `PAETH_PRED` remains deferred until it
-/// has a single-block oracle fixture; plain `SMOOTH_PRED` is admitted only for
-/// the top-left no-neighbour block (see the general intra mode gate).
+/// bit-exact against the AVM/dav2d oracle. `PAETH_PRED` is not yet supported;
+/// plain `SMOOTH_PRED` is admitted only for the top-left no-neighbour block (see
+/// the general intra mode gate).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SupportedNonDcLumaMode {
     /// AV2 `SMOOTH_PRED` (§ 7.13.2.13 plain 2-D smooth prediction blending both
@@ -461,8 +461,8 @@ fn get_intra_uv_mode_set(y_mode: IntraYMode, uv_mode: u8) -> Option<u8> {
 /// delta). The `D135_PRED` value can also appear as a non-follow entry from the
 /// `Default_Mode_List_Uv` scan paired with a non-directional luma mode; that
 /// pairing (`AngleDeltaUV = 0` independently) is also pAngle 135 with no delta,
-/// so it maps to the same predictor, but no oracle fixture exercises it yet, so
-/// it is left to a future increment by requiring the directional-follow path.
+/// so it maps to the same predictor, but is not yet AVM-verified, so it is left
+/// to a future increment by requiring the directional-follow path.
 pub(crate) fn supported_chroma_mode(
     y_mode: IntraYMode,
     uv_mode: u8,
@@ -832,10 +832,7 @@ fn get_intra_y_mode_set(
 /// (`block_n4w * block_n4h`) of `1`, `2`, and `2`. Every other `MiSize`
 /// (including `BLOCK_4X16` / `BLOCK_16X4`, which have a single-MI dimension but
 /// are NOT `< BLOCK_8X8`) has area `> 2` and runs the directional-neighbour
-/// reorder. The earlier `block_n4w >= 2 && block_n4h >= 2` gate wrongly skipped
-/// the reorder for `BLOCK_4X16` / `BLOCK_16X4` (and the wider 4x32/32x4/4x64/64x4
-/// shapes), deriving the wrong `YMode` for those leaves when a left/above
-/// directional joint-mode neighbour pre-selects modes ahead of `Default_Mode_List_Y`.
+/// reorder.
 fn mi_size_at_least_block_8x8(block_n4w: usize, block_n4h: usize) -> bool {
     block_n4w.checked_mul(block_n4h).is_none_or(|area| area > 2)
 }

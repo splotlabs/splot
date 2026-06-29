@@ -424,15 +424,9 @@ pub(crate) fn decode_general_intra_luma_block_mode(
     block_n4w: usize,
     block_n4h: usize,
 ) -> Result<GeneralIntraLumaBlockMode, GeneralIntraBlockModeError> {
-    // AV2 § 8.3.2 `y_mode_index` / `y_mode_offset` CDF context, derived from the
-    // already-decoded left/above neighbours' stored `IntraJointMode` (§ 5.20.5.3
-    // `get_joint_mode`). `ctx` is `0`, `1`, or `2` — the number of directional
-    // (`>= NON_DIRECTIONAL_MODES_COUNT`) left/above neighbours — and indexes the
-    // `TileYModeIndexCdf[ctx]` / `TileYModeOffsetCdf[ctx]` banks. The full `0..=2`
-    // range is now used directly (the `ctx != 0` selection is verified bit-exact
-    // against the AVM/dav2d oracle: a block whose left neighbour is the D135
-    // directional superblock decodes its non-directional luma mode with the
-    // `ctx == 1` CDF row, `syn-dirneigh-intra-128x64-q80`).
+    // AV2 § 8.3.2 `y_mode_index` / `y_mode_offset` CDF context (`0..=2`, the number
+    // of directional left/above neighbours), from the stored `IntraJointMode`
+    // (§ 5.20.5.3 `get_joint_mode`).
     let mode_ctx = joint_modes.y_mode_index_ctx(block_r, block_c, block_n4w, block_n4h);
     let neighbour_joint_modes =
         joint_modes.neighbour_joint_modes(block_r, block_c, block_n4w, block_n4h);
@@ -829,8 +823,7 @@ fn cfl_allowed_for_non_lossless_420(
     // <= 64`, where `planeSz` is the chroma plane block size. For 4:2:0 the chroma
     // plane is half the luma block, so `Block_Width[planeSz] = block_n4w * 2` and the
     // 64-sample limit becomes `block_n4w <= 32` (a 128x128 luma block has a 64x64
-    // chroma plane). The earlier `<= 16` bound wrongly rejected CfL for legal
-    // 128-wide/tall luma blocks (e.g. a 128x64 SHARED-NONE block reads `is_cfl`).
+    // chroma plane).
     chroma_tools.enable_cfl_intra && block_n4w <= 32 && block_n4h <= 32
 }
 
@@ -1060,8 +1053,7 @@ mod tests {
 
         // 64x64 luma (n4 = 16): chroma plane 32x32 -> allowed.
         assert!(cfl_allowed_for_non_lossless_420(tools, 16, 16));
-        // 128x64 luma (n4 = 32 x 16): chroma plane 64x32 -> allowed (the case that
-        // previously regressed, suppressing a legal `is_cfl` read).
+        // 128x64 luma (n4 = 32 x 16): chroma plane 64x32 -> allowed.
         assert!(cfl_allowed_for_non_lossless_420(tools, 32, 16));
         // 128x128 luma (n4 = 32): chroma plane 64x64 -> allowed (boundary).
         assert!(cfl_allowed_for_non_lossless_420(tools, 32, 32));

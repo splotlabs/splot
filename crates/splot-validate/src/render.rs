@@ -20,8 +20,7 @@ use serde::Serialize;
 
 use crate::diagnostic::{Diagnostic, ValidationReport};
 
-/// How to present a [`ValidationReport`]. The default reproduces the historical
-/// full, uncapped output.
+/// How to present a [`ValidationReport`]. The default is the full, uncapped output.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderOptions {
     /// Show at most this many diagnostics, with a truncation notice for the rest.

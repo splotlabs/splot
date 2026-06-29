@@ -2,9 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Small helpers shared across `xtask` modules.
-//!
-//! These were previously duplicated byte-for-byte across several command
-//! modules; they live here so there is a single source of truth.
 
 /// Returns `true` if `s` matches `^[A-Z0-9]+(-[A-Z0-9.]+)+$`.
 pub(crate) fn is_valid_feature_id(s: &str) -> bool {

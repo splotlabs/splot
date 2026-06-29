@@ -12847,6 +12847,53 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
+id = "INFRA-AI-SLOP-GATE"
+name = "AI-slop comment gate"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/ai_slop.rs"
+openspec_change = ""
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Adds `cargo xtask check-ai-slop`, a hard-zero gate that fails when a tracked, non-generated Rust source comment carries a banned process-history or fixture-diary phrase (`formerly`, `round-<n>`, `PR #<n>`, `this refactor`, `this used to`, `used to be`, `old behavior`/`old behaviour`, `oracle fixture`, `verified fixture`, `pinned by fixture`, `not yet fixtured`). It reuses the `comment_density` string-aware comment scanner (including nested and trailing block comments), skips generated files and SPDX lines, matches case-insensitively at word boundaries, and intentionally excludes established domain vocabulary (`frontier`, `previously`, `only supports`, `deferred until`). Wired into `cargo xtask ci` and `.github/workflows/ci.yml`. Codifies the recurring AI-slop policy in AGENTS.md §11, docs/agents/coding-standards.md, and docs/CODE_REVIEW.md. Pure repository hygiene: no AV2 conformance behavior, no diagnostic semantics, no crate dependency graph, and no CLI contract changes."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "xtask/src/ai_slop.rs::tests",
+]
+commands = [
+    "cargo test -p xtask ai_slop --locked",
+    "cargo xtask check-ai-slop",
+    "cargo xtask check-feature-status",
+    "cargo xtask ci",
+]
+fixtures = [
+    "xtask/src/ai_slop.rs",
+    "xtask/src/comment_density.rs",
+    ".github/workflows/ci.yml",
+    "AGENTS.md",
+    "docs/agents/coding-standards.md",
+    "docs/CODE_REVIEW.md",
+]
+diagnostics = []
+
+[[feature]]
 id = "INFRA-DUPEHOUND-DUPLICATION-GATE"
 name = "Duplicate-code budget gate"
 category = "infrastructure"

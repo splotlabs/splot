@@ -54,8 +54,7 @@ pub(super) enum ResolvedCdfLoad {
 /// `init_*_cdfs` state). To stay honest the caller resolves the actual loaded slot here and
 /// rejects (rather than confidently mis-decoding from defaults) when that slot's saved CDFs
 /// were ADAPTED. Resolving `PRIMARY_REF_CHOOSE` is required because a CHOOSE frame can
-/// resolve to a real ADAPTED inter reference, which the prior `CHOOSE -> no load` shortcut
-/// silently let bypass the guard.
+/// resolve to a real ADAPTED inter reference that must not bypass the guard.
 ///
 /// `DerivedPrimaryRefFrame` is the §5 :5497-5508 signal-overridden value: when
 /// `signal_primary_ref_frame == Some(true)` it is the explicitly-signalled

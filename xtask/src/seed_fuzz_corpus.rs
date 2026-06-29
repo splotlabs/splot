@@ -5,17 +5,12 @@
 //!
 //! Materializes the curated `fuzz/corpus/<target>/` seed inputs that the CI
 //! fuzz-smoke matrix relies on, from the committed `tests/fixtures/*.av2`
-//! corpus and the `tests/conformance/vectors/**/*.ivf` AVM streams. This is the
-//! Rust home of logic that previously lived as ~100 lines of embedded shell and
-//! Python in `.github/workflows/ci.yml`; moving it into `xtask` makes every
-//! byte layout unit-testable, runnable locally (`cargo xtask seed-fuzz-corpus`),
-//! and keeps the workflow declarative.
+//! corpus and the `tests/conformance/vectors/**/*.ivf` AVM streams.
 //!
-//! The seed bytes are byte-identical to the former inline script. Each fuzz
-//! target consumes a small leading config prefix before the bitstream, so the
-//! seeds prepend the matching prefix to a fixture or conformance vector, embed a
-//! few hand-tuned minimal payloads, synthesize IVF wrappers, and de-wrap IVF
-//! frames into raw OBU streams. Every helper documents the exact layout it
+//! Each fuzz target consumes a small leading config prefix before the bitstream,
+//! so the seeds prepend the matching prefix to a fixture or conformance vector,
+//! embed a few hand-tuned minimal payloads, synthesize IVF wrappers, and de-wrap
+//! IVF frames into raw OBU streams. Every helper documents the exact layout it
 //! reproduces.
 
 use std::path::{Path, PathBuf};

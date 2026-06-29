@@ -306,8 +306,7 @@ impl ReferenceStateTracker {
         Some(())
     }
 
-    /// Drops all per-layer state — used only at the end of the bitstream is not needed
-    /// (the tracker is consumed with the context); exposed for symmetry/tests.
+    /// Whether no per-layer state has been observed yet.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.layers.is_empty()

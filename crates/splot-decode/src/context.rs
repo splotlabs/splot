@@ -22,13 +22,10 @@ use crate::tile_payload::{
 
 /// A decode context.
 ///
-/// It owns exactly one [`WorkerPool`] and exposes the resolved worker count,
-/// builds bounded stream metadata from raw Annex B/IVF byte slices or already
-/// parsed stream structures, and exposes the narrow documented
-/// `minimal-intra-8bit420-hash-v1` runtime hash, raw, and Y4M byte paths. It
-/// intentionally does NOT inspect input/output paths, perform filesystem
-/// publication, invoke any external decoder, or claim broad AV2 runtime decode
-/// support.
+/// Owns exactly one [`WorkerPool`], plans bounded stream metadata from raw Annex
+/// B/IVF or parsed streams, and exposes the narrow `minimal-intra-8bit420-hash-v1`
+/// runtime hash, raw, and Y4M byte paths. It does not touch the filesystem,
+/// invoke any external decoder, or claim broad AV2 runtime decode support.
 #[derive(Debug)]
 pub struct DecodeContext {
     runtime: DecodeRuntimeConfig,
@@ -71,11 +68,9 @@ impl DecodeContext {
 
     /// Builds a deterministic plan over raw AV2 Annex B or IVF bytes.
     ///
-    /// This method runs inside the context-owned worker pool so future parallel
-    /// byte planning inherits the configured runtime. The current byte planner
-    /// is still plan-only: it bounds byte traversal, decodes no tile payloads,
-    /// reconstructs no pixels, writes no output, and invokes no external
-    /// decoder.
+    /// Runs inside the context-owned worker pool. Plan-only: bounds byte
+    /// traversal, decodes no tile payloads, reconstructs no pixels, writes no
+    /// output, and invokes no external decoder.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed sources, unsupported
@@ -86,10 +81,9 @@ impl DecodeContext {
 
     /// Decodes the documented minimal tier and returns a deterministic hash report.
     ///
-    /// This method first runs [`Self::plan_bytes`] so malformed sources,
-    /// resource-limit failures, layer selection, and planner-level unsupported
-    /// structures stay transactional. Runtime support is intentionally limited to
-    /// the `minimal-intra-8bit420-hash-v1` tier.
+    /// Runs [`Self::plan_bytes`] first so malformed sources, resource-limit
+    /// failures, layer selection, and planner-level unsupported structures stay
+    /// transactional. Limited to the `minimal-intra-8bit420-hash-v1` tier.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed sources, unsupported
@@ -108,13 +102,10 @@ impl DecodeContext {
 
     /// Decodes the documented minimal tier and writes complete raw sample bytes.
     ///
-    /// This method first runs [`Self::plan_bytes`] so malformed sources,
-    /// resource-limit failures, layer selection, and planner-level unsupported
-    /// structures stay transactional. Runtime raw support is intentionally
-    /// limited to the same `minimal-intra-8bit420-hash-v1` IVF tier as the hash
-    /// path. The complete raw sample byte stream is buffered and checked against
-    /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes are written
-    /// to `writer`.
+    /// Runs [`Self::plan_bytes`] first (see [`Self::decode_hash_report_bytes`]),
+    /// limited to the same `minimal-intra-8bit420-hash-v1` IVF tier. The complete
+    /// raw byte stream is buffered and checked against
+    /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes reach `writer`.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed sources, unsupported
@@ -139,13 +130,10 @@ impl DecodeContext {
 
     /// Decodes the documented minimal tier and writes a complete Y4M stream.
     ///
-    /// This method first runs [`Self::plan_bytes`] so malformed sources,
-    /// resource-limit failures, layer selection, and planner-level unsupported
-    /// structures stay transactional. Runtime Y4M support is intentionally
-    /// limited to the same `minimal-intra-8bit420-hash-v1` IVF tier as the hash
-    /// path. The complete Y4M stream is buffered and checked against
-    /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes are written
-    /// to `writer`.
+    /// Runs [`Self::plan_bytes`] first (see [`Self::decode_hash_report_bytes`]),
+    /// limited to the same `minimal-intra-8bit420-hash-v1` IVF tier. The complete
+    /// Y4M stream is buffered and checked against
+    /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes reach `writer`.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed sources, unsupported
@@ -170,10 +158,9 @@ impl DecodeContext {
 
     /// Builds a deterministic plan over an already parsed AV2 stream.
     ///
-    /// This method runs inside the context-owned worker pool so future parallel
-    /// planner work inherits the configured runtime. The current planner is
-    /// serial and plan-only: it consumes no raw bytes, decodes no tile payloads,
-    /// reconstructs no pixels, and invokes no external decoder.
+    /// Runs inside the context-owned worker pool. Serial and plan-only: consumes
+    /// no raw bytes, decodes no tile payloads, reconstructs no pixels, and
+    /// invokes no external decoder.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed parsed sources,
@@ -189,11 +176,8 @@ impl DecodeContext {
     /// Builds a deterministic tile-payload boundary plan inside this context's
     /// worker pool.
     ///
-    /// This is intentionally crate-private until a runtime decode path derives
-    /// the input facts from parsed frame state and exposes stable public
-    /// diagnostics. The boundary remains plan-only: it does not run
-    /// `decode_tile()`, reconstruct pixels, update references, write output, or
-    /// invoke external decoders.
+    /// Plan-only: does not run `decode_tile()`, reconstruct pixels, update
+    /// references, write output, or invoke external decoders.
     #[cfg_attr(
         not(test),
         allow(
@@ -211,11 +195,10 @@ impl DecodeContext {
     /// Derives and plans a deterministic tile-payload boundary inside this
     /// context's worker pool.
     ///
-    /// This remains crate-private and plan-only. It validates source-backed
-    /// parser facts before slicing the § 5.20 payload region, then stops at the
-    /// existing unsupported `decode_tile()` boundary without reconstructing
-    /// pixels, updating references, writing output, or invoking external
-    /// decoders.
+    /// Plan-only: validates source-backed parser facts before slicing the § 5.20
+    /// payload region, then stops at the unsupported `decode_tile()` boundary
+    /// without reconstructing pixels, updating references, writing output, or
+    /// invoking external decoders.
     #[cfg_attr(
         not(test),
         allow(

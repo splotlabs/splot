@@ -16,23 +16,14 @@ use splot_core::headers::sequence::MAX_SEQ_NUM;
 /// Caller-declared external HLS objects (AV2 § 7.3.8): objects provided "through
 /// external means" rather than in-band in the bitstream.
 ///
-/// Only declared availability *keys* are modeled (not the object contents), which is
-/// enough to resolve in-band-vs-external availability of a reference without
-/// fabricating the external object's syntax.
+/// Only declared availability *keys* are modeled (not the object contents), enough to
+/// resolve in-band-vs-external availability of a reference.
 ///
-/// **Partial-declaration semantics (important for validator suppression).** This set
-/// enumerates only the external HLS object kinds the caller can describe — sequence
-/// headers ([`Self::with_sequence_header_id`]) and operating point sets
-/// ([`Self::with_operating_point_set`]). It is **not** an exhaustive declaration of all
-/// external HLS: other external HLS OBU kinds the API cannot express — notably layer
-/// configuration records (LCRs) and atlas segments — MAY still exist externally even when
-/// the set does not (and cannot) enumerate them. The set is "what the caller knows", not
-/// "the complete external HLS". See [`ExternalHlsMode::Provided`].
-///
-/// For the kinds it *can* express, however, the set is treated as **authoritative**: the
-/// § 7.3.8.1 random-access-point replay suppresses a dangling sequence-header /
-/// operating-point-set reference only when the *exact* key is present here, so omitting an
-/// expressible key asserts it is not external (see [`ExternalHlsMode::Provided`]).
+/// Partial declaration: the set enumerates only the kinds the caller can describe —
+/// sequence headers ([`Self::with_sequence_header_id`]) and operating point sets
+/// ([`Self::with_operating_point_set`]). Other kinds (LCRs, atlas segments) MAY exist
+/// externally without being listed. For the kinds it can express the set is authoritative;
+/// see [`ExternalHlsMode::Provided`] for the suppression policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExternalHlsSet {
     sequence_header_ids: BTreeSet<u32>,
@@ -106,39 +97,19 @@ pub enum ExternalHlsMode {
     /// caller supplies it.
     #[default]
     Disabled,
-    /// External HLS exists, available in addition to in-band ones. The carried
-    /// [`ExternalHlsSet`] is a **partial** declaration: it enumerates only the object
-    /// kinds the caller can describe (sequence headers and operating point sets), so
-    /// other external HLS OBUs the set cannot express — notably layer configuration
-    /// records (LCRs) — MAY exist externally without being listed. The set is "what the
-    /// caller knows", not "the complete external HLS".
+    /// External HLS exists alongside in-band ones. The carried [`ExternalHlsSet`] is a
+    /// partial declaration: it enumerates only sequence headers and operating point sets, so
+    /// other kinds (LCRs, atlas segments) MAY exist externally without being listed.
     ///
-    /// This drives validator suppression policy (zero-false-positive principle):
-    /// because an unenumerated external *local* LCR could win the
-    /// local-first § 6.4.1 `seq_lcr_id` resolution ahead of an in-band record, *any*
-    /// Provided mode suppresses the association-dependent § 6.4.1 / § 6.8.5 / § 6.8.8 /
-    /// § 6.8.9 LCR checks — even an empty or OPS-only set, since the suppression is about
-    /// possibly-unenumerated external LCRs, not about declared sequence headers. Checks
-    /// that read no LCR association (e.g. the Annex A header value-space checks) stay
-    /// active under Provided, as they remain locally decidable from the in-band header
-    /// alone.
+    /// Suppression policy (zero-false-positive): because an unenumerated external local LCR
+    /// could win the § 6.4.1 `seq_lcr_id` resolution, *any* Provided mode (even empty or
+    /// OPS-only) suppresses the association-dependent § 6.4.1 / § 6.8.5 / § 6.8.8 / § 6.8.9 LCR
+    /// checks; checks that read no LCR association stay active.
     ///
-    /// **Refinement for expressible kinds (§ 7.3.8.1 random-access-point replay).** The
-    /// blanket "any Provided suppresses" rule above is the right policy *only for the kinds
-    /// this set cannot express* (multi-frame headers, LCRs, atlas segments): those MAY
-    /// exist externally without being listed, so the validator must assume they might.
-    /// But for the kinds the set *can* express — sequence headers
-    /// ([`ExternalHlsSet::with_sequence_header_id`]) and operating point sets
-    /// ([`ExternalHlsSet::with_operating_point_set`]) — the caller's declaration is
-    /// *authoritative*: a Provided set is a complete enumeration of the external objects of
-    /// those kinds. So the § 7.3.8.1 replay suppresses a dangling sequence-header /
-    /// operating-point-set reference only when the *exact* referenced key is declared
-    /// external; a reference to an expressible key the caller did *not* declare still fires
-    /// (an OPS-only Provided set does not excuse a pre-random-access-point-only sequence
-    /// header). This refinement applies specifically to the random-access-point replay
-    /// gate, where the per-key referenced object is known; the association-dependent LCR
-    /// checks above stay blanket-suppressed because they cannot pin the suppression to an
-    /// expressible key.
+    /// For the expressible kinds (sequence headers, operating point sets) the declaration is
+    /// authoritative: the § 7.3.8.1 random-access-point replay suppresses a dangling
+    /// reference only when the exact referenced key is declared, so a reference to an
+    /// expressible key the caller did not declare still fires.
     Provided(ExternalHlsSet),
 }
 

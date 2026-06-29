@@ -226,7 +226,7 @@ const MAX_GENERAL_SCAN_INDEX: usize = 15;
 /// `quant` is the row-major (raster) signed quantized block; `coeff_cdf_q_ctx` is the
 /// caller-resolved coefficient-CDF q-context. Delegates to the size-generic
 /// [`tokenize_general_luma_block`] with [`TxGeom::TX_4X4`], so its emitted stream is
-/// byte-identical to before this refactor.
+/// byte-identical to the size-generic walk.
 ///
 /// # Preconditions
 /// Assumes **TCQ is off** (`allow_tcq == 0`). The § 5.20.7.28 `read_quant` threshold

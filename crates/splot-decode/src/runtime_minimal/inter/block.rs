@@ -232,7 +232,7 @@ pub(super) fn decode_inter_blocks(
 /// AV2 § 5.20.2.1 superblock height in 4x4 MI units (`Num_4x4_Blocks_High[SbSize]`)
 /// for the `isSbBorder` derivation. The verified subset is sb_size 64
 /// (`sb_h4 == 16`); a sb_size-128 frame is rejected by the inter frame-header gate
-/// (the verified fixture is a single 64x64 superblock per tile).
+/// (the supported case is a single 64x64 superblock per tile).
 fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<usize> {
     let partition = sequence.partition?;
     let frame_is_intra = core.frame_is_intra?;
@@ -675,7 +675,7 @@ const INTER_UV_MODE_DC: usize = 0;
 /// coefficient loop with `is_inter == true` (the only inter-specific contexts are
 /// the § 8.3.2 `TileTxbSkipCdf[is_inter || fsc_mode]` bank and the `eobCtx =
 /// is_inter` luma EOB context, both threaded through
-/// `decode_general_intra_plane_coeffs`). The verified fixture's chroma is
+/// `decode_general_intra_plane_coeffs`). The supported case's chroma is
 /// `all_zero` (inter chroma == flat key chroma), so this luma-residual + chroma-
 /// skip path is oracle-exact; a coded *chroma* inter residual is not yet exercised.
 fn read_inter_residual(

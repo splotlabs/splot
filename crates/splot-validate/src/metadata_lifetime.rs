@@ -237,23 +237,14 @@ impl MetadataLifetimeStore {
         self.prune_empty();
     }
 
-    /// Expires every `NO_PERSISTENCE` record (AV2 § 6.16.3: "Used only for the
-    /// current frame"). Called from the validator's coded-frame hook at each
-    /// frame-bearing OBU, which is the coded frame of its frame unit (§ 7.3.5): the
-    /// first tile-group OBU of a coded frame, a SEF/TIP/bridge OBU, etc. A coded
-    /// frame unit carries at most one such coded frame, so the hook fires exactly
-    /// once per coded frame unit per layer — the coded-frame-unit granularity the
-    /// store needs. A record from a unit's pre-frame region therefore lapses once
-    /// that unit's coded frame has been observed.
+    /// Expires every `NO_PERSISTENCE` record (AV2 § 6.16.3: "Used only for the current
+    /// frame"). Called from the coded-frame hook at each frame-bearing OBU, which fires once
+    /// per coded frame unit per layer (§ 7.3.5), so a record from a unit's pre-frame region
+    /// lapses once that unit's coded frame is observed.
     ///
-    /// Residual: the expiry is per-coded-frame across all layers, not yet scoped to
-    /// the record's own `(xlayer, mlayer)` frame, so a global NO_PERSISTENCE unit at
-    /// the start of a temporal unit lapses at the first layer's coded frame rather
-    /// than once per consuming layer. No consumer reads the store's per-frame view
-    /// yet; the per-frame applicability checks deferred to tasks 8-9 of the
-    /// `metadata-semantic-validation` change will scope the expiry to the consuming
-    /// layer's frame when they land.
-    // TODO(spec: AV2-5.17-METADATA): scope the NO_PERSISTENCE expiry to the
+    /// Residual: the expiry is per-coded-frame across all layers, not yet scoped to the
+    /// record's own `(xlayer, mlayer)` frame.
+    // TODO(spec: AV2-5.17-METADATA): scope the NO_PERSISTENCE expiry to the consuming layer's frame.
     pub(crate) fn expire_no_persistence(&mut self) {
         for records in self.active.values_mut() {
             records.retain(|record| !matches!(record.persistence, PersistenceMode::No));
@@ -313,25 +304,12 @@ impl MetadataLifetimeStore {
     ///   embedded layer M, it applies to temporal layer C within embedded layer M
     ///   if TLayerDependencyMap\[M\]\[C\]\[T\] is equal to 1."
     ///
-    /// The multi-layer bullet's "explicit layer persistence indication" is read
-    /// **per target**: the metadata reaches embedded layer `M` only when bit `M`
-    /// of `muh_mlayer_map` is set (§ 6.16.3: "The metadata unit is intended for an
-    /// embedded layer m if bit m of muh_mlayer_map is equal to 1") AND
-    /// `MLayerDependencyMap[M][K]` is 1. Reading the bullet's unit-level NOTE
-    /// alone would propagate metadata to layers whose map bit is 0 — layers never
-    /// "explicitly signaled" — contradicting the § 6.16.3 `LAYER_VALUES`
-    /// definition ("a set of specific layer values, which are explicitly
-    /// signaled") and collapsing it into the all-layers / range modes the
-    /// `muh_layer_idc` intro lists as distinct. A set bit at `M > K` implies the
-    /// NOTE's unit-level indication, so the per-target reading satisfies every
-    /// § 6.16.3 sentence simultaneously.
-    ///
-    /// No bullet reaches an embedded layer below `K`, so `M < K` reads `false`.
-    /// Pure query — **never emits diagnostics** (the bullets bind decoder
-    /// applicability: "Decoders shall ignore metadata that does not apply to the
-    /// current operating point based on these rules", § 6.16.3). The caller
-    /// supplies the maps (see `ValidatorContext::metadata_applies_to` for the
-    /// active-sequence-header resolution and its fallback).
+    /// The multi-layer "explicit layer persistence indication" is read per target: layer `M`
+    /// is reached only when bit `M` of `muh_mlayer_map` is set AND `MLayerDependencyMap[M][K]`
+    /// is 1, matching the § 6.16.3 `LAYER_VALUES` "explicitly signaled" definition. No bullet
+    /// reaches an embedded layer below `K`, so `M < K` reads `false`. Pure query — never emits
+    /// diagnostics (the bullets bind decoder applicability, § 6.16.3); the caller supplies the
+    /// maps (see `ValidatorContext::metadata_applies_to`).
     pub(crate) fn applies_to(
         record: &ActiveMetadataUnit,
         target_mlayer: EmbeddedLayerId,

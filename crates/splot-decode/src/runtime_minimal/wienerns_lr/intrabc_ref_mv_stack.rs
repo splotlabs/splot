@@ -1072,9 +1072,8 @@ pub(super) fn intrabc_ref_stack_admission(
         return IntrabcStackAdmission::Defer;
     }
     // § 7.12.2.18 step 18 / § 7.12.2.19: when useSort holds AND there is more than one
-    // nearest candidate, move the max-weight candidate to slot 0 (single swap). This
-    // is the FULL model of the former `> 1`-candidate defer: every modelled-placed
-    // candidate carries a provable § 7.12.2.6 weight, so the sort is faithful.
+    // nearest candidate, move the max-weight candidate to slot 0 (single swap). Every
+    // modelled-placed candidate carries a provable § 7.12.2.6 weight, so the sort is faithful.
     let mut nearest: Vec<WeightedBv> = spatial.candidates.clone();
     if drl_reorder.use_sort(nearest.len()) && nearest.len() > 1 {
         sort_nearest_max_weight_to_slot0(&mut nearest);

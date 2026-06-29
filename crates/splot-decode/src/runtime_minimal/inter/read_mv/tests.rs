@@ -6,7 +6,7 @@
 //! These cover the structural building blocks ([`mv_clamp_to_integer`] and the
 //! [`read_ns`] § 4.11.13 arithmetic non-symmetric literal) that the shell decode
 //! composes. The full end-to-end bit-exactness of the shell read is proven by the
-//! `syn-2frame-subpel-inter-64x64.ivf` oracle fixture decode test.
+//! `syn-2frame-subpel-inter-64x64.ivf` decode test.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

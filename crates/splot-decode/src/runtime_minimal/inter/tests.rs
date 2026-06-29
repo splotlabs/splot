@@ -68,8 +68,7 @@ const TWO_FRAME_RESIDUAL_FIXTURE: &[u8] = include_bytes!(
 /// spatial-neighbour MV stack (find_mv_stack). All blocks are skip=1 (no
 /// residual). avmdec `--rawvideo --i420` and `dav2d --demuxer ivf` decode the
 /// whole stream byte-for-byte identically (oracle MD5
-/// `e5b581a55433785c0071b635d5642083`). The OLD single-block inter decoder
-/// rejected this fixture ("only supports a single top-left 64x64 inter block").
+/// `e5b581a55433785c0071b635d5642083`).
 const TWO_FRAME_MVSTACK_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-mvstack-64x64.ivf"
 );
@@ -84,8 +83,7 @@ const TWO_FRAME_MVSTACK_FIXTURE: &[u8] = include_bytes!(
 /// spatial-neighbour MV stack (find_mv_stack); both skip=1 (no residual). avmdec
 /// `--rawvideo --i420` and `dav2d --demuxer ivf` decode the whole stream
 /// byte-for-byte identically (oracle MD5 `477a993d671e93d37b92a0d368c238ff`,
-/// 24576 bytes). The OLD single-64x64 inter decoder rejected this fixture
-/// ("currently accepts only the verified 64x64 frame size").
+/// 24576 bytes).
 const MULTI_SB_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2sb-inter-128x64-q80.ivf");
 
@@ -97,11 +95,9 @@ const MULTI_SB_INTER_FIXTURE: &[u8] =
 /// full pels, eighth-pel units, has_neighbour=false); SB1 @ MI(0,16), SB2 @
 /// MI(16,0), and SB3 @ MI(16,16) are NEARMV that reconstruct SB0's MV from the
 /// frame-wide §7.11/§7.12 spatial-neighbour MV stack — SB2 and SB3 (in the SECOND
-/// superblock ROW) predict across the SB-ROW boundary, the exact case the
-/// single-SB-row brick deferred. avmdec `--rawvideo --i420` and `dav2d --demuxer
-/// ivf` decode the whole stream byte-for-byte identically (oracle MD5
-/// `897bf67e72ec04cb7275fae08eab700c`, 49152 bytes). The single-SB-row inter
-/// decoder rejected this fixture (`inter_unsupported_frame_size`).
+/// superblock ROW) predict across the SB-ROW boundary. avmdec `--rawvideo --i420`
+/// and `dav2d --demuxer ivf` decode the whole stream byte-for-byte identically
+/// (oracle MD5 `897bf67e72ec04cb7275fae08eab700c`, 49152 bytes).
 const GRID_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-grid-inter-128x128-q80.ivf");
 
