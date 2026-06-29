@@ -1171,10 +1171,6 @@ fn resolve_allow_local_intrabc(core: &FrameHeaderCore) -> bool {
 /// global wavefront branch is therefore only enabled when the flag is explicitly
 /// `Some(true)` — `None` (inferred `0` on a non-intra frame) and `Some(false)` both disable
 /// it. The matching `frame_is_intra` clause of `av2_is_dv_valid` is checked by the caller.
-///
-/// Test-only until the §5.20.5.5 mode-parse brick (documented in `intrabc_dv_proven_valid`)
-/// lands and the global wavefront branch is wired into the live displaced-copy admission.
-#[cfg(test)]
 fn resolve_allow_global_intrabc(core: &FrameHeaderCore) -> bool {
     core.intrabc
         .as_ref()
@@ -1232,31 +1228,53 @@ fn intrabc_dv_proven_valid(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
         )
     })?;
+    let block_w = geometry.n4w * MI_SIZE;
+    let block_h = geometry.n4h * MI_SIZE;
     // `av2_is_dv_valid` (`av2/common/mvref_common.h`) tries the `allow_local_intrabc`
     // local-IBC-buffer branch FIRST and returns valid on a hit (mvref_common.h:927-951),
     // then — for an intra-only frame with `allow_global_intrabc` — falls through to the
-    // GLOBAL wavefront branch (mvref_common.h:956-993). The same-SB local subset is the
-    // proven LIVE admission here; the global wavefront branch is modelled, AVM-verified,
-    // and unit-tested in [`global_intrabc_range_valid`] but NOT yet wired into the live
-    // displaced-copy admission. Wiring it re-ignites the deferred intra cascade through a
-    // regular (non-IntrABC) intra leaf at MI(36,224) that splot currently MIS-PARSES as
-    // the cardinal `H_PRED` while AVM `inspect --mode` decodes it as `V_PRED` — a
-    // pre-existing §5.20.5.5 intra-Y-mode parse divergence at a deep partition, fully
-    // independent of this DV gate. Once that block's left edge becomes covered by the
-    // cascade it reconstructs 256 confident-wrong samples (wrong cardinal axis + residual
-    // orientation); every IntrABC displaced copy the global branch admits is itself
-    // per-sample bit-exact vs the AVM pre-filter oracle, so the blocker is the separate
-    // §5.20.5.5 mode-parse brick. When it lands, OR the global clause in here:
-    // `local_valid || (frame_is_intra && allow_global && global_intrabc_range_valid(..))`.
-    // Over-rejecting is always safe (a deferred copy never claims a wrong sample).
-    Ok(local_intrabc_range_valid(IntrabcLocalRangeInputs {
+    // GLOBAL wavefront branch (mvref_common.h:956-993). Mirror that order: try the same-SB
+    // local subset first, then the §7.13.3.18 global wavefront branch gated on an
+    // intra-only frame AND an explicitly-read `allow_global_intrabc` (resolved by
+    // [`resolve_allow_global_intrabc`]). Both clauses are deterministic geometry checks
+    // that only ADMIT a source whose entire rectangle is already coded in decode order; an
+    // admitted copy is per-sample bit-exact vs the AVM pre-filter oracle. Over-rejecting is
+    // always safe (a deferred copy never claims a wrong sample), so a non-{64,128,256} SB
+    // size or missing tile info fails the global clause closed.
+    let local_valid = local_intrabc_range_valid(IntrabcLocalRangeInputs {
         mi_row: geometry.block.row,
         mi_col: geometry.block.col,
-        block_w: geometry.n4w * MI_SIZE,
-        block_h: geometry.n4h * MI_SIZE,
+        block_w,
+        block_h,
         dv_row: info.block_mv.row,
         dv_col: info.block_mv.col,
         sb_size,
+    });
+    if local_valid {
+        return Ok(true);
+    }
+    // The matching `frame_is_intra` clause of `av2_is_dv_valid` (mvref_common.h:954) plus
+    // the explicit `allow_global_intrabc`. `None` (inferred 0 on a non-intra frame) and
+    // `Some(false)` both disable the global branch — only an explicitly-read `Some(true)`
+    // on an intra-only frame enables it.
+    if core.frame_is_intra != Some(true) || !resolve_allow_global_intrabc(core) {
+        return Ok(false);
+    }
+    // The global wavefront branch needs the TRUE §5.18.7.6 superblock size (it must NOT
+    // collapse the 256 tier to 128 the way `superblock_samples` does — the `gradient` /
+    // `mib_size_log2` terms depend on the real size) and the block's tile 64x64-column
+    // extent (`total_sb64_per_row`).
+    let global_sb_size = global_superblock_samples(sequence, tile_offset)?;
+    let total_sb64_per_row = intrabc_tile_total_sb64_per_row(core, geometry, tile_offset)?;
+    Ok(global_intrabc_range_valid(IntrabcGlobalRangeInputs {
+        mi_row: geometry.block.row,
+        mi_col: geometry.block.col,
+        block_w,
+        block_h,
+        dv_row: info.block_mv.row,
+        dv_col: info.block_mv.col,
+        sb_size: global_sb_size,
+        total_sb64_per_row,
     }))
 }
 
@@ -1265,10 +1283,6 @@ fn intrabc_dv_proven_valid(
 /// of 64x64 columns spanning the block's tile. Derived from the block's tile interval
 /// (single-tile ac0ej3 spans the whole frame) so a multi-tile frame uses the correct
 /// per-tile extent.
-///
-/// Test-only until the global wavefront branch is wired live (see
-/// `intrabc_dv_proven_valid`).
-#[cfg(test)]
 fn intrabc_tile_total_sb64_per_row(
     core: &FrameHeaderCore,
     geometry: IntrabcBlockGeometry,
@@ -1310,10 +1324,6 @@ fn intrabc_tile_total_sb64_per_row(
 /// same-SB local subset never needs the true 256 size); the global branch's
 /// `mib_size_log2`, `gradient`, and `sb_64_residual` terms all depend on the REAL SB
 /// size, so it must not collapse 256 to 128.
-///
-/// Test-only until the global wavefront branch is wired live (see
-/// `intrabc_dv_proven_valid`).
-#[cfg(test)]
 fn global_superblock_samples(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<usize> {
     Ok(match intra_capped_seq_sb_size(sequence, tile_offset)? {
         SuperblockSize::Block64x64 => 64,
@@ -1400,10 +1410,6 @@ fn local_intrabc_range_valid(inputs: IntrabcLocalRangeInputs) -> bool {
 /// Inputs to the deterministic §7.13.3.18 global-intrabc wavefront range check (sample /
 /// MI-unit terms; the block vector is in eighth-pel units, `sb_size` the TRUE 64/128/256
 /// superblock sample size, `total_sb64_per_row` the block's tile 64x64-column extent).
-///
-/// Test-only until the global wavefront branch is wired live (see
-/// `intrabc_dv_proven_valid`).
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct IntrabcGlobalRangeInputs {
     mi_row: usize,
@@ -1417,15 +1423,12 @@ struct IntrabcGlobalRangeInputs {
 }
 
 /// AVM `INTRABC_DELAY_PIXELS / 64` (`av2/common/mvref_common.h:610`): the wavefront SB64
-/// delay of the global IntrABC reference window. Test-only with the global predicate.
-#[cfg(test)]
+/// delay of the global IntrABC reference window.
 const INTRABC_DELAY_SB64: i64 = 4;
 /// `mi_size_wide_log2[BLOCK_64X64]` / `mi_size_high_log2[BLOCK_64X64]` == 4 (a 64x64 SB is
-/// 16 MI wide/tall, `common_data.h`). Test-only with the global predicate.
-#[cfg(test)]
+/// 16 MI wide/tall, `common_data.h`).
 const LOG2_MI_PER_64: i64 = 4;
-/// `MI_SIZE_LOG2` == 2 (`enums.h:162`). Test-only with the global predicate.
-#[cfg(test)]
+/// `MI_SIZE_LOG2` == 2 (`enums.h:162`).
 const MI_SIZE_LOG2: i64 = 2;
 
 /// The GLOBAL wavefront branch of AV2 §7.13.3.18 / AVM `av2_is_dv_valid`
@@ -1453,10 +1456,6 @@ const MI_SIZE_LOG2: i64 = 2;
 /// `SB_HORZ_OR_QUAD` only ever WIDENS AVM's admission, so requiring the stricter horizon
 /// can over-reject (safe: a deferred copy never writes a wrong sample) but never
 /// over-admits.
-///
-/// Test-only until the §5.20.5.5 mode-parse brick (documented in `intrabc_dv_proven_valid`)
-/// lands and this predicate is wired into the live displaced-copy admission.
-#[cfg(test)]
 fn global_intrabc_range_valid(inputs: IntrabcGlobalRangeInputs) -> bool {
     let bw = inputs.block_w as i64;
     let bh = inputs.block_h as i64;

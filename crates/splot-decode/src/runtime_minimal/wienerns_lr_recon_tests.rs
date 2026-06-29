@@ -203,25 +203,34 @@ const MI40_IBP_STEP: u16 = 65;
 /// `PlaneTxType` instead of a hardcoded `DCT_DCT`: `LumaCoeffBlock` carries the
 /// already-decoded `metadata.luma_tx_type`, the inverse resolves the actual
 /// `Transform_1d_Type[PlaneTxType]` row/col kernels, and the former non-square /
-/// cardinal `eob > 1` tx-type defers are gone. This unblocks the MI(112,16) H_PRED
-/// `TX_16X16` `eob == 6` leaf (and its cascade), growing the region `273152` →
-/// `299264` (+26112). Every newly-reconstructed sample is per-sample bit-exact vs
-/// the oracle; the prior `273152` samples are bit-IDENTICAL (every prior-admitted
-/// leaf was `DCT_DCT`, so the real type equals `DCT_DCT` for them).
+/// cardinal `eob > 1` tx-type defers are gone. This unblocked the MI(112,16) H_PRED
+/// `TX_16X16` `eob == 6` leaf (and its cascade), growing the region to `299264`.
+///
+/// The §7.13.3.18 GLOBAL IntrABC wavefront DV-validity branch is now WIRED into the
+/// live displaced-copy admission ([`intrabc_dv_proven_valid`]): the §6.19.7.12
+/// `av2_is_dv_valid` local-IBC same-SB subset is tried first, then — on an intra-only
+/// frame with an explicitly-read `allow_global_intrabc` — the modelled global
+/// wavefront branch admits a source in the already-coded top-left wavefront region.
+/// With the upstream §5.20.5.5 y-mode neighbour-reorder gate fixed (PR #553), every
+/// global-IntrABC displaced copy and the regular-intra cascade it re-ignites is
+/// per-sample bit-exact, growing the region `299264` → `670976`. The blocks the
+/// global branch does NOT prove (e.g. the still-deferred MI(36,224) V_PRED leaf, no
+/// longer mis-parsed but not yet reconstructable through this sink) stay UNCOVERED at
+/// their fill value — the sink never claims a sample it has not proven bit-exact.
 ///
 /// Verified ZERO-mismatch, per sample, over EVERY covered luma sample against the AVM
-/// pre-filter reconstruction oracle (`/tmp/pref.yuv`, md5
-/// `f7959cb85a41dcf0e6ebf9179835da03`), aggregated by count + sum + FNV-1a-64 in
+/// pre-filter reconstruction oracle (the `inspect --dump-prefiltered` luma plane,
+/// 1920x1080 u16-LE, stride 3840), aggregated by count + sum + FNV-1a-64 in
 /// [`LUMA_RECON_REGION_SAMPLE_SUM`] / [`LUMA_RECON_REGION_FNV1A64`].
-const LUMA_RECON_SAMPLE_TOTAL: usize = 299_264;
-/// Sum of every reconstructed luma sample in the verified region (derived offline
-/// from the AVM pre-filter oracle over the sink's covered MI units, zero mismatch).
-const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 19_370_560;
+const LUMA_RECON_SAMPLE_TOTAL: usize = 670_976;
+/// Sum of every reconstructed luma sample in the verified region (derived from the AVM
+/// pre-filter oracle over the sink's covered MI units, zero mismatch vs splot).
+const LUMA_RECON_REGION_SAMPLE_SUM: u64 = 44_697_248;
 /// FNV-1a-64 over every reconstructed luma sample (row-major over the covered MI
 /// units, sample-major u16 LE), the whole-region per-value oracle pin: a wrong
 /// reconstruction anywhere in the covered region changes this checksum even at the
 /// same sample count.
-const LUMA_RECON_REGION_FNV1A64: u64 = 0x8299_0042_8329_75a5;
+const LUMA_RECON_REGION_FNV1A64: u64 = 0x4faf_a8c7_1271_6fc8;
 
 /// The bottom-edge `TX_64X64 DC_PRED` block at MI(16,256), x[64,128) y[1024,1080):
 /// its 56 in-frame rows (the 64-tall block overhangs the 1080-tall frame by 8). The
@@ -607,15 +616,17 @@ fn ac0ej3_frame_origin_chroma_dc_blocks_reconstruct_bit_exact_against_prefilter_
     // Coverage report: with the §7.12.2.19 IntrABC ref-MV weight sort modelled, the
     // §7.13.2.1 single-neighbour V_PRED edge fallback at the frame top, the §5.20.6.1
     // IntrABC `record_block` mode-info fill clamped to the frame edge (§5.20.3.2
-    // `block_coded`), and the §7.15.4 primary inverse now threading the REAL retained
-    // `PlaneTxType` (admitting the MI(112,16) H_PRED `eob > 1` leaf + cascade), the
-    // verified luma region is now the `299264`-sample bit-exact region — plus the two
+    // `block_coded`), the §7.15.4 primary inverse threading the REAL retained
+    // `PlaneTxType` (admitting the MI(112,16) H_PRED `eob > 1` leaf + cascade), and the
+    // §7.13.3.18 GLOBAL IntrABC wavefront branch now wired live (admitting the
+    // prev-SB-row displaced copies + the regular-intra cascade they re-ignite), the
+    // verified luma region is now the `670976`-sample bit-exact region — plus the two
     // 32x32 chroma origin blocks (2048 chroma samples total across U and V).
     let (luma4x4, chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "verified luma region is the 299264-sample bit-exact DC + cardinal + IntrABC region"
+        "verified luma region is the 670976-sample bit-exact DC + cardinal + IntrABC region"
     );
     assert_eq!(
         chroma4x4 * 16,
@@ -759,18 +770,20 @@ fn ac0ej3_sb_column3_hpred_block_reconstructs_bit_exact_against_prefilter_oracle
         "the frame-top V_PRED block at x[256,320) y=0 reconstructs to flat 68 via the §7.13.2.1 no-above fallback",
     );
 
-    // The whole reconstructed luma region is now 299264 bit-exact samples (the
+    // The whole reconstructed luma region is now 670976 bit-exact samples (the
     // §7.12.2.19 IntrABC ref-MV weight sort admits MI(192,112) and its siblings, the
     // §7.13.2.1 frame-top V_PRED fallback adds the x[256,448) y[0,64) top-row
     // rectangle, the §5.20.6.1 frame-edge `record_block` clamp lets the bottom
-    // partial-SB row reconstruct, and the §7.15.4 real-`PlaneTxType` threading admits
-    // the MI(112,16) H_PRED `eob > 1` leaf + cascade — pinned per value by
+    // partial-SB row reconstruct, the §7.15.4 real-`PlaneTxType` threading admits
+    // the MI(112,16) H_PRED `eob > 1` leaf + cascade, and the §7.13.3.18 GLOBAL
+    // IntrABC wavefront branch admits the prev-SB-row displaced copies + the
+    // regular-intra cascade they re-ignite — pinned per value by
     // LUMA_RECON_REGION_FNV1A64).
     let (luma4x4, _chroma4x4) = sink.reconstructed_counts();
     assert_eq!(
         luma4x4 * 16,
         LUMA_RECON_SAMPLE_TOTAL,
-        "the parse-advanced walk reconstructs 299264 bit-exact luma samples"
+        "the parse-advanced walk reconstructs 670976 bit-exact luma samples"
     );
 }
 

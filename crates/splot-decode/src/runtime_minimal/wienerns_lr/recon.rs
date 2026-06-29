@@ -921,15 +921,18 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 /// `BLOCK_16X64` IntrABC block at MI(256,56) — whose nominal 64-tall target overhangs
 /// the 1080-row luma frame by 8 rows — derives an EFFECTIVE 16x56 in-frame target
 /// (and a congruent 16x56 source) instead of erroring `intrabc_target_bounds`, so the
-/// parse advances past that former frontier. The block's own RECONSTRUCTION still
-/// DEFERS: its real DV is `(row=-1024, col=0)` (an integer -128px VERTICAL displacement
-/// whose source sits in the PREVIOUS superblock row), which AVM `av2_is_dv_valid`
-/// validates via the `allow_global_intrabc` path (ac0ej3 sets `allow_global_intrabc==1`),
-/// NOT the same-superblock `av2_is_dv_in_local_range` branch
-/// ([`super::intrabc_records`]'s `intrabc_dv_proven_valid` proves only the local same-SB
-/// subset). The global-intrabc DV class is unmodeled, so `intrabc_dv_proven_valid`
-/// returns `false` and the copy is conservatively deferred — never a confident-wrong
-/// sample. The §5.20 `reset_block_context` write is now ALSO clamped to the frame edge
+/// parse advances past that former frontier. The block's own RECONSTRUCTION is now
+/// ADMITTED: its real DV `(row=-1024, col=0)` (an integer -128px VERTICAL displacement
+/// whose source sits in the PREVIOUS superblock row) is validated by AVM
+/// `av2_is_dv_valid` via the §7.13.3.18 `allow_global_intrabc` wavefront branch
+/// (ac0ej3 sets `allow_global_intrabc==1`), NOT the same-superblock
+/// `av2_is_dv_in_local_range` branch. That global wavefront branch is now WIRED into
+/// [`super::intrabc_records`]'s `intrabc_dv_proven_valid` (the local same-SB subset is
+/// tried first, then the intra-only global branch), and with the upstream §5.20.5.5
+/// y-mode reorder gate fixed the admitted copy plus the regular-intra cascade it
+/// re-ignites is per-sample bit-exact vs the oracle. A source the global branch cannot
+/// prove still defers — never a confident-wrong sample. The §5.20 `reset_block_context`
+/// write is now ALSO clamped to the frame edge
 /// (modelling AVM `av2_set_entropy_contexts` / `av2_reset_entropy_context`,
 /// `av2/common/blockd.c`, and the §5.20.3.2 `block_coded` model): the bottom-edge
 /// SKIPPED transforms at MI(256,0) — whose nominal 16-tall MI footprint overhangs the
