@@ -32,6 +32,7 @@ mod decide;
 pub mod error;
 mod forward_transform;
 mod forward_transform_16x16;
+mod forward_transform_shared;
 pub mod frame;
 mod general_intra_trace;
 mod header_plan;

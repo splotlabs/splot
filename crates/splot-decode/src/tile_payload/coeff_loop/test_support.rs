@@ -2,9 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Shared coefficient-loop test helpers.
-//!
-//! These fixtures and setup helpers are reused byte-for-byte across several
-//! `coeff_loop` `*_tests` submodules; a single copy here avoids drift.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -38,16 +35,31 @@ pub(crate) fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
 
 /// A 32x32 coeff context state seeded with one prior 6x6 luma block update.
 pub(crate) fn seeded_context_state() -> TileCoeffContextState {
-    let mut state = TileCoeffContextState::new(32, 32).unwrap();
+    seeded_luma_context_state(32, 32, 6, 6, 1, 1)
+}
+
+pub(crate) fn seeded_6x6_context_state() -> TileCoeffContextState {
+    seeded_luma_context_state(6, 6, 6, 6, 1, 1)
+}
+
+pub(crate) fn seeded_luma_context_state(
+    columns: usize,
+    rows: usize,
+    w4: usize,
+    h4: usize,
+    cul_level: u32,
+    dc_category: u8,
+) -> TileCoeffContextState {
+    let mut state = TileCoeffContextState::new(columns, rows).unwrap();
     state
         .update_after_coeffs(CoeffContextUpdate {
             plane: 0,
             x4: 0,
             y4: 0,
-            w4: 6,
-            h4: 6,
-            cul_level: 1,
-            dc_category: 1,
+            w4,
+            h4,
+            cul_level,
+            dc_category,
         })
         .unwrap();
     state
@@ -61,18 +73,10 @@ pub(crate) fn run_ordinary_branch<'a>(
         &mut SymbolDecoder<'a>,
     ) -> CoeffOrdinaryBranch,
 ) -> OrdinaryBranchRun {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut context_state = seeded_context_state();
-    let branch = apply(&mut context_state, &mut tile, &mut symbols);
-    (
-        branch,
-        context_state,
-        tile,
-        symbols.consumed_bits(),
-        symbols.symbol_count(),
-    )
+    run_optional_branch(payload, |context_state, tile, symbols| {
+        Some(apply(context_state, tile, symbols))
+    })
+    .unwrap()
 }
 
 pub(crate) fn run_optional_branch<'a, T>(
@@ -97,14 +101,6 @@ pub(crate) fn run_optional_branch<'a, T>(
     ))
 }
 
-/// Narrows an EOB branch to its non-zero start, or `None` for the all-zero arm.
-fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart> {
-    match branch {
-        CoeffBlockEobBranch::AllZero(_) => None,
-        CoeffBlockEobBranch::NonZero(start) => Some(start),
-    }
-}
-
 /// Reads the non-zero EOB branch for `start` over a default tile and returns the
 /// tile, the live decoder, and the non-zero block start (or `None` if any step
 /// fails or the branch is all-zero).
@@ -123,5 +119,8 @@ pub(crate) fn setup_start_with_input(
         CoeffBlockEobBranchInput::NonZero(start),
     )
     .ok()?;
-    Some((tile, symbols, branch_nonzero(branch)?))
+    let CoeffBlockEobBranch::NonZero(start) = branch else {
+        return None;
+    };
+    Some((tile, symbols, start))
 }

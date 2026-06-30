@@ -7,7 +7,7 @@
 
 use super::*;
 
-type ResidualTable = [[[Option<usize>; 2]; 2]; 29];
+type SubsampledSizeTable = [[[usize; 2]; 2]; 29];
 
 const BLOCK_16X16: usize = 6;
 const BLOCK_16X32: usize = 7;
@@ -22,112 +22,47 @@ const BLOCK_64X16: usize = 24;
 const BLOCK_32X4: usize = 26;
 const BLOCK_8X64: usize = 27;
 const BLOCK_64X8: usize = 28;
+const BLOCK_INVALID: usize = 29;
 
-const SUBSAMPLED_SIZE: ResidualTable = [
+const SUBSAMPLED_SIZE: SubsampledSizeTable = [
+    [[BLOCK_4X4, BLOCK_4X4], [BLOCK_4X4, BLOCK_4X4]],
+    [[BLOCK_4X8, BLOCK_4X4], [BLOCK_INVALID, BLOCK_4X4]],
+    [[BLOCK_8X4, BLOCK_INVALID], [BLOCK_4X4, BLOCK_4X4]],
+    [[BLOCK_8X8, BLOCK_8X4], [BLOCK_4X8, BLOCK_4X4]],
+    [[BLOCK_8X16, BLOCK_8X8], [BLOCK_4X16, BLOCK_4X8]],
+    [[BLOCK_16X8, BLOCK_16X4], [BLOCK_8X8, BLOCK_8X4]],
+    [[BLOCK_16X16, BLOCK_16X8], [BLOCK_8X16, BLOCK_8X8]],
+    [[BLOCK_16X32, BLOCK_16X16], [BLOCK_8X32, BLOCK_8X16]],
+    [[BLOCK_32X16, BLOCK_32X8], [BLOCK_16X16, BLOCK_16X8]],
+    [[BLOCK_32X32, BLOCK_32X16], [BLOCK_16X32, BLOCK_16X16]],
+    [[BLOCK_32X64, BLOCK_32X32], [BLOCK_16X64, BLOCK_16X32]],
+    [[BLOCK_64X32, BLOCK_64X16], [BLOCK_32X32, BLOCK_32X16]],
+    [[BLOCK_64X64, BLOCK_64X32], [BLOCK_32X64, BLOCK_32X32]],
+    [[BLOCK_64X128, BLOCK_64X64], [BLOCK_INVALID, BLOCK_32X64]],
+    [[BLOCK_128X64, BLOCK_INVALID], [BLOCK_64X64, BLOCK_64X32]],
+    [[BLOCK_128X128, BLOCK_128X64], [BLOCK_64X128, BLOCK_64X64]],
     [
-        [Some(BLOCK_4X4), Some(BLOCK_4X4)],
-        [Some(BLOCK_4X4), Some(BLOCK_4X4)],
-    ],
-    [[Some(BLOCK_4X8), Some(BLOCK_4X4)], [None, Some(BLOCK_4X4)]],
-    [[Some(BLOCK_8X4), None], [Some(BLOCK_4X4), Some(BLOCK_4X4)]],
-    [
-        [Some(BLOCK_8X8), Some(BLOCK_8X4)],
-        [Some(BLOCK_4X8), Some(BLOCK_4X4)],
-    ],
-    [
-        [Some(BLOCK_8X16), Some(BLOCK_8X8)],
-        [Some(BLOCK_4X16), Some(BLOCK_4X8)],
-    ],
-    [
-        [Some(BLOCK_16X8), Some(BLOCK_16X4)],
-        [Some(BLOCK_8X8), Some(BLOCK_8X4)],
-    ],
-    [
-        [Some(BLOCK_16X16), Some(BLOCK_16X8)],
-        [Some(BLOCK_8X16), Some(BLOCK_8X8)],
+        [BLOCK_128X256, BLOCK_128X128],
+        [BLOCK_INVALID, BLOCK_64X128],
     ],
     [
-        [Some(BLOCK_16X32), Some(BLOCK_16X16)],
-        [Some(BLOCK_8X32), Some(BLOCK_8X16)],
+        [BLOCK_256X128, BLOCK_INVALID],
+        [BLOCK_128X128, BLOCK_128X64],
     ],
     [
-        [Some(BLOCK_32X16), Some(BLOCK_32X8)],
-        [Some(BLOCK_16X16), Some(BLOCK_16X8)],
+        [BLOCK_256X256, BLOCK_256X128],
+        [BLOCK_128X256, BLOCK_128X128],
     ],
-    [
-        [Some(BLOCK_32X32), Some(BLOCK_32X16)],
-        [Some(BLOCK_16X32), Some(BLOCK_16X16)],
-    ],
-    [
-        [Some(BLOCK_32X64), Some(BLOCK_32X32)],
-        [Some(BLOCK_16X64), Some(BLOCK_16X32)],
-    ],
-    [
-        [Some(BLOCK_64X32), Some(BLOCK_64X16)],
-        [Some(BLOCK_32X32), Some(BLOCK_32X16)],
-    ],
-    [
-        [Some(BLOCK_64X64), Some(BLOCK_64X32)],
-        [Some(BLOCK_32X64), Some(BLOCK_32X32)],
-    ],
-    [
-        [Some(BLOCK_64X128), Some(BLOCK_64X64)],
-        [None, Some(BLOCK_32X64)],
-    ],
-    [
-        [Some(BLOCK_128X64), None],
-        [Some(BLOCK_64X64), Some(BLOCK_64X32)],
-    ],
-    [
-        [Some(BLOCK_128X128), Some(BLOCK_128X64)],
-        [Some(BLOCK_64X128), Some(BLOCK_64X64)],
-    ],
-    [
-        [Some(BLOCK_128X256), Some(BLOCK_128X128)],
-        [None, Some(BLOCK_64X128)],
-    ],
-    [
-        [Some(BLOCK_256X128), None],
-        [Some(BLOCK_128X128), Some(BLOCK_128X64)],
-    ],
-    [
-        [Some(BLOCK_256X256), Some(BLOCK_256X128)],
-        [Some(BLOCK_128X256), Some(BLOCK_128X128)],
-    ],
-    [[Some(BLOCK_4X16), Some(BLOCK_4X8)], [None, Some(BLOCK_4X8)]],
-    [[Some(BLOCK_16X4), None], [Some(BLOCK_8X4), Some(BLOCK_8X4)]],
-    [
-        [Some(BLOCK_8X32), Some(BLOCK_8X16)],
-        [Some(BLOCK_4X32), Some(BLOCK_4X16)],
-    ],
-    [
-        [Some(BLOCK_32X8), Some(BLOCK_32X4)],
-        [Some(BLOCK_16X8), Some(BLOCK_16X4)],
-    ],
-    [
-        [Some(BLOCK_16X64), Some(BLOCK_16X32)],
-        [Some(BLOCK_8X64), Some(BLOCK_8X32)],
-    ],
-    [
-        [Some(BLOCK_64X16), Some(BLOCK_64X8)],
-        [Some(BLOCK_32X16), Some(BLOCK_32X8)],
-    ],
-    [
-        [Some(BLOCK_4X32), Some(BLOCK_4X16)],
-        [None, Some(BLOCK_4X16)],
-    ],
-    [
-        [Some(BLOCK_32X4), None],
-        [Some(BLOCK_16X4), Some(BLOCK_16X4)],
-    ],
-    [
-        [Some(BLOCK_8X64), Some(BLOCK_8X32)],
-        [None, Some(BLOCK_4X32)],
-    ],
-    [
-        [Some(BLOCK_64X8), None],
-        [Some(BLOCK_32X8), Some(BLOCK_32X4)],
-    ],
+    [[BLOCK_4X16, BLOCK_4X8], [BLOCK_INVALID, BLOCK_4X8]],
+    [[BLOCK_16X4, BLOCK_INVALID], [BLOCK_8X4, BLOCK_8X4]],
+    [[BLOCK_8X32, BLOCK_8X16], [BLOCK_4X32, BLOCK_4X16]],
+    [[BLOCK_32X8, BLOCK_32X4], [BLOCK_16X8, BLOCK_16X4]],
+    [[BLOCK_16X64, BLOCK_16X32], [BLOCK_8X64, BLOCK_8X32]],
+    [[BLOCK_64X16, BLOCK_64X8], [BLOCK_32X16, BLOCK_32X8]],
+    [[BLOCK_4X32, BLOCK_4X16], [BLOCK_INVALID, BLOCK_4X16]],
+    [[BLOCK_32X4, BLOCK_INVALID], [BLOCK_16X4, BLOCK_16X4]],
+    [[BLOCK_8X64, BLOCK_8X32], [BLOCK_INVALID, BLOCK_4X32]],
+    [[BLOCK_64X8, BLOCK_INVALID], [BLOCK_32X8, BLOCK_32X4]],
 ];
 
 #[test]
@@ -135,6 +70,7 @@ fn get_plane_residual_size_matches_subsampled_size_table() {
     for (b_size, subsampled) in SUBSAMPLED_SIZE.into_iter().enumerate() {
         for (subsampling_x, by_y) in subsampled.into_iter().enumerate() {
             for (subsampling_y, expected) in by_y.into_iter().enumerate() {
+                let expected = (expected != BLOCK_INVALID).then_some(expected);
                 let actual = get_plane_residual_size(
                     BlockSize::new(b_size).unwrap(),
                     1,

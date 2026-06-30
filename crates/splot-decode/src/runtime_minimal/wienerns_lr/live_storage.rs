@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Live Wiener NS loop-restoration storage allocation shells.
-
 use splot_recon::{BitDepth, ReconError};
 
 use crate::error::{DecodeError, Result};
@@ -17,28 +15,16 @@ pub(in crate::runtime_minimal) const LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES: u64 =
 pub(in crate::runtime_minimal) const LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE: u64 =
     core::mem::size_of::<Option<u8>>() as u64;
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private live storage-allocation proof waits for tile reconstruction to populate values"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Eq, PartialEq)]
 pub(in crate::runtime_minimal) struct WienerNsLrLiveStorageAllocation {
     bit_depth: BitDepth,
-    curr_frame: WienerNsLrLiveFrameBuffer,
-    cdef_frame: WienerNsLrLiveFrameBuffer,
+    curr_frame: LiveSlots<u16>,
+    cdef_frame: LiveSlots<u16>,
     tx_skip_grid: WienerNsLrLiveTxSkipGrid,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private live storage-allocation proof waits for tile reconstruction to populate values"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 impl WienerNsLrLiveStorageAllocation {
     pub(in crate::runtime_minimal) fn from_retention_frontier(
         frontier: WienerNsLrRuntimeStorageRetentionFrontier,
@@ -48,18 +34,16 @@ impl WienerNsLrLiveStorageAllocation {
                 "wiener ns lr live frame-buffer count",
             ));
         }
-        let bytes_per_sample = decoded_storage_bytes_per_sample(frontier.bit_depth);
-        if !frontier.frame_buffer_bytes.is_multiple_of(bytes_per_sample) {
-            return Err(source_read_arithmetic_overflow(
-                "wiener ns lr live frame-buffer byte alignment",
-            ));
-        }
-        let frame_sample_count = storage_u64_to_usize(
-            frontier.frame_buffer_bytes / bytes_per_sample,
-            "wiener ns lr live frame-buffer samples",
+        let frame_sample_count =
+            live_frame_sample_count(frontier.frame_buffer_bytes, frontier.bit_depth)?;
+        let curr_frame = LiveSlots::new(
+            frame_sample_count,
+            "wiener ns lr live frame-buffer allocation",
         )?;
-        let curr_frame = WienerNsLrLiveFrameBuffer::new(frontier.bit_depth, frame_sample_count)?;
-        let cdef_frame = WienerNsLrLiveFrameBuffer::new(frontier.bit_depth, frame_sample_count)?;
+        let cdef_frame = LiveSlots::new(
+            frame_sample_count,
+            "wiener ns lr live frame-buffer allocation",
+        )?;
         let tx_skip_grid = WienerNsLrLiveTxSkipGrid::new(
             frontier.tx_skip_rows,
             frontier.tx_skip_cols,
@@ -79,13 +63,13 @@ impl WienerNsLrLiveStorageAllocation {
     }
 
     pub(in crate::runtime_minimal) fn frame_sample_count(&self) -> usize {
-        self.curr_frame.sample_count()
+        self.curr_frame.len()
     }
 
     pub(in crate::runtime_minimal) fn unpopulated_frame_samples(&self) -> usize {
         self.curr_frame
-            .unpopulated_samples()
-            .saturating_add(self.cdef_frame.unpopulated_samples())
+            .unpopulated()
+            .saturating_add(self.cdef_frame.unpopulated())
     }
 
     pub(in crate::runtime_minimal) fn tx_skip_dimensions(&self) -> (usize, usize) {
@@ -119,39 +103,10 @@ impl WienerNsLrLiveStorageAllocation {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct WienerNsLrLiveFrameBuffer {
-    samples: Vec<Option<u16>>,
-    populated: usize,
-}
-
-impl WienerNsLrLiveFrameBuffer {
-    fn new(bit_depth: BitDepth, sample_count: usize) -> Result<Self> {
-        let _ = bit_depth;
-        Ok(Self {
-            samples: unpopulated_vec(sample_count, "wiener ns lr live frame-buffer allocation")?,
-            populated: 0,
-        })
-    }
-
-    fn sample_count(&self) -> usize {
-        self.samples.len()
-    }
-
-    fn unpopulated_samples(&self) -> usize {
-        self.samples.len().saturating_sub(self.populated)
-    }
-
-    fn is_fully_populated(&self) -> bool {
-        self.populated == self.samples.len()
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
 struct WienerNsLrLiveTxSkipGrid {
     rows: usize,
     cols: usize,
-    values: Vec<Option<u8>>,
-    populated: usize,
+    values: LiveSlots<u8>,
 }
 
 impl WienerNsLrLiveTxSkipGrid {
@@ -172,8 +127,7 @@ impl WienerNsLrLiveTxSkipGrid {
         Ok(Self {
             rows,
             cols,
-            values: unpopulated_vec(value_count, "wiener ns lr live tx-skip allocation")?,
-            populated: 0,
+            values: LiveSlots::new(value_count, "wiener ns lr live tx-skip allocation")?,
         })
     }
 
@@ -182,22 +136,19 @@ impl WienerNsLrLiveTxSkipGrid {
     }
 
     fn unpopulated_values(&self) -> usize {
-        self.values.len().saturating_sub(self.populated)
+        self.values.unpopulated()
     }
 
     fn populate_from_retained_grid(&mut self, grid: &WienerNsLrTxSkipGrid) -> Result<()> {
         if self.rows != grid.rows || self.cols != grid.cols {
             return Err(live_tx_skip_invalid("wiener ns lr live tx-skip dimensions"));
         }
-        if self.populated != 0 {
+        if self.values.has_population() {
             return Err(live_tx_skip_invalid(
                 "wiener ns lr live tx-skip already populated",
             ));
         }
-        for (slot, value) in self.values.iter_mut().zip(grid.values.iter().copied()) {
-            *slot = Some(value);
-        }
-        self.populated = self.values.len();
+        self.values.populate_from_slice(&grid.values);
         Ok(())
     }
 
@@ -206,7 +157,40 @@ impl WienerNsLrLiveTxSkipGrid {
             return None;
         }
         let index = row.checked_mul(self.cols)?.checked_add(col)?;
-        self.values.get(index).copied().flatten()
+        self.values.value(index)
+    }
+
+    fn is_fully_populated(&self) -> bool {
+        self.values.is_fully_populated()
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct LiveSlots<T> {
+    values: Vec<Option<T>>,
+    populated: usize,
+}
+
+impl<T: Clone> LiveSlots<T> {
+    fn new(len: usize, context: &'static str) -> Result<Self> {
+        Ok(Self {
+            values: unpopulated_vec(len, context)?,
+            populated: 0,
+        })
+    }
+}
+
+impl<T> LiveSlots<T> {
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    fn unpopulated(&self) -> usize {
+        self.values.len().saturating_sub(self.populated)
+    }
+
+    fn has_population(&self) -> bool {
+        self.populated != 0
     }
 
     fn is_fully_populated(&self) -> bool {
@@ -214,10 +198,36 @@ impl WienerNsLrLiveTxSkipGrid {
     }
 }
 
+impl<T: Copy> LiveSlots<T> {
+    fn populate_from_slice(&mut self, values: &[T]) {
+        for (slot, value) in self.values.iter_mut().zip(values.iter().copied()) {
+            *slot = Some(value);
+        }
+        self.populated = self.values.len();
+    }
+
+    fn value(&self, index: usize) -> Option<T> {
+        self.values.get(index).copied().flatten()
+    }
+}
+
 fn live_tx_skip_invalid(field: &'static str) -> DecodeError {
     DecodeError::Reconstruction {
         source: ReconError::PcWienerInvalidBounds { field },
     }
+}
+
+fn live_frame_sample_count(frame_buffer_bytes: u64, bit_depth: BitDepth) -> Result<usize> {
+    let bytes_per_sample = decoded_storage_bytes_per_sample(bit_depth);
+    if !frame_buffer_bytes.is_multiple_of(bytes_per_sample) {
+        return Err(source_read_arithmetic_overflow(
+            "wiener ns lr live frame-buffer byte alignment",
+        ));
+    }
+    storage_u64_to_usize(
+        frame_buffer_bytes / bytes_per_sample,
+        "wiener ns lr live frame-buffer samples",
+    )
 }
 
 fn storage_u64_to_usize(value: u64, context: &'static str) -> Result<usize> {

@@ -1,144 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! `splot-recon` - AV2 reconstruction model primitives.
+//! `splot-recon` owns AV2 reconstruction primitives and frame/workspace storage.
 //!
-//! This crate provides the first decoded output frame and plane model shared by
-//! future decoder, frame-hash, Y4M, reference-frame storage, and encoder
-//! roundtrip work. The model is limited to immutable owned output frames,
-//! plane storage invariants, a safe reference-slot container, and deterministic
-//! frame-hash input serialization and digest computation, plus source-backed
-//! Y4M writing for caller-supplied decoded frames, plus square DC,
-//! rectangular DC, subsampled DC, basic/PAETH, smooth, and H/V cardinal
-//! directional intra prediction primitives and a mutable current-frame
-//! workspace, plus the AV2 § 7.14.2 dequantization quantizer functions
-//! (quantizer-value lookup, quantizer-index resolution, and per-plane DC/AC
-//! composition), the § 7.15.2 1D inverse transforms (§ 7.15.2.1 kernel,
-//! § 7.15.2.2 Walsh-Hadamard, and § 7.15.2.3 identity), the § 7.14.3
-//! residual-addition step, the § 7.14.4 → § 7.15.4 → § 7.14.3 transform-block
-//! reconstruction chain composition
-//! ([`reconstruct_transform_block_residual`]), the § 7.15.3 secondary inverse
-//! transform ([`secondary_inverse_transform`], the § 9.7 IST matrix transform
-//! over caller-resolved kernel/transpose), the § 7.15.4.1 2D matrix transform core, the
-//! § 7.15.4 outer orchestration (the lossless IDTX shortcut, the DPCM cumulative
-//! sum, and adjusted-size sample duplication over caller-resolved transform
-//! selections), and the § 7.14.4 dequantization process (the per-coefficient
-//! dequant arithmetic, the non-quantization-matrix transform-block helper over
-//! caller-resolved quantizers, and the built-in-`Quantizer_Matrix`
-//! quantization-matrix weighting over caller-resolved indices), and the
-//! § 7.15.4 `Transform_Shift` row/column down-shift lookup keyed on the
-//! original `(log2W, log2H)` shape, the § 7.15.4 `get_transform_1d_type`
-//! row/column transform-type derivation (the built-in `Transform_1d_Type`
-//! table plus the `useDdt` `DDTX`/`FDDT` substitution), the combined § 7.15.4
-//! transform-parameter resolve helper ([`InverseTransform2dOuter::resolve`],
-//! which derives the per-pass shifts, the per-pass transform types over the
-//! adjusted sample sizes, and the `PlaneTxType == IDTX` flag from one
-//! `(plane_tx_type, log2W, log2H)` source), the § 7.15.4 DPCM cumulative-sum
-//! direction selection ([`dpcm_direction`], `None`/`Vertical`/`Horizontal` from
-//! the caller-resolved `useDpcm` and whether the prediction mode is `V_PRED`),
-//! and the § 5.20.7.30
-//! `get_scan` coefficient scan order (the anti-diagonal 2D scan and the
-//! row/column raster scans) with its `get_tx_class` `PlaneTxType`-to-class
-//! mapping, the § 7.17.7.1 deblocking sample filter
-//! ([`deblock_sample_filter`], the per-edge `deltaM2` ramp over a caller-supplied
-//! perpendicular sample line and caller-resolved widths/weights), and the
-//! § 7.17.3 deblocking filter-maximum-width derivation
-//! ([`deblock_filter_max_width`], the per-side `maxWidthNeg`/`maxWidthPos` from
-//! the filter size, plane, and super-block-edge flag), and the § 7.17.5 adaptive
-//! filter strength ([`deblock_adaptive_filter_strength`] /
-//! [`deblock_side_threshold_index`], the `qThr`/`side` thresholds from the filter
-//! level), and the § 7.17.7.2 deblocking filter-choice process
-//! ([`deblock_filter_choice`], the chosen filter width from the two perpendicular
-//! edge sample lines, the estimated second derivatives, and the `qThr`/`sideThr`
-//! threshold cascade over the caller-resolved `Q_First` table), and the
-//! § 7.20.2 loop-restoration source-sample selector
-//! ([`loop_restoration_source_sample`], the allowed-extent clipping,
-//! current-stripe source choice, and two-line out-of-stripe clamp over
-//! caller-resolved luma bounds) plus immutable frame-view sample reader
-//! ([`loop_restoration_source_sample_value`], the selected `CurrFrame`/`CdefFrame`
-//! coded-storage read), and the
-//! § 7.20.3 luma non-separable Wiener filter primitive
-//! ([`wiener_ns_filter_luma_block`], the luma `Wiener_Ns_Config_Y` tap
-//! accumulation over caller-resolved source samples, subclasses, coefficients,
-//! and bit depth), the § 7.20.3 chroma non-separable Wiener filter primitive
-//! ([`wiener_ns_filter_chroma_block`], the chroma `Wiener_Ns_Config_Uv` tap
-//! accumulation plus luma-tap contribution and 4:2:0 luma downsampling over
-//! caller-resolved source samples, coefficients, luma bounds, subsampling, and
-//! bit depth), the § 7.20.4 pixel-classified Wiener skip-filter classification
-//! primitive ([`pc_wiener_classify`], the 6x6 feature window, `LrTxSkip`
-//! normalization, quantizer contribution, `lutInput` construction, and
-//! `Pc_Wiener_Lut_To_Class` lookup over caller-resolved source samples and
-//! `LrTxSkip` values), and the
-//! § 7.13.3.18 block inter prediction (sub-pel motion compensation) kernel
-//! ([`subpel_predict_block`], the separable interpolation-filter convolution: a
-//! horizontal filter pass into an intermediate array then a vertical pass, the
-//! verbatim § 7.13.3.18 [`SUBPEL_FILTERS`] `[6][16][8]` coefficients selected by
-//! the § 6 `interp` with the small-block 4-tap substitution and the sub-pel phase
-//! `(p >> 6) & SUBPEL_MASK`, the § 7.13.3.16 `InterRound0` / `InterRound1`
-//! rounding, and the final § 4.8 `Clip1` for the single-reference (non-compound)
-//! write, over caller-resolved § 7.13.3.17 `startX`/`startY`/`stepX`/`stepY`
-//! scaling and a clipped [`ReferencePlaneView`] border extension); it does not
-//! implement the rest of the § 7.17 deblocking edge traversal and § 7.17.6 filter-level derivation,
-//! the other loop filters (CDEF, CCSO, full loop restoration traversal/filtering, GDF), byte-consuming
-//! decode, full
-//! reconstruction, the § 7.14.4 `shift` derivation
-//! or the user-defined `UserQm` matrices,
-//! the § 7.13.3.17 motion-vector scaling (the caller resolves
-//! `startX`/`startY`/`stepX`/`stepY`), the § 7.13.3 compound / mask-blend /
-//! distance-weighted prediction, the § 7.13.3.19 block warp, the § 7.13.3
-//! reference-area clipping selection, intra block copy,
-//! full loop-restoration traversal/filtering, runtime CLI Y4M output, or full AV2
-//! reference refresh semantics.
-//!
-//! The ownership model is view-first ([`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
-//! owned plane/frame/workspace storage hands out borrowed [`PlaneRef`]/[`PlaneMut`]
-//! and [`FrameRef`]/[`FrameMut`] views without copying, immutable frames are shared
-//! without copying pixels via [`SharedFrame`], and no media-storage type implements
-//! `Clone`.
-//!
-//! Feature tracking: `INFRA-RECON-FRAME-PLANE-TYPES`,
-//! `INFRA-ZERO-COPY-MEDIA-POLICY`,
-//! `RECON-REFERENCE-FRAME-STORE`, `RECON-HASH-INPUT-SERIALIZATION`,
-//! `RECON-FRAME-HASH-DIGEST`, `RECON-Y4M-OUTPUT-WRITER`,
-//! `RECON-INTRA-DC-SQUARE-PREDICTION`,
-//! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`,
-//! `RECON-INTRA-DC-SUBSAMPLED-PREDICTION`,
-//! `RECON-INTRA-IBP-DC-PREDICTION`,
-//! `RECON-INTRA-BASIC-PAETH-PREDICTION`,
-//! `RECON-INTRA-SMOOTH-PREDICTION`,
-//! `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`,
-//! `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION`,
-//! `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`,
-//! `RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION`,
-//! `RECON-CURRENT-FRAME-WORKSPACE`,
-//! `RECON-INTRABC-CURRENT-FRAME-COPY`,
-//! `RECON-DEQUANT-QUANTIZER-LOOKUP`,
-//! `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`,
-//! `RECON-INVERSE-TRANSFORM-1D`,
-//! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`,
-//! `RECON-RESIDUAL-ADDITION`,
-//! `RECON-RECONSTRUCT-TRANSFORM-BLOCK`,
-//! `RECON-SECONDARY-INVERSE-TRANSFORM`,
-//! `RECON-INVERSE-TRANSFORM-2D`,
-//! `RECON-INVERSE-TRANSFORM-2D-OUTER`,
-//! `RECON-DEQUANT-PROCESS`,
-//! `RECON-DEQUANT-QM-WEIGHT`,
-//! `RECON-TRANSFORM-SHIFT-LOOKUP`,
-//! `RECON-GET-TRANSFORM-1D-TYPE`,
-//! `RECON-RESOLVE-2D-TRANSFORM-PARAMS`,
-//! `RECON-DPCM-DIRECTION`,
-//! `RECON-COEFFICIENT-SCAN-ORDER`,
-//! `RECON-GET-TX-CLASS`,
-//! `RECON-DEBLOCK-SAMPLE-FILTER`,
-//! `RECON-DEBLOCK-FILTER-MAX-WIDTH`,
-//! `RECON-DEBLOCK-ADAPTIVE-STRENGTH`,
-//! `RECON-DEBLOCK-FILTER-CHOICE`,
-//! `RECON-LOOP-RESTORATION-SOURCE-SAMPLE`,
-//! `RECON-LOOP-RESTORATION-SOURCE-READ`,
-//! `RECON-WIENERNS-FILTER-PRIMITIVE`,
-//! `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE`,
-//! `RECON-PC-WIENER-CLASSIFICATION`,
-//! `RECON-SUBPEL-MC`.
+//! The crate exposes checked media buffers, view-first frame access, intra/inter
+//! prediction kernels, inverse-transform/dequant helpers, and loop-filter
+//! primitives. Byte parsing and runtime scheduling stay outside this crate.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -214,10 +81,7 @@ pub use intra_basic::{IntraPaethEdge, IntraPaethEdges, predict_intra_paeth_rect_
 pub use intra_dc_subsampled::{
     predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
 };
-pub use intra_directional::{
-    IntraCardinalDirection, IntraCardinalEdge, IntraCardinalEdges,
-    predict_intra_cardinal_directional_rect_into,
-};
+pub use intra_directional::{IntraCardinalDirection, predict_intra_cardinal_directional_rect_into};
 pub use intra_directional_angle::{
     IntraDirectionalAngle, IntraDirectionalAngleEdge, IntraDirectionalAngleEdges,
     IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,

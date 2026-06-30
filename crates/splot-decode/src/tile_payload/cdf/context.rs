@@ -2,8 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! AV2 § 8.3.2 partition-entry CDF context derivation.
-//!
-//! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY`.
 
 use splot_core::tables::conversion::{
     MI_HEIGHT_LOG2, MI_WIDTH_LOG2, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE,
@@ -26,16 +24,16 @@ const PARTITION_SIZE_ADJUST_RECT_TYPE: [usize; BLOCK_SIZES] = [
     0, 0, 0, 0, 1, 2, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 13, 14, 13, 14, 0, 0, 0, 0,
 ];
 
-/// Rectangular partition direction used by AV2 § 8.3.2 extended contexts.
+/// Rectangular partition direction for AV2 § 8.3.2 extended contexts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RectPartitionType {
-    /// `RECT_HORZ`; context is derived from left-neighbor heights.
+    /// `RECT_HORZ`.
     Horz,
-    /// `RECT_VERT`; context is derived from above-neighbor widths.
+    /// `RECT_VERT`.
     Vert,
 }
 
-/// Bounded inputs for AV2 § 8.3.2 partition-entry CDF context derivation.
+/// Inputs for AV2 § 8.3.2 partition-entry CDF context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PartitionContextInput<'a> {
     b_size: BlockSizeIndex,
@@ -48,10 +46,6 @@ pub(crate) struct PartitionContextInput<'a> {
 
 impl<'a> PartitionContextInput<'a> {
     /// Creates context inputs from tile-neighbor block-size state.
-    ///
-    /// `bSize` is checked eagerly. `PlaneStart`, `r`, `c`, second-half offsets,
-    /// and neighbor entries are checked by each selector method against its
-    /// target CDF array.
     pub(crate) fn new(
         b_size: usize,
         plane_start: usize,
@@ -70,43 +64,33 @@ impl<'a> PartitionContextInput<'a> {
         })
     }
 
-    /// Derives `TileDoSplitCdf[PlaneStart][ctx]` for AV2 § 8.3.2.
+    /// Derives `TileDoSplitCdf[PlaneStart][ctx]`.
     pub(crate) fn do_split_selector(self) -> Result<TileCdfSelector, TileCdfError> {
         let plane_start = checked_plane(TileCdfArray::DoSplit, self.plane_start)?;
-        let bsw = self.mi_width_log2()?.max(1);
-        let bsh = self.mi_height_log2()?.max(1);
-        let ctx1 = context_bit(self.left_height_log2(plane_start, self.r)? < bsh);
-        let ctx2 = context_bit(self.above_width_log2(plane_start, self.c)? < bsw);
-        let ctx = partition_context(
+        let ctx = self.neighbor_partition_context(
             TileCdfArray::DoSplit,
+            plane_start,
             PARTITION_SIZE_ADJUST[self.b_size.index()],
-            ctx1,
-            ctx2,
             DO_SPLIT_CONTEXTS,
         )?;
 
         Ok(TileCdfSelector::DoSplit { plane_start, ctx })
     }
 
-    /// Derives `TileRectTypeCdf[PlaneStart][ctx]` for AV2 § 8.3.2.
+    /// Derives `TileRectTypeCdf[PlaneStart][ctx]`.
     pub(crate) fn rect_type_selector(self) -> Result<TileCdfSelector, TileCdfError> {
         let plane_start = checked_plane(TileCdfArray::RectType, self.plane_start)?;
-        let bsw = self.mi_width_log2()?.max(1);
-        let bsh = self.mi_height_log2()?.max(1);
-        let ctx1 = context_bit(self.left_height_log2(plane_start, self.r)? < bsh);
-        let ctx2 = context_bit(self.above_width_log2(plane_start, self.c)? < bsw);
-        let ctx = partition_context(
+        let ctx = self.neighbor_partition_context(
             TileCdfArray::RectType,
+            plane_start,
             PARTITION_SIZE_ADJUST_RECT_TYPE[self.b_size.index()],
-            ctx1,
-            ctx2,
             RECT_TYPE_CONTEXTS,
         )?;
 
         Ok(TileCdfSelector::RectType { plane_start, ctx })
     }
 
-    /// Derives `TileDoExtPartitionCdf[PlaneStart][ctx]` for AV2 § 8.3.2.
+    /// Derives `TileDoExtPartitionCdf[PlaneStart][ctx]`.
     pub(crate) fn do_ext_partition_selector(
         self,
         rect_type: RectPartitionType,
@@ -122,7 +106,7 @@ impl<'a> PartitionContextInput<'a> {
         Ok(TileCdfSelector::DoExtPartition { plane_start, ctx })
     }
 
-    /// Derives `TileDoUneven4wayPartitionCdf[PlaneStart][ctx]` for AV2 § 8.3.2.
+    /// Derives `TileDoUneven4wayPartitionCdf[PlaneStart][ctx]`.
     pub(crate) fn do_uneven_4way_partition_selector(
         self,
         rect_type: RectPartitionType,
@@ -138,6 +122,20 @@ impl<'a> PartitionContextInput<'a> {
         Ok(TileCdfSelector::DoUneven4WayPartition { plane_start, ctx })
     }
 
+    fn neighbor_partition_context(
+        self,
+        array: TileCdfArray,
+        plane_start: usize,
+        adj_size: usize,
+        max_exclusive: usize,
+    ) -> Result<usize, TileCdfError> {
+        let bsw = self.b_size.width_log2()?.max(1);
+        let bsh = self.b_size.height_log2()?.max(1);
+        let ctx1 = self.left_context(plane_start, self.r, bsh)?;
+        let ctx2 = self.above_context(plane_start, self.c, bsw)?;
+        partition_context(array, adj_size, ctx1, ctx2, max_exclusive)
+    }
+
     fn extended_partition_context(
         self,
         array: TileCdfArray,
@@ -147,29 +145,21 @@ impl<'a> PartitionContextInput<'a> {
     ) -> Result<usize, TileCdfError> {
         let (ctx1, ctx2) = match rect_type {
             RectPartitionType::Horz => {
-                let bsh = self.mi_height_log2()?.saturating_sub(1).max(1);
-                let offset = conversion_table_value(
-                    "Num_4x4_Blocks_High",
-                    &NUM_4X4_BLOCKS_HIGH,
-                    self.b_size,
-                )? >> 1;
+                let bsh = self.b_size.height_log2()?.saturating_sub(1).max(1);
+                let offset = self.b_size.blocks_high()? >> 1;
                 let second = checked_neighbor_index("LeftMiSizes", plane_start, self.r, offset)?;
                 (
-                    context_bit(self.left_height_log2(plane_start, self.r)? < bsh),
-                    context_bit(self.left_height_log2(plane_start, second)? < bsh),
+                    self.left_context(plane_start, self.r, bsh)?,
+                    self.left_context(plane_start, second, bsh)?,
                 )
             }
             RectPartitionType::Vert => {
-                let bsw = self.mi_width_log2()?.saturating_sub(1).max(1);
-                let offset = conversion_table_value(
-                    "Num_4x4_Blocks_Wide",
-                    &NUM_4X4_BLOCKS_WIDE,
-                    self.b_size,
-                )? >> 1;
+                let bsw = self.b_size.width_log2()?.saturating_sub(1).max(1);
+                let offset = self.b_size.blocks_wide()? >> 1;
                 let second = checked_neighbor_index("AboveMiSizes", plane_start, self.c, offset)?;
                 (
-                    context_bit(self.above_width_log2(plane_start, self.c)? < bsw),
-                    context_bit(self.above_width_log2(plane_start, second)? < bsw),
+                    self.above_context(plane_start, self.c, bsw)?,
+                    self.above_context(plane_start, second, bsw)?,
                 )
             }
         };
@@ -183,36 +173,42 @@ impl<'a> PartitionContextInput<'a> {
         )
     }
 
-    fn mi_width_log2(self) -> Result<usize, TileCdfError> {
-        conversion_table_value("Mi_Width_Log2", &MI_WIDTH_LOG2, self.b_size)
-    }
-
-    fn mi_height_log2(self) -> Result<usize, TileCdfError> {
-        conversion_table_value("Mi_Height_Log2", &MI_HEIGHT_LOG2, self.b_size)
-    }
-
-    fn left_height_log2(self, plane_start: usize, index: usize) -> Result<usize, TileCdfError> {
-        let block_size = neighbor_block_size(
+    fn left_context(
+        self,
+        plane_start: usize,
+        index: usize,
+        threshold: usize,
+    ) -> Result<usize, TileCdfError> {
+        neighbor_context(
             "LeftMiSizes",
             self.left_mi_sizes[plane_start],
             plane_start,
             index,
-        )?;
-        conversion_table_value("Mi_Height_Log2", &MI_HEIGHT_LOG2, block_size)
+            "Mi_Height_Log2",
+            &MI_HEIGHT_LOG2,
+            threshold,
+        )
     }
 
-    fn above_width_log2(self, plane_start: usize, index: usize) -> Result<usize, TileCdfError> {
-        let block_size = neighbor_block_size(
+    fn above_context(
+        self,
+        plane_start: usize,
+        index: usize,
+        threshold: usize,
+    ) -> Result<usize, TileCdfError> {
+        neighbor_context(
             "AboveMiSizes",
             self.above_mi_sizes[plane_start],
             plane_start,
             index,
-        )?;
-        conversion_table_value("Mi_Width_Log2", &MI_WIDTH_LOG2, block_size)
+            "Mi_Width_Log2",
+            &MI_WIDTH_LOG2,
+            threshold,
+        )
     }
 }
 
-/// Bounded inputs for AV2 § 8.3.2 `do_square_split` context derivation.
+/// Inputs for AV2 § 8.3.2 `do_square_split` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SquareSplitContextInput<'a> {
     b_size: BlockSizeIndex,
@@ -226,10 +222,6 @@ pub(crate) struct SquareSplitContextInput<'a> {
 
 impl<'a> SquareSplitContextInput<'a> {
     /// Creates context inputs from caller-owned `MiSizes` block-size state.
-    ///
-    /// `bSize` is checked eagerly. `PlaneStart`, availability-gated neighbor
-    /// coordinates, grid entries, and the final context are checked by
-    /// [`Self::do_square_split_selector`].
     pub(crate) fn new(
         b_size: usize,
         plane_start: usize,
@@ -250,20 +242,36 @@ impl<'a> SquareSplitContextInput<'a> {
         })
     }
 
-    /// Derives `TileDoSquareSplitCdf[PlaneStart][ctx]` for AV2 § 8.3.2.
+    /// Derives `TileDoSquareSplitCdf[PlaneStart][ctx]`.
     pub(crate) fn do_square_split_selector(self) -> Result<TileCdfSelector, TileCdfError> {
         let plane_start = checked_square_split_plane(self.plane_start)?;
-        let bsw = self.mi_width_log2()?;
-        let bsh = self.mi_height_log2()?;
+        let bsw = self.b_size.width_log2()?;
+        let bsh = self.b_size.height_log2()?;
         let above = if self.avail_u {
             let row = checked_grid_coordinate("MiSizes", plane_start, "r", self.r, 1)?;
-            self.grid_width_log2(plane_start, row, self.c)? < bsw
+            grid_log2(
+                "MiSizes",
+                self.mi_sizes[plane_start],
+                plane_start,
+                row,
+                self.c,
+                "Mi_Width_Log2",
+                &MI_WIDTH_LOG2,
+            )? < bsw
         } else {
             false
         };
         let left = if self.avail_l {
             let col = checked_grid_coordinate("MiSizes", plane_start, "c", self.c, 1)?;
-            self.grid_height_log2(plane_start, self.r, col)? < bsh
+            grid_log2(
+                "MiSizes",
+                self.mi_sizes[plane_start],
+                plane_start,
+                self.r,
+                col,
+                "Mi_Height_Log2",
+                &MI_HEIGHT_LOG2,
+            )? < bsh
         } else {
             false
         };
@@ -276,36 +284,6 @@ impl<'a> SquareSplitContextInput<'a> {
         )?;
 
         Ok(TileCdfSelector::DoSquareSplit { plane_start, ctx })
-    }
-
-    fn mi_width_log2(self) -> Result<usize, TileCdfError> {
-        conversion_table_value("Mi_Width_Log2", &MI_WIDTH_LOG2, self.b_size)
-    }
-
-    fn mi_height_log2(self) -> Result<usize, TileCdfError> {
-        conversion_table_value("Mi_Height_Log2", &MI_HEIGHT_LOG2, self.b_size)
-    }
-
-    fn grid_width_log2(
-        self,
-        plane_start: usize,
-        row: usize,
-        col: usize,
-    ) -> Result<usize, TileCdfError> {
-        let block_size =
-            grid_block_size("MiSizes", self.mi_sizes[plane_start], plane_start, row, col)?;
-        conversion_table_value("Mi_Width_Log2", &MI_WIDTH_LOG2, block_size)
-    }
-
-    fn grid_height_log2(
-        self,
-        plane_start: usize,
-        row: usize,
-        col: usize,
-    ) -> Result<usize, TileCdfError> {
-        let block_size =
-            grid_block_size("MiSizes", self.mi_sizes[plane_start], plane_start, row, col)?;
-        conversion_table_value("Mi_Height_Log2", &MI_HEIGHT_LOG2, block_size)
     }
 }
 
@@ -326,6 +304,22 @@ impl BlockSizeIndex {
 
     const fn index(self) -> usize {
         self.0
+    }
+
+    fn width_log2(self) -> Result<usize, TileCdfError> {
+        conversion_table_value("Mi_Width_Log2", &MI_WIDTH_LOG2, self)
+    }
+
+    fn height_log2(self) -> Result<usize, TileCdfError> {
+        conversion_table_value("Mi_Height_Log2", &MI_HEIGHT_LOG2, self)
+    }
+
+    fn blocks_wide(self) -> Result<usize, TileCdfError> {
+        conversion_table_value("Num_4x4_Blocks_Wide", &NUM_4X4_BLOCKS_WIDE, self)
+    }
+
+    fn blocks_high(self) -> Result<usize, TileCdfError> {
+        conversion_table_value("Num_4x4_Blocks_High", &NUM_4X4_BLOCKS_HIGH, self)
     }
 }
 
@@ -371,6 +365,20 @@ fn neighbor_block_size(
             max_exclusive: BLOCK_SIZES,
         }
     })
+}
+
+fn neighbor_context(
+    array: &'static str,
+    neighbors: &[usize],
+    plane_start: usize,
+    index: usize,
+    table_name: &'static str,
+    table: &'static [i32],
+    threshold: usize,
+) -> Result<usize, TileCdfError> {
+    let block_size = neighbor_block_size(array, neighbors, plane_start, index)?;
+    let log2 = conversion_table_value(table_name, table, block_size)?;
+    Ok(context_bit(log2 < threshold))
 }
 
 fn checked_grid_coordinate(
@@ -425,6 +433,19 @@ fn grid_block_size(
             max_exclusive: BLOCK_SIZES,
         }
     })
+}
+
+fn grid_log2(
+    array: &'static str,
+    grid: &[&[usize]],
+    plane_start: usize,
+    row: usize,
+    col: usize,
+    table_name: &'static str,
+    table: &'static [i32],
+) -> Result<usize, TileCdfError> {
+    let block_size = grid_block_size(array, grid, plane_start, row, col)?;
+    conversion_table_value(table_name, table, block_size)
 }
 
 fn checked_neighbor_index(
@@ -482,6 +503,26 @@ mod tests {
     const BLOCK_32X32: usize = 9;
     const BLOCK_256X256: usize = BLOCK_256X256_INDEX;
 
+    fn do_split(plane_start: usize, ctx: usize) -> TileCdfSelector {
+        TileCdfSelector::DoSplit { plane_start, ctx }
+    }
+
+    fn rect_type(plane_start: usize, ctx: usize) -> TileCdfSelector {
+        TileCdfSelector::RectType { plane_start, ctx }
+    }
+
+    fn do_ext(plane_start: usize, ctx: usize) -> TileCdfSelector {
+        TileCdfSelector::DoExtPartition { plane_start, ctx }
+    }
+
+    fn do_uneven(plane_start: usize, ctx: usize) -> TileCdfSelector {
+        TileCdfSelector::DoUneven4WayPartition { plane_start, ctx }
+    }
+
+    fn do_square(plane_start: usize, ctx: usize) -> TileCdfSelector {
+        TileCdfSelector::DoSquareSplit { plane_start, ctx }
+    }
+
     #[test]
     fn derives_square_split_contexts_from_availability_gated_grid_neighbors() {
         let row0 = [BLOCK_256X256, BLOCK_4X4];
@@ -495,30 +536,21 @@ mod tests {
                 .unwrap()
                 .do_square_split_selector()
                 .unwrap(),
-            TileCdfSelector::DoSquareSplit {
-                plane_start: 0,
-                ctx: 3,
-            }
+            do_square(0, 3)
         );
         assert_eq!(
             SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, false, mi_sizes)
                 .unwrap()
                 .do_square_split_selector()
                 .unwrap(),
-            TileCdfSelector::DoSquareSplit {
-                plane_start: 0,
-                ctx: 1,
-            }
+            do_square(0, 1)
         );
         assert_eq!(
             SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, false, true, mi_sizes)
                 .unwrap()
                 .do_square_split_selector()
                 .unwrap(),
-            TileCdfSelector::DoSquareSplit {
-                plane_start: 0,
-                ctx: 2,
-            }
+            do_square(0, 2)
         );
 
         let empty_plane: [&[usize]; 0] = [];
@@ -528,10 +560,7 @@ mod tests {
                 .unwrap()
                 .do_square_split_selector()
                 .unwrap(),
-            TileCdfSelector::DoSquareSplit {
-                plane_start: 0,
-                ctx: 0,
-            }
+            do_square(0, 0)
         );
     }
 
@@ -548,20 +577,14 @@ mod tests {
                 .unwrap()
                 .do_square_split_selector()
                 .unwrap(),
-            TileCdfSelector::DoSquareSplit {
-                plane_start: 0,
-                ctx: 4,
-            }
+            do_square(0, 4)
         );
         assert_eq!(
             SquareSplitContextInput::new(BLOCK_256X256, 0, 1, 1, true, true, mi_sizes)
                 .unwrap()
                 .do_square_split_selector()
                 .unwrap(),
-            TileCdfSelector::DoSquareSplit {
-                plane_start: 0,
-                ctx: 7,
-            }
+            do_square(0, 7)
         );
     }
 
@@ -575,20 +598,8 @@ mod tests {
             PartitionContextInput::new(BLOCK_16X16, 0, 0, 0, [&left0, &left1], [&above0, &above1])
                 .unwrap();
 
-        assert_eq!(
-            input.do_split_selector().unwrap(),
-            TileCdfSelector::DoSplit {
-                plane_start: 0,
-                ctx: 7,
-            }
-        );
-        assert_eq!(
-            input.rect_type_selector().unwrap(),
-            TileCdfSelector::RectType {
-                plane_start: 0,
-                ctx: 3,
-            }
-        );
+        assert_eq!(input.do_split_selector().unwrap(), do_split(0, 7));
+        assert_eq!(input.rect_type_selector().unwrap(), rect_type(0, 3));
     }
 
     #[test]
@@ -601,23 +612,11 @@ mod tests {
             PartitionContextInput::new(BLOCK_16X16, 1, 0, 0, [&left0, &left1], [&above0, &above1])
                 .unwrap();
 
-        assert_eq!(
-            input.do_split_selector().unwrap(),
-            TileCdfSelector::DoSplit {
-                plane_start: 1,
-                ctx: 4,
-            }
-        );
+        assert_eq!(input.do_split_selector().unwrap(), do_split(1, 4));
         let luma =
             PartitionContextInput::new(BLOCK_16X16, 0, 0, 0, [&left0, &left1], [&above0, &above1])
                 .unwrap();
-        assert_eq!(
-            luma.do_split_selector().unwrap(),
-            TileCdfSelector::DoSplit {
-                plane_start: 0,
-                ctx: 7,
-            }
-        );
+        assert_eq!(luma.do_split_selector().unwrap(), do_split(0, 7));
 
         let empty_plane: [&[usize]; 0] = [];
         let empty_mi_sizes = [&empty_plane[..], &empty_plane[..]];
@@ -648,19 +647,13 @@ mod tests {
             input
                 .do_ext_partition_selector(RectPartitionType::Horz)
                 .unwrap(),
-            TileCdfSelector::DoExtPartition {
-                plane_start: 0,
-                ctx: 9,
-            }
+            do_ext(0, 9)
         );
         assert_eq!(
             input
                 .do_uneven_4way_partition_selector(RectPartitionType::Horz)
                 .unwrap(),
-            TileCdfSelector::DoUneven4WayPartition {
-                plane_start: 0,
-                ctx: 9,
-            }
+            do_uneven(0, 9)
         );
     }
 
@@ -680,10 +673,7 @@ mod tests {
             input
                 .do_ext_partition_selector(RectPartitionType::Vert)
                 .unwrap(),
-            TileCdfSelector::DoExtPartition {
-                plane_start: 0,
-                ctx: 9,
-            }
+            do_ext(0, 9)
         );
     }
 

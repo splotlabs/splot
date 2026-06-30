@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Minimal runtime bridge into the partition traversal frontier.
-//!
-//! Feature tracking: `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`,
-//! `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`,
-//! `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
-
 use core::mem::size_of;
 
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrParams};
@@ -33,34 +27,12 @@ use super::partition_traversal::{
     consume_tile_loop_restoration_root_frontier, decode_general_intra_partition_tree,
     plan_tile_partition_traversal_cursor,
 };
-use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
+use crate::{DecodeLimitError, DecodeLimitName, DecodeLimits};
 
 const BLOCK_64X64_INDEX: usize = 12;
 const BLOCK_128X128_INDEX: usize = 15;
 const BLOCK_256X256_INDEX: usize = 18;
 
-/// Live symbol cursor positioned at the minimal runtime block frontier.
-pub(crate) struct MinimalRuntimePartitionFrontier<'payload> {
-    symbols: SymbolDecoder<'payload>,
-    mi_size_state: TileMiSizeState,
-    frontier: DecodeBlockFrontier,
-}
-
-impl<'payload> MinimalRuntimePartitionFrontier<'payload> {
-    /// Splits the frontier into the live symbol decoder and MI-size state.
-    #[must_use]
-    fn into_parts(
-        self,
-    ) -> (
-        SymbolDecoder<'payload>,
-        TileMiSizeState,
-        DecodeBlockFrontier,
-    ) {
-        (self.symbols, self.mi_size_state, self.frontier)
-    }
-}
-
-/// Result of the minimal runtime block-symbol frontier.
 #[derive(Debug)]
 pub(crate) struct MinimalRuntimeBlockSymbolFrontier {
     summary: SymbolDecoderSummary,
@@ -68,79 +40,52 @@ pub(crate) struct MinimalRuntimeBlockSymbolFrontier {
 }
 
 impl MinimalRuntimeBlockSymbolFrontier {
-    /// Successful AV2 § 8.2.4 `exit_symbol()` summary after the traced block symbols.
     #[must_use]
     pub(crate) const fn summary(&self) -> SymbolDecoderSummary {
         self.summary
     }
 
-    /// Narrow reconstruction trace facts returned after block-symbol validation.
     #[must_use]
     pub(crate) const fn reconstruction_trace(&self) -> MinimalRuntimeReconstructionTrace {
         self.reconstruction_trace
     }
 }
 
-/// AV2 trace facts supported by the current minimal runtime frontier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MinimalRuntimeReconstructionTrace {
-    /// 64x64 8-bit 4:2:0 luma DC prediction with no residual path.
-    ///
-    /// The traced chroma symbol is not a neutral-chroma proof; current minimal
-    /// output materializes chroma separately as an output-contract fallback.
     LumaDcNoResidual8Bit420_64x64,
 }
 
-/// Error returned while deriving the minimal runtime partition frontier.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MinimalRuntimePartitionFrontierError {
-    /// A parser fact required by the runtime bridge is absent.
     #[error("minimal runtime partition frontier missing fact: {fact}")]
-    MissingFact {
-        /// Missing fact name.
-        fact: &'static str,
-    },
-    /// A bounded runtime allocation or arithmetic check failed.
+    MissingFact { fact: &'static str },
     #[error("minimal runtime partition frontier limit failed: {0}")]
     Limit(#[from] DecodeLimitError),
-    /// The underlying traversal frontier failed.
     #[error("minimal runtime partition traversal failed: {0}")]
     Traversal(#[from] TilePartitionTraversalError),
-    /// The MI-size state boundary failed.
     #[error("minimal runtime MI-size state failed: {0}")]
     MiSizeState(#[from] TileMiSizeStateError),
-    /// The `IntraJointModes` neighbour-mode state boundary failed.
     #[error("minimal runtime intra joint-mode state failed: {0}")]
     IntraJointModeState(#[from] TileIntraJointModeStateError),
-    /// The `UsesMrls` neighbour-mode state boundary failed.
     #[error("minimal runtime intra UsesMrls state failed: {0}")]
     UsesMrlsState(#[from] TileUsesMrlsStateError),
-    /// The `FscModes` neighbour-mode state boundary failed.
     #[error("minimal runtime intra FscModes state failed: {0}")]
     FscModeState(#[from] TileFscModeStateError),
-    /// The `UVCfls` neighbour-mode state boundary failed.
     #[error("minimal runtime intra UVCfls state failed: {0}")]
     UvCflState(#[from] TileUvCflStateError),
-    /// Traversal reached a shape outside the minimal tier.
     #[error("minimal runtime partition frontier mismatch: {reason}")]
-    UnexpectedFrontier {
-        /// Stable mismatch reason.
-        reason: &'static str,
-    },
+    UnexpectedFrontier { reason: &'static str },
 }
 
-/// Error returned while deriving the minimal runtime block-symbol frontier.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MinimalRuntimeBlockSymbolFrontierError {
-    /// The prerequisite partition frontier failed.
     #[error("minimal runtime partition frontier failed: {0}")]
     Partition(#[from] MinimalRuntimePartitionFrontierError),
-    /// The traced block-symbol frontier failed.
     #[error("minimal runtime block-symbol frontier failed: {0}")]
     Block(#[from] MinimalBlockSymbolTraceError),
 }
 
-/// Plans the minimal runtime partition and traced block-symbol frontier.
 pub(crate) fn plan_minimal_runtime_block_symbol_frontier(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     sequence: &SequenceHeader,
@@ -148,7 +93,7 @@ pub(crate) fn plan_minimal_runtime_block_symbol_frontier(
     limits: DecodeLimits,
 ) -> Result<MinimalRuntimeBlockSymbolFrontier, MinimalRuntimeBlockSymbolFrontierError> {
     let (symbols, mut mi_size_state, block_frontier) =
-        plan_minimal_runtime_partition_frontier(work_unit, sequence, core, limits)?.into_parts();
+        plan_minimal_runtime_partition_frontier(work_unit, sequence, core, limits)?;
     let tile_num = work_unit.tile_num();
     let trace = consume_minimal_block_symbol_trace(work_unit, symbols)?;
     mi_size_state
@@ -162,8 +107,6 @@ pub(crate) fn plan_minimal_runtime_block_symbol_frontier(
     })
 }
 
-/// Consumes the supported superblock-root LR unit syntax and stops before
-/// partition or block syntax.
 pub(crate) fn consume_minimal_runtime_lr_unit_frontier(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     sequence: &SequenceHeader,
@@ -182,35 +125,14 @@ pub(crate) fn consume_minimal_runtime_lr_unit_frontier(
     Ok(root)
 }
 
-/// Error from the general intra multi-block tree decode, separating the frame
-/// setup (frame facts / MI dimensions / MI-size allocation) from the partition
-/// tree walk (whose leaf error `E` is the caller's per-block decode error).
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GeneralIntraMultiblockError<E> {
-    /// Frame-fact / MI-dimension / MI-size-state setup failed.
     #[error("general intra multi-block setup failed: {0}")]
     Setup(#[from] MinimalRuntimePartitionFrontierError),
-    /// The partition tree walk failed.
     #[error("general intra multi-block tree walk failed: {0}")]
     Walk(GeneralIntraTreeWalkError<E>),
 }
 
-/// Decodes the complete general intra partition tree for the tile, invoking
-/// `on_leaf` at each leaf block in decode order, and returns the live symbol
-/// decoder for the caller's § 8.2.4 `exit_symbol()` check. The MI-size partition
-/// context and the AV2 § 5.20.5.3 `IntraJointModes` / `UsesMrls` / `FscModes`
-/// neighbour-mode grids are maintained across blocks internally.
-///
-/// `on_leaf` receives the shared per-MI `IntraJointModes` grid (read-only, for
-/// the § 8.3.2 `y_mode_index` neighbour context), the sibling `UsesMrls` grid
-/// (read-only, for MRL contexts), and the superblock-relative § 5.20.2.3
-/// `BlockDecoded` state (read-only, for the § 7.13.2.1 above-right /
-/// below-left sentinel availability via § 5.20.7.25 `count_top_right_avail` /
-/// `count_bottom_left_avail`), and returns the block's luma mode state when the
-/// leaf has a luma side, which the walk records into the grids for later luma
-/// and SDP chroma neighbours. The walk clears `BlockDecoded` per superblock
-/// (§ 5.20.2.3 `clear_block_decoded_flags`) and marks each decoded transform
-/// block's 4x4 units after `on_leaf` returns.
 pub(crate) fn decode_general_intra_multiblock_tree<'payload, E, F>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
     sequence: &SequenceHeader,
@@ -262,13 +184,19 @@ where
     .map_err(GeneralIntraMultiblockError::Walk)
 }
 
-/// Plans the minimal runtime root partition frontier and returns its live cursor.
-pub(crate) fn plan_minimal_runtime_partition_frontier<'payload>(
+fn plan_minimal_runtime_partition_frontier<'payload>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     limits: DecodeLimits,
-) -> Result<MinimalRuntimePartitionFrontier<'payload>, MinimalRuntimePartitionFrontierError> {
+) -> Result<
+    (
+        SymbolDecoder<'payload>,
+        TileMiSizeState,
+        DecodeBlockFrontier,
+    ),
+    MinimalRuntimePartitionFrontierError,
+> {
     let frame = minimal_partition_frame_facts(sequence, core)?;
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
     ensure_mi_size_allocation_within_limits(mi_rows, mi_cols, frame.sb_size(), limits)?;
@@ -283,11 +211,7 @@ pub(crate) fn plan_minimal_runtime_partition_frontier<'payload>(
     ensure_minimal_root_frontier(&plan, &symbols)?;
     let frontier = plan.frontier();
 
-    Ok(MinimalRuntimePartitionFrontier {
-        symbols,
-        mi_size_state,
-        frontier,
-    })
+    Ok((symbols, mi_size_state, frontier))
 }
 
 fn ensure_mi_size_allocation_within_limits(
@@ -301,11 +225,13 @@ fn ensure_mi_size_allocation_within_limits(
         DecodeLimitName::MaxLumaSamplesPerFrame,
         allocation.padded_grid_cells() as u64,
     )?;
-    let allocation_bytes = checked_mul_u64(
-        DecodeLimitName::MaxDecodedFrameBytes,
-        allocation.entry_count() as u64,
-        size_of::<usize>() as u64,
-    )?;
+    let allocation_bytes = limits
+        .ensure_mul(
+            DecodeLimitName::MaxDecodedFrameBytes,
+            allocation.entry_count() as u64,
+            size_of::<usize>() as u64,
+        )?
+        .actual();
     limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, allocation_bytes)?;
     Ok(())
 }
@@ -334,12 +260,11 @@ pub(crate) fn minimal_partition_frame_facts(
         .ok_or(MinimalRuntimePartitionFrontierError::MissingFact {
             fact: "sequence.filter",
         })?;
-    let loop_restoration = match core.lr_params.as_ref() {
-        Some(lr) => loop_restoration_state(lr, num_planes),
-        None => {
-            return Err(MinimalRuntimePartitionFrontierError::MissingFact { fact: "lr_params" });
-        }
-    };
+    let lr_params = core
+        .lr_params
+        .as_ref()
+        .ok_or(MinimalRuntimePartitionFrontierError::MissingFact { fact: "lr_params" })?;
+    let loop_restoration = loop_restoration_state(lr_params, num_planes);
 
     let sb_size_index = frame_sb_size_index(partition.seq_sb_size(), frame_is_intra);
 
@@ -450,7 +375,7 @@ fn ensure_minimal_root_frontier(
     let frontier = plan.frontier();
     if frontier.r != 0
         || frontier.c != 0
-        || frontier.b_size.index() != frame_size_block_index()
+        || frontier.b_size.index() != BLOCK_64X64_INDEX
         || frontier.symbol_count_before_block != 1
         || !plan.pending_children().is_empty()
         || plan.symbol_count_after() != 1
@@ -477,12 +402,8 @@ fn frame_sb_size_index(seq_sb_size: SuperblockSize, frame_is_intra: bool) -> usi
             BLOCK_128X128_INDEX
         }
         (SuperblockSize::Block256x256, false) => BLOCK_256X256_INDEX,
-        (SuperblockSize::Block64x64, _) => frame_size_block_index(),
+        (SuperblockSize::Block64x64, _) => BLOCK_64X64_INDEX,
     }
-}
-
-fn frame_size_block_index() -> usize {
-    BLOCK_64X64_INDEX
 }
 
 fn chroma_subsampling(chroma: ChromaFormatIdc) -> (bool, bool) {
@@ -491,16 +412,6 @@ fn chroma_subsampling(chroma: ChromaFormatIdc) -> (bool, bool) {
         ChromaFormatIdc::Yuv422 => (true, false),
         ChromaFormatIdc::Yuv444 => (false, false),
     }
-}
-
-fn checked_mul_u64(name: DecodeLimitName, left: u64, right: u64) -> Result<u64, DecodeLimitError> {
-    left.checked_mul(right)
-        .ok_or(DecodeLimitError::ArithmeticOverflow {
-            name,
-            op: DecodeLimitOp::Mul,
-            left,
-            right,
-        })
 }
 
 #[cfg(test)]

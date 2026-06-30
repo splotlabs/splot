@@ -1,24 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! General intra luma transform-block coefficient decode for the AVM-oracle
-//! general intra path.
-//!
-//! Feature tracking: `DECODE-GENERAL-INTRA-LUMA-COEFFS`.
-//!
-//! This decodes the AV2 § 5.20.7.27 `coeffs()` syntax for the single luma
-//! transform block of a minimal-tool intra key frame: it reads the `all_zero`
-//! (`txb_skip`) symbol with the spec-derived § 8.3.2 context, and when
-//! `all_zero == 0` routes the nonzero coefficient pass through the existing
-//! coefficient-loop machinery to produce the decoded `Quant[]` and end-of-block.
-//!
-//! Scope: the single non-partitioned 64x64 luma transform block at the tile
-//! origin (`tx_size == TX_64X64`, `PlaneTxType == DCT_DCT`). The chroma
-//! transform blocks, dequantization, inverse transform, residual addition,
-//! reconstruction, output, the general transform-block partition walk, and tile
-//! context-line persistence remain future increments. The decoded coefficients
-//! are returned to the caller (which currently still reports the reconstruction
-//! step unsupported) rather than committed to runtime decode state.
+//! General intra transform-block coefficient decode.
 
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{
@@ -57,99 +40,47 @@ use super::coeff_state::CoeffContextUpdate;
 use super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
 use super::{DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
-/// AV2 § 9.2 `TX_SIZES_ALL` index of `TX_64X64` (the single non-partitioned
-/// luma transform size for a 64x64 intra block with transform partitioning
-/// disabled).
 const TX_64X64: usize = 4;
-/// AV2 § 9.2 `TX_SIZES_ALL` index of `TX_8X8`.
 const TX_8X8: usize = 1;
-/// AV2 § 9.2 `TX_SIZES_ALL` index of `TX_16X16`.
 const TX_16X16: usize = 2;
-/// AV2 § 9.2 square-transform ordinal for `TX_32X32`, used by
-/// § 5.20.8.3 `get_tx_set`.
 const TX_32X32: usize = 3;
-/// AV2 § 9.2 `TX_SIZES_ALL` index of `TX_8X16`.
 const TX_8X16: usize = 7;
-/// AV2 § 3 `IST_4X4_HEIGHT`.
 const IST_4X4_HEIGHT: usize = 8;
-/// AV2 § 3 `IST_8X8_HEIGHT_RED`.
 const IST_8X8_HEIGHT_RED: usize = 20;
-/// AV2 § 3 `IST_8X8_HEIGHT`.
 const IST_8X8_HEIGHT: usize = 32;
-/// AV2 § 3 `ANGLE_STEP`.
 const ANGLE_STEP: i32 = 3;
-/// AV2 § 7.13.2.3 `Mrl_Index_To_Delta[MrlIndex]`.
 const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
-/// `DCT_DCT` `PlaneTxType` (AV2 § 5.20.7.29 implies `DCT_DCT` for this
-/// minimal-tool intra block; no `intra_tx_type` symbol is coded).
 const DCT_DCT: usize = 0;
-/// AV2 § 3 `ADST_DCT`.
 const ADST_DCT: usize = 1;
-/// AV2 § 3 `DCT_ADST`.
 const DCT_ADST: usize = 2;
-/// AV2 § 3 `ADST_ADST`.
 const ADST_ADST: usize = 3;
-/// AV2 § 3 `FLIPADST_DCT`.
 const FLIPADST_DCT: usize = 4;
-/// AV2 § 3 `DCT_FLIPADST`.
 const DCT_FLIPADST: usize = 5;
-/// AV2 § 3 `FLIPADST_FLIPADST`.
 const FLIPADST_FLIPADST: usize = 6;
-/// AV2 § 3 `ADST_FLIPADST`.
 const ADST_FLIPADST: usize = 7;
-/// AV2 § 3 `FLIPADST_ADST`.
 const FLIPADST_ADST: usize = 8;
-/// AV2 § 3 `IDTX`.
 const IDTX: usize = 9;
-/// AV2 § 3 `V_DCT`.
 const V_DCT: usize = 10;
-/// AV2 § 3 `H_DCT`.
 const H_DCT: usize = 11;
-/// AV2 § 3 `V_ADST`.
 const V_ADST: usize = 12;
-/// AV2 § 3 `H_ADST`.
 const H_ADST: usize = 13;
-/// AV2 § 3 `V_FLIPADST`.
 const V_FLIPADST: usize = 14;
-/// AV2 § 3 `H_FLIPADST`.
 const H_FLIPADST: usize = 15;
-/// AV2 § 9.2 `D45_PRED`.
 const D45_PRED: usize = 3;
-/// AV2 § 9.2 `D203_PRED`.
 const D203_PRED: usize = 7;
-/// The single default segment id for the minimal-tool intra block.
 const SEGMENT_ID: usize = 0;
-/// AV2 § 5.20.8.3 `TX_SET_DCTONLY`.
 const TX_SET_DCTONLY: usize = 0;
-/// AV2 § 5.20.8.3 `TX_SET_WIDE_64`.
 const TX_SET_WIDE_64: usize = 1;
-/// AV2 § 5.20.8.3 `TX_SET_HIGH_64`.
 const TX_SET_HIGH_64: usize = 2;
-/// AV2 § 5.20.8.3 `TX_SET_WIDE_32`.
 const TX_SET_WIDE_32: usize = 3;
-/// AV2 § 5.20.8.3 `TX_SET_HIGH_32`.
 const TX_SET_HIGH_32: usize = 4;
-/// AV2 § 5.20.8.3 `TX_SET_INTRA_1`.
 const TX_SET_INTRA_1: usize = 5;
-/// AV2 § 5.20.8.3 `TX_SET_INTRA_2`.
 const TX_SET_INTRA_2: usize = 6;
-/// AV2 § 5.20.8.3 `TX_SET_INTER_1`.
 const TX_SET_INTER_1: usize = 5;
-/// AV2 § 5.20.8.3 `TX_SET_INTER_2`.
 const TX_SET_INTER_2: usize = 6;
-/// AV2 § 5.20.8.3 `TX_SET_DCT_IDTX`.
 const TX_SET_DCT_IDTX: usize = 7;
-/// AV2 § 5.20.8.3 `TX_SET_DCT_IDTX_IDDCT`.
 const TX_SET_DCT_IDTX_IDDCT: usize = 8;
-/// AV2 § 5.20.7.29 `wide_angle_mapping` threshold.
-const WAIP_WH_RATIO_2_THRES: i32 = 61;
-/// AV2 § 5.20.7.29 `wide_angle_mapping` threshold.
-const WAIP_WH_RATIO_4_THRES: i32 = 73;
-/// AV2 § 5.20.7.29 `wide_angle_mapping` threshold.
-const WAIP_WH_RATIO_8_THRES: i32 = 82;
-/// AV2 § 5.20.7.29 `wide_angle_mapping` threshold.
-const WAIP_WH_RATIO_16_THRES: i32 = 86;
-/// AV2 § 5.20.8.2 `Tx_Type_Inv_Long[is_long_side_dct][wide_or_high][symbol]`.
+const WAIP_WH_RATIO_THRESHOLDS: [(usize, i32); 4] = [(2, 61), (4, 73), (8, 82), (16, 86)];
 const TX_TYPE_INV_LONG: [[[usize; 4]; 2]; 2] = [
     [
         [V_DCT, V_ADST, V_FLIPADST, IDTX],
@@ -161,8 +92,6 @@ const TX_TYPE_INV_LONG: [[[usize; 4]; 2]; 2] = [
     ],
 ];
 
-/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set1[16]` (the `TX_SET_INTER_1` inversion,
-/// indexed by `inter_tx_type * 8 + inter_tx_type_offset`).
 const TX_TYPE_INTER_INV_SET1: [usize; 16] = [
     IDTX,
     V_DCT,
@@ -182,8 +111,6 @@ const TX_TYPE_INTER_INV_SET1: [usize; 16] = [
     FLIPADST_ADST,
 ];
 
-/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set2[12]` (the `TX_SET_INTER_2` inversion,
-/// indexed by `inter_tx_type * 8 + inter_tx_type_offset`).
 const TX_TYPE_INTER_INV_SET2: [usize; 12] = [
     IDTX,
     V_DCT,
@@ -199,19 +126,10 @@ const TX_TYPE_INTER_INV_SET2: [usize; 12] = [
     FLIPADST_ADST,
 ];
 
-/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set3[2]` (the `TX_SET_DCT_IDTX` inversion,
-/// indexed by `inter_tx_type`).
 const TX_TYPE_INTER_INV_SET3: [usize; 2] = [IDTX, DCT_DCT];
-
-/// AV2 § 5.20.8.2 `Tx_Type_Inter_Inv_Set4[4]` (the `TX_SET_DCT_IDTX_IDDCT`
-/// inversion, indexed by `inter_tx_type`).
 const TX_TYPE_INTER_INV_SET4: [usize; 4] = [DCT_DCT, V_DCT, H_DCT, IDTX];
-
-/// AV2 § 5.20.8.2 split point between `inter_tx_type == 0` (the index symbol) and
-/// `inter_tx_type == 1` (the offset symbol) for `TX_SET_INTER_1/2`.
 const INTER_TX_TYPE_INDEX_COUNT: usize = 8;
 
-/// Already-decoded luma mode facts needed by AV2 § 5.20.8.2 `transform_type()`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LumaTransformTypeContext {
     y_mode: IntraYMode,
@@ -220,8 +138,6 @@ pub(crate) struct LumaTransformTypeContext {
 }
 
 impl LumaTransformTypeContext {
-    /// Creates luma transform-type context from § 5.20.5.3 mode-info facts for
-    /// the common `MrlIndex == 0` case.
     #[must_use]
     pub(crate) const fn new(y_mode: IntraYMode, angle_delta_y: i8) -> Self {
         Self {
@@ -231,8 +147,6 @@ impl LumaTransformTypeContext {
         }
     }
 
-    /// Creates luma transform-type context with the active § 5.20.5.3 `MrlIndex`
-    /// retained for § 5.20.8.2 `transform_type()` directional remapping.
     #[must_use]
     pub(crate) const fn with_mrl_index(
         y_mode: IntraYMode,
@@ -246,216 +160,111 @@ impl LumaTransformTypeContext {
         }
     }
 
-    /// The leaf's § 5.20.5.5 `MrlIndex` (the multi-reference-line distance, `0` for
-    /// the immediate edge). The ac0ej3 recon sink reads this to DEFER a cardinal
-    /// `H_PRED` / `V_PRED` leaf whose `mrl_index > 0` (its primitive copies the
-    /// immediate edge, not the selected multi-reference line).
     #[must_use]
     pub(crate) const fn mrl_index(self) -> u8 {
         self.mrl_index
     }
 
-    /// The leaf's § 5.20.5.3 `AngleDeltaY` (the signed angle-delta count). The
-    /// ac0ej3 recon sink combines it with the §9.2 `Mode_To_Angle[y_mode]` and
-    /// `Mrl_Index_To_Delta[mrl_index]` to recover the §7.13.2.8 `pAngle` for the
-    /// one-sided angular admission.
     #[must_use]
     pub(crate) const fn angle_delta_y(self) -> i8 {
         self.angle_delta_y
     }
 }
 
-/// Caller-selected policy for nonzero residuals when transform tools are active.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TransformToolResidualPolicy {
-    /// Decode the nonzero coefficient branch without an additional transform-tool
-    /// guard. Existing fixed-size minimal paths use this only after they have
-    /// already proven their syntax subset.
     Allow,
-    /// Consume `all_zero`, then admit a nonzero residual only through the
-    /// implemented transform-tool subset. Reconstruction-safe callers still
-    /// require `DCT_DCT`; the LR tx-skip record handoff may carry parsed
-    /// transform metadata without claiming reconstructed coefficients.
     AdmitTransformToolSubset {
-        /// Luma mode context for active plane-0 `intra_tx_type`; `None` for chroma.
         luma: Option<LumaTransformTypeContext>,
-        /// Whether active intra IST is admissible for a syntax-only handoff.
         active_intra_ist: ActiveIntraIstResidualPolicy,
-        /// Whether chroma transform/CCTX syntax is admissible for a syntax-only handoff.
         active_chroma: ActiveChromaResidualPolicy,
     },
 }
 
-/// Caller-selected handling for active intra IST secondary-transform syntax.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ActiveIntraIstResidualPolicy {
-    /// Reject active IST after consuming required syntax.
     Reject,
-    /// Admit active IST metadata for LR tx-skip record derivation only.
     LrTxSkipRecordHandoff,
 }
 
-/// Caller-selected handling for active chroma transform-tool syntax.
+impl ActiveIntraIstResidualPolicy {
+    const fn allows_record_handoff(self) -> bool {
+        matches!(self, Self::LrTxSkipRecordHandoff)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ActiveChromaResidualPolicy {
-    /// Reject active chroma CCTX/non-DCT transform syntax before reconstruction.
     Reject,
-    /// Admit CCTX metadata and chroma transform syntax for LR tx-skip record derivation only.
     LrTxSkipRecordHandoff,
 }
 
-/// Parsed AV2 § 5.20.7.29 intra IST secondary-transform syntax.
+impl ActiveChromaResidualPolicy {
+    const fn allows_record_handoff(self) -> bool {
+        matches!(self, Self::LrTxSkipRecordHandoff)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntraIstSyntax {
-    /// Decoded `sec_tx_type` symbol.
     pub(crate) sec_tx_type: usize,
-    /// Decoded `most_probable_stx_set`, present only when `sec_tx_type != 0`.
     pub(crate) most_probable_stx_set: Option<usize>,
 }
 
-/// The decoded luma transform-block coefficient facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LumaCoeffBlock {
-    /// `all_zero` (`txb_skip`) decision: `true` when the block is skipped.
     pub(crate) all_zero: bool,
-    /// Decoded end-of-block (number of coded coefficients); `0` when skipped.
     pub(crate) eob: usize,
-    /// Decoded row-major `Quant[]` for the adjusted transform block; empty when
-    /// skipped.
     pub(crate) quant: Vec<i32>,
-    /// Parsed intra IST syntax, when AV2 § 5.20.7.29 read that branch.
     pub(crate) intra_ist: Option<IntraIstSyntax>,
-    /// The retained § 3 `PlaneTxType` index (`0..TX_TYPES`, `DCT_DCT == 0`) of
-    /// this luma transform block: the already-decoded `metadata.luma_tx_type`,
-    /// carried so the § 7.15.4 primary inverse transform resolves the ACTUAL
-    /// `Transform_1d_Type[PlaneTxType]` kernels instead of assuming `DCT_DCT`.
-    /// The simple non-staged path forces `DCT_DCT` (its eob==1/DCTONLY subset),
-    /// and an `all_zero` skip block carries `DCT_DCT` (no residual is inverted).
     pub(crate) plane_tx_type: usize,
 }
 
-/// Error returned while decoding the general intra luma coefficient block.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GeneralIntraResidualError {
-    /// The `all_zero` (`txb_skip`) symbol read failed.
     #[error("general intra luma all_zero symbol read failed: {source}")]
-    AllZeroRead {
-        /// Source CDF selection or symbol-decoder error.
-        source: BlockSymbolTraceReadError,
-    },
-    /// The tile coefficient context state could not be allocated.
+    AllZeroRead { source: BlockSymbolTraceReadError },
     #[error("general intra luma coefficient context state failed: {source}")]
-    CoeffContextState {
-        /// Source coefficient context state error.
-        source: TileCoeffStateError,
-    },
-    /// The nonzero coefficient pass failed.
+    CoeffContextState { source: TileCoeffStateError },
     #[error("general intra luma nonzero coefficient pass failed: {source}")]
-    NonZeroPass {
-        /// Source coefficient branch error.
-        source: CoeffUseFscBranchError,
-    },
-    /// The staged nonzero EOB branch failed before transform-tool admission could
-    /// decide whether post-EOB syntax is active.
+    NonZeroPass { source: CoeffUseFscBranchError },
     #[error("general intra luma staged nonzero EOB read failed: {source}")]
-    NonZeroStart {
-        /// Source coefficient-loop branch error.
-        source: CoeffLoopContextError,
-    },
-    /// The staged nonzero coefficient pass failed after transform-tool admission.
+    NonZeroStart { source: CoeffLoopContextError },
     #[error("general intra luma staged nonzero coefficient pass failed: {source}")]
-    StagedNonZeroPass {
-        /// Source ordinary coefficient branch error.
-        source: CoeffOrdinaryBranchError,
-    },
-    /// The staged FSC/IDTX coefficient pass failed after transform-tool admission.
+    StagedNonZeroPass { source: CoeffOrdinaryBranchError },
     #[error("general intra luma staged FSC coefficient pass failed: {source}")]
-    StagedFscPass {
-        /// Source FSC coefficient branch error.
-        source: CoeffFscBranchError,
-    },
-    /// An active § 5.20.8.2 luma `intra_tx_type` symbol read failed.
+    StagedFscPass { source: CoeffFscBranchError },
     #[error("general intra luma transform_type symbol read failed: {source}")]
-    TransformTypeRead {
-        /// Source CDF selection or symbol-decoder error.
-        source: BlockSymbolTraceReadError,
-    },
-    /// A nonzero residual appeared while the caller is only prepared to consume a
-    /// narrower transform-tool subset than the block requires.
+    TransformTypeRead { source: BlockSymbolTraceReadError },
     #[error("general intra residual requires unsupported active transform-tool syntax: {reason}")]
-    UnsupportedTransformToolResidual {
-        /// Fail-closed reason for the unsupported transform-tool branch.
-        reason: &'static str,
-    },
-    /// The nonzero coefficient pass returned an unexpected branch result (FSC or
-    /// all-zero) for the ordinary luma block.
+    UnsupportedTransformToolResidual { reason: &'static str },
     #[error("general intra luma nonzero coefficient pass produced an unexpected branch result")]
     UnexpectedBranch,
-    /// The decoded `Quant[]` length does not match the adjusted 32x32 transform
-    /// block the reconstruction expects.
     #[error("general intra luma reconstruction expected {expected} quant entries, got {actual}")]
-    QuantLength {
-        /// Expected adjusted-block length.
-        expected: usize,
-        /// Actual decoded `Quant[]` length.
-        actual: usize,
-    },
-    /// The supplied per-sample prediction buffer length does not match the
-    /// original transform-block sample count.
+    QuantLength { expected: usize, actual: usize },
     #[error("general intra reconstruction expected {expected} prediction samples, got {actual}")]
-    PredictionLength {
-        /// Expected original-block sample count (`orig_side * orig_side`).
-        expected: usize,
-        /// Actual prediction buffer length.
-        actual: usize,
-    },
-    /// The `splot-recon` dequant / inverse-transform / residual reconstruction
-    /// rejected the luma block.
+    PredictionLength { expected: usize, actual: usize },
     #[error("general intra luma reconstruction failed: {source}")]
     Reconstruct {
-        /// Source reconstruction error.
         #[from]
         source: ReconError,
     },
-    /// A § 7.13.2.8 middle-angle directional block hit the `haveLeft && haveAbove`
-    /// edge-builder arm without its real § 7.13.2.1 corner sample
-    /// `CurrFrame[plane][y-1][x-1]` (D135 reads the corner on its main diagonal
-    /// `column == row`, where `above_base == -1`). The neighbour reconstruction path
-    /// always supplies that corner via `reconstructed_sample` before calling the
-    /// builder, so this is a defensive guard reached only if a future caller invokes
-    /// the builder for the `haveLeft && haveAbove` arm without the corner (returned
-    /// rather than panicking, per the no-panic policy).
     #[error(
         "general intra directional prediction over a real above-neighbour edge is missing its §7.13.2.1 corner sample"
     )]
     UnsupportedDirectionalAboveEdge,
-    /// A § 7.13.2.8 cardinal directional block (`V_PRED` pAngle 90 / `H_PRED`
-    /// pAngle 180) was reached without its required reconstructed neighbour edge:
-    /// `V_PRED` needs the real § 7.13.2.1 above row (`haveAbove == 1`), `H_PRED`
-    /// needs the real left column (`haveLeft == 1`). The admission gate only
-    /// admits these when the edge is present, so this is reached only if that gate
-    /// is relaxed without supplying the edge.
     #[error("general intra cardinal directional prediction is missing its required neighbour edge")]
     MissingCardinalEdge,
-    /// A cardinal `V_PRED` / `H_PRED` mode reached the § 7.13.2.8 middle-angle
-    /// (`90 < pAngle < 180`) mapping, which only covers `D135`. The dispatch routes
-    /// cardinal modes to the dedicated copy predictor
-    /// (`reconstruct_general_intra_cardinal_neighbour_block_into`), so this is
-    /// unreachable in correct operation; it is a defensive guard for a dispatch
-    /// regression (returned rather than panicking, per the no-panic policy).
     #[error(
         "general intra cardinal (V_PRED/H_PRED) mode reached the middle-angle path; it must be dispatched to the cardinal copy reconstruction"
     )]
     CardinalModeInMiddleAnglePath,
 }
 
-/// OR-reduces a `u32` context line over `[start, start + len)` (clamped to the
-/// available range), the AV2 § 8.3.2 above/left level-context reduction.
 fn or_u32(line: &[u32], start: usize, len: usize) -> u32 {
     line.iter().skip(start).take(len).fold(0, |acc, &v| acc | v)
 }
 
-/// OR-reduces a `u8` DC-context line over `[start, start + len)` (clamped).
 fn or_u8(line: &[u8], start: usize, len: usize) -> u8 {
     line.iter().skip(start).take(len).fold(0, |acc, &v| acc | v)
 }
@@ -464,29 +273,6 @@ fn coeff_ctx_err(source: TileCoeffStateError) -> GeneralIntraResidualError {
     GeneralIntraResidualError::CoeffContextState { source }
 }
 
-/// Decodes the AV2 § 5.20.7.27 `coeffs()` syntax for one transform block of any
-/// plane in the general intra multi-block walk. `tx_size` is the full § 9.2
-/// `TX_SIZES_ALL` index, so square (e.g. `TX_64X64`) and rectangular (e.g.
-/// `TX_64X32`) transforms are both handled: the above context span is
-/// `Tx_Width[txSz] >> 2` and the left context span is `Tx_Height[txSz] >> 2`,
-/// and the nonzero coefficient geometry (scan, eob class, dequant, transform)
-/// already reads width and height independently from the conversion tables.
-///
-/// The § 8.3.2 `txb_skip` (`all_zero`) context is derived from the persistent
-/// neighbour context lines (`context`): luma uses
-/// `TileTxbSkipCdf[is_inter || fsc_mode][txSzCtx][ctx]` with `ctx` from the
-/// above/left level OR-reductions; U adds the `+6` chroma offset; V uses
-/// `TileVTxbSkipCdf[ctx]` (with the `EobU` term). When `all_zero == 1` the zero
-/// context write is committed here; otherwise the nonzero coefficient pass reads
-/// `dc_sign` from `context` at `start_x`/`start_y` and commits its own context
-/// update internally. `start_x`/`start_y` are the block's plane-sample position.
-/// `tx_fills_block` is the caller-resolved § 8.3.2 fact `bw == w && bh == h`
-/// for luma `all_zero` context derivation; for V it drives the complementary
-/// `bw > w || bh > h` context term.
-/// `transform_tool_residual_policy` preserves the AV2 ordering: the helper
-/// always consumes the `all_zero` decision first, admits skipped transform
-/// blocks, and applies any transform-tool guard only before the nonzero
-/// coefficient branch.
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub(crate) fn decode_general_intra_plane_coeffs(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -515,26 +301,23 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     let left_level_or = or_u32(context.left_level(plane).map_err(coeff_ctx_err)?, y4, h4);
     let txb_skip_intra_inter = usize::from(is_inter || fsc_mode);
     let selector = match plane {
-        2 => {
+        1 | 2 => {
             let above_nz = above_level_or != 0
                 || or_u8(context.above_dc(plane).map_err(coeff_ctx_err)?, x4, w4) != 0;
             let left_nz = left_level_or != 0
                 || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, y4, h4) != 0;
-            TileCdfSelector::VTxbSkip {
-                coeff_cdf_q_ctx,
-                ctx: v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),
-            }
-        }
-        1 => {
-            let above_nz = above_level_or != 0
-                || or_u8(context.above_dc(plane).map_err(coeff_ctx_err)?, x4, w4) != 0;
-            let left_nz = left_level_or != 0
-                || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, y4, h4) != 0;
-            TileCdfSelector::TxbSkip {
-                coeff_cdf_q_ctx,
-                plane_type: txb_skip_intra_inter,
-                tx_size: tx_size_ctx,
-                ctx: usize::from(above_nz) + usize::from(left_nz) + 6,
+            if plane == 2 {
+                TileCdfSelector::VTxbSkip {
+                    coeff_cdf_q_ctx,
+                    ctx: v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),
+                }
+            } else {
+                TileCdfSelector::TxbSkip {
+                    coeff_cdf_q_ctx,
+                    plane_type: txb_skip_intra_inter,
+                    tx_size: tx_size_ctx,
+                    ctx: usize::from(above_nz) + usize::from(left_nz) + 6,
+                }
             }
         }
         _ => TileCdfSelector::TxbSkip {
@@ -655,8 +438,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let tx_width_log2 = tx_size_table_usize(&TX_WIDTH_LOG2, "Tx_Width_Log2", geometry.tx_size)?;
     let tx_height_log2 = tx_size_table_usize(&TX_HEIGHT_LOG2, "Tx_Height_Log2", geometry.tx_size)?;
-    let tx_width = tx_size_table_usize(&TX_WIDTH, "Tx_Width", geometry.tx_size)?;
-    let tx_height = tx_size_table_usize(&TX_HEIGHT, "Tx_Height", geometry.tx_size)?;
+    let (tx_width, tx_height) = tx_size_dimensions(geometry.tx_size)?;
     let block = AllZeroCoeffBlockInput {
         plane: geometry.plane,
         x4: geometry.start_x >> 2,
@@ -703,9 +485,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         },
     )?;
     let lossless = frame_facts.lossless_for_segment(SEGMENT_ID).ok_or(
-        GeneralIntraResidualError::UnsupportedTransformToolResidual {
-            reason: "unsupported_dctonly_residual_segment_id",
-        },
+        unsupported_transform_tool_residual_error("unsupported_dctonly_residual_segment_id"),
     )?;
     let base_config = staged_transform_tool_lossless_base_config(
         frame_facts,
@@ -796,7 +576,6 @@ fn staged_transform_tool_lossless_base_config(
 struct TransformToolResidualMetadata {
     intra_ist: Option<IntraIstSyntax>,
     luma_tx_type: usize,
-    // TODO(spec: DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS): hand this
     cctx_type: Option<usize>,
 }
 
@@ -845,10 +624,7 @@ fn ensure_transform_tool_residual_handoff(
     if !is_inter && plane == 0 && input.fsc_mode {
         metadata.luma_tx_type = IDTX;
     } else if !dct_forced {
-        if !is_inter
-            && plane > 0
-            && input.active_chroma_policy == ActiveChromaResidualPolicy::LrTxSkipRecordHandoff
-        {
+        if !is_inter && plane > 0 && input.active_chroma_policy.allows_record_handoff() {
         } else if !is_inter && plane == 0 {
             let luma_tx_type = read_active_luma_transform_type(
                 cdfs,
@@ -857,10 +633,7 @@ fn ensure_transform_tool_residual_handoff(
                 tx_size,
                 tx_set,
             )?;
-            if luma_tx_type != DCT_DCT
-                && input.active_intra_ist_policy
-                    != ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff
-            {
+            if luma_tx_type != DCT_DCT && !input.active_intra_ist_policy.allows_record_handoff() {
                 return unsupported_transform_tool_residual(
                     "unsupported_dctonly_residual_luma_tx_type",
                 );
@@ -869,10 +642,7 @@ fn ensure_transform_tool_residual_handoff(
         } else if is_inter && plane == 0 {
             let luma_tx_type =
                 read_active_inter_transform_type(cdfs, symbols, tx_size, tx_set, eob)?;
-            if luma_tx_type != DCT_DCT
-                && input.active_intra_ist_policy
-                    != ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff
-            {
+            if luma_tx_type != DCT_DCT && !input.active_intra_ist_policy.allows_record_handoff() {
                 return unsupported_transform_tool_residual(
                     "unsupported_dctonly_residual_inter_tx_type",
                 );
@@ -926,7 +696,7 @@ fn read_chroma_cctx_type(
     symbols: &mut SymbolDecoder<'_>,
     policy: ActiveChromaResidualPolicy,
 ) -> Result<usize, GeneralIntraResidualError> {
-    if policy != ActiveChromaResidualPolicy::LrTxSkipRecordHandoff {
+    if !policy.allows_record_handoff() {
         return unsupported_transform_tool_residual("unsupported_dctonly_residual_cctx");
     }
     read_transform_symbol(cdfs, symbols, TileCdfSelector::CctxType)
@@ -939,11 +709,10 @@ fn read_intra_ist_sec_tx(
     tx_size: usize,
     policy: ActiveIntraIstResidualPolicy,
 ) -> Result<Option<IntraIstSyntax>, GeneralIntraResidualError> {
-    let Some(luma_context) = luma_context else {
-        return unsupported_transform_tool_residual(
-            "unsupported_dctonly_residual_intra_ist_context",
-        );
-    };
+    let luma_context = require_luma_context(
+        luma_context,
+        "unsupported_dctonly_residual_intra_ist_context",
+    )?;
     if luma_context.y_mode.is_paeth() {
         return Ok(None);
     }
@@ -978,7 +747,7 @@ fn ensure_supported_intra_ist_sec_tx_type(
     syntax: IntraIstSyntax,
     policy: ActiveIntraIstResidualPolicy,
 ) -> Result<(), GeneralIntraResidualError> {
-    if syntax.sec_tx_type == 0 || policy == ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff {
+    if syntax.sec_tx_type == 0 || policy.allows_record_handoff() {
         Ok(())
     } else {
         unsupported_transform_tool_residual("unsupported_dctonly_residual_intra_sec_tx_type")
@@ -989,8 +758,7 @@ fn inter_ist_can_read_sec_tx(
     tx_size: usize,
     eob: usize,
 ) -> Result<bool, GeneralIntraResidualError> {
-    let tx_width = tx_size_table_usize(&TX_WIDTH, "Tx_Width", tx_size)?;
-    let tx_height = tx_size_table_usize(&TX_HEIGHT, "Tx_Height", tx_size)?;
+    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
     Ok(tx_width >= 16 && tx_height >= 16 && eob <= ist_eob_limit(tx_size, DCT_DCT)?)
 }
 
@@ -999,8 +767,7 @@ const fn intra_ist_can_read_sec_tx_type(luma_tx_type: usize) -> bool {
 }
 
 fn ist_eob_limit(tx_size: usize, tx_type: usize) -> Result<usize, GeneralIntraResidualError> {
-    let tx_width = tx_size_table_usize(&TX_WIDTH, "Tx_Width", tx_size)?;
-    let tx_height = tx_size_table_usize(&TX_HEIGHT, "Tx_Height", tx_size)?;
+    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
     if tx_width < 8 || tx_height < 8 {
         Ok(IST_4X4_HEIGHT)
     } else if tx_size == TX_8X8 || tx_type == ADST_ADST {
@@ -1017,11 +784,10 @@ fn read_active_luma_transform_type(
     tx_size: usize,
     tx_set: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
-    let Some(luma_context) = luma_context else {
-        return unsupported_transform_tool_residual(
-            "unsupported_dctonly_residual_luma_transform_context",
-        );
-    };
+    let luma_context = require_luma_context(
+        luma_context,
+        "unsupported_dctonly_residual_luma_transform_context",
+    )?;
     let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
     let tx_type = match tx_set {
         TX_SET_INTRA_1 => {
@@ -1056,55 +822,21 @@ fn read_active_luma_long_tx_type(
     tx_set: usize,
     tx_size_sqr: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
-    let is_long_side_dct = match tx_set {
-        TX_SET_WIDE_32 | TX_SET_HIGH_32 => read_transform_symbol(
-            cdfs,
-            symbols,
-            TileCdfSelector::IsLongSideDct { is_inter: 0 },
-        )?,
-        TX_SET_WIDE_64 | TX_SET_HIGH_64 => 1,
-        _ => {
-            return unsupported_transform_tool_residual(
-                "unsupported_dctonly_residual_luma_tx_set_long",
-            );
-        }
-    };
+    let shape = long_tx_set_shape(tx_set, "unsupported_dctonly_residual_luma_tx_set_long")?;
+    let is_long_side_dct = read_long_side_dct_symbol(cdfs, symbols, shape, 0)?;
     let intra_tx_type = read_transform_symbol(
         cdfs,
         symbols,
         TileCdfSelector::IntraTxTypeLong { tx_size_sqr },
     )?;
-    let wide_or_high = match tx_set {
-        TX_SET_WIDE_64 | TX_SET_WIDE_32 => 0,
-        TX_SET_HIGH_64 | TX_SET_HIGH_32 => 1,
-        _ => {
-            return unsupported_transform_tool_residual(
-                "unsupported_dctonly_residual_luma_tx_set_long",
-            );
-        }
-    };
-    TX_TYPE_INV_LONG
-        .get(is_long_side_dct)
-        .and_then(|long_side| long_side.get(wide_or_high))
-        .and_then(|row| row.get(intra_tx_type))
-        .copied()
-        .ok_or(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "unsupported_dctonly_residual_invalid_luma_tx_type",
-            },
-        )
+    long_tx_type_from_index(
+        shape,
+        is_long_side_dct,
+        intra_tx_type,
+        "unsupported_dctonly_residual_invalid_luma_tx_type",
+    )
 }
 
-/// Reads the AV2 § 5.20.7.29 / § 5.20.8.2 inter luma primary `transform_type`.
-///
-/// Dispatches by §5.20.8.3 transform set: the long-side sets (`TX_SET_WIDE_32/64`,
-/// `TX_SET_HIGH_32/64`) read `is_long_side_dct` plus the long `inter_tx_type`
-/// (`TileInterTxTypeLongCdf`); the small sets (`TX_SET_INTER_1/2`,
-/// `TX_SET_DCT_IDTX`, `TX_SET_DCT_IDTX_IDDCT`) read the `inter_tx_type` selector
-/// (and, for `INTER_1/2`, the follow-up `inter_tx_type_offset`) per §8.3.2 Table
-/// 8.3. The coefficient entropy is transform-type-agnostic, so any returned type
-/// only changes the §7.13.3 inverse transform (deferred at the reconstruction
-/// sink), not the residual parse.
 fn read_active_inter_transform_type(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -1158,9 +890,6 @@ fn read_active_inter_transform_type(
     }
 }
 
-/// Reads the inter long-side `transform_type` (`TX_SET_WIDE_32/64`,
-/// `TX_SET_HIGH_32/64`) per §5.20.8.2: `is_long_side_dct` (32 sets only) plus the
-/// long `inter_tx_type` symbol, inverted through `Tx_Type_Inv_Long`.
 fn read_active_inter_long_tx_type(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -1168,46 +897,75 @@ fn read_active_inter_long_tx_type(
     tx_size_sqr: usize,
     ctx: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
-    let wide_or_high = match tx_set {
-        TX_SET_WIDE_64 | TX_SET_WIDE_32 => 0,
-        _ => 1,
-    };
-    let is_long_side_dct = match tx_set {
-        TX_SET_WIDE_32 | TX_SET_HIGH_32 => read_transform_symbol(
-            cdfs,
-            symbols,
-            TileCdfSelector::IsLongSideDct { is_inter: 1 },
-        )?,
-        _ => 1,
-    };
+    let shape = long_tx_set_shape(tx_set, "unsupported_dctonly_residual_inter_tx_set")?;
+    let is_long_side_dct = read_long_side_dct_symbol(cdfs, symbols, shape, 1)?;
     let inter_tx_type = read_transform_symbol(
         cdfs,
         symbols,
         TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr },
     )?;
-    TX_TYPE_INV_LONG
-        .get(is_long_side_dct)
-        .and_then(|long_side| long_side.get(wide_or_high))
-        .and_then(|row| row.get(inter_tx_type))
-        .copied()
-        .ok_or(invalid_inter_tx_type())
+    long_tx_type_from_index(
+        shape,
+        is_long_side_dct,
+        inter_tx_type,
+        "unsupported_dctonly_residual_invalid_inter_tx_type",
+    )
 }
 
-/// Distinguishes the §5.20.8.2 `TX_SET_INTER_1` / `TX_SET_INTER_2` signaling sets,
-/// which share the two-stage `inter_tx_type` + `inter_tx_type_offset` read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LongTxSetShape {
+    wide_or_high: usize,
+    long_side_dct_is_forced: bool,
+}
+
+fn long_tx_set_shape(
+    tx_set: usize,
+    invalid_reason: &'static str,
+) -> Result<LongTxSetShape, GeneralIntraResidualError> {
+    let wide_or_high = match tx_set {
+        TX_SET_WIDE_64 | TX_SET_WIDE_32 => 0,
+        TX_SET_HIGH_64 | TX_SET_HIGH_32 => 1,
+        _ => return unsupported_transform_tool_residual(invalid_reason),
+    };
+    Ok(LongTxSetShape {
+        wide_or_high,
+        long_side_dct_is_forced: matches!(tx_set, TX_SET_WIDE_64 | TX_SET_HIGH_64),
+    })
+}
+
+fn read_long_side_dct_symbol(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    shape: LongTxSetShape,
+    is_inter: usize,
+) -> Result<usize, GeneralIntraResidualError> {
+    if shape.long_side_dct_is_forced {
+        Ok(1)
+    } else {
+        read_transform_symbol(cdfs, symbols, TileCdfSelector::IsLongSideDct { is_inter })
+    }
+}
+
+fn long_tx_type_from_index(
+    shape: LongTxSetShape,
+    is_long_side_dct: usize,
+    tx_type: usize,
+    invalid_reason: &'static str,
+) -> Result<usize, GeneralIntraResidualError> {
+    TX_TYPE_INV_LONG
+        .get(is_long_side_dct)
+        .and_then(|long_side| long_side.get(shape.wide_or_high))
+        .and_then(|row| row.get(tx_type))
+        .copied()
+        .ok_or(unsupported_transform_tool_residual_error(invalid_reason))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InterTxTypeSignalingSet {
-    /// `TX_SET_INTER_1` (`Tx_Type_Inter_Inv_Set1`).
     Inter1,
-    /// `TX_SET_INTER_2` (`Tx_Type_Inter_Inv_Set2`).
     Inter2,
 }
 
-/// Reads §5.20.8.2 `inter_tx_type` then `inter_tx_type_offset` for the
-/// `TX_SET_INTER_1` / `TX_SET_INTER_2` signaling sets, returning the inverted
-/// `TxType`. `inter_tx_type` is a 2-symbol selector; the follow-up index/offset
-/// symbol picks `inter_tx_type * 8 + inter_tx_type_offset` into the §5.20.8.2
-/// inversion table (AVM `av2_read_tx_type`, decodemv.c §`inter_block`).
 fn read_inter_tx_type_signaling_set(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -1247,24 +1005,18 @@ fn read_inter_tx_type_signaling_set(
         .ok_or(invalid_inter_tx_type())
 }
 
-/// The fail-closed error for an out-of-range inverted inter `TxType`.
 const fn invalid_inter_tx_type() -> GeneralIntraResidualError {
-    GeneralIntraResidualError::UnsupportedTransformToolResidual {
-        reason: "unsupported_dctonly_residual_invalid_inter_tx_type",
-    }
+    unsupported_transform_tool_residual_error("unsupported_dctonly_residual_invalid_inter_tx_type")
 }
 
-/// AV2 § 8.3.2 `inter_tx_type` context: from the `eob` diagonal position relative
-/// to the (32-capped) transform extent.
 fn inter_tx_type_long_ctx(tx_size: usize, eob: usize) -> Result<usize, GeneralIntraResidualError> {
-    let eob = eob.checked_sub(1).ok_or(
-        GeneralIntraResidualError::UnsupportedTransformToolResidual {
-            reason: "unsupported_dctonly_residual_inter_tx_type_eob",
-        },
-    )?;
+    let eob = eob
+        .checked_sub(1)
+        .ok_or(unsupported_transform_tool_residual_error(
+            "unsupported_dctonly_residual_inter_tx_type_eob",
+        ))?;
     let tx_width_log2 = tx_size_table_usize(&TX_WIDTH_LOG2, "Tx_Width_Log2", tx_size)?;
-    let tx_width = tx_size_table_usize(&TX_WIDTH, "Tx_Width", tx_size)?;
-    let tx_height = tx_size_table_usize(&TX_HEIGHT, "Tx_Height", tx_size)?;
+    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
     let bwl = tx_width_log2.min(5);
     let eoby = eob >> bwl;
     let eobx = eob - (eoby << bwl);
@@ -1301,20 +1053,20 @@ fn md_idx_luma_tx_type(
     let mode_row = MD_IDX_TO_TYPE
         .get(size_info)
         .and_then(|size| size.get(intra_dir))
-        .ok_or(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "unsupported_dctonly_residual_invalid_intra_mode",
-            },
-        )?;
-    let tx_type = mode_row.get(intra_tx_type).copied().ok_or(
-        GeneralIntraResidualError::UnsupportedTransformToolResidual {
-            reason: "unsupported_dctonly_residual_invalid_intra_tx_type",
-        },
-    )?;
+        .ok_or(unsupported_transform_tool_residual_error(
+            "unsupported_dctonly_residual_invalid_intra_mode",
+        ))?;
+    let tx_type =
+        mode_row
+            .get(intra_tx_type)
+            .copied()
+            .ok_or(unsupported_transform_tool_residual_error(
+                "unsupported_dctonly_residual_invalid_intra_tx_type",
+            ))?;
     usize::try_from(tx_type).map_err(|_| {
-        GeneralIntraResidualError::UnsupportedTransformToolResidual {
-            reason: "unsupported_dctonly_residual_invalid_luma_tx_type",
-        }
+        unsupported_transform_tool_residual_error(
+            "unsupported_dctonly_residual_invalid_luma_tx_type",
+        )
     })
 }
 
@@ -1326,44 +1078,38 @@ fn luma_transform_intra_dir(
     if !luma_context.y_mode.is_directional() {
         return Ok(intra_dir);
     }
-    let mode_to_angle = MODE_TO_ANGLE.get(intra_dir).copied().ok_or(
-        GeneralIntraResidualError::UnsupportedTransformToolResidual {
-            reason: "unsupported_dctonly_residual_invalid_intra_mode",
-        },
-    )?;
+    let mode_to_angle =
+        MODE_TO_ANGLE
+            .get(intra_dir)
+            .copied()
+            .ok_or(unsupported_transform_tool_residual_error(
+                "unsupported_dctonly_residual_invalid_intra_mode",
+            ))?;
     let mrl_delta = MRL_INDEX_TO_DELTA
         .get(usize::from(luma_context.mrl_index))
         .copied()
-        .ok_or(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "unsupported_dctonly_residual_invalid_mrl_index",
-            },
-        )?;
+        .ok_or(unsupported_transform_tool_residual_error(
+            "unsupported_dctonly_residual_invalid_mrl_index",
+        ))?;
     let p_angle = mode_to_angle
         .checked_add(i32::from(luma_context.angle_delta_y) * ANGLE_STEP)
         .and_then(|angle| angle.checked_add(mrl_delta))
-        .ok_or(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "unsupported_dctonly_residual_luma_angle_overflow",
-            },
-        )?;
-    let tx_width = tx_size_table_usize(&TX_WIDTH, "Tx_Width", tx_size)?;
-    let tx_height = tx_size_table_usize(&TX_HEIGHT, "Tx_Height", tx_size)?;
+        .ok_or(unsupported_transform_tool_residual_error(
+            "unsupported_dctonly_residual_luma_angle_overflow",
+        ))?;
+    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
     Ok(wide_angle_mapping(intra_dir, tx_width, tx_height, p_angle))
 }
 
-/// AV2 § 5.20.7.29 `wide_angle_mapping`.
 fn wide_angle_mapping(mode: usize, width: usize, height: usize, p_angle: i32) -> usize {
-    if is_scaled(height, width, 2) && p_angle < WAIP_WH_RATIO_2_THRES
-        || is_scaled(height, width, 4) && p_angle < WAIP_WH_RATIO_4_THRES
-        || is_scaled(height, width, 8) && p_angle < WAIP_WH_RATIO_8_THRES
-        || is_scaled(height, width, 16) && p_angle < WAIP_WH_RATIO_16_THRES
+    if WAIP_WH_RATIO_THRESHOLDS
+        .iter()
+        .any(|&(scale, threshold)| is_scaled(height, width, scale) && p_angle < threshold)
     {
         D203_PRED
-    } else if is_scaled(width, height, 2) && p_angle > 270 - WAIP_WH_RATIO_2_THRES
-        || is_scaled(width, height, 4) && p_angle > 270 - WAIP_WH_RATIO_4_THRES
-        || is_scaled(width, height, 8) && p_angle > 270 - WAIP_WH_RATIO_8_THRES
-        || is_scaled(width, height, 16) && p_angle > 270 - WAIP_WH_RATIO_16_THRES
+    } else if WAIP_WH_RATIO_THRESHOLDS
+        .iter()
+        .any(|&(scale, threshold)| is_scaled(width, height, scale) && p_angle > 270 - threshold)
     {
         D45_PRED
     } else {
@@ -1387,8 +1133,7 @@ fn transform_set(
         if tx_size_sqr >= TX_32X32 {
             return Ok(TX_SET_DCTONLY);
         }
-        let tx_width = tx_size_table_usize(&TX_WIDTH, "Tx_Width", tx_size)?;
-        let tx_height = tx_size_table_usize(&TX_HEIGHT, "Tx_Height", tx_size)?;
+        let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
         return if tx_width > tx_height {
             Ok(TX_SET_WIDE_64)
         } else {
@@ -1396,8 +1141,7 @@ fn transform_set(
         };
     }
     if tx_size_sqr_up == TX_32X32 && tx_size_sqr != TX_32X32 {
-        let tx_width = tx_size_table_usize(&TX_WIDTH, "Tx_Width", tx_size)?;
-        let tx_height = tx_size_table_usize(&TX_HEIGHT, "Tx_Height", tx_size)?;
+        let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
         return if tx_width > tx_height {
             Ok(TX_SET_WIDE_32)
         } else {
@@ -1448,36 +1192,44 @@ fn tx_size_table_usize(
     let value = table
         .get(tx_size)
         .copied()
-        .ok_or("unsupported_dctonly_residual_invalid_tx_size")
-        .map_err(|reason| GeneralIntraResidualError::UnsupportedTransformToolResidual { reason })?;
+        .ok_or(unsupported_transform_tool_residual_error(
+            "unsupported_dctonly_residual_invalid_tx_size",
+        ))?;
     usize::try_from(value).map_err(|_| {
         let reason = match table_name {
             "Tx_Size_Sqr" => "unsupported_dctonly_residual_invalid_tx_size_sqr",
             _ => "unsupported_dctonly_residual_invalid_tx_size_sqr_up",
         };
-        GeneralIntraResidualError::UnsupportedTransformToolResidual { reason }
+        unsupported_transform_tool_residual_error(reason)
     })
+}
+
+fn tx_size_dimensions(tx_size: usize) -> Result<(usize, usize), GeneralIntraResidualError> {
+    Ok((
+        tx_size_table_usize(&TX_WIDTH, "Tx_Width", tx_size)?,
+        tx_size_table_usize(&TX_HEIGHT, "Tx_Height", tx_size)?,
+    ))
+}
+
+fn require_luma_context(
+    luma_context: Option<LumaTransformTypeContext>,
+    reason: &'static str,
+) -> Result<LumaTransformTypeContext, GeneralIntraResidualError> {
+    luma_context.ok_or(unsupported_transform_tool_residual_error(reason))
+}
+
+const fn unsupported_transform_tool_residual_error(
+    reason: &'static str,
+) -> GeneralIntraResidualError {
+    GeneralIntraResidualError::UnsupportedTransformToolResidual { reason }
 }
 
 fn unsupported_transform_tool_residual<T>(
     reason: &'static str,
 ) -> Result<T, GeneralIntraResidualError> {
-    Err(GeneralIntraResidualError::UnsupportedTransformToolResidual { reason })
+    Err(unsupported_transform_tool_residual_error(reason))
 }
 
-/// Reconstructs one square intra plane block from the decoded `Quant[]` of its
-/// single DC_PRED transform block over a flat DC prediction `dc_sample`.
-///
-/// This composes the § 7.14.4 dequantization, § 7.15.4 inverse transform, and
-/// § 7.14.3 residual addition (`reconstruct_transform_block_residual`) over the
-/// flat § 7.13.2 DC prediction (`dc_sample`, derived from the partially-built
-/// frame's neighbours, or `128` when none). `qindex == base_q_idx` for this
-/// minimal-tool frame (no segmentation or delta-Q), and the § 7.15.4 primary
-/// inverse transform uses the supplied `plane_tx_type` (a § 3 `PlaneTxType`
-/// index, `DCT_DCT == 0`) over the original `log2_side` (adjusted, capped at 32)
-/// dimensions. `use_tcq` adds the § 7.14.4 TCQ `dqDenom` term (luma only). `bit_depth` is the
-/// active sequence sample depth (§ 6.4.1); the sample storage type `T` matches it
-/// (`u8` for 8-bit, `u16` for 10-bit) and bounds the § 7.14.3 Clip1.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block<T: ReconSample>(
     quant: &[i32],
@@ -1503,16 +1255,6 @@ pub(crate) fn reconstruct_general_intra_block<T: ReconSample>(
     )
 }
 
-/// Reconstructs one square intra plane block from the decoded `Quant[]` of its
-/// single transform block over an arbitrary per-sample `prediction` (§ 7.13.2),
-/// composing § 7.14.4 dequantization, § 7.15.4 inverse transform, and § 7.14.3
-/// residual addition. `prediction` is the predicted block in raster order over
-/// the original (unadjusted) `log2_side` dimensions. The flat DC path is the
-/// special case where every prediction sample is the DC value (see
-/// [`reconstruct_general_intra_block`]); the non-DC § 7.13.2.13 smooth path
-/// supplies a per-sample predicted block. `bit_depth` is the active sequence
-/// sample depth (§ 6.4.1); the sample storage type `T` matches it and bounds the
-/// § 7.14.3 Clip1.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block_with_prediction<T: ReconSample>(
     quant: &[i32],
@@ -1537,23 +1279,6 @@ pub(crate) fn reconstruct_general_intra_block_with_prediction<T: ReconSample>(
     )
 }
 
-/// Reconstructs one **rectangular** intra plane block from the decoded `Quant[]`
-/// over an arbitrary per-sample `prediction` (§7.13.2), the rectangular
-/// generalisation of [`reconstruct_general_intra_block_with_prediction`].
-///
-/// `prediction` is the predicted block in raster order over the *original*
-/// (unadjusted) `1<<log2_width` x `1<<log2_height` dimensions. The flat DC path is
-/// the special case where every prediction sample is the §7.13.2.10 DC value; the
-/// §7.13.2.12 IBP DC path supplies a per-sample predicted block whose edge
-/// rows/columns the IBP modifier has already blended toward the reconstructed
-/// neighbours. This composes the §7.14.4
-/// dequantization over the adjusted `Min(1<<log2_w, 32) x Min(1<<log2_h, 32)`
-/// coefficient grid, the §7.15.4 / §7.15.4.1 inverse transform (resolving the
-/// `Transform_1d_Type[PlaneTxType]` row/col kernels for the supplied
-/// `plane_tx_type`, plus the `Abs(log2_w - log2_h)` odd-ratio √2 rescale and the
-/// over-32 sample duplication), and the §7.14.3 residual addition. Intra passes
-/// use `use_ddt == false`. Chroma never uses the §7.14.4 TCQ `dqDenom` term (only
-/// the luma 2-D `DCT_DCT` class does), so `use_tcq` is `false` for chroma callers.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSample>(
     quant: &[i32],
@@ -1630,9 +1355,6 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSampl
     Ok(out)
 }
 
-/// AV2 § 5.20.7.27 `txSzCtx = (Tx_Size_Sqr[txSz] + Tx_Size_Sqr_Up[txSz] + 1) >> 1`
-/// over the generated § 9.2 conversion tables, the `txb_skip` CDF transform-size
-/// context axis.
 fn txb_skip_tx_size_ctx(tx_size: usize) -> usize {
     let sqr = TX_SIZE_SQR.get(tx_size).copied().unwrap_or(0);
     let sqr_up = TX_SIZE_SQR_UP.get(tx_size).copied().unwrap_or(0);

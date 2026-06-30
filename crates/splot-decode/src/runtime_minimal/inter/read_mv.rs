@@ -1,38 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 5.20.7.20 SHELL-coded `read_mv()` + § 5.20.7.13 `assign_mv()` sign pass
-//! for the verified single-reference NEWMV inter block and bounded IntrABC
-//! block-vector syntax handoff.
-//!
-//! The motion vector difference is coded as a *shell* (the L1 magnitude
-//! `shellIndex = |row| + |col|`) plus a split of that shell into its two
-//! components (AV2 § 5.20.7.20):
-//!
-//! 1. `shell_set` — selects the high/low half of the shell-class range.
-//! 2. `shell_class` — the shell magnitude class (with the EighthPel
-//!    `joint_shell_last_two_classes` refinement when `shell_set` and the raw
-//!    class is 7).
-//! 3. `shell_offset_*` — the offset within the class, giving `shellIndex`.
-//! 4. `col_mv_greater` / `col_mv_index` — split `shellIndex` into the column
-//!    magnitude `diffMv[1]`; the row magnitude is `diffMv[0] = shellIndex -
-//!    diffMv[1]`.
-//! 5. one `mv_sign` L(1) bypass bit per nonzero component (the § 5.20.7.13 sign
-//!    pass; sign derivation is disabled for EighthPel because `MvPrecision >=
-//!    MV_PRECISION_QUARTER_PEL`).
-//!
-//! For the no-neighbour single 64x64 block the § 7.10 MV stack yields the zero
-//! predictor (`PredMvs[0] == (0, 0)`), so the decoded block MV equals this read
-//! delta after the § 5.20.7.13 `mv_clamp_to_integer` (a no-op for the small
-//! shell magnitudes this subset produces).
-//!
-//! The inter wrapper still uses the EighthPel (`MvPrecision ==
-//! MV_PRECISION_EIGHTH_PEL`, P == 6, MvCtx == 0) subset. IntrABC uses the same
-//! SHELL syntax with `MV_INTRABC_CONTEXT` and the §5.20.5.4 block precision
-//! (one-pel or quarter-pel). Every read is a real § 8.2 symbol or bypass bit; a
-//! wrong read desynchronises the arithmetic decoder and fails the caller's
-//! § 8.2.4 `exit_symbol()`.
-
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 
@@ -40,28 +8,23 @@ use super::{Mv, SPEC_MV, unsupported_at};
 use crate::Result;
 use crate::tile_payload::{MvCdfSelector, TileCdfSelector, TileCdfSubset};
 
-/// AV2 § 3 `MAX_COL_TRUNCATED_UNARY_VAL`: the maximum number of `col_mv_greater`
-/// truncated-unary symbols.
 const MAX_COL_TRUNCATED_UNARY_VAL: usize = 2;
-
-/// AV2 § 3 `NUM_CTX_COL_MV_INDEX`: the `col_mv_index` context count.
 const NUM_CTX_COL_MV_INDEX: usize = 4;
-
-/// AV2 § 3 `MV_IN_USE_BITS` derived bounds for § 5.20.7.13 `mv_clamp_to_integer`.
 const MV_LOW: i32 = -(1 << 16);
 const MV_UPP: i32 = 1 << 16;
+
 /// AV2 Table 6.19 `MV_PRECISION_ONE_PEL`.
 pub(in crate::runtime_minimal) const MV_PRECISION_ONE_PEL: u8 = 3;
 /// AV2 Table 6.19 `MV_PRECISION_QUARTER_PEL`.
 pub(in crate::runtime_minimal) const MV_PRECISION_QUARTER_PEL: u8 = 5;
-/// AV2 Table 6.19 `MV_PRECISION_EIGHTH_PEL`.
 const MV_PRECISION_EIGHTH_PEL: u8 = 6;
+
 /// AV2 §3 `MV_INTRABC_CONTEXT`.
 pub(in crate::runtime_minimal) const MV_INTRABC_CONTEXT: usize = 1;
 const INTER_MV_CONTEXT: usize = 0;
 const MV_CONTEXTS: usize = 2;
 
-/// Bounded configuration for AV2 §5.20.7.20 `read_mv()`.
+/// Configuration for AV2 §5.20.7.20 `read_mv()`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::runtime_minimal) struct MvReadConfig {
     precision: u8,
@@ -83,9 +46,7 @@ impl MvReadConfig {
     }
 }
 
-/// AV2 § 5.20.7.13 `mv_clamp_to_integer(v)`. A no-op for the small magnitudes the
-/// verified subset produces, but applied faithfully. The caller forms
-/// `BlockMvs[0][comp] = mv_clamp_to_integer(PredMvs[0][comp] + diffMvs[0][comp])`.
+/// AV2 §5.20.7.13 `mv_clamp_to_integer(v)`.
 pub(in crate::runtime_minimal) const fn mv_clamp_to_integer(v: i32) -> i32 {
     if v < MV_LOW + 1 {
         MV_LOW + 8
@@ -96,13 +57,7 @@ pub(in crate::runtime_minimal) const fn mv_clamp_to_integer(v: i32) -> i32 {
     }
 }
 
-/// Reads the § 5.20.7.20 SHELL-coded MV delta and applies the § 5.20.7.13 sign
-/// pass for the single-reference EighthPel NEWMV block, returning the **signed MV
-/// difference** `diffMv = (row, col)` in eighth-pel units. The caller adds the
-/// § 7.12.2 stack predictor (`PredMvs[0]`) and applies § 5.20.7.13
-/// `mv_clamp_to_integer` to form the block MV; this function does not add a
-/// predictor or clamp (the predictor is the stack-selected candidate, which may be
-/// a neighbour's MV, not necessarily zero).
+/// Reads the signed MV difference for the single-reference EighthPel NEWMV path.
 pub(super) fn read_newmv_block_mvd(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -112,10 +67,6 @@ pub(super) fn read_newmv_block_mvd(
 }
 
 /// Reads the configured §5.20.7.20 SHELL-coded MV delta and explicit sign pass.
-///
-/// The caller is responsible for only using this when sign derivation is not
-/// active. That holds for the existing inter EighthPel subset and for IntrABC
-/// because `is_mvd_sign_derive_allowed()` returns 0 when `use_intrabc == 1`.
 pub(in crate::runtime_minimal) fn read_newmv_block_mvd_with_config(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -131,37 +82,41 @@ pub(in crate::runtime_minimal) fn read_newmv_block_mvd_with_config(
     Ok(Mv { row, col })
 }
 
-/// AV2 § 5.20.7.20 `read_mv()` magnitude path for EighthPel: returns the unsigned
-/// `(diffMv[0], diffMv[1]) == (row_magnitude, col_magnitude)` (shift == 0).
 fn read_shell_diff(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     tile_offset: ByteOffset,
     config: MvReadConfig,
 ) -> Result<(i32, i32)> {
-    let shell_set_selector = TileCdfSelector::ReadMv(MvCdfSelector::JointShellSet {
-        mv_ctx: config.mv_ctx,
-    });
-    let shell_set = read_symbol(cdfs, symbols, shell_set_selector, tile_offset)?;
+    let mv_ctx = config.mv_ctx;
+    let precision = config.precision;
+    let shell_set = read_symbol(
+        cdfs,
+        symbols,
+        MvCdfSelector::JointShellSet { mv_ctx },
+        tile_offset,
+    )?;
 
     let raw_shell_class = read_symbol(
         cdfs,
         symbols,
-        joint_shell_class_selector(
-            usize::from(config.precision),
-            shell_set as usize,
-            config.mv_ctx,
-        ),
+        MvCdfSelector::JointShellClass {
+            precision: usize::from(precision),
+            shell_set: usize::from(shell_set),
+            mv_ctx,
+        },
         tile_offset,
     )?;
     let mut shell_class = raw_shell_class as i64;
     if shell_set != 0 {
-        shell_class += i64::from((11 + config.precision) >> 1);
-        if config.precision == MV_PRECISION_EIGHTH_PEL && raw_shell_class == 7 {
-            let selector = TileCdfSelector::ReadMv(MvCdfSelector::JointShellLastTwo {
-                mv_ctx: config.mv_ctx,
-            });
-            let last_two = read_symbol(cdfs, symbols, selector, tile_offset)?;
+        shell_class += i64::from((11 + precision) >> 1);
+        if precision == MV_PRECISION_EIGHTH_PEL && raw_shell_class == 7 {
+            let last_two = read_symbol(
+                cdfs,
+                symbols,
+                MvCdfSelector::JointShellLastTwo { mv_ctx },
+                tile_offset,
+            )?;
             shell_class += i64::from(last_two);
         }
     }
@@ -183,7 +138,7 @@ fn read_shell_diff(
     let diff_col = read_col_split(cdfs, symbols, shell_index, shell_class, tile_offset, config)?;
     let diff_row = shell_index - diff_col;
 
-    let shift = u32::from(MV_PRECISION_EIGHTH_PEL - config.precision);
+    let shift = u32::from(MV_PRECISION_EIGHTH_PEL - precision);
     let diff_row = diff_row
         .checked_shl(shift)
         .ok_or_else(|| mv_overflow(tile_offset))?;
@@ -195,19 +150,6 @@ fn read_shell_diff(
     Ok((diff_row, diff_col))
 }
 
-fn joint_shell_class_selector(
-    precision: usize,
-    shell_set: usize,
-    mv_ctx: usize,
-) -> TileCdfSelector {
-    TileCdfSelector::ReadMv(MvCdfSelector::JointShellClass {
-        precision,
-        shell_set,
-        mv_ctx,
-    })
-}
-
-/// AV2 § 5.20.7.20 `shellClassOffset` derivation (the `shell_offset_*` reads).
 fn read_shell_class_offset(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -215,23 +157,29 @@ fn read_shell_class_offset(
     tile_offset: ByteOffset,
     config: MvReadConfig,
 ) -> Result<i64> {
+    let mv_ctx = config.mv_ctx;
     if shell_class < 2 {
-        let selector = TileCdfSelector::ReadMv(MvCdfSelector::ShellOffsetLowClass {
-            mv_ctx: config.mv_ctx,
-            shell_class: shell_class as usize,
-        });
-        let offset = read_symbol(cdfs, symbols, selector, tile_offset)?;
+        let offset = read_symbol(
+            cdfs,
+            symbols,
+            MvCdfSelector::ShellOffsetLowClass {
+                mv_ctx,
+                shell_class: shell_class as usize,
+            },
+            tile_offset,
+        )?;
         return Ok(i64::from(offset));
     }
     if shell_class == 2 {
         let mut shell_class_offset: i64 = 0;
         for i in 0..3 {
             if i == 0 {
-                let selector = TileCdfSelector::ReadMv(MvCdfSelector::ShellOffsetClass2 {
-                    mv_ctx: config.mv_ctx,
-                });
-                let v = read_symbol(cdfs, symbols, selector, tile_offset)?;
-                shell_class_offset = i64::from(v);
+                shell_class_offset = i64::from(read_symbol(
+                    cdfs,
+                    symbols,
+                    MvCdfSelector::ShellOffsetClass2 { mv_ctx },
+                    tile_offset,
+                )?);
             } else {
                 let high = read_bypass_bit(symbols, tile_offset)?;
                 shell_class_offset = i64::from(high) + i as i64;
@@ -244,19 +192,20 @@ fn read_shell_class_offset(
     }
     let mut shell_class_offset: i64 = 0;
     for i in 0..shell_class {
-        let selector = TileCdfSelector::ReadMv(MvCdfSelector::ShellOffsetOtherClass {
-            mv_ctx: config.mv_ctx,
-            i: i as usize,
-        });
-        let bit = read_symbol(cdfs, symbols, selector, tile_offset)?;
+        let bit = read_symbol(
+            cdfs,
+            symbols,
+            MvCdfSelector::ShellOffsetOtherClass {
+                mv_ctx,
+                i: i as usize,
+            },
+            tile_offset,
+        )?;
         shell_class_offset |= i64::from(bit) << i;
     }
     Ok(shell_class_offset)
 }
 
-/// AV2 § 5.20.7.20 column-magnitude split: derives `diffMv[1]` (the column
-/// magnitude) from `shellIndex` via `col_mv_greater` / `col_remainder` /
-/// `col_mv_index`.
 fn read_col_split(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -265,16 +214,21 @@ fn read_col_split(
     tile_offset: ByteOffset,
     config: MvReadConfig,
 ) -> Result<i64> {
+    let mv_ctx = config.mv_ctx;
     let mut col: i64 = 0;
     let maximum_pair_index = shell_index >> 1;
     if maximum_pair_index > 0 {
         let max_idx_bits = maximum_pair_index.min(MAX_COL_TRUNCATED_UNARY_VAL as i64);
         for i in 0..max_idx_bits {
-            let selector = TileCdfSelector::ReadMv(MvCdfSelector::ColMvGreater {
-                mv_ctx: config.mv_ctx,
-                i: i as usize,
-            });
-            let greater = read_symbol(cdfs, symbols, selector, tile_offset)?;
+            let greater = read_symbol(
+                cdfs,
+                symbols,
+                MvCdfSelector::ColMvGreater {
+                    mv_ctx,
+                    i: i as usize,
+                },
+                tile_offset,
+            )?;
             col = i + i64::from(greater);
             if greater == 0 {
                 break;
@@ -295,11 +249,12 @@ fn read_col_split(
     }
 
     let ctx = (shell_class as usize).min(NUM_CTX_COL_MV_INDEX - 1);
-    let selector = TileCdfSelector::ReadMv(MvCdfSelector::ColMvIndex {
-        mv_ctx: config.mv_ctx,
-        ctx,
-    });
-    let col_mv_index = read_symbol(cdfs, symbols, selector, tile_offset)?;
+    let col_mv_index = read_symbol(
+        cdfs,
+        symbols,
+        MvCdfSelector::ColMvIndex { mv_ctx, ctx },
+        tile_offset,
+    )?;
     if col_mv_index == 0 {
         Ok(col)
     } else {
@@ -317,16 +272,14 @@ fn validate_config(config: MvReadConfig, tile_offset: ByteOffset) -> Result<()> 
     }
 }
 
-/// AV2 § 4.11.13 `NS(n)`: arithmetic-coded non-symmetric literal in `0..n`,
-/// composed from the § 8.2 bypass primitives (`L(w-1)` then maybe `L(1)`).
 fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i64, tile_offset: ByteOffset) -> Result<i64> {
     if n <= 1 {
         return Ok(0);
     }
     let n_u = u64::try_from(n).map_err(|_| mv_overflow(tile_offset))?;
-    let floor_log2 = n_u.ilog2(); // FloorLog2(n) for n_u >= 1.
+    let floor_log2 = n_u.ilog2();
     let w = floor_log2 + 1;
-    let v = read_literal(symbols, w - 1, tile_offset)?; // L(w - 1)
+    let v = read_literal(symbols, w - 1, tile_offset)?;
     let m = (1u64 << w) - n_u;
     if u64::from(v) < m {
         return Ok(i64::from(v));
@@ -336,8 +289,6 @@ fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i64, tile_offset: ByteOffset) -> 
     i64::try_from(result).map_err(|_| mv_overflow(tile_offset))
 }
 
-/// Applies the § 5.20.7.13 explicit `mv_sign` L(1) read to a nonzero component
-/// magnitude; a zero magnitude reads no sign bit and stays 0.
 fn apply_sign(
     magnitude: i32,
     symbols: &mut SymbolDecoder<'_>,
@@ -350,20 +301,17 @@ fn apply_sign(
     Ok(if sign != 0 { -magnitude } else { magnitude })
 }
 
-/// Reads one § 8.2.6 arithmetic symbol from the selected CDF row, mapping a
-/// failure to a typed inter-decode error.
 fn read_symbol(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    selector: TileCdfSelector,
+    selector: MvCdfSelector,
     tile_offset: ByteOffset,
 ) -> Result<u8> {
-    cdfs.read_block_symbol_trace(selector, symbols)
+    cdfs.read_block_symbol_trace(TileCdfSelector::ReadMv(selector), symbols)
         .map(splot_core::symbol::Symbol::get)
         .map_err(|_| mv_symbol_error(tile_offset))
 }
 
-/// Reads one § 8.2.3 pseudo-raw bypass bit (an `L(1)` value).
 fn read_bypass_bit(symbols: &mut SymbolDecoder<'_>, tile_offset: ByteOffset) -> Result<u8> {
     symbols
         .read_bool()
@@ -371,7 +319,6 @@ fn read_bypass_bit(symbols: &mut SymbolDecoder<'_>, tile_offset: ByteOffset) -> 
         .map_err(|_| mv_symbol_error(tile_offset))
 }
 
-/// Reads an `L(n)` bypass literal (MSB-first), mapping a failure to a typed error.
 fn read_literal(symbols: &mut SymbolDecoder<'_>, n: u32, tile_offset: ByteOffset) -> Result<u32> {
     if n == 0 {
         return Ok(0);

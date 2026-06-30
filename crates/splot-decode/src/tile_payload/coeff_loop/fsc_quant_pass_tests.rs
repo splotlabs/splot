@@ -6,16 +6,13 @@
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
-use super::branch::{
-    CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStart,
-    NonZeroCoeffBlockStartInput,
-};
+use super::super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
+use super::branch::{CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStartInput};
 use super::fsc_level_pass::{
     CoeffFscLevelPassConfig, NonZeroCoeffFscLevelPass, apply_nonzero_coeff_fsc_level_pass,
 };
 use super::fsc_quant_pass::{
-    CoeffFscBranchError, CoeffFscBranchInput, CoeffFscBranchNonZeroInput,
+    CoeffFscBranch, CoeffFscBranchError, CoeffFscBranchInput, CoeffFscBranchNonZeroInput,
     CoeffFscBranchScanOrderInput, CoeffFscBranchScanOrderNonZeroInput, CoeffFscBranchSegEobInput,
     CoeffFscBranchSegEobNonZeroInput, CoeffFscBranchTestDimensionTables,
     CoeffFscBranchTestTxSizeTables, CoeffFscBranchTxSizeInput, CoeffFscBranchTxSizeNonZeroInput,
@@ -37,7 +34,7 @@ use super::read_quant::{CoeffReadQuantConfig, CoeffReadQuantInput, CoeffReadQuan
 use super::scan_walk::{
     CoeffScanOrderError, FscCoeffScanWalk, derive_coeff_scan_order, walk_fsc_coeff_scan,
 };
-use super::test_support::symbol_decoder;
+use super::test_support::{seeded_6x6_context_state as seeded_context_state, symbol_decoder};
 use super::*;
 
 const DCT_DCT: usize = 0;
@@ -52,11 +49,21 @@ const PAYLOAD_SUFFIXES: [[u8; 6]; 6] = [
     [0xff, 0xff, 0b0011_0100, 0xff, 0x00, 0x80],
 ];
 
-fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart> {
-    match branch {
-        CoeffBlockEobBranch::AllZero(_) => None,
-        CoeffBlockEobBranch::NonZero(start) => Some(start),
+fn find_candidate_payload<T>(
+    mut candidate: impl FnMut([u8; 8]) -> Option<T>,
+    not_found: &'static str,
+) -> ([u8; 8], T) {
+    for first in u8::MIN..=u8::MAX {
+        for second in u8::MIN..=u8::MAX {
+            for [a, b, c, d, e, f] in PAYLOAD_SUFFIXES {
+                let payload = [first, second, a, b, c, d, e, f];
+                if let Some(value) = candidate(payload) {
+                    return (payload, value);
+                }
+            }
+        }
     }
+    panic!("{not_found}");
 }
 
 fn config() -> CoeffFscLevelPassConfig {
@@ -209,22 +216,6 @@ fn out_of_bounds_context_commit_config() -> CoeffFscContextCommitConfig {
     }
 }
 
-fn seeded_context_state() -> TileCoeffContextState {
-    let mut state = TileCoeffContextState::new(6, 6).unwrap();
-    state
-        .update_after_coeffs(CoeffContextUpdate {
-            plane: 0,
-            x4: 0,
-            y4: 0,
-            w4: 6,
-            h4: 6,
-            cul_level: 1,
-            dc_category: 1,
-        })
-        .unwrap();
-    state
-}
-
 fn setup_level_pass(
     payload: &[u8],
     seg_eob: usize,
@@ -245,7 +236,9 @@ fn setup_level_pass(
         CoeffBlockEobBranchInput::NonZero(nonzero_start_input()),
     )
     .ok()?;
-    let start = branch_nonzero(branch)?;
+    let CoeffBlockEobBranch::NonZero(start) = branch else {
+        return None;
+    };
     if start.eob_read().eob().eob() != SCAN.len() - 2 {
         return None;
     }
@@ -254,6 +247,22 @@ fn setup_level_pass(
         apply_nonzero_coeff_fsc_level_pass(&mut tile, &mut symbols, start, walk.clone(), config())
             .ok()?;
     Some((tile, symbols, walk, pass))
+}
+
+fn setup_seeded_eob_read(payload: &[u8]) -> (TileCdfSubset, SymbolDecoder<'_>) {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context = seeded_context_state();
+    let start = read_coeff_block_eob_branch(
+        &mut context,
+        &mut tile,
+        &mut symbols,
+        CoeffBlockEobBranchInput::NonZero(nonzero_start_input()),
+    )
+    .unwrap();
+    assert!(matches!(start, CoeffBlockEobBranch::NonZero(_)));
+    (tile, symbols)
 }
 
 fn setup_sign_pass(
@@ -273,22 +282,59 @@ fn run_pass(payload: &[u8], seg_eob: usize) -> Option<NonZeroCoeffFscQuantPass> 
 }
 
 fn find_payload(seg_eob: usize, predicate: impl Fn(&NonZeroCoeffFscQuantPass) -> bool) -> [u8; 8] {
+    find_candidate_payload(
+        |payload| {
+            let pass = run_pass(&payload, seg_eob)?;
+            predicate(&pass).then_some(())
+        },
+        "no coefficient FSC quant payload found",
+    )
+    .0
+}
+
+fn find_order_sensitive_payload() -> (
+    [u8; 8],
+    NonZeroCoeffFscQuantPass,
+    Vec<CoeffFscSignRead>,
+    Vec<i32>,
+) {
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
-            for suffix in PAYLOAD_SUFFIXES {
-                let payload = [
-                    first, second, suffix[0], suffix[1], suffix[2], suffix[3], suffix[4], suffix[5],
-                ];
-                let Some(pass) = run_pass(&payload, seg_eob) else {
+            for [a, b, c, d, e, f] in PAYLOAD_SUFFIXES {
+                let payload = [first, second, a, b, c, d, e, f];
+                let Some(interleaved) = run_pass(&payload, 4) else {
                     continue;
                 };
-                if predicate(&pass) {
-                    return payload;
+                let Some((batched_signs, batched_quant)) =
+                    batched_sign_then_quant_for_payload(&payload, 4)
+                else {
+                    continue;
+                };
+                if interleaved.sign_reads() != batched_signs.as_slice()
+                    || interleaved.block().quant() != batched_quant.as_slice()
+                {
+                    return (payload, interleaved, batched_signs, batched_quant);
                 }
             }
         }
     }
-    panic!("no coefficient FSC quant payload found");
+    panic!("no coefficient FSC quant order-sensitive payload found");
+}
+
+fn find_scan_order_payload() -> [u8; 8] {
+    find_candidate_payload(
+        |payload| run_scan_order_branch(&payload).map(|_| ()),
+        "no coefficient FSC scan-order payload found",
+    )
+    .0
+}
+
+fn find_tx_size_payload() -> [u8; 8] {
+    find_candidate_payload(
+        |payload| run_tx_size_branch(&payload).map(|_| ()),
+        "no coefficient FSC tx-size payload found",
+    )
+    .0
 }
 
 fn batched_sign_then_quant_for_payload(
@@ -336,38 +382,7 @@ fn batched_sign_then_quant_for_payload(
     Some((sign_reads, block.quant().to_vec()))
 }
 
-fn find_order_sensitive_payload() -> (
-    [u8; 8],
-    NonZeroCoeffFscQuantPass,
-    Vec<CoeffFscSignRead>,
-    Vec<i32>,
-) {
-    for first in u8::MIN..=u8::MAX {
-        for second in u8::MIN..=u8::MAX {
-            for suffix in PAYLOAD_SUFFIXES {
-                let payload = [
-                    first, second, suffix[0], suffix[1], suffix[2], suffix[3], suffix[4], suffix[5],
-                ];
-                let Some(interleaved) = run_pass(&payload, 4) else {
-                    continue;
-                };
-                let Some((batched_signs, batched_quant)) =
-                    batched_sign_then_quant_for_payload(&payload, 4)
-                else {
-                    continue;
-                };
-                if interleaved.sign_reads() != batched_signs.as_slice()
-                    || interleaved.block().quant() != batched_quant.as_slice()
-                {
-                    return (payload, interleaved, batched_signs, batched_quant);
-                }
-            }
-        }
-    }
-    panic!("no coefficient FSC quant order-sensitive payload found");
-}
-
-fn run_scan_order_branch(payload: &[u8]) -> Option<super::fsc_quant_pass::CoeffFscBranch> {
+fn run_scan_order_branch(payload: &[u8]) -> Option<CoeffFscBranch> {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload);
@@ -381,23 +396,7 @@ fn run_scan_order_branch(payload: &[u8]) -> Option<super::fsc_quant_pass::CoeffF
     .ok()
 }
 
-fn find_scan_order_payload() -> [u8; 8] {
-    for first in u8::MIN..=u8::MAX {
-        for second in u8::MIN..=u8::MAX {
-            for suffix in PAYLOAD_SUFFIXES {
-                let payload = [
-                    first, second, suffix[0], suffix[1], suffix[2], suffix[3], suffix[4], suffix[5],
-                ];
-                if run_scan_order_branch(&payload).is_some() {
-                    return payload;
-                }
-            }
-        }
-    }
-    panic!("no coefficient FSC scan-order payload found");
-}
-
-fn run_tx_size_branch(payload: &[u8]) -> Option<super::fsc_quant_pass::CoeffFscBranch> {
+fn run_tx_size_branch(payload: &[u8]) -> Option<CoeffFscBranch> {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload);
@@ -411,68 +410,66 @@ fn run_tx_size_branch(payload: &[u8]) -> Option<super::fsc_quant_pass::CoeffFscB
     .ok()
 }
 
-fn find_tx_size_payload() -> [u8; 8] {
-    for first in u8::MIN..=u8::MAX {
-        for second in u8::MIN..=u8::MAX {
-            for suffix in PAYLOAD_SUFFIXES {
-                let payload = [
-                    first, second, suffix[0], suffix[1], suffix[2], suffix[3], suffix[4], suffix[5],
-                ];
-                if run_tx_size_branch(&payload).is_some() {
-                    return payload;
-                }
-            }
-        }
-    }
-    panic!("no coefficient FSC tx-size payload found");
+fn assert_branch_error_preserves_state_for_payload(
+    payload: &[u8],
+    apply: impl FnOnce(
+        &mut TileCoeffContextState,
+        &mut TileCdfSubset,
+        &mut SymbolDecoder<'_>,
+    ) -> Result<CoeffFscBranch, CoeffFscBranchError>,
+    assert_error: impl FnOnce(&CoeffFscBranchError),
+) {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(payload);
+    let mut context_state = seeded_context_state();
+    let tile_before = tile.clone();
+    let context_before = context_state.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+
+    let err = apply(&mut context_state, &mut tile, &mut symbols).unwrap_err();
+
+    assert_error(&err);
+    assert_eq!(context_state, context_before);
+    assert_eq!(tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
+fn assert_branch_error_preserves_state(
+    apply: impl FnOnce(
+        &mut TileCoeffContextState,
+        &mut TileCdfSubset,
+        &mut SymbolDecoder<'_>,
+    ) -> Result<CoeffFscBranch, CoeffFscBranchError>,
+    assert_error: impl FnOnce(&CoeffFscBranchError),
+) {
+    assert_branch_error_preserves_state_for_payload(&[0x80], apply, assert_error);
 }
 
 fn assert_scan_order_error_preserves_state(
     input: CoeffFscBranchScanOrderInput,
     assert_error: impl FnOnce(&CoeffFscBranchError),
 ) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(&[0x80]);
-    let mut context_state = seeded_context_state();
-    let tile_before = tile.clone();
-    let context_before = context_state.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-
-    let err =
-        apply_coeff_fsc_branch_from_scan_order(&mut context_state, &mut tile, &mut symbols, input)
-            .unwrap_err();
-
-    assert_error(&err);
-    assert_eq!(context_state, context_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_branch_error_preserves_state(
+        |context_state, tile, symbols| {
+            apply_coeff_fsc_branch_from_scan_order(context_state, tile, symbols, input)
+        },
+        assert_error,
+    );
 }
 
 fn assert_tx_size_error_preserves_state(
     input: CoeffFscBranchTxSizeInput,
     assert_error: impl FnOnce(&CoeffFscBranchError),
 ) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(&[0x80]);
-    let mut context_state = seeded_context_state();
-    let tile_before = tile.clone();
-    let context_before = context_state.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-
-    let err =
-        apply_coeff_fsc_branch_from_tx_size(&mut context_state, &mut tile, &mut symbols, input)
-            .unwrap_err();
-
-    assert_error(&err);
-    assert_eq!(context_state, context_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_branch_error_preserves_state(
+        |context_state, tile, symbols| {
+            apply_coeff_fsc_branch_from_tx_size(context_state, tile, symbols, input)
+        },
+        assert_error,
+    );
 }
 
 fn assert_tx_size_table_error_preserves_state(
@@ -480,29 +477,18 @@ fn assert_tx_size_table_error_preserves_state(
     tables: CoeffFscBranchTestTxSizeTables<'_>,
     assert_error: impl FnOnce(&CoeffFscBranchError),
 ) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(&[0x80]);
-    let mut context_state = seeded_context_state();
-    let tile_before = tile.clone();
-    let context_before = context_state.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-
-    let err = apply_coeff_fsc_branch_from_tx_size_with_test_tables(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-        tables,
-    )
-    .unwrap_err();
-
-    assert_error(&err);
-    assert_eq!(context_state, context_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_branch_error_preserves_state(
+        |context_state, tile, symbols| {
+            apply_coeff_fsc_branch_from_tx_size_with_test_tables(
+                context_state,
+                tile,
+                symbols,
+                input,
+                tables,
+            )
+        },
+        assert_error,
+    );
 }
 
 fn assert_scan_order_table_error_preserves_state(
@@ -510,29 +496,18 @@ fn assert_scan_order_table_error_preserves_state(
     tables: CoeffFscBranchTestDimensionTables<'_>,
     assert_error: impl FnOnce(&CoeffFscBranchError),
 ) {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(&[0x80]);
-    let mut context_state = seeded_context_state();
-    let tile_before = tile.clone();
-    let context_before = context_state.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-
-    let err = apply_coeff_fsc_branch_from_scan_order_with_test_dimension_tables(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        input,
-        tables,
-    )
-    .unwrap_err();
-
-    assert_error(&err);
-    assert_eq!(context_state, context_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_branch_error_preserves_state(
+        |context_state, tile, symbols| {
+            apply_coeff_fsc_branch_from_scan_order_with_test_dimension_tables(
+                context_state,
+                tile,
+                symbols,
+                input,
+                tables,
+            )
+        },
+        assert_error,
+    );
 }
 
 #[test]
@@ -910,54 +885,32 @@ fn coefficient_fsc_quant_pass_with_context_commit_preserves_context_on_pass_fail
 
 #[test]
 fn coefficient_fsc_branch_rejects_all_zero_without_mutation() {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(&[0x80]);
-    let mut context_state = seeded_context_state();
-    let tile_before = tile.clone();
-    let context_before = context_state.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-
-    let err = apply_coeff_fsc_branch(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        CoeffFscBranchInput::AllZero(all_zero_block_input()),
-    )
-    .unwrap_err();
-
-    assert!(matches!(err, CoeffFscBranchError::AllZero));
-    assert_eq!(context_state, context_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_branch_error_preserves_state(
+        |context_state, tile, symbols| {
+            apply_coeff_fsc_branch(
+                context_state,
+                tile,
+                symbols,
+                CoeffFscBranchInput::AllZero(all_zero_block_input()),
+            )
+        },
+        |err| assert!(matches!(err, CoeffFscBranchError::AllZero)),
+    );
 }
 
 #[test]
 fn coefficient_fsc_branch_scan_extent_rejects_all_zero_without_mutation() {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(&[0x80]);
-    let mut context_state = seeded_context_state();
-    let tile_before = tile.clone();
-    let context_before = context_state.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-
-    let err = apply_coeff_fsc_branch_from_scan_extent(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        CoeffFscBranchSegEobInput::AllZero(all_zero_block_input()),
-    )
-    .unwrap_err();
-
-    assert!(matches!(err, CoeffFscBranchError::AllZero));
-    assert_eq!(context_state, context_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_branch_error_preserves_state(
+        |context_state, tile, symbols| {
+            apply_coeff_fsc_branch_from_scan_extent(
+                context_state,
+                tile,
+                symbols,
+                CoeffFscBranchSegEobInput::AllZero(all_zero_block_input()),
+            )
+        },
+        |err| assert!(matches!(err, CoeffFscBranchError::AllZero)),
+    );
 }
 
 #[test]
@@ -1136,78 +1089,51 @@ fn coefficient_fsc_branch_tx_size_rejects_block_geometry_mismatch_without_mutati
 #[test]
 fn coefficient_fsc_branch_rejects_chroma_plane_before_eob_consumption() {
     let payload = find_payload(2, |_| true);
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(&payload);
-    let mut context_state = seeded_context_state();
-    let tile_before = tile.clone();
-    let context_before = context_state.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-
-    let err = apply_coeff_fsc_branch(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        fsc_branch_input(2, chroma_context_commit_config()),
-    )
-    .unwrap_err();
-
-    assert!(matches!(
-        err,
-        CoeffFscBranchError::NonLumaPlane { plane: 1 }
-    ));
-    assert_eq!(context_state, context_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_branch_error_preserves_state_for_payload(
+        &payload,
+        |context_state, tile, symbols| {
+            apply_coeff_fsc_branch(
+                context_state,
+                tile,
+                symbols,
+                fsc_branch_input(2, chroma_context_commit_config()),
+            )
+        },
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffFscBranchError::NonLumaPlane { plane: 1 }
+            ));
+        },
+    );
 }
 
 #[test]
 fn coefficient_fsc_branch_scan_extent_rejects_chroma_plane_before_eob_consumption() {
     let payload = find_payload(2, |_| true);
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(&payload);
-    let mut context_state = seeded_context_state();
-    let tile_before = tile.clone();
-    let context_before = context_state.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-
-    let err = apply_coeff_fsc_branch_from_scan_extent(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        fsc_branch_scan_extent_input(&SCAN, chroma_context_commit_config()),
-    )
-    .unwrap_err();
-
-    assert!(matches!(
-        err,
-        CoeffFscBranchError::NonLumaPlane { plane: 1 }
-    ));
-    assert_eq!(context_state, context_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_branch_error_preserves_state_for_payload(
+        &payload,
+        |context_state, tile, symbols| {
+            apply_coeff_fsc_branch_from_scan_extent(
+                context_state,
+                tile,
+                symbols,
+                fsc_branch_scan_extent_input(&SCAN, chroma_context_commit_config()),
+            )
+        },
+        |err| {
+            assert!(matches!(
+                err,
+                CoeffFscBranchError::NonLumaPlane { plane: 1 }
+            ));
+        },
+    );
 }
 
 #[test]
 fn coefficient_fsc_branch_rejects_invalid_scan_before_fsc_symbol_reads() {
     let payload = find_payload(2, |_| true);
-    let frame = FrameCdfSubset::from_defaults();
-    let mut expected_tile = frame.tile_copy();
-    let mut expected_symbols = symbol_decoder(&payload);
-    let mut expected_context = seeded_context_state();
-    let start = read_coeff_block_eob_branch(
-        &mut expected_context,
-        &mut expected_tile,
-        &mut expected_symbols,
-        CoeffBlockEobBranchInput::NonZero(nonzero_start_input()),
-    )
-    .unwrap();
-    assert!(matches!(start, CoeffBlockEobBranch::NonZero(_)));
+    let (expected_tile, expected_symbols) = setup_seeded_eob_read(&payload);
 
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
@@ -1238,18 +1164,7 @@ fn coefficient_fsc_branch_rejects_invalid_scan_before_fsc_symbol_reads() {
 #[test]
 fn coefficient_fsc_branch_scan_extent_rejects_short_scan_before_fsc_symbol_reads() {
     let payload = find_payload(2, |_| true);
-    let frame = FrameCdfSubset::from_defaults();
-    let mut expected_tile = frame.tile_copy();
-    let mut expected_symbols = symbol_decoder(&payload);
-    let mut expected_context = seeded_context_state();
-    let start = read_coeff_block_eob_branch(
-        &mut expected_context,
-        &mut expected_tile,
-        &mut expected_symbols,
-        CoeffBlockEobBranchInput::NonZero(nonzero_start_input()),
-    )
-    .unwrap();
-    assert!(matches!(start, CoeffBlockEobBranch::NonZero(_)));
+    let (expected_tile, expected_symbols) = setup_seeded_eob_read(&payload);
 
     let short_scan = [0u16];
     let frame = FrameCdfSubset::from_defaults();

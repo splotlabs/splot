@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Cardinal directional intra prediction primitive.
-//!
-//! Feature tracking: `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`.
+//! Cardinal directional intra prediction over the directional edge model.
 
 use crate::intra_dc_math::{validate_output_shape, validate_sample_type};
+use crate::intra_directional_angle::{
+    IntraDirectionalAngleEdge, IntraDirectionalAngleEdges, validate_directional_edge,
+};
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
 /// Cardinal AV2 directional intra prediction mode.
@@ -19,10 +20,18 @@ pub enum IntraCardinalDirection {
 
 impl IntraCardinalDirection {
     /// Returns the required prepared edge for this cardinal direction.
-    pub const fn required_edge(self) -> IntraCardinalEdge {
+    pub const fn required_edge(self) -> IntraDirectionalAngleEdge {
         match self {
-            Self::Vertical => IntraCardinalEdge::Above,
-            Self::Horizontal => IntraCardinalEdge::Left,
+            Self::Vertical => IntraDirectionalAngleEdge::Above,
+            Self::Horizontal => IntraDirectionalAngleEdge::Left,
+        }
+    }
+
+    /// Returns the AV2 pAngle value.
+    pub const fn p_angle(self) -> u16 {
+        match self {
+            Self::Vertical => 90,
+            Self::Horizontal => 180,
         }
     }
 
@@ -35,74 +44,7 @@ impl IntraCardinalDirection {
     }
 }
 
-/// Edge identifier for cardinal directional intra prediction inputs.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum IntraCardinalEdge {
-    /// Left edge samples `LeftCol[0..h)`.
-    Left,
-    /// Above edge samples `AboveRow[0..w)`.
-    Above,
-}
-
-impl IntraCardinalEdge {
-    /// Returns a stable human-readable edge name.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Left => "left",
-            Self::Above => "above",
-        }
-    }
-}
-
-/// Caller-provided prepared edge samples for AV2 §7.13.2.8 cardinal prediction.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IntraCardinalEdges<'a, T: ReconSample> {
-    left: Option<&'a [T]>,
-    above: Option<&'a [T]>,
-}
-
-impl<'a, T: ReconSample> IntraCardinalEdges<'a, T> {
-    /// Creates a prepared cardinal edge set from optional left and above edges.
-    ///
-    /// Availability and fallback preparation remain outside this type and are
-    /// owned by the broader AV2 §7.13.2.1 intra process.
-    pub const fn new(left: Option<&'a [T]>, above: Option<&'a [T]>) -> Self {
-        Self { left, above }
-    }
-
-    /// Creates an edge set with only `LeftCol[0..h)` available.
-    pub const fn left(left: &'a [T]) -> Self {
-        Self::new(Some(left), None)
-    }
-
-    /// Creates an edge set with only `AboveRow[0..w)` available.
-    pub const fn above(above: &'a [T]) -> Self {
-        Self::new(None, Some(above))
-    }
-
-    /// Creates an edge set with both left and above samples available.
-    pub const fn both(left: &'a [T], above: &'a [T]) -> Self {
-        Self::new(Some(left), Some(above))
-    }
-
-    /// Returns prepared left edge samples when available.
-    pub const fn left_samples(self) -> Option<&'a [T]> {
-        self.left
-    }
-
-    /// Returns prepared above edge samples when available.
-    pub const fn above_samples(self) -> Option<&'a [T]> {
-        self.above
-    }
-}
-
 /// Writes AV2 §7.13.2.8 pAngle 90/180 prediction into caller storage.
-///
-/// `Vertical` corresponds to `V_PRED` / pAngle 90 and copies `AboveRow[0..w)`
-/// into every output row. `Horizontal` corresponds to `H_PRED` / pAngle 180 and
-/// copies `LeftCol[0..h)` into every output column. `output` points at the
-/// top-left destination sample and `stride_samples` is the distance between
-/// adjacent output rows.
 ///
 /// # Errors
 /// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
@@ -112,7 +54,7 @@ pub fn predict_intra_cardinal_directional_rect_into<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     direction: IntraCardinalDirection,
-    edges: IntraCardinalEdges<'_, T>,
+    edges: IntraDirectionalAngleEdges<'_, T>,
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
@@ -124,31 +66,32 @@ pub fn predict_intra_cardinal_directional_rect_into<T: ReconSample>(
         "cardinal directional intra prediction output buffer length",
     )?;
 
-    match direction {
-        IntraCardinalDirection::Vertical => {
-            let above = required_edge(direction, edges.above)?;
-            validate_edge(IntraCardinalEdge::Above, above, size.width(), bit_depth)?;
-            for row in 0..size.height() {
-                let row_start =
-                    row.checked_mul(stride_samples)
-                        .ok_or(ReconError::ArithmeticOverflow {
-                            context: "cardinal directional intra prediction output row offset",
-                        })?;
-                // splot-copy-ok: copy prepared AboveRow into the caller-owned prediction row
-                output[row_start..row_start + size.width()].copy_from_slice(above);
-            }
-        }
-        IntraCardinalDirection::Horizontal => {
-            let left = required_edge(direction, edges.left)?;
-            validate_edge(IntraCardinalEdge::Left, left, size.height(), bit_depth)?;
-            for (row, left_sample) in left.iter().copied().enumerate() {
-                let row_start =
-                    row.checked_mul(stride_samples)
-                        .ok_or(ReconError::ArithmeticOverflow {
-                            context: "cardinal directional intra prediction output row offset",
-                        })?;
-                output[row_start..row_start + size.width()].fill(left_sample);
-            }
+    let edge_kind = direction.required_edge();
+    let edge = required_edge(
+        direction,
+        match edge_kind {
+            IntraDirectionalAngleEdge::Left => edges.left_samples(),
+            IntraDirectionalAngleEdge::Above => edges.above_samples(),
+        },
+    )?;
+    let edge_len = match edge_kind {
+        IntraDirectionalAngleEdge::Left => size.height(),
+        IntraDirectionalAngleEdge::Above => size.width(),
+    };
+    validate_directional_edge(edge_kind, edge, edge_len, bit_depth)?;
+
+    for row in 0..size.height() {
+        let row_start = row
+            .checked_mul(stride_samples)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "cardinal directional intra prediction output row offset",
+            })?;
+        for column in 0..size.width() {
+            let sample_index = match edge_kind {
+                IntraDirectionalAngleEdge::Left => row,
+                IntraDirectionalAngleEdge::Above => column,
+            };
+            output[row_start + column] = edge[sample_index];
         }
     }
 
@@ -159,51 +102,10 @@ fn required_edge<T: ReconSample>(
     direction: IntraCardinalDirection,
     edge: Option<&[T]>,
 ) -> Result<&[T]> {
-    edge.ok_or(ReconError::IntraCardinalEdgeUnavailable {
-        direction,
+    edge.ok_or(ReconError::IntraDirectionalAngleEdgeUnavailable {
+        p_angle: direction.p_angle(),
         edge: direction.required_edge(),
     })
-}
-
-fn validate_edge<T: ReconSample>(
-    edge: IntraCardinalEdge,
-    samples: &[T],
-    expected_len: usize,
-    bit_depth: BitDepth,
-) -> Result<()> {
-    if samples.len() != expected_len {
-        return Err(ReconError::IntraCardinalEdgeLengthMismatch {
-            edge,
-            expected: expected_len,
-            actual: samples.len(),
-        });
-    }
-
-    for (sample_index, sample) in samples.iter().copied().enumerate() {
-        validate_sample(edge, sample_index, sample, bit_depth)?;
-    }
-
-    Ok(())
-}
-
-fn validate_sample<T: ReconSample>(
-    edge: IntraCardinalEdge,
-    sample_index: usize,
-    sample: T,
-    bit_depth: BitDepth,
-) -> Result<()> {
-    let value = sample.to_u16();
-    let max = bit_depth.max_sample();
-    if value > max {
-        Err(ReconError::IntraCardinalSampleOutOfRange {
-            edge,
-            sample_index,
-            value,
-            max,
-        })
-    } else {
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -217,8 +119,8 @@ mod tests {
 
     fn assert_cardinal_prediction(
         direction: IntraCardinalDirection,
-        edges: IntraCardinalEdges<'_, u8>,
-        expected: [u8; 32],
+        edges: IntraDirectionalAngleEdges<'_, u8>,
+        expected_sample: impl Fn(usize, usize) -> u8,
     ) {
         let mut output = [0u8; 32];
         predict_intra_cardinal_directional_rect_into(
@@ -230,7 +132,11 @@ mod tests {
             4,
         )
         .unwrap();
-        assert_eq!(output, expected);
+        for row in 0..8 {
+            for column in 0..4 {
+                assert_eq!(output[row * 4 + column], expected_sample(row, column));
+            }
+        }
     }
 
     #[test]
@@ -238,11 +144,8 @@ mod tests {
         let above = [10, 20, 30, 40];
         assert_cardinal_prediction(
             IntraCardinalDirection::Vertical,
-            IntraCardinalEdges::above(&above),
-            [
-                10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40, 10,
-                20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40,
-            ],
+            IntraDirectionalAngleEdges::above(&above),
+            |_, column| above[column],
         );
     }
 
@@ -251,11 +154,8 @@ mod tests {
         let left = [1, 3, 5, 7, 9, 11, 13, 15];
         assert_cardinal_prediction(
             IntraCardinalDirection::Horizontal,
-            IntraCardinalEdges::left(&left),
-            [
-                1, 1, 1, 1, 3, 3, 3, 3, 5, 5, 5, 5, 7, 7, 7, 7, 9, 9, 9, 9, 11, 11, 11, 11, 13, 13,
-                13, 13, 15, 15, 15, 15,
-            ],
+            IntraDirectionalAngleEdges::left(&left),
+            |row, _| left[row],
         );
     }
 
@@ -268,7 +168,7 @@ mod tests {
             BitDepth::Eight,
             rect_size(2, 3),
             IntraCardinalDirection::Vertical,
-            IntraCardinalEdges::above(&above),
+            IntraDirectionalAngleEdges::above(&above),
             &mut output,
             6,
         )
@@ -289,13 +189,13 @@ mod tests {
                 BitDepth::Eight,
                 rect_size(2, 2),
                 IntraCardinalDirection::Vertical,
-                IntraCardinalEdges::<u8>::left(&[1; 4]),
+                IntraDirectionalAngleEdges::<u8>::left(&[1; 4]),
                 &mut output,
                 4
             ),
-            Err(ReconError::IntraCardinalEdgeUnavailable {
-                direction: IntraCardinalDirection::Vertical,
-                edge: IntraCardinalEdge::Above
+            Err(ReconError::IntraDirectionalAngleEdgeUnavailable {
+                p_angle: 90,
+                edge: IntraDirectionalAngleEdge::Above
             })
         ));
         assert!(matches!(
@@ -303,13 +203,13 @@ mod tests {
                 BitDepth::Eight,
                 rect_size(2, 2),
                 IntraCardinalDirection::Horizontal,
-                IntraCardinalEdges::<u8>::above(&[1; 4]),
+                IntraDirectionalAngleEdges::<u8>::above(&[1; 4]),
                 &mut output,
                 4
             ),
-            Err(ReconError::IntraCardinalEdgeUnavailable {
-                direction: IntraCardinalDirection::Horizontal,
-                edge: IntraCardinalEdge::Left
+            Err(ReconError::IntraDirectionalAngleEdgeUnavailable {
+                p_angle: 180,
+                edge: IntraDirectionalAngleEdge::Left
             })
         ));
     }
@@ -323,12 +223,12 @@ mod tests {
                 BitDepth::Eight,
                 rect_size(2, 3),
                 IntraCardinalDirection::Vertical,
-                IntraCardinalEdges::above(&[1; 3]),
+                IntraDirectionalAngleEdges::above(&[1; 3]),
                 &mut output,
                 4
             ),
-            Err(ReconError::IntraCardinalEdgeLengthMismatch {
-                edge: IntraCardinalEdge::Above,
+            Err(ReconError::IntraDirectionalAngleEdgeLengthMismatch {
+                edge: IntraDirectionalAngleEdge::Above,
                 expected: 4,
                 actual: 3
             })
@@ -338,12 +238,12 @@ mod tests {
                 BitDepth::Eight,
                 rect_size(2, 3),
                 IntraCardinalDirection::Horizontal,
-                IntraCardinalEdges::left(&[1; 7]),
+                IntraDirectionalAngleEdges::left(&[1; 7]),
                 &mut output,
                 4
             ),
-            Err(ReconError::IntraCardinalEdgeLengthMismatch {
-                edge: IntraCardinalEdge::Left,
+            Err(ReconError::IntraDirectionalAngleEdgeLengthMismatch {
+                edge: IntraDirectionalAngleEdge::Left,
                 expected: 8,
                 actual: 7
             })
@@ -359,12 +259,12 @@ mod tests {
                 BitDepth::Eight,
                 rect_size(2, 3),
                 IntraCardinalDirection::Vertical,
-                IntraCardinalEdges::above(&[1, 2, 256, 4]),
+                IntraDirectionalAngleEdges::above(&[1, 2, 256, 4]),
                 &mut output,
                 4
             ),
-            Err(ReconError::IntraCardinalSampleOutOfRange {
-                edge: IntraCardinalEdge::Above,
+            Err(ReconError::IntraDirectionalAngleSampleOutOfRange {
+                edge: IntraDirectionalAngleEdge::Above,
                 sample_index: 2,
                 value: 256,
                 max: 255
@@ -377,12 +277,12 @@ mod tests {
                 BitDepth::Eight,
                 rect_size(2, 3),
                 IntraCardinalDirection::Horizontal,
-                IntraCardinalEdges::left(&[1, 2, 256, 4, 5, 6, 7, 8]),
+                IntraDirectionalAngleEdges::left(&[1, 2, 256, 4, 5, 6, 7, 8]),
                 &mut output,
                 4
             ),
-            Err(ReconError::IntraCardinalSampleOutOfRange {
-                edge: IntraCardinalEdge::Left,
+            Err(ReconError::IntraDirectionalAngleSampleOutOfRange {
+                edge: IntraDirectionalAngleEdge::Left,
                 sample_index: 2,
                 value: 256,
                 max: 255
@@ -399,7 +299,7 @@ mod tests {
                 BitDepth::Ten,
                 rect_size(2, 3),
                 IntraCardinalDirection::Horizontal,
-                IntraCardinalEdges::left(&[1u8; 8]),
+                IntraDirectionalAngleEdges::left(&[1u8; 8]),
                 &mut output,
                 4
             ),
@@ -420,7 +320,7 @@ mod tests {
                 BitDepth::Eight,
                 rect_size(2, 3),
                 IntraCardinalDirection::Vertical,
-                IntraCardinalEdges::above(&above),
+                IntraDirectionalAngleEdges::above(&above),
                 &mut output,
                 3
             ),
@@ -435,7 +335,7 @@ mod tests {
                 BitDepth::Eight,
                 rect_size(2, 3),
                 IntraCardinalDirection::Vertical,
-                IntraCardinalEdges::above(&above),
+                IntraDirectionalAngleEdges::above(&above),
                 &mut output,
                 4
             ),
@@ -455,7 +355,7 @@ mod tests {
                 BitDepth::Eight,
                 rect_size(2, 3),
                 IntraCardinalDirection::Vertical,
-                IntraCardinalEdges::above(&[1u8; 4]),
+                IntraDirectionalAngleEdges::above(&[1u8; 4]),
                 &mut output,
                 usize::MAX
             ),

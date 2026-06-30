@@ -5,16 +5,16 @@
 
 use splot_core::symbol::SymbolDecoder;
 
-use super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSubset};
-use super::super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
+use super::super::cdf::{CoeffCdfSelector, TileCdfSubset};
+use super::super::coeff_state::TileCoeffStateError;
 use super::base_symbol::{
     CoeffBaseRangeRead, CoeffBaseSymbolRead, CoeffBaseSymbolReadInput, CoeffBaseSymbolSource,
     read_nonzero_coeff_base_symbols,
 };
-use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
+use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::level_state::{CoeffLevelStateWriteError, apply_nonzero_coeff_base_levels};
 use super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
-use super::test_support::symbol_decoder;
+use super::test_support::setup_start_with_input;
 use super::*;
 
 const BASE_LEVELS: u32 = 2;
@@ -28,27 +28,14 @@ const SCAN: [u16; 4] = [0, 8, 1, 9];
 const ALT_SCAN: [u16; 4] = [0, 8, 9, 1];
 const LARGE_SCAN: [u16; 4] = [0, 1, 8, 63];
 
-fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart> {
-    match branch {
-        CoeffBlockEobBranch::AllZero(_) => None,
-        CoeffBlockEobBranch::NonZero(start) => Some(start),
-    }
-}
-
 fn setup_start(
     payload: &[u8],
     w4: usize,
     h4: usize,
 ) -> Option<(TileCdfSubset, SymbolDecoder<'_>, NonZeroCoeffBlockStart)> {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut state = TileCoeffContextState::new(4, 4).ok()?;
-    let branch = read_coeff_block_eob_branch(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+    setup_start_with_input(
+        payload,
+        NonZeroCoeffBlockStartInput {
             block: AllZeroCoeffBlockInput {
                 plane: 0,
                 x4: 0,
@@ -63,11 +50,8 @@ fn setup_start(
                 tx_height_log2: 3,
                 coeff_cdf_q_ctx: 0,
             },
-        }),
+        },
     )
-    .ok()?;
-    let start = branch_nonzero(branch)?;
-    Some((tile, symbols, start))
 }
 
 fn base_eob_selector() -> CoeffCdfSelector {

@@ -248,15 +248,6 @@ pub(crate) enum CoeffSignSourceDeriveError {
 }
 
 /// Derives ordinary non-FSC §5.20.7.27 sign sources over checked scan entries.
-///
-/// The caller supplies post-first-pass local `Level[]`, hidden-parity summary,
-/// plane, transform-class, and DC context facts. This helper derives the source
-/// for each existing [`CoeffSignReadInput`] according to the sign branch in
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`, using the
-/// §8.3.2 `dc_sign` context rule from
-/// `docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`. It does not consume
-/// symbols, mutate CDF rows, write coefficient state, commit tile context
-/// lines, or invoke reconstruction.
 pub(crate) fn derive_nonzero_coeff_sign_inputs(
     block: &TransformCoeffBlockState,
     walk: &NonZeroCoeffScanWalk,
@@ -280,7 +271,7 @@ fn derive_coeff_sign_source(
     level: u32,
     config: CoeffSignSourceDeriveConfig<'_>,
 ) -> CoeffSignReadSource {
-    if !coeff_requires_sign_source(entry, level, config) {
+    if level == 0 && !(config.is_hidden && entry.scan_index() == 0 && config.sum_abs1 > 0) {
         return CoeffSignReadSource::None;
     }
 
@@ -297,13 +288,14 @@ fn derive_coeff_sign_source(
             )),
         };
     }
-    if config.tx_class == CoeffTransformClass::Horizontal && entry.col() == 0 && config.plane == 0 {
-        return CoeffSignReadSource::Cdf {
-            syntax: CoeffSignCdfSyntax::DcSignHorzVert,
-            selector: config.dc_selector(0),
+
+    let uses_axis_cdf = config.plane == 0
+        && match config.tx_class {
+            CoeffTransformClass::Horizontal => entry.col() == 0,
+            CoeffTransformClass::Vertical => entry.row() == 0,
+            CoeffTransformClass::TwoD => false,
         };
-    }
-    if config.tx_class == CoeffTransformClass::Vertical && entry.row() == 0 && config.plane == 0 {
+    if uses_axis_cdf {
         return CoeffSignReadSource::Cdf {
             syntax: CoeffSignCdfSyntax::DcSignHorzVert,
             selector: config.dc_selector(0),
@@ -313,23 +305,7 @@ fn derive_coeff_sign_source(
     CoeffSignReadSource::SignBit
 }
 
-fn coeff_requires_sign_source(
-    entry: CoeffScanEntry,
-    level: u32,
-    config: CoeffSignSourceDeriveConfig<'_>,
-) -> bool {
-    level != 0 || (config.is_hidden && entry.scan_index() == 0 && config.sum_abs1 > 0)
-}
-
 /// Reads ordinary non-FSC §5.20.7.27 coefficient signs over checked scan entries.
-///
-/// The caller owns the branch that selects `dc_sign`, `dc_sign_horz_vert`,
-/// `sign_bit`, or no read. This helper validates the already checked scan
-/// entries against local `Level[]` state, enforces that nonzero levels have a
-/// sign source, and then consumes the requested sign syntax
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27` and
-/// `docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`). It does not write
-/// `QuantSign[]`, `Quant[]`, tile context lines, or reconstruction state.
 pub(crate) fn read_nonzero_coeff_signs(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

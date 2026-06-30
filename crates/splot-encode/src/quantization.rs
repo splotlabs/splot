@@ -20,13 +20,14 @@
 #![allow(dead_code)]
 
 use splot_recon::{
-    BitDepth as ReconBitDepth, DequantBlockParams, PlaneId, PlaneRect, ac_quantizer, dc_quantizer,
-    dequantize_block, max_quantizer_index,
+    BitDepth as ReconBitDepth, PlaneId, PlaneRect, ac_quantizer, dc_quantizer, max_quantizer_index,
 };
 
 use crate::error::{Error, Result};
 use crate::forward_transform::ForwardTransformBlock;
-use crate::quantization_shared::{dequant_visible_range, zero_deltas};
+use crate::quantization_shared::{
+    dequantize_coefficients, quantize_coefficients, validate_quantization_shape, zero_deltas,
+};
 
 #[allow(unused_imports)]
 pub(crate) use crate::quantization_16x16::QuantizedTransformBlock16x16;
@@ -34,8 +35,6 @@ pub(crate) use crate::quantization_16x16::QuantizedTransformBlock16x16;
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;
-const DEQUANT_ROUNDING_SCALE: u128 = 8;
-const DEQUANT_PRODUCT_MAX: u64 = 0xFF_FFFF;
 
 /// Fixed quantizer inputs for the current private encoder subset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,11 +89,13 @@ impl FixedQuantizationParams {
         self.dq_denom
     }
 
-    fn dc_quantizer(self, plane: PlaneId) -> u32 {
+    /// Resolves the plane DC quantizer for the no-delta encoder subset.
+    pub(crate) fn dc_quantizer(self, plane: PlaneId) -> u32 {
         dc_quantizer(plane, self.qindex, zero_deltas(), self.bit_depth)
     }
 
-    fn ac_quantizer(self, plane: PlaneId) -> u32 {
+    /// Resolves the plane AC quantizer for the no-delta encoder subset.
+    pub(crate) fn ac_quantizer(self, plane: PlaneId) -> u32 {
         ac_quantizer(plane, self.qindex, zero_deltas(), self.bit_depth)
     }
 }
@@ -135,35 +136,26 @@ impl QuantizedTransformBlock {
 
         let dc_quantizer = params.dc_quantizer(plane);
         let ac_quantizer = params.ac_quantizer(plane);
-        let coefficients = transformed.coefficients();
-        let mut quantized = [0; DCT_DCT_4X4_COEFF_COUNT];
-        for (index, (&coefficient, out)) in
-            coefficients.iter().zip(quantized.iter_mut()).enumerate()
-        {
-            let quantizer = if index == 0 {
-                dc_quantizer
-            } else {
-                ac_quantizer
-            };
-            *out = quantize_coefficient(plane, block, index, coefficient, quantizer, params)?;
-        }
-
-        let mut dequantized = [0; DCT_DCT_4X4_COEFF_COUNT];
-        let dequant_params = DequantBlockParams {
-            dc_quant: dc_quantizer,
-            ac_quant: ac_quantizer,
-            tx_width: DCT_DCT_4X4_WIDTH,
-            tx_height: DCT_DCT_4X4_HEIGHT,
-            dq_denom: params.dq_denom(),
-            bit_depth: params.bit_depth(),
-        };
-        dequantize_block(&dequant_params, &quantized, &mut dequantized).map_err(|source| {
-            Error::QuantizationDequant {
-                plane,
-                block,
-                source,
-            }
-        })?;
+        let quantized = quantize_coefficients(
+            plane,
+            block,
+            transformed.coefficients(),
+            dc_quantizer,
+            ac_quantizer,
+            params.bit_depth(),
+            params.dq_denom(),
+        )?;
+        let dequantized = dequantize_coefficients(
+            plane,
+            block,
+            &quantized,
+            dc_quantizer,
+            ac_quantizer,
+            DCT_DCT_4X4_WIDTH,
+            DCT_DCT_4X4_HEIGHT,
+            params.bit_depth(),
+            params.dq_denom(),
+        )?;
 
         Ok(Self {
             plane,
@@ -225,119 +217,18 @@ impl QuantizedTransformBlock {
 }
 
 fn validate_4x4_shape(plane: PlaneId, block: PlaneRect) -> Result<()> {
-    if block.width() == DCT_DCT_4X4_WIDTH && block.height() == DCT_DCT_4X4_HEIGHT {
-        Ok(())
-    } else {
-        Err(Error::QuantizationUnsupportedShape {
-            plane,
-            block,
-            expected_width: DCT_DCT_4X4_WIDTH,
-            expected_height: DCT_DCT_4X4_HEIGHT,
-        })
-    }
-}
-
-fn quantize_coefficient(
-    plane: PlaneId,
-    block: PlaneRect,
-    index: usize,
-    coefficient: i32,
-    quantizer: u32,
-    params: FixedQuantizationParams,
-) -> Result<i32> {
-    let (min, max) = dequant_visible_range(params.bit_depth());
-    if coefficient < min || coefficient > max {
-        return Err(Error::QuantizationCoefficientOutOfRange {
-            plane,
-            block,
-            coefficient_index: index,
-            value: coefficient,
-            min,
-            max,
-            bit_depth: params.bit_depth(),
-        });
-    }
-    if coefficient == 0 {
-        return Ok(0);
-    }
-
-    let magnitude = u128::from(coefficient.unsigned_abs());
-    let numerator = magnitude
-        .checked_mul(u128::from(params.dq_denom()))
-        .and_then(|value| value.checked_mul(DEQUANT_ROUNDING_SCALE))
-        .ok_or(Error::QuantizationCoefficientOverflow {
-            plane,
-            block,
-            coefficient_index: index,
-            value: coefficient,
-            quantizer,
-            dq_denom: params.dq_denom(),
-            context: "quantization numerator",
-        })?;
-    let divisor = u128::from(quantizer);
-    let rounded =
-        numerator
-            .checked_add(divisor / 2)
-            .ok_or(Error::QuantizationCoefficientOverflow {
-                plane,
-                block,
-                coefficient_index: index,
-                value: coefficient,
-                quantizer,
-                dq_denom: params.dq_denom(),
-                context: "quantization rounding",
-            })?
-            / divisor;
-    if rounded > i32::MAX as u128 {
-        return Err(Error::QuantizationCoefficientOverflow {
-            plane,
-            block,
-            coefficient_index: index,
-            value: coefficient,
-            quantizer,
-            dq_denom: params.dq_denom(),
-            context: "quantized coefficient",
-        });
-    }
-
-    let product = rounded
-        .checked_mul(divisor)
-        .ok_or(Error::QuantizationCoefficientOverflow {
-            plane,
-            block,
-            coefficient_index: index,
-            value: coefficient,
-            quantizer,
-            dq_denom: params.dq_denom(),
-            context: "dequant product",
-        })?;
-    if product > u128::from(DEQUANT_PRODUCT_MAX) {
-        return Err(Error::QuantizationDequantProductOverflow {
-            plane,
-            block,
-            coefficient_index: index,
-            quantized_abs: rounded as u64,
-            quantizer,
-            max_product: DEQUANT_PRODUCT_MAX,
-        });
-    }
-
-    let quantized_abs = rounded as i32;
-    if coefficient < 0 {
-        Ok(-quantized_abs)
-    } else {
-        Ok(quantized_abs)
-    }
+    validate_quantization_shape(plane, block, DCT_DCT_4X4_WIDTH, DCT_DCT_4X4_HEIGHT)
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::quantization_shared::DEQUANT_PRODUCT_MAX;
     use crate::quantization_test_support::expected_level;
     use splot_recon::{
-        InverseTransform1dType, InverseTransform2dDim, InverseTransform2dOuter,
-        inverse_transform_2d_outer,
+        DequantBlockParams, InverseTransform1dType, InverseTransform2dDim, InverseTransform2dOuter,
+        dequantize_block, inverse_transform_2d_outer,
     };
 
     fn rect(width: usize, height: usize) -> PlaneRect {

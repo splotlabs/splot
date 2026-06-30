@@ -79,6 +79,57 @@ fn workspace_rect_samples<T: ReconSample>(
         .collect()
 }
 
+fn predict_middle_d135_with_edges(
+    workspace: &mut CurrentFrameWorkspace<u8>,
+    plane: PlaneId,
+    block: IntraRectBlockSize,
+    corner: u8,
+    above: &[u8],
+    left: &[u8],
+) {
+    workspace
+        .write_rect(plane, rect(0, 0, 1, 1), &[corner], 1)
+        .unwrap();
+    workspace
+        .write_rect(plane, rect(1, 0, above.len(), 1), above, above.len())
+        .unwrap();
+    for (i, sample) in left.iter().enumerate() {
+        workspace
+            .write_rect(plane, rect(0, 1 + i, 1, 1), &[*sample], 1)
+            .unwrap();
+    }
+    workspace
+        .predict_intra_middle_directional_angle_rect(
+            plane,
+            1,
+            1,
+            block,
+            IntraMiddleDirectionalAngle::D135,
+        )
+        .unwrap();
+}
+
+fn assert_edge_unavailable(
+    result: &Result<(), ReconError>,
+    plane: PlaneId,
+    p_angle: u16,
+    edge: IntraDirectionalAngleEdge,
+    expected_rect: PlaneRect,
+) {
+    assert!(matches!(
+        result,
+        Err(ReconError::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
+            plane: actual_plane,
+            p_angle: actual_p_angle,
+            edge: actual_edge,
+            rect
+        }) if *actual_plane == plane
+            && *actual_p_angle == p_angle
+            && *actual_edge == edge
+            && *rect == expected_rect
+    ));
+}
+
 #[test]
 fn workspace_predicts_one_sided_directional_angle_from_in_storage_above_edge() {
     let block = rect_block(2, 2);
@@ -246,54 +297,17 @@ fn workspace_middle_directional_luma_d135_idif_matches_chroma_bilinear() {
     let corner = 32_u8;
 
     let mut luma = workspace(BitDepth::Eight, 8, 8, 0_u8);
-    luma.write_rect(PlaneId::Y, rect(0, 0, 1, 1), &[corner], 1)
-        .unwrap();
-    luma.write_rect(
-        PlaneId::Y,
-        rect(1, 0, above_row.len(), 1),
-        &above_row,
-        above_row.len(),
-    )
-    .unwrap();
-    for (i, sample) in left_col.iter().enumerate() {
-        luma.write_rect(PlaneId::Y, rect(0, 1 + i, 1, 1), &[*sample], 1)
-            .unwrap();
-    }
-    luma.predict_intra_middle_directional_angle_rect(
-        PlaneId::Y,
-        1,
-        1,
-        block,
-        IntraMiddleDirectionalAngle::D135,
-    )
-    .unwrap();
+    predict_middle_d135_with_edges(&mut luma, PlaneId::Y, block, corner, &above_row, &left_col);
 
     let mut chroma = workspace_with_format(BitDepth::Eight, PixelFormat::Yuv444, 8, 8, 0_u8);
-    chroma
-        .write_rect(PlaneId::U, rect(0, 0, 1, 1), &[corner], 1)
-        .unwrap();
-    chroma
-        .write_rect(
-            PlaneId::U,
-            rect(1, 0, above_row.len(), 1),
-            &above_row,
-            above_row.len(),
-        )
-        .unwrap();
-    for (i, sample) in left_col.iter().enumerate() {
-        chroma
-            .write_rect(PlaneId::U, rect(0, 1 + i, 1, 1), &[*sample], 1)
-            .unwrap();
-    }
-    chroma
-        .predict_intra_middle_directional_angle_rect(
-            PlaneId::U,
-            1,
-            1,
-            block,
-            IntraMiddleDirectionalAngle::D135,
-        )
-        .unwrap();
+    predict_middle_d135_with_edges(
+        &mut chroma,
+        PlaneId::U,
+        block,
+        corner,
+        &above_row,
+        &left_col,
+    );
 
     assert_eq!(
         workspace_rect_samples(&luma, PlaneId::Y, target),
@@ -306,96 +320,65 @@ fn workspace_directional_angle_rejects_missing_prepared_edges() {
     let block = rect_block(2, 2);
     let mut workspace = workspace_with_format(BitDepth::Eight, PixelFormat::Yuv444, 8, 8, 0_u8);
 
-    assert!(matches!(
-        workspace.predict_intra_directional_angle_rect(
-            PlaneId::U,
+    for (x, y, angle, edge) in [
+        (
             1,
             0,
-            block,
-            IntraDirectionalAngle::D45
+            IntraDirectionalAngle::D45,
+            IntraDirectionalAngleEdge::Above,
         ),
-        Err(ReconError::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
-            plane: PlaneId::U,
-            p_angle: 45,
-            edge: IntraDirectionalAngleEdge::Above,
-            rect
-        }) if rect == PlaneRect::new(1, 0, 4, 4).unwrap()
-    ));
-    assert!(matches!(
-        workspace.predict_intra_directional_angle_rect(
-            PlaneId::U,
+        (
             1,
             1,
-            block,
-            IntraDirectionalAngle::D67
+            IntraDirectionalAngle::D67,
+            IntraDirectionalAngleEdge::Above,
         ),
-        Err(ReconError::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
-            plane: PlaneId::U,
-            p_angle: 67,
-            edge: IntraDirectionalAngleEdge::Above,
-            rect
-        }) if rect == PlaneRect::new(1, 1, 4, 4).unwrap()
-    ));
-    assert!(matches!(
-        workspace.predict_intra_directional_angle_rect(
-            PlaneId::U,
+        (
             0,
             1,
-            block,
-            IntraDirectionalAngle::D203
+            IntraDirectionalAngle::D203,
+            IntraDirectionalAngleEdge::Left,
         ),
-        Err(ReconError::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
-            plane: PlaneId::U,
-            p_angle: 203,
-            edge: IntraDirectionalAngleEdge::Left,
-            rect
-        }) if rect == PlaneRect::new(0, 1, 4, 4).unwrap()
-    ));
-    assert!(matches!(
-        workspace.predict_intra_directional_angle_rect(
-            PlaneId::U,
+        (
             1,
             1,
-            block,
-            IntraDirectionalAngle::D203
+            IntraDirectionalAngle::D203,
+            IntraDirectionalAngleEdge::Left,
         ),
-        Err(ReconError::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
-            plane: PlaneId::U,
-            p_angle: 203,
-            edge: IntraDirectionalAngleEdge::Left,
-            rect
-        }) if rect == PlaneRect::new(1, 1, 4, 4).unwrap()
-    ));
-    assert!(matches!(
-        workspace.predict_intra_middle_directional_angle_rect(
+    ] {
+        let result = workspace.predict_intra_directional_angle_rect(PlaneId::U, x, y, block, angle);
+        assert_edge_unavailable(
+            &result,
             PlaneId::U,
+            angle.p_angle(),
+            edge,
+            rect(x, y, block.width(), block.height()),
+        );
+    }
+    for (x, y, angle, edge) in [
+        (
             0,
             1,
-            block,
-            IntraMiddleDirectionalAngle::D113
+            IntraMiddleDirectionalAngle::D113,
+            IntraDirectionalAngleEdge::Left,
         ),
-        Err(ReconError::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
-            plane: PlaneId::U,
-            p_angle: 113,
-            edge: IntraDirectionalAngleEdge::Left,
-            rect
-        }) if rect == PlaneRect::new(0, 1, 4, 4).unwrap()
-    ));
-    assert!(matches!(
-        workspace.predict_intra_middle_directional_angle_rect(
-            PlaneId::U,
+        (
             1,
             0,
-            block,
-            IntraMiddleDirectionalAngle::D135
+            IntraMiddleDirectionalAngle::D135,
+            IntraDirectionalAngleEdge::Above,
         ),
-        Err(ReconError::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
-            plane: PlaneId::U,
-            p_angle: 135,
-            edge: IntraDirectionalAngleEdge::Above,
-            rect
-        }) if rect == PlaneRect::new(1, 0, 4, 4).unwrap()
-    ));
+    ] {
+        let result =
+            workspace.predict_intra_middle_directional_angle_rect(PlaneId::U, x, y, block, angle);
+        assert_edge_unavailable(
+            &result,
+            PlaneId::U,
+            angle.p_angle(),
+            edge,
+            rect(x, y, block.width(), block.height()),
+        );
+    }
 }
 
 #[test]

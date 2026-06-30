@@ -102,14 +102,8 @@ pub(crate) enum CoeffMaxLevelError {
     Allocation(#[from] TryReserveError),
 }
 
-/// Derives §5.20.7.27 `maxLevel` records for a checked scan walk.
-///
-/// The caller supplies transform class, plane, and hidden-parity facts. This
-/// helper implements the spec's `get_lf_limits(row, col, txClass, plane)` and
-/// `maxLevel` selection from
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`. It does not
-/// derive transform class or hidden parity from real block syntax, read symbols,
-/// mutate coefficient state, or invoke reconstruction.
+/// Derives §5.20.7.27 `maxLevel` records for a checked scan walk
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`).
 pub(crate) fn derive_nonzero_coeff_max_levels(
     walk: &NonZeroCoeffScanWalk,
     config: CoeffMaxLevelConfig,
@@ -117,18 +111,17 @@ pub(crate) fn derive_nonzero_coeff_max_levels(
     let entries = walk.entries();
     let mut levels = Vec::new();
     levels.try_reserve(entries.len())?;
-    for entry in entries.iter().copied() {
-        levels.push(derive_coeff_max_level(entry, config));
-    }
+    levels.extend(
+        entries
+            .iter()
+            .copied()
+            .map(|entry| derive_coeff_max_level(entry, config)),
+    );
     Ok(levels)
 }
 
-/// Derives §5.20.7.27 `maxLevel` records from caller-resolved `PlaneTxType`.
-///
-/// This is the decode-local handoff for AV2 § 5.20.7.27
-/// `txClass = get_tx_class(PlaneTxType)`. It does not implement
-/// `compute_tx_type`, derive scan order, read symbols, mutate CDF rows, or write
-/// coefficient state.
+/// Derives §5.20.7.27 `maxLevel` records from caller-resolved `PlaneTxType`
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`).
 pub(crate) fn derive_nonzero_coeff_max_levels_from_plane_tx_type(
     walk: &NonZeroCoeffScanWalk,
     config: CoeffMaxLevelPlaneTxTypeConfig,
@@ -148,18 +141,15 @@ pub(crate) fn max_levels_to_quant_pass_inputs(
 
 fn derive_coeff_max_level(entry: CoeffScanEntry, config: CoeffMaxLevelConfig) -> CoeffMaxLevel {
     let is_low_frequency = get_lf_limits(entry, config);
-    let mut max_level = if is_low_frequency {
-        if config.plane == 0 {
-            LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1
-        } else {
-            LF_NUM_BASE_LEVELS + 1
-        }
+    let max_level = if config.is_hidden && entry.scan_index() == 0 {
+        NUM_BASE_LEVELS + 1
     } else {
-        NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1
+        match (is_low_frequency, config.plane == 0) {
+            (true, true) => LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
+            (true, false) => LF_NUM_BASE_LEVELS + 1,
+            (false, _) => NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
+        }
     };
-    if config.is_hidden && entry.scan_index() == 0 {
-        max_level = NUM_BASE_LEVELS + 1;
-    }
 
     CoeffMaxLevel {
         entry,
@@ -187,26 +177,17 @@ pub(crate) fn coeff_is_low_frequency(
 
 fn get_lf_limits(entry: CoeffScanEntry, config: CoeffMaxLevelConfig) -> bool {
     let is_luma = config.plane == 0;
-    match config.tx_class {
-        CoeffTransformClass::TwoD => {
-            let diagonal = entry.row().saturating_add(entry.col());
-            if is_luma { diagonal < 4 } else { diagonal < 1 }
-        }
-        CoeffTransformClass::Horizontal => {
-            if is_luma {
-                entry.col() < 2
-            } else {
-                entry.col() < 1
-            }
-        }
-        CoeffTransformClass::Vertical => {
-            if is_luma {
-                entry.row() < 2
-            } else {
-                entry.row() < 1
-            }
-        }
-    }
+    let coordinate = match config.tx_class {
+        CoeffTransformClass::TwoD => entry.row().saturating_add(entry.col()),
+        CoeffTransformClass::Horizontal => entry.col(),
+        CoeffTransformClass::Vertical => entry.row(),
+    };
+    let limit = match (config.tx_class, is_luma) {
+        (CoeffTransformClass::TwoD, true) => 4,
+        (CoeffTransformClass::Horizontal | CoeffTransformClass::Vertical, true) => 2,
+        (_, false) => 1,
+    };
+    coordinate < limit
 }
 
 #[cfg(test)]

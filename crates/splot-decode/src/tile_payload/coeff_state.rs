@@ -6,16 +6,12 @@
 //! Feature tracking: `DECODE-TILE-COEFF-STATE-BUFFERS`,
 //! `DECODE-COEFF-ALL-ZERO-BLOCK-STATE`.
 
+use core::ops::Range;
 use std::collections::TryReserveError;
 
 const PLANE_COUNT: usize = 3;
 const MAX_ADJUSTED_TX_EXTENT: usize = 32;
 
-/// Transform-block-local coefficient state for AV2 § 5.20.7.27 `coeffs()`.
-///
-/// The arrays are row-major, `width` wide, and sized to the adjusted transform
-/// block extent used by `Level[]`, `QuantSign[]`, and `Quant[]` in
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformCoeffBlockState {
     width: usize,
@@ -26,7 +22,6 @@ pub(crate) struct TransformCoeffBlockState {
 }
 
 impl TransformCoeffBlockState {
-    /// Computes allocation for a transform-block coefficient state.
     pub(crate) fn allocation(
         width: usize,
         height: usize,
@@ -37,49 +32,42 @@ impl TransformCoeffBlockState {
         Ok(TransformCoeffBlockAllocation { coeff_count })
     }
 
-    /// Creates a zero-initialized transform-block coefficient state.
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(width, height)?;
         Ok(Self {
             width,
             height,
-            level: zeroed_u32_vec(allocation.coeff_count)?,
-            quant_sign: zeroed_i32_vec(allocation.coeff_count)?,
-            quant: zeroed_i32_vec(allocation.coeff_count)?,
+            level: zeroed_vec(allocation.coeff_count)?,
+            quant_sign: zeroed_vec(allocation.coeff_count)?,
+            quant: zeroed_vec(allocation.coeff_count)?,
         })
     }
 
-    /// Adjusted transform width in coefficients.
     #[must_use]
     pub(crate) const fn width(&self) -> usize {
         self.width
     }
 
-    /// Adjusted transform height in coefficients.
     #[must_use]
     pub(crate) const fn height(&self) -> usize {
         self.height
     }
 
-    /// Row-major `Level[]` magnitude slice.
     #[must_use]
     pub(crate) fn level(&self) -> &[u32] {
         &self.level
     }
 
-    /// Row-major `QuantSign[]` sign slice.
     #[must_use]
     pub(crate) fn quant_sign(&self) -> &[i32] {
         &self.quant_sign
     }
 
-    /// Row-major `Quant[]` coefficient slice, indexed by raster position.
     #[must_use]
     pub(crate) fn quant(&self) -> &[i32] {
         &self.quant
     }
 
-    /// Writes one `Level[row][col]` magnitude.
     pub(crate) fn set_level(
         &mut self,
         row: usize,
@@ -91,7 +79,6 @@ impl TransformCoeffBlockState {
         Ok(())
     }
 
-    /// Writes one `QuantSign[row][col]` sign value.
     pub(crate) fn set_quant_sign(
         &mut self,
         row: usize,
@@ -103,24 +90,20 @@ impl TransformCoeffBlockState {
         Ok(())
     }
 
-    /// Writes one `Quant[pos]` coefficient value.
     pub(crate) fn set_quant(&mut self, pos: usize, value: i32) -> Result<(), TileCoeffStateError> {
         let idx = self.quant_index(pos)?;
         self.quant[idx] = value;
         Ok(())
     }
 
-    /// Reads one `Level[row][col]` magnitude.
     pub(crate) fn level_at(&self, row: usize, col: usize) -> Result<u32, TileCoeffStateError> {
         Ok(self.level[self.index(row, col)?])
     }
 
-    /// Reads one `QuantSign[row][col]` sign value.
     pub(crate) fn quant_sign_at(&self, row: usize, col: usize) -> Result<i32, TileCoeffStateError> {
         Ok(self.quant_sign[self.index(row, col)?])
     }
 
-    /// Reads one `Quant[pos]` coefficient value.
     pub(crate) fn quant_at(&self, pos: usize) -> Result<i32, TileCoeffStateError> {
         Ok(self.quant[self.quant_index(pos)?])
     }
@@ -154,25 +137,18 @@ impl TransformCoeffBlockState {
     }
 }
 
-/// Allocation accounting for [`TransformCoeffBlockState`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TransformCoeffBlockAllocation {
     coeff_count: usize,
 }
 
 impl TransformCoeffBlockAllocation {
-    /// Coefficient entries in each row-major local block array.
     #[must_use]
     pub(crate) const fn coeff_count(self) -> usize {
         self.coeff_count
     }
 }
 
-/// Tile-local neighbour state for coefficient CDF context derivation.
-///
-/// This owns the § 5.20 context lines read by the § 8.3.2 coefficient contexts:
-/// `AboveLevelContext`, `LeftLevelContext`, `AboveDcContext`, and
-/// `LeftDcContext` for planes 0, 1, and 2.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileCoeffContextState {
     mi_rows: usize,
@@ -184,7 +160,6 @@ pub(crate) struct TileCoeffContextState {
 }
 
 impl TileCoeffContextState {
-    /// Computes allocation for tile coefficient context lines.
     pub(crate) fn allocation(
         mi_rows: usize,
         mi_cols: usize,
@@ -205,83 +180,44 @@ impl TileCoeffContextState {
         })
     }
 
-    /// Creates zero-initialized tile coefficient context lines.
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(mi_rows, mi_cols)?;
         Ok(Self {
             mi_rows,
             mi_cols,
-            above_level: [
-                zeroed_u32_vec(allocation.above_len)?,
-                zeroed_u32_vec(allocation.above_len)?,
-                zeroed_u32_vec(allocation.above_len)?,
-            ],
-            left_level: [
-                zeroed_u32_vec(allocation.left_len)?,
-                zeroed_u32_vec(allocation.left_len)?,
-                zeroed_u32_vec(allocation.left_len)?,
-            ],
-            above_dc: [
-                zeroed_u8_vec(allocation.above_len)?,
-                zeroed_u8_vec(allocation.above_len)?,
-                zeroed_u8_vec(allocation.above_len)?,
-            ],
-            left_dc: [
-                zeroed_u8_vec(allocation.left_len)?,
-                zeroed_u8_vec(allocation.left_len)?,
-                zeroed_u8_vec(allocation.left_len)?,
-            ],
+            above_level: zeroed_plane_lines(allocation.above_len)?,
+            left_level: zeroed_plane_lines(allocation.left_len)?,
+            above_dc: zeroed_plane_lines(allocation.above_len)?,
+            left_dc: zeroed_plane_lines(allocation.left_len)?,
         })
     }
 
-    /// Tile MI rows represented by the left context lines.
     #[must_use]
     pub(crate) const fn mi_rows(&self) -> usize {
         self.mi_rows
     }
 
-    /// Tile MI columns represented by the above context lines.
     #[must_use]
     pub(crate) const fn mi_cols(&self) -> usize {
         self.mi_cols
     }
 
-    /// `AboveLevelContext[plane]`.
     pub(crate) fn above_level(&self, plane: usize) -> Result<&[u32], TileCoeffStateError> {
         Ok(&self.above_level[validate_plane(plane)?])
     }
 
-    /// `LeftLevelContext[plane]`.
     pub(crate) fn left_level(&self, plane: usize) -> Result<&[u32], TileCoeffStateError> {
         Ok(&self.left_level[validate_plane(plane)?])
     }
 
-    /// `AboveDcContext[plane]`.
     pub(crate) fn above_dc(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
         Ok(&self.above_dc[validate_plane(plane)?])
     }
 
-    /// `LeftDcContext[plane]`.
     pub(crate) fn left_dc(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
         Ok(&self.left_dc[validate_plane(plane)?])
     }
 
-    /// Applies the AV2 § 5.20.7.27 end-of-`coeffs()` context writes.
-    ///
-    /// The spec writes `culLevel` / `dcCategory` over `x4 .. x4 + w4` above
-    /// columns and `y4 .. y4 + h4` left rows
-    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). A transform
-    /// block on the bottom or right frame edge overhangs the tile by up to one
-    /// transform extent, so the literal span exceeds this tile-global context
-    /// line. AVM's `av2_set_entropy_contexts` (`av2/common/blockd.c:138-166`)
-    /// clamps the on-frame portion with `AVMMIN(txs_*, blocks_* - off)` and
-    /// zero-fills the remainder; because AVM's entropy lines are SB-local the
-    /// off-frame indices are never observed, and the OR-reduce reads on the
-    /// splot side already clamp with `skip(start).take(len)`. This helper models
-    /// that clamp: the write covers only the on-tile indices and the overhang
-    /// (which has no backing storage and is never read) is skipped. A genuine
-    /// out-of-tile origin (`x4 >= mi_cols` or `y4 >= mi_rows`) is still a hard
-    /// error, as AVM never produces one.
     pub(crate) fn update_after_coeffs(
         &mut self,
         input: CoeffContextUpdate,
@@ -297,36 +233,23 @@ impl TileCoeffContextState {
         let above = edge_clamped_range("above", input.x4, input.w4, self.mi_cols)?;
         let left = edge_clamped_range("left", input.y4, input.h4, self.mi_rows)?;
 
-        for idx in above {
-            self.above_level[plane][idx] = input.cul_level;
-            self.above_dc[plane][idx] = input.dc_category;
-        }
-        for idx in left {
-            self.left_level[plane][idx] = input.cul_level;
-            self.left_dc[plane][idx] = input.dc_category;
-        }
+        fill_context_line(
+            &mut self.above_level[plane],
+            &mut self.above_dc[plane],
+            above,
+            input.cul_level,
+            input.dc_category,
+        );
+        fill_context_line(
+            &mut self.left_level[plane],
+            &mut self.left_dc[plane],
+            left,
+            input.cul_level,
+            input.dc_category,
+        );
         Ok(())
     }
 
-    /// Applies one plane of the AV2 § 5.20 block-context reset.
-    ///
-    /// The § 5.20 `reset_block_context` (`05-syntax-structures.md` line 10279)
-    /// zeros `AboveLevelContext` / `AboveDcContext` over the above columns
-    /// `(c >> subX) .. ((c + w4) >> subX)` and the matching left rows. A block on
-    /// the bottom or right frame edge has a nominal `w4` / `h4` footprint that
-    /// overhangs the tile by up to one block extent, so the literal span exceeds
-    /// this tile-global context line. This is the unclamped sibling of
-    /// [`Self::update_after_coeffs`]: both
-    /// model AVM `av2_set_entropy_contexts` (`av2/common/blockd.c:138-166`), which
-    /// clamps the on-frame portion with `AVMMIN(txs_*, blocks_* - off)` and leaves
-    /// the overhang untouched (`av2_reset_entropy_context`, `blockd.c:167-194`,
-    /// zeros only the SB-local `mi_size_*[plane_bsize]` extent). The off-frame
-    /// indices have no backing storage and the OR-reduce reads already clamp with
-    /// `skip(start).take(len)`, so they are never observed — mirroring the
-    /// § 5.20.3.2 `block_coded(r,c) { r < MiRows && c < MiCols }` model that the
-    /// frame-edge `record_block` and `update_after_coeffs` clamps use. A genuine
-    /// out-of-tile origin (`c >> subX >= mi_cols` or `r >> subY >= mi_rows`) is
-    /// still a hard error, as AVM never produces one.
     pub(crate) fn reset_block_context_plane(
         &mut self,
         input: CoeffContextReset,
@@ -336,39 +259,32 @@ impl TileCoeffContextState {
         validate_subsampling("y", input.sub_y)?;
         let above_start = shifted(input.c, input.sub_x)?;
         let left_start = shifted(input.r, input.sub_y)?;
-        let above_unshifted_end = checked_add_usize("c + w4", input.c, input.w4).map_err(|_| {
-            TileCoeffStateError::CoordinateOverflow {
-                coordinate: "column",
-                base: input.c,
-                offset: input.w4,
-            }
-        })?;
-        let left_unshifted_end = checked_add_usize("r + h4", input.r, input.h4).map_err(|_| {
-            TileCoeffStateError::CoordinateOverflow {
-                coordinate: "row",
-                base: input.r,
-                offset: input.h4,
-            }
-        })?;
+        let above_unshifted_end = checked_coordinate_add("column", input.c, input.w4)?;
+        let left_unshifted_end = checked_coordinate_add("row", input.r, input.h4)?;
         let above_end = shifted(above_unshifted_end, input.sub_x)?;
         let left_end = shifted(left_unshifted_end, input.sub_y)?;
         let above =
             edge_clamped_existing_range("above reset", above_start, above_end, self.mi_cols)?;
         let left = edge_clamped_existing_range("left reset", left_start, left_end, self.mi_rows)?;
 
-        for idx in above {
-            self.above_level[plane][idx] = 0;
-            self.above_dc[plane][idx] = 0;
-        }
-        for idx in left {
-            self.left_level[plane][idx] = 0;
-            self.left_dc[plane][idx] = 0;
-        }
+        fill_context_line(
+            &mut self.above_level[plane],
+            &mut self.above_dc[plane],
+            above,
+            0,
+            0,
+        );
+        fill_context_line(
+            &mut self.left_level[plane],
+            &mut self.left_dc[plane],
+            left,
+            0,
+            0,
+        );
         Ok(())
     }
 }
 
-/// Allocation accounting for [`TileCoeffContextState`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCoeffContextAllocation {
     above_len: usize,
@@ -377,165 +293,90 @@ pub(crate) struct TileCoeffContextAllocation {
 }
 
 impl TileCoeffContextAllocation {
-    /// Entries in each above context line.
     #[must_use]
     pub(crate) const fn above_len(self) -> usize {
         self.above_len
     }
 
-    /// Entries in each left context line.
     #[must_use]
     pub(crate) const fn left_len(self) -> usize {
         self.left_len
     }
 
-    /// Total scalar entries across level and DC context lines.
     #[must_use]
     pub(crate) const fn total_entries(self) -> usize {
         self.total_entries
     }
 }
 
-/// Inputs for § 5.20.7.27 context writes after one coefficient block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffContextUpdate {
-    /// Plane index, 0 for luma and 1/2 for chroma.
     pub(crate) plane: usize,
-    /// Transform-block x coordinate in 4x4 units.
     pub(crate) x4: usize,
-    /// Transform-block y coordinate in 4x4 units.
     pub(crate) y4: usize,
-    /// Transform-block width in 4x4 units.
     pub(crate) w4: usize,
-    /// Transform-block height in 4x4 units.
     pub(crate) h4: usize,
-    /// Caller-clamped `culLevel` written into level context lines.
     pub(crate) cul_level: u32,
-    /// `dcCategory` written into DC-context lines.
     pub(crate) dc_category: u8,
 }
 
-/// Inputs for one plane of § 5.20 `reset_block_context`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffContextReset {
-    /// Plane index, 0 for luma and 1/2 for chroma.
     pub(crate) plane: usize,
-    /// Plane-local column coordinate before subsampling adjustment.
     pub(crate) c: usize,
-    /// Plane-local row coordinate before subsampling adjustment.
     pub(crate) r: usize,
-    /// Plane-local block width in 4x4 units before subsampling adjustment.
     pub(crate) w4: usize,
-    /// Plane-local block height in 4x4 units before subsampling adjustment.
     pub(crate) h4: usize,
-    /// Horizontal subsampling shift, valid AV2 values are 0 or 1.
     pub(crate) sub_x: u32,
-    /// Vertical subsampling shift, valid AV2 values are 0 or 1.
     pub(crate) sub_y: u32,
 }
 
-/// Error returned by tile coefficient state helpers.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TileCoeffStateError {
-    /// Tile context dimensions were empty.
     #[error("coefficient context state dimensions must be nonzero, got {mi_rows}x{mi_cols}")]
-    EmptyTileDimensions {
-        /// Tile MI rows.
-        mi_rows: usize,
-        /// Tile MI columns.
-        mi_cols: usize,
-    },
-    /// Transform dimensions were outside the adjusted §5.20.7.27 extent.
+    EmptyTileDimensions { mi_rows: usize, mi_cols: usize },
     #[error("invalid adjusted transform {axis} {value}; expected 1..={MAX_ADJUSTED_TX_EXTENT}")]
-    InvalidAdjustedTransformExtent {
-        /// Axis name.
-        axis: &'static str,
-        /// Rejected extent.
-        value: usize,
-    },
-    /// Allocation or indexing arithmetic overflowed.
+    InvalidAdjustedTransformExtent { axis: &'static str, value: usize },
     #[error("{operation} overflow: left {left}, right {right}")]
     ArithmeticOverflow {
-        /// Operation name.
         operation: &'static str,
-        /// Left operand.
         left: usize,
-        /// Right operand.
         right: usize,
     },
-    /// Allocation failed.
     #[error("coefficient state allocation failed: {0}")]
     Allocation(#[from] TryReserveError),
-    /// Plane index was not one of the three AV2 planes.
     #[error("invalid coefficient context plane {plane}")]
-    InvalidPlane {
-        /// Rejected plane index.
-        plane: usize,
-    },
-    /// DC category was outside the §5.20.7.27 0/1/2 categories.
+    InvalidPlane { plane: usize },
     #[error("invalid coefficient DC category {dc_category}")]
-    InvalidDcCategory {
-        /// Rejected DC category.
-        dc_category: u8,
-    },
-    /// A required context update range was empty.
+    InvalidDcCategory { dc_category: u8 },
     #[error("empty coefficient context {axis} range")]
-    EmptyContextRange {
-        /// Axis name.
-        axis: &'static str,
-    },
-    /// Coordinate addition overflowed.
+    EmptyContextRange { axis: &'static str },
     #[error("{coordinate} coordinate overflow: {base} + {offset}")]
     CoordinateOverflow {
-        /// Coordinate name.
         coordinate: &'static str,
-        /// Base coordinate.
         base: usize,
-        /// Derived offset.
         offset: usize,
     },
-    /// A context range exceeded the owned tile line.
     #[error("{context} range {start}..{end} exceeds coefficient context line length {len}")]
     ContextRangeOutOfBounds {
-        /// Context line name.
         context: &'static str,
-        /// Inclusive start coordinate.
         start: usize,
-        /// Exclusive end coordinate.
         end: usize,
-        /// Owned line length.
         len: usize,
     },
-    /// A transform-block coordinate exceeded the local block arrays.
     #[error(
         "coefficient transform coordinate ({row},{col}) exceeds adjusted block {height}x{width}"
     )]
     TransformCoordinateOutOfBounds {
-        /// Row coordinate.
         row: usize,
-        /// Column coordinate.
         col: usize,
-        /// Local block height.
         height: usize,
-        /// Local block width.
         width: usize,
     },
-    /// A flat `Quant[]` coefficient position exceeded the local block array.
     #[error("coefficient Quant position {pos} exceeds adjusted block coefficient count {len}")]
-    QuantPositionOutOfBounds {
-        /// Rejected coefficient position.
-        pos: usize,
-        /// Local block coefficient count.
-        len: usize,
-    },
-    /// Subsampling shift was not a valid AV2 4:2:0/4:4:4 shift.
+    QuantPositionOutOfBounds { pos: usize, len: usize },
     #[error("invalid coefficient context subsampling {axis} shift {value}")]
-    InvalidSubsampling {
-        /// Axis name.
-        axis: &'static str,
-        /// Rejected shift.
-        value: u32,
-    },
+    InvalidSubsampling { axis: &'static str, value: u32 },
 }
 
 fn validate_adjusted_extent(axis: &'static str, value: usize) -> Result<(), TileCoeffStateError> {
@@ -596,58 +437,36 @@ fn checked_mul_usize(
         })
 }
 
-/// Builds a § 5.20.7.27 context-write range clamped to the bottom/right frame
-/// edge, modelling AVM `av2_set_entropy_contexts` (`av2/common/blockd.c`).
-///
-/// The unclamped span is `start .. start + len`. A transform block straddling
-/// the tile's right (above axis) or bottom (left axis) edge has an `end` that
-/// exceeds `line_len`; the on-frame portion is `start .. line_len` and the
-/// overhang is dropped (it has no backing storage and the OR-reduce reads
-/// already clamp, so it is never observed). The `start + len` addition keeps the
-/// existing overflow guard. A genuine out-of-tile origin (`start >= line_len`)
-/// is still rejected, matching AVM which never emits such a write.
+fn checked_coordinate_add(
+    coordinate: &'static str,
+    base: usize,
+    offset: usize,
+) -> Result<usize, TileCoeffStateError> {
+    base.checked_add(offset)
+        .ok_or(TileCoeffStateError::CoordinateOverflow {
+            coordinate,
+            base,
+            offset,
+        })
+}
+
 fn edge_clamped_range(
     context: &'static str,
     start: usize,
     len: usize,
     line_len: usize,
-) -> Result<core::ops::Range<usize>, TileCoeffStateError> {
-    let end = start
-        .checked_add(len)
-        .ok_or(TileCoeffStateError::CoordinateOverflow {
-            coordinate: context,
-            base: start,
-            offset: len,
-        })?;
-    if start >= line_len {
-        return Err(TileCoeffStateError::ContextRangeOutOfBounds {
-            context,
-            start,
-            end,
-            len: line_len,
-        });
-    }
-    Ok(start..end.min(line_len))
+) -> Result<Range<usize>, TileCoeffStateError> {
+    let end = checked_coordinate_add(context, start, len)?;
+    edge_clamped_existing_range(context, start, end, line_len)
 }
 
-/// Clamps a precomputed `start .. end` § 5.20 `reset_block_context` write to the
-/// bottom/right frame edge, the subsampled-coordinate analogue of
-/// [`edge_clamped_range`].
-///
-/// A block straddling the tile's right (above axis) or bottom (left axis) edge
-/// has an `end` (`(c + w4) >> subX` / `(r + h4) >> subY`) that exceeds `line_len`;
-/// the on-frame portion is `start .. line_len` and the overhang is dropped (it has
-/// no backing storage and the OR-reduce reads already clamp, so it is never
-/// observed), matching AVM `av2_set_entropy_contexts` / `av2_reset_entropy_context`
-/// (`av2/common/blockd.c`) and the § 5.20.3.2 `block_coded` model. A `start > end`
-/// inversion or a genuine out-of-tile origin (`start >= line_len`) is still
-/// rejected, as AVM never emits such a write.
 fn edge_clamped_existing_range(
     context: &'static str,
     start: usize,
     end: usize,
     line_len: usize,
-) -> Result<core::ops::Range<usize>, TileCoeffStateError> {
+) -> Result<Range<usize>, TileCoeffStateError> {
+    // Frame-edge overhang has no backing context storage; reject only impossible origins.
     if start > end || start >= line_len {
         return Err(TileCoeffStateError::ContextRangeOutOfBounds {
             context,
@@ -668,24 +487,29 @@ fn shifted(value: usize, shift: u32) -> Result<usize, TileCoeffStateError> {
         })
 }
 
-fn zeroed_u32_vec(len: usize) -> Result<Vec<u32>, TileCoeffStateError> {
-    let mut values = Vec::new();
-    values.try_reserve_exact(len)?;
-    values.resize(len, 0);
-    Ok(values)
+fn fill_context_line(
+    level: &mut [u32],
+    dc: &mut [u8],
+    range: Range<usize>,
+    level_value: u32,
+    dc_value: u8,
+) {
+    for idx in range {
+        level[idx] = level_value;
+        dc[idx] = dc_value;
+    }
 }
 
-fn zeroed_i32_vec(len: usize) -> Result<Vec<i32>, TileCoeffStateError> {
-    let mut values = Vec::new();
-    values.try_reserve_exact(len)?;
-    values.resize(len, 0);
-    Ok(values)
+fn zeroed_plane_lines<T: Default>(
+    len: usize,
+) -> Result<[Vec<T>; PLANE_COUNT], TileCoeffStateError> {
+    Ok([zeroed_vec(len)?, zeroed_vec(len)?, zeroed_vec(len)?])
 }
 
-fn zeroed_u8_vec(len: usize) -> Result<Vec<u8>, TileCoeffStateError> {
+fn zeroed_vec<T: Default>(len: usize) -> Result<Vec<T>, TileCoeffStateError> {
     let mut values = Vec::new();
     values.try_reserve_exact(len)?;
-    values.resize(len, 0);
+    values.resize_with(len, T::default);
     Ok(values)
 }
 
@@ -877,7 +701,7 @@ mod tests {
         let mi_rows = 270;
         let mi_cols = 480;
         let mut state = TileCoeffContextState::new(mi_rows, mi_cols).unwrap();
-        let y4 = mi_rows - 14; // 256: a 16-tall transform overhangs by 2 rows.
+        let y4 = mi_rows - 14;
 
         state
             .update_after_coeffs(CoeffContextUpdate {
@@ -911,7 +735,7 @@ mod tests {
         let mi_rows = 270;
         let mi_cols = 480;
         let mut state = TileCoeffContextState::new(mi_rows, mi_cols).unwrap();
-        let x4 = mi_cols - 14; // 466: a 16-wide transform overhangs by 2 cols.
+        let x4 = mi_cols - 14;
 
         state
             .update_after_coeffs(CoeffContextUpdate {

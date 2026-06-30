@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Wiener NS loop-restoration runtime frontier helpers.
-
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams, TxMode};
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
@@ -41,6 +39,8 @@ const PC_WIENER_LEAD: isize = 1;
 const PC_WIENER_LAG: isize = 4;
 const PC_WIENER_SOURCE_READS_PER_FEATURE: u64 = 7;
 const LR_RETAINED_FRAME_BUFFERS: u64 = 2;
+const PC_WIENER_FEATURE_SOURCE_READ_OFFSETS: [(isize, isize); 7] =
+    [(0, 0), (0, -1), (0, 1), (1, -1), (-1, 1), (1, 1), (-1, -1)];
 
 mod diagnostics;
 mod intrabc_records;
@@ -83,14 +83,8 @@ use self::source_read_math::{
     usize_to_source_coordinate, wienerns_lr_source_plane,
 };
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private source-read frontier proof state is consumed by tests until filtering consumes it"
-    )
-)]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct WienerNsLrSourceReadFrontier {
     pub(super) blocks_resolved: usize,
     pub(super) output_samples_resolved: usize,
@@ -100,13 +94,7 @@ pub(super) struct WienerNsLrSourceReadFrontier {
     pub(super) first_sample: Option<WienerNsLrSourceReadSample>,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private source-read frontier proof state is consumed by tests until filtering consumes it"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct WienerNsLrSourceReadSample {
     pub(super) plane: PlaneId,
@@ -115,14 +103,8 @@ pub(super) struct WienerNsLrSourceReadSample {
     pub(super) source: LoopRestorationSource,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private classified-Wiener frontier proof state is consumed by tests until filtering consumes it"
-    )
-)]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct WienerNsLrClassifiedWienerFrontier {
     pub(super) blocks_resolved: usize,
     pub(super) feature_points_resolved: usize,
@@ -134,13 +116,7 @@ pub(super) struct WienerNsLrClassifiedWienerFrontier {
     pub(super) first_tx_skip_lookup: Option<WienerNsLrTxSkipLookup>,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private classified-Wiener frontier proof state is consumed by tests until filtering consumes it"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct WienerNsLrTxSkipLookup {
     pub(super) x: usize,
@@ -149,13 +125,7 @@ pub(super) struct WienerNsLrTxSkipLookup {
     pub(super) col: usize,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private classified-Wiener storage proof waits for live tx-skip retention"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct WienerNsLrTxSkipGrid {
     rows: usize,
@@ -163,25 +133,10 @@ pub(super) struct WienerNsLrTxSkipGrid {
     values: Vec<u8>,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private classified-Wiener storage proof waits for live tx-skip retention"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 impl WienerNsLrTxSkipGrid {
     pub(super) fn new(rows: usize, cols: usize, values: Vec<u8>) -> ReconResult<Self> {
-        if rows == 0 || cols == 0 {
-            return Err(ReconError::PcWienerInvalidBounds {
-                field: "LrTxSkip grid dimensions",
-            });
-        }
-        let expected = rows
-            .checked_mul(cols)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "LrTxSkip grid sample count",
-            })?;
+        let expected = wienerns_lr_tx_skip_grid_len(rows, cols)?;
         if values.len() != expected {
             return Err(ReconError::BufferLengthMismatch {
                 expected,
@@ -197,18 +152,7 @@ impl WienerNsLrTxSkipGrid {
                 field: "LrTxSkip grid lookup",
             });
         }
-        let row_start =
-            lookup
-                .row
-                .checked_mul(self.cols)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "LrTxSkip grid row offset",
-                })?;
-        let index = row_start
-            .checked_add(lookup.col)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "LrTxSkip grid sample offset",
-            })?;
+        let index = wienerns_lr_tx_skip_grid_index(lookup.row, lookup.col, self.cols)?;
         let Some(value) = self.values.get(index) else {
             return Err(ReconError::BufferLengthMismatch {
                 expected: index.saturating_add(1),
@@ -219,28 +163,38 @@ impl WienerNsLrTxSkipGrid {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private tx-skip retention proof waits for live transform-record handoff"
-    )
-)]
-pub(super) fn derive_wienerns_lr_tx_skip_grid_retention(
-    rows: usize,
-    cols: usize,
-    records: &[WienerNsLrTxSkipTransformRecord],
-) -> ReconResult<WienerNsLrTxSkipGrid> {
+fn wienerns_lr_tx_skip_grid_len(rows: usize, cols: usize) -> ReconResult<usize> {
     if rows == 0 || cols == 0 {
         return Err(ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip grid dimensions",
         });
     }
-    let expected = rows
-        .checked_mul(cols)
+    rows.checked_mul(cols)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "LrTxSkip grid sample count",
+        })
+}
+
+fn wienerns_lr_tx_skip_grid_index(row: usize, col: usize, cols: usize) -> ReconResult<usize> {
+    let row_start = row
+        .checked_mul(cols)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "LrTxSkip grid row offset",
         })?;
+    row_start
+        .checked_add(col)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "LrTxSkip grid sample offset",
+        })
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn derive_wienerns_lr_tx_skip_grid_retention(
+    rows: usize,
+    cols: usize,
+    records: &[WienerNsLrTxSkipTransformRecord],
+) -> ReconResult<WienerNsLrTxSkipGrid> {
+    let expected = wienerns_lr_tx_skip_grid_len(rows, cols)?;
     let mut values = vec![None; expected];
     let mut populated = 0usize;
     for record in records {
@@ -302,17 +256,8 @@ fn write_wienerns_lr_tx_skip_record(
     let end_col = nominal_end_col.min(cols);
 
     for row in record.row..end_row {
-        let row_start = row
-            .checked_mul(cols)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "LrTxSkip grid row offset",
-            })?;
         for col in record.col..end_col {
-            let index = row_start
-                .checked_add(col)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "LrTxSkip grid sample offset",
-                })?;
+            let index = wienerns_lr_tx_skip_grid_index(row, col, cols)?;
             let Some(slot) = values.get_mut(index) else {
                 return Err(ReconError::BufferLengthMismatch {
                     expected: index.saturating_add(1),
@@ -341,13 +286,7 @@ fn write_wienerns_lr_tx_skip_record(
     Ok(())
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private classified-Wiener storage proof waits for live frame and tx-skip retention"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct WienerNsLrClassifiedWienerStorageInputs<'a, T: ReconSample> {
     pub(super) curr_frame: &'a DecodedFrame<T>,
@@ -355,13 +294,7 @@ pub(super) struct WienerNsLrClassifiedWienerStorageInputs<'a, T: ReconSample> {
     pub(super) tx_skip_grid: &'a WienerNsLrTxSkipGrid,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private runtime storage-retention frontier is consumed by tests until filtering consumes it"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct WienerNsLrRuntimeStorageRetentionFrontier {
     pub(super) bit_depth: BitDepth,
@@ -374,14 +307,8 @@ pub(super) struct WienerNsLrRuntimeStorageRetentionFrontier {
     pub(super) total_storage_bytes: u64,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private classified-Wiener value frontier proof state waits for real runtime storage"
-    )
-)]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct WienerNsLrClassifiedWienerValuesFrontier {
     pub(super) blocks_resolved: usize,
     pub(super) source_reads_resolved: usize,
@@ -392,13 +319,7 @@ pub(super) struct WienerNsLrClassifiedWienerValuesFrontier {
     pub(super) first_filter_class: Option<WienerNsLrFilterClassValue>,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private classified-Wiener value frontier proof state waits for real runtime storage"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct WienerNsLrFilterClassValue {
     pub(super) x: usize,
@@ -408,13 +329,7 @@ pub(super) struct WienerNsLrFilterClassValue {
     pub(super) class: u8,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private classified-Wiener value frontier proof state waits for real runtime storage"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct WienerNsLrClassifiedWienerValueSourceSample {
     pub(super) input_x: isize,
@@ -654,10 +569,11 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
     )?;
 
     let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())?;
+    let bytes_per_sample = decoded_storage_bytes_per_sample(bit_depth);
     let budget = decoded_frame_storage_budget(
         frame_size,
         sequence.general.chroma_format_idc,
-        decoded_storage_bytes_per_sample(bit_depth),
+        bytes_per_sample,
     )?;
     limits.ensure(DecodeLimitName::MaxLumaSamplesPerFrame, budget.luma_samples)?;
     limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, budget.decoded_bytes)?;
@@ -669,7 +585,6 @@ pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
         )?;
     }
 
-    let bytes_per_sample = decoded_storage_bytes_per_sample(bit_depth);
     let decoded_sample_count = budget.decoded_bytes / bytes_per_sample;
     let live_frame_buffer_bytes = checked_mul(
         DecodeLimitName::MaxReferenceStoreBytes,
@@ -798,7 +713,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                     WienerNsLrTransformRecordDiagnosticScope::FixedLargest,
                     "unsupported_wienerns_lr_live_transform_record_chroma_offset_leaf",
                     tile_offset,
-                    "minimal runtime reached active Wiener NS LR transform-record derivation, but a chroma-offset leaf would require carrying ancestor chroma residual coordinates before deriving fixed-largest chroma transform records",
+                    "Fixed-largest Wiener NS LR records need ancestor chroma residual coordinates for chroma-offset leaves.",
                     "5.20.3.1",
                 ));
             }
@@ -954,44 +869,53 @@ fn ensure_fixed_largest_transform_record_tool_gates(
     core: &FrameHeaderCore,
     offset: ByteOffset,
 ) -> Result<()> {
-    if core
-        .tile_info
-        .as_ref()
-        .is_none_or(|tile_info| tile_info.tile_cols != 1 || tile_info.tile_rows != 1)
-    {
-        return Err(wienerns_lr_live_transform_record_tool_gate_error(
-            offset,
+    let unsupported_gates = [
+        (
             "tile_grid",
-        ));
-    }
-    if core.allow_screen_content_tools != Some(false) || core.allow_intrabc != Some(false) {
-        return Err(wienerns_lr_live_transform_record_tool_gate_error(
-            offset,
+            core.tile_info
+                .as_ref()
+                .is_none_or(|tile_info| tile_info.tile_cols != 1 || tile_info.tile_rows != 1),
+        ),
+        (
             "screen_content_tools",
-        ));
-    }
-    if sequence.intra.as_ref().is_none_or(|intra| {
-        intra.enable_dip || intra.enable_ibp || intra.enable_mrls || intra.enable_intra_edge_filter
-    }) {
-        return Err(wienerns_lr_live_transform_record_tool_gate_error(
-            offset,
+            core.allow_screen_content_tools != Some(false) || core.allow_intrabc != Some(false),
+        ),
+        (
             "intra_tool",
-        ));
-    }
-    if sequence.transform_quant_entropy.as_ref().is_none_or(|tq| {
-        tq.enable_fsc
-            || tq.enable_cctx
-            || tq.enable_idtx_intra
-            || tq.enable_intra_ist
-            || tq.enable_chroma_dctonly
-    }) {
-        return Err(wienerns_lr_live_transform_record_tool_gate_error(
-            offset,
+            sequence.intra.as_ref().is_none_or(|intra| {
+                intra.enable_dip
+                    || intra.enable_ibp
+                    || intra.enable_mrls
+                    || intra.enable_intra_edge_filter
+            }),
+        ),
+        (
             "transform_tool",
-        ));
+            sequence.transform_quant_entropy.as_ref().is_none_or(|tq| {
+                tq.enable_fsc
+                    || tq.enable_cctx
+                    || tq.enable_idtx_intra
+                    || tq.enable_intra_ist
+                    || tq.enable_chroma_dctonly
+            }),
+        ),
+        (
+            "frame_tool",
+            fixed_largest_frame_tool_gate_is_unsupported(core),
+        ),
+    ];
+    for (tool, unsupported) in unsupported_gates {
+        if unsupported {
+            return Err(wienerns_lr_live_transform_record_tool_gate_error(
+                offset, tool,
+            ));
+        }
     }
-    if core
-        .segmentation_params
+    Ok(())
+}
+
+fn fixed_largest_frame_tool_gate_is_unsupported(core: &FrameHeaderCore) -> bool {
+    core.segmentation_params
         .as_ref()
         .is_none_or(|seg| seg.segmentation_enabled)
         || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
@@ -1015,13 +939,6 @@ fn ensure_fixed_largest_transform_record_tool_gates(
         || core
             .intra_tail
             .is_none_or(|tail| tail.film_grain.apply_grain)
-    {
-        return Err(wienerns_lr_live_transform_record_tool_gate_error(
-            offset,
-            "frame_tool",
-        ));
-    }
-    Ok(())
 }
 
 fn fixed_largest_tx_size_from_4x4(n4w: usize, n4h: usize) -> Option<usize> {
@@ -1045,10 +962,9 @@ fn fixed_largest_420_chroma_tx_size_from_luma_4x4(n4w: usize, n4h: usize) -> Opt
 fn tx_size_from_log2(w_log2: u32, h_log2: u32) -> Option<usize> {
     let w = i32::try_from(w_log2).ok()?;
     let h = i32::try_from(h_log2).ok()?;
-    TX_WIDTH_LOG2
-        .iter()
-        .zip(TX_HEIGHT_LOG2.iter())
-        .position(|(&tw, &th)| tw == w && th == h)
+    TX_WIDTH_LOG2.iter().enumerate().find_map(|(tx_size, &tw)| {
+        (tw == w && TX_HEIGHT_LOG2.get(tx_size).copied() == Some(h)).then_some(tx_size)
+    })
 }
 
 fn map_wienerns_lr_transform_record_multiblock_error(
@@ -1069,7 +985,7 @@ fn map_wienerns_lr_transform_record_multiblock_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_walk_mi_size_state",
                 tile_offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but the full partition-tree walk could not update MI-size state for the next leaf block",
+                "Wiener NS LR transform records need MI-size updates between partition leaves.",
                 "5.20.3.1",
             )
         }
@@ -1116,7 +1032,7 @@ fn wienerns_lr_transform_record_setup_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_missing_fact",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but a parser fact required to seed the partition-tree walk is absent",
+                "Wiener NS LR transform records need parser facts that are absent.",
                 "5.20.3.1",
             )
         }
@@ -1125,7 +1041,7 @@ fn wienerns_lr_transform_record_setup_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_setup_mi_size_state",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but MI-size state allocation for the partition-tree walk is outside the supported subset",
+                "Wiener NS LR transform records need MI-size traversal state.",
                 "5.20.3.1",
             )
         }
@@ -1134,7 +1050,7 @@ fn wienerns_lr_transform_record_setup_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_setup_intra_joint_mode_state",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but intra joint-mode neighbour state allocation for the partition-tree walk is outside the supported subset",
+                "Wiener NS LR transform records need intra joint-mode neighbour state.",
                 "8.3.2",
             )
         }
@@ -1143,7 +1059,7 @@ fn wienerns_lr_transform_record_setup_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_setup_uses_mrls_state",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but UsesMrls neighbour state allocation for the partition-tree walk is outside the supported subset",
+                "Wiener NS LR transform records need UsesMrls neighbour state.",
                 "8.3.2",
             )
         }
@@ -1152,7 +1068,7 @@ fn wienerns_lr_transform_record_setup_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_setup_fsc_mode_state",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but FscModes neighbour state allocation for the partition-tree walk is outside the supported subset",
+                "Wiener NS LR transform records need FscModes neighbour state.",
                 "8.3.2",
             )
         }
@@ -1161,7 +1077,7 @@ fn wienerns_lr_transform_record_setup_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_setup_uv_cfl_state",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but UVCfls neighbour state allocation for the partition-tree walk is outside the supported subset",
+                "Wiener NS LR transform records need UVCfls neighbour state.",
                 "8.3.2",
             )
         }
@@ -1170,7 +1086,7 @@ fn wienerns_lr_transform_record_setup_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_unexpected_frontier",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but the initial partition frontier shape is outside the supported transform-record handoff subset",
+                "Initial partition frontier shape is outside the Wiener NS LR record subset.",
                 "5.20.3.1",
             )
         }
@@ -1192,7 +1108,7 @@ fn wienerns_lr_transform_record_traversal_error(
             scope,
             "unsupported_wienerns_lr_live_transform_record_block_decoded_state",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but the partition-tree walk could not maintain BlockDecoded state",
+            "Partition traversal cannot maintain BlockDecoded state for Wiener NS LR records.",
             "5.20.2.3",
         ),
         TilePartitionTraversalError::IntraYModeState(_) => {
@@ -1200,7 +1116,7 @@ fn wienerns_lr_transform_record_traversal_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_intra_ymode_state",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but the partition-tree walk could not maintain SDP luma YMode state",
+                "Partition traversal cannot maintain SDP luma YMode state for Wiener NS LR records.",
                 "5.20.5.3",
             )
         }
@@ -1208,49 +1124,49 @@ fn wienerns_lr_transform_record_traversal_error(
             scope,
             "unsupported_wienerns_lr_live_transform_record_uses_mrls_state",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but the partition-tree walk could not maintain UsesMrls state for MRL contexts",
+            "Partition traversal cannot maintain UsesMrls state for Wiener NS LR records.",
             "8.3.2",
         ),
         TilePartitionTraversalError::FscModeState(_) => wienerns_lr_transform_record_unsupported(
             scope,
             "unsupported_wienerns_lr_live_transform_record_fsc_mode_state",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but the partition-tree walk could not maintain FscModes state for FSC contexts",
+            "Partition traversal cannot maintain FscModes state for Wiener NS LR records.",
             "8.3.2",
         ),
         TilePartitionTraversalError::Size(_) => wienerns_lr_transform_record_unsupported(
             scope,
             "unsupported_wienerns_lr_live_transform_record_partition_size",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but a partition-size lookup used by the full partition-tree walk failed",
+            "Partition-size lookup failed during Wiener NS LR record traversal.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::Allowed(_) => wienerns_lr_transform_record_unsupported(
             scope,
             "unsupported_wienerns_lr_live_transform_record_partition_allowed",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but the full partition-tree walk could not derive the allowed partition set",
+            "Allowed partition derivation failed during Wiener NS LR record traversal.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::Decision(_) => wienerns_lr_transform_record_unsupported(
             scope,
             "unsupported_wienerns_lr_live_transform_record_partition_decision",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but partition decision syntax is outside the currently supported handoff subset",
+            "Partition decision syntax is outside the Wiener NS LR record subset.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::Symbol(_) => wienerns_lr_transform_record_unsupported(
             scope,
             "unsupported_wienerns_lr_live_transform_record_partition_symbol",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but symbol decoder initialization for the partition-tree walk failed",
+            "Partition symbol decoder setup failed during Wiener NS LR record traversal.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::Cdf(_) => wienerns_lr_transform_record_unsupported(
             scope,
             "unsupported_wienerns_lr_live_transform_record_partition_cdf",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but a partition-tree CDF context lookup is outside the supported table shape",
+            "Partition CDF context lookup is outside the supported table shape.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::CoordinateUnderflow { .. }
@@ -1260,7 +1176,7 @@ fn wienerns_lr_transform_record_traversal_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_coordinate_math",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but partition-tree coordinate arithmetic exceeded the supported checked range",
+                "Partition coordinate arithmetic exceeded the checked range.",
                 "5.20.3.1",
             )
         }
@@ -1269,7 +1185,7 @@ fn wienerns_lr_transform_record_traversal_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_invalid_lr_unit_size",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but a loop-restoration unit size did not map to the supported traversal state",
+                "Loop-restoration unit size does not map to traversal state.",
                 "5.20.10.4",
             )
         }
@@ -1278,7 +1194,7 @@ fn wienerns_lr_transform_record_traversal_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_invalid_partition_subsize",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but the selected partition produced no valid child block size",
+                "Partition choice produced no valid child block size.",
                 "5.20.3.1",
             )
         }
@@ -1286,14 +1202,14 @@ fn wienerns_lr_transform_record_traversal_error(
             scope,
             "unsupported_wienerns_lr_live_transform_record_too_many_child_calls",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but the partition-tree walk produced more child calls than the supported stack shape",
+            "Partition traversal produced too many child calls.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::NoBlockFrontier => wienerns_lr_transform_record_unsupported(
             scope,
             "unsupported_wienerns_lr_live_transform_record_no_block_frontier",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but the partition-tree walk reached no in-frame decode_block frontier",
+            "Partition traversal reached no in-frame decode_block frontier.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::MissingIntraLumaModeState { .. } => {
@@ -1301,7 +1217,7 @@ fn wienerns_lr_transform_record_traversal_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_missing_intra_luma_mode_state",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but an intra luma/shared leaf did not provide YMode state for subsequent SDP chroma syntax",
+                "Intra luma/shared leaf is missing YMode state for SDP chroma syntax.",
                 "5.20.5.3",
             )
         }
@@ -1310,7 +1226,7 @@ fn wienerns_lr_transform_record_traversal_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_missing_uses_mrls_state",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but an intra luma/shared leaf did not provide UsesMrls state for subsequent MRL contexts",
+                "Intra luma/shared leaf is missing UsesMrls state for MRL contexts.",
                 "5.20.5.3",
             )
         }
@@ -1319,7 +1235,7 @@ fn wienerns_lr_transform_record_traversal_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_missing_fsc_mode_state",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but an intra luma/shared leaf did not provide FscModes state for subsequent FSC contexts",
+                "Intra luma/shared leaf is missing FscModes state for FSC contexts.",
                 "5.20.5.3",
             )
         }
@@ -1332,18 +1248,11 @@ fn wienerns_lr_transform_record_unsupported_traversal(
     scope: WienerNsLrTransformRecordDiagnosticScope,
 ) -> DecodeError {
     match unsupported {
-        TilePartitionTraversalUnsupported::Sdp => wienerns_lr_transform_record_unsupported(
-            scope,
-            "unsupported_wienerns_lr_live_transform_record_sdp",
-            offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but SDP partition side effects are outside the supported partition-tree walk",
-            "5.20.3.1",
-        ),
         TilePartitionTraversalUnsupported::ExtendedSdp => wienerns_lr_transform_record_unsupported(
             scope,
             "unsupported_wienerns_lr_live_transform_record_extended_sdp",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but extended SDP region signaling is outside the supported partition-tree walk",
+            "Extended SDP region signaling is outside the Wiener NS LR record subset.",
             "5.20.3.1",
         ),
         TilePartitionTraversalUnsupported::ReadLoopRestoration => {
@@ -1351,7 +1260,7 @@ fn wienerns_lr_transform_record_unsupported_traversal(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_read_loop_restoration",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but root read_lr syntax appeared in the partition traversal path instead of the earlier LR-unit frontier",
+                "Root read_lr syntax is outside transform-record traversal.",
                 "5.20.10.4",
             )
         }
@@ -1359,7 +1268,7 @@ fn wienerns_lr_transform_record_unsupported_traversal(
             scope,
             "unsupported_wienerns_lr_live_transform_record_bru_or_bridge",
             offset,
-            "minimal runtime reached active Wiener NS LR transform-record derivation, but BRU/bridge/inactive partition behavior is outside the supported handoff subset",
+            "BRU, bridge, and inactive partition behavior are outside the Wiener NS LR record subset.",
             "5.20.3.1",
         ),
     }
@@ -1394,7 +1303,7 @@ fn wienerns_lr_live_transform_record_mode_error(
                 scope,
                 wienerns_lr_mode_symbol_reason(reason),
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but a mode-info CDF symbol read is outside the currently supported intra subset",
+                "Mode-info CDF symbol read is outside the supported intra subset.",
                 "5.20.5.3",
             )
         }
@@ -1403,7 +1312,7 @@ fn wienerns_lr_live_transform_record_mode_error(
                 scope,
                 wienerns_lr_mode_literal_reason(reason),
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but a mode-info escape literal read is outside the currently supported intra subset",
+                "Mode-info escape literal read is outside the supported intra subset.",
                 "5.20.5.3",
             )
         }
@@ -1412,7 +1321,7 @@ fn wienerns_lr_live_transform_record_mode_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_y_mode",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but the block selected a luma intra mode outside the supported transform-record handoff subset",
+                "Luma intra mode is outside the Wiener NS LR record subset.",
                 "5.20.5.3",
             )
         }
@@ -1421,7 +1330,7 @@ fn wienerns_lr_live_transform_record_mode_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_uv_mode",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but the block selected a chroma intra mode outside the supported transform-record handoff subset",
+                "Chroma intra mode is outside the Wiener NS LR record subset.",
                 "5.20.5.6",
             )
         }
@@ -1430,7 +1339,7 @@ fn wienerns_lr_live_transform_record_mode_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_fsc_bsize_group",
                 offset,
-                "minimal runtime reached active Wiener NS LR and consumed mode-info syntax, but the block size could not be mapped through Fsc_Bsize_Groups for fsc_mode",
+                "Block size does not map through Fsc_Bsize_Groups for fsc_mode.",
                 "8.3.2",
             )
         }
@@ -1439,7 +1348,7 @@ fn wienerns_lr_live_transform_record_mode_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_cfl_mh_dir_size_group",
                 offset,
-                "minimal runtime reached active Wiener NS LR and consumed active CfL mode syntax, but the block size could not be mapped through Size_Group for cfl_mh_dir",
+                "Block size does not map through Size_Group for cfl_mh_dir.",
                 "8.3.2",
             )
         }
@@ -1448,7 +1357,7 @@ fn wienerns_lr_live_transform_record_mode_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_mhccp_mode",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but the block selected active MHCCP chroma prediction",
+                "Active MHCCP chroma prediction is outside the Wiener NS LR record subset.",
                 "5.20.5.6",
             )
         }
@@ -1457,7 +1366,7 @@ fn wienerns_lr_live_transform_record_mode_error(
                 scope,
                 "unsupported_wienerns_lr_live_transform_record_directional_neighbour_reorder",
                 offset,
-                "minimal runtime reached active Wiener NS LR transform-record derivation, but y_mode selection needs the directional-neighbour reorder path",
+                "Y-mode selection needs directional-neighbour reordering.",
                 "5.20.5.3",
             )
         }
@@ -1487,7 +1396,7 @@ fn wienerns_lr_live_transform_record_residual_error(
             scope,
             "unsupported_wienerns_lr_live_transform_record_residual_parse",
             offset,
-            "minimal runtime reached active Wiener NS LR and tried to derive live LrTxSkip records from key-tile transform coefficients, but the coefficient syntax is outside the transform-record handoff subset; live samples, filtering, output, and reference refresh are not applied",
+            "Coefficient syntax is outside the Wiener NS LR transform-record subset.",
             "5.20.7.27",
         ),
     }
@@ -1502,6 +1411,80 @@ const fn decoded_storage_bytes_per_sample(bit_depth: BitDepth) -> u64 {
 
 fn usize_to_storage_u64(value: usize, context: &'static str) -> Result<u64> {
     u64::try_from(value).map_err(|_| source_read_arithmetic_overflow(context))
+}
+
+fn increment_wienerns_lr_counter(value: &mut usize, context: &'static str) -> Result<()> {
+    *value = value
+        .checked_add(1)
+        .ok_or_else(|| source_read_arithmetic_overflow(context))?;
+    Ok(())
+}
+
+fn increment_wienerns_lr_recon_counter(
+    value: &mut usize,
+    context: &'static str,
+) -> ReconResult<()> {
+    *value = value
+        .checked_add(1)
+        .ok_or(ReconError::ArithmeticOverflow { context })?;
+    Ok(())
+}
+
+fn next_wienerns_lr_counter(value: usize, context: &'static str) -> Result<usize> {
+    value
+        .checked_add(1)
+        .ok_or_else(|| source_read_arithmetic_overflow(context))
+}
+
+fn wienerns_lr_source_read_sample(
+    plane: PlaneId,
+    sample: LoopRestorationSourceSample,
+) -> WienerNsLrSourceReadSample {
+    WienerNsLrSourceReadSample {
+        plane,
+        x: sample.x,
+        y: sample.y,
+        source: sample.source,
+    }
+}
+
+fn observe_wienerns_lr_source_sample(
+    first_sample: &mut Option<WienerNsLrSourceReadSample>,
+    curr_frame_source_reads: &mut usize,
+    cdef_frame_source_reads: &mut usize,
+    plane: PlaneId,
+    sample: LoopRestorationSourceSample,
+    curr_context: &'static str,
+    cdef_context: &'static str,
+) -> Result<()> {
+    if first_sample.is_none() {
+        *first_sample = Some(wienerns_lr_source_read_sample(plane, sample));
+    }
+    match sample.source {
+        LoopRestorationSource::CurrFrame => {
+            increment_wienerns_lr_counter(curr_frame_source_reads, curr_context)
+        }
+        LoopRestorationSource::CdefFrame => {
+            increment_wienerns_lr_counter(cdef_frame_source_reads, cdef_context)
+        }
+    }
+}
+
+fn observe_wienerns_lr_recon_source_sample(
+    curr_frame_source_reads: &mut usize,
+    cdef_frame_source_reads: &mut usize,
+    sample: LoopRestorationSourceSample,
+    curr_context: &'static str,
+    cdef_context: &'static str,
+) -> ReconResult<()> {
+    match sample.source {
+        LoopRestorationSource::CurrFrame => {
+            increment_wienerns_lr_recon_counter(curr_frame_source_reads, curr_context)
+        }
+        LoopRestorationSource::CdefFrame => {
+            increment_wienerns_lr_recon_counter(cdef_frame_source_reads, cdef_context)
+        }
+    }
 }
 
 pub(super) fn wienerns_lr_source_read_config(
@@ -1595,7 +1578,7 @@ fn ensure_wienerns_lr_source_read_preconditions(
             return Err(unsupported_feature_at(
                 "unsupported_wienerns_lr_unit_chroma_filter_values",
                 offset,
-                "minimal runtime retained an active chroma Wiener NS LR unit whose coefficients are coded per unit, but per-unit filter coefficients are not retained for §7.20.3 chroma luma-source tap selection before source-read derivation",
+                "Per-unit chroma Wiener NS coefficients are not retained for luma-source tap selection.",
                 AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
                 AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
                 "5.20.10.6",
@@ -1667,16 +1650,7 @@ fn derive_wienerns_lr_classified_wiener_frontier_after_preflight(
     active_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
     planes: &[LrPlaneParams],
 ) -> Result<WienerNsLrClassifiedWienerFrontier> {
-    let mut summary = WienerNsLrClassifiedWienerFrontier {
-        blocks_resolved: 0,
-        feature_points_resolved: 0,
-        source_reads_resolved: 0,
-        curr_frame_source_reads: 0,
-        cdef_frame_source_reads: 0,
-        tx_skip_lookups_resolved: 0,
-        first_sample: None,
-        first_tx_skip_lookup: None,
-    };
+    let mut summary = WienerNsLrClassifiedWienerFrontier::default();
     if !wienerns_lr_uses_classified_luma(active_source_blocks, planes) {
         return Ok(summary);
     }
@@ -1699,16 +1673,24 @@ fn derive_wienerns_lr_classified_wiener_frontier_after_preflight(
             x,
             y,
         )?;
-        summary.blocks_resolved = summary
-            .blocks_resolved
-            .checked_add(1)
-            .ok_or_else(|| source_read_arithmetic_overflow("pc wiener classified block count"))?;
+        increment_wienerns_lr_counter(
+            &mut summary.blocks_resolved,
+            "pc wiener classified block count",
+        )?;
     }
     Ok(summary)
 }
 
 fn wienerns_lr_classified_luma_source_bounds(
     block: &crate::tile_payload::WienerNsLrSourceBlock,
+) -> LoopRestorationSourceBounds {
+    wienerns_lr_source_block_bounds(block, 0, 0)
+}
+
+fn wienerns_lr_source_block_bounds(
+    block: &crate::tile_payload::WienerNsLrSourceBlock,
+    subsampling_x: u8,
+    subsampling_y: u8,
 ) -> LoopRestorationSourceBounds {
     LoopRestorationSourceBounds {
         luma_start_x: block.luma_start_x,
@@ -1717,18 +1699,12 @@ fn wienerns_lr_classified_luma_source_bounds(
         luma_end_y: block.luma_end_y,
         luma_stripe_start_y: block.luma_stripe_start_y,
         luma_stripe_end_y: block.luma_stripe_end_y,
-        subsampling_x: 0,
-        subsampling_y: 0,
+        subsampling_x,
+        subsampling_y,
     }
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private classified-Wiener value frontier waits for decoded frame and tx-skip storage"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn derive_wienerns_lr_classified_wiener_values_frontier<T, FS, FT>(
     active_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
     planes: &[LrPlaneParams],
@@ -1750,15 +1726,7 @@ where
         return Ok(None);
     }
 
-    let mut summary = WienerNsLrClassifiedWienerValuesFrontier {
-        blocks_resolved: 0,
-        source_reads_resolved: 0,
-        curr_frame_source_reads: 0,
-        cdef_frame_source_reads: 0,
-        filter_classes_resolved: 0,
-        first_sample: None,
-        first_filter_class: None,
-    };
+    let mut summary = WienerNsLrClassifiedWienerValuesFrontier::default();
     for block in active_source_blocks
         .iter()
         .filter(|block| block.plane == PlaneId::Y.index())
@@ -1799,13 +1767,7 @@ where
     Ok(Some(summary))
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "private classified-Wiener storage proof waits for live frame and tx-skip retention"
-    )
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn derive_wienerns_lr_classified_wiener_storage_frontier<T>(
     active_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
     planes: &[LrPlaneParams],
@@ -1869,41 +1831,22 @@ fn record_wienerns_lr_classified_wiener_value_source_read(
         input_x,
         input_y,
         bounds,
-        sample: WienerNsLrSourceReadSample {
-            plane: PlaneId::Y,
-            x: sample.x,
-            y: sample.y,
-            source: sample.source,
-        },
+        sample: wienerns_lr_source_read_sample(PlaneId::Y, sample),
     };
     if summary.first_sample.is_none() {
         summary.first_sample = Some(read);
     }
-    summary.source_reads_resolved =
-        summary
-            .source_reads_resolved
-            .checked_add(1)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "pc wiener classified value source-read count",
-            })?;
-    match sample.source {
-        LoopRestorationSource::CurrFrame => {
-            summary.curr_frame_source_reads = summary
-                .curr_frame_source_reads
-                .checked_add(1)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "pc wiener classified value curr-frame source-read count",
-                })?;
-        }
-        LoopRestorationSource::CdefFrame => {
-            summary.cdef_frame_source_reads = summary
-                .cdef_frame_source_reads
-                .checked_add(1)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "pc wiener classified value cdef-frame source-read count",
-                })?;
-        }
-    }
+    increment_wienerns_lr_recon_counter(
+        &mut summary.source_reads_resolved,
+        "pc wiener classified value source-read count",
+    )?;
+    observe_wienerns_lr_recon_source_sample(
+        &mut summary.curr_frame_source_reads,
+        &mut summary.cdef_frame_source_reads,
+        sample,
+        "pc wiener classified value curr-frame source-read count",
+        "pc wiener classified value cdef-frame source-read count",
+    )?;
     Ok(read)
 }
 
@@ -1922,17 +1865,14 @@ fn record_wienerns_lr_filter_class(
     if summary.first_filter_class.is_none() {
         summary.first_filter_class = Some(filter_class);
     }
-    summary.blocks_resolved = summary
-        .blocks_resolved
-        .checked_add(1)
-        .ok_or_else(|| source_read_arithmetic_overflow("pc wiener classified value block count"))?;
-    summary.filter_classes_resolved =
-        summary
-            .filter_classes_resolved
-            .checked_add(1)
-            .ok_or_else(|| {
-                source_read_arithmetic_overflow("pc wiener classified filter-class count")
-            })?;
+    increment_wienerns_lr_counter(
+        &mut summary.blocks_resolved,
+        "pc wiener classified value block count",
+    )?;
+    increment_wienerns_lr_counter(
+        &mut summary.filter_classes_resolved,
+        "pc wiener classified filter-class count",
+    )?;
     Ok(())
 }
 
@@ -2001,52 +1941,45 @@ fn derive_pc_wiener_feature_source_reads(
         usize_to_source_coordinate(block_end_x_plus_two, "pc wiener classified block end x")?;
     let x = x.min(block_end_x_plus_two);
 
-    record_wienerns_lr_classified_source_read(summary, x, y, bounds)?;
-    record_wienerns_lr_classified_source_read(
-        summary,
-        x,
-        source_read_coordinate_add(y, -1, "pc wiener feature up y")?,
-        bounds,
-    )?;
-    record_wienerns_lr_classified_source_read(
-        summary,
-        x,
-        source_read_coordinate_add(y, 1, "pc wiener feature down y")?,
-        bounds,
-    )?;
-    record_wienerns_lr_classified_source_read(
-        summary,
-        source_read_coordinate_add(x, 1, "pc wiener feature right x")?,
-        source_read_coordinate_add(y, -1, "pc wiener feature up y")?,
-        bounds,
-    )?;
-    record_wienerns_lr_classified_source_read(
-        summary,
-        source_read_coordinate_add(x, -1, "pc wiener feature left x")?,
-        source_read_coordinate_add(y, 1, "pc wiener feature down y")?,
-        bounds,
-    )?;
-    record_wienerns_lr_classified_source_read(
-        summary,
-        source_read_coordinate_add(x, 1, "pc wiener feature right x")?,
-        source_read_coordinate_add(y, 1, "pc wiener feature down y")?,
-        bounds,
-    )?;
-    record_wienerns_lr_classified_source_read(
-        summary,
-        source_read_coordinate_add(x, -1, "pc wiener feature left x")?,
-        source_read_coordinate_add(y, -1, "pc wiener feature up y")?,
-        bounds,
-    )?;
+    for (dx, dy) in PC_WIENER_FEATURE_SOURCE_READ_OFFSETS {
+        record_wienerns_lr_classified_source_read(
+            summary,
+            pc_wiener_feature_source_read_coordinate(
+                x,
+                dx,
+                "pc wiener feature left x",
+                "pc wiener feature right x",
+            )?,
+            pc_wiener_feature_source_read_coordinate(
+                y,
+                dy,
+                "pc wiener feature up y",
+                "pc wiener feature down y",
+            )?,
+            bounds,
+        )?;
+    }
     record_wienerns_lr_classified_tx_skip_lookup(summary, block, block_start_x, block_end_x, x, y)?;
-    summary.feature_points_resolved =
-        summary
-            .feature_points_resolved
-            .checked_add(1)
-            .ok_or_else(|| {
-                source_read_arithmetic_overflow("pc wiener classified feature point count")
-            })?;
+    increment_wienerns_lr_counter(
+        &mut summary.feature_points_resolved,
+        "pc wiener classified feature point count",
+    )?;
     Ok(())
+}
+
+fn pc_wiener_feature_source_read_coordinate(
+    coordinate: isize,
+    delta: isize,
+    negative_context: &'static str,
+    positive_context: &'static str,
+) -> Result<isize> {
+    match delta.cmp(&0) {
+        std::cmp::Ordering::Less => source_read_coordinate_add(coordinate, delta, negative_context),
+        std::cmp::Ordering::Equal => Ok(coordinate),
+        std::cmp::Ordering::Greater => {
+            source_read_coordinate_add(coordinate, delta, positive_context)
+        }
+    }
 }
 
 fn record_wienerns_lr_classified_source_read(
@@ -2055,37 +1988,20 @@ fn record_wienerns_lr_classified_source_read(
     y: isize,
     bounds: &LoopRestorationSourceBounds,
 ) -> Result<()> {
-    let next_reads = summary
-        .source_reads_resolved
-        .checked_add(1)
-        .ok_or_else(|| source_read_arithmetic_overflow("pc wiener classified source-read count"))?;
+    let next_reads = next_wienerns_lr_counter(
+        summary.source_reads_resolved,
+        "pc wiener classified source-read count",
+    )?;
     let sample = loop_restoration_source_sample(PlaneId::Y, x, y, bounds)?;
-    if summary.first_sample.is_none() {
-        summary.first_sample = Some(WienerNsLrSourceReadSample {
-            plane: PlaneId::Y,
-            x: sample.x,
-            y: sample.y,
-            source: sample.source,
-        });
-    }
-    match sample.source {
-        LoopRestorationSource::CurrFrame => {
-            summary.curr_frame_source_reads = summary
-                .curr_frame_source_reads
-                .checked_add(1)
-                .ok_or_else(|| {
-                    source_read_arithmetic_overflow("pc wiener curr-frame source-read count")
-                })?;
-        }
-        LoopRestorationSource::CdefFrame => {
-            summary.cdef_frame_source_reads = summary
-                .cdef_frame_source_reads
-                .checked_add(1)
-                .ok_or_else(|| {
-                    source_read_arithmetic_overflow("pc wiener cdef-frame source-read count")
-                })?;
-        }
-    }
+    observe_wienerns_lr_source_sample(
+        &mut summary.first_sample,
+        &mut summary.curr_frame_source_reads,
+        &mut summary.cdef_frame_source_reads,
+        PlaneId::Y,
+        sample,
+        "pc wiener curr-frame source-read count",
+        "pc wiener cdef-frame source-read count",
+    )?;
     summary.source_reads_resolved = next_reads;
     Ok(())
 }
@@ -2127,10 +2043,10 @@ fn record_wienerns_lr_classified_tx_skip_lookup(
     if summary.first_tx_skip_lookup.is_none() {
         summary.first_tx_skip_lookup = Some(lookup);
     }
-    summary.tx_skip_lookups_resolved = summary
-        .tx_skip_lookups_resolved
-        .checked_add(1)
-        .ok_or_else(|| source_read_arithmetic_overflow("pc wiener tx-skip lookup count"))?;
+    increment_wienerns_lr_counter(
+        &mut summary.tx_skip_lookups_resolved,
+        "pc wiener tx-skip lookup count",
+    )?;
     Ok(())
 }
 
@@ -2163,40 +2079,23 @@ fn derive_wienerns_lr_source_read_frontier_after_preflight(
     offset: ByteOffset,
 ) -> Result<WienerNsLrSourceReadFrontier> {
     let (subsampling_x, subsampling_y) = chroma_subsampling(chroma_format);
-    let mut summary = WienerNsLrSourceReadFrontier {
-        blocks_resolved: 0,
-        output_samples_resolved: 0,
-        source_reads_resolved: 0,
-        curr_frame_source_reads: 0,
-        cdef_frame_source_reads: 0,
-        first_sample: None,
-    };
+    let mut summary = WienerNsLrSourceReadFrontier::default();
 
     for block in active_source_blocks {
         let plane = wienerns_lr_source_plane(block.plane, chroma_format, offset)?;
-        let bounds = LoopRestorationSourceBounds {
-            luma_start_x: block.luma_start_x,
-            luma_end_x: block.luma_end_x,
-            luma_start_y: block.luma_start_y,
-            luma_end_y: block.luma_end_y,
-            luma_stripe_start_y: block.luma_stripe_start_y,
-            luma_stripe_end_y: block.luma_stripe_end_y,
-            subsampling_x,
-            subsampling_y,
-        };
+        let bounds = wienerns_lr_source_block_bounds(block, subsampling_x, subsampling_y);
         for y_offset in 0..block.height {
-            let y = block.y.checked_add(y_offset).ok_or_else(|| {
-                source_read_arithmetic_overflow("wiener ns lr source y coordinate")
-            })?;
-            let y = isize::try_from(y)
-                .map_err(|_| source_read_arithmetic_overflow("wiener ns lr source y coordinate"))?;
+            let y = wienerns_lr_block_sample_coordinate(
+                block.y,
+                y_offset,
+                "wiener ns lr source y coordinate",
+            )?;
             for x_offset in 0..block.width {
-                let x = block.x.checked_add(x_offset).ok_or_else(|| {
-                    source_read_arithmetic_overflow("wiener ns lr source x coordinate")
-                })?;
-                let x = isize::try_from(x).map_err(|_| {
-                    source_read_arithmetic_overflow("wiener ns lr source x coordinate")
-                })?;
+                let x = wienerns_lr_block_sample_coordinate(
+                    block.x,
+                    x_offset,
+                    "wiener ns lr source x coordinate",
+                )?;
                 derive_wienerns_lr_output_sample_source_reads(
                     &mut summary,
                     config,
@@ -2208,12 +2107,23 @@ fn derive_wienerns_lr_source_read_frontier_after_preflight(
                 )?;
             }
         }
-        summary.blocks_resolved = summary
-            .blocks_resolved
-            .checked_add(1)
-            .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr source block count"))?;
+        increment_wienerns_lr_counter(
+            &mut summary.blocks_resolved,
+            "wiener ns lr source block count",
+        )?;
     }
     Ok(summary)
+}
+
+fn wienerns_lr_block_sample_coordinate(
+    origin: usize,
+    offset: usize,
+    context: &'static str,
+) -> Result<isize> {
+    let coordinate = origin
+        .checked_add(offset)
+        .ok_or_else(|| source_read_arithmetic_overflow(context))?;
+    usize_to_source_coordinate(coordinate, context)
 }
 
 fn count_wienerns_lr_source_reads(
@@ -2301,18 +2211,24 @@ fn derive_wienerns_lr_output_sample_source_reads(
     record_wienerns_lr_source_read(summary, plane, x, y, bounds)?;
     match plane {
         PlaneId::Y => {
-            for (dy, dx) in WIENER_NS_LUMA_SOURCE_TAPS {
-                let tap_x = source_read_coordinate_add(x, dx, "wiener ns lr luma tap x")?;
-                let tap_y = source_read_coordinate_add(y, dy, "wiener ns lr luma tap y")?;
-                record_wienerns_lr_source_read(summary, plane, tap_x, tap_y, bounds)?;
-            }
+            record_wienerns_lr_tap_source_reads(
+                summary,
+                plane,
+                (x, y),
+                bounds,
+                &WIENER_NS_LUMA_SOURCE_TAPS,
+                ("wiener ns lr luma tap x", "wiener ns lr luma tap y"),
+            )?;
         }
         PlaneId::U | PlaneId::V => {
-            for (dy, dx) in WIENER_NS_CHROMA_SOURCE_TAPS {
-                let tap_x = source_read_coordinate_add(x, dx, "wiener ns lr chroma tap x")?;
-                let tap_y = source_read_coordinate_add(y, dy, "wiener ns lr chroma tap y")?;
-                record_wienerns_lr_source_read(summary, plane, tap_x, tap_y, bounds)?;
-            }
+            record_wienerns_lr_tap_source_reads(
+                summary,
+                plane,
+                (x, y),
+                bounds,
+                &WIENER_NS_CHROMA_SOURCE_TAPS,
+                ("wiener ns lr chroma tap x", "wiener ns lr chroma tap y"),
+            )?;
             record_wienerns_lr_chroma_luma_source_reads(
                 summary,
                 config,
@@ -2341,10 +2257,28 @@ fn derive_wienerns_lr_output_sample_source_reads(
             }
         }
     }
-    summary.output_samples_resolved = summary
-        .output_samples_resolved
-        .checked_add(1)
-        .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr output sample count"))?;
+    increment_wienerns_lr_counter(
+        &mut summary.output_samples_resolved,
+        "wiener ns lr output sample count",
+    )?;
+    Ok(())
+}
+
+fn record_wienerns_lr_tap_source_reads(
+    summary: &mut WienerNsLrSourceReadFrontier,
+    plane: PlaneId,
+    origin: (isize, isize),
+    bounds: &LoopRestorationSourceBounds,
+    taps_yx: &[(isize, isize)],
+    contexts: (&'static str, &'static str),
+) -> Result<()> {
+    let (x, y) = origin;
+    let (x_context, y_context) = contexts;
+    for &(dy, dx) in taps_yx {
+        let tap_x = source_read_coordinate_add(x, dx, x_context)?;
+        let tap_y = source_read_coordinate_add(y, dy, y_context)?;
+        record_wienerns_lr_source_read(summary, plane, tap_x, tap_y, bounds)?;
+    }
     Ok(())
 }
 
@@ -2355,37 +2289,20 @@ fn record_wienerns_lr_source_read(
     y: isize,
     bounds: &LoopRestorationSourceBounds,
 ) -> Result<()> {
-    let next_reads = summary
-        .source_reads_resolved
-        .checked_add(1)
-        .ok_or_else(|| source_read_arithmetic_overflow("wiener ns lr source-read count"))?;
+    let next_reads = next_wienerns_lr_counter(
+        summary.source_reads_resolved,
+        "wiener ns lr source-read count",
+    )?;
     let sample = loop_restoration_source_sample(plane, x, y, bounds)?;
-    if summary.first_sample.is_none() {
-        summary.first_sample = Some(WienerNsLrSourceReadSample {
-            plane,
-            x: sample.x,
-            y: sample.y,
-            source: sample.source,
-        });
-    }
-    match sample.source {
-        LoopRestorationSource::CurrFrame => {
-            summary.curr_frame_source_reads = summary
-                .curr_frame_source_reads
-                .checked_add(1)
-                .ok_or_else(|| {
-                    source_read_arithmetic_overflow("wiener ns lr curr-frame source-read count")
-                })?;
-        }
-        LoopRestorationSource::CdefFrame => {
-            summary.cdef_frame_source_reads = summary
-                .cdef_frame_source_reads
-                .checked_add(1)
-                .ok_or_else(|| {
-                    source_read_arithmetic_overflow("wiener ns lr cdef-frame source-read count")
-                })?;
-        }
-    }
+    observe_wienerns_lr_source_sample(
+        &mut summary.first_sample,
+        &mut summary.curr_frame_source_reads,
+        &mut summary.cdef_frame_source_reads,
+        plane,
+        sample,
+        "wiener ns lr curr-frame source-read count",
+        "wiener ns lr cdef-frame source-read count",
+    )?;
     summary.source_reads_resolved = next_reads;
     Ok(())
 }

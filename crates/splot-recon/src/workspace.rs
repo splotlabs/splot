@@ -16,13 +16,13 @@ use core::ops::Range;
 
 use crate::intra_basic::predict_paeth_sample;
 use crate::intra_dc_math::validate_sample_type;
-use crate::intra_directional::{IntraCardinalEdges, predict_intra_cardinal_directional_rect_into};
+use crate::intra_directional::predict_intra_cardinal_directional_rect_into;
 use crate::intra_smooth::{SmoothSampleEdges, SmoothSamplePosition, predict_smooth_sample_values};
 use crate::{
     DecodedFrame, DecodedFrameInfo, FrameMut, FramePlanes, FrameRef, IntraCardinalDirection,
-    IntraCardinalEdge, IntraPaethEdge, IntraRectBlockSize, IntraSmoothEdge, IntraSmoothMode,
-    IntraSquareBlockSize, PixelFormat, Plane, PlaneId, PlaneMut, PlaneRect, PlaneRef, PlaneSize,
-    ReconError, ReconSample, Result,
+    IntraDirectionalAngleEdge, IntraPaethEdge, IntraRectBlockSize, IntraSmoothEdge,
+    IntraSmoothMode, IntraSquareBlockSize, PixelFormat, Plane, PlaneId, PlaneMut, PlaneRect,
+    PlaneRef, PlaneSize, ReconError, ReconSample, Result,
 };
 
 #[path = "workspace_edges.rs"]
@@ -238,12 +238,9 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
     /// Copies an already reconstructed source rectangle within one workspace plane.
     ///
-    /// The source rectangle is snapped into bounded scratch storage before the
-    /// target is mutated, so overlapping source and target rectangles read the
-    /// original source samples. This composes with integer-vector IntrABC copy
-    /// handoffs; fractional BILINEAR IntrABC prediction needs a convolution path
-    /// rather than an equal-shape rectangle copy. AV2 availability checks remain
-    /// the caller's responsibility.
+    /// The source rectangle is snapped into scratch storage before target writes,
+    /// so overlapping copies read the original samples. Fractional IntrABC
+    /// prediction needs a separate convolution path.
     ///
     /// # Errors
     /// Returns [`ReconError`] when the plane is absent, either rectangle is out of
@@ -333,10 +330,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
     /// Predicts rectangular basic/PAETH intra samples into the workspace.
     ///
-    /// This helper uses in-storage top-left, left, and above neighbor samples as
-    /// the prepared AV2 §7.13.2.2 inputs. It does not synthesize §7.13.2.1
-    /// fallback samples or decide AV2 edge availability, MRL, tile-boundary, or
-    /// superblock semantics.
+    /// Uses adjacent in-storage samples as the prepared AV2 §7.13.2.2 edges.
+    /// Edge synthesis and availability remain caller-owned.
     ///
     /// # Errors
     /// Returns [`ReconError`] for invalid target geometry, absent planes, or
@@ -354,10 +349,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
     /// Predicts rectangular smooth intra samples into the workspace.
     ///
-    /// This helper uses in-storage left, above, bottom-left, and top-right
-    /// neighbor samples as the prepared AV2 §7.13.2.13 inputs. It does not
-    /// synthesize §7.13.2.1 fallback samples or decide AV2 edge availability,
-    /// MRL, tile-boundary, or superblock semantics.
+    /// Uses adjacent in-storage samples as the prepared AV2 §7.13.2.13 edges.
+    /// Edge synthesis and availability remain caller-owned.
     ///
     /// # Errors
     /// Returns [`ReconError`] for invalid target geometry, absent planes, or
@@ -378,10 +371,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
     /// Predicts rectangular cardinal directional intra samples into the workspace.
     ///
-    /// This helper uses the in-storage above edge for [`IntraCardinalDirection::Vertical`]
-    /// and the in-storage left edge for [`IntraCardinalDirection::Horizontal`].
-    /// It does not synthesize AV2 §7.13.2.1 fallback samples or decide AV2 edge
-    /// availability, MRL, tile-boundary, or superblock semantics.
+    /// Uses the in-storage above edge for vertical prediction and the in-storage
+    /// left edge for horizontal prediction. Edge synthesis remains caller-owned.
     ///
     /// # Errors
     /// Returns [`ReconError`] for invalid target geometry, absent planes, or
@@ -565,8 +556,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     }
 
     fn fill_rect(&mut self, rect: PlaneRect, sample: T) -> Result<()> {
-        // Frame-edge fills (the §7.13.2 flat-DC / single-sample write path) drop the
-        // out-of-frame overhang of a partial-superblock block, mirroring `write_rect`.
+        // Frame-edge fills use the same in-frame clamp as `write_rect`.
         let rect = self.clamp_rect_to_storage(rect)?;
         for row in rect.y()..rect.y() + rect.height() {
             let range = self.row_range(row, rect.x(), rect.width())?;
@@ -582,13 +572,8 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         row_stride_samples: usize,
         max_sample: u16,
     ) -> Result<()> {
-        // §7.11.3 reconstruction writes only IN-FRAME samples: a transform whose MI
-        // footprint overhangs a partial frame-edge superblock contributes no samples
-        // below/right of the frame (nothing downstream reads them — AVM's frame
-        // buffer / decoded output is the in-frame region). Clamp the write extent to
-        // storage and drop the overhang rows/cols; the caller still passes the full
-        // row-strided block, so the dropped columns are simply not read. A genuinely
-        // out-of-frame ORIGIN still errors (`clamp_rect_to_storage`).
+        // Reconstruction writes only in-frame samples. Partial frame-edge
+        // overhang is dropped; an out-of-frame origin remains an error.
         let rect = self.clamp_rect_to_storage(rect)?;
         if row_stride_samples < rect.width() {
             return Err(ReconError::WorkspaceWriteStrideTooSmall {
@@ -768,66 +753,27 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         self.ensure_rect(rect)?;
 
         let output_start = self.sample_index(rect.x(), rect.y())?;
-        match direction {
-            IntraCardinalDirection::Vertical => {
-                if rect.y() == 0 {
-                    return Err(
-                        ReconError::WorkspaceCardinalIntraPredictionEdgeUnavailable {
-                            plane: self.plane,
-                            edge: IntraCardinalEdge::Above,
-                            rect,
-                        },
-                    );
-                }
-                let above_range = self.row_range(rect.y() - 1, rect.x(), rect.width())?;
-                let mut above = Vec::new();
-                above.try_reserve_exact(rect.width()).map_err(|_| {
-                    ReconError::WorkspaceAllocationFailed {
-                        plane: self.plane,
-                        context: "cardinal directional above edge",
-                    }
-                })?;
-                // splot-copy-ok: materialize bounded above-edge scratch for cardinal prediction
-                above.extend_from_slice(&self.samples[above_range]);
-                predict_intra_cardinal_directional_rect_into(
-                    bit_depth,
-                    size,
-                    direction,
-                    IntraCardinalEdges::above(&above),
-                    &mut self.samples[output_start..],
-                    self.stride_samples,
-                )
-            }
-            IntraCardinalDirection::Horizontal => {
-                if rect.x() == 0 {
-                    return Err(
-                        ReconError::WorkspaceCardinalIntraPredictionEdgeUnavailable {
-                            plane: self.plane,
-                            edge: IntraCardinalEdge::Left,
-                            rect,
-                        },
-                    );
-                }
-                let mut left = Vec::new();
-                left.try_reserve_exact(rect.height()).map_err(|_| {
-                    ReconError::WorkspaceAllocationFailed {
-                        plane: self.plane,
-                        context: "cardinal directional left edge",
-                    }
-                })?;
-                for row in rect.y()..rect.y() + rect.height() {
-                    left.push(self.samples[self.sample_index(rect.x() - 1, row)?]);
-                }
-                predict_intra_cardinal_directional_rect_into(
-                    bit_depth,
-                    size,
-                    direction,
-                    IntraCardinalEdges::left(&left),
-                    &mut self.samples[output_start..],
-                    self.stride_samples,
-                )
-            }
-        }
+        let edge_kind = direction.required_edge();
+        let edge_len = match edge_kind {
+            IntraDirectionalAngleEdge::Above => rect.width(),
+            IntraDirectionalAngleEdge::Left => rect.height(),
+        };
+        let edge = self.directional_angle_edge_samples(
+            rect,
+            edge_kind,
+            edge_len,
+            direction.p_angle(),
+            cardinal_edge_context(edge_kind),
+        )?;
+        let edges = workspace_edges::directional_angle_edges(edge_kind, &edge);
+        predict_intra_cardinal_directional_rect_into(
+            bit_depth,
+            size,
+            direction,
+            edges,
+            &mut self.samples[output_start..],
+            self.stride_samples,
+        )
     }
 
     fn freeze(self) -> Result<Plane<T>> {
@@ -841,17 +787,12 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 
     /// Clamps a write/fill `rect` to the in-frame storage extent.
     ///
-    /// Models AVM's in-frame-only reconstruction: a transform whose MI footprint
-    /// overhangs a partial-superblock frame edge writes only the rows/columns inside
-    /// the frame; the out-of-frame overhang is dropped (no downstream block reads
-    /// below/right of the frame). The returned rectangle shares the origin and is
-    /// narrowed/shortened to `[x, min(x + w, storage_w)) x [y, min(y + h, storage_h))`.
+    /// Models AVM's in-frame-only reconstruction: frame-edge overhang is dropped,
+    /// while a rectangle whose origin is already out of frame still errors.
     ///
     /// # Errors
-    /// A genuinely out-of-frame ORIGIN (`x >= storage_w` or `y >= storage_h`, which
-    /// AVM never produces) is a hard [`ReconError::WorkspaceRectOutOfBounds`]: there
-    /// is no in-frame extent to write, so it is a real geometry bug, not an edge
-    /// overhang.
+    /// Returns [`ReconError::WorkspaceRectOutOfBounds`] when `rect` starts outside
+    /// storage.
     fn clamp_rect_to_storage(&self, rect: PlaneRect) -> Result<PlaneRect> {
         let storage_width = self.storage_size.width();
         let storage_height = self.storage_size.height();
@@ -922,6 +863,13 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 rect: PlaneRect::new(x, row, width, 1)?,
             })
         }
+    }
+}
+
+const fn cardinal_edge_context(edge: IntraDirectionalAngleEdge) -> &'static str {
+    match edge {
+        IntraDirectionalAngleEdge::Above => "cardinal directional above edge",
+        IntraDirectionalAngleEdge::Left => "cardinal directional left edge",
     }
 }
 

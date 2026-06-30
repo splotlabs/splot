@@ -1,26 +1,21 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! First-inter-frame decode tests for the shared minimal-tier runtime.
-//!
-//! The committed `syn-2frame-inter-64x64.ivf` is the verified target: frame 0 is an
-//! `OBU_CLOSED_LOOP_KEY` intra key frame, frame 1 is an `OBU_REGULAR_TILE_GROUP`
-//! inter frame (single reference, `is_inter == 1`, `skip == 1`, the single-reference
-//! zero-MV NEARMV mode, no residual). avmdec `--rawvideo --i420` and
-//! `dav2d --demuxer ivf` decode the whole stream byte-for-byte identically
-//! (decoded-output md5 `4e1bd39f0b541ef1f479cff049e6985c`, 12288 bytes; frame 1 == a
-//! straight copy of frame 0 via § 7.13.3.18 zero-fraction motion compensation).
-
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use splot_parallel::ThreadCount;
 
 use splot_core::headers::frame::{FrameHeaderParseStatus, QuantizationParams};
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
-use splot_core::ivf::{write_ivf_frame, write_ivf_header};
+use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 use splot_core::span::ByteOffset;
-use splot_core::stream::{ParsedBitstream, ParsedIvfFrame, parse_bitstream_partial};
-use splot_recon::{LoopRestorationSource, PlaneId, ReconError};
+use splot_core::stream::{
+    ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame, parse_bitstream_partial,
+};
+use splot_recon::{
+    BitDepth, DecodedFrameHashInput, LoopRestorationSource, PixelFormat, PlaneId, PlaneSize,
+    ReconError,
+};
 
 use super::super::{MinimalRuntimeFrame, decode_minimal_frames_from_plan};
 use super::block::interp_filter_no_neighbour_ctx;
@@ -34,89 +29,30 @@ use crate::tile_payload::{
 };
 use crate::{
     DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
-    DecodeRuntimeConfig,
+    DecodeRuntimeConfig, DecodeStreamPlan,
 };
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
-/// The first bit-exact sub-pel inter fixture: frame 0 is a general-intra DC_PRED
-/// half-cosine key frame; frame 1 is a single-reference NEWMV inter frame with an
-/// EighthPel `(0, -4)` (a -1/2 luma-sample horizontal) sub-pel motion vector, a
-/// SWITCHABLE `EIGHTTAP_SHARP` interpolation filter, and `skip == 1` (no residual).
-/// avmdec `--rawvideo --i420` and `dav2d --demuxer ivf` decode the whole stream
-/// byte-for-byte identically.
 const TWO_FRAME_SUBPEL_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-subpel-inter-64x64.ivf"
 );
 
-/// The first bit-exact inter-residual fixture: frame 0 is a general-intra DC_PRED
-/// flat-100 key frame; frame 1 is a single-reference zero-MV inter frame with
-/// `skip == 0` carrying a low-frequency §5.20.7.27 luma DCT_DCT residual (flat
-/// chroma, no residual) added over the §7.13.3.18 zero-fraction copy of frame 0.
-/// avmdec `--rawvideo --i420` and `dav2d --demuxer ivf` decode the whole stream
-/// byte-for-byte identically (oracle MD5 `ab2b067aed48cf46035fa031cefb3ab1`).
 const TWO_FRAME_RESIDUAL_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-residual-64x64.ivf"
 );
 
-/// The first bit-exact MULTI-BLOCK inter fixture: frame 0 is a general-intra
-/// DC_PRED key frame (four flat 32x32 quadrants); frame 1 is a single-reference
-/// inter frame whose 64x64 superblock is SPLIT into four 32x32 inter blocks.
-/// Block 0 @ MI(0,0) is NEWMV with a non-zero MV (col 48 = +6 full pels); the
-/// later three blocks are NEARMV that predict block 0's MV from the §7.11/§7.12
-/// spatial-neighbour MV stack (find_mv_stack). All blocks are skip=1 (no
-/// residual). avmdec `--rawvideo --i420` and `dav2d --demuxer ivf` decode the
-/// whole stream byte-for-byte identically (oracle MD5
-/// `e5b581a55433785c0071b635d5642083`).
 const TWO_FRAME_MVSTACK_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-mvstack-64x64.ivf"
 );
 
-/// The first bit-exact MULTI-SUPERBLOCK inter fixture: a 128x64 frame is two
-/// horizontally-adjacent 64x64 superblocks. Frame 0 is a general-intra DC_PRED key
-/// frame (left SB flat 100, right SB flat 150, flat chroma); frame 1 is a
-/// single-reference inter frame whose two superblocks are each a single 64x64 inter
-/// block. SB0 @ MI(0,0) is NEWMV with a non-zero MV (col 48 = +6 full pels in
-/// eighth-pel units); SB1 @ MI(0,16) — in the SECOND superblock — is NEARMV that
-/// predicts SB0's MV across the superblock boundary from the frame-wide §7.11/§7.12
-/// spatial-neighbour MV stack (find_mv_stack); both skip=1 (no residual). avmdec
-/// `--rawvideo --i420` and `dav2d --demuxer ivf` decode the whole stream
-/// byte-for-byte identically (oracle MD5 `477a993d671e93d37b92a0d368c238ff`,
-/// 24576 bytes).
 const MULTI_SB_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2sb-inter-128x64-q80.ivf");
 
-/// The first bit-exact 2-D-GRID inter fixture: a 128x128 frame is a 2x2 grid of
-/// 64x64 superblocks. Frame 0 is a general-intra DC_PRED key frame (four flat
-/// 64x64 luma superblocks 100/150/80/200, flat chroma); frame 1 is a
-/// single-reference inter frame whose four superblocks are each a single 64x64
-/// inter block, all skip=1 (no residual). SB0 @ MI(0,0) is NEWMV (col 48 = +6
-/// full pels, eighth-pel units, has_neighbour=false); SB1 @ MI(0,16), SB2 @
-/// MI(16,0), and SB3 @ MI(16,16) are NEARMV that reconstruct SB0's MV from the
-/// frame-wide §7.11/§7.12 spatial-neighbour MV stack — SB2 and SB3 (in the SECOND
-/// superblock ROW) predict across the SB-ROW boundary. avmdec `--rawvideo --i420`
-/// and `dav2d --demuxer ivf` decode the whole stream byte-for-byte identically
-/// (oracle MD5 `897bf67e72ec04cb7275fae08eab700c`, 49152 bytes).
 const GRID_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-grid-inter-128x128-q80.ivf");
 
-/// The first bit-exact DISTINCT-neighbour-MV inter fixture: a 64x64 frame is a
-/// §5.20.3 SPLIT into four 32x32 inter blocks, each carrying a DIFFERENT motion
-/// vector (UNLIKE the identical-MV mvstack fixtures whose stack collapses to one
-/// entry). Frame 0 is a general-intra DC_PRED key frame (four flat 32x32 quadrants
-/// 100/150/60/200, flat chroma); frame 1 shifts each quadrant by a distinct amount.
-/// Block 0 @ MI(0,0) is NEWMV col 64 (+8 pel), block 1 @ MI(0,8) NEWMV col -32
-/// (-4 pel), block 2 @ MI(8,0) NEWMV col 32 (+4 pel), and the interior block 3 @
-/// MI(8,8) is NEARMV with RefMvIdx 1: its §7.12.2 spatial stack is
-/// `[col 32 (LEFT = block 2), col -32 (ABOVE = block 1), col 64, col 0]`, so
-/// RefMvIdx 1 reconstructs col -32 (the ABOVE neighbour) directly — pinning the
-/// §7.12.2 left-before-above scan-point ORDERING and the §5.20.7.8 DRL slot-1
-/// selection. Every leaf is 32x32 (Block_Width / Block_Height == 32, not > 32), so
-/// the §7.12.2.20 large-block MVP combinations do not apply. avmdec
-/// `--rawvideo --i420` and `dav2d --demuxer ivf` decode the whole stream
-/// byte-for-byte identically (oracle MD5 `284e1450b42180f02de7415ab0367bfe`,
-/// 12288 bytes).
 const MVORDER_INTER_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-mvorder-64x64.ivf"
 );
@@ -124,6 +60,14 @@ const MVORDER_INTER_FIXTURE: &[u8] = include_bytes!(
 const FLAT_LUMA: u8 = 100;
 const FLAT_CHROMA_U: u8 = 120;
 const FLAT_CHROMA_V: u8 = 130;
+
+fn decode_context() -> DecodeContext {
+    DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context")
+}
+
+fn plan_fixture(bytes: &[u8], options: DecodeOptions) -> DecodeStreamPlan {
+    decode_context().plan_bytes(bytes, options).expect("plan")
+}
 
 fn decode_fixture(bytes: &[u8]) -> Vec<MinimalRuntimeFrame> {
     let options = DecodeOptions::default();
@@ -134,9 +78,7 @@ fn decode_fixture_with_options(
     bytes: &[u8],
     options: DecodeOptions,
 ) -> Result<Vec<MinimalRuntimeFrame>> {
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(bytes, options).expect("plan");
+    let plan = plan_fixture(bytes, options);
     decode_minimal_frames_from_plan(bytes, options, &plan)
 }
 
@@ -154,19 +96,61 @@ fn fixture_sequence_and_quantization(bytes: &[u8]) -> (SequenceHeader, Quantizat
     )
 }
 
+fn assert_yuv420_8bit_frames(frames: &[MinimalRuntimeFrame], width: usize, height: usize) {
+    let visible_size = PlaneSize::new(width, height).expect("valid visible size");
+    for (index, output) in frames.iter().enumerate() {
+        let frame = output.frame();
+        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
+        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
+        assert_eq!(frame.y().visible_size(), visible_size, "frame {index}");
+    }
+}
+
+fn frame_hashes(frames: &[MinimalRuntimeFrame]) -> Vec<String> {
+    frames
+        .iter()
+        .map(|output| {
+            DecodedFrameHashInput::new(output.frame())
+                .compute_hash()
+                .to_hex()
+        })
+        .collect()
+}
+
+fn parse_ivf_fixture<'a>(bytes: &'a [u8], name: &str) -> ParsedIvfBitstream<'a> {
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(bytes) else {
+        panic!("{name} fixture is IVF");
+    };
+    assert!(parsed.error.is_none(), "{name} fixture parse error");
+    assert!(parsed.warnings.is_empty(), "{name} fixture warnings");
+    parsed
+}
+
+fn parse_multiref_fixture() -> ParsedIvfBitstream<'static> {
+    parse_ivf_fixture(MULTIREF_FIXTURE, "multiref")
+}
+
+fn write_repacked_ivf_header(bytes: &mut Vec<u8>, header: &IvfHeader) {
+    write_ivf_header(bytes, header).expect("write repacked IVF header");
+}
+
+fn write_repacked_ivf_frame(bytes: &mut Vec<u8>, pts: u64, payload: &[u8]) {
+    write_ivf_frame(bytes, pts, payload).expect("write repacked IVF record");
+}
+
+fn write_original_ivf_frames(bytes: &mut Vec<u8>, frames: &[ParsedIvfFrame<'_>]) {
+    for frame in frames {
+        write_repacked_ivf_frame(bytes, frame.frame.pts, frame.frame.payload);
+    }
+}
+
 fn decode_inter_blocks_after_quantization_mutation(
     bytes: &[u8],
     mutate: impl FnOnce(&mut QuantizationParams),
 ) -> Result<usize> {
     let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(bytes, options).expect("plan");
-    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(bytes) else {
-        panic!("fixture is IVF");
-    };
-    assert!(parsed.error.is_none());
-    assert!(parsed.warnings.is_empty());
+    let plan = plan_fixture(bytes, options);
+    let parsed = parse_ivf_fixture(bytes, "inter");
     let header = parsed.header.expect("fixture carries an IVF header");
     let first_ivf_frame = parsed.frames.first().expect("fixture carries a key frame");
     let [_td_envelope, sequence_envelope, key_envelope] =
@@ -268,24 +252,16 @@ fn unsupported_reason(error: DecodeError) -> &'static str {
 
 #[test]
 fn two_frame_inter_fixture_decodes_both_frames_bit_exact() {
-    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
-
     let frames = decode_frames();
     assert_eq!(
         frames.len(),
         2,
         "the stream decodes a key frame + one inter frame"
     );
+    assert_yuv420_8bit_frames(&frames, 64, 64);
 
     for (index, output) in frames.iter().enumerate() {
         let frame = output.frame();
-        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
-        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
-        assert_eq!(
-            frame.y().visible_size(),
-            PlaneSize::new(64, 64).unwrap(),
-            "frame {index}"
-        );
         assert!(
             frame.y().samples().iter().all(|&s| s == FLAT_LUMA),
             "frame {index} luma must be flat {FLAT_LUMA}"
@@ -329,33 +305,17 @@ fn inter_frame_is_a_bit_exact_copy_of_the_key_frame() {
     );
 }
 
-/// The committed sub-pel fixture decodes a key frame + one sub-pel inter frame.
 #[test]
 fn subpel_fixture_decodes_two_frames() {
-    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
-
     let frames = decode_fixture(TWO_FRAME_SUBPEL_FIXTURE);
     assert_eq!(
         frames.len(),
         2,
         "the sub-pel stream decodes a key frame + one inter frame"
     );
-    for (index, output) in frames.iter().enumerate() {
-        let frame = output.frame();
-        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
-        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
-        assert_eq!(
-            frame.y().visible_size(),
-            PlaneSize::new(64, 64).unwrap(),
-            "frame {index}"
-        );
-    }
+    assert_yuv420_8bit_frames(&frames, 64, 64);
 }
 
-/// The sub-pel inter frame is NOT a copy of the key frame: the § 7.13.3.18
-/// interpolation-filter convolution over the decoded sub-pel motion vector
-/// produces a fractionally-shifted prediction. This distinguishes the sub-pel MC
-/// from the zero-MV straight copy.
 #[test]
 fn subpel_inter_frame_differs_from_key_frame() {
     let frames = decode_fixture(TWO_FRAME_SUBPEL_FIXTURE);
@@ -368,69 +328,37 @@ fn subpel_inter_frame_differs_from_key_frame() {
     );
 }
 
-/// Regression pin for the per-frame decode hash of the sub-pel fixture. The raw
-/// decoded output (both frames concatenated I420) matches avmdec `--rawvideo
-/// --i420` and `dav2d --demuxer ivf` byte-for-byte (oracle MD5
-/// `a0e82de3a95bb4b519c4c84ffa2ba816`, recorded in
-/// `docs/LOCAL-REFERENCE-EVIDENCE.toml`); these `splot-dfh-sha256-v1` per-frame
-/// hashes are splot's internal regression anchors for that bit-exact output.
 #[test]
 fn subpel_fixture_per_frame_hash_is_stable() {
     let frames = decode_fixture(TWO_FRAME_SUBPEL_FIXTURE);
-    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
-        .compute_hash()
-        .to_hex();
-    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
-        .compute_hash()
-        .to_hex();
+    let hashes = frame_hashes(&frames);
     assert_eq!(
-        key_hash, "8a6751d4517073bad0bbe71f4b5537df8e8b0bfee85fcd6af1ac2d5878dd59e8",
+        hashes[0], "8a6751d4517073bad0bbe71f4b5537df8e8b0bfee85fcd6af1ac2d5878dd59e8",
         "sub-pel key-frame hash"
     );
     assert_eq!(
-        inter_hash, "4c2443d95b38cee9a574ba1166a1fe15d6f2b5d20de070001d31db15a661896e",
+        hashes[1], "4c2443d95b38cee9a574ba1166a1fe15d6f2b5d20de070001d31db15a661896e",
         "sub-pel inter-frame hash"
     );
-    assert_ne!(key_hash, inter_hash, "the sub-pel frames must differ");
+    assert_ne!(hashes[0], hashes[1], "the sub-pel frames must differ");
 }
 
 #[test]
 fn two_frame_inter_fixture_per_frame_hash_is_stable() {
-    // Regression pin for the per-frame decode hash. The flat-plane / copy tests above
-    // are the avmdec/dav2d oracle anchors. The inter frame is a copy of the key
-    // frame, so their per-frame hashes match.
     let frames = decode_frames();
-    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
-        .compute_hash()
-        .to_hex();
-    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
-        .compute_hash()
-        .to_hex();
-    assert_eq!(key_hash, inter_hash, "inter frame hash == key frame hash");
+    let hashes = frame_hashes(&frames);
+    assert_eq!(hashes[0], hashes[1], "inter frame hash == key frame hash");
 }
 
-/// The committed inter-residual fixture decodes a key frame + one `skip == 0`
-/// inter frame (a §5.20.7.27 coded residual over the zero-MV MC prediction).
 #[test]
 fn residual_fixture_decodes_two_frames() {
-    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
-
     let frames = decode_fixture(TWO_FRAME_RESIDUAL_FIXTURE);
     assert_eq!(
         frames.len(),
         2,
         "the residual stream decodes a key frame + one inter frame"
     );
-    for (index, output) in frames.iter().enumerate() {
-        let frame = output.frame();
-        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
-        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
-        assert_eq!(
-            frame.y().visible_size(),
-            PlaneSize::new(64, 64).unwrap(),
-            "frame {index}"
-        );
-    }
+    assert_yuv420_8bit_frames(&frames, 64, 64);
 }
 
 #[test]
@@ -458,12 +386,6 @@ fn skip_one_inter_allows_nonzero_effective_quantizer_deltas() {
     assert_eq!(blocks, 1);
 }
 
-/// The `skip == 0` inter frame is NOT a copy of the key frame: the §5.20.7.27
-/// decoded residual (§7.14.4 dequant + §7.15.4 inverse transform + §7.14.3 add)
-/// over the zero-MV §7.13.3.18 copy genuinely changes the luma. The chroma carries
-/// no residual (the encoder coded a luma-only residual), so it stays flat and
-/// equals the key chroma. This distinguishes the residual decode from the bare
-/// zero-MV copy: if the residual were dropped, frame 1 would equal frame 0.
 #[test]
 fn residual_inter_frame_differs_from_key_frame() {
     let frames = decode_fixture(TWO_FRAME_RESIDUAL_FIXTURE);
@@ -508,269 +430,140 @@ fn residual_inter_frame_differs_from_key_frame() {
     );
 }
 
-/// Regression pin for the per-frame decode hash of the inter-residual fixture.
-/// The raw decoded output (both frames concatenated I420) matches avmdec
-/// `--rawvideo --i420` and `dav2d --demuxer ivf` byte-for-byte (oracle MD5
-/// `ab2b067aed48cf46035fa031cefb3ab1`, recorded in
-/// `docs/LOCAL-REFERENCE-EVIDENCE.toml`); these `splot-dfh-sha256-v1` per-frame
-/// hashes are splot's internal regression anchors for that bit-exact output.
 #[test]
 fn residual_fixture_per_frame_hash_is_stable() {
     let frames = decode_fixture(TWO_FRAME_RESIDUAL_FIXTURE);
-    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
-        .compute_hash()
-        .to_hex();
-    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
-        .compute_hash()
-        .to_hex();
+    let hashes = frame_hashes(&frames);
     assert_eq!(
-        key_hash, "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979",
+        hashes[0], "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979",
         "residual key-frame hash"
     );
     assert_eq!(
-        inter_hash, "6bc96c12710ebe225b994c8e70e253e7159cd3fe49da61de5ad2558c207e26d8",
+        hashes[1], "6bc96c12710ebe225b994c8e70e253e7159cd3fe49da61de5ad2558c207e26d8",
         "residual inter-frame hash"
     );
     assert_ne!(
-        key_hash, inter_hash,
+        hashes[0], hashes[1],
         "the residual inter frame must differ from the key frame"
     );
 }
 
-/// The committed multi-block fixture decodes a key frame + one multi-block inter
-/// frame (a §5.20.3 SPLIT into four 32x32 inter blocks).
 #[test]
 fn mvstack_fixture_decodes_two_frames() {
-    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
-
     let frames = decode_fixture(TWO_FRAME_MVSTACK_FIXTURE);
     assert_eq!(
         frames.len(),
         2,
         "the multi-block stream decodes a key frame + one inter frame"
     );
-    for (index, output) in frames.iter().enumerate() {
-        let frame = output.frame();
-        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
-        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
-        assert_eq!(
-            frame.y().visible_size(),
-            PlaneSize::new(64, 64).unwrap(),
-            "frame {index}"
-        );
-    }
+    assert_yuv420_8bit_frames(&frames, 64, 64);
 }
 
-/// Regression pin for the per-frame decode hash of the multi-block MV-stack
-/// fixture. The raw decoded output (both frames concatenated I420) matches avmdec
-/// `--rawvideo --i420` and `dav2d --demuxer ivf` byte-for-byte (oracle MD5
-/// `e5b581a55433785c0071b635d5642083`, recorded in
-/// `docs/LOCAL-REFERENCE-EVIDENCE.toml`); these `splot-dfh-sha256-v1` per-frame
-/// hashes are splot's internal regression anchors for that bit-exact output. The
-/// inter frame is reconstructed from the §7.11/§7.12 neighbour-predicted MVs of
-/// its four 32x32 blocks (block 0 NEWMV, the rest NEARMV reusing block 0's MV).
 #[test]
 fn mvstack_fixture_per_frame_hash_is_stable() {
     let frames = decode_fixture(TWO_FRAME_MVSTACK_FIXTURE);
-    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
-        .compute_hash()
-        .to_hex();
-    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
-        .compute_hash()
-        .to_hex();
+    let hashes = frame_hashes(&frames);
     assert_eq!(
-        key_hash, "37d5a851609575dcceec47aa4b53043fa04f36cb483c40925913b8adfd91504f",
+        hashes[0], "37d5a851609575dcceec47aa4b53043fa04f36cb483c40925913b8adfd91504f",
         "multi-block key-frame hash"
     );
     assert_eq!(
-        inter_hash, "b39afe593c1046b080efea9c8bf76242dba2a4965a556d7ed31bcf0fca444fc1",
+        hashes[1], "b39afe593c1046b080efea9c8bf76242dba2a4965a556d7ed31bcf0fca444fc1",
         "multi-block inter-frame hash"
     );
     assert_ne!(
-        key_hash, inter_hash,
+        hashes[0], hashes[1],
         "the multi-block inter frame must differ from the key frame"
     );
 }
 
-/// The committed multi-SUPERBLOCK fixture decodes a 128x64 key frame + one
-/// 128x64 multi-superblock inter frame (two 64x64 superblocks).
 #[test]
 fn multi_sb_fixture_decodes_two_frames() {
-    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
-
     let frames = decode_fixture(MULTI_SB_INTER_FIXTURE);
     assert_eq!(
         frames.len(),
         2,
         "the multi-superblock stream decodes a key frame + one inter frame"
     );
-    for (index, output) in frames.iter().enumerate() {
-        let frame = output.frame();
-        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
-        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
-        assert_eq!(
-            frame.y().visible_size(),
-            PlaneSize::new(128, 64).unwrap(),
-            "frame {index} is a 128x64 two-superblock frame"
-        );
-    }
+    assert_yuv420_8bit_frames(&frames, 128, 64);
 }
 
-/// Regression pin for the per-frame decode hash of the multi-superblock fixture.
-/// The raw decoded output (both frames concatenated I420) matches avmdec
-/// `--rawvideo --i420` and `dav2d --demuxer ivf` byte-for-byte (oracle MD5
-/// `477a993d671e93d37b92a0d368c238ff`, recorded in
-/// `docs/LOCAL-REFERENCE-EVIDENCE.toml`); these `splot-dfh-sha256-v1` per-frame
-/// hashes are splot's internal regression anchors for that bit-exact output. The
-/// inter frame is reconstructed from the §7.11/§7.12 neighbour-predicted MVs of
-/// its two superblocks (SB0 NEWMV, SB1 NEARMV reusing SB0's MV across the
-/// superblock boundary).
 #[test]
 fn multi_sb_fixture_per_frame_hash_is_stable() {
     let frames = decode_fixture(MULTI_SB_INTER_FIXTURE);
-    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
-        .compute_hash()
-        .to_hex();
-    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
-        .compute_hash()
-        .to_hex();
+    let hashes = frame_hashes(&frames);
     assert_eq!(
-        key_hash, "2dc3b82d7f75dd5f400474fbf370a9acc2e631f65e2cc1263d0ec0684b14da15",
+        hashes[0], "2dc3b82d7f75dd5f400474fbf370a9acc2e631f65e2cc1263d0ec0684b14da15",
         "multi-superblock key-frame hash"
     );
     assert_eq!(
-        inter_hash, "dc9b4c4aef4e6dc1afa43ed16a93c17dd2fab9c1e61b5ab97dbae863d62a7ebd",
+        hashes[1], "dc9b4c4aef4e6dc1afa43ed16a93c17dd2fab9c1e61b5ab97dbae863d62a7ebd",
         "multi-superblock inter-frame hash"
     );
     assert_ne!(
-        key_hash, inter_hash,
+        hashes[0], hashes[1],
         "the multi-superblock inter frame must differ from the key frame (real cross-SB MV shift)"
     );
 }
 
-/// The committed 2-D-GRID fixture decodes a 128x128 key frame + one 128x128
-/// 2x2-superblock-grid inter frame.
 #[test]
 fn grid_fixture_decodes_two_frames() {
-    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
-
     let frames = decode_fixture(GRID_INTER_FIXTURE);
     assert_eq!(
         frames.len(),
         2,
         "the 2-D-grid stream decodes a key frame + one inter frame"
     );
-    for (index, output) in frames.iter().enumerate() {
-        let frame = output.frame();
-        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
-        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
-        assert_eq!(
-            frame.y().visible_size(),
-            PlaneSize::new(128, 128).unwrap(),
-            "frame {index} is a 128x128 2x2-superblock-grid frame"
-        );
-    }
+    assert_yuv420_8bit_frames(&frames, 128, 128);
 }
 
-/// Regression pin for the per-frame decode hash of the 2-D-grid fixture. The raw
-/// decoded output (both frames concatenated I420) matches avmdec `--rawvideo
-/// --i420` and `dav2d --demuxer ivf` byte-for-byte (oracle MD5
-/// `897bf67e72ec04cb7275fae08eab700c`, 49152 bytes, recorded in
-/// `docs/LOCAL-REFERENCE-EVIDENCE.toml`); these `splot-dfh-sha256-v1` per-frame
-/// hashes are splot's internal regression anchors for that bit-exact output. The
-/// inter frame is reconstructed from the §7.11/§7.12 neighbour-predicted MVs of
-/// its four superblocks, two of which (SB2/SB3 in the second superblock ROW)
-/// predict SB0's MV across the superblock-row boundary.
 #[test]
 fn grid_fixture_per_frame_hash_is_stable() {
     let frames = decode_fixture(GRID_INTER_FIXTURE);
-    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
-        .compute_hash()
-        .to_hex();
-    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
-        .compute_hash()
-        .to_hex();
+    let hashes = frame_hashes(&frames);
     assert_eq!(
-        key_hash, "5619e639914803867ca0bdeb12bff97e808788607f992c661a7bcfc0bea4911a",
+        hashes[0], "5619e639914803867ca0bdeb12bff97e808788607f992c661a7bcfc0bea4911a",
         "2-D-grid key-frame hash"
     );
     assert_eq!(
-        inter_hash, "f23ded7e9197d7c9b0a2fdc5cdc649c079cd1fb8a1c79e913b72fb74f0c502db",
+        hashes[1], "f23ded7e9197d7c9b0a2fdc5cdc649c079cd1fb8a1c79e913b72fb74f0c502db",
         "2-D-grid inter-frame hash"
     );
     assert_ne!(
-        key_hash, inter_hash,
+        hashes[0], hashes[1],
         "the 2-D-grid inter frame must differ from the key frame (real cross-SB MV shift)"
     );
 }
 
-/// The committed DISTINCT-neighbour-MV fixture decodes a 64x64 key frame + one
-/// 64x64 multi-block inter frame (a §5.20.3 SPLIT into four 32x32 inter blocks
-/// with four DIFFERENT motion vectors).
 #[test]
 fn mvorder_fixture_decodes_two_frames() {
-    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
-
     let frames = decode_fixture(MVORDER_INTER_FIXTURE);
     assert_eq!(
         frames.len(),
         2,
         "the distinct-MV stream decodes a key frame + one inter frame"
     );
-    for (index, output) in frames.iter().enumerate() {
-        let frame = output.frame();
-        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
-        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
-        assert_eq!(
-            frame.y().visible_size(),
-            PlaneSize::new(64, 64).unwrap(),
-            "frame {index}"
-        );
-    }
+    assert_yuv420_8bit_frames(&frames, 64, 64);
 }
 
-/// Regression pin for the per-frame decode hash of the DISTINCT-neighbour-MV
-/// fixture. The raw decoded output (both frames concatenated I420) matches avmdec
-/// `--rawvideo --i420` and `dav2d --demuxer ivf` byte-for-byte (oracle MD5
-/// `284e1450b42180f02de7415ab0367bfe`, 12288 bytes, recorded in
-/// `docs/LOCAL-REFERENCE-EVIDENCE.toml`); these `splot-dfh-sha256-v1` per-frame
-/// hashes are splot's internal regression anchors for that bit-exact output. The
-/// interior block 3 @ MI(8,8) is NEARMV RefMvIdx 1 over a §7.12.2 spatial stack
-/// whose slot 0 is its LEFT neighbour (col 32) and slot 1 is its ABOVE neighbour
-/// (col -32); reconstructing col -32 confirms the left-before-above ordering. A
-/// wrong stack order would reconstruct block 3 from col 32 and change this hash.
 #[test]
 fn mvorder_fixture_per_frame_hash_is_stable() {
     let frames = decode_fixture(MVORDER_INTER_FIXTURE);
-    let key_hash = splot_recon::DecodedFrameHashInput::new(frames[0].frame())
-        .compute_hash()
-        .to_hex();
-    let inter_hash = splot_recon::DecodedFrameHashInput::new(frames[1].frame())
-        .compute_hash()
-        .to_hex();
+    let hashes = frame_hashes(&frames);
     assert_eq!(
-        key_hash, "3ddad4a90c482c106f9389ef55bc87beeaf772f4bec2041da4555bbd8deb6142",
+        hashes[0], "3ddad4a90c482c106f9389ef55bc87beeaf772f4bec2041da4555bbd8deb6142",
         "distinct-MV key-frame hash"
     );
     assert_eq!(
-        inter_hash, "3c2a8c85c4ba4be4fa82aecbefe92baa1567f2a9c45ea88f8275c21414480ad9",
+        hashes[1], "3c2a8c85c4ba4be4fa82aecbefe92baa1567f2a9c45ea88f8275c21414480ad9",
         "distinct-MV inter-frame hash"
     );
     assert_ne!(
-        key_hash, inter_hash,
+        hashes[0], hashes[1],
         "the distinct-MV inter frame must differ from the key frame"
     );
 }
 
-/// The committed three-frame MULTI-REFERENCE fixture (DECODE-INTER-MULTIREF-RUNTIME):
-/// frame 0 a flat DC_PRED intra key (luma 100), frame 1 a single-reference inter
-/// block (§7.7 NumTotalRefs == 1, the key) reconstructing luma 160 and refreshing a
-/// SECOND reference slot, and frame 2 an inter block over TWO valid references (§7.7
-/// ref_frame_idx [0, 1]) whose §5.20.7.12 single_ref selects slot 1 (the retained
-/// frame 1, luma 160), NOT the key (luma 100). Encoded with --cdf-update-mode=0 so
-/// no CDF adaptation propagates. avmdec `--rawvideo --i420` and `dav2d --demuxer ivf
-/// --muxer yuv` decode the whole stream byte-for-byte identically (oracle MD5
-/// `861078138ab514bd847ccfe22ac44fa1`, 18432 bytes).
 const MULTIREF_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf");
 
@@ -778,18 +571,10 @@ const TEN_BIT_INTRA_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-intra-64x64-10bit.ivf");
 
 fn repack_first_record_with_extra_regular_tile_group(source: &[u8]) -> Vec<u8> {
-    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(source) else {
-        panic!("source fixture is IVF");
-    };
-    assert!(parsed.error.is_none());
-    assert!(parsed.warnings.is_empty());
+    let parsed = parse_ivf_fixture(source, "source");
     assert!(!parsed.frames.is_empty());
 
-    let ParsedBitstream::Ivf(inter_parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
-        panic!("multiref fixture is IVF");
-    };
-    assert!(inter_parsed.error.is_none());
-    assert!(inter_parsed.warnings.is_empty());
+    let inter_parsed = parse_multiref_fixture();
     assert_eq!(inter_parsed.frames[1].obus.len(), 2);
 
     let first_inter_td_end = obu_end_in_ivf_payload(&inter_parsed.frames[1], 0);
@@ -803,42 +588,35 @@ fn repack_first_record_with_extra_regular_tile_group(source: &[u8]) -> Vec<u8> {
     header.frame_count = 1;
 
     let mut bytes = Vec::new();
-    write_ivf_header(&mut bytes, &header).expect("write repacked IVF header");
-    write_ivf_frame(&mut bytes, parsed.frames[0].frame.pts, &leading_payload)
-        .expect("write leading IVF record with extra tile group");
+    write_repacked_ivf_header(&mut bytes, &header);
+    write_repacked_ivf_frame(&mut bytes, parsed.frames[0].frame.pts, &leading_payload);
 
     bytes
 }
 
 fn repack_multiref_last_two_frames_into_one_ivf_record() -> Vec<u8> {
-    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
-        panic!("multiref fixture is IVF");
-    };
-    assert!(parsed.error.is_none());
-    assert!(parsed.warnings.is_empty());
+    let parsed = parse_multiref_fixture();
     assert_eq!(parsed.frames.len(), 3);
 
     let mut header = parsed.header.expect("multiref fixture has an IVF header");
     header.frame_count = 2;
 
     let mut bytes = Vec::new();
-    write_ivf_header(&mut bytes, &header).expect("write repacked IVF header");
-    write_ivf_frame(
+    write_repacked_ivf_header(&mut bytes, &header);
+    write_repacked_ivf_frame(
         &mut bytes,
         parsed.frames[0].frame.pts,
         parsed.frames[0].frame.payload,
-    )
-    .expect("write first repacked IVF record");
+    );
 
     let mut grouped_inter_payload = Vec::new();
     grouped_inter_payload.extend_from_slice(parsed.frames[1].frame.payload);
     grouped_inter_payload.extend_from_slice(parsed.frames[2].frame.payload);
-    write_ivf_frame(
+    write_repacked_ivf_frame(
         &mut bytes,
         parsed.frames[1].frame.pts,
         &grouped_inter_payload,
-    )
-    .expect("write grouped inter IVF record");
+    );
 
     bytes
 }
@@ -855,11 +633,7 @@ fn obu_end_in_ivf_payload(frame: &ParsedIvfFrame<'_>, obu_index: usize) -> usize
 }
 
 fn repack_multiref_first_inter_td_separate_from_tile_group() -> Vec<u8> {
-    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
-        panic!("multiref fixture is IVF");
-    };
-    assert!(parsed.error.is_none());
-    assert!(parsed.warnings.is_empty());
+    let parsed = parse_multiref_fixture();
     assert_eq!(parsed.frames.len(), 3);
     assert_eq!(parsed.frames[1].obus.len(), 2);
 
@@ -870,39 +644,32 @@ fn repack_multiref_first_inter_td_separate_from_tile_group() -> Vec<u8> {
     let first_inter_payload = parsed.frames[1].frame.payload;
 
     let mut bytes = Vec::new();
-    write_ivf_header(&mut bytes, &header).expect("write repacked IVF header");
-    write_ivf_frame(
+    write_repacked_ivf_header(&mut bytes, &header);
+    write_repacked_ivf_frame(
         &mut bytes,
         parsed.frames[0].frame.pts,
         parsed.frames[0].frame.payload,
-    )
-    .expect("write first repacked IVF record");
-    write_ivf_frame(
+    );
+    write_repacked_ivf_frame(
         &mut bytes,
         parsed.frames[1].frame.pts,
         &first_inter_payload[..first_inter_td_end],
-    )
-    .expect("write temporal-delimiter-only IVF record");
+    );
 
     let mut record_leading_tile_group_payload = Vec::new();
     record_leading_tile_group_payload.extend_from_slice(&first_inter_payload[first_inter_td_end..]);
     record_leading_tile_group_payload.extend_from_slice(parsed.frames[2].frame.payload);
-    write_ivf_frame(
+    write_repacked_ivf_frame(
         &mut bytes,
         parsed.frames[2].frame.pts,
         &record_leading_tile_group_payload,
-    )
-    .expect("write record-leading tile-group IVF record");
+    );
 
     bytes
 }
 
 fn repack_multiref_first_inter_with_extra_sequence_header() -> Vec<u8> {
-    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
-        panic!("multiref fixture is IVF");
-    };
-    assert!(parsed.error.is_none());
-    assert!(parsed.warnings.is_empty());
+    let parsed = parse_multiref_fixture();
     assert_eq!(parsed.frames.len(), 3);
     assert_eq!(parsed.frames[0].obus.len(), 3);
 
@@ -918,35 +685,28 @@ fn repack_multiref_first_inter_with_extra_sequence_header() -> Vec<u8> {
     state_prefixed_inter_payload.extend_from_slice(parsed.frames[1].frame.payload);
 
     let mut bytes = Vec::new();
-    write_ivf_header(&mut bytes, &header).expect("write repacked IVF header");
-    write_ivf_frame(
+    write_repacked_ivf_header(&mut bytes, &header);
+    write_repacked_ivf_frame(
         &mut bytes,
         parsed.frames[0].frame.pts,
         parsed.frames[0].frame.payload,
-    )
-    .expect("write first repacked IVF record");
-    write_ivf_frame(
+    );
+    write_repacked_ivf_frame(
         &mut bytes,
         parsed.frames[1].frame.pts,
         &state_prefixed_inter_payload,
-    )
-    .expect("write state-prefixed inter IVF record");
-    write_ivf_frame(
+    );
+    write_repacked_ivf_frame(
         &mut bytes,
         parsed.frames[2].frame.pts,
         parsed.frames[2].frame.payload,
-    )
-    .expect("write third repacked IVF record");
+    );
 
     bytes
 }
 
 fn repack_multiref_first_inter_with_trailing_sequence_header() -> Vec<u8> {
-    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
-        panic!("multiref fixture is IVF");
-    };
-    assert!(parsed.error.is_none());
-    assert!(parsed.warnings.is_empty());
+    let parsed = parse_multiref_fixture();
     assert_eq!(parsed.frames.len(), 3);
     assert_eq!(parsed.frames[0].obus.len(), 3);
 
@@ -962,58 +722,43 @@ fn repack_multiref_first_inter_with_trailing_sequence_header() -> Vec<u8> {
     state_trailing_inter_payload.extend_from_slice(sequence_obu);
 
     let mut bytes = Vec::new();
-    write_ivf_header(&mut bytes, &header).expect("write repacked IVF header");
-    write_ivf_frame(
+    write_repacked_ivf_header(&mut bytes, &header);
+    write_repacked_ivf_frame(
         &mut bytes,
         parsed.frames[0].frame.pts,
         parsed.frames[0].frame.payload,
-    )
-    .expect("write first repacked IVF record");
-    write_ivf_frame(
+    );
+    write_repacked_ivf_frame(
         &mut bytes,
         parsed.frames[1].frame.pts,
         &state_trailing_inter_payload,
-    )
-    .expect("write state-trailing inter IVF record");
-    write_ivf_frame(
+    );
+    write_repacked_ivf_frame(
         &mut bytes,
         parsed.frames[2].frame.pts,
         parsed.frames[2].frame.payload,
-    )
-    .expect("write third repacked IVF record");
+    );
 
     bytes
 }
 
 fn append_multiref_third_frame_as_fourth_ivf_record() -> Vec<u8> {
-    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
-        panic!("multiref fixture is IVF");
-    };
-    assert!(parsed.error.is_none());
-    assert!(parsed.warnings.is_empty());
+    let parsed = parse_multiref_fixture();
     assert_eq!(parsed.frames.len(), 3);
 
     let mut header = parsed.header.expect("multiref fixture has an IVF header");
     header.frame_count = 4;
 
     let mut bytes = Vec::new();
-    write_ivf_header(&mut bytes, &header).expect("write four-frame IVF header");
-    for frame in &parsed.frames {
-        write_ivf_frame(&mut bytes, frame.frame.pts, frame.frame.payload)
-            .expect("write original IVF record");
-    }
-    write_ivf_frame(&mut bytes, 3, parsed.frames[2].frame.payload)
-        .expect("write repeated fourth IVF record");
+    write_repacked_ivf_header(&mut bytes, &header);
+    write_original_ivf_frames(&mut bytes, &parsed.frames);
+    write_repacked_ivf_frame(&mut bytes, 3, parsed.frames[2].frame.payload);
 
     bytes
 }
 
 fn append_future_state_record_after_fourth_multiref_candidate() -> Vec<u8> {
-    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(MULTIREF_FIXTURE) else {
-        panic!("multiref fixture is IVF");
-    };
-    assert!(parsed.error.is_none());
-    assert!(parsed.warnings.is_empty());
+    let parsed = parse_multiref_fixture();
     assert_eq!(parsed.frames.len(), 3);
     assert_eq!(parsed.frames[0].obus.len(), 3);
 
@@ -1025,52 +770,31 @@ fn append_future_state_record_after_fourth_multiref_candidate() -> Vec<u8> {
     let sequence_obu = &parsed.frames[0].frame.payload[sequence_start..sequence_end];
 
     let mut bytes = Vec::new();
-    write_ivf_header(&mut bytes, &header).expect("write five-frame IVF header");
-    for frame in &parsed.frames {
-        write_ivf_frame(&mut bytes, frame.frame.pts, frame.frame.payload)
-            .expect("write original IVF record");
-    }
-    write_ivf_frame(&mut bytes, 3, parsed.frames[2].frame.payload)
-        .expect("write repeated fourth IVF record");
-    write_ivf_frame(&mut bytes, 4, sequence_obu).expect("write future state IVF record");
+    write_repacked_ivf_header(&mut bytes, &header);
+    write_original_ivf_frames(&mut bytes, &parsed.frames);
+    write_repacked_ivf_frame(&mut bytes, 3, parsed.frames[2].frame.payload);
+    write_repacked_ivf_frame(&mut bytes, 4, sequence_obu);
 
     bytes
 }
 
-/// The committed three-frame COMPOUND_AVERAGE fixture
-/// (DECODE-INTER-COMPOUND-AVERAGE): frame 0 is a general-intra DC_PRED
-/// low-frequency key frame, frame 1 is a single-reference NEWMV inter frame, and
-/// frame 2 is a `reference_select` compound block over refs [0, 1] with non-joint
-/// `NEAR_NEARMV`, zero MVs, `skip == 1`, `COMPOUND_AVERAGE`, and CWP/masks disabled.
-/// avmdec `--rawvideo --i420` and dav2d `--demuxer ivf --muxer yuv` decode the
-/// whole stream byte-for-byte identically (raw SHA-256
-/// `2b4f716243d9f5c30a244ecc6f7fdcb5bef804d2ba353a21d670d686cfe63ff4`, raw MD5
-/// `34074c6945348b146f84551a20d9affd`).
 const COMPOUND_AVERAGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-3frame-compound-average-64x64.ivf"
 );
 
-/// The committed multi-reference fixture decodes all THREE frames bit-exact.
 #[test]
 fn multiref_fixture_decodes_three_frames_bit_exact() {
-    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
-
     let frames = decode_fixture(MULTIREF_FIXTURE);
     assert_eq!(
         frames.len(),
         3,
         "the stream decodes a key frame + two inter frames"
     );
+    assert_yuv420_8bit_frames(&frames, 64, 64);
+
     let expected: [(u8, u8, u8); 3] = [(100, 120, 130), (160, 90, 70), (160, 90, 70)];
     for (index, output) in frames.iter().enumerate() {
         let frame = output.frame();
-        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
-        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
-        assert_eq!(
-            frame.y().visible_size(),
-            PlaneSize::new(64, 64).unwrap(),
-            "frame {index}"
-        );
         let (y, u, v) = expected[index];
         assert!(
             frame.y().samples().iter().all(|&s| s == y),
@@ -1117,17 +841,11 @@ fn multiref_fixture_decodes_when_two_frame_units_share_one_ivf_record() {
 fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
     let repacked = repack_multiref_first_inter_td_separate_from_tile_group();
     let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(&repacked, options).expect("plan");
+    let plan = plan_fixture(&repacked, options);
     let Err(error) = decode_minimal_frames_from_plan(&repacked, options, &plan) else {
         panic!("record-leading tile group must fail closed");
     };
-    let reason = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
-        _ => panic!("record-leading tile group must be an unsupported-feature error"),
-    };
-    assert_eq!(reason, "unexpected_inter_obu_order");
+    assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
 }
 
 #[test]
@@ -1535,9 +1253,7 @@ fn mhccp_sequence_tool_rejects_before_tile_decode() {
 fn leading_key_payload_extra_obu_reaches_chroma_tool_gate_after_key_header() {
     let repacked = repack_first_record_with_extra_regular_tile_group(TEN_BIT_INTRA_FIXTURE);
     let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(&repacked, options).expect("plan");
+    let plan = plan_fixture(&repacked, options);
     assert!(
         plan.obu_count() >= 4,
         "test fixture must keep an extra OBU after the leading key frame"
@@ -1561,9 +1277,7 @@ fn leading_key_payload_extra_obu_reaches_chroma_tool_gate_after_key_header() {
 fn multiref_runtime_rejects_extra_obu_after_leading_key_payload() {
     let repacked = repack_first_record_with_extra_regular_tile_group(MULTIREF_FIXTURE);
     let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(&repacked, options).expect("plan");
+    let plan = plan_fixture(&repacked, options);
     assert!(
         plan.obu_count() >= 4,
         "test fixture must keep an extra OBU after the leading key frame"
@@ -1581,9 +1295,7 @@ fn multiref_runtime_rejects_extra_obu_after_leading_key_payload() {
 fn multiref_runtime_rejects_state_obu_before_following_inter_candidate() {
     let repacked = repack_multiref_first_inter_with_extra_sequence_header();
     let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(&repacked, options).expect("plan");
+    let plan = plan_fixture(&repacked, options);
     assert_eq!(
         plan.frame_candidate_count(),
         3,
@@ -1599,9 +1311,7 @@ fn multiref_runtime_rejects_state_obu_before_following_inter_candidate() {
 fn multiref_runtime_rejects_state_obu_after_inter_candidate_before_next_frame() {
     let repacked = repack_multiref_first_inter_with_trailing_sequence_header();
     let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(&repacked, options).expect("plan");
+    let plan = plan_fixture(&repacked, options);
     assert_eq!(
         plan.frame_candidate_count(),
         3,
@@ -1617,9 +1327,7 @@ fn multiref_runtime_rejects_state_obu_after_inter_candidate_before_next_frame() 
 fn four_frame_multiref_reaches_too_many_valid_references_gate() {
     let four_frame = append_multiref_third_frame_as_fourth_ivf_record();
     let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(&four_frame, options).expect("plan");
+    let plan = plan_fixture(&four_frame, options);
     assert_eq!(
         plan.frame_candidate_count(),
         4,
@@ -1635,9 +1343,7 @@ fn four_frame_multiref_reaches_too_many_valid_references_gate() {
 fn multiref_runtime_does_not_preflight_future_ivf_records_before_reference_gate() {
     let future_state = append_future_state_record_after_fourth_multiref_candidate();
     let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(&future_state, options).expect("plan");
+    let plan = plan_fixture(&future_state, options);
     assert_eq!(
         plan.frame_candidate_count(),
         4,
@@ -1706,12 +1412,6 @@ fn multiref_runtime_enforces_cumulative_output_byte_limit() {
     assert_eq!(check.threshold(), DecodeLimitThreshold::Max(12_288));
 }
 
-/// THE asymmetric retention proof: frame 2 reads the RETAINED inter frame (frame 1,
-/// slot 1) via the §5.20.7.12 single_ref read, NOT the key (slot 0). Frame 1 and
-/// frame 2 reconstruct identically (luma 160), and both DIFFER from the key (luma
-/// 100) — so a wrong slot-0 selection would reconstruct frame 2 to the key's 100 and
-/// fail this test. This proves the §7.7 two-valid-slot map + §7.23 retention +
-/// single_ref selection genuinely read frame 1's samples.
 #[test]
 fn multiref_frame2_reads_retained_inter_frame_not_key() {
     let frames = decode_fixture(MULTIREF_FIXTURE);
@@ -1740,57 +1440,35 @@ fn multiref_frame2_reads_retained_inter_frame_not_key() {
     );
 }
 
-/// Per-frame decode-hash regression pin for the multi-reference fixture.
 #[test]
 fn multiref_fixture_per_frame_hash_is_stable() {
     let frames = decode_fixture(MULTIREF_FIXTURE);
-    let hash = |i: usize| {
-        splot_recon::DecodedFrameHashInput::new(frames[i].frame())
-            .compute_hash()
-            .to_hex()
-    };
-    let key_hash = hash(0);
-    let inter1_hash = hash(1);
-    let inter2_hash = hash(2);
+    let hashes = frame_hashes(&frames);
     assert_eq!(
-        key_hash, "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979",
+        hashes[0], "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979",
         "multi-reference key-frame hash"
     );
     assert_eq!(
-        inter1_hash, "7dad863f3e72b5785012a4e0497e9eb0eab98281bec147f7fb81240aa5116e1b",
+        hashes[1], "7dad863f3e72b5785012a4e0497e9eb0eab98281bec147f7fb81240aa5116e1b",
         "multi-reference frame-1 hash"
     );
     assert_eq!(
-        inter2_hash, "7dad863f3e72b5785012a4e0497e9eb0eab98281bec147f7fb81240aa5116e1b",
+        hashes[2], "7dad863f3e72b5785012a4e0497e9eb0eab98281bec147f7fb81240aa5116e1b",
         "multi-reference frame-2 hash (== retained frame 1)"
     );
-    assert_eq!(inter1_hash, inter2_hash, "frame 2 == retained frame 1");
-    assert_ne!(
-        key_hash, inter1_hash,
-        "the inter frames differ from the key"
-    );
+    assert_eq!(hashes[1], hashes[2], "frame 2 == retained frame 1");
+    assert_ne!(hashes[0], hashes[1], "the inter frames differ from the key");
 }
 
 #[test]
 fn compound_average_fixture_decodes_three_frames_bit_exact() {
-    use splot_recon::{BitDepth, PixelFormat, PlaneSize};
-
     let frames = decode_fixture(COMPOUND_AVERAGE_FIXTURE);
     assert_eq!(
         frames.len(),
         3,
         "the stream decodes a key frame + two inter frames"
     );
-    for (index, output) in frames.iter().enumerate() {
-        let frame = output.frame();
-        assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
-        assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
-        assert_eq!(
-            frame.y().visible_size(),
-            PlaneSize::new(64, 64).unwrap(),
-            "frame {index}"
-        );
-    }
+    assert_yuv420_8bit_frames(&frames, 64, 64);
 
     let frame0 = frames[0].frame();
     let frame1 = frames[1].frame();
@@ -1825,14 +1503,7 @@ fn compound_average_fixture_decodes_three_frames_bit_exact() {
 #[test]
 fn compound_average_fixture_per_frame_hash_is_stable() {
     let frames = decode_fixture(COMPOUND_AVERAGE_FIXTURE);
-    let hashes = frames
-        .iter()
-        .map(|output| {
-            splot_recon::DecodedFrameHashInput::new(output.frame())
-                .compute_hash()
-                .to_hex()
-        })
-        .collect::<Vec<_>>();
+    let hashes = frame_hashes(&frames);
     assert_eq!(
         hashes,
         [
@@ -1861,13 +1532,6 @@ fn assert_rounded_average(ref0: &[u8], ref1: &[u8], compound: &[u8]) {
     }
 }
 
-/// AV2 § 5 `choose_primary_secondary_ref_frame` (mirror :5468-5495): the
-/// CHOOSE-resolution loop scores ONLY `RefFrameType == INTER_FRAME` slots, so a
-/// reference history whose valid slot holds the KEY frame resolves to
-/// `PRIMARY_REF_NONE` (8 == PRIMARY_REF_CHOOSE is the input value; 7 ==
-/// PRIMARY_REF_NONE is the result). This is the GROUND-TRUTH behaviour of the
-/// committed 2-frame fixtures (their only valid slot holds the CLK KEY frame), so
-/// CHOOSE never resolves to an adapted-CDF load there.
 #[test]
 fn choose_primary_ref_frame_skips_non_inter_slots() {
     use super::cross_frame::choose_primary_secondary_ref_frame as choose;
@@ -1915,8 +1579,6 @@ fn choose_primary_ref_frame_skips_non_inter_slots() {
     );
 }
 
-/// AV2 § 5 `choose_primary_secondary_ref_frame` (mirror :5476-5495): with two inter
-/// candidates the lower `qpDiff = Abs(RefBaseQIdx - base_q_idx)` wins.
 #[test]
 fn choose_primary_ref_frame_ranks_two_inter_slots_by_qp_diff() {
     use super::cross_frame::choose_primary_secondary_ref_frame as choose;
@@ -1948,10 +1610,6 @@ fn choose_primary_ref_frame_ranks_two_inter_slots_by_qp_diff() {
     );
 }
 
-/// AV2 § 5 `set_primary_ref_frame_and_ctx` (mirror :5411-5430) — the CDF-load decision
-/// after resolving `PRIMARY_REF_CHOOSE`. A CHOOSE frame over a KEY-only history resolves to
-/// PRIMARY_REF_NONE -> `Default` (no load); over an ADAPTED inter slot it resolves to
-/// `LoadSlot(slot)` -> the caller rejects. cross-frame-init-disabled is always `Default`.
 #[test]
 fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
     use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
@@ -2265,18 +1923,12 @@ fn effective_quantizer_delta_gate_includes_frame_and_sequence_offsets() {
     );
 }
 
-/// AV2 § 5.18.2 `get_disp_order_hint` — the stored RefOrderHint (= OrderHintLsbs) is the
-/// unwrapped OrderHint unless the DIRECTIONAL wrap correction fires, which happens only when
-/// the max prior valid reference's order hint exceeds this frame's LSB by at least HALF an
-/// OrderHintBits window (`maxDisp - LSB >= window/2`, a `monotonic_output_order_flag == 0`
-/// wrap-back). FORWARD frames (`LSB >= maxDisp`) are never corrected and are admitted even
-/// with a large span; only the wrap-back direction is rejected.
 #[test]
 fn order_hint_history_wrap_guard() {
     use super::cross_frame::order_hint_history_unwrapped as unwrapped;
     assert!(unwrapped(&[true], &[0u32], 0, 5));
     assert!(unwrapped(&[true], &[0u32], 4, 1));
-    assert!(unwrapped(&[true], &[0u32], 4, 9)); // the forward span the symmetric bound wrongly rejected
+    assert!(unwrapped(&[true], &[0u32], 4, 9));
     assert!(unwrapped(&[true], &[0u32], 4, 15));
     assert!(!unwrapped(&[true], &[15u32], 4, 0));
     assert!(!unwrapped(&[true], &[8u32], 4, 0));
@@ -2284,10 +1936,6 @@ fn order_hint_history_wrap_guard() {
     assert!(!unwrapped(&[true, true], &[0u32, 12], 4, 1));
 }
 
-/// AV2 §8.3.2 `is_same_side()` uses strict signs: a reference with zero relative
-/// distance is neither before nor after the current frame. This keeps zero/zero
-/// compound refs on `TileIsJointCdf[0]` rather than accidentally admitting them
-/// through the verified ctx-1 compound-average subset.
 #[test]
 fn compound_is_joint_context_uses_strict_same_side_signs() {
     let ctx = compound_is_joint_context_from_order_hints;
@@ -2307,23 +1955,18 @@ fn compound_is_joint_context_uses_strict_same_side_signs() {
     );
 }
 
-/// AV2 §8.3.2 `interp_filter` starts at no-neighbour type 3, then adds
-/// `is_inter_ref_frame(RefFrame[1]) * 4`. The verified compound-average path has
-/// an inter second reference, so a SWITCHABLE compound block must read
-/// `TileInterpFilterCdf[7]`, not the single-reference row 3.
 #[test]
 fn interp_filter_no_neighbour_context_accounts_for_compound_second_ref() {
     assert_eq!(interp_filter_no_neighbour_ctx(false), 3);
     assert_eq!(interp_filter_no_neighbour_ctx(true), 7);
 }
 
-/// `FloorLog2` (AV2 § 4): the MSB index, 0 for 0.
 #[test]
 fn floor_log2_matches_msb_index() {
     use super::cross_frame::floor_log2;
     assert_eq!(floor_log2(0), 0);
     assert_eq!(floor_log2(1), 0);
     assert_eq!(floor_log2(2), 1);
-    assert_eq!(floor_log2(64 * 64), 12); // 4096 == 1 << 12
+    assert_eq!(floor_log2(64 * 64), 12);
     assert_eq!(floor_log2(4095), 11);
 }

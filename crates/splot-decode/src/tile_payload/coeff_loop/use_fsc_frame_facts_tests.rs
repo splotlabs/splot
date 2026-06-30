@@ -205,37 +205,16 @@ fn find_fsc_payload() -> [u8; 8] {
     panic!("no FSC coefficient frame-facts payload found");
 }
 
-fn assert_runs_eq(derived: &SelectorRun, expected: &SelectorRun) {
-    assert_eq!(derived.0, expected.0);
-    assert_eq!(derived.1, expected.1);
-    assert_eq!(derived.2, expected.2);
-    assert_eq!(derived.3, expected.3);
-    assert_eq!(derived.4, expected.4);
-}
-
 #[test]
 fn coefficient_frame_facts_nonzero_input_derives_lower_packet() {
-    let lossless_array = [false; MAX_SEGMENTS];
     let input = CoeffUseFscFrameFactsNonZeroInput {
-        frame: TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
-            enable_fsc: true,
-            enable_idtx_intra: true,
-            enable_intra_ist: false,
-            enable_inter_ist: false,
-            enable_chroma_dctonly: true,
-            enable_cctx: false,
-            reduced_tx_set: 3,
-            lossless_array,
-            allow_tcq: true,
-            allow_parity_hiding: true,
-            base_q_idx: 141,
-        }),
+        frame: frame_facts(true, true, 3, true, true, 141, None),
         block: CoeffUseFscFrameBlockFacts {
-            geometry: geometry(),
             plane_tx_type: DCT_DCT,
             fsc_mode: false,
             is_inter: true,
             segment_id: 4,
+            ..block_facts()
         },
         ordinary: CoeffUseFscFrameOrdinaryFacts {
             uv_mode: 5,
@@ -269,11 +248,9 @@ fn coefficient_frame_facts_lossless_suppresses_parity_hiding_and_tcq() {
     let input = CoeffUseFscFrameFactsNonZeroInput {
         frame: frame_facts(false, false, 0, true, true, 91, Some(0)),
         block: CoeffUseFscFrameBlockFacts {
-            geometry: geometry(),
             plane_tx_type: DCT_DCT,
             fsc_mode: false,
-            is_inter: false,
-            segment_id: 0,
+            ..block_facts()
         },
         ordinary: ordinary_facts(),
     };
@@ -296,8 +273,7 @@ fn coefficient_frame_facts_chroma_suppresses_parity_hiding_and_tcq() {
             },
             plane_tx_type: DCT_DCT,
             fsc_mode: false,
-            is_inter: false,
-            segment_id: 0,
+            ..block_facts()
         },
         ordinary: ordinary_facts(),
     };
@@ -313,13 +289,7 @@ fn coefficient_frame_facts_chroma_suppresses_parity_hiding_and_tcq() {
 fn coefficient_frame_facts_idtx_fsc_suppresses_parity_hiding_and_tcq() {
     let input = CoeffUseFscFrameFactsNonZeroInput {
         frame: frame_facts(true, false, 0, true, true, 91, None),
-        block: CoeffUseFscFrameBlockFacts {
-            geometry: geometry(),
-            plane_tx_type: IDTX,
-            fsc_mode: true,
-            is_inter: false,
-            segment_id: 0,
-        },
+        block: block_facts(),
         ordinary: ordinary_facts(),
     };
 
@@ -335,11 +305,9 @@ fn coefficient_frame_facts_non_2d_suppresses_tcq_only() {
     let input = CoeffUseFscFrameFactsNonZeroInput {
         frame: frame_facts(false, false, 0, true, true, 91, None),
         block: CoeffUseFscFrameBlockFacts {
-            geometry: geometry(),
             plane_tx_type: V_DCT,
             fsc_mode: false,
-            is_inter: false,
-            segment_id: 0,
+            ..block_facts()
         },
         ordinary: ordinary_facts(),
     };
@@ -357,7 +325,7 @@ fn coefficient_frame_facts_all_zero_matches_base_q_path() {
     let derived =
         run_frame_facts(&[0x80], CoeffUseFscFrameFactsInput::AllZero(geometry())).unwrap();
 
-    assert_runs_eq(&derived, &expected);
+    assert_eq!(derived, expected);
 }
 
 #[test]
@@ -374,17 +342,15 @@ fn coefficient_frame_facts_false_matches_base_q_ordinary_path() {
     )
     .unwrap();
 
-    assert_runs_eq(&derived, &expected);
+    assert_eq!(derived, expected);
 }
 
 #[test]
 fn coefficient_frame_facts_parity_hiding_matches_explicit_base_q_path() {
     let block = CoeffUseFscFrameBlockFacts {
-        geometry: geometry(),
         plane_tx_type: DCT_DCT,
         fsc_mode: false,
-        is_inter: false,
-        segment_id: 0,
+        ..block_facts()
     };
     let mut ordinary = ordinary_base_config();
     ordinary.parity_hiding = true;
@@ -407,17 +373,15 @@ fn coefficient_frame_facts_parity_hiding_matches_explicit_base_q_path() {
     )
     .unwrap();
 
-    assert_runs_eq(&derived, &expected);
+    assert_eq!(derived, expected);
 }
 
 #[test]
 fn coefficient_frame_facts_tcq_matches_explicit_base_q_path() {
     let block = CoeffUseFscFrameBlockFacts {
-        geometry: geometry(),
         plane_tx_type: DCT_DCT,
         fsc_mode: false,
-        is_inter: false,
-        segment_id: 0,
+        ..block_facts()
     };
     let mut ordinary = ordinary_base_config();
     ordinary.use_tcq = true;
@@ -440,7 +404,7 @@ fn coefficient_frame_facts_tcq_matches_explicit_base_q_path() {
     )
     .unwrap();
 
-    assert_runs_eq(&derived, &expected);
+    assert_eq!(derived, expected);
 }
 
 #[test]
@@ -457,7 +421,7 @@ fn coefficient_frame_facts_true_matches_base_q_fsc_path() {
     )
     .unwrap();
 
-    assert_runs_eq(&derived, &expected);
+    assert_eq!(derived, expected);
 }
 
 #[test]

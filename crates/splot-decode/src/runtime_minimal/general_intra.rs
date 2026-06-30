@@ -1,32 +1,24 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! General minimal-tool intra decode frontier for the shared minimal-tier
-//! runtime.
-//!
-//! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
-
 use splot_core::headers::sequence::BitDepthIdc;
-use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, ReconSample};
 
+use super::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
+use super::capability::missing_capability_message;
+use super::intra_prediction::{IntraLumaUnsupported, plan_luma_prediction};
+use super::residual_pipeline::{GeneralIntraResidualPlan, ResidualPipelineUnsupported};
 use super::*;
+use crate::tile_payload::{GeneralIntraBlockModes, GeneralIntraLeafMode, SupportedChromaMode};
 
-/// Routes a parsed frame to the general intra decode frontier.
-///
-/// The frozen minimal hash tier owns exactly the committed
-/// `base_q_idx == 255` fixture (see [`validate_frame_core`]); any other
-/// general minimal-tool intra key frame routes to
-/// [`decode_general_minimal_intra_frame`]. Frames that are not minimal-tool
-/// intra (segmentation, quant matrices, delta-Q, in-loop filters, CCSO, GDF,
-/// film grain, screen-content/palette, DIP, or SDP enabled) fall through to the
-/// frozen gate so its precise diagnostics are preserved.
-///
-/// `enable_dip` (§ 5.20.5.3 `dip_mode_info`) and `enable_sdp` (luma-only key
-/// partitions that omit the `uv_mode` read) are checked here at the sequence
-/// level — not in [`validate_sequence`] — because the frozen hash fixture is
-/// itself an `enable_sdp` stream whose hand-traced symbol path handles it; only
-/// the general mode decode cannot yet.
+const FULL_SB_N4_LUMA: usize = 16;
+
+macro_rules! general_intra_at {
+    ($reason:expr, $offset:expr, $message:expr, $spec_section:expr $(,)?) => {
+        general_intra_unsupported($reason, Some($offset), $message, $spec_section)
+    };
+}
+
 pub(super) fn route_general_minimal_intra(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -70,13 +62,6 @@ pub(super) fn route_general_minimal_intra(
         })
         && is_general_minimal_intra(core)
 }
-
-/// Returns whether `core` is a single-tile 8-bit intra key frame whose width and
-/// height are positive multiples of 64 forming a (possibly 2-D) grid of 64x64
-/// superblocks, with no segmentation, quant matrices, delta-Q, in-loop filters,
-/// CCSO, GDF, or film grain — the general intra subset the frontier admits. This
-/// mirrors [`validate_frame_core`] but accepts any `base_q_idx`, so blocks can
-/// carry a real (nonzero) residual.
 fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
     core.status == FrameHeaderParseStatus::IntraHeaderComplete
         && core.cur_mfh_id.is_zero()
@@ -129,16 +114,6 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
             .is_some_and(|tail| !tail.film_grain.apply_grain)
         && core.allow_screen_content_tools != Some(true)
 }
-
-/// Decodes a general minimal-tool intra key frame as far as the current
-/// frontier reaches.
-///
-/// This runs the real AV2 § 5.20.3.1 partition traversal over the single tile,
-/// confirms the root partition frontier, decodes the § 5.20.5.3 block mode info,
-/// decodes the § 5.20.7.27 luma and chroma transform-block coefficients,
-/// dequantizes / inverse-transforms / residual-adds each plane over a
-/// no-neighbour DC prediction, validates `exit_symbol()`, and returns the
-/// reconstructed frame. It never mutates the frozen minimal hash tier.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_general_minimal_intra_frame(
     plan: &DecodeStreamPlan,
@@ -173,7 +148,7 @@ pub(super) fn decode_general_minimal_intra_frame(
             return Err(general_intra_unsupported(
                 "general_intra_unexpected_tile_work_units",
                 work_units.first().map(|tile| tile.tile_byte_span().start),
-                "general intra decode currently supports exactly one tile work unit",
+                missing_capability_message!("intra.tile.count", count = "not_one"),
                 GENERAL_INTRA_TILE_SPEC_SECTION,
             ));
         }
@@ -184,9 +159,9 @@ pub(super) fn decode_general_minimal_intra_frame(
         .quantization_params
         .map(|quant| quant.base_q_idx)
         .ok_or_else(|| {
-            general_intra_unsupported(
+            general_intra_at!(
                 "general_intra_missing_base_q",
-                Some(tile_offset),
+                tile_offset,
                 "general intra decode requires a parsed base_q_idx",
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
             )
@@ -196,9 +171,9 @@ pub(super) fn decode_general_minimal_intra_frame(
         .map_err(|error| general_intra_partition_frontier_error(error, tile_offset))?;
 
     let frame_size = core.frame_size.ok_or_else(|| {
-        general_intra_unsupported(
+        general_intra_at!(
             "general_intra_missing_frame_size",
-            Some(tile_offset),
+            tile_offset,
             "general intra decode requires a parsed frame size",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         )
@@ -254,16 +229,6 @@ pub(super) fn decode_general_minimal_intra_frame(
         frame_rate_denominator: header.timebase_numerator,
     })
 }
-
-/// Reconstructs the general intra key frame into a `DecodedFrame<T>` for the
-/// sample storage type `T` selected by the active sequence `bit_depth` (§ 6.4.1).
-///
-/// This is the storage-typed body of [`decode_general_minimal_intra_frame`]: it
-/// builds the typed `CurrentFrameWorkspace<T>`, walks the real AV2 § 5.20.3.1
-/// partition tree decoding each leaf's § 5.20.5.3 mode info and § 5.20.7.27
-/// Y/U/V coefficients, reconstructs each block into the workspace in decode order
-/// (so later blocks predict from the already-reconstructed neighbours),
-/// validates § 8.2.4 `exit_symbol()`, and freezes the workspace.
 #[allow(clippy::too_many_arguments)]
 fn decode_general_intra_frame_into<T: ReconSample>(
     tile: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
@@ -330,9 +295,9 @@ fn decode_general_intra_frame_into<T: ReconSample>(
     .map_err(|error| map_general_intra_multiblock_error(error, tile_offset))?;
 
     symbols.exit_symbol().map_err(|_| {
-        general_intra_unsupported(
+        general_intra_at!(
             "general_intra_exit_symbol",
-            Some(tile_offset),
+            tile_offset,
             "general intra tile payload did not satisfy §8.2.4 exit_symbol() after the decoded blocks",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         )
@@ -359,11 +324,6 @@ fn decode_general_intra_frame_into<T: ReconSample>(
 
     Ok(workspace.freeze()?)
 }
-
-/// Builds the §7.18.1 single-strength-set CDEF parameters from the parsed frame
-/// header, or `None` when CDEF is frame-disabled (the pass is then skipped). The
-/// route gate guarantees `CdefStrengths == 1` and a present damping / strength set
-/// whenever `cdef_frame_enable` is true, so this maps the verified subset only.
 fn cdef_frame_params(core: &FrameHeaderCore) -> Option<super::cdef::CdefFrameParams> {
     let cdef = core.cdef_params.as_ref()?;
     if !cdef.cdef_frame_enable {
@@ -379,47 +339,25 @@ fn cdef_frame_params(core: &FrameHeaderCore) -> Option<super::cdef::CdefFramePar
         damping,
     })
 }
-
-/// Maps a §7.18 CDEF-orchestration error to a decode diagnostic. The per-block
-/// primitives are total for valid inputs, so any error here signals an internal
-/// inconsistency (a geometry or workspace access out of bounds) and surfaces as an
-/// `unsupported-feature` diagnostic rather than a silent wrong-pixel output.
 fn general_intra_cdef_error(_error: super::cdef::CdefError, offset: ByteOffset) -> DecodeError {
-    general_intra_unsupported(
+    general_intra_at!(
         "general_intra_cdef",
-        Some(offset),
-        "general intra §7.18 CDEF orchestration reached an unsupported or inconsistent block configuration",
+        offset,
+        missing_capability_message!("intra.cdef.block_config"),
         "7.18",
     )
 }
-
-/// Maps a §7.17 deblocking-orchestration error to a decode diagnostic. The
-/// per-edge primitives are total for valid inputs, so any error here signals an
-/// internal inconsistency (an uncovered MI, a missing transform size, or a
-/// workspace access out of bounds) and surfaces as an `unsupported-feature`
-/// diagnostic rather than a silent wrong-pixel output.
 fn general_intra_deblock_error(
     _error: super::deblock::DeblockError,
     offset: ByteOffset,
 ) -> DecodeError {
-    general_intra_unsupported(
+    general_intra_at!(
         "general_intra_deblock",
-        Some(offset),
-        "general intra §7.17 deblocking-filter orchestration reached an unsupported or inconsistent edge configuration",
+        offset,
+        missing_capability_message!("intra.deblock.edge_config"),
         "7.17",
     )
 }
-
-/// Decodes one general intra leaf block (mode info + Y/U/V coefficients) and
-/// reconstructs it into `workspace` in decode order. Gated to square DC_PRED
-/// blocks: the no-neighbour-aware §7.13.2 DC prediction is read from the
-/// partially-built frame, so non-DC modes and non-square partitions are
-/// rejected. Chroma is 4:2:0 (half-resolution).
-///
-/// Returns the block's AV2 § 5.20.5.3 luma mode state so the caller can record
-/// it into the `IntraJointModes` / `YModes` grids for later blocks' contexts;
-/// `joint_modes` supplies that grid (read-only here) for this block's own
-/// `y_mode_index` context.
 #[allow(clippy::too_many_arguments)]
 fn decode_one_general_intra_block<T: ReconSample>(
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
@@ -438,11 +376,11 @@ fn decode_one_general_intra_block<T: ReconSample>(
     mi_rows: usize,
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
-) -> Result<crate::tile_payload::GeneralIntraLeafMode> {
+) -> Result<GeneralIntraLeafMode> {
     let geometry_error = || {
-        general_intra_unsupported(
+        general_intra_at!(
             "general_intra_block_geometry",
-            Some(tile_offset),
+            tile_offset,
             "general intra block geometry lookup failed",
             GENERAL_INTRA_PARTITION_SPEC_SECTION,
         )
@@ -456,21 +394,32 @@ fn decode_one_general_intra_block<T: ReconSample>(
         .num_4x4_high()
         .map_err(|_| geometry_error())?;
     if n4w < 2 || n4h < 2 {
-        return Err(general_intra_unsupported(
+        return Err(general_intra_at!(
             "general_intra_sub_8x8_block",
-            Some(tile_offset),
-            "general intra decode does not yet support sub-8x8 luma blocks (deferred 4:2:0 chroma sizing)",
+            tile_offset,
+            missing_capability_message!("intra.block.size", block = "sub_8x8"),
             GENERAL_INTRA_PARTITION_SPEC_SECTION,
         ));
     }
     if !frontier.has_chroma {
-        return Err(general_intra_unsupported(
+        return Err(general_intra_at!(
             "general_intra_luma_only_block",
-            Some(tile_offset),
-            "general intra decode does not yet support luma-only (no-chroma) blocks",
+            tile_offset,
+            missing_capability_message!("intra.chroma.presence", chroma = "absent"),
             GENERAL_INTRA_PARTITION_SPEC_SECTION,
         ));
     }
+    let Some(block_tx_shape) = TxShape::from_luma_4x4(n4w, n4h) else {
+        return Err(geometry_error());
+    };
+    let block_ctx = BlockCtx::new(
+        BlockRect::new(frontier.r, frontier.c, n4w, n4h),
+        block_tx_shape,
+        mi_cols,
+        mi_rows,
+        bit_depth,
+        ChromaSampling::Yuv420,
+    );
 
     let modes = crate::tile_payload::decode_general_intra_block_modes(
         work_unit,
@@ -488,865 +437,223 @@ fn decode_one_general_intra_block<T: ReconSample>(
     )
     .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
     if modes.uses_active_mrl() {
-        return Err(general_intra_unsupported(
+        return Err(general_intra_at!(
             "general_intra_unsupported_mrl_mode",
-            Some(tile_offset),
-            "general intra decode can retain active MRL mode-info but does not support §7.13.2 MRL prediction",
+            tile_offset,
+            missing_capability_message!("intra.luma.mrl", mode = "active"),
             "7.13.2",
         ));
     }
     if modes.uses_active_fsc() {
-        return Err(general_intra_unsupported(
+        return Err(general_intra_at!(
             "general_intra_unsupported_fsc_mode",
-            Some(tile_offset),
-            "general intra decode can retain active FSC mode-info but does not support FSC/IDTX reconstruction",
+            tile_offset,
+            missing_capability_message!("intra.transform.fsc", mode = "active"),
             "5.20.7.27",
         ));
     }
-
-    let single_sb_frame = mi_cols == FULL_SB_N4_LUMA && mi_rows == FULL_SB_N4_LUMA;
-    let chroma_admitted_10bit = match modes.supported_chroma_mode() {
-        Some(crate::tile_payload::SupportedChromaMode::Dc) => true,
-        Some(crate::tile_payload::SupportedChromaMode::Smooth) => {
-            single_sb_frame && frontier.r == 0 && frontier.c == 0
-        }
-        _ => false,
-    };
-    if bit_depth != BitDepth::Eight && (!modes.luma_is_dc() || !chroma_admitted_10bit) {
-        return Err(general_intra_unsupported(
-            "unsupported_10bit_non_dc_intra",
-            Some(tile_offset),
-            "general intra 10-bit reconstruction is only oracle-verified for DC_PRED luma with DC chroma, or no-neighbour top-left SMOOTH chroma; a 10-bit non-DC luma, other non-DC chroma, or neighbour-having SMOOTH chroma block is deferred until a 10-bit oracle fixture pins it",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
-
-    if bit_depth != BitDepth::Eight && (n4w != FULL_SB_N4_LUMA || n4h != FULL_SB_N4_LUMA) {
-        return Err(general_intra_unsupported(
-            "unsupported_10bit_non_64x64_leaf",
-            Some(tile_offset),
-            "general intra 10-bit reconstruction is only oracle-verified for full 64x64 square DC leaves; a 10-bit non-64x64 partition leaf (rectangular, or a split 32x32 / 16x16 square sub-block) is deferred until a 10-bit oracle fixture pins it",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
+    ensure_10bit_general_intra_capability(&modes, block_ctx, (mi_cols, mi_rows), tile_offset)?;
 
     if n4w != n4h {
         return decode_one_general_intra_rect_block::<T>(
             work_unit,
             symbols,
-            frontier,
+            frontier.has_chroma,
             &modes,
             workspace,
             coeff_ctx,
             deblock_blocks,
             qindex,
-            n4w,
-            n4h,
-            bit_depth,
+            luma_use_tcq,
+            block_ctx,
+            block_decoded,
             tile_offset,
         );
     }
 
     let Some(supported_chroma) = modes.supported_chroma_mode() else {
-        return Err(general_intra_unsupported(
+        return Err(general_intra_at!(
             "general_intra_non_dc_chroma_mode",
-            Some(tile_offset),
-            "general intra reconstruction only supports DC, SMOOTH, the cardinal V/H directional-follow, and the D135 / D157 directional-follow chroma prediction; other non-DC chroma (uv_mode) modes are not yet implemented",
+            tile_offset,
+            missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     };
-    let chroma_is_top_left = frontier.r == 0 && frontier.c == 0;
-    #[allow(clippy::items_after_statements)]
-    const FULL_SB_N4_CHROMA_GATE: usize = 16;
-    let chroma_first_row_neighbour_ok = frontier.r == 0 && n4w == FULL_SB_N4_CHROMA_GATE;
-    let chroma_row_gt0_neighbour_ok =
-        frontier.r != 0 && frontier.c != 0 && n4w == FULL_SB_N4_CHROMA_GATE;
-    if supported_chroma == crate::tile_payload::SupportedChromaMode::D135Follow
-        && !((chroma_is_top_left && n4w == FULL_SB_N4_CHROMA_GATE)
-            || chroma_first_row_neighbour_ok
-            || chroma_row_gt0_neighbour_ok)
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_directional_chroma_neighbour",
-            Some(tile_offset),
-            "general intra directional-follow (D135) chroma prediction is supported for the top-left (no-neighbour) 64x64 superblock block, a first-superblock-row neighbour-having full 64x64 superblock block, and a row > 0 non-first-column full 64x64 superblock block (real reconstructed above row + left column + diagonally-above-left corner); a row > 0 FIRST-column (!haveLeft && haveAbove) or sub-partitioned D135-follow chroma block is deferred until an oracle fixture pins it",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
-    if supported_chroma == crate::tile_payload::SupportedChromaMode::D113Follow
-        && !(frontier.r != 0 && frontier.c != 0 && n4w == FULL_SB_N4_CHROMA_GATE)
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_directional_d113_chroma_neighbour",
-            Some(tile_offset),
-            "general intra directional-follow (D113) chroma prediction is only supported for a row>0, non-first-column neighbour-having full 64x64 superblock block reading the real reconstructed §7.13.2.1 above row + left column + diagonally-above-left corner; the top-left, first-row, first-column, sub-partitioned, and non-64x64 D113-follow chroma positions are deferred until an oracle fixture pins them",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
-    if supported_chroma == crate::tile_payload::SupportedChromaMode::D157Follow
-        && !(frontier.r == 0 && frontier.c != 0 && n4w == FULL_SB_N4_CHROMA_GATE)
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_directional_d157_chroma_neighbour",
-            Some(tile_offset),
-            "general intra directional-follow (D157) chroma prediction is only supported for a first-superblock-row, non-first-column neighbour-having full 64x64 superblock block reading the real reconstructed §7.13.2.1 left chroma column; the top-left, first-column, sub-partitioned, and row>0 D157-follow chroma positions are deferred until an oracle fixture pins them",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
-    if supported_chroma == crate::tile_payload::SupportedChromaMode::D45Follow
-        && !(frontier.r != 0
-            && frontier.c != 0
-            && n4w == FULL_SB_N4_CHROMA_GATE
-            && full_sb_num4_above_right(frontier.c, n4w, mi_cols, 1) > 0)
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_directional_d45_chroma_neighbour",
-            Some(tile_offset),
-            "general intra directional-follow (D45) chroma prediction is only supported for a row>0, non-first-column, non-rightmost neighbour-having full 64x64 superblock block reading the real reconstructed §7.13.2.1 above row + above-right; the top-left, first-row, first-column, rightmost, sub-partitioned, and non-64x64 D45-follow chroma positions are deferred until an oracle fixture pins them",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
-    if supported_chroma == crate::tile_payload::SupportedChromaMode::VerticalFollow
-        && !(frontier.r != 0 && n4w == FULL_SB_N4_CHROMA_GATE)
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_cardinal_vertical_chroma",
-            Some(tile_offset),
-            "general intra directional-follow V_PRED (pAngle 90) chroma prediction is only supported for a row>0 full 64x64 superblock block reading the real reconstructed §7.13.2.1 above row; a first-superblock-row or sub-partitioned block is not yet covered by an oracle fixture",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
-    if supported_chroma == crate::tile_payload::SupportedChromaMode::HorizontalFollow
-        && !(frontier.c != 0 && n4w == FULL_SB_N4_CHROMA_GATE)
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_cardinal_horizontal_chroma",
-            Some(tile_offset),
-            "general intra directional-follow H_PRED (pAngle 180) chroma prediction is only supported for a non-first-column full 64x64 superblock block reading the real reconstructed §7.13.2.1 left column; a first-superblock-column or sub-partitioned block is not yet covered by an oracle fixture",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
-    if supported_chroma == crate::tile_payload::SupportedChromaMode::Horizontal
-        && !(chroma_is_top_left && n4w == FULL_SB_N4_CHROMA_GATE)
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_horizontal_chroma_position",
-            Some(tile_offset),
-            "general intra non-follow H_PRED (pAngle 180) chroma prediction is only supported at the no-neighbour top-left full 64x64 superblock block reading the §7.13.2.1 flat fallback left column; a neighbour-having or sub-partitioned position is not yet covered by an oracle fixture",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
-    #[allow(clippy::items_after_statements)]
-    const FULL_SB_N4: usize = 16;
-    if supported_chroma == crate::tile_payload::SupportedChromaMode::Smooth && n4w != FULL_SB_N4 {
-        return Err(general_intra_unsupported(
-            "general_intra_smooth_chroma_subblock",
-            Some(tile_offset),
-            "general intra SMOOTH chroma is only supported for full 64x64 superblock blocks; sub-partitioned SMOOTH chroma needs the §7.13.2.1 above-right / below-left sentinel neighbours from the per-block §5.20.2.3 BlockDecoded update, which is not yet modelled",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
-    #[allow(clippy::items_after_statements)]
-    const NON_DC_MIN_N4: usize = 8;
-    #[allow(clippy::items_after_statements)]
-    const FULL_SB_N4_LUMA: usize = 16;
-    let supported_nondc_luma = modes.supported_nondc_luma();
-    let supported_directional_luma = modes.supported_directional_luma();
-    let is_top_left = frontier.r == 0 && frontier.c == 0;
-    let nondc_luma_has_neighbour = supported_nondc_luma.is_some() && !is_top_left;
-    let directional_luma_has_neighbour = supported_directional_luma.is_some() && !is_top_left;
-    if !modes.luma_is_dc() {
-        #[allow(clippy::match_same_arms)]
-        match (supported_nondc_luma, supported_directional_luma) {
-            (Some(SupportedNonDcLumaMode::Smooth), _) if is_top_left && n4w == FULL_SB_N4_LUMA => {}
-            (
-                Some(
-                    SupportedNonDcLumaMode::SmoothVertical
-                    | SupportedNonDcLumaMode::SmoothHorizontal,
-                ),
-                _,
-            ) if is_top_left && n4w >= NON_DC_MIN_N4 => {}
-            (Some(SupportedNonDcLumaMode::SmoothVertical), _) if n4w == FULL_SB_N4_LUMA => {}
-            (Some(SupportedNonDcLumaMode::SmoothHorizontal), _) if n4w == FULL_SB_N4_LUMA => {}
-            (Some(_), _) if is_top_left => {
-                return Err(general_intra_unsupported(
-                    "general_intra_non_dc_non_dctonly_size",
-                    Some(tile_offset),
-                    "general intra non-DC luma prediction is only supported for 32x32-or-larger (TX_SET_DCTONLY) blocks; smaller non-DC blocks can signal a mode-dependent transform type that is not yet decoded",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (Some(SupportedNonDcLumaMode::SmoothHorizontal), _)
-                if n4w >= NON_DC_MIN_N4 && !frontier.r.is_multiple_of(FULL_SB_N4_LUMA) => {}
-            (Some(SupportedNonDcLumaMode::SmoothHorizontal), _) if n4w >= NON_DC_MIN_N4 => {
-                return Err(general_intra_unsupported(
-                    "general_intra_smooth_h_above_right_unverified",
-                    Some(tile_offset),
-                    "general intra SMOOTH_H sub-partitioned luma at superblock-relative row 0 reads the §7.13.2.1 above-right sentinel value (AboveRow[w]) from a cross-superblock (row>0) decoded neighbour — the same luma (sub_x=0) above-right value path the full-superblock arm defers; only the within-superblock above-right sibling is oracle-verified, so it is deferred to a multi-superblock-row SMOOTH_H luma fixture",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (Some(_), _) => {
-                return Err(general_intra_unsupported(
-                    "general_intra_multiblock_non_dc_subblock",
-                    Some(tile_offset),
-                    "general intra multi-block SMOOTH_V luma prediction over a reconstructed neighbour is only supported for full 64x64 superblock blocks; a sub-partitioned SMOOTH_V block reads the §7.13.2.1 below-left sentinel (LeftCol[h], §5.20.7.25 count_bottom_left_avail), which is not yet covered by an oracle fixture",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (_, Some(SupportedDirectionalLumaMode::Vertical))
-                if frontier.r != 0 && n4w == FULL_SB_N4_LUMA => {}
-            (_, Some(SupportedDirectionalLumaMode::Vertical)) => {
-                return Err(general_intra_unsupported(
-                    "general_intra_cardinal_vertical_unverified",
-                    Some(tile_offset),
-                    "general intra cardinal V_PRED (pAngle 90) luma prediction is only verified for a row>0 full 64x64 superblock block reading the real reconstructed §7.13.2.1 above row; a first-superblock-row (haveAbove == 0) or sub-partitioned V_PRED block is not yet covered by an oracle fixture",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (_, Some(SupportedDirectionalLumaMode::Horizontal))
-                if frontier.c != 0 && n4w == FULL_SB_N4_LUMA => {}
-            (_, Some(SupportedDirectionalLumaMode::Horizontal)) => {
-                return Err(general_intra_unsupported(
-                    "general_intra_cardinal_horizontal_unverified",
-                    Some(tile_offset),
-                    "general intra cardinal H_PRED (pAngle 180) luma prediction is only verified for a non-first-column full 64x64 superblock block reading the real reconstructed §7.13.2.1 left column; a first-superblock-column (haveLeft == 0) or sub-partitioned H_PRED block is not yet covered by an oracle fixture",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (_, Some(SupportedDirectionalLumaMode::D157))
-                if frontier.r == 0 && frontier.c != 0 && n4w == FULL_SB_N4_LUMA => {}
-            (_, Some(SupportedDirectionalLumaMode::D157)) => {
-                return Err(general_intra_unsupported(
-                    "general_intra_d157_unverified_position",
-                    Some(tile_offset),
-                    "general intra directional D157 (pAngle 157) luma IDIF prediction is only verified for a first-superblock-row, non-first-column full 64x64 superblock block (haveLeft && !haveAbove, real reconstructed §7.13.2.1 left column); the top-left no-neighbour, first-column, sub-partitioned, and row>0 D157 positions read the §7.13.2.1 corner / above row that no oracle fixture pins yet, so they are deferred",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (_, Some(SupportedDirectionalLumaMode::D113))
-                if frontier.r != 0 && frontier.c != 0 && n4w == FULL_SB_N4_LUMA => {}
-            (_, Some(SupportedDirectionalLumaMode::D113)) => {
-                return Err(general_intra_unsupported(
-                    "general_intra_d113_unverified_position",
-                    Some(tile_offset),
-                    "general intra directional D113 (pAngle 113) luma IDIF prediction is only verified for a row>0, non-first-column full 64x64 superblock block (haveLeft && haveAbove, real reconstructed §7.13.2.1 above row + left column + diagonally-above-left corner); the top-left no-neighbour, first-row, first-column, sub-partitioned, and non-64x64 D113 positions read the §7.13.2.1 above row / corner that no oracle fixture pins yet, so they are deferred",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (_, Some(SupportedDirectionalLumaMode::D45))
-                if frontier.r != 0
-                    && frontier.c != 0
-                    && n4w == FULL_SB_N4_LUMA
-                    && full_sb_num4_above_right(frontier.c, n4w, mi_cols, 0) > 0 => {}
-            (_, Some(SupportedDirectionalLumaMode::D45)) => {
-                return Err(general_intra_unsupported(
-                    "general_intra_d45_unverified_position",
-                    Some(tile_offset),
-                    "general intra directional D45 (pAngle 45, §7.13.2.8 zone-1 one-sided) luma prediction is only verified for a row>0, non-first-column, non-rightmost full 64x64 superblock block (haveLeft && haveAbove, with a real decoded above-right superblock supplying the §7.13.2.1 above-right CurrFrame[plane][y-1][x+i]); the top-left no-neighbour, first-row, first-column, rightmost (no decoded above-right), sub-partitioned, and non-64x64 D45 positions read the §7.13.2.1 above-right that no oracle fixture pins yet, so they are deferred",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (_, Some(SupportedDirectionalLumaMode::D203))
-                if frontier.r == 0 && frontier.c != 0 && n4w == FULL_SB_N4_LUMA => {}
-            (_, Some(SupportedDirectionalLumaMode::D203)) => {
-                return Err(general_intra_unsupported(
-                    "general_intra_d203_unverified_position",
-                    Some(tile_offset),
-                    "general intra directional D203 (pAngle 203, §7.13.2.8 zone-3 one-sided) luma prediction is only verified for a first-superblock-row, non-first-column full 64x64 superblock block (haveAbove == 0 && haveLeft == 1, with a real reconstructed left column supplying the §7.13.2.1 left column CurrFrame[plane][Min(leftLimit, y+i)][x-1]); the top-left no-neighbour, first-column (no real left column), row>0, sub-partitioned, and non-64x64 D203 positions read the §7.13.2.1 left column / below-left / corner that no oracle fixture pins yet, so they are deferred",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (_, Some(_)) if is_top_left && n4w == FULL_SB_N4_LUMA => {}
-            (_, Some(_)) if frontier.r == 0 && n4w == FULL_SB_N4_LUMA => {}
-            (_, Some(SupportedDirectionalLumaMode::D135))
-                if frontier.r != 0 && frontier.c != 0 && n4w == FULL_SB_N4_LUMA => {}
-            (_, Some(_)) if !is_top_left && frontier.r != 0 => {
-                return Err(general_intra_unsupported(
-                    "general_intra_multirow_directional_luma",
-                    Some(tile_offset),
-                    "general intra directional (D135) luma prediction over a real reconstructed neighbour is verified for the first superblock row (haveAbove == 0, real left column) and for a row > 0 non-first-column full-superblock block (haveLeft && haveAbove, real above row + left column + diagonally-above-left corner); a row > 0 FIRST-column (!haveLeft && haveAbove) or sub-partitioned D135 block, and any row > 0 D157 block, are not yet covered by an oracle fixture, so they are deferred",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (_, Some(_)) if !is_top_left => {
-                return Err(general_intra_unsupported(
-                    "general_intra_multiblock_directional_subblock",
-                    Some(tile_offset),
-                    "general intra multi-block directional (D135) luma prediction over a reconstructed neighbour is only supported for full 64x64 superblock blocks; sub-partitioned directional blocks need the §5.20.2.3 per-block BlockDecoded update for the §7.13.2.1 neighbours and the mode-dependent transform type, which is not yet modelled",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (_, Some(_)) => {
-                return Err(general_intra_unsupported(
-                    "general_intra_directional_non_dctonly_size",
-                    Some(tile_offset),
-                    "general intra directional (D135) luma prediction is only supported for the verified 64x64 (TX_SET_DCTONLY) superblock block; smaller directional blocks can signal a mode-dependent transform type that is not yet decoded",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-            (None, None) => {
-                return Err(general_intra_unsupported(
-                    "general_intra_unsupported_luma_mode",
-                    Some(tile_offset),
-                    "general intra reconstruction only supports DC, SMOOTH_V / SMOOTH_H, and D135 (pAngle 135) luma prediction; SMOOTH, PAETH, other directional modes, and non-zero angle deltas are not yet implemented",
-                    GENERAL_INTRA_MODE_SPEC_SECTION,
-                ));
-            }
-        }
-    }
+    ensure_supported_chroma_capability(supported_chroma, block_ctx)
+        .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?;
+    let luma_plan = plan_luma_prediction(&modes, block_ctx)
+        .map_err(|error| general_intra_luma_plan_error(error, tile_offset))?;
 
-    let uv_mode = modes.coeff_uv_mode();
-    let luma_log2 = n4w.trailing_zeros() + 2;
-    let luma_tx = (luma_log2 - 2) as usize;
-    let luma_x = frontier.c * 4;
-    let luma_y = frontier.r * 4;
-    let luma = crate::tile_payload::decode_general_intra_plane_coeffs(
+    let residual_plan = GeneralIntraResidualPlan::square(
+        block_ctx,
+        luma_plan,
+        frontier.has_chroma.then_some(supported_chroma),
+        luma_use_tcq,
+    )
+    .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
+    execute_general_intra_residual_plan(
+        residual_plan,
         work_unit,
         symbols,
         coeff_ctx,
-        0,
-        luma_tx,
-        luma_x,
-        luma_y,
-        true,
-        false,
-        uv_mode,
-        false,
-        false,
-        TransformToolResidualPolicy::Allow,
-    )
-    .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    match (supported_nondc_luma, supported_directional_luma) {
-        (Some(mode), _) if nondc_luma_has_neighbour => {
-            let num4_above_right = luma_num4_above_right_from_block_decoded(
-                block_decoded,
-                frontier.r,
-                frontier.c,
-                n4w,
-            );
-            crate::runtime_minimal_recon::reconstruct_general_intra_luma_nondc_neighbour_block_into(
-                workspace,
-                &luma,
-                mode,
-                luma_x,
-                luma_y,
-                luma_log2,
-                qindex,
-                luma_use_tcq,
-                num4_above_right,
-                bit_depth,
-            )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        }
-        (Some(mode), _) => {
-            crate::runtime_minimal_recon::reconstruct_general_intra_luma_nondc_first_block_into(
-                workspace,
-                &luma,
-                mode,
-                luma_x,
-                luma_y,
-                luma_log2,
-                qindex,
-                luma_use_tcq,
-                bit_depth,
-            )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        }
-        (
-            None,
-            Some(SupportedDirectionalLumaMode::Vertical | SupportedDirectionalLumaMode::Horizontal),
-        ) if directional_luma_has_neighbour => {
-            let direction = match supported_directional_luma {
-                Some(SupportedDirectionalLumaMode::Vertical) => IntraCardinalDirection::Vertical,
-                _ => IntraCardinalDirection::Horizontal,
-            };
-            crate::runtime_minimal_recon::reconstruct_general_intra_cardinal_neighbour_block_into(
-                workspace,
-                &luma,
-                direction,
-                PlaneId::Y,
-                luma_x,
-                luma_y,
-                luma_log2,
-                luma_log2,
-                qindex,
-                luma_use_tcq,
-                bit_depth,
-            )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        }
-        (None, Some(SupportedDirectionalLumaMode::D45)) if directional_luma_has_neighbour => {
-            let num4_above_right = full_sb_num4_above_right(frontier.c, n4w, mi_cols, 0);
-            crate::runtime_minimal_recon::reconstruct_general_intra_one_sided_neighbour_block_into(
-                workspace,
-                &luma,
-                45,
-                PlaneId::Y,
-                luma_x,
-                luma_y,
-                luma_log2,
-                luma_log2,
-                qindex,
-                num4_above_right,
-                crate::runtime_minimal_recon::OneSidedAboveMrl::default(),
-                luma_use_tcq,
-                bit_depth,
-                crate::runtime_minimal_recon::OneSidedEdgeFilter::default(),
-            )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        }
-        (None, Some(SupportedDirectionalLumaMode::D203)) if directional_luma_has_neighbour => {
-            let num4_below_left = full_sb_num4_below_left(frontier.r, n4h, 0);
-            crate::runtime_minimal_recon::reconstruct_general_intra_one_sided_left_neighbour_block_into(
-                workspace,
-                &luma,
-                203,
-                PlaneId::Y,
-                luma_x,
-                luma_y,
-                luma_log2,
-                luma_log2,
-                qindex,
-                num4_below_left,
-                false, // have_above: first-SB-row no-above leaf, corner `CurrFrame[y][x-1]`
-                0,     // mrl_index: this committed D203 leaf uses the immediate edge
-                luma_use_tcq,
-                bit_depth,
-                crate::runtime_minimal_recon::OneSidedEdgeFilter::default(),
-            )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        }
-        (None, Some(mode)) if directional_luma_has_neighbour => {
-            crate::runtime_minimal_recon::reconstruct_general_intra_directional_neighbour_block_into(
-                workspace,
-                &luma,
-                mode,
-                PlaneId::Y,
-                luma_x,
-                luma_y,
-                luma_log2,
-                qindex,
-                luma_use_tcq,
-                bit_depth,
-            )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        }
-        (None, Some(mode)) => {
-            crate::runtime_minimal_recon::reconstruct_general_intra_luma_directional_first_block_into(
-                workspace,
-                &luma,
-                mode,
-                luma_x,
-                luma_y,
-                luma_log2,
-                qindex,
-                luma_use_tcq,
-                bit_depth,
-            )
-            .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        }
-        (None, None) => crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
-            workspace,
-            &luma,
-            PlaneId::Y,
-            luma_x,
-            luma_y,
-            luma_log2,
-            qindex,
-            luma_use_tcq,
-            bit_depth,
-        )
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?,
-    }
+        workspace,
+        block_ctx,
+        block_decoded,
+        deblock_blocks,
+        modes.coeff_uv_mode(),
+        qindex,
+        tile_offset,
+    )?;
 
-    if frontier.has_chroma {
-        let chroma_log2 = luma_log2 - 1;
-        let chroma_tx = (chroma_log2 - 2) as usize;
-        let chroma_x = frontier.c * 2;
-        let chroma_y = frontier.r * 2;
-        let num4_above_right =
-            full_sb_num4_above_right(frontier.c, n4w, mi_cols, FRAME_420_SUBSAMPLING_X);
-        let num4_below_left = full_sb_num4_below_left(frontier.r, n4h, FRAME_420_SUBSAMPLING_Y);
-        let u = crate::tile_payload::decode_general_intra_plane_coeffs(
-            work_unit,
-            symbols,
-            coeff_ctx,
-            1,
-            chroma_tx,
-            chroma_x,
-            chroma_y,
-            true,
-            false,
-            uv_mode,
-            false,
-            false,
-            TransformToolResidualPolicy::Allow,
-        )
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        crate::runtime_minimal_recon::reconstruct_general_intra_chroma_block_into(
-            workspace,
-            &u,
-            PlaneId::U,
-            chroma_x,
-            chroma_y,
-            chroma_log2,
-            qindex,
-            supported_chroma,
-            num4_above_right,
-            num4_below_left,
-            bit_depth,
-        )
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        let v = crate::tile_payload::decode_general_intra_plane_coeffs(
-            work_unit,
-            symbols,
-            coeff_ctx,
-            2,
-            chroma_tx,
-            chroma_x,
-            chroma_y,
-            true,
-            !u.all_zero,
-            uv_mode,
-            false,
-            false,
-            TransformToolResidualPolicy::Allow,
-        )
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        crate::runtime_minimal_recon::reconstruct_general_intra_chroma_block_into(
-            workspace,
-            &v,
-            PlaneId::V,
-            chroma_x,
-            chroma_y,
-            chroma_log2,
-            qindex,
-            supported_chroma,
-            num4_above_right,
-            num4_below_left,
-            bit_depth,
-        )
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    }
-    let chroma_tx = if frontier.has_chroma {
-        Some((luma_log2 - 1 - 2) as usize)
-    } else {
-        None
-    };
-    deblock_blocks.push(super::deblock::DeblockBlock {
-        r: frontier.r,
-        c: frontier.c,
-        n4w,
-        n4h,
-        luma_tx,
-        chroma_tx,
-    });
-
-    Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
-        modes.intra_joint_mode,
-        modes.y_mode,
-        modes.fsc_mode,
-        modes.uses_mrls,
-    ))
+    Ok(leaf_mode(&modes))
 }
-
-/// Decodes and reconstructs one **rectangular** general intra leaf block
-/// (`n4w != n4h`, e.g. a 64x32 PARTITION_HORZ child or a 32x64 PARTITION_VERT
-/// child), gated to the verified DC_PRED luma + DC chroma subset.
-///
-/// The §7.13.2.4 DC predictor reads only the immediate in-frame left column /
-/// above row, so a rectangular DC leaf reconstructs correctly at any superblock
-/// position with NO §5.20.2.3 BlockDecoded sentinel state. Under TX_MODE_LARGEST
-/// the luma transform is the single rectangular transform spanning the block
-/// (`Max_Tx_Size_Rect`, derived here from the §9.2 conversion tables by the
-/// block's width/height log2), and the 4:2:0 chroma transform is one log2 smaller
-/// in each dimension; both resolve to `DCT_DCT` (§5.20.8.2 `get_tx_set` returns
-/// TX_SET_DCTONLY for `txSzSqrUp >= TX_32X32`). The §5.20.7.27 coefficient loop
-/// and §7.14.4/§7.15.4 reconstruction already read width and height
-/// independently. Any non-DC luma or non-DC chroma mode is rejected (a
-/// rectangular §7.13.2.8 / §7.13.2.13 predictor is not yet modelled), keeping the
-/// verified subset tight.
 #[allow(clippy::too_many_arguments)]
 fn decode_one_general_intra_rect_block<T: ReconSample>(
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
-    frontier: &crate::tile_payload::DecodeBlockFrontier,
-    modes: &crate::tile_payload::GeneralIntraBlockModes,
+    has_chroma: bool,
+    modes: &GeneralIntraBlockModes,
     workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     deblock_blocks: &mut Vec<super::deblock::DeblockBlock>,
     qindex: u32,
-    n4w: usize,
-    n4h: usize,
-    bit_depth: BitDepth,
+    luma_use_tcq: bool,
+    block_ctx: BlockCtx,
+    block_decoded: &crate::tile_payload::TileBlockDecodedState,
     tile_offset: ByteOffset,
-) -> Result<crate::tile_payload::GeneralIntraLeafMode> {
-    if (n4w, n4h) != (16, 8) {
-        return Err(general_intra_unsupported(
+) -> Result<GeneralIntraLeafMode> {
+    let block = block_ctx.block();
+    if (block.width4(), block.height4()) != (FULL_SB_N4_LUMA, FULL_SB_N4_LUMA / 2) {
+        return Err(general_intra_at!(
             "general_intra_rect_unverified_geometry",
-            Some(tile_offset),
-            "general intra rectangular (non-square) partition leaves are only oracle-verified for the 64x32 PARTITION_HORZ geometry; other rectangular sizes are decodable by the same path but not yet fixtured",
+            tile_offset,
+            missing_capability_message!(
+                "intra.rect.geometry",
+                block = "not_64x32",
+                partition = "non_horz",
+            ),
             GENERAL_INTRA_PARTITION_SPEC_SECTION,
         ));
     }
     if !modes.luma_is_dc() {
-        return Err(general_intra_unsupported(
+        return Err(general_intra_at!(
             "general_intra_rect_non_dc_luma",
-            Some(tile_offset),
-            "general intra rectangular (non-square) partition leaves are only reconstructed for DC_PRED luma; non-DC (SMOOTH / directional) rectangular luma prediction is not yet modelled",
+            tile_offset,
+            missing_capability_message!("intra.rect.luma_mode", mode = "non_dc"),
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
-    if modes.supported_chroma_mode() != Some(crate::tile_payload::SupportedChromaMode::Dc) {
-        return Err(general_intra_unsupported(
+    if modes.supported_chroma_mode() != Some(SupportedChromaMode::Dc) {
+        return Err(general_intra_at!(
             "general_intra_rect_non_dc_chroma",
-            Some(tile_offset),
-            "general intra rectangular (non-square) partition leaves are only reconstructed for DC chroma; non-DC rectangular chroma prediction is not yet modelled",
+            tile_offset,
+            missing_capability_message!("intra.rect.chroma_mode", mode = "non_dc"),
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ));
     }
 
-    let uv_mode = modes.coeff_uv_mode();
-    let luma_w_log2 = n4w.trailing_zeros() + 2;
-    let luma_h_log2 = n4h.trailing_zeros() + 2;
-    let luma_tx = rect_tx_size_from_log2(luma_w_log2, luma_h_log2).ok_or_else(|| {
-        general_intra_unsupported(
-            "general_intra_rect_tx_size",
-            Some(tile_offset),
-            "general intra rectangular leaf could not resolve a §9.2 transform size for its width/height",
-            GENERAL_INTRA_PARTITION_SPEC_SECTION,
-        )
-    })?;
-    let luma_x = frontier.c * 4;
-    let luma_y = frontier.r * 4;
-    let luma = crate::tile_payload::decode_general_intra_plane_coeffs(
+    let residual_plan = GeneralIntraResidualPlan::rect(block_ctx, has_chroma, luma_use_tcq)
+        .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
+    execute_general_intra_residual_plan(
+        residual_plan,
         work_unit,
         symbols,
         coeff_ctx,
-        0,
-        luma_tx,
-        luma_x,
-        luma_y,
-        true,
-        false,
-        uv_mode,
-        false,
-        false,
-        TransformToolResidualPolicy::Allow,
-    )
-    .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    let luma_use_tcq = work_unit.coeff_frame_facts().allow_tcq();
-    crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into(
         workspace,
-        &luma,
-        PlaneId::Y,
-        luma_x,
-        luma_y,
-        luma_w_log2,
-        luma_h_log2,
+        block_ctx,
+        block_decoded,
+        deblock_blocks,
+        modes.coeff_uv_mode(),
         qindex,
-        luma_use_tcq,
-        false,
-        bit_depth,
-    )
-    .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+        tile_offset,
+    )?;
+    Ok(leaf_mode(modes))
+}
 
-    if frontier.has_chroma {
-        let chroma_w_log2 = luma_w_log2 - 1;
-        let chroma_h_log2 = luma_h_log2 - 1;
-        let chroma_tx = rect_tx_size_from_log2(chroma_w_log2, chroma_h_log2).ok_or_else(|| {
-            general_intra_unsupported(
-                "general_intra_rect_chroma_tx_size",
-                Some(tile_offset),
-                "general intra rectangular leaf could not resolve a §9.2 chroma transform size",
-                GENERAL_INTRA_PARTITION_SPEC_SECTION,
-            )
-        })?;
-        let chroma_x = frontier.c * 2;
-        let chroma_y = frontier.r * 2;
-        let u = crate::tile_payload::decode_general_intra_plane_coeffs(
-            work_unit,
-            symbols,
-            coeff_ctx,
-            1,
-            chroma_tx,
-            chroma_x,
-            chroma_y,
-            true,
-            false,
-            uv_mode,
-            false,
-            false,
-            TransformToolResidualPolicy::Allow,
-        )
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into(
-            workspace,
-            &u,
-            PlaneId::U,
-            chroma_x,
-            chroma_y,
-            chroma_w_log2,
-            chroma_h_log2,
-            qindex,
-            false,
-            false,
-            bit_depth,
-        )
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        let v = crate::tile_payload::decode_general_intra_plane_coeffs(
-            work_unit,
-            symbols,
-            coeff_ctx,
-            2,
-            chroma_tx,
-            chroma_x,
-            chroma_y,
-            true,
-            !u.all_zero,
-            uv_mode,
-            false,
-            false,
-            TransformToolResidualPolicy::Allow,
-        )
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-        crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into(
-            workspace,
-            &v,
-            PlaneId::V,
-            chroma_x,
-            chroma_y,
-            chroma_w_log2,
-            chroma_h_log2,
-            qindex,
-            false,
-            false,
-            bit_depth,
-        )
-        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    }
-    let chroma_tx = if frontier.has_chroma {
-        rect_tx_size_from_log2(luma_w_log2 - 1, luma_h_log2 - 1)
-    } else {
-        None
-    };
-    deblock_blocks.push(super::deblock::DeblockBlock {
-        r: frontier.r,
-        c: frontier.c,
-        n4w,
-        n4h,
-        luma_tx,
-        chroma_tx,
-    });
-    Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
+fn leaf_mode(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
+    GeneralIntraLeafMode::luma(
         modes.intra_joint_mode,
         modes.y_mode,
         modes.fsc_mode,
         modes.uses_mrls,
-    ))
+    )
 }
 
-/// Resolves the AV2 § 9.2 `TX_SIZES_ALL` index whose `Tx_Width_Log2` /
-/// `Tx_Height_Log2` match `(w_log2, h_log2)`, scanning the generated conversion
-/// tables (no invented constant). Used to map a rectangular block's transform
-/// dimensions to its `txSz` for the §5.20.7.27 coefficient loop and §7.15.4
-/// reconstruction. Returns `None` when no §9.2 transform has those dimensions.
-fn rect_tx_size_from_log2(w_log2: u32, h_log2: u32) -> Option<usize> {
-    let w = i32::try_from(w_log2).ok()?;
-    let h = i32::try_from(h_log2).ok()?;
-    TX_WIDTH_LOG2
-        .iter()
-        .zip(TX_HEIGHT_LOG2.iter())
-        .position(|(&tw, &th)| tw == w && th == h)
-}
-
-/// 4:2:0 chroma horizontal subsampling (`SubsamplingX == 1`).
-const FRAME_420_SUBSAMPLING_X: usize = 1;
-
-/// 4:2:0 chroma vertical subsampling (`SubsamplingY == 1`).
-const FRAME_420_SUBSAMPLING_Y: usize = 1;
-
-/// Derives AV2 § 7.13.2.1 `num4AboveRight` (in plane 4x4 units) for a
-/// full-superblock transform block, faithfully to § 5.20.7.25
-/// `count_top_right_avail` over the § 5.20.2.3 `BlockDecoded` state. The plane is
-/// selected by `sub_x` (`0` for luma, `1` for 4:2:0 chroma).
-///
-/// For a full 64x64 superblock the block coincides with the superblock, so its
-/// sub-block MI position within the superblock is `(0, 0)` and its width in plane
-/// 4x4 units is `w4 = n4w >> SubsamplingX` (the luma `n4w` 4x4 units subsampled).
-/// `count_top_right_avail(plane, 0, 0, w4)` scans `BlockDecoded[plane][-1][w4 + i]`
-/// for `i in 0..w4`; `clear_block_decoded_flags` (§ 5.20.2.3) marks the above row
-/// decoded for plane columns `x < (MiColEnd - c) >> SubsamplingX` (a single
-/// full-frame tile has `MiColEnd == MiCols`), so a column `w4 + i` is decoded while
-/// `w4 + i < (MiCols - c) >> SubsamplingX`. The count stops at the first
-/// undecoded column (or at `w4`), matching the spec loop's `break`.
-pub(super) fn full_sb_num4_above_right(
-    c: usize,
-    n4w: usize,
-    mi_cols: usize,
-    sub_x: usize,
-) -> usize {
-    let w4 = n4w >> sub_x;
-    let above_decoded_cols = mi_cols.saturating_sub(c) >> sub_x;
-    let mut num_top_right = 0;
-    for i in 0..w4 {
-        if w4 + i < above_decoded_cols {
-            num_top_right = i + 1;
-        } else {
-            break;
-        }
+fn ensure_10bit_general_intra_capability(
+    modes: &GeneralIntraBlockModes,
+    block_ctx: BlockCtx,
+    frame_n4: (usize, usize),
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    if block_ctx.bit_depth() == BitDepth::Eight {
+        return Ok(());
     }
-    num_top_right
+    let chroma_admitted = match modes.supported_chroma_mode() {
+        Some(SupportedChromaMode::Dc) => true,
+        Some(SupportedChromaMode::Smooth) => {
+            frame_n4 == (FULL_SB_N4_LUMA, FULL_SB_N4_LUMA) && block_ctx.is_top_left()
+        }
+        _ => false,
+    };
+    if !modes.luma_is_dc() || !chroma_admitted {
+        return Err(general_intra_at!(
+            "unsupported_10bit_non_dc_intra",
+            tile_offset,
+            missing_capability_message!("intra.10bit.non_dc", luma = "non_dc_or_chroma_neighbour",),
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
+    let block = block_ctx.block();
+    if block.width4() != FULL_SB_N4_LUMA || block.height4() != FULL_SB_N4_LUMA {
+        return Err(general_intra_at!(
+            "unsupported_10bit_non_64x64_leaf",
+            tile_offset,
+            missing_capability_message!("intra.10bit.leaf_shape", block = "non_64x64"),
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ));
+    }
+    Ok(())
 }
 
-/// Derives AV2 § 7.13.2.1 `num4BelowLeft` (in plane 4x4 units) for a
-/// full-superblock transform block, faithfully to § 5.20.7.25
-/// `count_bottom_left_avail` over the § 5.20.2.3 `BlockDecoded` state. The plane
-/// is selected by `sub_y` (`0` for luma, `1` for 4:2:0 chroma).
-///
-/// `count_bottom_left_avail(plane, x4, y4, h4)` scans
-/// `BlockDecoded[plane][y4 + h4 + i][x4 - 1]` for `i in 0..h4`. For a full 64x64
-/// superblock the block coincides with the superblock, so its sub-block MI
-/// position within the superblock is `(0, 0)`: it scans
-/// `BlockDecoded[plane][h4 + i][-1]`, the column to the left of the superblock at
-/// rows BELOW the superblock. In raster decode order those below-left rows belong
-/// to superblocks that have not been decoded yet (a first-superblock-row block has
-/// no decoded superblock below it), and `clear_block_decoded_flags` (§ 5.20.2.3)
-/// does not mark the below-left rows decoded, so the count is `0`. This matches
-/// the spec loop's first-iteration `break`.
-fn full_sb_num4_below_left(_r: usize, _n4h: usize, _sub_y: usize) -> usize {
-    0
-}
-
-/// Derives AV2 § 7.13.2.1 `num4AboveRight` (in luma 4x4 units) for an arbitrary
-/// (full-superblock or sub-partitioned) luma transform block, faithfully to
-/// § 5.20.7.25 `count_top_right_avail` over the real § 5.20.2.3 `BlockDecoded`
-/// state. Unlike [`full_sb_num4_above_right`] (which special-cases the
-/// full-superblock `(0, 0)` sub-block whose above-right is read directly from the
-/// `clear_block_decoded_flags` above-row marking), this reads the genuine
-/// per-block decoded grid, so a SPLIT child's above-right sibling (e.g. the
-/// bottom-left 32x32 reading the already-decoded top-right 32x32) is counted.
-///
-/// `r` / `c` are the block's luma MI position; `n4w` is its width in luma 4x4
-/// units. The superblock-relative sub-block position is `(r & sbMask, c & sbMask)`
-/// (`sbMask = sbSize4 - 1`); luma is not subsampled, so `x4 = subBlockMiCol`,
-/// `y4 = subBlockMiRow`, `w4 = n4w`.
-fn luma_num4_above_right_from_block_decoded(
+#[allow(clippy::too_many_arguments)]
+fn execute_general_intra_residual_plan<T: ReconSample>(
+    residual_plan: GeneralIntraResidualPlan,
+    work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block_ctx: BlockCtx,
     block_decoded: &crate::tile_payload::TileBlockDecodedState,
-    r: usize,
-    c: usize,
-    n4w: usize,
-) -> usize {
-    let sb_mask = block_decoded.sb_size4().saturating_sub(1);
-    let x4 = c & sb_mask;
-    let y4 = r & sb_mask;
-    block_decoded.count_top_right_avail(0, x4, y4, n4w)
+    deblock_blocks: &mut Vec<super::deblock::DeblockBlock>,
+    uv_mode: usize,
+    qindex: u32,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    residual_plan
+        .execute(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            workspace,
+            block_ctx,
+            block_decoded,
+            uv_mode,
+            qindex,
+        )
+        .map_err(|error| general_intra_residual_error(error, tile_offset))?;
+    let block = block_ctx.block();
+    let transforms = residual_plan.transforms();
+    deblock_blocks.push(super::deblock::DeblockBlock {
+        r: block.row4(),
+        c: block.col4(),
+        n4w: block.width4(),
+        n4h: block.height4(),
+        luma_tx: transforms.luma_tx(),
+        chroma_tx: transforms.chroma_tx(),
+    });
+    Ok(())
 }
 
-/// Maps a general intra multi-block tree-walk error to a decode diagnostic. The
-/// leaf-block error is already a structured `DecodeError`; setup, traversal, and
-/// MI-size failures collapse to an unsupported-partition diagnostic.
 fn map_general_intra_multiblock_error(
     error: crate::tile_payload::GeneralIntraMultiblockError<DecodeError>,
     tile_offset: ByteOffset,
@@ -1360,13 +667,149 @@ fn map_general_intra_multiblock_error(
         GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
             TilePartitionTraversalError::Limit(source),
         )) => DecodeError::Limit { source },
-        GeneralIntraMultiblockError::Walk(_) => general_intra_unsupported(
+        GeneralIntraMultiblockError::Walk(_) => general_intra_at!(
             "general_intra_partition_walk",
-            Some(tile_offset),
-            "general intra partition tree walk reached an unsupported path",
+            tile_offset,
+            missing_capability_message!("intra.partition.walk", path = "unsupported"),
             GENERAL_INTRA_PARTITION_SPEC_SECTION,
         ),
     }
+}
+
+#[derive(Clone, Copy)]
+struct ChromaCapabilityUnsupported {
+    reason_id: &'static str,
+    message: &'static str,
+}
+
+fn ensure_supported_chroma_capability(
+    mode: SupportedChromaMode,
+    block_ctx: BlockCtx,
+) -> core::result::Result<(), ChromaCapabilityUnsupported> {
+    let n4w = block_ctx.block().width4();
+    let neighbours = block_ctx.neighbours(PlaneId::U);
+    let full_sb = n4w == FULL_SB_N4_LUMA;
+    let above_left = full_sb && neighbours.has_above() && neighbours.has_left();
+    let left_only = full_sb && !neighbours.has_above() && neighbours.has_left();
+    match mode {
+        SupportedChromaMode::Dc | SupportedChromaMode::D203Follow => Ok(()),
+        SupportedChromaMode::Smooth if full_sb => Ok(()),
+        SupportedChromaMode::Smooth => Err(unsupported_chroma(
+            "general_intra_smooth_chroma_subblock",
+            missing_capability_message!(
+                "intra.chroma.smooth",
+                neighbour = "above_right_below_left",
+                block = "subpartition",
+            ),
+        )),
+        SupportedChromaMode::D135Follow | SupportedChromaMode::Horizontal
+            if full_sb && neighbours.is_top_left() =>
+        {
+            Ok(())
+        }
+        SupportedChromaMode::D135Follow if left_only || above_left => Ok(()),
+        SupportedChromaMode::D135Follow => Err(unsupported_chroma(
+            "general_intra_directional_chroma_neighbour",
+            missing_capability_message!(
+                "intra.chroma.directional.d135",
+                neighbour = "unsupported",
+                block = "non_full_sb_or_first_col",
+            ),
+        )),
+        SupportedChromaMode::D113Follow if above_left => Ok(()),
+        SupportedChromaMode::D113Follow => Err(unsupported_chroma(
+            "general_intra_directional_d113_chroma_neighbour",
+            missing_capability_message!(
+                "intra.chroma.directional.d113",
+                neighbour = "above_left",
+                block = "non_full_sb_or_edge",
+            ),
+        )),
+        SupportedChromaMode::D157Follow if left_only => Ok(()),
+        SupportedChromaMode::D157Follow => Err(unsupported_chroma(
+            "general_intra_directional_d157_chroma_neighbour",
+            missing_capability_message!(
+                "intra.chroma.directional.d157",
+                neighbour = "left_only",
+                block = "non_full_sb_or_not_first_row",
+            ),
+        )),
+        SupportedChromaMode::D45Follow if above_left && neighbours.num_above_right() > 0 => Ok(()),
+        SupportedChromaMode::D45Follow => Err(unsupported_chroma(
+            "general_intra_directional_d45_chroma_neighbour",
+            missing_capability_message!(
+                "intra.chroma.directional.d45",
+                neighbour = "above_right",
+                block = "non_full_sb_or_edge",
+            ),
+        )),
+        SupportedChromaMode::VerticalFollow if full_sb && neighbours.has_above() => Ok(()),
+        SupportedChromaMode::VerticalFollow => Err(unsupported_chroma(
+            "general_intra_cardinal_vertical_chroma",
+            missing_capability_message!(
+                "intra.chroma.cardinal.vertical",
+                neighbour = "above",
+                block = "non_full_sb_or_first_row",
+            ),
+        )),
+        SupportedChromaMode::HorizontalFollow if full_sb && neighbours.has_left() => Ok(()),
+        SupportedChromaMode::HorizontalFollow => Err(unsupported_chroma(
+            "general_intra_cardinal_horizontal_chroma",
+            missing_capability_message!(
+                "intra.chroma.cardinal.horizontal",
+                neighbour = "left",
+                block = "non_full_sb_or_first_col",
+            ),
+        )),
+        SupportedChromaMode::Horizontal => Err(unsupported_chroma(
+            "general_intra_horizontal_chroma_position",
+            missing_capability_message!(
+                "intra.chroma.horizontal",
+                neighbour = "top_left_only",
+                block = "non_full_sb_or_neighbour",
+            ),
+        )),
+    }
+}
+
+const fn unsupported_chroma(
+    reason_id: &'static str,
+    message: &'static str,
+) -> ChromaCapabilityUnsupported {
+    ChromaCapabilityUnsupported { reason_id, message }
+}
+
+fn general_intra_chroma_capability_error(
+    error: ChromaCapabilityUnsupported,
+    offset: ByteOffset,
+) -> DecodeError {
+    general_intra_at!(
+        error.reason_id,
+        offset,
+        error.message,
+        GENERAL_INTRA_MODE_SPEC_SECTION,
+    )
+}
+
+fn general_intra_luma_plan_error(error: IntraLumaUnsupported, offset: ByteOffset) -> DecodeError {
+    general_intra_at!(
+        error.reason_id(),
+        offset,
+        error.message(),
+        GENERAL_INTRA_MODE_SPEC_SECTION,
+    )
+}
+
+fn general_intra_residual_plan_error(
+    error: ResidualPipelineUnsupported,
+    offset: ByteOffset,
+) -> DecodeError {
+    general_intra_at!(
+        error.reason_id(),
+        offset,
+        error.message(),
+        error.spec_section(),
+    )
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1380,56 +823,56 @@ fn general_intra_residual_error(
         | GeneralIntraResidualError::NonZeroStart { .. }
         | GeneralIntraResidualError::StagedNonZeroPass { .. }
         | GeneralIntraResidualError::StagedFscPass { .. }
-        | GeneralIntraResidualError::TransformTypeRead { .. } => general_intra_unsupported(
+        | GeneralIntraResidualError::TransformTypeRead { .. } => general_intra_at!(
             "general_intra_luma_coeff_parse",
-            Some(offset),
+            offset,
             "general intra luma transform-block coefficient syntax could not be parsed from the tile payload",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
-        GeneralIntraResidualError::CoeffContextState { .. } => general_intra_unsupported(
+        GeneralIntraResidualError::CoeffContextState { .. } => general_intra_at!(
             "general_intra_luma_coeff_state",
-            Some(offset),
+            offset,
             "general intra luma coefficient context state could not be derived from the tile work unit",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
         GeneralIntraResidualError::UnsupportedTransformToolResidual { .. } => {
-            general_intra_unsupported(
+            general_intra_at!(
                 "general_intra_transform_tool_residual",
-                Some(offset),
-                "general intra residual decode consumed the all_zero decision, but a nonzero residual would require transform-tool syntax outside the supported subset",
+                offset,
+                missing_capability_message!("intra.residual.transform_tools", residual = "nonzero"),
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
             )
         }
-        GeneralIntraResidualError::UnexpectedBranch => general_intra_unsupported(
+        GeneralIntraResidualError::UnexpectedBranch => general_intra_at!(
             "general_intra_luma_coeff_unexpected_branch",
-            Some(offset),
+            offset,
             "general intra luma coefficient decode produced an unexpected branch result",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
         GeneralIntraResidualError::QuantLength { .. }
         | GeneralIntraResidualError::PredictionLength { .. }
-        | GeneralIntraResidualError::Reconstruct { .. } => general_intra_unsupported(
+        | GeneralIntraResidualError::Reconstruct { .. } => general_intra_at!(
             "general_intra_luma_reconstruct",
-            Some(offset),
+            offset,
             "general intra luma transform-block reconstruction could not be composed from the decoded coefficients",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
-        GeneralIntraResidualError::UnsupportedDirectionalAboveEdge => general_intra_unsupported(
+        GeneralIntraResidualError::UnsupportedDirectionalAboveEdge => general_intra_at!(
             "general_intra_directional_above_edge",
-            Some(offset),
-            "general intra directional prediction over a real reconstructed above-neighbour edge needs the §7.13.2.1 corner sample CurrFrame[plane][y-1][x-1] (D135 reads the corner on its main diagonal), which is not yet modelled",
+            offset,
+            missing_capability_message!("intra.luma.directional.above_edge", neighbour = "corner",),
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
-        GeneralIntraResidualError::MissingCardinalEdge => general_intra_unsupported(
+        GeneralIntraResidualError::MissingCardinalEdge => general_intra_at!(
             "general_intra_cardinal_missing_edge",
-            Some(offset),
-            "general intra cardinal (V_PRED / H_PRED) prediction is missing its required reconstructed neighbour edge (V_PRED needs the §7.13.2.1 above row, H_PRED needs the left column)",
+            offset,
+            missing_capability_message!("intra.luma.cardinal.edge", neighbour = "missing"),
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
-        GeneralIntraResidualError::CardinalModeInMiddleAnglePath => general_intra_unsupported(
+        GeneralIntraResidualError::CardinalModeInMiddleAnglePath => general_intra_at!(
             "general_intra_cardinal_in_middle_angle_path",
-            Some(offset),
-            "general intra cardinal (V_PRED / H_PRED) mode reached the §7.13.2.8 middle-angle path (which only covers D135); cardinal modes must be dispatched to the cardinal copy reconstruction",
+            offset,
+            missing_capability_message!("intra.luma.dispatch", path = "cardinal_in_middle_angle"),
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
     }
@@ -1442,49 +885,52 @@ fn general_intra_block_mode_error(
 ) -> DecodeError {
     match error {
         GeneralIntraBlockModeError::SymbolRead { .. }
-        | GeneralIntraBlockModeError::Literal { .. } => general_intra_unsupported(
+        | GeneralIntraBlockModeError::Literal { .. } => general_intra_at!(
             "general_intra_block_mode_parse",
-            Some(offset),
+            offset,
             "general intra block mode-info syntax could not be parsed from the tile payload",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
-        GeneralIntraBlockModeError::UnsupportedYMode { .. } => general_intra_unsupported(
+        GeneralIntraBlockModeError::UnsupportedYMode { .. } => general_intra_at!(
             "general_intra_unsupported_y_mode",
-            Some(offset),
-            "general intra decode reached a luma intra mode outside the currently supported reconstruction subset",
+            offset,
+            missing_capability_message!("intra.luma.mode", mode = "unsupported"),
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
-        GeneralIntraBlockModeError::InvalidUvMode { .. } => general_intra_unsupported(
+        GeneralIntraBlockModeError::InvalidUvMode { .. } => general_intra_at!(
             "general_intra_invalid_uv_mode",
-            Some(offset),
+            offset,
             "general intra decode rejected an out-of-range chroma uv_mode index",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
-        GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { .. } => general_intra_unsupported(
+        GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { .. } => general_intra_at!(
             "general_intra_invalid_fsc_block_size_index",
-            Some(offset),
+            offset,
             "general intra decode could not map MiSize through Fsc_Bsize_Groups",
             "8.3.2",
         ),
         GeneralIntraBlockModeError::InvalidCflMhDirBlockSizeIndex { .. } => {
-            general_intra_unsupported(
+            general_intra_at!(
                 "general_intra_invalid_cfl_mh_dir_size_group",
-                Some(offset),
+                offset,
                 "general intra decode could not map MiSize through Size_Group for cfl_mh_dir",
                 "8.3.2",
             )
         }
-        GeneralIntraBlockModeError::UnsupportedMhccpMode => general_intra_unsupported(
+        GeneralIntraBlockModeError::UnsupportedMhccpMode => general_intra_at!(
             "general_intra_unsupported_mhccp_mode",
-            Some(offset),
-            "general intra decode can skip a false MHCCP-enabled is_cfl decision but does not support active MHCCP chroma prediction",
+            offset,
+            missing_capability_message!("intra.chroma.mhccp", mode = "active"),
             "5.20.5.6",
         ),
         GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder { .. } => {
-            general_intra_unsupported(
+            general_intra_at!(
                 "general_intra_directional_neighbour_reorder",
-                Some(offset),
-                "general intra luma mode syntax over a directional joint-mode neighbour needs the §5.20.5.5 directional-neighbour mode reorder",
+                offset,
+                missing_capability_message!(
+                    "intra.luma.directional_neighbour_reorder",
+                    neighbour = "directional",
+                ),
                 GENERAL_INTRA_MODE_SPEC_SECTION,
             )
         }
@@ -1509,10 +955,13 @@ fn general_intra_partition_frontier_error(
         | MinimalRuntimePartitionFrontierError::UvCflState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => {
-            general_intra_unsupported(
+            general_intra_at!(
                 "general_intra_partition_frontier",
-                Some(offset),
-                "general intra decode could not reach a supported AV2 §5.20.3.1 single-block root partition frontier",
+                offset,
+                missing_capability_message!(
+                    "intra.partition.frontier",
+                    shape = "non_single_block_root",
+                ),
                 GENERAL_INTRA_PARTITION_SPEC_SECTION,
             )
         }

@@ -1,25 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! General intra block mode-info decode for the AVM-oracle general intra path.
-//!
-//! Feature tracking: `DECODE-GENERAL-INTRA-BLOCK-MODES`.
-//!
-//! This decodes the AV2 § 5.20.5.3 `intra_frame_mode_info()` mode symbols for a
-//! single minimal-tool intra key-frame block — `read_intra_y_mode()` then
-//! `read_intra_uv_mode()` — in spec order, without the frozen minimal-tier
-//! trace's hardcoded value assertions. For the supported minimal-tool subset,
-//! most tool branches read no symbols, so the core mode symbols are
-//! `y_mode_set`, `y_mode_index`, and `uv_mode` (with the
-//! `uv_mode == CHROMA_MODE_COUNT - 1` escape literal). When the sequence allows
-//! FSC or MRL syntax, this module also consumes inactive `fsc_mode == 0` and
-//! retains decoded MRL metadata for callers that can stay syntax-only before
-//! sample prediction.
-//!
-//! Scope: it decodes and consumes the mode symbols and reconstructs the typed
-//! luma `YMode`; the typed `UVMode` reconstruction (`get_intra_uv_mode_set`),
-//! the residual / transform-block syntax, coefficient decode, dequantization,
-//! inverse transform, reconstruction, and output remain future increments.
+//! General intra block mode-info decode.
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
@@ -37,25 +19,12 @@ use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
 use super::intra_joint_modes::{TileFscModeState, TileIntraJointModeState, TileUsesMrlsState};
 
-/// AV2 § 3 `CHROMA_MODE_COUNT`: the number of values for the `uv_mode` symbol
-/// (`03-symbols.md`); `uv_mode == CHROMA_MODE_COUNT - 1` triggers the
-/// `uv_mode_idx` `L(3)` escape (§ 5.20.5.3 `read_intra_uv_mode`).
 const CHROMA_MODE_COUNT: u8 = 8;
-
-/// AV2 § 3 `UV_INTRA_MODES_CFL_NOT_ALLOWED` (`03-symbols.md`): the number of
-/// chroma intra modes when CfL is not allowed; the decoded `uv_mode` (after the
-/// escape) must index this list (`0..UV_INTRA_MODES_CFL_NOT_ALLOWED`).
 const UV_INTRA_MODES_CFL_NOT_ALLOWED: u8 = 13;
-/// AV2 §6.19.7.4 `UVMode`: `UV_CFL_PRED`.
 const UV_CFL_PRED_MODE: u8 = 13;
-
-/// AV2 § 5.20.5.3 `uv_mode_idx` literal width (`L(3)`).
 const UV_MODE_IDX_BITS: u32 = 3;
-/// AV2 § 5.20.5.5 `y_second_mode` literal width (`L(4)`).
 const Y_SECOND_MODE_BITS: u32 = 4;
-/// AV2 § 3 `FIRST_MODE_COUNT`: first second-mode `modeIdx` value.
 const FIRST_MODE_COUNT: usize = 13;
-/// AV2 § 3 `SECOND_MODE_COUNT`: values per non-zero `y_mode_set`.
 const SECOND_MODE_COUNT: usize = 16;
 
 const Y_MODE_SET_REASON: &str = "intra_y_mode_set";
@@ -82,7 +51,6 @@ const CFL_EXPLICIT: u8 = 0;
 const CFL_MULTI: u8 = 2;
 const CFL_SIGN_ZERO: u8 = 0;
 
-/// Sequence tool flags that affect §5.20.5.5/§5.20.5.6 intra mode syntax.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct GeneralIntraChromaToolConfig {
     enable_cfl_intra: bool,
@@ -92,7 +60,6 @@ pub(crate) struct GeneralIntraChromaToolConfig {
 }
 
 impl GeneralIntraChromaToolConfig {
-    /// Creates a config from parsed sequence chroma-tool flags.
     #[must_use]
     pub(crate) const fn new(enable_cfl_intra: bool, enable_mhccp: bool) -> Self {
         Self {
@@ -103,41 +70,31 @@ impl GeneralIntraChromaToolConfig {
         }
     }
 
-    /// Returns a copy with the parsed `enable_idtx_intra` transform flag.
     #[must_use]
     pub(crate) const fn with_enable_idtx_intra(mut self, enable_idtx_intra: bool) -> Self {
         self.enable_idtx_intra = enable_idtx_intra;
         self
     }
 
-    /// Returns a copy with the parsed `enable_mrls` intra flag.
     #[must_use]
     pub(crate) const fn with_enable_mrls(mut self, enable_mrls: bool) -> Self {
         self.enable_mrls = enable_mrls;
         self
     }
 
-    /// No sequence chroma tools are enabled.
     #[must_use]
     pub(crate) const fn disabled() -> Self {
         Self::new(false, false)
     }
 }
 
-/// Tree/context facts that affect AV2 §5.20.5.6 `read_intra_uv_mode`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraChromaModeContext {
     cfl_allowed_in_sdp: bool,
-    /// AV2 § 8.3.2 `is_cfl` CDF context (`0..=2`) from the chroma above/left
-    /// `UVCfls` neighbours.
     is_cfl_ctx: usize,
 }
 
 impl GeneralIntraChromaModeContext {
-    /// Context for non-SDP or non-chroma-part callers.
-    ///
-    /// `is_cfl_ctx` is the AV2 § 8.3.2 `is_cfl` CDF context derived from the
-    /// chroma above/left `UVCfls` neighbours.
     #[must_use]
     pub(crate) const fn shared_or_non_sdp(is_cfl_ctx: usize) -> Self {
         Self {
@@ -146,10 +103,6 @@ impl GeneralIntraChromaModeContext {
         }
     }
 
-    /// Context for an SDP `CHROMA_PART` leaf with retained §5.20.3.1 state.
-    ///
-    /// `is_cfl_ctx` is the AV2 § 8.3.2 `is_cfl` CDF context derived from the
-    /// chroma above/left `UVCfls` neighbours.
     #[must_use]
     pub(crate) const fn sdp_chroma_part(cfl_allowed_in_sdp: bool, is_cfl_ctx: usize) -> Self {
         Self {
@@ -159,41 +112,20 @@ impl GeneralIntraChromaModeContext {
     }
 }
 
-/// The decoded mode-info facts for one general intra block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraBlockModes {
-    /// The reconstructed typed luma intra mode (§ 5.20.5.3 `read_intra_y_mode`).
     pub(crate) y_mode: IntraYMode,
-    /// The reconstructed `AngleDeltaY` (§ 5.20.5.3), `0` for non-directional
-    /// modes and for the supported directional subset.
     pub(crate) angle_delta_y: i8,
-    /// The decoded `uv_mode` value (after the `CHROMA_MODE_COUNT - 1` escape),
-    /// the index into the chroma mode list; typed `UVMode` reconstruction is a
-    /// future increment.
     pub(crate) uv_mode: u8,
-    /// The `UVMode` value handed to coefficient transform-type derivation. For
-    /// active CfL this is `UV_CFL_PRED`; for existing no-CfL paths it preserves
-    /// the prior decoded-index behavior until those paths are widened separately.
     coeff_uv_mode: u8,
-    /// True when §5.20.5.6 selected `UV_CFL_PRED`.
     is_cfl: bool,
-    /// The AV2 § 5.20.5.3 `IntraJointMode` (`= modeDelta`, the reorder index)
-    /// stored into `IntraJointModes` for this block, which feeds the § 8.3.2
-    /// `y_mode_index` neighbour context of later blocks. A directional mode has
-    /// `intra_joint_mode >= NON_DIRECTIONAL_MODES_COUNT`.
     pub(crate) intra_joint_mode: u8,
-    /// Decoded AV2 §5.20.5.5 `mrl_index`; zero when MRL syntax is disabled or
-    /// not present for this luma mode.
     pub(crate) mrl_index: u8,
-    /// Decoded AV2 §5.20.5.5 `mrl_sec_index` when `mrl_index > 0`.
     pub(crate) mrl_sec_index: Option<u8>,
-    /// Decoded AV2 §5.20.5.3 `fsc_mode`.
     pub(crate) fsc_mode: u8,
-    /// Derived AV2 §5.20.5.3 `UsesMrls` value stored for later neighbours.
     pub(crate) uses_mrls: u8,
 }
 
-/// Decoded chroma-side mode-info facts for one intra block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraChromaBlockMode {
     uv_mode: u8,
@@ -218,92 +150,53 @@ impl GeneralIntraChromaBlockMode {
         }
     }
 
-    /// The legacy decoded `uv_mode` value used by existing no-CfL prediction
-    /// helpers.
     pub(crate) const fn uv_mode(self) -> u8 {
         self.uv_mode
     }
 
-    /// The `UVMode` value used by coefficient transform-type derivation.
     pub(crate) const fn coeff_uv_mode(self) -> usize {
         self.coeff_uv_mode as usize
     }
 
-    /// True when this mode selected `UV_CFL_PRED`.
     pub(crate) const fn is_cfl(self) -> bool {
         self.is_cfl
     }
 }
 
-/// The decoded luma-side mode-info facts for one intra block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraLumaBlockMode {
-    /// The reconstructed typed luma intra mode (§ 5.20.5.3 `read_intra_y_mode`).
     pub(crate) y_mode: IntraYMode,
-    /// The reconstructed `AngleDeltaY`.
     pub(crate) angle_delta_y: i8,
-    /// The AV2 § 5.20.5.3 `IntraJointMode` stored for neighbour contexts.
     pub(crate) intra_joint_mode: u8,
-    /// Decoded AV2 §5.20.5.5 `mrl_index`; zero when no MRL syntax is active.
     pub(crate) mrl_index: u8,
-    /// Decoded AV2 §5.20.5.5 `mrl_sec_index` when `mrl_index > 0`.
     pub(crate) mrl_sec_index: Option<u8>,
-    /// Decoded AV2 §5.20.5.3 `fsc_mode`.
     pub(crate) fsc_mode: u8,
-    /// Derived AV2 §5.20.5.3 `UsesMrls` value stored for later neighbours.
     pub(crate) uses_mrls: u8,
 }
 
 impl GeneralIntraLumaBlockMode {
-    /// The supported directional-angle luma predictor for this §5.20.3.1 SDP
-    /// luma-part leaf, or `None` for non-directional modes, the not-yet-supported
-    /// directional modes, and any non-zero `AngleDeltaY`. Mirrors
-    /// [`GeneralIntraBlockModes::supported_directional_luma`]: only `AngleDeltaY ==
-    /// 0` (the cardinal pAngles 90/180 and the middle pAngles 135/157) is verified,
-    /// so a non-zero angle delta is reported unsupported.
     pub(crate) fn supported_directional_luma(self) -> Option<SupportedDirectionalLumaMode> {
-        if self.angle_delta_y != 0 {
-            return None;
-        }
-        self.y_mode.supported_directional()
+        supported_directional_luma(self.y_mode, self.angle_delta_y)
     }
 }
 
 impl GeneralIntraBlockModes {
-    /// True when the luma plane uses `DC_PRED`.
     pub(crate) fn luma_is_dc(&self) -> bool {
         self.y_mode == IntraYMode::DC_PRED
     }
 
-    /// True when §5.20.5.6 selected `UV_CFL_PRED` (`UVCfls`), feeding the
-    /// § 8.3.2 `is_cfl` neighbour context of later chroma blocks.
     pub(crate) const fn is_cfl(&self) -> bool {
         self.is_cfl
     }
 
-    /// The supported non-DC luma predictor for this block, or `None` for DC and
-    /// the not-yet-supported non-DC luma modes (see [`IntraYMode::supported_nondc`]).
     pub(crate) fn supported_nondc_luma(&self) -> Option<SupportedNonDcLumaMode> {
         self.y_mode.supported_nondc()
     }
 
-    /// The supported directional-angle luma predictor for this block, or `None`
-    /// for non-directional modes and the not-yet-supported directional modes /
-    /// non-zero angle deltas (see [`IntraYMode::supported_directional`]). A
-    /// directional mode with a non-zero `AngleDeltaY` is reported as unsupported
-    /// because only `AngleDeltaY == 0` (the cardinal pAngles 90/180 and the
-    /// middle pAngles 135/157) is verified.
     pub(crate) fn supported_directional_luma(&self) -> Option<SupportedDirectionalLumaMode> {
-        if self.angle_delta_y != 0 {
-            return None;
-        }
-        self.y_mode.supported_directional()
+        supported_directional_luma(self.y_mode, self.angle_delta_y)
     }
 
-    /// The supported chroma predictor for this block (DC or SMOOTH), resolving
-    /// the decoded `uv_mode` index through § 5.20.5.3 `get_intra_uv_mode_set`
-    /// (handling both the non-directional and directional luma branches), or
-    /// `None` for an unsupported chroma mode (see [`supported_chroma_mode`]).
     pub(crate) fn supported_chroma_mode(&self) -> Option<SupportedChromaMode> {
         if self.is_cfl {
             return None;
@@ -311,105 +204,51 @@ impl GeneralIntraBlockModes {
         supported_chroma_mode(self.y_mode, self.uv_mode)
     }
 
-    /// The `UVMode` value used by coefficient transform-type derivation.
     pub(crate) const fn coeff_uv_mode(&self) -> usize {
         self.coeff_uv_mode as usize
     }
 
-    /// True when decoded sample prediction would need AV2 §7.13.2 MRL support.
     pub(crate) const fn uses_active_mrl(&self) -> bool {
         self.uses_mrls != 0
     }
 
-    /// True when decoded sample prediction would need FSC/IDTX coefficient support.
     pub(crate) const fn uses_active_fsc(&self) -> bool {
         self.fsc_mode != 0
     }
 }
 
-/// Error returned while decoding general intra block mode info.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GeneralIntraBlockModeError {
-    /// A mode-info CDF symbol read failed.
     #[error("general intra mode-info symbol read failed for {reason}: {source}")]
     SymbolRead {
-        /// Stable symbol reason.
         reason: &'static str,
-        /// Source CDF selection or symbol-decoder error.
         source: BlockSymbolTraceReadError,
     },
-    /// A mode-info escape literal read failed.
     #[error("general intra mode-info literal read failed for {reason}: {source}")]
     Literal {
-        /// Stable literal reason.
         reason: &'static str,
-        /// Source symbol-decoder error.
         source: CoreError,
     },
-    /// The decoded luma mode syntax resolved to a §5.20.5.5 `modeIdx` outside
-    /// the supported `YMode` reconstruction subset.
     #[error(
         "general intra mode-info cannot reconstruct YMode for y_mode_set {y_mode_set}, modeIdx {mode_idx}"
     )]
-    UnsupportedYMode {
-        /// Decoded `y_mode_set` value.
-        y_mode_set: u8,
-        /// Resolved §5.20.5.5 `modeIdx` value.
-        mode_idx: usize,
-    },
-    /// The decoded `uv_mode` (after the `uv_mode_idx` escape) indexed past the
-    /// CfL-not-allowed chroma mode list (`>= UV_INTRA_MODES_CFL_NOT_ALLOWED`),
-    /// so `get_intra_uv_mode_set` has no entry for it (malformed or unsupported
-    /// chroma mode syntax).
+    UnsupportedYMode { y_mode_set: u8, mode_idx: usize },
     #[error("general intra mode-info decoded out-of-range uv_mode {uv_mode}")]
-    InvalidUvMode {
-        /// Decoded `uv_mode` value.
-        uv_mode: u8,
-    },
-    /// The block-size index used to select `Fsc_Bsize_Groups[MiSize]` is outside
-    /// the mirrored table.
+    InvalidUvMode { uv_mode: u8 },
     #[error("general intra mode-info block-size index {block_size_index} has no FSC group")]
-    InvalidFscBlockSizeIndex {
-        /// `MiSize` block-size index.
-        block_size_index: usize,
-    },
-    /// The block-size index used to select `Size_Group[MiSize]` for
-    /// `cfl_mh_dir` is outside the mirrored table.
+    InvalidFscBlockSizeIndex { block_size_index: usize },
     #[error(
         "general intra mode-info block-size index {block_size_index} has no CfL MH direction size group"
     )]
-    InvalidCflMhDirBlockSizeIndex {
-        /// `MiSize` block-size index.
-        block_size_index: usize,
-    },
-    /// The block selected the MHCCP-enabled chroma-from-luma path.
+    InvalidCflMhDirBlockSizeIndex { block_size_index: usize },
     #[error("general intra mode-info selected unsupported MHCCP chroma prediction")]
     UnsupportedMhccpMode,
-    /// The block hit a directional luma `modeIdx` while it has a directional
-    /// joint-mode neighbour (`ctx != 0`). `get_intra_y_mode_set` preselects the
-    /// neighbours' (and, for `Block_Width * Block_Height > 64`, their ±1..4
-    /// expanded) modes ahead of the `Default_Mode_List_Y` scan — a reorder the
-    /// current top-left-equivalent helpers do not model. The luma syntax element
-    /// that produced `modeIdx` has already been consumed when this is returned.
     #[error(
-        "general intra mode-info modeIdx {mode_idx} with a directional neighbour (ctx {ctx}) needs the unmodelled §5.20.5.5 directional-neighbour reorder"
+        "general intra mode-info modeIdx {mode_idx} with directional-neighbour ctx {ctx} requires §5.20.5.5 reorder support"
     )]
-    UnsupportedDirectionalNeighbourReorder {
-        /// The computed § 8.3.2 `y_mode_index` context (`1` or `2`).
-        ctx: usize,
-        /// The resolved §5.20.5.5 `modeIdx` whose reorder needs neighbour state.
-        mode_idx: usize,
-    },
+    UnsupportedDirectionalNeighbourReorder { ctx: usize, mode_idx: usize },
 }
 
-/// Decodes the AV2 § 5.20.5.3 luma-side mode-info symbols for one general
-/// intra luma/shared block.
-///
-/// `joint_modes` is the tile's per-MI `IntraJointModes` grid (§ 5.20.5.3); the
-/// sibling `uses_mrls` grid supplies the MRL contexts. The block's `MiSize`
-/// index (`block_size_index`), MI position (`block_r`, `block_c`), and MI
-/// width/height (`block_n4w`, `block_n4h`, `Num_4x4_Blocks_Wide/High[MiSize]`)
-/// select the FSC group and left/above neighbours for the § 8.3.2 contexts.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_luma_block_mode(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -424,100 +263,20 @@ pub(crate) fn decode_general_intra_luma_block_mode(
     block_n4w: usize,
     block_n4h: usize,
 ) -> Result<GeneralIntraLumaBlockMode, GeneralIntraBlockModeError> {
-    // AV2 § 8.3.2 `y_mode_index` / `y_mode_offset` CDF context (`0..=2`, the number
-    // of directional left/above neighbours), from the stored `IntraJointMode`
-    // (§ 5.20.5.3 `get_joint_mode`).
     let mode_ctx = joint_modes.y_mode_index_ctx(block_r, block_c, block_n4w, block_n4h);
     let neighbour_joint_modes =
         joint_modes.neighbour_joint_modes(block_r, block_c, block_n4w, block_n4h);
 
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
 
-    // read_intra_y_mode(): y_mode_set (§ 8.3.2 `TileYModeSetCdf`, no context).
-    let y_mode_set = read_symbol(cdfs, symbols, TileCdfSelector::YModeSet, Y_MODE_SET_REASON)?;
-
-    // Reconstruct the typed luma `YMode`, `AngleDeltaY`, and the stored
-    // `IntraJointMode` (`modeDelta`) (§ 5.20.5.5 `read_intra_y_mode`,
-    // `get_intra_y_mode_set`, `Reordered_Y_Mode`).
-    //
-    // `y_mode_set == 0` reads `y_mode_index`; non-zero `y_mode_set` reads the
-    // 4-bit `y_second_mode` literal instead. The supported directional branches
-    // only cover `mode_ctx == 0`, where §5.20.5.5 `get_intra_y_mode_set` does not
-    // preselect any directional neighbour modes before the `Default_Mode_List_Y`
-    // scan. The syntax element for an unsupported neighbour-reorder branch is
-    // consumed before returning the fail-closed diagnostic.
-    let (y_mode, angle_delta_y, intra_joint_mode) = if y_mode_set == 0 {
-        // y_mode_index (§ 8.3.2 `TileYModeIndexCdf[ctx]`, ctx from `get_joint_mode`).
-        let y_mode_index = read_symbol(
-            cdfs,
-            symbols,
-            TileCdfSelector::YModeIndex { ctx: mode_ctx },
-            Y_MODE_INDEX_REASON,
-        )?;
-
-        if y_mode_index == MODE_INDEX_COUNT - 1 {
-            let y_mode_offset = read_symbol(
-                cdfs,
-                symbols,
-                TileCdfSelector::YModeOffset { ctx: mode_ctx },
-                Y_MODE_OFFSET_REASON,
-            )?;
-            let mode_idx = usize::from(MODE_INDEX_COUNT - 1) + usize::from(y_mode_offset);
-            let escape = reconstruct_y_mode_result(
-                y_mode_set,
-                mode_idx,
-                mode_ctx,
-                neighbour_joint_modes,
-                block_n4w,
-                block_n4h,
-                reconstruct_y_mode_offset_escape_top_left(y_mode_offset),
-            )?;
-            (escape.y_mode, escape.angle_delta_y, escape.intra_joint_mode)
-        } else if usize::from(y_mode_index) >= NON_DIRECTIONAL_MODES_COUNT {
-            let mode_idx = usize::from(y_mode_index);
-            let result = reconstruct_y_mode_result(
-                y_mode_set,
-                mode_idx,
-                mode_ctx,
-                neighbour_joint_modes,
-                block_n4w,
-                block_n4h,
-                reconstruct_y_mode_first_set_directional_top_left(y_mode_index),
-            )?;
-            (result.y_mode, result.angle_delta_y, result.intra_joint_mode)
-        } else {
-            let mode_idx = usize::from(y_mode_index);
-            let y_mode = reconstruct_minimal_y_mode(y_mode_set, y_mode_index).ok_or(
-                GeneralIntraBlockModeError::UnsupportedYMode {
-                    y_mode_set,
-                    mode_idx,
-                },
-            )?;
-            (y_mode, 0, y_mode_index)
-        }
-    } else {
-        let y_second_mode = symbols.read_literal(Y_SECOND_MODE_BITS).map_err(|source| {
-            GeneralIntraBlockModeError::Literal {
-                reason: Y_SECOND_MODE_REASON,
-                source,
-            }
-        })? as u8;
-        let mode_idx = FIRST_MODE_COUNT
-            .saturating_add(
-                usize::from(y_mode_set.saturating_sub(1)).saturating_mul(SECOND_MODE_COUNT),
-            )
-            .saturating_add(usize::from(y_second_mode));
-        let result = reconstruct_y_mode_result(
-            y_mode_set,
-            mode_idx,
-            mode_ctx,
-            neighbour_joint_modes,
-            block_n4w,
-            block_n4h,
-            reconstruct_y_mode_second_set_top_left(y_mode_set, y_second_mode),
-        )?;
-        (result.y_mode, result.angle_delta_y, result.intra_joint_mode)
-    };
+    let y_mode_result = decode_luma_y_mode(
+        cdfs,
+        symbols,
+        mode_ctx,
+        neighbour_joint_modes,
+        block_n4w,
+        block_n4h,
+    )?;
 
     let fsc_mode = if allow_fsc_intra(chroma_tools, block_n4w, block_n4h) {
         let bsize_group = fsc_bsize_group(block_size_index)
@@ -538,8 +297,7 @@ pub(crate) fn decode_general_intra_luma_block_mode(
     let mut mrl_index = 0;
     let mut mrl_sec_index = None;
     let mut uses_mrls_value = 0;
-    if chroma_tools.enable_mrls && y_mode.is_directional() {
-        // AV2 § 8.3.2 derives the MRL contexts from neighbouring `UsesMrls`.
+    if chroma_tools.enable_mrls && y_mode_result.y_mode.is_directional() {
         mrl_index = read_symbol(
             cdfs,
             symbols,
@@ -563,9 +321,9 @@ pub(crate) fn decode_general_intra_luma_block_mode(
     }
 
     Ok(GeneralIntraLumaBlockMode {
-        y_mode,
-        angle_delta_y,
-        intra_joint_mode,
+        y_mode: y_mode_result.y_mode,
+        angle_delta_y: y_mode_result.angle_delta_y,
+        intra_joint_mode: y_mode_result.intra_joint_mode,
         mrl_index,
         mrl_sec_index,
         fsc_mode,
@@ -573,8 +331,6 @@ pub(crate) fn decode_general_intra_luma_block_mode(
     })
 }
 
-/// Decodes the AV2 § 5.20.5.3/§5.20.5.6 mode-info symbols for one shared
-/// luma+chroma intra block.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_block_modes(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -628,8 +384,6 @@ pub(crate) fn decode_general_intra_block_modes(
     })
 }
 
-/// Decodes the AV2 §5.20.5.6 chroma mode-info symbols for one chroma-capable
-/// intra block, using the already-decoded luma `YMode`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_chroma_block_mode(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -643,12 +397,6 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
 ) -> Result<GeneralIntraChromaBlockMode, GeneralIntraBlockModeError> {
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
 
-    // read_intra_uv_mode(): when CfL is sequence-enabled and the supported
-    // non-lossless intra block is no larger than the current LR subset, or when
-    // MHCCP is allowed for the block, §5.20.5.6 reads `is_cfl` before `uv_mode`.
-    // The §8.3.2 `is_cfl` CDF context is `(AvailUChroma && UVCfls[above]) +
-    // (AvailLChroma && UVCfls[left])`, derived by the partition walk from the
-    // chroma above/left neighbours and threaded in as `is_cfl_ctx`.
     let cfl_allowed = mode_context.cfl_allowed_in_sdp
         && cfl_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h);
     let mhccp_allowed = mode_context.cfl_allowed_in_sdp
@@ -678,8 +426,6 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
         }
     }
 
-    // uv_mode (§ 8.3.2 `TileUVModeCflNotAllowedCdf[ctx]`,
-    // `ctx = is_directional_mode(YMode)`).
     let uv_mode_base = read_symbol(
         cdfs,
         symbols,
@@ -689,23 +435,13 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
         UV_MODE_REASON,
     )?;
 
-    // The `uv_mode == CHROMA_MODE_COUNT - 1` escape adds an `L(3)` `uv_mode_idx`
-    // (§ 5.20.5.3 `read_intra_uv_mode`).
     let uv_mode = if uv_mode_base == CHROMA_MODE_COUNT - 1 {
-        let uv_mode_idx = symbols.read_literal(UV_MODE_IDX_BITS).map_err(|source| {
-            GeneralIntraBlockModeError::Literal {
-                reason: UV_MODE_IDX_REASON,
-                source,
-            }
-        })?;
-        uv_mode_base.saturating_add(uv_mode_idx as u8)
+        let uv_mode_idx = read_literal_u8(symbols, UV_MODE_IDX_BITS, UV_MODE_IDX_REASON)?;
+        uv_mode_base.saturating_add(uv_mode_idx)
     } else {
         uv_mode_base
     };
 
-    // The decoded `uv_mode` must index the CfL-not-allowed chroma mode list; the
-    // `uv_mode_idx` escape can otherwise produce 13 or 14, which
-    // `get_intra_uv_mode_set` cannot map.
     if uv_mode >= UV_INTRA_MODES_CFL_NOT_ALLOWED {
         return Err(GeneralIntraBlockModeError::InvalidUvMode { uv_mode });
     }
@@ -721,16 +457,12 @@ fn read_cfl_alphas(
     block_n4w: usize,
     block_n4h: usize,
 ) -> Result<(), GeneralIntraBlockModeError> {
+    let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let mhccp_allowed = mhccp_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h);
     let cfl_mhccp = if !chroma_tools.enable_cfl_intra {
         1
     } else if mhccp_allowed {
-        read_symbol(
-            work_unit.cdf_mut().tile_cdfs_mut(),
-            symbols,
-            TileCdfSelector::CflMhccp,
-            CFL_MHCCP_REASON,
-        )?
+        read_symbol(cdfs, symbols, TileCdfSelector::CflMhccp, CFL_MHCCP_REASON)?
     } else {
         0
     };
@@ -738,18 +470,13 @@ fn read_cfl_alphas(
     let cfl_index = if cfl_mhccp != 0 {
         CFL_MULTI
     } else {
-        read_symbol(
-            work_unit.cdf_mut().tile_cdfs_mut(),
-            symbols,
-            TileCdfSelector::CflIndex,
-            CFL_INDEX_REASON,
-        )?
+        read_symbol(cdfs, symbols, TileCdfSelector::CflIndex, CFL_INDEX_REASON)?
     };
 
     if cfl_index == CFL_MULTI {
         let size_group = cfl_mh_dir_size_group(block_size_index)?;
         let _ = read_symbol(
-            work_unit.cdf_mut().tile_cdfs_mut(),
+            cdfs,
             symbols,
             TileCdfSelector::CflMhDir { size_group },
             CFL_MH_DIR_REASON,
@@ -760,18 +487,13 @@ fn read_cfl_alphas(
         return Ok(());
     }
 
-    let cfl_alpha_signs = read_symbol(
-        work_unit.cdf_mut().tile_cdfs_mut(),
-        symbols,
-        TileCdfSelector::CflSign,
-        CFL_SIGN_REASON,
-    )?;
+    let cfl_alpha_signs = read_symbol(cdfs, symbols, TileCdfSelector::CflSign, CFL_SIGN_REASON)?;
     let sign_u = (cfl_alpha_signs + 1) / 3;
     let sign_v = (cfl_alpha_signs + 1) % 3;
     if sign_u != CFL_SIGN_ZERO {
         let ctx = cfl_alpha_u_ctx(sign_u, sign_v);
         let _ = read_symbol(
-            work_unit.cdf_mut().tile_cdfs_mut(),
+            cdfs,
             symbols,
             TileCdfSelector::CflAlpha { ctx },
             CFL_ALPHA_U_REASON,
@@ -780,13 +502,91 @@ fn read_cfl_alphas(
     if sign_v != CFL_SIGN_ZERO {
         let ctx = cfl_alpha_v_ctx(sign_u, sign_v);
         let _ = read_symbol(
-            work_unit.cdf_mut().tile_cdfs_mut(),
+            cdfs,
             symbols,
             TileCdfSelector::CflAlpha { ctx },
             CFL_ALPHA_V_REASON,
         )?;
     }
     Ok(())
+}
+
+fn decode_luma_y_mode(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    mode_ctx: usize,
+    neighbour_joint_modes: [u8; 2],
+    block_n4w: usize,
+    block_n4h: usize,
+) -> Result<YModeEscapeResult, GeneralIntraBlockModeError> {
+    let y_mode_set = read_symbol(cdfs, symbols, TileCdfSelector::YModeSet, Y_MODE_SET_REASON)?;
+    if y_mode_set != 0 {
+        let y_second_mode = read_literal_u8(symbols, Y_SECOND_MODE_BITS, Y_SECOND_MODE_REASON)?;
+        let mode_idx = FIRST_MODE_COUNT
+            .saturating_add(
+                usize::from(y_mode_set.saturating_sub(1)).saturating_mul(SECOND_MODE_COUNT),
+            )
+            .saturating_add(usize::from(y_second_mode));
+        return reconstruct_y_mode_result(
+            y_mode_set,
+            mode_idx,
+            mode_ctx,
+            neighbour_joint_modes,
+            block_n4w,
+            block_n4h,
+            reconstruct_y_mode_second_set_top_left(y_mode_set, y_second_mode),
+        );
+    }
+
+    let y_mode_index = read_symbol(
+        cdfs,
+        symbols,
+        TileCdfSelector::YModeIndex { ctx: mode_ctx },
+        Y_MODE_INDEX_REASON,
+    )?;
+    if y_mode_index == MODE_INDEX_COUNT - 1 {
+        let y_mode_offset = read_symbol(
+            cdfs,
+            symbols,
+            TileCdfSelector::YModeOffset { ctx: mode_ctx },
+            Y_MODE_OFFSET_REASON,
+        )?;
+        let mode_idx = usize::from(MODE_INDEX_COUNT - 1) + usize::from(y_mode_offset);
+        return reconstruct_y_mode_result(
+            y_mode_set,
+            mode_idx,
+            mode_ctx,
+            neighbour_joint_modes,
+            block_n4w,
+            block_n4h,
+            reconstruct_y_mode_offset_escape_top_left(y_mode_offset),
+        );
+    }
+
+    let mode_idx = usize::from(y_mode_index);
+    if mode_idx >= NON_DIRECTIONAL_MODES_COUNT {
+        return reconstruct_y_mode_result(
+            y_mode_set,
+            mode_idx,
+            mode_ctx,
+            neighbour_joint_modes,
+            block_n4w,
+            block_n4h,
+            reconstruct_y_mode_first_set_directional_top_left(y_mode_index),
+        );
+    }
+
+    let y_mode = reconstruct_minimal_y_mode(y_mode_set, y_mode_index).ok_or(
+        GeneralIntraBlockModeError::UnsupportedYMode {
+            y_mode_set,
+            mode_idx,
+        },
+    )?;
+    Ok(YModeEscapeResult {
+        y_mode,
+        angle_delta_y: 0,
+        intra_joint_mode: y_mode_index,
+    })
 }
 
 fn reconstruct_y_mode_result(
@@ -813,17 +613,22 @@ fn reconstruct_y_mode_result(
     )
 }
 
+fn supported_directional_luma(
+    y_mode: IntraYMode,
+    angle_delta_y: i8,
+) -> Option<SupportedDirectionalLumaMode> {
+    if angle_delta_y != 0 {
+        return None;
+    }
+    y_mode.supported_directional()
+}
+
 fn cfl_allowed_for_non_lossless_420(
     chroma_tools: GeneralIntraChromaToolConfig,
     block_n4w: usize,
     block_n4h: usize,
 ) -> bool {
-    // AV2 §5.20.5.6 (`docs/spec/av2/1.0.0/05-syntax-structures.md`, line 11254):
-    // non-lossless `cflAllowed = Block_Width[planeSz] <= 64 && Block_Height[planeSz]
-    // <= 64`, where `planeSz` is the chroma plane block size. For 4:2:0 the chroma
-    // plane is half the luma block, so `Block_Width[planeSz] = block_n4w * 2` and the
-    // 64-sample limit becomes `block_n4w <= 32` (a 128x128 luma block has a 64x64
-    // chroma plane).
+    // AV2 §5.20.5.6: 4:2:0 chroma blocks are half luma size.
     chroma_tools.enable_cfl_intra && block_n4w <= 32 && block_n4h <= 32
 }
 
@@ -867,8 +672,6 @@ const fn cfl_alpha_v_ctx(sign_u: u8, sign_v: u8) -> usize {
     ((sign_v - 1) * 3 + sign_u) as usize
 }
 
-/// Reads one mode-info `S()` symbol, mapping a CDF/symbol failure to a typed
-/// error and returning the decoded value.
 fn read_symbol(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -880,94 +683,52 @@ fn read_symbol(
         .map_err(|source| GeneralIntraBlockModeError::SymbolRead { reason, source })
 }
 
+fn read_literal_u8(
+    symbols: &mut SymbolDecoder<'_>,
+    bits: u32,
+    reason: &'static str,
+) -> Result<u8, GeneralIntraBlockModeError> {
+    symbols
+        .read_literal(bits)
+        .map(|value| value as u8)
+        .map_err(|source| GeneralIntraBlockModeError::Literal { reason, source })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use core::ops::Range;
-
-    use splot_core::segment::MAX_SEGMENTS;
-    use splot_core::span::{ByteOffset, ByteSpan};
+    use splot_core::span::ByteOffset;
     use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
     use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 
-    use super::super::cdf::{
-        FrameCdfSubset, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy,
-    };
+    use super::super::cdf::FrameCdfSubset;
     use super::super::partition_allowed::PartitionFeatureFlags;
+    use super::super::partition_traversal::tests::make_work_unit as make_test_work_unit;
     use super::super::partition_traversal::{
         TilePartitionBruState, TilePartitionContextState, TilePartitionFrameFacts,
         TilePartitionLoopRestorationState, TilePartitionTraversalInput,
         plan_tile_partition_traversal_cursor,
     };
-    use super::super::{
-        SymbolInitBoundary, TileBruPath, TileCoeffFrameFacts, TileCoeffFrameFactsInput,
-        TilePayloadSource,
-    };
     use super::*;
-    use crate::{DecodeLayerSelection, DecodeLimits, DecodeObuSourceKind};
+    use crate::DecodeLimits;
 
     const BLOCK_16X16: usize = 6;
     const BLOCK_64X64: usize = 12;
     const BLOCK_256X256: usize = 18;
-    // The same hand-crafted minimal tile payload the frozen block-symbol trace
-    // tests use: its first two block symbols decode `y_mode_set == 0` and
-    // `y_mode_index == 0` (DC_PRED), proving spec-order mode decode on the
-    // general path.
     const PAYLOAD: [u8; 2] = [0x12, 0xFB];
 
     fn make_work_unit(payload: &[u8]) -> DecodeTileWorkUnit<'_> {
-        DecodeTileWorkUnit {
-            source: TilePayloadSource::new(
-                DecodeObuSourceKind::AnnexB,
-                None,
-                0,
-                ByteOffset::new(0),
-            ),
-            selected_layer: DecodeLayerSelection::base(),
-            tile_num: 0,
-            tile_row: 0,
-            tile_col: 0,
-            mi_row_range: Range { start: 0, end: 64 },
-            mi_col_range: Range { start: 0, end: 64 },
-            tile_bytes: payload,
-            tile_byte_span: ByteSpan::new(ByteOffset::new(128), payload.len() as u64),
-            tile_size: payload.len() as u64,
-            current_q_index_at_entry: 0,
-            coeff_frame_facts: TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
-                enable_fsc: false,
-                enable_idtx_intra: false,
-                enable_intra_ist: false,
-                enable_inter_ist: false,
-                enable_chroma_dctonly: false,
-                enable_cctx: false,
-                reduced_tx_set: 0,
-                lossless_array: [false; MAX_SEGMENTS],
-                allow_tcq: false,
-                allow_parity_hiding: false,
-                base_q_idx: 0,
-            }),
-            bru_path: TileBruPath::NotUsed,
-            symbol: SymbolInitBoundary {
-                consumed_bits: payload.len().saturating_mul(8).min(15) as u64,
-                symbol_max_bits: payload.len() as i64 * 8 - 15,
-                cdf_update_mode: CdfUpdateMode::Disabled,
-            },
-            cdf: TileCdfWorkUnitBoundary::new(
-                CdfUpdateMode::Disabled,
-                tile_cdf_save_policy(TileCdfPolicyInput::single_tile_default(), 0).unwrap(),
-                FrameCdfSubset::from_defaults(),
-            ),
-        }
+        make_test_work_unit(payload, CdfUpdateMode::Disabled)
     }
 
-    fn symbols_at_block_frontier<'payload>(
+    fn symbols_at_block_start<'payload>(
         work_unit: &mut DecodeTileWorkUnit<'payload>,
     ) -> SymbolDecoder<'payload> {
-        let rows = vec![vec![BLOCK_256X256; 16]; 16];
+        let rows: Vec<Vec<usize>> = (0..16).map(|_| vec![BLOCK_256X256; 16]).collect();
         let mi0_rows: Vec<&[usize]> = rows.iter().map(Vec::as_slice).collect();
         let mi1_rows: Vec<&[usize]> = rows.iter().map(Vec::as_slice).collect();
-        let edge = vec![BLOCK_256X256; 16];
+        let edge = [BLOCK_256X256; 16];
         let context =
             TilePartitionContextState::new([&mi0_rows, &mi1_rows], [&edge, &edge], [&edge, &edge]);
         let frame = TilePartitionFrameFacts::new(
@@ -1023,13 +784,8 @@ mod tests {
         encoder.finish().unwrap().into_bytes()
     }
 
-    // A 64x64 superblock is 16x16 MI units (Num_4x4_Blocks_Wide/High).
     const SB_N4: usize = 16;
-    // A representative directional IntraJointMode (>= NON_DIRECTIONAL_MODES_COUNT):
-    // the merged D135 modeDelta 36 (§ 5.20.5.3).
     const D135_JOINT_MODE: u8 = 36;
-    // A representative non-directional IntraJointMode (< NON_DIRECTIONAL_MODES_COUNT):
-    // SMOOTH_V modeDelta 2.
     const SMOOTH_V_JOINT_MODE: u8 = 2;
 
     fn empty_joint_modes() -> TileIntraJointModeState {
@@ -1046,24 +802,15 @@ mod tests {
 
     #[test]
     fn cfl_allowed_420_uses_chroma_plane_64_sample_limit() {
-        // AV2 §5.20.5.6: non-lossless `cflAllowed = Block_Width[planeSz] <= 64 &&
-        // Block_Height[planeSz] <= 64`. For 4:2:0 the chroma plane is half the luma
-        // block, so the limit is a 128-sample luma extent (`block_n4* <= 32`).
         let tools = GeneralIntraChromaToolConfig::new(true, false);
 
-        // 64x64 luma (n4 = 16): chroma plane 32x32 -> allowed.
         assert!(cfl_allowed_for_non_lossless_420(tools, 16, 16));
-        // 128x64 luma (n4 = 32 x 16): chroma plane 64x32 -> allowed.
         assert!(cfl_allowed_for_non_lossless_420(tools, 32, 16));
-        // 128x128 luma (n4 = 32): chroma plane 64x64 -> allowed (boundary).
         assert!(cfl_allowed_for_non_lossless_420(tools, 32, 32));
-        // Just past the boundary (n4 = 33) -> chroma plane 66 -> disallowed.
         assert!(!cfl_allowed_for_non_lossless_420(tools, 33, 32));
         assert!(!cfl_allowed_for_non_lossless_420(tools, 32, 33));
-        // 256-wide luma (n4 = 64): chroma plane 128 wide -> disallowed.
         assert!(!cfl_allowed_for_non_lossless_420(tools, 64, 32));
         assert!(!cfl_allowed_for_non_lossless_420(tools, 32, 64));
-        // Sequence CfL disabled always disallows.
         assert!(!cfl_allowed_for_non_lossless_420(
             GeneralIntraChromaToolConfig::new(false, false),
             16,
@@ -1074,11 +821,10 @@ mod tests {
     #[test]
     fn decodes_dc_luma_mode_and_a_chroma_mode_in_spec_order() {
         let mut work_unit = make_work_unit(&PAYLOAD);
-        let mut symbols = symbols_at_block_frontier(&mut work_unit);
+        let mut symbols = symbols_at_block_start(&mut work_unit);
         let joint_modes = empty_joint_modes();
         let uses_mrls = empty_uses_mrls();
 
-        // Top-left block (0, 0): out-of-frame neighbours -> ctx 0.
         let modes = decode_general_intra_block_modes(
             &mut work_unit,
             &mut symbols,
@@ -1095,15 +841,8 @@ mod tests {
         )
         .unwrap();
 
-        // y_mode_set == 0, y_mode_index == 0 -> DC_PRED (the same first two
-        // symbols the frozen trace decodes; the general path reads them without
-        // asserting and reconstructs the typed mode).
         assert_eq!(modes.y_mode, IntraYMode::DC_PRED);
-        // DC_PRED is non-directional: IntraJointMode == modeDelta == y_mode_index == 0.
         assert_eq!(modes.intra_joint_mode, 0);
-        // The decoded uv_mode is a valid chroma-mode-list index for the
-        // CfL-not-allowed set (after any escape extension); out-of-range values
-        // are rejected before constructing GeneralIntraBlockModes.
         assert!(
             modes.uv_mode < UV_INTRA_MODES_CFL_NOT_ALLOWED,
             "uv_mode {} out of range",
@@ -1114,7 +853,7 @@ mod tests {
     #[test]
     fn non_directional_left_neighbour_keeps_ctx_zero_and_decodes() {
         let mut work_unit = make_work_unit(&PAYLOAD);
-        let mut symbols = symbols_at_block_frontier(&mut work_unit);
+        let mut symbols = symbols_at_block_start(&mut work_unit);
         let mut joint_modes = empty_joint_modes();
         let uses_mrls = empty_uses_mrls();
         joint_modes.record_block(0, 0, SB_N4, SB_N4, SMOOTH_V_JOINT_MODE);
@@ -1140,7 +879,7 @@ mod tests {
     #[test]
     fn directional_neighbour_ctx_reads_with_the_real_context() {
         let mut work_unit = make_work_unit(&PAYLOAD);
-        let mut symbols = symbols_at_block_frontier(&mut work_unit);
+        let mut symbols = symbols_at_block_start(&mut work_unit);
         let symbol_count_before = symbols.symbol_count();
         let mut joint_modes = empty_joint_modes();
         let uses_mrls = empty_uses_mrls();

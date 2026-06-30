@@ -54,9 +54,6 @@ impl PartitionType {
         Self::Split,
     ];
 
-    const HORZ_FAMILY: [Self; 4] = [Self::Horz, Self::Horz3, Self::Horz4A, Self::Horz4B];
-    const VERT_FAMILY: [Self; 4] = [Self::Vert, Self::Vert3, Self::Vert4A, Self::Vert4B];
-
     pub(crate) const fn index(self) -> usize {
         self as usize
     }
@@ -95,12 +92,61 @@ impl AllowedPartitions {
         }
         found
     }
+}
 
-    fn any(self, partitions: &[PartitionType]) -> bool {
-        partitions
-            .iter()
-            .copied()
-            .any(|partition| self.contains(partition))
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RectPartitionFamily {
+    non_ext: PartitionType,
+    three_way: PartitionType,
+    four_way_a: PartitionType,
+    four_way_b: PartitionType,
+}
+
+impl RectPartitionFamily {
+    const HORZ: Self = Self {
+        non_ext: PartitionType::Horz,
+        three_way: PartitionType::Horz3,
+        four_way_a: PartitionType::Horz4A,
+        four_way_b: PartitionType::Horz4B,
+    };
+    const VERT: Self = Self {
+        non_ext: PartitionType::Vert,
+        three_way: PartitionType::Vert3,
+        four_way_a: PartitionType::Vert4A,
+        four_way_b: PartitionType::Vert4B,
+    };
+
+    const fn for_rect_type(rect_type: RectPartitionType) -> Self {
+        match rect_type {
+            RectPartitionType::Horz => Self::HORZ,
+            RectPartitionType::Vert => Self::VERT,
+        }
+    }
+
+    const fn final_partition(
+        self,
+        do_ext_partition: bool,
+        do_uneven_4way_partition: bool,
+        uneven_4way_partition_type: bool,
+    ) -> PartitionType {
+        if !do_ext_partition {
+            return self.non_ext;
+        }
+        if !do_uneven_4way_partition {
+            return self.three_way;
+        }
+        if uneven_4way_partition_type {
+            self.four_way_b
+        } else {
+            self.four_way_a
+        }
+    }
+
+    fn has_any_allowed(self, allowed: AllowedPartitions) -> bool {
+        allowed.contains(self.non_ext)
+            || allowed.contains(self.three_way)
+            || allowed.contains(self.four_way_a)
+            || allowed.contains(self.four_way_b)
     }
 }
 
@@ -253,22 +299,29 @@ pub(crate) fn read_partition_decision(
     }
 
     let rect_type = resolve_rect_type(input, &mut trace, cdfs, symbols)?;
-    let (non_ext_allowed, ext_allowed3, ext_allowed4) = match rect_type {
-        RectPartitionType::Horz => (
-            input.allowed.contains(PartitionType::Horz),
-            input.allowed.contains(PartitionType::Horz3),
-            input.allowed.contains(PartitionType::Horz4A)
-                || input.allowed.contains(PartitionType::Horz4B),
-        ),
-        RectPartitionType::Vert => (
-            input.allowed.contains(PartitionType::Vert),
-            input.allowed.contains(PartitionType::Vert3),
-            input.allowed.contains(PartitionType::Vert4A)
-                || input.allowed.contains(PartitionType::Vert4B),
-        ),
-    };
+    let partition = read_rect_partition(input, rect_type, &mut trace, cdfs, symbols)?;
+    if !input.allowed.contains(partition) {
+        return Err(PartitionDecisionError::FinalPartitionDisallowed { partition });
+    }
 
-    let do_ext_partition = if non_ext_allowed && (ext_allowed3 || ext_allowed4) {
+    Ok(ReadPartitionDecision::new(partition, trace))
+}
+
+fn read_rect_partition(
+    input: ReadPartitionDecisionInput<'_>,
+    rect_type: RectPartitionType,
+    trace: &mut ReadPartitionDecisionTrace,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+) -> Result<PartitionType, PartitionDecisionError> {
+    let family = RectPartitionFamily::for_rect_type(rect_type);
+    let non_ext_allowed = input.allowed.contains(family.non_ext);
+    let ext_allowed3 = input.allowed.contains(family.three_way);
+    let ext_allowed4 =
+        input.allowed.contains(family.four_way_a) || input.allowed.contains(family.four_way_b);
+    let ext_allowed = ext_allowed3 || ext_allowed4;
+
+    let do_ext_partition = if non_ext_allowed && ext_allowed {
         let value = read_partition_bool(
             "do_ext_partition",
             input
@@ -280,47 +333,42 @@ pub(crate) fn read_partition_decision(
         trace.do_ext_partition = Some(value);
         value
     } else {
-        ext_allowed3 || ext_allowed4
+        ext_allowed
     };
 
-    let mut do_uneven_4way_partition = false;
-    let mut uneven_4way_partition_type = false;
-    if do_ext_partition {
-        if ext_allowed3 && ext_allowed4 {
-            do_uneven_4way_partition = read_partition_bool(
-                "do_uneven_4way_partition",
-                input
-                    .partition_context
-                    .do_uneven_4way_partition_selector(rect_type)?,
-                cdfs,
-                symbols,
-            )?;
-            trace.do_uneven_4way_partition = Some(do_uneven_4way_partition);
-        } else {
-            do_uneven_4way_partition = ext_allowed4;
-        }
+    let do_uneven_4way_partition = if !do_ext_partition {
+        false
+    } else if ext_allowed3 && ext_allowed4 {
+        let value = read_partition_bool(
+            "do_uneven_4way_partition",
+            input
+                .partition_context
+                .do_uneven_4way_partition_selector(rect_type)?,
+            cdfs,
+            symbols,
+        )?;
+        trace.do_uneven_4way_partition = Some(value);
+        value
+    } else {
+        ext_allowed4
+    };
 
-        if do_uneven_4way_partition {
-            uneven_4way_partition_type = symbols
-                .read_literal(1)
-                .map_err(PartitionDecisionError::Literal)?
-                != 0;
-            trace.uneven_4way_partition_type = Some(uneven_4way_partition_type);
-        }
-    }
+    let uneven_4way_partition_type = if do_uneven_4way_partition {
+        let value = symbols
+            .read_literal(1)
+            .map_err(PartitionDecisionError::Literal)?
+            != 0;
+        trace.uneven_4way_partition_type = Some(value);
+        value
+    } else {
+        false
+    };
 
-    let partition = rect_part_table(
+    Ok(family.final_partition(
         do_ext_partition,
         do_uneven_4way_partition,
         uneven_4way_partition_type,
-        rect_type,
-    );
-    if !input.allowed.contains(partition) {
-        // TODO(spec: DECODE-TILE-PARTITION-DECISION-BOUNDARY): decide whether
-        return Err(PartitionDecisionError::FinalPartitionDisallowed { partition });
-    }
-
-    Ok(ReadPartitionDecision::new(partition, trace))
+    ))
 }
 
 fn resolve_rect_type(
@@ -333,8 +381,8 @@ fn resolve_rect_type(
         return Ok(rect_type);
     }
 
-    let allow_horz = input.allowed.any(&PartitionType::HORZ_FAMILY);
-    let allow_vert = input.allowed.any(&PartitionType::VERT_FAMILY);
+    let allow_horz = RectPartitionFamily::HORZ.has_any_allowed(input.allowed);
+    let allow_vert = RectPartitionFamily::VERT.has_any_allowed(input.allowed);
     if !allow_horz {
         return Ok(RectPartitionType::Vert);
     }
@@ -374,29 +422,6 @@ fn symbol_to_bool(syntax: &'static str, symbol: Symbol) -> Result<bool, Partitio
             syntax,
             symbol: value,
         }),
-    }
-}
-
-fn rect_part_table(
-    do_ext_partition: bool,
-    do_uneven_4way_partition: bool,
-    uneven_4way_partition_type: bool,
-    rect_type: RectPartitionType,
-) -> PartitionType {
-    match (
-        do_ext_partition,
-        do_uneven_4way_partition,
-        uneven_4way_partition_type,
-        rect_type,
-    ) {
-        (false, _, _, RectPartitionType::Horz) => PartitionType::Horz,
-        (false, _, _, RectPartitionType::Vert) => PartitionType::Vert,
-        (true, false, _, RectPartitionType::Horz) => PartitionType::Horz3,
-        (true, false, _, RectPartitionType::Vert) => PartitionType::Vert3,
-        (true, true, false, RectPartitionType::Horz) => PartitionType::Horz4A,
-        (true, true, false, RectPartitionType::Vert) => PartitionType::Vert4A,
-        (true, true, true, RectPartitionType::Horz) => PartitionType::Horz4B,
-        (true, true, true, RectPartitionType::Vert) => PartitionType::Vert4B,
     }
 }
 

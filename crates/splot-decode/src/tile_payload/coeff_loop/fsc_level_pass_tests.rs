@@ -5,15 +5,14 @@
 
 use splot_core::symbol::SymbolDecoder;
 
-use super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
-use super::super::coeff_state::TileCoeffContextState;
-use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
+use super::super::cdf::{CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
+use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::fsc_level_pass::{
     CoeffFscLevelPassConfig, CoeffFscLevelPassError, CoeffFscLevelSymbolSource,
     NonZeroCoeffFscLevelPass, apply_nonzero_coeff_fsc_level_pass,
 };
 use super::scan_walk::{FscCoeffScanWalk, walk_fsc_coeff_scan};
-use super::test_support::symbol_decoder;
+use super::test_support::setup_start_with_input;
 use super::*;
 
 const SCAN: [u16; 4] = [0, 8, 1, 9];
@@ -23,13 +22,6 @@ const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
     [0x55, 0xaa, 0x80],
     [0xff, 0xff, 0x80],
 ];
-
-fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<NonZeroCoeffBlockStart> {
-    match branch {
-        CoeffBlockEobBranch::AllZero(_) => None,
-        CoeffBlockEobBranch::NonZero(start) => Some(start),
-    }
-}
 
 fn config() -> CoeffFscLevelPassConfig {
     CoeffFscLevelPassConfig {
@@ -49,15 +41,9 @@ fn setup_start(
     NonZeroCoeffBlockStart,
     FscCoeffScanWalk,
 )> {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload);
-    let mut state = TileCoeffContextState::new(4, 4).ok()?;
-    let branch = read_coeff_block_eob_branch(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+    let (tile, symbols, start) = setup_start_with_input(
+        payload,
+        NonZeroCoeffBlockStartInput {
             block: AllZeroCoeffBlockInput {
                 plane: 0,
                 x4: 0,
@@ -72,10 +58,8 @@ fn setup_start(
                 tx_height_log2: 3,
                 coeff_cdf_q_ctx: 0,
             },
-        }),
-    )
-    .ok()?;
-    let start = branch_nonzero(branch)?;
+        },
+    )?;
     if start.eob_read().eob().eob() != SCAN.len() - 2 {
         return None;
     }

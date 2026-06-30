@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! `read_mv` shell-scheme unit tests.
-//!
-//! These cover the structural building blocks ([`mv_clamp_to_integer`] and the
-//! [`read_ns`] § 4.11.13 arithmetic non-symmetric literal) that the shell decode
-//! composes. The full end-to-end bit-exactness of the shell read is proven by the
-//! `syn-2frame-subpel-inter-64x64.ivf` decode test.
-
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use splot_core::span::ByteOffset;
@@ -17,29 +10,32 @@ use super::{MV_LOW, MV_UPP, mv_clamp_to_integer, read_ns};
 
 #[test]
 fn mv_clamp_to_integer_is_identity_in_range() {
-    assert_eq!(mv_clamp_to_integer(0), 0);
-    assert_eq!(mv_clamp_to_integer(4), 4);
-    assert_eq!(mv_clamp_to_integer(-4), -4);
-    assert_eq!(mv_clamp_to_integer(1000), 1000);
-    assert_eq!(mv_clamp_to_integer(-1000), -1000);
+    for value in [0, 4, -4, 1000, -1000] {
+        assert_eq!(mv_clamp_to_integer(value), value);
+    }
 }
 
 #[test]
 fn mv_clamp_to_integer_clamps_out_of_range() {
-    assert_eq!(mv_clamp_to_integer(MV_LOW), MV_LOW + 8);
-    assert_eq!(mv_clamp_to_integer(MV_LOW - 100), MV_LOW + 8);
-    assert_eq!(mv_clamp_to_integer(MV_UPP), MV_UPP - 8);
-    assert_eq!(mv_clamp_to_integer(MV_UPP + 100), MV_UPP - 8);
+    for (value, clamped) in [
+        (MV_LOW, MV_LOW + 8),
+        (MV_LOW - 100, MV_LOW + 8),
+        (MV_UPP, MV_UPP - 8),
+        (MV_UPP + 100, MV_UPP - 8),
+    ] {
+        assert_eq!(mv_clamp_to_integer(value), clamped);
+    }
 }
 
 #[test]
 fn read_ns_small_n_reads_nothing() {
     let mut symbols = SymbolDecoder::new(&[0x00, 0x80]).unwrap();
     let before = symbols.consumed_bits();
-    assert_eq!(read_ns(&mut symbols, 1, ByteOffset::new(0)).unwrap(), 0);
-    assert_eq!(symbols.consumed_bits(), before);
-    assert_eq!(read_ns(&mut symbols, 0, ByteOffset::new(0)).unwrap(), 0);
-    assert_eq!(symbols.consumed_bits(), before);
+
+    for n in [1, 0] {
+        assert_eq!(read_ns(&mut symbols, n, ByteOffset::new(0)).unwrap(), 0);
+        assert_eq!(symbols.consumed_bits(), before);
+    }
 }
 
 #[test]

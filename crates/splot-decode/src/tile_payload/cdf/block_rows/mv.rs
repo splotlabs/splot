@@ -12,7 +12,7 @@ use splot_core::tables::cdf::{
     DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF,
 };
 
-use super::super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_count};
+use super::super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_rows, scale_cdf_rows};
 
 const MV_CONTEXTS: usize = 2;
 const SHELL_OFFSET_LOW_CLASS_BANKS: usize = 2;
@@ -31,6 +31,24 @@ type ShellOffsetOtherClassCdfRows =
     [[[i32; CDF_ROW_LEN]; SHELL_OFFSET_OTHER_CLASS_BANKS]; MV_CONTEXTS];
 type ColMvGreaterCdfRows = [[[i32; CDF_ROW_LEN]; COL_MV_GREATER_BANKS]; MV_CONTEXTS];
 type ColMvIndexCdfRows = [[[i32; CDF_ROW_LEN]; COL_MV_INDEX_BANKS]; MV_CONTEXTS];
+
+macro_rules! visit_mv_cdf_rows {
+    ($visit:ident) => {
+        $visit!(joint_shell_set);
+        $visit!(joint_shell3_class0);
+        $visit!(joint_shell3_class1);
+        $visit!(joint_shell5_class0);
+        $visit!(joint_shell5_class1);
+        $visit!(joint_shell6_class0);
+        $visit!(joint_shell6_class1);
+        $visit!(joint_shell_last_two);
+        $visit!(shell_offset_low_class.flatten());
+        $visit!(shell_offset_class2);
+        $visit!(shell_offset_other_class.flatten());
+        $visit!(col_mv_greater.flatten());
+        $visit!(col_mv_index.flatten());
+    };
+}
 
 /// CDF selector for the AV2 § 5.20.7.20 `read_mv()` row family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,276 +145,153 @@ impl MvCdfRows {
 
     pub(super) fn row(&self, selector: MvCdfSelector) -> Result<&[i32], TileCdfError> {
         match selector {
-            MvCdfSelector::JointShellSet { mv_ctx } => Ok(checked_row(
+            MvCdfSelector::JointShellSet { mv_ctx } => checked_cdf_row(
                 &self.joint_shell_set,
                 mv_ctx,
                 "mv_ctx",
                 TileCdfArray::JointShell6Class,
-            )?
-            .as_slice()),
+            ),
             MvCdfSelector::JointShellClass {
                 precision,
                 shell_set,
                 mv_ctx,
             } => self.joint_shell_class_row(precision, shell_set, mv_ctx),
-            MvCdfSelector::JointShellLastTwo { mv_ctx } => Ok(checked_row(
+            MvCdfSelector::JointShellLastTwo { mv_ctx } => checked_cdf_row(
                 &self.joint_shell_last_two,
                 mv_ctx,
                 "mv_ctx",
                 TileCdfArray::JointShell6Class,
-            )?
-            .as_slice()),
+            ),
             MvCdfSelector::ShellOffsetLowClass {
                 mv_ctx,
                 shell_class,
-            } => {
-                let bank = checked_row(
-                    &self.shell_offset_low_class,
-                    mv_ctx,
-                    "mv_ctx",
-                    TileCdfArray::ShellOffsetLowClass,
-                )?;
-                Ok(checked_row(
-                    bank,
-                    shell_class,
-                    "shell_class",
-                    TileCdfArray::ShellOffsetLowClass,
-                )?
-                .as_slice())
-            }
-            MvCdfSelector::ShellOffsetClass2 { mv_ctx } => Ok(checked_row(
+            } => checked_cdf_bank_row(
+                &self.shell_offset_low_class,
+                mv_ctx,
+                "mv_ctx",
+                shell_class,
+                "shell_class",
+                TileCdfArray::ShellOffsetLowClass,
+            ),
+            MvCdfSelector::ShellOffsetClass2 { mv_ctx } => checked_cdf_row(
                 &self.shell_offset_class2,
                 mv_ctx,
                 "mv_ctx",
                 TileCdfArray::ShellOffsetLowClass,
-            )?
-            .as_slice()),
-            MvCdfSelector::ShellOffsetOtherClass { mv_ctx, i } => {
-                let bank = checked_row(
-                    &self.shell_offset_other_class,
-                    mv_ctx,
-                    "mv_ctx",
-                    TileCdfArray::ShellOffsetOtherClass,
-                )?;
-                Ok(checked_row(bank, i, "i", TileCdfArray::ShellOffsetOtherClass)?.as_slice())
-            }
-            MvCdfSelector::ColMvGreater { mv_ctx, i } => {
-                let bank = checked_row(
-                    &self.col_mv_greater,
-                    mv_ctx,
-                    "mv_ctx",
-                    TileCdfArray::ColMvGreater,
-                )?;
-                Ok(checked_row(bank, i, "i", TileCdfArray::ColMvGreater)?.as_slice())
-            }
-            MvCdfSelector::ColMvIndex { mv_ctx, ctx } => {
-                let bank = checked_row(
-                    &self.col_mv_index,
-                    mv_ctx,
-                    "mv_ctx",
-                    TileCdfArray::ColMvIndex,
-                )?;
-                Ok(checked_row(bank, ctx, "ctx", TileCdfArray::ColMvIndex)?.as_slice())
-            }
+            ),
+            MvCdfSelector::ShellOffsetOtherClass { mv_ctx, i } => checked_cdf_bank_row(
+                &self.shell_offset_other_class,
+                mv_ctx,
+                "mv_ctx",
+                i,
+                "i",
+                TileCdfArray::ShellOffsetOtherClass,
+            ),
+            MvCdfSelector::ColMvGreater { mv_ctx, i } => checked_cdf_bank_row(
+                &self.col_mv_greater,
+                mv_ctx,
+                "mv_ctx",
+                i,
+                "i",
+                TileCdfArray::ColMvGreater,
+            ),
+            MvCdfSelector::ColMvIndex { mv_ctx, ctx } => checked_cdf_bank_row(
+                &self.col_mv_index,
+                mv_ctx,
+                "mv_ctx",
+                ctx,
+                "ctx",
+                TileCdfArray::ColMvIndex,
+            ),
         }
     }
 
     pub(super) fn row_mut(&mut self, selector: MvCdfSelector) -> Result<&mut [i32], TileCdfError> {
         match selector {
-            MvCdfSelector::JointShellSet { mv_ctx } => Ok(checked_row_mut(
+            MvCdfSelector::JointShellSet { mv_ctx } => checked_cdf_row_mut(
                 &mut self.joint_shell_set,
                 mv_ctx,
                 "mv_ctx",
                 TileCdfArray::JointShell6Class,
-            )?
-            .as_mut_slice()),
+            ),
             MvCdfSelector::JointShellClass {
                 precision,
                 shell_set,
                 mv_ctx,
             } => self.joint_shell_class_row_mut(precision, shell_set, mv_ctx),
-            MvCdfSelector::JointShellLastTwo { mv_ctx } => Ok(checked_row_mut(
+            MvCdfSelector::JointShellLastTwo { mv_ctx } => checked_cdf_row_mut(
                 &mut self.joint_shell_last_two,
                 mv_ctx,
                 "mv_ctx",
                 TileCdfArray::JointShell6Class,
-            )?
-            .as_mut_slice()),
+            ),
             MvCdfSelector::ShellOffsetLowClass {
                 mv_ctx,
                 shell_class,
-            } => {
-                let bank = checked_row_mut(
-                    &mut self.shell_offset_low_class,
-                    mv_ctx,
-                    "mv_ctx",
-                    TileCdfArray::ShellOffsetLowClass,
-                )?;
-                Ok(checked_row_mut(
-                    bank,
-                    shell_class,
-                    "shell_class",
-                    TileCdfArray::ShellOffsetLowClass,
-                )?
-                .as_mut_slice())
-            }
-            MvCdfSelector::ShellOffsetClass2 { mv_ctx } => Ok(checked_row_mut(
+            } => checked_cdf_bank_row_mut(
+                &mut self.shell_offset_low_class,
+                mv_ctx,
+                "mv_ctx",
+                shell_class,
+                "shell_class",
+                TileCdfArray::ShellOffsetLowClass,
+            ),
+            MvCdfSelector::ShellOffsetClass2 { mv_ctx } => checked_cdf_row_mut(
                 &mut self.shell_offset_class2,
                 mv_ctx,
                 "mv_ctx",
                 TileCdfArray::ShellOffsetLowClass,
-            )?
-            .as_mut_slice()),
-            MvCdfSelector::ShellOffsetOtherClass { mv_ctx, i } => {
-                let bank = checked_row_mut(
-                    &mut self.shell_offset_other_class,
-                    mv_ctx,
-                    "mv_ctx",
-                    TileCdfArray::ShellOffsetOtherClass,
-                )?;
-                Ok(
-                    checked_row_mut(bank, i, "i", TileCdfArray::ShellOffsetOtherClass)?
-                        .as_mut_slice(),
-                )
-            }
-            MvCdfSelector::ColMvGreater { mv_ctx, i } => {
-                let bank = checked_row_mut(
-                    &mut self.col_mv_greater,
-                    mv_ctx,
-                    "mv_ctx",
-                    TileCdfArray::ColMvGreater,
-                )?;
-                Ok(checked_row_mut(bank, i, "i", TileCdfArray::ColMvGreater)?.as_mut_slice())
-            }
-            MvCdfSelector::ColMvIndex { mv_ctx, ctx } => {
-                let bank = checked_row_mut(
-                    &mut self.col_mv_index,
-                    mv_ctx,
-                    "mv_ctx",
-                    TileCdfArray::ColMvIndex,
-                )?;
-                Ok(checked_row_mut(bank, ctx, "ctx", TileCdfArray::ColMvIndex)?.as_mut_slice())
-            }
+            ),
+            MvCdfSelector::ShellOffsetOtherClass { mv_ctx, i } => checked_cdf_bank_row_mut(
+                &mut self.shell_offset_other_class,
+                mv_ctx,
+                "mv_ctx",
+                i,
+                "i",
+                TileCdfArray::ShellOffsetOtherClass,
+            ),
+            MvCdfSelector::ColMvGreater { mv_ctx, i } => checked_cdf_bank_row_mut(
+                &mut self.col_mv_greater,
+                mv_ctx,
+                "mv_ctx",
+                i,
+                "i",
+                TileCdfArray::ColMvGreater,
+            ),
+            MvCdfSelector::ColMvIndex { mv_ctx, ctx } => checked_cdf_bank_row_mut(
+                &mut self.col_mv_index,
+                mv_ctx,
+                "mv_ctx",
+                ctx,
+                "ctx",
+                TileCdfArray::ColMvIndex,
+            ),
         }
     }
 
     pub(super) fn average_from_tile(&mut self, tile: &Self, tile_num: u32, num_log2: u8) {
-        for mv_ctx in 0..MV_CONTEXTS {
-            avg_cdf_row(
-                &mut self.joint_shell_set[mv_ctx],
-                &tile.joint_shell_set[mv_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.joint_shell3_class0[mv_ctx],
-                &tile.joint_shell3_class0[mv_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.joint_shell3_class1[mv_ctx],
-                &tile.joint_shell3_class1[mv_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.joint_shell5_class0[mv_ctx],
-                &tile.joint_shell5_class0[mv_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.joint_shell5_class1[mv_ctx],
-                &tile.joint_shell5_class1[mv_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.joint_shell6_class0[mv_ctx],
-                &tile.joint_shell6_class0[mv_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.joint_shell6_class1[mv_ctx],
-                &tile.joint_shell6_class1[mv_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.joint_shell_last_two[mv_ctx],
-                &tile.joint_shell_last_two[mv_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.shell_offset_class2[mv_ctx],
-                &tile.shell_offset_class2[mv_ctx],
-                tile_num,
-                num_log2,
-            );
+        macro_rules! avg_rows {
+            ($field:ident $(. $flatten:ident())*) => {
+                avg_cdf_rows(
+                    self.$field.iter_mut()$(.$flatten())*,
+                    tile.$field.iter()$(.$flatten())*,
+                    tile_num,
+                    num_log2,
+                );
+            };
         }
-        for mv_ctx in 0..MV_CONTEXTS {
-            for bank in 0..SHELL_OFFSET_LOW_CLASS_BANKS {
-                avg_cdf_row(
-                    &mut self.shell_offset_low_class[mv_ctx][bank],
-                    &tile.shell_offset_low_class[mv_ctx][bank],
-                    tile_num,
-                    num_log2,
-                );
-            }
-            for bank in 0..SHELL_OFFSET_OTHER_CLASS_BANKS {
-                avg_cdf_row(
-                    &mut self.shell_offset_other_class[mv_ctx][bank],
-                    &tile.shell_offset_other_class[mv_ctx][bank],
-                    tile_num,
-                    num_log2,
-                );
-            }
-            for bank in 0..COL_MV_GREATER_BANKS {
-                avg_cdf_row(
-                    &mut self.col_mv_greater[mv_ctx][bank],
-                    &tile.col_mv_greater[mv_ctx][bank],
-                    tile_num,
-                    num_log2,
-                );
-            }
-            for bank in 0..COL_MV_INDEX_BANKS {
-                avg_cdf_row(
-                    &mut self.col_mv_index[mv_ctx][bank],
-                    &tile.col_mv_index[mv_ctx][bank],
-                    tile_num,
-                    num_log2,
-                );
-            }
-        }
+
+        visit_mv_cdf_rows!(avg_rows);
     }
 
     pub(super) fn scale_counts(&mut self) {
-        for mv_ctx in 0..MV_CONTEXTS {
-            scale_cdf_count(&mut self.joint_shell_set[mv_ctx]);
-            scale_cdf_count(&mut self.joint_shell3_class0[mv_ctx]);
-            scale_cdf_count(&mut self.joint_shell3_class1[mv_ctx]);
-            scale_cdf_count(&mut self.joint_shell5_class0[mv_ctx]);
-            scale_cdf_count(&mut self.joint_shell5_class1[mv_ctx]);
-            scale_cdf_count(&mut self.joint_shell6_class0[mv_ctx]);
-            scale_cdf_count(&mut self.joint_shell6_class1[mv_ctx]);
-            scale_cdf_count(&mut self.joint_shell_last_two[mv_ctx]);
-            scale_cdf_count(&mut self.shell_offset_class2[mv_ctx]);
-            for bank in 0..SHELL_OFFSET_LOW_CLASS_BANKS {
-                scale_cdf_count(&mut self.shell_offset_low_class[mv_ctx][bank]);
-            }
-            for bank in 0..SHELL_OFFSET_OTHER_CLASS_BANKS {
-                scale_cdf_count(&mut self.shell_offset_other_class[mv_ctx][bank]);
-            }
-            for bank in 0..COL_MV_GREATER_BANKS {
-                scale_cdf_count(&mut self.col_mv_greater[mv_ctx][bank]);
-            }
-            for bank in 0..COL_MV_INDEX_BANKS {
-                scale_cdf_count(&mut self.col_mv_index[mv_ctx][bank]);
-            }
+        macro_rules! scale_rows {
+            ($field:ident $(. $flatten:ident())*) => {
+                scale_cdf_rows(self.$field.iter_mut()$(.$flatten())*);
+            };
         }
+
+        visit_mv_cdf_rows!(scale_rows);
     }
 
     fn joint_shell_class_row(
@@ -478,6 +373,27 @@ fn checked_row<'a, T, const N: usize>(
     })
 }
 
+fn checked_cdf_row<'a, const ROW_LEN: usize, const N: usize>(
+    rows: &'a [[i32; ROW_LEN]; N],
+    index: usize,
+    index_name: &'static str,
+    array: TileCdfArray,
+) -> Result<&'a [i32], TileCdfError> {
+    Ok(checked_row(rows, index, index_name, array)?.as_slice())
+}
+
+fn checked_cdf_bank_row<'a, const ROW_LEN: usize, const OUTER: usize, const INNER: usize>(
+    rows: &'a [[[i32; ROW_LEN]; INNER]; OUTER],
+    outer: usize,
+    outer_name: &'static str,
+    inner: usize,
+    inner_name: &'static str,
+    array: TileCdfArray,
+) -> Result<&'a [i32], TileCdfError> {
+    let bank = checked_row(rows, outer, outer_name, array)?;
+    checked_cdf_row(bank, inner, inner_name, array)
+}
+
 fn checked_row_mut<'a, T, const N: usize>(
     rows: &'a mut [T; N],
     index: usize,
@@ -490,6 +406,27 @@ fn checked_row_mut<'a, T, const N: usize>(
         actual: index,
         max_exclusive: N,
     })
+}
+
+fn checked_cdf_row_mut<'a, const ROW_LEN: usize, const N: usize>(
+    rows: &'a mut [[i32; ROW_LEN]; N],
+    index: usize,
+    index_name: &'static str,
+    array: TileCdfArray,
+) -> Result<&'a mut [i32], TileCdfError> {
+    Ok(checked_row_mut(rows, index, index_name, array)?.as_mut_slice())
+}
+
+fn checked_cdf_bank_row_mut<'a, const ROW_LEN: usize, const OUTER: usize, const INNER: usize>(
+    rows: &'a mut [[[i32; ROW_LEN]; INNER]; OUTER],
+    outer: usize,
+    outer_name: &'static str,
+    inner: usize,
+    inner_name: &'static str,
+    array: TileCdfArray,
+) -> Result<&'a mut [i32], TileCdfError> {
+    let bank = checked_row_mut(rows, outer, outer_name, array)?;
+    checked_cdf_row_mut(bank, inner, inner_name, array)
 }
 
 fn precision_error(precision: usize) -> TileCdfError {

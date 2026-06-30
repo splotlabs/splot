@@ -15,59 +15,45 @@ use super::partition::PartitionType;
 const BLOCK_SIZES: usize = 29;
 const BLOCK_INVALID: i32 = 29;
 
-/// A valid AV2 § 6.19.3 `BLOCK_*` size discriminant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockSize(usize);
 
 impl BlockSize {
-    /// Creates a checked block-size index in AV2 Table 6.22 order.
     pub(crate) fn new(index: usize) -> Result<Self, PartitionSizeError> {
         if index >= BLOCK_SIZES {
-            return Err(PartitionSizeError::BlockSizeOutOfRange {
-                table: "bSize",
-                b_size: index,
-                max_exclusive: BLOCK_SIZES,
-            });
+            return Err(block_size_out_of_range("bSize", index));
         }
         Ok(Self(index))
     }
 
-    /// Returns the AV2 block-size discriminant.
     pub(crate) const fn index(self) -> usize {
         self.0
     }
 
-    /// Returns `Num_4x4_Blocks_Wide[bSize]`.
     pub(crate) fn num_4x4_wide(self) -> Result<usize, PartitionSizeError> {
         table_usize("Num_4x4_Blocks_Wide", &NUM_4X4_BLOCKS_WIDE, self)
     }
 
-    /// Returns `Num_4x4_Blocks_High[bSize]`.
     pub(crate) fn num_4x4_high(self) -> Result<usize, PartitionSizeError> {
         table_usize("Num_4x4_Blocks_High", &NUM_4X4_BLOCKS_HIGH, self)
     }
 
-    /// Returns AV2 § 9.2 `Block_Width[bSize]` in samples.
     pub(crate) fn width_samples(self) -> Result<usize, PartitionSizeError> {
         Ok(self.num_4x4_wide()? * 4)
     }
 
-    /// Returns AV2 § 9.2 `Block_Height[bSize]` in samples.
     pub(crate) fn height_samples(self) -> Result<usize, PartitionSizeError> {
         Ok(self.num_4x4_high()? * 4)
     }
 
-    /// Returns `Mi_Width_Log2[bSize]`.
     pub(crate) fn mi_width_log2(self) -> Result<usize, PartitionSizeError> {
         table_usize("Mi_Width_Log2", &MI_WIDTH_LOG2, self)
     }
 
-    /// Returns `Mi_Height_Log2[bSize]`.
     pub(crate) fn mi_height_log2(self) -> Result<usize, PartitionSizeError> {
         table_usize("Mi_Height_Log2", &MI_HEIGHT_LOG2, self)
     }
 
-    /// Finds a valid AV2 block size with the supplied 4x4-block dimensions.
     pub(crate) fn from_4x4_dimensions(
         width_4x4: usize,
         height_4x4: usize,
@@ -82,17 +68,13 @@ impl BlockSize {
     }
 }
 
-/// Result of a § 9.2 partition-size lookup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PartitionSubsize {
-    /// The table entry was a valid AV2 block-size discriminant.
     Valid(BlockSize),
-    /// The table entry was `BLOCK_INVALID`.
     Invalid,
 }
 
 impl PartitionSubsize {
-    /// Returns the valid block size, if the table entry was not `BLOCK_INVALID`.
     pub(crate) const fn valid(self) -> Option<BlockSize> {
         match self {
             Self::Valid(block_size) => Some(block_size),
@@ -101,62 +83,41 @@ impl PartitionSubsize {
     }
 }
 
-/// Error returned by the crate-private partition-size table boundary.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum PartitionSizeError {
-    /// The caller supplied a block-size index outside `BLOCK_SIZES`.
     #[error("{table} block-size index {b_size} is outside 0..{max_exclusive}")]
     BlockSizeOutOfRange {
-        /// Table or input name.
         table: &'static str,
-        /// Supplied block-size index.
         b_size: usize,
-        /// Exclusive upper bound.
         max_exclusive: usize,
     },
-    /// A generated § 9.2 table entry was not a valid block-size or invalid sentinel.
     #[error("{table}[{partition:?}][{b_size}] value {value} is not a valid block-size entry")]
     TableValueOutOfRange {
-        /// Table name.
         table: &'static str,
-        /// Partition index, when the table is partition-indexed.
         partition: Option<usize>,
-        /// Source block-size index.
         b_size: usize,
-        /// Generated table value.
         value: i32,
     },
 }
 
-/// Looks up AV2 § 9.2 `Partition_Subsize[partition][bSize]`.
 pub(crate) fn partition_subsize(
     partition: PartitionType,
     b_size: BlockSize,
 ) -> Result<PartitionSubsize, PartitionSizeError> {
     let partition_index = partition.index();
-    let value = PARTITION_SUBSIZE
-        .get(partition_index)
-        .and_then(|row| row.get(b_size.index()))
-        .copied()
-        .ok_or(PartitionSizeError::BlockSizeOutOfRange {
-            table: "Partition_Subsize",
-            b_size: b_size.index(),
-            max_exclusive: BLOCK_SIZES,
-        })?;
+    let value = partition_table_i32(
+        "Partition_Subsize",
+        &PARTITION_SUBSIZE,
+        partition_index,
+        b_size,
+    )?;
     table_value("Partition_Subsize", Some(partition_index), b_size, value)
 }
 
-/// Looks up AV2 § 9.2 `H_Partition_Midsize[bSize]`.
 pub(crate) fn h_partition_midsize(
     b_size: BlockSize,
 ) -> Result<PartitionSubsize, PartitionSizeError> {
-    let value = H_PARTITION_MIDSIZE.get(b_size.index()).copied().ok_or(
-        PartitionSizeError::BlockSizeOutOfRange {
-            table: "H_Partition_Midsize",
-            b_size: b_size.index(),
-            max_exclusive: BLOCK_SIZES,
-        },
-    )?;
+    let value = table_i32("H_Partition_Midsize", &H_PARTITION_MIDSIZE, b_size)?;
     table_value("H_Partition_Midsize", None, b_size, value)
 }
 
@@ -169,19 +130,10 @@ fn table_value(
     if value == BLOCK_INVALID {
         return Ok(PartitionSubsize::Invalid);
     }
-    let index = usize::try_from(value).map_err(|_| PartitionSizeError::TableValueOutOfRange {
-        table,
-        partition,
-        b_size: b_size.index(),
-        value,
-    })?;
-    let block_size =
-        BlockSize::new(index).map_err(|_| PartitionSizeError::TableValueOutOfRange {
-            table,
-            partition,
-            b_size: b_size.index(),
-            value,
-        })?;
+    let index = usize::try_from(value)
+        .map_err(|_| table_value_out_of_range(table, partition, b_size, value))?;
+    let block_size = BlockSize::new(index)
+        .map_err(|_| table_value_out_of_range(table, partition, b_size, value))?;
     Ok(PartitionSubsize::Valid(block_size))
 }
 
@@ -190,21 +142,54 @@ fn table_usize(
     values: &[i32],
     b_size: BlockSize,
 ) -> Result<usize, PartitionSizeError> {
-    let value =
-        values
-            .get(b_size.index())
-            .copied()
-            .ok_or(PartitionSizeError::BlockSizeOutOfRange {
-                table,
-                b_size: b_size.index(),
-                max_exclusive: BLOCK_SIZES,
-            })?;
-    usize::try_from(value).map_err(|_| PartitionSizeError::TableValueOutOfRange {
+    let value = table_i32(table, values, b_size)?;
+    usize::try_from(value).map_err(|_| table_value_out_of_range(table, None, b_size, value))
+}
+
+fn partition_table_i32(
+    table: &'static str,
+    values: &[[i32; BLOCK_SIZES]],
+    partition: usize,
+    b_size: BlockSize,
+) -> Result<i32, PartitionSizeError> {
+    values
+        .get(partition)
+        .and_then(|row| row.get(b_size.index()))
+        .copied()
+        .ok_or(block_size_out_of_range(table, b_size.index()))
+}
+
+fn table_i32(
+    table: &'static str,
+    values: &[i32],
+    b_size: BlockSize,
+) -> Result<i32, PartitionSizeError> {
+    values
+        .get(b_size.index())
+        .copied()
+        .ok_or(block_size_out_of_range(table, b_size.index()))
+}
+
+fn block_size_out_of_range(table: &'static str, b_size: usize) -> PartitionSizeError {
+    PartitionSizeError::BlockSizeOutOfRange {
         table,
-        partition: None,
+        b_size,
+        max_exclusive: BLOCK_SIZES,
+    }
+}
+
+fn table_value_out_of_range(
+    table: &'static str,
+    partition: Option<usize>,
+    b_size: BlockSize,
+    value: i32,
+) -> PartitionSizeError {
+    PartitionSizeError::TableValueOutOfRange {
+        table,
+        partition,
         b_size: b_size.index(),
         value,
-    })
+    }
 }
 
 #[cfg(test)]

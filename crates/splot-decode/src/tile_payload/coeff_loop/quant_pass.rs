@@ -15,7 +15,7 @@ use super::max_level::{
     max_levels_to_quant_pass_inputs,
 };
 use super::quant_state::{
-    CoeffQuantReadInput, CoeffQuantStateConfig, CoeffQuantStateWriteError, NonZeroCoeffQuantState,
+    CoeffQuantStateConfig, CoeffQuantStateWriteError, NonZeroCoeffQuantState,
     apply_nonzero_coeff_quant_state,
 };
 use super::read_quant::{
@@ -194,13 +194,7 @@ pub(crate) enum CoeffQuantPassError {
     QuantState(#[from] CoeffQuantStateWriteError),
 }
 
-/// Runs the ordinary non-FSC `read_quant` and quant-state write pass.
-///
-/// This composes AV2 §5.20.7.28 `read_quant` literal parsing with the
-/// §5.20.7.27 signed `Quant[]` write step. The caller still owns scan-table,
-/// sign-source, `maxLevel`, hidden-parity, `sumAbs1`, TCQ, and lossless fact
-/// derivation from real block syntax. Runtime `coeffs()` integration, tile
-/// context writes, dequantization, and reconstruction remain out of scope.
+/// Runs the ordinary non-FSC `read_quant` and signed `Quant[]` write pass.
 pub(crate) fn apply_nonzero_coeff_quant_pass(
     symbols: &mut SymbolDecoder<'_>,
     block: &mut TransformCoeffBlockState,
@@ -222,7 +216,9 @@ pub(crate) fn apply_nonzero_coeff_quant_pass(
             hr_level_avg: config.hr_level_avg,
         },
     )?;
-    let quant_inputs = quant_inputs_from_reads(&read_quants)?;
+    let mut quant_inputs = Vec::new();
+    quant_inputs.try_reserve(read_quants.len())?;
+    quant_inputs.extend(read_quants.iter().map(|read| read.quant_input()));
     let quant_state = apply_nonzero_coeff_quant_state(
         block,
         walk,
@@ -259,14 +255,6 @@ pub(crate) fn validate_coeff_quant_pass_config(
 }
 
 /// Runs the ordinary non-FSC quant pass with derived `maxLevel` inputs.
-///
-/// This is the same loaded-but-unwired second-pass boundary as
-/// [`apply_nonzero_coeff_quant_pass`], but it removes the per-coefficient
-/// `maxLevel` caller fact by applying the AV2 §5.20.7.27 derivation over the
-/// checked scan walk before invoking the quant pass. The caller still owns
-/// transform-class derivation, sign-source selection, hidden-parity and TCQ
-/// facts, runtime `coeffs()` integration, tile context writes, dequantization,
-/// and reconstruction.
 pub(crate) fn apply_nonzero_coeff_quant_pass_with_derived_max_levels(
     symbols: &mut SymbolDecoder<'_>,
     block: &mut TransformCoeffBlockState,
@@ -363,15 +351,6 @@ fn preflight_quant_pass(
         });
     }
     Ok(read_inputs)
-}
-
-fn quant_inputs_from_reads(
-    reads: &[CoeffReadQuant],
-) -> Result<Vec<CoeffQuantReadInput>, CoeffQuantPassError> {
-    let mut inputs = Vec::new();
-    inputs.try_reserve(reads.len())?;
-    inputs.extend(reads.iter().map(|read| read.quant_input()));
-    Ok(inputs)
 }
 
 #[cfg(test)]

@@ -1,118 +1,43 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 7.11 / § 7.12 motion-vector context + prediction kernel (minimal
-//! spatial-only single-reference subset).
-//!
-//! This module models the spatial-neighbour parts of the AV2 motion-vector
-//! context (§ 7.11.2 `find_mode_ctx`, the find mode context process) and the
-//! motion-vector prediction stack (§ 7.12.2 `find_mv_stack`, the Find MV stack
-//! process) that a multi-block single-reference inter frame needs to predict a
-//! later block's motion vector from a decoded neighbour block (NEARMV /
-//! NEARESTMV reusing a spatial-neighbour MV).
-//!
-//! It is the inter analog of the directional-prediction / sub-pel-MC kernels:
-//! a precise, unit-tested subset that admits exactly the supported inter case and
-//! defers the rest with explicit spec TODOs.
-//!
-//! ## What is modelled
-//!
-//! - The neighbour mode-info grid ([`NeighbourMvGrid`]): per-MI `IsInters`,
-//!   `RefFrames[0]`, `YModes`, and `Mvs[0]` written after each block decodes
-//!   (the inputs § 7.11.3 / § 7.12.2.6 read for a later block).
-//! - § 7.11.2 `find_mode_ctx` for single prediction: the `leftA` / `aboveA` /
-//!   `leftB` / `aboveB` scan-point context probes (§ 7.11.3 Scan point context
-//!   process), giving `NewMvContext` and `NewMvCount` ([`find_mode_ctx`]).
-//! - § 7.12.2 `find_mv_stack` for single prediction (`isCompound == 0`): the
-//!   ordered spatial scan-point steps (§ 7.12.2.6 Scan point process +
-//!   § 7.12.2.10 Add reference motion vector process + § 7.12.2.12 Search stack
-//!   process), the `numNearest` sort gate (§ 7.12.2.19 Sorting process), and the
-//!   extra-search global-MV fallback (§ 7.12.2.20 Extra search process) +
-//!   clamping (§ 7.12.2.23 Clamping process) ([`find_mv_stack`]). The per-neighbour
-//!   scan-point ORDERING (left-before-above precedence) and the § 5.20.7.8 DRL
-//!   slot selection are oracle-PINNED by the committed
-//!   `syn-2frame-inter-mvorder-64x64.ivf` (`DECODE-INTER-MVORDER-SPATIAL`): four
-//!   32x32 leaves with DISTINCT MVs whose interior NEARMV block selects RefMvIdx 1
-//!   (the above neighbour) over a stack whose slot 0 is the left neighbour, so a
-//!   reversed order would mis-decode it (avmdec + dav2d bit-exact).
-//!
-//! ## What is deferred (`TODO(spec: DECODE-INTER-MVSTACK-SPATIAL)`)
-//!
-//! - Temporal MV candidates (§ 7.12.2.7 / § 7.12.2.8): the caller requires
-//!   `use_ref_frame_mvs == 0`, so `useTemporal == 0` and no temporal scan runs.
-//! - Compound prediction (`isCompound == 1`) and the compound search /
-//!   derived / TIP candidate processes (§ 7.12.2.13–§ 7.12.2.18).
-//! - Warp candidate derivation (`DeriveWrl == 1`, § 7.12.2.2–§ 7.12.2.4,
-//!   § 7.12.2.9, § 7.12.2.11) and the find-warp-samples process (§ 7.12.3).
-//! - The reference MV bank (`enable_refmvbank`, § 7.12.2.21) and the derived
-//!   single-MV predictor list (§ 7.12.2.16 / § 7.12.2.22), both requiring
-//!   sequence features the caller rejects.
-//! - The DRL reorder full sort (`DrlReorder != DRL_REORDER_ALWAYS`,
-//!   the `useSort` constraint path); the caller rejects `enable_drl_reorder`.
-//! - Global (warp) motion: the caller rejects `use_global_motion`, so the
-//!   § 7.12.2.1 Setup global MV process yields the zero vector for every list.
-//! - The § 7.12.2.20 large-block (Block_Width > 32 AND Block_Height > 32) extra
-//!   MVP-combination candidates, the intrabc block-vector candidates, and the
-//!   warp-bank candidates. The committed distinct-MV fixture
-//!   (`DECODE-INTER-MVORDER-SPATIAL`) pins the spatial ordering with 32x32 leaves
-//!   (Block_Width / Block_Height == 32, NOT > 32), for which § 7.12.2.20 large-block
-//!   is correctly inapplicable, so it does not exercise that step; the > 32x32 MVP
-//!   combinations remain deferred and guarded by the § 5.20.7.8
-//!   `inter_block_drl_idx_out_of_range` reject (see [`extra_search`]).
-
 use super::Mv;
 
 /// AV2 § 3 `MAX_REF_MV_STACK_SIZE`: the maximum number of motion vectors in the
 /// stack.
 pub(super) const MAX_REF_MV_STACK_SIZE: usize = 6;
 
-/// AV2 § 3 `MV_BORDER`: the value used when clipping motion vectors
-/// (§ 5.20.9.4 / § 5.20.9.5).
 const MV_BORDER: i32 = 128;
 
-/// AV2 § 3 `MI_SIZE`: luma samples per mode-info unit.
 const MI_SIZE: i32 = 4;
 
-/// One decoded neighbour mode-info cell: the § 7.11.3 / § 7.12.2.6 inputs a
-/// later block reads. A `None` cell has not been decoded for this frame (the
-/// § 7.12.2.6 "RefFrames[mvRow][mvCol][0] has been written" check fails).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NeighbourCell {
-    /// `IsInters[mvRow][mvCol]`: 1 for an inter block, 0 for intra.
     is_inter: bool,
-    /// `RefFrames[mvRow][mvCol][0]`: the single-reference frame index of the
-    /// block (only the single-prediction list 0 is modelled).
     ref_frame0: i8,
-    /// `YModes[mvRow][mvCol]`: the block's luma prediction mode, used by
-    /// § 7.11.3 `has_newmv_for_list` to count `NewMvCount`.
     y_mode: NeighbourYMode,
-    /// `Mvs[mvRow][mvCol][0]`: the block's list-0 motion vector.
     mv: Mv,
-    /// `Skips[mvRow][mvCol]`: the block's `skip` flag, used by the § 8.3.2
-    /// `skip_flag` context (`ctx += Skips[NPosBuf[n]]`).
     skip: bool,
 }
 
-/// The subset of AV2 § 5.20.7.6 luma inter prediction modes the § 7.11.3
-/// `has_newmv_for_list` context probe distinguishes for single prediction. Only
-/// `NEWMV` increments `NewMvCount` for list 0 in the single-reference subset
-/// (NEARMV / NEARESTMV / GLOBALMV do not).
+const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
+    is_inter: false,
+    ref_frame0: -1,
+    y_mode: NeighbourYMode::Other,
+    mv: Mv::ZERO,
+    skip: false,
+};
+
+/// Luma mode class needed by § 7.11.3 `has_newmv_for_list`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NeighbourYMode {
-    /// A `NEWMV` block (§ 5.20.7.6 single_mode == 2): a new MV was coded, so
-    /// § 7.11.3 `has_newmv_for_list(candMode, 0)` returns 1.
+    /// The neighbour coded a new list-0 MV.
     NewMv,
-    /// A `NEARMV` / `NEARESTMV` / `GLOBALMV` (or intra) block: not a NEW MV for
-    /// list 0, so `has_newmv_for_list` returns 0.
+    /// Any neighbour mode that does not increment `NewMvCount`.
     Other,
 }
 
-/// The per-MI neighbour mode-info grid the § 7.11 / § 7.12 spatial scan reads.
-///
-/// Sized to the tile's MI grid; written after each block decodes so a later
-/// block in decode (DFS) order sees its already-decoded left/above neighbours,
-/// exactly as AV2 § 5.20.4.1 `decode_block` records `Mvs` / `RefFrames` /
-/// `YModes` / `IsInters` into the frame mode-info arrays.
+/// Per-MI mode-info grid read by the § 7.11 / § 7.12 spatial scans.
 pub(super) struct NeighbourMvGrid {
     mi_rows: usize,
     mi_cols: usize,
@@ -120,8 +45,7 @@ pub(super) struct NeighbourMvGrid {
 }
 
 impl NeighbourMvGrid {
-    /// Builds an empty grid for an `mi_rows` x `mi_cols` MI region (every cell
-    /// undecoded). Returns `None` if the dimensions overflow the allocation.
+    /// Builds an empty MI grid, returning `None` if the dimensions overflow.
     pub(super) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let cells = mi_rows.checked_mul(mi_cols)?;
         Some(Self {
@@ -131,10 +55,7 @@ impl NeighbourMvGrid {
         })
     }
 
-    /// Records a decoded block's mode info into every MI cell it covers.
-    /// `r` / `c` are the block's MI top-left, `n4w` / `n4h` its size in 4x4 MI
-    /// units. Mirrors AV2 § 5.20.4.1 writing the per-MI `Mvs` / `RefFrames` /
-    /// `YModes` / `IsInters` for the block region.
+    /// Records a decoded block's mode info into every covered MI cell.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_block(
         &mut self,
@@ -168,8 +89,6 @@ impl NeighbourMvGrid {
         }
     }
 
-    /// Returns the decoded mode-info cell at MI `(r, c)`, or `None` if the
-    /// position is outside the grid or undecoded.
     fn get(&self, r: i32, c: i32) -> Option<NeighbourCell> {
         if r < 0 || c < 0 {
             return None;
@@ -205,10 +124,96 @@ pub(super) struct MvBlockContext {
 }
 
 impl MvBlockContext {
-    /// AV2 § 7.12.2 `isSbBorder = (MiRow & (Num_4x4_Blocks_High[SbSize] - 1)) == 0`.
     fn is_sb_border(&self) -> bool {
         (self.mi_row & self.sb_h4.saturating_sub(1)) == 0
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RelativeProbe {
+    delta_row: i32,
+    delta_col: i32,
+}
+
+impl RelativeProbe {
+    const fn new(delta_row: i32, delta_col: i32) -> Self {
+        Self {
+            delta_row,
+            delta_col,
+        }
+    }
+
+    fn cell(self, grid: &NeighbourMvGrid, block: &MvBlockContext) -> Option<NeighbourCell> {
+        let row = block.mi_row as i32 + self.delta_row;
+        let col = block.mi_col as i32 + self.delta_col;
+        grid.get(row, col)
+    }
+
+    fn stack_cell(
+        self,
+        grid: &NeighbourMvGrid,
+        block: &MvBlockContext,
+    ) -> Option<(NeighbourCell, u32)> {
+        let (row, col, delta_col) = self.stack_target(block);
+        let zero_weight = (self.delta_row == -1 && delta_col == -1) || delta_col < -1;
+        let weight = u32::from(!zero_weight);
+        grid.get(row, col).map(|cell| (cell, weight))
+    }
+
+    fn stack_target(self, block: &MvBlockContext) -> (i32, i32, i32) {
+        let row = block.mi_row as i32 + self.delta_row;
+        let mut col = block.mi_col as i32 + self.delta_col;
+        let mut delta_col = self.delta_col;
+
+        if self.delta_row < 0 && block.is_sb_border() {
+            col = (col >> 1) << 1;
+            delta_col = col - block.mi_col as i32;
+        }
+
+        (row, col, delta_col)
+    }
+}
+
+fn immediate_spatial_probes(block: &MvBlockContext) -> [RelativeProbe; 4] {
+    let bw4 = block.bw4 as i32;
+    let bh4 = block.bh4 as i32;
+    [
+        RelativeProbe::new(bh4 - 1, -1),
+        RelativeProbe::new(-1, bw4 - 1),
+        RelativeProbe::new(0, -1),
+        RelativeProbe::new(-1, 0),
+    ]
+}
+
+fn mv_stack_spatial_probes(block: &MvBlockContext) -> [Option<RelativeProbe>; 7] {
+    let bw4 = block.bw4 as i32;
+    let bh4 = block.bh4 as i32;
+    let is_sb_border_adj = i32::from(block.is_sb_border());
+    [
+        Some(RelativeProbe::new(bh4 - 1, -1)),
+        Some(RelativeProbe::new(-1, (bw4 - 1 - is_sb_border_adj).max(0))),
+        optional_probe(bh4 >= 2, 0, -1),
+        optional_probe(bw4 >= if is_sb_border_adj == 1 { 4 } else { 2 }, -1, 0),
+        optional_probe(bh4 <= 16, bh4, -1),
+        optional_probe(
+            bw4 <= 16,
+            -1,
+            if is_sb_border_adj == 1 {
+                bw4.max(2)
+            } else {
+                bw4
+            },
+        ),
+        Some(RelativeProbe::new(-1, -1 - is_sb_border_adj)),
+    ]
+}
+
+fn optional_probe(enabled: bool, delta_row: i32, delta_col: i32) -> Option<RelativeProbe> {
+    enabled.then_some(RelativeProbe::new(delta_row, delta_col))
+}
+
+fn matches_block_ref(cell: NeighbourCell, block: &MvBlockContext) -> bool {
+    cell.is_inter && cell.ref_frame0 == block.ref_frame0
 }
 
 /// The result of § 7.11.2 `find_mode_ctx` for single prediction: the
@@ -222,25 +227,25 @@ pub(super) struct ModeContext {
     pub(super) new_mv_count: usize,
 }
 
-/// AV2 § 7.11.2 Find mode context process for single prediction (`isCompound ==
-/// 0`).
-///
-/// Scans the immediate spatial neighbours (`leftA` / `aboveA` / `leftB` /
-/// `aboveB`, each a § 7.11.3 Scan point context process probe) and returns the
-/// `NewMvContext` + `NewMvCount`. The warp context probes (§ 7.11.4) are not
-/// modelled (warp is deferred), and only single prediction is supported.
+/// AV2 § 7.11.2 `find_mode_ctx` for single prediction.
 pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> ModeContext {
-    let bw4 = block.bw4 as i32;
-    let bh4 = block.bh4 as i32;
-    let is_sb_border = block.is_sb_border();
     let mut new_mv_count = 0usize;
+    let mut found = [false; 4];
 
-    let left_a = scan_point_ctx(grid, block, bh4 - 1, -1, &mut new_mv_count);
-    let above_a = scan_point_ctx(grid, block, -1, bw4 - 1, &mut new_mv_count);
-    let left_b = scan_point_ctx(grid, block, 0, -1, &mut new_mv_count);
-    let above_b = scan_point_ctx(grid, block, -1, 0, &mut new_mv_count);
-    let _ = is_sb_border; // only used by the omitted warp probes
+    for (slot, probe) in found.iter_mut().zip(immediate_spatial_probes(block)) {
+        let Some(cell) = probe.cell(grid, block) else {
+            continue;
+        };
+        if !matches_block_ref(cell, block) {
+            continue;
+        }
+        if matches!(cell.y_mode, NeighbourYMode::NewMv) {
+            new_mv_count = (new_mv_count + 1).min(3);
+        }
+        *slot = true;
+    }
 
+    let [left_a, above_a, left_b, above_b] = found;
     let nearest_match = usize::from(above_a || above_b) + usize::from(left_a || left_b);
     let new_mv_context = nearest_match + if new_mv_count > 0 { 2 } else { 0 };
     ModeContext {
@@ -249,56 +254,34 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
     }
 }
 
-/// The § 5.20.7.2 neighbour-buffer-derived § 8.3.2 contexts for `is_inter` and
-/// `skip_flag` (single prediction subset).
+/// § 5.20.7.2 neighbour-buffer-derived § 8.3.2 contexts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct BlockNeighbourContext {
     /// AV2 § 8.3.2 `is_inter` context: from `NNumBuf` + `NIntra[]`.
     pub(super) is_inter_ctx: usize,
     /// AV2 § 8.3.2 `skip_flag` context: `ctx += Skips[NPosBuf[n]]` (no `skip_mode`).
     pub(super) skip_ctx: usize,
-    /// True if the block has at least one decoded § 5.20.7.2 neighbour
-    /// (`NNumBuf >= 1`). A block with no decoded neighbours is provably unaffected
-    /// by the deferred temporal / ref-MV-bank / DRL-reorder MV-stack steps, so the
-    /// caller can admit the deferred tools for a no-neighbour block but must reject
-    /// them once a neighbour exists.
+    /// True when `NNumBuf >= 1`.
     pub(super) has_neighbour: bool,
-    /// AV2 § 8.3.2 `single_ref` / `comp_ref` neighbour reference counts
-    /// (`neighbors_ref_counts` / `count_refs`): `ref_counts[r]` is the number of
-    /// neighbour-line-buffer entries (the up-to-2 § 5.20.7.2 `add_neighbor` cells,
-    /// matching AVM `MAX_NUM_NEIGHBORS == 2`) whose single reference frame is `r`.
-    /// Only single-reference neighbours contribute (the verified subset has no
-    /// compound neighbour), and a non-inter neighbour (`ref_frame0 < 0`) contributes
-    /// none. Indexed `0..MAX_NEIGHBOUR_REFS`.
     ref_counts: [u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS],
 }
 
 impl BlockNeighbourContext {
-    /// The number of single-reference frame indices the § 8.3.2 `single_ref` context
-    /// counts over (the verified subset's NumTotalRefs ∈ {1, 2}; the largest index a
-    /// `single_ref` decision can reference is `NumTotalRefs - 1 == 1`).
     const MAX_NEIGHBOUR_REFS: usize = 2;
 
-    /// AV2 § 8.3.2 `single_ref` context for decision `ref` over `num_total_refs`
-    /// (the CDF-selection process shared with `comp_ref`,
-    /// `docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2` line 1094 / 1060):
-    ///
-    /// ```text
-    /// thisRefCount = count_refs(ref)
-    /// nextRefsCount = sum(count_refs(i) for i in ref+1 .. num_total_refs)
-    /// ctx = (thisRefCount == nextRefsCount) ? 1
-    ///     : (thisRefCount < nextRefsCount)  ? 0 : 2
-    /// ```
-    ///
-    /// Cross-checked against AVM `av2_get_ref_pred_context`
-    /// (`av2/common/pred_common.c`). Returns `None` when `ref + 1` is at/beyond the
-    /// modelled count range (the verified subset only reads `ref == 0`).
+    /// AV2 § 8.3.2 `single_ref` context for `ref_idx`.
     pub(super) fn single_ref_ctx(&self, ref_idx: usize, num_total_refs: usize) -> Option<usize> {
         let this_count = u32::from(*self.ref_counts.get(ref_idx)?);
-        let mut next_count = 0u32;
-        for i in (ref_idx + 1)..num_total_refs {
-            next_count += u32::from(*self.ref_counts.get(i)?);
-        }
+        let next_start = ref_idx.checked_add(1)?;
+        let next_count = if next_start >= num_total_refs {
+            0
+        } else {
+            self.ref_counts
+                .get(next_start..num_total_refs)?
+                .iter()
+                .map(|&count| u32::from(count))
+                .sum()
+        };
         Some(match this_count.cmp(&next_count) {
             core::cmp::Ordering::Equal => 1,
             core::cmp::Ordering::Less => 0,
@@ -307,47 +290,12 @@ impl BlockNeighbourContext {
     }
 }
 
-/// Derives the § 5.20.7.2 neighbour buffer (`NPosBuf` / `NNumBuf` / `NIntra` /
-/// `Skips`) and the § 8.3.2 `is_inter` + `skip_flag` contexts for a block.
-///
-/// The four AV2 § 5.20.7.2 `add_neighbor` probes are scanned in order
-/// (bottom-left, top-right, left, above), collecting up to 2 inside positions
-/// into `NPosBuf`. `is_inter` ctx follows the § 8.3.2 `NNumBuf == 2 / == 1 / else`
-/// branches over `NIntra[]`; `skip_flag` ctx sums the neighbour `Skips[]`.
-/// `skip_mode` is always 0 for the verified subset, so its `(SKIP_CONTEXTS >> 1)`
-/// term is omitted.
+/// Derives the § 5.20.7.2 neighbour buffer contexts for a block.
 pub(super) fn block_neighbour_ctx(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
 ) -> BlockNeighbourContext {
-    let r = block.mi_row as i32;
-    let c = block.mi_col as i32;
-    let bw4 = block.bw4 as i32;
-    let bh4 = block.bh4 as i32;
-
-    let probes = [
-        (r + bh4 - 1, c - 1), // bottom-left
-        (r - 1, c + bw4 - 1), // top-right
-        (r, c - 1),           // left
-        (r - 1, c),           // above
-    ];
-    let mut buf: [NeighbourCell; 2] = [NeighbourCell {
-        is_inter: false,
-        ref_frame0: -1,
-        y_mode: NeighbourYMode::Other,
-        mv: Mv::ZERO,
-        skip: false,
-    }; 2];
-    let mut num_buf = 0usize;
-    for (pr, pc) in probes {
-        if num_buf >= 2 {
-            break;
-        }
-        if let Some(cell) = grid.get(pr, pc) {
-            buf[num_buf] = cell;
-            num_buf += 1;
-        }
-    }
+    let (buf, num_buf) = collect_neighbour_context_cells(grid, block);
 
     let n_intra_0 = num_buf >= 1 && !buf[0].is_inter;
     let n_intra_1 = num_buf >= 2 && !buf[1].is_inter;
@@ -386,54 +334,39 @@ pub(super) fn block_neighbour_ctx(
     }
 }
 
-/// AV2 § 7.11.3 Scan point context process for single prediction. Returns
-/// `found` (1 if a neighbour with a matching reference frame exists at the
-/// probe) and updates `new_mv_count` per § 7.11.3 `has_newmv_for_list`.
-fn scan_point_ctx(
+fn collect_neighbour_context_cells(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
-    delta_row: i32,
-    delta_col: i32,
-    new_mv_count: &mut usize,
-) -> bool {
-    let mv_row = block.mi_row as i32 + delta_row;
-    let mv_col = block.mi_col as i32 + delta_col;
-    let Some(cell) = grid.get(mv_row, mv_col) else {
-        return false;
-    };
-    if !cell.is_inter {
-        return false;
-    }
-    if cell.ref_frame0 == block.ref_frame0 {
-        if matches!(cell.y_mode, NeighbourYMode::NewMv) {
-            *new_mv_count = (*new_mv_count + 1).min(3);
+) -> ([NeighbourCell; 2], usize) {
+    let mut cells = [EMPTY_NEIGHBOUR_CELL; 2];
+    let mut len = 0usize;
+
+    for probe in immediate_spatial_probes(block) {
+        if len >= cells.len() {
+            break;
         }
-        return true;
+        if let Some(cell) = probe.cell(grid, block) {
+            cells[len] = cell;
+            len += 1;
+        }
     }
-    false
+
+    (cells, len)
 }
 
-/// The result of § 7.12.2 `find_mv_stack` for single prediction: the
-/// `RefStackMv` candidate list (`NumMvFound` of them).
+/// § 7.12.2 `RefStackMv` candidates for single prediction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct MvStack {
-    /// `RefStackMv[idx][0]` (list 0): the single-prediction MV candidates,
-    /// `NumMvFound` of them. The `numNearest` (step 15) immediate-neighbour count
-    /// is not retained: the conditional sort (steps 17–18) that consumes it is
-    /// deferred (`DRL_REORDER_NONE` makes `useSort == 0` for the verified subset).
     stack: Vec<Mv>,
 }
 
 impl MvStack {
-    /// `NumMvFound`: the number of candidate MVs in the stack.
+    /// `NumMvFound`: the number of candidate MVs.
     pub(super) fn num_mv_found(&self) -> usize {
         self.stack.len()
     }
 
-    /// `RefStackMv[idx][0]`: the candidate MV at stack position `idx`, or the
-    /// last candidate if `idx` is past the end (the spec guarantees a global-MV
-    /// fallback fills the stack, so a valid `RefMvIdx` always indexes a candidate;
-    /// the saturating access is defensive).
+    /// Returns `RefStackMv[idx][0]`, saturating to the final fallback candidate.
     pub(super) fn candidate(&self, idx: usize) -> Mv {
         self.stack
             .get(idx)
@@ -443,53 +376,17 @@ impl MvStack {
     }
 }
 
-/// AV2 § 7.12.2 Find MV stack process for single prediction (`isCompound ==
-/// 0`), spatial-only subset.
-///
-/// `global_mv` is the § 7.12.2.1 Setup global MV process output for list 0 (the
-/// zero vector for the caller's identity-global-motion subset). The ordered
-/// steps modelled are the spatial scan-point steps (7–14), the `numNearest`
-/// capture (15), the conditional sort (17–18, only when `numNearest >= 4` under
-/// the caller's `DRL_REORDER_NONE`), the extra-search global-MV fallback (22),
-/// and the clamp (23). Temporal, compound, warp, ref-MV-bank, and derived-SMVP
-/// steps are deferred (see the module docs).
+/// AV2 § 7.12.2 `find_mv_stack` for the spatial-only single-prediction subset.
 pub(super) fn find_mv_stack(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     global_mv: Mv,
 ) -> MvStack {
-    let bw4 = block.bw4 as i32;
-    let bh4 = block.bh4 as i32;
-    let is_sb_border_adj = i32::from(block.is_sb_border());
+    let mut entries: Vec<MvStackEntry> = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
 
-    let mut entries: Vec<MvStackEntry> = Vec::new();
-
-    scan_point(grid, block, bh4 - 1, -1, &mut entries);
-    scan_point(
-        grid,
-        block,
-        -1,
-        (bw4 - 1 - is_sb_border_adj).max(0),
-        &mut entries,
-    );
-    if bh4 >= 2 {
-        scan_point(grid, block, 0, -1, &mut entries);
+    for probe in mv_stack_spatial_probes(block).into_iter().flatten() {
+        scan_mv_stack_probe(grid, block, probe, &mut entries);
     }
-    if bw4 >= if is_sb_border_adj == 1 { 4 } else { 2 } {
-        scan_point(grid, block, -1, 0, &mut entries);
-    }
-    if bh4 <= 16 {
-        scan_point(grid, block, bh4, -1, &mut entries);
-    }
-    if bw4 <= 16 {
-        let dc = if is_sb_border_adj == 1 {
-            bw4.max(2)
-        } else {
-            bw4
-        };
-        scan_point(grid, block, -1, dc, &mut entries);
-    }
-    scan_point(grid, block, -1, -1 - is_sb_border_adj, &mut entries);
 
     // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.5 Scan col process
 
@@ -499,42 +396,26 @@ pub(super) fn find_mv_stack(
     extra_search(block, global_mv, &mut entries);
 
     let stack: Vec<Mv> = entries
-        .iter()
+        .into_iter()
         .map(|entry| clamp_mv(block, entry.mv))
         .collect();
 
     MvStack { stack }
 }
 
-/// One stack entry: the candidate MV plus its accumulated `WeightStack` weight.
 #[derive(Clone, Copy, Debug)]
 struct MvStackEntry {
     mv: Mv,
     weight: u32,
 }
 
-/// AV2 § 7.12.2.6 Scan point process for single prediction. Probes one neighbour
-/// location, derives its weight, and (when the location is a decoded inter block)
-/// invokes the § 7.12.2.10 Add reference motion vector process.
-fn scan_point(
+fn scan_mv_stack_probe(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
-    delta_row: i32,
-    mut delta_col: i32,
+    probe: RelativeProbe,
     entries: &mut Vec<MvStackEntry>,
 ) {
-    let mv_row = block.mi_row as i32 + delta_row;
-    let mut mv_col = block.mi_col as i32 + delta_col;
-
-    if delta_row < 0 && block.is_sb_border() {
-        mv_col = (mv_col >> 1) << 1;
-        delta_col = mv_col - block.mi_col as i32;
-    }
-
-    let zero_weight = (delta_row == -1 && delta_col == -1) || delta_col < -1;
-    let weight: u32 = u32::from(!zero_weight);
-
-    let Some(cell) = grid.get(mv_row, mv_col) else {
+    let Some((cell, weight)) = probe.stack_cell(grid, block) else {
         return;
     };
 
@@ -542,53 +423,23 @@ fn scan_point(
         return;
     }
 
-    add_reference_mv(block, cell, weight, entries);
-}
-
-/// AV2 § 7.12.2.10 Add reference motion vector process for single prediction
-/// (`isCompound == 0`), non-intrabc, non-TIP subset. For a candidate whose
-/// reference frame matches `RefFrame[0]`, invokes the § 7.12.2.12 Search stack
-/// process. The TIP / derived-ref-frame branches are deferred.
-fn add_reference_mv(
-    block: &MvBlockContext,
-    cell: NeighbourCell,
-    weight: u32,
-    entries: &mut Vec<MvStackEntry>,
-) {
-    if !cell.is_inter {
+    if !matches_block_ref(cell, block) {
         return;
     }
-    if cell.ref_frame0 == block.ref_frame0 {
-        search_stack(cell.mv, weight, entries);
-    }
-}
 
-/// AV2 § 7.12.2.12 Search stack process for single prediction. If `cand_mv` is
-/// already in the stack, adds `weight` to its `WeightStack`; otherwise appends a
-/// new candidate (bounded by `MAX_REF_MV_STACK_SIZE`).
-fn search_stack(cand_mv: Mv, weight: u32, entries: &mut Vec<MvStackEntry>) {
     for entry in entries.iter_mut() {
-        if entry.mv == cand_mv {
+        if entry.mv == cell.mv {
             entry.weight = entry.weight.saturating_add(weight);
             return;
         }
     }
-    if entries.len() < MAX_REF_MV_STACK_SIZE {
-        entries.push(MvStackEntry {
-            mv: cand_mv,
-            weight,
-        });
-    }
+
+    entries.push(MvStackEntry {
+        mv: cell.mv,
+        weight,
+    });
 }
 
-/// AV2 § 7.12.2.20 Extra search process (single prediction, non-intrabc, no
-/// warp): clamp the existing candidates, then add the global MV if it is not
-/// already present. The large-block (Block_Width > 32 AND Block_Height > 32) MVP
-/// combinations and the warp / intrabc candidates are deferred. NB: the admitted
-/// leaves are >= 32x32 with no upper bound, so the verified 64x64 blocks are
-/// larger than 32x32 and the large-block step applies to them; it is kept safe
-/// only by the identical-MV fixtures and the §5.20.7.8 DRL-out-of-range reject
-/// (see the call-site note in [`find_mv_stack`]).
 fn extra_search(block: &MvBlockContext, global_mv: Mv, entries: &mut Vec<MvStackEntry>) {
     for entry in entries.iter_mut() {
         entry.mv = clamp_mv(block, entry.mv);
@@ -605,9 +456,6 @@ fn extra_search(block: &MvBlockContext, global_mv: Mv, entries: &mut Vec<MvStack
     }
 }
 
-/// AV2 § 5.20.9.4 `clamp_mv_row` + § 5.20.9.5 `clamp_mv_col` applied to a motion
-/// vector (eighth-pel units), the per-candidate clamp the § 7.12.2.20 /
-/// § 7.12.2.23 processes use.
 fn clamp_mv(block: &MvBlockContext, mv: Mv) -> Mv {
     let bw4 = block.bw4 as i32;
     let bh4 = block.bh4 as i32;

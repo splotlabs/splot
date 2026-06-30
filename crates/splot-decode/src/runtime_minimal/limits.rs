@@ -41,33 +41,19 @@ pub(super) fn decoded_frame_storage_budget(
 ) -> Result<DecodedFrameStorageBudget> {
     let width = u64::from(frame_size.width);
     let height = u64::from(frame_size.height);
-    let luma_samples = checked_mul(DecodeLimitName::MaxLumaSamplesPerFrame, width, height)?;
+    let sample_limit = DecodeLimitName::MaxLumaSamplesPerFrame;
+    let byte_limit = DecodeLimitName::MaxDecodedFrameBytes;
+    let luma_samples = checked_mul(sample_limit, width, height)?;
     let (chroma_width, chroma_height, chroma_plane_count) = match chroma_format {
         ChromaFormatIdc::Monochrome => (0, 0, 0),
         ChromaFormatIdc::Yuv420 => ((width + 1) >> 1, (height + 1) >> 1, 2),
         ChromaFormatIdc::Yuv422 => ((width + 1) >> 1, height, 2),
         ChromaFormatIdc::Yuv444 => (width, height, 2),
     };
-    let chroma_samples_per_plane = checked_mul(
-        DecodeLimitName::MaxLumaSamplesPerFrame,
-        chroma_width,
-        chroma_height,
-    )?;
-    let chroma_samples = checked_mul(
-        DecodeLimitName::MaxLumaSamplesPerFrame,
-        chroma_samples_per_plane,
-        chroma_plane_count,
-    )?;
-    let decoded_samples = checked_add(
-        DecodeLimitName::MaxDecodedFrameBytes,
-        luma_samples,
-        chroma_samples,
-    )?;
-    let decoded_bytes = checked_mul(
-        DecodeLimitName::MaxDecodedFrameBytes,
-        decoded_samples,
-        bytes_per_sample,
-    )?;
+    let chroma_samples_per_plane = checked_mul(sample_limit, chroma_width, chroma_height)?;
+    let chroma_samples = checked_mul(sample_limit, chroma_samples_per_plane, chroma_plane_count)?;
+    let decoded_samples = checked_add(byte_limit, luma_samples, chroma_samples)?;
+    let decoded_bytes = checked_mul(byte_limit, decoded_samples, bytes_per_sample)?;
     Ok(DecodedFrameStorageBudget {
         luma_samples,
         chroma_samples_per_plane,

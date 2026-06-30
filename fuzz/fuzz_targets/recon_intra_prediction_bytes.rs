@@ -5,10 +5,10 @@
 use libfuzzer_sys::fuzz_target;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraCardinalDirection,
-    IntraCardinalEdges, IntraDcEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges,
-    IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges, IntraPaethEdges,
-    IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode, IntraSquareBlockSize, OutputIndex,
-    PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconSample, apply_intra_ibp_dc_rect,
+    IntraDcEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges, IntraMiddleDirectionalAngle,
+    IntraMiddleDirectionalAngleEdges, IntraPaethEdges, IntraRectBlockSize, IntraSmoothEdges,
+    IntraSmoothMode, IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect,
+    PlaneSize, ReconSample, apply_intra_ibp_dc_rect,
     predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_into,
     predict_intra_dc_rect_value, predict_intra_dc_square, predict_intra_dc_square_into,
     predict_intra_dc_square_value,
@@ -476,13 +476,8 @@ fn cardinal_edges<'a, T: ReconSample>(
     selector: u8,
     left: &'a [T],
     above: &'a [T],
-) -> IntraCardinalEdges<'a, T> {
-    match (selector >> 2) & 0b0000_0011 {
-        0 => IntraCardinalEdges::new(None, None),
-        1 => IntraCardinalEdges::left(left),
-        2 => IntraCardinalEdges::above(above),
-        _ => IntraCardinalEdges::both(left, above),
-    }
+) -> IntraDirectionalAngleEdges<'a, T> {
+    directional_edges(selector, 2, left, above)
 }
 
 fn directional_angle_edges<'a, T: ReconSample>(
@@ -490,7 +485,16 @@ fn directional_angle_edges<'a, T: ReconSample>(
     left: &'a [T],
     above: &'a [T],
 ) -> IntraDirectionalAngleEdges<'a, T> {
-    match (selector >> 3) & 0b0000_0011 {
+    directional_edges(selector, 3, left, above)
+}
+
+fn directional_edges<'a, T: ReconSample>(
+    selector: u8,
+    shift: u8,
+    left: &'a [T],
+    above: &'a [T],
+) -> IntraDirectionalAngleEdges<'a, T> {
+    match (selector >> shift) & 0b0000_0011 {
         0 => IntraDirectionalAngleEdges::new(None, None),
         1 => IntraDirectionalAngleEdges::left(left),
         2 => IntraDirectionalAngleEdges::above(above),

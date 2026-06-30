@@ -29,7 +29,7 @@ const INTERP_SCALE: u16 = 32;
 /// `Dr_Intra_Derivative[pAngle - 90]`. Several entries (indices 0, 11, 12, 34,
 /// 56, 78, 79 — the spec's starred values) are unused by any reachable angle.
 #[rustfmt::skip]
-const DR_INTRA_DERIVATIVE: [u16; 90] = [
+pub(super) const DR_INTRA_DERIVATIVE: [u16; 90] = [
     0,    4096, 2048,
     1365, 1024, 819,
     682,  585,  512,
@@ -64,11 +64,11 @@ const DR_INTRA_DERIVATIVE: [u16; 90] = [
 /// above row (step 1, zone-1), strictly above `ZONE_3_MIN` reads the left column
 /// (step 3, zone-3). `90`/`180` are the cardinals (steps 4/5) and `90 < pAngle <
 /// 180` is the zone-2 middle band (step 2).
-const ZONE_1_MAX: u16 = 90;
-const ZONE_3_MIN: u16 = 180;
+pub(super) const ZONE_1_MAX: u16 = 90;
+pub(super) const ZONE_3_MIN: u16 = 180;
 /// AV2 §7.13.2.8 zone-3 derivative index base: `dy = Dr_Intra_Derivative[270 -
 /// pAngle]`.
-const ZONE_3_INDEX_BASE: u16 = 270;
+pub(super) const ZONE_3_INDEX_BASE: u16 = 270;
 
 /// Number of `shift` rows in the §7.13.2.8 IDIF filter table.
 const DR_INTERP_FILTER_SHIFTS: usize = 32;
@@ -874,7 +874,7 @@ fn validate_inputs<T: ReconSample>(
             edges
                 .left
                 .ok_or(ReconError::IntraDirectionalAngleEdgeUnavailable {
-                    angle,
+                    p_angle: angle.p_angle(),
                     edge: edge_kind,
                 })?
         }
@@ -882,12 +882,12 @@ fn validate_inputs<T: ReconSample>(
             edges
                 .above
                 .ok_or(ReconError::IntraDirectionalAngleEdgeUnavailable {
-                    angle,
+                    p_angle: angle.p_angle(),
                     edge: edge_kind,
                 })?
         }
     };
-    validate_edge(edge_kind, edge, expected_len, bit_depth)?;
+    validate_directional_edge(edge_kind, edge, expected_len, bit_depth)?;
 
     Ok(ValidatedInputs { edge })
 }
@@ -1121,34 +1121,29 @@ fn validate_middle_index_bounds(
     Ok(())
 }
 
-fn validate_edge<T: ReconSample>(
+pub(super) fn validate_directional_edge<T: ReconSample>(
     edge: IntraDirectionalAngleEdge,
     samples: &[T],
     expected_len: usize,
     bit_depth: BitDepth,
 ) -> Result<()> {
-    if samples.len() != expected_len {
-        return Err(ReconError::IntraDirectionalAngleEdgeLengthMismatch {
+    validate_edge_samples(
+        edge,
+        samples,
+        expected_len,
+        bit_depth,
+        |edge, expected, actual| ReconError::IntraDirectionalAngleEdgeLengthMismatch {
             edge,
-            expected: expected_len,
-            actual: samples.len(),
-        });
-    }
-
-    let max = bit_depth.max_sample();
-    for (sample_index, sample) in samples.iter().copied().enumerate() {
-        let value = sample.to_u16();
-        if value > max {
-            return Err(ReconError::IntraDirectionalAngleSampleOutOfRange {
-                edge,
-                sample_index,
-                value,
-                max,
-            });
-        }
-    }
-
-    Ok(())
+            expected,
+            actual,
+        },
+        |edge, sample_index, value, max| ReconError::IntraDirectionalAngleSampleOutOfRange {
+            edge,
+            sample_index,
+            value,
+            max,
+        },
+    )
 }
 
 fn validate_middle_edge<T: ReconSample>(
@@ -1157,24 +1152,47 @@ fn validate_middle_edge<T: ReconSample>(
     expected_len: usize,
     bit_depth: BitDepth,
 ) -> Result<()> {
-    if samples.len() != expected_len {
-        return Err(ReconError::IntraMiddleDirectionalAngleEdgeLengthMismatch {
+    validate_edge_samples(
+        edge,
+        samples,
+        expected_len,
+        bit_depth,
+        |edge, expected, actual| ReconError::IntraMiddleDirectionalAngleEdgeLengthMismatch {
             edge,
-            expected: expected_len,
-            actual: samples.len(),
-        });
+            expected,
+            actual,
+        },
+        |edge, sample_index, value, max| ReconError::IntraMiddleDirectionalAngleSampleOutOfRange {
+            edge,
+            sample_index,
+            value,
+            max,
+        },
+    )
+}
+
+fn validate_edge_samples<T, LengthError, RangeError>(
+    edge: IntraDirectionalAngleEdge,
+    samples: &[T],
+    expected_len: usize,
+    bit_depth: BitDepth,
+    length_error: LengthError,
+    range_error: RangeError,
+) -> Result<()>
+where
+    T: ReconSample,
+    LengthError: Fn(IntraDirectionalAngleEdge, usize, usize) -> ReconError,
+    RangeError: Fn(IntraDirectionalAngleEdge, usize, u16, u16) -> ReconError,
+{
+    if samples.len() != expected_len {
+        return Err(length_error(edge, expected_len, samples.len()));
     }
 
     let max = bit_depth.max_sample();
     for (sample_index, sample) in samples.iter().copied().enumerate() {
         let value = sample.to_u16();
         if value > max {
-            return Err(ReconError::IntraMiddleDirectionalAngleSampleOutOfRange {
-                edge,
-                sample_index,
-                value,
-                max,
-            });
+            return Err(range_error(edge, sample_index, value, max));
         }
     }
 
@@ -1258,7 +1276,7 @@ fn validate_one_sided_idif_inputs<T: ReconSample>(
     }
     let edge = edges.edge;
     let edge_len = required_one_sided_idif_edge_len(size, mrl_index)?;
-    validate_edge(direction, edge, edge_len, bit_depth)?;
+    validate_directional_edge(direction, edge, edge_len, bit_depth)?;
     validate_one_sided_idif_index_bounds(size, angle, mrl_index, edge.len())?;
     Ok(edge)
 }

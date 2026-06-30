@@ -382,72 +382,50 @@ mod tests {
         ([20, 40, 60, 80, 100], [10, 30, 50, 70, 90])
     }
 
-    #[test]
-    fn smooth_horizontal_prediction_matches_spec_formula() {
+    fn assert_smooth_prediction(mode: IntraSmoothMode, expected: [u8; 16]) {
         let (left, above) = non_uniform_edges();
         let mut output = [0u8; 16];
 
         predict_intra_smooth_rect_into(
             BitDepth::Eight,
             rect_size(2, 2),
-            IntraSmoothMode::SmoothHorizontal,
+            mode,
             IntraSmoothEdges::new(&left, &above),
             &mut output,
             4,
         )
         .unwrap();
 
-        assert_eq!(
-            output,
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn smooth_horizontal_prediction_matches_spec_formula() {
+        assert_smooth_prediction(
+            IntraSmoothMode::SmoothHorizontal,
             [
-                29, 51, 71, 90, 47, 62, 77, 90, 64, 73, 82, 90, 82, 84, 88, 90
-            ]
+                29, 51, 71, 90, 47, 62, 77, 90, 64, 73, 82, 90, 82, 84, 88, 90,
+            ],
         );
     }
 
     #[test]
     fn smooth_vertical_prediction_matches_spec_formula() {
-        let (left, above) = non_uniform_edges();
-        let mut output = [0u8; 16];
-
-        predict_intra_smooth_rect_into(
-            BitDepth::Eight,
-            rect_size(2, 2),
+        assert_smooth_prediction(
             IntraSmoothMode::SmoothVertical,
-            IntraSmoothEdges::new(&left, &above),
-            &mut output,
-            4,
-        )
-        .unwrap();
-
-        assert_eq!(
-            output,
             [
-                22, 39, 57, 74, 49, 61, 72, 83, 76, 81, 87, 92, 100, 100, 100, 100
-            ]
+                22, 39, 57, 74, 49, 61, 72, 83, 76, 81, 87, 92, 100, 100, 100, 100,
+            ],
         );
     }
 
     #[test]
     fn smooth_prediction_averages_horizontal_and_vertical_paths() {
-        let (left, above) = non_uniform_edges();
-        let mut output = [0u8; 16];
-
-        predict_intra_smooth_rect_into(
-            BitDepth::Eight,
-            rect_size(2, 2),
+        assert_smooth_prediction(
             IntraSmoothMode::Smooth,
-            IntraSmoothEdges::new(&left, &above),
-            &mut output,
-            4,
-        )
-        .unwrap();
-
-        assert_eq!(
-            output,
             [
-                26, 45, 64, 82, 48, 62, 75, 87, 70, 77, 85, 91, 91, 92, 94, 95
-            ]
+                26, 45, 64, 82, 48, 62, 75, 87, 70, 77, 85, 91, 91, 92, 94, 95,
+            ],
         );
     }
 
@@ -515,70 +493,29 @@ mod tests {
     fn smooth_prediction_validates_edge_samples_against_bit_depth() {
         let mut output = [0u16; 16];
 
-        assert!(matches!(
-            predict_intra_smooth_rect_into(
-                BitDepth::Eight,
-                rect_size(2, 2),
-                IntraSmoothMode::Smooth,
-                IntraSmoothEdges::new(&[1, 300, 1, 1, 1], &[1; 5]),
-                &mut output,
-                4
-            ),
-            Err(ReconError::IntraSmoothSampleOutOfRange {
-                edge: IntraSmoothEdge::Left,
-                sample_index: 1,
-                value: 300,
-                max: 255
-            })
-        ));
-        assert!(matches!(
-            predict_intra_smooth_rect_into(
-                BitDepth::Eight,
-                rect_size(2, 2),
-                IntraSmoothMode::Smooth,
-                IntraSmoothEdges::new(&[1; 5], &[1, 300, 1, 1, 1]),
-                &mut output,
-                4
-            ),
-            Err(ReconError::IntraSmoothSampleOutOfRange {
-                edge: IntraSmoothEdge::Above,
-                sample_index: 1,
-                value: 300,
-                max: 255
-            })
-        ));
-        assert!(matches!(
-            predict_intra_smooth_rect_into(
-                BitDepth::Eight,
-                rect_size(2, 2),
-                IntraSmoothMode::Smooth,
-                IntraSmoothEdges::new(&[1, 1, 1, 1, 300], &[1; 5]),
-                &mut output,
-                4
-            ),
-            Err(ReconError::IntraSmoothSampleOutOfRange {
-                edge: IntraSmoothEdge::BottomLeft,
-                sample_index: 4,
-                value: 300,
-                max: 255
-            })
-        ));
-        assert!(matches!(
-            predict_intra_smooth_rect_into(
-                BitDepth::Eight,
-                rect_size(2, 2),
-                IntraSmoothMode::Smooth,
-                IntraSmoothEdges::new(&[1; 5], &[1, 1, 1, 1, 300]),
-                &mut output,
-                4
-            ),
-            Err(ReconError::IntraSmoothSampleOutOfRange {
-                edge: IntraSmoothEdge::TopRight,
-                sample_index: 4,
-                value: 300,
-                max: 255
-            })
-        ));
+        for (left, above, expected_edge, expected_index) in [
+            ([1, 300, 1, 1, 1], [1; 5], IntraSmoothEdge::Left, 1),
+            ([1; 5], [1, 300, 1, 1, 1], IntraSmoothEdge::Above, 1),
+            ([1, 1, 1, 1, 300], [1; 5], IntraSmoothEdge::BottomLeft, 4),
+            ([1; 5], [1, 1, 1, 1, 300], IntraSmoothEdge::TopRight, 4),
+        ] {
+            assert!(matches!(
+                predict_intra_smooth_rect_into(
+                    BitDepth::Eight,
+                    rect_size(2, 2),
+                    IntraSmoothMode::Smooth,
+                    IntraSmoothEdges::new(&left, &above),
+                    &mut output,
+                    4
+                ),
+                Err(ReconError::IntraSmoothSampleOutOfRange {
+                    edge,
+                    sample_index,
+                    value: 300,
+                    max: 255
+                }) if edge == expected_edge && sample_index == expected_index
+            ));
+        }
     }
 
     #[test]

@@ -10,10 +10,6 @@
 //! transform, so the forward transform is derived from it (a true inverse for the
 //! flat DC-only subset, bounded for general AC).
 //!
-//! It is split into a sibling module (re-exported from [`crate::forward_transform`])
-//! purely to keep each source file under the project's 1000-line budget; the 4x4 and
-//! 16x16 paths are independent.
-//!
 //! [`ForwardTransformBlock16x16::dct_dct_16x16`] maps any signed 16x16 residual block
 //! to its 256 row-major coefficients via the transposed § 9 [`DCT_KERNEL16`] (a row
 //! pass then a column pass with the [`FORWARD_ROW_SHIFT_16X16`] /
@@ -30,7 +26,10 @@
 use splot_recon::{PlaneId, PlaneRect};
 use splot_tables::tables::transform_1d::DCT_KERNEL16;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
+#[cfg(test)]
+use crate::forward_transform_shared::forward_round2;
+use crate::forward_transform_shared::{forward_dct_dct_square, validate_forward_shape};
 
 pub(crate) const DCT_DCT_16X16_WIDTH: usize = 16;
 pub(crate) const DCT_DCT_16X16_HEIGHT: usize = 16;
@@ -92,56 +91,14 @@ impl ForwardTransformBlock16x16 {
         block: PlaneRect,
         residual: &[i32],
     ) -> Result<Self> {
-        validate_16x16_shape(plane, block)?;
-        if residual.len() != DCT_DCT_16X16_COEFF_COUNT {
-            return Err(Error::ForwardTransformInputLengthMismatch {
-                plane,
-                block,
-                expected: DCT_DCT_16X16_COEFF_COUNT,
-                actual: residual.len(),
-            });
-        }
-
-        let mut intermediate = [0i64; DCT_DCT_16X16_COEFF_COUNT];
-        for r in 0..DCT_DCT_16X16_HEIGHT {
-            let mut row = [0i64; DCT_DCT_16X16_WIDTH];
-            for (c, slot) in row.iter_mut().enumerate() {
-                let Some(&sample) = residual.get(r * DCT_DCT_16X16_WIDTH + c) else {
-                    return Err(Error::ForwardTransformInputLengthMismatch {
-                        plane,
-                        block,
-                        expected: DCT_DCT_16X16_COEFF_COUNT,
-                        actual: residual.len(),
-                    });
-                };
-                *slot = i64::from(sample);
-            }
-            let transformed = forward_dct16_1d(&row, FORWARD_ROW_SHIFT_16X16);
-            for (c, &value) in transformed.iter().enumerate() {
-                intermediate[r * DCT_DCT_16X16_WIDTH + c] = value;
-            }
-        }
-
-        let mut coefficients = [0; DCT_DCT_16X16_COEFF_COUNT];
-        for c in 0..DCT_DCT_16X16_WIDTH {
-            let mut column = [0i64; DCT_DCT_16X16_HEIGHT];
-            for (r, slot) in column.iter_mut().enumerate() {
-                *slot = intermediate[r * DCT_DCT_16X16_WIDTH + c];
-            }
-            let transformed = forward_dct16_1d(&column, FORWARD_COL_SHIFT_16X16);
-            for (r, &value) in transformed.iter().enumerate() {
-                let index = r * DCT_DCT_16X16_WIDTH + c;
-                coefficients[index] = i32::try_from(value).map_err(|_| {
-                    Error::ForwardTransformCoefficientRangeExceeded {
-                        plane,
-                        block,
-                        index,
-                        value,
-                    }
-                })?;
-            }
-        }
-
+        let coefficients = forward_dct_dct_square::<DCT_DCT_16X16_WIDTH, DCT_DCT_16X16_COEFF_COUNT>(
+            plane,
+            block,
+            residual,
+            &DCT_KERNEL16,
+            FORWARD_ROW_SHIFT_16X16,
+            FORWARD_COL_SHIFT_16X16,
+        )?;
         Ok(Self {
             plane,
             block,
@@ -166,56 +123,14 @@ impl ForwardTransformBlock16x16 {
 }
 
 fn validate_16x16_shape(plane: PlaneId, block: PlaneRect) -> Result<()> {
-    if block.width() == DCT_DCT_16X16_WIDTH && block.height() == DCT_DCT_16X16_HEIGHT {
-        Ok(())
-    } else {
-        Err(Error::ForwardTransformUnsupportedShape {
-            plane,
-            block,
-            expected_width: DCT_DCT_16X16_WIDTH,
-            expected_height: DCT_DCT_16X16_HEIGHT,
-        })
-    }
-}
-
-/// AV2 § 4.8 `Round2(value, n)`, identical to the `splot-recon` inverse transform's
-/// `round2` and the 4x4 forward `forward_round2`: `n == 0` returns `value`, otherwise
-/// `(value + (1 << (n - 1))) >> n` with an arithmetic (sign-extending) shift, the
-/// rounding add done in `i128` so it is total for every `i64` value. Matching the
-/// decoder's rounding exactly keeps the forward transform the precise numerical
-/// inverse of the inverse pass.
-fn forward_round2(value: i64, shift: u32) -> i64 {
-    if shift == 0 {
-        return value;
-    }
-    ((i128::from(value) + (1i128 << (shift - 1))) >> shift) as i64
-}
-
-/// One forward 16-point DCT pass:
-/// `out[r] = Round2(sum over i of DCT_KERNEL16[r][i] * input[i], shift)`.
-///
-/// The kernel ROW index `r` is the output frequency and the COLUMN index `i` is the
-/// input sample — the transpose of the decoder inverse's `DCT_KERNEL16[j][i]`
-/// indexing (`splot-recon` `inverse_transform.rs` `kernel_sum`), so this pass is the
-/// analytic inverse of the 1D inverse DCT. The kernel matrix is asymmetric, so the
-/// `[r][i]` orientation is load-bearing. The 16-tap sum accumulates in `i64`
-/// (`|kernel| <= 90`; the largest pass product stays well within `i64`).
-fn forward_dct16_1d(input: &[i64; DCT_DCT_16X16_WIDTH], shift: u32) -> [i64; DCT_DCT_16X16_WIDTH] {
-    let mut out = [0i64; DCT_DCT_16X16_WIDTH];
-    for (r, slot) in out.iter_mut().enumerate() {
-        let mut sum = 0i64;
-        for (i, &sample) in input.iter().enumerate() {
-            sum += i64::from(DCT_KERNEL16[r][i]) * sample;
-        }
-        *slot = forward_round2(sum, shift);
-    }
-    out
+    validate_forward_shape(plane, block, DCT_DCT_16X16_WIDTH, DCT_DCT_16X16_HEIGHT)
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::error::Error;
     use splot_recon::{
         BitDepth as ReconBitDepth, InverseTransform1dType, InverseTransform2dDim,
         InverseTransform2dOuter, inverse_transform_2d_outer,

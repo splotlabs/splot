@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Ordinary coefficient branch geometry handoff.
-
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{
     ADJUSTED_TX_SIZE, MODE_TO_ANGLE, MODE_TO_TXFM, TX_HEIGHT, TX_HEIGHT_LOG2, TX_SIZE_SQR,
@@ -73,25 +71,16 @@ const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
 ];
 
-/// Caller-selected ordinary coefficient branch before transform-size dimensions.
 pub(crate) enum CoeffOrdinaryBranchTxSizeDimensionsInput {
-    /// Decoded `all_zero == 1`.
     AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    /// Decoded `all_zero == 0`.
     NonZero(CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput),
 }
 
-/// Caller-resolved facts for the ordinary nonzero branch before dimensions.
 pub(crate) struct CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput {
-    /// Caller-resolved `coeffs()` geometry facts before table lookup.
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
-    /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
-    /// Caller-resolved inter/intra flag for EOB context derivation.
     pub(crate) is_inter: bool,
-    /// Caller-resolved base facts that still are not derived from `txSz`.
     pub(crate) base_config: CoeffOrdinaryBranchTxSizeDimensionsBaseConfig,
-    /// Caller-resolved lossless flag for the quantized-state update.
     pub(crate) lossless: bool,
 }
 
@@ -103,165 +92,94 @@ struct CoeffOrdinaryStagedTxSizeDimensionsInput {
     lossless: bool,
 }
 
-/// Caller-selected ordinary coefficient branch before the `Mode_To_Txfm` subset.
 pub(crate) enum CoeffOrdinaryBranchModeToTxfmInput {
-    /// Decoded `all_zero == 1`.
     AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    /// Decoded `all_zero == 0`.
     NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput),
 }
 
-/// Caller-resolved facts for the ordinary nonzero branch before `Mode_To_Txfm`.
 pub(crate) struct CoeffOrdinaryBranchModeToTxfmNonZeroInput {
-    /// Caller-resolved `coeffs()` geometry facts before table lookup.
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
-    /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
-    /// Caller-resolved inter/intra flag for EOB context derivation.
     pub(crate) is_inter: bool,
-    /// Caller-resolved base facts before `PlaneTxType`.
     pub(crate) base_config: CoeffOrdinaryBranchModeToTxfmBaseConfig,
-    /// Caller-resolved lossless flag for the quantized-state update.
     pub(crate) lossless: bool,
 }
 
-/// Caller-selected ordinary coefficient branch before `txSet` derivation.
 pub(crate) enum CoeffOrdinaryBranchTxSetInput {
-    /// Decoded `all_zero == 1`.
     AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    /// Decoded `all_zero == 0`.
     NonZero(CoeffOrdinaryBranchTxSetNonZeroInput),
 }
 
-/// Caller-resolved facts for the ordinary nonzero branch before `txSet`.
 pub(crate) struct CoeffOrdinaryBranchTxSetNonZeroInput {
-    /// Caller-resolved `coeffs()` geometry facts before table lookup.
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
-    /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
-    /// Caller-resolved inter/intra flag for `get_tx_set` and EOB context derivation.
     pub(crate) is_inter: bool,
-    /// Caller-resolved base facts before `txSet`.
     pub(crate) base_config: CoeffOrdinaryBranchTxSetBaseConfig,
-    /// Caller-resolved lossless flag for the quantized-state update.
     pub(crate) lossless: bool,
 }
 
-/// Caller-selected ordinary coefficient branch before lossless transform-type selection.
 pub(crate) enum CoeffOrdinaryBranchLosslessInput {
-    /// Decoded `all_zero == 1`.
     AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    /// Decoded `all_zero == 0`.
     NonZero(CoeffOrdinaryBranchLosslessNonZeroInput),
 }
 
-/// Caller-resolved facts for the ordinary nonzero branch before lossless selection.
 pub(crate) struct CoeffOrdinaryBranchLosslessNonZeroInput {
-    /// Caller-resolved `coeffs()` geometry facts before table lookup.
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
-    /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
-    /// Caller-resolved inter/intra flag for lower non-lossless derivation.
-    ///
-    /// The staged lossless `DCT_DCT` subset only accepts intra blocks; lossless
-    /// inter blocks require the broader IDTX/`TxTypes` branches in § 5.20.7.29.
     pub(crate) is_inter: bool,
-    /// Caller-resolved base facts before lossless transform-type selection.
     pub(crate) base_config: CoeffOrdinaryBranchLosslessBaseConfig,
-    /// Caller-resolved AV2 § 5.20.7.29 `Lossless` flag.
-    ///
-    /// Callers must route only the non-FSC lossless outcome represented by this
-    /// wrapper. FSC/IDTX lossless handling is intentionally out of scope.
     pub(crate) lossless: bool,
 }
 
-/// Caller-resolved staged nonzero ordinary branch after EOB has been read.
 pub(crate) struct CoeffOrdinaryStagedLosslessNonZeroInput {
-    /// Caller-resolved `coeffs()` geometry facts before table lookup.
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
-    /// Decoded EOB start and zeroed local coefficient state.
     pub(crate) start: NonZeroCoeffBlockStart,
-    /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
-    /// Caller-resolved inter/intra flag for lower non-lossless derivation.
     pub(crate) is_inter: bool,
-    /// Caller-resolved base facts before lossless transform-type selection.
     pub(crate) base_config: CoeffOrdinaryBranchLosslessBaseConfig,
-    /// Caller-resolved AV2 § 5.20.7.29 `Lossless` flag.
     pub(crate) lossless: bool,
 }
 
-/// Caller-resolved base-derivation facts before transform-size dimensions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
-    /// Caller-resolved `PlaneTxType` from AV2 § 5.20.7.29 `compute_tx_type`.
     pub(crate) plane_tx_type: usize,
-    /// Whether hidden parity is active for this transform block.
     pub(crate) parity_hiding: bool,
-    /// Whether TCQ is active for this transform block.
     pub(crate) use_tcq: bool,
 }
 
-/// Caller-resolved base-derivation facts before the `Mode_To_Txfm` subset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryBranchModeToTxfmBaseConfig {
-    /// Caller-resolved `txSet` from AV2 § 5.20.8.3 `get_tx_set`.
     pub(crate) tx_set: usize,
-    /// Caller-resolved `UVMode` from the chroma intra mode syntax.
     pub(crate) uv_mode: usize,
-    /// Caller-resolved `AngleDeltaUV` from chroma intra mode syntax.
     pub(crate) angle_delta_uv: i32,
-    /// Caller-resolved luma `TxTypes[blockY][blockX]`.
     pub(crate) luma_tx_type: usize,
-    /// Caller-resolved chroma-inter `TxTypes[y4][x4]`.
     pub(crate) chroma_inter_tx_type: usize,
-    /// Caller-resolved AV2 § 5.20.7.29 `enable_chroma_dctonly` flag.
     pub(crate) enable_chroma_dctonly: bool,
-    /// Whether hidden parity is active for this transform block.
     pub(crate) parity_hiding: bool,
-    /// Whether TCQ is active for this transform block.
     pub(crate) use_tcq: bool,
 }
 
-/// Caller-resolved base-derivation facts before AV2 § 5.20.8.3 `get_tx_set`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryBranchTxSetBaseConfig {
-    /// Caller-resolved AV2 § 5.20.8.3 `reduced_tx_set` frame flag.
     pub(crate) reduced_tx_set: usize,
-    /// Caller-resolved AV2 § 5.20.7.29 `enable_chroma_dctonly` flag.
     pub(crate) enable_chroma_dctonly: bool,
-    /// Caller-resolved `UVMode` from the chroma intra mode syntax.
     pub(crate) uv_mode: usize,
-    /// Caller-resolved `AngleDeltaUV` from chroma intra mode syntax.
     pub(crate) angle_delta_uv: i32,
-    /// Caller-resolved luma `TxTypes[blockY][blockX]`.
     pub(crate) luma_tx_type: usize,
-    /// Caller-resolved chroma-inter `TxTypes[y4][x4]`.
     pub(crate) chroma_inter_tx_type: usize,
-    /// Whether hidden parity is active for this transform block.
     pub(crate) parity_hiding: bool,
-    /// Whether TCQ is active for this transform block.
     pub(crate) use_tcq: bool,
 }
 
-/// Caller-resolved base-derivation facts before AV2 § 5.20.7.29 lossless selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryBranchLosslessBaseConfig {
-    /// Caller-resolved AV2 § 5.20.8.3 `reduced_tx_set` frame flag.
     pub(crate) reduced_tx_set: usize,
-    /// Caller-resolved AV2 § 5.20.7.29 `enable_chroma_dctonly` flag.
     pub(crate) enable_chroma_dctonly: bool,
-    /// Caller-resolved `UVMode` from the chroma intra mode syntax.
     pub(crate) uv_mode: usize,
-    /// Caller-resolved `AngleDeltaUV` from chroma intra mode syntax.
     pub(crate) angle_delta_uv: i32,
-    /// Caller-resolved luma `TxTypes[blockY][blockX]`.
     pub(crate) luma_tx_type: usize,
-    /// Caller-resolved chroma-inter `TxTypes[y4][x4]`.
     pub(crate) chroma_inter_tx_type: usize,
-    /// Whether hidden parity is active for this transform block.
     pub(crate) parity_hiding: bool,
-    /// Whether TCQ is active for this transform block.
     pub(crate) use_tcq: bool,
 }
 
@@ -325,16 +243,11 @@ impl CoeffOrdinaryBranchLosslessBaseConfig {
     }
 }
 
-/// AV2 § 5.20.7.27 `coeffs()` geometry facts before table lookup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryTxSizeGeometryConfig {
-    /// Plane index, 0 for luma and 1/2 for chroma.
     pub(crate) plane: usize,
-    /// `startX` argument to `coeffs()`.
     pub(crate) start_x: usize,
-    /// `startY` argument to `coeffs()`.
     pub(crate) start_y: usize,
-    /// `txSz` argument to `coeffs()`.
     pub(crate) tx_size: usize,
 }
 
@@ -378,6 +291,84 @@ const DEFAULT_TX_SIZE_TABLES: CoeffOrdinaryTxSizeTables<'static> = CoeffOrdinary
     tx_height_log2: &TX_HEIGHT_LOG2,
 };
 
+struct CoeffOrdinaryDerivedTxSize {
+    raw_dimensions: CoeffOrdinaryTxSizeDimensions,
+    adjusted_dimensions: CoeffOrdinaryTxSizeDimensions,
+    tx_size_ctx: usize,
+    tx_class: CoeffTransformClass,
+    scan: Vec<u16>,
+}
+
+impl CoeffOrdinaryDerivedTxSize {
+    fn derive(
+        tables: CoeffOrdinaryTxSizeTables<'_>,
+        geometry: CoeffOrdinaryTxSizeGeometryConfig,
+        plane_tx_type: usize,
+    ) -> Result<Self, CoeffOrdinaryBranchError> {
+        let raw_dimensions = tx_size_dimensions(tables, geometry.tx_size)?;
+        let adjusted_dimensions = adjusted_tx_size_dimensions(tables, geometry.tx_size)?;
+        let tx_size_ctx = tx_size_context(tables, geometry.tx_size)?;
+        let tx_class = CoeffTransformClass::from_plane_tx_type(plane_tx_type);
+        let scan = tx_size_scan(raw_dimensions, tx_class)?;
+        Ok(Self {
+            raw_dimensions,
+            adjusted_dimensions,
+            tx_size_ctx,
+            tx_class,
+            scan,
+        })
+    }
+
+    const fn eob_context(
+        &self,
+        geometry: CoeffOrdinaryTxSizeGeometryConfig,
+        is_inter: bool,
+        coeff_cdf_q_ctx: usize,
+    ) -> NonZeroCoeffEobContextInput {
+        NonZeroCoeffEobContextInput {
+            plane: geometry.plane,
+            is_inter,
+            tx_width_log2: self.raw_dimensions.tx_width_log2 as usize,
+            tx_height_log2: self.raw_dimensions.tx_height_log2 as usize,
+            coeff_cdf_q_ctx,
+        }
+    }
+
+    fn state_context_input(
+        &self,
+        input: CoeffOrdinaryStagedTxSizeDimensionsInput,
+    ) -> CoeffOrdinaryStateContextPassInput<'_> {
+        let block = input
+            .geometry
+            .coeffs_geometry(self.raw_dimensions)
+            .block_input();
+        CoeffOrdinaryStateContextPassInput {
+            start: input.start,
+            scan: &self.scan,
+            base_config: CoeffBaseDerivedLevelPassConfig {
+                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+                tx_size_ctx: self.tx_size_ctx,
+                tx_width_log2: self.adjusted_dimensions.tx_width_log2,
+                tx_width: self.adjusted_dimensions.tx_width,
+                tx_height: self.adjusted_dimensions.tx_height,
+                plane: input.geometry.plane,
+                tx_class: self.tx_class,
+                parity_hiding: input.base_config.parity_hiding,
+                use_tcq: input.base_config.use_tcq,
+            },
+            state_context: CoeffOrdinaryStateContextConfig {
+                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+                plane_type: usize::from(input.geometry.plane > 0),
+                x4: block.x4,
+                y4: block.y4,
+                w4: block.w4,
+                h4: block.h4,
+            },
+            lossless: input.lossless,
+        }
+    }
+}
+
 impl CoeffOrdinaryTxSizeGeometryConfig {
     fn coeffs_geometry(
         self,
@@ -415,42 +406,26 @@ impl CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
     }
 }
 
-/// Caller-selected ordinary coefficient branch before block geometry.
 pub(crate) enum CoeffOrdinaryBranchCoeffsGeometryInput<'a> {
-    /// Decoded `all_zero == 1`.
     AllZero(CoeffOrdinaryCoeffsGeometryConfig),
-    /// Decoded `all_zero == 0`.
     NonZero(CoeffOrdinaryBranchCoeffsGeometryNonZeroInput<'a>),
 }
 
-/// Caller-resolved facts for the ordinary nonzero branch before block geometry.
 pub(crate) struct CoeffOrdinaryBranchCoeffsGeometryNonZeroInput<'a> {
-    /// Caller-resolved `coeffs()` geometry facts.
     pub(crate) geometry: CoeffOrdinaryCoeffsGeometryConfig,
-    /// Caller-resolved facts for reading the nonzero EOB syntax.
     pub(crate) eob: NonZeroCoeffEobContextInput,
-    /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
     pub(crate) scan: &'a [u16],
-    /// Caller-resolved facts for deriving base selectors plus `PlaneTxType`.
     pub(crate) base_config: CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
-    /// Caller-resolved facts for state-backed sign/context handoff, before geometry.
     pub(crate) state_context: CoeffOrdinaryGeometryStateContextConfig,
-    /// Caller-resolved lossless flag for the quantized-state update.
     pub(crate) lossless: bool,
 }
 
-/// Caller-resolved AV2 § 5.20.7.27 `coeffs()` geometry facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryCoeffsGeometryConfig {
-    /// Plane index, 0 for luma and 1/2 for chroma.
     pub(crate) plane: usize,
-    /// `startX` argument to `coeffs()`.
     pub(crate) start_x: usize,
-    /// `startY` argument to `coeffs()`.
     pub(crate) start_y: usize,
-    /// Caller-resolved `Tx_Width[txSz]`.
     pub(crate) tx_width: usize,
-    /// Caller-resolved `Tx_Height[txSz]`.
     pub(crate) tx_height: usize,
 }
 
@@ -466,59 +441,24 @@ impl CoeffOrdinaryCoeffsGeometryConfig {
     }
 }
 
-/// Caller-selected ordinary coefficient branch before state-context geometry.
 pub(crate) enum CoeffOrdinaryBranchGeometryInput<'a> {
-    /// Decoded `all_zero == 1`.
     AllZero(AllZeroCoeffBlockInput),
-    /// Decoded `all_zero == 0`.
     NonZero(CoeffOrdinaryBranchGeometryNonZeroInput<'a>),
 }
 
-/// Caller-resolved facts for the ordinary nonzero branch before geometry handoff.
 pub(crate) struct CoeffOrdinaryBranchGeometryNonZeroInput<'a> {
-    /// Caller-resolved facts for nonzero EOB start, including block geometry.
     pub(crate) start: NonZeroCoeffBlockStartInput,
-    /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
     pub(crate) scan: &'a [u16],
-    /// Caller-resolved facts for deriving base selectors plus `PlaneTxType`.
     pub(crate) base_config: CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
-    /// Caller-resolved facts for state-backed sign/context handoff, before geometry.
     pub(crate) state_context: CoeffOrdinaryGeometryStateContextConfig,
-    /// Caller-resolved lossless flag for the quantized-state update.
     pub(crate) lossless: bool,
 }
 
-/// Caller-resolved state-context facts before block-geometry handoff.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryGeometryStateContextConfig {
-    /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
 }
 
-impl CoeffOrdinaryGeometryStateContextConfig {
-    const fn state_context(
-        self,
-        block: AllZeroCoeffBlockInput,
-    ) -> CoeffOrdinaryPlaneTypeStateContextConfig {
-        CoeffOrdinaryPlaneTypeStateContextConfig {
-            coeff_cdf_q_ctx: self.coeff_cdf_q_ctx,
-            x4: block.x4,
-            y4: block.y4,
-            w4: block.w4,
-            h4: block.h4,
-        }
-    }
-}
-
-/// Dispatches the ordinary branch after deriving context geometry from block geometry.
-///
-/// This adapts the staged branch boundary for AV2 § 5.20.7.27 `coeffs()`
-/// geometry (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`) by
-/// reusing the already caller-resolved block geometry in
-/// `NonZeroCoeffBlockStartInput.block`. It does not derive raw `startX`,
-/// `startY`, or `txSz`, implement `compute_tx_type`, derive scan order, wire
-/// runtime `coeffs()`, dequantize, inverse transform, residual add, or
-/// reconstruct.
 pub(crate) fn apply_coeff_ordinary_branch_from_geometry(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -530,11 +470,18 @@ pub(crate) fn apply_coeff_ordinary_branch_from_geometry(
             CoeffOrdinaryBranchPlaneTypeInput::AllZero(input)
         }
         CoeffOrdinaryBranchGeometryInput::NonZero(input) => {
+            let block = input.start.block;
             CoeffOrdinaryBranchPlaneTypeInput::NonZero(CoeffOrdinaryBranchPlaneTypeNonZeroInput {
                 start: input.start,
                 scan: input.scan,
                 base_config: input.base_config,
-                state_context: input.state_context.state_context(input.start.block),
+                state_context: CoeffOrdinaryPlaneTypeStateContextConfig {
+                    coeff_cdf_q_ctx: input.state_context.coeff_cdf_q_ctx,
+                    x4: block.x4,
+                    y4: block.y4,
+                    w4: block.w4,
+                    h4: block.h4,
+                },
                 lossless: input.lossless,
             })
         }
@@ -542,15 +489,6 @@ pub(crate) fn apply_coeff_ordinary_branch_from_geometry(
     apply_coeff_ordinary_branch_from_plane_type(state, cdfs, symbols, input)
 }
 
-/// Dispatches the ordinary branch after deriving block geometry from `coeffs()` facts.
-///
-/// This adapts the staged branch boundary for AV2 § 5.20.7.27 `coeffs()`
-/// geometry (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`) by
-/// applying the spec assignments `x4 = startX >> 2`, `y4 = startY >> 2`,
-/// `w4 = Tx_Width[txSz] >> 2`, and `h4 = Tx_Height[txSz] >> 2`. It does not
-/// derive `Tx_Width[txSz]` or `Tx_Height[txSz]` from `txSz`, implement
-/// `compute_tx_type`, derive scan order, wire runtime `coeffs()`, dequantize,
-/// inverse transform, residual add, or reconstruct.
 pub(crate) fn apply_coeff_ordinary_branch_from_coeffs_geometry(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -577,22 +515,6 @@ pub(crate) fn apply_coeff_ordinary_branch_from_coeffs_geometry(
     apply_coeff_ordinary_branch_from_geometry(state, cdfs, symbols, input)
 }
 
-/// Dispatches the ordinary branch after deriving generated `txSz` dimensions.
-///
-/// This adapts the staged branch boundary for AV2 § 5.20.7.27 `coeffs()`
-/// geometry (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`) by
-/// deriving `Tx_Width[txSz]`, `Tx_Height[txSz]`, `Tx_Width_Log2[txSz]`, and
-/// `Tx_Height_Log2[txSz]` from generated AV2 § 9.2 conversion tables
-/// (`docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md`).
-/// For AV2 § 8.3.2 base contexts
-/// (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`), it separately
-/// derives `Adjusted_Tx_Size[txSz]` and uses the adjusted width, height, and
-/// width log2. It also derives the AV2 § 5.20.7.27 `txSzCtx` formula from
-/// `Tx_Size_Sqr[txSz]` and `Tx_Size_Sqr_Up[txSz]`, then derives
-/// `scan = get_scan(txSz, txClass)` per AV2 § 5.20.7.30
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30`). It does not
-/// implement `compute_tx_type`, wire runtime `coeffs()`, dequantize, inverse
-/// transform, residual add, or reconstruct.
 pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -608,21 +530,6 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
     )
 }
 
-/// Dispatches the ordinary branch after deriving `PlaneTxType`.
-///
-/// This covers only the non-lossless luma/chroma subset of AV2
-/// § 5.20.7.29 `compute_tx_type`
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`) where luma
-/// returns caller-resolved `TxTypes[blockY][blockX]`; chroma
-/// `enable_chroma_dctonly` short-circuits to `DCT_DCT`; chroma inter checks
-/// caller-resolved `TxTypes[y4][x4]` against the inline
-/// `Tx_Type_In_Set_Inter[txSet][txType]` table; otherwise directional `UVMode`
-/// applies `wide_angle_mapping`, non-directional `UVMode` maps through
-/// `Mode_To_Txfm`, followed by the inline
-/// `Tx_Type_In_Set_Intra[txSet][txType]` membership check and `DCT_DCT`
-/// fallback. Full `get_tx_set`, all lossless branches, runtime `coeffs()`,
-/// dequantization, inverse transform, residual add, and reconstruction remain
-/// out of scope.
 pub(crate) fn apply_coeff_ordinary_branch_from_mode_to_txfm(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -638,16 +545,6 @@ pub(crate) fn apply_coeff_ordinary_branch_from_mode_to_txfm(
     )
 }
 
-/// Dispatches the ordinary branch after deriving AV2 § 5.20.8.3 `txSet`.
-///
-/// This adapts the staged branch boundary for AV2 § 5.20.8.3 `get_tx_set`
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3`) by deriving
-/// `txSet` from generated AV2 § 9.2 transform-size conversion tables plus
-/// caller-resolved `is_inter`, `reduced_tx_set`, and `enable_chroma_dctonly`.
-/// It delegates transform-type selection to the non-lossless luma/chroma subset
-/// wrapper. Full frame-state derivation,
-/// full `compute_tx_type`, runtime `coeffs()`, dequantization, inverse
-/// transform, residual add, and reconstruction remain out of scope.
 pub(crate) fn apply_coeff_ordinary_branch_from_tx_set(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -663,15 +560,6 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_set(
     )
 }
 
-/// Dispatches the ordinary branch after applying a staged lossless transform branch.
-///
-/// This covers only the AV2 § 5.20.7.29 `compute_tx_type`
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29`) lossless
-/// outcome that selects `DCT_DCT` before `get_tx_set(txSz, plane)`. Non-lossless
-/// branches delegate to the existing AV2 § 5.20.8.3 `txSet` wrapper. Full
-/// `compute_tx_type`, FSC/IDTX lossless cases, luma/inter transform-state
-/// lookup, runtime `coeffs()`, dequantization, inverse transform, residual add,
-/// and reconstruction remain out of scope.
 pub(crate) fn apply_coeff_ordinary_branch_from_lossless(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -687,14 +575,6 @@ pub(crate) fn apply_coeff_ordinary_branch_from_lossless(
     )
 }
 
-/// Runs the ordinary nonzero branch after the caller has already read EOB.
-///
-/// This is the staged counterpart to [`apply_coeff_ordinary_branch_from_lossless`]
-/// for AV2 § 5.20.7.27 callers that must inspect EOB before deciding whether
-/// post-EOB transform-tool syntax is active. It performs the same non-FSC
-/// transform-set, transform-type, scan, base-context, and context-line derivation
-/// as the non-staged path, but starts from the supplied
-/// [`NonZeroCoeffBlockStart`].
 pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -891,43 +771,16 @@ fn apply_staged_nonzero_coeff_ordinary_pass_from_tx_size_dimensions_with_tables(
     input: CoeffOrdinaryStagedTxSizeDimensionsInput,
     tables: CoeffOrdinaryTxSizeTables<'_>,
 ) -> Result<NonZeroCoeffOrdinaryDerivedBasePass, CoeffOrdinaryBranchError> {
-    let raw_dimensions = tx_size_dimensions(tables, input.geometry.tx_size)?;
-    let adjusted_dimensions = adjusted_tx_size_dimensions(tables, input.geometry.tx_size)?;
-    let tx_size_ctx = tx_size_context(tables, input.geometry.tx_size)?;
-    let tx_class = CoeffTransformClass::from_plane_tx_type(input.base_config.plane_tx_type);
-    let scan = tx_size_scan(raw_dimensions, tx_class)?;
-    let x4 = input.geometry.start_x >> 2;
-    let y4 = input.geometry.start_y >> 2;
-    let w4 = raw_dimensions.tx_width >> 2;
-    let h4 = raw_dimensions.tx_height >> 2;
+    let derived = CoeffOrdinaryDerivedTxSize::derive(
+        tables,
+        input.geometry,
+        input.base_config.plane_tx_type,
+    )?;
     apply_nonzero_coeff_ordinary_pass_with_state_context(
         state,
         cdfs,
         symbols,
-        CoeffOrdinaryStateContextPassInput {
-            start: input.start,
-            scan: &scan,
-            base_config: CoeffBaseDerivedLevelPassConfig {
-                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
-                tx_size_ctx,
-                tx_width_log2: adjusted_dimensions.tx_width_log2,
-                tx_width: adjusted_dimensions.tx_width,
-                tx_height: adjusted_dimensions.tx_height,
-                plane: input.geometry.plane,
-                tx_class,
-                parity_hiding: input.base_config.parity_hiding,
-                use_tcq: input.base_config.use_tcq,
-            },
-            state_context: CoeffOrdinaryStateContextConfig {
-                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
-                plane_type: usize::from(input.geometry.plane > 0),
-                x4,
-                y4,
-                w4,
-                h4,
-            },
-            lossless: input.lossless,
-        },
+        derived.state_context_input(input),
     )
     .map_err(CoeffOrdinaryBranchError::from)
 }
@@ -952,30 +805,28 @@ fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
             )
         }
         CoeffOrdinaryBranchTxSizeDimensionsInput::NonZero(input) => {
-            let raw_dimensions = tx_size_dimensions(tables, input.geometry.tx_size)?;
-            let adjusted_dimensions = adjusted_tx_size_dimensions(tables, input.geometry.tx_size)?;
-            let tx_size_ctx = tx_size_context(tables, input.geometry.tx_size)?;
-            let tx_class = CoeffTransformClass::from_plane_tx_type(input.base_config.plane_tx_type);
-            let scan = tx_size_scan(raw_dimensions, tx_class)?;
+            let derived = CoeffOrdinaryDerivedTxSize::derive(
+                tables,
+                input.geometry,
+                input.base_config.plane_tx_type,
+            )?;
             apply_coeff_ordinary_branch_from_coeffs_geometry(
                 state,
                 cdfs,
                 symbols,
                 CoeffOrdinaryBranchCoeffsGeometryInput::NonZero(
                     CoeffOrdinaryBranchCoeffsGeometryNonZeroInput {
-                        geometry: input.geometry.coeffs_geometry(raw_dimensions),
-                        eob: NonZeroCoeffEobContextInput {
-                            plane: input.geometry.plane,
-                            is_inter: input.is_inter,
-                            tx_width_log2: raw_dimensions.tx_width_log2 as usize,
-                            tx_height_log2: raw_dimensions.tx_height_log2 as usize,
-                            coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
-                        },
-                        scan: &scan,
+                        geometry: input.geometry.coeffs_geometry(derived.raw_dimensions),
+                        eob: derived.eob_context(
+                            input.geometry,
+                            input.is_inter,
+                            input.coeff_cdf_q_ctx,
+                        ),
+                        scan: &derived.scan,
                         base_config: input.base_config.base_config(
                             input.geometry,
-                            tx_size_ctx,
-                            adjusted_dimensions,
+                            derived.tx_size_ctx,
+                            derived.adjusted_dimensions,
                             input.coeff_cdf_q_ctx,
                         ),
                         state_context: CoeffOrdinaryGeometryStateContextConfig {
@@ -1215,7 +1066,6 @@ fn directional_uv_mode(
     ))
 }
 
-/// AV2 § 5.20.7.29 `wide_angle_mapping`.
 fn wide_angle_mapping(mode: usize, width: usize, height: usize, p_angle: i32) -> usize {
     if is_scaled(height, width, 2) && p_angle < WAIP_WH_RATIO_2_THRES
         || is_scaled(height, width, 4) && p_angle < WAIP_WH_RATIO_4_THRES

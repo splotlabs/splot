@@ -2,8 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Shared minimal-tier runtime implementation.
-//!
-//! Feature tracking: `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`.
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
@@ -19,7 +17,7 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 use splot_core::types::ObuType;
-use splot_recon::{BitDepth, DecodedFrame, DecodedFrameHashInput, IntraCardinalDirection};
+use splot_recon::{BitDepth, DecodedFrame, DecodedFrameHashInput};
 
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
@@ -27,11 +25,11 @@ use crate::tile_payload::{
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, GeneralIntraBlockModeError,
     GeneralIntraResidualError, MinimalBlockSymbolTraceError,
     MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
-    MinimalRuntimeReconstructionTrace, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
-    TileGroupPositionFacts, TilePartitionTraversalError, TransformToolResidualPolicy,
+    MinimalRuntimeReconstructionTrace, TileGroupPositionFacts, TilePartitionTraversalError,
 };
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
+use self::capability::missing_capability_message;
 use self::limits::{checked_add, decoded_frame_byte_budget};
 use self::wienerns_lr::ensure_wienerns_lr_unit_runtime_frontier;
 #[cfg(test)]
@@ -55,8 +53,6 @@ use self::wienerns_lr::{
     wienerns_lr_runtime_storage_retention_error, wienerns_lr_source_read_config,
     wienerns_lr_source_read_runtime_error, wienerns_lr_tx_mode_select_transform_record_error,
 };
-
-/// Stable id for the first supported runtime decode tier.
 pub const MINIMAL_INTRA_HASH_TIER_ID: &str = "minimal-intra-8bit420-hash-v1";
 
 const FEATURE_ID: &str = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS";
@@ -71,40 +67,22 @@ const AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-UNIT-SELECT
 const AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW: &str = "ac0ej3-lr-unit-selections-frontier";
 const AC0EJ3_LR_SOURCE_READ_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER";
 const AC0EJ3_LR_SOURCE_READ_MATRIX_ROW: &str = "ac0ej3-lr-source-read-frontier";
-#[allow(
-    dead_code,
-    reason = "classified-Wiener storage diagnostic is retained for the helper-row regression test after the live path advanced"
-)]
+#[allow(dead_code)]
 const AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_FEATURE_ID: &str =
     "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE";
-#[allow(
-    dead_code,
-    reason = "classified-Wiener storage diagnostic is retained for the helper-row regression test after the live path advanced"
-)]
+#[allow(dead_code)]
 const AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW: &str = "ac0ej3-lr-classified-wiener-storage";
 const AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID: &str =
     "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION";
 const AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW: &str = "ac0ej3-lr-runtime-storage-retention";
-#[allow(
-    dead_code,
-    reason = "live storage-allocation diagnostic is retained for the helper-row regression test after the live path advanced"
-)]
+#[allow(dead_code)]
 const AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_FEATURE_ID: &str =
     "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION";
-#[allow(
-    dead_code,
-    reason = "live storage-allocation diagnostic is retained for the helper-row regression test after the live path advanced"
-)]
+#[allow(dead_code)]
 const AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_MATRIX_ROW: &str = "ac0ej3-lr-live-storage-allocation";
-#[allow(
-    dead_code,
-    reason = "live tx-skip grid population is a private prerequisite row until live tile records reach this frontier"
-)]
+#[allow(dead_code)]
 const AC0EJ3_LR_LIVE_TX_SKIP_GRID_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID";
-#[allow(
-    dead_code,
-    reason = "live tx-skip grid population is a private prerequisite row until live tile records reach this frontier"
-)]
+#[allow(dead_code)]
 const AC0EJ3_LR_LIVE_TX_SKIP_GRID_MATRIX_ROW: &str = "ac0ej3-lr-live-tx-skip-grid";
 const AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID: &str =
     "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF";
@@ -125,9 +103,6 @@ const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;
 const MINIMAL_TRACE_TRAILING_BIT_POSITION: u64 = 14;
 const MINIMAL_TRACE_PADDING_END_POSITION: u64 = 16;
-/// `base_q_idx` of the committed frozen minimal-tier fixture; frames with this
-/// quantizer stay on the frozen hash-contract path, all others route to the
-/// general intra frontier.
 const FROZEN_MINIMAL_BASE_Q_IDX: u32 = 255;
 
 const GENERAL_INTRA_FEATURE_ID: &str = "DECODE-GENERAL-INTRA-FRAME-FRONTIER";
@@ -137,16 +112,9 @@ const GENERAL_INTRA_TILE_SPEC_SECTION: &str = "5.20.1";
 const GENERAL_INTRA_PARTITION_SPEC_SECTION: &str = "5.20.3.1";
 const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
 const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
-const GENERAL_INTRA_REMEDIATION: &str = "General intra coefficient and reconstruction decode is not yet implemented; track DECODE-GENERAL-INTRA-FRAME-FRONTIER.";
-/// AV2 § 5.4.8 `DELTA_DCQUANT_MIN` with `DELTA_DCQUANT_BITS == 5`: the bias added
-/// to a raw `base_*_delta_q` field when deriving `Base*DeltaQ` (= -23). A raw
-/// field of `-DELTA_DCQUANT_MIN` therefore resolves to a zero base offset.
+const GENERAL_INTRA_REMEDIATION: &str =
+    "Use an admitted general-intra subset or track DECODE-GENERAL-INTRA-FRAME-FRONTIER.";
 const GENERAL_INTRA_DELTA_DCQUANT_MIN: i32 = (1 << 3) - (1 << 5) + 1;
-
-/// Output carrier for one displayed frame, holding either an 8-bit
-/// (`DecodedFrame<u8>`) or 10-bit (`DecodedFrame<u16>`) reconstruction (§ 6.4.1).
-/// The reference / inter path is 8-bit only; 10-bit is admitted only for the
-/// single-frame general-intra DC subset (`DECODE-GENERAL-INTRA-10BIT`).
 pub(crate) enum MinimalRuntimeDecodedFrame {
     Eight(DecodedFrame<u8>),
     Ten(DecodedFrame<u16>),
@@ -159,22 +127,16 @@ pub(crate) struct MinimalRuntimeFrame {
 }
 
 impl MinimalRuntimeFrame {
-    /// Borrows the 8-bit decoded frame for §7.23 reference retention / inter
-    /// decode, which is 8-bit only. A 10-bit frame is rejected with a structured
-    /// diagnostic: the inter / reference path does not yet retain 10-bit frames.
     pub(crate) fn frame_eight(&self) -> Result<&DecodedFrame<u8>> {
         match &self.frame {
             MinimalRuntimeDecodedFrame::Eight(frame) => Ok(frame),
             MinimalRuntimeDecodedFrame::Ten(_) => Err(unsupported(
                 "unsupported_10bit_reference_retention",
                 None,
-                "minimal runtime reconstructs a 10-bit intra key frame but does not yet retain 10-bit frames for the §7.23 reference / inter path",
+                missing_capability_message!("reference.retention bit_depth=10"),
             )),
         }
     }
-
-    /// Returns the serialized visible-plane byte length of this frame
-    /// (16-bit-LE-packed for 10-bit), dispatching on the sample-storage arm.
     pub(crate) fn byte_len(&self) -> Result<usize> {
         match &self.frame {
             MinimalRuntimeDecodedFrame::Eight(frame) => {
@@ -185,10 +147,6 @@ impl MinimalRuntimeFrame {
             }
         }
     }
-
-    /// Borrows the 8-bit decoded frame in `#[cfg(test)]` contexts (the test
-    /// fixtures are 8-bit unless a test explicitly decodes the 10-bit subset via
-    /// [`Self::into_frame_ten`]).
     #[cfg(test)]
     #[allow(clippy::panic)]
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
@@ -199,9 +157,6 @@ impl MinimalRuntimeFrame {
             }
         }
     }
-
-    /// Consumes the carrier and returns the owned 8-bit decoded frame in
-    /// `#[cfg(test)]` contexts (the 8-bit test fixtures).
     #[cfg(test)]
     #[allow(clippy::panic)]
     pub(crate) fn into_frame_eight(self) -> DecodedFrame<u8> {
@@ -212,9 +167,6 @@ impl MinimalRuntimeFrame {
             }
         }
     }
-
-    /// Consumes the carrier and returns the owned 10-bit decoded frame in
-    /// `#[cfg(test)]` contexts (the 10-bit DC subset fixture).
     #[cfg(test)]
     #[allow(clippy::panic)]
     pub(crate) fn into_frame_ten(self) -> DecodedFrame<u16> {
@@ -226,13 +178,6 @@ impl MinimalRuntimeFrame {
         }
     }
 }
-
-/// Decodes the leading closed-loop-key frame into a single [`MinimalRuntimeFrame`].
-///
-/// This is the frozen intra-tier convenience entry for the intra runtime tests. It
-/// delegates to the multi-frame driver and returns the first (key) frame; for a
-/// single-frame intra stream the result is byte-identical to the prior single-frame
-/// behavior. Production output adapters call [`decode_minimal_frames_from_plan`].
 #[cfg(test)]
 pub(crate) fn decode_minimal_frame_from_plan(
     bytes: &[u8],
@@ -249,16 +194,6 @@ pub(crate) fn decode_minimal_frame_from_plan(
     }
     Ok(frames.swap_remove(0))
 }
-
-/// Reconstructs the ac0ej3 frame-0 NON-IntrABC general-intra DC region into a
-/// reconstruction sink, for the region-verification test. Mirrors the leading-OBU
-/// extraction in [`decode_minimal_frames_from_plan_with_ivf_preflight`] up to the
-/// `TX_MODE_SELECT` selectable transform-record handoff, then runs that walk with
-/// a sink attached. The returned sink holds the first superblock reconstructed
-/// before the walk's expected IntrABC fail-closed rejection.
-/// As [`reconstruct_ac0ej3_intra_region_from_plan`], but selects the gated (shipped)
-/// sink (`full_recon == false`) or the DIAGNOSTIC-ONLY full-reconstruction sink
-/// (`full_recon == true`, driven by the `SPLOT_AC0EJ3_FULL_RECON` harness).
 #[cfg(test)]
 fn reconstruct_ac0ej3_intra_region_from_plan(
     bytes: &[u8],
@@ -298,13 +233,6 @@ fn reconstruct_ac0ej3_intra_region_from_plan(
         full_recon,
     )
 }
-
-/// Decodes every frame candidate the planner accepted (one key frame, optionally
-/// followed by inter frames), emitting one [`MinimalRuntimeFrame`] per displayed
-/// frame in output order (AV2 § 5.2.1, § 6.18).
-///
-/// Feature tracking: `DECODE-FIRST-INTER-FRAME-FRONTIER` (the inter frame loop and
-/// reference retention), layered on `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS`.
 pub(crate) fn decode_minimal_frames_from_plan(
     bytes: &[u8],
     options: DecodeOptions,
@@ -312,12 +240,6 @@ pub(crate) fn decode_minimal_frames_from_plan(
 ) -> Result<Vec<MinimalRuntimeFrame>> {
     decode_minimal_frames_from_plan_with_ivf_preflight(bytes, options, plan, |_| Ok(()))
 }
-
-/// Decodes one closed-loop-key frame candidate into a [`MinimalRuntimeFrame`].
-///
-/// This is the per-key-frame body shared by the single-frame frozen-tier entry and
-/// the multi-frame runtime loop. It routes to the general intra path or the frozen
-/// hash tier exactly as the single-frame entry historically did.
 fn decode_minimal_key_frame(
     bytes: &[u8],
     options: DecodeOptions,
@@ -341,10 +263,10 @@ fn decode_minimal_key_frame(
         );
     }
     if sequence.general.bit_depth_idc != BitDepthIdc::Eight {
-        return Err(unsupported(
+        return Err(unsupported_at(
             "unsupported_10bit_frozen_minimal_tier",
-            Some(frame_envelope.offset),
-            "the frozen minimal-tier reconstruction path is 8-bit only; a 10-bit frame outside the general-intra DC subset is not yet supported",
+            frame_envelope.offset,
+            missing_capability_message!("frozen_minimal_tier bit_depth=10"),
         ));
     }
     validate_frame_core(&core, frame_envelope.offset)?;
@@ -371,7 +293,7 @@ fn decode_minimal_key_frame(
             return Err(unsupported(
                 "unexpected_tile_work_units",
                 work_units.first().map(|tile| tile.tile_byte_span().start),
-                "minimal runtime hash support requires exactly one traced tile work unit",
+                missing_capability_message!("tile.work_unit_count !=1"),
             ));
         }
     };
@@ -396,18 +318,6 @@ fn decode_minimal_key_frame(
         frame_rate_denominator: header.timebase_numerator,
     })
 }
-
-/// Multi-frame minimal-tier runtime driver (AV2 § 5.2.1, § 5.19, § 6.18).
-///
-/// Decodes the leading closed-loop-key frame, then walks any further
-/// inter frame candidates in planned OBU stream order. IVF records are treated as
-/// container payload groups and are not required to map one-to-one to decoded
-/// frames. Each displayed frame becomes one
-/// [`MinimalRuntimeFrame`]; the key frame's decoded planes are retained as the
-/// reference state the inter frame consumes (§ 7.23). A single-frame intra stream
-/// still yields a one-element vector, byte-identical to the single-frame entry.
-///
-/// Feature tracking: `DECODE-FIRST-INTER-FRAME-FRONTIER`.
 pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     bytes: &[u8],
     options: DecodeOptions,
@@ -528,7 +438,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                     return Err(unsupported_at(
                         "inter_too_many_valid_references",
                         next_candidate.offset(),
-                        "minimal multi-reference decode is verified only for up to two valid reference slots; a third valid slot needs a richer §7.7 ranking / multi-decision single_ref that is not yet fixtured",
+                        missing_capability_message!("inter.reference_count valid_refs>2"),
                     ));
                 }
                 let (store, meta) = reference.build_store(&frames)?;
@@ -582,7 +492,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                 return Err(unsupported_at(
                     "multiple_frames_unimplemented",
                     next_candidate.offset(),
-                    "minimal tier decodes a key frame followed by single-reference inter frames; a following frame candidate outside that runtime subset (for example, a second key frame or TIP frame) is admitted at the planner but decoding it is not yet implemented",
+                    missing_capability_message!("frame.sequence key_plus_inter"),
                 ));
             }
         }
@@ -590,14 +500,6 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
 
     Ok(frames)
 }
-
-/// Resolves the `OBU_REGULAR_TILE_GROUP` envelope for a following inter frame by
-/// planned OBU offset. An IVF frame record is only a non-normative byte envelope:
-/// before each candidate is decoded, the runtime lazily validates every
-/// following IVF payload up to and including the candidate's payload as complete
-/// `[TD, OBU_REGULAR_TILE_GROUP]` pairs. That catches candidate-less state OBUs
-/// before they can make a later frame decode against stale sequence state, while
-/// malformed future records do not pre-empt an earlier candidate's runtime gate.
 fn following_inter_envelope<'a>(
     ivf: &'a ParsedIvfBitstream<'a>,
     candidate: &DecodePlannedObu,
@@ -630,7 +532,7 @@ fn following_inter_envelope<'a>(
             return Err(unsupported_at(
                 "missing_inter_temporal_delimiter",
                 candidate.offset(),
-                "minimal tier requires each following inter frame candidate to be immediately preceded by OBU_TEMPORAL_DELIMITER in its IVF payload",
+                missing_capability_message!("inter.ivf_frame_unit_order"),
             ));
         };
         require_obu_type(
@@ -677,7 +579,7 @@ fn require_inter_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
             return Err(unsupported_at(
                 "unexpected_inter_obu_order",
                 envelope.offset,
-                "minimal tier requires following inter IVF payloads to contain only [OBU_TEMPORAL_DELIMITER, OBU_REGULAR_TILE_GROUP] frame units before each inter candidate",
+                missing_capability_message!("inter.ivf_frame_unit_order"),
             ));
         }
     }
@@ -688,24 +590,11 @@ fn require_inter_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
         return Err(unsupported_at(
             "unexpected_inter_obu_order",
             offset,
-            "minimal tier requires following inter IVF payloads to contain complete [OBU_TEMPORAL_DELIMITER, OBU_REGULAR_TILE_GROUP] frame units",
+            missing_capability_message!("inter.ivf_frame_unit_order"),
         ));
     }
     Ok(())
 }
-
-/// Validates the planned stream shape for the multi-frame runtime: one accepted
-/// frame candidate for a single intra key, followed by zero or more frame candidates
-/// the runtime will attempt in stream order. The shape stays the minimal tier's:
-/// one base-layer sequence header, and enough planned OBUs for the leading
-/// `[TD, SEQ, CLK]` key frame. Container warning policy is enforced by
-/// `require_multiframe_ivf`, which permits only terminal trailing partial IVF
-/// headers. Each following
-/// `OBU_REGULAR_TILE_GROUP` is validated by `following_inter_envelope`; non-inter
-/// frame candidates fail closed before output because every following IVF payload
-/// must contain only complete `[OBU_TEMPORAL_DELIMITER, OBU_REGULAR_TILE_GROUP]`
-/// frame-unit pairs. Unverified reference/tool states fail at their precise
-/// runtime gates before caller-visible output.
 fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<()> {
     let frame_count = plan.frame_candidate_count();
     if frame_count == 0 {
@@ -725,12 +614,6 @@ fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<()> {
         ))
     }
 }
-
-/// Container-shape gate for the multi-frame runtime: an `AV02` IVF with positive-sized
-/// records, no fatal container errors, and only terminal trailing partial IVF
-/// header warnings. The IVF header's `frame_count` is a container-record count
-/// when present (and is often zero in real streams), not the AV2 decoded
-/// frame-candidate count.
 fn require_multiframe_ivf<'a>(
     parsed: &'a ParsedBitstream<'a>,
 ) -> Result<(&'a ParsedIvfBitstream<'a>, IvfHeader)> {
@@ -738,7 +621,7 @@ fn require_multiframe_ivf<'a>(
         return Err(unsupported(
             "non_ivf_input",
             None,
-            "minimal runtime support currently accepts only the committed IVF fixture shape",
+            missing_capability_message!("container.ivf"),
         ));
     };
     let Some(header) = ivf.header else {
@@ -764,7 +647,7 @@ fn require_multiframe_ivf<'a>(
         return Err(unsupported(
             "unsupported_ivf_shape",
             None,
-            "minimal tier requires positive-sized AV02 IVF frame records with no fatal container errors and only terminal trailing partial-frame-header warnings; declared IVF frame_count must be zero or match the parsed record count",
+            missing_capability_message!("container.ivf_av02_frame_records"),
         ));
     }
     Ok((ivf, header))
@@ -874,44 +757,39 @@ fn decode_minimal_block_symbol_error(
     error: MinimalBlockSymbolTraceError,
     offset: ByteOffset,
 ) -> DecodeError {
-    match error {
-        MinimalBlockSymbolTraceError::SymbolRead { .. } => unsupported_at(
+    let (reason, message) = match error {
+        MinimalBlockSymbolTraceError::SymbolRead { .. } => (
             "minimal_tile_symbol_parse",
-            offset,
-            "minimal runtime hash support requires the traced flat tile symbol stream",
+            missing_capability_message!("tile.symbol_stream flat_minimal"),
         ),
-        MinimalBlockSymbolTraceError::UnexpectedSymbol { reason, .. } => unsupported_at(
+        MinimalBlockSymbolTraceError::UnexpectedSymbol { reason, .. } => (
             reason,
-            offset,
-            "minimal runtime hash support only accepts the traced flat tile symbol values",
+            missing_capability_message!("tile.symbol_values flat_minimal"),
         ),
-        MinimalBlockSymbolTraceError::UnsupportedYMode { .. } => unsupported_at(
+        MinimalBlockSymbolTraceError::UnsupportedYMode { .. } => (
             "minimal_tile_y_mode_reconstruction",
-            offset,
-            "minimal runtime hash support only reconstructs the traced flat tile non-directional YMode subset",
+            missing_capability_message!("intra.y_mode non_directional_flat"),
         ),
         MinimalBlockSymbolTraceError::InvalidCoeffContextRange { .. }
         | MinimalBlockSymbolTraceError::CoeffContextDimensionOverflow { .. }
         | MinimalBlockSymbolTraceError::CoeffContextState { .. }
         | MinimalBlockSymbolTraceError::CoeffLoopContext { .. }
-        | MinimalBlockSymbolTraceError::CoeffFrameEntry { .. } => unsupported_at(
+        | MinimalBlockSymbolTraceError::CoeffFrameEntry { .. } => (
             "minimal_tile_coeff_context_state",
-            offset,
-            "minimal runtime hash support requires the traced flat tile coefficient context state",
+            missing_capability_message!("residual.coeff_context flat_minimal"),
         ),
         MinimalBlockSymbolTraceError::CoeffTxGeometryDimensionOverflow { .. }
         | MinimalBlockSymbolTraceError::UnsupportedCoeffTxGeometry { .. }
-        | MinimalBlockSymbolTraceError::InvalidCoeffTxTableValue { .. } => unsupported_at(
+        | MinimalBlockSymbolTraceError::InvalidCoeffTxTableValue { .. } => (
             "minimal_tile_coeff_tx_size_geometry",
-            offset,
-            "minimal runtime hash support requires traced coefficient transform geometry to map to generated AV2 transform-size tables",
+            missing_capability_message!("residual.tx_geometry"),
         ),
-        MinimalBlockSymbolTraceError::ExitSymbol { .. } => unsupported_at(
+        MinimalBlockSymbolTraceError::ExitSymbol { .. } => (
             "minimal_tile_exit_symbol",
-            offset,
-            "minimal runtime hash support requires the traced flat tile payload to satisfy §8.2.4 exit_symbol()",
+            missing_capability_message!("tile.exit_symbol §8.2.4"),
         ),
-    }
+    };
+    unsupported_at(reason, offset, message)
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -934,7 +812,7 @@ fn decode_minimal_partition_frontier_error(
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => unsupported_at(
             "minimal_tile_partition_frontier",
             offset,
-            "minimal runtime hash support requires the traced root AV2 5.20.3.1 partition frontier before block syntax",
+            missing_capability_message!("tile.partition §5.20.3.1"),
         ),
     }
 }
@@ -953,7 +831,7 @@ fn validate_minimal_trace_summary(
         Err(unsupported_at(
             "minimal_tile_trace_summary",
             tile.tile_byte_span().start,
-            "minimal runtime hash support requires the traced flat tile symbol count and padding boundary",
+            missing_capability_message!("tile.trace_summary flat_minimal"),
         ))
     }
 }
@@ -991,7 +869,7 @@ fn require_obu_type(
         Err(unsupported_at(
             reason,
             envelope.offset,
-            "minimal tier OBU order does not match the traced fixture shape",
+            missing_capability_message!("obu.order minimal_frame_unit"),
         ))
     }
 }
@@ -1065,41 +943,31 @@ fn ensure_sequence_chroma_tools_before_tile_decode(
             "minimal tier requires a fully parsed sequence intra config",
         )
     })?;
-    if intra.enable_cfl_intra {
-        return Err(unsupported_feature_at(
+    for (enabled, reason, message) in [
+        (
+            intra.enable_cfl_intra,
             "unsupported_cfl_intra",
-            offset,
-            "minimal tier parses the sequence CFL flag but still rejects before §5.20.5.6 is_cfl / UV_CFL_PRED mode-info syntax can be skipped",
-            AC0EJ3_CHROMA_MATRIX_ROW,
-            AC0EJ3_CHROMA_FEATURE_ID,
-            "5.20.5.6",
-        ));
-    }
-    if intra.enable_mhccp {
-        return Err(unsupported_feature_at(
+            missing_capability_message!("intra.chroma.cfl §5.20.5.6"),
+        ),
+        (
+            intra.enable_mhccp,
             "unsupported_mhccp",
-            offset,
-            "minimal tier parses the sequence MHCCP flag but still rejects before §5.20.5.6 is_mhccp_allowed mode-info syntax can be skipped",
-            AC0EJ3_CHROMA_MATRIX_ROW,
-            AC0EJ3_CHROMA_FEATURE_ID,
-            "5.20.5.6",
-        ));
+            missing_capability_message!("intra.chroma.mhccp §5.20.5.6"),
+        ),
+    ] {
+        if enabled {
+            return Err(unsupported_feature_at(
+                reason,
+                offset,
+                message,
+                AC0EJ3_CHROMA_MATRIX_ROW,
+                AC0EJ3_CHROMA_FEATURE_ID,
+                "5.20.5.6",
+            ));
+        }
     }
     Ok(())
 }
-
-/// Gates the runtime sample-storage bit depth (§ 6.4.1). 8-bit always proceeds.
-/// 10-bit is admitted ONLY for the single-frame general-intra DC subset
-/// (`DECODE-GENERAL-INTRA-10BIT`): the per-frame `route_general_minimal_intra` /
-/// `is_general_minimal_intra` gates and the per-block DC admission inside
-/// `general_intra` reject every richer 10-bit shape before any output, so this
-/// relaxation cannot emit a confident-but-wrong 10-bit hash. Any bit depth other
-/// than 8 or 10 still fails closed here (the parser only produces Eight / Ten,
-/// but the check is explicit). Routing: a 10-bit stream that is NOT the general
-/// intra DC subset reaches the frozen `validate_frame_core` (which is the
-/// `base_q_idx == 255` 8-bit fixture path) and fails there; the general intra
-/// path handles 10-bit DC and rejects 10-bit non-DC inside `decode_one_general
-/// _intra_block`.
 #[allow(clippy::unnecessary_wraps)]
 fn ensure_runtime_storage_bit_depth(sequence: &SequenceHeader, _offset: ByteOffset) -> Result<()> {
     match sequence.general.bit_depth_idc {
@@ -1142,18 +1010,6 @@ fn parse_frame_core(
         )
     })
 }
-
-/// Extracts the AV2 § 7.23 reference frame update inputs from a parsed frame header.
-///
-/// The stored `RefOrderHint[i]` is the UNWRAPPED `OrderHint` (`get_disp_order_hint()`,
-/// mirror :4375 / § 7.23 :14123), not the raw `OrderHintLsbs`. The minimal multi-frame
-/// subset is admitted only when the GOP never wraps `OrderHintBits` (enforced by
-/// [`order_hint_history_unwrapped`] before any inter decode), so within the admitted
-/// subset `OrderHint == OrderHintLsbs` exactly; a wrapping history is rejected rather
-/// than stored with a stale small LSB value that a § 7.7 /
-/// `choose_primary_secondary_ref_frame` ranking would mis-order. There is no
-/// segmentation / delta-Q so `qindex == base_q_idx`. The caller applies the refresh into
-/// the [`reference_buffer::RuntimeReferenceBuffer`].
 fn frame_ref_update_from_core(
     core: &FrameHeaderCore,
     offset: ByteOffset,
@@ -1222,7 +1078,7 @@ fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()>
             return Err(unsupported_at(
                 "unsupported_frame_size",
                 offset,
-                "minimal runtime hash support currently accepts only the traced 64x64 frame size",
+                missing_capability_message!("frame.size width!=64 || height!=64"),
             ));
         }
     }
@@ -1275,7 +1131,7 @@ fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()>
         return Err(unsupported_at(
             "unsupported_frame_tools",
             offset,
-            "minimal runtime hash support requires the traced no-tool, no-filter, no-grain frame header",
+            missing_capability_message!("frame.tools no_filters_no_grain"),
         ));
     }
     Ok(())
@@ -1296,7 +1152,7 @@ fn incomplete_intra_header_error(
         FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { .. } => unsupported_feature_at(
             "unsupported_wienerns_filter",
             offset,
-            "minimal runtime reached an unsupported read_wienerns_filter() (§5.20.10.6) branch from AV2 §5.18.7.11 lr_params() before loop-restoration params could be modeled completely",
+            missing_capability_message!("filters.wiener_ns read_wienerns_filter §5.18.7.11"),
             AC0EJ3_WIENERNS_MATRIX_ROW,
             AC0EJ3_WIENERNS_FEATURE_ID,
             "5.18.7.11",
@@ -1335,12 +1191,16 @@ mod test_support {
     }
 }
 
+mod block_context;
+mod capability;
 mod cdef;
 mod deblock;
 mod general_intra;
 mod inter;
+mod intra_prediction;
 mod limits;
 mod reference_buffer;
+mod residual_pipeline;
 mod wienerns_lr;
 
 #[cfg(test)]
@@ -1349,19 +1209,11 @@ mod general_intra_tests;
 
 #[cfg(test)]
 mod wienerns_lr_recon_tests;
-
-/// Which frame-type tile-facts derivation [`derive_tile_plan_with`] applies — the
-/// only thing that differs between the intra and inter tile-plan entry points.
 #[derive(Clone, Copy)]
 enum TileFactsKind {
     Intra,
     Inter,
 }
-
-/// Shared tile-payload-plan derivation for the intra and inter entry points: build
-/// the coeff/cdf facts and boundary input from the parsed §5.18.2 header, then plan
-/// the derived tile-payload boundary. The two entry points differ only in `kind`,
-/// which selects the intra vs inter tile-facts derivation.
 #[allow(clippy::too_many_arguments)]
 fn derive_tile_plan_with<'a>(
     plan: &'a DecodeStreamPlan,
@@ -1421,13 +1273,6 @@ fn derive_tile_plan<'a>(
         TileFactsKind::Intra,
     )
 }
-
-/// Derives the inter frame's tile-payload plan (DECODE-FIRST-INTER-FRAME-FRONTIER).
-///
-/// Mirrors [`derive_tile_plan`] but uses the inter tile-facts derivation
-/// ([`FrameCandidateTileFacts::from_inter_frame_core`]) so the geometry / base_q_idx
-/// / disable_cdf_update / coefficient facts are read from the parsed §5.18.2 inter
-/// header (`InterHeaderComplete`).
 fn derive_inter_tile_plan<'a>(
     plan: &'a DecodeStreamPlan,
     candidate: &'a DecodePlannedObu,
@@ -1515,12 +1360,6 @@ fn malformed_tile_boundary_reason(
         }
     }
 }
-
-/// AV2 §6.4.1: bytes of decoded storage per visible sample for `bit_depth`
-/// (8-bit packs 1 byte, 10-bit packs 2 bytes little-endian). The reconstruction
-/// workspace and the raw/Y4M/hash output all use this width, so the pre-allocation
-/// `MaxDecodedFrameBytes` / `MaxOutputBytes` budget must charge it (a 10-bit
-/// `DecodedFrame<u16>` allocates twice the 8-bit budget for the same dimensions).
 fn bytes_per_sample(bit_depth: BitDepth) -> u64 {
     match bit_depth {
         BitDepth::Eight => 1,

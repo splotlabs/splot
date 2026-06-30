@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Selectable transform-record handoff for the ac0ej3 Wiener NS LR frontier.
-
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, FrameHeaderParseStatus, TxMode};
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockSize};
@@ -17,12 +15,13 @@ use splot_recon::{BitDepth, PlaneId, max_quantizer_index};
 use crate::error::Result;
 use crate::tile_payload::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, DecodeBlockFrontier,
-    DecodeTileWorkUnit, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
-    GeneralIntraLeafMode, IntraIstSyntax, IntraYMode, LumaTransformTypeContext, TileCdfSelector,
-    TileCoeffContextState, TransformToolResidualPolicy, decode_general_intra_block_modes,
-    decode_general_intra_chroma_block_mode, decode_general_intra_luma_block_mode,
-    decode_general_intra_multiblock_tree, decode_general_intra_plane_coeffs, frame_mi_dimensions,
-    supported_chroma_mode,
+    DecodeTileWorkUnit, GeneralIntraBlockModeError, GeneralIntraChromaModeContext,
+    GeneralIntraChromaToolConfig, GeneralIntraLeafMode, GeneralIntraMultiblockError,
+    GeneralIntraResidualError, IntraIstSyntax, IntraYMode, LumaCoeffBlock,
+    LumaTransformTypeContext, TileCdfSelector, TileCoeffContextState, TransformToolResidualPolicy,
+    decode_general_intra_block_modes, decode_general_intra_chroma_block_mode,
+    decode_general_intra_luma_block_mode, decode_general_intra_multiblock_tree,
+    decode_general_intra_plane_coeffs, frame_mi_dimensions, supported_chroma_mode,
 };
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
@@ -63,7 +62,19 @@ const DELTA_Q_SMALL: usize = 7;
 const DELTA_Q_REM_BITS_WIDTH: u32 = 3;
 const DELTA_Q_SIGN_BIT_WIDTH: u32 = 1;
 
+macro_rules! selectable_reason {
+    ($suffix:literal) => {
+        concat!(
+            "unsupported_wienerns_lr_selectable_transform_records_",
+            $suffix
+        )
+    };
+}
+
 type SelectableTransformGridSize = (usize, usize);
+
+const SELECTABLE_DIAGNOSTIC_SCOPE: WienerNsLrTransformRecordDiagnosticScope =
+    WienerNsLrTransformRecordDiagnosticScope::Selectable;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SelectableTxSizeContext {
@@ -71,6 +82,37 @@ struct SelectableTxSizeContext {
     fsc_mode: u8,
     is_inter: bool,
     skip_flag: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Block4x4Extent {
+    cols: usize,
+    rows: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResidualDecodeContext {
+    uv_mode: usize,
+    is_inter: bool,
+    fsc_mode: u8,
+    tool_policy: TransformToolResidualPolicy,
+}
+
+impl ResidualDecodeContext {
+    fn luma_policy(self, luma: LumaTransformTypeContext) -> TransformToolResidualPolicy {
+        match self.tool_policy {
+            TransformToolResidualPolicy::Allow => TransformToolResidualPolicy::Allow,
+            TransformToolResidualPolicy::AdmitTransformToolSubset {
+                active_intra_ist,
+                active_chroma,
+                ..
+            } => TransformToolResidualPolicy::AdmitTransformToolSubset {
+                luma: Some(luma),
+                active_intra_ist,
+                active_chroma,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -84,7 +126,7 @@ pub(super) struct WienerNsLrLiveTransformRecordHandoff {
     not(test),
     allow(
         dead_code,
-        reason = "private tx-skip retention proof waits for live transform-record handoff"
+        reason = "crate-visible handoff record crosses runtime_minimal module boundary"
     )
 )]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,7 +137,6 @@ pub(in crate::runtime_minimal) struct WienerNsLrTxSkipTransformRecord {
     pub(in crate::runtime_minimal) cols: usize,
     pub(in crate::runtime_minimal) skip_flag: bool,
     pub(in crate::runtime_minimal) eob: usize,
-    // TODO(spec: DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS): feed retained
     pub(in crate::runtime_minimal) intra_ist: Option<IntraIstSyntax>,
 }
 
@@ -180,25 +221,13 @@ pub(super) enum SelectableTransformRecordError {
 impl SelectableTransformRecordError {
     fn unsupported_reason(&self) -> &'static str {
         match self {
-            Self::EmptyTransform { .. } => {
-                "unsupported_wienerns_lr_selectable_transform_records_empty_transform"
-            }
-            Self::InvalidTxSize { .. } => {
-                "unsupported_wienerns_lr_selectable_transform_records_invalid_tx_size"
-            }
-            Self::OutOfBounds { .. } => {
-                "unsupported_wienerns_lr_selectable_transform_records_out_of_bounds"
-            }
-            Self::Overlap { .. } => "unsupported_wienerns_lr_selectable_transform_records_overlap",
-            Self::Incomplete { .. } => {
-                "unsupported_wienerns_lr_selectable_transform_records_incomplete_grid"
-            }
-            Self::TableIndex { .. } => {
-                "unsupported_wienerns_lr_selectable_transform_records_table_index"
-            }
-            Self::TableValue { .. } => {
-                "unsupported_wienerns_lr_selectable_transform_records_table_value"
-            }
+            Self::EmptyTransform { .. } => selectable_reason!("empty_transform"),
+            Self::InvalidTxSize { .. } => selectable_reason!("invalid_tx_size"),
+            Self::OutOfBounds { .. } => selectable_reason!("out_of_bounds"),
+            Self::Overlap { .. } => selectable_reason!("overlap"),
+            Self::Incomplete { .. } => selectable_reason!("incomplete_grid"),
+            Self::TableIndex { .. } => selectable_reason!("table_index"),
+            Self::TableValue { .. } => selectable_reason!("table_value"),
             Self::Unsupported { reason } => selectable_unsupported_reason(reason),
         }
     }
@@ -206,31 +235,24 @@ impl SelectableTransformRecordError {
 
 fn selectable_unsupported_reason(reason: &'static str) -> &'static str {
     match reason {
-        "grid-size-overflow" => {
-            "unsupported_wienerns_lr_selectable_transform_records_grid_size_overflow"
-        }
-        "tx-width-overflow" => {
-            "unsupported_wienerns_lr_selectable_transform_records_tx_width_overflow"
-        }
-        "tx-height-overflow" => {
-            "unsupported_wienerns_lr_selectable_transform_records_tx_height_overflow"
-        }
-        "record-allocation" => {
-            "unsupported_wienerns_lr_selectable_transform_records_record_allocation"
-        }
-        "region-size-overflow" => {
-            "unsupported_wienerns_lr_selectable_transform_records_region_size_overflow"
-        }
-        "grid-index-overflow" => {
-            "unsupported_wienerns_lr_selectable_transform_records_grid_index_overflow"
-        }
-        "horz4-loop" => "unsupported_wienerns_lr_selectable_transform_records_horz4_loop",
-        "vert4-loop" => "unsupported_wienerns_lr_selectable_transform_records_vert4_loop",
-        "tx-partition-type" => {
-            "unsupported_wienerns_lr_selectable_transform_records_tx_partition_type"
-        }
-        _ => "unsupported_wienerns_lr_selectable_transform_records_unsupported_branch",
+        "grid-size-overflow" => selectable_reason!("grid_size_overflow"),
+        "tx-width-overflow" => selectable_reason!("tx_width_overflow"),
+        "tx-height-overflow" => selectable_reason!("tx_height_overflow"),
+        "record-allocation" => selectable_reason!("record_allocation"),
+        "region-size-overflow" => selectable_reason!("region_size_overflow"),
+        "grid-index-overflow" => selectable_reason!("grid_index_overflow"),
+        "horz4-loop" => selectable_reason!("horz4_loop"),
+        "vert4-loop" => selectable_reason!("vert4_loop"),
+        "tx-partition-type" => selectable_reason!("tx_partition_type"),
+        _ => selectable_reason!("unsupported_branch"),
     }
+}
+
+fn selectable_decode_error(
+    tile_offset: ByteOffset,
+    reason: &'static str,
+) -> crate::error::DecodeError {
+    wienerns_lr_selectable_transform_record_error_reason(tile_offset, reason)
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -238,7 +260,44 @@ fn selectable_transform_record_error(
     error: SelectableTransformRecordError,
     tile_offset: ByteOffset,
 ) -> crate::error::DecodeError {
-    wienerns_lr_selectable_transform_record_error_reason(tile_offset, error.unsupported_reason())
+    selectable_decode_error(tile_offset, error.unsupported_reason())
+}
+
+fn selectable_mode_error_at(
+    tile_offset: ByteOffset,
+) -> impl FnOnce(GeneralIntraBlockModeError) -> crate::error::DecodeError {
+    move |error| {
+        wienerns_lr_live_transform_record_mode_error(
+            error,
+            tile_offset,
+            SELECTABLE_DIAGNOSTIC_SCOPE,
+        )
+    }
+}
+
+fn selectable_residual_error_at(
+    tile_offset: ByteOffset,
+) -> impl FnOnce(GeneralIntraResidualError) -> crate::error::DecodeError {
+    move |error| {
+        wienerns_lr_live_transform_record_residual_error(
+            error,
+            tile_offset,
+            SELECTABLE_DIAGNOSTIC_SCOPE,
+        )
+    }
+}
+
+fn selectable_multiblock_error_at(
+    tile_offset: ByteOffset,
+) -> impl FnOnce(GeneralIntraMultiblockError<crate::error::DecodeError>) -> crate::error::DecodeError
+{
+    move |error| {
+        map_wienerns_lr_transform_record_multiblock_error(
+            error,
+            tile_offset,
+            SELECTABLE_DIAGNOSTIC_SCOPE,
+        )
+    }
 }
 
 impl DeltaQState {
@@ -254,19 +313,11 @@ impl DeltaQState {
             .quantization_params
             .as_ref()
             .ok_or_else(|| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_missing_quantization",
-                )
+                selectable_decode_error(tile_offset, selectable_reason!("missing_quantization"))
             })?
             .base_q_idx;
         let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())
-            .map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_bit_depth",
-                )
-            })?;
+            .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("bit_depth")))?;
         let sb_size4 = intra_delta_q_sb_size4(sequence, tile_offset)?;
         Ok(Self {
             present,
@@ -298,16 +349,10 @@ impl DeltaQState {
             let delta_q_abs = read_delta_q_abs(work_unit, symbols, tile_offset)?;
             if delta_q_abs != 0 {
                 let sign_bit = symbols.read_literal(DELTA_Q_SIGN_BIT_WIDTH).map_err(|_| {
-                    wienerns_lr_selectable_transform_record_error_reason(
-                        tile_offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_delta_q_sign_read",
-                    )
+                    selectable_decode_error(tile_offset, selectable_reason!("delta_q_sign_read"))
                 })? != 0;
                 let delta_q_abs = i64::try_from(delta_q_abs).map_err(|_| {
-                    wienerns_lr_selectable_transform_record_error_reason(
-                        tile_offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_delta_q_abs_width",
-                    )
+                    selectable_decode_error(tile_offset, selectable_reason!("delta_q_abs_width"))
                 })?;
                 let reduced_delta_q_index = if sign_bit { -delta_q_abs } else { delta_q_abs };
                 self.current_q_index = updated_current_q_index(
@@ -327,8 +372,6 @@ impl DeltaQState {
         (frontier.r / self.sb_size4, frontier.c / self.sb_size4)
     }
 
-    /// The §5.20.6.5 per-block dequant index (`current_q_index`, already clamped to
-    /// `[1, max_q]`) for the reconstruction sink; a defensive clamp keeps it total.
     fn qindex_u32(&self) -> u32 {
         u32::try_from(self.current_q_index.clamp(0, i64::from(u32::MAX))).unwrap_or(u32::MAX)
     }
@@ -344,10 +387,7 @@ impl CdefState {
         let rows = mi_rows.div_ceil(CDEF_UNIT_MI);
         let cols = mi_cols.div_ceil(CDEF_UNIT_MI);
         let values_len = rows.checked_mul(cols).ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_grid_overflow",
-            )
+            selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_overflow"))
         })?;
         Ok(Self {
             rows,
@@ -372,33 +412,30 @@ impl CdefState {
             return Ok(());
         }
         let Some(cdef) = core.cdef_params.as_ref() else {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
+            return Err(selectable_decode_error(
                 tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_missing_cdef_params",
+                selectable_reason!("missing_cdef_params"),
             ));
         };
         if !cdef.cdef_frame_enable {
             return Ok(());
         }
         let strengths = cdef.cdef_strengths.ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_missing_cdef_strengths",
-            )
+            selectable_decode_error(tile_offset, selectable_reason!("missing_cdef_strengths"))
         })? as usize;
         if !(1..=8).contains(&strengths) {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
+            return Err(selectable_decode_error(
                 tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_strengths",
+                selectable_reason!("cdef_strengths"),
             ));
         }
 
         let unit_row = frontier.r / CDEF_UNIT_MI;
         let unit_col = frontier.c / CDEF_UNIT_MI;
         if unit_row >= self.rows || unit_col >= self.cols {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
+            return Err(selectable_decode_error(
                 tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_bounds",
+                selectable_reason!("cdef_bounds"),
             ));
         }
         if self.value(unit_row, unit_col, tile_offset)?.is_some() {
@@ -428,10 +465,7 @@ impl CdefState {
                 )?
                 .checked_add(1)
                 .ok_or_else(|| {
-                    wienerns_lr_selectable_transform_record_error_reason(
-                        tile_offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_cdef_index_overflow",
-                    )
+                    selectable_decode_error(tile_offset, selectable_reason!("cdef_index_overflow"))
                 })?
             }
         };
@@ -498,18 +532,15 @@ impl CdefState {
 
     fn index(&self, row: usize, col: usize, tile_offset: ByteOffset) -> Result<usize> {
         if row >= self.rows || col >= self.cols {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
+            return Err(selectable_decode_error(
                 tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_index_bounds",
+                selectable_reason!("cdef_index_bounds"),
             ));
         }
         row.checked_mul(self.cols)
             .and_then(|start| start.checked_add(col))
             .ok_or_else(|| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_cdef_index_overflow",
-                )
+                selectable_decode_error(tile_offset, selectable_reason!("cdef_index_overflow"))
             })
     }
 
@@ -714,42 +745,35 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
     let tile = match tile_plan.work_units_mut() {
         [tile] => tile,
         [] => {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
+            return Err(selectable_decode_error(
                 key_envelope.offset,
-                "unsupported_wienerns_lr_selectable_transform_records_no_tile",
+                selectable_reason!("no_tile"),
             ));
         }
         work_units => {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
+            return Err(selectable_decode_error(
                 work_units
                     .first()
                     .map_or(key_envelope.offset, |tile| tile.tile_byte_span().start),
-                "unsupported_wienerns_lr_selectable_transform_records_multi_tile",
+                selectable_reason!("multi_tile"),
             ));
         }
     };
     let tile_offset = tile.tile_byte_span().start;
     let frame_facts = tile.coeff_frame_facts();
     if frame_facts.lossless_for_segment(DEFAULT_SEGMENT_ID) != Some(false) {
-        return Err(wienerns_lr_selectable_transform_record_error_reason(
+        return Err(selectable_decode_error(
             tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_lossless",
+            selectable_reason!("lossless"),
         ));
     }
     let luma_use_tcq = frame_facts.allow_tcq();
 
     let (tx_skip_rows, tx_skip_cols) = frame_mi_dimensions(core).map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_frame_dimensions",
-        )
+        selectable_decode_error(tile_offset, selectable_reason!("frame_dimensions"))
     })?;
-    let mut coeff_ctx = TileCoeffContextState::new(tx_skip_rows, tx_skip_cols).map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_coeff_context",
-        )
-    })?;
+    let mut coeff_ctx = TileCoeffContextState::new(tx_skip_rows, tx_skip_cols)
+        .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("coeff_context")))?;
     let mut records = Vec::new();
     let limits = options.limits();
     let chroma_tools = sequence
@@ -795,46 +819,48 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, is_cfl_ctx, block_decoded| {
-            let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_block_width",
-                )
-            })?;
-            let n4h = frontier.b_size.num_4x4_high().map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_block_height",
-                )
-            })?;
+        |work_unit,
+         symbols,
+         frontier,
+         joint_modes,
+         uses_mrls,
+         fsc_modes,
+         is_cfl_ctx,
+         block_decoded| {
+            let block_extent = frontier_4x4_extent(
+                frontier,
+                tile_offset,
+                selectable_reason!("block_width"),
+                selectable_reason!("block_height"),
+            )?;
+            let (n4w, n4h) = (block_extent.cols, block_extent.rows);
             if frontier.chroma_offset
                 && !selectable_chroma_offset_leaf_supported(
                     frontier.is_luma_part(),
                     frontier.has_chroma,
                 )
             {
-                return Err(wienerns_lr_selectable_transform_record_error_reason(
+                return Err(selectable_decode_error(
                     tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_chroma_offset_leaf",
+                    selectable_reason!("chroma_offset_leaf"),
                 ));
             }
             if !selectable_transform_leaf_shape_supported(
                 frontier.is_luma_part(),
                 frontier.has_chroma,
-                n4w,
-                n4h,
+                block_extent.cols,
+                block_extent.rows,
             ) {
-                return Err(wienerns_lr_selectable_transform_record_error_reason(
+                return Err(selectable_decode_error(
                     tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_block_shape",
+                    selectable_reason!("block_shape"),
                 ));
             }
             if frontier.is_chroma_part() {
                 let y_mode = frontier.stored_luma_y_mode().ok_or_else(|| {
-                    wienerns_lr_selectable_transform_record_error_reason(
+                    selectable_decode_error(
                         tile_offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_missing_sdp_luma_mode",
+                        selectable_reason!("missing_sdp_luma_mode"),
                     )
                 })?;
                 let uv_mode = decode_general_intra_chroma_block_mode(
@@ -850,13 +876,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     n4w,
                     n4h,
                 )
-                .map_err(|error| {
-                    wienerns_lr_live_transform_record_mode_error(
-                        error,
-                        tile_offset,
-                        WienerNsLrTransformRecordDiagnosticScope::Selectable,
-                    )
-                })?;
+                .map_err(selectable_mode_error_at(tile_offset))?;
                 let sdp_recon = SelectableReconContext {
                     leaf_y_mode: Some(y_mode),
                     directional_luma: None,
@@ -874,10 +894,13 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     symbols,
                     &mut coeff_ctx,
                     frontier,
-                    n4w,
-                    n4h,
-                    uv_mode.coeff_uv_mode(),
-                    transform_tool_residual_policy,
+                    block_extent,
+                    ResidualDecodeContext {
+                        uv_mode: uv_mode.coeff_uv_mode(),
+                        is_inter: false,
+                        fsc_mode: 0,
+                        tool_policy: transform_tool_residual_policy,
+                    },
                     sink.as_deref_mut(),
                     sdp_recon,
                     tile_offset,
@@ -929,13 +952,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     n4w,
                     n4h,
                 )
-                .map_err(|error| {
-                    wienerns_lr_live_transform_record_mode_error(
-                        error,
-                        tile_offset,
-                        WienerNsLrTransformRecordDiagnosticScope::Selectable,
-                    )
-                })?;
+                .map_err(selectable_mode_error_at(tile_offset))?;
                 (
                     0,
                     GeneralIntraLeafMode::luma(
@@ -968,13 +985,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     n4w,
                     n4h,
                 )
-                .map_err(|error| {
-                    wienerns_lr_live_transform_record_mode_error(
-                        error,
-                        tile_offset,
-                        WienerNsLrTransformRecordDiagnosticScope::Selectable,
-                    )
-                })?;
+                .map_err(selectable_mode_error_at(tile_offset))?;
                 let chroma_mode = modes.supported_chroma_mode();
                 (
                     modes.coeff_uv_mode(),
@@ -1009,23 +1020,14 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 tile_offset,
             )?;
             records.try_reserve(luma_records.len()).map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_output_allocation",
-                )
+                selectable_decode_error(tile_offset, selectable_reason!("output_allocation"))
             })?;
             if let Some(sink) = sink.as_deref_mut() {
-                let block_extent = LumaCodingBlockExtent {
-                    block_row: frontier.r,
-                    block_col: frontier.c,
-                    n4w,
-                    n4h,
-                };
                 record_per_transform_far_edge(
                     sink,
                     block_decoded,
                     &luma_records,
-                    block_extent,
+                    LumaCodingBlockExtent::new(frontier.r, frontier.c, block_extent),
                     tile_offset,
                 )?;
             }
@@ -1045,51 +1047,36 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 symbols,
                 &mut coeff_ctx,
                 frontier,
-                n4w,
-                n4h,
-                uv_mode,
+                block_extent,
                 &luma_records,
                 &mut records,
                 luma_transform_type_context,
-                fsc_mode,
-                prelude.is_inter,
                 prelude.skip_flag,
-                transform_tool_residual_policy,
+                ResidualDecodeContext {
+                    uv_mode,
+                    is_inter: prelude.is_inter,
+                    fsc_mode,
+                    tool_policy: transform_tool_residual_policy,
+                },
                 sink.as_deref_mut(),
                 recon_context,
                 tile_offset,
             )?;
-            intrabc_state.record_block(
-                frontier.r,
-                frontier.c,
-                n4w,
-                n4h,
-                prelude,
-                tile_offset,
-            )?;
+            intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude, tile_offset)?;
             if symbols.is_past_payload_end() {
-                return Err(wienerns_lr_selectable_transform_record_error_reason(
+                return Err(selectable_decode_error(
                     tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_bitstream_desync",
+                    selectable_reason!("bitstream_desync"),
                 ));
             }
             Ok(leaf_mode)
         },
     )
-    .map_err(|error| {
-        map_wienerns_lr_transform_record_multiblock_error(
-            error,
-            tile_offset,
-            WienerNsLrTransformRecordDiagnosticScope::Selectable,
-        )
-    })?;
+    .map_err(selectable_multiblock_error_at(tile_offset))?;
 
-    symbols.exit_symbol().map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_exit_symbol",
-        )
-    })?;
+    symbols
+        .exit_symbol()
+        .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("exit_symbol")))?;
 
     Ok(WienerNsLrLiveTransformRecordHandoff {
         tx_skip_rows,
@@ -1115,19 +1102,13 @@ fn derive_selectable_luma_tx_records_for_block(
         context,
         tile_offset,
     )?;
-    let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_region_width",
-        )
-    })?;
-    let n4h = frontier.b_size.num_4x4_high().map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_region_height",
-        )
-    })?;
-    grid.records_for_region(frontier.r, frontier.c, n4h, n4w)
+    let extent = frontier_4x4_extent(
+        frontier,
+        tile_offset,
+        selectable_reason!("region_width"),
+        selectable_reason!("region_height"),
+    )?;
+    grid.records_for_region(frontier.r, frontier.c, extent.rows, extent.cols)
         .map_err(|error| selectable_transform_record_error(error, tile_offset))
 }
 
@@ -1137,16 +1118,12 @@ fn decode_selectable_residual_chunks(
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     frontier: &DecodeBlockFrontier,
-    n4w: usize,
-    n4h: usize,
-    uv_mode: usize,
+    block_extent: Block4x4Extent,
     luma_records: &[SelectableLumaTxRecord],
     records: &mut Vec<WienerNsLrTxSkipTransformRecord>,
     luma_transform_type_context: LumaTransformTypeContext,
-    fsc_mode: u8,
-    is_inter: bool,
     skip_flag: bool,
-    transform_tool_residual_policy: TransformToolResidualPolicy,
+    residual_context: ResidualDecodeContext,
     mut sink: Option<&mut WienerNsLrReconSink<u16>>,
     recon: SelectableReconContext,
     tile_offset: ByteOffset,
@@ -1155,8 +1132,8 @@ fn decode_selectable_residual_chunks(
         return skip_records::record_skipped_selectable_residuals(
             coeff_ctx,
             frontier,
-            n4w,
-            n4h,
+            block_extent.cols,
+            block_extent.rows,
             luma_records,
             records,
             sink,
@@ -1164,6 +1141,133 @@ fn decode_selectable_residual_chunks(
             tile_offset,
         );
     }
+    visit_residual_chunks(block_extent, tile_offset, |chunk| {
+        let chunk_geometry = chunk.luma_geometry(frontier.r, frontier.c, tile_offset)?;
+        decode_luma_records_for_chunk(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            luma_records,
+            records,
+            chunk_geometry,
+            block_extent,
+            luma_transform_type_context,
+            residual_context,
+            sink.as_deref_mut(),
+            recon,
+            tile_offset,
+        )?;
+
+        if frontier.has_chroma
+            && let Some(chroma_group) = chunk.chroma
+        {
+            decode_chroma_group(
+                work_unit,
+                symbols,
+                coeff_ctx,
+                frontier,
+                chroma_group,
+                residual_context,
+                sink.as_deref_mut(),
+                recon,
+                tile_offset,
+            )?;
+        }
+        Ok(())
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_chroma_residual_chunks(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    coeff_ctx: &mut TileCoeffContextState,
+    frontier: &DecodeBlockFrontier,
+    block_extent: Block4x4Extent,
+    residual_context: ResidualDecodeContext,
+    mut sink: Option<&mut WienerNsLrReconSink<u16>>,
+    recon: SelectableReconContext,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    visit_residual_chunks(block_extent, tile_offset, |chunk| {
+        if let Some(chroma_group) = chunk.chroma {
+            decode_chroma_group(
+                work_unit,
+                symbols,
+                coeff_ctx,
+                frontier,
+                chroma_group,
+                residual_context,
+                sink.as_deref_mut(),
+                recon,
+                tile_offset,
+            )?;
+        }
+        Ok(())
+    })
+}
+
+#[derive(Clone, Copy)]
+struct ResidualChunk {
+    x: usize,
+    y: usize,
+    rows: usize,
+    cols: usize,
+    chroma: Option<ChromaGroup>,
+}
+
+impl ResidualChunk {
+    fn luma_geometry(
+        self,
+        block_row: usize,
+        block_col: usize,
+        tile_offset: ByteOffset,
+    ) -> Result<ResidualChunkGeometry> {
+        Ok(ResidualChunkGeometry {
+            row: chunk_origin(block_row, self.y, tile_offset)?,
+            col: chunk_origin(block_col, self.x, tile_offset)?,
+            rows: self.rows,
+            cols: self.cols,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ResidualChunkGeometry {
+    row: usize,
+    col: usize,
+    rows: usize,
+    cols: usize,
+}
+
+impl ResidualChunkGeometry {
+    fn row_end(self, tile_offset: ByteOffset) -> Result<usize> {
+        self.row.checked_add(self.rows).ok_or_else(|| {
+            selectable_decode_error(tile_offset, selectable_reason!("chunk_row_end_overflow"))
+        })
+    }
+
+    fn col_end(self, tile_offset: ByteOffset) -> Result<usize> {
+        self.col.checked_add(self.cols).ok_or_else(|| {
+            selectable_decode_error(tile_offset, selectable_reason!("chunk_col_end_overflow"))
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ChromaGroup {
+    chunk_x: usize,
+    chunk_y: usize,
+    luma_n4w: usize,
+    luma_n4h: usize,
+}
+
+fn visit_residual_chunks(
+    block: Block4x4Extent,
+    tile_offset: ByteOffset,
+    mut visit: impl FnMut(ResidualChunk) -> Result<()>,
+) -> Result<()> {
+    let (n4w, n4h) = (block.cols, block.rows);
     let width_chunks = (n4w / 16).max(1);
     let height_chunks = (n4h / 16).max(1);
     let large_chunks = width_chunks > 1 || height_chunks > 1;
@@ -1174,35 +1278,9 @@ fn decode_selectable_residual_chunks(
         for start_chunk_x in (0..width_chunks).step_by(2) {
             for chunk_y in start_chunk_y..(start_chunk_y + 2).min(height_chunks) {
                 for chunk_x in start_chunk_x..(start_chunk_x + 2).min(width_chunks) {
-                    let chunk_row = chunk_origin(frontier.r, chunk_y, tile_offset)?;
-                    let chunk_col = chunk_origin(frontier.c, chunk_x, tile_offset)?;
-                    let chunk_rows = if large_chunks { 16 } else { n4h };
-                    let chunk_cols = if large_chunks { 16 } else { n4w };
-                    decode_luma_records_for_chunk(
-                        work_unit,
-                        symbols,
-                        coeff_ctx,
-                        uv_mode,
-                        luma_records,
-                        records,
-                        chunk_row,
-                        chunk_col,
-                        chunk_rows,
-                        chunk_cols,
-                        n4h,
-                        n4w,
-                        luma_transform_type_context,
-                        fsc_mode,
-                        is_inter,
-                        transform_tool_residual_policy,
-                        sink.as_deref_mut(),
-                        recon,
-                        tile_offset,
-                    )?;
-
-                    let at_start = (!double_chroma_w || chunk_x & 1 == 0)
+                    let at_chroma_start = (!double_chroma_w || chunk_x & 1 == 0)
                         && (!double_chroma_h || chunk_y & 1 == 0);
-                    if frontier.has_chroma && at_start {
+                    let chroma = if at_chroma_start {
                         let group_chunks_w = if large_chunks && double_chroma_w {
                             (width_chunks - chunk_x).min(2)
                         } else {
@@ -1213,127 +1291,42 @@ fn decode_selectable_residual_chunks(
                         } else {
                             1
                         };
-                        let chroma_luma_n4w = if large_chunks {
+                        let luma_n4w = if large_chunks {
                             group_chunks_w.checked_mul(16).ok_or_else(|| {
-                                wienerns_lr_selectable_transform_record_error_reason(
+                                selectable_decode_error(
                                     tile_offset,
-                                    "unsupported_wienerns_lr_selectable_transform_records_chroma_group_width_overflow",
+                                    selectable_reason!("chroma_group_width_overflow"),
                                 )
                             })?
                         } else {
                             n4w
                         };
-                        let chroma_luma_n4h = if large_chunks {
+                        let luma_n4h = if large_chunks {
                             group_chunks_h.checked_mul(16).ok_or_else(|| {
-                                wienerns_lr_selectable_transform_record_error_reason(
+                                selectable_decode_error(
                                     tile_offset,
-                                    "unsupported_wienerns_lr_selectable_transform_records_chroma_group_height_overflow",
+                                    selectable_reason!("chroma_group_height_overflow"),
                                 )
                             })?
                         } else {
                             n4h
                         };
-                        decode_chroma_group(
-                            work_unit,
-                            symbols,
-                            coeff_ctx,
-                            frontier,
+                        Some(ChromaGroup {
                             chunk_x,
                             chunk_y,
-                            chroma_luma_n4w,
-                            chroma_luma_n4h,
-                            uv_mode,
-                            is_inter,
-                            fsc_mode,
-                            transform_tool_residual_policy,
-                            sink.as_deref_mut(),
-                            recon,
-                            tile_offset,
-                        )?;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn decode_chroma_residual_chunks(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
-    symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    frontier: &DecodeBlockFrontier,
-    n4w: usize,
-    n4h: usize,
-    uv_mode: usize,
-    transform_tool_residual_policy: TransformToolResidualPolicy,
-    mut sink: Option<&mut WienerNsLrReconSink<u16>>,
-    recon: SelectableReconContext,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let width_chunks = (n4w / 16).max(1);
-    let height_chunks = (n4h / 16).max(1);
-    let large_chunks = width_chunks > 1 || height_chunks > 1;
-    let double_chroma_w = width_chunks > 1;
-    let double_chroma_h = height_chunks > 1;
-
-    for start_chunk_y in (0..height_chunks).step_by(2) {
-        for start_chunk_x in (0..width_chunks).step_by(2) {
-            for chunk_y in start_chunk_y..(start_chunk_y + 2).min(height_chunks) {
-                for chunk_x in start_chunk_x..(start_chunk_x + 2).min(width_chunks) {
-                    let at_start = (!double_chroma_w || chunk_x & 1 == 0)
-                        && (!double_chroma_h || chunk_y & 1 == 0);
-                    if !at_start {
-                        continue;
-                    }
-                    let group_chunks_w = if large_chunks && double_chroma_w {
-                        (width_chunks - chunk_x).min(2)
+                            luma_n4w,
+                            luma_n4h,
+                        })
                     } else {
-                        1
+                        None
                     };
-                    let group_chunks_h = if large_chunks && double_chroma_h {
-                        (height_chunks - chunk_y).min(2)
-                    } else {
-                        1
-                    };
-                    let chroma_luma_n4w = if large_chunks {
-                        group_chunks_w.checked_mul(16).ok_or_else(|| {
-                            wienerns_lr_selectable_transform_record_error_reason(
-                                tile_offset,
-                                "unsupported_wienerns_lr_selectable_transform_records_chroma_group_width_overflow",
-                            )
-                        })?
-                    } else {
-                        n4w
-                    };
-                    let chroma_luma_n4h = if large_chunks {
-                        group_chunks_h.checked_mul(16).ok_or_else(|| {
-                            wienerns_lr_selectable_transform_record_error_reason(
-                                tile_offset,
-                                "unsupported_wienerns_lr_selectable_transform_records_chroma_group_height_overflow",
-                            )
-                        })?
-                    } else {
-                        n4h
-                    };
-                    decode_chroma_group(
-                        work_unit,
-                        symbols,
-                        coeff_ctx,
-                        frontier,
-                        chunk_x,
-                        chunk_y,
-                        chroma_luma_n4w,
-                        chroma_luma_n4h,
-                        uv_mode,
-                        false,
-                        0,
-                        transform_tool_residual_policy,
-                        sink.as_deref_mut(),
-                        recon,
-                        tile_offset,
-                    )?;
+                    visit(ResidualChunk {
+                        x: chunk_x,
+                        y: chunk_y,
+                        rows: if large_chunks { 16 } else { n4h },
+                        cols: if large_chunks { 16 } else { n4w },
+                        chroma,
+                    })?;
                 }
             }
         }
@@ -1346,45 +1339,26 @@ fn decode_luma_records_for_chunk(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
-    uv_mode: usize,
     luma_records: &[SelectableLumaTxRecord],
     records: &mut Vec<WienerNsLrTxSkipTransformRecord>,
-    chunk_row: usize,
-    chunk_col: usize,
-    chunk_rows: usize,
-    chunk_cols: usize,
-    block_rows: usize,
-    block_cols: usize,
+    chunk: ResidualChunkGeometry,
+    block: Block4x4Extent,
     luma_transform_type_context: LumaTransformTypeContext,
-    fsc_mode: u8,
-    is_inter: bool,
-    transform_tool_residual_policy: TransformToolResidualPolicy,
+    residual_context: ResidualDecodeContext,
     mut sink: Option<&mut WienerNsLrReconSink<u16>>,
     recon: SelectableReconContext,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let mut decoded_any = false;
-    let chunk_row_end = chunk_row.checked_add(chunk_rows).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_chunk_row_end_overflow",
-        )
-    })?;
-    let chunk_col_end = chunk_col.checked_add(chunk_cols).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_chunk_col_end_overflow",
-        )
-    })?;
+    let chunk_row_end = chunk.row_end(tile_offset)?;
+    let chunk_col_end = chunk.col_end(tile_offset)?;
     for record in luma_records.iter().copied().filter(|record| {
-        record.row >= chunk_row
-            && record.col >= chunk_col
+        record.row >= chunk.row
+            && record.col >= chunk.col
             && record.row < chunk_row_end
             && record.col < chunk_col_end
     }) {
         decoded_any = true;
-        let residual_policy =
-            luma_transform_tool_policy(transform_tool_residual_policy, luma_transform_type_context);
         let luma = decode_general_intra_plane_coeffs(
             work_unit,
             symbols,
@@ -1393,20 +1367,14 @@ fn decode_luma_records_for_chunk(
             record.tx_size,
             mi_to_sample(record.col, tile_offset)?,
             mi_to_sample(record.row, tile_offset)?,
-            selectable_luma_tx_record_fills_block(record, block_rows, block_cols),
+            selectable_luma_tx_record_fills_block(record, block.rows, block.cols),
             false,
-            uv_mode,
-            is_inter,
-            fsc_mode != 0,
-            residual_policy,
+            residual_context.uv_mode,
+            residual_context.is_inter,
+            residual_context.fsc_mode != 0,
+            residual_context.luma_policy(luma_transform_type_context),
         )
-        .map_err(|error| {
-            wienerns_lr_live_transform_record_residual_error(
-                error,
-                tile_offset,
-                WienerNsLrTransformRecordDiagnosticScope::Selectable,
-            )
-        })?;
+        .map_err(selectable_residual_error_at(tile_offset))?;
         if let Some(sink) = sink.as_deref_mut() {
             sink.reconstruct_luma_transform(
                 record.col,
@@ -1437,28 +1405,10 @@ fn decode_luma_records_for_chunk(
     if decoded_any {
         Ok(())
     } else {
-        Err(wienerns_lr_selectable_transform_record_error_reason(
+        Err(selectable_decode_error(
             tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_empty_chunk",
+            selectable_reason!("empty_chunk"),
         ))
-    }
-}
-
-fn luma_transform_tool_policy(
-    policy: TransformToolResidualPolicy,
-    luma: LumaTransformTypeContext,
-) -> TransformToolResidualPolicy {
-    match policy {
-        TransformToolResidualPolicy::Allow => TransformToolResidualPolicy::Allow,
-        TransformToolResidualPolicy::AdmitTransformToolSubset {
-            active_intra_ist,
-            active_chroma,
-            ..
-        } => TransformToolResidualPolicy::AdmitTransformToolSubset {
-            luma: Some(luma),
-            active_intra_ist,
-            active_chroma,
-        },
     }
 }
 
@@ -1468,29 +1418,19 @@ fn decode_chroma_group(
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     frontier: &DecodeBlockFrontier,
-    chunk_x: usize,
-    chunk_y: usize,
-    chroma_luma_n4w: usize,
-    chroma_luma_n4h: usize,
-    uv_mode: usize,
-    is_inter: bool,
-    fsc_mode: u8,
-    transform_tool_residual_policy: TransformToolResidualPolicy,
+    group: ChromaGroup,
+    residual_context: ResidualDecodeContext,
     sink: Option<&mut WienerNsLrReconSink<u16>>,
     recon: SelectableReconContext,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    let chroma_tx =
-        fixed_largest_420_chroma_tx_size_from_luma_4x4(chroma_luma_n4w, chroma_luma_n4h)
-            .ok_or_else(|| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_chroma_tx_size",
-                )
-            })?;
-    let chroma_x = chroma_420_sample(frontier.c, chunk_x, tile_offset)?;
-    let chroma_y = chroma_420_sample(frontier.r, chunk_y, tile_offset)?;
-    let u = decode_general_intra_plane_coeffs(
+    let chroma_tx = fixed_largest_420_chroma_tx_size_from_luma_4x4(group.luma_n4w, group.luma_n4h)
+        .ok_or_else(|| {
+            selectable_decode_error(tile_offset, selectable_reason!("chroma_tx_size"))
+        })?;
+    let chroma_x = chroma_420_sample(frontier.c, group.chunk_x, tile_offset)?;
+    let chroma_y = chroma_420_sample(frontier.r, group.chunk_y, tile_offset)?;
+    let u = decode_chroma_plane_coeffs(
         work_unit,
         symbols,
         coeff_ctx,
@@ -1498,21 +1438,12 @@ fn decode_chroma_group(
         chroma_tx,
         chroma_x,
         chroma_y,
-        true,
         false,
-        uv_mode,
-        is_inter,
-        fsc_mode != 0,
-        transform_tool_residual_policy,
-    )
-    .map_err(|error| {
-        wienerns_lr_live_transform_record_residual_error(
-            error,
-            tile_offset,
-            WienerNsLrTransformRecordDiagnosticScope::Selectable,
-        )
-    })?;
-    let v = decode_general_intra_plane_coeffs(
+        residual_context,
+        residual_context.fsc_mode != 0,
+        tile_offset,
+    )?;
+    let v = decode_chroma_plane_coeffs(
         work_unit,
         symbols,
         coeff_ctx,
@@ -1520,20 +1451,11 @@ fn decode_chroma_group(
         chroma_tx,
         chroma_x,
         chroma_y,
-        true,
         !u.all_zero,
-        uv_mode,
-        is_inter,
+        residual_context,
         false,
-        transform_tool_residual_policy,
-    )
-    .map_err(|error| {
-        wienerns_lr_live_transform_record_residual_error(
-            error,
-            tile_offset,
-            WienerNsLrTransformRecordDiagnosticScope::Selectable,
-        )
-    })?;
+        tile_offset,
+    )?;
     if let Some(sink) = sink {
         for (plane, block) in [(PlaneId::U, &u), (PlaneId::V, &v)] {
             sink.reconstruct_chroma_transform(
@@ -1551,23 +1473,47 @@ fn decode_chroma_group(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn decode_chroma_plane_coeffs(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    coeff_ctx: &mut TileCoeffContextState,
+    plane: usize,
+    chroma_tx: usize,
+    chroma_x: usize,
+    chroma_y: usize,
+    chroma_context: bool,
+    residual_context: ResidualDecodeContext,
+    fsc_mode: bool,
+    tile_offset: ByteOffset,
+) -> Result<LumaCoeffBlock> {
+    decode_general_intra_plane_coeffs(
+        work_unit,
+        symbols,
+        coeff_ctx,
+        plane,
+        chroma_tx,
+        chroma_x,
+        chroma_y,
+        true,
+        chroma_context,
+        residual_context.uv_mode,
+        residual_context.is_inter,
+        fsc_mode,
+        residual_context.tool_policy,
+    )
+    .map_err(selectable_residual_error_at(tile_offset))
+}
+
 fn chunk_origin(base: usize, chunk: usize, tile_offset: ByteOffset) -> Result<usize> {
     let chunk_offset = chunk.checked_mul(16).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_chunk_origin_overflow",
-        )
+        selectable_decode_error(tile_offset, selectable_reason!("chunk_origin_overflow"))
     })?;
     base.checked_add(chunk_offset).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_chunk_origin_add_overflow",
-        )
+        selectable_decode_error(tile_offset, selectable_reason!("chunk_origin_add_overflow"))
     })
 }
 
-/// The coding block origin (luma MI) and extent (luma 4x4 units) enclosing a
-/// transform, for the AV2 §7.13.2.1 per-transform far-edge derivation.
 #[derive(Clone, Copy)]
 struct LumaCodingBlockExtent {
     block_row: usize,
@@ -1576,32 +1522,17 @@ struct LumaCodingBlockExtent {
     n4h: usize,
 }
 
-/// Derives a single luma TRANSFORM's AV2 §7.13.2.1 far-edge availability
-/// (`num4AboveRight`, `num4BelowLeft`, in luma 4x4 units) at the transform's own
-/// position and `Tx_Width`/`Tx_Height` 4x4 extent — NOT the enclosing partition
-/// block's `n4w` / `n4h`. Faithful to AVM `has_top_right` / `has_bottom_left`
-/// (`av2/common/reconintra.c:59` / `:163`), which key the count on
-/// `tx_size_wide_unit[txsz]` / `tx_size_high_unit[txsz]` at the transform's
-/// `(row_off, col_off)` within the coding block (plane Y, so `ss_x == ss_y == 0`,
-/// `plane_bw_unit == n4w`, `plane_bh_unit == n4h`):
-///
-/// * above-right (`has_top_right`): a transform whose above-right lies inside the
-///   coding block's own span returns `tx_w4` WITHOUT consulting `BlockDecoded` —
-///   `row_off > 0` ⇒ `col_off + tx_w4 < n4w` (the in-block right neighbour above,
-///   `reconintra.c:110`); `row_off == 0` ⇒ `col_off + tx_w4 < n4w` (all above-right
-///   pixels are in the row above the whole block, `:113`). Only when that fails
-///   (the top-right transform of the block, `row_off == 0`) does AVM fall to the
-///   superblock `is_mi_coded` scan, modelled here by §5.20.7.25
-///   `count_top_right_avail` over the live `BlockDecoded`.
-/// * below-left (`has_bottom_left`): mirror — `col_off > 0` ⇒ unavailable
-///   (`:222-224`); `col_off == 0` ⇒ `row_off + tx_h4 < n4h` returns `tx_h4`
-///   (`:231`), else the §5.20.7.25 `count_bottom_left_avail` scan.
-///
-/// Block sizes above 64x64 (the `block_size_wide > 64` special cases at
-/// `reconintra.c:89` / `:196`) are not split into multi-128 residual units in this
-/// sink's reachable region, so the common-case logic suffices. Called while
-/// `BlockDecoded` is live at the tree-walk callback (before this whole block is
-/// marked), so the fall-through SB scan reflects exactly AVM's decode-order reads.
+impl LumaCodingBlockExtent {
+    const fn new(block_row: usize, block_col: usize, extent: Block4x4Extent) -> Self {
+        Self {
+            block_row,
+            block_col,
+            n4w: extent.cols,
+            n4h: extent.rows,
+        }
+    }
+}
+
 fn transform_luma_far_edge_avail(
     block_decoded: &crate::tile_payload::TileBlockDecodedState,
     tx_row: usize,
@@ -1632,16 +1563,6 @@ fn transform_luma_far_edge_avail(
     (above_right, below_left)
 }
 
-/// Records the AV2 §7.13.2.1 far-edge availability for EVERY luma transform of the
-/// current block into the sink, at PER-TRANSFORM granularity (each record's own
-/// `Tx_Width`/`Tx_Height` 4x4 extent, via [`transform_luma_far_edge_avail`]), while
-/// the live §5.20.2.3 `BlockDecoded` state still reflects the decode-order
-/// availability for this block's transforms (the tree-walk marks this whole block
-/// only after the leaf callback returns). The per-transform `num4AboveRight` /
-/// `num4BelowLeft` is what AVM `has_top_right` / `has_bottom_left` read — distinct
-/// from the enclosing partition block's counts when the block splits into multiple
-/// transforms (a transform whose above-right lies inside the coding block's own
-/// above span reads the already-decoded row above the whole block).
 fn record_per_transform_far_edge(
     sink: &mut WienerNsLrReconSink<u16>,
     block_decoded: &crate::tile_payload::TileBlockDecodedState,
@@ -1673,37 +1594,48 @@ fn record_per_transform_far_edge(
 
 fn mi_to_sample(mi: usize, tile_offset: ByteOffset) -> Result<usize> {
     mi.checked_mul(MI_SIZE).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
+        selectable_decode_error(
             tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_sample_coordinate_overflow",
+            selectable_reason!("sample_coordinate_overflow"),
         )
     })
 }
 
 fn chroma_420_sample(base_mi: usize, chunk: usize, tile_offset: ByteOffset) -> Result<usize> {
     let base = base_mi.checked_mul(2).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_chroma_base_overflow",
-        )
+        selectable_decode_error(tile_offset, selectable_reason!("chroma_base_overflow"))
     })?;
     let chunk_luma_mi = chunk.checked_mul(16).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_chroma_chunk_overflow",
-        )
+        selectable_decode_error(tile_offset, selectable_reason!("chroma_chunk_overflow"))
     })?;
     let chunk_chroma_samples = (chunk_luma_mi >> 1).checked_mul(MI_SIZE).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_chroma_offset_overflow",
-        )
+        selectable_decode_error(tile_offset, selectable_reason!("chroma_offset_overflow"))
     })?;
     base.checked_add(chunk_chroma_samples).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
+        selectable_decode_error(
             tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_chroma_coordinate_overflow",
+            selectable_reason!("chroma_coordinate_overflow"),
         )
+    })
+}
+
+fn frontier_4x4_extent(
+    frontier: &DecodeBlockFrontier,
+    tile_offset: ByteOffset,
+    width_reason: &'static str,
+    height_reason: &'static str,
+) -> Result<Block4x4Extent> {
+    let n4w = frontier
+        .b_size
+        .num_4x4_wide()
+        .map_err(|_| selectable_decode_error(tile_offset, width_reason))?;
+    let n4h = frontier
+        .b_size
+        .num_4x4_high()
+        .map_err(|_| selectable_decode_error(tile_offset, height_reason))?;
+    Ok(Block4x4Extent {
+        cols: n4w,
+        rows: n4h,
     })
 }
 
@@ -1716,18 +1648,13 @@ fn read_tx_size_selectable(
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let b_size = frontier.b_size.index();
-    let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_4x4_width",
-        )
-    })?;
-    let n4h = frontier.b_size.num_4x4_high().map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_4x4_height",
-        )
-    })?;
+    let extent = frontier_4x4_extent(
+        frontier,
+        tile_offset,
+        selectable_reason!("4x4_width"),
+        selectable_reason!("4x4_height"),
+    )?;
+    let (n4w, n4h) = (extent.cols, extent.rows);
     if b_size == BLOCK_4X4 {
         grid.set_tx_size(frontier.r, frontier.c, n4h, n4w, false, false)
             .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
@@ -1744,18 +1671,14 @@ fn read_tx_size_selectable(
         .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
     let allow_select = !context.skip_flag || !context.is_inter;
 
-    let width = frontier.b_size.width_samples().map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_sample_width",
-        )
-    })?;
-    let height = frontier.b_size.height_samples().map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_sample_height",
-        )
-    })?;
+    let width = frontier
+        .b_size
+        .width_samples()
+        .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("sample_width")))?;
+    let height = frontier
+        .b_size
+        .height_samples()
+        .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("sample_height")))?;
     let width_chunks = width >> 6;
     let height_chunks = height >> 6;
     if !allow_select {
@@ -1873,14 +1796,12 @@ fn read_tx_partition_symbols(
                     },
                     tile_offset,
                 )?;
-                tx_partition = symbol
-                    .checked_add(1)
-                    .ok_or_else(|| {
-                        wienerns_lr_selectable_transform_record_error_reason(
-                            tile_offset,
-                            "unsupported_wienerns_lr_selectable_transform_records_partition_symbol_overflow",
-                        )
-                    })?;
+                tx_partition = symbol.checked_add(1).ok_or_else(|| {
+                    selectable_decode_error(
+                        tile_offset,
+                        selectable_reason!("partition_symbol_overflow"),
+                    )
+                })?;
             } else {
                 let vert_or_horz_group = table_usize(
                     "Size_To_Tx_Type_Group_Vert_Or_Horz",
@@ -1899,9 +1820,9 @@ fn read_tx_partition_symbols(
                                 fsc_mode: tx_fsc_mode,
                                 is_inter: tx_is_inter,
                                 ctx: vert_or_horz_group.checked_sub(1).ok_or_else(|| {
-                                    wienerns_lr_selectable_transform_record_error_reason(
+                                    selectable_decode_error(
                                         tile_offset,
-                                        "unsupported_wienerns_lr_selectable_transform_records_vert_or_horz_context_underflow",
+                                        selectable_reason!("vert_or_horz_context_underflow"),
                                     )
                                 })?,
                             },
@@ -2120,12 +2041,48 @@ fn read_tx_symbol(
         .tile_cdfs_mut()
         .read_block_symbol_trace(selector, symbols)
         .map(|symbol| usize::from(symbol.get()))
-        .map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_symbol_read",
-            )
-        })
+        .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("symbol_read")))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SelectableToolGate {
+    ChromaFormat,
+    FrameType,
+    TileGrid,
+    IntraTail,
+    MissingIntraConfig,
+    UnsupportedIntraTool,
+    MissingPartitionConfig,
+    MissingTransformQuantEntropyConfig,
+    ScreenContentTools,
+    Segmentation,
+    QuantMatrix,
+    Lossless,
+    Gdf,
+    Cdef,
+}
+
+impl SelectableToolGate {
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::ChromaFormat => selectable_reason!("chroma_format"),
+            Self::FrameType => selectable_reason!("frame_type"),
+            Self::TileGrid => selectable_reason!("tile_grid"),
+            Self::IntraTail => selectable_reason!("intra_tail"),
+            Self::MissingIntraConfig => selectable_reason!("missing_intra_config"),
+            Self::UnsupportedIntraTool => selectable_reason!("unsupported_intra_tool"),
+            Self::MissingPartitionConfig => selectable_reason!("missing_partition_config"),
+            Self::MissingTransformQuantEntropyConfig => {
+                selectable_reason!("missing_transform_quant_entropy_config")
+            }
+            Self::ScreenContentTools => selectable_reason!("screen_content_tools"),
+            Self::Segmentation => selectable_reason!("segmentation"),
+            Self::QuantMatrix => selectable_reason!("quant_matrix"),
+            Self::Lossless => selectable_reason!("lossless"),
+            Self::Gdf => selectable_reason!("gdf"),
+            Self::Cdef => selectable_reason!("cdef"),
+        }
+    }
 }
 
 fn ensure_selectable_transform_record_tool_gates(
@@ -2133,109 +2090,91 @@ fn ensure_selectable_transform_record_tool_gates(
     core: &FrameHeaderCore,
     offset: ByteOffset,
 ) -> Result<()> {
+    if let Some(gate) = selectable_tool_gate_failure(sequence, core) {
+        return selectable_tool_gate_error(offset, gate);
+    }
+    Ok(())
+}
+
+fn selectable_tool_gate_failure(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+) -> Option<SelectableToolGate> {
+    use SelectableToolGate::{
+        Cdef, ChromaFormat, FrameType, Gdf, IntraTail, Lossless, MissingIntraConfig,
+        MissingPartitionConfig, MissingTransformQuantEntropyConfig, QuantMatrix,
+        ScreenContentTools, Segmentation, TileGrid, UnsupportedIntraTool,
+    };
+
     if sequence.general.chroma_format_idc != ChromaFormatIdc::Yuv420 {
-        return selectable_tool_gate_error(offset, "chroma_format");
+        return Some(ChromaFormat);
     }
     if core.status != FrameHeaderParseStatus::IntraHeaderComplete
         || core.frame_is_intra != Some(true)
         || !core.is_key_frame
     {
-        return selectable_tool_gate_error(offset, "frame_type");
+        return Some(FrameType);
     }
     if core
         .tile_info
         .as_ref()
         .is_none_or(|tile_info| tile_info.tile_cols != 1 || tile_info.tile_rows != 1)
     {
-        return selectable_tool_gate_error(offset, "tile_grid");
+        return Some(TileGrid);
     }
     if core
         .intra_tail
         .is_none_or(|tail| tail.tx_mode != TxMode::Select || tail.film_grain.apply_grain)
     {
-        return selectable_tool_gate_error(offset, "intra_tail");
+        return Some(IntraTail);
     }
     let Some(intra) = sequence.intra.as_ref() else {
-        return selectable_tool_gate_error(offset, "missing_intra_config");
+        return Some(MissingIntraConfig);
     };
     if intra.enable_dip {
-        return selectable_tool_gate_error(offset, "unsupported_intra_tool");
+        return Some(UnsupportedIntraTool);
     }
-    let Some(partition) = sequence.partition.as_ref() else {
-        return selectable_tool_gate_error(offset, "missing_partition_config");
-    };
-    let _ = partition;
-    let Some(_tq) = sequence.transform_quant_entropy.as_ref() else {
-        return selectable_tool_gate_error(offset, "missing_transform_quant_entropy_config");
-    };
+    if sequence.partition.is_none() {
+        return Some(MissingPartitionConfig);
+    }
+    if sequence.transform_quant_entropy.is_none() {
+        return Some(MissingTransformQuantEntropyConfig);
+    }
     if core.allow_screen_content_tools != Some(false) || core.allow_intrabc.is_none() {
-        return selectable_tool_gate_error(offset, "screen_content_tools");
+        return Some(ScreenContentTools);
     }
     if core
         .segmentation_params
         .as_ref()
         .is_none_or(|seg| seg.segmentation_enabled)
     {
-        return selectable_tool_gate_error(offset, "segmentation");
+        return Some(Segmentation);
     }
     if core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix) {
-        return selectable_tool_gate_error(offset, "quant_matrix");
+        return Some(QuantMatrix);
     }
     if core
         .lossless_info
         .as_ref()
         .is_none_or(|lossless| lossless.coded_lossless)
     {
-        return selectable_tool_gate_error(offset, "lossless");
+        return Some(Lossless);
     }
     if core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable) {
-        return selectable_tool_gate_error(offset, "gdf");
+        return Some(Gdf);
     }
     if core
         .cdef_params
         .as_ref()
         .is_none_or(|cdef| cdef.cdef_frame_enable && cdef.cdef_strengths.is_none())
     {
-        return selectable_tool_gate_error(offset, "cdef");
+        return Some(Cdef);
     }
-    Ok(())
+    None
 }
 
-fn selectable_tool_gate_error(offset: ByteOffset, tool: &'static str) -> Result<()> {
-    let reason = match tool {
-        "chroma_format" => "unsupported_wienerns_lr_selectable_transform_records_chroma_format",
-        "frame_type" => "unsupported_wienerns_lr_selectable_transform_records_frame_type",
-        "tile_grid" => "unsupported_wienerns_lr_selectable_transform_records_tile_grid",
-        "intra_tail" => "unsupported_wienerns_lr_selectable_transform_records_intra_tail",
-        "missing_intra_config" => {
-            "unsupported_wienerns_lr_selectable_transform_records_missing_intra_config"
-        }
-        "unsupported_intra_tool" => {
-            "unsupported_wienerns_lr_selectable_transform_records_unsupported_intra_tool"
-        }
-        "missing_partition_config" => {
-            "unsupported_wienerns_lr_selectable_transform_records_missing_partition_config"
-        }
-        "missing_transform_quant_entropy_config" => {
-            "unsupported_wienerns_lr_selectable_transform_records_missing_transform_quant_entropy_config"
-        }
-        "unsupported_transform_tool" => {
-            "unsupported_wienerns_lr_selectable_transform_records_unsupported_transform_tool"
-        }
-        "screen_content_tools" => {
-            "unsupported_wienerns_lr_selectable_transform_records_screen_content_tools"
-        }
-        "segmentation" => "unsupported_wienerns_lr_selectable_transform_records_segmentation",
-        "quant_matrix" => "unsupported_wienerns_lr_selectable_transform_records_quant_matrix",
-        "lossless" => "unsupported_wienerns_lr_selectable_transform_records_lossless",
-        "gdf" => "unsupported_wienerns_lr_selectable_transform_records_gdf",
-        "cdef" => "unsupported_wienerns_lr_selectable_transform_records_cdef",
-        "ccso" => "unsupported_wienerns_lr_selectable_transform_records_ccso",
-        _ => "unsupported_wienerns_lr_selectable_transform_records_unsupported_tool",
-    };
-    Err(wienerns_lr_selectable_transform_record_error_reason(
-        offset, reason,
-    ))
+fn selectable_tool_gate_error(offset: ByteOffset, gate: SelectableToolGate) -> Result<()> {
+    Err(selectable_decode_error(offset, gate.reason()))
 }
 
 fn read_delta_q_abs(
@@ -2250,42 +2189,27 @@ fn read_delta_q_abs(
     let delta_q_rem_bits = read_literal_usize(symbols, DELTA_Q_REM_BITS_WIDTH, tile_offset)?
         .checked_add(1)
         .ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_delta_q_rem_bits_overflow",
-            )
+            selectable_decode_error(tile_offset, selectable_reason!("delta_q_rem_bits_overflow"))
         })?;
     let delta_q_abs_bits = read_literal_usize(
         symbols,
         u32::try_from(delta_q_rem_bits).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_delta_q_rem_bits_width",
-            )
+            selectable_decode_error(tile_offset, selectable_reason!("delta_q_rem_bits_width"))
         })?,
         tile_offset,
     )?;
     let delta_q_large_base = 1usize
         .checked_shl(u32::try_from(delta_q_rem_bits).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_delta_q_shift_width",
-            )
+            selectable_decode_error(tile_offset, selectable_reason!("delta_q_shift_width"))
         })?)
         .ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_delta_q_shift_overflow",
-            )
+            selectable_decode_error(tile_offset, selectable_reason!("delta_q_shift_overflow"))
         })?;
     delta_q_abs_bits
         .checked_add(delta_q_large_base)
         .and_then(|value| value.checked_add(DELTA_Q_SMALL - 2))
         .ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_delta_q_abs_overflow",
-            )
+            selectable_decode_error(tile_offset, selectable_reason!("delta_q_abs_overflow"))
         })
 }
 
@@ -2294,18 +2218,11 @@ fn read_literal_usize(
     width: u32,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
-    let value = symbols.read_literal(width).map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_literal_read",
-        )
-    })?;
-    usize::try_from(value).map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_literal_width",
-        )
-    })
+    let value = symbols
+        .read_literal(width)
+        .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("literal_read")))?;
+    usize::try_from(value)
+        .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("literal_width")))
 }
 
 fn updated_current_q_index(
@@ -2340,10 +2257,7 @@ fn block_dimension(
     let dimension = table_usize(table, values, block_size)
         .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
     dimension.checked_mul(MI_SIZE).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_block_dimension_overflow",
-        )
+        selectable_decode_error(tile_offset, selectable_reason!("block_dimension_overflow"))
     })
 }
 

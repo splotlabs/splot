@@ -1,16 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The minimal-tier multi-frame § 7.23 reference-frame buffer state.
+//! Minimal-tier AV2 § 7.23 reference-frame buffer state.
 //!
-//! As each frame decodes, the AV2 § 7.23 reference frame update process refreshes
-//! the reference-frame buffer slots named by the frame's `refresh_frame_flags`
-//! (§ 7.20), storing the decoded planes plus the per-slot metadata later frames'
-//! § 7.7 implicit reference-map ranking reads (`RefValid` / `RefOrderHint` /
-//! `RefBaseQIdx` / dims / `RefCounter`). This module models that buffer for the
-//! verified multi-reference runtime subset: it tracks, per slot, the metadata and
-//! the index of the decoded frame stored there, and builds the borrowed
-//! [`super::inter::InterReferenceState`] a following inter frame consumes.
+//! The buffer tracks decoded-frame indices plus the per-slot metadata consumed by
+//! the next inter frame's [`super::inter::InterReferenceState`].
 //!
 //! Feature tracking: `DECODE-INTER-MULTIREF-RUNTIME`.
 
@@ -20,39 +14,16 @@ use crate::error::Result;
 
 use super::MinimalRuntimeFrame;
 
-/// One reference-frame buffer slot's modeled § 7.23 state for the minimal tier.
-///
-/// `frame_index` is the index, into the runtime's decoded-frame vector, of the
-/// frame stored in this slot; the borrowed [`DecodedFrame`] is recovered from that
-/// vector when building the reference store (so the buffer holds no borrow itself).
+/// One modeled § 7.23 reference slot.
 #[derive(Clone, Copy, Debug)]
 struct Slot {
-    /// `RefValid[i]` (§ 7.23): whether the slot holds a usable reference frame.
     valid: bool,
-    /// `RefOrderHint[i]` (§ 7.23): the stored frame's display order hint (the UNWRAPPED
-    /// `OrderHint` from `get_disp_order_hint()`, mirror :4375 / § 7.23 :14123 — NOT the
-    /// raw `OrderHintLsbs`), so a § 7.7 / `choose_primary_secondary_ref_frame` ranking is
-    /// wrap-correct when `OrderHintBits` would otherwise truncate it.
     order_hint: u32,
-    /// `RefFrameWidth[i]` (§ 7.23).
     width: u32,
-    /// `RefFrameHeight[i]` (§ 7.23).
     height: u32,
-    /// `RefBaseQIdx[i]` (§ 7.23): the stored frame's `base_q_idx` (a § 7.7 score input).
     base_q_idx: u32,
-    /// `RefFrameType[i] == INTER_FRAME` (§ 7.23 :14110): whether the stored frame is an
-    /// inter frame. The § 5 `choose_primary_secondary_ref_frame` CHOOSE-resolution loop
-    /// (mirror :5468-5495) scores ONLY inter-typed reference slots, so a key / intra-only
-    /// reference can never be the resolved `primary_ref_frame` (and so never triggers the
-    /// cross-frame CDF-load reject).
     is_inter: bool,
-    /// Whether the frame stored in this slot ADAPTED its CDFs (`disable_cdf_update == 0`).
-    /// A later frame that loads THIS slot's saved CDFs (§ 7.23 save / § 5 `load_cdfs`)
-    /// would inherit an adapted entropy state the minimal decoder does not model, so the
-    /// per-slot flag drives the cross-frame CDF-inheritance reject against the RESOLVED
-    /// loaded slot (not a coarse "any prior frame adapted").
     adapted: bool,
-    /// The index of the decoded frame stored in this slot, or `None` when empty.
     frame_index: Option<usize>,
 }
 
@@ -67,43 +38,48 @@ impl Slot {
         adapted: false,
         frame_index: None,
     };
+
+    fn refresh(&mut self, frame_index: usize, update: FrameRefUpdate, valid: bool) {
+        *self = Self {
+            valid,
+            order_hint: update.order_hint,
+            width: update.width,
+            height: update.height,
+            base_q_idx: update.base_q_idx,
+            is_inter: update.is_inter,
+            adapted: update.adapted,
+            frame_index: Some(frame_index),
+        };
+    }
 }
 
-/// The per-frame § 7.23 update inputs the reference buffer needs from a decoded frame.
+/// Per-frame § 7.23 refresh inputs.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct FrameRefUpdate {
-    /// `refresh_frame_flags` (§ 5.18.2): the bitmask of slots this frame refreshes.
+    /// Slot refresh bitmask.
     pub(super) refresh_frame_flags: u32,
-    /// `OrderHint` (§ 5.18.2): the frame's display order hint.
+    /// Unwrapped display order hint.
     pub(super) order_hint: u32,
-    /// `FrameWidth` (§ 5.18.4).
+    /// Frame width.
     pub(super) width: u32,
-    /// `FrameHeight` (§ 5.18.4).
+    /// Frame height.
     pub(super) height: u32,
-    /// `base_q_idx` (§ 5.18.6.1).
+    /// Frame `base_q_idx`.
     pub(super) base_q_idx: u32,
-    /// `true` for a KEY / SWITCH frame: § 7.23 sets `RefValid[i] = first` (only the
-    /// first refreshed slot becomes valid, the rest invalid); `false` (an inter frame)
-    /// sets every refreshed slot `RefValid[i] = 1`.
+    /// Whether § 7.23 should apply KEY/SWITCH first-slot validity.
     pub(super) is_key_or_switch: bool,
-    /// `FrameType == INTER_FRAME` for the stored frame (§ 7.23 :14110 `RefFrameType`).
-    /// Drives the § 5 `choose_primary_secondary_ref_frame` inter-only candidate filter.
+    /// Whether the stored frame is `INTER_FRAME`.
     pub(super) is_inter: bool,
-    /// Whether the stored frame ADAPTED its CDFs (`disable_cdf_update == 0`). Recorded
-    /// per slot so a later frame's cross-frame CDF-load reject fires only when the
-    /// RESOLVED loaded slot's saved CDFs are adapted.
+    /// Whether the stored frame adapted its CDFs.
     pub(super) adapted: bool,
 }
 
 /// The minimal-tier § 7.23 reference-frame buffer over `num_ref_frames` active slots.
 pub(super) struct RuntimeReferenceBuffer {
     slots: Vec<Slot>,
-    /// `FrameCounter` (§ 7.23): incremented per frame, stored as each refreshed slot's
-    /// `RefCounter`. Equal-counter slots (the same decoded frame stored in two slots)
-    /// dedup to one distinct reference in § 7.7 `first_slot_with_ref`. For the verified
-    /// subset each frame refreshes distinct slots so counters are naturally distinct.
+    /// Modeled § 7.23 `FrameCounter`; the current subset deduplicates by frame index.
     frame_counter: u32,
-    /// Whether the first § 7.23 update has run (so `frame_counter` starts at 0).
+    /// Whether the first update has run.
     started: bool,
 }
 
@@ -124,12 +100,7 @@ impl RuntimeReferenceBuffer {
         })
     }
 
-    /// Applies the AV2 § 7.23 reference frame update process for a just-decoded frame
-    /// at `frame_index`, refreshing every slot named by `update.refresh_frame_flags`.
-    ///
-    /// A KEY / SWITCH frame sets `RefValid[i] = first` (so a `refresh_frame_flags ==
-    /// allFrames` key marks ONLY the first refreshed slot valid, the rest invalid,
-    /// mirror § 7.23 :14100); an inter frame sets every refreshed slot valid.
+    /// Applies the § 7.23 refresh for a decoded frame.
     pub(super) fn update(&mut self, frame_index: usize, update: FrameRefUpdate) {
         if self.started {
             self.frame_counter = self.frame_counter.wrapping_add(1);
@@ -140,17 +111,11 @@ impl RuntimeReferenceBuffer {
             if (update.refresh_frame_flags >> i) & 1 == 0 {
                 continue;
             }
-            slot.valid = if update.is_key_or_switch { first } else { true };
+            let valid = !update.is_key_or_switch || first;
             first = false;
-            slot.order_hint = update.order_hint;
-            slot.width = update.width;
-            slot.height = update.height;
-            slot.base_q_idx = update.base_q_idx;
-            slot.is_inter = update.is_inter;
-            slot.adapted = update.adapted;
-            slot.frame_index = Some(frame_index);
+            slot.refresh(frame_index, update, valid);
         }
-        let _ = self.frame_counter; // RefCounter is naturally distinct in this subset.
+        let _ = self.frame_counter;
     }
 
     /// The number of active slots that are currently `RefValid`.
@@ -158,12 +123,7 @@ impl RuntimeReferenceBuffer {
         self.slots.iter().filter(|s| s.valid).count()
     }
 
-    /// Builds the borrowed § 7.23 [`super::inter::InterReferenceState`] for the next
-    /// inter frame, recovering each valid slot's decoded frame from `frames`.
-    ///
-    /// The returned [`ReferenceFrameStore`] borrows the decoded frames in `frames`, so
-    /// the caller must keep `frames` alive for the inter decode. `RefBaseQIdx` is
-    /// modeled so the § 7.7 two-valid-slot ranking resolves exactly.
+    /// Builds the borrowed reference store and metadata for the next inter frame.
     pub(super) fn build_store<'a>(
         &self,
         frames: &'a [MinimalRuntimeFrame],
@@ -171,15 +131,9 @@ impl RuntimeReferenceBuffer {
         let num = self.slots.len();
         let mut store: ReferenceFrameStore<&'a DecodedFrame<u8>> =
             ReferenceFrameStore::with_capacity(num)?;
-        let mut meta = ReferenceMetadata::with_len(num);
+        let mut meta = ReferenceMetadata::with_capacity(num);
         for (i, slot) in self.slots.iter().enumerate() {
-            meta.ref_valid[i] = slot.valid;
-            meta.ref_order_hint[i] = slot.order_hint;
-            meta.ref_frame_width[i] = slot.width;
-            meta.ref_frame_height[i] = slot.height;
-            meta.ref_base_q_idx[i] = slot.base_q_idx;
-            meta.ref_is_inter[i] = slot.is_inter;
-            meta.ref_adapted[i] = slot.adapted;
+            meta.push_slot(*slot);
             if !slot.valid {
                 continue;
             }
@@ -198,19 +152,13 @@ impl RuntimeReferenceBuffer {
                 )
             })?;
             let reference_slot = ReferenceSlot::new(i)?;
-            // §7.23 reference retention is 8-bit only; `frame_eight` rejects a
-            // 10-bit frame with a structured diagnostic (the 10-bit subset is
-            // single-frame intra, so an inter frame never references one).
             store.put(reference_slot, frame.frame_eight()?)?;
         }
         Ok((store, meta))
     }
 }
 
-/// The parallel § 7.23 / § 7.7 reference metadata slices the [`super::inter`] decode
-/// borrows into its [`super::inter::InterReferenceState`] (the owner of the backing
-/// storage outlives the borrow).
-// `ref_*` fields mirror the AV2 `RefValid`/`RefOrderHint`/… arrays; the prefix preserves that spec correspondence.
+/// Reference metadata arrays borrowed by [`super::inter::InterReferenceState`].
 #[allow(clippy::struct_field_names)]
 pub(super) struct ReferenceMetadata {
     /// `RefValid[i]` per slot.
@@ -230,16 +178,26 @@ pub(super) struct ReferenceMetadata {
 }
 
 impl ReferenceMetadata {
-    fn with_len(num: usize) -> Self {
+    fn with_capacity(num: usize) -> Self {
         Self {
-            ref_valid: vec![false; num],
-            ref_order_hint: vec![0; num],
-            ref_frame_width: vec![0; num],
-            ref_frame_height: vec![0; num],
-            ref_base_q_idx: vec![0; num],
-            ref_is_inter: vec![false; num],
-            ref_adapted: vec![false; num],
+            ref_valid: Vec::with_capacity(num),
+            ref_order_hint: Vec::with_capacity(num),
+            ref_frame_width: Vec::with_capacity(num),
+            ref_frame_height: Vec::with_capacity(num),
+            ref_base_q_idx: Vec::with_capacity(num),
+            ref_is_inter: Vec::with_capacity(num),
+            ref_adapted: Vec::with_capacity(num),
         }
+    }
+
+    fn push_slot(&mut self, slot: Slot) {
+        self.ref_valid.push(slot.valid);
+        self.ref_order_hint.push(slot.order_hint);
+        self.ref_frame_width.push(slot.width);
+        self.ref_frame_height.push(slot.height);
+        self.ref_base_q_idx.push(slot.base_q_idx);
+        self.ref_is_inter.push(slot.is_inter);
+        self.ref_adapted.push(slot.adapted);
     }
 }
 
@@ -261,8 +219,19 @@ mod tests {
         }
     }
 
-    /// AV2 § 7.23 :14100 — a KEY frame's `refresh_frame_flags == 0xFF` marks ONLY the
-    /// first refreshed slot valid (`first`), the rest invalid.
+    fn inter_update(adapted: bool) -> FrameRefUpdate {
+        FrameRefUpdate {
+            refresh_frame_flags: 1 << 1,
+            order_hint: 1,
+            width: 64,
+            height: 64,
+            base_q_idx: 109,
+            is_key_or_switch: false,
+            is_inter: true,
+            adapted,
+        }
+    }
+
     #[test]
     fn key_refresh_marks_only_first_slot_valid() {
         let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
@@ -274,26 +243,11 @@ mod tests {
         assert_eq!(buf.slots[0].frame_index, Some(0));
     }
 
-    /// AV2 § 7.23 — an inter frame's `refresh_frame_flags` marks every refreshed slot
-    /// valid (`RefValid[i] = 1`), so after key (slot 0) + an inter refreshing slot 1
-    /// there are TWO valid slots (the multi-reference precondition).
     #[test]
     fn inter_refresh_adds_a_second_valid_slot() {
         let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
         buf.update(0, key_update());
-        buf.update(
-            1,
-            FrameRefUpdate {
-                refresh_frame_flags: 1 << 1, // slot 1
-                order_hint: 1,
-                width: 64,
-                height: 64,
-                base_q_idx: 109,
-                is_key_or_switch: false,
-                is_inter: true,
-                adapted: false,
-            },
-        );
+        buf.update(1, inter_update(false));
         assert_eq!(buf.valid_count(), 2);
         assert!(buf.slots[0].valid);
         assert!(buf.slots[1].valid);
@@ -304,27 +258,11 @@ mod tests {
         assert!(!buf.slots[1].adapted);
     }
 
-    /// AV2 § 7.23 — per-slot CDF adaptation: an inter frame refreshed with
-    /// `disable_cdf_update == 0` records `adapted == true` only in ITS refreshed slot,
-    /// leaving an earlier non-adapted slot's flag clear. This is the precise per-slot
-    /// state the cross-frame CDF-load reject keys on (vs a coarse "any prior adapted").
     #[test]
     fn per_slot_adaptation_is_tracked_independently() {
         let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-        buf.update(0, key_update()); // slot 0: key, not adapted
-        buf.update(
-            1,
-            FrameRefUpdate {
-                refresh_frame_flags: 1 << 1, // slot 1
-                order_hint: 1,
-                width: 64,
-                height: 64,
-                base_q_idx: 109,
-                is_key_or_switch: false,
-                is_inter: true,
-                adapted: true, // this inter frame adapted its CDFs
-            },
-        );
+        buf.update(0, key_update());
+        buf.update(1, inter_update(true));
         assert!(!buf.slots[0].adapted);
         assert!(buf.slots[1].adapted);
         assert!(!buf.slots[0].is_inter);

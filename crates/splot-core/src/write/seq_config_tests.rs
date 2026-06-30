@@ -14,49 +14,7 @@ mod tests {
     };
     use crate::segment::SegmentFeature;
     use crate::span::ByteOffset;
-
-    /// MSB-first bit builder mirroring the `Bits` helper in `headers::sequence`'s own
-    /// tests; reuses the same hand-built, spec-grounded fixture style and adds an `ns`
-    /// encoder (the inverse of [`BitReader::read_ns`]) for the inter-config fixtures.
-    #[derive(Default, Clone)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) {
-            self.bits.push(bit & 1);
-        }
-        fn f(&mut self, value: u32, width: u32) {
-            for shift in (0..width).rev() {
-                self.bit(((value >> shift) & 1) as u8);
-            }
-        }
-        /// Encodes `ns(n)`, the inverse of [`BitReader::read_ns`].
-        fn ns(&mut self, value: u32, n: u32) {
-            let w = u32::BITS - n.leading_zeros();
-            let m = (1u64 << w) - u64::from(n);
-            let value = u64::from(value);
-            if value < m {
-                self.f(value as u32, w - 1);
-            } else {
-                let t = value + m;
-                self.f((t >> 1) as u32, w - 1);
-                self.bit((t & 1) as u8);
-            }
-        }
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
+    use crate::test_bits::Bits;
 
     fn reader(bytes: &[u8]) -> BitReader<'_> {
         BitReader::new(bytes, ByteOffset::new(0))

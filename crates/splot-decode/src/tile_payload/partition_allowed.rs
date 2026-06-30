@@ -28,14 +28,41 @@ const BLOCK_8X32: usize = 21;
 const BLOCK_32X8: usize = 22;
 const BLOCK_4X32: usize = 25;
 
-/// AV2 partition tree selector facts needed by § 5.20.3.2 helpers.
+#[derive(Clone, Copy)]
+struct BlockGeometry {
+    wide_4x4: usize,
+    high_4x4: usize,
+}
+
+impl BlockGeometry {
+    fn new(block_size: BlockSize) -> Result<Self, PartitionAllowedError> {
+        Ok(Self {
+            wide_4x4: block_size.num_4x4_wide()?,
+            high_4x4: block_size.num_4x4_high()?,
+        })
+    }
+
+    const fn half_wide_4x4(self) -> usize {
+        self.wide_4x4 >> 1
+    }
+
+    const fn half_high_4x4(self) -> usize {
+        self.high_4x4 >> 1
+    }
+
+    const fn width_samples(self) -> usize {
+        self.wide_4x4 * 4
+    }
+
+    const fn height_samples(self) -> usize {
+        self.high_4x4 * 4
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PartitionTreeType {
-    /// Shared luma/chroma tree.
     Shared,
-    /// `TreeType == LUMA_PART`.
     LumaPart,
-    /// `TreeType == CHROMA_PART`.
     ChromaPart,
 }
 
@@ -49,7 +76,6 @@ impl PartitionTreeType {
     }
 }
 
-/// AV2 partition feature flags consumed by the allowed-set boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PartitionFeatureFlags {
     enable_ext_partitions: bool,
@@ -57,7 +83,6 @@ pub(crate) struct PartitionFeatureFlags {
 }
 
 impl PartitionFeatureFlags {
-    /// Creates feature flags for § 5.20.3.2 partition allowance checks.
     #[must_use]
     pub(crate) const fn new(
         enable_ext_partitions: bool,
@@ -70,7 +95,6 @@ impl PartitionFeatureFlags {
     }
 }
 
-/// Explicit caller facts for AV2 § 5.20.3.2 partition allowance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PartitionAllowedInput {
     r: usize,
@@ -92,7 +116,6 @@ pub(crate) struct PartitionAllowedInput {
 }
 
 impl PartitionAllowedInput {
-    /// Creates checked caller facts for § 5.20.3.2 partition allowance.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub(crate) fn new(
         r: usize,
@@ -133,7 +156,6 @@ impl PartitionAllowedInput {
     }
 }
 
-/// Result of AV2 `init_allowed_partitions`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct InitializedAllowedPartitions {
     num_allowed: usize,
@@ -141,20 +163,17 @@ pub(crate) struct InitializedAllowedPartitions {
 }
 
 impl InitializedAllowedPartitions {
-    /// Number of allowed partition entries.
     #[must_use]
     pub(crate) const fn num_allowed(self) -> usize {
         self.num_allowed
     }
 
-    /// Allowed partitions in AV2 partition enum order.
     #[must_use]
     pub(crate) const fn allowed(self) -> AllowedPartitions {
         self.allowed
     }
 }
 
-/// Caller facts derived for the existing partition decision boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PartitionDecisionFacts {
     implied_partition: Option<PartitionType>,
@@ -163,19 +182,16 @@ pub(crate) struct PartitionDecisionFacts {
 }
 
 impl PartitionDecisionFacts {
-    /// Implied partition, when AV2 `partition_implied` returned `implied == 1`.
     #[must_use]
     pub(crate) const fn implied_partition(self) -> Option<PartitionType> {
         self.implied_partition
     }
 
-    /// Initialized allowed partition set.
     #[must_use]
     pub(crate) const fn initialized(self) -> InitializedAllowedPartitions {
         self.initialized
     }
 
-    /// Builds the existing partition decision input from derived facts.
     pub(crate) fn read_partition_decision_input<'a>(
         self,
         bru_active: bool,
@@ -193,30 +209,20 @@ impl PartitionDecisionFacts {
     }
 }
 
-/// Error returned by the crate-private allowed-partition boundary.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PartitionAllowedError {
-    /// A generated size-table or geometry lookup failed.
     #[error("partition allowance size lookup failed: {0}")]
     Size(#[from] PartitionSizeError),
-    /// Coordinate addition overflowed.
     #[error("{coordinate} coordinate overflow: {base} + {offset}")]
     CoordinateOverflow {
-        /// Coordinate name.
         coordinate: &'static str,
-        /// Base coordinate.
         base: usize,
-        /// Derived offset.
         offset: usize,
     },
-    /// Derived arithmetic overflowed.
     #[error("{operation} overflow: {left} * {right}")]
     ArithmeticOverflow {
-        /// Operation name.
         operation: &'static str,
-        /// Left operand.
         left: usize,
-        /// Right operand.
         right: usize,
     },
 }
@@ -278,35 +284,34 @@ pub(crate) fn rect_type_implied_by_bsize(
 pub(crate) fn partition_implied_at_boundary(
     input: PartitionAllowedInput,
 ) -> Result<Option<PartitionType>, PartitionAllowedError> {
-    let num_wide_4x4 = input.b_size.num_4x4_wide()?;
-    let num_high_4x4 = input.b_size.num_4x4_high()?;
-    let has_rows = checked_less_than("r", input.r, num_high_4x4 >> 1, input.mi_rows)?;
-    let has_cols = checked_less_than("c", input.c, num_wide_4x4 >> 1, input.mi_cols)?;
+    let geometry = BlockGeometry::new(input.b_size)?;
+    let has_rows = checked_less_than("r", input.r, geometry.half_high_4x4(), input.mi_rows)?;
+    let has_cols = checked_less_than("c", input.c, geometry.half_wide_4x4(), input.mi_cols)?;
     if has_rows && has_cols {
         return Ok(None);
     }
 
-    if num_wide_4x4 == num_high_4x4 {
+    if geometry.wide_4x4 == geometry.high_4x4 {
         return Ok(Some(if has_rows {
             PartitionType::Vert
         } else {
             PartitionType::Horz
         }));
     }
-    if num_high_4x4 > num_wide_4x4 {
+    if geometry.high_4x4 > geometry.wide_4x4 {
         if !has_rows {
             return Ok(Some(PartitionType::Horz));
         }
-        let sub_has_cols = checked_less_than("c", input.c, num_wide_4x4 >> 2, input.mi_cols)?;
-        if num_wide_4x4 >= 4 && !sub_has_cols {
+        let sub_has_cols = checked_less_than("c", input.c, geometry.wide_4x4 >> 2, input.mi_cols)?;
+        if geometry.wide_4x4 >= 4 && !sub_has_cols {
             return Ok(Some(PartitionType::Horz));
         }
     } else {
         if !has_cols {
             return Ok(Some(PartitionType::Vert));
         }
-        let sub_has_rows = checked_less_than("r", input.r, num_high_4x4 >> 2, input.mi_rows)?;
-        if num_high_4x4 >= 4 && !sub_has_rows {
+        let sub_has_rows = checked_less_than("r", input.r, geometry.high_4x4 >> 2, input.mi_rows)?;
+        if geometry.high_4x4 >= 4 && !sub_has_rows {
             return Ok(Some(PartitionType::Vert));
         }
     }
@@ -343,15 +348,16 @@ pub(crate) fn is_partition_allowed(
     if !input.frame_is_intra && input.mixed_region && sub_size.index() == BLOCK_4X4 {
         return Ok(false);
     }
+    let partition_rect_type = partition_rect_type(partition);
     if let Some(rect_type) = rect_type_implied_by_bsize(input.b_size, input.tree_type)
-        && ((rect_type == RectPartitionType::Vert && is_horizontal_family(partition))
-            || (rect_type == RectPartitionType::Horz && is_vertical_family(partition)))
+        && partition_rect_type.is_some_and(|partition_rect_type| partition_rect_type != rect_type)
     {
         return Ok(false);
     }
 
-    let bw = sub_size.width_samples()?;
-    let bh = sub_size.height_samples()?;
+    let sub_geometry = BlockGeometry::new(sub_size)?;
+    let bw = sub_geometry.width_samples();
+    let bh = sub_geometry.height_samples();
     if bw > checked_mul("bh * MaxPbAspectRatio", bh, input.max_pb_aspect_ratio)?
         || bh > checked_mul("bw * MaxPbAspectRatio", bw, input.max_pb_aspect_ratio)?
     {
@@ -363,28 +369,27 @@ pub(crate) fn is_partition_allowed(
         }
     }
 
-    let num_4x4_wide = input.b_size.num_4x4_wide()?;
-    let num_4x4_high = input.b_size.num_4x4_high()?;
-    let half_block_4x4_wide = num_4x4_wide >> 1;
-    let half_block_4x4_high = num_4x4_high >> 1;
+    let block_geometry = BlockGeometry::new(input.b_size)?;
     let mut chroma_offset = input.chroma_offset;
     if input.has_chroma && !input.tree_type.is_chroma_part() && !chroma_offset {
         chroma_offset = is_chroma_offset_for_partition(input, partition, sub_size)?;
     }
     if ((input.has_chroma && !chroma_offset && !input.tree_type.is_luma_part())
-        || check_chroma(input)?)
+        || check_chroma(input, block_geometry)?)
         && get_plane_residual_size(sub_size, 1, input.subsampling_x, input.subsampling_y)?
             == PartitionSubsize::Invalid
     {
         return Ok(false);
     }
 
-    if !partition_feature_allowed(input, partition)? {
+    if !partition_feature_allowed(input, partition, block_geometry) {
         return Ok(false);
     }
     if partition == PartitionType::None {
-        let has_rows = checked_less_than("r", input.r, half_block_4x4_high, input.mi_rows)?;
-        let has_cols = checked_less_than("c", input.c, half_block_4x4_wide, input.mi_cols)?;
+        let has_rows =
+            checked_less_than("r", input.r, block_geometry.half_high_4x4(), input.mi_rows)?;
+        let has_cols =
+            checked_less_than("c", input.c, block_geometry.half_wide_4x4(), input.mi_cols)?;
         if (!input.tree_type.is_chroma_part() || input.b_size.index() != BLOCK_8X8)
             && (!has_rows || !has_cols)
         {
@@ -424,59 +429,76 @@ pub(crate) fn init_allowed_partitions(
 fn partition_feature_allowed(
     input: PartitionAllowedInput,
     partition: PartitionType,
-) -> Result<bool, PartitionAllowedError> {
-    match partition {
-        PartitionType::Horz3 => is_ext_partition_allowed(input, RectPartitionType::Horz),
-        PartitionType::Vert3 => is_ext_partition_allowed(input, RectPartitionType::Vert),
-        PartitionType::Horz4A | PartitionType::Horz4B => {
-            Ok(is_ext_partition_allowed(input, RectPartitionType::Horz)?
-                && is_uneven_4way_partition_allowed(input, RectPartitionType::Horz)?)
-        }
-        PartitionType::Vert4A | PartitionType::Vert4B => {
-            Ok(is_ext_partition_allowed(input, RectPartitionType::Vert)?
-                && is_uneven_4way_partition_allowed(input, RectPartitionType::Vert)?)
-        }
-        _ => Ok(true),
+    block_geometry: BlockGeometry,
+) -> bool {
+    let Some(rect_type) = partition_rect_type(partition) else {
+        return true;
+    };
+    if matches!(
+        partition,
+        PartitionType::Horz3
+            | PartitionType::Vert3
+            | PartitionType::Horz4A
+            | PartitionType::Horz4B
+            | PartitionType::Vert4A
+            | PartitionType::Vert4B
+    ) && !is_ext_partition_allowed(input, rect_type, block_geometry)
+    {
+        return false;
     }
+    if matches!(
+        partition,
+        PartitionType::Horz4A
+            | PartitionType::Horz4B
+            | PartitionType::Vert4A
+            | PartitionType::Vert4B
+    ) {
+        return is_uneven_4way_partition_allowed(input, rect_type, block_geometry);
+    }
+    true
 }
 
 fn is_ext_partition_allowed(
     input: PartitionAllowedInput,
     rect_type: RectPartitionType,
-) -> Result<bool, PartitionAllowedError> {
+    block_geometry: BlockGeometry,
+) -> bool {
     if !input.features.enable_ext_partitions {
-        return Ok(false);
+        return false;
     }
-    let width = input.b_size.width_samples()?;
-    let height = input.b_size.height_samples()?;
-    Ok(!input.tree_type.is_chroma_part()
+    let width = block_geometry.width_samples();
+    let height = block_geometry.height_samples();
+    !input.tree_type.is_chroma_part()
         || (rect_type == RectPartitionType::Horz && height > 16 && width > 8)
-        || (rect_type == RectPartitionType::Vert && width > 16 && height > 8))
+        || (rect_type == RectPartitionType::Vert && width > 16 && height > 8)
 }
 
 fn is_uneven_4way_partition_allowed(
     input: PartitionAllowedInput,
     rect_type: RectPartitionType,
-) -> Result<bool, PartitionAllowedError> {
+    block_geometry: BlockGeometry,
+) -> bool {
     if !input.features.enable_uneven_4way_partitions {
-        return Ok(false);
+        return false;
     }
-    let width = input.b_size.width_samples()?;
-    let height = input.b_size.height_samples()?;
-    Ok(!input.tree_type.is_chroma_part()
+    let width = block_geometry.width_samples();
+    let height = block_geometry.height_samples();
+    !input.tree_type.is_chroma_part()
         || (rect_type == RectPartitionType::Horz && height == 64)
-        || (rect_type == RectPartitionType::Vert && width == 64))
+        || (rect_type == RectPartitionType::Vert && width == 64)
 }
-
-fn check_chroma(input: PartitionAllowedInput) -> Result<bool, PartitionAllowedError> {
+fn check_chroma(
+    input: PartitionAllowedInput,
+    block_geometry: BlockGeometry,
+) -> Result<bool, PartitionAllowedError> {
     if get_plane_residual_size(input.b_size, 1, input.subsampling_x, input.subsampling_y)?
         == PartitionSubsize::Invalid
     {
         return Ok(false);
     }
     Ok(input.tree_type.is_luma_part()
-        && input.b_size.width_samples()? >= 64
-        && input.b_size.height_samples()? >= 64)
+        && block_geometry.width_samples() >= 64
+        && block_geometry.height_samples() >= 64)
 }
 
 fn is_chroma_offset_for_partition(
@@ -603,18 +625,18 @@ const fn block_coded(input: PartitionAllowedInput, r: usize, c: usize) -> bool {
     r < input.mi_rows && c < input.mi_cols
 }
 
-const fn is_horizontal_family(partition: PartitionType) -> bool {
-    matches!(
-        partition,
-        PartitionType::Horz | PartitionType::Horz3 | PartitionType::Horz4A | PartitionType::Horz4B
-    )
-}
-
-const fn is_vertical_family(partition: PartitionType) -> bool {
-    matches!(
-        partition,
-        PartitionType::Vert | PartitionType::Vert3 | PartitionType::Vert4A | PartitionType::Vert4B
-    )
+const fn partition_rect_type(partition: PartitionType) -> Option<RectPartitionType> {
+    match partition {
+        PartitionType::Horz
+        | PartitionType::Horz3
+        | PartitionType::Horz4A
+        | PartitionType::Horz4B => Some(RectPartitionType::Horz),
+        PartitionType::Vert
+        | PartitionType::Vert3
+        | PartitionType::Vert4A
+        | PartitionType::Vert4B => Some(RectPartitionType::Vert),
+        PartitionType::None | PartitionType::Split => None,
+    }
 }
 
 #[cfg(test)]

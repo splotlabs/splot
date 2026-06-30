@@ -1,70 +1,35 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 7.18 CDEF (Constrained Directional Enhancement Filter) orchestration for
-//! the general intra decode path.
-//!
-//! This is the scheduler over the `splot-recon` per-block CDEF primitives
-//! ([`cdef_direction`], [`cdef_filter_sample`], [`CDEF_DIRECTIONS`], [`CDEF_UV_DIR`]):
-//! it iterates the § 7.18 64x64-unit → 8x8-block grid, derives the § 7.18.2 direction
-//! / variance from the deblocked luma block, derives the § 7.18.1 primary / secondary
-//! strengths and damping, fetches each output sample's primary / secondary directional
-//! taps with the § 5.20.9.3 `is_inside_filter_region` (single-tile → `is_inside_frame`)
-//! availability check from a pre-CDEF snapshot of `CurrFrame`, and writes the deringed
-//! `CdefFrame` samples back into the [`CurrentFrameWorkspace`] IN PLACE after deblocking
-//! and before `workspace.freeze()`.
-//!
-//! Reading from a snapshot is load-bearing: § 7.18 filters `CurrFrame` (the deblocked
-//! frame) into `CdefFrame`, so every tap must read the pre-CDEF sample even after an
-//! earlier 8x8 block in raster order has written its output.
-//!
-//! Verified subset (everything else is rejected by the general intra route gate before
-//! any caller-visible output): an 8-bit 4:2:0 intra key frame with
-//! `cdef_frame_enable == 1`, `CdefStrengths == 1` (so § 5.20.10.1 `read_cdef` reads NO
-//! per-block symbol — `cdef_idx[r][c]` is `0` for the whole frame), and
-//! `cdef_on_skip_txfm_frame_enable == 1` (so the § 7.18.1 `skip` is `0` with no `Skips`
-//! lookup). Segmentation is disabled and no segment is lossless (so the § 7.18.1
-//! `LosslessArray` skip terms are `0`). Both luma and chroma (uv) strengths are applied
-//! and oracle-pinned: the § 7.18.1 chroma steps 9-14 — the
-//! `Cdef_Uv_Dir[SubsamplingX][SubsamplingY][yDir]` direction selection (engaged when
-//! `uv_pri != 0`), the 4:2:0 subsampled 4x4 chroma tap addressing, and the
-//! `CdefDamping - 1` chroma damping — are bit-exact vs avmdec (and dav2d) on a
-//! nonzero-uv fixture, so a sample-changing chroma CDEF output is hashed against the
-//! oracle rather than over-rejected upstream.
-//!
-//! Feature tracking: `DECODE-GENERAL-INTRA-CDEF`.
-
 use splot_recon::{
     BitDepth, CDEF_DIRECTIONS, CDEF_UV_DIR, CdefSampleTaps, CdefTap, CurrentFrameWorkspace,
     PlaneId, ReconSample, cdef_direction, cdef_filter_sample,
 };
 
-/// AV2 § 3 `MI_SIZE`: the side of one mode-info unit in luma samples.
 const MI_SIZE: usize = 4;
-/// AV2 § 3 `MI_SIZE_LOG2`.
 const MI_SIZE_LOG2: u32 = 2;
-/// `Num_4x4_Blocks_Wide[BLOCK_8X8]`: the § 7.18 `step4` (8x8 block stride in MI units).
 const STEP4: usize = 2;
 
-/// One frame's parsed § 5.18.7.10 CDEF parameters for the admitted single-strength-set
-/// subset: the strengths the § 7.18.1 process applies (`cdef_idx` is `0` everywhere).
+const UNAVAILABLE_TAP: CdefTap = CdefTap {
+    value: 0,
+    available: false,
+};
+
+/// Parsed CDEF strengths for the admitted single-strength-set subset.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CdefFrameParams {
-    /// `cdef_y_pri_strength[0]`.
+    /// Luma primary strength.
     pub(crate) y_pri: i32,
-    /// `cdef_y_sec_strength[0]`.
+    /// Luma secondary strength.
     pub(crate) y_sec: i32,
-    /// `cdef_uv_pri_strength[0]`.
+    /// Chroma primary strength.
     pub(crate) uv_pri: i32,
-    /// `cdef_uv_sec_strength[0]`.
+    /// Chroma secondary strength.
     pub(crate) uv_sec: i32,
-    /// `CdefDamping`.
+    /// CDEF damping.
     pub(crate) damping: i32,
 }
 
-/// A pre-CDEF snapshot of one plane's reconstructed (`CurrFrame`) samples, addressed
-/// in plane sample coordinates. Out-of-frame reads return `None` so the caller can set
-/// `CdefAvailable = 0`.
 struct PlaneSnapshot {
     width: usize,
     height: usize,
@@ -72,7 +37,6 @@ struct PlaneSnapshot {
 }
 
 impl PlaneSnapshot {
-    /// Snapshots the visible region of `plane` from `workspace`.
     fn capture<T: ReconSample>(
         workspace: &CurrentFrameWorkspace<T>,
         plane: PlaneId,
@@ -98,7 +62,6 @@ impl PlaneSnapshot {
         })
     }
 
-    /// The sample at `(x, y)`, or `None` when off-frame.
     fn get(&self, x: isize, y: isize) -> Option<i32> {
         if x < 0 || y < 0 {
             return None;
@@ -111,16 +74,7 @@ impl PlaneSnapshot {
     }
 }
 
-/// AV2 § 7.18 CDEF orchestration over the decoded general intra frame, applied in
-/// place to `workspace`.
-///
-/// `params` are the single-strength-set CDEF parameters (§ 7.18.1); `mi_rows` /
-/// `mi_cols` are the frame MI dimensions; `bit_depth` is the active decoded bit depth.
-/// 4:2:0 chroma (the admitted subset) is assumed (`SubsamplingX == SubsamplingY == 1`,
-/// `NumPlanes == 3`).
-///
-/// Returns `Err` only on an internal inconsistency (a workspace access out of bounds or
-/// a geometry overflow); for the verified subset it is total.
+/// Applies AV2 § 7.18 CDEF in place.
 pub(crate) fn cdef_general_intra_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     params: CdefFrameParams,
@@ -172,7 +126,6 @@ pub(crate) fn cdef_general_intra_frame<T: ReconSample>(
     Ok(())
 }
 
-/// Inputs to the § 7.18.1 CDEF block process for one 8x8 block.
 struct CdefBlockCtx {
     r: usize,
     c: usize,
@@ -185,7 +138,33 @@ struct CdefBlockCtx {
     sub_y: usize,
 }
 
-/// AV2 § 7.18.1 CDEF block process for one 8x8 block (`idx == 0`, `skip == 0`).
+impl CdefBlockCtx {
+    fn filter_ctx(
+        &self,
+        pri_str: i32,
+        sec_str: i32,
+        damping: i32,
+        dir: usize,
+        sub: usize,
+    ) -> CdefFilterCtx {
+        CdefFilterCtx {
+            r: self.r,
+            c: self.c,
+            pri_str,
+            sec_str,
+            damping,
+            dir,
+            sub,
+            coeff_shift: self.coeff_shift,
+            max_sample: self.max_sample,
+            mi_rows: self.mi_rows,
+            mi_cols: self.mi_cols,
+            frame_sub_x: self.sub_x,
+            frame_sub_y: self.sub_y,
+        }
+    }
+}
+
 fn cdef_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     ctx: &CdefBlockCtx,
@@ -206,14 +185,6 @@ fn cdef_block<T: ReconSample>(
     }
     let (y_dir, var) = cdef_direction(&block);
 
-    #[cfg(debug_assertions)]
-    if std::env::var_os("SPLOT_CDEF_TRACE").is_some() {
-        eprintln!(
-            "CDEF unit r={} c={} yDir={} var={} y_pri={} y_sec={} damp={}",
-            ctx.r, ctx.c, y_dir, var, ctx.params.y_pri, ctx.params.y_sec, ctx.params.damping
-        );
-    }
-
     let pri_str = ctx.params.y_pri << ctx.coeff_shift;
     let sec_str = ctx.params.y_sec << ctx.coeff_shift;
     let dir = if pri_str == 0 { 0 } else { y_dir };
@@ -228,26 +199,8 @@ fn cdef_block<T: ReconSample>(
         0
     };
     let damping = ctx.params.damping + ctx.coeff_shift as i32;
-    cdef_filter_plane(
-        workspace,
-        PlaneId::Y,
-        luma_snap,
-        &CdefFilterCtx {
-            r: ctx.r,
-            c: ctx.c,
-            pri_str,
-            sec_str,
-            damping,
-            dir,
-            sub: 0,
-            coeff_shift: ctx.coeff_shift,
-            max_sample: ctx.max_sample,
-            mi_rows: ctx.mi_rows,
-            mi_cols: ctx.mi_cols,
-            frame_sub_x: ctx.sub_x,
-            frame_sub_y: ctx.sub_y,
-        },
-    )?;
+    let y_filter = ctx.filter_ctx(pri_str, sec_str, damping, dir, 0);
+    cdef_filter_plane(workspace, PlaneId::Y, luma_snap, &y_filter)?;
 
     let uv_pri = ctx.params.uv_pri << ctx.coeff_shift;
     let uv_sec = ctx.params.uv_sec << ctx.coeff_shift;
@@ -257,32 +210,13 @@ fn cdef_block<T: ReconSample>(
         CDEF_UV_DIR[ctx.sub_x][ctx.sub_y][y_dir]
     };
     let uv_damping = ctx.params.damping + ctx.coeff_shift as i32 - 1;
+    let uv_filter = ctx.filter_ctx(uv_pri, uv_sec, uv_damping, uv_dir, 1);
     for (plane, snap) in [(PlaneId::U, u_snap), (PlaneId::V, v_snap)] {
-        cdef_filter_plane(
-            workspace,
-            plane,
-            snap,
-            &CdefFilterCtx {
-                r: ctx.r,
-                c: ctx.c,
-                pri_str: uv_pri,
-                sec_str: uv_sec,
-                damping: uv_damping,
-                dir: uv_dir,
-                sub: 1,
-                coeff_shift: ctx.coeff_shift,
-                max_sample: ctx.max_sample,
-                mi_rows: ctx.mi_rows,
-                mi_cols: ctx.mi_cols,
-                frame_sub_x: ctx.sub_x,
-                frame_sub_y: ctx.sub_y,
-            },
-        )?;
+        cdef_filter_plane(workspace, plane, snap, &uv_filter)?;
     }
     Ok(())
 }
 
-/// Inputs to the § 7.18.3 CDEF filter process for one plane of one 8x8 block.
 struct CdefFilterCtx {
     r: usize,
     c: usize,
@@ -290,7 +224,6 @@ struct CdefFilterCtx {
     sec_str: i32,
     damping: i32,
     dir: usize,
-    /// `1` for a subsampled chroma plane, `0` for luma (selects `w`/`h` and `subX`/`subY`).
     sub: usize,
     coeff_shift: u32,
     max_sample: i32,
@@ -300,7 +233,6 @@ struct CdefFilterCtx {
     frame_sub_y: usize,
 }
 
-/// AV2 § 7.18.3 CDEF filter process for one plane of one 8x8 block.
 fn cdef_filter_plane<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
@@ -338,7 +270,6 @@ fn cdef_filter_plane<T: ReconSample>(
     Ok(())
 }
 
-/// AV2 § 7.18.3 `cdef_get_at` for all six directional taps of one output sample.
 #[allow(clippy::too_many_arguments)]
 fn gather_taps(
     snap: &PlaneSnapshot,
@@ -366,28 +297,16 @@ fn gather_taps(
                     value,
                     available: true,
                 },
-                None => CdefTap {
-                    value: 0,
-                    available: false,
-                },
+                None => UNAVAILABLE_TAP,
             }
         } else {
-            CdefTap {
-                value: 0,
-                available: false,
-            }
+            UNAVAILABLE_TAP
         }
     };
 
     let sign_for = |index: usize| if index == 0 { -1 } else { 1 };
-    let mut primary = [[CdefTap {
-        value: 0,
-        available: false,
-    }; 2]; 2];
-    let mut secondary = [[[CdefTap {
-        value: 0,
-        available: false,
-    }; 2]; 2]; 2];
+    let mut primary = [[UNAVAILABLE_TAP; 2]; 2];
+    let mut secondary = [[[UNAVAILABLE_TAP; 2]; 2]; 2];
     for k in 0..2 {
         for sign_index in 0..2 {
             let sign = sign_for(sign_index);
@@ -406,7 +325,6 @@ fn gather_taps(
     }
 }
 
-/// AV2 § 4.7 `FloorLog2` for the i64 `var >> 6` (guarded nonzero by the caller).
 const fn floor_log2_i64(x: i64) -> i32 {
     if x <= 0 {
         0
@@ -415,15 +333,13 @@ const fn floor_log2_i64(x: i64) -> i32 {
     }
 }
 
-/// Errors from the CDEF orchestration. These signal an internal inconsistency (the
-/// per-block primitives are total for valid inputs), so the caller maps them to an
-/// `unsupported-feature` decode diagnostic rather than a silent wrong-pixel output.
+/// Errors from CDEF orchestration.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CdefError {
-    /// A geometry / index computation went out of range.
+    /// Geometry or indexing went out of range.
     #[error("CDEF geometry computation went out of range")]
     Geometry,
-    /// A workspace read/write went out of bounds or produced an out-of-range sample.
+    /// Workspace sample access went out of range.
     #[error("CDEF workspace sample access went out of bounds")]
     Workspace,
 }
@@ -515,12 +431,6 @@ mod tests {
         assert_eq!(snap.get(0, 16), None, "y past height off-frame");
     }
 
-    /// Builds a 64x64 4:2:0 frame (mi 16x16, chroma 32x32) whose top-left luma 8x8
-    /// carries a directional gradient (`row_varying` selects the §7.18.2 yDir) and
-    /// whose chroma planes carry a row-alternating ±2 ripple on a flat 128 field —
-    /// a small ringing pattern §7.18 CDEF derings. (The amplitude is kept low: a
-    /// larger diff is rejected by the §7.18.3 `constrain` rampdown under the
-    /// `CdefDamping - 1` chroma damping, leaving the chroma untouched.)
     fn workspace_chroma_ripple(row_varying: bool) -> CurrentFrameWorkspace<u8> {
         let mut ws = workspace_8bit(64, 64, 128);
         for plane in [PlaneId::U, PlaneId::V] {
@@ -552,8 +462,8 @@ mod tests {
         cdef_general_intra_frame(
             ws,
             CdefFrameParams {
-                y_pri: 0, // luma unfiltered: isolate the chroma path (yDir is still
-                y_sec: 0, // derived from the luma block content for Cdef_Uv_Dir).
+                y_pri: 0,
+                y_sec: 0,
                 uv_pri,
                 uv_sec,
                 damping: 4,
@@ -623,8 +533,6 @@ mod tests {
             "the two luma blocks must select different yDirs to drive Cdef_Uv_Dir",
         );
 
-        // uv_pri nonzero: the top-left chroma 4x4 differs between the two luma
-        // directions, because Cdef_Uv_Dir picks a different primary chroma direction.
         let mut horiz = workspace_chroma_ripple(true);
         let mut vert = workspace_chroma_ripple(false);
         run_cdef(&mut horiz, 2, 4);

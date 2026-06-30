@@ -1,26 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 7.17 deblocking-filter orchestration for the general intra decode path.
-//!
-//! This is the scheduler over the `splot-recon` per-edge deblocking primitives
-//! ([`deblock_filter_choice`], [`deblock_sample_filter`], [`deblock_filter_max_width`],
-//! [`deblock_adaptive_filter_strength`], [`deblock_side_threshold_index`]): it
-//! derives the per-(plane, pass) filter LEVEL (§ 7.17.6), the (qThr, side)
-//! strengths (§ 7.17.5), iterates the § 7.17.1 / § 7.17.2 plane × pass × MI edge
-//! loop over the decoded block grid, gathers each perpendicular sample line from
-//! the [`CurrentFrameWorkspace`], and applies the filter IN PLACE after the block
-//! walk and before `workspace.freeze()`.
-//!
-//! Verified subset: the general intra frontier admits intra key frames whose
-//! `df_delta_q` is all zero, `allow_df_sub_pu` is `0` (always for a key frame, so
-//! `isSubPuEdge == 0`), segmentation disabled (so `LosslessArray` is all-false and
-//! `SegmentIds`/`ChromaSegmentIds` are `0`), and the single 4:2:0 tile. The chroma
-//! per-plane base offsets resolve to zero (the frontier gate requires it). This
-//! module is bit-exact vs avmdec for `syn-2sb-deblock-intra-128x64-q100.ivf`.
-//!
-//! Feature tracking: `DECODE-GENERAL-INTRA-DEBLOCK`.
-
 use splot_core::tables::conversion::{
     Q_FIRST, Q_THRESH_MULTS, SIDE_THRESHOLDS, TX_HEIGHT, TX_WIDTH, W_MULT,
 };
@@ -30,64 +10,36 @@ use splot_recon::{
     deblock_sample_filter, deblock_side_threshold_index,
 };
 
-/// AV2 § 3 `MI_SIZE`: the side of one mode-info unit in luma samples.
 const MI_SIZE: usize = 4;
 
-/// Superblock side in luma samples (the admitted general intra frontier is
-/// `sb_size == 64`). The § 7.17.2 `horz64Edge` term tests this 64-sample grid.
 const SB_SIZE: usize = 64;
 
-/// One decoded leaf block's deblocking-relevant geometry, recorded during the
-/// § 5.20.3.1 partition walk. `r` / `c` are the luma MI position of the block's
-/// top-left; `n4w` / `n4h` are its width / height in luma 4x4 units; `luma_tx` /
-/// `chroma_tx` are the § 9.2 `TX_SIZES_ALL` indices of the single (TX_MODE_LARGEST)
-/// luma / 4:2:0-chroma transform spanning the block.
+/// Deblocking geometry for one decoded leaf block.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DeblockBlock {
-    /// Luma MI row of the block's top-left (`MiRowBase`).
+    /// Luma MI row.
     pub(crate) r: usize,
-    /// Luma MI col of the block's top-left (`MiColBase`).
+    /// Luma MI column.
     pub(crate) c: usize,
-    /// Block width in luma 4x4 units (`Num_4x4_Blocks_Wide[MiSize]`).
+    /// Width in luma 4x4 units.
     pub(crate) n4w: usize,
-    /// Block height in luma 4x4 units (`Num_4x4_Blocks_High[MiSize]`).
+    /// Height in luma 4x4 units.
     pub(crate) n4h: usize,
-    /// § 9.2 `TX_SIZES_ALL` index of the luma transform (DeblockingTxSizes[0]).
+    /// Luma transform index.
     pub(crate) luma_tx: usize,
-    /// § 9.2 `TX_SIZES_ALL` index of the 4:2:0 chroma transform
-    /// (DeblockingTxSizes[1]/[2]), or `None` for a luma-only block.
+    /// Chroma transform index, if present.
     pub(crate) chroma_tx: Option<usize>,
 }
 
-/// Per-plane deblocking metadata for one MI position, resolved from the covering
-/// decoded block. The luma plane reads the luma grid (full resolution); a chroma
-/// plane reads the same grid but with the § 7.17.2 chroma "bottom-right mode info"
-/// and subsampling adjustments applied by the caller.
 #[derive(Clone, Copy)]
 struct MiBlockInfo {
-    /// `MiRowBase` (luma MI) of the covering block.
     base_row: usize,
-    /// `MiColBase` (luma MI) of the covering block.
     base_col: usize,
-    /// Luma transform size index.
     luma_tx: usize,
-    /// Chroma transform size index, if the block has chroma.
     chroma_tx: Option<usize>,
 }
 
-/// AV2 § 7.17.1 / § 7.17.2 deblocking-filter orchestration over the decoded
-/// general intra block grid, applied in place to `workspace`.
-///
-/// `blocks` are the decoded leaf blocks (their union tiles the frame); `mi_rows`
-/// / `mi_cols` are the frame MI dimensions; `apply` is the parsed
-/// `apply_deblocking_filter[0..4]` gate; `base_q_idx` is the frame quantizer
-/// (segmentation disabled, no delta-Q, `df_delta_q` all zero → every plane's
-/// § 7.17.6 `lvl` equals `q_clamped(base_q_idx, 0)`); `bit_depth` is the active
-/// decoded bit depth.
-///
-/// Returns `Err` only on an internal inconsistency (a block grid that does not
-/// cover the frame, or a workspace read/write out of bounds); for the verified
-/// subset it is total.
+/// Applies AV2 § 7.17 deblocking in place.
 pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     blocks: &[DeblockBlock],
@@ -102,50 +54,23 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     }
 
     let grid = build_mi_grid(blocks, mi_rows, mi_cols)?;
+    let (q_thr, side) = adaptive_strength(q_clamped_zero_delta(base_q_idx), bit_depth);
 
-    let sub_x = 1usize;
-    let sub_y = 1usize;
-    let num_planes = 3usize;
-
-    for plane in 0..num_planes {
+    for plane in 0..3 {
         for pass in 0..2usize {
-            let apply_index = if plane == 0 { pass } else { plane + 1 };
-            if !apply[apply_index] {
+            let Some(plane_pass) = PlanePass::active(plane, pass, apply, q_thr, side, bit_depth)
+            else {
                 continue;
-            }
-            let (plane_sub_x, plane_sub_y) = if plane == 0 { (0, 0) } else { (sub_x, sub_y) };
-            let row_step = if plane == 0 { 1 } else { 1 << sub_y };
-            let col_step = if plane == 0 { 1 } else { 1 << sub_x };
+            };
 
-            let lvl = q_clamped_zero_delta(base_q_idx);
-            let (q_thr, side) = adaptive_strength(lvl, bit_depth);
-
-            let plane_id = plane_index_to_id(plane);
-            let mut r = 0usize;
-            while r < mi_rows {
-                let mut c = 0usize;
-                while c < mi_cols {
+            for r in (0..mi_rows).step_by(plane_pass.row_step) {
+                for c in (0..mi_cols).step_by(plane_pass.col_step) {
                     deblock_filter_edge(
                         workspace,
                         &grid,
-                        EdgeContext {
-                            plane,
-                            plane_id,
-                            pass,
-                            row: r,
-                            col: c,
-                            mi_rows,
-                            mi_cols,
-                            plane_sub_x,
-                            plane_sub_y,
-                            q_thr,
-                            side,
-                            bit_depth,
-                        },
+                        plane_pass.edge_context(r, c, mi_rows, mi_cols),
                     )?;
-                    c += col_step;
                 }
-                r += row_step;
             }
         }
     }
@@ -153,7 +78,67 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     Ok(())
 }
 
-/// Inputs to the § 7.17.2 edge deblocking filter process for one MI edge.
+#[derive(Clone, Copy)]
+struct PlanePass {
+    plane: usize,
+    plane_id: PlaneId,
+    pass: usize,
+    plane_sub_x: usize,
+    plane_sub_y: usize,
+    row_step: usize,
+    col_step: usize,
+    q_thr: i32,
+    side: i32,
+    bit_depth: BitDepth,
+}
+
+impl PlanePass {
+    fn active(
+        plane: usize,
+        pass: usize,
+        apply: [bool; 4],
+        q_thr: i32,
+        side: i32,
+        bit_depth: BitDepth,
+    ) -> Option<Self> {
+        let apply_index = if plane == 0 { pass } else { plane + 1 };
+        if !apply[apply_index] {
+            return None;
+        }
+
+        let (plane_sub_x, plane_sub_y) = if plane == 0 { (0, 0) } else { (1, 1) };
+        Some(Self {
+            plane,
+            plane_id: plane_index_to_id(plane),
+            pass,
+            plane_sub_x,
+            plane_sub_y,
+            row_step: 1 << plane_sub_y,
+            col_step: 1 << plane_sub_x,
+            q_thr,
+            side,
+            bit_depth,
+        })
+    }
+
+    fn edge_context(self, row: usize, col: usize, mi_rows: usize, mi_cols: usize) -> EdgeContext {
+        EdgeContext {
+            plane: self.plane,
+            plane_id: self.plane_id,
+            pass: self.pass,
+            row,
+            col,
+            mi_rows,
+            mi_cols,
+            plane_sub_x: self.plane_sub_x,
+            plane_sub_y: self.plane_sub_y,
+            q_thr: self.q_thr,
+            side: self.side,
+            bit_depth: self.bit_depth,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct EdgeContext {
     plane: usize,
@@ -170,7 +155,6 @@ struct EdgeContext {
     bit_depth: BitDepth,
 }
 
-/// AV2 § 7.17.2 edge deblocking filter process for one (plane, pass, row, col).
 fn deblock_filter_edge<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     grid: &MiGrid,
@@ -295,15 +279,22 @@ fn deblock_filter_edge<T: ReconSample>(
 
     let eff_neg = width.min(max_width_neg);
     let eff_pos = width.min(max_width_pos);
-    #[cfg(debug_assertions)]
-    if std::env::var_os("SPLOT_DEBLOCK_TRACE").is_some() {
-        eprintln!(
-            "DEBLOCK plane={plane} pass={pass} edge(xP={x_p},yP={y_p}) lvl_strengths(qThr={q_thr},side={side}) filterSize={filter_size} maxW(neg={max_width_neg},pos={max_width_pos}) width={width} sbEdge={sb_edge}"
-        );
-    }
     let q_thresh_mult = Q_THRESH_MULTS[eff_neg.max(eff_pos) - 1];
     let w_mult_neg = W_MULT[eff_neg - 1];
     let w_mult_pos = W_MULT[eff_pos - 1];
+    let sample_params = DeblockSampleFilter {
+        boundary: GATHER_HALF,
+        q_thr,
+        max_width_neg: eff_neg,
+        max_width_pos: eff_pos,
+        q_thresh_mult,
+        w_mult_neg,
+        w_mult_pos,
+        prev_lossless: false,
+        curr_lossless: false,
+        bit_depth,
+    };
+
     for i in 0..MI_SIZE {
         let px = x_p + dy * i;
         let py = y_p + dx * i;
@@ -311,26 +302,13 @@ fn deblock_filter_edge<T: ReconSample>(
             workspace,
             plane_id,
             PerpLine::new(px, py, dx, dy),
-            DeblockSampleFilter {
-                boundary: 0, // set inside apply_sample_filter
-                q_thr,
-                max_width_neg: eff_neg,
-                max_width_pos: eff_pos,
-                q_thresh_mult,
-                w_mult_neg,
-                w_mult_pos,
-                prev_lossless: false,
-                curr_lossless: false,
-                bit_depth,
-            },
+            sample_params,
         )?;
     }
 
     Ok(())
 }
 
-/// Gathers the perpendicular `s` / `t` sample lines at the two ends of the
-/// MI_SIZE-long edge and calls § 7.17.7.2 [`deblock_filter_choice`].
 #[allow(clippy::too_many_arguments)]
 fn choose_filter_width<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
@@ -371,9 +349,6 @@ fn choose_filter_width<T: ReconSample>(
     Ok(width)
 }
 
-/// A perpendicular sample line through frame position `(x, y)` advancing by
-/// `(dx, dy)` (the § 7.17 filter direction). The gathered line indexes samples
-/// at signed offsets from `(x, y)` along `(dx, dy)`.
 #[derive(Clone, Copy)]
 struct PerpLine {
     x: usize,
@@ -387,8 +362,6 @@ impl PerpLine {
         Self { x, y, dx, dy }
     }
 
-    /// Frame position offset by `offset` steps along `(dx, dy)`, without clamping
-    /// (the caller has verified the position is in-frame).
     fn offset(self, offset: isize) -> Result<(usize, usize), DeblockError> {
         let fx = (self.x as isize + offset * self.dx as isize)
             .try_into()
@@ -400,33 +373,24 @@ impl PerpLine {
     }
 }
 
-/// Half-window (each side) gathered around the boundary. The § 7.17.7.1 sample
-/// filter and § 7.17.7.2 choice cascade never access past `MAX_DBL_FLT_LEN == 8`
-/// samples on either side, so a window of 8 + 8 (boundary at index 8) covers
-/// every § 7.17.3 width.
 const GATHER_HALF: usize = 8;
 
-/// Gathers the perpendicular sample line through `(x, y)`, applies the § 7.17.7.1
-/// [`deblock_sample_filter`] (with `boundary` repointed at the gathered `q0`), and
-/// writes the modified samples back into the workspace.
 fn apply_sample_filter<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
     perp: PerpLine,
     params: DeblockSampleFilter,
 ) -> Result<(), DeblockError> {
-    let boundary = GATHER_HALF;
     let mut line = gather_line(workspace, plane_id, perp)?;
     let before = line.clone();
 
-    deblock_sample_filter(&mut line, &DeblockSampleFilter { boundary, ..params })
-        .map_err(|_| DeblockError::SampleFilter)?;
+    deblock_sample_filter(&mut line, &params).map_err(|_| DeblockError::SampleFilter)?;
 
     for (idx, (&new, &old)) in line.iter().zip(before.iter()).enumerate() {
         if new.to_u16() == old.to_u16() {
             continue;
         }
-        let (fx, fy) = perp.offset(idx as isize - boundary as isize)?;
+        let (fx, fy) = perp.offset(idx as isize - params.boundary as isize)?;
         workspace
             .set_reconstructed_sample(plane_id, fx, fy, new)
             .map_err(|_| DeblockError::Workspace)?;
@@ -434,12 +398,6 @@ fn apply_sample_filter<T: ReconSample>(
     Ok(())
 }
 
-/// Gathers `2 * GATHER_HALF` samples along the perpendicular direction `(dx, dy)`
-/// centred so index `GATHER_HALF` is the sample at `(x, y)` (the spec `q0` /
-/// boundary). Off-frame positions are clamped to the frame edge (the deblocking
-/// edge selection guarantees the filtered samples are in-frame; the wider gather
-/// window can reach off-frame for the choice cascade's deep reads, which the edge
-/// geometry never actually filters past).
 fn gather_line<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
@@ -466,23 +424,16 @@ fn gather_line<T: ReconSample>(
     Ok(line)
 }
 
-/// AV2 § 7.17.6 `q_clamped(qindex, 0)` for the admitted zero-delta subset:
-/// returns `0` when `qindex == 0`, else `qindex` (already in `0..=MaxQ`).
 const fn q_clamped_zero_delta(qindex: u32) -> u32 {
     if qindex == 0 { 0 } else { qindex }
 }
 
-/// AV2 § 7.17.5 adaptive filter strength `(qThr, side)` for filter level `lvl`,
-/// composing [`deblock_side_threshold_index`] over the § 9.2 `Side_Thresholds`
-/// table with [`deblock_adaptive_filter_strength`].
 fn adaptive_strength(lvl: u32, bit_depth: BitDepth) -> (i32, i32) {
     let q_ind = deblock_side_threshold_index(lvl, bit_depth);
     let side_threshold = SIDE_THRESHOLDS[q_ind];
     deblock_adaptive_filter_strength(lvl, side_threshold, bit_depth)
 }
 
-/// AV2 § 7.17.2 `qThr` / `side` combine: the average when both sides are nonzero,
-/// else the max.
 fn combine_strengths(curr_q: i32, prev_q: i32, curr_side: i32, prev_side: i32) -> (i32, i32) {
     let q_thr = if curr_q != 0 && prev_q != 0 {
         (curr_q + prev_q + 1) >> 1
@@ -497,8 +448,6 @@ fn combine_strengths(curr_q: i32, prev_q: i32, curr_side: i32, prev_side: i32) -
     (q_thr, side)
 }
 
-/// `DeblockingTxSizes[plane]` for the covering block: the luma transform for
-/// `plane == 0`, the chroma transform otherwise.
 fn plane_tx(plane: usize, info: MiBlockInfo) -> Option<usize> {
     if plane == 0 {
         Some(info.luma_tx)
@@ -515,7 +464,6 @@ fn plane_index_to_id(plane: usize) -> PlaneId {
     }
 }
 
-/// Luma-MI-indexed covering-block grid.
 struct MiGrid {
     mi_cols: usize,
     cells: Vec<Option<MiBlockInfo>>,
@@ -527,9 +475,6 @@ impl MiGrid {
     }
 }
 
-/// Builds the luma-MI covering-block grid from the decoded leaf blocks. Every MI
-/// position the deblocking loop visits must be covered; an MI left uncovered is an
-/// internal inconsistency that surfaces as [`DeblockError::UncoveredMi`] later.
 fn build_mi_grid(
     blocks: &[DeblockBlock],
     mi_rows: usize,
@@ -562,26 +507,22 @@ fn build_mi_grid(
     Ok(MiGrid { mi_cols, cells })
 }
 
-/// Errors from the deblocking-filter orchestration. These signal an internal
-/// inconsistency (the per-edge primitives are total for valid inputs), so the
-/// caller maps them to an `unsupported-feature` decode diagnostic rather than a
-/// silent wrong-pixel output.
+/// Errors from deblocking orchestration.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DeblockError {
-    /// A visited MI position was not covered by any decoded block.
+    /// A visited MI position is uncovered.
     #[error("deblocking MI ({row}, {col}) is not covered by any decoded block")]
     UncoveredMi { row: usize, col: usize },
-    /// A plane's `DeblockingTxSizes` entry was missing (chroma tx on a luma-only
-    /// block).
+    /// A plane has no transform size for the covering block.
     #[error("deblocking plane {plane} has no transform size for the covering block")]
     MissingTx { plane: usize },
-    /// The § 7.17.7.2 filter-choice primitive rejected its inputs.
+    /// Filter-choice rejected its inputs.
     #[error("deblocking filter-choice primitive rejected its inputs")]
     FilterChoice,
-    /// The § 7.17.7.1 sample-filter primitive rejected its inputs.
+    /// Sample-filter rejected its inputs.
     #[error("deblocking sample-filter primitive rejected its inputs")]
     SampleFilter,
-    /// A workspace read/write or geometry computation went out of bounds.
+    /// Workspace sample access went out of range.
     #[error("deblocking workspace sample access went out of bounds")]
     Workspace,
 }

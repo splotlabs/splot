@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Minimal AV2 block-symbol `S()` reads for the traced runtime frontier.
-//!
-//! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
+//! AV2 block-symbol `S()` reads.
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::{Symbol, SymbolDecoder};
@@ -24,9 +22,7 @@ pub(crate) enum BlockSymbolTraceReadError {
 impl TileCdfSubset {
     /// Reads one traced AV2 § 5.20 block-symbol `S()` value.
     ///
-    /// This helper is deliberately no broader than the current minimal flat
-    /// intra trace. It validates a [`TileCdfSelector`] from the crate-private
-    /// CDF subset and hands the selected row to the caller-owned symbol cursor.
+    /// Validates a [`TileCdfSelector`] and reads from the selected row.
     pub(crate) fn read_block_symbol_trace(
         &mut self,
         selector: TileCdfSelector,
@@ -49,6 +45,46 @@ mod tests {
     use super::*;
 
     const PAYLOAD: [u8; 2] = [0x00, 0x80];
+    const SUPPORTED_BLOCK_SYMBOL_SELECTORS: &[TileCdfSelector] = &[
+        TileCdfSelector::YModeSet,
+        TileCdfSelector::YModeIndex { ctx: 0 },
+        TileCdfSelector::TxbSkip {
+            coeff_cdf_q_ctx: 2,
+            plane_type: 0,
+            tx_size: 0,
+            ctx: 0,
+        },
+        TileCdfSelector::UvModeCflNotAllowed { ctx: 0 },
+        TileCdfSelector::IsCfl { ctx: 0 },
+        TileCdfSelector::CflIndex,
+        TileCdfSelector::CflSign,
+        TileCdfSelector::CflAlpha { ctx: 0 },
+        TileCdfSelector::CflMhccp,
+        TileCdfSelector::CflMhDir { size_group: 0 },
+        TileCdfSelector::IntrabcMode,
+        TileCdfSelector::IntrabcPrecision,
+        TileCdfSelector::FscMode {
+            ctx: 0,
+            bsize_group: 0,
+        },
+        TileCdfSelector::DeltaQ,
+        TileCdfSelector::VTxbSkip {
+            coeff_cdf_q_ctx: 1,
+            ctx: 3,
+        },
+        TileCdfSelector::IsLongSideDct { is_inter: 0 },
+        TileCdfSelector::IntraTxTypeLong { tx_size_sqr: 2 },
+        TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr: 0 },
+        TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr: 1 },
+        TileCdfSelector::SecTxType {
+            is_inter: 0,
+            tx_size_sqr: 2,
+        },
+        TileCdfSelector::MostProbableStxSet,
+        TileCdfSelector::MostProbableStxSetAdst,
+        TileCdfSelector::CctxType,
+        TileCdfSelector::UseWienerNs,
+    ];
 
     fn decoder(mode: CdfUpdateMode) -> SymbolDecoder<'static> {
         SymbolDecoder::with_base_and_config(
@@ -61,49 +97,9 @@ mod tests {
 
     #[test]
     fn reads_supported_block_symbol_rows() {
-        let selectors = [
-            TileCdfSelector::YModeSet,
-            TileCdfSelector::YModeIndex { ctx: 0 },
-            TileCdfSelector::TxbSkip {
-                coeff_cdf_q_ctx: 2,
-                plane_type: 0,
-                tx_size: 0,
-                ctx: 0,
-            },
-            TileCdfSelector::UvModeCflNotAllowed { ctx: 0 },
-            TileCdfSelector::IsCfl { ctx: 0 },
-            TileCdfSelector::CflIndex,
-            TileCdfSelector::CflSign,
-            TileCdfSelector::CflAlpha { ctx: 0 },
-            TileCdfSelector::CflMhccp,
-            TileCdfSelector::CflMhDir { size_group: 0 },
-            TileCdfSelector::IntrabcMode,
-            TileCdfSelector::IntrabcPrecision,
-            TileCdfSelector::FscMode {
-                ctx: 0,
-                bsize_group: 0,
-            },
-            TileCdfSelector::DeltaQ,
-            TileCdfSelector::VTxbSkip {
-                coeff_cdf_q_ctx: 1,
-                ctx: 3,
-            },
-            TileCdfSelector::IsLongSideDct { is_inter: 0 },
-            TileCdfSelector::IntraTxTypeLong { tx_size_sqr: 2 },
-            TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr: 0 },
-            TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr: 1 },
-            TileCdfSelector::SecTxType {
-                is_inter: 0,
-                tx_size_sqr: 2,
-            },
-            TileCdfSelector::MostProbableStxSet,
-            TileCdfSelector::MostProbableStxSetAdst,
-            TileCdfSelector::CctxType,
-            TileCdfSelector::UseWienerNs,
-        ];
         let frame = FrameCdfSubset::from_defaults();
 
-        for selector in selectors {
+        for &selector in SUPPORTED_BLOCK_SYMBOL_SELECTORS {
             let mut direct_tile = frame.tile_copy();
             let mut helper_tile = frame.tile_copy();
             let mut direct = decoder(CdfUpdateMode::Enabled);
@@ -156,52 +152,12 @@ mod tests {
     #[test]
     fn update_mode_controls_only_selected_block_symbol_rows() {
         let frame = FrameCdfSubset::from_defaults();
-        let selectors = [
-            TileCdfSelector::YModeSet,
-            TileCdfSelector::YModeIndex { ctx: 0 },
-            TileCdfSelector::TxbSkip {
-                coeff_cdf_q_ctx: 2,
-                plane_type: 0,
-                tx_size: 0,
-                ctx: 0,
-            },
-            TileCdfSelector::UvModeCflNotAllowed { ctx: 0 },
-            TileCdfSelector::IsCfl { ctx: 0 },
-            TileCdfSelector::CflIndex,
-            TileCdfSelector::CflSign,
-            TileCdfSelector::CflAlpha { ctx: 0 },
-            TileCdfSelector::CflMhccp,
-            TileCdfSelector::CflMhDir { size_group: 0 },
-            TileCdfSelector::IntrabcMode,
-            TileCdfSelector::IntrabcPrecision,
-            TileCdfSelector::FscMode {
-                ctx: 0,
-                bsize_group: 0,
-            },
-            TileCdfSelector::DeltaQ,
-            TileCdfSelector::VTxbSkip {
-                coeff_cdf_q_ctx: 1,
-                ctx: 3,
-            },
-            TileCdfSelector::IsLongSideDct { is_inter: 0 },
-            TileCdfSelector::IntraTxTypeLong { tx_size_sqr: 2 },
-            TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr: 0 },
-            TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr: 1 },
-            TileCdfSelector::SecTxType {
-                is_inter: 0,
-                tx_size_sqr: 2,
-            },
-            TileCdfSelector::MostProbableStxSet,
-            TileCdfSelector::MostProbableStxSetAdst,
-            TileCdfSelector::CctxType,
-            TileCdfSelector::UseWienerNs,
-        ];
         let untouched = TileCdfSelector::DoSplit {
             plane_start: 0,
             ctx: 0,
         };
 
-        for selector in selectors {
+        for &selector in SUPPORTED_BLOCK_SYMBOL_SELECTORS {
             let mut enabled = frame.tile_copy();
             let selected_before = enabled.row(selector).unwrap().to_vec();
             let untouched_before = enabled.row(untouched).unwrap().to_vec();

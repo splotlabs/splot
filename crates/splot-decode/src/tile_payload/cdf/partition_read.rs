@@ -23,11 +23,6 @@ pub(crate) enum PartitionEntrySymbolReadError {
 
 impl TileCdfSubset {
     /// Reads one AV2 § 5.20.3.2 partition-entry `S()` symbol.
-    ///
-    /// The caller owns `symbol_decoder` so sequential syntax reads consume one
-    /// tile payload stream. This helper only validates the existing
-    /// [`TileCdfSelector`] and hands the selected mutable CDF row to
-    /// [`SymbolDecoder::read_symbol`].
     pub(crate) fn read_partition_entry_symbol(
         &mut self,
         selector: TileCdfSelector,
@@ -52,16 +47,7 @@ mod tests {
 
     const PAYLOAD: [u8; 2] = [0x80, 0x00];
 
-    fn decoder(mode: CdfUpdateMode) -> SymbolDecoder<'static> {
-        SymbolDecoder::with_base_and_config(
-            &PAYLOAD,
-            ByteOffset::new(0),
-            SymbolDecoderConfig::new().with_cdf_update_mode(mode),
-        )
-        .unwrap()
-    }
-
-    fn decoder_for_payload(payload: &'static [u8], mode: CdfUpdateMode) -> SymbolDecoder<'static> {
+    fn decoder(payload: &'static [u8], mode: CdfUpdateMode) -> SymbolDecoder<'static> {
         SymbolDecoder::with_base_and_config(
             payload,
             ByteOffset::new(0),
@@ -99,8 +85,8 @@ mod tests {
         for selector in selectors {
             let mut direct_tile = frame.tile_copy();
             let mut helper_tile = frame.tile_copy();
-            let mut direct = decoder(CdfUpdateMode::Enabled);
-            let mut helper = decoder(CdfUpdateMode::Enabled);
+            let mut direct = decoder(&PAYLOAD, CdfUpdateMode::Enabled);
+            let mut helper = decoder(&PAYLOAD, CdfUpdateMode::Enabled);
 
             let expected = direct_tile
                 .with_row_mut(selector, |row| direct.read_symbol(row))
@@ -133,7 +119,7 @@ mod tests {
         let mut tile = frame.tile_copy();
         let selected_before = tile.row(selector).unwrap().to_vec();
         let untouched_before = tile.row(untouched).unwrap().to_vec();
-        let mut symbol = decoder(CdfUpdateMode::Enabled);
+        let mut symbol = decoder(&PAYLOAD, CdfUpdateMode::Enabled);
 
         let _ = tile
             .read_partition_entry_symbol(selector, &mut symbol)
@@ -152,7 +138,7 @@ mod tests {
         };
         let mut tile = frame.tile_copy();
         let before = tile.row(selector).unwrap().to_vec();
-        let mut symbol = decoder(CdfUpdateMode::Disabled);
+        let mut symbol = decoder(&PAYLOAD, CdfUpdateMode::Disabled);
 
         let _ = tile
             .read_partition_entry_symbol(selector, &mut symbol)
@@ -161,8 +147,6 @@ mod tests {
         assert_eq!(tile.row(selector).unwrap(), before.as_slice());
     }
 
-    /// Asserts that reading `invalid` errors (matched by `expected`) without
-    /// consuming any symbol bit or mutating the CDF row for `valid`.
     fn assert_selector_error_is_inert(
         valid: TileCdfSelector,
         invalid: TileCdfSelector,
@@ -171,7 +155,7 @@ mod tests {
         let frame = FrameCdfSubset::from_defaults();
         let mut tile = frame.tile_copy();
         let before = tile.row(valid).unwrap().to_vec();
-        let mut symbol = decoder(CdfUpdateMode::Enabled);
+        let mut symbol = decoder(&PAYLOAD, CdfUpdateMode::Enabled);
         let consumed_before = symbol.consumed_bits();
 
         let err = tile
@@ -243,7 +227,7 @@ mod tests {
         let mut tile = frame.tile_copy();
         tile.rows_mut().do_split[0][0] = [0, 0, 0];
         let before = tile.row(selector).unwrap().to_vec();
-        let mut symbol = decoder(CdfUpdateMode::Enabled);
+        let mut symbol = decoder(&PAYLOAD, CdfUpdateMode::Enabled);
 
         let err = tile
             .read_partition_entry_symbol(selector, &mut symbol)
@@ -268,8 +252,8 @@ mod tests {
         };
         let mut direct_tile = frame.tile_copy();
         let mut helper_tile = frame.tile_copy();
-        let mut direct = decoder_for_payload(&[], CdfUpdateMode::Enabled);
-        let mut helper = decoder_for_payload(&[], CdfUpdateMode::Enabled);
+        let mut direct = decoder(&[], CdfUpdateMode::Enabled);
+        let mut helper = decoder(&[], CdfUpdateMode::Enabled);
 
         let expected = direct_tile
             .with_row_mut(selector, |row| direct.read_symbol(row))

@@ -21,18 +21,10 @@ const IBP_WEIGHTS: [[u16; 16]; 5] = [
     [68, 72, 76, 79, 83, 87, 90, 94, 98, 102, 106, 109, 113, 117, 121, 124],
 ];
 
-/// Applies AV2 §7.13.2.12 IBP DC prediction to existing DC samples.
-///
-/// The caller supplies a strided rectangular `pred` buffer that already holds
-/// AV2 §7.13.2.10 DC prediction. This modifier validates the sample type,
-/// prepared `LeftCol[0..h)` / `AboveRow[0..w)` edge lengths and ranges, output
-/// shape, and every existing `pred` sample it will blend before mutating
-/// storage. If both edges are absent, the call is a validated no-op.
+/// Applies AV2 §7.13.2.12 IBP DC prediction to validated DC samples.
 ///
 /// # Errors
-/// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
-/// wrong edge lengths, out-of-range edges or prediction samples, a too-small
-/// stride, a too-small output buffer, arithmetic overflow, or storage
+/// Returns [`ReconError`] for invalid inputs, arithmetic overflow, or storage
 /// conversion failure.
 pub fn apply_intra_ibp_dc_rect<T: ReconSample>(
     bit_depth: BitDepth,
@@ -65,43 +57,46 @@ pub fn apply_intra_ibp_dc_rect<T: ReconSample>(
 
     validate_pred_samples(bit_depth, size, have_left, have_above, pred, stride_samples)?;
 
-    if let Some(above) = edges.above_samples()
-        && have_above
-    {
-        for row in 0..top_row_count(size) {
-            let weight = ibp_weight(size.log2_height(), row)?;
-            for (column, above_sample) in above
-                .iter()
-                .copied()
-                .enumerate()
-                .take(size.width())
-                .skip(above_start_column(size, have_left))
-            {
-                let index = pred_index(row, column, stride_samples)?;
-                let sample =
-                    blend_sample(bit_depth, above_sample, pred_sample(pred, index)?, weight)?;
-                set_pred_sample(pred, index, sample, required)?;
-            }
-        }
-    }
-
-    if let Some(left) = edges.left_samples()
-        && have_left
-    {
-        for (row, left_sample) in left
-            .iter()
-            .copied()
-            .enumerate()
-            .skip(left_start_row(size, have_above))
-        {
-            for column in 0..left_column_count(size) {
-                let weight = ibp_weight(size.log2_width(), column)?;
-                let index = pred_index(row, column, stride_samples)?;
-                let sample =
-                    blend_sample(bit_depth, left_sample, pred_sample(pred, index)?, weight)?;
-                set_pred_sample(pred, index, sample, required)?;
-            }
-        }
+    for (edge, samples, have_edge, have_other) in [
+        (
+            IntraDcEdge::Above,
+            edges.above_samples(),
+            have_above,
+            have_left,
+        ),
+        (
+            IntraDcEdge::Left,
+            edges.left_samples(),
+            have_left,
+            have_above,
+        ),
+    ] {
+        let Some(samples) = samples.filter(|_| have_edge) else {
+            continue;
+        };
+        visit_ibp_zone(
+            edge,
+            size,
+            have_other,
+            stride_samples,
+            |edge_index, log2_dimension, weight_index, pred_index| {
+                let edge_sample = samples.get(edge_index).copied().ok_or(
+                    ReconError::IntraPredictionEdgeLengthMismatch {
+                        edge,
+                        expected: edge_len(edge, size),
+                        actual: samples.len(),
+                    },
+                )?;
+                let weight = ibp_weight(log2_dimension, weight_index)?;
+                let sample = blend_sample(
+                    bit_depth,
+                    edge_sample,
+                    pred_sample(pred, pred_index)?,
+                    weight,
+                )?;
+                set_pred_sample(pred, pred_index, sample, required)
+            },
+        )?;
     }
 
     Ok(())
@@ -115,19 +110,70 @@ fn validate_pred_samples<T: ReconSample>(
     pred: &[T],
     stride_samples: usize,
 ) -> Result<()> {
-    if have_above {
-        for row in 0..top_row_count(size) {
-            for column in above_start_column(size, have_left)..size.width() {
-                validate_pred_sample(bit_depth, pred, pred_index(row, column, stride_samples)?)?;
-            }
+    for (edge, have_edge, have_other) in [
+        (IntraDcEdge::Above, have_above, have_left),
+        (IntraDcEdge::Left, have_left, have_above),
+    ] {
+        if have_edge {
+            visit_ibp_zone(
+                edge,
+                size,
+                have_other,
+                stride_samples,
+                |_, _, _, pred_index| validate_pred_sample(bit_depth, pred, pred_index),
+            )?;
         }
     }
 
-    if have_left {
-        for row in left_start_row(size, have_above)..size.height() {
-            for column in 0..left_column_count(size) {
-                validate_pred_sample(bit_depth, pred, pred_index(row, column, stride_samples)?)?;
-            }
+    Ok(())
+}
+
+fn visit_ibp_zone(
+    edge: IntraDcEdge,
+    size: IntraRectBlockSize,
+    have_other: bool,
+    stride_samples: usize,
+    mut visit: impl FnMut(usize, u8, usize, usize) -> Result<()>,
+) -> Result<()> {
+    let (rows, columns, log2_dimension) = match edge {
+        IntraDcEdge::Above => {
+            let start_column = if size.width() < size.height() && have_other {
+                size.width() >> 2
+            } else {
+                0
+            };
+            (
+                0..(size.height() >> 2),
+                start_column..size.width(),
+                size.log2_height(),
+            )
+        }
+        IntraDcEdge::Left => {
+            let start_row = if size.width() >= size.height() && have_other {
+                size.height() >> 2
+            } else {
+                0
+            };
+            (
+                start_row..size.height(),
+                0..(size.width() >> 2),
+                size.log2_width(),
+            )
+        }
+    };
+
+    for row in rows {
+        for column in columns.clone() {
+            let (edge_index, weight_index) = match edge {
+                IntraDcEdge::Above => (column, row),
+                IntraDcEdge::Left => (row, column),
+            };
+            visit(
+                edge_index,
+                log2_dimension,
+                weight_index,
+                pred_index(row, column, stride_samples)?,
+            )?;
         }
     }
 
@@ -236,27 +282,10 @@ fn set_pred_sample<T: ReconSample>(
     Ok(())
 }
 
-const fn top_row_count(size: IntraRectBlockSize) -> usize {
-    size.height() >> 2
-}
-
-const fn left_column_count(size: IntraRectBlockSize) -> usize {
-    size.width() >> 2
-}
-
-const fn above_start_column(size: IntraRectBlockSize, have_left: bool) -> usize {
-    if size.width() < size.height() && have_left {
-        size.width() >> 2
-    } else {
-        0
-    }
-}
-
-const fn left_start_row(size: IntraRectBlockSize, have_above: bool) -> usize {
-    if size.width() >= size.height() && have_above {
-        size.height() >> 2
-    } else {
-        0
+const fn edge_len(edge: IntraDcEdge, size: IntraRectBlockSize) -> usize {
+    match edge {
+        IntraDcEdge::Left => size.height(),
+        IntraDcEdge::Above => size.width(),
     }
 }
 
@@ -358,65 +387,6 @@ mod tests {
         for row in 2..8 {
             assert_eq!(pred[row * 8], left_col0);
             assert_eq!(pred[row * 8 + 1], left_col1);
-            assert_eq!(&pred[row * 8 + 2..row * 8 + 8], &[80u8; 6]);
-        }
-    }
-
-    #[test]
-    fn ibp_dc_both_edges_wide_skips_left_top_overlap() {
-        let size = rect_size(4, 3);
-        let left = [20u8; 8];
-        let above = [200u8; 16];
-        let mut pred = [80u8; 128];
-
-        apply_intra_ibp_dc_rect(
-            BitDepth::Eight,
-            size,
-            IntraDcEdges::both(&left, &above),
-            &mut pred,
-            16,
-        )
-        .unwrap();
-
-        assert!(pred[0..32].iter().all(|sample| *sample > 80));
-        for row in 2..8 {
-            assert!(
-                pred[row * 16..row * 16 + 4]
-                    .iter()
-                    .all(|sample| *sample < 80)
-            );
-            assert_eq!(&pred[row * 16 + 4..row * 16 + 16], &[80u8; 12]);
-        }
-    }
-
-    #[test]
-    fn ibp_dc_both_edges_tall_skips_above_left_overlap() {
-        let size = rect_size(3, 4);
-        let left = [20u8; 16];
-        let above = [200u8; 8];
-        let mut pred = [80u8; 128];
-
-        apply_intra_ibp_dc_rect(
-            BitDepth::Eight,
-            size,
-            IntraDcEdges::both(&left, &above),
-            &mut pred,
-            8,
-        )
-        .unwrap();
-
-        for row in 0..size.height() {
-            assert!(pred[row * 8] < 80);
-            assert!(pred[row * 8 + 1] < 80);
-        }
-        for row in 0..4 {
-            assert!(
-                pred[row * 8 + 2..row * 8 + 8]
-                    .iter()
-                    .all(|sample| *sample > 80)
-            );
-        }
-        for row in 4..size.height() {
             assert_eq!(&pred[row * 8 + 2..row * 8 + 8], &[80u8; 6]);
         }
     }

@@ -7800,6 +7800,156 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "DECODE-GENERIC-RUNTIME-DESLOP"
+name = "Decoder generic runtime deslop"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.2.3", "5.20.7.25", "5.20.7.27", "7.13.2", "7.13.3.16", "7.14.4", "7.15.4"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md",
+    "docs/spec/av2/1.0.0/07-decoding-process.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal.rs"
+openspec_change = "decoder-runtime-deslop"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Extracts shared block context, capability diagnostics, intra prediction, residual planning, and inter prediction dispatch from the minimal runtime while preserving decoded output and existing unsupported-feature diagnostics. The follow-on cleanup collapses repeated CDF row lifecycle, chroma/recon write-back, inter residual, general-intra neighbour code, coefficient transform-size derivation, FSC pass plumbing, IntrABC probe scans and ranges, partition child construction, runtime diagnostics, MV-stack neighbour probes, intra joint neighbour sampling, decoder-facing recon directional-angle reference walks, Wiener NS LR transform-record/live-storage/recon helpers, inter decode/test helpers, root runtime/reconstruction helpers, CDEF/deblock scheduling helpers, tile-payload root/partition helpers, tile-payload CDF row traversal, selector-bound checks and tests, tile-payload test work-unit setup, and coeff-loop seeded context fixtures while deleting long runtime prose. The implementation-comment budget is ratcheted to 262 and the duplication budget is ratcheted to 6327; source-line hard allowances remain empty."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal/block_context.rs::tests",
+    "crates/splot-decode/src/runtime_minimal/capability.rs::tests",
+    "crates/splot-decode/src/runtime_minimal/intra_prediction.rs::tests",
+    "crates/splot-decode/src/runtime_minimal/residual_pipeline.rs::tests",
+    "crates/splot-decode/src/runtime_minimal/cdef.rs::tests",
+    "crates/splot-decode/src/runtime_minimal/deblock.rs::tests",
+    "crates/splot-decode/src/runtime_minimal/reference_buffer.rs::tests",
+    "crates/splot-decode/src/runtime_minimal_recon.rs::tests",
+    "crates/splot-decode/src/runtime_minimal/inter/mc.rs::tests",
+    "crates/splot-decode/src/runtime_minimal/general_intra_tests",
+    "crates/splot-decode/src/runtime_minimal/general_intra_tests/general_intra_cdef_tests.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/tests",
+    "crates/splot-decode/src/tile_payload",
+    "crates/splot-decode/src/tile_payload/cdf",
+    "crates/splot-decode/src/tile_payload/coeff_loop",
+]
+commands = [
+    "cargo clippy -p splot-decode -p splot-recon --all-targets --all-features --locked -- -D warnings",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo test -p splot-decode --locked",
+    "cargo test -p splot-decode --lib tile_payload::cdf --locked",
+    "cargo test -p splot-decode tile_payload --lib --locked",
+    "cargo xtask check-comment-density",
+    "cargo xtask check-duplication",
+    "cargo xtask check-source-lines",
+    "openspec validate decoder-runtime-deslop --no-interactive",
+    "cargo xtask check-feature-status",
+    "cargo xtask ci",
+]
+fixtures = [
+    "crates/splot-decode/src/runtime_minimal.rs",
+    "crates/splot-decode/src/runtime_minimal/block_context.rs",
+    "crates/splot-decode/src/runtime_minimal/capability.rs",
+    "crates/splot-decode/src/runtime_minimal/cdef.rs",
+    "crates/splot-decode/src/runtime_minimal/deblock.rs",
+    "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+    "crates/splot-decode/src/runtime_minimal/general_intra_tests.rs",
+    "crates/splot-decode/src/runtime_minimal/general_intra_tests/general_intra_cdef_tests.rs",
+    "crates/splot-decode/src/runtime_minimal/intra_prediction.rs",
+    "crates/splot-decode/src/runtime_minimal/limits.rs",
+    "crates/splot-decode/src/runtime_minimal/reference_buffer.rs",
+    "crates/splot-decode/src/runtime_minimal/residual_pipeline.rs",
+    "crates/splot-decode/src/runtime_minimal/inter.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/block.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/compound.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/cross_frame.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/lr_live_storage_tests.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/lr_source_read_tests.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/mc.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/mv_scaling.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/read_mv.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/read_mv/tests.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/single_ref.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/single_ref/tests.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/test_support.rs",
+    "crates/splot-decode/src/runtime_minimal/inter/tests.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/diagnostics.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_ref_mv_stack.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/live_storage.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/source_read_math.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records/ccso.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records/max_rect.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records/skip_records.rs",
+    "crates/splot-decode/src/runtime_minimal_recon.rs",
+    "crates/splot-decode/src/runtime_minimal_recon/chroma_directional.rs",
+    "crates/splot-decode/src/runtime_minimal_recon/tests.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon.rs",
+    "crates/splot-decode/src/tile_payload.rs",
+    "crates/splot-decode/src/tile_payload/block_symbol.rs",
+    "crates/splot-decode/src/tile_payload/coeff_state.rs",
+    "crates/splot-decode/src/tile_payload/derived_tests.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_block.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
+    "crates/splot-decode/src/tile_payload/general_intra_residual/tests.rs",
+    "crates/splot-decode/src/tile_payload/intra_joint_modes.rs",
+    "crates/splot-decode/src/tile_payload/mi_size_state.rs",
+    "crates/splot-decode/src/tile_payload/partition.rs",
+    "crates/splot-decode/src/tile_payload/partition_allowed.rs",
+    "crates/splot-decode/src/tile_payload/partition_allowed/spec_table_tests.rs",
+    "crates/splot-decode/src/tile_payload/partition_size.rs",
+    "crates/splot-decode/src/tile_payload/partition_traversal.rs",
+    "crates/splot-decode/src/tile_payload/partition_traversal/partition_children.rs",
+    "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs",
+    "crates/splot-decode/src/tile_payload/runtime_frontier.rs",
+    "crates/splot-decode/src/tile_payload/tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/eob_symbol_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_state_context_tests.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/test_support.rs",
+    "crates/splot-decode/src/tile_payload/cdf.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_context.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_read.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_rows.rs",
+    "crates/splot-decode/src/tile_payload/cdf/block_rows/mv.rs",
+    "crates/splot-decode/src/tile_payload/cdf/coeff_context.rs",
+    "crates/splot-decode/src/tile_payload/cdf/coeff_rows.rs",
+    "crates/splot-decode/src/tile_payload/cdf/context.rs",
+    "crates/splot-decode/src/tile_payload/cdf/lifecycle.rs",
+    "crates/splot-decode/src/tile_payload/cdf/partition_read.rs",
+    "crates/splot-decode/src/tile_payload/cdf/tests.rs",
+    "crates/splot-decode/src/tile_payload/cdf/util.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+    "crates/splot-recon/src/intra_directional_angle.rs",
+    "tools/comments/budget.toml",
+    "tools/dupehound/budget.toml",
+    "openspec/changes/decoder-runtime-deslop/proposal.md",
+    "openspec/changes/decoder-runtime-deslop/tasks.md",
+    "openspec/changes/decoder-runtime-deslop/specs/decoder-runtime-deslop/spec.md",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DOC-FEATURE-TRACKING"
 name = "Feature tracking documentation"
 category = "docs"
@@ -19598,7 +19748,6 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/partition_traversal.rs",
     "crates/splot-decode/src/tile_payload/partition_traversal_tests.rs",
     "crates/splot-decode/src/tile_payload/runtime_frontier.rs",
-    "openspec/changes/archive/2026-06-15-tile-partition-traversal-boundary",
 ]
 diagnostics = []
 
@@ -19732,7 +19881,6 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/cdf/block_rows.rs",
     "crates/splot-decode/src/tile_payload/cdf/block_read.rs",
     "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
-    "openspec/changes/archive/2026-06-15-minimal-block-syntax-frontier",
 ]
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source", "decode/output-error"]
 
@@ -19801,7 +19949,6 @@ fixtures = [
     "crates/splot-decode/src/tile_payload/runtime_frontier.rs",
     "crates/splot-recon/src/intra_directional.rs",
     "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
-    "openspec/changes/archive/2026-06-15-minimal-intra-reconstruction-frontier",
     "openspec/changes/recon-intra-cardinal-directional-prediction",
 ]
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source", "decode/output-error"]

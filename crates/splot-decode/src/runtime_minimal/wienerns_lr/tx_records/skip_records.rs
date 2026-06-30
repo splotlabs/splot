@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Skipped residual record helpers for the selectable transform-record handoff.
-
 use splot_core::span::ByteOffset;
 use splot_recon::PlaneId;
 
@@ -16,8 +14,8 @@ use super::super::recon::{SelectableReconContext, WienerNsLrReconSink};
 use super::super::wienerns_lr_selectable_transform_record_error_reason;
 use super::{SelectableLumaTxRecord, WienerNsLrTxSkipTransformRecord, mi_to_sample};
 
-/// An `all_zero` (`txb_skip`) coefficient block: no residual, so reconstruction
-/// writes the bare §7.13.2 DC prediction.
+const COEFF_CONTEXT_PLANES: [(usize, u32); 3] = [(0, 0), (1, 1), (2, 1)];
+
 fn skipped_coeff_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         all_zero: true,
@@ -76,28 +74,22 @@ pub(super) fn record_skipped_selectable_residuals(
             "unsupported_wienerns_lr_selectable_transform_records_skipped_record_allocation",
         )
     })?;
-    records.extend(
-        luma_records
-            .iter()
-            .copied()
-            .map(|record| WienerNsLrTxSkipTransformRecord {
-                row: record.row,
-                col: record.col,
-                rows: record.rows,
-                cols: record.cols,
-                skip_flag: true,
-                eob: 0,
-                intra_ist: None,
-            }),
-    );
+    records.extend(luma_records.iter().copied().map(skipped_tx_record));
     Ok(())
 }
 
-/// Reconstructs the skipped block's §6.4.1 4:2:0 chroma U/V planes as flat DC
-/// predictions (zero residual) for the single-chroma-group (non-`large_chunks`)
-/// case. A multi-chroma-group skipped block (`n4w >= 32` or `n4h >= 32`) is left
-/// unreconstructed for chroma — the verified region excludes it rather than
-/// emitting a partial chroma group.
+fn skipped_tx_record(record: SelectableLumaTxRecord) -> WienerNsLrTxSkipTransformRecord {
+    WienerNsLrTxSkipTransformRecord {
+        row: record.row,
+        col: record.col,
+        rows: record.rows,
+        cols: record.cols,
+        skip_flag: true,
+        eob: 0,
+        intra_ist: None,
+    }
+}
+
 fn reconstruct_skipped_chroma(
     sink: &mut WienerNsLrReconSink<u16>,
     frontier: &DecodeBlockFrontier,
@@ -137,9 +129,8 @@ fn reset_skipped_block_coeff_contexts(
     n4h: usize,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    let plane_count = if frontier.has_chroma { 3 } else { 1 };
-    for plane in 0..plane_count {
-        let (sub_x, sub_y) = if plane == 0 { (0, 0) } else { (1, 1) };
+    let plane_count = 1 + usize::from(frontier.has_chroma) * (COEFF_CONTEXT_PLANES.len() - 1);
+    for &(plane, sub) in COEFF_CONTEXT_PLANES.iter().take(plane_count) {
         coeff_ctx
             .reset_block_context_plane(CoeffContextReset {
                 plane,
@@ -147,8 +138,8 @@ fn reset_skipped_block_coeff_contexts(
                 r: frontier.r,
                 w4: n4w,
                 h4: n4h,
-                sub_x,
-                sub_y,
+                sub_x: sub,
+                sub_y: sub,
             })
             .map_err(|_| {
                 wienerns_lr_selectable_transform_record_error_reason(
