@@ -447,6 +447,10 @@ impl PlaneCoverage {
         true
     }
 
+    fn fully_covered(&self) -> bool {
+        self.covered.iter().all(|covered| *covered)
+    }
+
     /// The length of the contiguous run of reconstructed MI units starting at the
     /// origin-adjacent cell of a §7.13.2.1 reference edge, stopping at the first
     /// uncovered (or off-grid) cell — the §5.20.2.3 / AVM `count_top_right_avail` /
@@ -781,6 +785,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         offset: ByteOffset,
     ) -> Result<DecodedFrame<T>> {
         self.replay_pending_chroma_transforms()?;
+        self.ensure_full_recon_coverage_complete(offset)?;
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
         if let Some(filter) = core.deblocking_filter_params
@@ -994,6 +999,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 return Ok(());
             }
         }
+    }
+
+    fn ensure_full_recon_coverage_complete(&self, offset: ByteOffset) -> Result<()> {
+        if !self.full_recon {
+            return Ok(());
+        }
+        if self.pending_chroma_transforms.is_empty()
+            && self.coverage.iter().all(PlaneCoverage::fully_covered)
+        {
+            return Ok(());
+        }
+        Err(full_recon_deferred_leaf_error(offset))
     }
 
     /// Whether the transform rect `[x, x+width) x [y, y+height)` lies entirely
@@ -2109,7 +2126,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// `mi_col` / `mi_row` are the transform's §3 MI coordinates and `tx_size` its
     /// §5.20.6 `TxSize` index.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime_minimal) fn reconstruct_luma_transform(
         &mut self,
         mi_col: usize,
@@ -2128,9 +2144,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         tile_offset: ByteOffset,
     ) -> Result<()> {
         if !self.quant_reconstructable {
+            if self.full_recon {
+                return Err(full_recon_deferred_leaf_error(tile_offset));
+            }
             return Ok(());
         }
         let Some((log2_width, log2_height)) = tx_size_log2(tx_size) else {
+            if self.full_recon {
+                return Err(full_recon_deferred_leaf_error(tile_offset));
+            }
             return Ok(());
         };
         let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
@@ -2145,6 +2167,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 log2_width,
                 log2_height,
                 full_recon_mode_label(leaf_y_mode, directional, is_intrabc),
+                tile_offset,
             );
         }
         if is_intrabc {
@@ -2177,6 +2200,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         log2_width,
                         log2_height,
                         "DC_PRED",
+                        tile_offset,
                     );
                 }
                 let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
@@ -2232,13 +2256,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         ),
                         None => Ok(false),
                     };
-                    if !self.routed_angular_wrote(routed)? {
+                    if !self.routed_angular_wrote(routed, tile_offset)? {
                         return self.defer_full_recon_leaf(
                             mi_col,
                             mi_row,
                             log2_width,
                             log2_height,
                             cardinal_label,
+                            tile_offset,
                         );
                     }
                 } else {
@@ -2258,6 +2283,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                             log2_width,
                             log2_height,
                             cardinal_label,
+                            tile_offset,
                         );
                     }
                     let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
@@ -2298,6 +2324,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         log2_width,
                         log2_height,
                         "PAETH_PRED",
+                        tile_offset,
                     );
                 }
                 let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
@@ -2343,7 +2370,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     mrl_sec_index,
                     tile_offset,
                 );
-                if !self.routed_angular_wrote(result)? {
+                if !self.routed_angular_wrote(result, tile_offset)? {
                     let label = full_recon_mode_label(leaf_y_mode, directional, is_intrabc);
                     return self.defer_full_recon_leaf(
                         mi_col,
@@ -2351,6 +2378,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         log2_width,
                         log2_height,
                         label,
+                        tile_offset,
                     );
                 }
             }
@@ -2361,6 +2389,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     log2_width,
                     log2_height,
                     full_recon_mode_label(leaf_y_mode, directional, is_intrabc),
+                    tile_offset,
                 );
             }
         }
@@ -2408,7 +2437,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let width = 1usize << log2_width;
         let height = 1usize << log2_height;
         if !self.rect_within_pending_intrabc_prediction(x, y, width, height) {
-            return self.defer_full_recon_leaf(mi_col, mi_row, log2_width, log2_height, "INTRABC");
+            return self.defer_full_recon_leaf(
+                mi_col,
+                mi_row,
+                log2_width,
+                log2_height,
+                "INTRABC",
+                tile_offset,
+            );
         }
         reconstruct_intrabc_block_residual_rect_into(
             &mut self.workspace,
@@ -4535,7 +4571,8 @@ mod edge_filter;
 mod final_filters;
 mod full_recon;
 use full_recon::{
-    ANGLE_STEP, FarEdgeSide, MRL_INDEX_TO_DELTA, full_recon_mode_label, wide_angle_mapping,
+    ANGLE_STEP, FarEdgeSide, MRL_INDEX_TO_DELTA, full_recon_deferred_leaf_error,
+    full_recon_mode_label, wide_angle_mapping,
 };
 
 #[cfg(test)]

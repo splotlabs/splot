@@ -6,7 +6,14 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crate::error::DecodeError;
+use crate::runtime_minimal::deblock::DeblockQuantDeltas;
+use crate::tile_payload::{WienerNsLrSourceBlock, WienerNsLrUnitFilter};
+use splot_core::headers::frame::{
+    FrameRestorationType, LrPlaneParams, build_minimal_intra_clk_core,
+};
 use splot_core::span::ByteOffset;
+use splot_recon::{WIENER_NS_CHROMA_COEFFS, WIENER_NS_LUMA_COEFFS};
 
 /// §3 `TxSize` index for TX_16X16 (`Tx_Width[2] == Tx_Height[2] == 16`).
 const TX_16X16: usize = 2;
@@ -74,6 +81,13 @@ fn coeff_block_16x16() -> LumaCoeffBlock {
 
 fn sink() -> WienerNsLrReconSink<u16> {
     WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, true, false, false, 0, 16).unwrap()
+}
+
+fn unsupported_reason(error: DecodeError) -> Option<&'static str> {
+    match error {
+        DecodeError::UnsupportedFeature { unsupported } => Some(unsupported.reason()),
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -287,6 +301,131 @@ fn ist_nonzero_dc_leaf_is_deferred() {
     );
     assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(), 0);
     assert_eq!(sink.reconstructed_counts().0, 0);
+}
+
+#[test]
+fn full_recon_deferred_luma_leaf_returns_unsupported() {
+    let mut sink = sink().into_full_recon();
+    let mut block = coeff_block_16x16();
+    block.intra_ist = Some(crate::tile_payload::IntraIstSyntax {
+        sec_tx_type: 1,
+        most_probable_stx_set: Some(0),
+    });
+
+    let error = sink
+        .reconstruct_luma_transform(
+            0,
+            0,
+            TX_16X16,
+            &block,
+            Some(IntraYMode::DC_PRED),
+            None,
+            0,
+            None,
+            0,
+            149,
+            true,
+            false,
+            false,
+            ByteOffset::new(0),
+        )
+        .err()
+        .unwrap();
+
+    assert_eq!(
+        unsupported_reason(error),
+        Some("unsupported_wienerns_lr_selectable_transform_records_full_recon_deferred_leaf")
+    );
+}
+
+#[test]
+fn full_recon_filtered_frame_rejects_incomplete_coverage() {
+    let sink = WienerNsLrReconSink::<u16>::new(16, 16, BitDepth::Ten, true, false, false, 0, 16)
+        .unwrap()
+        .into_full_recon();
+    let (core, _) = build_minimal_intra_clk_core().unwrap();
+
+    let error = sink
+        .into_filtered_frame(&core, DeblockQuantDeltas::ZERO, ByteOffset::new(0))
+        .err()
+        .unwrap();
+
+    assert_eq!(
+        unsupported_reason(error),
+        Some("unsupported_wienerns_lr_selectable_transform_records_full_recon_deferred_leaf")
+    );
+}
+
+#[test]
+fn luma_lr_partial_edge_block_clips_to_coded_plane() {
+    let mut sink =
+        WienerNsLrReconSink::<u16>::new(6, 6, BitDepth::Ten, true, false, false, 0, 16).unwrap();
+    let (mut core, _) = build_minimal_intra_clk_core().unwrap();
+    let lr = core.lr_params.as_mut().unwrap();
+    lr.uses_lr = true;
+    lr.planes = vec![
+        LrPlaneParams {
+            restoration_type: FrameRestorationType::WienerNonsep,
+            frame_filters_on: false,
+            num_filter_classes: None,
+            frame_filter_bank: None,
+        },
+        LrPlaneParams {
+            restoration_type: FrameRestorationType::None,
+            frame_filters_on: false,
+            num_filter_classes: None,
+            frame_filter_bank: None,
+        },
+        LrPlaneParams {
+            restoration_type: FrameRestorationType::None,
+            frame_filters_on: false,
+            num_filter_classes: None,
+            frame_filter_bank: None,
+        },
+    ];
+    let curr_luma = vec![123u16; 36];
+    let cdef_luma = vec![123u16; 36];
+    let block = WienerNsLrSourceBlock {
+        plane: PlaneId::Y.index(),
+        row: 0,
+        col: 1,
+        unit_row: 0,
+        unit_col: 0,
+        tile_mi_row_start: 0,
+        tile_mi_row_end: 2,
+        tile_mi_col_start: 0,
+        tile_mi_col_end: 2,
+        x: 4,
+        y: 0,
+        width: 4,
+        height: 4,
+        luma_start_x: 0,
+        luma_end_x: 7,
+        luma_start_y: 0,
+        luma_end_y: 7,
+        frame_luma_end_y: 7,
+        luma_stripe_start_y: 0,
+        luma_stripe_end_y: 7,
+    };
+    let filter = WienerNsLrUnitFilter {
+        plane: PlaneId::Y.index(),
+        unit_row: 0,
+        unit_col: 0,
+        coeff_count: WIENER_NS_LUMA_COEFFS,
+        coeffs: [0i16; WIENER_NS_CHROMA_COEFFS],
+    };
+
+    sink.apply_luma_lr(
+        &core,
+        ByteOffset::new(0),
+        &[block],
+        &[filter],
+        &curr_luma,
+        &cdef_luma,
+    )
+    .unwrap();
+
+    assert_eq!(sink.reconstructed_sample(PlaneId::Y, 5, 3).unwrap(), 123);
 }
 
 #[test]

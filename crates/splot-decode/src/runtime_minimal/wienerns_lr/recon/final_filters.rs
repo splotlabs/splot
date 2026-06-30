@@ -111,6 +111,42 @@ fn lr_unit_filter_for_block<'a>(
         .ok_or_else(|| luma_lr_filter_error(offset))
 }
 
+fn clipped_lr_source_block(
+    block: &WienerNsLrSourceBlock,
+    plane_width: usize,
+    plane_height: usize,
+    luma_width: usize,
+    luma_height: usize,
+    offset: ByteOffset,
+) -> Result<WienerNsLrSourceBlock> {
+    let mut clipped = *block;
+    let remaining_width = plane_width
+        .checked_sub(block.x)
+        .ok_or_else(|| luma_lr_filter_error(offset))?;
+    let remaining_height = plane_height
+        .checked_sub(block.y)
+        .ok_or_else(|| luma_lr_filter_error(offset))?;
+    clipped.width = block.width.min(remaining_width);
+    clipped.height = block.height.min(remaining_height);
+    if clipped.width == 0 || clipped.height == 0 || luma_width == 0 || luma_height == 0 {
+        return Err(luma_lr_filter_error(offset));
+    }
+
+    let luma_end_x = luma_width - 1;
+    let luma_end_y = luma_height - 1;
+    clipped.luma_end_x = clipped.luma_end_x.min(luma_end_x);
+    clipped.luma_end_y = clipped.luma_end_y.min(luma_end_y);
+    clipped.frame_luma_end_y = clipped.frame_luma_end_y.min(luma_end_y);
+    clipped.luma_stripe_end_y = clipped.luma_stripe_end_y.min(luma_end_y);
+    if clipped.luma_start_x > clipped.luma_end_x
+        || clipped.luma_start_y > clipped.luma_end_y
+        || clipped.luma_stripe_start_y > clipped.luma_stripe_end_y
+    {
+        return Err(luma_lr_filter_error(offset));
+    }
+    Ok(clipped)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lr_plane_source_sample<T: ReconSample>(
     plane: PlaneId,
@@ -472,9 +508,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         lr_chroma: &mut [T],
     ) -> Result<()> {
         let (plane_width, plane_height) = self.plane_dimensions(plane_id);
+        let block = clipped_lr_source_block(
+            block,
+            plane_width,
+            plane_height,
+            self.luma_width,
+            self.luma_height,
+            offset,
+        )?;
         let coeffs = match frame_coeffs {
             Some(coeffs) => *coeffs,
-            None => chroma_lr_unit_coeffs(lr_unit_filters, block, offset)?,
+            None => chroma_lr_unit_coeffs(lr_unit_filters, &block, offset)?,
         };
         let sample_count = block
             .width
@@ -496,8 +540,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             mi_rows: self.luma_height.div_ceil(MI_SIZE),
             cfl_ds_filter_index: self.cfl_ds_filter_index,
         };
-        let chroma_bounds = super::super::wienerns_lr_source_block_bounds(block, 1, 1);
-        let luma_bounds = super::super::wienerns_lr_source_block_bounds(block, 1, 1);
+        let chroma_bounds = super::super::wienerns_lr_source_block_bounds(&block, 1, 1);
+        let luma_bounds = super::super::wienerns_lr_source_block_bounds(&block, 1, 1);
         let source_error = core::cell::RefCell::new(None::<ReconError>);
         wiener_ns_filter_chroma_block(
             &mut output,
@@ -574,6 +618,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         coeffs: &[[i16; WIENER_NS_LUMA_COEFFS]],
         lr_luma: &mut [T],
     ) -> Result<()> {
+        let block = clipped_lr_source_block(
+            block,
+            self.luma_width,
+            self.luma_height,
+            self.luma_width,
+            self.luma_height,
+            offset,
+        )?;
         let sample_count = block
             .width
             .checked_mul(block.height)
@@ -581,7 +633,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let subclasses = if num_classes > 1 {
             Some(self.luma_lr_subclasses(
                 offset,
-                block,
+                &block,
                 curr_luma,
                 cdef_luma,
                 qindex,
@@ -601,7 +653,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             coeffs_by_class: coeffs,
             subclasses: subclasses.as_deref(),
         };
-        let bounds = super::super::wienerns_lr_source_block_bounds(block, 0, 0);
+        let bounds = super::super::wienerns_lr_source_block_bounds(&block, 0, 0);
         let block_x = usize_to_isize_recon(block.x, "luma LR block x")
             .map_err(|_| luma_lr_filter_error(offset))?;
         let block_y = usize_to_isize_recon(block.y, "luma LR block y")
