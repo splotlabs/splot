@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Loop-restoration source-read regression tests for the minimal inter runtime.
-
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::cell::Cell;
@@ -18,6 +16,7 @@ use splot_recon::{
     ReconError,
 };
 
+use super::super::wienerns_lr::WienerNsLrClassifiedWienerValuesFrontier;
 use super::test_support::{
     UnsupportedFeatureExpectation, assert_unsupported_feature, fixture_sequence_and_key_core,
 };
@@ -101,6 +100,24 @@ fn storage_inputs<'a>(
         cdef_frame,
         tx_skip_grid,
     }
+}
+
+fn classified_wiener_storage_frontier(
+    tx_skip: &super::super::WienerNsLrTxSkipGrid,
+) -> Result<Option<WienerNsLrClassifiedWienerValuesFrontier>, DecodeError> {
+    let blocks = [wienerns_lr_source_block()];
+    let planes = [lr_plane(true, Some(2), None)];
+    let curr_frame = flat_monochrome_frame_u16(12);
+    let cdef_frame = flat_monochrome_frame_u16(12);
+
+    super::super::derive_wienerns_lr_classified_wiener_storage_frontier(
+        &blocks,
+        &planes,
+        BitDepth::Ten,
+        0,
+        DecodeLimits::unlimited(),
+        storage_inputs(&curr_frame, &cdef_frame, tx_skip),
+    )
 }
 
 #[test]
@@ -512,22 +529,11 @@ fn wienerns_lr_classified_wiener_values_frontier_propagates_invalid_tx_skip() {
 
 #[test]
 fn wienerns_lr_classified_wiener_storage_frontier_reads_frame_and_tx_skip_storage() {
-    let blocks = [wienerns_lr_source_block()];
-    let planes = [lr_plane(true, Some(2), None)];
-    let curr_frame = flat_monochrome_frame_u16(12);
-    let cdef_frame = flat_monochrome_frame_u16(12);
     let tx_skip = tx_skip_grid(vec![0; 16]);
 
-    let frontier = super::super::derive_wienerns_lr_classified_wiener_storage_frontier(
-        &blocks,
-        &planes,
-        BitDepth::Ten,
-        0,
-        DecodeLimits::unlimited(),
-        storage_inputs(&curr_frame, &cdef_frame, &tx_skip),
-    )
-    .expect("storage-backed classified Wiener frontier")
-    .expect("classified luma is active");
+    let frontier = classified_wiener_storage_frontier(&tx_skip)
+        .expect("storage-backed classified Wiener frontier")
+        .expect("classified luma is active");
 
     assert_eq!(frontier.blocks_resolved, 1);
     assert_eq!(frontier.source_reads_resolved, 36 * 7);
@@ -626,15 +632,10 @@ fn wienerns_lr_tx_skip_grid_retention_rejects_missing_cells() {
     }
 }
 
-/// A record whose ORIGIN is genuinely out of the visible MI grid (`row >= rows` or
-/// `col >= cols`) is a structured bounds error — AVM never emits one. A record whose
-/// in-frame origin merely has an overhanging NOMINAL extent is instead clamped to the
-/// frame edge (the §5.20.3.2 `block_coded` model), covered by the grid `clamps_*_edge`
-/// tests in `tx_records_grid_tests.rs`.
 #[test]
 fn wienerns_lr_tx_skip_grid_retention_rejects_out_of_frame_origin_record() {
     let records = [super::super::WienerNsLrTxSkipTransformRecord {
-        row: 2, // origin at/beyond the 2-row grid: a genuine out-of-frame write
+        row: 2,
         col: 0,
         rows: 2,
         cols: 1,
@@ -690,21 +691,9 @@ fn wienerns_lr_tx_skip_grid_retention_rejects_conflicting_records() {
 
 #[test]
 fn wienerns_lr_classified_wiener_storage_frontier_propagates_tx_skip_grid_bounds() {
-    let blocks = [wienerns_lr_source_block()];
-    let planes = [lr_plane(true, Some(2), None)];
-    let curr_frame = flat_monochrome_frame_u16(12);
-    let cdef_frame = flat_monochrome_frame_u16(12);
     let tx_skip = super::super::WienerNsLrTxSkipGrid::new(1, 1, vec![0]).unwrap();
 
-    let error = super::super::derive_wienerns_lr_classified_wiener_storage_frontier(
-        &blocks,
-        &planes,
-        BitDepth::Ten,
-        0,
-        DecodeLimits::unlimited(),
-        storage_inputs(&curr_frame, &cdef_frame, &tx_skip),
-    )
-    .unwrap_err();
+    let error = classified_wiener_storage_frontier(&tx_skip).unwrap_err();
 
     match error {
         DecodeError::Reconstruction {
@@ -718,23 +707,11 @@ fn wienerns_lr_classified_wiener_storage_frontier_propagates_tx_skip_grid_bounds
 
 #[test]
 fn wienerns_lr_classified_wiener_storage_frontier_propagates_non_boolean_tx_skip() {
-    let blocks = [wienerns_lr_source_block()];
-    let planes = [lr_plane(true, Some(2), None)];
-    let curr_frame = flat_monochrome_frame_u16(12);
-    let cdef_frame = flat_monochrome_frame_u16(12);
     let mut values = vec![0; 16];
     values[8] = 2;
     let tx_skip = tx_skip_grid(values);
 
-    let error = super::super::derive_wienerns_lr_classified_wiener_storage_frontier(
-        &blocks,
-        &planes,
-        BitDepth::Ten,
-        0,
-        DecodeLimits::unlimited(),
-        storage_inputs(&curr_frame, &cdef_frame, &tx_skip),
-    )
-    .unwrap_err();
+    let error = classified_wiener_storage_frontier(&tx_skip).unwrap_err();
 
     match error {
         DecodeError::Reconstruction {

@@ -182,58 +182,34 @@ mod tests {
         IntraRectBlockSize::new(log2_width, log2_height).unwrap()
     }
 
-    #[test]
-    fn paeth_prediction_selects_left_candidate() {
-        let left = [30u8; 8];
-        let above = [12u8; 4];
+    fn assert_paeth_fills(left: [u8; 8], above: [u8; 4], top_left: u8, expected: u8) {
         let mut output = [0u8; 32];
 
         predict_intra_paeth_rect_into(
             BitDepth::Eight,
             rect_size(2, 3),
-            IntraPaethEdges::new(&left, &above, 10),
+            IntraPaethEdges::new(&left, &above, top_left),
             &mut output,
             4,
         )
         .unwrap();
 
-        assert_eq!(output, [30u8; 32]);
+        assert_eq!(output, [expected; 32]);
+    }
+
+    #[test]
+    fn paeth_prediction_selects_left_candidate() {
+        assert_paeth_fills([30; 8], [12; 4], 10, 30);
     }
 
     #[test]
     fn paeth_prediction_selects_above_candidate() {
-        let left = [12u8; 8];
-        let above = [30u8; 4];
-        let mut output = [0u8; 32];
-
-        predict_intra_paeth_rect_into(
-            BitDepth::Eight,
-            rect_size(2, 3),
-            IntraPaethEdges::new(&left, &above, 10),
-            &mut output,
-            4,
-        )
-        .unwrap();
-
-        assert_eq!(output, [30u8; 32]);
+        assert_paeth_fills([12; 8], [30; 4], 10, 30);
     }
 
     #[test]
     fn paeth_prediction_selects_top_left_candidate() {
-        let left = [0u8; 8];
-        let above = [20u8; 4];
-        let mut output = [99u8; 32];
-
-        predict_intra_paeth_rect_into(
-            BitDepth::Eight,
-            rect_size(2, 3),
-            IntraPaethEdges::new(&left, &above, 10),
-            &mut output,
-            4,
-        )
-        .unwrap();
-
-        assert_eq!(output, [10u8; 32]);
+        assert_paeth_fills([0; 8], [20; 4], 10, 10);
     }
 
     #[test]

@@ -7,8 +7,8 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, IntraCardinalDirection,
-    IntraCardinalEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges,
-    IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
+    IntraDirectionalAngle, IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges,
+    IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraPaethEdges, IntraRectBlockSize, IntraSmoothEdges,
     IntraSmoothMode, IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
     ReconSample, apply_ibp_dr_blend_rect, apply_intra_edge_filter, apply_intra_ibp_dc_rect,
@@ -74,7 +74,7 @@ fn reconstruct_luma_dc_chroma_h_pred_8bit420_64x64() -> Result<DecodedFrame<u8>>
         BitDepth::Eight,
         chroma_block,
         IntraCardinalDirection::Horizontal,
-        IntraCardinalEdges::left(&chroma_left),
+        IntraDirectionalAngleEdges::left(&chroma_left),
         &mut chroma_prediction,
         MINIMAL_CHROMA_WIDTH,
     )?;
@@ -1847,7 +1847,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
     let cardinal_edges = match direction {
         IntraCardinalDirection::Vertical => {
             if let Some(above) = edges.above_samples() {
-                IntraCardinalEdges::above(above)
+                IntraDirectionalAngleEdges::above(above)
             } else {
                 let left = edges
                     .left_samples()
@@ -1856,12 +1856,12 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
                     .first()
                     .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
                 synthesized_edge = vec![fill; width];
-                IntraCardinalEdges::above(&synthesized_edge)
+                IntraDirectionalAngleEdges::above(&synthesized_edge)
             }
         }
         IntraCardinalDirection::Horizontal => {
             if let Some(left) = edges.left_samples() {
-                IntraCardinalEdges::left(left)
+                IntraDirectionalAngleEdges::left(left)
             } else {
                 let above = edges
                     .above_samples()
@@ -1870,7 +1870,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
                     .first()
                     .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
                 synthesized_edge = vec![fill; height];
-                IntraCardinalEdges::left(&synthesized_edge)
+                IntraDirectionalAngleEdges::left(&synthesized_edge)
             }
         }
     };

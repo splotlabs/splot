@@ -86,7 +86,6 @@ pub(crate) use runtime_frontier::{
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";
 pub(crate) const TILE_PAYLOAD_DECODE_FEATURE_ID: &str = "DECODE-TILE-PAYLOAD-BOUNDARY";
 
-/// Input to the crate-private tile payload boundary planner.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TilePayloadBoundaryInput<'payload, 'facts> {
     payload: &'payload [u8],
@@ -100,7 +99,6 @@ pub(crate) struct TilePayloadBoundaryInput<'payload, 'facts> {
 }
 
 impl<'payload, 'facts> TilePayloadBoundaryInput<'payload, 'facts> {
-    /// Builds a tile payload boundary input from already-framed tile payload bytes.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub(crate) const fn new(
@@ -126,7 +124,6 @@ impl<'payload, 'facts> TilePayloadBoundaryInput<'payload, 'facts> {
     }
 }
 
-/// Source metadata carried into deterministic tile work units.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePayloadSource {
     source_kind: DecodeObuSourceKind,
@@ -136,7 +133,6 @@ pub(crate) struct TilePayloadSource {
 }
 
 impl TilePayloadSource {
-    /// Creates tile payload source metadata.
     #[must_use]
     pub(crate) const fn new(
         source_kind: DecodeObuSourceKind,
@@ -152,32 +148,27 @@ impl TilePayloadSource {
         }
     }
 
-    /// Source container kind.
     #[must_use]
     pub(crate) const fn source_kind(self) -> DecodeObuSourceKind {
         self.source_kind
     }
 
-    /// IVF frame metadata, when the source was IVF-wrapped.
     #[must_use]
     pub(crate) const fn ivf_frame(self) -> Option<DecodeIvfFrameContext> {
         self.ivf_frame
     }
 
-    /// Planned OBU index.
     #[must_use]
     pub(crate) const fn obu_index(self) -> u64 {
         self.obu_index
     }
 
-    /// Absolute OBU header byte offset.
     #[must_use]
     pub(crate) const fn obu_offset(self) -> ByteOffset {
         self.obu_offset
     }
 }
 
-/// Tile-grid facts needed to derive row/column and MI boundaries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileGridFacts<'a> {
     tile_cols: u32,
@@ -187,7 +178,6 @@ pub(crate) struct TileGridFacts<'a> {
 }
 
 impl<'a> TileGridFacts<'a> {
-    /// Creates tile-grid facts from parsed frame-header tile info.
     #[must_use]
     pub(crate) const fn new(
         tile_cols: u32,
@@ -204,7 +194,6 @@ impl<'a> TileGridFacts<'a> {
     }
 }
 
-/// Frame facts that gate the current minimal tile payload tier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileFrameFacts {
     obu_type: ObuType,
@@ -220,7 +209,6 @@ pub(crate) struct TileFrameFacts {
 }
 
 impl TileFrameFacts {
-    /// Creates frame facts for tile payload boundary planning.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     #[must_use]
     pub(crate) const fn new(
@@ -247,7 +235,6 @@ impl TileFrameFacts {
         }
     }
 
-    /// Returns a copy with parsed coefficient frame facts.
     #[must_use]
     pub(crate) const fn with_coeff_frame_facts(
         mut self,
@@ -257,7 +244,6 @@ impl TileFrameFacts {
         self
     }
 
-    /// Returns a copy with explicit tile CDF policy facts.
     #[must_use]
     pub(crate) const fn with_cdf_policy(mut self, cdf_policy: TileCdfPolicyInput) -> Self {
         self.cdf_policy = cdf_policy;
@@ -265,7 +251,7 @@ impl TileFrameFacts {
     }
 }
 
-/// Parsed frame/sequence facts needed by future coefficient decoding.
+/// Parsed frame/sequence facts used by coefficient decoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCoeffFrameFacts {
     enable_fsc: bool,
@@ -281,7 +267,7 @@ pub(crate) struct TileCoeffFrameFacts {
     base_q_idx: u32,
 }
 
-/// Named input for parsed frame/sequence facts needed by coefficient decoding.
+/// Named input for parsed frame/sequence facts used by coefficient decoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCoeffFrameFactsInput {
     pub(crate) enable_fsc: bool,
@@ -298,7 +284,6 @@ pub(crate) struct TileCoeffFrameFactsInput {
 }
 
 impl TileCoeffFrameFacts {
-    /// Creates parsed coefficient frame facts.
     #[must_use]
     pub(crate) const fn new(input: TileCoeffFrameFactsInput) -> Self {
         Self {
@@ -332,67 +317,56 @@ impl TileCoeffFrameFacts {
         }
     }
 
-    /// Parsed `enable_fsc` from AV2 § 5.4.8.
     #[must_use]
     pub(crate) const fn enable_fsc(self) -> bool {
         self.enable_fsc
     }
 
-    /// Parsed `enable_idtx_intra` from AV2 § 5.4.8.
     #[must_use]
     pub(crate) const fn enable_idtx_intra(self) -> bool {
         self.enable_idtx_intra
     }
 
-    /// Parsed `enable_intra_ist` from AV2 § 5.4.8.
     #[must_use]
     pub(crate) const fn enable_intra_ist(self) -> bool {
         self.enable_intra_ist
     }
 
-    /// Parsed `enable_inter_ist` from AV2 § 5.4.8.
     #[must_use]
     pub(crate) const fn enable_inter_ist(self) -> bool {
         self.enable_inter_ist
     }
 
-    /// Parsed `enable_chroma_dctonly` from AV2 § 5.4.8.
     #[must_use]
     pub(crate) const fn enable_chroma_dctonly(self) -> bool {
         self.enable_chroma_dctonly
     }
 
-    /// Parsed `enable_cctx` from AV2 § 5.4.8.
     #[must_use]
     pub(crate) const fn enable_cctx(self) -> bool {
         self.enable_cctx
     }
 
-    /// Parsed frame-header `reduced_tx_set`.
     #[must_use]
     pub(crate) const fn reduced_tx_set(self) -> usize {
         self.reduced_tx_set
     }
 
-    /// Parsed frame `base_q_idx`.
     #[must_use]
     pub(crate) const fn base_q_idx(self) -> u32 {
         self.base_q_idx
     }
 
-    /// Parsed frame `allow_tcq` from AV2 § 5.18.2.
     #[must_use]
     pub(crate) const fn allow_tcq(self) -> bool {
         self.allow_tcq
     }
 
-    /// Parsed frame `allow_parity_hiding` from AV2 § 5.18.2.
     #[must_use]
     pub(crate) const fn allow_parity_hiding(self) -> bool {
         self.allow_parity_hiding
     }
 
-    /// `LosslessArray[segment_id]`, if `segment_id` is in domain.
     #[must_use]
     pub(crate) const fn lossless_for_segment(self, segment_id: usize) -> Option<bool> {
         if segment_id < self.lossless_array.len() {
@@ -403,18 +377,14 @@ impl TileCoeffFrameFacts {
     }
 }
 
-/// BRU path for the modeled tile payload boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TileBruPath {
-    /// `use_bru == 0`; the minimal tier does not read per-tile BRU activity.
     NotUsed,
-    /// BRU activity is active for this tile path; unsupported by this change.
     Active,
-    /// BRU activity is inactive for this tile path; unsupported by this change.
     Inactive,
 }
 
-/// Deterministic plan for a tile payload boundary that reaches `decode_tile()`.
+/// Deterministic plan for framed tile payload work.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTilePayloadPlan<'a> {
     source: TilePayloadSource,
@@ -425,43 +395,37 @@ pub(crate) struct DecodeTilePayloadPlan<'a> {
 }
 
 impl<'a> DecodeTilePayloadPlan<'a> {
-    /// Source metadata shared by this tile-payload plan.
     #[must_use]
     pub(crate) const fn source(&self) -> TilePayloadSource {
         self.source
     }
 
-    /// Selected layer shared by this tile-payload plan.
     #[must_use]
     pub(crate) const fn selected_layer(&self) -> DecodeLayerSelection {
         self.selected_layer
     }
 
-    /// Planned tile work units in deterministic `TileNum` order.
     #[must_use]
     pub(crate) fn work_units(&self) -> &[DecodeTileWorkUnit<'a>] {
         &self.work_units
     }
 
-    /// Mutable tile work units for future tile syntax traversal.
     pub(crate) fn work_units_mut(&mut self) -> &mut [DecodeTileWorkUnit<'a>] {
         &mut self.work_units
     }
 
-    /// Unsupported boundary reached after creating tile work units.
     #[must_use]
     pub(crate) const fn unsupported(&self) -> TilePayloadUnsupported {
         self.unsupported
     }
 
-    /// Frame-end operations reached by this boundary, if any.
     #[must_use]
     pub(crate) const fn frame_end(&self) -> FrameEndBoundary {
         self.frame_end
     }
 }
 
-/// One deterministic tile work unit for future tile syntax decoding.
+/// One deterministic tile work unit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTileWorkUnit<'a> {
     source: TilePayloadSource,
@@ -482,97 +446,81 @@ pub(crate) struct DecodeTileWorkUnit<'a> {
 }
 
 impl<'a> DecodeTileWorkUnit<'a> {
-    /// Source metadata for this work unit.
     #[must_use]
     pub(crate) const fn source(&self) -> TilePayloadSource {
         self.source
     }
 
-    /// Selected layer for this work unit.
     #[must_use]
     pub(crate) const fn selected_layer(&self) -> DecodeLayerSelection {
         self.selected_layer
     }
 
-    /// `TileNum` for this work unit.
     #[must_use]
     pub(crate) const fn tile_num(&self) -> u32 {
         self.tile_num
     }
 
-    /// Tile row index.
     #[must_use]
     pub(crate) const fn tile_row(&self) -> u32 {
         self.tile_row
     }
 
-    /// Tile column index.
     #[must_use]
     pub(crate) const fn tile_col(&self) -> u32 {
         self.tile_col
     }
 
-    /// MI row range covered by this tile.
     #[must_use]
     pub(crate) fn mi_row_range(&self) -> core::ops::Range<u32> {
         self.mi_row_range.clone()
     }
 
-    /// MI column range covered by this tile.
     #[must_use]
     pub(crate) fn mi_col_range(&self) -> core::ops::Range<u32> {
         self.mi_col_range.clone()
     }
 
-    /// Borrowed tile bytes that future `decode_tile()` may consume.
     #[must_use]
     pub(crate) const fn tile_bytes(&self) -> &'a [u8] {
         self.tile_bytes
     }
 
-    /// Absolute byte span of the tile bytes.
     #[must_use]
     pub(crate) const fn tile_byte_span(&self) -> ByteSpan {
         self.tile_byte_span
     }
 
-    /// `tileSize` in bytes.
     #[must_use]
     pub(crate) const fn tile_size(&self) -> u64 {
         self.tile_size
     }
 
-    /// `CurrentQIndex` at tile entry.
     #[must_use]
     pub(crate) const fn current_q_index_at_entry(&self) -> u32 {
         self.current_q_index_at_entry
     }
 
-    /// Parsed frame/sequence facts needed by future coefficient decoding.
     #[must_use]
     pub(crate) const fn coeff_frame_facts(&self) -> TileCoeffFrameFacts {
         self.coeff_frame_facts
     }
 
-    /// Symbol-decoder initialization boundary facts.
     #[must_use]
     pub(crate) const fn symbol(&self) -> SymbolInitBoundary {
         self.symbol
     }
 
-    /// Tile-local CDF selection boundary facts.
     #[must_use]
     pub(crate) const fn cdf(&self) -> &TileCdfWorkUnitBoundary {
         &self.cdf
     }
 
-    /// Mutable tile CDF boundary metadata attached to this work unit.
     pub(crate) fn cdf_mut(&mut self) -> &mut TileCdfWorkUnitBoundary {
         &mut self.cdf
     }
 }
 
-/// Symbol-decoder state immediately after `init_symbol(tileSize)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SymbolInitBoundary {
     consumed_bits: u64,
@@ -581,26 +529,22 @@ pub(crate) struct SymbolInitBoundary {
 }
 
 impl SymbolInitBoundary {
-    /// Number of coded bits consumed by `init_symbol`.
     #[must_use]
     pub(crate) const fn consumed_bits(self) -> u64 {
         self.consumed_bits
     }
 
-    /// Initial signed `SymbolMaxBits`.
     #[must_use]
     pub(crate) const fn symbol_max_bits(self) -> i64 {
         self.symbol_max_bits
     }
 
-    /// CDF update policy configured for the future tile syntax decoder.
     #[must_use]
     pub(crate) const fn cdf_update_mode(self) -> CdfUpdateMode {
         self.cdf_update_mode
     }
 }
 
-/// Frame-end operations that remain residual at the tile payload boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameEndBoundary {
     reaches_last_tile_group: bool,
@@ -617,47 +561,33 @@ impl FrameEndBoundary {
         }
     }
 
-    /// Returns true when this boundary reached the last tile group of the frame.
     #[must_use]
     pub(crate) const fn reaches_last_tile_group(self) -> bool {
         self.reaches_last_tile_group
     }
 
-    /// Returns true when `frame_end_update_cdf()` is intentionally deferred.
     #[must_use]
     pub(crate) const fn frame_end_update_cdf_deferred(self) -> bool {
         self.frame_end_update_cdf_deferred
     }
 
-    /// Returns true when `decode_frame_wrapup()` is intentionally deferred.
     #[must_use]
     pub(crate) const fn decode_frame_wrapup_deferred(self) -> bool {
         self.decode_frame_wrapup_deferred
     }
 }
 
-/// Stable unsupported tile-payload reason.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePayloadUnsupportedReason {
-    /// The boundary reached § 5.20.2.1 `decode_tile()`, which remains future work.
     DecodeTileSyntax,
-    /// Complete minimal-tier intra first tile-group facts are not available.
     MissingCompleteIntraFirstTileGroup,
-    /// The tile group does not contain exactly one framed tile.
     NonSingleTile,
-    /// Multiple tiles are outside the current minimal tier.
     MultipleTiles,
-    /// Multiple tile groups are outside the current minimal tier.
     MultipleTileGroups,
-    /// Non-closed-loop-key OBUs are outside the current minimal tier.
     NonClosedLoopKey,
-    /// Non-intra frame paths are outside the current minimal tier.
     NonIntraFrame,
-    /// Bridge tile payload behavior is outside the current minimal tier.
     BridgeTile,
-    /// BRU tile activity is outside the current minimal tier.
     BruTileActivity,
-    /// Tile-grid facts are inconsistent with the framed tile number.
     InvalidTileGrid,
 }
 
@@ -675,7 +605,6 @@ crate::impl_reason_labels!(pub(crate) TilePayloadUnsupportedReason {
 });
 
 impl TilePayloadUnsupportedReason {
-    /// AV2 section most directly associated with this unsupported boundary.
     #[must_use]
     pub(crate) const fn spec_section(self) -> &'static str {
         match self {
@@ -692,7 +621,6 @@ impl TilePayloadUnsupportedReason {
     }
 }
 
-/// Structured unsupported metadata for `decode/unsupported-feature`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePayloadUnsupported {
     reason: TilePayloadUnsupportedReason,
@@ -722,90 +650,69 @@ impl TilePayloadUnsupported {
         }
     }
 
-    /// Stable rule id.
     #[allow(clippy::unused_self)]
     #[must_use]
     pub(crate) const fn rule_id(self) -> &'static str {
         UNSUPPORTED_FEATURE_RULE_ID
     }
 
-    /// Decoder support matrix row.
     #[must_use]
     pub(crate) const fn matrix_row(self) -> &'static str {
         self.matrix_row
     }
 
-    /// Feature ID.
     #[must_use]
     pub(crate) const fn feature_id(self) -> &'static str {
         self.feature_id
     }
 
-    /// AV2 spec section associated with the unsupported boundary.
     #[must_use]
     pub(crate) const fn spec_section(self) -> &'static str {
         self.spec_section
     }
 
-    /// Stable unsupported reason.
     #[must_use]
     pub(crate) const fn reason(self) -> TilePayloadUnsupportedReason {
         self.reason
     }
 
-    /// Tile number associated with the unsupported boundary, when known.
     #[must_use]
     pub(crate) const fn tile_num(self) -> Option<u32> {
         self.tile_num
     }
 
-    /// Absolute byte offset associated with the unsupported boundary.
     #[must_use]
     pub(crate) const fn byte_offset(self) -> ByteOffset {
         self.byte_offset
     }
 
-    /// Human-readable unsupported boundary message.
     #[must_use]
     pub(crate) const fn message(self) -> &'static str {
         self.message
     }
 }
 
-/// Malformed or incomplete tile payload boundary facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePayloadMalformed {
-    /// `parse_tile_group_framing` reported a § 5.20.1 defect.
     FramingDefect(TileFramingDefect),
-    /// A tile byte range did not fit in the supplied payload slice.
     TileRangeOutOfBounds {
-        /// Tile number associated with the invalid range.
         tile_num: u32,
-        /// Tile data offset relative to the payload region.
         tile_data_offset: u64,
-        /// Tile size in bytes.
         tile_size: u64,
-        /// Payload length in bytes.
         payload_len: u64,
     },
 }
 
-/// Error from tile payload boundary planning.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TilePayloadBoundaryError {
-    /// A decode resource limit rejected the tile payload boundary.
     #[error("tile payload boundary rejected by resource limit: {0}")]
     Limit(#[from] DecodeLimitError),
-    /// Tile payload facts are malformed.
     #[error("malformed tile payload boundary: {0}")]
     Malformed(TilePayloadMalformed),
-    /// The boundary is outside the current supported tile payload tier.
     #[error("unsupported tile payload boundary: {0}")]
     Unsupported(TilePayloadUnsupported),
-    /// Tile CDF boundary facts are invalid.
     #[error("tile CDF boundary failed: {0}")]
     Cdf(#[from] TileCdfError),
-    /// Symbol initialization failed for the bounded tile slice.
     #[error("tile payload symbol initialization failed: {0}")]
     Symbol(#[from] splot_core::Error),
 }
@@ -871,81 +778,67 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         ));
     }
     if input.frame.is_bridge {
-        return Err(TilePayloadBoundaryError::Unsupported(
-            unsupported_without_tile(
-                TilePayloadUnsupportedReason::BridgeTile,
-                input.payload_base,
-                "bridge tile payload behavior is outside the current tile payload boundary tier.",
-            ),
+        return Err(unsupported_boundary_without_tile(
+            TilePayloadUnsupportedReason::BridgeTile,
+            input.payload_base,
+            "bridge tile payload behavior is outside the current tile payload boundary tier.",
         ));
     }
     match (input.frame.obu_type, input.frame.is_frame_intra) {
         (ObuType::ClosedLoopKey, true) | (ObuType::RegularTileGroup, false) => {}
         (ObuType::RegularTileGroup, true) | (_, false) => {
-            return Err(TilePayloadBoundaryError::Unsupported(
-                unsupported_without_tile(
-                    TilePayloadUnsupportedReason::NonIntraFrame,
-                    input.payload_base,
-                    "inter-only tile payload behavior is outside the current tile payload boundary tier.",
-                ),
+            return Err(unsupported_boundary_without_tile(
+                TilePayloadUnsupportedReason::NonIntraFrame,
+                input.payload_base,
+                "inter-only tile payload behavior is outside the current tile payload boundary tier.",
             ));
         }
         _ => {
-            return Err(TilePayloadBoundaryError::Unsupported(
-                unsupported_without_tile(
-                    TilePayloadUnsupportedReason::NonClosedLoopKey,
-                    input.payload_base,
-                    "only OBU_CLOSED_LOOP_KEY (intra) or OBU_REGULAR_TILE_GROUP (inter) is inside the current tile payload boundary tier.",
-                ),
+            return Err(unsupported_boundary_without_tile(
+                TilePayloadUnsupportedReason::NonClosedLoopKey,
+                input.payload_base,
+                "only OBU_CLOSED_LOOP_KEY (intra) or OBU_REGULAR_TILE_GROUP (inter) is inside the current tile payload boundary tier.",
             ));
         }
     }
     if !input.frame.is_complete_intra_first_tile_group {
-        return Err(TilePayloadBoundaryError::Unsupported(
-            unsupported_without_tile(
-                TilePayloadUnsupportedReason::MissingCompleteIntraFirstTileGroup,
-                input.payload_base,
-                "tile payload planning requires a complete first tile group in the minimal tier.",
-            ),
+        return Err(unsupported_boundary_without_tile(
+            TilePayloadUnsupportedReason::MissingCompleteIntraFirstTileGroup,
+            input.payload_base,
+            "tile payload planning requires a complete first tile group in the minimal tier.",
         ));
     }
     if !input.frame.is_last_tile_group {
-        return Err(TilePayloadBoundaryError::Unsupported(
-            unsupported_without_tile(
-                TilePayloadUnsupportedReason::MultipleTileGroups,
-                input.payload_base,
-                "multiple tile groups are outside the current tile payload boundary tier.",
-            ),
+        return Err(unsupported_boundary_without_tile(
+            TilePayloadUnsupportedReason::MultipleTileGroups,
+            input.payload_base,
+            "multiple tile groups are outside the current tile payload boundary tier.",
         ));
     }
     if input.frame.bru_path != TileBruPath::NotUsed {
-        return Err(TilePayloadBoundaryError::Unsupported(
-            unsupported_without_tile(
-                TilePayloadUnsupportedReason::BruTileActivity,
-                input.payload_base,
-                "BRU tile activity is outside the current tile payload boundary tier.",
-            ),
+        return Err(unsupported_boundary_without_tile(
+            TilePayloadUnsupportedReason::BruTileActivity,
+            input.payload_base,
+            "BRU tile activity is outside the current tile payload boundary tier.",
         ));
     }
     if input.framing.tiles.len() != 1 {
-        return Err(TilePayloadBoundaryError::Unsupported(
-            unsupported_without_tile(
-                TilePayloadUnsupportedReason::NonSingleTile,
-                input.payload_base,
-                "tile groups without exactly one tile are outside the current tile payload boundary tier.",
-            ),
+        return Err(unsupported_boundary_without_tile(
+            TilePayloadUnsupportedReason::NonSingleTile,
+            input.payload_base,
+            "tile groups without exactly one tile are outside the current tile payload boundary tier.",
         ));
     }
 
     let tile = input.framing.tiles[0];
     if tile.tile_num != 0 || input.grid.tile_cols != 1 || input.grid.tile_rows != 1 {
-        return Err(TilePayloadBoundaryError::Unsupported(unsupported_tile(
+        return Err(unsupported_boundary_with_tile(
             TilePayloadUnsupportedReason::MultipleTiles,
             tile.tile_num,
             input.payload_base,
             tile.tile_data_offset,
             "only TileNum 0 in a one-tile frame is inside the current tile payload boundary tier.",
-        )?));
+        )?);
     }
 
     let (tile_row, tile_col, mi_row_range, mi_col_range) = grid_ranges(
@@ -960,16 +853,8 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         tile.tile_data_offset,
         tile.tile_size,
     )?;
-    let absolute_tile_offset = checked_byte_offset(
-        input.payload_base,
-        tile.tile_data_offset,
-        DecodeLimitName::MaxTilePayloadBytes,
-    )?;
-    let tile_byte_span = checked_byte_span(
-        absolute_tile_offset,
-        tile.tile_size,
-        DecodeLimitName::MaxTilePayloadBytes,
-    )?;
+    let absolute_tile_offset = checked_tile_byte_offset(input.payload_base, tile.tile_data_offset)?;
+    let tile_byte_span = checked_tile_byte_span(absolute_tile_offset, tile.tile_size)?;
     let cdf_update_mode = if input.frame.disable_cdf_update {
         CdfUpdateMode::Disabled
     } else {
@@ -1107,22 +992,44 @@ fn invalid_grid(
     payload_base: ByteOffset,
     tile_data_offset: u64,
 ) -> TilePayloadBoundaryError {
-    TilePayloadBoundaryError::Unsupported(
-        unsupported_tile(
+    unsupported_boundary_with_tile(
+        TilePayloadUnsupportedReason::InvalidTileGrid,
+        tile_num,
+        payload_base,
+        tile_data_offset,
+        "tile grid facts do not cover the framed tile number.",
+    )
+    .unwrap_or_else(|_| {
+        unsupported_boundary_without_tile(
             TilePayloadUnsupportedReason::InvalidTileGrid,
-            tile_num,
             payload_base,
-            tile_data_offset,
             "tile grid facts do not cover the framed tile number.",
         )
-        .unwrap_or_else(|_| {
-            unsupported_without_tile(
-                TilePayloadUnsupportedReason::InvalidTileGrid,
-                payload_base,
-                "tile grid facts do not cover the framed tile number.",
-            )
-        }),
-    )
+    })
+}
+
+fn unsupported_boundary_without_tile(
+    reason: TilePayloadUnsupportedReason,
+    byte_offset: ByteOffset,
+    message: &'static str,
+) -> TilePayloadBoundaryError {
+    TilePayloadBoundaryError::Unsupported(unsupported_without_tile(reason, byte_offset, message))
+}
+
+fn unsupported_boundary_with_tile(
+    reason: TilePayloadUnsupportedReason,
+    tile_num: u32,
+    payload_base: ByteOffset,
+    tile_data_offset: u64,
+    message: &'static str,
+) -> Result<TilePayloadBoundaryError, DecodeLimitError> {
+    Ok(TilePayloadBoundaryError::Unsupported(unsupported_tile(
+        reason,
+        tile_num,
+        payload_base,
+        tile_data_offset,
+        message,
+    )?))
 }
 
 fn unsupported_without_tile(
@@ -1140,17 +1047,21 @@ fn unsupported_tile(
     tile_data_offset: u64,
     message: &'static str,
 ) -> Result<TilePayloadUnsupported, DecodeLimitError> {
-    let byte_offset = checked_byte_offset(
-        payload_base,
-        tile_data_offset,
-        DecodeLimitName::MaxTilePayloadBytes,
-    )?;
+    let byte_offset = checked_tile_byte_offset(payload_base, tile_data_offset)?;
     Ok(TilePayloadUnsupported::new(
         reason,
         Some(tile_num),
         byte_offset,
         message,
     ))
+}
+
+fn checked_tile_byte_offset(base: ByteOffset, delta: u64) -> Result<ByteOffset, DecodeLimitError> {
+    checked_byte_offset(base, delta, DecodeLimitName::MaxTilePayloadBytes)
+}
+
+fn checked_tile_byte_span(start: ByteOffset, len: u64) -> Result<ByteSpan, DecodeLimitError> {
+    checked_byte_span(start, len, DecodeLimitName::MaxTilePayloadBytes)
 }
 
 fn checked_byte_offset(

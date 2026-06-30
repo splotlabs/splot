@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! CDF selection-bounds validation and per-tile CDF averaging helpers, split out
-//! of `super` to keep the selection-boundary source under the §5 hard cap.
+//! CDF selection-bounds validation and row lifecycle helpers.
 
 use super::{
     CDF_PROB_SCALE, DO_SPLIT_PLANE_CONTEXTS, DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS, TileCdfArray,
@@ -13,34 +12,16 @@ pub(super) fn checked_plane(
     array: TileCdfArray,
     plane_start: usize,
 ) -> Result<usize, TileCdfError> {
-    checked_plane_within(array, plane_start, DO_SPLIT_PLANE_CONTEXTS)
+    checked_context(array, "plane_start", plane_start, DO_SPLIT_PLANE_CONTEXTS)
 }
 
-/// § 8.3.2 fixes `do_square_split` `PlaneStart` at 0 (the chroma partition is
-/// forced for the large block sizes where it is read), so only plane 0 is valid
-/// for that selector — tighter than the shared 2-plane partition CDF array bound.
 pub(super) fn checked_square_split_plane(plane_start: usize) -> Result<usize, TileCdfError> {
-    checked_plane_within(
+    checked_context(
         TileCdfArray::DoSquareSplit,
+        "plane_start",
         plane_start,
         DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS,
     )
-}
-
-pub(super) fn checked_plane_within(
-    array: TileCdfArray,
-    plane_start: usize,
-    max_exclusive: usize,
-) -> Result<usize, TileCdfError> {
-    if plane_start >= max_exclusive {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array,
-            index_name: "plane_start",
-            actual: plane_start,
-            max_exclusive,
-        });
-    }
-    Ok(plane_start)
 }
 
 pub(super) fn checked_context(
@@ -90,6 +71,25 @@ pub(in crate::tile_payload::cdf) fn avg_cdf_row<const N: usize>(
 
 pub(in crate::tile_payload::cdf) fn scale_cdf_count<const N: usize>(cdf: &mut [i32; N]) {
     cdf[N - 1] = cdf[N - 1].saturating_mul(3) >> 2;
+}
+
+pub(in crate::tile_payload::cdf) fn avg_cdf_rows<'a, 'b, const N: usize>(
+    frame: impl Iterator<Item = &'a mut [i32; N]>,
+    tile: impl Iterator<Item = &'b [i32; N]>,
+    tile_num: u32,
+    num_log2: u8,
+) {
+    for (frame_row, tile_row) in frame.zip(tile) {
+        avg_cdf_row(frame_row, tile_row, tile_num, num_log2);
+    }
+}
+
+pub(in crate::tile_payload::cdf) fn scale_cdf_rows<'a, const N: usize>(
+    rows: impl Iterator<Item = &'a mut [i32; N]>,
+) {
+    for row in rows {
+        scale_cdf_count(row);
+    }
 }
 
 pub(super) const fn floor_log2(value: u32) -> u32 {

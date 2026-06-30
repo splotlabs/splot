@@ -7,41 +7,8 @@
 mod tests {
     use super::*;
     use crate::headers::frame::parse_tile_info;
-    
+    use crate::test_bits::Bits;
     use crate::test_support::base_view;
-
-    /// MSB-first bit builder mirroring the `Bits` helper in the parser's own `tiling`
-    /// tests, so this module reuses the same hand-built, spec-grounded fixtures.
-    #[derive(Default)]
-    struct Bits {
-        bits: Vec<u8>,
-    }
-
-    impl Bits {
-        fn bit(&mut self, bit: u8) -> &mut Self {
-            self.bits.push(bit & 1);
-            self
-        }
-
-        fn f(&mut self, value: u32, width: u32) -> &mut Self {
-            for shift in (0..width).rev() {
-                self.bit(((value >> shift) & 1) as u8);
-            }
-            self
-        }
-
-        fn into_bytes(self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for chunk in self.bits.chunks(8) {
-                let mut byte = 0u8;
-                for (i, bit) in chunk.iter().enumerate() {
-                    byte |= *bit << (7 - i);
-                }
-                bytes.push(byte);
-            }
-            bytes
-        }
-    }
 
     /// A stored uniform 2x2 sequence tile layout for a 4x4-superblock frame.
     fn uniform_2x2_seq_params() -> TileParams {

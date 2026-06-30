@@ -92,7 +92,7 @@ fn rust_source_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn physical_line_count(text: &str) -> usize {
+pub(crate) fn physical_line_count(text: &str) -> usize {
     if text.is_empty() {
         0
     } else {

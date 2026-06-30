@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! `SymbolEncoder` <-> `read_single_ref` round-trip proofs for the AV2
-//! § 5.20.7.12 `single_ref` entropy element.
-//!
-//! These tests encode the exact `single_ref` symbol sequence that
-//! `read_single_ref` reads for a target `RefFrame[0]` selection, using
-//! `splot-core`'s `SymbolEncoder` over the SAME `TileSingleRefCdf[ctx][ref]` rows
-//! the decoder reads (an identical `tile_copy()` via `with_row_mut`), then assert
-//! `read_single_ref` recovers the encoded selection and that `exit_symbol()`
-//! agrees on the bit count. The selections and per-decision contexts are
-//! ASYMMETRIC (every selectable `RefFrame[0]` value and DISTINCT per-`ref`
-//! contexts) so a transposed tree decision or a wrong CDF-row index would change
-//! the decoded selection and be caught.
-
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use splot_core::span::ByteOffset;
@@ -34,8 +21,6 @@ fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
     .unwrap()
 }
 
-/// Writes one `single_ref` binary symbol to `tile`'s `TileSingleRefCdf[ctx][ref]`
-/// row (adapting it), mirroring the decoder's `read_block_symbol_trace`.
 fn encode_single_ref(
     tile: &mut TileCdfSubset,
     encoder: &mut SymbolEncoder,
@@ -50,30 +35,33 @@ fn encode_single_ref(
     .unwrap();
 }
 
-/// Encodes the § 5.20.7.12 `single_ref` tree for a target `selection`: a `0` at
-/// every `ref < selection`, then a `1` at `ref == selection` (unless `selection`
-/// is the terminal `NumTotalRefs - 1`, which is reached purely by `0` symbols).
 fn encode_selection(
-    enc_tile: &mut TileCdfSubset,
-    encoder: &mut SymbolEncoder,
     num_total_refs: usize,
     contexts: &[usize],
     selection: usize,
-) {
+) -> (TileCdfSubset, Vec<u8>) {
     let decisions = num_total_refs - 1;
+    let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::new();
+    let mut reached_selection = false;
+
     for (ref_idx, &ctx) in contexts.iter().enumerate().take(decisions) {
         if ref_idx < selection {
-            encode_single_ref(enc_tile, encoder, ctx, ref_idx, 0);
+            encode_single_ref(&mut enc_tile, &mut encoder, ctx, ref_idx, 0);
         } else {
-            encode_single_ref(enc_tile, encoder, ctx, ref_idx, 1);
-            return;
+            encode_single_ref(&mut enc_tile, &mut encoder, ctx, ref_idx, 1);
+            reached_selection = true;
+            break;
         }
     }
-    assert_eq!(selection, decisions);
+
+    if !reached_selection {
+        assert_eq!(selection, decisions);
+    }
+
+    (enc_tile, encoder.finish().unwrap().into_bytes())
 }
 
-/// Distinct per-`ref` contexts (0, 1, 2, 0, 1, 2, ...) so a wrong CDF-row context
-/// index would adapt the wrong row and desynchronize the decode.
 fn distinct_contexts(decisions: usize) -> Vec<usize> {
     (0..decisions).map(|i| i % 3).collect()
 }
@@ -85,16 +73,7 @@ fn single_ref_selection_roundtrips_through_symbol_encoder_for_every_value() {
     let contexts = distinct_contexts(decisions);
 
     for selection in 0..num_total_refs {
-        let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut encoder = SymbolEncoder::new();
-        encode_selection(
-            &mut enc_tile,
-            &mut encoder,
-            num_total_refs,
-            &contexts,
-            selection,
-        );
-        let bytes = encoder.finish().unwrap().into_bytes();
+        let (enc_tile, bytes) = encode_selection(num_total_refs, &contexts, selection);
 
         let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&bytes);
@@ -127,16 +106,7 @@ fn single_ref_roundtrips_across_num_total_refs_and_distinct_contexts() {
         let decisions = num_total_refs - 1;
         let contexts = distinct_contexts(decisions);
         for selection in 0..num_total_refs {
-            let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
-            let mut encoder = SymbolEncoder::new();
-            encode_selection(
-                &mut enc_tile,
-                &mut encoder,
-                num_total_refs,
-                &contexts,
-                selection,
-            );
-            let bytes = encoder.finish().unwrap().into_bytes();
+            let (_, bytes) = encode_selection(num_total_refs, &contexts, selection);
 
             let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
             let mut symbols = symbol_decoder(&bytes);
@@ -154,20 +124,11 @@ fn single_ref_roundtrips_across_num_total_refs_and_distinct_contexts() {
 
 #[test]
 fn single_ref_context_indexing_is_load_bearing() {
-    let num_total_refs = 4; // 3 decisions, contexts 0/1/2
-    let encode_contexts = vec![0usize, 1, 2];
-    let selection = 2; // single_ref reads ref0=0, ref1=0, ref2=1 over ctx 0/1/2.
+    let num_total_refs = 4;
+    let encode_contexts = [0usize, 1, 2];
+    let selection = 2;
 
-    let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut encoder = SymbolEncoder::new();
-    encode_selection(
-        &mut enc_tile,
-        &mut encoder,
-        num_total_refs,
-        &encode_contexts,
-        selection,
-    );
-    let bytes = encoder.finish().unwrap().into_bytes();
+    let (_, bytes) = encode_selection(num_total_refs, &encode_contexts, selection);
 
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
@@ -181,7 +142,7 @@ fn single_ref_context_indexing_is_load_bearing() {
     assert_eq!(decoded, selection);
     symbols.exit_symbol().unwrap();
 
-    let mut wrong_contexts = encode_contexts.clone();
+    let mut wrong_contexts = encode_contexts;
     wrong_contexts[2] = 0;
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);

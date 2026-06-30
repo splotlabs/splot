@@ -16,7 +16,7 @@ use splot_core::tables::cdf::{
     DEFAULT_IDTX_SIGN_CDF,
 };
 
-use super::{TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_count};
+use super::{TileCdfArray, TileCdfError, avg_cdf_rows, scale_cdf_rows};
 
 const COEFF_CDF_Q_CONTEXTS: usize = 4;
 const TX_SIZE_CONTEXTS: usize = 5;
@@ -261,13 +261,6 @@ impl CoeffCdfRows {
     }
 }
 
-/// Expands the shared body of [`CoeffCdfRows::row`] and
-/// [`CoeffCdfRows::row_mut`].
-///
-/// Every bound is validated through the `checked_*` helpers (which carry their
-/// own explicit `max_exclusive`), so the two accessors differ only in the final
-/// slice conversion: `$as_slice` is `as_slice` for the shared borrow and
-/// `as_mut_slice` for the exclusive one.
 macro_rules! coeff_cdf_row {
     ($self:ident, $selector:ident, $as_slice:ident) => {
         match $selector {
@@ -485,6 +478,45 @@ macro_rules! coeff_cdf_row {
     };
 }
 
+macro_rules! avg_row_family {
+    (2, $self:ident, $tile:ident, $tile_num:ident, $num_log2:ident, $field:ident) => {
+        avg_cdf_rows(
+            $self.$field.iter_mut().flatten(),
+            $tile.$field.iter().flatten(),
+            $tile_num,
+            $num_log2,
+        );
+    };
+    (3, $self:ident, $tile:ident, $tile_num:ident, $num_log2:ident, $field:ident) => {
+        avg_cdf_rows(
+            $self.$field.iter_mut().flatten().flatten(),
+            $tile.$field.iter().flatten().flatten(),
+            $tile_num,
+            $num_log2,
+        );
+    };
+    (4, $self:ident, $tile:ident, $tile_num:ident, $num_log2:ident, $field:ident) => {
+        avg_cdf_rows(
+            $self.$field.iter_mut().flatten().flatten().flatten(),
+            $tile.$field.iter().flatten().flatten().flatten(),
+            $tile_num,
+            $num_log2,
+        );
+    };
+}
+
+macro_rules! scale_row_family {
+    (2, $self:ident, $field:ident) => {
+        scale_cdf_rows($self.$field.iter_mut().flatten());
+    };
+    (3, $self:ident, $field:ident) => {
+        scale_cdf_rows($self.$field.iter_mut().flatten().flatten());
+    };
+    (4, $self:ident, $field:ident) => {
+        scale_cdf_rows($self.$field.iter_mut().flatten().flatten().flatten());
+    };
+}
+
 impl CoeffCdfRows {
     pub(crate) fn row(&self, selector: CoeffCdfSelector) -> Result<&[i32], TileCdfError> {
         coeff_cdf_row!(self, selector, as_slice)
@@ -498,138 +530,41 @@ impl CoeffCdfRows {
     }
 
     pub(crate) fn avg_from_tile(&mut self, tile_num: u32, tile: &Self, num_log2: u8) {
-        avg_rows(
-            self.coeff_base.iter_mut().flatten().flatten().flatten(),
-            tile.coeff_base.iter().flatten().flatten().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_base_ph.iter_mut().flatten(),
-            tile.coeff_base_ph.iter().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_base_uv.iter_mut().flatten(),
-            tile.coeff_base_uv.iter().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_base_lf.iter_mut().flatten().flatten().flatten(),
-            tile.coeff_base_lf.iter().flatten().flatten().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_base_lf_uv.iter_mut().flatten(),
-            tile.coeff_base_lf_uv.iter().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_base_eob.iter_mut().flatten().flatten(),
-            tile.coeff_base_eob.iter().flatten().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_base_eob_uv.iter_mut().flatten(),
-            tile.coeff_base_eob_uv.iter().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_base_bob.iter_mut().flatten().flatten(),
-            tile.coeff_base_bob.iter().flatten().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_base_idtx.iter_mut().flatten().flatten(),
-            tile.coeff_base_idtx.iter().flatten().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_base_lf_eob.iter_mut().flatten().flatten(),
-            tile.coeff_base_lf_eob.iter().flatten().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_base_lf_eob_uv.iter_mut().flatten(),
-            tile.coeff_base_lf_eob_uv.iter().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_br.iter_mut().flatten(),
-            tile.coeff_br.iter().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_br_uv.iter_mut().flatten(),
-            tile.coeff_br_uv.iter().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_br_lf.iter_mut().flatten(),
-            tile.coeff_br_lf.iter().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.coeff_br_idtx.iter_mut().flatten().flatten(),
-            tile.coeff_br_idtx.iter().flatten().flatten(),
-            tile_num,
-            num_log2,
-        );
-        avg_rows(
-            self.idtx_sign.iter_mut().flatten().flatten(),
-            tile.idtx_sign.iter().flatten().flatten(),
-            tile_num,
-            num_log2,
-        );
+        avg_row_family!(4, self, tile, tile_num, num_log2, coeff_base);
+        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_base_ph);
+        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_base_uv);
+        avg_row_family!(4, self, tile, tile_num, num_log2, coeff_base_lf);
+        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_base_lf_uv);
+        avg_row_family!(3, self, tile, tile_num, num_log2, coeff_base_eob);
+        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_base_eob_uv);
+        avg_row_family!(3, self, tile, tile_num, num_log2, coeff_base_bob);
+        avg_row_family!(3, self, tile, tile_num, num_log2, coeff_base_idtx);
+        avg_row_family!(3, self, tile, tile_num, num_log2, coeff_base_lf_eob);
+        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_base_lf_eob_uv);
+        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_br);
+        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_br_uv);
+        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_br_lf);
+        avg_row_family!(3, self, tile, tile_num, num_log2, coeff_br_idtx);
+        avg_row_family!(3, self, tile, tile_num, num_log2, idtx_sign);
     }
 
     pub(crate) fn scale_counts_for_frame_end_update(&mut self) {
-        scale_rows(self.coeff_base.iter_mut().flatten().flatten().flatten());
-        scale_rows(self.coeff_base_ph.iter_mut().flatten());
-        scale_rows(self.coeff_base_uv.iter_mut().flatten());
-        scale_rows(self.coeff_base_lf.iter_mut().flatten().flatten().flatten());
-        scale_rows(self.coeff_base_lf_uv.iter_mut().flatten());
-        scale_rows(self.coeff_base_eob.iter_mut().flatten().flatten());
-        scale_rows(self.coeff_base_eob_uv.iter_mut().flatten());
-        scale_rows(self.coeff_base_bob.iter_mut().flatten().flatten());
-        scale_rows(self.coeff_base_idtx.iter_mut().flatten().flatten());
-        scale_rows(self.coeff_base_lf_eob.iter_mut().flatten().flatten());
-        scale_rows(self.coeff_base_lf_eob_uv.iter_mut().flatten());
-        scale_rows(self.coeff_br.iter_mut().flatten());
-        scale_rows(self.coeff_br_uv.iter_mut().flatten());
-        scale_rows(self.coeff_br_lf.iter_mut().flatten());
-        scale_rows(self.coeff_br_idtx.iter_mut().flatten().flatten());
-        scale_rows(self.idtx_sign.iter_mut().flatten().flatten());
-    }
-}
-
-fn avg_rows<'a, 'b, const N: usize>(
-    frame: impl Iterator<Item = &'a mut [i32; N]>,
-    tile: impl Iterator<Item = &'b [i32; N]>,
-    tile_num: u32,
-    num_log2: u8,
-) {
-    for (frame_row, tile_row) in frame.zip(tile) {
-        avg_cdf_row(frame_row, tile_row, tile_num, num_log2);
-    }
-}
-
-fn scale_rows<'a, const N: usize>(rows: impl Iterator<Item = &'a mut [i32; N]>) {
-    for row in rows {
-        scale_cdf_count(row);
+        scale_row_family!(4, self, coeff_base);
+        scale_row_family!(2, self, coeff_base_ph);
+        scale_row_family!(2, self, coeff_base_uv);
+        scale_row_family!(4, self, coeff_base_lf);
+        scale_row_family!(2, self, coeff_base_lf_uv);
+        scale_row_family!(3, self, coeff_base_eob);
+        scale_row_family!(2, self, coeff_base_eob_uv);
+        scale_row_family!(3, self, coeff_base_bob);
+        scale_row_family!(3, self, coeff_base_idtx);
+        scale_row_family!(3, self, coeff_base_lf_eob);
+        scale_row_family!(2, self, coeff_base_lf_eob_uv);
+        scale_row_family!(2, self, coeff_br);
+        scale_row_family!(2, self, coeff_br_uv);
+        scale_row_family!(2, self, coeff_br_lf);
+        scale_row_family!(3, self, coeff_br_idtx);
+        scale_row_family!(3, self, idtx_sign);
     }
 }
 

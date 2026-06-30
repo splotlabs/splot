@@ -45,6 +45,15 @@ fn input<'a>(
     framing: &'a TileGroupFraming,
     limits: DecodeLimits,
 ) -> TilePayloadBoundaryInput<'a, 'a> {
+    input_with_frame(payload, framing, base_frame(), limits)
+}
+
+fn input_with_frame<'a>(
+    payload: &'a [u8],
+    framing: &'a TileGroupFraming,
+    frame: TileFrameFacts,
+    limits: DecodeLimits,
+) -> TilePayloadBoundaryInput<'a, 'a> {
     TilePayloadBoundaryInput::new(
         payload,
         ByteOffset::new(256),
@@ -52,9 +61,41 @@ fn input<'a>(
         base_source(),
         base_layer(),
         one_tile_grid(),
+        frame,
+        limits,
+    )
+}
+
+fn input_with_grid<'a>(
+    payload: &'a [u8],
+    framing: &'a TileGroupFraming,
+    grid: TileGridFacts<'a>,
+    limits: DecodeLimits,
+) -> TilePayloadBoundaryInput<'a, 'a> {
+    TilePayloadBoundaryInput::new(
+        payload,
+        ByteOffset::new(256),
+        framing,
+        base_source(),
+        base_layer(),
+        grid,
         base_frame(),
         limits,
     )
+}
+
+fn unsupported(error: &TilePayloadBoundaryError) -> TilePayloadUnsupported {
+    let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
+        panic!("expected unsupported tile payload boundary");
+    };
+    *unsupported
+}
+
+fn limit_error(error: &TilePayloadBoundaryError) -> DecodeLimitError {
+    let TilePayloadBoundaryError::Limit(limit) = error else {
+        panic!("expected tile payload boundary limit");
+    };
+    *limit
 }
 
 #[test]
@@ -145,16 +186,7 @@ fn cdf_update_disable_is_recorded_without_symbol_finish() {
     let framing = one_tile_framing(&payload);
     let mut frame = base_frame();
     frame.disable_cdf_update = true;
-    let input = TilePayloadBoundaryInput::new(
-        &payload,
-        ByteOffset::new(8),
-        &framing,
-        base_source(),
-        base_layer(),
-        one_tile_grid(),
-        frame,
-        DecodeLimits::unlimited(),
-    );
+    let input = input_with_frame(&payload, &framing, frame, DecodeLimits::unlimited());
     let plan = plan_tile_payload_boundary(&input).unwrap();
 
     assert_eq!(
@@ -177,16 +209,7 @@ fn cdf_policy_tile_dimensions_are_derived_from_planned_grid() {
     let payload = [0x80, 0x00];
     let framing = one_tile_framing(&payload);
     let frame = base_frame().with_cdf_policy(TileCdfPolicyInput::new(16, 1, true, true, 0));
-    let input = TilePayloadBoundaryInput::new(
-        &payload,
-        ByteOffset::new(16),
-        &framing,
-        base_source(),
-        base_layer(),
-        one_tile_grid(),
-        frame,
-        DecodeLimits::unlimited(),
-    );
+    let input = input_with_frame(&payload, &framing, frame, DecodeLimits::unlimited());
     let plan = plan_tile_payload_boundary(&input).unwrap();
     let save_policy = plan.work_units()[0].cdf().save_policy();
 
@@ -200,16 +223,7 @@ fn cdf_context_update_tile_id_is_validated_against_planned_grid() {
     let payload = [0x80, 0x00];
     let framing = one_tile_framing(&payload);
     let frame = base_frame().with_cdf_policy(TileCdfPolicyInput::new(16, 1, false, false, 2));
-    let input = TilePayloadBoundaryInput::new(
-        &payload,
-        ByteOffset::new(16),
-        &framing,
-        base_source(),
-        base_layer(),
-        one_tile_grid(),
-        frame,
-        DecodeLimits::unlimited(),
-    );
+    let input = input_with_frame(&payload, &framing, frame, DecodeLimits::unlimited());
     let error = plan_tile_payload_boundary(&input).unwrap_err();
 
     let TilePayloadBoundaryError::Cdf(TileCdfError::ContextUpdateTileOutOfRange {
@@ -229,10 +243,8 @@ fn multiple_tiles_are_unsupported_before_work_units_are_retained() {
     let framing = parse_tile_group_framing(&payload, 0, 1, 1, false);
     let error = plan_tile_payload_boundary(&input(&payload, &framing, DecodeLimits::unlimited()))
         .unwrap_err();
+    let unsupported = unsupported(&error);
 
-    let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
-        panic!("expected unsupported multiple tiles");
-    };
     assert_eq!(
         unsupported.reason(),
         TilePayloadUnsupportedReason::NonSingleTile
@@ -248,10 +260,8 @@ fn inverted_tile_group_range_is_unsupported_without_work_units() {
 
     let error = plan_tile_payload_boundary(&input(&payload, &framing, DecodeLimits::unlimited()))
         .unwrap_err();
+    let unsupported = unsupported(&error);
 
-    let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
-        panic!("expected unsupported empty tile group");
-    };
     assert_eq!(
         unsupported.reason(),
         TilePayloadUnsupportedReason::NonSingleTile
@@ -268,10 +278,8 @@ fn single_nonzero_tile_num_is_unsupported_before_grid_lookup() {
 
     let error = plan_tile_payload_boundary(&input(&payload, &framing, DecodeLimits::unlimited()))
         .unwrap_err();
+    let unsupported = unsupported(&error);
 
-    let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
-        panic!("expected unsupported nonzero tile number");
-    };
     assert_eq!(
         unsupported.reason(),
         TilePayloadUnsupportedReason::MultipleTiles
@@ -318,10 +326,8 @@ fn tile_range_out_of_bounds_is_malformed_not_panic() {
 fn constructed_huge_tile_range_is_rejected_before_slice_indexing() {
     let payload = [0x80];
     let error = tile_slice(&payload, 0, u64::MAX, 1).unwrap_err();
+    let limit = limit_error(&error);
 
-    let TilePayloadBoundaryError::Limit(limit) = error else {
-        panic!("expected arithmetic overflow limit");
-    };
     assert_eq!(limit.name(), DecodeLimitName::MaxTilePayloadBytes);
     assert_eq!(limit.op(), Some(DecodeLimitOp::Add));
 }
@@ -334,9 +340,7 @@ fn payload_and_tile_count_limits_are_enforced_first() {
         DecodeLimits::unlimited().with_max_tile_payload_bytes(DecodeLimitThreshold::Max(1));
     let error =
         plan_tile_payload_boundary(&input(&payload, &framing, payload_limited)).unwrap_err();
-    let TilePayloadBoundaryError::Limit(limit) = error else {
-        panic!("expected payload limit");
-    };
+    let limit = limit_error(&error);
     assert_eq!(limit.name(), DecodeLimitName::MaxTilePayloadBytes);
     assert_eq!(limit.actual(), Some(2));
 
@@ -344,9 +348,7 @@ fn payload_and_tile_count_limits_are_enforced_first() {
         DecodeLimits::unlimited().with_max_tile_count(DecodeLimitThreshold::Max(0));
     let error =
         plan_tile_payload_boundary(&input(&payload, &framing, tile_count_limited)).unwrap_err();
-    let TilePayloadBoundaryError::Limit(limit) = error else {
-        panic!("expected tile count limit");
-    };
+    let limit = limit_error(&error);
     assert_eq!(limit.name(), DecodeLimitName::MaxTileCount);
     assert_eq!(limit.actual(), Some(1));
 
@@ -365,10 +367,8 @@ fn tile_payload_limit_is_per_framed_tile_not_group_payload() {
 
     let limits = DecodeLimits::unlimited().with_max_tile_payload_bytes(MAX(1));
     let error = plan_tile_payload_boundary(&input(&payload, &framing, limits)).unwrap_err();
+    let unsupported = unsupported(&error);
 
-    let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
-        panic!("expected unsupported non-single-tile group");
-    };
     assert_eq!(
         unsupported.reason(),
         TilePayloadUnsupportedReason::NonSingleTile
@@ -381,21 +381,15 @@ fn frame_tile_count_limit_uses_grid_not_current_group_len() {
     let framing = parse_tile_group_framing(&payload, 1, 1, 1, false);
     assert_eq!(framing.tiles.len(), 1);
 
-    let input = TilePayloadBoundaryInput::new(
+    let input = input_with_grid(
         &payload,
-        ByteOffset::new(0),
         &framing,
-        base_source(),
-        base_layer(),
         TileGridFacts::new(2, 1, &[0, 16, 32], &[0, 8]),
-        base_frame(),
         DecodeLimits::unlimited().with_max_tile_count(MAX(1)),
     );
     let error = plan_tile_payload_boundary(&input).unwrap_err();
+    let limit = limit_error(&error);
 
-    let TilePayloadBoundaryError::Limit(limit) = error else {
-        panic!("expected frame tile count limit");
-    };
     assert_eq!(limit.name(), DecodeLimitName::MaxTileCount);
     assert_eq!(limit.actual(), Some(2));
 }
@@ -404,30 +398,20 @@ fn frame_tile_count_limit_uses_grid_not_current_group_len() {
 fn bridge_frame_keeps_bridge_specific_unsupported_reason() {
     let payload = [0x80];
     let framing = one_tile_framing(&payload);
-    let input = TilePayloadBoundaryInput::new(
-        &payload,
-        ByteOffset::new(0),
-        &framing,
-        base_source(),
-        base_layer(),
-        one_tile_grid(),
-        TileFrameFacts::new(
-            ObuType::BridgeFrame,
-            false,
-            true,
-            true,
-            true,
-            TileBruPath::NotUsed,
-            0,
-            false,
-        ),
-        DecodeLimits::unlimited(),
+    let frame = TileFrameFacts::new(
+        ObuType::BridgeFrame,
+        false,
+        true,
+        true,
+        true,
+        TileBruPath::NotUsed,
+        0,
+        false,
     );
+    let input = input_with_frame(&payload, &framing, frame, DecodeLimits::unlimited());
     let error = plan_tile_payload_boundary(&input).unwrap_err();
+    let unsupported = unsupported(&error);
 
-    let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
-        panic!("expected bridge unsupported reason");
-    };
     assert_eq!(
         unsupported.reason(),
         TilePayloadUnsupportedReason::BridgeTile
@@ -541,20 +525,9 @@ fn unsupported_minimal_tier_gates_are_structured() {
     ];
 
     for (frame, reason, spec_section) in cases {
-        let input = TilePayloadBoundaryInput::new(
-            &payload,
-            ByteOffset::new(40),
-            &framing,
-            base_source(),
-            base_layer(),
-            one_tile_grid(),
-            frame,
-            DecodeLimits::unlimited(),
-        );
+        let input = input_with_frame(&payload, &framing, frame, DecodeLimits::unlimited());
         let error = plan_tile_payload_boundary(&input).unwrap_err();
-        let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
-            panic!("expected unsupported gate");
-        };
+        let unsupported = unsupported(&error);
         assert_eq!(unsupported.reason(), reason);
         assert_eq!(unsupported.rule_id(), "decode/unsupported-feature");
         assert_eq!(unsupported.matrix_row(), "tile-payload-decode");
@@ -567,20 +540,14 @@ fn unsupported_minimal_tier_gates_are_structured() {
 fn invalid_grid_and_offset_overflow_are_structured() {
     let payload = [0x80];
     let framing = one_tile_framing(&payload);
-    let input = TilePayloadBoundaryInput::new(
+    let input = input_with_grid(
         &payload,
-        ByteOffset::new(0),
         &framing,
-        base_source(),
-        base_layer(),
         TileGridFacts::new(1, 1, &[0], &[0, 8]),
-        base_frame(),
         DecodeLimits::unlimited(),
     );
     let error = plan_tile_payload_boundary(&input).unwrap_err();
-    let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
-        panic!("expected invalid grid unsupported");
-    };
+    let unsupported = unsupported(&error);
     assert_eq!(
         unsupported.reason(),
         TilePayloadUnsupportedReason::InvalidTileGrid
@@ -617,21 +584,9 @@ fn non_increasing_mi_grid_ranges_are_invalid() {
     ];
 
     for grid in grids {
-        let input = TilePayloadBoundaryInput::new(
-            &payload,
-            ByteOffset::new(0),
-            &framing,
-            base_source(),
-            base_layer(),
-            grid,
-            base_frame(),
-            DecodeLimits::unlimited(),
-        );
-
+        let input = input_with_grid(&payload, &framing, grid, DecodeLimits::unlimited());
         let error = plan_tile_payload_boundary(&input).unwrap_err();
-        let TilePayloadBoundaryError::Unsupported(unsupported) = error else {
-            panic!("expected invalid grid unsupported");
-        };
+        let unsupported = unsupported(&error);
         assert_eq!(
             unsupported.reason(),
             TilePayloadUnsupportedReason::InvalidTileGrid
@@ -670,10 +625,8 @@ fn decode_context_tile_payload_handoff_preserves_limit_errors() {
     let error = ctx
         .plan_tile_payload_boundary(&input(&payload, &framing, limits))
         .unwrap_err();
+    let limit = limit_error(&error);
 
-    let TilePayloadBoundaryError::Limit(limit) = error else {
-        panic!("expected payload limit");
-    };
     assert_eq!(limit.name(), DecodeLimitName::MaxTilePayloadBytes);
     assert_eq!(limit.actual(), Some(2));
 }

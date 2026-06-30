@@ -66,28 +66,7 @@ pub(crate) enum CoeffBlockEobBranch {
     NonZero(NonZeroCoeffBlockStart),
 }
 
-/// Initializes nonzero local coefficient state and reads nonzero EOB syntax.
-///
-/// The local block is allocated before EOB syntax is consumed so invalid
-/// geometry fails without touching CDF rows or symbol-decoder state. Scan
-/// traversal, coefficient reads, context-line writes, and reconstruction remain
-/// deferred.
-pub(crate) fn read_nonzero_coeff_block_start(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: NonZeroCoeffBlockStartInput,
-) -> Result<NonZeroCoeffBlockStart, CoeffLoopContextError> {
-    let width = adjusted_coeff_extent(input.block.w4);
-    let height = adjusted_coeff_extent(input.block.h4);
-    let block = TransformCoeffBlockState::new(width, height)?;
-    let eob_read = read_nonzero_coeff_eob_from_context(cdfs, symbols, input.eob)?;
-    Ok(NonZeroCoeffBlockStart { eob_read, block })
-}
-
 /// Dispatches the AV2 § 5.20.7.27 branch after caller-decoded `all_zero`.
-///
-/// All-zero applies coefficient context state without consuming symbols or CDF
-/// rows. Nonzero initializes local block state, then reads only EOB syntax.
 pub(crate) fn read_coeff_block_eob_branch(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -99,7 +78,15 @@ pub(crate) fn read_coeff_block_eob_branch(
             apply_all_zero_coeff_block(state, input).map(CoeffBlockEobBranch::AllZero)
         }
         CoeffBlockEobBranchInput::NonZero(input) => {
-            read_nonzero_coeff_block_start(cdfs, symbols, input).map(CoeffBlockEobBranch::NonZero)
+            let width = adjusted_coeff_extent(input.block.w4);
+            let height = adjusted_coeff_extent(input.block.h4);
+            let block = TransformCoeffBlockState::new(width, height)?;
+            let eob_read = read_nonzero_coeff_eob_from_context(cdfs, symbols, input.eob)?;
+
+            Ok(CoeffBlockEobBranch::NonZero(NonZeroCoeffBlockStart {
+                eob_read,
+                block,
+            }))
         }
     }
 }

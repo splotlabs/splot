@@ -76,19 +76,16 @@ fn frame_level_chroma_wiener_ns(unit_size: usize) -> TilePartitionLoopRestoratio
     )
 }
 
-fn make_work_unit(
-    payload: &'static [u8],
-    update_mode: CdfUpdateMode,
-) -> DecodeTileWorkUnit<'static> {
+pub(crate) fn make_work_unit(payload: &[u8], update_mode: CdfUpdateMode) -> DecodeTileWorkUnit<'_> {
     make_work_unit_at(payload, update_mode, 0..64, 0..64)
 }
 
-fn make_work_unit_at(
-    payload: &'static [u8],
+pub(crate) fn make_work_unit_at(
+    payload: &[u8],
     update_mode: CdfUpdateMode,
     mi_row_range: Range<u32>,
     mi_col_range: Range<u32>,
-) -> DecodeTileWorkUnit<'static> {
+) -> DecodeTileWorkUnit<'_> {
     DecodeTileWorkUnit {
         source: TilePayloadSource::new(DecodeObuSourceKind::AnnexB, None, 0, ByteOffset::new(0)),
         selected_layer: DecodeLayerSelection::base(),
@@ -141,12 +138,66 @@ fn frontier(
     ))
 }
 
+fn root_lr_frontier(
+    work_unit: &mut DecodeTileWorkUnit<'static>,
+    frame: TilePartitionFrameFacts,
+) -> Result<TileLoopRestorationRootFrontier, TilePartitionTraversalError> {
+    root_lr_frontier_with_limits(work_unit, frame, DecodeLimits::DEFAULT)
+}
+
+fn root_lr_frontier_with_limits(
+    work_unit: &mut DecodeTileWorkUnit<'static>,
+    frame: TilePartitionFrameFacts,
+    limits: DecodeLimits,
+) -> Result<TileLoopRestorationRootFrontier, TilePartitionTraversalError> {
+    consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+        work_unit,
+        frame,
+        context(),
+        limits,
+    ))
+}
+
+fn assert_max_tile_partition_steps_limit(err: &TilePartitionTraversalError, actual: u64) {
+    assert!(matches!(
+        err,
+        TilePartitionTraversalError::Limit(DecodeLimitError::LimitExceeded { .. })
+    ));
+    if let TilePartitionTraversalError::Limit(DecodeLimitError::LimitExceeded { check }) = err {
+        assert_eq!(check.name(), DecodeLimitName::MaxTilePartitionSteps);
+        assert_eq!(check.actual(), actual);
+    }
+}
+
+fn assert_frontier_unsupported(
+    frame: TilePartitionFrameFacts,
+    expected: TilePartitionTraversalUnsupported,
+) {
+    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let err = frontier(&mut work_unit, frame, context()).unwrap_err();
+
+    assert!(matches!(
+        err,
+        TilePartitionTraversalError::Unsupported(actual) if actual == expected
+    ));
+}
+
 fn root_call(b_size: usize) -> TilePartitionCall {
     TilePartitionCall::root(0, 0, BlockSize::new(b_size).unwrap(), true)
 }
 
-fn child_positions(partition: PartitionType) -> Vec<(usize, usize)> {
-    child_positions_for(partition, BLOCK_32X32)
+fn assert_child_positions(partition: PartitionType, expected: &[(usize, usize)]) {
+    assert_child_positions_for(partition, BLOCK_32X32, expected);
+}
+
+fn assert_child_positions_for(
+    partition: PartitionType,
+    b_size: usize,
+    expected: &[(usize, usize)],
+) {
+    let positions = child_positions_for(partition, b_size);
+
+    assert_eq!(positions.as_slice(), expected);
 }
 
 fn child_positions_for(partition: PartitionType, b_size: usize) -> Vec<(usize, usize)> {
@@ -213,19 +264,14 @@ fn sdp_chroma_partition_forced_from_luma_when_chroma_follows_luma() {
     let luma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::LumaPart);
     let chroma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::ChromaPart);
 
-    let mut state = SdpPartitionState::default();
-    state.record_partition(frame, luma_root, PartitionType::None);
-    assert_eq!(
-        state.forced_chroma_partition(frame, chroma_root),
-        Some(PartitionType::None)
-    );
-
-    let mut state = SdpPartitionState::default();
-    state.record_partition(frame, luma_root, PartitionType::Horz);
-    assert_eq!(
-        state.forced_chroma_partition(frame, chroma_root),
-        Some(PartitionType::Horz)
-    );
+    for partition in [PartitionType::None, PartitionType::Horz] {
+        let mut state = SdpPartitionState::default();
+        assert!(state.record_partition(frame, luma_root, partition));
+        assert_eq!(
+            state.forced_chroma_partition(frame, chroma_root),
+            Some(partition)
+        );
+    }
 }
 
 #[test]
@@ -252,7 +298,7 @@ fn sdp_chroma_partition_not_forced_when_trees_diverge_or_out_of_scope() {
         3,
         true,
         true,
-        false, // frame_is_intra = false (inter frame)
+        false,
         false,
         false,
         false,
@@ -364,44 +410,45 @@ fn non_none_partition_descends_to_first_child_and_keeps_siblings_pending() {
 
 #[test]
 fn child_call_geometry_follows_spec_order_for_basic_partitions() {
-    assert_eq!(child_positions(PartitionType::Horz), vec![(0, 0), (4, 0)]);
-    assert_eq!(child_positions(PartitionType::Vert), vec![(0, 0), (0, 4)]);
-    assert_eq!(
-        child_positions_for(PartitionType::Split, BLOCK_128X128),
-        vec![(0, 0), (0, 16), (16, 0), (16, 16)]
+    let cases: &[(PartitionType, &[(usize, usize)])] = &[
+        (PartitionType::Horz, &[(0, 0), (4, 0)]),
+        (PartitionType::Vert, &[(0, 0), (0, 4)]),
+    ];
+
+    for &(partition, expected) in cases {
+        assert_child_positions(partition, expected);
+    }
+    assert_child_positions_for(
+        PartitionType::Split,
+        BLOCK_128X128,
+        &[(0, 0), (0, 16), (16, 0), (16, 16)],
     );
 }
 
 #[test]
 fn child_call_geometry_follows_spec_order_for_three_way_partitions() {
-    assert_eq!(
-        child_positions(PartitionType::Horz3),
-        vec![(0, 0), (2, 0), (2, 4), (6, 0)]
-    );
-    assert_eq!(
-        child_positions(PartitionType::Vert3),
-        vec![(0, 0), (0, 2), (4, 2), (0, 6)]
-    );
+    let cases: &[(PartitionType, &[(usize, usize)])] = &[
+        (PartitionType::Horz3, &[(0, 0), (2, 0), (2, 4), (6, 0)]),
+        (PartitionType::Vert3, &[(0, 0), (0, 2), (4, 2), (0, 6)]),
+    ];
+
+    for &(partition, expected) in cases {
+        assert_child_positions(partition, expected);
+    }
 }
 
 #[test]
 fn child_call_geometry_follows_spec_order_for_four_way_partitions() {
-    assert_eq!(
-        child_positions(PartitionType::Horz4A),
-        vec![(0, 0), (1, 0), (3, 0), (7, 0)]
-    );
-    assert_eq!(
-        child_positions(PartitionType::Horz4B),
-        vec![(0, 0), (1, 0), (5, 0), (7, 0)]
-    );
-    assert_eq!(
-        child_positions(PartitionType::Vert4A),
-        vec![(0, 0), (0, 1), (0, 3), (0, 7)]
-    );
-    assert_eq!(
-        child_positions(PartitionType::Vert4B),
-        vec![(0, 0), (0, 1), (0, 5), (0, 7)]
-    );
+    let cases: &[(PartitionType, &[(usize, usize)])] = &[
+        (PartitionType::Horz4A, &[(0, 0), (1, 0), (3, 0), (7, 0)]),
+        (PartitionType::Horz4B, &[(0, 0), (1, 0), (5, 0), (7, 0)]),
+        (PartitionType::Vert4A, &[(0, 0), (0, 1), (0, 3), (0, 7)]),
+        (PartitionType::Vert4B, &[(0, 0), (0, 1), (0, 5), (0, 7)]),
+    ];
+
+    for &(partition, expected) in cases {
+        assert_child_positions(partition, expected);
+    }
 }
 
 #[test]
@@ -617,13 +664,7 @@ fn root_lr_frontier_consumes_only_frame_level_wiener_ns_symbols() {
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = frame_level_wiener_ns(256);
 
-    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
-        &mut work_unit,
-        facts,
-        context(),
-        DecodeLimits::DEFAULT,
-    ))
-    .unwrap();
+    let root = root_lr_frontier(&mut work_unit, facts).unwrap();
 
     assert_eq!(root.symbol_count_after(), 1);
     assert!(root.consumed_bits_after() > 0);
@@ -648,13 +689,7 @@ fn root_lr_frontier_reports_active_frame_level_wiener_ns_unit() {
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = frame_level_wiener_ns(256);
 
-    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
-        &mut work_unit,
-        facts,
-        context(),
-        DecodeLimits::DEFAULT,
-    ))
-    .unwrap();
+    let root = root_lr_frontier(&mut work_unit, facts).unwrap();
 
     assert_eq!(root.symbol_count_after(), 1);
     assert_eq!(root.lr_units_consumed(), 1);
@@ -734,13 +769,7 @@ fn active_lr_source_blocks_track_stripe_bounds() {
     let mut facts = frame(BLOCK_64X64);
     facts.loop_restoration = frame_level_wiener_ns(256);
 
-    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
-        &mut work_unit,
-        facts,
-        context(),
-        DecodeLimits::DEFAULT,
-    ))
-    .unwrap();
+    let root = root_lr_frontier(&mut work_unit, facts).unwrap();
 
     assert_eq!(root.active_source_blocks().len(), 4096);
     let second_stripe = root
@@ -761,13 +790,7 @@ fn active_lr_source_bounds_clamp_to_tile_when_loopfilters_across_tiles_disabled(
     facts.disable_loopfilters_across_tiles = true;
     facts.loop_restoration = frame_level_wiener_ns(256);
 
-    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
-        &mut work_unit,
-        facts,
-        context(),
-        DecodeLimits::DEFAULT,
-    ))
-    .unwrap();
+    let root = root_lr_frontier(&mut work_unit, facts).unwrap();
 
     assert_eq!(root.active_source_blocks().len(), 1024);
     assert_eq!(root.active_source_blocks()[0].luma_end_x, 127);
@@ -781,22 +804,14 @@ fn root_lr_frontier_honors_zero_step_limit_before_lr_symbol() {
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = frame_level_wiener_ns(256);
 
-    let err = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+    let err = root_lr_frontier_with_limits(
         &mut work_unit,
         facts,
-        context(),
         DecodeLimits::unlimited().with_max_tile_partition_steps(DecodeLimitThreshold::Max(0)),
-    ))
+    )
     .unwrap_err();
 
-    assert!(matches!(
-        &err,
-        TilePartitionTraversalError::Limit(DecodeLimitError::LimitExceeded { .. })
-    ));
-    if let TilePartitionTraversalError::Limit(DecodeLimitError::LimitExceeded { check }) = err {
-        assert_eq!(check.name(), DecodeLimitName::MaxTilePartitionSteps);
-        assert_eq!(check.actual(), 1);
-    }
+    assert_max_tile_partition_steps_limit(&err, 1);
     assert_eq!(work_unit.cdf().tile_cdfs(), &before);
 }
 
@@ -807,13 +822,7 @@ fn root_lr_frontier_consumes_sdp_chroma_lr_unit() {
     facts.enable_sdp = true;
     facts.loop_restoration = frame_level_chroma_wiener_ns(256);
 
-    let frontier = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
-        &mut work_unit,
-        facts,
-        context(),
-        DecodeLimits::DEFAULT,
-    ))
-    .unwrap();
+    let frontier = root_lr_frontier(&mut work_unit, facts).unwrap();
 
     assert_eq!(frontier.lr_units_consumed(), 1);
     assert_eq!(frontier.active_wiener_ns_units(), 0);
@@ -826,13 +835,7 @@ fn frame_level_wiener_ns_multi_unit_root_counts_every_covered_unit() {
     let mut facts = frame(BLOCK_128X128);
     facts.loop_restoration = frame_level_wiener_ns(64);
 
-    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
-        &mut work_unit,
-        facts,
-        context(),
-        DecodeLimits::DEFAULT,
-    ))
-    .unwrap();
+    let root = root_lr_frontier(&mut work_unit, facts).unwrap();
 
     assert_eq!(root.symbol_count_after(), 4);
     assert_eq!(root.lr_units_consumed(), 4);
@@ -899,26 +902,17 @@ fn disabled_cdf_update_preserves_rows_while_advancing_symbols() {
 
 #[test]
 fn unsupported_gates_are_explicit() {
-    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     let mut extended_sdp = frame(BLOCK_32X32);
     extended_sdp.enable_extended_sdp = true;
     extended_sdp.frame_is_intra = false;
-    let err = frontier(&mut work_unit, extended_sdp, context()).unwrap_err();
-    assert!(matches!(
-        err,
-        TilePartitionTraversalError::Unsupported(TilePartitionTraversalUnsupported::ExtendedSdp)
-    ));
+    assert_frontier_unsupported(extended_sdp, TilePartitionTraversalUnsupported::ExtendedSdp);
 
-    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     let mut read_lr = frame(BLOCK_32X32);
     read_lr.loop_restoration = TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;
-    let err = frontier(&mut work_unit, read_lr, context()).unwrap_err();
-    assert!(matches!(
-        err,
-        TilePartitionTraversalError::Unsupported(
-            TilePartitionTraversalUnsupported::ReadLoopRestoration
-        )
-    ));
+    assert_frontier_unsupported(
+        read_lr,
+        TilePartitionTraversalUnsupported::ReadLoopRestoration,
+    );
 
     let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     let mut inter = frame(BLOCK_32X32);
@@ -926,14 +920,9 @@ fn unsupported_gates_are_explicit() {
     let plan = frontier(&mut work_unit, inter, context()).unwrap();
     assert_eq!(plan.symbol_count_after(), 1);
 
-    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     let mut bru = frame(BLOCK_32X32);
     bru.bru_state = TilePartitionBruState::Unsupported;
-    let err = frontier(&mut work_unit, bru, context()).unwrap_err();
-    assert!(matches!(
-        err,
-        TilePartitionTraversalError::Unsupported(TilePartitionTraversalUnsupported::BruOrBridge)
-    ));
+    assert_frontier_unsupported(bru, TilePartitionTraversalUnsupported::BruOrBridge);
 }
 
 #[test]
@@ -980,14 +969,7 @@ fn max_tile_partition_steps_limit_bounds_frontier_steps() {
     ))
     .unwrap_err();
 
-    assert!(matches!(
-        &err,
-        TilePartitionTraversalError::Limit(DecodeLimitError::LimitExceeded { .. })
-    ));
-    if let TilePartitionTraversalError::Limit(DecodeLimitError::LimitExceeded { check }) = err {
-        assert_eq!(check.name(), DecodeLimitName::MaxTilePartitionSteps);
-        assert_eq!(check.actual(), 2);
-    }
+    assert_max_tile_partition_steps_limit(&err, 2);
 }
 
 #[test]

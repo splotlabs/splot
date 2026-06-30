@@ -178,14 +178,7 @@ pub(crate) fn read_nonzero_coeff_quants(
                 actual: input.entry,
             });
         }
-        input
-            .max_level
-            .checked_sub(u32::from(config.allow_tcq))
-            .ok_or(CoeffReadQuantError::InvalidMaxLevel {
-                index,
-                max_level: input.max_level,
-                allow_tcq: config.allow_tcq,
-            })?;
+        quant_threshold(index, input.max_level, config.allow_tcq)?;
     }
 
     let mut state = CoeffReadQuantState::new(config);
@@ -222,14 +215,7 @@ impl CoeffReadQuantState {
         index: usize,
         input: CoeffReadQuantInput,
     ) -> Result<CoeffReadQuant, CoeffReadQuantError> {
-        let threshold = input
-            .max_level
-            .checked_sub(u32::from(self.allow_tcq))
-            .ok_or(CoeffReadQuantError::InvalidMaxLevel {
-                index,
-                max_level: input.max_level,
-                allow_tcq: self.allow_tcq,
-            })?;
+        let threshold = quant_threshold(index, input.max_level, self.allow_tcq)?;
         if input.level < threshold {
             return Ok(CoeffReadQuant {
                 quant: CoeffQuantReadInput {
@@ -244,7 +230,7 @@ impl CoeffReadQuantState {
         let lvl_shift = u32::from(input.entry.pos() == 0 && self.is_hidden);
         let pred_level = self.hr_level_avg >> lvl_shift;
         let m = get_msb(pred_level).clamp(MIN_M, MAX_M);
-        let k = checked_add(index, m, 1, "m + 1")?;
+        let k = m + 1;
         let c_max = (m + 4).min(6);
 
         let mut q = 0;
@@ -260,10 +246,7 @@ impl CoeffReadQuantState {
             while !read_one_bit(symbols, index, "golomb_length_bit")? {
                 prefix = checked_add(index, prefix, 1, "golomb length prefix + 1")?;
                 if prefix > MAX_COEFF_REM_BITS.saturating_sub(k) {
-                    return Err(CoeffReadQuantError::QuantOverflow {
-                        index,
-                        operation: "coeff_rem literal width",
-                    });
+                    return Err(quant_overflow(index, "coeff_rem literal width"));
                 }
             }
             let length = checked_add(index, prefix, k, "golomb length + k")?;
@@ -277,7 +260,9 @@ impl CoeffReadQuantState {
                     checked_add_u64(
                         index,
                         q_base,
-                        checked_sub_u64(index, length_base, k_base, "1 << length - 1 << k")?,
+                        length_base
+                            .checked_sub(k_base)
+                            .ok_or(quant_overflow(index, "1 << length - 1 << k"))?,
                         "extended xBase",
                     )?,
                     "u64 xBase to u32",
@@ -295,10 +280,7 @@ impl CoeffReadQuantState {
         };
 
         if length > MAX_COEFF_REM_BITS {
-            return Err(CoeffReadQuantError::QuantOverflow {
-                index,
-                operation: "coeff_rem literal width",
-            });
+            return Err(quant_overflow(index, "coeff_rem literal width"));
         }
         let coeff_rem = read_literal(symbols, index, length, "coeff_rem")?;
         let x = checked_u32(
@@ -333,14 +315,10 @@ impl CoeffReadQuantState {
             )?,
             "u64 quant extension to u32",
         )?;
-        let quant =
-            input
-                .level
-                .checked_add(quant_add)
-                .ok_or(CoeffReadQuantError::QuantOverflow {
-                    index,
-                    operation: "quant + x << allowTcq",
-                })?;
+        let quant = input
+            .level
+            .checked_add(quant_add)
+            .ok_or(quant_overflow(index, "quant + x << allowTcq"))?;
         self.hr_level_avg = next_hr;
 
         Ok(CoeffReadQuant {
@@ -369,6 +347,20 @@ const fn get_msb(value: u32) -> u32 {
     } else {
         u32::BITS - 1 - value.leading_zeros()
     }
+}
+
+fn quant_threshold(
+    index: usize,
+    max_level: u32,
+    allow_tcq: bool,
+) -> Result<u32, CoeffReadQuantError> {
+    max_level
+        .checked_sub(u32::from(allow_tcq))
+        .ok_or(CoeffReadQuantError::InvalidMaxLevel {
+            index,
+            max_level,
+            allow_tcq,
+        })
 }
 
 fn read_one_bit(
@@ -400,8 +392,7 @@ fn checked_add(
     rhs: u32,
     operation: &'static str,
 ) -> Result<u32, CoeffReadQuantError> {
-    lhs.checked_add(rhs)
-        .ok_or(CoeffReadQuantError::QuantOverflow { index, operation })
+    lhs.checked_add(rhs).ok_or(quant_overflow(index, operation))
 }
 
 fn checked_shl_u64(
@@ -412,7 +403,7 @@ fn checked_shl_u64(
 ) -> Result<u64, CoeffReadQuantError> {
     value
         .checked_shl(shift)
-        .ok_or(CoeffReadQuantError::QuantOverflow { index, operation })
+        .ok_or(quant_overflow(index, operation))
 }
 
 fn checked_add_u64(
@@ -421,18 +412,7 @@ fn checked_add_u64(
     rhs: u64,
     operation: &'static str,
 ) -> Result<u64, CoeffReadQuantError> {
-    lhs.checked_add(rhs)
-        .ok_or(CoeffReadQuantError::QuantOverflow { index, operation })
-}
-
-fn checked_sub_u64(
-    index: usize,
-    lhs: u64,
-    rhs: u64,
-    operation: &'static str,
-) -> Result<u64, CoeffReadQuantError> {
-    lhs.checked_sub(rhs)
-        .ok_or(CoeffReadQuantError::QuantOverflow { index, operation })
+    lhs.checked_add(rhs).ok_or(quant_overflow(index, operation))
 }
 
 fn checked_u32(
@@ -440,7 +420,11 @@ fn checked_u32(
     value: u64,
     operation: &'static str,
 ) -> Result<u32, CoeffReadQuantError> {
-    u32::try_from(value).map_err(|_| CoeffReadQuantError::QuantOverflow { index, operation })
+    u32::try_from(value).map_err(|_| quant_overflow(index, operation))
+}
+
+fn quant_overflow(index: usize, operation: &'static str) -> CoeffReadQuantError {
+    CoeffReadQuantError::QuantOverflow { index, operation }
 }
 
 #[cfg(test)]
@@ -462,12 +446,6 @@ mod tests {
         .unwrap()
     }
 
-    /// Encodes the §5.20.7.28 `read_quant` bitstream for one Extended-path
-    /// coefficient with `splot-core`'s `SymbolEncoder`, mirroring the decoder's
-    /// reads exactly: the q-length unary code (`q` zeros, then a terminating `1`
-    /// when `q < c_max`, otherwise the golomb length prefix of `golomb_prefix`
-    /// zeros and a terminating `1`), followed by the `length`-bit `coeff_rem`
-    /// literal. These are pure bypass writes, so no CDF is involved.
     fn encode_extended(
         enc: &mut SymbolEncoder,
         q: u32,
@@ -731,12 +709,12 @@ mod tests {
     fn read_quant_finite_q_roundtrips_through_symbol_encoder() {
         let entry = CoeffScanEntry::for_test(3, 9, 1, 1);
         let (m, k, c_max) = (4u32, 5u32, 6u32);
-        let (q, coeff_rem) = (2u32, 10u32); // q < c_max -> finite-q path
+        let (q, coeff_rem) = (2u32, 10u32);
         let length = m;
         let x_base = q << m;
         let x = x_base + coeff_rem;
         let level = 3u32;
-        let expected_quant = level + x; // allow_tcq = 0 -> quant = level + x
+        let expected_quant = level + x;
 
         let mut enc = SymbolEncoder::new();
         encode_extended(&mut enc, q, c_max, 0, length, coeff_rem);
@@ -768,7 +746,7 @@ mod tests {
         let entry = CoeffScanEntry::for_test(3, 9, 1, 1);
         let (m, k, c_max) = (1u32, 2u32, 5u32);
         let (golomb_prefix, coeff_rem) = (1u32, 5u32);
-        let q = c_max; // q == c_max -> golomb extension path
+        let q = c_max;
         let length = golomb_prefix + k;
         let x_base = (q << m) + ((1 << length) - (1 << k));
         let x = x_base + coeff_rem;

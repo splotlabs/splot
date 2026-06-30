@@ -2,92 +2,75 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! AV2 § 8.3.2 coefficient-symbol CDF context derivation.
-//!
-//! This module derives the per-symbol `ctx` index that selects a coefficient
-//! CDF row in the § 8.3.2 Cdf selection process
-//! (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`). It is the coefficient
-//! counterpart of [`super::block_context`] (which derives the block-mode
-//! contexts).
-//!
-//! Feature tracking: `DECODE-TILE-CDF-SELECTION-BOUNDARY`.
-//!
-//! Scope:
-//!
-//! - the two **position-only** coefficient base contexts — `coeff_base_eob` (the
-//!   end-of-block base context, keyed on the scan position relative to the
-//!   transform block size) and `coeff_base_bob` (the begin-of-block base context,
-//!   keyed on the begin position relative to the segment end-of-block) — pure
-//!   functions of caller-supplied scan/segment scalars and caller-resolved
-//!   geometry, needing no `Level[]` magnitude buffer; and
-//! - the `coeff_br` coefficient base-range context ([`CoeffBrContext`]), the first
-//!   context that reads the per-transform-block `Level[]` magnitudes, over a
-//!   caller-provided level slice; and
-//! - the two identity-transform magnitude contexts `coeff_base_idtx`
-//!   ([`coeff_base_idtx_ctx`]) and `coeff_br_idtx` ([`coeff_br_idtx_ctx`]), which
-//!   read only the left and above `Level[]` neighbours;
-//! - the main 2D significant-coefficient context `coeff_base`
-//!   ([`CoeffBaseContext`]), which selects one of five `coeff_base` banks from a
-//!   neighbour-magnitude sum; and
-//! - the `dc_sign` sign context ([`dc_sign_ctx`]), which sums the above/left
-//!   DC-context signs; and
-//! - the `idtx_sign` sign context ([`idtx_sign_ctx`]), which sums the left, above,
-//!   and above-left `QuantSign[]` neighbours with a `Level[]` threshold.
-//!
-//! This is the complete set of § 8.3.2 coefficient-symbol CDF contexts. What
-//! remains for coefficient decode is the runtime state these read — the
-//! per-transform-block `Level[]` / `QuantSign[]` and the `Above`/`Left`
-//! DC-context tile buffers — plus the § 5.20.7.27 `coeffs()` loop that fills them
-//! and consumes these contexts. Nothing here is wired into a decode path yet, so
-//! it is no-output-change (the derivations are exercised by compile-time
-//! spec-contract `const` checks and unit tests, not by any decode stage).
 
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 
-/// AV2 § 3 `SIG_COEF_CONTEXTS_EOB`: the number of `coeff_base_eob` contexts
-/// (`03-symbols.md`); the four contexts are `SIG_COEF_CONTEXTS_EOB - 4 ..=
-/// SIG_COEF_CONTEXTS_EOB - 1`, i.e. `0..=3`.
 const SIG_COEF_CONTEXTS_EOB: usize = 4;
 
-/// AV2 § 3 `LF_SIG_COEF_CONTEXTS_2D_UV` (`03-symbols.md`): the chroma 2D
-/// `coeff_base` context-count offset used by the non-2D chroma branch.
 const LF_SIG_COEF_CONTEXTS_2D_UV: usize = 8;
 
-/// AV2 § 3 `MAX_BASE_BR_RANGE` = `COEFF_BASE_RANGE (3) + NUM_BASE_LEVELS (2) + 1`
-/// (`03-symbols.md`); the `coeff_br` magnitude sum clamps each neighbour level to
-/// `MAX_BASE_BR_RANGE - 1`. (`COEFF_BASE_RANGE` is shared from
-/// [`splot_core::coefficient`].)
 const MAX_BASE_BR_RANGE: u32 = 6;
 
-/// AV2 § 8.3.2 `Mag_Ref_Offset_With_Tx_Class[txClass][idx][rowOrCol]`
-/// (`08-parsing-process.md#s-8-3-2`): the up-to-three neighbour `(dRow, dCol)`
-/// offsets the `coeff_br` magnitude sum reads, per transform class. Indexed by the
-/// spec `txClass` value (`TX_CLASS_2D` = 0, `TX_CLASS_HORIZ` = 1,
-/// `TX_CLASS_VERT` = 2).
 const MAG_REF_OFFSET_WITH_TX_CLASS: [[[usize; 2]; 3]; 3] = [
     [[0, 1], [1, 0], [1, 1]], // TX_CLASS_2D
     [[0, 1], [1, 0], [0, 2]], // TX_CLASS_HORIZ
     [[0, 1], [1, 0], [2, 0]], // TX_CLASS_VERT
 ];
 
-/// Returns the AV2 § 8.3.2 `coeff_base_eob` CDF context for the scan position
-/// `c` in a transform block of caller-resolved adjusted geometry
-/// (`08-parsing-process.md#s-8-3-2`).
-///
-/// The context partitions the scan position by the adjusted transform block's
-/// coefficient count `numCoeffs = height << bwl` (the spec's
-/// `Tx_Height[adjTxSz] << Tx_Width_Log2[adjTxSz]`):
-///
-/// - `c == 0` → `SIG_COEF_CONTEXTS_EOB - 4` (`0`)
-/// - `c <= numCoeffs / 8` → `SIG_COEF_CONTEXTS_EOB - 3` (`1`)
-/// - `c <= numCoeffs / 4` → `SIG_COEF_CONTEXTS_EOB - 2` (`2`)
-/// - otherwise → `SIG_COEF_CONTEXTS_EOB - 1` (`3`)
-///
-/// `bwl` is `Tx_Width_Log2[adjTxSz]` and `height` is `Tx_Height[adjTxSz]`, both
-/// caller-resolved from the adjusted transform size (this module does not model
-/// the § 9.2 conversion tables). The result is in `0..=3`. The `numCoeffs`
-/// shift is computed total: an out-of-range `bwl` saturates to `usize::MAX`
-/// rather than overflowing, so the function never panics.
+const CHROMA_2D_PLANE_CONTEXT_OFFSET: [usize; 3] = [4, 0, 4];
+const LF_2D_CONTEXT_CAP_AND_OFFSET: [(usize, usize); 3] = [(8, 0), (6, 9), (4, 16)];
+const HF_2D_CONTEXT_OFFSET: [usize; 3] = [0, 5, 10];
+
+#[derive(Clone, Copy)]
+struct CoeffPosition {
+    row: usize,
+    col: usize,
+}
+
+const fn tx_class_idx(tx_class: usize) -> usize {
+    if tx_class < 3 { tx_class } else { 0 }
+}
+
+const fn coeff_position(pos: usize, bwl: u32) -> CoeffPosition {
+    let row = match pos.checked_shr(bwl) {
+        Some(v) => v,
+        None => 0,
+    };
+    let shifted = match row.checked_shl(bwl) {
+        Some(v) => v,
+        None => 0,
+    };
+    CoeffPosition {
+        row,
+        col: pos - shifted,
+    }
+}
+
+const fn clamp_u32(value: u32, limit: u32) -> u32 {
+    if value < limit { value } else { limit }
+}
+
+const fn clamped_level_at(
+    level: &[u32],
+    row: usize,
+    col: usize,
+    txw: usize,
+    txh: usize,
+    limit: u32,
+) -> u32 {
+    if row >= txh || col >= txw {
+        return 0;
+    }
+    let flat = row.saturating_mul(txw).saturating_add(col);
+    if flat < level.len() {
+        clamp_u32(level[flat], limit)
+    } else {
+        0
+    }
+}
+
+/// Returns the AV2 § 8.3.2 `coeff_base_eob` context for scan position `c`.
 pub(crate) const fn coeff_base_eob_ctx(c: usize, bwl: u32, height: usize) -> usize {
     let num_coeffs = match height.checked_shl(bwl) {
         Some(v) => v,
@@ -104,16 +87,7 @@ pub(crate) const fn coeff_base_eob_ctx(c: usize, bwl: u32, height: usize) -> usi
     }
 }
 
-/// Returns the AV2 § 8.3.2 `coeff_base_bob` CDF context for the begin-of-block
-/// position `bob` relative to the segment end-of-block `seg_eob`
-/// (`08-parsing-process.md#s-8-3-2`).
-///
-/// - `bob <= seg_eob >> 3` → `0`
-/// - `bob <= seg_eob >> 2` → `1`
-/// - otherwise → `2`
-///
-/// The result is in `0..=2`. Pure function of the two caller-supplied scalars;
-/// total and panic-free.
+/// Returns the AV2 § 8.3.2 `coeff_base_bob` context for `bob` and `seg_eob`.
 pub(crate) const fn coeff_base_bob_ctx(bob: usize, seg_eob: usize) -> usize {
     if bob <= seg_eob >> 3 {
         0
@@ -124,67 +98,30 @@ pub(crate) const fn coeff_base_bob_ctx(bob: usize, seg_eob: usize) -> usize {
     }
 }
 
-/// AV2 § 8.3.2 `coeff_br` coefficient base-range CDF context derivation.
-///
-/// `coeff_br` selects `TileCoeffBrUvCdf[ctx]` (chroma), `TileCoeffBrLfCdf[ctx]`
-/// (low-frequency luma), or `TileCoeffBrCdf[ctx]` (luma) from the `ctx` derived
-/// here (`08-parsing-process.md#s-8-3-2`). The context sums up to three
-/// neighbouring `Level[]` magnitudes (each clamped to `MAX_BASE_BR_RANGE - 1`) at
-/// the transform-class-specific offsets, halves and clamps the sum to `0..=6`,
-/// then offsets it by plane / DC-position / low-frequency.
+/// AV2 § 8.3.2 `coeff_br` base-range context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffBrContext {
-    /// The coefficient scan position `pos` within the adjusted transform block.
+    /// Coefficient scan position.
     pub(crate) pos: usize,
-    /// `Tx_Width_Log2[adjTxSz]` — the adjusted block width log2 (`row`/`col`
-    /// split of `pos`).
+    /// Adjusted block width log2.
     pub(crate) bwl: u32,
-    /// `Tx_Width[adjTxSz]` — the adjusted block width (column bound + row stride).
+    /// Adjusted block width.
     pub(crate) txw: usize,
-    /// `Tx_Height[adjTxSz]` — the adjusted block height (row bound).
+    /// Adjusted block height.
     pub(crate) txh: usize,
-    /// The plane index (`0` luma, `> 0` chroma).
+    /// Plane index.
     pub(crate) plane: usize,
-    /// Whether this transform block is low-frequency (`isLf`).
+    /// Whether this transform block is low-frequency.
     pub(crate) is_lf: bool,
-    /// The spec `txClass` value: `0` = `TX_CLASS_2D`, `1` = `TX_CLASS_HORIZ`,
-    /// `2` = `TX_CLASS_VERT` — the caller-resolved `get_tx_class(PlaneTxType)`
-    /// result (kept a scalar here so the entropy CDF-selection layer does not
-    /// import a reconstruction transform-class type). An out-of-range value is
-    /// treated as `TX_CLASS_2D`.
+    /// Spec `txClass` value; out-of-range values use `TX_CLASS_2D`.
     pub(crate) tx_class: usize,
 }
 
 impl CoeffBrContext {
-    /// The bounded `txClass` index into [`MAG_REF_OFFSET_WITH_TX_CLASS`]: the
-    /// caller-resolved `tx_class` when in `0..3`, else `0` (`TX_CLASS_2D`), so the
-    /// table access is total.
-    const fn class_idx(self) -> usize {
-        if self.tx_class < 3 { self.tx_class } else { 0 }
-    }
-
-    /// Returns the AV2 § 8.3.2 `coeff_br` CDF context, reading the
-    /// per-transform-block `Level[]` magnitudes from `level` (row-major,
-    /// `txw`-wide; `level[row * txw + col]`).
-    ///
-    /// Neighbour reads outside the block bounds (`refRow >= txh` or
-    /// `refCol >= txw`) or past the `level` slice contribute `0`, matching the
-    /// spec's `refRow < txh && refCol < txw` guard. All geometry arithmetic is
-    /// checked or saturating — the shift width (`pos >> bwl` / `row << bwl`), and
-    /// the flat index (`row * txw + col`) — so the function is total and never
-    /// panics for any caller-provided geometry. The result is the spec `ctx`:
-    /// `0..=13` (luma / low-frequency) or `0..=3` (chroma).
+    /// Returns the AV2 § 8.3.2 `coeff_br` context from row-major `Level[]`.
     pub(crate) const fn ctx(self, level: &[u32]) -> usize {
-        let row = match self.pos.checked_shr(self.bwl) {
-            Some(v) => v,
-            None => 0,
-        };
-        let shifted = match row.checked_shl(self.bwl) {
-            Some(v) => v,
-            None => 0,
-        };
-        let col = self.pos - shifted;
-        let class_idx = self.class_idx();
+        let pos = coeff_position(self.pos, self.bwl);
+        let class_idx = tx_class_idx(self.tx_class);
         let num = if class_idx != 0 && self.plane > 0 {
             2
         } else {
@@ -194,24 +131,21 @@ impl CoeffBrContext {
         let mut mag: u32 = 0;
         let mut idx = 0;
         while idx < num {
-            let ref_row = row.saturating_add(MAG_REF_OFFSET_WITH_TX_CLASS[class_idx][idx][0]);
-            let ref_col = col.saturating_add(MAG_REF_OFFSET_WITH_TX_CLASS[class_idx][idx][1]);
-            if ref_row < self.txh && ref_col < self.txw {
-                let flat = ref_row.saturating_mul(self.txw).saturating_add(ref_col);
-                if flat < level.len() {
-                    let lvl = level[flat];
-                    mag += if lvl < clamp { lvl } else { clamp };
-                }
-            }
+            let off = MAG_REF_OFFSET_WITH_TX_CLASS[class_idx][idx];
+            mag += clamped_level_at(
+                level,
+                pos.row.saturating_add(off[0]),
+                pos.col.saturating_add(off[1]),
+                self.txw,
+                self.txh,
+                clamp,
+            );
             idx += 1;
         }
-        let halved = (mag + 1) >> 1;
-        let mag = (if halved < 6 { halved } else { 6 }) as usize;
+        let mag = clamp_u32((mag + 1) >> 1, MAX_BASE_BR_RANGE) as usize;
         if self.plane > 0 {
             if mag < 3 { mag } else { 3 }
-        } else if self.pos == 0 {
-            if class_idx != 0 { mag + 7 } else { mag }
-        } else if self.is_lf {
+        } else if (self.pos == 0 && class_idx != 0) || (self.pos != 0 && self.is_lf) {
             mag + 7
         } else {
             mag
@@ -219,38 +153,18 @@ impl CoeffBrContext {
     }
 }
 
-/// The shared AV2 § 8.3.2 identity-transform magnitude sum: the left
-/// (`Level[row][col-1]`) and above (`Level[row-1][col]`) neighbour magnitudes,
-/// each clamped to `clamp`, over a caller-provided row-major `txw`-wide `level`
-/// slice. Geometry is saturating and the flat index is slice-bounds-guarded, so
-/// out-of-range or short-slice reads contribute `0` and the helper never panics.
 const fn idtx_neighbour_mag(level: &[u32], row: usize, col: usize, txw: usize, clamp: u32) -> u32 {
     let mut mag = 0u32;
     if col > 0 {
-        let flat = row.saturating_mul(txw).saturating_add(col - 1);
-        if flat < level.len() {
-            let v = level[flat];
-            mag += if v < clamp { v } else { clamp };
-        }
+        mag += clamped_level_at(level, row, col - 1, txw, usize::MAX, clamp);
     }
     if row > 0 {
-        let flat = (row - 1).saturating_mul(txw).saturating_add(col);
-        if flat < level.len() {
-            let v = level[flat];
-            mag += if v < clamp { v } else { clamp };
-        }
+        mag += clamped_level_at(level, row - 1, col, txw, usize::MAX, clamp);
     }
     mag
 }
 
-/// Returns the AV2 § 8.3.2 `coeff_base_idtx` CDF context — the spec `mag`, used
-/// directly as the inner index of `TileCoeffBaseIdtxCdf[Min(TX_16X16, txSzCtx)]`
-/// (`08-parsing-process.md#s-8-3-2`).
-///
-/// `mag = Min(3, Level[row][col-1]) + Min(3, Level[row-1][col])` (each neighbour
-/// included only when in range). `level` is a caller-provided row-major
-/// `txw`-wide `Level[]` slice; out-of-range or short-slice reads contribute `0`,
-/// so the function is total and never panics. The result is in `0..=6`.
+/// Returns the AV2 § 8.3.2 `coeff_base_idtx` context.
 pub(crate) const fn coeff_base_idtx_ctx(
     level: &[u32],
     row: usize,
@@ -260,92 +174,55 @@ pub(crate) const fn coeff_base_idtx_ctx(
     idtx_neighbour_mag(level, row, col, txw, 3) as usize
 }
 
-/// Returns the AV2 § 8.3.2 `coeff_br_idtx` CDF context — the spec `mag`, used
-/// directly as the inner index of `TileCoeffBrIdtxCdf[Min(TX_16X16, txSzCtx)]`
-/// (`08-parsing-process.md#s-8-3-2`).
-///
-/// `mag = Min(MAX_BASE_BR_RANGE-1, Level[row][col-1]) + Min(MAX_BASE_BR_RANGE-1,
-/// Level[row-1][col])`, then `mag = Min(mag, 6)`. `level` is a caller-provided
-/// row-major `txw`-wide `Level[]` slice; out-of-range or short-slice reads
-/// contribute `0`, so the function is total and never panics. The result is in
-/// `0..=6`.
+/// Returns the AV2 § 8.3.2 `coeff_br_idtx` context.
 pub(crate) const fn coeff_br_idtx_ctx(level: &[u32], row: usize, col: usize, txw: usize) -> usize {
     let mag = idtx_neighbour_mag(level, row, col, txw, MAX_BASE_BR_RANGE - 1);
     (if mag < 6 { mag } else { 6 }) as usize
 }
 
-/// The AV2 § 8.3.2 `coeff_base` CDF bank selected for a coefficient, plus its
-/// context index (`08-parsing-process.md#s-8-3-2`). The caller maps the variant
-/// to the bank, supplying the `txSzCtx` / `tcqState` dimensions the [`Lf`] and
-/// [`Hf`] banks carry.
-///
-/// [`Lf`]: CoeffBaseSelection::Lf
-/// [`Hf`]: CoeffBaseSelection::Hf
+/// AV2 § 8.3.2 `coeff_base` CDF bank plus context index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffBaseSelection {
-    /// `TileCoeffBasePhCdf[ctx]` — the parity-hidden DC coefficient (`isHidden`
-    /// and `c == 0`); `ctx` is `Min((mag+1)>>1, 4)`.
+    /// `TileCoeffBasePhCdf[ctx]`.
     Ph { ctx: usize },
-    /// `TileCoeffBaseLfUvCdf[ctx]` — chroma low-frequency.
+    /// `TileCoeffBaseLfUvCdf[ctx]`.
     LfUv { ctx: usize },
-    /// `TileCoeffBaseUvCdf[ctx]` — chroma.
+    /// `TileCoeffBaseUvCdf[ctx]`.
     Uv { ctx: usize },
-    /// `TileCoeffBaseLfCdf[txSzCtx][ctx][(tcqState>>1)&1]` — luma low-frequency.
+    /// `TileCoeffBaseLfCdf[txSzCtx][ctx][(tcqState>>1)&1]`.
     Lf { ctx: usize },
-    /// `TileCoeffBaseCdf[txSzCtx][ctx][(tcqState>>1)&1]` — luma high-frequency.
+    /// `TileCoeffBaseCdf[txSzCtx][ctx][(tcqState>>1)&1]`.
     Hf { ctx: usize },
 }
 
-/// AV2 § 8.3.2 `coeff_base` CDF context derivation — the main 2D significant-
-/// coefficient context (`08-parsing-process.md#s-8-3-2`).
-///
-/// It sums the significant-neighbour `Level[]` magnitudes (each clamped by a
-/// position-dependent `magLimit`) at the `Sig_Ref_Diff_Offset` offsets for the
-/// transform class, forms `ctx = (mag+1) >> 1`, and selects one of the five
-/// `coeff_base` banks ([`CoeffBaseSelection`]) with its bank-specific context
-/// offset.
+/// AV2 § 8.3.2 `coeff_base` CDF context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffBaseContext {
-    /// The coefficient scan position `pos` within the adjusted transform block.
+    /// Coefficient scan position.
     pub(crate) pos: usize,
-    /// `Tx_Width_Log2[adjTxSz]` — the adjusted block width log2 (`row`/`col`
-    /// split of `pos`).
+    /// Adjusted block width log2.
     pub(crate) bwl: u32,
-    /// `Tx_Width[adjTxSz]` — the adjusted block width (column bound + row stride).
+    /// Adjusted block width.
     pub(crate) txw: usize,
-    /// `Tx_Height[adjTxSz]` — the adjusted block height (row bound).
+    /// Adjusted block height.
     pub(crate) txh: usize,
-    /// The plane index (`0` luma, `1` U, `2` V).
+    /// Plane index.
     pub(crate) plane: usize,
-    /// Whether this transform block is low-frequency (`isLf`).
+    /// Whether this transform block is low-frequency.
     pub(crate) is_lf: bool,
-    /// Whether the parity is hidden for this block (`isHidden`).
+    /// Whether parity is hidden for this block.
     pub(crate) is_hidden: bool,
-    /// The scan index `c` of this coefficient.
+    /// Scan index of this coefficient.
     pub(crate) c: usize,
-    /// The spec `txClass` value: `0` = `TX_CLASS_2D`, `1` = `TX_CLASS_HORIZ`,
-    /// `2` = `TX_CLASS_VERT` (caller-resolved; out-of-range treated as 2D).
+    /// Spec `txClass` value; out-of-range values use `TX_CLASS_2D`.
     pub(crate) tx_class: usize,
 }
 
 impl CoeffBaseContext {
-    /// The bounded `txClass` index into `SIG_REF_DIFF_OFFSET`.
-    fn class_idx(&self) -> usize {
-        if self.tx_class < 3 { self.tx_class } else { 0 }
-    }
-
-    /// Returns the AV2 § 8.3.2 `coeff_base` bank selection and context, reading
-    /// the per-transform-block `Level[]` magnitudes from `level` (row-major,
-    /// `txw`-wide; `level[row * txw + col]`).
-    ///
-    /// Geometry is checked/saturating and the flat index is slice-bounds-guarded
-    /// (the spec's `refRow < height && refCol < width` guard), so out-of-range or
-    /// short-slice reads contribute `0` and the function is total and never
-    /// panics.
+    /// Returns the AV2 § 8.3.2 `coeff_base` bank and context.
     pub(crate) fn select(&self, level: &[u32]) -> CoeffBaseSelection {
-        let row = self.pos.checked_shr(self.bwl).unwrap_or(0);
-        let col = self.pos - row.checked_shl(self.bwl).unwrap_or(0);
-        let class_idx = self.class_idx();
+        let pos = coeff_position(self.pos, self.bwl);
+        let class_idx = tx_class_idx(self.tx_class);
         let num = if self.plane > 0 {
             if class_idx == 0 { 3 } else { 2 }
         } else {
@@ -355,21 +232,20 @@ impl CoeffBaseContext {
         let mut idx = 0;
         while idx < num {
             let off = SIG_REF_DIFF_OFFSET[class_idx][idx];
-            let ref_row = row.saturating_add(off[0] as usize);
-            let ref_col = col.saturating_add(off[1] as usize);
             let mag_limit: u32 =
                 if self.is_lf && (class_idx == 0 || idx < 2) && !(self.is_hidden && self.c == 0) {
                     5
                 } else {
                     3
                 };
-            if ref_row < self.txh && ref_col < self.txw {
-                let flat = ref_row.saturating_mul(self.txw).saturating_add(ref_col);
-                if flat < level.len() {
-                    let v = level[flat];
-                    mag += if v < mag_limit { v } else { mag_limit };
-                }
-            }
+            mag += clamped_level_at(
+                level,
+                pos.row.saturating_add(off[0] as usize),
+                pos.col.saturating_add(off[1] as usize),
+                self.txw,
+                self.txh,
+                mag_limit,
+            );
             idx += 1;
         }
         let ctx = ((mag + 1) >> 1) as usize;
@@ -381,10 +257,13 @@ impl CoeffBaseContext {
             let ctx2 = ctx.min(3);
             let uv_ctx = if class_idx != 0 {
                 ctx2 + LF_SIG_COEF_CONTEXTS_2D_UV
-            } else if self.plane == 1 {
-                ctx2
             } else {
-                ctx2 + 4
+                let plane = if self.plane < CHROMA_2D_PLANE_CONTEXT_OFFSET.len() {
+                    self.plane
+                } else {
+                    2
+                };
+                ctx2 + CHROMA_2D_PLANE_CONTEXT_OFFSET[plane]
             };
             return if self.is_lf {
                 CoeffBaseSelection::LfUv { ctx: uv_ctx }
@@ -394,15 +273,17 @@ impl CoeffBaseContext {
         }
         if self.is_lf {
             let lf_ctx = if class_idx == 0 {
-                if self.c == 0 {
-                    ctx.min(8)
-                } else if row + col < 2 {
-                    ctx.min(6) + 9
+                let bucket = if self.c == 0 {
+                    0
+                } else if pos.row + pos.col < 2 {
+                    1
                 } else {
-                    ctx.min(4) + 16
-                }
+                    2
+                };
+                let (cap, offset) = LF_2D_CONTEXT_CAP_AND_OFFSET[bucket];
+                ctx.min(cap) + offset
             } else {
-                let lidx = if class_idx == 1 { col } else { row };
+                let lidx = [pos.row, pos.col, pos.row][class_idx];
                 if lidx == 0 {
                     LF_SIG_COEF_CONTEXTS_2D + ctx.min(6)
                 } else {
@@ -413,13 +294,9 @@ impl CoeffBaseContext {
         }
         let ctx2 = ctx.min(4);
         let hf_ctx = if class_idx == 0 {
-            if row + col < 6 {
-                ctx2
-            } else if row + col < 8 {
-                ctx2 + 5
-            } else {
-                ctx2 + 10
-            }
+            let diagonal = pos.row + pos.col;
+            let bucket = usize::from(diagonal >= 6) + usize::from(diagonal >= 8);
+            ctx2 + HF_2D_CONTEXT_OFFSET[bucket]
         } else {
             ctx2 + 15
         };
@@ -427,20 +304,7 @@ impl CoeffBaseContext {
     }
 }
 
-/// Returns the AV2 § 8.3.2 `dc_sign` CDF context — the inner index of
-/// `TileDcSignCdf[ptype][isHidden][ctx]` (`08-parsing-process.md#s-8-3-2`).
-///
-/// It nets the DC-sign votes of the block's above and left neighbours:
-/// `AboveDcContext[plane][x4+k]` for `k` in `0..w4` and
-/// `LeftDcContext[plane][y4+k]` for `k` in `0..h4`, each sign `1` decrementing and
-/// sign `2` incrementing a running `dcSign`; the context is `1` if `dcSign < 0`,
-/// `2` if `dcSign > 0`, else `0`.
-///
-/// `above_dc` is `AboveDcContext[plane]` (length `MiCols`) and `left_dc` is
-/// `LeftDcContext[plane]` (length `MiRows`); the spec `x4 + k < MiCols` /
-/// `y4 + k < MiRows` guards are exactly the slice bounds, so reads past either
-/// slice are skipped (matching out-of-frame neighbours). Index arithmetic is
-/// saturating, so the function is total and never panics.
+/// Returns the AV2 § 8.3.2 `dc_sign` context.
 pub(crate) const fn dc_sign_ctx(
     above_dc: &[u8],
     left_dc: &[u8],
@@ -485,21 +349,7 @@ pub(crate) const fn dc_sign_ctx(
     }
 }
 
-/// Returns the AV2 § 8.3.2 `idtx_sign` CDF context — the inner index of
-/// `TileIdtxSignCdf[Min(TX_16X16, txSzCtx)][ctx]` (`08-parsing-process.md#s-8-3-2`).
-///
-/// It nets the signs of the left (`QuantSign[row*txw + col-1]`), above
-/// (`QuantSign[(row-1)*txw + col]`), and above-left (`QuantSign[(row-1)*txw +
-/// col-1]`) coefficients into `signc`, maps it to a base context (`5` for `signc >
-/// 2`, `6` for `signc < -2`, `1` for `signc > 0`, `2` for `signc < 0`, else `0`),
-/// then adds `2` when the current `Level[row][col]` exceeds `COEFF_BASE_RANGE` and
-/// the base context is non-zero.
-///
-/// `quant_sign` and `level` are the per-transform-block row-major `txw`-wide
-/// `QuantSign[]` (signed, `-1`/`0`/`+1`) and `Level[]` slices; the edge neighbours
-/// are gated by `col > 0` / `row > 0`, and the flat index is saturating and
-/// slice-bounds-guarded, so the function is total and never panics. The result is
-/// in `0..=8`.
+/// Returns the AV2 § 8.3.2 `idtx_sign` context.
 pub(crate) const fn idtx_sign_ctx(
     quant_sign: &[i32],
     level: &[u32],
@@ -544,70 +394,6 @@ pub(crate) const fn idtx_sign_ctx(
     }
     ctx
 }
-
-const _COEFF_BASE_EOB_CONTRACT: () = {
-    assert!(coeff_base_eob_ctx(0, 5, 32) == 0);
-    assert!(coeff_base_eob_ctx(128, 5, 32) == 1);
-    assert!(coeff_base_eob_ctx(256, 5, 32) == 2);
-    assert!(coeff_base_eob_ctx(257, 5, 32) == 3);
-};
-const _COEFF_BASE_BOB_CONTRACT: () = {
-    assert!(coeff_base_bob_ctx(0, 64) == 0);
-    assert!(coeff_base_bob_ctx(16, 64) == 1);
-    assert!(coeff_base_bob_ctx(17, 64) == 2);
-};
-const _COEFF_BR_CONTRACT: () = {
-    let zero = [0u32; 16];
-    let dc_2d = CoeffBrContext {
-        pos: 0,
-        bwl: 2,
-        txw: 4,
-        txh: 4,
-        plane: 0,
-        is_lf: false,
-        tx_class: 0, // TX_CLASS_2D
-    };
-    assert!(dc_2d.ctx(&zero) == 0);
-    let mags = [0u32, 4, 0, 0, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    assert!(dc_2d.ctx(&mags) == 6);
-    let dc_vert = CoeffBrContext {
-        pos: 0,
-        bwl: 2,
-        txw: 4,
-        txh: 4,
-        plane: 0,
-        is_lf: false,
-        tx_class: 2, // TX_CLASS_VERT
-    };
-    assert!(dc_vert.ctx(&zero) == 7);
-};
-const _COEFF_IDTX_CONTRACT: () = {
-    let zero = [0u32; 16];
-    assert!(coeff_base_idtx_ctx(&zero, 1, 1, 4) == 0);
-    assert!(coeff_br_idtx_ctx(&zero, 1, 1, 4) == 0);
-    let lvl = [0u32, 10, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    assert!(coeff_base_idtx_ctx(&lvl, 1, 1, 4) == 5);
-    assert!(coeff_br_idtx_ctx(&lvl, 1, 1, 4) == 6);
-};
-const _DC_SIGN_CONTRACT: () = {
-    let z2 = [0u8, 0];
-    let z1 = [0u8];
-    assert!(dc_sign_ctx(&z2, &z1, 0, 0, 2, 1) == 0);
-    let pos = [2u8, 2];
-    assert!(dc_sign_ctx(&pos, &z1, 0, 0, 2, 1) == 2);
-    let neg = [1u8];
-    assert!(dc_sign_ctx(&z2, &neg, 0, 0, 2, 1) == 1);
-};
-const _IDTX_SIGN_CONTRACT: () = {
-    let zq = [0i32; 16];
-    let zl = [0u32; 16];
-    assert!(idtx_sign_ctx(&zq, &zl, 1, 1, 4) == 0);
-    let pos3 = [1i32, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    assert!(idtx_sign_ctx(&pos3, &zl, 1, 1, 4) == 5);
-    let pos1 = [0i32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let hi = [0u32, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    assert!(idtx_sign_ctx(&pos1, &hi, 1, 1, 4) == 3);
-};
 
 #[cfg(test)]
 mod tests {
@@ -667,8 +453,6 @@ mod tests {
         assert_eq!(coeff_base_bob_ctx(1, 0), 2);
     }
 
-    /// A `coeff_br` context over TX_4X4 adjusted geometry (bwl 2, txw/txh 4).
-    /// `tx_class` is the spec `txClass` value (0 = 2D, 1 = HORIZ, 2 = VERT).
     fn br(pos: usize, plane: usize, is_lf: bool, tx_class: usize) -> CoeffBrContext {
         CoeffBrContext {
             pos,
@@ -790,7 +574,6 @@ mod tests {
         let _ = coeff_br_idtx_ctx(&lvl, usize::MAX, usize::MAX, usize::MAX);
     }
 
-    /// A `coeff_base` context over TX_8X8 adjusted geometry (bwl 3, txw/txh 8).
     fn cb8(
         pos: usize,
         plane: usize,

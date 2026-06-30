@@ -447,80 +447,25 @@ fn decode_block_symbol(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use core::ops::Range;
-
-    use splot_core::segment::MAX_SEGMENTS;
-    use splot_core::span::{ByteOffset, ByteSpan};
     use splot_core::symbol::CdfUpdateMode;
 
-    use super::super::cdf::{
-        FrameCdfSubset, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy,
-    };
     use super::super::coeff_loop::AllZeroCoeffBlockInput;
     use super::super::coeff_loop::ordinary_pass::{
         CoeffOrdinaryBranchInput, apply_coeff_ordinary_branch,
     };
     use super::super::partition_allowed::PartitionFeatureFlags;
+    use super::super::partition_traversal::tests::make_work_unit;
     use super::super::partition_traversal::{
         TilePartitionBruState, TilePartitionContextState, TilePartitionFrameFacts,
         TilePartitionLoopRestorationState, TilePartitionTraversalError,
         TilePartitionTraversalInput, plan_tile_partition_traversal_cursor,
     };
-    use super::super::{
-        SymbolInitBoundary, TileBruPath, TileCoeffFrameFacts, TileCoeffFrameFactsInput,
-        TilePayloadSource,
-    };
     use super::*;
-    use crate::{DecodeLayerSelection, DecodeLimits, DecodeObuSourceKind};
+    use crate::DecodeLimits;
 
     const BLOCK_64X64: usize = 12;
     const BLOCK_256X256: usize = 18;
     const PAYLOAD: [u8; 2] = [0x12, 0xFB];
-
-    fn make_work_unit(payload: &[u8], update_mode: CdfUpdateMode) -> DecodeTileWorkUnit<'_> {
-        DecodeTileWorkUnit {
-            source: TilePayloadSource::new(
-                DecodeObuSourceKind::AnnexB,
-                None,
-                0,
-                ByteOffset::new(0),
-            ),
-            selected_layer: DecodeLayerSelection::base(),
-            tile_num: 0,
-            tile_row: 0,
-            tile_col: 0,
-            mi_row_range: Range { start: 0, end: 64 },
-            mi_col_range: Range { start: 0, end: 64 },
-            tile_bytes: payload,
-            tile_byte_span: ByteSpan::new(ByteOffset::new(128), payload.len() as u64),
-            tile_size: payload.len() as u64,
-            current_q_index_at_entry: 0,
-            coeff_frame_facts: TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
-                enable_fsc: false,
-                enable_idtx_intra: false,
-                enable_intra_ist: false,
-                enable_inter_ist: false,
-                enable_chroma_dctonly: false,
-                enable_cctx: false,
-                reduced_tx_set: 0,
-                lossless_array: [false; MAX_SEGMENTS],
-                allow_tcq: false,
-                allow_parity_hiding: false,
-                base_q_idx: 0,
-            }),
-            bru_path: TileBruPath::NotUsed,
-            symbol: SymbolInitBoundary {
-                consumed_bits: payload.len().saturating_mul(8).min(15) as u64,
-                symbol_max_bits: payload.len() as i64 * 8 - 15,
-                cdf_update_mode: update_mode,
-            },
-            cdf: TileCdfWorkUnitBoundary::new(
-                update_mode,
-                tile_cdf_save_policy(TileCdfPolicyInput::single_tile_default(), 0).unwrap(),
-                FrameCdfSubset::from_defaults(),
-            ),
-        }
-    }
 
     fn symbols_at_block_frontier<'payload>(
         work_unit: &mut DecodeTileWorkUnit<'payload>,

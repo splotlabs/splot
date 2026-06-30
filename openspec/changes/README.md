@@ -55,6 +55,7 @@ same id in the matrix, the OpenSpec folder, and the GitHub issue/PR.
 | `decode-inter-single-ref-symbol` | `DECODE-INTER-SINGLE-REF-SYMBOL` | blocked (change text contains blocked marker; unchecked tasks) |
 | `decode-inter-subpel-mv` | `DECODE-FIRST-INTER-FRAME-FRONTIER`, `DECODE-INTER-SUBPEL-MV`, `RECON-SUBPEL-MC` | blocked (artifact incomplete: design=ready) |
 | `decode-ivf-grouped-frame-units` | n/a | blocked (artifact incomplete: design=ready) |
+| `decoder-runtime-deslop` | `DECODE-GENERIC-RUNTIME-DESLOP` | in-progress (implemented; pending review) |
 | `dupehound-duplication-gate` | `INFRA-DUPEHOUND-DUPLICATION-GATE` | in-progress (gate landed; dedup campaign ongoing) |
 | `encoder-coeff-tokenize-16x16-base` | `ENC-COEFF-TOKENIZE-16X16-BASE` | blocked (artifact incomplete: design=ready) |
 | `encoder-coeff-tokenize-16x16-dc` | `ENC-COEFF-TOKENIZE-16X16-DC` | blocked (artifact incomplete: design=ready) |

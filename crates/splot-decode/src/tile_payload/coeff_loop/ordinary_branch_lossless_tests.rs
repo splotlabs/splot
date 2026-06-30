@@ -221,40 +221,34 @@ fn find_payload_for_explicit(tx_size: usize, plane_tx_type: usize, lossless: boo
     panic!("no ordinary coefficient payload found");
 }
 
+fn assert_lossless_matches_dct_dct(input: CoeffOrdinaryBranchLosslessInput) {
+    let payload = find_payload_for_explicit(TX_8X8, DCT_DCT, true);
+    assert_eq!(
+        run_lossless(&payload, input),
+        run_explicit(&payload, explicit_input(TX_8X8, DCT_DCT, true))
+    );
+}
+
 #[test]
 fn coefficient_ordinary_branch_lossless_selects_dct_dct() {
-    let payload = find_payload_for_explicit(TX_8X8, DCT_DCT, true);
-
-    let explicit = run_explicit(&payload, explicit_input(TX_8X8, DCT_DCT, true));
-    let derived = run_lossless(
-        &payload,
-        lossless_input(TX_8X8, UV_SMOOTH_PRED, 0, false, true),
-    );
-
-    assert_eq!(derived, explicit);
+    assert_lossless_matches_dct_dct(lossless_input(TX_8X8, UV_SMOOTH_PRED, 0, false, true));
 }
 
 #[test]
 fn coefficient_ordinary_branch_lossless_bypasses_lower_validation() {
-    let payload = find_payload_for_explicit(TX_8X8, DCT_DCT, true);
-
-    let explicit = run_explicit(&payload, explicit_input(TX_8X8, DCT_DCT, true));
-    let derived = run_lossless(&payload, lossless_input(TX_8X8, 99, 4, false, true));
-
-    assert_eq!(derived, explicit);
+    assert_lossless_matches_dct_dct(lossless_input(TX_8X8, 99, 4, false, true));
 }
 
 #[test]
 fn coefficient_ordinary_branch_lossless_disables_non_lossless_entropy_flags() {
-    let payload = find_payload_for_explicit(TX_8X8, DCT_DCT, true);
-
-    let explicit = run_explicit(&payload, explicit_input(TX_8X8, DCT_DCT, true));
-    let derived = run_lossless(
-        &payload,
-        lossless_input_with_entropy_flags(TX_8X8, UV_SMOOTH_PRED, 0, false, true, true),
-    );
-
-    assert_eq!(derived, explicit);
+    assert_lossless_matches_dct_dct(lossless_input_with_entropy_flags(
+        TX_8X8,
+        UV_SMOOTH_PRED,
+        0,
+        false,
+        true,
+        true,
+    ));
 }
 
 #[test]

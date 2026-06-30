@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Live loop-restoration storage allocation regression tests.
-
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use splot_core::headers::sequence::BitDepthIdc;
 use splot_core::span::ByteOffset;
 use splot_recon::{BitDepth, ReconError};
 
+use super::super as lr;
 use super::test_support::{
     UnsupportedFeatureExpectation, assert_unsupported_feature, fixture_sequence_and_key_core,
 };
@@ -18,14 +17,13 @@ use crate::{DecodeLimitThreshold, DecodeLimits};
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
-fn valid_live_storage_frontier() -> super::super::WienerNsLrRuntimeStorageRetentionFrontier {
+fn valid_live_storage_frontier() -> lr::WienerNsLrRuntimeStorageRetentionFrontier {
     let frame_sample_count = 64_u64 * 64 * 3 / 2;
     let retained_frame_buffer_bytes =
-        frame_sample_count * super::super::LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES * 2;
+        frame_sample_count * lr::LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES * 2;
     let tx_skip_values = 16_u64 * 16;
-    let tx_skip_storage_bytes =
-        tx_skip_values * super::super::LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE;
-    super::super::WienerNsLrRuntimeStorageRetentionFrontier {
+    let tx_skip_storage_bytes = tx_skip_values * lr::LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE;
+    lr::WienerNsLrRuntimeStorageRetentionFrontier {
         bit_depth: BitDepth::Ten,
         frame_buffer_count: 2,
         frame_buffer_bytes: 12_288,
@@ -38,10 +36,12 @@ fn valid_live_storage_frontier() -> super::super::WienerNsLrRuntimeStorageRetent
 }
 
 fn assert_live_storage_guard(
-    frontier: super::super::WienerNsLrRuntimeStorageRetentionFrontier,
+    mutate_frontier: impl FnOnce(&mut lr::WienerNsLrRuntimeStorageRetentionFrontier),
     expected_context: &'static str,
 ) {
-    let error = super::super::derive_wienerns_lr_live_storage_allocation(frontier).unwrap_err();
+    let mut frontier = valid_live_storage_frontier();
+    mutate_frontier(&mut frontier);
+    let error = lr::derive_wienerns_lr_live_storage_allocation(frontier).unwrap_err();
     let DecodeError::Reconstruction {
         source: ReconError::ArithmeticOverflow { context },
     } = error
@@ -51,17 +51,17 @@ fn assert_live_storage_guard(
     assert_eq!(context, expected_context);
 }
 
-fn valid_live_storage_allocation() -> super::super::WienerNsLrLiveStorageAllocation {
-    super::super::derive_wienerns_lr_live_storage_allocation(valid_live_storage_frontier())
+fn valid_live_storage_allocation() -> lr::WienerNsLrLiveStorageAllocation {
+    lr::derive_wienerns_lr_live_storage_allocation(valid_live_storage_frontier())
         .expect("live storage allocation")
 }
 
-fn tx_skip_grid(rows: usize, cols: usize, start: u8) -> super::super::WienerNsLrTxSkipGrid {
+fn tx_skip_grid(rows: usize, cols: usize, start: u8) -> lr::WienerNsLrTxSkipGrid {
     let value_count = rows.checked_mul(cols).expect("test grid dimensions fit");
     let values = (0..value_count)
         .map(|index| start.wrapping_add((index % 2) as u8))
         .collect();
-    super::super::WienerNsLrTxSkipGrid::new(rows, cols, values).expect("tx-skip grid")
+    lr::WienerNsLrTxSkipGrid::new(rows, cols, values).expect("tx-skip grid")
 }
 
 fn assert_live_tx_skip_error(error: &DecodeError, expected_field: &'static str) {
@@ -78,7 +78,7 @@ fn assert_live_tx_skip_error(error: &DecodeError, expected_field: &'static str) 
 fn wienerns_lr_live_storage_allocation_shells_count_ten_bit_420_buffers_and_tx_skip_grid() {
     let (mut sequence, core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
     sequence.general.bit_depth_idc = BitDepthIdc::Ten;
-    let frontier = super::super::derive_wienerns_lr_runtime_storage_retention_frontier(
+    let frontier = lr::derive_wienerns_lr_runtime_storage_retention_frontier(
         &sequence,
         &core,
         ByteOffset::new(74),
@@ -86,9 +86,8 @@ fn wienerns_lr_live_storage_allocation_shells_count_ten_bit_420_buffers_and_tx_s
     )
     .expect("retention frontier");
 
-    let allocation: super::super::WienerNsLrLiveStorageAllocation =
-        super::super::derive_wienerns_lr_live_storage_allocation(frontier)
-            .expect("live storage allocation");
+    let allocation =
+        lr::derive_wienerns_lr_live_storage_allocation(frontier).expect("live storage allocation");
 
     let frame_samples = 64 * 64 * 3 / 2;
     assert_eq!(allocation.bit_depth(), BitDepth::Ten);
@@ -136,7 +135,7 @@ fn wienerns_lr_live_tx_skip_grid_populates_retained_values_without_frame_samples
 fn wienerns_lr_live_transform_record_handoff_populates_tx_skip_without_frame_samples() {
     let mut allocation = valid_live_storage_allocation();
     let records = [
-        super::super::WienerNsLrTxSkipTransformRecord {
+        lr::WienerNsLrTxSkipTransformRecord {
             row: 0,
             col: 0,
             rows: 8,
@@ -145,7 +144,7 @@ fn wienerns_lr_live_transform_record_handoff_populates_tx_skip_without_frame_sam
             eob: 0,
             intra_ist: None,
         },
-        super::super::WienerNsLrTxSkipTransformRecord {
+        lr::WienerNsLrTxSkipTransformRecord {
             row: 8,
             col: 0,
             rows: 8,
@@ -154,7 +153,7 @@ fn wienerns_lr_live_transform_record_handoff_populates_tx_skip_without_frame_sam
             eob: 7,
             intra_ist: None,
         },
-        super::super::WienerNsLrTxSkipTransformRecord {
+        lr::WienerNsLrTxSkipTransformRecord {
             row: 8,
             col: 8,
             rows: 8,
@@ -165,13 +164,8 @@ fn wienerns_lr_live_transform_record_handoff_populates_tx_skip_without_frame_sam
         },
     ];
 
-    super::super::populate_wienerns_lr_live_tx_skip_from_transform_records(
-        &mut allocation,
-        16,
-        16,
-        &records,
-    )
-    .expect("populate from transform records");
+    lr::populate_wienerns_lr_live_tx_skip_from_transform_records(&mut allocation, 16, 16, &records)
+        .expect("populate from transform records");
 
     assert_eq!(allocation.unpopulated_tx_skip_values(), 0);
     assert_eq!(allocation.tx_skip_value(0, 0), Some(1));
@@ -222,35 +216,35 @@ fn wienerns_lr_live_tx_skip_grid_rejects_repopulation_without_mutation() {
 
 #[test]
 fn wienerns_lr_live_storage_allocation_rejects_invalid_internal_frontiers() {
-    let mut frontier = valid_live_storage_frontier();
-    frontier.frame_buffer_count = 1;
-    assert_live_storage_guard(frontier, "wiener ns lr live frame-buffer count");
-
-    let mut frontier = valid_live_storage_frontier();
-    frontier.frame_buffer_bytes = 3;
-    assert_live_storage_guard(frontier, "wiener ns lr live frame-buffer byte alignment");
-
-    let mut frontier = valid_live_storage_frontier();
-    frontier.tx_skip_rows = 0;
-    assert_live_storage_guard(frontier, "wiener ns lr live tx-skip dimensions");
-
-    let mut frontier = valid_live_storage_frontier();
-    frontier.tx_skip_values = 255;
-    assert_live_storage_guard(frontier, "wiener ns lr live tx-skip value count");
+    assert_live_storage_guard(
+        |frontier| frontier.frame_buffer_count = 1,
+        "wiener ns lr live frame-buffer count",
+    );
+    assert_live_storage_guard(
+        |frontier| frontier.frame_buffer_bytes = 3,
+        "wiener ns lr live frame-buffer byte alignment",
+    );
+    assert_live_storage_guard(
+        |frontier| frontier.tx_skip_rows = 0,
+        "wiener ns lr live tx-skip dimensions",
+    );
+    assert_live_storage_guard(
+        |frontier| frontier.tx_skip_values = 255,
+        "wiener ns lr live tx-skip value count",
+    );
 }
 
 #[test]
 fn wienerns_lr_live_storage_allocation_keeps_retention_limits_before_diagnostic() {
     let (mut sequence, core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
     sequence.general.bit_depth_idc = BitDepthIdc::Ten;
-    let actual_storage_bytes =
-        64_u64 * 64 * 3 / 2 * super::super::LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES * 2
-            + 16_u64 * 16 * super::super::LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE;
+    let actual_storage_bytes = 64_u64 * 64 * 3 / 2 * lr::LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES * 2
+        + 16_u64 * 16 * lr::LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE;
     let limits = DecodeLimits::unlimited()
         .with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(12_288))
         .with_max_reference_store_bytes(DecodeLimitThreshold::Max(actual_storage_bytes - 1));
 
-    let error = super::super::derive_wienerns_lr_runtime_storage_retention_frontier(
+    let error = lr::derive_wienerns_lr_runtime_storage_retention_frontier(
         &sequence,
         &core,
         ByteOffset::new(74),
@@ -266,7 +260,7 @@ fn wienerns_lr_live_storage_allocation_keeps_retention_limits_before_diagnostic(
 
 #[test]
 fn wienerns_lr_live_storage_allocation_error_reports_unpopulated_boundary() {
-    let error = super::super::wienerns_lr_live_storage_allocation_error(ByteOffset::new(74));
+    let error = lr::wienerns_lr_live_storage_allocation_error(ByteOffset::new(74));
     assert_unsupported_feature(
         error,
         "live storage-allocation frontier",
@@ -288,8 +282,7 @@ fn wienerns_lr_live_storage_allocation_error_reports_unpopulated_boundary() {
 
 #[test]
 fn wienerns_lr_tx_mode_select_transform_record_error_reports_handoff_frontier() {
-    let error =
-        super::super::wienerns_lr_tx_mode_select_transform_record_error(ByteOffset::new(74));
+    let error = lr::wienerns_lr_tx_mode_select_transform_record_error(ByteOffset::new(74));
     assert_unsupported_feature(
         error,
         "tx-mode-select transform frontier",
@@ -306,7 +299,7 @@ fn wienerns_lr_tx_mode_select_transform_record_error_reports_handoff_frontier() 
 
 #[test]
 fn wienerns_lr_live_frame_samples_unpopulated_error_reports_handoff_frontier() {
-    let error = super::super::wienerns_lr_live_frame_samples_unpopulated_error(ByteOffset::new(74));
+    let error = lr::wienerns_lr_live_frame_samples_unpopulated_error(ByteOffset::new(74));
     let DecodeError::UnsupportedFeature { unsupported } = error else {
         panic!("live frame-sample frontier must be an unsupported-feature error");
     };

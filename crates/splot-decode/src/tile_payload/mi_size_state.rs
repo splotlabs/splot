@@ -5,6 +5,7 @@
 //!
 //! Feature tracking: `DECODE-TILE-MI-SIZE-STATE-BOUNDARY`.
 
+use std::array;
 use std::collections::TryReserveError;
 
 use super::partition_size::{BlockSize, PartitionSizeError};
@@ -12,15 +13,22 @@ use super::partition_traversal::TilePartitionContextState;
 
 const BLOCK_256X256_INDEX: usize = 18;
 const PLANE_COUNT: usize = 2;
+const LUMA_PLANE: usize = 0;
+const CHROMA_PLANE: usize = 1;
+
+type MiSizeRow = Vec<usize>;
+type MiSizeGrid = Vec<MiSizeRow>;
+type PlaneGrids = [MiSizeGrid; PLANE_COUNT];
+type PlaneLines = [MiSizeRow; PLANE_COUNT];
 
 /// Mutable tile-local MI-size state used by partition contexts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileMiSizeState {
     mi_rows: usize,
     mi_cols: usize,
-    mi_sizes: [Vec<Vec<usize>>; PLANE_COUNT],
-    left_mi_sizes: [Vec<usize>; PLANE_COUNT],
-    above_mi_sizes: [Vec<usize>; PLANE_COUNT],
+    mi_sizes: PlaneGrids,
+    left_mi_sizes: PlaneLines,
+    above_mi_sizes: PlaneLines,
 }
 
 impl TileMiSizeState {
@@ -70,25 +78,13 @@ impl TileMiSizeState {
         Ok(Self {
             mi_rows,
             mi_cols,
-            mi_sizes: [
-                filled_grid(allocation.padded_rows, allocation.padded_cols)?,
-                filled_grid(allocation.padded_rows, allocation.padded_cols)?,
-            ],
-            left_mi_sizes: [
-                filled_line(allocation.padded_rows)?,
-                filled_line(allocation.padded_rows)?,
-            ],
-            above_mi_sizes: [
-                filled_line(allocation.padded_cols)?,
-                filled_line(allocation.padded_cols)?,
-            ],
+            mi_sizes: filled_grids(allocation.padded_rows, allocation.padded_cols)?,
+            left_mi_sizes: filled_lines(allocation.padded_rows)?,
+            above_mi_sizes: filled_lines(allocation.padded_cols)?,
         })
     }
 
-    /// Resets the left MI-size partition context to the clear-context sentinel,
-    /// mirroring AV2 § 5.20.2.1 `clear_left_context()` (§ 6.19.2.1) invoked at
-    /// the start of every superblock row. The above MI-size context persists
-    /// across rows, so only the left line is reset.
+    /// Resets the left MI-size partition context for a new superblock row.
     pub(crate) fn clear_left_context(&mut self) {
         for line in &mut self.left_mi_sizes {
             line.fill(BLOCK_256X256_INDEX);
@@ -102,7 +98,7 @@ impl TileMiSizeState {
         c: usize,
         mi_size: BlockSize,
     ) -> Result<(), TileMiSizeStateError> {
-        self.update_plane_block(0, r, c, mi_size)
+        self.update_plane_block(LUMA_PLANE, r, c, mi_size)
     }
 
     /// Applies AV2 § 5.20.4.1 chroma MI-size writes for caller-supplied chroma facts.
@@ -112,7 +108,7 @@ impl TileMiSizeState {
         chroma_mi_col: usize,
         chroma_mi_size: BlockSize,
     ) -> Result<(), TileMiSizeStateError> {
-        self.update_plane_block(1, chroma_mi_row, chroma_mi_col, chroma_mi_size)
+        self.update_plane_block(CHROMA_PLANE, chroma_mi_row, chroma_mi_col, chroma_mi_size)
     }
 
     /// Builds a short-lived read-only partition-context view over this state.
@@ -120,12 +116,11 @@ impl TileMiSizeState {
         &self,
         f: impl for<'ctx> FnOnce(TilePartitionContextState<'ctx>) -> R,
     ) -> Result<R, TileMiSizeStateError> {
-        let mi0_rows = row_slices(&self.mi_sizes[0])?;
-        let mi1_rows = row_slices(&self.mi_sizes[1])?;
+        let mi_rows = plane_row_slices(&self.mi_sizes)?;
         Ok(f(TilePartitionContextState::new(
-            [&mi0_rows, &mi1_rows],
-            [&self.left_mi_sizes[0], &self.left_mi_sizes[1]],
-            [&self.above_mi_sizes[0], &self.above_mi_sizes[1]],
+            array::from_fn(|plane| mi_rows[plane].as_slice()),
+            array::from_fn(|plane| self.left_mi_sizes[plane].as_slice()),
+            array::from_fn(|plane| self.above_mi_sizes[plane].as_slice()),
         )))
     }
 
@@ -138,15 +133,12 @@ impl TileMiSizeState {
     ) -> Result<(), TileMiSizeStateError> {
         let region = self.validated_region(plane, r, c, mi_size)?;
         let mi_size_index = mi_size.index();
+        let cols = region.col_range();
         for row in region.row_range() {
-            for col in region.col_range() {
-                self.mi_sizes[plane][row][col] = mi_size_index;
-            }
+            self.mi_sizes[plane][row][cols.clone()].fill(mi_size_index);
             self.left_mi_sizes[plane][row] = mi_size_index;
         }
-        for col in region.col_range() {
-            self.above_mi_sizes[plane][col] = mi_size_index;
-        }
+        self.above_mi_sizes[plane][cols].fill(mi_size_index);
         Ok(())
     }
 
@@ -182,12 +174,9 @@ impl TileMiSizeState {
                 mi_cols: self.mi_cols,
             });
         }
-        let rows = self.mi_sizes[plane].len();
-        let cols = self
-            .mi_sizes
-            .get(plane)
-            .and_then(|plane_rows| plane_rows.first())
-            .map_or(0, Vec::len);
+        let plane_grid = &self.mi_sizes[plane];
+        let rows = plane_grid.len();
+        let cols = plane_grid.first().map_or(0, Vec::len);
         if row_end > rows || col_end > cols {
             return Err(TileMiSizeStateError::BlockOutOfBounds {
                 plane,
@@ -233,25 +222,21 @@ pub(crate) struct TileMiSizeStateAllocation {
 }
 
 impl TileMiSizeStateAllocation {
-    /// Superblock-padded MI row count.
     #[must_use]
     pub(crate) const fn padded_rows(self) -> usize {
         self.padded_rows
     }
 
-    /// Superblock-padded MI column count.
     #[must_use]
     pub(crate) const fn padded_cols(self) -> usize {
         self.padded_cols
     }
 
-    /// MI cells in one padded plane grid.
     #[must_use]
     pub(crate) const fn padded_grid_cells(self) -> usize {
         self.padded_grid_cells
     }
 
-    /// Total `usize` entries allocated across both grids and neighbor lines.
     #[must_use]
     pub(crate) const fn entry_count(self) -> usize {
         self.entry_count
@@ -279,86 +264,52 @@ impl TileMiSizeRegion {
 /// Error returned by the tile MI-size state boundary.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TileMiSizeStateError {
-    /// State dimensions were empty.
     #[error("MI-size state dimensions must be nonzero, got {mi_rows}x{mi_cols}")]
-    EmptyDimensions {
-        /// MI rows.
-        mi_rows: usize,
-        /// MI columns.
-        mi_cols: usize,
-    },
-    /// Allocation arithmetic overflowed.
+    EmptyDimensions { mi_rows: usize, mi_cols: usize },
     #[error("{operation} overflow: left {left}, right {right}")]
     ArithmeticOverflow {
-        /// Operation name.
         operation: &'static str,
-        /// Left operand.
         left: usize,
-        /// Right operand.
         right: usize,
     },
-    /// Allocation failed.
     #[error("MI-size state allocation failed: {0}")]
     Allocation(#[from] TryReserveError),
-    /// A block-size table lookup failed.
     #[error("MI-size state block-size lookup failed: {0}")]
     Size(#[from] PartitionSizeError),
-    /// Coordinate addition overflowed.
     #[error("{coordinate} coordinate overflow: {base} + {offset}")]
     CoordinateOverflow {
-        /// Coordinate name.
         coordinate: &'static str,
-        /// Base coordinate.
         base: usize,
-        /// Derived offset.
         offset: usize,
     },
-    /// The block footprint exceeded the state dimensions.
     #[error(
         "MI-size state plane {plane} block ({r},{c})..({row_end},{col_end}) exceeds {mi_rows}x{mi_cols}"
     )]
     BlockOutOfBounds {
-        /// Plane index, 0 for luma and 1 for chroma.
         plane: usize,
-        /// Starting row.
         r: usize,
-        /// Starting column.
         c: usize,
-        /// Exclusive end row.
         row_end: usize,
-        /// Exclusive end column.
         col_end: usize,
-        /// State row count.
         mi_rows: usize,
-        /// State column count.
         mi_cols: usize,
     },
-    /// The block start coordinate was outside visible frame MI dimensions.
     #[error(
         "MI-size state plane {plane} block start ({r},{c}) exceeds visible {mi_rows}x{mi_cols}"
     )]
     BlockStartOutOfBounds {
-        /// Plane index, 0 for luma and 1 for chroma.
         plane: usize,
-        /// Starting row.
         r: usize,
-        /// Starting column.
         c: usize,
-        /// Visible frame row count.
         mi_rows: usize,
-        /// Visible frame column count.
         mi_cols: usize,
     },
-    /// A superblock-padded state dimension overflowed.
     #[error(
         "MI-size state padded {axis} dimension overflow: dimension {dimension}, superblock span {sb_span}"
     )]
     PaddedDimensionOverflow {
-        /// Axis name.
         axis: &'static str,
-        /// Visible dimension.
         dimension: usize,
-        /// Superblock span along this axis.
         sb_span: usize,
     },
 }
@@ -419,7 +370,11 @@ fn checked_mul_usize(
         })
 }
 
-fn filled_grid(rows: usize, cols: usize) -> Result<Vec<Vec<usize>>, TileMiSizeStateError> {
+fn filled_grids(rows: usize, cols: usize) -> Result<PlaneGrids, TileMiSizeStateError> {
+    Ok([filled_grid(rows, cols)?, filled_grid(rows, cols)?])
+}
+
+fn filled_grid(rows: usize, cols: usize) -> Result<MiSizeGrid, TileMiSizeStateError> {
     let mut grid = Vec::new();
     grid.try_reserve_exact(rows)?;
     for _ in 0..rows {
@@ -428,14 +383,27 @@ fn filled_grid(rows: usize, cols: usize) -> Result<Vec<Vec<usize>>, TileMiSizeSt
     Ok(grid)
 }
 
-fn filled_line(len: usize) -> Result<Vec<usize>, TileMiSizeStateError> {
+fn filled_lines(len: usize) -> Result<PlaneLines, TileMiSizeStateError> {
+    Ok([filled_line(len)?, filled_line(len)?])
+}
+
+fn filled_line(len: usize) -> Result<MiSizeRow, TileMiSizeStateError> {
     let mut line = Vec::new();
     line.try_reserve_exact(len)?;
     line.resize(len, BLOCK_256X256_INDEX);
     Ok(line)
 }
 
-fn row_slices(grid: &[Vec<usize>]) -> Result<Vec<&[usize]>, TileMiSizeStateError> {
+fn plane_row_slices(
+    grids: &[MiSizeGrid; PLANE_COUNT],
+) -> Result<[Vec<&[usize]>; PLANE_COUNT], TileMiSizeStateError> {
+    Ok([
+        row_slices(&grids[LUMA_PLANE])?,
+        row_slices(&grids[CHROMA_PLANE])?,
+    ])
+}
+
+fn row_slices(grid: &[MiSizeRow]) -> Result<Vec<&[usize]>, TileMiSizeStateError> {
     let mut rows = Vec::new();
     rows.try_reserve_exact(grid.len())?;
     for row in grid {

@@ -66,14 +66,6 @@ pub(crate) enum CoeffLevelStateWriteError {
 }
 
 /// Applies decoded ordinary non-FSC §5.20.7.27 levels to local `Level[]` state.
-///
-/// This starts after nonzero EOB, checked scan traversal, and
-/// base/base-range symbol reads. It validates the decoded read records against
-/// the checked scan walk, preflights every target coordinate, and then writes
-/// `Level[row][col] = level`
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). It does not
-/// read signs, write `QuantSign[]` or `Quant[]`, run `read_quant`, update tile
-/// context lines, or invoke reconstruction.
 pub(crate) fn apply_nonzero_coeff_base_levels(
     start: NonZeroCoeffBlockStart,
     walk: &NonZeroCoeffScanWalk,
@@ -89,8 +81,7 @@ pub(crate) fn apply_nonzero_coeff_base_levels(
     }
 
     preflight_level_writes(&block, entries, reads)?;
-    for read in reads {
-        let entry = read.entry();
+    for (entry, read) in entries.iter().copied().zip(reads.iter().copied()) {
         block.set_level(entry.row(), entry.col(), read.level())?;
     }
 

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Unit tests for the general intra luma transform-block coefficient decode
-//! (`super`), split out to keep the parser source under the §5 hard cap.
+//! Unit tests for general intra transform-block coefficient decode helpers.
 
 #![allow(clippy::unwrap_used)]
 
@@ -16,7 +15,7 @@ use crate::tile_payload::TileCoeffFrameFactsInput;
 
 const PAYLOAD: [u8; 2] = [0x00, 0x80];
 
-fn symbol_decoder_for_payload(payload: &'static [u8]) -> SymbolDecoder<'static> {
+fn symbol_decoder_for_payload(payload: &[u8]) -> SymbolDecoder<'_> {
     SymbolDecoder::with_base_and_config(
         payload,
         ByteOffset::new(0),
@@ -44,6 +43,38 @@ fn encode_transform_symbols(sequence: &[(TileCdfSelector, u8)]) -> Vec<u8> {
     encoder.finish().unwrap().into_bytes()
 }
 
+fn sec_tx_type_payload(
+    tx_size: usize,
+    sec_tx_type: u8,
+    most_probable_stx_set: Option<u8>,
+) -> Vec<u8> {
+    let tx_size_sqr = TX_SIZE_SQR[tx_size] as usize;
+    let mut sequence = vec![(
+        TileCdfSelector::SecTxType {
+            is_inter: 0,
+            tx_size_sqr,
+        },
+        sec_tx_type,
+    )];
+    if let Some(stx_set) = most_probable_stx_set {
+        sequence.push((TileCdfSelector::MostProbableStxSet, stx_set));
+    }
+    encode_transform_symbols(&sequence)
+}
+
+fn intra_tx_type_set1_payload(tx_size: usize, intra_tx_type: u8) -> Vec<u8> {
+    encode_transform_symbols(&[(
+        TileCdfSelector::IntraTxTypeSet1 {
+            tx_size_sqr: TX_SIZE_SQR[tx_size] as usize,
+        },
+        intra_tx_type,
+    )])
+}
+
+fn dc_luma_context() -> LumaTransformTypeContext {
+    LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)
+}
+
 #[test]
 fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
     let quant = vec![0i32; 16];
@@ -69,11 +100,9 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
 
 #[test]
 fn txb_skip_tx_size_ctx_matches_spec_formula_for_square_sizes() {
-    assert_eq!(txb_skip_tx_size_ctx(0), 0);
-    assert_eq!(txb_skip_tx_size_ctx(1), 1);
-    assert_eq!(txb_skip_tx_size_ctx(2), 2);
-    assert_eq!(txb_skip_tx_size_ctx(3), 3);
-    assert_eq!(txb_skip_tx_size_ctx(TX_64X64), 4);
+    for (tx_size, expected) in [(0, 0), (1, 1), (2, 2), (3, 3), (TX_64X64, 4)] {
+        assert_eq!(txb_skip_tx_size_ctx(tx_size), expected);
+    }
 }
 
 #[test]
@@ -90,33 +119,20 @@ fn frame_facts(
     enable_cctx: bool,
 ) -> TileCoeffFrameFacts {
     TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
-        enable_fsc: false,
         enable_idtx_intra,
         enable_intra_ist,
-        enable_inter_ist: false,
         enable_chroma_dctonly,
         enable_cctx,
-        reduced_tx_set: 0,
-        lossless_array: [false; MAX_SEGMENTS],
-        allow_tcq: false,
-        allow_parity_hiding: false,
-        base_q_idx: 128,
+        ..frame_facts_input()
     })
 }
 
 fn frame_facts_with_coeff_tools(allow_tcq: bool, allow_parity_hiding: bool) -> TileCoeffFrameFacts {
     TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
-        enable_fsc: false,
         enable_idtx_intra: true,
-        enable_intra_ist: false,
-        enable_inter_ist: false,
-        enable_chroma_dctonly: false,
-        enable_cctx: false,
-        reduced_tx_set: 0,
-        lossless_array: [false; MAX_SEGMENTS],
         allow_tcq,
         allow_parity_hiding,
-        base_q_idx: 128,
+        ..frame_facts_input()
     })
 }
 
@@ -124,6 +140,14 @@ fn frame_facts_with_fsc() -> TileCoeffFrameFacts {
     TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
         enable_fsc: true,
         enable_idtx_intra: true,
+        ..frame_facts_input()
+    })
+}
+
+fn frame_facts_input() -> TileCoeffFrameFactsInput {
+    TileCoeffFrameFactsInput {
+        enable_fsc: false,
+        enable_idtx_intra: false,
         enable_intra_ist: false,
         enable_inter_ist: false,
         enable_chroma_dctonly: false,
@@ -133,13 +157,14 @@ fn frame_facts_with_fsc() -> TileCoeffFrameFacts {
         allow_tcq: false,
         allow_parity_hiding: false,
         base_q_idx: 128,
-    })
+    }
 }
 
-#[allow(clippy::needless_pass_by_value)]
-fn unsupported_reason<T>(result: Result<T, GeneralIntraResidualError>) -> Option<&'static str> {
+fn unsupported_reason<T>(result: &Result<T, GeneralIntraResidualError>) -> Option<&'static str> {
     match result {
-        Err(GeneralIntraResidualError::UnsupportedTransformToolResidual { reason }) => Some(reason),
+        Err(GeneralIntraResidualError::UnsupportedTransformToolResidual { reason }) => {
+            Some(*reason)
+        }
         _ => None,
     }
 }
@@ -175,7 +200,7 @@ fn ensure_with_test_payload_and_policy(
     luma: Option<LumaTransformTypeContext>,
     active_intra_ist_policy: ActiveIntraIstResidualPolicy,
     active_chroma_policy: ActiveChromaResidualPolicy,
-    payload: &'static [u8],
+    payload: &[u8],
 ) -> Result<TransformToolResidualMetadata, GeneralIntraResidualError> {
     ensure_with_test_payload_fsc_and_policy(
         facts,
@@ -202,7 +227,7 @@ fn ensure_with_test_payload_fsc_and_policy(
     luma: Option<LumaTransformTypeContext>,
     active_intra_ist_policy: ActiveIntraIstResidualPolicy,
     active_chroma_policy: ActiveChromaResidualPolicy,
-    payload: &'static [u8],
+    payload: &[u8],
 ) -> Result<TransformToolResidualMetadata, GeneralIntraResidualError> {
     let mut cdfs = tile_cdfs();
     let mut symbols = symbol_decoder_for_payload(payload);
@@ -259,7 +284,7 @@ fn non_fsc_luma_transform_handoff_still_requires_luma_context() {
     );
 
     assert_eq!(
-        unsupported_reason(result),
+        unsupported_reason(&result),
         Some("unsupported_dctonly_residual_luma_transform_context")
     );
 }
@@ -272,7 +297,7 @@ fn dctonly_residual_admits_luma_when_ist_cannot_read_after_eob_limit() {
         TX_32X32,
         false,
         IST_8X8_HEIGHT + 1,
-        Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
+        Some(dc_luma_context()),
     );
 
     assert!(result.is_ok());
@@ -286,7 +311,7 @@ fn dctonly_residual_admits_luma_when_intra_ist_reads_zero_sec_tx_type() {
         TX_32X32,
         false,
         2,
-        Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
+        Some(dc_luma_context()),
     );
 
     assert!(result.is_ok());
@@ -304,7 +329,7 @@ fn dctonly_residual_rejects_intra_ist_without_luma_context() {
     );
 
     assert_eq!(
-        unsupported_reason(result),
+        unsupported_reason(&result),
         Some("unsupported_dctonly_residual_intra_ist_context")
     );
 }
@@ -320,24 +345,14 @@ fn dctonly_residual_rejects_active_intra_ist_sec_tx_type() {
     );
 
     assert_eq!(
-        unsupported_reason(result),
+        unsupported_reason(&result),
         Some("unsupported_dctonly_residual_intra_sec_tx_type")
     );
 }
 
 #[test]
 fn dctonly_residual_lr_handoff_admits_active_intra_ist_metadata() {
-    let payload = encode_transform_symbols(&[
-        (
-            TileCdfSelector::SecTxType {
-                is_inter: 0,
-                tx_size_sqr: TX_SIZE_SQR[TX_32X32] as usize,
-            },
-            1,
-        ),
-        (TileCdfSelector::MostProbableStxSet, 2),
-    ]);
-    let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
+    let payload = sec_tx_type_payload(TX_32X32, 1, Some(2));
 
     let metadata = ensure_with_test_payload_and_policy(
         frame_facts(true, true, false, false),
@@ -345,10 +360,10 @@ fn dctonly_residual_lr_handoff_admits_active_intra_ist_metadata() {
         TX_32X32,
         false,
         2,
-        Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
+        Some(dc_luma_context()),
         ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
         ActiveChromaResidualPolicy::Reject,
-        leaked_payload,
+        &payload,
     )
     .unwrap();
 
@@ -363,17 +378,7 @@ fn dctonly_residual_lr_handoff_admits_active_intra_ist_metadata() {
 
 #[test]
 fn dctonly_residual_safe_policy_rejects_encoded_active_intra_ist() {
-    let payload = encode_transform_symbols(&[
-        (
-            TileCdfSelector::SecTxType {
-                is_inter: 0,
-                tx_size_sqr: TX_SIZE_SQR[TX_32X32] as usize,
-            },
-            1,
-        ),
-        (TileCdfSelector::MostProbableStxSet, 2),
-    ]);
-    let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
+    let payload = sec_tx_type_payload(TX_32X32, 1, Some(2));
 
     let result = ensure_with_test_payload_and_policy(
         frame_facts(true, true, false, false),
@@ -381,26 +386,21 @@ fn dctonly_residual_safe_policy_rejects_encoded_active_intra_ist() {
         TX_32X32,
         false,
         2,
-        Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
+        Some(dc_luma_context()),
         ActiveIntraIstResidualPolicy::Reject,
         ActiveChromaResidualPolicy::Reject,
-        leaked_payload,
+        &payload,
     );
 
     assert_eq!(
-        unsupported_reason(result),
+        unsupported_reason(&result),
         Some("unsupported_dctonly_residual_intra_sec_tx_type")
     );
 }
 
 #[test]
 fn dctonly_residual_maps_nonzero_intra_tx_type_to_non_dct() {
-    let tx_type = md_idx_luma_tx_type(
-        TX_8X8,
-        LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0),
-        1,
-    )
-    .unwrap();
+    let tx_type = md_idx_luma_tx_type(TX_8X8, dc_luma_context(), 1).unwrap();
 
     assert_ne!(tx_type, DCT_DCT);
 }
@@ -410,9 +410,8 @@ const INTER_SET_EOB: usize = 10;
 
 fn read_inter_tx_type_from_symbols(tx_set: usize, sequence: &[(TileCdfSelector, u8)]) -> usize {
     let payload = encode_transform_symbols(sequence);
-    let leaked: &'static [u8] = Box::leak(payload.into_boxed_slice());
     let mut cdfs = tile_cdfs();
-    let mut symbols = symbol_decoder_for_payload(leaked);
+    let mut symbols = symbol_decoder_for_payload(&payload);
     read_active_inter_transform_type(
         &mut cdfs,
         &mut symbols,
@@ -588,14 +587,8 @@ fn luma_transform_context_applies_mrl_delta_before_wide_angle_mapping() {
 
 #[test]
 fn luma_txtype_residual_lr_handoff_retains_non_dct_luma_tx_type() {
-    let payload = encode_transform_symbols(&[(
-        TileCdfSelector::IntraTxTypeSet1 {
-            tx_size_sqr: TX_SIZE_SQR[TX_8X8] as usize,
-        },
-        1,
-    )]);
-    let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-    let luma = LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0);
+    let payload = intra_tx_type_set1_payload(TX_8X8, 1);
+    let luma = dc_luma_context();
     let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
 
     let metadata = ensure_with_test_payload_and_policy(
@@ -607,7 +600,7 @@ fn luma_txtype_residual_lr_handoff_retains_non_dct_luma_tx_type() {
         Some(luma),
         ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
         ActiveChromaResidualPolicy::Reject,
-        leaked_payload,
+        &payload,
     )
     .unwrap();
 
@@ -617,14 +610,8 @@ fn luma_txtype_residual_lr_handoff_retains_non_dct_luma_tx_type() {
 
 #[test]
 fn luma_txtype_residual_lr_handoff_skips_intra_ist_for_non_sec_tx_type() {
-    let payload = encode_transform_symbols(&[(
-        TileCdfSelector::IntraTxTypeSet1 {
-            tx_size_sqr: TX_SIZE_SQR[TX_8X8] as usize,
-        },
-        2,
-    )]);
-    let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-    let luma = LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0);
+    let payload = intra_tx_type_set1_payload(TX_8X8, 2);
+    let luma = dc_luma_context();
     let expected = md_idx_luma_tx_type(TX_8X8, luma, 2).unwrap();
 
     let metadata = ensure_with_test_payload_and_policy(
@@ -636,7 +623,7 @@ fn luma_txtype_residual_lr_handoff_skips_intra_ist_for_non_sec_tx_type() {
         Some(luma),
         ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
         ActiveChromaResidualPolicy::Reject,
-        leaked_payload,
+        &payload,
     )
     .unwrap();
 
@@ -648,14 +635,8 @@ fn luma_txtype_residual_lr_handoff_skips_intra_ist_for_non_sec_tx_type() {
 
 #[test]
 fn luma_txtype_residual_adst_adst_uses_reduced_ist_eob_limit() {
-    let payload = encode_transform_symbols(&[(
-        TileCdfSelector::IntraTxTypeSet1 {
-            tx_size_sqr: TX_SIZE_SQR[TX_16X16] as usize,
-        },
-        1,
-    )]);
-    let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-    let luma = LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0);
+    let payload = intra_tx_type_set1_payload(TX_16X16, 1);
+    let luma = dc_luma_context();
     let expected = md_idx_luma_tx_type(TX_16X16, luma, 1).unwrap();
 
     let metadata = ensure_with_test_payload_and_policy(
@@ -667,7 +648,7 @@ fn luma_txtype_residual_adst_adst_uses_reduced_ist_eob_limit() {
         Some(luma),
         ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
         ActiveChromaResidualPolicy::Reject,
-        leaked_payload,
+        &payload,
     )
     .unwrap();
 
@@ -678,7 +659,7 @@ fn luma_txtype_residual_adst_adst_uses_reduced_ist_eob_limit() {
 
 #[test]
 fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
-    let luma = LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0);
+    let luma = dc_luma_context();
     let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
 
     let config = staged_transform_tool_lossless_base_config(
@@ -697,65 +678,31 @@ fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
 }
 
 #[test]
-fn luma_txtype_residual_staged_base_config_derives_flags_for_2d_luma_tx_type() {
-    let config = staged_transform_tool_lossless_base_config(
-        frame_facts_with_coeff_tools(true, true),
-        0,
-        0,
-        false,
-        TransformToolResidualMetadata {
-            luma_tx_type: ADST_DCT,
-            ..TransformToolResidualMetadata::default()
-        },
-    );
+fn luma_txtype_residual_staged_base_config_derives_coeff_tool_flags() {
+    for (luma_tx_type, parity_hiding, use_tcq) in [
+        (ADST_DCT, true, true),
+        (IDTX, false, true),
+        (V_DCT, true, false),
+    ] {
+        let config = staged_transform_tool_lossless_base_config(
+            frame_facts_with_coeff_tools(true, true),
+            0,
+            0,
+            false,
+            TransformToolResidualMetadata {
+                luma_tx_type,
+                ..TransformToolResidualMetadata::default()
+            },
+        );
 
-    assert!(config.parity_hiding);
-    assert!(config.use_tcq);
-}
-
-#[test]
-fn luma_txtype_residual_staged_base_config_suppresses_parity_hiding_for_idtx() {
-    let config = staged_transform_tool_lossless_base_config(
-        frame_facts_with_coeff_tools(true, true),
-        0,
-        0,
-        false,
-        TransformToolResidualMetadata {
-            luma_tx_type: IDTX,
-            ..TransformToolResidualMetadata::default()
-        },
-    );
-
-    assert!(!config.parity_hiding);
-    assert!(config.use_tcq);
-}
-
-#[test]
-fn luma_txtype_residual_staged_base_config_suppresses_tcq_for_1d_luma_tx_type() {
-    let config = staged_transform_tool_lossless_base_config(
-        frame_facts_with_coeff_tools(true, true),
-        0,
-        0,
-        false,
-        TransformToolResidualMetadata {
-            luma_tx_type: V_DCT,
-            ..TransformToolResidualMetadata::default()
-        },
-    );
-
-    assert!(config.parity_hiding);
-    assert!(!config.use_tcq);
+        assert_eq!(config.parity_hiding, parity_hiding);
+        assert_eq!(config.use_tcq, use_tcq);
+    }
 }
 
 #[test]
 fn luma_txtype_residual_safe_policy_rejects_non_dct_luma_tx_type() {
-    let payload = encode_transform_symbols(&[(
-        TileCdfSelector::IntraTxTypeSet1 {
-            tx_size_sqr: TX_SIZE_SQR[TX_8X8] as usize,
-        },
-        1,
-    )]);
-    let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
+    let payload = intra_tx_type_set1_payload(TX_8X8, 1);
 
     let result = ensure_with_test_payload_and_policy(
         frame_facts(false, false, false, false),
@@ -763,14 +710,14 @@ fn luma_txtype_residual_safe_policy_rejects_non_dct_luma_tx_type() {
         TX_8X8,
         false,
         2,
-        Some(LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)),
+        Some(dc_luma_context()),
         ActiveIntraIstResidualPolicy::Reject,
         ActiveChromaResidualPolicy::Reject,
-        leaked_payload,
+        &payload,
     );
 
     assert_eq!(
-        unsupported_reason(result),
+        unsupported_reason(&result),
         Some("unsupported_dctonly_residual_luma_tx_type")
     );
 }
@@ -783,7 +730,7 @@ fn dctonly_residual_rejects_u_plane_cctx_only_when_eob_requires_cctx_type() {
 
     assert!(eob_one.is_ok());
     assert_eq!(
-        unsupported_reason(eob_two),
+        unsupported_reason(&eob_two),
         Some("unsupported_dctonly_residual_cctx")
     );
 }
@@ -800,7 +747,7 @@ fn dctonly_residual_safe_policy_rejects_chroma_non_dct_tx_set() {
     );
 
     assert_eq!(
-        unsupported_reason(result),
+        unsupported_reason(&result),
         Some("unsupported_dctonly_residual_tx_set")
     );
 }
@@ -823,55 +770,30 @@ fn dctonly_residual_lr_handoff_admits_chroma_non_dct_tx_set() {
 }
 
 #[test]
-fn dctonly_residual_lr_handoff_reads_cctx_zero() {
-    let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, 0)]);
-    let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
+fn dctonly_residual_lr_handoff_reads_cctx_metadata() {
+    for cctx_type in [0u8, 1] {
+        let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, cctx_type)]);
 
-    let metadata = ensure_with_test_payload_and_policy(
-        frame_facts(false, false, false, true),
-        1,
-        TX_8X8,
-        false,
-        2,
-        None,
-        ActiveIntraIstResidualPolicy::Reject,
-        ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
-        leaked_payload,
-    )
-    .unwrap();
+        let metadata = ensure_with_test_payload_and_policy(
+            frame_facts(false, false, false, true),
+            1,
+            TX_8X8,
+            false,
+            2,
+            None,
+            ActiveIntraIstResidualPolicy::Reject,
+            ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
+            &payload,
+        )
+        .unwrap();
 
-    assert_eq!(metadata.cctx_type, Some(0));
-}
-
-#[test]
-fn dctonly_residual_lr_handoff_reads_nonzero_cctx_metadata() {
-    let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, 1)]);
-    let leaked_payload: &'static [u8] = Box::leak(payload.into_boxed_slice());
-
-    let metadata = ensure_with_test_payload_and_policy(
-        frame_facts(false, false, false, true),
-        1,
-        TX_8X8,
-        false,
-        2,
-        None,
-        ActiveIntraIstResidualPolicy::Reject,
-        ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
-        leaked_payload,
-    )
-    .unwrap();
-
-    assert_eq!(metadata.cctx_type, Some(1));
+        assert_eq!(metadata.cctx_type, Some(usize::from(cctx_type)));
+    }
 }
 
 #[test]
 fn dctonly_residual_maps_intra_tx_type_zero_to_dct_dct() {
-    let tx_type = md_idx_luma_tx_type(
-        TX_8X8,
-        LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0),
-        0,
-    )
-    .unwrap();
+    let tx_type = md_idx_luma_tx_type(TX_8X8, dc_luma_context(), 0).unwrap();
 
     assert_eq!(tx_type, DCT_DCT);
 }

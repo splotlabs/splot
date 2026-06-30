@@ -130,13 +130,8 @@ pub(crate) enum CoeffScanOrderError {
     Allocation(#[from] TryReserveError),
 }
 
-/// Derives AV2 § 5.20.7.30 `get_scan(txSz, txClass)` output.
-///
-/// The caller supplies already-resolved `Tx_Width[txSz]`, `Tx_Height[txSz]`,
-/// and `txClass` facts. This helper applies the spec's 32-coefficient axis cap
-/// before emitting vertical, horizontal, or anti-diagonal scan positions
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30`). It does not
-/// derive transform type, read symbols, mutate CDFs, or write coefficients.
+/// Derives AV2 § 5.20.7.30 `get_scan(txSz, txClass)` output from resolved
+/// transform facts (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30`).
 pub(crate) fn derive_coeff_scan_order(
     tx_width: usize,
     tx_height: usize,
@@ -185,37 +180,22 @@ pub(crate) fn derive_coeff_scan_order(
     Ok(out)
 }
 
-/// Walks the ordinary non-FSC § 5.20.7.27 nonzero coefficient scan window.
-///
-/// The caller supplies the already-resolved `scan = get_scan(txSz, txClass)`
-/// table. This helper only checks the decode-side consumption boundary and maps
-/// `scan[c]` raster positions to row/column facts using the initialized adjusted
-/// block extent (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`).
-/// It does not derive scan order, read symbols, update CDFs, or write
-/// coefficients.
-pub(crate) fn walk_nonzero_coeff_scan(
+fn collect_scan_entries<I>(
     start: &NonZeroCoeffBlockStart,
-    scan: &[u16],
-) -> Result<NonZeroCoeffScanWalk, CoeffLoopContextError> {
-    let eob = start.eob_read().eob().eob();
-    if eob == 0 {
-        return Err(CoeffLoopContextError::InvalidScanWalkEob { eob });
-    }
-    if eob > scan.len() {
-        return Err(CoeffLoopContextError::ScanWalkEobOutOfRange {
-            eob,
-            scan_len: scan.len(),
-        });
-    }
-
+    scan_positions: I,
+    capacity: usize,
+) -> Result<Vec<CoeffScanEntry>, CoeffLoopContextError>
+where
+    I: IntoIterator<Item = (usize, u16)>,
+{
     let block = start.block();
     let width = block.width();
     let coeff_count = block.level().len();
     let mut entries = Vec::new();
-    entries.try_reserve(eob)?;
+    entries.try_reserve(capacity)?;
 
-    for scan_index in (0..eob).rev() {
-        let pos = usize::from(scan[scan_index]);
+    for (scan_index, scan_pos) in scan_positions {
+        let pos = usize::from(scan_pos);
         if pos >= coeff_count {
             return Err(CoeffLoopContextError::ScanWalkPositionOutOfRange {
                 scan_index,
@@ -231,18 +211,35 @@ pub(crate) fn walk_nonzero_coeff_scan(
         ));
     }
 
+    Ok(entries)
+}
+
+/// Walks the ordinary non-FSC AV2 § 5.20.7.27 nonzero coefficient scan window
+/// over a caller-supplied scan order
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`).
+pub(crate) fn walk_nonzero_coeff_scan(
+    start: &NonZeroCoeffBlockStart,
+    scan: &[u16],
+) -> Result<NonZeroCoeffScanWalk, CoeffLoopContextError> {
+    let eob = start.eob_read().eob().eob();
+    if eob == 0 {
+        return Err(CoeffLoopContextError::InvalidScanWalkEob { eob });
+    }
+    if eob > scan.len() {
+        return Err(CoeffLoopContextError::ScanWalkEobOutOfRange {
+            eob,
+            scan_len: scan.len(),
+        });
+    }
+
+    let entries = collect_scan_entries(start, scan[..eob].iter().copied().enumerate().rev(), eob)?;
+
     Ok(NonZeroCoeffScanWalk { entries })
 }
 
-/// Walks the FSC/IDTX § 5.20.7.27 coefficient scan window.
-///
-/// The caller supplies the already-resolved `scan = get_scan(txSz, txClass)` and
-/// `segEob = Min(32, Tx_Width[txSz]) * Min(Tx_Height[txSz], 32)`. This helper
-/// checks `bob = segEob - eob` and returns forward entries for the spec's
-/// `for (c = bob; c < eob; c++)` loop after the FSC branch assigns
-/// `eob = segEob` (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`).
-/// It does not read symbols, update CDFs, write coefficient state, or derive
-/// `useFsc`.
+/// Walks the FSC/IDTX AV2 § 5.20.7.27 coefficient scan window for a
+/// caller-resolved `segEob` and scan order
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`).
 pub(crate) fn walk_fsc_coeff_scan(
     start: &NonZeroCoeffBlockStart,
     seg_eob: usize,
@@ -262,29 +259,12 @@ pub(crate) fn walk_fsc_coeff_scan(
         });
     }
 
-    let block = start.block();
-    let width = block.width();
-    let coeff_count = block.level().len();
     let bob = seg_eob - eob;
-    let mut entries = Vec::new();
-    entries.try_reserve(eob)?;
-
-    for (scan_index, &scan_pos) in scan.iter().enumerate().take(seg_eob).skip(bob) {
-        let pos = usize::from(scan_pos);
-        if pos >= coeff_count {
-            return Err(CoeffLoopContextError::ScanWalkPositionOutOfRange {
-                scan_index,
-                pos,
-                coeff_count,
-            });
-        }
-        entries.push(CoeffScanEntry::new(
-            scan_index,
-            pos,
-            pos / width,
-            pos % width,
-        ));
-    }
+    let entries = collect_scan_entries(
+        start,
+        (bob..seg_eob).zip(scan[bob..seg_eob].iter().copied()),
+        eob,
+    )?;
 
     Ok(FscCoeffScanWalk {
         bob,

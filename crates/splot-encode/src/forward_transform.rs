@@ -33,6 +33,11 @@ use splot_recon::{PlaneId, PlaneRect};
 use splot_tables::tables::transform_1d::DCT_KERNEL4;
 
 use crate::error::{Error, Result};
+#[cfg(test)]
+use crate::forward_transform_shared::forward_round2;
+use crate::forward_transform_shared::{
+    forward_dct_dct_square, validate_forward_input_length, validate_forward_shape,
+};
 
 #[allow(unused_imports)]
 pub(crate) use crate::forward_transform_16x16::ForwardTransformBlock16x16;
@@ -79,15 +84,8 @@ impl ForwardTransformBlock {
         block: PlaneRect,
         residual: &[i32],
     ) -> Result<Self> {
-        validate_4x4_shape(plane, block)?;
-        if residual.len() != DCT_DCT_4X4_COEFF_COUNT {
-            return Err(Error::ForwardTransformInputLengthMismatch {
-                plane,
-                block,
-                expected: DCT_DCT_4X4_COEFF_COUNT,
-                actual: residual.len(),
-            });
-        }
+        validate_forward_shape(plane, block, DCT_DCT_4X4_WIDTH, DCT_DCT_4X4_HEIGHT)?;
+        validate_forward_input_length(plane, block, DCT_DCT_4X4_COEFF_COUNT, residual.len())?;
 
         let first = residual[0];
         for (index, &sample) in residual.iter().enumerate().skip(1) {
@@ -140,48 +138,14 @@ impl ForwardTransformBlock {
     /// coefficient falls outside `i32` (unreachable for valid 8-bit residuals; the
     /// passes accumulate in `i64`).
     pub(crate) fn dct_dct_4x4(plane: PlaneId, block: PlaneRect, residual: &[i32]) -> Result<Self> {
-        validate_4x4_shape(plane, block)?;
-        if residual.len() != DCT_DCT_4X4_COEFF_COUNT {
-            return Err(Error::ForwardTransformInputLengthMismatch {
-                plane,
-                block,
-                expected: DCT_DCT_4X4_COEFF_COUNT,
-                actual: residual.len(),
-            });
-        }
-
-        let mut intermediate = [0i64; DCT_DCT_4X4_COEFF_COUNT];
-        for r in 0..DCT_DCT_4X4_HEIGHT {
-            let mut row = [0i64; DCT_DCT_4X4_WIDTH];
-            for (c, slot) in row.iter_mut().enumerate() {
-                *slot = i64::from(residual[r * DCT_DCT_4X4_WIDTH + c]);
-            }
-            let transformed = forward_dct4_1d(&row, FORWARD_ROW_SHIFT);
-            for (c, &value) in transformed.iter().enumerate() {
-                intermediate[r * DCT_DCT_4X4_WIDTH + c] = value;
-            }
-        }
-
-        let mut coefficients = [0; DCT_DCT_4X4_COEFF_COUNT];
-        for c in 0..DCT_DCT_4X4_WIDTH {
-            let mut column = [0i64; DCT_DCT_4X4_HEIGHT];
-            for (r, slot) in column.iter_mut().enumerate() {
-                *slot = intermediate[r * DCT_DCT_4X4_WIDTH + c];
-            }
-            let transformed = forward_dct4_1d(&column, FORWARD_COL_SHIFT);
-            for (r, &value) in transformed.iter().enumerate() {
-                let index = r * DCT_DCT_4X4_WIDTH + c;
-                coefficients[index] = i32::try_from(value).map_err(|_| {
-                    Error::ForwardTransformCoefficientRangeExceeded {
-                        plane,
-                        block,
-                        index,
-                        value,
-                    }
-                })?;
-            }
-        }
-
+        let coefficients = forward_dct_dct_square::<DCT_DCT_4X4_WIDTH, DCT_DCT_4X4_COEFF_COUNT>(
+            plane,
+            block,
+            residual,
+            &DCT_KERNEL4,
+            FORWARD_ROW_SHIFT,
+            FORWARD_COL_SHIFT,
+        )?;
         Ok(Self {
             plane,
             block,
@@ -203,52 +167,6 @@ impl ForwardTransformBlock {
     pub(crate) const fn coefficients(&self) -> &[i32; DCT_DCT_4X4_COEFF_COUNT] {
         &self.coefficients
     }
-}
-
-fn validate_4x4_shape(plane: PlaneId, block: PlaneRect) -> Result<()> {
-    if block.width() == DCT_DCT_4X4_WIDTH && block.height() == DCT_DCT_4X4_HEIGHT {
-        Ok(())
-    } else {
-        Err(Error::ForwardTransformUnsupportedShape {
-            plane,
-            block,
-            expected_width: DCT_DCT_4X4_WIDTH,
-            expected_height: DCT_DCT_4X4_HEIGHT,
-        })
-    }
-}
-
-/// AV2 § 4.8 `Round2(value, n)`, identical to the `splot-recon` inverse transform's
-/// `round2`: `n == 0` returns `value`, otherwise `(value + (1 << (n - 1))) >> n`
-/// with an arithmetic (sign-extending) shift, the rounding add done in `i128` so it
-/// is total for every `i64` value. Matching the decoder's rounding exactly is what
-/// keeps the forward transform the precise numerical inverse of the inverse pass.
-fn forward_round2(value: i64, shift: u32) -> i64 {
-    if shift == 0 {
-        return value;
-    }
-    ((i128::from(value) + (1i128 << (shift - 1))) >> shift) as i64
-}
-
-/// One forward 4-point DCT pass:
-/// `out[r] = Round2(sum over i of DCT_KERNEL4[r][i] * input[i], shift)`.
-///
-/// The kernel ROW index `r` is the output frequency and the COLUMN index `i` is the
-/// input sample — the transpose of the decoder inverse's `DCT_KERNEL4[j][i]`
-/// indexing (`splot-recon` `inverse_transform.rs` `kernel_sum`), so this pass is the
-/// analytic inverse of the 1D inverse DCT. The kernel matrix is asymmetric, so the
-/// `[r][i]` orientation is load-bearing. The 4-tap sum accumulates in `i64`
-/// (`|kernel| <= 83` times the column-pass intermediate stays well within `i64`).
-fn forward_dct4_1d(input: &[i64; DCT_DCT_4X4_WIDTH], shift: u32) -> [i64; DCT_DCT_4X4_WIDTH] {
-    let mut out = [0i64; DCT_DCT_4X4_WIDTH];
-    for (r, slot) in out.iter_mut().enumerate() {
-        let mut sum = 0i64;
-        for (i, &sample) in input.iter().enumerate() {
-            sum += i64::from(DCT_KERNEL4[r][i]) * sample;
-        }
-        *slot = forward_round2(sum, shift);
-    }
-    out
 }
 
 #[cfg(test)]

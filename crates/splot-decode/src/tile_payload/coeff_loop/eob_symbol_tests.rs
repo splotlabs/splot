@@ -9,9 +9,10 @@ use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 use super::super::cdf::{
     EobPtSize, FrameCdfSubset, TileCdfArray, TileCdfError, TileCdfSelector, TileCdfSubset,
 };
-use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
+use super::super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
 use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
-use super::scan_walk::{walk_fsc_coeff_scan, walk_nonzero_coeff_scan};
+use super::scan_walk::{CoeffScanEntry, walk_fsc_coeff_scan, walk_nonzero_coeff_scan};
+use super::test_support::seeded_luma_context_state;
 use super::*;
 
 fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
@@ -114,19 +115,7 @@ fn direct_eob_read(
 }
 
 fn seeded_coeff_context_state() -> TileCoeffContextState {
-    let mut state = TileCoeffContextState::new(4, 4).unwrap();
-    state
-        .update_after_coeffs(CoeffContextUpdate {
-            plane: 0,
-            x4: 0,
-            y4: 0,
-            w4: 2,
-            h4: 2,
-            cul_level: 4,
-            dc_category: 2,
-        })
-        .unwrap();
-    state
+    seeded_luma_context_state(4, 4, 2, 2, 4, 2)
 }
 
 fn branch_all_zero(branch: CoeffBlockEobBranch) -> Option<AllZeroCoeffBlock> {
@@ -481,23 +470,16 @@ fn coeff_scan_walk_returns_reverse_scan_entries_without_mutation() {
     let walk = walk_nonzero_coeff_scan(&start, &[0, 8, 1, 9]).unwrap();
     let entries = walk.entries();
 
-    assert_eq!(entries.len(), 4);
-    assert_eq!(entries[0].scan_index(), 3);
-    assert_eq!(entries[0].pos(), 9);
-    assert_eq!(entries[0].row(), 1);
-    assert_eq!(entries[0].col(), 1);
-    assert_eq!(entries[1].scan_index(), 2);
-    assert_eq!(entries[1].pos(), 1);
-    assert_eq!(entries[1].row(), 0);
-    assert_eq!(entries[1].col(), 1);
-    assert_eq!(entries[2].scan_index(), 1);
-    assert_eq!(entries[2].pos(), 8);
-    assert_eq!(entries[2].row(), 1);
-    assert_eq!(entries[2].col(), 0);
-    assert_eq!(entries[3].scan_index(), 0);
-    assert_eq!(entries[3].pos(), 0);
-    assert_eq!(entries[3].row(), 0);
-    assert_eq!(entries[3].col(), 0);
+    assert_eq!(
+        entries,
+        [
+            CoeffScanEntry::for_test(3, 9, 1, 1),
+            CoeffScanEntry::for_test(2, 1, 0, 1),
+            CoeffScanEntry::for_test(1, 8, 1, 0),
+            CoeffScanEntry::for_test(0, 0, 0, 0),
+        ]
+        .as_slice()
+    );
     assert_eq!(start.block(), &block_before);
     assert_eq!(state, state_before);
     assert_eq!(tile, tile_before);
@@ -569,15 +551,14 @@ fn coeff_fsc_scan_walk_returns_forward_segment_without_mutation() {
 
     assert_eq!(walk.bob(), 2);
     assert_eq!(walk.seg_eob(), 4);
-    assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].scan_index(), 2);
-    assert_eq!(entries[0].pos(), 1);
-    assert_eq!(entries[0].row(), 0);
-    assert_eq!(entries[0].col(), 1);
-    assert_eq!(entries[1].scan_index(), 3);
-    assert_eq!(entries[1].pos(), 9);
-    assert_eq!(entries[1].row(), 1);
-    assert_eq!(entries[1].col(), 1);
+    assert_eq!(
+        entries,
+        [
+            CoeffScanEntry::for_test(2, 1, 0, 1),
+            CoeffScanEntry::for_test(3, 9, 1, 1),
+        ]
+        .as_slice()
+    );
     assert_eq!(start.block(), &block_before);
     assert_eq!(state, state_before);
     assert_eq!(tile, tile_before);

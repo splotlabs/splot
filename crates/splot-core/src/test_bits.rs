@@ -10,21 +10,23 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 /// MSB-first bit writer: push bits, then pack them into bytes.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Bits {
     /// One entry per bit (0 or 1), MSB first.
     pub(crate) bits: Vec<u8>,
 }
 
 impl Bits {
-    pub(crate) fn bit(&mut self, bit: u8) {
+    pub(crate) fn bit(&mut self, bit: u8) -> &mut Self {
         self.bits.push(bit & 1);
+        self
     }
 
-    pub(crate) fn f(&mut self, value: u32, width: u32) {
+    pub(crate) fn f(&mut self, value: u32, width: u32) -> &mut Self {
         for shift in (0..width).rev() {
             self.bit(((value >> shift) & 1) as u8);
         }
+        self
     }
 
     pub(crate) fn uvlc(&mut self, value: u32) {
@@ -95,8 +97,12 @@ impl Bits {
     pub(crate) fn raw(&mut self, s: &str) {
         for c in s.chars() {
             match c {
-                '0' => self.bit(0),
-                '1' => self.bit(1),
+                '0' => {
+                    self.bit(0);
+                }
+                '1' => {
+                    self.bit(1);
+                }
                 _ => {}
             }
         }
@@ -123,6 +129,12 @@ impl Bits {
             2 * (value.unsigned_abs())
         };
         self.uvlc(uvlc);
+    }
+
+    pub(crate) fn deltas(&mut self, delta: i32, count: usize) {
+        for _ in 0..count {
+            self.svlc(delta);
+        }
     }
 
     pub(crate) fn tu(&mut self, value: u32, mx: u32) {

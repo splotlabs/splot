@@ -314,7 +314,7 @@ pub(crate) fn apply_nonzero_coeff_quant_state(
         .zip(inputs.iter().copied())
         .enumerate()
     {
-        let write = state.apply(index, entry, levels[index], sign.sign(), input)?;
+        let write = state.apply_entry(index, entry, levels[index], sign.sign(), input)?;
         writes.push(write);
     }
 
@@ -343,39 +343,60 @@ fn preflight_quant_writes(
         .zip(inputs.iter().copied())
         .enumerate()
     {
-        if sign.entry() != entry {
-            return Err(CoeffQuantStateWriteError::SignEntryMismatch {
-                index,
-                expected: entry,
-                actual: sign.entry(),
-            });
-        }
-        if input.entry != entry {
-            return Err(CoeffQuantStateWriteError::InputEntryMismatch {
-                index,
-                expected: entry,
-                actual: input.entry,
-            });
-        }
-        let level = block.level_at(entry.row(), entry.col())?;
-        if sign.level() != level {
-            return Err(CoeffQuantStateWriteError::SignLevelMismatch {
-                index,
-                expected: level,
-                actual: sign.level(),
-            });
-        }
-        if config.is_hidden
-            && config.sum_abs1 > 0
-            && entry.scan_index() == 0
-            && sign.symbol() == CoeffSignReadSymbol::None
-        {
-            return Err(CoeffQuantStateWriteError::HiddenParityMissingSign { index, entry });
-        }
-        block.quant_at(entry.pos())?;
+        let level = checked_quant_write_level(
+            block,
+            index,
+            entry,
+            sign,
+            input,
+            config.is_hidden,
+            config.sum_abs1,
+        )?;
         levels.push(level);
     }
     Ok(levels)
+}
+
+fn checked_quant_write_level(
+    block: &TransformCoeffBlockState,
+    index: usize,
+    entry: CoeffScanEntry,
+    sign: CoeffSignRead,
+    input: CoeffQuantReadInput,
+    is_hidden: bool,
+    sum_abs1: u32,
+) -> Result<u32, CoeffQuantStateWriteError> {
+    if sign.entry() != entry {
+        return Err(CoeffQuantStateWriteError::SignEntryMismatch {
+            index,
+            expected: entry,
+            actual: sign.entry(),
+        });
+    }
+    if input.entry != entry {
+        return Err(CoeffQuantStateWriteError::InputEntryMismatch {
+            index,
+            expected: entry,
+            actual: input.entry,
+        });
+    }
+    let level = block.level_at(entry.row(), entry.col())?;
+    if sign.level() != level {
+        return Err(CoeffQuantStateWriteError::SignLevelMismatch {
+            index,
+            expected: level,
+            actual: sign.level(),
+        });
+    }
+    if is_hidden
+        && sum_abs1 > 0
+        && entry.scan_index() == 0
+        && sign.symbol() == CoeffSignReadSymbol::None
+    {
+        return Err(CoeffQuantStateWriteError::HiddenParityMissingSign { index, entry });
+    }
+    block.quant_at(entry.pos())?;
+    Ok(level)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -407,17 +428,6 @@ impl CoeffQuantStateAccumulator {
 
     /// Applies one checked coefficient to the accumulator without mutating block storage.
     pub(crate) fn apply_entry(
-        &mut self,
-        index: usize,
-        entry: CoeffScanEntry,
-        level: u32,
-        sign: bool,
-        input: CoeffQuantReadInput,
-    ) -> Result<CoeffQuantStateWrite, CoeffQuantStateWriteError> {
-        self.apply(index, entry, level, sign, input)
-    }
-
-    fn apply(
         &mut self,
         index: usize,
         entry: CoeffScanEntry,
@@ -473,38 +483,16 @@ pub(crate) fn apply_nonzero_coeff_quant_state_step(
     sign: CoeffSignRead,
     input: CoeffQuantReadInput,
 ) -> Result<CoeffQuantStateWrite, CoeffQuantStateWriteError> {
-    if sign.entry() != entry {
-        return Err(CoeffQuantStateWriteError::SignEntryMismatch {
-            index,
-            expected: entry,
-            actual: sign.entry(),
-        });
-    }
-    if input.entry != entry {
-        return Err(CoeffQuantStateWriteError::InputEntryMismatch {
-            index,
-            expected: entry,
-            actual: input.entry,
-        });
-    }
-    let level = block.level_at(entry.row(), entry.col())?;
-    if sign.level() != level {
-        return Err(CoeffQuantStateWriteError::SignLevelMismatch {
-            index,
-            expected: level,
-            actual: sign.level(),
-        });
-    }
-    if state.is_hidden
-        && state.sum_abs1 > 0
-        && entry.scan_index() == 0
-        && sign.symbol() == CoeffSignReadSymbol::None
-    {
-        return Err(CoeffQuantStateWriteError::HiddenParityMissingSign { index, entry });
-    }
-    block.quant_at(entry.pos())?;
-
-    let write = state.apply(index, entry, level, sign.sign(), input)?;
+    let level = checked_quant_write_level(
+        block,
+        index,
+        entry,
+        sign,
+        input,
+        state.is_hidden,
+        state.sum_abs1,
+    )?;
+    let write = state.apply_entry(index, entry, level, sign.sign(), input)?;
     block.set_quant(write.entry().pos(), write.quant())?;
     Ok(write)
 }

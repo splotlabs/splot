@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Diagnostic constructors for the Wiener NS loop-restoration runtime frontier.
-
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 
@@ -30,13 +28,13 @@ pub(in crate::runtime_minimal) fn transform_tool_residual_frontier(
     match reason {
         "unsupported_dctonly_residual_intra_sec_tx_type"
         | "unsupported_dctonly_residual_intra_ist_context" => (
-            "minimal runtime reached active Wiener NS LR, consumed DCT-only residual prelude syntax, read intra IST secondary-transform syntax, and found an active secondary transform; secondary inverse transforms, decoded samples, filtering, output, and reference refresh remain unsupported",
+            "Active Wiener NS LR parsed DCT-only residual prelude and intra IST syntax, but active secondary transforms are unsupported before decoded samples, filtering, output, and reference refresh",
             AC0EJ3_INTRA_IST_ZERO_FRONTIER_MATRIX_ROW,
             AC0EJ3_INTRA_IST_ZERO_FRONTIER_FEATURE_ID,
             "5.20.7.29",
         ),
         _ => (
-            "minimal runtime reached active Wiener NS LR, consumed the all_zero decision, staged the nonzero EOB syntax, consumed supported active luma transform_type syntax, and proved this residual is outside the DCT_DCT-only transform-tool subset; non-DCT transforms, CCTX, IST, decoded samples, filtering, output, and reference refresh remain unsupported",
+            "Active Wiener NS LR parsed nonzero residual syntax and a supported luma transform_type, but the residual is outside the DCT_DCT-only subset; non-DCT transforms, CCTX, IST, decoded samples, filtering, output, and reference refresh are unsupported",
             AC0EJ3_DCTONLY_RESIDUAL_FRONTIER_MATRIX_ROW,
             AC0EJ3_DCTONLY_RESIDUAL_FRONTIER_FEATURE_ID,
             "5.20.7.27",
@@ -64,7 +62,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_unit_runtime_error(
     unsupported_feature_at(
         "unsupported_active_wienerns_lr_units",
         offset,
-        "minimal runtime consumed the supported AV2 §5.20.10.4/§5.20.10.5 frame-level Wiener NS LR unit syntax, retained per-unit selection state, and found at least one unit selecting RESTORE_WIENER_NONSEP, but does not yet apply active loop-restoration reconstruction before output",
+        "AV2 §5.20.10.4/§5.20.10.5 Wiener NS LR unit syntax selected RESTORE_WIENER_NONSEP; loop-restoration reconstruction before output is unsupported",
         AC0EJ3_LR_UNIT_SELECTIONS_MATRIX_ROW,
         AC0EJ3_LR_UNIT_SELECTIONS_FEATURE_ID,
         "5.20.10.5",
@@ -77,7 +75,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_source_read_runtime_error(
     unsupported_feature_at(
         "unsupported_wienerns_lr_source_read",
         offset,
-        "minimal runtime consumed active AV2 §5.20.10.4/§5.20.10.5 frame-level Wiener NS LR unit syntax, retained per-unit selection state, derived active §7.20.1 loop-restoration source-bound facts, and resolved §7.20.2 source-read state for output, Wiener tap, and chroma luma-source coordinates, but does not yet read source sample values or apply §7.20.3 filtering before output",
+        "Active Wiener NS LR retained per-unit selection state and source-bound facts, and resolved §7.20.2 source-read state for output, Wiener tap, and chroma luma-source coordinates; source sample values and §7.20.3 filtering are unsupported",
         AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
         AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
         "7.20.2",
@@ -88,7 +86,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_source_read_runtime_error(
     not(test),
     allow(
         dead_code,
-        reason = "old storage-helper diagnostic is retained for the helper-row regression test after the live path advanced"
+        reason = "regression test keeps the historical storage-helper row"
     )
 )]
 pub(in crate::runtime_minimal) fn wienerns_lr_classified_wiener_storage_runtime_error(
@@ -97,7 +95,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_classified_wiener_storage_runtime_
     unsupported_feature_at(
         "unsupported_wienerns_lr_classified_wiener_runtime_storage",
         offset,
-        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 skip-filter classified-luma source-read and LrTxSkip lookup coordinates, resolved the later §7.20.3 source-read state, and has storage-backed FilterClass derivation for decoded CurrFrame/CdefFrame views plus a bounded LrTxSkip grid, but the live ac0ej3 path reaches loop restoration before decoded 10-bit frame buffers and an LrTxSkip grid are retained for filtering; loop-restoration filtering/output/reference refresh is not applied",
+        "Active Wiener NS LR resolved source-read and LrTxSkip lookup coordinates with storage-backed FilterClass support, but decoded 10-bit frame buffers and LrTxSkip values are not retained for filtering; loop-restoration filtering is not applied",
         AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW,
         AC0EJ3_LR_CLASSIFIED_WIENER_STORAGE_FEATURE_ID,
         "7.20.4",
@@ -110,7 +108,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_runtime_storage_retention_error(
     unsupported_feature_at(
         "unsupported_wienerns_lr_runtime_storage_unpopulated",
         offset,
-        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 classified-luma source-read and LrTxSkip lookup coordinates, resolved later §7.20.3 source-read state, has storage-backed FilterClass derivation for decoded CurrFrame/CdefFrame views plus a bounded LrTxSkip grid, and now derives/limit-checks the live active-bit-depth CurrFrame/CdefFrame storage footprint plus the frame-wide LrTxSkip grid shape, but tile reconstruction has not populated decoded frame samples or LrTxSkip values for filtering; loop-restoration filtering/output/reference refresh is not applied",
+        "Active Wiener NS LR derives the active-bit-depth CurrFrame/CdefFrame storage footprint and LrTxSkip grid shape, but tile reconstruction has not populated decoded frame samples or LrTxSkip values; loop-restoration filtering/output is not applied",
         AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW,
         AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID,
         "7.20.4",
@@ -119,7 +117,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_runtime_storage_retention_error(
 
 #[allow(
     dead_code,
-    reason = "live storage-allocation diagnostic is retained for the helper-row regression test after the live path advanced"
+    reason = "regression test keeps the historical live-storage row"
 )]
 pub(in crate::runtime_minimal) fn wienerns_lr_live_storage_allocation_error(
     offset: ByteOffset,
@@ -127,7 +125,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_live_storage_allocation_error(
     unsupported_feature_at(
         "unsupported_wienerns_lr_live_storage_unpopulated",
         offset,
-        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, retained §7.20.1 source-bound and tile-bound facts, resolved §7.20.4 classified-luma source-read and LrTxSkip lookup coordinates, resolved later §7.20.3 source-read state, derived/limit-checked the live active-bit-depth CurrFrame/CdefFrame storage footprint plus the frame-wide LrTxSkip grid shape, and allocated private unpopulated CurrFrame, CdefFrame, and LrTxSkip storage shells, but tile reconstruction has not populated decoded frame samples or LrTxSkip values for storage-backed classification; FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+        "Active Wiener NS LR allocated private unpopulated CurrFrame, CdefFrame, and LrTxSkip storage shells, but tile reconstruction has not populated decoded frame samples or LrTxSkip values; FilterClass retention and loop-restoration filtering/output are unsupported",
         AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_MATRIX_ROW,
         AC0EJ3_LR_LIVE_STORAGE_ALLOCATION_FEATURE_ID,
         "7.20.4",
@@ -136,7 +134,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_live_storage_allocation_error(
 
 #[allow(
     dead_code,
-    reason = "historical TX_MODE_SELECT diagnostic is retained for the helper-row regression test after selectable records advanced"
+    reason = "regression test keeps the historical TX_MODE_SELECT row"
 )]
 pub(in crate::runtime_minimal) fn wienerns_lr_tx_mode_select_transform_record_error(
     offset: ByteOffset,
@@ -144,7 +142,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_tx_mode_select_transform_record_er
     unsupported_feature_at(
         "unsupported_wienerns_lr_tx_mode_select_transform_records",
         offset,
-        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived live storage footprints, and reached the live LrTxSkip transform-record handoff, but the key frame uses TX_MODE_SELECT; deriving LrTxSkip from this stream requires §5.20.6.1 read_tx_size/read_tx_partition records before live samples, FilterClass retention, loop-restoration filtering/output, and reference refresh can run",
+        "Active Wiener NS LR reached the LrTxSkip handoff with TX_MODE_SELECT; deriving LrTxSkip needs §5.20.6.1 read_tx_size/read_tx_partition records before live samples and filtering",
         AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
         AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
         "5.20.6.1",
@@ -157,43 +155,43 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_transform_record_error_
 ) -> DecodeError {
     let (message, matrix_row, feature_id, spec_section) = match reason {
         "unsupported_wienerns_lr_selectable_transform_records_chroma_offset_leaf" => (
-            "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived selectable transform records, retained the active non-DCT luma transform type for syntax-only LR tx-skip coefficient derivation, and advanced to a chroma-offset selectable transform-record leaf; chroma residual coordinate handoff, decoded samples, FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+            "Selectable LR transform records reached a chroma-offset leaf; chroma residual coordinate handoff and decoded samples are unsupported before FilterClass retention, loop-restoration filtering/output, and reference refresh",
             AC0EJ3_LUMA_TXTYPE_RESIDUAL_HANDOFF_MATRIX_ROW,
             AC0EJ3_LUMA_TXTYPE_RESIDUAL_HANDOFF_FEATURE_ID,
             "5.20.3.1",
         ),
         "unsupported_wienerns_lr_selectable_transform_records_intrabc" => (
-            "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived selectable transform records, and reached the AV2 §5.20.5.3 `use_intrabc` mode-info branch; IntrABC mode-info, block-vector prediction, decoded samples, FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+            "Selectable LR transform records reached §5.20.5.3 use_intrabc mode info; IntrABC mode info, block-vector prediction, decoded samples, FilterClass retention, loop-restoration filtering/output, and reference refresh are unsupported",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "5.20.5.3",
         ),
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv" => (
-            "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, reached the TX_MODE_SELECT LrTxSkip transform-record handoff, consumed the bounded IntrABC mode-info prelude, and stopped before unsupported §5.20.5.4 NEWMV block-vector syntax; decoded samples, IntrABC prediction, loop-restoration filtering/output, and reference refresh are not applied",
+            "IntrABC transform records parsed the bounded mode-info prelude but stopped before §5.20.5.4 NEWMV block-vector syntax; IntrABC prediction, decoded samples, filtering, output, and reference refresh are unsupported",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "5.20.5.4",
         ),
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_prediction" => (
-            "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, reached the TX_MODE_SELECT LrTxSkip transform-record handoff, consumed the bounded IntrABC mode-info prelude, read §5.20.7.13/§5.20.7.20 block-vector syntax, and stopped before unsupported current-frame IntrABC prediction; decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
+            "IntrABC transform records parsed block-vector syntax but current-frame IntrABC prediction is unsupported before decoded samples, loop-restoration filtering/output, and reference refresh",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "5.20.7.13",
         ),
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack" => (
-            "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, reached the TX_MODE_SELECT LrTxSkip transform-record handoff, consumed the bounded IntrABC mode-info prelude, and stopped before using a §7.12.2 IntrABC MV stack that may contain spatial or ref-MV-bank candidates; decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
+            "IntrABC transform records need a §7.12.2 MV stack candidate beyond the bounded subset; decoded samples, loop-restoration filtering/output, and reference refresh are unsupported",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "7.12.2",
         ),
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples" => (
-            "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, reached the TX_MODE_SELECT LrTxSkip transform-record handoff, consumed the bounded IntrABC mode-info prelude, read §5.20.7.13/§5.20.7.20 block-vector syntax, derived checked §7.13.3.18 current-frame IntrABC luma prediction geometry, and stopped because decoded CurrFrame samples are not populated for prediction; decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
+            "IntrABC transform records derived §7.13.3.18 luma prediction geometry, but decoded CurrFrame samples are unpopulated; decoded samples, loop-restoration filtering/output, and reference refresh are unsupported",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "7.13.3.18",
         ),
         "unsupported_wienerns_lr_selectable_transform_records_intrabc_nonskip_residual" => (
-            "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, decoded the first §7.13.3.18 IntrABC skip block and continued the partition walk, then reached a NON-skip IntrABC block whose §5.20.7.23 residual on the inter/IntrABC transform path is not yet supported; decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
+            "IntrABC transform records decoded a skip block, then reached a NON-skip block using §5.20.7.23 residual syntax on the inter/IntrABC path; decoded samples, loop-restoration filtering/output, and reference refresh are unsupported",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "5.20.7.23",
@@ -203,7 +201,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_transform_record_error_
         | "unsupported_wienerns_lr_selectable_transform_records_intrabc_mv_validity"
         | "unsupported_wienerns_lr_selectable_transform_records_intrabc_frame_size"
         | "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry" => (
-            "minimal runtime consumed active IntrABC block-vector syntax but the resulting luma current-frame prediction geometry is outside the bounded ac0ej3 prediction subset; decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
+            "IntrABC block-vector syntax produced luma current-frame prediction geometry outside the bounded ac0ej3 subset; decoded samples, loop-restoration filtering/output, and reference refresh are unsupported",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "6.19.7.12",
@@ -211,19 +209,19 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_transform_record_error_
         "unsupported_wienerns_lr_selectable_transform_records_ccso_grid_overflow"
         | "unsupported_wienerns_lr_selectable_transform_records_ccso_bounds"
         | "unsupported_wienerns_lr_selectable_transform_records_ccso_symbol_range" => (
-            "minimal runtime reading the per-block § 5.20.10.2 CCSO `ccso_blk` symbol hit an internal CCSO-grid inconsistency (an out-of-bounds CCSO unit origin or an out-of-range decoded symbol); decoded samples, loop-restoration filtering/output, and reference refresh are not applied",
+            "Per-block §5.20.10.2 CCSO ccso_blk parsing hit an internal CCSO-grid inconsistency; decoded samples, loop-restoration filtering/output, and reference refresh are unsupported",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "5.20.10.2",
         ),
         "unsupported_wienerns_lr_selectable_transform_records_bitstream_desync" => (
-            "minimal runtime walking the live selectable transform-record stream consumed past the tile payload end (§8.2.4 SymbolMaxBits < -14): every later read would be zero-padded phantom data from an upstream entropy-coder desync, so the walk fails closed at its true exhaustion point; decoded samples, FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+            "Selectable transform-record parsing consumed past the tile payload end (§8.2.4 SymbolMaxBits < -14); the decoder fails closed before phantom zero-padded reads, decoded samples, filtering, output, and reference refresh",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "8.2.4",
         ),
         _ => (
-            "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived live storage footprints, and reached the TX_MODE_SELECT LrTxSkip transform-record handoff, but a bounded selectable transform-record subcase is still outside the non-FSC intra subset currently wired into live LR storage; decoded samples, FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+            "TX_MODE_SELECT LrTxSkip handoff reached a selectable transform-record subcase outside the supported non-FSC intra subset; decoded samples, FilterClass retention, filtering, output, and reference refresh are unsupported",
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
             AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
             "5.20.6.1",
@@ -261,7 +259,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_live_transform_record_handoff_erro
     unsupported_feature_at(
         "unsupported_wienerns_lr_live_transform_records",
         offset,
-        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived live storage footprints, and reached the live LrTxSkip transform-record handoff, but the tile transform records are outside the fixed-largest subset currently wired into live LR storage; selectable transform records, live samples, FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+        "Active Wiener NS LR reached the live LrTxSkip handoff, but tile transform records are outside the fixed-largest subset; selectable transform records, live samples, FilterClass retention, filtering, output, and reference refresh are unsupported",
         AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
         AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
         "5.20.7.27",
@@ -285,7 +283,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_live_transform_record_tool_gate_er
     unsupported_feature_at(
         reason,
         offset,
-        "minimal runtime reached active Wiener NS LR transform-record derivation, but an enabled mode, coefficient, or filtering tool can add unmodelled tile syntax before fixed-largest LR record handoff",
+        "Active Wiener NS LR transform-record derivation found an enabled tool that may add unmodelled tile syntax before fixed-largest LR record handoff",
         AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
         AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
         "5.20.5.3",
@@ -338,7 +336,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_selectable_live_frame_samples_unpo
     unsupported_feature_at(
         "unsupported_wienerns_lr_selectable_live_frame_samples_unpopulated",
         offset,
-        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived live storage footprints, parsed supported TX_MODE_SELECT §5.20.6.1/§5.20.6.3 transform records, derived live LrTxSkip values from tile luma coefficient facts, and populated the live LrTxSkip shell, but decoded CurrFrame and CdefFrame samples are still unpopulated for storage-backed classification; FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+        "Active Wiener NS LR parsed supported TX_MODE_SELECT §5.20.6.1/§5.20.6.3 transform records, derived LrTxSkip from tile luma coefficient facts, and populated the live LrTxSkip shell, but CurrFrame and CdefFrame samples are still unpopulated for storage-backed classification; FilterClass retention, loop-restoration filtering/output, and reference refresh are unsupported",
         AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
         AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
         "7.20.4",
@@ -351,7 +349,7 @@ pub(in crate::runtime_minimal) fn wienerns_lr_live_frame_samples_unpopulated_err
     unsupported_feature_at(
         "unsupported_wienerns_lr_live_frame_samples_unpopulated",
         offset,
-        "minimal runtime consumed active AV2 frame-level Wiener NS LR unit syntax, derived live storage footprints, derived live LrTxSkip values from fixed-largest tile transform records, and populated the live LrTxSkip shell, but decoded CurrFrame and CdefFrame samples are still unpopulated for storage-backed classification; FilterClass retention, loop-restoration filtering/output, and reference refresh are not applied",
+        "Active Wiener NS LR derived LrTxSkip from fixed-largest tile transform records and populated the live LrTxSkip shell, but CurrFrame and CdefFrame samples are still unpopulated for storage-backed classification; FilterClass retention, loop-restoration filtering/output, and reference refresh are unsupported",
         AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
         AC0EJ3_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
         "7.20.4",

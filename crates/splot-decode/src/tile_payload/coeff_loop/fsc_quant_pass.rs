@@ -2,13 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! FSC/IDTX coefficient quant pass.
-//!
-//! Feature tracking: `DECODE-COEFF-FSC-QUANT-PASS`,
-//! `DECODE-COEFF-FSC-CONTEXT-COMMIT`,
-//! `DECODE-COEFF-FSC-BRANCH-HANDOFF`,
-//! `DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF`,
-//! `DECODE-COEFF-FSC-BRANCH-SCAN-ORDER`,
-//! `DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF`.
 
 use std::collections::TryReserveError;
 
@@ -31,8 +24,8 @@ use super::fsc_level_pass::{
     apply_nonzero_coeff_fsc_level_pass,
 };
 use super::fsc_sign_pass::{
-    CoeffFscSignPassError, CoeffFscSignRead, CoeffFscSignReadInput, derive_fsc_sign_input,
-    fsc_sign_entries, preflight_pass, quant_sign_value, read_fsc_sign_symbol,
+    CoeffFscSignPassError, CoeffFscSignRead, CoeffFscSignReadInput, checked_fsc_sign_entries,
+    derive_fsc_sign_input, quant_sign_value, read_fsc_sign_symbol,
 };
 use super::max_level::{COEFF_BASE_RANGE, CoeffTransformClass, NUM_BASE_LEVELS};
 use super::quant_state::{
@@ -54,12 +47,6 @@ use super::{
 
 const FSC_MAX_LEVEL: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
 
-#[derive(Clone, Copy)]
-struct CoeffFscBranchScanOrderTables<'a> {
-    tx_width: &'a [i32],
-    tx_height: &'a [i32],
-}
-
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CoeffFscBranchTxSizeDimensions {
@@ -78,6 +65,13 @@ struct CoeffFscBranchTxSizeTables<'a> {
     tx_height: &'a [i32],
     tx_width_log2: &'a [i32],
     tx_height_log2: &'a [i32],
+}
+
+#[derive(Clone, Copy)]
+struct CoeffFscBranchTxSizeFacts {
+    raw_dimensions: CoeffFscBranchTxSizeDimensions,
+    level_config: CoeffFscLevelPassConfig,
+    context: CoeffFscContextCommitConfig,
 }
 
 #[cfg(test)]
@@ -99,12 +93,6 @@ pub(crate) struct CoeffFscBranchTestTxSizeTables<'a> {
     pub(crate) tx_height_log2: &'a [i32],
 }
 
-const DEFAULT_SCAN_ORDER_TABLES: CoeffFscBranchScanOrderTables<'static> =
-    CoeffFscBranchScanOrderTables {
-        tx_width: &TX_WIDTH,
-        tx_height: &TX_HEIGHT,
-    };
-
 const DEFAULT_TX_SIZE_TABLES: CoeffFscBranchTxSizeTables<'static> = CoeffFscBranchTxSizeTables {
     adjusted_tx_size: &ADJUSTED_TX_SIZE,
     tx_size_sqr: &TX_SIZE_SQR,
@@ -114,8 +102,6 @@ const DEFAULT_TX_SIZE_TABLES: CoeffFscBranchTxSizeTables<'static> = CoeffFscBran
     tx_width_log2: &TX_WIDTH_LOG2,
     tx_height_log2: &TX_HEIGHT_LOG2,
 };
-
-/// Result of the FSC/IDTX quant pass.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffFscQuantPass {
     eob_read: NonZeroCoeffEobSymbolRead,
@@ -128,130 +114,70 @@ pub(crate) struct NonZeroCoeffFscQuantPass {
     quant_state: NonZeroCoeffQuantState,
     block: TransformCoeffBlockState,
 }
-
-/// Caller-resolved facts for committing FSC end-of-`coeffs()` context lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffFscContextCommitConfig {
-    /// Plane index; the FSC/IDTX branch is valid only for luma plane 0.
     pub(crate) plane: usize,
-    /// Transform-block x coordinate in 4x4 units.
     pub(crate) x4: usize,
-    /// Transform-block y coordinate in 4x4 units.
     pub(crate) y4: usize,
-    /// Transform-block width in 4x4 units.
     pub(crate) w4: usize,
-    /// Transform-block height in 4x4 units.
     pub(crate) h4: usize,
 }
-
-/// Caller-selected FSC/IDTX coefficient branch after `all_zero`.
 pub(crate) enum CoeffFscBranchInput<'a> {
-    /// Decoded `all_zero == 1`, invalid for the FSC-specific branch.
     AllZero(AllZeroCoeffBlockInput),
-    /// Decoded `all_zero == 0`.
     NonZero(CoeffFscBranchNonZeroInput<'a>),
 }
-
-/// Caller-resolved facts for the FSC/IDTX nonzero branch.
 pub(crate) struct CoeffFscBranchNonZeroInput<'a> {
-    /// Caller-resolved facts for nonzero EOB start.
     pub(crate) start: NonZeroCoeffBlockStartInput,
-    /// Caller-resolved `segEob` for the FSC branch.
     pub(crate) seg_eob: usize,
-    /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
     pub(crate) scan: &'a [u16],
-    /// Caller-resolved FSC level-pass facts.
     pub(crate) level_config: CoeffFscLevelPassConfig,
-    /// Caller-resolved facts for committing tile context lines.
     pub(crate) context: CoeffFscContextCommitConfig,
 }
-
-/// Caller-selected FSC/IDTX coefficient branch before `segEob` handoff.
 pub(crate) enum CoeffFscBranchSegEobInput<'a> {
-    /// Decoded `all_zero == 1`, invalid for the FSC-specific branch.
     AllZero(AllZeroCoeffBlockInput),
-    /// Decoded `all_zero == 0`.
     NonZero(CoeffFscBranchSegEobNonZeroInput<'a>),
 }
-
-/// Caller-resolved facts for the FSC/IDTX nonzero branch before `segEob`.
 pub(crate) struct CoeffFscBranchSegEobNonZeroInput<'a> {
-    /// Caller-resolved facts for nonzero EOB start.
     pub(crate) start: NonZeroCoeffBlockStartInput,
-    /// Caller-resolved `scan = get_scan(txSz, txClass)` raster positions.
     pub(crate) scan: &'a [u16],
-    /// Caller-resolved FSC level-pass facts.
     pub(crate) level_config: CoeffFscLevelPassConfig,
-    /// Caller-resolved facts for committing tile context lines.
     pub(crate) context: CoeffFscContextCommitConfig,
 }
-
-/// Caller-selected FSC/IDTX coefficient branch before tx-size handoff.
 pub(crate) enum CoeffFscBranchTxSizeInput {
-    /// Decoded `all_zero == 1`, invalid for the FSC-specific branch.
     AllZero(AllZeroCoeffBlockInput),
-    /// Decoded `all_zero == 0`.
     NonZero(CoeffFscBranchTxSizeNonZeroInput),
 }
-
-/// Caller-resolved facts for the FSC/IDTX nonzero branch before tx-size derivation.
 pub(crate) struct CoeffFscBranchTxSizeNonZeroInput {
-    /// Caller-resolved transform-block geometry from AV2 § 5.20.7.27 `coeffs()`.
     pub(crate) block: AllZeroCoeffBlockInput,
-    /// Caller-resolved `txSz` argument to AV2 § 5.20.7.27 `coeffs()`.
     pub(crate) tx_size: usize,
-    /// Caller-resolved `PlaneTxType` from AV2 § 5.20.7.29 `compute_tx_type`.
     pub(crate) plane_tx_type: usize,
-    /// Caller-resolved inter/intra flag for EOB context derivation.
     pub(crate) is_inter: bool,
-    /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
 }
-
-/// Caller-resolved FSC/IDTX facts after nonzero EOB has already been read.
 pub(crate) struct CoeffFscStagedTxSizeNonZeroInput {
-    /// Caller-resolved `coeffs()` block geometry.
     pub(crate) block: AllZeroCoeffBlockInput,
-    /// Decoded EOB start and zeroed local coefficient state.
     pub(crate) start: NonZeroCoeffBlockStart,
-    /// Caller-resolved `txSz` argument to AV2 § 5.20.7.27 `coeffs()`.
     pub(crate) tx_size: usize,
-    /// Caller-resolved `PlaneTxType` from AV2 § 5.20.7.29 `compute_tx_type`.
     pub(crate) plane_tx_type: usize,
-    /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
 }
-
-/// Caller-selected FSC/IDTX coefficient branch before scan-order handoff.
 pub(crate) enum CoeffFscBranchScanOrderInput {
-    /// Decoded `all_zero == 1`, invalid for the FSC-specific branch.
     AllZero(AllZeroCoeffBlockInput),
-    /// Decoded `all_zero == 0`.
     NonZero(CoeffFscBranchScanOrderNonZeroInput),
 }
-
-/// Caller-resolved facts for the FSC/IDTX nonzero branch before scan order.
 pub(crate) struct CoeffFscBranchScanOrderNonZeroInput {
-    /// Caller-resolved facts for nonzero EOB start.
     pub(crate) start: NonZeroCoeffBlockStartInput,
-    /// Caller-resolved `txSz` argument to AV2 § 5.20.7.27 `coeffs()`.
     pub(crate) tx_size: usize,
-    /// Caller-resolved `PlaneTxType` from AV2 § 5.20.7.29 `compute_tx_type`.
     pub(crate) plane_tx_type: usize,
-    /// Caller-resolved FSC level-pass facts.
     pub(crate) level_config: CoeffFscLevelPassConfig,
-    /// Caller-resolved facts for committing tile context lines.
     pub(crate) context: CoeffFscContextCommitConfig,
 }
-
-/// Result of the loaded FSC/IDTX coefficient branch handoff.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffFscBranch {
     pass: NonZeroCoeffFscQuantPass,
 }
 
 impl CoeffFscBranch {
-    /// Completed FSC/IDTX quant pass.
     #[must_use]
     pub(crate) const fn pass(&self) -> &NonZeroCoeffFscQuantPass {
         &self.pass
@@ -259,181 +185,107 @@ impl CoeffFscBranch {
 }
 
 impl NonZeroCoeffFscQuantPass {
-    /// Decoded nonzero EOB syntax carried from block start.
     #[must_use]
     pub(crate) const fn eob_read(&self) -> NonZeroCoeffEobSymbolRead {
         self.eob_read
     }
-
-    /// Checked `bob..segEob` walk used by the level first pass.
     #[must_use]
     pub(crate) const fn level_walk(&self) -> &FscCoeffScanWalk {
         &self.level_walk
     }
-
-    /// Decoded level reads in forward `bob..segEob` order.
     #[must_use]
     pub(crate) fn level_reads(&self) -> &[CoeffFscLevelRead] {
         &self.level_reads
     }
-
-    /// Checked sign and quant entries in forward `0..segEob` order.
     #[must_use]
     pub(crate) fn sign_entries(&self) -> &[CoeffScanEntry] {
         &self.sign_entries
     }
-
-    /// Derived sign inputs in forward `0..segEob` order.
     #[must_use]
     pub(crate) fn sign_inputs(&self) -> &[CoeffFscSignReadInput] {
         &self.sign_inputs
     }
-
-    /// Decoded sign reads in forward `0..segEob` order.
     #[must_use]
     pub(crate) fn sign_reads(&self) -> &[CoeffFscSignRead] {
         &self.sign_reads
     }
-
-    /// Raw `read_quant` results in forward `0..segEob` order.
     #[must_use]
     pub(crate) fn read_quants(&self) -> &[CoeffReadQuant] {
         &self.read_quants
     }
-
-    /// Final quant-state summary after signed `Quant[]` writes.
     #[must_use]
     pub(crate) const fn quant_state(&self) -> &NonZeroCoeffQuantState {
         &self.quant_state
     }
-
-    /// Local coefficient state after FSC `Quant[]` writes.
     #[must_use]
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         &self.block
     }
 }
-
-/// Error returned by the FSC/IDTX quant-pass boundary.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffFscQuantPassError {
-    /// Allocation for read or write summaries failed.
     #[error("coefficient FSC quant allocation failed: {0}")]
     Allocation(#[from] TryReserveError),
-    /// The FSC/IDTX sign step failed.
     #[error("coefficient FSC quant sign step failed: {0}")]
     Sign(#[from] CoeffFscSignPassError),
-    /// The local transform-block state rejected a checked coordinate or position.
     #[error("coefficient FSC quant state error: {0}")]
     State(#[from] TileCoeffStateError),
-    /// The `read_quant` parser failed.
     #[error("coefficient FSC quant read_quant failed: {0}")]
     ReadQuant(#[from] CoeffReadQuantError),
-    /// Applying signed quant state failed.
     #[error("coefficient FSC quant write failed: {0}")]
     QuantState(#[from] CoeffQuantStateWriteError),
-    /// The FSC/IDTX context commit was requested for a non-luma plane.
     #[error("coefficient FSC quant context commit requires luma plane, got plane {plane}")]
-    NonLumaPlane {
-        /// Rejected plane index.
-        plane: usize,
-    },
-    /// Committing tile coefficient context lines failed.
+    NonLumaPlane { plane: usize },
     #[error("coefficient FSC quant context update failed: {0}")]
     ContextUpdate(TileCoeffStateError),
 }
-
-/// Error returned by the FSC/IDTX coefficient branch handoff.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffFscBranchError {
-    /// `txSz` did not index the generated transform-size conversion tables.
     #[error("coefficient FSC branch invalid transform size index {tx_size}")]
-    InvalidTransformSize {
-        /// Caller-provided `txSz` index.
-        tx_size: usize,
-    },
-    /// A generated transform-size conversion table held an invalid dimension.
+    InvalidTransformSize { tx_size: usize },
     #[error("coefficient FSC branch invalid {table}[{tx_size}] transform-size table value {value}")]
     InvalidTransformSizeTableValue {
-        /// AV2 conversion table name.
         table: &'static str,
-        /// Caller-provided `txSz` index.
         tx_size: usize,
-        /// Generated table value.
         value: i32,
     },
-    /// A generated transform-size conversion table pointed outside the transform-size domain.
     #[error("coefficient FSC branch invalid {table}[{tx_size}] transform-size table index {value}")]
     InvalidTransformSizeTableIndex {
-        /// AV2 conversion table name.
         table: &'static str,
-        /// Caller-provided `txSz` index.
         tx_size: usize,
-        /// Generated table index.
         value: usize,
     },
-    /// Deriving the transform-size context overflowed.
     #[error("coefficient FSC branch transform-size context overflow for txSz {tx_size}")]
-    TransformSizeContextOverflow {
-        /// Caller-provided `txSz` index.
-        tx_size: usize,
-    },
-    /// Caller-resolved block geometry did not match `Tx_Width[txSz]` / `Tx_Height[txSz]`.
+    TransformSizeContextOverflow { tx_size: usize },
     #[error(
         "coefficient FSC branch block geometry {actual_w4}x{actual_h4} does not match txSz {tx_size} geometry {expected_w4}x{expected_h4}"
     )]
     BlockGeometryMismatch {
-        /// Caller-provided `txSz` index.
         tx_size: usize,
-        /// Actual block width in 4x4 units.
         actual_w4: usize,
-        /// Actual block height in 4x4 units.
         actual_h4: usize,
-        /// Expected block width in 4x4 units.
         expected_w4: usize,
-        /// Expected block height in 4x4 units.
         expected_h4: usize,
     },
-    /// Deriving AV2 § 5.20.7.30 scan order failed.
     #[error("coefficient FSC branch scan-order derivation failed: {0}")]
     ScanOrder(#[from] CoeffScanOrderError),
-    /// The FSC-specific branch was asked to handle `all_zero == 1`.
     #[error("coefficient FSC branch does not support all-zero routing")]
     AllZero,
-    /// The FSC-specific branch was requested for a non-luma plane.
     #[error("coefficient FSC branch requires luma plane, got plane {plane}")]
-    NonLumaPlane {
-        /// Rejected plane index.
-        plane: usize,
-    },
-    /// EOB branch handoff or checked scan-walk derivation failed.
+    NonLumaPlane { plane: usize },
     #[error("coefficient FSC branch handoff failed: {0}")]
     Branch(#[from] CoeffLoopContextError),
-    /// The FSC/IDTX first level pass failed.
     #[error("coefficient FSC branch level pass failed: {0}")]
     Level(#[from] CoeffFscLevelPassError),
-    /// The FSC/IDTX quant and context-commit pass failed.
     #[error("coefficient FSC branch quant pass failed: {0}")]
     Quant(#[from] CoeffFscQuantPassError),
-    /// Internal branch routing returned a different branch than requested.
     #[error("coefficient FSC branch returned unexpected {actual} arm while expecting {expected}")]
     UnexpectedBranch {
-        /// Expected branch arm.
         expected: &'static str,
-        /// Actual branch arm.
         actual: &'static str,
     },
 }
 
-/// Dispatches the FSC/IDTX nonzero coefficient branch.
-///
-/// This loaded-but-unwired helper models the AV2 §5.20.7.27 `useFsc` branch
-/// after caller-decoded `all_zero == 0`
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). It derives
-/// `bob = segEob - eob`, walks the caller-resolved scan window, runs the FSC
-/// level pass, then runs the FSC sign/quant pass and commits the final tile
-/// context lines. Runtime `useFsc`, `segEob`, scan, transform, dequantization,
-/// inverse transform, residual add, and reconstruction remain out of scope.
 pub(crate) fn apply_coeff_fsc_branch(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -482,17 +334,6 @@ pub(crate) fn apply_coeff_fsc_branch(
     Ok(CoeffFscBranch { pass })
 }
 
-/// Dispatches the FSC/IDTX branch after deriving `segEob` from scan extent.
-///
-/// AV2 §5.20.7.27 derives `segEob = Min(32, Tx_Width[txSz]) *
-/// Min(Tx_Height[txSz], 32)`, and §5.20.7.30 `get_scan(txSz, txClass)` returns
-/// exactly that many entries
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`;
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30`). This staged
-/// wrapper therefore derives `segEob` from the caller-resolved scan length
-/// before delegating to [`apply_coeff_fsc_branch`]. Runtime `useFsc`, scan,
-/// transform, dequantization, inverse transform, residual add, and
-/// reconstruction remain out of scope.
 pub(crate) fn apply_coeff_fsc_branch_from_scan_extent(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -514,19 +355,6 @@ pub(crate) fn apply_coeff_fsc_branch_from_scan_extent(
     apply_coeff_fsc_branch(state, cdfs, symbols, input)
 }
 
-/// Dispatches the FSC/IDTX branch after deriving tx-size-dependent facts.
-///
-/// This staged wrapper derives AV2 § 5.20.7.27 `txSzCtx`, nonzero EOB
-/// context, context-commit geometry, adjusted FSC level/sign dimensions, and
-/// § 5.20.7.30 scan order from generated § 9.2 transform-size tables before
-/// delegating to [`apply_coeff_fsc_branch_from_scan_order`]
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`;
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30`;
-/// `docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`;
-/// `docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md`).
-/// Runtime `useFsc`, full `compute_tx_type`, `PlaneTxType` derivation,
-/// dequantization, inverse transform, residual add, and reconstruction remain
-/// out of scope.
 pub(crate) fn apply_coeff_fsc_branch_from_tx_size(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -542,12 +370,6 @@ pub(crate) fn apply_coeff_fsc_branch_from_tx_size(
     )
 }
 
-/// Runs the FSC/IDTX nonzero branch after the caller has already read EOB.
-///
-/// This staged counterpart to [`apply_coeff_fsc_branch_from_tx_size`] is for
-/// AV2 § 5.20.7.27 callers that must inspect EOB before deciding transform-tool
-/// metadata, while still running the same FSC scan, level, sign, quant, and
-/// context-commit logic exactly once.
 pub(crate) fn apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -560,38 +382,24 @@ pub(crate) fn apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
         });
     }
 
-    let raw_dimensions = fsc_tx_size_dimensions(DEFAULT_TX_SIZE_TABLES, input.tx_size)?;
-    validate_fsc_block_geometry(input.block, input.tx_size, raw_dimensions)?;
-    let adjusted_dimensions =
-        fsc_adjusted_tx_size_dimensions(DEFAULT_TX_SIZE_TABLES, input.tx_size)?;
-    let scan = fsc_branch_scan_order(
-        DEFAULT_SCAN_ORDER_TABLES,
+    let facts = fsc_branch_tx_size_facts(
+        DEFAULT_TX_SIZE_TABLES,
+        input.block,
         input.tx_size,
-        input.plane_tx_type,
+        input.coeff_cdf_q_ctx,
     )?;
-    let level_config = CoeffFscLevelPassConfig {
-        coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
-        tx_size_ctx: fsc_tx_size_context(DEFAULT_TX_SIZE_TABLES, input.tx_size)?,
-        tx_width: adjusted_dimensions.tx_width,
-        tx_height: adjusted_dimensions.tx_height,
-    };
+    let scan = fsc_branch_scan_order(&TX_WIDTH, &TX_HEIGHT, input.tx_size, input.plane_tx_type)?;
     let walk = walk_fsc_coeff_scan(&input.start, scan.len(), &scan)?;
     let level_pass =
-        apply_nonzero_coeff_fsc_level_pass(cdfs, symbols, input.start, walk, level_config)?;
+        apply_nonzero_coeff_fsc_level_pass(cdfs, symbols, input.start, walk, facts.level_config)?;
     apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
         state,
         cdfs,
         symbols,
         level_pass,
         &scan,
-        level_config,
-        CoeffFscContextCommitConfig {
-            plane: input.block.plane,
-            x4: input.block.x4,
-            y4: input.block.y4,
-            w4: input.block.w4,
-            h4: input.block.h4,
-        },
+        facts.level_config,
+        facts.context,
     )
     .map_err(CoeffFscBranchError::from)
 }
@@ -642,10 +450,12 @@ fn apply_coeff_fsc_branch_from_tx_size_with_tables(
                 });
             }
 
-            let raw_dimensions = fsc_tx_size_dimensions(tables, input.tx_size)?;
-            validate_fsc_block_geometry(input.block, input.tx_size, raw_dimensions)?;
-            let adjusted_dimensions = fsc_adjusted_tx_size_dimensions(tables, input.tx_size)?;
-            let tx_size_ctx = fsc_tx_size_context(tables, input.tx_size)?;
+            let facts = fsc_branch_tx_size_facts(
+                tables,
+                input.block,
+                input.tx_size,
+                input.coeff_cdf_q_ctx,
+            )?;
             apply_coeff_fsc_branch_from_scan_order(
                 state,
                 cdfs,
@@ -656,45 +466,21 @@ fn apply_coeff_fsc_branch_from_tx_size_with_tables(
                         eob: NonZeroCoeffEobContextInput {
                             plane: input.block.plane,
                             is_inter: input.is_inter,
-                            tx_width_log2: raw_dimensions.tx_width_log2,
-                            tx_height_log2: raw_dimensions.tx_height_log2,
+                            tx_width_log2: facts.raw_dimensions.tx_width_log2,
+                            tx_height_log2: facts.raw_dimensions.tx_height_log2,
                             coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
                         },
                     },
                     tx_size: input.tx_size,
                     plane_tx_type: input.plane_tx_type,
-                    level_config: CoeffFscLevelPassConfig {
-                        coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
-                        tx_size_ctx,
-                        tx_width: adjusted_dimensions.tx_width,
-                        tx_height: adjusted_dimensions.tx_height,
-                    },
-                    context: CoeffFscContextCommitConfig {
-                        plane: input.block.plane,
-                        x4: input.block.x4,
-                        y4: input.block.y4,
-                        w4: input.block.w4,
-                        h4: input.block.h4,
-                    },
+                    level_config: facts.level_config,
+                    context: facts.context,
                 }),
             )
         }
     }
 }
 
-/// Dispatches the FSC/IDTX branch after deriving scan order from `txSz`.
-///
-/// This staged wrapper derives `scan = get_scan(txSz, txClass)` from generated
-/// AV2 § 9.2 `Tx_Width[txSz]` / `Tx_Height[txSz]` tables and decode-local
-/// AV2 § 8.3.2 `get_tx_class(PlaneTxType)`, then delegates to
-/// [`apply_coeff_fsc_branch_from_scan_extent`], which derives `segEob` from the
-/// scan extent (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`;
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30`;
-/// `docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`;
-/// `docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md`).
-/// Runtime `useFsc`, full `compute_tx_type`, FSC level-config derivation,
-/// context geometry derivation, dequantization, inverse transform, residual add,
-/// and reconstruction remain out of scope.
 pub(crate) fn apply_coeff_fsc_branch_from_scan_order(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -702,11 +488,7 @@ pub(crate) fn apply_coeff_fsc_branch_from_scan_order(
     input: CoeffFscBranchScanOrderInput,
 ) -> Result<CoeffFscBranch, CoeffFscBranchError> {
     apply_coeff_fsc_branch_from_scan_order_with_tables(
-        state,
-        cdfs,
-        symbols,
-        input,
-        DEFAULT_SCAN_ORDER_TABLES,
+        state, cdfs, symbols, input, &TX_WIDTH, &TX_HEIGHT,
     )
 }
 
@@ -723,10 +505,8 @@ pub(crate) fn apply_coeff_fsc_branch_from_scan_order_with_test_dimension_tables(
         cdfs,
         symbols,
         input,
-        CoeffFscBranchScanOrderTables {
-            tx_width: tables.tx_width,
-            tx_height: tables.tx_height,
-        },
+        tables.tx_width,
+        tables.tx_height,
     )
 }
 
@@ -735,7 +515,8 @@ fn apply_coeff_fsc_branch_from_scan_order_with_tables(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffFscBranchScanOrderInput,
-    tables: CoeffFscBranchScanOrderTables<'_>,
+    tx_width_table: &[i32],
+    tx_height_table: &[i32],
 ) -> Result<CoeffFscBranch, CoeffFscBranchError> {
     match input {
         CoeffFscBranchScanOrderInput::AllZero(input) => apply_coeff_fsc_branch_from_scan_extent(
@@ -745,7 +526,12 @@ fn apply_coeff_fsc_branch_from_scan_order_with_tables(
             CoeffFscBranchSegEobInput::AllZero(input),
         ),
         CoeffFscBranchScanOrderInput::NonZero(input) => {
-            let scan = fsc_branch_scan_order(tables, input.tx_size, input.plane_tx_type)?;
+            let scan = fsc_branch_scan_order(
+                tx_width_table,
+                tx_height_table,
+                input.tx_size,
+                input.plane_tx_type,
+            )?;
             apply_coeff_fsc_branch_from_scan_extent(
                 state,
                 cdfs,
@@ -762,17 +548,45 @@ fn apply_coeff_fsc_branch_from_scan_order_with_tables(
 }
 
 fn fsc_branch_scan_order(
-    tables: CoeffFscBranchScanOrderTables<'_>,
+    tx_width_table: &[i32],
+    tx_height_table: &[i32],
     tx_size: usize,
     plane_tx_type: usize,
 ) -> Result<Vec<u16>, CoeffFscBranchError> {
-    let tx_width = tx_size_table_usize(tables.tx_width, "Tx_Width", tx_size)?;
-    let tx_height = tx_size_table_usize(tables.tx_height, "Tx_Height", tx_size)?;
+    let tx_width = tx_size_table_usize(tx_width_table, "Tx_Width", tx_size)?;
+    let tx_height = tx_size_table_usize(tx_height_table, "Tx_Height", tx_size)?;
     Ok(derive_coeff_scan_order(
         tx_width,
         tx_height,
         CoeffTransformClass::from_plane_tx_type(plane_tx_type),
     )?)
+}
+
+fn fsc_branch_tx_size_facts(
+    tables: CoeffFscBranchTxSizeTables<'_>,
+    block: AllZeroCoeffBlockInput,
+    tx_size: usize,
+    coeff_cdf_q_ctx: usize,
+) -> Result<CoeffFscBranchTxSizeFacts, CoeffFscBranchError> {
+    let raw_dimensions = fsc_tx_size_dimensions(tables, tx_size)?;
+    validate_fsc_block_geometry(block, tx_size, raw_dimensions)?;
+    let adjusted_dimensions = fsc_adjusted_tx_size_dimensions(tables, tx_size)?;
+    Ok(CoeffFscBranchTxSizeFacts {
+        raw_dimensions,
+        level_config: CoeffFscLevelPassConfig {
+            coeff_cdf_q_ctx,
+            tx_size_ctx: fsc_tx_size_context(tables, tx_size)?,
+            tx_width: adjusted_dimensions.tx_width,
+            tx_height: adjusted_dimensions.tx_height,
+        },
+        context: CoeffFscContextCommitConfig {
+            plane: block.plane,
+            x4: block.x4,
+            y4: block.y4,
+            w4: block.w4,
+            h4: block.h4,
+        },
+    })
 }
 
 fn validate_fsc_block_geometry(
@@ -862,17 +676,6 @@ fn tx_size_table_usize(
     })
 }
 
-/// Runs the FSC/IDTX §5.20.7.27 sign/quant loop over `c = 0 .. segEob`.
-///
-/// The helper follows the second `useFsc` loop in spec order. For each checked
-/// entry, it reads `idtx_sign` when the local level is nonzero, immediately
-/// writes `QuantSign[]` for later sign contexts, calls §5.20.7.28
-/// `read_quant(level, pos, 0, NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
-/// hrLevelAvg, 0)`, computes signed `Quant[pos]`, and derives final `culLevel`
-/// and `dcCategory`
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`;
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28`). It does not
-/// commit tile context lines, dequantize, or reconstruct pixels.
 pub(crate) fn apply_nonzero_coeff_fsc_quant_pass(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -881,9 +684,7 @@ pub(crate) fn apply_nonzero_coeff_fsc_quant_pass(
     config: CoeffFscLevelPassConfig,
 ) -> Result<NonZeroCoeffFscQuantPass, CoeffFscQuantPassError> {
     let (eob_read, level_walk, _level_inputs, level_reads, mut block) = level_pass.into_parts();
-    preflight_pass(&block, &level_walk, scan, config)?;
-
-    let sign_entries = fsc_sign_entries(&block, level_walk.seg_eob(), scan)?;
+    let sign_entries = checked_fsc_sign_entries(&block, &level_walk, scan, config)?;
     let mut interleaved = FscInterleavedQuantPass::new(sign_entries.len())?;
     interleaved.run(cdfs, symbols, &mut block, &sign_entries, config)?;
     let (sign_inputs, sign_reads, read_quants, quant_state) = interleaved.finish(&mut block)?;
@@ -901,16 +702,6 @@ pub(crate) fn apply_nonzero_coeff_fsc_quant_pass(
     })
 }
 
-/// Runs the FSC/IDTX quant pass and commits tile context lines.
-///
-/// This wraps [`apply_nonzero_coeff_fsc_quant_pass`] with the AV2 §5.20.7.27
-/// end-of-`coeffs()` context update
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). The final
-/// `culLevel` and `dcCategory` come from the signed `Quant[]` state summary
-/// produced after §5.20.7.28 `read_quant`; the caller still resolves `useFsc`,
-/// `segEob`, scan, plane, and geometry facts. Runtime `coeffs()` wiring,
-/// dequantization, inverse transform, residual add, and reconstruction remain
-/// out of scope.
 pub(crate) fn apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,

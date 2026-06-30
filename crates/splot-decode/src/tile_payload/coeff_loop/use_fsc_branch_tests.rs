@@ -475,11 +475,7 @@ fn coefficient_use_fsc_condition_all_zero_matches_selector() {
     )
     .unwrap();
 
-    assert_eq!(derived.0, expected.0);
-    assert_eq!(derived.1, expected.1);
-    assert_eq!(derived.2, expected.2);
-    assert_eq!(derived.3, expected.3);
-    assert_eq!(derived.4, expected.4);
+    assert_eq!(derived, expected);
 }
 
 #[test]
@@ -524,11 +520,7 @@ fn coefficient_use_fsc_condition_false_delegates_to_ordinary_and_ignores_fsc() {
         )
         .unwrap();
 
-        assert_eq!(derived.0, expected.0, "{condition:?}");
-        assert_eq!(derived.1, expected.1, "{condition:?}");
-        assert_eq!(derived.2, expected.2, "{condition:?}");
-        assert_eq!(derived.3, expected.3, "{condition:?}");
-        assert_eq!(derived.4, expected.4, "{condition:?}");
+        assert_eq!(derived, expected, "{condition:?}");
     }
 }
 
@@ -554,11 +546,7 @@ fn coefficient_use_fsc_condition_true_delegates_to_fsc_and_ignores_ordinary() {
     )
     .unwrap();
 
-    assert_eq!(derived.0, expected.0);
-    assert_eq!(derived.1, expected.1);
-    assert_eq!(derived.2, expected.2);
-    assert_eq!(derived.3, expected.3);
-    assert_eq!(derived.4, expected.4);
+    assert_eq!(derived, expected);
 }
 
 #[test]
@@ -583,11 +571,7 @@ fn coefficient_use_fsc_condition_inter_true_also_selects_fsc() {
     )
     .unwrap();
 
-    assert_eq!(derived.0, expected.0);
-    assert_eq!(derived.1, expected.1);
-    assert_eq!(derived.2, expected.2);
-    assert_eq!(derived.3, expected.3);
-    assert_eq!(derived.4, expected.4);
+    assert_eq!(derived, expected);
 }
 
 #[test]
@@ -600,11 +584,7 @@ fn coefficient_use_fsc_shared_facts_all_zero_matches_selector() {
     )
     .unwrap();
 
-    assert_eq!(derived.0, expected.0);
-    assert_eq!(derived.1, expected.1);
-    assert_eq!(derived.2, expected.2);
-    assert_eq!(derived.3, expected.3);
-    assert_eq!(derived.4, expected.4);
+    assert_eq!(derived, expected);
 }
 
 #[test]
@@ -781,11 +761,7 @@ fn coefficient_use_fsc_base_q_all_zero_matches_shared_facts() {
     )
     .unwrap();
 
-    assert_eq!(derived.0, expected.0);
-    assert_eq!(derived.1, expected.1);
-    assert_eq!(derived.2, expected.2);
-    assert_eq!(derived.3, expected.3);
-    assert_eq!(derived.4, expected.4);
+    assert_eq!(derived, expected);
 }
 
 #[test]
@@ -819,11 +795,7 @@ fn coefficient_use_fsc_base_q_false_matches_explicit_q_contexts() {
         )
         .unwrap();
 
-        assert_eq!(derived.0, expected.0, "base_q_idx {base_q_idx}");
-        assert_eq!(derived.1, expected.1, "base_q_idx {base_q_idx}");
-        assert_eq!(derived.2, expected.2, "base_q_idx {base_q_idx}");
-        assert_eq!(derived.3, expected.3, "base_q_idx {base_q_idx}");
-        assert_eq!(derived.4, expected.4, "base_q_idx {base_q_idx}");
+        assert_eq!(derived, expected, "base_q_idx {base_q_idx}");
     }
 }
 
@@ -858,10 +830,6 @@ fn coefficient_use_fsc_base_q_true_matches_explicit_q_contexts() {
         )
         .unwrap();
 
-        assert_eq!(derived.0, expected.0, "base_q_idx {base_q_idx}");
-        assert_eq!(derived.1, expected.1, "base_q_idx {base_q_idx}");
-        assert_eq!(derived.2, expected.2, "base_q_idx {base_q_idx}");
-        assert_eq!(derived.3, expected.3, "base_q_idx {base_q_idx}");
-        assert_eq!(derived.4, expected.4, "base_q_idx {base_q_idx}");
+        assert_eq!(derived, expected, "base_q_idx {base_q_idx}");
     }
 }

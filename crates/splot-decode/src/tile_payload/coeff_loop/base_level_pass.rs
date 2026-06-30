@@ -20,6 +20,7 @@ use super::base_symbol::{
     CoeffBaseSymbolSource, read_coeff_base_symbol,
 };
 use super::branch::NonZeroCoeffBlockStart;
+use super::fsc_level_pass::expected_fsc_entry_pos as expected_entry_pos;
 use super::max_level::{
     COEFF_BASE_RANGE, CoeffTransformClass, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS,
     coeff_is_low_frequency,
@@ -32,23 +33,14 @@ const PHTHRESH: usize = 4;
 /// Caller-resolved facts for deriving ordinary non-FSC base/level selectors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffBaseDerivedLevelPassConfig {
-    /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
-    /// Transform-size context (`txSzCtx`) for luma coefficient rows.
     pub(crate) tx_size_ctx: usize,
-    /// `Tx_Width_Log2[adjTxSz]`, resolved by the caller.
     pub(crate) tx_width_log2: u32,
-    /// Adjusted transform width in coefficients.
     pub(crate) tx_width: usize,
-    /// Adjusted transform height in coefficients.
     pub(crate) tx_height: usize,
-    /// Plane index, 0 for luma and greater than 0 for chroma.
     pub(crate) plane: usize,
-    /// Caller-resolved `get_tx_class(PlaneTxType)` result.
     pub(crate) tx_class: CoeffTransformClass,
-    /// Whether hidden parity is active for this transform block.
     pub(crate) parity_hiding: bool,
-    /// Whether TCQ is active for this transform block.
     pub(crate) use_tcq: bool,
 }
 
@@ -62,25 +54,21 @@ pub(crate) struct CoeffBaseFirstPassSummary {
 }
 
 impl CoeffBaseFirstPassSummary {
-    /// Caller-visible `sumAbs1` parity accumulator after the first pass.
     #[must_use]
     pub(crate) const fn sum_abs1(self) -> u32 {
         self.sum_abs1
     }
 
-    /// Number of nonzero `c > 0` coefficients contributing to parity hiding.
     #[must_use]
     pub(crate) const fn num_nonzero(self) -> usize {
         self.num_nonzero
     }
 
-    /// Whether hidden parity is active for the final DC coefficient.
     #[must_use]
     pub(crate) const fn is_hidden(self) -> bool {
         self.is_hidden
     }
 
-    /// `tcqState` after the first pass.
     #[must_use]
     pub(crate) const fn tcq_state(self) -> usize {
         self.tcq_state
@@ -124,37 +112,31 @@ pub(crate) struct NonZeroCoeffBaseDerivedLevelPass {
 }
 
 impl NonZeroCoeffBaseDerivedLevelPass {
-    /// Decoded nonzero EOB syntax carried from block start.
     #[must_use]
     pub(crate) const fn eob_read(&self) -> NonZeroCoeffEobSymbolRead {
         self.eob_read
     }
 
-    /// Checked scan walk used by the first pass.
     #[must_use]
     pub(crate) const fn walk(&self) -> &NonZeroCoeffScanWalk {
         &self.walk
     }
 
-    /// Derived base/base-range selector inputs in scan-walk order.
     #[must_use]
     pub(crate) fn derived_inputs(&self) -> &[CoeffBaseSymbolReadInput] {
         &self.derived_inputs
     }
 
-    /// Decoded base/base-range summaries in scan-walk order.
     #[must_use]
     pub(crate) fn base_reads(&self) -> &[CoeffBaseSymbolRead] {
         &self.base_reads
     }
 
-    /// First-pass parity and TCQ state summary.
     #[must_use]
     pub(crate) const fn first_pass(&self) -> CoeffBaseFirstPassSummary {
         self.first_pass
     }
 
-    /// Local coefficient state after first-pass `Level[]` writes.
     #[must_use]
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         &self.block
@@ -164,79 +146,43 @@ impl NonZeroCoeffBaseDerivedLevelPass {
 /// Error returned by the derived ordinary base/level first-pass boundary.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffBaseDerivedLevelPassError {
-    /// The checked scan walk cardinality did not match the decoded EOB value.
     #[error("coefficient base/level scan entries {entries} do not match eob {eob}")]
-    ScanEntryCountMismatch {
-        /// Decoded `eob`.
-        eob: usize,
-        /// Checked scan-walk entry count.
-        entries: usize,
-    },
-    /// The caller supplied geometry that does not match the initialized block.
+    ScanEntryCountMismatch { eob: usize, entries: usize },
     #[error(
         "coefficient base/level config geometry {config_width}x{config_height} does not match block {block_width}x{block_height}"
     )]
     BlockGeometryMismatch {
-        /// Block width.
         block_width: usize,
-        /// Block height.
         block_height: usize,
-        /// Caller-resolved width.
         config_width: usize,
-        /// Caller-resolved height.
         config_height: usize,
     },
-    /// The caller supplied a width log2 inconsistent with the adjusted width.
     #[error("coefficient base/level tx_width_log2 {tx_width_log2} does not match width {tx_width}")]
-    TxWidthLog2Mismatch {
-        /// Caller-resolved width log2.
-        tx_width_log2: u32,
-        /// Caller-resolved width.
-        tx_width: usize,
-    },
-    /// A checked scan entry did not match the local row-major block geometry.
+    TxWidthLog2Mismatch { tx_width_log2: u32, tx_width: usize },
     #[error(
         "coefficient base/level scan entry {entry:?} maps to position {expected_pos}, not {actual_pos}"
     )]
     ScanEntryPositionMismatch {
-        /// Checked scan entry.
         entry: CoeffScanEntry,
-        /// Row-major position derived from `row`, `col`, and block width.
         expected_pos: usize,
-        /// Entry position.
         actual_pos: usize,
     },
-    /// The caller supplied mutually exclusive block facts.
     #[error("coefficient base/level config cannot enable parity hiding and TCQ together")]
     InconsistentParityAndTcq,
-    /// The local TCQ state was outside the AV2 state table.
     #[error("coefficient base/level entry {entry:?} used invalid tcqState {tcq_state}")]
     InvalidTcqState {
-        /// Checked scan entry.
         entry: CoeffScanEntry,
-        /// Invalid `tcqState`.
         tcq_state: usize,
     },
-    /// Allocation for derived selector or decoded-read records failed.
     #[error("coefficient base/level allocation failed: {0}")]
     Allocation(#[from] TryReserveError),
-    /// Base/base-range symbol reading failed.
     #[error("coefficient base/level base symbol read failed: {0}")]
     Base(#[from] CoeffBaseSymbolReadError),
-    /// The local transform-block state rejected a checked coordinate or position.
     #[error("coefficient base/level state error: {0}")]
     State(#[from] TileCoeffStateError),
 }
 
 /// Runs the ordinary non-FSC base/level first pass with runtime selector derivation.
-///
-/// The helper implements the first loop over `c = eob - 1 .. 0` from AV2
-/// §5.20.7.27 for non-FSC blocks: it derives `coeff_base_eob`/`coeff_base` and
-/// conditional `coeff_br` selectors from the current `Level[]`, reads the
-/// symbols, updates first-pass `tcqState`, `sumAbs1`, `numNz`, and `isHidden`,
-/// then writes `Level[row][col]` before the next selector derivation. It does not
-/// read signs or quant residuals, update tile context lines, dequantize, or run
-/// reconstruction.
 pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -308,15 +254,7 @@ fn preflight_pass(
     for entry in entries.iter().copied() {
         block.level_at(entry.row(), entry.col())?;
         block.quant_at(entry.pos())?;
-        let expected_pos = entry
-            .row()
-            .checked_mul(block.width())
-            .and_then(|base| base.checked_add(entry.col()))
-            .ok_or(TileCoeffStateError::ArithmeticOverflow {
-                operation: "row * width + col",
-                left: entry.row(),
-                right: block.width(),
-            })?;
+        let expected_pos = expected_entry_pos(block, entry)?;
         if expected_pos != entry.pos() {
             return Err(CoeffBaseDerivedLevelPassError::ScanEntryPositionMismatch {
                 entry,

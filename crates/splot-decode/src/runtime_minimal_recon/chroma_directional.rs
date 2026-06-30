@@ -14,7 +14,7 @@
 //! Feature tracking: `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, IntraCardinalEdges,
+    BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, IntraDirectionalAngleEdges,
     IntraRectBlockSize, IntraSmoothMode, PlaneId, ReconSample,
     predict_intra_cardinal_directional_rect_into,
 };
@@ -281,7 +281,7 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
         bit_depth,
         block_size,
         IntraCardinalDirection::Horizontal,
-        IntraCardinalEdges::left(&left),
+        IntraDirectionalAngleEdges::left(&left),
         &mut prediction,
         side,
     )?;

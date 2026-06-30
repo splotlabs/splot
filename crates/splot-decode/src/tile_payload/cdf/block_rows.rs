@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Minimal block-symbol CDF rows for the traced runtime frontier.
-//!
-//! Feature tracking: `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER`.
+//! AV2 block-symbol CDF rows.
 
 use splot_core::tables::cdf::{
     DEFAULT_CCTX_TYPE_CDF, DEFAULT_CFL_ALPHA_CDF, DEFAULT_CFL_INDEX_CDF, DEFAULT_CFL_MH_DIR_CDF,
@@ -31,7 +29,10 @@ mod mv;
 use self::mv::MvCdfRows;
 pub(crate) use self::mv::MvCdfSelector;
 use super::coeff_rows::{CoeffCdfRows, CoeffCdfSelector};
-use super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row, scale_cdf_count};
+use super::{
+    CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row, avg_cdf_rows, checked_context,
+    scale_cdf_count, scale_cdf_rows,
+};
 
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
 const Y_MODE_INDEX_CONTEXTS: usize = 3;
@@ -174,319 +175,169 @@ pub(crate) type EobPt256CdfRows = [[[i32; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTE
 pub(crate) type EobPt512CdfRows = [[[i32; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type EobPt1024CdfRows = [[[i32; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
 
-/// The AV2 `eob_pt` transform-size class, selecting which `TileEobPt<size>Cdf`
-/// family bank the §8.3.2 `eob_pt` symbol reads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EobPtSize {
-    /// `TileEobPt16Cdf`.
     Pt16,
-    /// `TileEobPt32Cdf`.
     Pt32,
-    /// `TileEobPt64Cdf`.
     Pt64,
-    /// `TileEobPt128Cdf`.
     Pt128,
-    /// `TileEobPt256Cdf`.
     Pt256,
-    /// `TileEobPt512Cdf`.
     Pt512,
-    /// `TileEobPt1024Cdf`.
     Pt1024,
 }
 
-/// Block-symbol CDF selectors handled by this focused row bundle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BlockCdfSelector {
-    /// `TileYModeSetCdf`.
     YModeSet,
-    /// `TileYModeIndexCdf[ctx]`.
     YModeIndex {
-        /// Intra mode context index.
         ctx: usize,
     },
-    /// `TileYModeOffsetCdf[ctx]`.
     YModeOffset {
-        /// Intra mode context index (shares the `y_mode_index` § 8.3.2 context).
         ctx: usize,
     },
-    /// `TileTxbSkipCdf[coeff_cdf_q_ctx][plane_type][tx_size][ctx]`.
     TxbSkip {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Plane type context.
         plane_type: usize,
-        /// Transform-size context.
         tx_size: usize,
-        /// Transform-skip context index.
         ctx: usize,
     },
-    /// `TileUvModeCflNotAllowedCdf[ctx]`.
     UvModeCflNotAllowed {
-        /// Chroma mode context index.
         ctx: usize,
     },
-    /// `TileIsCflCdf[ctx]` from AV2 § 8.3.2.
     IsCfl {
-        /// CfL neighbour context index.
         ctx: usize,
     },
-    /// `TileCflIndexCdf` from AV2 § 8.3.2.
     CflIndex,
-    /// `TileCflSignCdf` from AV2 § 8.3.2.
     CflSign,
-    /// `TileCflAlphaCdf[ctx]` from AV2 § 8.3.2.
     CflAlpha {
-        /// CfL alpha context index.
         ctx: usize,
     },
-    /// `TileCflMhccpCdf` from AV2 § 8.3.2.
     CflMhccp,
-    /// `TileCflMhDirCdf[Size_Group[MiSize]]` from AV2 § 8.3.2.
     CflMhDir {
-        /// `Size_Group[MiSize]`.
         size_group: usize,
     },
-    /// `TileVTxbSkipCdf[coeff_cdf_q_ctx][ctx]`.
     VTxbSkip {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// V-plane transform-skip context index.
         ctx: usize,
     },
-    /// `TileEobExtraCdf[coeff_cdf_q_ctx]` (AV2 § 8.3.2: the cdf is given by
-    /// `TileEobExtraCdf` directly, with no per-symbol context).
     EobExtra {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
     },
-    /// `TileEobPt<size>Cdf[coeff_cdf_q_ctx][eobCtx]` (AV2 § 8.3.2): the
-    /// transform-size class selects the bank and `eobCtx` selects the row.
     EobPt {
-        /// Transform-size class selecting the `eob_pt` family bank.
         size: EobPtSize,
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// `eobCtx = (plane > 0) ? 2 : is_inter` (`0..EOB_PLANE_CTXS`).
         eob_ctx: usize,
     },
-    /// `TileDcSignCdf[coeff_cdf_q_ctx][plane_type][group][ctx]` (AV2 § 8.3.2):
-    /// `group` is the spec `isHidden` flag; `ctx` (`0..DC_SIGN_CONTEXTS`) is the
-    /// caller-resolved DC-sign context.
     DcSign {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Plane type context (luma vs chroma).
         plane_type: usize,
-        /// `isHidden` group (`0..DC_SIGN_GROUPS`).
         group: usize,
-        /// DC-sign context (`0..DC_SIGN_CONTEXTS`).
         ctx: usize,
     },
-    /// `TileIsInterCdf[ctx]` (AV2 § 8.3.2): the `read_is_inter` decision.
     IsInter {
-        /// `is_inter` context index (`0..IS_INTER_CONTEXTS`).
         ctx: usize,
     },
-    /// `TileSkipCdf[ctx]` (AV2 § 8.3.2): the `read_skip` decision.
     Skip {
-        /// `skip_flag` context index (`0..SKIP_CONTEXTS`).
         ctx: usize,
     },
-    /// `TileSingleModeCdf[NewMvContext]` (AV2 § 8.3.2): the single-reference inter
-    /// `single_mode` symbol (`YMode = NEARMV + single_mode`).
     SingleMode {
-        /// `NewMvContext` (`0..SINGLE_MODE_CONTEXTS`).
         ctx: usize,
     },
-    /// `TileDrlModeCdf[Min(idx, 2)][NewMvContext]` (AV2 § 8.3.2): the §5.20.7.8
-    /// `read_drl_idx` `drl_mode` symbol for a non-skip-mode, non-TIP reference.
     DrlMode {
-        /// `Min(idx, 2)` index bank (`0..DRL_MODE_IDX_BANKS`).
         idx: usize,
-        /// `NewMvContext` (`0..DRL_MODE_CONTEXTS`).
         ctx: usize,
     },
-    /// `TileSingleRefCdf[ctx][ref]` (AV2 § 8.3.2): the §5.20.7.12 `read_single_ref`
-    /// binary `single_ref` symbol for a per-decision context/loop-index pair.
     SingleRef {
-        /// §8.3.2 neighbour-derived single_ref context (`0..REF_CONTEXTS`).
         ctx: usize,
-        /// The §5.20.7.12 loop counter `ref` (`0..REFS_PER_FRAME_MINUS_1`).
         ref_idx: usize,
     },
-    /// `TileCompModeCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.10 `comp_mode` symbol.
     CompMode {
-        /// §8.3.2 compound-reference mode context (`0..COMP_MODE_CONTEXTS`).
         ctx: usize,
     },
-    /// `TileIsJointCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.6 `is_joint` symbol.
     IsJoint {
-        /// §8.3.2 `is_joint` context (`0..IS_JOINT_CONTEXTS`).
         ctx: usize,
     },
-    /// `TileCompoundModeNonJointCdf[NewMvContext]` (AV2 § 8.3.2): the
-    /// §5.20.7.6 non-joint compound mode symbol.
     CompoundModeNonJoint {
-        /// `NewMvContext` (`0..COMPOUND_MODE_CONTEXTS`).
         ctx: usize,
     },
-    /// `TileCompGroupIdxCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.16
-    /// `comp_group_idx` symbol.
     CompGroupIdx {
-        /// `comp_group_idx` context (`0..COMP_GROUP_IDX_CONTEXTS`).
         ctx: usize,
     },
-    /// `TileCwpIdxCdf[idx]` (AV2 § 8.3.2): the §5.20.7.6 `cwp_idx` symbol.
     CwpIdx {
-        /// CWP truncated-unary index (`0..CWP_IDX_CONTEXTS`).
         idx: usize,
     },
-    /// `TileCompRef0Cdf[ctx][ref]` (AV2 § 8.3.2): the §5.20.7.11 `comp_ref`
-    /// symbol before any compound reference has been found.
     CompRef0 {
-        /// §8.3.2 neighbour-derived comp_ref context (`0..REF_CONTEXTS`).
         ctx: usize,
-        /// The §5.20.7.11 loop counter `ref` (`0..REFS_PER_FRAME_MINUS_1`).
         ref_idx: usize,
     },
-    /// `TileCompRef1Cdf[ctx][bitType][ref]` (AV2 § 8.3.2): the §5.20.7.11
-    /// `comp_ref` symbol after the first compound reference has been found.
     CompRef1 {
-        /// §8.3.2 neighbour-derived comp_ref context (`0..REF_CONTEXTS`).
         ctx: usize,
-        /// Same-side/opposite-side bit type (`0..COMP_REF1_BIT_TYPES`).
         bit_type: usize,
-        /// The §5.20.7.11 loop counter `ref` (`0..REFS_PER_FRAME_MINUS_1`).
         ref_idx: usize,
     },
-    /// AV2 § 5.20.7.20 SHELL-coded motion-vector CDF rows.
     ReadMv(MvCdfSelector),
-    /// `TileInterpFilterCdf[ctx]` (AV2 § 8.3.2): the §5.20.7.6 `interp_filter`
-    /// SWITCHABLE symbol.
     InterpFilter {
-        /// The §8.3.2 interp-filter context (`0..INTERP_FILTER_CONTEXTS`).
         ctx: usize,
     },
-    /// `TileUseWienerNsCdf` (AV2 § 8.3.2): the §5.20.10.5 `use_wiener_ns`
-    /// binary symbol.
     UseWienerNs,
-    /// `TileWienerNsLengthCdf[Min(plane, 1)]` (AV2 § 8.3.2): the
-    /// §5.20.10.6 `wiener_ns_length` binary symbol.
     WienerNsLength {
-        /// `Min(plane, 1)`.
         plane_ctx: usize,
     },
-    /// `TileWienerNsUvSymCdf` (AV2 § 8.3.2): the §5.20.10.6
-    /// `wiener_ns_uv_sym` binary symbol.
     WienerNsUvSym,
-    /// `TileWienerNsBaseCdf` (AV2 § 8.3.2): the §5.20.10.6
-    /// `wiener_ns_base` symbol used by `decode_4part`.
     WienerNsBase,
-    /// `TileIsLongSideDctCdf[is_inter]` (AV2 § 8.3.2).
     IsLongSideDct {
-        /// `is_inter`.
         is_inter: usize,
     },
-    /// `TileIntraTxTypeLongCdf[Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.2).
     IntraTxTypeLong {
-        /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
-    /// `TileInterTxTypeLongCdf[ctx][Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.3),
-    /// the inter long-side `inter_tx_type` symbol for the
-    /// `TX_SET_WIDE_32/64` and `TX_SET_HIGH_32/64` transform sets.
     InterTxTypeLong {
-        /// The §8.3.2 `inter_tx_type` eob context (0..3).
         ctx: usize,
-        /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
-    /// `TileInterTxTypeSet1Cdf[ctx][Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.3),
-    /// the `inter_tx_type` 2-symbol read for `TX_SET_INTER_1`.
     InterTxTypeSet1 {
-        /// The §8.3.2 `inter_tx_type` eob context (0..2).
         ctx: usize,
-        /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
-    /// `TileInterTxTypeSet2Cdf[ctx]` (AV2 § 8.3.2 Table 8.3), the
-    /// `inter_tx_type` 2-symbol read for `TX_SET_INTER_2`.
     InterTxTypeSet2 {
-        /// The §8.3.2 `inter_tx_type` eob context (0..2).
         ctx: usize,
     },
-    /// `TileInterTxTypeIndexSet1Cdf[ctx]` (AV2 § 8.3.2), the
-    /// `inter_tx_type_offset` 8-symbol read for `TX_SET_INTER_1` when
-    /// `inter_tx_type == 0`.
     InterTxTypeIndexSet1 {
-        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
         ctx: usize,
     },
-    /// `TileInterTxTypeIndexSet2Cdf[ctx]` (AV2 § 8.3.2), the
-    /// `inter_tx_type_offset` 8-symbol read for `TX_SET_INTER_2` when
-    /// `inter_tx_type == 0`.
     InterTxTypeIndexSet2 {
-        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
         ctx: usize,
     },
-    /// `TileInterTxTypeOffsetSet1Cdf[ctx]` (AV2 § 8.3.2), the
-    /// `inter_tx_type_offset` 8-symbol read for `TX_SET_INTER_1` when
-    /// `inter_tx_type == 1`.
     InterTxTypeOffsetSet1 {
-        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
         ctx: usize,
     },
-    /// `TileInterTxTypeOffsetSet2Cdf[ctx]` (AV2 § 8.3.2), the
-    /// `inter_tx_type_offset` 4-symbol read for `TX_SET_INTER_2` when
-    /// `inter_tx_type == 1`.
     InterTxTypeOffsetSet2 {
-        /// The §8.3.2 `inter_tx_type_offset` eob context (0..2).
         ctx: usize,
     },
-    /// `TileInterTxTypeSet3Cdf[ctx][Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.3),
-    /// the `inter_tx_type` 2-symbol read for `TX_SET_DCT_IDTX`.
     InterTxTypeSet3 {
-        /// The §8.3.2 `inter_tx_type` eob context (0..2).
         ctx: usize,
-        /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
-    /// `TileInterTxTypeSet4Cdf[ctx][Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.3),
-    /// the `inter_tx_type` 4-symbol read for `TX_SET_DCT_IDTX_IDDCT`.
     InterTxTypeSet4 {
-        /// The §8.3.2 `inter_tx_type` eob context (0..2).
         ctx: usize,
-        /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
-    /// `TileIntraTxTypeSet1Cdf[Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.2).
     IntraTxTypeSet1 {
-        /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
-    /// `TileIntraTxTypeSet2Cdf[Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2 Table 8.2).
     IntraTxTypeSet2 {
-        /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
-    /// `TileSecTxTypeCdf[is_inter][Tx_Size_Sqr[txSz]]` (AV2 § 8.3.2).
     SecTxType {
-        /// `is_inter`.
         is_inter: usize,
-        /// `Tx_Size_Sqr[txSz]`.
         tx_size_sqr: usize,
     },
-    /// `TileMostProbableStxSetCdf` (AV2 § 8.3.2).
     MostProbableStxSet,
-    /// `TileMostProbableStxSetAdstCdf` (AV2 § 8.3.2).
     MostProbableStxSetAdst,
-    /// `TileCctxTypeCdf` (AV2 § 8.3.2).
     CctxType,
-    /// Coefficient base/base-EOB/base-range and IDTX CDF rows.
     Coeff(CoeffCdfSelector),
 }
 
-/// Supported block-symbol CDF arrays for the minimal flat-intra trace.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BlockCdfRows {
     pub(super) y_mode_set: YModeSetCdfRow,
@@ -548,49 +399,45 @@ pub(crate) struct BlockCdfRows {
     pub(super) coeff: CoeffCdfRows,
 }
 
-/// Expands the shared body of [`BlockCdfRows::row`] and
-/// [`BlockCdfRows::row_mut`].
-///
-/// `$get` / `$as_slice` are the shared/exclusive accessor pairs
-/// (`get` + `as_slice` for the borrow, `get_mut` + `as_mut_slice` for the
-/// exclusive variant) and `$delegate` is the `MvCdfRows` / `CoeffCdfRows`
-/// method to forward to (`row` or `row_mut`). The body is the borrow-safe
-/// `row_mut` form: each `max_exclusive` length is bound before the `$get`
-/// call so the macro compiles for `get_mut` (which would otherwise hold a
-/// mutable borrow across a `.len()` read). Because every length constant
-/// equals its backing array's declared size, the `&self` expansion produces
-/// the same `max_exclusive` values the const-based `row` body used.
+macro_rules! checked_block_row {
+    ($rows:expr, $index:expr, $index_name:literal, $array:expr, $get:ident) => {{
+        let max_exclusive = $rows.len();
+        $rows.$get($index).ok_or(TileCdfError::SelectorOutOfRange {
+            array: $array,
+            index_name: $index_name,
+            actual: $index,
+            max_exclusive,
+        })
+    }};
+}
+
+macro_rules! block_row_slice {
+    ($rows:expr, $index:expr, $index_name:literal, $array:expr, $get:ident, $as_slice:ident) => {{
+        let row = checked_block_row!($rows, $index, $index_name, $array, $get)?;
+        Ok(row.$as_slice())
+    }};
+}
+
 macro_rules! block_cdf_row {
     ($self:ident, $selector:ident, $get:ident, $as_slice:ident, $delegate:ident) => {
         match $selector {
             BlockCdfSelector::YModeSet => Ok($self.y_mode_set.$as_slice()),
-            BlockCdfSelector::YModeIndex { ctx } => {
-                let max_exclusive = $self.y_mode_index.len();
-                let row = $self
-                    .y_mode_index
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::YModeIndex,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::YModeOffset { ctx } => {
-                let max_exclusive = $self.y_mode_offset.len();
-                let row =
-                    $self
-                        .y_mode_offset
-                        .$get(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::YModeOffset,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive,
-                        })?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::YModeIndex { ctx } => block_row_slice!(
+                $self.y_mode_index,
+                ctx,
+                "ctx",
+                TileCdfArray::YModeIndex,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::YModeOffset { ctx } => block_row_slice!(
+                $self.y_mode_offset,
+                ctx,
+                "ctx",
+                TileCdfArray::YModeOffset,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::TxbSkip {
                 coeff_cdf_q_ctx,
                 plane_type,
@@ -601,88 +448,64 @@ macro_rules! block_cdf_row {
                     checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
                 let plane_type = checked_plane_type(TileCdfArray::TxbSkip, plane_type)?;
                 let tx_size = checked_tx_size(TileCdfArray::TxbSkip, tx_size)?;
-                let max_exclusive = $self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size].len();
-                let row = $self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size]
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::TxbSkip,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
+                block_row_slice!(
+                    $self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size],
+                    ctx,
+                    "ctx",
+                    TileCdfArray::TxbSkip,
+                    $get,
+                    $as_slice
+                )
             }
-            BlockCdfSelector::UvModeCflNotAllowed { ctx } => {
-                let max_exclusive = $self.uv_mode_cfl_not_allowed.len();
-                let row = $self.uv_mode_cfl_not_allowed.$get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::UvModeCflNotAllowed,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::IsCfl { ctx } => {
-                let max_exclusive = $self.is_cfl.len();
-                let row = $self
-                    .is_cfl
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsCfl,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::UvModeCflNotAllowed { ctx } => block_row_slice!(
+                $self.uv_mode_cfl_not_allowed,
+                ctx,
+                "ctx",
+                TileCdfArray::UvModeCflNotAllowed,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::IsCfl { ctx } => block_row_slice!(
+                $self.is_cfl,
+                ctx,
+                "ctx",
+                TileCdfArray::IsCfl,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::CflIndex => Ok($self.cfl_index.$as_slice()),
             BlockCdfSelector::CflSign => Ok($self.cfl_sign.$as_slice()),
-            BlockCdfSelector::CflAlpha { ctx } => {
-                let max_exclusive = $self.cfl_alpha.len();
-                let row = $self
-                    .cfl_alpha
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CflAlpha,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::CflAlpha { ctx } => block_row_slice!(
+                $self.cfl_alpha,
+                ctx,
+                "ctx",
+                TileCdfArray::CflAlpha,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::CflMhccp => Ok($self.cfl_mhccp.$as_slice()),
-            BlockCdfSelector::CflMhDir { size_group } => {
-                let max_exclusive = $self.cfl_mh_dir.len();
-                let row =
-                    $self
-                        .cfl_mh_dir
-                        .$get(size_group)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::CflMhDir,
-                            index_name: "size_group",
-                            actual: size_group,
-                            max_exclusive,
-                        })?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::CflMhDir { size_group } => block_row_slice!(
+                $self.cfl_mh_dir,
+                size_group,
+                "size_group",
+                TileCdfArray::CflMhDir,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::VTxbSkip {
                 coeff_cdf_q_ctx,
                 ctx,
             } => {
                 let coeff_cdf_q_ctx =
                     checked_coeff_cdf_q_context(TileCdfArray::VTxbSkip, coeff_cdf_q_ctx)?;
-                let max_exclusive = $self.v_txb_skip[coeff_cdf_q_ctx].len();
-                let row = $self.v_txb_skip[coeff_cdf_q_ctx].$get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::VTxbSkip,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.$as_slice())
+                block_row_slice!(
+                    $self.v_txb_skip[coeff_cdf_q_ctx],
+                    ctx,
+                    "ctx",
+                    TileCdfArray::VTxbSkip,
+                    $get,
+                    $as_slice
+                )
             }
             BlockCdfSelector::EobExtra { coeff_cdf_q_ctx } => {
                 let coeff_cdf_q_ctx =
@@ -715,462 +538,299 @@ macro_rules! block_cdf_row {
                 let q = checked_coeff_cdf_q_context(TileCdfArray::DcSign, coeff_cdf_q_ctx)?;
                 let plane_type = checked_plane_type(TileCdfArray::DcSign, plane_type)?;
                 let group = checked_dc_sign_group(group)?;
-                let row = $self.dc_sign[q][plane_type][group].$get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::DcSign,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: DC_SIGN_CONTEXTS,
-                    },
-                )?;
-                Ok(row.$as_slice())
+                block_row_slice!(
+                    $self.dc_sign[q][plane_type][group],
+                    ctx,
+                    "ctx",
+                    TileCdfArray::DcSign,
+                    $get,
+                    $as_slice
+                )
             }
-            BlockCdfSelector::IsInter { ctx } => {
-                let max_exclusive = $self.is_inter.len();
-                let row = $self
-                    .is_inter
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsInter,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::IsInter { ctx } => block_row_slice!(
+                $self.is_inter,
+                ctx,
+                "ctx",
+                TileCdfArray::IsInter,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::Skip { ctx } => {
-                let max_exclusive = $self.skip.len();
-                let row = $self
-                    .skip
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::Skip,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
+                block_row_slice!($self.skip, ctx, "ctx", TileCdfArray::Skip, $get, $as_slice)
             }
-            BlockCdfSelector::SingleMode { ctx } => {
-                let max_exclusive = $self.single_mode.len();
-                let row = $self
-                    .single_mode
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::SingleMode,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::SingleMode { ctx } => block_row_slice!(
+                $self.single_mode,
+                ctx,
+                "ctx",
+                TileCdfArray::SingleMode,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::DrlMode { idx, ctx } => {
-                let bank_len = $self.drl_mode.len();
-                let bank = $self
-                    .drl_mode
-                    .$get(idx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::DrlMode,
-                        index_name: "idx",
-                        actual: idx,
-                        max_exclusive: bank_len,
-                    })?;
-                let ctx_len = bank.len();
-                let row = bank.$get(ctx).ok_or(TileCdfError::SelectorOutOfRange {
-                    array: TileCdfArray::DrlMode,
-                    index_name: "ctx",
-                    actual: ctx,
-                    max_exclusive: ctx_len,
-                })?;
-                Ok(row.$as_slice())
+                let bank =
+                    checked_block_row!($self.drl_mode, idx, "idx", TileCdfArray::DrlMode, $get)?;
+                block_row_slice!(bank, ctx, "ctx", TileCdfArray::DrlMode, $get, $as_slice)
             }
             BlockCdfSelector::SingleRef { ctx, ref_idx } => {
-                let bank_len = $self.single_ref.len();
-                let bank = $self
-                    .single_ref
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::SingleRef,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: bank_len,
-                    })?;
-                let ref_len = bank.len();
-                let row = bank.$get(ref_idx).ok_or(TileCdfError::SelectorOutOfRange {
-                    array: TileCdfArray::SingleRef,
-                    index_name: "ref",
-                    actual: ref_idx,
-                    max_exclusive: ref_len,
-                })?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::CompMode { ctx } => {
-                let max_exclusive = $self.comp_mode.len();
-                let row = $self
-                    .comp_mode
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompMode,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::IsJoint { ctx } => {
-                let max_exclusive = $self.is_joint.len();
-                let row = $self
-                    .is_joint
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsJoint,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::CompoundModeNonJoint { ctx } => {
-                let max_exclusive = $self.compound_mode_non_joint.len();
-                let row = $self.compound_mode_non_joint.$get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompoundModeNonJoint,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    },
+                let bank = checked_block_row!(
+                    $self.single_ref,
+                    ctx,
+                    "ctx",
+                    TileCdfArray::SingleRef,
+                    $get
                 )?;
-                Ok(row.$as_slice())
+                block_row_slice!(
+                    bank,
+                    ref_idx,
+                    "ref",
+                    TileCdfArray::SingleRef,
+                    $get,
+                    $as_slice
+                )
             }
-            BlockCdfSelector::CompGroupIdx { ctx } => {
-                let max_exclusive = $self.comp_group_idx.len();
-                let row =
-                    $self
-                        .comp_group_idx
-                        .$get(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::CompGroupIdx,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive,
-                        })?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::CwpIdx { idx } => {
-                let max_exclusive = $self.cwp_idx.len();
-                let row = $self
-                    .cwp_idx
-                    .$get(idx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CwpIdx,
-                        index_name: "idx",
-                        actual: idx,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::CompMode { ctx } => block_row_slice!(
+                $self.comp_mode,
+                ctx,
+                "ctx",
+                TileCdfArray::CompMode,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::IsJoint { ctx } => block_row_slice!(
+                $self.is_joint,
+                ctx,
+                "ctx",
+                TileCdfArray::IsJoint,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::CompoundModeNonJoint { ctx } => block_row_slice!(
+                $self.compound_mode_non_joint,
+                ctx,
+                "ctx",
+                TileCdfArray::CompoundModeNonJoint,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::CompGroupIdx { ctx } => block_row_slice!(
+                $self.comp_group_idx,
+                ctx,
+                "ctx",
+                TileCdfArray::CompGroupIdx,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::CwpIdx { idx } => block_row_slice!(
+                $self.cwp_idx,
+                idx,
+                "idx",
+                TileCdfArray::CwpIdx,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::CompRef0 { ctx, ref_idx } => {
-                let bank_len = $self.comp_ref0.len();
-                let bank = $self
-                    .comp_ref0
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef0,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: bank_len,
-                    })?;
-                let ref_len = bank.len();
-                let row = bank.$get(ref_idx).ok_or(TileCdfError::SelectorOutOfRange {
-                    array: TileCdfArray::CompRef0,
-                    index_name: "ref",
-                    actual: ref_idx,
-                    max_exclusive: ref_len,
-                })?;
-                Ok(row.$as_slice())
+                let bank =
+                    checked_block_row!($self.comp_ref0, ctx, "ctx", TileCdfArray::CompRef0, $get)?;
+                block_row_slice!(
+                    bank,
+                    ref_idx,
+                    "ref",
+                    TileCdfArray::CompRef0,
+                    $get,
+                    $as_slice
+                )
             }
             BlockCdfSelector::CompRef1 {
                 ctx,
                 bit_type,
                 ref_idx,
             } => {
-                let bank_len = $self.comp_ref1.len();
-                let bank = $self
-                    .comp_ref1
-                    .$get(ctx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef1,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive: bank_len,
-                    })?;
-                let bit_len = bank.len();
-                let bit_bank = bank
-                    .$get(bit_type)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef1,
-                        index_name: "bit_type",
-                        actual: bit_type,
-                        max_exclusive: bit_len,
-                    })?;
-                let ref_len = bit_bank.len();
-                let row = bit_bank
-                    .$get(ref_idx)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::CompRef1,
-                        index_name: "ref",
-                        actual: ref_idx,
-                        max_exclusive: ref_len,
-                    })?;
-                Ok(row.$as_slice())
+                let bank =
+                    checked_block_row!($self.comp_ref1, ctx, "ctx", TileCdfArray::CompRef1, $get)?;
+                let bit_bank =
+                    checked_block_row!(bank, bit_type, "bit_type", TileCdfArray::CompRef1, $get)?;
+                block_row_slice!(
+                    bit_bank,
+                    ref_idx,
+                    "ref",
+                    TileCdfArray::CompRef1,
+                    $get,
+                    $as_slice
+                )
             }
             BlockCdfSelector::ReadMv(selector) => $self.read_mv.$delegate(selector),
-            BlockCdfSelector::InterpFilter { ctx } => {
-                let max_exclusive = $self.interp_filter.len();
-                let row =
-                    $self
-                        .interp_filter
-                        .$get(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::InterpFilter,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive,
-                        })?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::InterpFilter { ctx } => block_row_slice!(
+                $self.interp_filter,
+                ctx,
+                "ctx",
+                TileCdfArray::InterpFilter,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::UseWienerNs => Ok($self.use_wiener_ns.$as_slice()),
-            BlockCdfSelector::WienerNsLength { plane_ctx } => {
-                let max_exclusive = $self.wiener_ns_length.len();
-                let row = $self.wiener_ns_length.$get(plane_ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::WienerNsLength,
-                        index_name: "plane_ctx",
-                        actual: plane_ctx,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::WienerNsLength { plane_ctx } => block_row_slice!(
+                $self.wiener_ns_length,
+                plane_ctx,
+                "plane_ctx",
+                TileCdfArray::WienerNsLength,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::WienerNsUvSym => Ok($self.wiener_ns_uv_sym.$as_slice()),
             BlockCdfSelector::WienerNsBase => Ok($self.wiener_ns_base.$as_slice()),
-            BlockCdfSelector::IsLongSideDct { is_inter } => {
-                let max_exclusive = $self.is_long_side_dct.len();
-                let row = $self.is_long_side_dct.$get(is_inter).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IsLongSideDct,
-                        index_name: "is_inter",
-                        actual: is_inter,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::IntraTxTypeLong { tx_size_sqr } => {
-                let max_exclusive = $self.intra_tx_type_long.len();
-                let row = $self.intra_tx_type_long.$get(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IntraTxTypeLong,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::IsLongSideDct { is_inter } => block_row_slice!(
+                $self.is_long_side_dct,
+                is_inter,
+                "is_inter",
+                TileCdfArray::IsLongSideDct,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::IntraTxTypeLong { tx_size_sqr } => block_row_slice!(
+                $self.intra_tx_type_long,
+                tx_size_sqr,
+                "tx_size_sqr",
+                TileCdfArray::IntraTxTypeLong,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::InterTxTypeLong { ctx, tx_size_sqr } => {
-                let eob_max = $self.inter_tx_type_long.len();
-                let eob_row =
-                    $self
-                        .inter_tx_type_long
-                        .$get(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::InterTxTypeLong,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive: eob_max,
-                        })?;
-                let max_exclusive = eob_row.len();
-                let row = eob_row
-                    .$get(tx_size_sqr)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::InterTxTypeLong,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
+                let eob_row = checked_block_row!(
+                    $self.inter_tx_type_long,
+                    ctx,
+                    "ctx",
+                    TileCdfArray::InterTxTypeLong,
+                    $get
+                )?;
+                block_row_slice!(
+                    eob_row,
+                    tx_size_sqr,
+                    "tx_size_sqr",
+                    TileCdfArray::InterTxTypeLong,
+                    $get,
+                    $as_slice
+                )
             }
             BlockCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr } => {
-                let ctx_max = $self.inter_tx_type_set1.len();
-                let ctx_row =
-                    $self
-                        .inter_tx_type_set1
-                        .$get(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::InterTxTypeSet1,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive: ctx_max,
-                        })?;
-                let max_exclusive = ctx_row.len();
-                let row = ctx_row
-                    .$get(tx_size_sqr)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::InterTxTypeSet1,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::InterTxTypeSet2 { ctx } => {
-                let max_exclusive = $self.inter_tx_type_set2.len();
-                let row =
-                    $self
-                        .inter_tx_type_set2
-                        .$get(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::InterTxTypeSet2,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive,
-                        })?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::InterTxTypeIndexSet1 { ctx } => {
-                let max_exclusive = $self.inter_tx_type_index_set1.len();
-                let row = $self.inter_tx_type_index_set1.$get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::InterTxTypeIndexSet1,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    },
+                let ctx_row = checked_block_row!(
+                    $self.inter_tx_type_set1,
+                    ctx,
+                    "ctx",
+                    TileCdfArray::InterTxTypeSet1,
+                    $get
                 )?;
-                Ok(row.$as_slice())
+                block_row_slice!(
+                    ctx_row,
+                    tx_size_sqr,
+                    "tx_size_sqr",
+                    TileCdfArray::InterTxTypeSet1,
+                    $get,
+                    $as_slice
+                )
             }
-            BlockCdfSelector::InterTxTypeIndexSet2 { ctx } => {
-                let max_exclusive = $self.inter_tx_type_index_set2.len();
-                let row = $self.inter_tx_type_index_set2.$get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::InterTxTypeIndexSet2,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::InterTxTypeOffsetSet1 { ctx } => {
-                let max_exclusive = $self.inter_tx_type_offset_set1.len();
-                let row = $self.inter_tx_type_offset_set1.$get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::InterTxTypeOffsetSet1,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::InterTxTypeOffsetSet2 { ctx } => {
-                let max_exclusive = $self.inter_tx_type_offset_set2.len();
-                let row = $self.inter_tx_type_offset_set2.$get(ctx).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::InterTxTypeOffsetSet2,
-                        index_name: "ctx",
-                        actual: ctx,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::InterTxTypeSet2 { ctx } => block_row_slice!(
+                $self.inter_tx_type_set2,
+                ctx,
+                "ctx",
+                TileCdfArray::InterTxTypeSet2,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::InterTxTypeIndexSet1 { ctx } => block_row_slice!(
+                $self.inter_tx_type_index_set1,
+                ctx,
+                "ctx",
+                TileCdfArray::InterTxTypeIndexSet1,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::InterTxTypeIndexSet2 { ctx } => block_row_slice!(
+                $self.inter_tx_type_index_set2,
+                ctx,
+                "ctx",
+                TileCdfArray::InterTxTypeIndexSet2,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::InterTxTypeOffsetSet1 { ctx } => block_row_slice!(
+                $self.inter_tx_type_offset_set1,
+                ctx,
+                "ctx",
+                TileCdfArray::InterTxTypeOffsetSet1,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::InterTxTypeOffsetSet2 { ctx } => block_row_slice!(
+                $self.inter_tx_type_offset_set2,
+                ctx,
+                "ctx",
+                TileCdfArray::InterTxTypeOffsetSet2,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr } => {
-                let ctx_max = $self.inter_tx_type_set3.len();
-                let ctx_row =
-                    $self
-                        .inter_tx_type_set3
-                        .$get(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::InterTxTypeSet3,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive: ctx_max,
-                        })?;
-                let max_exclusive = ctx_row.len();
-                let row = ctx_row
-                    .$get(tx_size_sqr)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::InterTxTypeSet3,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
+                let ctx_row = checked_block_row!(
+                    $self.inter_tx_type_set3,
+                    ctx,
+                    "ctx",
+                    TileCdfArray::InterTxTypeSet3,
+                    $get
+                )?;
+                block_row_slice!(
+                    ctx_row,
+                    tx_size_sqr,
+                    "tx_size_sqr",
+                    TileCdfArray::InterTxTypeSet3,
+                    $get,
+                    $as_slice
+                )
             }
             BlockCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr } => {
-                let ctx_max = $self.inter_tx_type_set4.len();
-                let ctx_row =
-                    $self
-                        .inter_tx_type_set4
-                        .$get(ctx)
-                        .ok_or(TileCdfError::SelectorOutOfRange {
-                            array: TileCdfArray::InterTxTypeSet4,
-                            index_name: "ctx",
-                            actual: ctx,
-                            max_exclusive: ctx_max,
-                        })?;
-                let max_exclusive = ctx_row.len();
-                let row = ctx_row
-                    .$get(tx_size_sqr)
-                    .ok_or(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::InterTxTypeSet4,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    })?;
-                Ok(row.$as_slice())
-            }
-            BlockCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => {
-                let max_exclusive = $self.intra_tx_type_set1.len();
-                let row = $self.intra_tx_type_set1.$get(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IntraTxTypeSet1,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    },
+                let ctx_row = checked_block_row!(
+                    $self.inter_tx_type_set4,
+                    ctx,
+                    "ctx",
+                    TileCdfArray::InterTxTypeSet4,
+                    $get
                 )?;
-                Ok(row.$as_slice())
+                block_row_slice!(
+                    ctx_row,
+                    tx_size_sqr,
+                    "tx_size_sqr",
+                    TileCdfArray::InterTxTypeSet4,
+                    $get,
+                    $as_slice
+                )
             }
-            BlockCdfSelector::IntraTxTypeSet2 { tx_size_sqr } => {
-                let max_exclusive = $self.intra_tx_type_set2.len();
-                let row = $self.intra_tx_type_set2.$get(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::IntraTxTypeSet2,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.$as_slice())
-            }
+            BlockCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => block_row_slice!(
+                $self.intra_tx_type_set1,
+                tx_size_sqr,
+                "tx_size_sqr",
+                TileCdfArray::IntraTxTypeSet1,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::IntraTxTypeSet2 { tx_size_sqr } => block_row_slice!(
+                $self.intra_tx_type_set2,
+                tx_size_sqr,
+                "tx_size_sqr",
+                TileCdfArray::IntraTxTypeSet2,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::SecTxType {
                 is_inter,
                 tx_size_sqr,
             } => {
                 let is_inter = checked_sec_tx_is_inter(is_inter)?;
-                let max_exclusive = $self.sec_tx_type[is_inter].len();
-                let row = $self.sec_tx_type[is_inter].$get(tx_size_sqr).ok_or(
-                    TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::SecTxType,
-                        index_name: "tx_size_sqr",
-                        actual: tx_size_sqr,
-                        max_exclusive,
-                    },
-                )?;
-                Ok(row.$as_slice())
+                block_row_slice!(
+                    $self.sec_tx_type[is_inter],
+                    tx_size_sqr,
+                    "tx_size_sqr",
+                    TileCdfArray::SecTxType,
+                    $get,
+                    $as_slice
+                )
             }
             BlockCdfSelector::MostProbableStxSet => Ok($self.most_probable_stx_set.$as_slice()),
             BlockCdfSelector::MostProbableStxSetAdst => {
@@ -1180,6 +840,67 @@ macro_rules! block_cdf_row {
             BlockCdfSelector::Coeff(selector) => $self.coeff.$delegate(selector),
         }
     };
+}
+
+macro_rules! block_cdf_count_rows {
+    ($row:ident, $rows:ident, $read_mv:block, $coeff:block) => {{
+        $row!(y_mode_set);
+        $rows!(y_mode_index);
+        $rows!(txb_skip.flatten().flatten().flatten());
+        $rows!(v_txb_skip.flatten());
+        $rows!(eob_extra);
+        $rows!(uv_mode_cfl_not_allowed);
+        $rows!(is_cfl);
+        $row!(cfl_index);
+        $row!(cfl_sign);
+        $rows!(cfl_alpha);
+        $row!(cfl_mhccp);
+        $rows!(cfl_mh_dir);
+        $rows!(eob_pt_16.flatten());
+        $rows!(eob_pt_32.flatten());
+        $rows!(eob_pt_64.flatten());
+        $rows!(eob_pt_128.flatten());
+        $rows!(eob_pt_256.flatten());
+        $rows!(eob_pt_512.flatten());
+        $rows!(eob_pt_1024.flatten());
+        $rows!(dc_sign.flatten().flatten().flatten());
+        $rows!(is_inter);
+        $rows!(skip);
+        $rows!(single_mode);
+        $rows!(drl_mode.flatten());
+        $rows!(single_ref.flatten());
+        $rows!(comp_mode);
+        $rows!(is_joint);
+        $rows!(compound_mode_non_joint);
+        $rows!(comp_group_idx);
+        $rows!(cwp_idx);
+        $rows!(comp_ref0.flatten());
+        $rows!(comp_ref1.flatten().flatten());
+        $read_mv
+        $rows!(interp_filter);
+        $row!(use_wiener_ns);
+        $rows!(wiener_ns_length);
+        $row!(wiener_ns_uv_sym);
+        $row!(wiener_ns_base);
+        $rows!(is_long_side_dct);
+        $rows!(intra_tx_type_long);
+        $rows!(inter_tx_type_long.flatten());
+        $rows!(inter_tx_type_set1.flatten());
+        $rows!(inter_tx_type_set3.flatten());
+        $rows!(inter_tx_type_set4.flatten());
+        $rows!(inter_tx_type_set2);
+        $rows!(inter_tx_type_index_set1);
+        $rows!(inter_tx_type_index_set2);
+        $rows!(inter_tx_type_offset_set1);
+        $rows!(inter_tx_type_offset_set2);
+        $rows!(intra_tx_type_set1);
+        $rows!(intra_tx_type_set2);
+        $rows!(sec_tx_type.flatten());
+        $row!(most_probable_stx_set);
+        $row!(most_probable_stx_set_adst);
+        $row!(cctx_type);
+        $coeff
+    }};
 }
 
 impl BlockCdfRows {
@@ -1257,478 +978,57 @@ impl BlockCdfRows {
     }
 
     pub(crate) fn avg_from_tile(&mut self, tile_num: u32, tile: &Self, num_log2: u8) {
-        avg_cdf_row(&mut self.y_mode_set, &tile.y_mode_set, tile_num, num_log2);
-        for ctx in 0..Y_MODE_INDEX_CONTEXTS {
-            avg_cdf_row(
-                &mut self.y_mode_index[ctx],
-                &tile.y_mode_index[ctx],
-                tile_num,
-                num_log2,
-            );
+        macro_rules! avg_row {
+            ($field:ident) => {
+                avg_cdf_row(&mut self.$field, &tile.$field, tile_num, num_log2);
+            };
         }
-        for coeff_cdf_q_ctx in 0..COEFF_CDF_Q_CONTEXTS {
-            for plane_type in 0..PLANE_TYPES {
-                for tx_size in 0..TX_SIZE_CONTEXTS {
-                    for ctx in 0..TXB_SKIP_CONTEXTS {
-                        avg_cdf_row(
-                            &mut self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size][ctx],
-                            &tile.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size][ctx],
-                            tile_num,
-                            num_log2,
-                        );
-                    }
-                }
-            }
-            for ctx in 0..V_TXB_SKIP_CONTEXTS {
-                avg_cdf_row(
-                    &mut self.v_txb_skip[coeff_cdf_q_ctx][ctx],
-                    &tile.v_txb_skip[coeff_cdf_q_ctx][ctx],
+        macro_rules! avg_rows {
+            ($field:ident $(. $flatten:ident())*) => {
+                avg_cdf_rows(
+                    self.$field.iter_mut()$(.$flatten())*,
+                    tile.$field.iter()$(.$flatten())*,
                     tile_num,
                     num_log2,
                 );
+            };
+        }
+
+        block_cdf_count_rows!(
+            avg_row,
+            avg_rows,
+            {
+                self.read_mv
+                    .average_from_tile(&tile.read_mv, tile_num, num_log2);
+            },
+            {
+                self.coeff.avg_from_tile(tile_num, &tile.coeff, num_log2);
             }
-            avg_cdf_row(
-                &mut self.eob_extra[coeff_cdf_q_ctx],
-                &tile.eob_extra[coeff_cdf_q_ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for ctx in 0..UV_MODE_CONTEXTS {
-            avg_cdf_row(
-                &mut self.uv_mode_cfl_not_allowed[ctx],
-                &tile.uv_mode_cfl_not_allowed[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for ctx in 0..CFL_CONTEXTS {
-            avg_cdf_row(&mut self.is_cfl[ctx], &tile.is_cfl[ctx], tile_num, num_log2);
-        }
-        avg_cdf_row(&mut self.cfl_index, &tile.cfl_index, tile_num, num_log2);
-        avg_cdf_row(&mut self.cfl_sign, &tile.cfl_sign, tile_num, num_log2);
-        for ctx in 0..CFL_ALPHA_CONTEXTS {
-            avg_cdf_row(
-                &mut self.cfl_alpha[ctx],
-                &tile.cfl_alpha[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        avg_cdf_row(&mut self.cfl_mhccp, &tile.cfl_mhccp, tile_num, num_log2);
-        for size_group in 0..CFL_MH_DIR_GROUPS {
-            avg_cdf_row(
-                &mut self.cfl_mh_dir[size_group],
-                &tile.cfl_mh_dir[size_group],
-                tile_num,
-                num_log2,
-            );
-        }
-        avg_eob_pt_bank(&mut self.eob_pt_16, &tile.eob_pt_16, tile_num, num_log2);
-        avg_eob_pt_bank(&mut self.eob_pt_32, &tile.eob_pt_32, tile_num, num_log2);
-        avg_eob_pt_bank(&mut self.eob_pt_64, &tile.eob_pt_64, tile_num, num_log2);
-        avg_eob_pt_bank(&mut self.eob_pt_128, &tile.eob_pt_128, tile_num, num_log2);
-        avg_eob_pt_bank(&mut self.eob_pt_256, &tile.eob_pt_256, tile_num, num_log2);
-        avg_eob_pt_bank(&mut self.eob_pt_512, &tile.eob_pt_512, tile_num, num_log2);
-        avg_eob_pt_bank(&mut self.eob_pt_1024, &tile.eob_pt_1024, tile_num, num_log2);
-        for (frame_row, tile_row) in self
-            .dc_sign
-            .iter_mut()
-            .flatten()
-            .flatten()
-            .flatten()
-            .zip(tile.dc_sign.iter().flatten().flatten().flatten())
-        {
-            avg_cdf_row(frame_row, tile_row, tile_num, num_log2);
-        }
-        for ctx in 0..IS_INTER_CONTEXTS {
-            avg_cdf_row(
-                &mut self.is_inter[ctx],
-                &tile.is_inter[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for ctx in 0..SKIP_CONTEXTS {
-            avg_cdf_row(&mut self.skip[ctx], &tile.skip[ctx], tile_num, num_log2);
-        }
-        for ctx in 0..SINGLE_MODE_CONTEXTS {
-            avg_cdf_row(
-                &mut self.single_mode[ctx],
-                &tile.single_mode[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for idx in 0..DRL_MODE_IDX_BANKS {
-            for ctx in 0..DRL_MODE_CONTEXTS {
-                avg_cdf_row(
-                    &mut self.drl_mode[idx][ctx],
-                    &tile.drl_mode[idx][ctx],
-                    tile_num,
-                    num_log2,
-                );
-            }
-        }
-        for ctx in 0..REF_CONTEXTS {
-            for ref_idx in 0..REFS_PER_FRAME_MINUS_1 {
-                avg_cdf_row(
-                    &mut self.single_ref[ctx][ref_idx],
-                    &tile.single_ref[ctx][ref_idx],
-                    tile_num,
-                    num_log2,
-                );
-            }
-        }
-        for ctx in 0..COMP_MODE_CONTEXTS {
-            avg_cdf_row(
-                &mut self.comp_mode[ctx],
-                &tile.comp_mode[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for ctx in 0..IS_JOINT_CONTEXTS {
-            avg_cdf_row(
-                &mut self.is_joint[ctx],
-                &tile.is_joint[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for ctx in 0..COMPOUND_MODE_CONTEXTS {
-            avg_cdf_row(
-                &mut self.compound_mode_non_joint[ctx],
-                &tile.compound_mode_non_joint[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for ctx in 0..COMP_GROUP_IDX_CONTEXTS {
-            avg_cdf_row(
-                &mut self.comp_group_idx[ctx],
-                &tile.comp_group_idx[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for idx in 0..CWP_IDX_CONTEXTS {
-            avg_cdf_row(
-                &mut self.cwp_idx[idx],
-                &tile.cwp_idx[idx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for ctx in 0..REF_CONTEXTS {
-            for ref_idx in 0..REFS_PER_FRAME_MINUS_1 {
-                avg_cdf_row(
-                    &mut self.comp_ref0[ctx][ref_idx],
-                    &tile.comp_ref0[ctx][ref_idx],
-                    tile_num,
-                    num_log2,
-                );
-            }
-        }
-        for ctx in 0..REF_CONTEXTS {
-            for bit_type in 0..COMP_REF1_BIT_TYPES {
-                for ref_idx in 0..REFS_PER_FRAME_MINUS_1 {
-                    avg_cdf_row(
-                        &mut self.comp_ref1[ctx][bit_type][ref_idx],
-                        &tile.comp_ref1[ctx][bit_type][ref_idx],
-                        tile_num,
-                        num_log2,
-                    );
-                }
-            }
-        }
-        self.read_mv
-            .average_from_tile(&tile.read_mv, tile_num, num_log2);
-        for ctx in 0..INTERP_FILTER_CONTEXTS {
-            avg_cdf_row(
-                &mut self.interp_filter[ctx],
-                &tile.interp_filter[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        avg_cdf_row(
-            &mut self.use_wiener_ns,
-            &tile.use_wiener_ns,
-            tile_num,
-            num_log2,
         );
-        for ctx in 0..WIENER_NS_LENGTH_CONTEXTS {
-            avg_cdf_row(
-                &mut self.wiener_ns_length[ctx],
-                &tile.wiener_ns_length[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        avg_cdf_row(
-            &mut self.wiener_ns_uv_sym,
-            &tile.wiener_ns_uv_sym,
-            tile_num,
-            num_log2,
-        );
-        avg_cdf_row(
-            &mut self.wiener_ns_base,
-            &tile.wiener_ns_base,
-            tile_num,
-            num_log2,
-        );
-        for ctx in 0..IS_LONG_SIDE_DCT_CONTEXTS {
-            avg_cdf_row(
-                &mut self.is_long_side_dct[ctx],
-                &tile.is_long_side_dct[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for ctx in 0..INTRA_TX_TYPE_LONG_SIZE_CONTEXTS {
-            avg_cdf_row(
-                &mut self.intra_tx_type_long[ctx],
-                &tile.intra_tx_type_long[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for eob_ctx in 0..INTER_TX_TYPE_LONG_EOB_CONTEXTS {
-            for tx_size_sqr in 0..INTER_TX_TYPE_LONG_SIZE_CONTEXTS {
-                avg_cdf_row(
-                    &mut self.inter_tx_type_long[eob_ctx][tx_size_sqr],
-                    &tile.inter_tx_type_long[eob_ctx][tx_size_sqr],
-                    tile_num,
-                    num_log2,
-                );
-            }
-        }
-        for eob_ctx in 0..INTER_TX_TYPE_EOB_CONTEXTS {
-            for tx_size_sqr in 0..INTER_TX_TYPE_SET1_SIZE_CONTEXTS {
-                avg_cdf_row(
-                    &mut self.inter_tx_type_set1[eob_ctx][tx_size_sqr],
-                    &tile.inter_tx_type_set1[eob_ctx][tx_size_sqr],
-                    tile_num,
-                    num_log2,
-                );
-            }
-            for tx_size_sqr in 0..INTER_TX_TYPE_SET34_SIZE_CONTEXTS {
-                avg_cdf_row(
-                    &mut self.inter_tx_type_set3[eob_ctx][tx_size_sqr],
-                    &tile.inter_tx_type_set3[eob_ctx][tx_size_sqr],
-                    tile_num,
-                    num_log2,
-                );
-                avg_cdf_row(
-                    &mut self.inter_tx_type_set4[eob_ctx][tx_size_sqr],
-                    &tile.inter_tx_type_set4[eob_ctx][tx_size_sqr],
-                    tile_num,
-                    num_log2,
-                );
-            }
-            avg_cdf_row(
-                &mut self.inter_tx_type_set2[eob_ctx],
-                &tile.inter_tx_type_set2[eob_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.inter_tx_type_index_set1[eob_ctx],
-                &tile.inter_tx_type_index_set1[eob_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.inter_tx_type_index_set2[eob_ctx],
-                &tile.inter_tx_type_index_set2[eob_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.inter_tx_type_offset_set1[eob_ctx],
-                &tile.inter_tx_type_offset_set1[eob_ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.inter_tx_type_offset_set2[eob_ctx],
-                &tile.inter_tx_type_offset_set2[eob_ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for ctx in 0..INTRA_TX_TYPE_SIZE_CONTEXTS {
-            avg_cdf_row(
-                &mut self.intra_tx_type_set1[ctx],
-                &tile.intra_tx_type_set1[ctx],
-                tile_num,
-                num_log2,
-            );
-            avg_cdf_row(
-                &mut self.intra_tx_type_set2[ctx],
-                &tile.intra_tx_type_set2[ctx],
-                tile_num,
-                num_log2,
-            );
-        }
-        for is_inter in 0..SEC_TX_TYPE_IS_INTER_CONTEXTS {
-            for tx_size_sqr in 0..SEC_TX_TYPE_TX_SIZE_CONTEXTS {
-                avg_cdf_row(
-                    &mut self.sec_tx_type[is_inter][tx_size_sqr],
-                    &tile.sec_tx_type[is_inter][tx_size_sqr],
-                    tile_num,
-                    num_log2,
-                );
-            }
-        }
-        avg_cdf_row(
-            &mut self.most_probable_stx_set,
-            &tile.most_probable_stx_set,
-            tile_num,
-            num_log2,
-        );
-        avg_cdf_row(
-            &mut self.most_probable_stx_set_adst,
-            &tile.most_probable_stx_set_adst,
-            tile_num,
-            num_log2,
-        );
-        avg_cdf_row(&mut self.cctx_type, &tile.cctx_type, tile_num, num_log2);
-        self.coeff.avg_from_tile(tile_num, &tile.coeff, num_log2);
     }
 
     pub(crate) fn scale_counts_for_frame_end_update(&mut self) {
-        scale_cdf_count(&mut self.y_mode_set);
-        for ctx in 0..Y_MODE_INDEX_CONTEXTS {
-            scale_cdf_count(&mut self.y_mode_index[ctx]);
+        macro_rules! scale_row {
+            ($field:ident) => {
+                scale_cdf_count(&mut self.$field);
+            };
         }
-        for coeff_cdf_q_ctx in 0..COEFF_CDF_Q_CONTEXTS {
-            for plane_type in 0..PLANE_TYPES {
-                for tx_size in 0..TX_SIZE_CONTEXTS {
-                    for ctx in 0..TXB_SKIP_CONTEXTS {
-                        scale_cdf_count(
-                            &mut self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size][ctx],
-                        );
-                    }
-                }
+        macro_rules! scale_rows {
+            ($field:ident $(. $flatten:ident())*) => {
+                scale_cdf_rows(self.$field.iter_mut()$(.$flatten())*);
+            };
+        }
+
+        block_cdf_count_rows!(
+            scale_row,
+            scale_rows,
+            {
+                self.read_mv.scale_counts();
+            },
+            {
+                self.coeff.scale_counts_for_frame_end_update();
             }
-            for ctx in 0..V_TXB_SKIP_CONTEXTS {
-                scale_cdf_count(&mut self.v_txb_skip[coeff_cdf_q_ctx][ctx]);
-            }
-            scale_cdf_count(&mut self.eob_extra[coeff_cdf_q_ctx]);
-        }
-        for ctx in 0..UV_MODE_CONTEXTS {
-            scale_cdf_count(&mut self.uv_mode_cfl_not_allowed[ctx]);
-        }
-        for ctx in 0..CFL_CONTEXTS {
-            scale_cdf_count(&mut self.is_cfl[ctx]);
-        }
-        scale_cdf_count(&mut self.cfl_index);
-        scale_cdf_count(&mut self.cfl_sign);
-        for ctx in 0..CFL_ALPHA_CONTEXTS {
-            scale_cdf_count(&mut self.cfl_alpha[ctx]);
-        }
-        scale_cdf_count(&mut self.cfl_mhccp);
-        for size_group in 0..CFL_MH_DIR_GROUPS {
-            scale_cdf_count(&mut self.cfl_mh_dir[size_group]);
-        }
-        scale_eob_pt_bank(&mut self.eob_pt_16);
-        scale_eob_pt_bank(&mut self.eob_pt_32);
-        scale_eob_pt_bank(&mut self.eob_pt_64);
-        scale_eob_pt_bank(&mut self.eob_pt_128);
-        scale_eob_pt_bank(&mut self.eob_pt_256);
-        scale_eob_pt_bank(&mut self.eob_pt_512);
-        scale_eob_pt_bank(&mut self.eob_pt_1024);
-        for row in self.dc_sign.iter_mut().flatten().flatten().flatten() {
-            scale_cdf_count(row);
-        }
-        for ctx in 0..IS_INTER_CONTEXTS {
-            scale_cdf_count(&mut self.is_inter[ctx]);
-        }
-        for ctx in 0..SKIP_CONTEXTS {
-            scale_cdf_count(&mut self.skip[ctx]);
-        }
-        for ctx in 0..SINGLE_MODE_CONTEXTS {
-            scale_cdf_count(&mut self.single_mode[ctx]);
-        }
-        for idx in 0..DRL_MODE_IDX_BANKS {
-            for ctx in 0..DRL_MODE_CONTEXTS {
-                scale_cdf_count(&mut self.drl_mode[idx][ctx]);
-            }
-        }
-        for ctx in 0..REF_CONTEXTS {
-            for ref_idx in 0..REFS_PER_FRAME_MINUS_1 {
-                scale_cdf_count(&mut self.single_ref[ctx][ref_idx]);
-            }
-        }
-        for ctx in 0..COMP_MODE_CONTEXTS {
-            scale_cdf_count(&mut self.comp_mode[ctx]);
-        }
-        for ctx in 0..IS_JOINT_CONTEXTS {
-            scale_cdf_count(&mut self.is_joint[ctx]);
-        }
-        for ctx in 0..COMPOUND_MODE_CONTEXTS {
-            scale_cdf_count(&mut self.compound_mode_non_joint[ctx]);
-        }
-        for ctx in 0..COMP_GROUP_IDX_CONTEXTS {
-            scale_cdf_count(&mut self.comp_group_idx[ctx]);
-        }
-        for idx in 0..CWP_IDX_CONTEXTS {
-            scale_cdf_count(&mut self.cwp_idx[idx]);
-        }
-        for row in self.comp_ref0.iter_mut().flatten() {
-            scale_cdf_count(row);
-        }
-        for row in self.comp_ref1.iter_mut().flatten().flatten() {
-            scale_cdf_count(row);
-        }
-        self.read_mv.scale_counts();
-        for ctx in 0..INTERP_FILTER_CONTEXTS {
-            scale_cdf_count(&mut self.interp_filter[ctx]);
-        }
-        scale_cdf_count(&mut self.use_wiener_ns);
-        for ctx in 0..WIENER_NS_LENGTH_CONTEXTS {
-            scale_cdf_count(&mut self.wiener_ns_length[ctx]);
-        }
-        scale_cdf_count(&mut self.wiener_ns_uv_sym);
-        scale_cdf_count(&mut self.wiener_ns_base);
-        for ctx in 0..IS_LONG_SIDE_DCT_CONTEXTS {
-            scale_cdf_count(&mut self.is_long_side_dct[ctx]);
-        }
-        for ctx in 0..INTRA_TX_TYPE_LONG_SIZE_CONTEXTS {
-            scale_cdf_count(&mut self.intra_tx_type_long[ctx]);
-        }
-        for row in self.inter_tx_type_long.iter_mut().flatten() {
-            scale_cdf_count(row);
-        }
-        for row in self.inter_tx_type_set1.iter_mut().flatten() {
-            scale_cdf_count(row);
-        }
-        for row in self.inter_tx_type_set3.iter_mut().flatten() {
-            scale_cdf_count(row);
-        }
-        for row in self.inter_tx_type_set4.iter_mut().flatten() {
-            scale_cdf_count(row);
-        }
-        for eob_ctx in 0..INTER_TX_TYPE_EOB_CONTEXTS {
-            scale_cdf_count(&mut self.inter_tx_type_set2[eob_ctx]);
-            scale_cdf_count(&mut self.inter_tx_type_index_set1[eob_ctx]);
-            scale_cdf_count(&mut self.inter_tx_type_index_set2[eob_ctx]);
-            scale_cdf_count(&mut self.inter_tx_type_offset_set1[eob_ctx]);
-            scale_cdf_count(&mut self.inter_tx_type_offset_set2[eob_ctx]);
-        }
-        for ctx in 0..INTRA_TX_TYPE_SIZE_CONTEXTS {
-            scale_cdf_count(&mut self.intra_tx_type_set1[ctx]);
-            scale_cdf_count(&mut self.intra_tx_type_set2[ctx]);
-        }
-        for row in self.sec_tx_type.iter_mut().flatten() {
-            scale_cdf_count(row);
-        }
-        scale_cdf_count(&mut self.most_probable_stx_set);
-        scale_cdf_count(&mut self.most_probable_stx_set_adst);
-        scale_cdf_count(&mut self.cctx_type);
-        self.coeff.scale_counts_for_frame_end_update();
+        );
     }
 
     #[cfg(test)]
@@ -1887,104 +1187,39 @@ impl BlockCdfRows {
     }
 }
 
-/// Averages one `eob_pt` family bank (`[coeff_cdf_q_ctx][eobCtx][N]`) against the
-/// completed tile's matching bank, for any class width `N`.
-fn avg_eob_pt_bank<const N: usize>(
-    frame: &mut [[[i32; N]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS],
-    tile: &[[[i32; N]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS],
-    tile_num: u32,
-    num_log2: u8,
-) {
-    for (frame_q, tile_q) in frame.iter_mut().zip(tile.iter()) {
-        for (frame_row, tile_row) in frame_q.iter_mut().zip(tile_q.iter()) {
-            avg_cdf_row(frame_row, tile_row, tile_num, num_log2);
-        }
-    }
-}
-
-/// Scales the frame-end adaptation count of every row in one `eob_pt` family
-/// bank, for any class width `N`.
-fn scale_eob_pt_bank<const N: usize>(
-    bank: &mut [[[i32; N]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS],
-) {
-    for q_rows in bank.iter_mut() {
-        for row in q_rows.iter_mut() {
-            scale_cdf_count(row);
-        }
-    }
-}
-
 fn checked_eob_plane_ctx(eob_ctx: usize) -> Result<usize, TileCdfError> {
-    if eob_ctx >= EOB_PLANE_CTXS {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::EobPt,
-            index_name: "eob_ctx",
-            actual: eob_ctx,
-            max_exclusive: EOB_PLANE_CTXS,
-        });
-    }
-    Ok(eob_ctx)
+    checked_context(TileCdfArray::EobPt, "eob_ctx", eob_ctx, EOB_PLANE_CTXS)
 }
 
 fn checked_sec_tx_is_inter(is_inter: usize) -> Result<usize, TileCdfError> {
-    if is_inter >= SEC_TX_TYPE_IS_INTER_CONTEXTS {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::SecTxType,
-            index_name: "is_inter",
-            actual: is_inter,
-            max_exclusive: SEC_TX_TYPE_IS_INTER_CONTEXTS,
-        });
-    }
-    Ok(is_inter)
+    checked_context(
+        TileCdfArray::SecTxType,
+        "is_inter",
+        is_inter,
+        SEC_TX_TYPE_IS_INTER_CONTEXTS,
+    )
 }
 
 fn checked_dc_sign_group(group: usize) -> Result<usize, TileCdfError> {
-    if group >= DC_SIGN_GROUPS {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::DcSign,
-            index_name: "group",
-            actual: group,
-            max_exclusive: DC_SIGN_GROUPS,
-        });
-    }
-    Ok(group)
+    checked_context(TileCdfArray::DcSign, "group", group, DC_SIGN_GROUPS)
 }
 
 fn checked_coeff_cdf_q_context(
     array: TileCdfArray,
     coeff_cdf_q_ctx: usize,
 ) -> Result<usize, TileCdfError> {
-    if coeff_cdf_q_ctx >= COEFF_CDF_Q_CONTEXTS {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array,
-            index_name: "coeff_cdf_q_ctx",
-            actual: coeff_cdf_q_ctx,
-            max_exclusive: COEFF_CDF_Q_CONTEXTS,
-        });
-    }
-    Ok(coeff_cdf_q_ctx)
+    checked_context(
+        array,
+        "coeff_cdf_q_ctx",
+        coeff_cdf_q_ctx,
+        COEFF_CDF_Q_CONTEXTS,
+    )
 }
 
 fn checked_plane_type(array: TileCdfArray, plane_type: usize) -> Result<usize, TileCdfError> {
-    if plane_type >= PLANE_TYPES {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array,
-            index_name: "plane_type",
-            actual: plane_type,
-            max_exclusive: PLANE_TYPES,
-        });
-    }
-    Ok(plane_type)
+    checked_context(array, "plane_type", plane_type, PLANE_TYPES)
 }
 
 fn checked_tx_size(array: TileCdfArray, tx_size: usize) -> Result<usize, TileCdfError> {
-    if tx_size >= TX_SIZE_CONTEXTS {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array,
-            index_name: "tx_size",
-            actual: tx_size,
-            max_exclusive: TX_SIZE_CONTEXTS,
-        });
-    }
-    Ok(tx_size)
+    checked_context(array, "tx_size", tx_size, TX_SIZE_CONTEXTS)
 }

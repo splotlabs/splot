@@ -6,13 +6,8 @@
 //! Feature tracking: `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY`.
 
 use super::{
-    CCSO_CONTEXTS, CCSO_PLANES, CDEF_STRENGTH_INDEX0_CONTEXTS, DO_EXT_PARTITION_CONTEXTS,
-    DO_SPLIT_CONTEXTS, DO_SPLIT_PLANE_CONTEXTS, DO_SQUARE_SPLIT_CONTEXTS,
-    DO_UNEVEN_4WAY_PARTITION_CONTEXTS, FSC_BSIZE_CONTEXTS, FSC_MODE_CONTEXTS, FrameCdfSubset,
-    INTRABC_CONTEXTS, MRL_INDEX_CONTEXTS, RECT_TYPE_CONTEXTS, SavedCdfSubset,
-    TX_2OR3_PARTITION_TYPE_CONTEXTS, TX_FSC_CONTEXTS, TX_IS_INTER_CONTEXTS,
-    TX_PARTITION_TYPE_CONTEXTS, TXFM_SPLIT_GROUPS, TileCdfRows, TileCdfSavePolicy, TileCdfSubset,
-    TileCdfWorkUnitBoundary, scale_cdf_count,
+    FrameCdfSubset, SavedCdfSubset, TileCdfRows, TileCdfSavePolicy, TileCdfSubset,
+    TileCdfWorkUnitBoundary, scale_cdf_count, scale_cdf_rows,
 };
 
 impl FrameCdfSubset {
@@ -62,66 +57,41 @@ impl TileCdfRows {
     }
 
     fn scale_counts_for_frame_end_update(&mut self) {
-        for plane in 0..DO_SPLIT_PLANE_CONTEXTS {
-            for ctx in 0..DO_SPLIT_CONTEXTS {
-                scale_cdf_count(&mut self.do_split[plane][ctx]);
-            }
-            for ctx in 0..DO_EXT_PARTITION_CONTEXTS {
-                scale_cdf_count(&mut self.do_ext_partition[plane][ctx]);
-            }
-            for ctx in 0..DO_SQUARE_SPLIT_CONTEXTS {
-                scale_cdf_count(&mut self.do_square_split[plane][ctx]);
-            }
-            for ctx in 0..RECT_TYPE_CONTEXTS {
-                scale_cdf_count(&mut self.rect_type[plane][ctx]);
-            }
-            for ctx in 0..DO_UNEVEN_4WAY_PARTITION_CONTEXTS {
-                scale_cdf_count(&mut self.do_uneven_4way_partition[plane][ctx]);
-            }
+        macro_rules! scale_row {
+            ($field:ident) => {
+                scale_cdf_count(&mut self.$field);
+            };
         }
-        for fsc_mode in 0..TX_FSC_CONTEXTS {
-            for is_inter in 0..TX_IS_INTER_CONTEXTS {
-                for ctx in 0..TXFM_SPLIT_GROUPS {
-                    scale_cdf_count(&mut self.tx_do_partition[fsc_mode][is_inter][ctx]);
-                }
-                for ctx in 0..TX_2OR3_PARTITION_TYPE_CONTEXTS {
-                    scale_cdf_count(&mut self.tx_2or3_partition_type[fsc_mode][is_inter][ctx]);
-                }
-                for ctx in 0..TX_PARTITION_TYPE_CONTEXTS {
-                    scale_cdf_count(&mut self.tx_partition_type[fsc_mode][is_inter][ctx]);
-                    scale_cdf_count(&mut self.tx_partition_type_reduced[fsc_mode][is_inter][ctx]);
-                }
-            }
+        macro_rules! scale_rows {
+            ($field:ident $(. $flatten:ident())*) => {
+                scale_cdf_rows(self.$field.iter_mut()$(.$flatten())*);
+            };
         }
-        scale_cdf_count(&mut self.delta_q);
-        for ctx in 0..CDEF_STRENGTH_INDEX0_CONTEXTS {
-            scale_cdf_count(&mut self.cdef_index0[ctx]);
-        }
-        for plane in 0..CCSO_PLANES {
-            for ctx in 0..CCSO_CONTEXTS {
-                scale_cdf_count(&mut self.ccso_blk[plane][ctx]);
-            }
-        }
-        scale_cdf_count(&mut self.cdef_index_minus1_with3);
-        scale_cdf_count(&mut self.cdef_index_minus1_with4);
-        scale_cdf_count(&mut self.cdef_index_minus1_with5);
-        scale_cdf_count(&mut self.cdef_index_minus1_with6);
-        scale_cdf_count(&mut self.cdef_index_minus1_with7);
-        scale_cdf_count(&mut self.cdef_index_minus1_with8);
-        for ctx in 0..INTRABC_CONTEXTS {
-            scale_cdf_count(&mut self.intrabc[ctx]);
-        }
-        scale_cdf_count(&mut self.intrabc_mode);
-        scale_cdf_count(&mut self.intrabc_precision);
-        for ctx in 0..FSC_MODE_CONTEXTS {
-            for bsize_group in 0..FSC_BSIZE_CONTEXTS {
-                scale_cdf_count(&mut self.fsc_mode[ctx][bsize_group]);
-            }
-        }
-        for ctx in 0..MRL_INDEX_CONTEXTS {
-            scale_cdf_count(&mut self.mrl_index[ctx]);
-            scale_cdf_count(&mut self.mrl_sec_index[ctx]);
-        }
+
+        scale_rows!(do_split.flatten());
+        scale_rows!(do_ext_partition.flatten());
+        scale_rows!(do_square_split.flatten());
+        scale_rows!(rect_type.flatten());
+        scale_rows!(do_uneven_4way_partition.flatten());
+        scale_rows!(tx_do_partition.flatten().flatten());
+        scale_rows!(tx_2or3_partition_type.flatten().flatten());
+        scale_rows!(tx_partition_type.flatten().flatten());
+        scale_rows!(tx_partition_type_reduced.flatten().flatten());
+        scale_row!(delta_q);
+        scale_rows!(cdef_index0);
+        scale_rows!(ccso_blk.flatten());
+        scale_row!(cdef_index_minus1_with3);
+        scale_row!(cdef_index_minus1_with4);
+        scale_row!(cdef_index_minus1_with5);
+        scale_row!(cdef_index_minus1_with6);
+        scale_row!(cdef_index_minus1_with7);
+        scale_row!(cdef_index_minus1_with8);
+        scale_rows!(intrabc);
+        scale_row!(intrabc_mode);
+        scale_row!(intrabc_precision);
+        scale_rows!(fsc_mode.flatten());
+        scale_rows!(mrl_index);
+        scale_rows!(mrl_sec_index);
         self.block.scale_counts_for_frame_end_update();
     }
 }

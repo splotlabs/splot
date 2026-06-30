@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Coefficient-loop foundation helpers.
-//! Feature tracking: focused `DECODE-COEFF-*` rows cover each helper boundary.
 
 use std::collections::TryReserveError;
 
@@ -51,96 +50,59 @@ pub(crate) mod use_fsc_branch;
 #[cfg(test)]
 mod use_fsc_frame_facts_tests;
 
-/// Caller-resolved facts for luma § 8.3.2 `all_zero` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LumaAllZeroContextInput {
-    /// Transform-block x coordinate in 4x4 units.
     pub(crate) x4: usize,
-    /// Transform-block y coordinate in 4x4 units.
     pub(crate) y4: usize,
-    /// Transform-block width in 4x4 units.
     pub(crate) w4: usize,
-    /// Transform-block height in 4x4 units.
     pub(crate) h4: usize,
-    /// Whether the transform fills its plane residual block (`bw == w && bh == h`).
     pub(crate) tx_fills_block: bool,
-    /// Whether `fsc_mode && enable_fsc` selects the final luma context.
     pub(crate) fsc_active: bool,
 }
 
-/// Caller-resolved facts for V-plane § 8.3.2 `all_zero` context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct VAllZeroContextInput {
-    /// Transform-block x coordinate in chroma 4x4 units.
     pub(crate) x4: usize,
-    /// Transform-block y coordinate in chroma 4x4 units.
     pub(crate) y4: usize,
-    /// Transform-block width in chroma 4x4 units.
     pub(crate) w4: usize,
-    /// Transform-block height in chroma 4x4 units.
     pub(crate) h4: usize,
-    /// Whether the chroma residual block is larger than the transform.
     pub(crate) chroma_block_larger_than_tx: bool,
-    /// Whether the previously decoded U-plane EOB is nonzero.
     pub(crate) eob_u_nonzero: bool,
 }
 
-/// Caller-resolved facts for applying the § 5.20.7.27 all-zero coefficient path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AllZeroCoeffBlockInput {
-    /// Plane index, 0 for luma and 1/2 for chroma.
     pub(crate) plane: usize,
-    /// Transform-block x coordinate in 4x4 units.
     pub(crate) x4: usize,
-    /// Transform-block y coordinate in 4x4 units.
     pub(crate) y4: usize,
-    /// Transform-block width in 4x4 units.
     pub(crate) w4: usize,
-    /// Transform-block height in 4x4 units.
     pub(crate) h4: usize,
 }
 
-/// Caller-resolved facts for computing the nonzero § 5.20.7.27 EOB value.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEobInput {
-    /// Decoded `eobPt` after the active `eob_pt_*` and any size-specific
-    /// `eob_pt_*_extra` syntax have been resolved by the caller.
     pub(crate) eob_pt: usize,
-    /// Decoded `eob_extra` flag. This flag is only present for `eobPt >= 3`.
     pub(crate) eob_extra: bool,
-    /// Packed `eob_extra_bit` refinements. Bit `i` corresponds to the spec loop
-    /// contribution `1 << i`.
     pub(crate) eob_extra_bits: usize,
 }
 
-/// Caller-resolved facts for reading the nonzero § 5.20.7.27 EOB syntax.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEobSymbolInput {
-    /// Transform-size EOB CDF family selected by the caller.
     pub(crate) size: EobPtSize,
-    /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
-    /// `eobCtx = (plane > 0) ? 2 : is_inter`, resolved by the caller.
     pub(crate) eob_ctx: usize,
 }
 
-/// Caller-resolved facts for deriving nonzero § 5.20.7.27 EOB CDF selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEobContextInput {
-    /// Plane index, 0 for luma and 1/2 for chroma.
     pub(crate) plane: usize,
-    /// Whether the current block is inter-predicted.
     pub(crate) is_inter: bool,
-    /// `Tx_Width_Log2[txSz]`, resolved by the caller from transform syntax.
     pub(crate) tx_width_log2: usize,
-    /// `Tx_Height_Log2[txSz]`, resolved by the caller from transform syntax.
     pub(crate) tx_height_log2: usize,
-    /// Coefficient-CDF quantization context.
     pub(crate) coeff_cdf_q_ctx: usize,
 }
 
-/// Summary of a § 5.20.7.27 all-zero coefficient block state application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AllZeroCoeffBlock {
     eob: usize,
@@ -150,29 +112,24 @@ pub(crate) struct AllZeroCoeffBlock {
 }
 
 impl AllZeroCoeffBlock {
-    /// End-of-block value returned by `coeffs()`.
     #[must_use]
     pub(crate) const fn eob(&self) -> usize {
         self.eob
     }
-    /// `culLevel` written to level context lines.
     #[must_use]
     pub(crate) const fn cul_level(&self) -> u32 {
         self.cul_level
     }
-    /// `dcCategory` written to DC context lines.
     #[must_use]
     pub(crate) const fn dc_category(&self) -> u8 {
         self.dc_category
     }
-    /// Zero-initialized local transform coefficient state.
     #[must_use]
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         &self.block
     }
 }
 
-/// Checked nonzero § 5.20.7.27 EOB value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEob {
     eob_pt: usize,
@@ -180,19 +137,16 @@ pub(crate) struct NonZeroCoeffEob {
 }
 
 impl NonZeroCoeffEob {
-    /// Decoded `eobPt` used to derive this EOB value.
     #[must_use]
     pub(crate) const fn eob_pt(self) -> usize {
         self.eob_pt
     }
-    /// End-of-block value returned by the nonzero `coeffs()` branch.
     #[must_use]
     pub(crate) const fn eob(self) -> usize {
         self.eob
     }
 }
 
-/// Result of the crate-private nonzero EOB symbol-read sequence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEobSymbolRead {
     eob: NonZeroCoeffEob,
@@ -203,146 +157,91 @@ pub(crate) struct NonZeroCoeffEobSymbolRead {
 }
 
 impl NonZeroCoeffEobSymbolRead {
-    /// Checked EOB value derived from the decoded syntax elements.
     #[must_use]
     pub(crate) const fn eob(self) -> NonZeroCoeffEob {
         self.eob
     }
-    /// Raw symbol decoded from the selected `eob_pt_*` CDF row.
     #[must_use]
     pub(crate) const fn eob_pt_symbol(self) -> u8 {
         self.eob_pt_symbol
     }
-    /// Size-specific `eob_pt_*_extra` literal value, or zero when absent.
     #[must_use]
     pub(crate) const fn eob_pt_extra(self) -> u32 {
         self.eob_pt_extra
     }
-    /// Decoded `eob_extra` flag, or false when absent.
     #[must_use]
     pub(crate) const fn eob_extra(self) -> bool {
         self.eob_extra
     }
 
-    /// Packed `eob_extra_bit` refinement value, or zero when absent.
     #[must_use]
     pub(crate) const fn eob_extra_bits(self) -> u32 {
         self.eob_extra_bits
     }
 }
 
-/// Error returned by coefficient-loop context handoff helpers.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffLoopContextError {
-    /// The underlying coefficient context state rejected a plane or allocation fact.
     #[error("coefficient context state error: {0}")]
     State(#[from] TileCoeffStateError),
-    /// Reading an EOB CDF symbol failed.
     #[error("coefficient EOB symbol read failed: {0}")]
     EobSymbolRead(#[from] BlockSymbolTraceReadError),
-    /// Reading EOB literal refinement bits failed.
     #[error("coefficient EOB literal read failed for {syntax}: {source}")]
     EobLiteralRead {
-        /// Syntax element being read.
         syntax: &'static str,
-        /// Source symbol-decoder error.
         #[source]
         source: CoreError,
     },
-    /// Caller supplied an `eobPt` outside the nonzero § 5.20.7.27 range.
     #[error("coefficient EOB point {eob_pt} is outside the supported AV2 range 1..=11")]
-    InvalidEobPoint {
-        /// Caller-provided `eobPt`.
-        eob_pt: usize,
-    },
-    /// Caller supplied refinement syntax for an `eobPt` that has no refinements.
+    InvalidEobPoint { eob_pt: usize },
     #[error(
         "coefficient EOB point {eob_pt} cannot carry eob_extra={eob_extra} or eob_extra_bits={eob_extra_bits}"
     )]
     UnexpectedEobRefinement {
-        /// Caller-provided `eobPt`.
         eob_pt: usize,
-        /// Caller-provided `eob_extra`.
         eob_extra: bool,
-        /// Caller-provided packed `eob_extra_bit` refinements.
         eob_extra_bits: usize,
     },
-    /// Caller supplied packed `eob_extra_bit` refinements outside the implied width.
     #[error(
         "coefficient EOB point {eob_pt} allows eob_extra_bits <= {max_eob_extra_bits}, got {eob_extra_bits}"
     )]
     EobExtraBitsOutOfRange {
-        /// Caller-provided `eobPt`.
         eob_pt: usize,
-        /// Caller-provided packed `eob_extra_bit` refinements.
         eob_extra_bits: usize,
-        /// Largest packed refinement value allowed by `eobPt`.
         max_eob_extra_bits: usize,
     },
-    /// Caller supplied a transform log2 dimension outside the AV2 EOB-size range.
     #[error(
         "coefficient EOB transform {axis} log2 value {value} is below the AV2 minimum {minimum}"
     )]
     InvalidEobTransformLog2 {
-        /// Transform axis whose log2 dimension is invalid.
         axis: &'static str,
-        /// Caller-provided log2 dimension.
         value: usize,
-        /// Minimum accepted log2 dimension.
         minimum: usize,
     },
-    /// Caller reached the ordinary non-FSC scan walk without a positive EOB.
     #[error("coefficient scan walk requires nonzero EOB, got {eob}")]
-    InvalidScanWalkEob {
-        /// Caller-provided EOB.
-        eob: usize,
-    },
-    /// Caller supplied fewer scan entries than the decoded EOB requires.
+    InvalidScanWalkEob { eob: usize },
     #[error("coefficient scan walk EOB {eob} exceeds scan length {scan_len}")]
-    ScanWalkEobOutOfRange {
-        /// Decoded EOB.
-        eob: usize,
-        /// Caller-supplied scan table length.
-        scan_len: usize,
-    },
-    /// Caller supplied a FSC segment EOB smaller than the decoded EOB.
+    ScanWalkEobOutOfRange { eob: usize, scan_len: usize },
     #[error("coefficient FSC scan walk EOB {eob} exceeds segment EOB {seg_eob}")]
-    FscScanWalkEobOutOfRange {
-        /// Decoded EOB before the FSC branch expands it to `segEob`.
-        eob: usize,
-        /// Caller-resolved `segEob`.
-        seg_eob: usize,
-    },
-    /// Caller supplied a scan position outside the initialized coefficient block.
+    FscScanWalkEobOutOfRange { eob: usize, seg_eob: usize },
     #[error(
         "coefficient scan index {scan_index} points to position {pos}, outside coefficient count {coeff_count}"
     )]
     ScanWalkPositionOutOfRange {
-        /// Scan index `c` from § 5.20.7.27.
         scan_index: usize,
-        /// Caller-supplied raster coefficient position.
         pos: usize,
-        /// Local adjusted block coefficient count.
         coeff_count: usize,
     },
-    /// Allocation for checked scan-walk entries failed.
     #[error("coefficient scan walk allocation failed: {0}")]
     ScanWalkAllocation(#[from] TryReserveError),
 }
 
-/// Derives the luma § 8.3.2 `all_zero` (`txb_skip`) context from tile state.
-///
-/// The context formula is defined in § 8.3.2
-/// (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`). This helper only
-/// resolves the `AboveLevelContext[0]` / `LeftLevelContext[0]` OR reductions
-/// from owned tile state; transform geometry and FSC facts stay caller-resolved
-/// until broader § 5.20 transform-block syntax is wired.
 pub(crate) fn luma_all_zero_context(
     state: &TileCoeffContextState,
     input: LumaAllZeroContextInput,
 ) -> Result<usize, CoeffLoopContextError> {
-    let above = bounded_or_u32(state.above_level(LUMA_PLANE)?, input.x4, input.w4);
-    let left = bounded_or_u32(state.left_level(LUMA_PLANE)?, input.y4, input.h4);
+    let above = bounded_or(state.above_level(LUMA_PLANE)?, input.x4, input.w4);
+    let left = bounded_or(state.left_level(LUMA_PLANE)?, input.y4, input.h4);
     Ok(txb_skip_ctx_luma(
         above,
         left,
@@ -351,13 +250,6 @@ pub(crate) fn luma_all_zero_context(
     ))
 }
 
-/// Derives the V-plane § 8.3.2 `all_zero` (`v_txb_skip`) context from tile state.
-///
-/// The context formula is defined in § 8.3.2
-/// (`docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2`). This helper resolves
-/// the V-plane level/DC above and left nonzero facts from owned tile state; the
-/// chroma geometry and `EobU` facts remain caller-resolved until broader
-/// § 5.20 transform-block syntax is wired.
 pub(crate) fn v_all_zero_context(
     state: &TileCoeffContextState,
     input: VAllZeroContextInput,
@@ -382,20 +274,10 @@ pub(crate) fn v_all_zero_context(
     ))
 }
 
-/// Applies the AV2 § 5.20.7.27 `all_zero == 1` coefficient-block state effects.
-///
-/// The syntax initializes `Quant[]`, `QuantSign[]`, `Level[]`, sets `eob`,
-/// `culLevel`, and `dcCategory` to zero, then writes those zero context values to
-/// `AboveLevelContext` / `LeftLevelContext` and `AboveDcContext` /
-/// `LeftDcContext` at the end of `coeffs()`
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`). This helper
-/// models only that all-zero branch. Transform size, transform type, scan order,
-/// nonzero EOB, `read_quant`, dequantization, and reconstruction stay deferred.
 pub(crate) fn apply_all_zero_coeff_block(
     state: &mut TileCoeffContextState,
     input: AllZeroCoeffBlockInput,
 ) -> Result<AllZeroCoeffBlock, CoeffLoopContextError> {
-    // TODO(spec: DECODE-COEFF-ALL-ZERO-BLOCK-STATE): Model the plane-0
     let width = adjusted_coeff_extent(input.w4);
     let height = adjusted_coeff_extent(input.h4);
     let block = TransformCoeffBlockState::new(width, height)?;
@@ -418,14 +300,6 @@ pub(crate) fn apply_all_zero_coeff_block(
     })
 }
 
-/// Computes the AV2 § 5.20.7.27 nonzero-branch EOB value.
-///
-/// This helper starts after the caller has decoded the size-specific
-/// `eob_pt_*` symbol and any `eob_pt_*_extra` literal bits into `eobPt`; it
-/// models only the following `eob`, `eob_extra`, and `eob_extra_bit` arithmetic
-/// in `coeffs()` (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`).
-/// CDF reads, transform-size dispatch, scan walking, coefficient reads,
-/// `Quant[]` writes, dequantization, and reconstruction remain caller-owned.
 pub(crate) fn nonzero_coeff_eob(
     input: NonZeroCoeffEobInput,
 ) -> Result<NonZeroCoeffEob, CoeffLoopContextError> {
@@ -469,14 +343,6 @@ pub(crate) fn nonzero_coeff_eob(
     })
 }
 
-/// Reads the AV2 § 5.20.7.27 nonzero-branch EOB syntax and returns its value.
-///
-/// The caller resolves the transform-size class, coefficient-CDF q context, and
-/// `eobCtx`; this helper performs only the `eob_pt_*`, optional
-/// `eob_pt_*_extra`, `eob_extra`, and `eob_extra_bit` read sequence before
-/// delegating the arithmetic to [`nonzero_coeff_eob`]. Scan walking,
-/// coefficient symbols, `Quant[]` writes, dequantization, and reconstruction
-/// remain deferred.
 pub(crate) fn read_nonzero_coeff_eob(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -529,11 +395,6 @@ pub(crate) fn read_nonzero_coeff_eob(
     })
 }
 
-/// Derives EOB selector facts and reads the AV2 § 5.20.7.27 nonzero EOB syntax.
-///
-/// Invalid selector facts fail before CDF or symbol-decoder consumption. Scan
-/// walking, coefficient symbols, `Quant[]`, dequantization, and reconstruction
-/// remain deferred.
 pub(crate) fn read_nonzero_coeff_eob_from_context(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -543,13 +404,6 @@ pub(crate) fn read_nonzero_coeff_eob_from_context(
     read_nonzero_coeff_eob(cdfs, symbols, input)
 }
 
-/// Derives the AV2 § 5.20.7.27 nonzero EOB symbol-reader input.
-///
-/// This helper maps caller-resolved `Tx_Width_Log2[txSz]` and
-/// `Tx_Height_Log2[txSz]` to the active `eob_pt_*` CDF family and derives
-/// `eobCtx = (plane > 0) ? 2 : is_inter` before handing the facts to
-/// [`read_nonzero_coeff_eob`]. It does not read symbols, walk scan order, update
-/// coefficient state, dequantize, or reconstruct.
 pub(crate) fn nonzero_coeff_eob_symbol_input(
     input: NonZeroCoeffEobContextInput,
 ) -> Result<NonZeroCoeffEobSymbolInput, CoeffLoopContextError> {
@@ -625,26 +479,16 @@ fn read_eob_literal(
         .map_err(|source| CoeffLoopContextError::EobLiteralRead { syntax, source })
 }
 
-fn bounded_or_u32(values: &[u32], start: usize, count: usize) -> u32 {
-    let Some(tail) = values.get(start..) else {
-        return 0;
-    };
-    tail.iter()
-        .take(count)
-        .fold(0, |value, entry| value | *entry)
-}
-
-fn bounded_or_u8(values: &[u8], start: usize, count: usize) -> u32 {
-    let Some(tail) = values.get(start..) else {
-        return 0;
-    };
-    tail.iter()
-        .take(count)
-        .fold(0, |value, entry| value | u32::from(*entry))
+fn bounded_or<T: Copy + Into<u32>>(values: &[T], start: usize, count: usize) -> u32 {
+    values.get(start..).map_or(0, |tail| {
+        tail.iter()
+            .take(count)
+            .fold(0, |value, entry| value | (*entry).into())
+    })
 }
 
 fn bounded_or_level_dc(level: &[u32], dc: &[u8], start: usize, count: usize) -> u32 {
-    bounded_or_u32(level, start, count) | bounded_or_u8(dc, start, count)
+    bounded_or(level, start, count) | bounded_or(dc, start, count)
 }
 
 fn adjusted_coeff_extent(size4: usize) -> usize {

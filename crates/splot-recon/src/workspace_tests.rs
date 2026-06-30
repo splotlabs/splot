@@ -26,6 +26,53 @@ fn rect_block(log2_width: u8, log2_height: u8) -> IntraRectBlockSize {
     IntraRectBlockSize::new(log2_width, log2_height).unwrap()
 }
 
+fn assert_paeth_edge_unavailable(
+    result: &Result<()>,
+    edge: IntraPaethEdge,
+    expected_rect: PlaneRect,
+) {
+    assert!(matches!(
+        result,
+        Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: actual_edge,
+            rect
+        }) if *actual_edge == edge && *rect == expected_rect
+    ));
+}
+
+fn assert_directional_edge_unavailable(
+    result: &Result<()>,
+    p_angle: u16,
+    edge: IntraDirectionalAngleEdge,
+    expected_rect: PlaneRect,
+) {
+    assert!(matches!(
+        result,
+        Err(ReconError::WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            p_angle: actual_p_angle,
+            edge: actual_edge,
+            rect
+        }) if *actual_p_angle == p_angle && *actual_edge == edge && *rect == expected_rect
+    ));
+}
+
+fn assert_smooth_edge_unavailable(
+    result: &Result<()>,
+    edge: IntraSmoothEdge,
+    expected_rect: PlaneRect,
+) {
+    assert!(matches!(
+        result,
+        Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
+            plane: PlaneId::Y,
+            edge: actual_edge,
+            rect
+        }) if *actual_edge == edge && *rect == expected_rect
+    ));
+}
+
 fn info(
     bit_depth: BitDepth,
     pixel_format: PixelFormat,
@@ -42,18 +89,27 @@ fn info(
     .unwrap()
 }
 
+fn monochrome_info(bit_depth: BitDepth, width: usize, height: usize) -> DecodedFrameInfo {
+    info(
+        bit_depth,
+        PixelFormat::Monochrome,
+        size(width, height),
+        rect(0, 0, width, height),
+    )
+}
+
+fn yuv420_info(width: usize, height: usize) -> DecodedFrameInfo {
+    info(
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+        size(width, height),
+        rect(0, 0, width, height),
+    )
+}
+
 #[test]
 fn workspace_allocates_yuv420_planes_from_frame_info() {
-    let workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            size(5, 3),
-            rect(0, 0, 5, 3),
-        ),
-        7,
-    )
-    .unwrap();
+    let workspace = CurrentFrameWorkspace::<u8>::new(yuv420_info(5, 3), 7).unwrap();
 
     assert_eq!(workspace.info().pixel_format(), PixelFormat::Yuv420);
     assert_eq!(
@@ -74,16 +130,8 @@ fn workspace_allocates_yuv420_planes_from_frame_info() {
 
 #[test]
 fn workspace_reports_missing_chroma_for_monochrome() {
-    let workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 4),
-            rect(0, 0, 4, 4),
-        ),
-        0,
-    )
-    .unwrap();
+    let workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 4), 0).unwrap();
 
     assert!(matches!(
         workspace.plane(PlaneId::U),
@@ -93,16 +141,8 @@ fn workspace_reports_missing_chroma_for_monochrome() {
 
 #[test]
 fn workspace_fill_checks_plane_before_sample_range() {
-    let mut workspace = CurrentFrameWorkspace::<u16>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 4),
-            rect(0, 0, 4, 4),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 4, 4), 0).unwrap();
 
     assert!(matches!(
         workspace.fill_rect(PlaneId::U, rect(0, 0, 1, 1), 300),
@@ -113,15 +153,7 @@ fn workspace_fill_checks_plane_before_sample_range() {
 #[test]
 fn workspace_rejects_unsupported_storage_type_before_allocation() {
     assert!(matches!(
-        CurrentFrameWorkspace::<u8>::new(
-            info(
-                BitDepth::Ten,
-                PixelFormat::Monochrome,
-                size(4, 4),
-                rect(0, 0, 4, 4),
-            ),
-            0,
-        ),
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Ten, 4, 4), 0),
         Err(ReconError::SampleTypeUnsupportedBitDepth {
             sample_type: "u8",
             bit_depth: BitDepth::Ten
@@ -132,15 +164,7 @@ fn workspace_rejects_unsupported_storage_type_before_allocation() {
 #[test]
 fn workspace_rejects_out_of_range_fill_sample() {
     assert!(matches!(
-        CurrentFrameWorkspace::<u16>::new(
-            info(
-                BitDepth::Eight,
-                PixelFormat::Monochrome,
-                size(4, 4),
-                rect(0, 0, 4, 4),
-            ),
-            300,
-        ),
+        CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 4, 4), 300),
         Err(ReconError::SampleOutOfRange {
             plane: PlaneId::Y,
             sample_index: 0,
@@ -194,16 +218,8 @@ fn workspace_rejects_overflowing_allocation_byte_count() {
 
 #[test]
 fn workspace_rect_writes_are_bounded_and_preserve_other_samples() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 3),
-            rect(0, 0, 4, 3),
-        ),
-        1,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 3), 1).unwrap();
 
     workspace
         .write_rect(PlaneId::Y, rect(1, 1, 2, 2), &[9, 8, 7, 6], 2)
@@ -222,16 +238,8 @@ fn workspace_rect_writes_are_bounded_and_preserve_other_samples() {
 
 #[test]
 fn workspace_rect_writes_reject_invalid_shape_and_bounds() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 4),
-            rect(0, 0, 4, 4),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 4), 0).unwrap();
 
     assert!(matches!(
         workspace.write_rect(PlaneId::Y, rect(0, 0, 2, 2), &[1, 2, 3, 4], 1),
@@ -275,16 +283,8 @@ fn workspace_rect_writes_reject_invalid_shape_and_bounds() {
 
 #[test]
 fn workspace_write_rect_block_clamps_frame_edge_overhang_to_in_frame_samples() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(6, 4),
-            rect(0, 0, 6, 4),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 6, 4), 0).unwrap();
 
     let block: [u8; 16] = [
         10, 11, 12, 13, // row 0 (in-frame columns 10,11)
@@ -324,16 +324,8 @@ fn workspace_write_rect_block_clamps_frame_edge_overhang_to_in_frame_samples() {
 
 #[test]
 fn workspace_intra_edge_extends_partial_bottom_left_with_last_in_frame_sample() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(8, 4),
-            rect(0, 0, 8, 4),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 4), 0).unwrap();
 
     workspace
         .write_rect(PlaneId::Y, rect(3, 1, 1, 3), &[50, 60, 70], 1)
@@ -357,16 +349,8 @@ fn workspace_intra_edge_extends_partial_bottom_left_with_last_in_frame_sample() 
 
 #[test]
 fn workspace_intra_edge_extends_partial_right_above_with_last_in_frame_sample() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 8),
-            rect(0, 0, 4, 8),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 8), 0).unwrap();
 
     workspace
         .write_rect(PlaneId::Y, rect(1, 3, 3, 1), &[50, 60, 70], 3)
@@ -389,16 +373,8 @@ fn workspace_intra_edge_extends_partial_right_above_with_last_in_frame_sample() 
 
 #[test]
 fn workspace_copy_rect_within_plane_copies_luma_samples() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(5, 4),
-            rect(0, 0, 5, 4),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 5, 4), 0).unwrap();
     let initial: Vec<u8> = (0..20).collect();
     workspace
         .write_rect(PlaneId::Y, rect(0, 0, 5, 4), &initial, 5)
@@ -418,16 +394,8 @@ fn workspace_copy_rect_within_plane_copies_luma_samples() {
 
 #[test]
 fn workspace_copy_rect_within_plane_snapshots_overlapping_source() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(6, 1),
-            rect(0, 0, 6, 1),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 6, 1), 0).unwrap();
     workspace
         .write_rect(PlaneId::Y, rect(0, 0, 6, 1), &[0, 1, 2, 3, 4, 5], 6)
         .unwrap();
@@ -441,16 +409,7 @@ fn workspace_copy_rect_within_plane_snapshots_overlapping_source() {
 
 #[test]
 fn workspace_copy_rect_within_plane_rejects_invalid_inputs_without_mutation() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            size(4, 4),
-            rect(0, 0, 4, 4),
-        ),
-        7,
-    )
-    .unwrap();
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(yuv420_info(4, 4), 7).unwrap();
     workspace
         .write_rect(
             PlaneId::Y,
@@ -489,16 +448,8 @@ fn workspace_copy_rect_within_plane_rejects_invalid_inputs_without_mutation() {
 
 #[test]
 fn workspace_copy_rect_within_plane_rejects_missing_plane() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 4),
-            rect(0, 0, 4, 4),
-        ),
-        3,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 4), 3).unwrap();
     // splot-copy-ok: test snapshots workspace samples to prove missing-plane IntrABC copy is fail-atomic.
     let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
 
@@ -511,16 +462,8 @@ fn workspace_copy_rect_within_plane_rejects_missing_plane() {
 
 #[test]
 fn workspace_write_rejects_out_of_range_samples_without_partial_write() {
-    let mut workspace = CurrentFrameWorkspace::<u16>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(2, 2),
-            rect(0, 0, 2, 2),
-        ),
-        1,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 2, 2), 1).unwrap();
 
     let err = workspace
         .write_rect(PlaneId::Y, rect(0, 0, 2, 1), &[7, 300], 2)
@@ -539,16 +482,8 @@ fn workspace_write_rejects_out_of_range_samples_without_partial_write() {
 
 #[test]
 fn workspace_extracts_edges_and_predicts_rectangular_dc() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(8, 10),
-            rect(0, 0, 8, 10),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 10), 0).unwrap();
     let block = rect_block(2, 3);
 
     workspace
@@ -580,16 +515,8 @@ fn workspace_extracts_edges_and_predicts_rectangular_dc() {
 
 #[test]
 fn workspace_rectangular_dc_clamps_overhang_and_rejects_out_of_frame_origin() {
-    let workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(8, 8),
-            rect(0, 0, 8, 8),
-        ),
-        0,
-    )
-    .unwrap();
+    let workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
 
     let edges = workspace
         .intra_dc_edges_for_rect(PlaneId::Y, 5, 1, rect_block(2, 3))
@@ -608,16 +535,8 @@ fn workspace_rectangular_dc_clamps_overhang_and_rejects_out_of_frame_origin() {
 
 #[test]
 fn workspace_predicts_subsampled_dc_from_in_storage_edges() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(66, 66),
-            rect(0, 0, 66, 66),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 66, 66), 0).unwrap();
     let block = rect_block(6, 6);
     let mut left = [200u8; 64];
     let mut above = [200u8; 64];
@@ -648,16 +567,8 @@ fn workspace_predicts_subsampled_dc_from_in_storage_edges() {
 
 #[test]
 fn workspace_subsampled_dc_top_left_uses_midpoint_without_edges() {
-    let mut workspace = CurrentFrameWorkspace::<u16>::new(
-        info(
-            BitDepth::Ten,
-            PixelFormat::Monochrome,
-            size(4, 4),
-            rect(0, 0, 4, 4),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Ten, 4, 4), 0).unwrap();
 
     workspace
         .predict_intra_dc_subsampled_rect(PlaneId::Y, 0, 0, rect_block(2, 2))
@@ -668,16 +579,8 @@ fn workspace_subsampled_dc_top_left_uses_midpoint_without_edges() {
 
 #[test]
 fn workspace_subsampled_dc_uses_available_edge_without_synthesizing_missing_edge() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 5),
-            rect(0, 0, 4, 5),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 5), 0).unwrap();
 
     workspace
         .write_rect(PlaneId::Y, rect(0, 0, 4, 1), &[40, 40, 40, 40], 4)
@@ -695,16 +598,8 @@ fn workspace_subsampled_dc_uses_available_edge_without_synthesizing_missing_edge
 
 #[test]
 fn workspace_subsampled_dc_rejects_missing_plane_and_out_of_bounds_target() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(8, 8),
-            rect(0, 0, 8, 8),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
 
     assert!(matches!(
         workspace.predict_intra_dc_subsampled_rect(PlaneId::U, 0, 0, rect_block(2, 2)),
@@ -721,16 +616,8 @@ fn workspace_subsampled_dc_rejects_missing_plane_and_out_of_bounds_target() {
 
 #[test]
 fn workspace_predicts_ibp_dc_from_in_storage_edges() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(10, 10),
-            rect(0, 0, 10, 10),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 10, 10), 0).unwrap();
     let block = rect_block(3, 3);
     let left = [20u8, 24, 28, 32, 36, 40, 44, 48];
     let above = [160u8, 156, 152, 148, 144, 140, 136, 132];
@@ -774,16 +661,8 @@ fn workspace_predicts_ibp_dc_from_in_storage_edges() {
 
 #[test]
 fn workspace_ibp_dc_top_left_uses_dc_midpoint_without_edges() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 4),
-            rect(0, 0, 4, 4),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 4), 0).unwrap();
 
     workspace
         .predict_intra_ibp_dc_rect(PlaneId::Y, 0, 0, rect_block(2, 2))
@@ -794,16 +673,8 @@ fn workspace_ibp_dc_top_left_uses_dc_midpoint_without_edges() {
 
 #[test]
 fn workspace_ibp_dc_rejects_missing_plane_and_out_of_bounds_target() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(8, 8),
-            rect(0, 0, 8, 8),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
 
     assert!(matches!(
         workspace.predict_intra_ibp_dc_rect(PlaneId::U, 0, 0, rect_block(2, 2)),
@@ -820,16 +691,8 @@ fn workspace_ibp_dc_rejects_missing_plane_and_out_of_bounds_target() {
 
 #[test]
 fn workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target() {
-    let mut workspace = CurrentFrameWorkspace::<u16>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(6, 6),
-            rect(0, 0, 6, 6),
-        ),
-        7,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 6, 6), 7).unwrap();
     {
         let mut frame = workspace.as_frame_mut();
         let mut rows = frame.y_mut().visible_rows_mut();
@@ -854,16 +717,8 @@ fn workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target() {
 
 #[test]
 fn workspace_predicts_rectangular_paeth_from_in_storage_edges() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(6, 6),
-            rect(0, 0, 6, 6),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 6, 6), 0).unwrap();
     let block = rect_block(2, 2);
 
     workspace
@@ -889,48 +744,20 @@ fn workspace_predicts_rectangular_paeth_from_in_storage_edges() {
 
 #[test]
 fn workspace_paeth_rejects_missing_prepared_edges() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(8, 8),
-            rect(0, 0, 8, 8),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
     let block = rect_block(2, 2);
 
-    assert!(matches!(
-        workspace.predict_intra_paeth_rect(PlaneId::Y, 0, 1, block),
-        Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: IntraPaethEdge::Left,
-            rect
-        }) if rect == PlaneRect::new(0, 1, 4, 4).unwrap()
-    ));
-    assert!(matches!(
-        workspace.predict_intra_paeth_rect(PlaneId::Y, 1, 0, block),
-        Err(ReconError::WorkspaceIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: IntraPaethEdge::Above,
-            rect
-        }) if rect == PlaneRect::new(1, 0, 4, 4).unwrap()
-    ));
+    for (x, y, edge) in [(0, 1, IntraPaethEdge::Left), (1, 0, IntraPaethEdge::Above)] {
+        let result = workspace.predict_intra_paeth_rect(PlaneId::Y, x, y, block);
+        assert_paeth_edge_unavailable(&result, edge, rect(x, y, 4, 4));
+    }
 }
 
 #[test]
 fn workspace_predicts_cardinal_directional_from_in_storage_edges() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(6, 6),
-            rect(0, 0, 6, 6),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 6, 6), 0).unwrap();
     let block = rect_block(2, 2);
 
     workspace
@@ -982,60 +809,34 @@ fn workspace_predicts_cardinal_directional_from_in_storage_edges() {
 
 #[test]
 fn workspace_cardinal_directional_rejects_missing_prepared_edges() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(8, 8),
-            rect(0, 0, 8, 8),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
     let block = rect_block(2, 2);
 
-    assert!(matches!(
-        workspace.predict_intra_cardinal_directional_rect(
-            PlaneId::Y,
+    for (x, y, direction, edge) in [
+        (
             1,
             0,
-            block,
-            IntraCardinalDirection::Vertical
+            IntraCardinalDirection::Vertical,
+            IntraDirectionalAngleEdge::Above,
         ),
-        Err(ReconError::WorkspaceCardinalIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: IntraCardinalEdge::Above,
-            rect
-        }) if rect == PlaneRect::new(1, 0, 4, 4).unwrap()
-    ));
-    assert!(matches!(
-        workspace.predict_intra_cardinal_directional_rect(
-            PlaneId::Y,
+        (
             0,
             1,
-            block,
-            IntraCardinalDirection::Horizontal
+            IntraCardinalDirection::Horizontal,
+            IntraDirectionalAngleEdge::Left,
         ),
-        Err(ReconError::WorkspaceCardinalIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: IntraCardinalEdge::Left,
-            rect
-        }) if rect == PlaneRect::new(0, 1, 4, 4).unwrap()
-    ));
+    ] {
+        let result =
+            workspace.predict_intra_cardinal_directional_rect(PlaneId::Y, x, y, block, direction);
+        assert_directional_edge_unavailable(&result, direction.p_angle(), edge, rect(x, y, 4, 4));
+    }
 }
 
 #[test]
 fn workspace_predicts_rectangular_smooth_from_in_storage_edges() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(6, 6),
-            rect(0, 0, 6, 6),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 6, 6), 0).unwrap();
     let block = rect_block(2, 2);
 
     workspace
@@ -1066,88 +867,26 @@ fn workspace_predicts_rectangular_smooth_from_in_storage_edges() {
 
 #[test]
 fn workspace_smooth_rejects_missing_prepared_edges() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(8, 8),
-            rect(0, 0, 8, 8),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
     let block = rect_block(2, 2);
 
-    assert!(matches!(
-        workspace.predict_intra_smooth_rect(
-            PlaneId::Y,
-            0,
-            1,
-            block,
-            IntraSmoothMode::Smooth
-        ),
-        Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: IntraSmoothEdge::Left,
-            rect
-        }) if rect == PlaneRect::new(0, 1, 4, 4).unwrap()
-    ));
-    assert!(matches!(
-        workspace.predict_intra_smooth_rect(
-            PlaneId::Y,
-            1,
-            0,
-            block,
-            IntraSmoothMode::Smooth
-        ),
-        Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: IntraSmoothEdge::Above,
-            rect
-        }) if rect == PlaneRect::new(1, 0, 4, 4).unwrap()
-    ));
-    assert!(matches!(
-        workspace.predict_intra_smooth_rect(
-            PlaneId::Y,
-            1,
-            4,
-            block,
-            IntraSmoothMode::Smooth
-        ),
-        Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: IntraSmoothEdge::BottomLeft,
-            rect
-        }) if rect == PlaneRect::new(1, 4, 4, 4).unwrap()
-    ));
-    assert!(matches!(
-        workspace.predict_intra_smooth_rect(
-            PlaneId::Y,
-            4,
-            1,
-            block,
-            IntraSmoothMode::Smooth
-        ),
-        Err(ReconError::WorkspaceSmoothIntraPredictionEdgeUnavailable {
-            plane: PlaneId::Y,
-            edge: IntraSmoothEdge::TopRight,
-            rect
-        }) if rect == PlaneRect::new(4, 1, 4, 4).unwrap()
-    ));
+    for (x, y, edge) in [
+        (0, 1, IntraSmoothEdge::Left),
+        (1, 0, IntraSmoothEdge::Above),
+        (1, 4, IntraSmoothEdge::BottomLeft),
+        (4, 1, IntraSmoothEdge::TopRight),
+    ] {
+        let result =
+            workspace.predict_intra_smooth_rect(PlaneId::Y, x, y, block, IntraSmoothMode::Smooth);
+        assert_smooth_edge_unavailable(&result, edge, rect(x, y, 4, 4));
+    }
 }
 
 #[test]
 fn workspace_extracts_edges_and_predicts_square_dc() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(8, 8),
-            rect(0, 0, 8, 8),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
     let block = square(2);
 
     workspace
@@ -1175,16 +914,8 @@ fn workspace_extracts_edges_and_predicts_square_dc() {
 
 #[test]
 fn workspace_top_left_square_dc_uses_midpoint_without_edges() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 4),
-            rect(0, 0, 4, 4),
-        ),
-        0,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 4), 0).unwrap();
     workspace
         .predict_intra_dc_square(PlaneId::Y, 0, 0, square(2))
         .unwrap();
@@ -1194,16 +925,7 @@ fn workspace_top_left_square_dc_uses_midpoint_without_edges() {
 
 #[test]
 fn workspace_freezes_into_hash_y4m_and_reference_store_inputs() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            size(4, 4),
-            rect(0, 0, 4, 4),
-        ),
-        8,
-    )
-    .unwrap();
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(yuv420_info(4, 4), 8).unwrap();
     workspace
         .fill_rect(PlaneId::U, rect(0, 0, 2, 2), 16)
         .unwrap();
@@ -1238,16 +960,8 @@ fn workspace_freezes_into_hash_y4m_and_reference_store_inputs() {
 
 #[test]
 fn workspace_reconstructed_sample_reads_arbitrary_in_storage_samples() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 3),
-            rect(0, 0, 4, 3),
-        ),
-        1,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 3), 1).unwrap();
 
     workspace
         .write_rect(PlaneId::Y, rect(1, 1, 2, 2), &[9, 8, 7, 6], 2)
@@ -1260,16 +974,8 @@ fn workspace_reconstructed_sample_reads_arbitrary_in_storage_samples() {
 
 #[test]
 fn workspace_reconstructed_sample_rejects_out_of_bounds_and_missing_plane() {
-    let workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 3),
-            rect(0, 0, 4, 3),
-        ),
-        1,
-    )
-    .unwrap();
+    let workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 3), 1).unwrap();
 
     assert!(matches!(
         workspace.reconstructed_sample(PlaneId::Y, 4, 0),
@@ -1287,16 +993,8 @@ fn workspace_reconstructed_sample_rejects_out_of_bounds_and_missing_plane() {
 
 #[test]
 fn workspace_set_reconstructed_sample_writes_and_validates() {
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(
-        info(
-            BitDepth::Eight,
-            PixelFormat::Monochrome,
-            size(4, 3),
-            rect(0, 0, 4, 3),
-        ),
-        1,
-    )
-    .unwrap();
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 3), 1).unwrap();
 
     workspace
         .set_reconstructed_sample(PlaneId::Y, 2, 1, 200)

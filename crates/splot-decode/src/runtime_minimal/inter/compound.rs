@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Minimal compound-reference `mode_info` syntax for the first source-backed
-//! COMPOUND_AVERAGE fixture.
-//!
-//! Feature tracking: `DECODE-INTER-COMPOUND-AVERAGE`.
-
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 
@@ -13,24 +8,16 @@ use super::{Mv, unsupported_compound_at};
 use crate::Result;
 use crate::tile_payload::{TileCdfSelector, TileCdfSubset};
 
-/// AV2 reference mode `COMPOUND_REFERENCE` selected by § 5.20.7.10 `comp_mode`.
 const COMPOUND_REFERENCE: u8 = 1;
-
-/// AV2 compound mode offset 0: `YMode = NEAR_NEARMV`.
 const COMPOUND_MODE_NEAR_NEARMV: u8 = 0;
-
-/// No-neighbour § 8.3.2 `comp_mode` context (`NNumBuf == 0`).
 const COMP_MODE_CTX_NO_NEIGHBOUR: usize = 1;
-/// No-neighbour § 8.3.2 `comp_ref` context for the verified second-reference
-/// decision (`count_refs(0) == count_refs(1) == 0`).
 const COMP_REF_CTX_NO_NEIGHBOUR: usize = 1;
-/// Same-side bit type for the forced first ref and candidate ref 0 in the
-/// `NumTotalRefs == 2`, `NumSameRefCompound == 1` path.
 const COMP_REF1_BIT_TYPE_SAME_SIDE: usize = 0;
+const FULL_SB_N4: usize = 16;
 const SPEC_READ_REF_FRAMES: &str = "5.20.7.10";
 const SPEC_INTER_BLOCK_MODE_INFO: &str = "5.20.7.6";
 
-/// Inputs needed to read the narrow compound syntax subset.
+/// Inputs needed to read the compound-average syntax subset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CompoundParseInput {
     /// § 6.19.7.11 `NumTotalRefs`.
@@ -72,12 +59,7 @@ pub(super) struct CompoundBlockSyntax {
     pub(super) mv1: Mv,
 }
 
-/// Reads § 5.20.7.10 / § 5.20.7.11 / § 5.20.7.6 for the verified compound subset:
-/// `comp_mode == COMPOUND_REFERENCE`, implicit two-reference selection
-/// `RefFrame == [0, 1]`, `is_joint == 0`, and `compound_mode_non_joint == 0`
-/// (`NEAR_NEARMV`). The admitted block must be a skipped, no-neighbour, full-frame
-/// 64x64 leaf; the caller then reads the two § 5.20.7.8 DRL symbols in spec order
-/// and gates compound type/CWP tools through the sequence-level unsupported checks.
+/// Reads §5.20.7 compound reference and mode symbols for COMPOUND_AVERAGE.
 pub(super) fn read_compound_average_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -86,94 +68,75 @@ pub(super) fn read_compound_average_syntax(
 ) -> Result<CompoundBlockSyntax> {
     gate_compound_subset(input, tile_offset)?;
 
-    let comp_mode = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::CompMode {
-                ctx: COMP_MODE_CTX_NO_NEIGHBOUR,
-            },
-            symbols,
-        )
-        .map_err(|_| compound_symbol_read_error(tile_offset))?;
-    if comp_mode.get() != COMPOUND_REFERENCE {
-        return Err(unsupported_compound_at(
+    let mut read_symbol = |selector| {
+        cdfs.read_block_symbol_trace(selector, symbols)
+            .map(splot_core::symbol::Symbol::get)
+            .map_err(|_| compound_symbol_read_error(tile_offset))
+    };
+
+    let comp_mode = read_symbol(TileCdfSelector::CompMode {
+        ctx: COMP_MODE_CTX_NO_NEIGHBOUR,
+    })?;
+    if comp_mode != COMPOUND_REFERENCE {
+        return Err(compound_cap!(
             "compound_block_single_reference",
             tile_offset,
-            "minimal compound-average decode expected §5.20.7.10 comp_mode == COMPOUND_REFERENCE for the reference-select fixture",
-            SPEC_READ_REF_FRAMES,
+            "inter.compound.comp_mode != COMPOUND_REFERENCE",
+            SPEC_READ_REF_FRAMES
         ));
     }
 
     if input.num_same_ref_compound > 1 {
-        let comp_ref0 = cdfs
-            .read_block_symbol_trace(
-                TileCdfSelector::CompRef0 {
-                    ctx: COMP_REF_CTX_NO_NEIGHBOUR,
-                    ref_idx: 0,
-                },
-                symbols,
-            )
-            .map_err(|_| compound_symbol_read_error(tile_offset))?;
-        if comp_ref0.get() != 1 {
-            return Err(unsupported_compound_at(
+        let comp_ref0 = read_symbol(TileCdfSelector::CompRef0 {
+            ctx: COMP_REF_CTX_NO_NEIGHBOUR,
+            ref_idx: 0,
+        })?;
+        if comp_ref0 != 1 {
+            return Err(compound_cap!(
                 "compound_block_missing_first_ref",
                 tile_offset,
-                "minimal compound-average decode requires the NumSameRefCompound first-reference comp_ref symbol to select RefFrame[0] == 0",
-                SPEC_READ_REF_FRAMES,
+                "inter.compound.comp_ref0 != 1",
+                SPEC_READ_REF_FRAMES
             ));
         }
     }
     if input.num_same_ref_compound > 0 {
-        let comp_ref1 = cdfs
-            .read_block_symbol_trace(
-                TileCdfSelector::CompRef1 {
-                    ctx: COMP_REF_CTX_NO_NEIGHBOUR,
-                    bit_type: COMP_REF1_BIT_TYPE_SAME_SIDE,
-                    ref_idx: 0,
-                },
-                symbols,
-            )
-            .map_err(|_| compound_symbol_read_error(tile_offset))?;
-        if comp_ref1.get() != 0 {
-            return Err(unsupported_compound_at(
+        let comp_ref1 = read_symbol(TileCdfSelector::CompRef1 {
+            ctx: COMP_REF_CTX_NO_NEIGHBOUR,
+            bit_type: COMP_REF1_BIT_TYPE_SAME_SIDE,
+            ref_idx: 0,
+        })?;
+        if comp_ref1 != 0 {
+            return Err(compound_cap!(
                 "compound_block_same_ref_pair",
                 tile_offset,
-                "minimal compound-average decode requires the NumSameRefCompound second-reference comp_ref symbol to select the distinct RefFrame[1] == 1 path",
-                SPEC_READ_REF_FRAMES,
+                "inter.compound.comp_ref1 != 0",
+                SPEC_READ_REF_FRAMES
             ));
         }
     }
 
-    let is_joint = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::IsJoint {
-                ctx: input.is_joint_ctx,
-            },
-            symbols,
-        )
-        .map_err(|_| compound_symbol_read_error(tile_offset))?;
-    if is_joint.get() != 0 {
-        return Err(unsupported_compound_at(
+    let is_joint = read_symbol(TileCdfSelector::IsJoint {
+        ctx: input.is_joint_ctx,
+    })?;
+    if is_joint != 0 {
+        return Err(compound_cap!(
             "compound_block_joint_mode",
             tile_offset,
-            "minimal compound-average decode only supports non-joint compound mode syntax (is_joint == 0)",
-            SPEC_INTER_BLOCK_MODE_INFO,
+            "inter.compound.is_joint",
+            SPEC_INTER_BLOCK_MODE_INFO
         ));
     }
 
-    let compound_mode = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::CompoundModeNonJoint {
-                ctx: input.new_mv_context,
-            },
-            symbols,
-        )
-        .map_err(|_| compound_symbol_read_error(tile_offset))?;
-    if compound_mode.get() != COMPOUND_MODE_NEAR_NEARMV {
-        return Err(unsupported_compound_at(
+    let compound_mode = read_symbol(TileCdfSelector::CompoundModeNonJoint {
+        ctx: input.new_mv_context,
+    })?;
+    if compound_mode != COMPOUND_MODE_NEAR_NEARMV {
+        return Err(compound_cap!(
             "compound_block_unsupported_mode",
             tile_offset,
-            "minimal compound-average decode only supports compound_mode_non_joint == 0 (NEAR_NEARMV)",
-            SPEC_INTER_BLOCK_MODE_INFO,
+            "inter.compound.mode != NEAR_NEARMV",
+            SPEC_INTER_BLOCK_MODE_INFO
         ));
     }
 
@@ -186,65 +149,63 @@ pub(super) fn read_compound_average_syntax(
 }
 
 fn gate_compound_subset(input: CompoundParseInput, tile_offset: ByteOffset) -> Result<()> {
-    if input.num_total_refs != 2 {
-        return Err(unsupported_compound_at(
+    let full_sb_geometry = input.n4w == FULL_SB_N4
+        && input.n4h == FULL_SB_N4
+        && input.mi_row == 0
+        && input.mi_col == 0
+        && input.mi_rows == FULL_SB_N4
+        && input.mi_cols == FULL_SB_N4;
+    for (missing, reason, message, spec_section) in [
+        (
+            input.num_total_refs != 2,
             "compound_num_total_refs",
-            tile_offset,
-            "minimal compound-average decode requires NumTotalRefs == 2 so read_compound_ref selects implicit RefFrame[0,1] without comp_ref symbols",
+            "unsupported capability: inter.compound.num_total_refs != 2",
             SPEC_READ_REF_FRAMES,
-        ));
-    }
-    if input.has_neighbour || input.new_mv_context != 0 {
-        return Err(unsupported_compound_at(
+        ),
+        (
+            input.has_neighbour || input.new_mv_context != 0,
             "compound_block_neighbour_context",
-            tile_offset,
-            "minimal compound-average decode is verified only for a no-neighbour NEAR_NEARMV block (NewMvContext == 0)",
+            "unsupported capability: inter.compound.neighbour_context",
             SPEC_INTER_BLOCK_MODE_INFO,
-        ));
-    }
-    if input.is_joint_ctx != 1 {
-        return Err(unsupported_compound_at(
+        ),
+        (
+            input.is_joint_ctx != 1,
             "compound_is_joint_context",
-            tile_offset,
-            "minimal compound-average decode is verified only for the same-side or unequal-distance §8.3.2 is_joint context 1 fixture",
+            "unsupported capability: inter.compound.is_joint_ctx != 1",
             SPEC_INTER_BLOCK_MODE_INFO,
-        ));
-    }
-    if input.skip != 1 {
-        return Err(unsupported_compound_at(
+        ),
+        (
+            input.skip != 1,
             "compound_block_residual",
-            tile_offset,
-            "minimal compound-average decode only supports a skipped compound block (no residual syntax)",
+            "unsupported capability: inter.compound.residual",
             SPEC_INTER_BLOCK_MODE_INFO,
-        ));
-    }
-
-    #[allow(clippy::items_after_statements)]
-    const FULL_SB_N4: usize = 16;
-    if input.n4w != FULL_SB_N4
-        || input.n4h != FULL_SB_N4
-        || input.mi_row != 0
-        || input.mi_col != 0
-        || input.mi_rows != FULL_SB_N4
-        || input.mi_cols != FULL_SB_N4
-    {
-        return Err(unsupported_compound_at(
+        ),
+        (
+            !full_sb_geometry,
             "compound_block_geometry",
-            tile_offset,
-            "minimal compound-average decode is verified only for one top-left 64x64 compound leaf covering a single-superblock frame",
+            "unsupported capability: inter.compound.block_geometry",
             SPEC_INTER_BLOCK_MODE_INFO,
-        ));
+        ),
+    ] {
+        if missing {
+            return Err(unsupported_compound_at(
+                reason,
+                tile_offset,
+                message,
+                spec_section,
+            ));
+        }
     }
 
     Ok(())
 }
 
 fn compound_symbol_read_error(tile_offset: ByteOffset) -> super::super::DecodeError {
-    unsupported_compound_at(
+    compound_missing!(
         "compound_block_mode_parse",
         tile_offset,
-        "minimal compound-average block mode-info syntax could not be parsed from the tile payload",
-        SPEC_INTER_BLOCK_MODE_INFO,
+        "inter.compound.mode_info_symbols",
+        SPEC_INTER_BLOCK_MODE_INFO
     )
 }
 
@@ -519,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn compound_average_rejects_unverified_geometry_before_reading_symbols() {
+    fn compound_average_rejects_unsupported_geometry_before_reading_symbols() {
         let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&[0x80, 0x00]);
         let mut input = default_input();

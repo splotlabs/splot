@@ -5,10 +5,10 @@
 use libfuzzer_sys::fuzz_target;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraCardinalDirection,
-    IntraCardinalEdges, IntraDcEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges,
-    IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges, IntraPaethEdges,
-    IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode, IntraSquareBlockSize, OutputIndex,
-    PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconSample, apply_intra_ibp_dc_rect,
+    IntraDcEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges, IntraMiddleDirectionalAngle,
+    IntraMiddleDirectionalAngleEdges, IntraPaethEdges, IntraRectBlockSize, IntraSmoothEdges,
+    IntraSmoothMode, IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect,
+    PlaneSize, ReconSample, apply_intra_ibp_dc_rect,
     predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_into,
     predict_intra_dc_rect_value, predict_intra_dc_square, predict_intra_dc_square_into,
     predict_intra_dc_square_value,
@@ -476,12 +476,12 @@ fn cardinal_edges<'a, T: ReconSample>(
     selector: u8,
     left: &'a [T],
     above: &'a [T],
-) -> IntraCardinalEdges<'a, T> {
+) -> IntraDirectionalAngleEdges<'a, T> {
     match (selector >> 2) & 0b0000_0011 {
-        0 => IntraCardinalEdges::new(None, None),
-        1 => IntraCardinalEdges::left(left),
-        2 => IntraCardinalEdges::above(above),
-        _ => IntraCardinalEdges::both(left, above),
+        0 => IntraDirectionalAngleEdges::new(None, None),
+        1 => IntraDirectionalAngleEdges::left(left),
+        2 => IntraDirectionalAngleEdges::above(above),
+        _ => IntraDirectionalAngleEdges::both(left, above),
     }
 }
 

@@ -14,36 +14,33 @@ use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// Computes the constant sample value for AV2 §7.13.2.11 subsampled DC prediction.
 ///
-/// The caller provides prepared `LeftCol[0..h]` and `AboveRow[0..w]` samples.
-/// Edges are fully validated against the requested bit depth, then sampled with
-/// the AV2 subsampled-DC step: every sample for dimensions up to 32 and every
-/// second sample for dimensions greater than 32. Any nonzero sampled count uses
-/// the §7.13.2.11 / §7.13.3.22 `Clip1(approx_divide(sum, count))` path.
-///
 /// # Errors
-/// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
-/// wrong edge lengths, out-of-range edge samples, arithmetic overflow, or
-/// storage conversion failure.
+/// Returns [`ReconError`] for invalid inputs, arithmetic overflow, or conversion failure.
 pub fn predict_intra_dc_subsampled_rect_value<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     edges: IntraDcEdges<'_, T>,
 ) -> Result<T> {
     validate_sample_type::<T>(bit_depth)?;
-    let left = validate_dc_edge_sampled_sum(
-        IntraDcEdge::Left,
-        edges.left_samples(),
-        size.height(),
-        subsampled_step(size.height()),
-        bit_depth,
-    )?;
-    let above = validate_dc_edge_sampled_sum(
-        IntraDcEdge::Above,
-        edges.above_samples(),
-        size.width(),
-        subsampled_step(size.width()),
-        bit_depth,
-    )?;
+    let mut left = None;
+    let mut above = None;
+    for (slot, edge, samples, dimension) in [
+        (
+            &mut left,
+            IntraDcEdge::Left,
+            edges.left_samples(),
+            size.height(),
+        ),
+        (
+            &mut above,
+            IntraDcEdge::Above,
+            edges.above_samples(),
+            size.width(),
+        ),
+    ] {
+        let step = subsampled_step(dimension);
+        *slot = validate_dc_edge_sampled_sum(edge, samples, dimension, step, bit_depth)?;
+    }
 
     predict_intra_dc_subsampled_rect_value_from_sums(bit_depth, left, above)
 }
@@ -54,7 +51,24 @@ pub(crate) fn predict_intra_dc_subsampled_rect_value_from_sums<T: ReconSample>(
     above: Option<DcEdgeSum>,
 ) -> Result<T> {
     validate_sample_type::<T>(bit_depth)?;
-    let (sum, count) = sampled_sum_and_count(left, above)?;
+    let (sum, count) =
+        [left, above]
+            .into_iter()
+            .flatten()
+            .try_fold((0u64, 0u64), |(sum, count), edge| {
+                let sum = sum
+                    .checked_add(edge.sum)
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "subsampled intra DC sample sum",
+                    })?;
+                let count =
+                    count
+                        .checked_add(edge.count)
+                        .ok_or(ReconError::ArithmeticOverflow {
+                            context: "subsampled intra DC sample count",
+                        })?;
+                Ok::<_, ReconError>((sum, count))
+            })?;
     let predicted = if count == 0 {
         dc_midpoint(bit_depth)
     } else {
@@ -66,13 +80,8 @@ pub(crate) fn predict_intra_dc_subsampled_rect_value_from_sums<T: ReconSample>(
 
 /// Writes AV2 §7.13.2.11 subsampled DC prediction into caller-owned storage.
 ///
-/// `output` points at the top-left destination sample and `stride_samples` is
-/// the distance between adjacent output rows. Samples outside the predicted
-/// rectangle are left unchanged.
-///
 /// # Errors
-/// Returns [`ReconError`] for invalid prediction inputs, a too-small stride, a
-/// too-small output buffer, arithmetic overflow, or storage conversion failure.
+/// Returns [`ReconError`] for invalid inputs, arithmetic overflow, or conversion failure.
 pub fn predict_intra_dc_subsampled_rect_into<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
@@ -94,24 +103,6 @@ pub fn predict_intra_dc_subsampled_rect_into<T: ReconSample>(
 
 pub(crate) const fn subsampled_step(dimension: usize) -> usize {
     if dimension > 32 { 2 } else { 1 }
-}
-
-fn sampled_sum_and_count(left: Option<DcEdgeSum>, above: Option<DcEdgeSum>) -> Result<(u64, u64)> {
-    let mut sum = 0u64;
-    let mut count = 0u64;
-    for edge in [left, above].into_iter().flatten() {
-        sum = sum
-            .checked_add(edge.sum)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "subsampled intra DC sample sum",
-            })?;
-        count = count
-            .checked_add(edge.count)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "subsampled intra DC sample count",
-            })?;
-    }
-    Ok((sum, count))
 }
 
 #[cfg(test)]

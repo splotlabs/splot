@@ -4,7 +4,9 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use splot_core::span::ByteOffset;
-use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::{
+    CdfUpdateMode, Symbol, SymbolBitPosition, SymbolDecoder, SymbolDecoderConfig,
+};
 use splot_core::symbol_encoder::SymbolEncoder;
 
 use super::super::cdf::block_read::BlockSymbolTraceReadError;
@@ -30,6 +32,7 @@ const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
 const SCAN: [u16; 4] = [0, 8, 1, 9];
 
 type BaseReadTuple = (CoeffScanEntry, u8, Option<u8>, u32);
+type ReadState = (TileCdfSubset, SymbolBitPosition, u64);
 
 fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
     SymbolDecoder::with_base_and_config(
@@ -38,13 +41,6 @@ fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
         SymbolDecoderConfig::new().with_cdf_update_mode(mode),
     )
     .unwrap()
-}
-
-fn branch_nonzero(branch: CoeffBlockEobBranch) -> Option<super::branch::NonZeroCoeffBlockStart> {
-    match branch {
-        CoeffBlockEobBranch::AllZero(_) => None,
-        CoeffBlockEobBranch::NonZero(start) => Some(start),
-    }
 }
 
 fn setup_walk(
@@ -77,7 +73,9 @@ fn setup_walk(
         }),
     )
     .ok()?;
-    let start = branch_nonzero(branch)?;
+    let CoeffBlockEobBranch::NonZero(start) = branch else {
+        return None;
+    };
     if start.eob_read().eob().eob() != SCAN.len() {
         return None;
     }
@@ -109,6 +107,12 @@ fn br_selector() -> CoeffCdfSelector {
     }
 }
 
+fn br_range() -> CoeffBaseRangeRead {
+    CoeffBaseRangeRead::Enabled {
+        selector: br_selector(),
+    }
+}
+
 fn invalid_base_eob_selector() -> CoeffCdfSelector {
     CoeffCdfSelector::BaseEob {
         coeff_cdf_q_ctx: 4,
@@ -122,6 +126,21 @@ fn invalid_br_selector() -> CoeffCdfSelector {
         coeff_cdf_q_ctx: 0,
         ctx: 7,
     }
+}
+
+fn read_state(tile: &TileCdfSubset, symbols: &SymbolDecoder<'_>) -> ReadState {
+    (
+        tile.clone(),
+        symbols.consumed_bits(),
+        symbols.symbol_count(),
+    )
+}
+
+fn assert_read_state(tile: &TileCdfSubset, symbols: &SymbolDecoder<'_>, before: ReadState) {
+    let (tile_before, consumed_before, symbol_count_before) = before;
+    assert_eq!(tile, &tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
 }
 
 fn inputs_for(
@@ -166,14 +185,9 @@ fn find_payload(predicate: impl Fn(&[CoeffBaseSymbolRead]) -> bool) -> [u8; 5] {
         for second in u8::MIN..=u8::MAX {
             for suffix in PAYLOAD_SUFFIXES {
                 let payload = [first, second, suffix[0], suffix[1], suffix[2]];
-                let Some(reads) = read_payload(
-                    &payload,
-                    CdfUpdateMode::Enabled,
-                    BASE_LEVELS,
-                    CoeffBaseRangeRead::Enabled {
-                        selector: br_selector(),
-                    },
-                ) else {
+                let Some(reads) =
+                    read_payload(&payload, CdfUpdateMode::Enabled, BASE_LEVELS, br_range())
+                else {
                     continue;
                 };
                 if predicate(&reads) {
@@ -243,13 +257,7 @@ fn coefficient_base_symbol_read_matches_direct_sequence() {
         setup_walk(&payload, CdfUpdateMode::Enabled).unwrap();
     let (mut helper_tile, mut helper_symbols, helper_walk) =
         setup_walk(&payload, CdfUpdateMode::Enabled).unwrap();
-    let inputs = inputs_for(
-        &direct_walk,
-        BASE_LEVELS,
-        CoeffBaseRangeRead::Enabled {
-            selector: br_selector(),
-        },
-    );
+    let inputs = inputs_for(&direct_walk, BASE_LEVELS, br_range());
 
     let expected = direct_read(&mut direct_tile, &mut direct_symbols, &inputs).unwrap();
     let actual = read_nonzero_coeff_base_symbols(
@@ -275,16 +283,8 @@ fn coefficient_base_symbol_read_matches_direct_sequence() {
 fn coefficient_base_symbol_read_rejects_mismatched_scan_entries_before_read() {
     let payload = find_payload(|reads| !reads.is_empty());
     let (mut tile, mut symbols, walk) = setup_walk(&payload, CdfUpdateMode::Enabled).unwrap();
-    let tile_before = tile.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-    let mut inputs = inputs_for(
-        &walk,
-        BASE_LEVELS,
-        CoeffBaseRangeRead::Enabled {
-            selector: br_selector(),
-        },
-    );
+    let state_before = read_state(&tile, &symbols);
+    let mut inputs = inputs_for(&walk, BASE_LEVELS, br_range());
     inputs[0].entry = walk.entries()[1];
 
     let err = read_nonzero_coeff_base_symbols(&mut tile, &mut symbols, &walk, &inputs).unwrap_err();
@@ -293,25 +293,15 @@ fn coefficient_base_symbol_read_rejects_mismatched_scan_entries_before_read() {
         err,
         CoeffBaseSymbolReadError::ScanEntryMismatch { index: 0, .. }
     ));
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_read_state(&tile, &symbols, state_before);
 }
 
 #[test]
 fn coefficient_base_symbol_read_rejects_reached_invalid_selector_before_symbol_read() {
     let payload = find_payload(|reads| !reads.is_empty());
     let (mut tile, mut symbols, walk) = setup_walk(&payload, CdfUpdateMode::Enabled).unwrap();
-    let tile_before = tile.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-    let mut inputs = inputs_for(
-        &walk,
-        BASE_LEVELS,
-        CoeffBaseRangeRead::Enabled {
-            selector: br_selector(),
-        },
-    );
+    let state_before = read_state(&tile, &symbols);
+    let mut inputs = inputs_for(&walk, BASE_LEVELS, br_range());
     inputs[0].base = CoeffBaseSymbolSource::BaseEob {
         selector: invalid_base_eob_selector(),
     };
@@ -329,9 +319,7 @@ fn coefficient_base_symbol_read_rejects_reached_invalid_selector_before_symbol_r
             }
         ))
     ));
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_read_state(&tile, &symbols, state_before);
 }
 
 #[test]
@@ -374,16 +362,8 @@ fn coefficient_base_symbol_read_disabled_base_range_skips_br_above_threshold() {
 fn coefficient_base_symbol_read_count_mismatch_preserves_state() {
     let payload = find_payload(|reads| !reads.is_empty());
     let (mut tile, mut symbols, walk) = setup_walk(&payload, CdfUpdateMode::Enabled).unwrap();
-    let tile_before = tile.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-    let mut inputs = inputs_for(
-        &walk,
-        BASE_LEVELS,
-        CoeffBaseRangeRead::Enabled {
-            selector: br_selector(),
-        },
-    );
+    let state_before = read_state(&tile, &symbols);
+    let mut inputs = inputs_for(&walk, BASE_LEVELS, br_range());
     inputs.pop();
 
     let err = read_nonzero_coeff_base_symbols(&mut tile, &mut symbols, &walk, &inputs).unwrap_err();
@@ -395,13 +375,9 @@ fn coefficient_base_symbol_read_count_mismatch_preserves_state() {
             entries: 4
         }
     ));
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_read_state(&tile, &symbols, state_before);
 }
 
-/// Writes one `coeff_base`/`coeff_base_eob`/`coeff_br` symbol to `tile`'s CDF row
-/// for `selector` (adapting it), mirroring the decoder's `read_block_symbol_trace`.
 fn encode_coeff_symbol(
     tile: &mut TileCdfSubset,
     encoder: &mut SymbolEncoder,
@@ -420,9 +396,7 @@ fn coefficient_base_symbols_roundtrip_through_symbol_encoder() {
     let entry0 = CoeffScanEntry::for_test(1, 8, 1, 0);
     let entry1 = CoeffScanEntry::for_test(0, 0, 0, 0);
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry0, entry1]);
-    let base_range = CoeffBaseRangeRead::Enabled {
-        selector: br_selector(),
-    };
+    let base_range = br_range();
     let inputs = vec![
         CoeffBaseSymbolReadInput {
             entry: entry0,
@@ -478,9 +452,7 @@ fn coefficient_base_eob_only_roundtrips_through_symbol_encoder() {
             selector: base_eob_selector(),
         },
         base_levels: BASE_LEVELS,
-        base_range: CoeffBaseRangeRead::Enabled {
-            selector: br_selector(),
-        },
+        base_range: br_range(),
     }];
 
     let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();

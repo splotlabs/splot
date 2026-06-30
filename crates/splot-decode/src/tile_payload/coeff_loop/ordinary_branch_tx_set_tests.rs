@@ -177,43 +177,38 @@ fn find_payload_for_explicit(tx_size: usize, plane_tx_type: usize) -> [u8; 12] {
     panic!("no ordinary coefficient payload found");
 }
 
-#[test]
-fn coefficient_ordinary_branch_tx_set_derives_default_intra_set() {
-    let payload = find_payload_for_explicit(TX_8X8, ADST_ADST);
-
+fn assert_default_tx_set_derives(
+    tx_size: usize,
+    plane_tx_type: usize,
+    tx_set: usize,
+    enable_chroma_dctonly: bool,
+) {
+    let payload = find_payload_for_explicit(tx_size, plane_tx_type);
     let explicit = run_mode_to_txfm(
         &payload,
-        mode_to_txfm_input(TX_8X8, UV_SMOOTH_PRED, TX_SET_INTRA_1, false),
+        mode_to_txfm_input(tx_size, UV_SMOOTH_PRED, tx_set, enable_chroma_dctonly),
     );
-    let derived = run_tx_set(&payload, tx_set_input(TX_8X8, UV_SMOOTH_PRED, 0, false));
+    let derived = run_tx_set(
+        &payload,
+        tx_set_input(tx_size, UV_SMOOTH_PRED, 0, enable_chroma_dctonly),
+    );
 
     assert_eq!(derived, explicit);
+}
+
+#[test]
+fn coefficient_ordinary_branch_tx_set_derives_default_intra_set() {
+    assert_default_tx_set_derives(TX_8X8, ADST_ADST, TX_SET_INTRA_1, false);
 }
 
 #[test]
 fn coefficient_ordinary_branch_tx_set_derives_reduced_chroma_set() {
-    let payload = find_payload_for_explicit(TX_8X8, DCT_DCT);
-
-    let explicit = run_mode_to_txfm(
-        &payload,
-        mode_to_txfm_input(TX_8X8, UV_SMOOTH_PRED, TX_SET_INTRA_2, true),
-    );
-    let derived = run_tx_set(&payload, tx_set_input(TX_8X8, UV_SMOOTH_PRED, 0, true));
-
-    assert_eq!(derived, explicit);
+    assert_default_tx_set_derives(TX_8X8, DCT_DCT, TX_SET_INTRA_2, true);
 }
 
 #[test]
 fn coefficient_ordinary_branch_tx_set_derives_large_dctonly_set() {
-    let payload = find_payload_for_explicit(TX_32X32, DCT_DCT);
-
-    let explicit = run_mode_to_txfm(
-        &payload,
-        mode_to_txfm_input(TX_32X32, UV_SMOOTH_PRED, TX_SET_DCTONLY, false),
-    );
-    let derived = run_tx_set(&payload, tx_set_input(TX_32X32, UV_SMOOTH_PRED, 0, false));
-
-    assert_eq!(derived, explicit);
+    assert_default_tx_set_derives(TX_32X32, DCT_DCT, TX_SET_DCTONLY, false);
 }
 
 fn assert_tx_set_error_preserves_state<F>(input: CoeffOrdinaryBranchTxSetInput, assert_error: F)

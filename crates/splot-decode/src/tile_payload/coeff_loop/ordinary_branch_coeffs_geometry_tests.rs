@@ -3,9 +3,11 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
+use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{ADJUSTED_TX_SIZE, TX_SIZE_SQR, TX_SIZE_SQR_UP};
 
-use super::super::cdf::FrameCdfSubset;
+use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
+use super::super::coeff_state::TileCoeffContextState;
 use super::base_level_pass::{CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError};
 use super::branch::NonZeroCoeffBlockStartInput;
 use super::max_level::CoeffTransformClass;
@@ -21,8 +23,9 @@ use super::ordinary_pass::geometry::{
     apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables, tx_size_scan_for_test,
 };
 use super::ordinary_pass::{
-    CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput, CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
-    CoeffOrdinaryPassError, CoeffOrdinaryStateContextConfig, CoeffOrdinaryStateContextPassInput,
+    CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput,
+    CoeffOrdinaryBranchPlaneTxTypeBaseConfig, CoeffOrdinaryPassError,
+    CoeffOrdinaryStateContextConfig, CoeffOrdinaryStateContextPassInput,
     NonZeroCoeffOrdinaryDerivedBasePass, apply_coeff_ordinary_branch,
     apply_nonzero_coeff_ordinary_pass_with_state_context,
 };
@@ -330,6 +333,47 @@ fn run_tx_size_dimensions_branch(
     })
 }
 
+fn tx_size_dimensions_error_preserves_mutable_state(
+    tx_size: usize,
+    apply: impl FnOnce(
+        &mut TileCoeffContextState,
+        &mut TileCdfSubset,
+        &mut SymbolDecoder<'_>,
+        CoeffOrdinaryBranchTxSizeDimensionsInput,
+    ) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError>,
+) -> CoeffOrdinaryBranchError {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[0x80]);
+    let mut context_state = seeded_context_state();
+    let before = (
+        context_state.clone(),
+        tile.clone(),
+        symbols.consumed_bits(),
+        symbols.symbol_count(),
+    );
+    let start = nonzero_start_input_for_plane_and_geometry(1, 1, 1, 2, 2);
+
+    let err = apply(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        branch_tx_size_dimensions_nonzero_input(start, tx_size, tx_size_base_config()),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        (
+            context_state,
+            tile,
+            symbols.consumed_bits(),
+            symbols.symbol_count()
+        ),
+        before
+    );
+    err
+}
+
 #[test]
 fn coefficient_ordinary_branch_coeffs_geometry_nonzero_matches_explicit_geometry() {
     let start = nonzero_start_input_for_plane_and_geometry(1, 1, 1, 2, 2);
@@ -587,23 +631,10 @@ fn coefficient_ordinary_branch_tx_size_dimensions_all_zero_preserves_direct_bran
 
 #[test]
 fn coefficient_ordinary_branch_tx_size_dimensions_invalid_tx_size_preserves_mutable_state() {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let tile_before = tile.clone();
-    let mut symbols = symbol_decoder(&[0x80]);
-    let consumed_before = symbols.consumed_bits();
-    let symbols_before = symbols.symbol_count();
-    let mut context_state = seeded_context_state();
-    let context_before = context_state.clone();
-    let start = nonzero_start_input_for_plane_and_geometry(1, 1, 1, 2, 2);
-
-    let err = apply_coeff_ordinary_branch_from_tx_size_dimensions(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        branch_tx_size_dimensions_nonzero_input(start, usize::MAX, tx_size_base_config()),
-    )
-    .unwrap_err();
+    let err = tx_size_dimensions_error_preserves_mutable_state(
+        usize::MAX,
+        apply_coeff_ordinary_branch_from_tx_size_dimensions,
+    );
 
     assert!(matches!(
         err,
@@ -611,35 +642,24 @@ fn coefficient_ordinary_branch_tx_size_dimensions_invalid_tx_size_preserves_muta
             tx_size: usize::MAX
         }
     ));
-    assert_eq!(context_state, context_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbols_before);
 }
 
 #[test]
 fn coefficient_ordinary_branch_adjusted_tx_size_table_value_preserves_mutable_state() {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let tile_before = tile.clone();
-    let mut symbols = symbol_decoder(&[0x80]);
-    let consumed_before = symbols.consumed_bits();
-    let symbols_before = symbols.symbol_count();
-    let mut context_state = seeded_context_state();
-    let context_before = context_state.clone();
-    let start = nonzero_start_input_for_plane_and_geometry(1, 1, 1, 2, 2);
-    let invalid_adjusted_tx_size_table = [-1];
-
-    let err = apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        branch_tx_size_dimensions_nonzero_input(start, 0, tx_size_base_config()),
-        &invalid_adjusted_tx_size_table,
-        &TX_SIZE_SQR,
-        &TX_SIZE_SQR_UP,
-    )
-    .unwrap_err();
+    let err = tx_size_dimensions_error_preserves_mutable_state(
+        0,
+        |context_state, tile, symbols, input| {
+            apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables(
+                context_state,
+                tile,
+                symbols,
+                input,
+                &[-1],
+                &TX_SIZE_SQR,
+                &TX_SIZE_SQR_UP,
+            )
+        },
+    );
 
     assert!(matches!(
         err,
@@ -649,10 +669,6 @@ fn coefficient_ordinary_branch_adjusted_tx_size_table_value_preserves_mutable_st
             value: -1,
         }
     ));
-    assert_eq!(context_state, context_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbols_before);
 }
 
 #[test]
@@ -664,32 +680,22 @@ fn coefficient_ordinary_branch_tx_size_context_table_value_preserves_mutable_sta
     ) where
         F: FnOnce(CoeffOrdinaryBranchError),
     {
-        let frame = FrameCdfSubset::from_defaults();
-        let mut tile = frame.tile_copy();
-        let tile_before = tile.clone();
-        let mut symbols = symbol_decoder(&[0x80]);
-        let consumed_before = symbols.consumed_bits();
-        let symbols_before = symbols.symbol_count();
-        let mut context_state = seeded_context_state();
-        let context_before = context_state.clone();
-        let start = nonzero_start_input_for_plane_and_geometry(1, 1, 1, 2, 2);
-
-        let err = apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables(
-            &mut context_state,
-            &mut tile,
-            &mut symbols,
-            branch_tx_size_dimensions_nonzero_input(start, 0, tx_size_base_config()),
-            &ADJUSTED_TX_SIZE,
-            tx_size_sqr_table,
-            tx_size_sqr_up_table,
-        )
-        .unwrap_err();
+        let err = tx_size_dimensions_error_preserves_mutable_state(
+            0,
+            |context_state, tile, symbols, input| {
+                apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables(
+                    context_state,
+                    tile,
+                    symbols,
+                    input,
+                    &ADJUSTED_TX_SIZE,
+                    tx_size_sqr_table,
+                    tx_size_sqr_up_table,
+                )
+            },
+        );
 
         assert_expected_error(err);
-        assert_eq!(context_state, context_before);
-        assert_eq!(tile, tile_before);
-        assert_eq!(symbols.consumed_bits(), consumed_before);
-        assert_eq!(symbols.symbol_count(), symbols_before);
     }
 
     assert_invalid_square_table_preserves_mutable_state(&[-1], &TX_SIZE_SQR_UP, |err| {
@@ -722,29 +728,23 @@ fn coefficient_ordinary_branch_tx_size_context_table_value_preserves_mutable_sta
 
 #[test]
 fn coefficient_ordinary_branch_tx_size_scan_shape_preserves_mutable_state() {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let tile_before = tile.clone();
-    let mut symbols = symbol_decoder(&[0x80]);
-    let consumed_before = symbols.consumed_bits();
-    let symbols_before = symbols.symbol_count();
-    let mut context_state = seeded_context_state();
-    let context_before = context_state.clone();
-    let start = nonzero_start_input_for_plane_and_geometry(1, 1, 1, 2, 2);
-
-    let err = apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_dimension_tables(
-        &mut context_state,
-        &mut tile,
-        &mut symbols,
-        branch_tx_size_dimensions_nonzero_input(start, 0, tx_size_base_config()),
-        CoeffOrdinaryTestDimensionTables {
-            tx_width: &[2],
-            tx_height: &[4],
-            tx_width_log2: &[1],
-            tx_height_log2: &[2],
+    let err = tx_size_dimensions_error_preserves_mutable_state(
+        0,
+        |context_state, tile, symbols, input| {
+            apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_dimension_tables(
+                context_state,
+                tile,
+                symbols,
+                input,
+                CoeffOrdinaryTestDimensionTables {
+                    tx_width: &[2],
+                    tx_height: &[4],
+                    tx_width_log2: &[1],
+                    tx_height_log2: &[2],
+                },
+            )
         },
-    )
-    .unwrap_err();
+    );
 
     assert!(matches!(
         err,
@@ -753,8 +753,4 @@ fn coefficient_ordinary_branch_tx_size_scan_shape_preserves_mutable_state() {
             height: 4
         }
     ));
-    assert_eq!(context_state, context_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbols_before);
 }

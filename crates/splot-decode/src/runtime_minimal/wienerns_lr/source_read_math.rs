@@ -82,27 +82,28 @@ pub(super) fn wienerns_lr_source_plane(
     chroma_format: ChromaFormatIdc,
     offset: ByteOffset,
 ) -> crate::error::Result<PlaneId> {
-    match plane {
-        0 => Ok(PlaneId::Y),
-        1 if chroma_format != ChromaFormatIdc::Monochrome => Ok(PlaneId::U),
-        2 if chroma_format != ChromaFormatIdc::Monochrome => Ok(PlaneId::V),
-        1 | 2 => Err(unsupported_feature_at(
+    let (rule_id, message) = match plane {
+        0 => return Ok(PlaneId::Y),
+        1 if chroma_format != ChromaFormatIdc::Monochrome => return Ok(PlaneId::U),
+        2 if chroma_format != ChromaFormatIdc::Monochrome => return Ok(PlaneId::V),
+        1 | 2 => (
             "unsupported_wienerns_lr_source_chroma_plane",
-            offset,
             "minimal runtime reached a Wiener NS LR source-read request for a chroma plane in a monochrome sequence",
-            AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
-            AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
-            "7.20.2",
-        )),
-        _ => Err(unsupported_feature_at(
+        ),
+        _ => (
             "unsupported_wienerns_lr_source_plane",
-            offset,
             "minimal runtime reached a Wiener NS LR source-read request for an unsupported plane index",
-            AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
-            AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
-            "7.20.2",
-        )),
-    }
+        ),
+    };
+
+    Err(unsupported_feature_at(
+        rule_id,
+        offset,
+        message,
+        AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
+        AC0EJ3_LR_SOURCE_READ_FEATURE_ID,
+        "7.20.2",
+    ))
 }
 
 pub(super) fn source_read_arithmetic_overflow(context: &'static str) -> DecodeError {

@@ -34,6 +34,26 @@ fn coeff(selector: CoeffCdfSelector) -> TileCdfSelector {
     TileCdfSelector::Coeff(selector)
 }
 
+fn assert_selector_out_of_range(
+    tile: &TileCdfSubset,
+    selector: TileCdfSelector,
+    array: TileCdfArray,
+    index_name: &'static str,
+    actual: usize,
+    max_exclusive: usize,
+) {
+    assert_eq!(
+        tile.row(selector).unwrap_err(),
+        TileCdfError::SelectorOutOfRange {
+            array,
+            index_name,
+            actual,
+            max_exclusive,
+        },
+        "{selector:?}"
+    );
+}
+
 #[test]
 fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
     let frame = FrameCdfSubset::from_defaults();
@@ -212,24 +232,21 @@ fn cfl_cdf_selectors_match_generated_defaults_and_check_bounds() {
         );
     }
 
-    assert_eq!(
-        tile.row(TileCdfSelector::CflAlpha { ctx: 6 }).unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CflAlpha,
-            index_name: "ctx",
-            actual: 6,
-            max_exclusive: 6,
-        }
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::CflAlpha { ctx: 6 },
+        TileCdfArray::CflAlpha,
+        "ctx",
+        6,
+        6,
     );
-    assert_eq!(
-        tile.row(TileCdfSelector::CflMhDir { size_group: 4 })
-            .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CflMhDir,
-            index_name: "size_group",
-            actual: 4,
-            max_exclusive: 4,
-        }
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::CflMhDir { size_group: 4 },
+        TileCdfArray::CflMhDir,
+        "size_group",
+        4,
+        4,
     );
 }
 
@@ -309,77 +326,64 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
         "tile_copy mutation must not alias frame defaults"
     );
 
-    assert_eq!(
-        tile.row(TileCdfSelector::CompMode { ctx: 5 }).unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CompMode,
-            index_name: "ctx",
-            actual: 5,
-            max_exclusive: 5,
-        }
-    );
-    assert_eq!(
-        tile.row(TileCdfSelector::IsJoint { ctx: 2 }).unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::IsJoint,
-            index_name: "ctx",
-            actual: 2,
-            max_exclusive: 2,
-        }
-    );
-    assert_eq!(
-        tile.row(TileCdfSelector::CompoundModeNonJoint { ctx: 5 })
-            .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CompoundModeNonJoint,
-            index_name: "ctx",
-            actual: 5,
-            max_exclusive: 5,
-        }
-    );
-    assert_eq!(
-        tile.row(TileCdfSelector::CompGroupIdx { ctx: 12 })
-            .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CompGroupIdx,
-            index_name: "ctx",
-            actual: 12,
-            max_exclusive: 12,
-        }
-    );
-    assert_eq!(
-        tile.row(TileCdfSelector::CwpIdx { idx: 4 }).unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CwpIdx,
-            index_name: "idx",
-            actual: 4,
-            max_exclusive: 4,
-        }
-    );
-    assert_eq!(
-        tile.row(TileCdfSelector::CompRef0 { ctx: 3, ref_idx: 0 })
-            .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CompRef0,
-            index_name: "ctx",
-            actual: 3,
-            max_exclusive: 3,
-        }
-    );
-    assert_eq!(
-        tile.row(TileCdfSelector::CompRef1 {
-            ctx: 3,
-            bit_type: 0,
-            ref_idx: 0
-        })
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CompRef1,
-            index_name: "ctx",
-            actual: 3,
-            max_exclusive: 3,
-        }
-    );
+    let error_cases = [
+        (
+            TileCdfSelector::CompMode { ctx: 5 },
+            TileCdfArray::CompMode,
+            "ctx",
+            5,
+            5,
+        ),
+        (
+            TileCdfSelector::IsJoint { ctx: 2 },
+            TileCdfArray::IsJoint,
+            "ctx",
+            2,
+            2,
+        ),
+        (
+            TileCdfSelector::CompoundModeNonJoint { ctx: 5 },
+            TileCdfArray::CompoundModeNonJoint,
+            "ctx",
+            5,
+            5,
+        ),
+        (
+            TileCdfSelector::CompGroupIdx { ctx: 12 },
+            TileCdfArray::CompGroupIdx,
+            "ctx",
+            12,
+            12,
+        ),
+        (
+            TileCdfSelector::CwpIdx { idx: 4 },
+            TileCdfArray::CwpIdx,
+            "idx",
+            4,
+            4,
+        ),
+        (
+            TileCdfSelector::CompRef0 { ctx: 3, ref_idx: 0 },
+            TileCdfArray::CompRef0,
+            "ctx",
+            3,
+            3,
+        ),
+        (
+            TileCdfSelector::CompRef1 {
+                ctx: 3,
+                bit_type: 0,
+                ref_idx: 0,
+            },
+            TileCdfArray::CompRef1,
+            "ctx",
+            3,
+            3,
+        ),
+    ];
+    for (selector, array, index_name, actual, max_exclusive) in error_cases {
+        assert_selector_out_of_range(&tile, selector, array, index_name, actual, max_exclusive);
+    }
 }
 
 #[test]
@@ -931,15 +935,14 @@ fn eob_extra_selector_returns_rows_and_bounds_error() {
             .unwrap();
         assert_eq!(row, expected.as_slice(), "eob_extra q-ctx {q}");
     }
-    assert!(matches!(
-        tile.row(TileCdfSelector::EobExtra { coeff_cdf_q_ctx: 4 }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::EobExtra,
-            index_name: "coeff_cdf_q_ctx",
-            actual: 4,
-            max_exclusive: 4,
-        })
-    ));
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::EobExtra { coeff_cdf_q_ctx: 4 },
+        TileCdfArray::EobExtra,
+        "coeff_cdf_q_ctx",
+        4,
+        4,
+    );
 }
 
 #[test]
@@ -987,32 +990,30 @@ fn eob_pt_family_loads_defaults_and_selects_by_size_and_context() {
 fn eob_pt_selector_rejects_out_of_range_contexts() {
     let frame = FrameCdfSubset::from_defaults();
     let tile = frame.tile_copy();
-    assert!(matches!(
-        tile.row(TileCdfSelector::EobPt {
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::EobPt {
             size: EobPtSize::Pt16,
             coeff_cdf_q_ctx: 4,
-            eob_ctx: 0
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::EobPt,
-            index_name: "coeff_cdf_q_ctx",
-            actual: 4,
-            max_exclusive: 4,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::EobPt {
+            eob_ctx: 0,
+        },
+        TileCdfArray::EobPt,
+        "coeff_cdf_q_ctx",
+        4,
+        4,
+    );
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::EobPt {
             size: EobPtSize::Pt1024,
             coeff_cdf_q_ctx: 0,
-            eob_ctx: 3
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::EobPt,
-            index_name: "eob_ctx",
-            actual: 3,
-            max_exclusive: 3,
-        })
-    ));
+            eob_ctx: 3,
+        },
+        TileCdfArray::EobPt,
+        "eob_ctx",
+        3,
+        3,
+    );
 }
 
 #[test]
@@ -1054,62 +1055,58 @@ fn dc_sign_loads_defaults_and_selects_by_all_indices() {
 fn dc_sign_selector_rejects_out_of_range_indices() {
     let frame = FrameCdfSubset::from_defaults();
     let tile = frame.tile_copy();
-    assert!(matches!(
-        tile.row(TileCdfSelector::DcSign {
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::DcSign {
             coeff_cdf_q_ctx: 4,
             plane_type: 0,
             group: 0,
-            ctx: 0
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::DcSign,
-            index_name: "coeff_cdf_q_ctx",
-            actual: 4,
-            max_exclusive: 4,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::DcSign {
+            ctx: 0,
+        },
+        TileCdfArray::DcSign,
+        "coeff_cdf_q_ctx",
+        4,
+        4,
+    );
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::DcSign {
             coeff_cdf_q_ctx: 0,
             plane_type: 2,
             group: 0,
-            ctx: 0
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::DcSign,
-            index_name: "plane_type",
-            actual: 2,
-            max_exclusive: 2,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::DcSign {
+            ctx: 0,
+        },
+        TileCdfArray::DcSign,
+        "plane_type",
+        2,
+        2,
+    );
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::DcSign {
             coeff_cdf_q_ctx: 0,
             plane_type: 0,
             group: 2,
-            ctx: 0
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::DcSign,
-            index_name: "group",
-            actual: 2,
-            max_exclusive: 2,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::DcSign {
+            ctx: 0,
+        },
+        TileCdfArray::DcSign,
+        "group",
+        2,
+        2,
+    );
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::DcSign {
             coeff_cdf_q_ctx: 0,
             plane_type: 0,
             group: 0,
-            ctx: 3
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::DcSign,
-            index_name: "ctx",
-            actual: 3,
-            max_exclusive: 3,
-        })
-    ));
+            ctx: 3,
+        },
+        TileCdfArray::DcSign,
+        "ctx",
+        3,
+        3,
+    );
 }
 
 #[test]
@@ -1128,20 +1125,19 @@ fn dc_sign_tile_copy_does_not_alias_the_frame() {
 fn txb_skip_plane_type_error_still_names_txb_skip() {
     let frame = FrameCdfSubset::from_defaults();
     let tile = frame.tile_copy();
-    assert!(matches!(
-        tile.row(TileCdfSelector::TxbSkip {
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::TxbSkip {
             coeff_cdf_q_ctx: 0,
             plane_type: 2,
             tx_size: 0,
-            ctx: 0
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::TxbSkip,
-            index_name: "plane_type",
-            actual: 2,
-            max_exclusive: 2,
-        })
-    ));
+            ctx: 0,
+        },
+        TileCdfArray::TxbSkip,
+        "plane_type",
+        2,
+        2,
+    );
 }
 
 #[test]
@@ -1243,135 +1239,116 @@ fn tx_partition_rows_load_defaults_and_report_selector_errors() {
         DEFAULT_CCTX_TYPE_CDF.as_slice()
     );
 
-    assert!(matches!(
-        tile.row(TileCdfSelector::TxDoPartition {
-            fsc_mode: 2,
-            is_inter: 0,
-            txfm_split_group: 0,
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::TxDoPartition,
-            index_name: "fsc_mode",
-            actual: 2,
-            max_exclusive: 2,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::TxPartitionType {
-            fsc_mode: 0,
-            is_inter: 0,
-            ctx: 14,
-            reduced: true,
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::TxPartitionTypeReduced,
-            index_name: "ctx",
-            actual: 14,
-            max_exclusive: 14,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::FscMode {
-            ctx: 4,
-            bsize_group: 0,
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::FscMode,
-            index_name: "ctx",
-            actual: 4,
-            max_exclusive: 4,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::MrlIndex { ctx: 3 }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::MrlIndex,
-            index_name: "ctx",
-            actual: 3,
-            max_exclusive: 3,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::MrlSecIndex { ctx: 3 }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::MrlSecIndex,
-            index_name: "ctx",
-            actual: 3,
-            max_exclusive: 3,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr: 3 }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::IntraTxTypeSet1,
-            index_name: "tx_size_sqr",
-            actual: 3,
-            max_exclusive: 3,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr: 3 }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::IntraTxTypeSet2,
-            index_name: "tx_size_sqr",
-            actual: 3,
-            max_exclusive: 3,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::IntraTxTypeLong { tx_size_sqr: 4 }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::IntraTxTypeLong,
-            index_name: "tx_size_sqr",
-            actual: 4,
-            max_exclusive: 4,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::IsLongSideDct { is_inter: 2 }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::IsLongSideDct,
-            index_name: "is_inter",
-            actual: 2,
-            max_exclusive: 2,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::SecTxType {
-            is_inter: 2,
-            tx_size_sqr: 0,
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::SecTxType,
-            index_name: "is_inter",
-            actual: 2,
-            max_exclusive: 2,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::SecTxType {
-            is_inter: 0,
-            tx_size_sqr: 5,
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::SecTxType,
-            index_name: "tx_size_sqr",
-            actual: 5,
-            max_exclusive: 5,
-        })
-    ));
-    assert!(matches!(
-        tile.row(TileCdfSelector::FscMode {
-            ctx: 0,
-            bsize_group: 6,
-        }),
-        Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::FscMode,
-            index_name: "bsize_group",
-            actual: 6,
-            max_exclusive: 6,
-        })
-    ));
+    let error_cases = [
+        (
+            TileCdfSelector::TxDoPartition {
+                fsc_mode: 2,
+                is_inter: 0,
+                txfm_split_group: 0,
+            },
+            TileCdfArray::TxDoPartition,
+            "fsc_mode",
+            2,
+            2,
+        ),
+        (
+            TileCdfSelector::TxPartitionType {
+                fsc_mode: 0,
+                is_inter: 0,
+                ctx: 14,
+                reduced: true,
+            },
+            TileCdfArray::TxPartitionTypeReduced,
+            "ctx",
+            14,
+            14,
+        ),
+        (
+            TileCdfSelector::FscMode {
+                ctx: 4,
+                bsize_group: 0,
+            },
+            TileCdfArray::FscMode,
+            "ctx",
+            4,
+            4,
+        ),
+        (
+            TileCdfSelector::MrlIndex { ctx: 3 },
+            TileCdfArray::MrlIndex,
+            "ctx",
+            3,
+            3,
+        ),
+        (
+            TileCdfSelector::MrlSecIndex { ctx: 3 },
+            TileCdfArray::MrlSecIndex,
+            "ctx",
+            3,
+            3,
+        ),
+        (
+            TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr: 3 },
+            TileCdfArray::IntraTxTypeSet1,
+            "tx_size_sqr",
+            3,
+            3,
+        ),
+        (
+            TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr: 3 },
+            TileCdfArray::IntraTxTypeSet2,
+            "tx_size_sqr",
+            3,
+            3,
+        ),
+        (
+            TileCdfSelector::IntraTxTypeLong { tx_size_sqr: 4 },
+            TileCdfArray::IntraTxTypeLong,
+            "tx_size_sqr",
+            4,
+            4,
+        ),
+        (
+            TileCdfSelector::IsLongSideDct { is_inter: 2 },
+            TileCdfArray::IsLongSideDct,
+            "is_inter",
+            2,
+            2,
+        ),
+        (
+            TileCdfSelector::SecTxType {
+                is_inter: 2,
+                tx_size_sqr: 0,
+            },
+            TileCdfArray::SecTxType,
+            "is_inter",
+            2,
+            2,
+        ),
+        (
+            TileCdfSelector::SecTxType {
+                is_inter: 0,
+                tx_size_sqr: 5,
+            },
+            TileCdfArray::SecTxType,
+            "tx_size_sqr",
+            5,
+            5,
+        ),
+        (
+            TileCdfSelector::FscMode {
+                ctx: 0,
+                bsize_group: 6,
+            },
+            TileCdfArray::FscMode,
+            "bsize_group",
+            6,
+            6,
+        ),
+    ];
+    for (selector, array, index_name, actual, max_exclusive) in error_cases {
+        assert_selector_out_of_range(&tile, selector, array, index_name, actual, max_exclusive);
+    }
 }
 
 #[test]
@@ -1513,172 +1490,141 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
     let frame = FrameCdfSubset::from_defaults();
     let tile = frame.tile_copy();
 
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::Base {
-            coeff_cdf_q_ctx: 4,
-            tx_size: 0,
-            ctx: 0,
-            tcq_ctx: 0,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CoeffBase,
-            index_name: "coeff_cdf_q_ctx",
-            actual: 4,
-            max_exclusive: 4,
-        }
-    );
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::BaseLfEob {
-            coeff_cdf_q_ctx: 0,
-            tx_size: 5,
-            ctx: 0,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CoeffBaseLfEob,
-            index_name: "tx_size",
-            actual: 5,
-            max_exclusive: 5,
-        }
-    );
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::BasePh {
-            coeff_cdf_q_ctx: 4,
-            ctx: 0,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CoeffBasePh,
-            index_name: "coeff_cdf_q_ctx",
-            actual: 4,
-            max_exclusive: 4,
-        }
-    );
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::BasePh {
-            coeff_cdf_q_ctx: 0,
-            ctx: 5,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CoeffBasePh,
-            index_name: "ctx",
-            actual: 5,
-            max_exclusive: 5,
-        }
-    );
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::BaseBob {
-            coeff_cdf_q_ctx: 0,
-            tx_size_ctx: 3,
-            ctx: 0,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CoeffBaseBob,
-            index_name: "tx_size_ctx",
-            actual: 3,
-            max_exclusive: 3,
-        }
-    );
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::BaseBob {
-            coeff_cdf_q_ctx: 0,
-            tx_size_ctx: 0,
-            ctx: 3,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CoeffBaseBob,
-            index_name: "ctx",
-            actual: 3,
-            max_exclusive: 3,
-        }
-    );
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::BaseIdtx {
-            coeff_cdf_q_ctx: 0,
-            tx_size_ctx: 0,
-            ctx: 7,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CoeffBaseIdtx,
-            index_name: "ctx",
-            actual: 7,
-            max_exclusive: 7,
-        }
-    );
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::BaseUv {
-            coeff_cdf_q_ctx: 0,
-            ctx: 12,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CoeffBaseUv,
-            index_name: "ctx",
-            actual: 12,
-            max_exclusive: 12,
-        }
-    );
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::Base {
-            coeff_cdf_q_ctx: 0,
-            tx_size: 0,
-            ctx: 0,
-            tcq_ctx: 2,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CoeffBase,
-            index_name: "tcq_ctx",
-            actual: 2,
-            max_exclusive: 2,
-        }
-    );
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::BrLf {
-            coeff_cdf_q_ctx: 0,
-            ctx: 14,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CoeffBrLf,
-            index_name: "ctx",
-            actual: 14,
-            max_exclusive: 14,
-        }
-    );
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::BrIdtx {
-            coeff_cdf_q_ctx: 0,
-            tx_size_ctx: 0,
-            ctx: 7,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::CoeffBrIdtx,
-            index_name: "ctx",
-            actual: 7,
-            max_exclusive: 7,
-        }
-    );
-    assert_eq!(
-        tile.row(coeff(CoeffCdfSelector::IdtxSign {
-            coeff_cdf_q_ctx: 0,
-            tx_size_ctx: 0,
-            ctx: 9,
-        }))
-        .unwrap_err(),
-        TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::IdtxSign,
-            index_name: "ctx",
-            actual: 9,
-            max_exclusive: 9,
-        }
-    );
+    let error_cases = [
+        (
+            coeff(CoeffCdfSelector::Base {
+                coeff_cdf_q_ctx: 4,
+                tx_size: 0,
+                ctx: 0,
+                tcq_ctx: 0,
+            }),
+            TileCdfArray::CoeffBase,
+            "coeff_cdf_q_ctx",
+            4,
+            4,
+        ),
+        (
+            coeff(CoeffCdfSelector::BaseLfEob {
+                coeff_cdf_q_ctx: 0,
+                tx_size: 5,
+                ctx: 0,
+            }),
+            TileCdfArray::CoeffBaseLfEob,
+            "tx_size",
+            5,
+            5,
+        ),
+        (
+            coeff(CoeffCdfSelector::BasePh {
+                coeff_cdf_q_ctx: 4,
+                ctx: 0,
+            }),
+            TileCdfArray::CoeffBasePh,
+            "coeff_cdf_q_ctx",
+            4,
+            4,
+        ),
+        (
+            coeff(CoeffCdfSelector::BasePh {
+                coeff_cdf_q_ctx: 0,
+                ctx: 5,
+            }),
+            TileCdfArray::CoeffBasePh,
+            "ctx",
+            5,
+            5,
+        ),
+        (
+            coeff(CoeffCdfSelector::BaseBob {
+                coeff_cdf_q_ctx: 0,
+                tx_size_ctx: 3,
+                ctx: 0,
+            }),
+            TileCdfArray::CoeffBaseBob,
+            "tx_size_ctx",
+            3,
+            3,
+        ),
+        (
+            coeff(CoeffCdfSelector::BaseBob {
+                coeff_cdf_q_ctx: 0,
+                tx_size_ctx: 0,
+                ctx: 3,
+            }),
+            TileCdfArray::CoeffBaseBob,
+            "ctx",
+            3,
+            3,
+        ),
+        (
+            coeff(CoeffCdfSelector::BaseIdtx {
+                coeff_cdf_q_ctx: 0,
+                tx_size_ctx: 0,
+                ctx: 7,
+            }),
+            TileCdfArray::CoeffBaseIdtx,
+            "ctx",
+            7,
+            7,
+        ),
+        (
+            coeff(CoeffCdfSelector::BaseUv {
+                coeff_cdf_q_ctx: 0,
+                ctx: 12,
+            }),
+            TileCdfArray::CoeffBaseUv,
+            "ctx",
+            12,
+            12,
+        ),
+        (
+            coeff(CoeffCdfSelector::Base {
+                coeff_cdf_q_ctx: 0,
+                tx_size: 0,
+                ctx: 0,
+                tcq_ctx: 2,
+            }),
+            TileCdfArray::CoeffBase,
+            "tcq_ctx",
+            2,
+            2,
+        ),
+        (
+            coeff(CoeffCdfSelector::BrLf {
+                coeff_cdf_q_ctx: 0,
+                ctx: 14,
+            }),
+            TileCdfArray::CoeffBrLf,
+            "ctx",
+            14,
+            14,
+        ),
+        (
+            coeff(CoeffCdfSelector::BrIdtx {
+                coeff_cdf_q_ctx: 0,
+                tx_size_ctx: 0,
+                ctx: 7,
+            }),
+            TileCdfArray::CoeffBrIdtx,
+            "ctx",
+            7,
+            7,
+        ),
+        (
+            coeff(CoeffCdfSelector::IdtxSign {
+                coeff_cdf_q_ctx: 0,
+                tx_size_ctx: 0,
+                ctx: 9,
+            }),
+            TileCdfArray::IdtxSign,
+            "ctx",
+            9,
+            9,
+        ),
+    ];
+    for (selector, array, index_name, actual, max_exclusive) in error_cases {
+        assert_selector_out_of_range(&tile, selector, array, index_name, actual, max_exclusive);
+    }
 }
 
 #[test]

@@ -74,14 +74,6 @@ fn tx_size_geometry(start: NonZeroCoeffBlockStartInput) -> CoeffOrdinaryTxSizeGe
     }
 }
 
-fn explicit_base_config(plane_tx_type: usize) -> CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
-    CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
-        plane_tx_type,
-        parity_hiding: false,
-        use_tcq: false,
-    }
-}
-
 fn mode_to_txfm_base_config(
     uv_mode: usize,
     tx_set: usize,
@@ -98,52 +90,22 @@ fn mode_to_txfm_base_config(
     }
 }
 
-fn mode_to_txfm_base_config_with_angle(
-    uv_mode: usize,
-    tx_set: usize,
-    angle_delta_uv: i32,
-) -> CoeffOrdinaryBranchModeToTxfmBaseConfig {
-    CoeffOrdinaryBranchModeToTxfmBaseConfig {
-        angle_delta_uv,
-        ..mode_to_txfm_base_config(uv_mode, tx_set)
-    }
-}
-
-fn mode_to_txfm_base_config_with_luma_tx_type(
-    tx_set: usize,
-    luma_tx_type: usize,
-) -> CoeffOrdinaryBranchModeToTxfmBaseConfig {
-    CoeffOrdinaryBranchModeToTxfmBaseConfig {
-        luma_tx_type,
-        ..mode_to_txfm_base_config(UV_SMOOTH_PRED, tx_set)
-    }
-}
-
-fn mode_to_txfm_base_config_with_chroma_inter_tx_type(
-    tx_set: usize,
-    chroma_inter_tx_type: usize,
-) -> CoeffOrdinaryBranchModeToTxfmBaseConfig {
-    CoeffOrdinaryBranchModeToTxfmBaseConfig {
-        chroma_inter_tx_type,
-        ..mode_to_txfm_base_config(UV_SMOOTH_PRED, tx_set)
-    }
-}
-
-fn mode_to_txfm_base_config_with_chroma_dctonly(
-    uv_mode: usize,
-    tx_set: usize,
-) -> CoeffOrdinaryBranchModeToTxfmBaseConfig {
-    CoeffOrdinaryBranchModeToTxfmBaseConfig {
-        enable_chroma_dctonly: true,
-        ..mode_to_txfm_base_config(uv_mode, tx_set)
-    }
-}
-
-fn explicit_input(
+fn mode_to_txfm_nonzero_input(
     start: NonZeroCoeffBlockStartInput,
-    plane_tx_type: usize,
-) -> CoeffOrdinaryBranchTxSizeDimensionsInput {
-    explicit_input_with_tx_size(start, TX_8X8, plane_tx_type)
+    tx_size: usize,
+    is_inter: bool,
+    base_config: CoeffOrdinaryBranchModeToTxfmBaseConfig,
+) -> CoeffOrdinaryBranchModeToTxfmInput {
+    CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
+        geometry: CoeffOrdinaryTxSizeGeometryConfig {
+            tx_size,
+            ..tx_size_geometry(start)
+        },
+        coeff_cdf_q_ctx: 0,
+        is_inter,
+        base_config,
+        lossless: false,
+    })
 }
 
 fn explicit_input_with_tx_size(
@@ -159,7 +121,11 @@ fn explicit_input_with_tx_size(
             },
             coeff_cdf_q_ctx: 0,
             is_inter: start.eob.is_inter,
-            base_config: explicit_base_config(plane_tx_type),
+            base_config: CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
+                plane_tx_type,
+                parity_hiding: false,
+                use_tcq: false,
+            },
             lossless: false,
         },
     )
@@ -170,13 +136,12 @@ fn mode_to_txfm_input(
     uv_mode: usize,
     tx_set: usize,
 ) -> CoeffOrdinaryBranchModeToTxfmInput {
-    CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
-        geometry: tx_size_geometry(start),
-        coeff_cdf_q_ctx: 0,
-        is_inter: false,
-        base_config: mode_to_txfm_base_config(uv_mode, tx_set),
-        lossless: false,
-    })
+    mode_to_txfm_nonzero_input(
+        start,
+        TX_8X8,
+        false,
+        mode_to_txfm_base_config(uv_mode, tx_set),
+    )
 }
 
 fn mode_to_txfm_input_with_angle(
@@ -186,16 +151,15 @@ fn mode_to_txfm_input_with_angle(
     tx_set: usize,
     angle_delta_uv: i32,
 ) -> CoeffOrdinaryBranchModeToTxfmInput {
-    CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
-        geometry: CoeffOrdinaryTxSizeGeometryConfig {
-            tx_size,
-            ..tx_size_geometry(start)
+    mode_to_txfm_nonzero_input(
+        start,
+        tx_size,
+        false,
+        CoeffOrdinaryBranchModeToTxfmBaseConfig {
+            angle_delta_uv,
+            ..mode_to_txfm_base_config(uv_mode, tx_set)
         },
-        coeff_cdf_q_ctx: 0,
-        is_inter: false,
-        base_config: mode_to_txfm_base_config_with_angle(uv_mode, tx_set, angle_delta_uv),
-        lossless: false,
-    })
+    )
 }
 
 fn mode_to_txfm_luma_input(
@@ -203,16 +167,16 @@ fn mode_to_txfm_luma_input(
     luma_tx_type: usize,
     enable_chroma_dctonly: bool,
 ) -> CoeffOrdinaryBranchModeToTxfmInput {
-    CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
-        geometry: tx_size_geometry(start),
-        coeff_cdf_q_ctx: 0,
-        is_inter: start.eob.is_inter,
-        base_config: CoeffOrdinaryBranchModeToTxfmBaseConfig {
+    mode_to_txfm_nonzero_input(
+        start,
+        TX_8X8,
+        start.eob.is_inter,
+        CoeffOrdinaryBranchModeToTxfmBaseConfig {
+            luma_tx_type,
             enable_chroma_dctonly,
-            ..mode_to_txfm_base_config_with_luma_tx_type(TX_SET_DCTONLY, luma_tx_type)
+            ..mode_to_txfm_base_config(UV_SMOOTH_PRED, TX_SET_DCTONLY)
         },
-        lossless: false,
-    })
+    )
 }
 
 fn luma_start_input(is_inter: bool) -> NonZeroCoeffBlockStartInput {
@@ -228,16 +192,31 @@ fn mode_to_txfm_chroma_inter_input(
     tx_set: usize,
     chroma_inter_tx_type: usize,
 ) -> CoeffOrdinaryBranchModeToTxfmInput {
-    CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
-        geometry: tx_size_geometry(start),
-        coeff_cdf_q_ctx: 0,
-        is_inter: true,
-        base_config: mode_to_txfm_base_config_with_chroma_inter_tx_type(
-            tx_set,
+    mode_to_txfm_nonzero_input(
+        start,
+        TX_8X8,
+        true,
+        CoeffOrdinaryBranchModeToTxfmBaseConfig {
             chroma_inter_tx_type,
-        ),
-        lossless: false,
-    })
+            ..mode_to_txfm_base_config(UV_SMOOTH_PRED, tx_set)
+        },
+    )
+}
+
+fn mode_to_txfm_chroma_dctonly_input(
+    start: NonZeroCoeffBlockStartInput,
+    uv_mode: usize,
+    tx_set: usize,
+) -> CoeffOrdinaryBranchModeToTxfmInput {
+    mode_to_txfm_nonzero_input(
+        start,
+        TX_8X8,
+        start.eob.is_inter,
+        CoeffOrdinaryBranchModeToTxfmBaseConfig {
+            enable_chroma_dctonly: true,
+            ..mode_to_txfm_base_config(uv_mode, tx_set)
+        },
+    )
 }
 
 fn chroma_inter_start_input() -> NonZeroCoeffBlockStartInput {
@@ -265,14 +244,6 @@ fn run_mode_to_txfm(
     })
 }
 
-fn find_payload_for_explicit(plane_tx_type: usize) -> [u8; 12] {
-    find_payload_for_explicit_tx_size(TX_8X8, plane_tx_type)
-}
-
-fn find_payload_for_explicit_tx_size(tx_size: usize, plane_tx_type: usize) -> [u8; 12] {
-    find_payload_for_explicit_start(start_input(), tx_size, plane_tx_type)
-}
-
 fn find_payload_for_explicit_start(
     start: NonZeroCoeffBlockStartInput,
     tx_size: usize,
@@ -297,200 +268,163 @@ fn find_payload_for_explicit_start(
     panic!("no ordinary coefficient payload found");
 }
 
-#[test]
-fn coefficient_ordinary_branch_mode_to_txfm_accepts_mapped_transform() {
-    let start = start_input();
-    let payload = find_payload_for_explicit(ADST_ADST);
-
-    let explicit = run_explicit(&payload, explicit_input(start, ADST_ADST));
-    let derived = run_mode_to_txfm(
+fn assert_mode_to_txfm_matches_explicit(
+    start: NonZeroCoeffBlockStartInput,
+    tx_size: usize,
+    plane_tx_type: usize,
+    input: CoeffOrdinaryBranchModeToTxfmInput,
+) {
+    let payload = find_payload_for_explicit_start(start, tx_size, plane_tx_type);
+    let explicit = run_explicit(
         &payload,
-        mode_to_txfm_input(start, UV_SMOOTH_PRED, TX_SET_INTRA_1),
+        explicit_input_with_tx_size(start, tx_size, plane_tx_type),
     );
-
-    assert_eq!(derived, explicit);
-}
-
-#[test]
-fn coefficient_ordinary_branch_mode_to_txfm_uses_second_mapped_transform() {
-    let start = start_input();
-    let payload = find_payload_for_explicit(ADST_DCT);
-
-    let explicit = run_explicit(&payload, explicit_input(start, ADST_DCT));
-    let derived = run_mode_to_txfm(
-        &payload,
-        mode_to_txfm_input(start, UV_SMOOTH_V_PRED, TX_SET_INTRA_1),
-    );
-
-    assert_eq!(derived, explicit);
-}
-
-#[test]
-fn coefficient_ordinary_branch_mode_to_txfm_falls_back_to_dct() {
-    let start = start_input();
-    let payload = find_payload_for_explicit(DCT_DCT);
-
-    let explicit = run_explicit(&payload, explicit_input(start, DCT_DCT));
-    let derived = run_mode_to_txfm(
-        &payload,
-        mode_to_txfm_input(start, UV_SMOOTH_PRED, TX_SET_DCTONLY),
-    );
-
-    assert_eq!(derived, explicit);
-}
-
-#[test]
-fn coefficient_ordinary_branch_mode_to_txfm_chroma_dctonly_short_circuits() {
-    let start = start_input();
-    let payload = find_payload_for_explicit(DCT_DCT);
-    let input =
-        CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
-            geometry: tx_size_geometry(start),
-            coeff_cdf_q_ctx: 0,
-            is_inter: false,
-            base_config: mode_to_txfm_base_config_with_chroma_dctonly(
-                UV_SMOOTH_PRED,
-                TX_SET_INTRA_2,
-            ),
-            lossless: false,
-        });
-
-    let explicit = run_explicit(&payload, explicit_input(start, DCT_DCT));
     let derived = run_mode_to_txfm(&payload, input);
 
     assert_eq!(derived, explicit);
 }
 
 #[test]
+fn coefficient_ordinary_branch_mode_to_txfm_accepts_mapped_transform() {
+    let start = start_input();
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_8X8,
+        ADST_ADST,
+        mode_to_txfm_input(start, UV_SMOOTH_PRED, TX_SET_INTRA_1),
+    );
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_uses_second_mapped_transform() {
+    let start = start_input();
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_8X8,
+        ADST_DCT,
+        mode_to_txfm_input(start, UV_SMOOTH_V_PRED, TX_SET_INTRA_1),
+    );
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_falls_back_to_dct() {
+    let start = start_input();
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_8X8,
+        DCT_DCT,
+        mode_to_txfm_input(start, UV_SMOOTH_PRED, TX_SET_DCTONLY),
+    );
+}
+
+#[test]
+fn coefficient_ordinary_branch_mode_to_txfm_chroma_dctonly_short_circuits() {
+    let start = start_input();
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_8X8,
+        DCT_DCT,
+        mode_to_txfm_chroma_dctonly_input(start, UV_SMOOTH_PRED, TX_SET_INTRA_2),
+    );
+}
+
+#[test]
 fn coefficient_ordinary_branch_mode_to_txfm_maps_directional_uv_without_remap() {
     let start = start_input();
-    let payload = find_payload_for_explicit(ADST_DCT);
-
-    let explicit = run_explicit(&payload, explicit_input(start, ADST_DCT));
-    let derived = run_mode_to_txfm(
-        &payload,
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_8X8,
+        ADST_DCT,
         mode_to_txfm_input(start, UV_V_PRED, TX_SET_INTRA_1),
     );
-
-    assert_eq!(derived, explicit);
 }
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_maps_directional_uv_with_wide_angle_remap() {
     let start = start_input();
-    let payload = find_payload_for_explicit_tx_size(TX_4X8, DCT_ADST);
-
-    let explicit = run_explicit(
-        &payload,
-        explicit_input_with_tx_size(start, TX_4X8, DCT_ADST),
-    );
-    let derived = run_mode_to_txfm(
-        &payload,
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_4X8,
+        DCT_ADST,
         mode_to_txfm_input_with_angle(start, TX_4X8, UV_D45_PRED, TX_SET_INTRA_1, 0),
     );
-
-    assert_eq!(derived, explicit);
 }
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_directional_uv_falls_back_to_dct() {
     let start = start_input();
-    let payload = find_payload_for_explicit_tx_size(TX_4X8, DCT_DCT);
-
-    let explicit = run_explicit(
-        &payload,
-        explicit_input_with_tx_size(start, TX_4X8, DCT_DCT),
-    );
-    let derived = run_mode_to_txfm(
-        &payload,
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_4X8,
+        DCT_DCT,
         mode_to_txfm_input_with_angle(start, TX_4X8, UV_D45_PRED, TX_SET_DCTONLY, 0),
     );
-
-    assert_eq!(derived, explicit);
 }
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_maps_luma_txtypes() {
     let start = luma_start_input(false);
-    let payload = find_payload_for_explicit_start(start, TX_8X8, ADST_DCT);
-
-    let explicit = run_explicit(&payload, explicit_input(start, ADST_DCT));
-    let derived = run_mode_to_txfm(&payload, mode_to_txfm_luma_input(start, ADST_DCT, false));
-
-    assert_eq!(derived, explicit);
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_8X8,
+        ADST_DCT,
+        mode_to_txfm_luma_input(start, ADST_DCT, false),
+    );
 }
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_luma_ignores_chroma_dctonly() {
     let start = luma_start_input(false);
-    let payload = find_payload_for_explicit_start(start, TX_8X8, DCT_ADST);
-
-    let explicit = run_explicit(&payload, explicit_input(start, DCT_ADST));
-    let derived = run_mode_to_txfm(&payload, mode_to_txfm_luma_input(start, DCT_ADST, true));
-
-    assert_eq!(derived, explicit);
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_8X8,
+        DCT_ADST,
+        mode_to_txfm_luma_input(start, DCT_ADST, true),
+    );
 }
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_luma_inter_uses_txtypes() {
     let start = luma_start_input(true);
-    let payload = find_payload_for_explicit_start(start, TX_8X8, ADST_DCT);
-
-    let explicit = run_explicit(&payload, explicit_input(start, ADST_DCT));
-    let derived = run_mode_to_txfm(&payload, mode_to_txfm_luma_input(start, ADST_DCT, false));
-
-    assert_eq!(derived, explicit);
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_8X8,
+        ADST_DCT,
+        mode_to_txfm_luma_input(start, ADST_DCT, false),
+    );
 }
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_chroma_inter_dctonly_short_circuits() {
     let start = chroma_inter_start_input();
-    let payload = find_payload_for_explicit_start(start, TX_8X8, DCT_DCT);
-
-    let explicit = run_explicit(&payload, explicit_input(start, DCT_DCT));
-    let derived = run_mode_to_txfm(
-        &payload,
-        CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
-            geometry: tx_size_geometry(start),
-            coeff_cdf_q_ctx: 0,
-            is_inter: true,
-            base_config: mode_to_txfm_base_config_with_chroma_dctonly(
-                UV_SMOOTH_PRED,
-                TX_SET_DCTONLY,
-            ),
-            lossless: false,
-        }),
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_8X8,
+        DCT_DCT,
+        mode_to_txfm_chroma_dctonly_input(start, UV_SMOOTH_PRED, TX_SET_DCTONLY),
     );
-
-    assert_eq!(derived, explicit);
 }
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_chroma_inter_txtypes_maps_when_in_set() {
     let start = chroma_inter_start_input();
-    let payload = find_payload_for_explicit_start(start, TX_8X8, ADST_DCT);
-
-    let explicit = run_explicit(&payload, explicit_input(start, ADST_DCT));
-    let derived = run_mode_to_txfm(
-        &payload,
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_8X8,
+        ADST_DCT,
         mode_to_txfm_chroma_inter_input(start, TX_SET_INTER_1, ADST_DCT),
     );
-
-    assert_eq!(derived, explicit);
 }
 
 #[test]
 fn coefficient_ordinary_branch_mode_to_txfm_chroma_inter_txtypes_falls_back_to_dct() {
     let start = chroma_inter_start_input();
-    let payload = find_payload_for_explicit_start(start, TX_8X8, DCT_DCT);
-
-    let explicit = run_explicit(&payload, explicit_input(start, DCT_DCT));
-    let derived = run_mode_to_txfm(
-        &payload,
+    assert_mode_to_txfm_matches_explicit(
+        start,
+        TX_8X8,
+        DCT_DCT,
         mode_to_txfm_chroma_inter_input(start, TX_SET_DCT_IDTX, ADST_DCT),
     );
-
-    assert_eq!(derived, explicit);
 }
 
 fn assert_mode_to_txfm_error_preserves_state<F>(

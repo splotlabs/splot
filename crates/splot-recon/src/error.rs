@@ -6,9 +6,8 @@
 use thiserror::Error;
 
 use crate::{
-    BitDepth, IntraCardinalDirection, IntraCardinalEdge, IntraDcEdge, IntraDirectionalAngle,
-    IntraDirectionalAngleEdge, IntraMiddleDirectionalAngle, IntraPaethEdge, IntraSmoothEdge,
-    PlaneId, PlaneRect, PlaneSize, ReferenceSlot,
+    BitDepth, IntraDcEdge, IntraDirectionalAngleEdge, IntraMiddleDirectionalAngle, IntraPaethEdge,
+    IntraSmoothEdge, PlaneId, PlaneRect, PlaneSize, ReferenceSlot,
 };
 
 /// Result alias used by `splot-recon` constructors and helpers.
@@ -265,36 +264,6 @@ pub enum ReconError {
         /// Maximum sample value allowed by the active bit depth.
         max: u16,
     },
-    /// A required cardinal directional intra prediction edge was absent.
-    #[error("cardinal directional intra prediction {} mode requires {} edge", .direction.name(), .edge.name())]
-    IntraCardinalEdgeUnavailable {
-        /// Cardinal prediction direction being computed.
-        direction: IntraCardinalDirection,
-        /// Required edge that was absent.
-        edge: IntraCardinalEdge,
-    },
-    /// A supplied cardinal directional intra prediction edge did not match the block size.
-    #[error("cardinal directional intra prediction {} edge length mismatch: expected {expected} samples, got {actual}", .edge.name())]
-    IntraCardinalEdgeLengthMismatch {
-        /// Edge whose sample count was checked.
-        edge: IntraCardinalEdge,
-        /// Expected edge sample count.
-        expected: usize,
-        /// Actual edge sample count.
-        actual: usize,
-    },
-    /// A cardinal directional intra prediction edge sample exceeded the active bit depth.
-    #[error("cardinal directional intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}", .edge.name())]
-    IntraCardinalSampleOutOfRange {
-        /// Edge containing the out-of-range sample.
-        edge: IntraCardinalEdge,
-        /// Zero-based index within the edge samples.
-        sample_index: usize,
-        /// Observed sample value.
-        value: u16,
-        /// Maximum sample value allowed by the active bit depth.
-        max: u16,
-    },
     /// A directional-angle pAngle is outside the currently source-backed subset.
     #[error(
         "unsupported one-sided directional intra prediction pAngle {p_angle}; expected 45, 67, or 203"
@@ -303,16 +272,16 @@ pub enum ReconError {
         /// Rejected AV2 pAngle value.
         p_angle: u16,
     },
-    /// A required one-sided directional-angle prediction edge was absent.
-    #[error("directional angle intra prediction pAngle {} requires {} edge", .angle.p_angle(), .edge.name())]
+    /// A required directional prediction edge was absent.
+    #[error("directional intra prediction pAngle {p_angle} requires {} edge", .edge.name())]
     IntraDirectionalAngleEdgeUnavailable {
         /// Directional pAngle being computed.
-        angle: IntraDirectionalAngle,
+        p_angle: u16,
         /// Required edge that was absent.
         edge: IntraDirectionalAngleEdge,
     },
-    /// A supplied one-sided directional-angle edge did not match the block size.
-    #[error("directional angle intra prediction {} edge length mismatch: expected {expected} samples, got {actual}", .edge.name())]
+    /// A supplied directional edge did not match the block size.
+    #[error("directional intra prediction {} edge length mismatch: expected {expected} samples, got {actual}", .edge.name())]
     IntraDirectionalAngleEdgeLengthMismatch {
         /// Edge whose sample count was checked.
         edge: IntraDirectionalAngleEdge,
@@ -321,8 +290,8 @@ pub enum ReconError {
         /// Actual edge sample count.
         actual: usize,
     },
-    /// A one-sided directional-angle edge sample exceeded the active bit depth.
-    #[error("directional angle intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}", .edge.name())]
+    /// A directional edge sample exceeded the active bit depth.
+    #[error("directional intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}", .edge.name())]
     IntraDirectionalAngleSampleOutOfRange {
         /// Edge containing the out-of-range sample.
         edge: IntraDirectionalAngleEdge,
@@ -455,18 +424,8 @@ pub enum ReconError {
         /// Prediction rectangle needing the edge.
         rect: PlaneRect,
     },
-    /// A workspace cardinal directional intra helper could not read a required edge.
-    #[error("current-frame workspace {} cardinal directional intra prediction requires {} edge for rectangle x={} y={} width={} height={}", .plane.name(), .edge.name(), .rect.x(), .rect.y(), .rect.width(), .rect.height())]
-    WorkspaceCardinalIntraPredictionEdgeUnavailable {
-        /// Plane whose workspace storage was checked.
-        plane: PlaneId,
-        /// Required edge that was outside workspace storage.
-        edge: IntraCardinalEdge,
-        /// Prediction rectangle needing the edge.
-        rect: PlaneRect,
-    },
     /// A workspace directional-angle helper could not read a required edge.
-    #[error("current-frame workspace {} directional angle intra prediction pAngle {} requires {} edge for rectangle x={} y={} width={} height={}", .plane.name(), .p_angle, .edge.name(), .rect.x(), .rect.y(), .rect.width(), .rect.height())]
+    #[error("current-frame workspace {} directional intra prediction pAngle {} requires {} edge for rectangle x={} y={} width={} height={}", .plane.name(), .p_angle, .edge.name(), .rect.x(), .rect.y(), .rect.width(), .rect.height())]
     WorkspaceDirectionalAngleIntraPredictionEdgeUnavailable {
         /// Plane whose workspace storage was checked.
         plane: PlaneId,

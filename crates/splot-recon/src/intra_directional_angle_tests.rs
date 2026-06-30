@@ -45,6 +45,40 @@ fn assert_idif_prediction(
     assert_eq!(output, expected);
 }
 
+fn middle_prediction(
+    angle: IntraMiddleDirectionalAngle,
+    edges: IntraMiddleDirectionalAngleEdges<'_, u8>,
+) -> [u8; 16] {
+    let mut output = [0u8; 16];
+    predict_intra_middle_directional_angle_rect_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        angle,
+        edges,
+        &mut output,
+        4,
+    )
+    .unwrap();
+    output
+}
+
+fn middle_idif_prediction(
+    angle: IntraMiddleDirectionalAngle,
+    edges: IntraMiddleDirectionalAngleIdifEdges<'_, u8>,
+) -> [u8; 16] {
+    let mut output = [0u8; 16];
+    predict_intra_middle_directional_angle_rect_idif_into(
+        BitDepth::Eight,
+        rect_size(2, 2),
+        angle,
+        edges,
+        &mut output,
+        4,
+    )
+    .unwrap();
+    output
+}
+
 #[test]
 fn d45_prediction_uses_above_edge_and_edge_end_fallback() {
     let above = [10, 20, 30, 40, 50, 60, 70, 80];
@@ -347,7 +381,7 @@ fn directional_angle_prediction_validates_required_edge_presence() {
     assert_eq!(
         err,
         ReconError::IntraDirectionalAngleEdgeUnavailable {
-            angle: IntraDirectionalAngle::D203,
+            p_angle: 203,
             edge: IntraDirectionalAngleEdge::Left
         }
     );
@@ -481,20 +515,12 @@ fn directional_angle_prediction_validates_output_shape() {
 fn d135_middle_prediction_uses_above_and_left_negative_logical_edges() {
     let above = [100, 10, 20, 30, 40];
     let left = [110, 50, 60, 70, 80];
-    let mut output = [0u8; 16];
-
-    predict_intra_middle_directional_angle_rect_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
-        IntraMiddleDirectionalAngle::D135,
-        IntraMiddleDirectionalAngleEdges::both(&left, &above),
-        &mut output,
-        4,
-    )
-    .unwrap();
 
     assert_eq!(
-        output,
+        middle_prediction(
+            IntraMiddleDirectionalAngle::D135,
+            IntraMiddleDirectionalAngleEdges::both(&left, &above),
+        ),
         [
             100, 10, 20, 30, 50, 100, 10, 20, 60, 50, 100, 10, 70, 60, 50, 100
         ]
@@ -505,20 +531,12 @@ fn d135_middle_prediction_uses_above_and_left_negative_logical_edges() {
 fn d113_middle_prediction_matches_non_idif_bilinear_formula() {
     let above = [100, 10, 30, 50, 70];
     let left = [110, 20, 40, 60, 80];
-    let mut output = [0u8; 16];
-
-    predict_intra_middle_directional_angle_rect_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
-        IntraMiddleDirectionalAngle::D113,
-        IntraMiddleDirectionalAngleEdges::both(&left, &above),
-        &mut output,
-        4,
-    )
-    .unwrap();
 
     assert_eq!(
-        output,
+        middle_prediction(
+            IntraMiddleDirectionalAngle::D113,
+            IntraMiddleDirectionalAngleEdges::both(&left, &above),
+        ),
         [
             44, 23, 43, 63, 78, 15, 35, 55, 79, 21, 28, 48, 27, 55, 20, 40
         ]
@@ -529,20 +547,12 @@ fn d113_middle_prediction_matches_non_idif_bilinear_formula() {
 fn d157_middle_prediction_matches_non_idif_bilinear_formula() {
     let above = [100, 10, 30, 50, 70];
     let left = [110, 20, 40, 60, 80];
-    let mut output = [0u8; 16];
-
-    predict_intra_middle_directional_angle_rect_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
-        IntraMiddleDirectionalAngle::D157,
-        IntraMiddleDirectionalAngleEdges::both(&left, &above),
-        &mut output,
-        4,
-    )
-    .unwrap();
 
     assert_eq!(
-        output,
+        middle_prediction(
+            IntraMiddleDirectionalAngle::D157,
+            IntraMiddleDirectionalAngleEdges::both(&left, &above),
+        ),
         [
             54, 88, 69, 17, 33, 25, 31, 65, 53, 45, 38, 30, 73, 65, 58, 50
         ]
@@ -573,20 +583,12 @@ fn middle_directional_angle_prediction_accepts_10_bit_u16_samples() {
 fn d135_idif_middle_prediction_is_a_sample_copy_identical_to_bilinear() {
     let above_idif = [100, 100, 10, 20, 30, 40, 40, 40];
     let left_idif = [110, 110, 50, 60, 70, 80, 80, 80];
-    let mut output = [0u8; 16];
-
-    predict_intra_middle_directional_angle_rect_idif_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
-        IntraMiddleDirectionalAngle::D135,
-        IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-        &mut output,
-        4,
-    )
-    .unwrap();
 
     assert_eq!(
-        output,
+        middle_idif_prediction(
+            IntraMiddleDirectionalAngle::D135,
+            IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
+        ),
         [
             100, 10, 20, 30, 50, 100, 10, 20, 60, 50, 100, 10, 70, 60, 50, 100
         ]
@@ -597,17 +599,10 @@ fn d135_idif_middle_prediction_is_a_sample_copy_identical_to_bilinear() {
 fn d157_idif_middle_prediction_applies_the_4_tap_filter_and_differs_from_bilinear() {
     let above_idif = [100, 100, 10, 30, 50, 70, 70, 70];
     let left_idif = [110, 110, 20, 40, 60, 80, 80, 80];
-    let mut idif_output = [0u8; 16];
-
-    predict_intra_middle_directional_angle_rect_idif_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
+    let idif_output = middle_idif_prediction(
         IntraMiddleDirectionalAngle::D157,
         IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-        &mut idif_output,
-        4,
-    )
-    .unwrap();
+    );
 
     assert_eq!(
         idif_output,
@@ -618,49 +613,23 @@ fn d157_idif_middle_prediction_applies_the_4_tap_filter_and_differs_from_bilinea
 
     let above = [100, 10, 30, 50, 70];
     let left = [110, 20, 40, 60, 80];
-    let mut bilinear_output = [0u8; 16];
-    predict_intra_middle_directional_angle_rect_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
+    let bilinear_output = middle_prediction(
         IntraMiddleDirectionalAngle::D157,
         IntraMiddleDirectionalAngleEdges::both(&left, &above),
-        &mut bilinear_output,
-        4,
-    )
-    .unwrap();
+    );
     assert_ne!(idif_output, bilinear_output);
 }
 
-/// NON-CANONICAL zone-2 pAngle (`pAngle == 132`, an `AngleDeltaY != 0` middle
-/// angle that is NOT one of the named `D113` / `D135` / `D157` modes) over a 4x4
-/// luma IDIF block with ASYMMETRIC above / left edges and a DISTINCT corner. The
-/// expected samples are computed VERBATIM from AVM `av2_highbd_dr_prediction_z2_idif_c`
-/// (`dx = dr_intra_derivative[180 - 132] == dr_intra_derivative[48] == 56`,
-/// `dy = dr_intra_derivative[132 - 90] == dr_intra_derivative[42] == 73`, the
-/// `base_x >= -1` above-vs-left branch, the 4-tap `Dr_Interp_Filter[shift]` over the
-/// IDIF edge, `Clip1(Round2(s, 7))`). This proves the generalized
-/// [`IntraMiddleDirectionalAngle::try_from_p_angle`] / `branch` computes the correct
-/// per-angle `(dx, dy)` from the §9.2 table for an arbitrary in-band pAngle, not just
-/// the three canonical angles. The asymmetric edges make a wrong `(dx, dy)`, a
-/// swapped above/left branch, or a wrong shift observable.
 #[test]
 fn idif_middle_prediction_noncanonical_p132_matches_avm_z2_idif() {
     let above_idif = [200, 200, 120, 130, 140, 150, 150, 150];
     let left_idif = [200, 200, 60, 70, 80, 90, 90, 90];
-    let mut output = [0u8; 16];
-
-    predict_intra_middle_directional_angle_rect_idif_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
-        IntraMiddleDirectionalAngle::try_from_p_angle(132).unwrap(),
-        IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-        &mut output,
-        4,
-    )
-    .unwrap();
 
     assert_eq!(
-        output,
+        middle_idif_prediction(
+            IntraMiddleDirectionalAngle::try_from_p_angle(132).unwrap(),
+            IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
+        ),
         [
             192, 117, 131, 141, 78, 181, 115, 132, 63, 95, 170, 115, 79, 58, 119, 159
         ]
@@ -671,20 +640,12 @@ fn idif_middle_prediction_noncanonical_p132_matches_avm_z2_idif() {
 fn idif_middle_prediction_clamps_negative_4_tap_sum_to_zero() {
     let above_idif = [0, 0, 0, 0, 0, 0, 0, 0];
     let left_idif = [255, 255, 0, 0, 255, 255, 0, 0];
-    let mut output = [9u8; 16];
-
-    predict_intra_middle_directional_angle_rect_idif_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
-        IntraMiddleDirectionalAngle::D157,
-        IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-        &mut output,
-        4,
-    )
-    .unwrap();
 
     assert_eq!(
-        output,
+        middle_idif_prediction(
+            IntraMiddleDirectionalAngle::D157,
+            IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
+        ),
         [
             92, 197, 0, 0, 0, 0, 26, 128, 163, 58, 0, 0, 255, 255, 229, 128
         ]
