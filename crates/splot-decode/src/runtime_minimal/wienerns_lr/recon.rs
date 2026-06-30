@@ -4226,6 +4226,13 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         )
     })?;
     let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())?;
+    super::super::ensure_runtime_limits(
+        options.limits(),
+        frame_size.width,
+        frame_size.height,
+        0,
+        bit_depth,
+    )?;
     let enable_ibp = sequence
         .intra
         .as_ref()

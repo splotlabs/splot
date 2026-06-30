@@ -228,14 +228,23 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
     let sub_x = 1usize;
     let sub_y = 1usize;
 
-    let luma_w = mi_cols * MI_SIZE;
-    let luma_h = mi_rows * MI_SIZE;
-    let chroma_w = luma_w >> sub_x;
-    let chroma_h = luma_h >> sub_y;
+    let luma_size = workspace
+        .plane(PlaneId::Y)
+        .map_err(|_| CdefError::Workspace)?
+        .storage_size();
+    let u_size = workspace
+        .plane(PlaneId::U)
+        .map_err(|_| CdefError::Workspace)?
+        .storage_size();
+    let v_size = workspace
+        .plane(PlaneId::V)
+        .map_err(|_| CdefError::Workspace)?
+        .storage_size();
 
-    let luma_snap = PlaneSnapshot::capture(workspace, PlaneId::Y, luma_w, luma_h)?;
-    let u_snap = PlaneSnapshot::capture(workspace, PlaneId::U, chroma_w, chroma_h)?;
-    let v_snap = PlaneSnapshot::capture(workspace, PlaneId::V, chroma_w, chroma_h)?;
+    let luma_snap =
+        PlaneSnapshot::capture(workspace, PlaneId::Y, luma_size.width(), luma_size.height())?;
+    let u_snap = PlaneSnapshot::capture(workspace, PlaneId::U, u_size.width(), u_size.height())?;
+    let v_snap = PlaneSnapshot::capture(workspace, PlaneId::V, v_size.width(), v_size.height())?;
 
     let mut r = 0usize;
     while r < mi_rows {
@@ -325,12 +334,19 @@ fn cdef_block<T: ReconSample>(
 ) -> Result<(), CdefError> {
     let x0 = ctx.c << MI_SIZE_LOG2;
     let y0 = ctx.r << MI_SIZE_LOG2;
+    let block_w = 8.min(luma_snap.width.saturating_sub(x0));
+    let block_h = 8.min(luma_snap.height.saturating_sub(y0));
+    if block_w == 0 || block_h == 0 {
+        return Ok(());
+    }
     let mut block = [[0i32; 8]; 8];
     for (i, row) in block.iter_mut().enumerate() {
         for (j, cell) in row.iter_mut().enumerate() {
-            let sample = luma_snap
-                .get((x0 + j) as isize, (y0 + i) as isize)
-                .ok_or(CdefError::Geometry)?;
+            let sample = luma_snap.get(
+                (x0 + j.min(block_w - 1)) as isize,
+                (y0 + i.min(block_h - 1)) as isize,
+            );
+            let sample = sample.ok_or(CdefError::Geometry)?;
             *cell = (sample >> ctx.coeff_shift) - 128;
         }
     }
@@ -394,8 +410,8 @@ fn cdef_filter_plane<T: ReconSample>(
     let sub_y = if ctx.sub > 0 { ctx.frame_sub_y } else { 0 };
     let x0 = (ctx.c * MI_SIZE) >> sub_x;
     let y0 = (ctx.r * MI_SIZE) >> sub_y;
-    let w = 8 >> sub_x;
-    let h = 8 >> sub_y;
+    let w = (8 >> sub_x).min(snap.width.saturating_sub(x0));
+    let h = (8 >> sub_y).min(snap.height.saturating_sub(y0));
 
     for i in 0..h {
         for j in 0..w {
@@ -526,6 +542,33 @@ mod tests {
             ws.samples(PlaneId::U).unwrap().iter().all(|&s| s == 100),
             "flat chroma unchanged"
         );
+    }
+
+    #[test]
+    fn partial_coded_edge_blocks_do_not_exceed_plane_bounds() {
+        let width = 18usize;
+        let height = 10usize;
+        let mut ws = workspace_8bit(width, height, 100);
+        cdef_general_intra_frame(
+            &mut ws,
+            CdefFrameParams {
+                y_pri: 4,
+                y_sec: 4,
+                uv_pri: 2,
+                uv_sec: 4,
+                damping: 4,
+            },
+            height.div_ceil(MI_SIZE),
+            width.div_ceil(MI_SIZE),
+            BitDepth::Eight,
+        )
+        .unwrap();
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            assert!(
+                ws.samples(plane).unwrap().iter().all(|&s| s == 100),
+                "flat partial-edge plane remains unchanged"
+            );
+        }
     }
 
     #[test]
