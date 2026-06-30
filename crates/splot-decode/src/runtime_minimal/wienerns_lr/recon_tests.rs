@@ -73,7 +73,7 @@ fn coeff_block_16x16() -> LumaCoeffBlock {
 }
 
 fn sink() -> WienerNsLrReconSink<u16> {
-    WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, true, false, false, 16).unwrap()
+    WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, true, false, false, 0, 16).unwrap()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -94,6 +94,7 @@ fn recon_luma(
         mode,
         None,
         0,
+        None,
         0,
         149,
         true,
@@ -127,6 +128,7 @@ fn recon_luma_cardinal(
         Some(mode),
         Some(directional),
         mrl_index,
+        None,
         0,
         149,
         true,
@@ -173,6 +175,10 @@ fn dc_chroma_non_dc_mode_leaves_the_region_unreconstructed() {
         0,
         &zero_block(),
         Some(SupportedChromaMode::Smooth),
+        0,
+        None,
+        0,
+        0,
         149,
         ByteOffset::new(0),
     )
@@ -186,6 +192,10 @@ fn dc_chroma_non_dc_mode_leaves_the_region_unreconstructed() {
         0,
         &zero_block(),
         Some(SupportedChromaMode::Dc),
+        0,
+        None,
+        0,
+        0,
         149,
         ByteOffset::new(0),
     )
@@ -465,6 +475,10 @@ fn chroma_u_coverage_does_not_satisfy_v_edge_guard() {
         0,
         &zero_block(),
         Some(SupportedChromaMode::Dc),
+        0,
+        None,
+        0,
+        0,
         149,
         ByteOffset::new(0),
     )
@@ -478,6 +492,10 @@ fn chroma_u_coverage_does_not_satisfy_v_edge_guard() {
         0,
         &zero_block(),
         Some(SupportedChromaMode::Dc),
+        0,
+        None,
+        0,
+        0,
         149,
         ByteOffset::new(0),
     )
@@ -492,7 +510,7 @@ fn chroma_u_coverage_does_not_satisfy_v_edge_guard() {
 #[test]
 fn non_reconstructable_quant_defers_everything() {
     let mut sink =
-        WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, false, false, false, 16).unwrap();
+        WienerNsLrReconSink::<u16>::new(64, 64, BitDepth::Ten, false, false, false, 0, 16).unwrap();
     recon_luma(
         &mut sink,
         0,
@@ -509,6 +527,10 @@ fn non_reconstructable_quant_defers_everything() {
         0,
         &zero_block(),
         Some(SupportedChromaMode::Dc),
+        0,
+        None,
+        0,
+        0,
         149,
         ByteOffset::new(0),
     )
@@ -946,9 +968,10 @@ fn intrabc_fractional_dv_runs_bilinear_subpel_predictor() {
     use crate::runtime_minimal::inter::mv_scaling::derive_plane_scaling;
     use splot_recon::{ReferencePlaneView, subpel_predict_block};
 
-    let mut sink = WienerNsLrReconSink::<u16>::new(128, 128, BitDepth::Ten, true, false, false, 16)
-        .unwrap()
-        .into_full_recon();
+    let mut sink =
+        WienerNsLrReconSink::<u16>::new(128, 128, BitDepth::Ten, true, false, false, 0, 16)
+            .unwrap()
+            .into_full_recon();
     for col in 0..4 {
         let dc = 100 + 80 * col as i32;
         recon_luma(
@@ -1102,6 +1125,7 @@ fn intrabc_non_skip_residual_leaf_adds_residual_onto_copied_prediction() {
         Some(IntraYMode::DC_PRED),
         None,
         0,
+        None,
         0,
         149,
         true,
@@ -1145,6 +1169,7 @@ fn intrabc_non_skip_residual_leaf_without_pending_prediction_is_deferred() {
         Some(IntraYMode::DC_PRED),
         None,
         0,
+        None,
         0,
         149,
         true,
@@ -1190,6 +1215,7 @@ fn intrabc_non_skip_residual_leaf_with_real_ist_is_deferred() {
         Some(IntraYMode::DC_PRED),
         None,
         0,
+        None,
         0,
         149,
         true,

@@ -177,6 +177,46 @@ pub(crate) fn approx_divide(num: u64, den: u64) -> Result<u16> {
     Ok(round2(scaled, shift))
 }
 
+pub(crate) fn resolve_division(num: i64, den: i64, shift: u8) -> i16 {
+    if num == 0 || den <= 0 {
+        return 0;
+    }
+    let sign_negative = num < 0;
+    let n_abs = num.unsigned_abs();
+    let d = den as u64;
+    let shift_n = floor_log2(n_abs);
+    let shift_d = floor_log2(d);
+    let e_d = d - (1u64 << shift_d);
+    let f_d = if shift_d > DIV_LUT_BITS {
+        round2_u64(e_d, shift_d - DIV_LUT_BITS) as usize
+    } else {
+        (e_d << (DIV_LUT_BITS - shift_d)) as usize
+    };
+    let f_n = if shift_n > DIV_LUT_BITS {
+        round2_u64(n_abs, shift_n - DIV_LUT_BITS)
+    } else {
+        n_abs << (DIV_LUT_BITS - shift_n)
+    };
+    let shift_add = i32::from(shift_d) - i32::from(shift_n) - i32::from(shift);
+    let max = (2i64 << shift) - 1;
+    let mut ret = if shift_add <= 1 {
+        let shift0 = i32::from(DIV_LUT_PREC_BITS) + i32::from(DIV_LUT_BITS) + shift_add;
+        if shift0 >= 0 {
+            let scale = i64::from(DIV_LUT.get(f_d).copied().unwrap_or(0));
+            (scale * i64::try_from(f_n).unwrap_or(i64::MAX)) >> shift0
+        } else {
+            max
+        }
+    } else {
+        0
+    };
+    ret = ret.min(max);
+    if sign_negative {
+        ret = -ret;
+    }
+    ret as i16
+}
+
 /// AV2 §7.13.2.9 / §7.13.2.12 `resolve_divisor(D)`: decomposes `D` so that
 /// `1/D ≈ scale / 2^shift`, returning `(shift, scale)` with `scale` at
 /// `DIV_LUT_PREC_BITS` precision. Matches AVM `resolve_divisor_32`

@@ -41,6 +41,7 @@ Thumbs.db
 
 # Local AV2 scratch streams (do not commit sample bitstreams)
 /scratch
+/.work/
 *.av2
 *.obu
 # ...but DO track the curated test fixtures.

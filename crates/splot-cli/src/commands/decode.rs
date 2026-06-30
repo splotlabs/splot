@@ -6,6 +6,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -66,6 +67,9 @@ pub struct DecodeArgs {
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     pub threads: ThreadCount,
+    /// Stop after emitting this many output frames.
+    #[arg(long)]
+    pub limit: Option<NonZeroU64>,
 }
 
 #[derive(Debug)]
@@ -491,7 +495,7 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
         .context("decode output target was not resolved")?;
     let output_format = target.format();
 
-    let options = DecodeOptions::default();
+    let options = DecodeOptions::default().with_output_frame_limit(args.limit);
     let report = match read_decode_input(&args.input, options)? {
         DecodeInputRead::Bytes(bytes) => {
             let context = DecodeContext::new(DecodeRuntimeConfig::new(args.threads))?;

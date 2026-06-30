@@ -641,6 +641,7 @@ fn read_inter_residual_plane(
         true,
         chroma_eob_ctx,
         INTER_UV_MODE_DC,
+        0,
         true,
         false,
         TransformToolResidualPolicy::Allow,

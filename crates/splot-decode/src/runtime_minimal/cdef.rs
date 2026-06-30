@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
     BitDepth, CDEF_DIRECTIONS, CDEF_UV_DIR, CdefSampleTaps, CdefTap, CurrentFrameWorkspace,
     PlaneId, ReconSample, cdef_direction, cdef_filter_sample,
@@ -8,6 +9,7 @@ use splot_recon::{
 
 const MI_SIZE: usize = 4;
 const MI_SIZE_LOG2: u32 = 2;
+const CDEF_UNIT_MI: usize = 16;
 const STEP4: usize = 2;
 
 const UNAVAILABLE_TAP: CdefTap = CdefTap {
@@ -28,6 +30,70 @@ pub(crate) struct CdefFrameParams {
     pub(crate) uv_sec: i32,
     /// CDEF damping.
     pub(crate) damping: i32,
+}
+
+pub(crate) fn cdef_frame_strengths(core: &FrameHeaderCore) -> Option<Vec<CdefFrameParams>> {
+    let cdef = core.cdef_params.as_ref()?;
+    if !cdef.cdef_frame_enable {
+        return None;
+    }
+    let damping = i32::from(cdef.cdef_damping?);
+    let mut strengths = Vec::with_capacity(cdef.strengths.len());
+    for set in &cdef.strengths {
+        strengths.push(CdefFrameParams {
+            y_pri: i32::from(set.y_pri_strength),
+            y_sec: i32::from(set.y_sec_strength),
+            uv_pri: i32::from(set.uv_pri_strength),
+            uv_sec: i32::from(set.uv_sec_strength),
+            damping,
+        });
+    }
+    Some(strengths)
+}
+
+/// Parsed CDEF strength index grid, one cell per 64x64 luma filter block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CdefUnitGrid {
+    rows: usize,
+    cols: usize,
+    values: Vec<Option<usize>>,
+}
+
+impl CdefUnitGrid {
+    /// Creates a row-major CDEF unit grid.
+    pub(crate) fn new(
+        rows: usize,
+        cols: usize,
+        values: Vec<Option<usize>>,
+    ) -> Result<Self, CdefError> {
+        if values.len() != rows.checked_mul(cols).ok_or(CdefError::Geometry)? {
+            return Err(CdefError::Geometry);
+        }
+        Ok(Self { rows, cols, values })
+    }
+
+    fn constant(mi_rows: usize, mi_cols: usize, value: usize) -> Result<Self, CdefError> {
+        let rows = mi_rows.div_ceil(CDEF_UNIT_MI);
+        let cols = mi_cols.div_ceil(CDEF_UNIT_MI);
+        let values_len = rows.checked_mul(cols).ok_or(CdefError::Geometry)?;
+        Ok(Self {
+            rows,
+            cols,
+            values: vec![Some(value); values_len],
+        })
+    }
+
+    fn strength_for_mi(&self, mi_row: usize, mi_col: usize) -> Result<Option<usize>, CdefError> {
+        let row = mi_row / CDEF_UNIT_MI;
+        let col = mi_col / CDEF_UNIT_MI;
+        if row >= self.rows || col >= self.cols {
+            return Ok(None);
+        }
+        self.values
+            .get(row * self.cols + col)
+            .copied()
+            .ok_or(CdefError::Geometry)
+    }
 }
 
 struct PlaneSnapshot {
@@ -82,6 +148,19 @@ pub(crate) fn cdef_general_intra_frame<T: ReconSample>(
     mi_cols: usize,
     bit_depth: BitDepth,
 ) -> Result<(), CdefError> {
+    let grid = CdefUnitGrid::constant(mi_rows, mi_cols, 0)?;
+    cdef_general_intra_frame_indexed(workspace, &[params], &grid, mi_rows, mi_cols, bit_depth)
+}
+
+/// Applies AV2 § 7.18 CDEF using the parsed per-unit strength index grid.
+pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    strengths: &[CdefFrameParams],
+    grid: &CdefUnitGrid,
+    mi_rows: usize,
+    mi_cols: usize,
+    bit_depth: BitDepth,
+) -> Result<(), CdefError> {
     let coeff_shift = u32::from(bit_depth.bits()) - 8;
     let max_sample = i32::from(bit_depth.max_sample());
 
@@ -101,6 +180,11 @@ pub(crate) fn cdef_general_intra_frame<T: ReconSample>(
     while r < mi_rows {
         let mut c = 0usize;
         while c < mi_cols {
+            let Some(strength_index) = grid.strength_for_mi(r, c)? else {
+                c += STEP4;
+                continue;
+            };
+            let params = *strengths.get(strength_index).ok_or(CdefError::Geometry)?;
             cdef_block(
                 workspace,
                 &CdefBlockCtx {

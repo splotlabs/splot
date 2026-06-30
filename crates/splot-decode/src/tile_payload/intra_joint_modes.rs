@@ -234,9 +234,7 @@ impl TileUsesMrlsState {
         n4w: usize,
         n4h: usize,
     ) -> [u8; 2] {
-        npos_neighbour_values(NO_MRL, (r, c), (n4w, n4h), r, self.sb_size4, |row, col| {
-            self.grid.cell(row, col)
-        })
+        npos_grid_values(NO_MRL, &self.grid, r, c, n4w, n4h, self.sb_size4)
     }
 
     /// Writes the block's derived `UsesMrls` value into every MI cell it covers.
@@ -301,10 +299,22 @@ impl TileFscModeState {
     }
 
     fn neighbour_fsc_modes(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> [u8; 2] {
-        npos_neighbour_values(NO_FSC, (r, c), (n4w, n4h), r, self.sb_size4, |row, col| {
-            self.grid.cell(row, col)
-        })
+        npos_grid_values(NO_FSC, &self.grid, r, c, n4w, n4h, self.sb_size4)
     }
+}
+
+fn npos_grid_values(
+    default: u8,
+    grid: &MiGrid<u8>,
+    r: usize,
+    c: usize,
+    n4w: usize,
+    n4h: usize,
+    sb_size4: usize,
+) -> [u8; 2] {
+    npos_neighbour_values(default, (r, c), (n4w, n4h), r, sb_size4, |row, col| {
+        grid.cell(row, col)
+    })
 }
 
 fn neighbour_value_or(
@@ -501,9 +511,15 @@ pub(crate) enum TileIntraJointModeStateError {
 }
 
 /// Tile-local AV2 § 5.20.5.3 `YModes[r][c]` grid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TileIntraYModeFacts {
+    pub(crate) y_mode: IntraYMode,
+    pub(crate) angle_delta_y: i8,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileIntraYModeState {
-    grid: MiGrid<Option<IntraYMode>>,
+    grid: MiGrid<Option<TileIntraYModeFacts>>,
 }
 
 impl TileIntraYModeState {
@@ -512,7 +528,7 @@ impl TileIntraYModeState {
         let grid = MiGrid::new(
             mi_rows,
             mi_cols,
-            None::<IntraYMode>,
+            None::<TileIntraYModeFacts>,
             |mi_rows, mi_cols| TileIntraYModeStateError::EmptyDimensions { mi_rows, mi_cols },
             |operation, left, right| TileIntraYModeStateError::ArithmeticOverflow {
                 operation,
@@ -533,12 +549,20 @@ impl TileIntraYModeState {
         n4w: usize,
         n4h: usize,
         y_mode: IntraYMode,
+        angle_delta_y: i8,
     ) {
-        self.grid.record_block((r, c), (n4w, n4h), Some(y_mode));
+        self.grid.record_block(
+            (r, c),
+            (n4w, n4h),
+            Some(TileIntraYModeFacts {
+                y_mode,
+                angle_delta_y,
+            }),
+        );
     }
 
-    /// Reads the stored luma `YMode` for a chroma-only SDP block.
-    pub(crate) fn y_mode_at(&self, row: usize, col: usize) -> Option<IntraYMode> {
+    /// Reads the stored luma mode facts for a chroma-only SDP block.
+    pub(crate) fn y_mode_facts_at(&self, row: usize, col: usize) -> Option<TileIntraYModeFacts> {
         self.grid.cell(row, col).flatten()
     }
 }
@@ -742,12 +766,16 @@ mod tests {
     #[test]
     fn y_mode_state_records_and_clips_blocks() {
         let mut state = TileIntraYModeState::new(4, 4).unwrap();
-        state.record_block(2, 2, 16, 16, IntraYMode::DC_PRED);
+        state.record_block(2, 2, 16, 16, IntraYMode::DC_PRED, -3);
 
-        assert_eq!(state.y_mode_at(2, 2), Some(IntraYMode::DC_PRED));
-        assert_eq!(state.y_mode_at(3, 3), Some(IntraYMode::DC_PRED));
-        assert_eq!(state.y_mode_at(0, 0), None);
-        assert_eq!(state.y_mode_at(4, 4), None);
+        let expected = Some(TileIntraYModeFacts {
+            y_mode: IntraYMode::DC_PRED,
+            angle_delta_y: -3,
+        });
+        assert_eq!(state.y_mode_facts_at(2, 2), expected);
+        assert_eq!(state.y_mode_facts_at(3, 3), expected);
+        assert_eq!(state.y_mode_facts_at(0, 0), None);
+        assert_eq!(state.y_mode_facts_at(4, 4), None);
     }
 
     #[test]

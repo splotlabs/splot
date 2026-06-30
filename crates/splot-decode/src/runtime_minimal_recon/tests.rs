@@ -165,6 +165,53 @@ fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
     assert!(!got.contains(&200));
 }
 
+#[test]
+fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
+    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let mut rows = vec![0u8; 64 * 4];
+    for col in 0..64 {
+        rows[2 * 64 + col] = 200;
+        rows[3 * 64 + col] = 100;
+    }
+    ws.write_rect_block(
+        PlaneId::Y,
+        0,
+        8,
+        IntraRectBlockSize::new(6, 2).unwrap(),
+        &rows,
+    )
+    .unwrap();
+
+    reconstruct_general_intra_mrl_secondary_above_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        45,
+        8,
+        12,
+        3,
+        3,
+        0,
+        4,
+        OneSidedAboveMrl {
+            mrl_index: 1,
+            above_mrl_index: 1,
+        },
+        false,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    for row in 0..8 {
+        for col in 0..8 {
+            assert_eq!(
+                ws.reconstructed_sample(PlaneId::Y, 8 + col, 12 + row)
+                    .unwrap(),
+                150
+            );
+        }
+    }
+}
+
 /// §7.13.2.8 ZONE-2 TWO-SIDED GUARD — a non-canonical `pAngle == 132` middle leaf
 /// over an 8x8 block at interior (8, 8) with a REAL, NON-FLAT above row + left
 /// column + DISTINCT diagonal corner, the §7.13.2.7 edge filter a NO-OP
@@ -899,6 +946,7 @@ fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
         &mut ws,
         &all_zero_luma_block(),
         45, // pAngle (zone-1)
+        PlaneId::Y,
         8,
         8,
         3, // log2_width = 3 -> 8

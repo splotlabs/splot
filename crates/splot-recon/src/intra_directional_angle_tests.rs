@@ -415,6 +415,24 @@ fn directional_angle_prediction_validates_edge_lengths() {
 }
 
 #[test]
+fn directional_angle_prediction_clamps_zone1_projection_to_edge_end() {
+    let above = (0..48).collect::<Vec<u16>>();
+    let mut output = vec![999u16; 32 * 16];
+
+    predict_intra_directional_angle_rect_into(
+        BitDepth::Ten,
+        rect_size(5, 4),
+        IntraDirectionalAngle::try_from_p_angle(39).unwrap(),
+        IntraDirectionalAngleEdges::above(&above),
+        &mut output,
+        32,
+    )
+    .unwrap();
+
+    assert_eq!(output[15 * 32 + 31], 47);
+}
+
+#[test]
 fn directional_angle_prediction_validates_edge_sample_ranges() {
     let above = [0u16, 1, 2, 3, 4, 5, 6, 1024];
     let mut output = [9u16; 16];

@@ -7,6 +7,7 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 
 use crate::error::Result;
+use crate::runtime_minimal::ccso::CcsoUnitGrid;
 use crate::tile_payload::{DecodeBlockFrontier, DecodeTileWorkUnit, TileCdfSelector};
 
 use super::super::{
@@ -155,6 +156,22 @@ impl CcsoState {
             return None;
         }
         unit_row.checked_mul(self.grid_cols)?.checked_add(unit_col)
+    }
+
+    pub(super) fn into_grid(self, tile_offset: ByteOffset) -> Result<Option<CcsoUnitGrid>> {
+        if !self.active {
+            return Ok(None);
+        }
+        CcsoUnitGrid::new(
+            self.active,
+            self.shift,
+            self.plane_enabled,
+            self.blocks,
+            self.grid_rows,
+            self.grid_cols,
+        )
+        .map(Some)
+        .map_err(|_| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))
     }
 }
 

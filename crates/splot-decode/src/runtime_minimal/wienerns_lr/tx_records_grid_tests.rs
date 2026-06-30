@@ -36,7 +36,8 @@ fn per_transform_far_edge_counts_within_coding_block_above_right() {
         n4w: 8,
         n4h: 2,
     };
-    let (above_right, _below_left) = transform_luma_far_edge_avail(&state, 30, 224, 4, 2, block);
+    let (above_right, _below_left) =
+        transform_luma_far_edge_avail(&state, 30, 224, 4, 2, false, block);
     assert_eq!(
         above_right, 4,
         "LEFT TX_16X8 of BLOCK_32X8 reads its above-right within the coding block (num4AboveRight == 4)"
@@ -70,10 +71,34 @@ fn per_transform_far_edge_within_block_non_top_transform_above_right() {
         n4w: 4,
         n4h: 16,
     };
-    let (above_right, _below_left) = transform_luma_far_edge_avail(&state, 8, 0, 2, 8, block);
+    let (above_right, _below_left) =
+        transform_luma_far_edge_avail(&state, 8, 0, 2, 8, false, block);
     assert_eq!(
         above_right, 2,
         "in-block non-top TX_8X32 reads its above-right within the coding block (num4AboveRight == 2)"
+    );
+}
+
+#[test]
+fn late_uneven5_transform_records_suppress_far_edges() {
+    let mut state = TileBlockDecodedState::new(3, 1, 1, SB_SIZE4, 64, 64).unwrap();
+    state.clear_superblock(0, 0);
+    let block = LumaCodingBlockExtent {
+        block_row: 0,
+        block_col: 0,
+        n4w: 16,
+        n4h: 16,
+    };
+
+    assert_eq!(
+        transform_luma_far_edge_avail(&state, 4, 0, 8, 4, false, block),
+        (8, 4),
+        "ordinary in-block transform edges are available"
+    );
+    assert_eq!(
+        transform_luma_far_edge_avail(&state, 4, 0, 8, 4, true, block),
+        (0, 0),
+        "AVM disables far-edge extension for TX_PARTITION_HORZ5/VERT5 records after txb_idx 0"
     );
 }
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+#![allow(clippy::large_types_passed_by_value)]
+
 //! `splot` — a thin command-line interface over the `splot-*` library crates.
 //!
 //! This binary only parses arguments, initializes logging, reads/writes files,

@@ -21,7 +21,18 @@ struct SourceLineAllowance {
     reason: &'static str,
 }
 
-const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[];
+const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
+    SourceLineAllowance {
+        path: "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon.rs",
+        max_lines: 5_200,
+        reason: "temporary ac0ej3 selectable-reconstruction frontier before module split",
+    },
+    SourceLineAllowance {
+        path: "crates/splot-decode/src/runtime_minimal_recon.rs",
+        max_lines: 3_000,
+        reason: "temporary ac0ej3 intra-reconstruction frontier before module split",
+    },
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceFileLineCount {

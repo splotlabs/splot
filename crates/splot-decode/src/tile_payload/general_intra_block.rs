@@ -13,7 +13,8 @@ use super::cdf::block_context::{
     SupportedDirectionalLumaMode, SupportedNonDcLumaMode, YModeEscapeResult,
     reconstruct_minimal_y_mode, reconstruct_y_mode_first_set_directional_top_left,
     reconstruct_y_mode_offset_escape_top_left, reconstruct_y_mode_second_set_top_left,
-    reconstruct_y_mode_with_neighbours, supported_chroma_mode, uv_mode_ctx,
+    reconstruct_y_mode_with_neighbours, resolved_chroma_uv_mode, supported_chroma_mode,
+    uv_mode_ctx,
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
@@ -119,6 +120,7 @@ pub(crate) struct GeneralIntraBlockModes {
     pub(crate) uv_mode: u8,
     coeff_uv_mode: u8,
     is_cfl: bool,
+    cfl_params: Option<CflParams>,
     pub(crate) intra_joint_mode: u8,
     pub(crate) mrl_index: u8,
     pub(crate) mrl_sec_index: Option<u8>,
@@ -131,22 +133,40 @@ pub(crate) struct GeneralIntraChromaBlockMode {
     uv_mode: u8,
     coeff_uv_mode: u8,
     is_cfl: bool,
+    cfl_params: Option<CflParams>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CflIndex {
+    Explicit,
+    DerivedAlpha,
+    Multi,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CflParams {
+    pub(crate) index: CflIndex,
+    pub(crate) alpha_u: i8,
+    pub(crate) alpha_v: i8,
+    pub(crate) mh_dir: Option<u8>,
 }
 
 impl GeneralIntraChromaBlockMode {
-    const fn no_cfl(uv_mode: u8) -> Self {
+    const fn no_cfl(uv_mode: u8, coeff_uv_mode: u8) -> Self {
         Self {
             uv_mode,
-            coeff_uv_mode: uv_mode,
+            coeff_uv_mode,
             is_cfl: false,
+            cfl_params: None,
         }
     }
 
-    const fn cfl() -> Self {
+    const fn cfl(cfl_params: CflParams) -> Self {
         Self {
             uv_mode: UV_CFL_PRED_MODE,
             coeff_uv_mode: UV_CFL_PRED_MODE,
             is_cfl: true,
+            cfl_params: Some(cfl_params),
         }
     }
 
@@ -160,6 +180,10 @@ impl GeneralIntraChromaBlockMode {
 
     pub(crate) const fn is_cfl(self) -> bool {
         self.is_cfl
+    }
+
+    pub(crate) const fn cfl_params(self) -> Option<CflParams> {
+        self.cfl_params
     }
 }
 
@@ -187,6 +211,10 @@ impl GeneralIntraBlockModes {
 
     pub(crate) const fn is_cfl(&self) -> bool {
         self.is_cfl
+    }
+
+    pub(crate) const fn cfl_params(&self) -> Option<CflParams> {
+        self.cfl_params
     }
 
     pub(crate) fn supported_nondc_luma(&self) -> Option<SupportedNonDcLumaMode> {
@@ -376,6 +404,7 @@ pub(crate) fn decode_general_intra_block_modes(
         uv_mode: uv_mode.uv_mode(),
         coeff_uv_mode: uv_mode.coeff_uv_mode,
         is_cfl: uv_mode.is_cfl(),
+        cfl_params: uv_mode.cfl_params(),
         intra_joint_mode: luma.intra_joint_mode,
         mrl_index: luma.mrl_index,
         mrl_sec_index: luma.mrl_sec_index,
@@ -414,7 +443,7 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
             if mhccp_allowed && !cfl_allowed {
                 return Err(GeneralIntraBlockModeError::UnsupportedMhccpMode);
             }
-            read_cfl_alphas(
+            let cfl_params = read_cfl_alphas(
                 work_unit,
                 symbols,
                 chroma_tools,
@@ -422,7 +451,7 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
                 block_n4w,
                 block_n4h,
             )?;
-            return Ok(GeneralIntraChromaBlockMode::cfl());
+            return Ok(GeneralIntraChromaBlockMode::cfl(cfl_params));
         }
     }
 
@@ -446,7 +475,10 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
         return Err(GeneralIntraBlockModeError::InvalidUvMode { uv_mode });
     }
 
-    Ok(GeneralIntraChromaBlockMode::no_cfl(uv_mode))
+    let coeff_uv_mode = resolved_chroma_uv_mode(y_mode, uv_mode)
+        .ok_or(GeneralIntraBlockModeError::InvalidUvMode { uv_mode })?;
+
+    Ok(GeneralIntraChromaBlockMode::no_cfl(uv_mode, coeff_uv_mode))
 }
 
 fn read_cfl_alphas(
@@ -456,7 +488,7 @@ fn read_cfl_alphas(
     block_size_index: usize,
     block_n4w: usize,
     block_n4h: usize,
-) -> Result<(), GeneralIntraBlockModeError> {
+) -> Result<CflParams, GeneralIntraBlockModeError> {
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let mhccp_allowed = mhccp_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h);
     let cfl_mhccp = if !chroma_tools.enable_cfl_intra {
@@ -475,40 +507,71 @@ fn read_cfl_alphas(
 
     if cfl_index == CFL_MULTI {
         let size_group = cfl_mh_dir_size_group(block_size_index)?;
-        let _ = read_symbol(
+        let mh_dir = read_symbol(
             cdfs,
             symbols,
             TileCdfSelector::CflMhDir { size_group },
             CFL_MH_DIR_REASON,
         )?;
+        return Ok(CflParams {
+            index: CflIndex::Multi,
+            alpha_u: 0,
+            alpha_v: 0,
+            mh_dir: Some(mh_dir),
+        });
     }
 
     if cfl_index != CFL_EXPLICIT {
-        return Ok(());
+        return Ok(CflParams {
+            index: CflIndex::DerivedAlpha,
+            alpha_u: 0,
+            alpha_v: 0,
+            mh_dir: None,
+        });
     }
 
     let cfl_alpha_signs = read_symbol(cdfs, symbols, TileCdfSelector::CflSign, CFL_SIGN_REASON)?;
     let sign_u = (cfl_alpha_signs + 1) / 3;
     let sign_v = (cfl_alpha_signs + 1) % 3;
-    if sign_u != CFL_SIGN_ZERO {
+    let alpha_u = if sign_u != CFL_SIGN_ZERO {
         let ctx = cfl_alpha_u_ctx(sign_u, sign_v);
-        let _ = read_symbol(
-            cdfs,
-            symbols,
-            TileCdfSelector::CflAlpha { ctx },
-            CFL_ALPHA_U_REASON,
-        )?;
-    }
-    if sign_v != CFL_SIGN_ZERO {
+        signed_cfl_alpha(
+            sign_u,
+            read_symbol(
+                cdfs,
+                symbols,
+                TileCdfSelector::CflAlpha { ctx },
+                CFL_ALPHA_U_REASON,
+            )?,
+        )
+    } else {
+        0
+    };
+    let alpha_v = if sign_v != CFL_SIGN_ZERO {
         let ctx = cfl_alpha_v_ctx(sign_u, sign_v);
-        let _ = read_symbol(
-            cdfs,
-            symbols,
-            TileCdfSelector::CflAlpha { ctx },
-            CFL_ALPHA_V_REASON,
-        )?;
-    }
-    Ok(())
+        signed_cfl_alpha(
+            sign_v,
+            read_symbol(
+                cdfs,
+                symbols,
+                TileCdfSelector::CflAlpha { ctx },
+                CFL_ALPHA_V_REASON,
+            )?,
+        )
+    } else {
+        0
+    };
+    Ok(CflParams {
+        index: CflIndex::Explicit,
+        alpha_u,
+        alpha_v,
+        mh_dir: None,
+    })
+}
+
+fn signed_cfl_alpha(sign: u8, alpha_minus_one: u8) -> i8 {
+    let magnitude = alpha_minus_one.saturating_add(1) as i8;
+    if sign == 1 { -magnitude } else { magnitude }
 }
 
 fn decode_luma_y_mode(
@@ -1086,6 +1149,15 @@ mod tests {
         assert!(mode.is_cfl());
         assert_eq!(mode.uv_mode(), UV_CFL_PRED_MODE);
         assert_eq!(mode.coeff_uv_mode(), usize::from(UV_CFL_PRED_MODE));
+        assert_eq!(
+            mode.cfl_params(),
+            Some(CflParams {
+                index: CflIndex::DerivedAlpha,
+                alpha_u: 0,
+                alpha_v: 0,
+                mh_dir: None
+            })
+        );
         assert_eq!(symbols.symbol_count(), 2);
         assert_eq!(symbols.finish().unwrap().symbol_count, 2);
     }
@@ -1126,7 +1198,7 @@ mod tests {
         let mut work_unit = make_work_unit(&payload);
         let mut symbols = symbol_decoder(&payload);
 
-        read_cfl_alphas(
+        let params = read_cfl_alphas(
             &mut work_unit,
             &mut symbols,
             GeneralIntraChromaToolConfig::new(true, false),
@@ -1136,6 +1208,15 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(
+            params,
+            CflParams {
+                index: CflIndex::Explicit,
+                alpha_u: 4,
+                alpha_v: 5,
+                mh_dir: None
+            }
+        );
         assert_eq!(symbols.symbol_count(), 4);
         assert_eq!(symbols.finish().unwrap().symbol_count, 4);
     }

@@ -13,15 +13,19 @@ use splot_core::tables::conversion::{
 use splot_recon::{BitDepth, PlaneId, max_quantizer_index};
 
 use crate::error::Result;
+use crate::runtime_minimal::ccso::CcsoUnitGrid;
+use crate::runtime_minimal::cdef::CdefUnitGrid;
 use crate::tile_payload::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, DecodeBlockFrontier,
     DecodeTileWorkUnit, GeneralIntraBlockModeError, GeneralIntraChromaModeContext,
     GeneralIntraChromaToolConfig, GeneralIntraLeafMode, GeneralIntraMultiblockError,
     GeneralIntraResidualError, IntraIstSyntax, IntraYMode, LumaCoeffBlock,
-    LumaTransformTypeContext, TileCdfSelector, TileCoeffContextState, TransformToolResidualPolicy,
+    LumaTransformTypeContext, TileBlockDecodedState, TileCdfSelector, TileCoeffContextState,
+    TransformToolResidualPolicy, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
     decode_general_intra_block_modes, decode_general_intra_chroma_block_mode,
-    decode_general_intra_luma_block_mode, decode_general_intra_multiblock_tree,
-    decode_general_intra_plane_coeffs, frame_mi_dimensions, supported_chroma_mode,
+    decode_general_intra_luma_block_mode,
+    decode_general_intra_multiblock_tree_with_lr_source_blocks, decode_general_intra_plane_coeffs,
+    frame_mi_dimensions, supported_chroma_mode,
 };
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
@@ -93,6 +97,7 @@ struct Block4x4Extent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ResidualDecodeContext {
     uv_mode: usize,
+    angle_delta_uv: i32,
     is_inter: bool,
     fsc_mode: u8,
     tool_policy: TransformToolResidualPolicy,
@@ -115,11 +120,23 @@ impl ResidualDecodeContext {
     }
 }
 
+fn chroma_angle_delta_uv(y_mode: IntraYMode, uv_mode: usize, angle_delta_y: i8) -> i32 {
+    if uv_mode == y_mode.value() {
+        i32::from(angle_delta_y)
+    } else {
+        0
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct WienerNsLrLiveTransformRecordHandoff {
     pub(super) tx_skip_rows: usize,
     pub(super) tx_skip_cols: usize,
     pub(super) records: Vec<WienerNsLrTxSkipTransformRecord>,
+    pub(super) active_source_blocks: Vec<WienerNsLrSourceBlock>,
+    pub(super) unit_filters: Vec<WienerNsLrUnitFilter>,
+    pub(in crate::runtime_minimal) cdef_grid: Option<CdefUnitGrid>,
+    pub(in crate::runtime_minimal) ccso_grid: Option<CcsoUnitGrid>,
 }
 
 #[cfg_attr(
@@ -547,6 +564,12 @@ impl CdefState {
     const fn sb_size4_units(&self) -> usize {
         self.sb_size4 / CDEF_UNIT_MI
     }
+
+    fn into_grid(self, tile_offset: ByteOffset) -> Result<CdefUnitGrid> {
+        CdefUnitGrid::new(self.rows, self.cols, self.values).map_err(|_| {
+            selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_shape"))
+        })
+    }
 }
 
 impl SelectableLumaTxGrid {
@@ -814,7 +837,7 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
     let mut intrabc_state =
         TileIntrabcPreludeState::new(tx_skip_rows, tx_skip_cols, sequence, tile_offset)?;
 
-    let symbols = decode_general_intra_multiblock_tree(
+    let tree_output = decode_general_intra_multiblock_tree_with_lr_source_blocks(
         tile,
         sequence,
         core,
@@ -863,6 +886,12 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         selectable_reason!("missing_sdp_luma_mode"),
                     )
                 })?;
+                let angle_delta_y = frontier.stored_luma_angle_delta_y().ok_or_else(|| {
+                    selectable_decode_error(
+                        tile_offset,
+                        selectable_reason!("missing_sdp_luma_angle_delta"),
+                    )
+                })?;
                 let uv_mode = decode_general_intra_chroma_block_mode(
                     work_unit,
                     symbols,
@@ -881,9 +910,10 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     leaf_y_mode: Some(y_mode),
                     directional_luma: None,
                     mrl_index: 0,
-                    // SDP chroma-part leaf decodes no luma directional mode.
-                    angle_delta_y: 0,
+                    mrl_sec_index: None,
+                    angle_delta_y,
                     chroma_mode: supported_chroma_mode(y_mode, uv_mode.uv_mode()),
+                    cfl_params: uv_mode.cfl_params(),
                     qindex: delta_q_state.qindex_u32(),
                     luma_use_tcq,
                     fsc_mode: false,
@@ -895,8 +925,14 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     &mut coeff_ctx,
                     frontier,
                     block_extent,
+                    block_decoded,
                     ResidualDecodeContext {
                         uv_mode: uv_mode.coeff_uv_mode(),
+                        angle_delta_uv: chroma_angle_delta_uv(
+                            y_mode,
+                            uv_mode.coeff_uv_mode(),
+                            angle_delta_y,
+                        ),
                         is_inter: false,
                         fsc_mode: 0,
                         tool_policy: transform_tool_residual_policy,
@@ -928,13 +964,15 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 luma_transform_type_context,
                 fsc_mode,
                 chroma_mode,
+                cfl_params,
                 directional_luma,
             ) = if prelude.use_intrabc {
                 (
                     0,
-                    GeneralIntraLeafMode::luma(0, IntraYMode::DC_PRED, 0, 0),
+                    GeneralIntraLeafMode::luma(0, IntraYMode::DC_PRED, 0, 0, 0),
                     LumaTransformTypeContext::with_mrl_index(IntraYMode::DC_PRED, 0, 0),
                     0,
+                    None,
                     None,
                     None,
                 )
@@ -958,15 +996,18 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     GeneralIntraLeafMode::luma(
                         luma.intra_joint_mode,
                         luma.y_mode,
+                        luma.angle_delta_y,
                         luma.fsc_mode,
                         luma.uses_mrls,
                     ),
-                    LumaTransformTypeContext::with_mrl_index(
+                    LumaTransformTypeContext::with_mrl_indices(
                         luma.y_mode,
                         luma.angle_delta_y,
                         luma.mrl_index,
+                        luma.mrl_sec_index,
                     ),
                     luma.fsc_mode,
+                    None,
                     None,
                     luma.supported_directional_luma(),
                 )
@@ -992,17 +1033,20 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     GeneralIntraLeafMode::luma(
                         modes.intra_joint_mode,
                         modes.y_mode,
+                        modes.angle_delta_y,
                         modes.fsc_mode,
                         modes.uses_mrls,
                     )
                     .with_uv_cfl(modes.is_cfl()),
-                    LumaTransformTypeContext::with_mrl_index(
+                    LumaTransformTypeContext::with_mrl_indices(
                         modes.y_mode,
                         modes.angle_delta_y,
                         modes.mrl_index,
+                        modes.mrl_sec_index,
                     ),
                     modes.fsc_mode,
                     chroma_mode,
+                    modes.cfl_params(),
                     modes.supported_directional_luma(),
                 )
             };
@@ -1035,8 +1079,10 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 leaf_y_mode: leaf_mode.luma_y_mode(),
                 directional_luma,
                 mrl_index: luma_transform_type_context.mrl_index(),
+                mrl_sec_index: luma_transform_type_context.mrl_sec_index(),
                 angle_delta_y: luma_transform_type_context.angle_delta_y(),
                 chroma_mode,
+                cfl_params,
                 qindex: delta_q_state.qindex_u32(),
                 luma_use_tcq,
                 fsc_mode: fsc_mode != 0,
@@ -1054,10 +1100,18 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 prelude.skip_flag,
                 ResidualDecodeContext {
                     uv_mode,
+                    angle_delta_uv: leaf_mode.luma_y_mode().map_or(0, |y_mode| {
+                        chroma_angle_delta_uv(
+                            y_mode,
+                            uv_mode,
+                            luma_transform_type_context.angle_delta_y(),
+                        )
+                    }),
                     is_inter: prelude.is_inter,
                     fsc_mode,
                     tool_policy: transform_tool_residual_policy,
                 },
+                block_decoded,
                 sink.as_deref_mut(),
                 recon_context,
                 tile_offset,
@@ -1073,6 +1127,9 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
         },
     )
     .map_err(selectable_multiblock_error_at(tile_offset))?;
+    let symbols = tree_output.symbols;
+    let active_source_blocks = tree_output.active_source_blocks;
+    let unit_filters = tree_output.unit_filters;
 
     symbols
         .exit_symbol()
@@ -1082,6 +1139,10 @@ pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
         tx_skip_rows,
         tx_skip_cols,
         records,
+        active_source_blocks,
+        unit_filters,
+        cdef_grid: Some(cdef_state.into_grid(tile_offset)?),
+        ccso_grid: ccso_state.into_grid(tile_offset)?,
     })
 }
 
@@ -1124,6 +1185,7 @@ fn decode_selectable_residual_chunks(
     luma_transform_type_context: LumaTransformTypeContext,
     skip_flag: bool,
     residual_context: ResidualDecodeContext,
+    block_decoded: &TileBlockDecodedState,
     mut sink: Option<&mut WienerNsLrReconSink<u16>>,
     recon: SelectableReconContext,
     tile_offset: ByteOffset,
@@ -1136,6 +1198,7 @@ fn decode_selectable_residual_chunks(
             block_extent.rows,
             luma_records,
             records,
+            block_decoded,
             sink,
             recon,
             tile_offset,
@@ -1168,6 +1231,7 @@ fn decode_selectable_residual_chunks(
                 frontier,
                 chroma_group,
                 residual_context,
+                block_decoded,
                 sink.as_deref_mut(),
                 recon,
                 tile_offset,
@@ -1184,6 +1248,7 @@ fn decode_chroma_residual_chunks(
     coeff_ctx: &mut TileCoeffContextState,
     frontier: &DecodeBlockFrontier,
     block_extent: Block4x4Extent,
+    block_decoded: &TileBlockDecodedState,
     residual_context: ResidualDecodeContext,
     mut sink: Option<&mut WienerNsLrReconSink<u16>>,
     recon: SelectableReconContext,
@@ -1198,6 +1263,7 @@ fn decode_chroma_residual_chunks(
                 frontier,
                 chroma_group,
                 residual_context,
+                block_decoded,
                 sink.as_deref_mut(),
                 recon,
                 tile_offset,
@@ -1370,12 +1436,22 @@ fn decode_luma_records_for_chunk(
             selectable_luma_tx_record_fills_block(record, block.rows, block.cols),
             false,
             residual_context.uv_mode,
+            0,
             residual_context.is_inter,
             residual_context.fsc_mode != 0,
             residual_context.luma_policy(luma_transform_type_context),
         )
         .map_err(selectable_residual_error_at(tile_offset))?;
         if let Some(sink) = sink.as_deref_mut() {
+            sink.record_deblock_block(
+                record.col,
+                record.row,
+                record.cols,
+                record.rows,
+                record.tx_size,
+                fixed_largest_420_chroma_tx_size_from_luma_4x4(record.cols, record.rows),
+                recon.qindex,
+            );
             sink.reconstruct_luma_transform(
                 record.col,
                 record.row,
@@ -1384,6 +1460,7 @@ fn decode_luma_records_for_chunk(
                 recon.leaf_y_mode,
                 recon.directional_luma,
                 recon.mrl_index,
+                recon.mrl_sec_index,
                 recon.angle_delta_y,
                 recon.qindex,
                 recon.luma_use_tcq,
@@ -1420,6 +1497,7 @@ fn decode_chroma_group(
     frontier: &DecodeBlockFrontier,
     group: ChromaGroup,
     residual_context: ResidualDecodeContext,
+    block_decoded: &TileBlockDecodedState,
     sink: Option<&mut WienerNsLrReconSink<u16>>,
     recon: SelectableReconContext,
     tile_offset: ByteOffset,
@@ -1457,6 +1535,8 @@ fn decode_chroma_group(
         tile_offset,
     )?;
     if let Some(sink) = sink {
+        let (num4_above_right, num4_below_left) =
+            chroma_group_far_edge_avail(frontier, group, block_decoded);
         for (plane, block) in [(PlaneId::U, &u), (PlaneId::V, &v)] {
             sink.reconstruct_chroma_transform(
                 plane,
@@ -1465,12 +1545,32 @@ fn decode_chroma_group(
                 chroma_y,
                 block,
                 recon.chroma_mode,
+                recon.angle_delta_y,
+                recon.cfl_params,
+                num4_above_right,
+                num4_below_left,
                 recon.qindex,
                 tile_offset,
             )?;
         }
     }
     Ok(())
+}
+
+fn chroma_group_far_edge_avail(
+    frontier: &DecodeBlockFrontier,
+    group: ChromaGroup,
+    block_decoded: &TileBlockDecodedState,
+) -> (usize, usize) {
+    let sb_mask = block_decoded.sb_size4().saturating_sub(1);
+    let x4 = ((frontier.c & sb_mask) >> 1).saturating_add(group.chunk_x.saturating_mul(8));
+    let y4 = ((frontier.r & sb_mask) >> 1).saturating_add(group.chunk_y.saturating_mul(8));
+    let w4 = group.luma_n4w >> 1;
+    let h4 = group.luma_n4h >> 1;
+    (
+        block_decoded.count_top_right_avail(PlaneId::U.index(), x4, y4, w4),
+        block_decoded.count_bottom_left_avail(PlaneId::U.index(), x4, y4, h4),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1498,6 +1598,7 @@ fn decode_chroma_plane_coeffs(
         true,
         chroma_context,
         residual_context.uv_mode,
+        residual_context.angle_delta_uv,
         residual_context.is_inter,
         fsc_mode,
         residual_context.tool_policy,
@@ -1539,8 +1640,13 @@ fn transform_luma_far_edge_avail(
     tx_col: usize,
     tx_w4: usize,
     tx_h4: usize,
+    suppress_uneven5_far_edges: bool,
     block: LumaCodingBlockExtent,
 ) -> (usize, usize) {
+    if suppress_uneven5_far_edges {
+        return (0, 0);
+    }
+
     let sb_mask = block_decoded.sb_size4().saturating_sub(1);
     let x4 = tx_col & sb_mask;
     let y4 = tx_row & sb_mask;
@@ -1579,6 +1685,7 @@ fn record_per_transform_far_edge(
             record.col,
             tx_w4,
             tx_h4,
+            record.middle,
             block,
         );
         sink.record_block_decoded_far_edge(

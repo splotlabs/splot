@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_core::headers::frame::{DeblockingFilterParams, QuantizationParams};
 use splot_core::tables::conversion::{
     Q_FIRST, Q_THRESH_MULTS, SIDE_THRESHOLDS, TX_HEIGHT, TX_WIDTH, W_MULT,
 };
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, PlaneId,
     ReconSample, deblock_adaptive_filter_strength, deblock_filter_choice, deblock_filter_max_width,
-    deblock_sample_filter, deblock_side_threshold_index,
+    deblock_sample_filter, deblock_side_threshold_index, max_quantizer_index,
 };
 
 const MI_SIZE: usize = 4;
@@ -29,6 +30,37 @@ pub(crate) struct DeblockBlock {
     pub(crate) luma_tx: usize,
     /// Chroma transform index, if present.
     pub(crate) chroma_tx: Option<usize>,
+    /// Current luma AC qindex for this transform block.
+    pub(crate) qindex: u32,
+}
+
+/// Frame-level quantizer-index deltas used by chroma deblocking.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct DeblockQuantDeltas {
+    u_ac: i32,
+    v_ac: i32,
+}
+
+impl DeblockQuantDeltas {
+    pub(crate) const ZERO: Self = Self { u_ac: 0, v_ac: 0 };
+
+    pub(crate) const fn from_frame_quant(
+        quant: QuantizationParams,
+        base_uv_ac_delta_q: i32,
+    ) -> Self {
+        Self {
+            u_ac: quant.delta_q_u_ac + base_uv_ac_delta_q,
+            v_ac: quant.delta_q_v_ac + base_uv_ac_delta_q,
+        }
+    }
+
+    const fn ac_delta(self, plane: usize) -> i32 {
+        match plane {
+            1 => self.u_ac,
+            2 => self.v_ac,
+            _ => 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -37,28 +69,40 @@ struct MiBlockInfo {
     base_col: usize,
     luma_tx: usize,
     chroma_tx: Option<usize>,
+    qindex: u32,
 }
 
 /// Applies AV2 § 7.17 deblocking in place.
 pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     blocks: &[DeblockBlock],
+    chroma_blocks: [&[DeblockBlock]; 2],
     mi_rows: usize,
     mi_cols: usize,
-    apply: [bool; 4],
-    base_q_idx: u32,
+    filter: DeblockingFilterParams,
+    quant_deltas: DeblockQuantDeltas,
     bit_depth: BitDepth,
 ) -> Result<(), DeblockError> {
-    if apply == [false; 4] {
+    if filter.apply_deblocking_filter == [false; 4] {
         return Ok(());
     }
 
     let grid = build_mi_grid(blocks, mi_rows, mi_cols)?;
-    let (q_thr, side) = adaptive_strength(q_clamped_zero_delta(base_q_idx), bit_depth);
+    let mut chroma_grids = [
+        build_mi_grid(blocks, mi_rows, mi_cols)?,
+        build_mi_grid(blocks, mi_rows, mi_cols)?,
+    ];
+    overlay_mi_grid(&mut chroma_grids[0], chroma_blocks[0], mi_rows, mi_cols);
+    overlay_mi_grid(&mut chroma_grids[1], chroma_blocks[1], mi_rows, mi_cols);
 
     for plane in 0..3 {
+        let plane_grid = if plane == 0 {
+            &grid
+        } else {
+            &chroma_grids[plane - 1]
+        };
         for pass in 0..2usize {
-            let Some(plane_pass) = PlanePass::active(plane, pass, apply, q_thr, side, bit_depth)
+            let Some(plane_pass) = PlanePass::active(plane, pass, filter, quant_deltas, bit_depth)
             else {
                 continue;
             };
@@ -67,7 +111,7 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
                 for c in (0..mi_cols).step_by(plane_pass.col_step) {
                     deblock_filter_edge(
                         workspace,
-                        &grid,
+                        plane_grid,
                         plane_pass.edge_context(r, c, mi_rows, mi_cols),
                     )?;
                 }
@@ -87,8 +131,8 @@ struct PlanePass {
     plane_sub_y: usize,
     row_step: usize,
     col_step: usize,
-    q_thr: i32,
-    side: i32,
+    df_delta_q: i32,
+    quant_delta: i32,
     bit_depth: BitDepth,
 }
 
@@ -96,13 +140,12 @@ impl PlanePass {
     fn active(
         plane: usize,
         pass: usize,
-        apply: [bool; 4],
-        q_thr: i32,
-        side: i32,
+        filter: DeblockingFilterParams,
+        quant_deltas: DeblockQuantDeltas,
         bit_depth: BitDepth,
     ) -> Option<Self> {
         let apply_index = if plane == 0 { pass } else { plane + 1 };
-        if !apply[apply_index] {
+        if !filter.apply_deblocking_filter[apply_index] {
             return None;
         }
 
@@ -115,8 +158,8 @@ impl PlanePass {
             plane_sub_y,
             row_step: 1 << plane_sub_y,
             col_step: 1 << plane_sub_x,
-            q_thr,
-            side,
+            df_delta_q: filter.df_delta_q[apply_index],
+            quant_delta: quant_deltas.ac_delta(plane),
             bit_depth,
         })
     }
@@ -132,8 +175,8 @@ impl PlanePass {
             mi_cols,
             plane_sub_x: self.plane_sub_x,
             plane_sub_y: self.plane_sub_y,
-            q_thr: self.q_thr,
-            side: self.side,
+            df_delta_q: self.df_delta_q,
+            quant_delta: self.quant_delta,
             bit_depth: self.bit_depth,
         }
     }
@@ -150,8 +193,8 @@ struct EdgeContext {
     mi_cols: usize,
     plane_sub_x: usize,
     plane_sub_y: usize,
-    q_thr: i32,
-    side: i32,
+    df_delta_q: i32,
+    quant_delta: i32,
     bit_depth: BitDepth,
 }
 
@@ -170,8 +213,8 @@ fn deblock_filter_edge<T: ReconSample>(
         mi_cols,
         plane_sub_x,
         plane_sub_y,
-        q_thr: curr_q,
-        side: curr_side,
+        df_delta_q,
+        quant_delta,
         bit_depth,
     } = ctx;
 
@@ -208,13 +251,17 @@ fn deblock_filter_edge<T: ReconSample>(
     let base_y = (base_row * MI_SIZE) >> plane_sub_y;
     let base_x = (base_col * MI_SIZE) >> plane_sub_x;
 
-    let tx_sz = plane_tx(plane, curr).ok_or(DeblockError::MissingTx { plane })?;
-    let prev_tx_sz = plane_tx(plane, prev).ok_or(DeblockError::MissingTx { plane })?;
+    let Some(tx_sz) = plane_tx(plane, curr) else {
+        return Ok(());
+    };
+    let Some(prev_tx_sz) = plane_tx(plane, prev) else {
+        return Ok(());
+    };
 
-    let tx_col_base = base_col >> plane_sub_x;
-    let tx_row_base = base_row >> plane_sub_y;
-    let prev_tx_col_base = prev.base_col >> plane_sub_x;
-    let prev_tx_row_base = prev.base_row >> plane_sub_y;
+    let tx_col_base = curr.base_col;
+    let tx_row_base = curr.base_row;
+    let prev_tx_col_base = prev.base_col;
+    let prev_tx_row_base = prev.base_row;
 
     let skip = false;
     let is_sub_pu_edge = false;
@@ -224,8 +271,17 @@ fn deblock_filter_edge<T: ReconSample>(
     let is_block_edge = (pass == 0 && x_r == 0) || (pass == 1 && y_r == 0);
     let is_tx_edge = tx_col_base != prev_tx_col_base || tx_row_base != prev_tx_row_base;
 
+    let (curr_q, curr_side) = adaptive_strength(
+        deblock_level(curr.qindex, quant_delta, df_delta_q, bit_depth),
+        bit_depth,
+    );
+    let (prev_q, prev_side) = adaptive_strength(
+        deblock_level(prev.qindex, quant_delta, df_delta_q, bit_depth),
+        bit_depth,
+    );
+
     let curr_strong = curr_q != 0 && curr_side != 0;
-    let prev_strong = curr_strong;
+    let prev_strong = prev_q != 0 && prev_side != 0;
     let apply_filter = (is_tx_edge || is_sub_pu_edge)
         && (curr_strong || prev_strong)
         && (is_block_edge || !skip || is_sub_pu_edge);
@@ -250,7 +306,7 @@ fn deblock_filter_edge<T: ReconSample>(
         filter_size = filter_size.min(8);
     }
 
-    let (mut q_thr, mut side) = combine_strengths(curr_q, curr_q, curr_side, curr_side);
+    let (mut q_thr, mut side) = combine_strengths(curr_q, prev_q, curr_side, prev_side);
     if is_sub_pu_edge && !is_tx_edge {
         q_thr >>= 3;
         side >>= 3;
@@ -387,10 +443,11 @@ fn apply_sample_filter<T: ReconSample>(
     deblock_sample_filter(&mut line, &params).map_err(|_| DeblockError::SampleFilter)?;
 
     for (idx, (&new, &old)) in line.iter().zip(before.iter()).enumerate() {
-        if new.to_u16() == old.to_u16() {
+        let (fx, fy) = perp.offset(idx as isize - params.boundary as isize)?;
+        let changed = new.to_u16() != old.to_u16();
+        if !changed {
             continue;
         }
-        let (fx, fy) = perp.offset(idx as isize - params.boundary as isize)?;
         workspace
             .set_reconstructed_sample(plane_id, fx, fy, new)
             .map_err(|_| DeblockError::Workspace)?;
@@ -424,8 +481,26 @@ fn gather_line<T: ReconSample>(
     Ok(line)
 }
 
-const fn q_clamped_zero_delta(qindex: u32) -> u32 {
-    if qindex == 0 { 0 } else { qindex }
+const DF_DELTA_SCALE: i32 = 8;
+
+fn deblock_level(qindex: u32, quant_delta: i32, df_delta_q: i32, bit_depth: BitDepth) -> u32 {
+    let q_clamped = q_clamped(qindex, quant_delta, bit_depth);
+    let level = i64::from(q_clamped) + i64::from(df_delta_q) * i64::from(DF_DELTA_SCALE);
+    if level <= 0 {
+        0
+    } else if level > i64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        level as u32
+    }
+}
+
+fn q_clamped(qindex: u32, delta: i32, bit_depth: BitDepth) -> u32 {
+    if qindex == 0 && delta <= 0 {
+        return 0;
+    }
+    let max = i64::from(max_quantizer_index(bit_depth));
+    (i64::from(qindex) + i64::from(delta)).clamp(1, max) as u32
 }
 
 fn adaptive_strength(lvl: u32, bit_depth: BitDepth) -> (i32, i32) {
@@ -490,12 +565,7 @@ fn build_mi_grid(
     cells.resize(count, None);
 
     for block in blocks {
-        let info = MiBlockInfo {
-            base_row: block.r,
-            base_col: block.c,
-            luma_tx: block.luma_tx,
-            chroma_tx: block.chroma_tx,
-        };
+        let info = block_info(*block);
         for rr in block.r..block.r + block.n4h {
             for cc in block.c..block.c + block.n4w {
                 if rr < mi_rows && cc < mi_cols {
@@ -507,15 +577,35 @@ fn build_mi_grid(
     Ok(MiGrid { mi_cols, cells })
 }
 
+fn overlay_mi_grid(grid: &mut MiGrid, blocks: &[DeblockBlock], mi_rows: usize, mi_cols: usize) {
+    for block in blocks {
+        let info = block_info(*block);
+        for rr in block.r..block.r + block.n4h {
+            for cc in block.c..block.c + block.n4w {
+                if rr < mi_rows && cc < mi_cols {
+                    grid.cells[rr * mi_cols + cc] = Some(info);
+                }
+            }
+        }
+    }
+}
+
+const fn block_info(block: DeblockBlock) -> MiBlockInfo {
+    MiBlockInfo {
+        base_row: block.r,
+        base_col: block.c,
+        luma_tx: block.luma_tx,
+        chroma_tx: block.chroma_tx,
+        qindex: block.qindex,
+    }
+}
+
 /// Errors from deblocking orchestration.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DeblockError {
     /// A visited MI position is uncovered.
     #[error("deblocking MI ({row}, {col}) is not covered by any decoded block")]
     UncoveredMi { row: usize, col: usize },
-    /// A plane has no transform size for the covering block.
-    #[error("deblocking plane {plane} has no transform size for the covering block")]
-    MissingTx { plane: usize },
     /// Filter-choice rejected its inputs.
     #[error("deblocking filter-choice primitive rejected its inputs")]
     FilterChoice,
@@ -544,16 +634,63 @@ mod tests {
                     n4h: 8,
                     luma_tx: 3,
                     chroma_tx: Some(2),
+                    qindex: 100,
                 });
             }
         }
         blocks
     }
 
+    const fn filter(apply_deblocking_filter: [bool; 4]) -> DeblockingFilterParams {
+        DeblockingFilterParams::new(apply_deblocking_filter, [false; 4], [0; 4])
+    }
+
+    fn fill_rect(
+        ws: &mut CurrentFrameWorkspace<u8>,
+        plane: PlaneId,
+        x_range: core::ops::Range<usize>,
+        y_range: core::ops::Range<usize>,
+        sample: u8,
+    ) {
+        for y in y_range {
+            for x in x_range.clone() {
+                ws.set_reconstructed_sample(plane, x, y, sample).unwrap();
+            }
+        }
+    }
+
+    fn run_deblock(
+        ws: &mut CurrentFrameWorkspace<u8>,
+        blocks: &[DeblockBlock],
+        mi_rows: usize,
+        mi_cols: usize,
+        apply_deblocking_filter: [bool; 4],
+    ) {
+        deblock_general_intra_frame(
+            ws,
+            blocks,
+            [&[], &[]],
+            mi_rows,
+            mi_cols,
+            filter(apply_deblocking_filter),
+            DeblockQuantDeltas::ZERO,
+            BitDepth::Eight,
+        )
+        .unwrap();
+    }
+
+    fn assert_smoothed_step(p0: u8, q0: u8, reason: &str) {
+        assert!(
+            (100..=108).contains(&p0) && (100..=108).contains(&q0),
+            "smoothing stays within the step band: p0={p0} q0={q0}"
+        );
+        assert!(p0 > 100 || q0 < 108, "{reason}: p0={p0} q0={q0}");
+    }
+
     #[test]
     fn q_clamped_zero_delta_matches_spec() {
         for q in [0u32, 1, 100, 255] {
-            assert_eq!(q_clamped_zero_delta(q), q, "q_clamped_zero_delta({q})");
+            assert_eq!(q_clamped(q, 0, BitDepth::Eight), q, "q_clamped({q}, 0)");
         }
     }
 
@@ -580,10 +717,11 @@ mod tests {
         deblock_general_intra_frame(
             &mut workspace,
             &[],
+            [&[], &[]],
             16,
             16,
-            [false; 4],
-            100,
+            filter([false; 4]),
+            DeblockQuantDeltas::ZERO,
             BitDepth::Eight,
         )
         .unwrap();
@@ -606,6 +744,7 @@ mod tests {
             n4h: 8,
             luma_tx: 3,
             chroma_tx: Some(2),
+            qindex: 100,
         }];
         let grid = build_mi_grid(&blocks, 16, 16).unwrap();
         assert!(grid.get(0, 0).is_some(), "top-left MI is covered");
@@ -626,22 +765,9 @@ mod tests {
     #[test]
     fn luma_vertical_pass_filters_the_x64_block_edge() {
         let mut ws = yuv420_workspace(128, 64, 100);
-        for y in 0..64 {
-            for x in 64..128 {
-                ws.set_reconstructed_sample(PlaneId::Y, x, y, 108).unwrap();
-            }
-        }
+        fill_rect(&mut ws, PlaneId::Y, 64..128, 0..64, 108);
         let blocks = deblock_blocks(16, 32);
-        deblock_general_intra_frame(
-            &mut ws,
-            &blocks,
-            16,
-            32,
-            [true, false, false, false],
-            100,
-            BitDepth::Eight,
-        )
-        .unwrap();
+        run_deblock(&mut ws, &blocks, 16, 32, [true, false, false, false]);
         let at = |x, y| ws.reconstructed_sample(PlaneId::Y, x, y).unwrap();
         assert_eq!(at(10, 32), 100, "left interior untouched");
         assert_eq!(at(120, 32), 108, "right interior untouched");
@@ -649,51 +775,28 @@ mod tests {
         assert_eq!(at(32, 32), 100, "x=32 within-region edge untouched");
         assert_eq!(at(95, 32), 108, "x=96 within-region edge untouched");
         assert_eq!(at(96, 32), 108, "x=96 within-region edge untouched");
-        let p0 = at(63, 32);
-        let q0 = at(64, 32);
-        assert!(
-            (100..=108).contains(&p0) && (100..=108).contains(&q0),
-            "smoothing stays within the step band: p0={p0} q0={q0}"
-        );
-        assert!(
-            p0 > 100 || q0 < 108,
-            "luma-vertical pass must change the x=64 edge: p0={p0} q0={q0}"
+        assert_smoothed_step(
+            at(63, 32),
+            at(64, 32),
+            "luma-vertical pass must change the x=64 edge",
         );
     }
 
     #[test]
     fn luma_horizontal_pass_filters_the_y64_superblock_edge() {
         let mut ws = yuv420_workspace(128, 128, 100);
-        for y in 64..128 {
-            for x in 0..128 {
-                ws.set_reconstructed_sample(PlaneId::Y, x, y, 108).unwrap();
-            }
-        }
+        fill_rect(&mut ws, PlaneId::Y, 0..128, 64..128, 108);
         let blocks = deblock_blocks(32, 32);
-        deblock_general_intra_frame(
-            &mut ws,
-            &blocks,
-            32,
-            32,
-            [false, true, false, false],
-            100,
-            BitDepth::Eight,
-        )
-        .unwrap();
+        run_deblock(&mut ws, &blocks, 32, 32, [false, true, false, false]);
         let at = |x, y| ws.reconstructed_sample(PlaneId::Y, x, y).unwrap();
         assert_eq!(at(64, 10), 100, "top interior untouched");
         assert_eq!(at(64, 120), 108, "bottom interior untouched");
         assert_eq!(at(64, 31), 100, "y=32 within-region edge untouched");
         assert_eq!(at(64, 96), 108, "y=96 within-region edge untouched");
-        let p0 = at(64, 63);
-        let q0 = at(64, 64);
-        assert!(
-            (100..=108).contains(&p0) && (100..=108).contains(&q0),
-            "smoothing stays within the step band: p0={p0} q0={q0}"
-        );
-        assert!(
-            p0 > 100 || q0 < 108,
-            "luma-horizontal sbEdge pass must change the y=64 edge: p0={p0} q0={q0}"
+        assert_smoothed_step(
+            at(64, 63),
+            at(64, 64),
+            "luma-horizontal sbEdge pass must change the y=64 edge",
         );
         assert_eq!(
             at(64, 59),
@@ -705,34 +808,16 @@ mod tests {
     #[test]
     fn chroma_pass_filters_the_chroma_block_edge() {
         let mut ws = yuv420_workspace(128, 64, 100);
-        for y in 0..32 {
-            for x in 32..64 {
-                ws.set_reconstructed_sample(PlaneId::U, x, y, 108).unwrap();
-            }
-        }
+        fill_rect(&mut ws, PlaneId::U, 32..64, 0..32, 108);
         let blocks = deblock_blocks(16, 32);
-        deblock_general_intra_frame(
-            &mut ws,
-            &blocks,
-            16,
-            32,
-            [false, false, true, false],
-            100,
-            BitDepth::Eight,
-        )
-        .unwrap();
+        run_deblock(&mut ws, &blocks, 16, 32, [false, false, true, false]);
         let u = |x, y| ws.reconstructed_sample(PlaneId::U, x, y).unwrap();
         assert_eq!(u(8, 16), 100, "left chroma interior untouched");
         assert_eq!(u(60, 16), 108, "right chroma interior untouched");
-        let p0 = u(31, 16);
-        let q0 = u(32, 16);
-        assert!(
-            (100..=108).contains(&p0) && (100..=108).contains(&q0),
-            "chroma smoothing stays within the step band: p0={p0} q0={q0}"
-        );
-        assert!(
-            p0 > 100 || q0 < 108,
-            "chroma pass must change the chroma x=32 edge: p0={p0} q0={q0}"
+        assert_smoothed_step(
+            u(31, 16),
+            u(32, 16),
+            "chroma pass must change the chroma x=32 edge",
         );
         assert_eq!(
             ws.reconstructed_sample(PlaneId::V, 31, 16).unwrap(),

@@ -20,10 +20,11 @@ use super::partition::PartitionType;
 use super::partition_allowed::PartitionFeatureFlags;
 use super::partition_size::BlockSize;
 use super::partition_traversal::{
-    DecodeBlockFrontier, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
-    TileLoopRestorationRootFrontier, TilePartitionBruState, TilePartitionFrameFacts,
-    TilePartitionLoopRestorationState, TilePartitionTraversalError, TilePartitionTraversalInput,
-    TilePartitionTraversalPlan, TilePartitionWienerNsLoopRestorationState,
+    DecodeBlockFrontier, GeneralIntraLeafMode, GeneralIntraPartitionTreeOutput,
+    GeneralIntraTreeWalkError, TileLoopRestorationRootFrontier, TilePartitionBruState,
+    TilePartitionFrameFacts, TilePartitionLoopRestorationState, TilePartitionTraversalError,
+    TilePartitionTraversalInput, TilePartitionTraversalPlan,
+    TilePartitionWienerNsLoopRestorationState, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
     consume_tile_loop_restoration_root_frontier, decode_general_intra_partition_tree,
     plan_tile_partition_traversal_cursor,
 };
@@ -133,6 +134,12 @@ pub(crate) enum GeneralIntraMultiblockError<E> {
     Walk(GeneralIntraTreeWalkError<E>),
 }
 
+pub(crate) struct GeneralIntraMultiblockOutput<'payload> {
+    pub(crate) symbols: SymbolDecoder<'payload>,
+    pub(crate) active_source_blocks: Vec<WienerNsLrSourceBlock>,
+    pub(crate) unit_filters: Vec<WienerNsLrUnitFilter>,
+}
+
 pub(crate) fn decode_general_intra_multiblock_tree<'payload, E, F>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
     sequence: &SequenceHeader,
@@ -140,6 +147,54 @@ pub(crate) fn decode_general_intra_multiblock_tree<'payload, E, F>(
     limits: DecodeLimits,
     on_leaf: F,
 ) -> Result<SymbolDecoder<'payload>, GeneralIntraMultiblockError<E>>
+where
+    F: FnMut(
+        &mut DecodeTileWorkUnit<'payload>,
+        &mut SymbolDecoder<'payload>,
+        &DecodeBlockFrontier,
+        &TileIntraJointModeState,
+        &TileUsesMrlsState,
+        &TileFscModeState,
+        IsCflContext,
+        &TileBlockDecodedState,
+    ) -> Result<GeneralIntraLeafMode, E>,
+{
+    Ok(decode_general_intra_multiblock_tree_impl(
+        work_unit, sequence, core, limits, false, on_leaf,
+    )?
+    .symbols)
+}
+
+pub(crate) fn decode_general_intra_multiblock_tree_with_lr_source_blocks<'payload, E, F>(
+    work_unit: &mut DecodeTileWorkUnit<'payload>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    limits: DecodeLimits,
+    on_leaf: F,
+) -> Result<GeneralIntraMultiblockOutput<'payload>, GeneralIntraMultiblockError<E>>
+where
+    F: FnMut(
+        &mut DecodeTileWorkUnit<'payload>,
+        &mut SymbolDecoder<'payload>,
+        &DecodeBlockFrontier,
+        &TileIntraJointModeState,
+        &TileUsesMrlsState,
+        &TileFscModeState,
+        IsCflContext,
+        &TileBlockDecodedState,
+    ) -> Result<GeneralIntraLeafMode, E>,
+{
+    decode_general_intra_multiblock_tree_impl(work_unit, sequence, core, limits, true, on_leaf)
+}
+
+fn decode_general_intra_multiblock_tree_impl<'payload, E, F>(
+    work_unit: &mut DecodeTileWorkUnit<'payload>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    limits: DecodeLimits,
+    retain_lr_source_blocks: bool,
+    on_leaf: F,
+) -> Result<GeneralIntraMultiblockOutput<'payload>, GeneralIntraMultiblockError<E>>
 where
     F: FnMut(
         &mut DecodeTileWorkUnit<'payload>,
@@ -170,7 +225,7 @@ where
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
     let mut uv_cfls = TileUvCflState::new(mi_rows, mi_cols)
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
-    decode_general_intra_partition_tree(
+    let output: GeneralIntraPartitionTreeOutput<'payload> = decode_general_intra_partition_tree(
         work_unit,
         frame,
         &mut mi_size_state,
@@ -179,9 +234,15 @@ where
         &mut fsc_modes,
         &mut uv_cfls,
         limits,
+        retain_lr_source_blocks,
         on_leaf,
     )
-    .map_err(GeneralIntraMultiblockError::Walk)
+    .map_err(GeneralIntraMultiblockError::Walk)?;
+    Ok(GeneralIntraMultiblockOutput {
+        symbols: output.symbols,
+        active_source_blocks: output.active_source_blocks,
+        unit_filters: output.unit_filters,
+    })
 }
 
 fn plan_minimal_runtime_partition_frontier<'payload>(

@@ -50,10 +50,9 @@ mod recon;
 mod source_read_math;
 mod tx_records;
 
+pub(super) use self::recon::reconstruct_ac0ej3_selectable_intra_region;
 #[cfg(test)]
-pub(super) use self::recon::{
-    FullReconLumaLeaf, WienerNsLrReconSink, reconstruct_ac0ej3_selectable_intra_region,
-};
+pub(super) use self::recon::{FullReconLumaLeaf, WienerNsLrReconSink};
 use self::tx_records::WienerNsLrLiveTransformRecordHandoff;
 pub(super) use self::tx_records::WienerNsLrTxSkipTransformRecord;
 
@@ -425,41 +424,15 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
     if !has_wienerns_frame_filter_bank(core) {
         return Ok(());
     }
-    let mut tile_plan = derive_tile_plan(
+    let lr_frontier = consume_wienerns_lr_unit_frontier(
+        bytes,
+        options,
         plan,
         key_candidate,
-        bytes,
         key_envelope,
         sequence,
         core,
-        options,
     )?;
-    let tile = match tile_plan.work_units_mut() {
-        [tile] => tile,
-        [] => {
-            return Err(unsupported_at(
-                "missing_lr_tile_work_unit",
-                key_envelope.offset,
-                "minimal runtime requires one tile work unit before parsing LR unit syntax",
-            ));
-        }
-        work_units => {
-            return Err(unsupported_at(
-                "multi_tile_lr_unit_syntax",
-                work_units
-                    .first()
-                    .map_or(key_envelope.offset, |tile| tile.tile_byte_span().start),
-                "minimal runtime only consumes ac0ej3 LR unit syntax for one-tile key frames",
-            ));
-        }
-    };
-    let lr_frontier = crate::tile_payload::consume_minimal_runtime_lr_unit_frontier(
-        tile,
-        sequence,
-        core,
-        options.limits(),
-    )
-    .map_err(|err| map_wienerns_lr_unit_frontier_error(err, key_envelope.offset))?;
     if lr_frontier.all_lr_units_inactive() {
         Ok(())
     } else if !lr_frontier.active_source_blocks().is_empty() {
@@ -544,6 +517,53 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
     } else {
         Err(wienerns_lr_unit_runtime_error(key_envelope.offset))
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn consume_wienerns_lr_unit_frontier(
+    bytes: &[u8],
+    options: DecodeOptions,
+    plan: &DecodeStreamPlan,
+    key_candidate: &DecodePlannedObu,
+    key_envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+) -> Result<crate::tile_payload::TileLoopRestorationRootFrontier> {
+    let mut tile_plan = derive_tile_plan(
+        plan,
+        key_candidate,
+        bytes,
+        key_envelope,
+        sequence,
+        core,
+        options,
+    )?;
+    let tile = match tile_plan.work_units_mut() {
+        [tile] => tile,
+        [] => {
+            return Err(unsupported_at(
+                "missing_lr_tile_work_unit",
+                key_envelope.offset,
+                "minimal runtime requires one tile work unit before parsing LR unit syntax",
+            ));
+        }
+        work_units => {
+            return Err(unsupported_at(
+                "multi_tile_lr_unit_syntax",
+                work_units
+                    .first()
+                    .map_or(key_envelope.offset, |tile| tile.tile_byte_span().start),
+                "minimal runtime only consumes ac0ej3 LR unit syntax for one-tile key frames",
+            ));
+        }
+    };
+    crate::tile_payload::consume_minimal_runtime_lr_unit_frontier(
+        tile,
+        sequence,
+        core,
+        options.limits(),
+    )
+    .map_err(|err| map_wienerns_lr_unit_frontier_error(err, key_envelope.offset))
 }
 
 pub(super) fn derive_wienerns_lr_runtime_storage_retention_frontier(
@@ -754,6 +774,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 true,
                 false,
                 modes.coeff_uv_mode(),
+                0,
                 false,
                 false,
                 TransformToolResidualPolicy::Allow,
@@ -782,6 +803,11 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 .ok_or_else(|| wienerns_lr_live_transform_record_handoff_error(tile_offset))?;
             let chroma_x = frontier.c * 2;
             let chroma_y = frontier.r * 2;
+            let angle_delta_uv = if modes.coeff_uv_mode() == modes.y_mode.value() {
+                i32::from(modes.angle_delta_y)
+            } else {
+                0
+            };
             let u = decode_general_intra_plane_coeffs(
                 work_unit,
                 symbols,
@@ -793,6 +819,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 true,
                 false,
                 modes.coeff_uv_mode(),
+                angle_delta_uv,
                 false,
                 false,
                 TransformToolResidualPolicy::Allow,
@@ -815,6 +842,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 true,
                 !u.all_zero,
                 modes.coeff_uv_mode(),
+                angle_delta_uv,
                 false,
                 false,
                 TransformToolResidualPolicy::Allow,
@@ -829,6 +857,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
             Ok(crate::tile_payload::GeneralIntraLeafMode::luma(
                 modes.intra_joint_mode,
                 modes.y_mode,
+                modes.angle_delta_y,
                 modes.fsc_mode,
                 modes.uses_mrls,
             )
@@ -851,6 +880,10 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
         tx_skip_rows,
         tx_skip_cols,
         records,
+        active_source_blocks: Vec::new(),
+        unit_filters: Vec::new(),
+        cdef_grid: None,
+        ccso_grid: None,
     })
 }
 

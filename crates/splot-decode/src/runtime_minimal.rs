@@ -6,8 +6,8 @@
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameReferenceStateView, FrameSize, TxMode, parse_frame_header_core,
+    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameSize, TxMode, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, SequenceHeader, parse_sequence_header,
@@ -31,7 +31,6 @@ use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 use self::capability::missing_capability_message;
 use self::limits::{checked_add, decoded_frame_byte_budget};
-use self::wienerns_lr::ensure_wienerns_lr_unit_runtime_frontier;
 #[cfg(test)]
 use self::wienerns_lr::{
     LR_LIVE_FRAME_SAMPLE_STORAGE_BYTES, LR_LIVE_TX_SKIP_STORAGE_BYTES_PER_VALUE,
@@ -52,6 +51,9 @@ use self::wienerns_lr::{
     wienerns_lr_live_frame_samples_unpopulated_error, wienerns_lr_live_storage_allocation_error,
     wienerns_lr_runtime_storage_retention_error, wienerns_lr_source_read_config,
     wienerns_lr_source_read_runtime_error, wienerns_lr_tx_mode_select_transform_record_error,
+};
+use self::wienerns_lr::{
+    ensure_wienerns_lr_unit_runtime_frontier, reconstruct_ac0ej3_selectable_intra_region,
 };
 pub const MINIMAL_INTRA_HASH_TIER_ID: &str = "minimal-intra-8bit420-hash-v1";
 
@@ -118,6 +120,20 @@ const GENERAL_INTRA_DELTA_DCQUANT_MIN: i32 = (1 << 3) - (1 << 5) + 1;
 pub(crate) enum MinimalRuntimeDecodedFrame {
     Eight(DecodedFrame<u8>),
     Ten(DecodedFrame<u16>),
+}
+
+fn deblock_quant_deltas(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+) -> deblock::DeblockQuantDeltas {
+    let (Some(tq), Some(quant)) = (
+        sequence.transform_quant_entropy.as_ref(),
+        core.quantization_params,
+    ) else {
+        return deblock::DeblockQuantDeltas::ZERO;
+    };
+    let seq_quant = CoreSeqQuantView::from_sequence_configs(&sequence.general, tq);
+    deblock::DeblockQuantDeltas::from_frame_quant(quant, seq_quant.base_uv_ac_delta_q)
 }
 
 pub(crate) struct MinimalRuntimeFrame {
@@ -250,6 +266,18 @@ fn decode_minimal_key_frame(
     header: IvfHeader,
 ) -> Result<MinimalRuntimeFrame> {
     let core = parse_frame_core(frame_envelope, sequence)?;
+    if route_wienerns_lr_selectable_full_recon(sequence, &core) {
+        return decode_wienerns_lr_selectable_full_recon_key_frame(
+            bytes,
+            options,
+            plan,
+            candidate,
+            frame_envelope,
+            sequence,
+            &core,
+            header,
+        );
+    }
     if general_intra::route_general_minimal_intra(sequence, &core) {
         return general_intra::decode_general_minimal_intra_frame(
             plan,
@@ -318,6 +346,52 @@ fn decode_minimal_key_frame(
         frame_rate_denominator: header.timebase_numerator,
     })
 }
+
+fn route_wienerns_lr_selectable_full_recon(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+) -> bool {
+    sequence.general.bit_depth_idc == BitDepthIdc::Ten
+        && core.is_key_frame
+        && core.frame_is_intra == Some(true)
+        && core
+            .intra_tail
+            .as_ref()
+            .is_some_and(|tail| tail.tx_mode == TxMode::Select)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_wienerns_lr_selectable_full_recon_key_frame(
+    bytes: &[u8],
+    options: DecodeOptions,
+    plan: &DecodeStreamPlan,
+    candidate: &DecodePlannedObu,
+    frame_envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    header: IvfHeader,
+) -> Result<MinimalRuntimeFrame> {
+    let sink = reconstruct_ac0ej3_selectable_intra_region(
+        bytes,
+        options,
+        plan,
+        candidate,
+        frame_envelope,
+        sequence,
+        core,
+        true,
+    )?;
+    Ok(MinimalRuntimeFrame {
+        frame: MinimalRuntimeDecodedFrame::Ten(sink.into_filtered_frame(
+            core,
+            deblock_quant_deltas(sequence, core),
+            frame_envelope.offset,
+        )?),
+        frame_rate_numerator: header.timebase_denominator,
+        frame_rate_denominator: header.timebase_numerator,
+    })
+}
+
 pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     bytes: &[u8],
     options: DecodeOptions,
@@ -359,6 +433,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
 
     let key_core = parse_frame_core(key_envelope, &sequence)?;
     ensure_intra_header_complete(&key_core, key_envelope.offset)?;
+    let full_recon_key_frame = route_wienerns_lr_selectable_full_recon(&sequence, &key_core);
     let mut candidates = plan.frame_candidates_all();
     let key_candidate = candidates.next().ok_or_else(|| {
         unsupported(
@@ -367,19 +442,21 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
             "minimal tier requires one selected key frame candidate",
         )
     })?;
-    ensure_wienerns_lr_unit_runtime_frontier(
-        bytes,
-        options,
-        plan,
-        key_candidate,
-        key_envelope,
-        sequence_envelope.offset,
-        &sequence,
-        &key_core,
-    )?;
-    ensure_sequence_chroma_tools_before_tile_decode(&sequence, sequence_envelope.offset)?;
+    if !full_recon_key_frame {
+        ensure_wienerns_lr_unit_runtime_frontier(
+            bytes,
+            options,
+            plan,
+            key_candidate,
+            key_envelope,
+            sequence_envelope.offset,
+            &sequence,
+            &key_core,
+        )?;
+        ensure_sequence_chroma_tools_before_tile_decode(&sequence, sequence_envelope.offset)?;
+        reject_extra_leading_key_payload_obus(leading_obus)?;
+    }
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
-    reject_extra_leading_key_payload_obus(leading_obus)?;
 
     let num_ref_frames = usize::from(
         sequence
@@ -422,6 +499,9 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
         0,
         frame_ref_update_from_core(&key_core, key_envelope.offset)?,
     );
+    if output_frame_limit_reached(options, frames.len()) {
+        return Ok(frames);
+    }
 
     for next_candidate in candidates {
         match next_candidate.obu_type() {
@@ -487,6 +567,9 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                     frame_index,
                     frame_ref_update_from_core(&inter_core, inter_envelope.offset)?,
                 );
+                if output_frame_limit_reached(options, frames.len()) {
+                    break;
+                }
             }
             _ => {
                 return Err(unsupported_at(
@@ -499,6 +582,12 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     }
 
     Ok(frames)
+}
+
+fn output_frame_limit_reached(options: DecodeOptions, output_frame_count: usize) -> bool {
+    options
+        .output_frame_limit()
+        .is_some_and(|limit| output_frame_count as u64 >= limit.get())
 }
 fn following_inter_envelope<'a>(
     ivf: &'a ParsedIvfBitstream<'a>,
@@ -1193,6 +1282,7 @@ mod test_support {
 
 mod block_context;
 mod capability;
+mod ccso;
 mod cdef;
 mod deblock;
 mod general_intra;

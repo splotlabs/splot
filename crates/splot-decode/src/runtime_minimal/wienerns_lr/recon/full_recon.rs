@@ -60,12 +60,9 @@ pub(in crate::runtime_minimal) fn intrabc_bilinear_params(
 }
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
-    /// Switches this sink into the DIAGNOSTIC-ONLY full-reconstruction mode (see the
-    /// `full_recon` field). Used ONLY by the `SPLOT_AC0EJ3_FULL_RECON` ignored
-    /// harness, which reconstructs every luma leaf in decode order and diffs the whole
-    /// frame against the AVM pre-filter oracle. The shipped oracle-pin tests never call
-    /// this, so the gated path is untouched.
-    #[cfg(test)]
+    /// Switches this sink into the full-reconstruction mode (see the `full_recon`
+    /// field), reconstructing every luma leaf in decode order with recorded
+    /// per-transform far-edge availability.
     pub(in crate::runtime_minimal) fn into_full_recon(mut self) -> Self {
         self.full_recon = true;
         self

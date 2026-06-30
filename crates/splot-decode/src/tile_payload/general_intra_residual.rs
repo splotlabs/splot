@@ -23,8 +23,9 @@ use super::coeff_loop::fsc_quant_pass::{
 };
 use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::geometry::{
-    CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryStagedLosslessNonZeroInput,
-    CoeffOrdinaryTxSizeGeometryConfig, apply_staged_nonzero_coeff_ordinary_branch_from_lossless,
+    CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryBranchModeToTxfmBaseConfig,
+    CoeffOrdinaryStagedLosslessNonZeroInput, CoeffOrdinaryTxSizeGeometryConfig,
+    apply_staged_nonzero_coeff_ordinary_branch_from_lossless, resolve_mode_to_txfm_plane_tx_type,
 };
 use super::coeff_loop::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
 use super::coeff_loop::use_fsc_branch::{
@@ -135,6 +136,7 @@ pub(crate) struct LumaTransformTypeContext {
     y_mode: IntraYMode,
     angle_delta_y: i8,
     mrl_index: u8,
+    mrl_sec_index: Option<u8>,
 }
 
 impl LumaTransformTypeContext {
@@ -144,6 +146,7 @@ impl LumaTransformTypeContext {
             y_mode,
             angle_delta_y,
             mrl_index: 0,
+            mrl_sec_index: None,
         }
     }
 
@@ -157,12 +160,33 @@ impl LumaTransformTypeContext {
             y_mode,
             angle_delta_y,
             mrl_index,
+            mrl_sec_index: None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn with_mrl_indices(
+        y_mode: IntraYMode,
+        angle_delta_y: i8,
+        mrl_index: u8,
+        mrl_sec_index: Option<u8>,
+    ) -> Self {
+        Self {
+            y_mode,
+            angle_delta_y,
+            mrl_index,
+            mrl_sec_index,
         }
     }
 
     #[must_use]
     pub(crate) const fn mrl_index(self) -> u8 {
         self.mrl_index
+    }
+
+    #[must_use]
+    pub(crate) const fn mrl_sec_index(self) -> Option<u8> {
+        self.mrl_sec_index
     }
 
     #[must_use]
@@ -285,6 +309,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     tx_fills_block: bool,
     eob_u_nonzero: bool,
     uv_mode: usize,
+    angle_delta_uv: i32,
     is_inter: bool,
     fsc_mode: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
@@ -382,6 +407,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             geometry,
             coeff_cdf_q_ctx,
             uv_mode,
+            angle_delta_uv,
             is_inter,
             fsc_mode,
             luma,
@@ -401,7 +427,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         },
         ordinary: CoeffUseFscFrameOrdinaryFacts {
             uv_mode,
-            angle_delta_uv: 0,
+            angle_delta_uv,
             luma_tx_type: DCT_DCT,
             chroma_inter_tx_type: DCT_DCT,
         },
@@ -430,6 +456,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     coeff_cdf_q_ctx: usize,
     uv_mode: usize,
+    angle_delta_uv: i32,
     is_inter: bool,
     fsc_mode: bool,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
@@ -491,9 +518,12 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         frame_facts,
         geometry.plane,
         uv_mode,
+        angle_delta_uv,
         lossless,
         metadata,
     );
+    let plane_tx_type =
+        staged_transform_tool_plane_tx_type(geometry, is_inter, lossless, base_config)?;
     let use_fsc = frame_facts.enable_fsc()
         && metadata.luma_tx_type == IDTX
         && geometry.plane == 0
@@ -517,7 +547,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             eob: pass.eob_read().eob().eob(),
             quant: pass.block().quant().to_vec(),
             intra_ist: metadata.intra_ist,
-            plane_tx_type: metadata.luma_tx_type,
+            plane_tx_type,
         });
     }
     let pass = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
@@ -539,7 +569,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         eob,
         quant: pass.block().quant().to_vec(),
         intra_ist: metadata.intra_ist,
-        plane_tx_type: metadata.luma_tx_type,
+        plane_tx_type,
     })
 }
 
@@ -547,6 +577,7 @@ fn staged_transform_tool_lossless_base_config(
     frame_facts: TileCoeffFrameFacts,
     plane: usize,
     uv_mode: usize,
+    angle_delta_uv: i32,
     lossless: bool,
     metadata: TransformToolResidualMetadata,
 ) -> CoeffOrdinaryBranchLosslessBaseConfig {
@@ -564,12 +595,38 @@ fn staged_transform_tool_lossless_base_config(
         reduced_tx_set: frame_facts.reduced_tx_set(),
         enable_chroma_dctonly: frame_facts.enable_chroma_dctonly(),
         uv_mode,
-        angle_delta_uv: 0,
+        angle_delta_uv,
         luma_tx_type: metadata.luma_tx_type,
         chroma_inter_tx_type: DCT_DCT,
         parity_hiding,
         use_tcq,
     }
+}
+
+fn staged_transform_tool_plane_tx_type(
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    is_inter: bool,
+    lossless: bool,
+    base_config: CoeffOrdinaryBranchLosslessBaseConfig,
+) -> Result<usize, GeneralIntraResidualError> {
+    let mode_to_txfm = CoeffOrdinaryBranchModeToTxfmBaseConfig {
+        tx_set: transform_set_from_flags(
+            base_config.reduced_tx_set,
+            base_config.enable_chroma_dctonly,
+            geometry.plane,
+            geometry.tx_size,
+            is_inter,
+        )?,
+        uv_mode: base_config.uv_mode,
+        angle_delta_uv: base_config.angle_delta_uv,
+        luma_tx_type: base_config.luma_tx_type,
+        chroma_inter_tx_type: base_config.chroma_inter_tx_type,
+        enable_chroma_dctonly: base_config.enable_chroma_dctonly,
+        parity_hiding: base_config.parity_hiding,
+        use_tcq: base_config.use_tcq,
+    };
+    resolve_mode_to_txfm_plane_tx_type(geometry, is_inter, lossless, mode_to_txfm)
+        .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1127,6 +1184,22 @@ fn transform_set(
     tx_size: usize,
     is_inter: bool,
 ) -> Result<usize, GeneralIntraResidualError> {
+    transform_set_from_flags(
+        frame_facts.reduced_tx_set(),
+        frame_facts.enable_chroma_dctonly(),
+        plane,
+        tx_size,
+        is_inter,
+    )
+}
+
+fn transform_set_from_flags(
+    reduced_tx_set: usize,
+    enable_chroma_dctonly: bool,
+    plane: usize,
+    tx_size: usize,
+    is_inter: bool,
+) -> Result<usize, GeneralIntraResidualError> {
     let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
     let tx_size_sqr_up = tx_size_table_usize(&TX_SIZE_SQR_UP, "Tx_Size_Sqr_Up", tx_size)?;
     if tx_size_sqr_up > TX_32X32 {
@@ -1152,9 +1225,9 @@ fn transform_set(
         return Ok(TX_SET_DCTONLY);
     }
     let reduced_tx_set = if plane == 0 {
-        frame_facts.reduced_tx_set()
+        reduced_tx_set
     } else {
-        usize::from(frame_facts.enable_chroma_dctonly())
+        usize::from(enable_chroma_dctonly)
     };
     if reduced_tx_set > 3 {
         return unsupported_transform_tool_residual("unsupported_dctonly_residual_reduced_tx_set");

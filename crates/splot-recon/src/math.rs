@@ -5,12 +5,14 @@
 //! (`docs/spec/av2/1.0.0/04-conventions.md#s-4-8`).
 //!
 //! These are the spec's integer-operation definitions of `Round2`,
-//! `Round2Signed`, and `Clip3` over `i64`, given one citable home so the
+//! `Round2Signed`, `Clip3`, and `approx_divide`, given one citable home so the
 //! reconstruction, deblocking, restoration, secondary-transform, dequant, and
 //! motion-compensation paths do not each re-derive them. Per-file `FloorLog2`
 //! helpers and the `isize`-typed, value-first `Clip3` specializations in loop
 //! restoration and chroma WienerNS keep their own definitions: they have
 //! incompatible signatures, not duplicated logic.
+
+use crate::Result;
 
 /// AV2 § 4.8 `Round2` evaluated in `i128` so the public `i64` wrappers stay
 /// total and panic-free for any argument. The rounding add cannot overflow
@@ -66,6 +68,22 @@ pub const fn clip3(low: i64, high: i64, value: i64) -> i64 {
     } else {
         value
     }
+}
+
+/// AV2 `approx_divide(num, den)` via the shared §7.13.2.9
+/// `resolve_divisor` implementation.
+///
+/// # Errors
+/// Returns [`ReconError`](crate::ReconError) for a zero divisor or arithmetic
+/// overflow.
+pub fn approx_divide(num: u64, den: u64) -> Result<u16> {
+    crate::intra_dc_math::approx_divide(num, den)
+}
+
+/// AV2 `resolve_division(N, D, shift)` used by CfL/MHCCP-style linear
+/// predictors.
+pub fn resolve_division(num: i64, den: i64, shift: u8) -> i16 {
+    crate::intra_dc_math::resolve_division(num, den, shift)
 }
 
 #[cfg(test)]

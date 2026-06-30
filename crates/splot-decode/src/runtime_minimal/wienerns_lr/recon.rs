@@ -29,29 +29,44 @@
 //! walk, and asserts the populated workspace region is bit-exact against the AVM
 //! pre-filter reconstruction oracle.
 
+use splot_core::headers::frame::FrameRestorationType;
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
+use splot_recon::math::{approx_divide, clip3, resolve_division, round2, round2_signed};
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, IntraDirectionalAngle,
-    IntraDirectionalAngleEdge, IntraRectBlockSize, PlaneId, PlaneRect, ReconSample,
+    BitDepth, CurrentFrameWorkspace, DecodedFrame, IntraCardinalDirection, IntraDirectionalAngle,
+    IntraDirectionalAngleEdge, IntraRectBlockSize, IntraSmoothMode, LoopRestorationSource,
+    LoopRestorationSourceBounds, PcWienerClassifyParams, PlaneId, PlaneRect, ReconError,
+    ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS, WIENER_NS_LUMA_COEFFS,
+    WienerNsChromaFilter, WienerNsLumaFilter, loop_restoration_source_sample, pc_wiener_classify,
+    pc_wiener_filter_set_index, pc_wiener_subclass, predict_intra_dc_rect_value,
+    predict_intra_dc_subsampled_rect_value, wiener_ns_filter_chroma_block,
+    wiener_ns_filter_luma_block,
 };
 
 use crate::Result;
 use crate::runtime_minimal::inter::mv_scaling::PlaneScaling;
-#[cfg(test)]
-use crate::runtime_minimal_recon::new_general_intra_workspace;
 use crate::runtime_minimal_recon::{
     IbpSecondary, OneSidedAboveMrl, OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters,
-    reconstruct_general_intra_block_rect_into,
+    new_general_intra_workspace, reconstruct_general_intra_block_rect_into,
+    reconstruct_general_intra_cardinal_mrl_luma_block_into,
     reconstruct_general_intra_cardinal_neighbour_block_into,
+    reconstruct_general_intra_chroma_block_into,
+    reconstruct_general_intra_chroma_smooth_available_edges_into,
     reconstruct_general_intra_luma_paeth_neighbour_block_into,
+    reconstruct_general_intra_middle_neighbour_rect_block_into,
+    reconstruct_general_intra_mrl_secondary_above_block_into,
+    reconstruct_general_intra_mrl_secondary_left_block_into,
     reconstruct_general_intra_one_sided_ibp_luma_block_into,
     reconstruct_general_intra_one_sided_left_neighbour_block_into,
     reconstruct_general_intra_one_sided_neighbour_block_into,
     reconstruct_general_intra_two_sided_middle_luma_block_into,
+    reconstruct_general_intra_two_sided_middle_luma_mrl_block_into,
     reconstruct_intrabc_block_residual_rect_into,
 };
 use crate::tile_payload::{
-    IntraYMode, LumaCoeffBlock, SupportedChromaMode, SupportedDirectionalLumaMode,
+    CflIndex, CflParams, GeneralIntraResidualError, IntraYMode, LumaCoeffBlock,
+    SupportedChromaMode, SupportedDirectionalLumaMode,
+    reconstruct_general_intra_block_rect_with_prediction,
 };
 
 use super::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
@@ -59,6 +74,33 @@ use splot_core::span::ByteOffset;
 
 /// AV2 §3 `MI_SIZE`: one mode-info unit spans four samples.
 const MI_SIZE: usize = 4;
+const CFL_FILTERS_420: [[[i64; 3]; 3]; 3] = [
+    [[0, 0, 0], [0, 2, 2], [0, 2, 2]],
+    [[0, 0, 0], [1, 2, 1], [1, 2, 1]],
+    [[0, 1, 0], [1, 4, 1], [0, 1, 0]],
+];
+const CFL_ALPHA_SHIFT: u32 = 11;
+const CFL_ALPHA_SCALE: i64 = 32;
+const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
+const NUM_REF_SAM_CFL: usize = 8;
+const MHCCP_BITS: u32 = 16;
+const MHCCP_PARAM_COUNT: usize = 3;
+const DIV_PREC_BITS: u32 = 14;
+const DIV_PREC_BITS_POW2: u32 = 8;
+const DIV_SLOT_BITS: u32 = 3;
+const DIV_INTR_BITS: u32 = DIV_PREC_BITS - DIV_SLOT_BITS;
+const DIVISION_POW2_W: [i64; 8] = [214, 153, 113, 86, 67, 53, 43, 35];
+const DIVISION_POW2_O: [i64; 8] = [4822, 5952, 6624, 6792, 6408, 5424, 3792, 1466];
+const DIVISION_POW2_B: [i64; 8] = [12784, 12054, 11670, 11583, 11764, 12195, 12870, 13782];
+
+struct MhccpRefs {
+    width: usize,
+    height: usize,
+    above: usize,
+    left: usize,
+    luma: Vec<i64>,
+    chroma: Vec<i64>,
+}
 
 /// Per-block reconstruction parameters handed to the [`WienerNsLrReconSink`] as
 /// the selectable walk decodes each general-intra block's coefficients. The luma
@@ -94,7 +136,12 @@ pub(in crate::runtime_minimal) struct SelectableReconContext {
     /// `AngleDeltaY`. Carried separately so the sink can admit a one-sided angle
     /// whose `AngleDeltaY != 0` (e.g. the §9.2 D67/D203 seeds).
     pub(in crate::runtime_minimal) angle_delta_y: i8,
+    /// The optional §5.20.5.5 `mrl_sec_index`. `Some(1)` means a non-4x4
+    /// `MrlIndex > 0` directional luma block averages the primary MRL prediction
+    /// with a second prediction from the immediate reference line.
+    pub(in crate::runtime_minimal) mrl_sec_index: Option<u8>,
     pub(in crate::runtime_minimal) chroma_mode: Option<SupportedChromaMode>,
+    pub(in crate::runtime_minimal) cfl_params: Option<CflParams>,
     pub(in crate::runtime_minimal) qindex: u32,
     pub(in crate::runtime_minimal) luma_use_tcq: bool,
     pub(in crate::runtime_minimal) fsc_mode: bool,
@@ -158,6 +205,11 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
     /// applies; otherwise the filtered edge is unmodelled and the leaf DEFERS.
     /// (ac0ej3's sequence sets this flag.)
     enable_intra_edge_filter: bool,
+    /// The §5.4.4 `cfl_ds_filter_index` sequence value used by §7.13.5 luma
+    /// downsampling; value `3` aliases filter `0`.
+    cfl_ds_filter_index: u8,
+    luma_width: usize,
+    luma_height: usize,
     /// The §5.20.5.5 superblock side in luma 4x4 MI units (`mib_size`: 16/32/64 for a
     /// 64/128/256 superblock). Drives the §7.13.2.1 `is_sb_boundary == (mi_row %
     /// mib_size == 0)` MRL above-line rule (`aboveMrlIndex == sbBoundary ? 0 : MrlIndex`).
@@ -182,6 +234,14 @@ pub(in crate::runtime_minimal) struct WienerNsLrReconSink<T: ReconSample> {
     /// SKIP IntrABC block (no residual) marks its coverage at copy time and records
     /// nothing here.
     pending_intrabc_predictions: Vec<PlaneRect>,
+    pending_chroma_transforms: Vec<PendingChromaTransform>,
+    deblock_blocks: Vec<super::super::deblock::DeblockBlock>,
+    chroma_deblock_blocks: [Vec<super::super::deblock::DeblockBlock>; 2],
+    cdef_grid: Option<super::super::cdef::CdefUnitGrid>,
+    ccso_grid: Option<super::super::ccso::CcsoUnitGrid>,
+    tx_skip_grid: Option<super::WienerNsLrTxSkipGrid>,
+    lr_source_blocks: Vec<crate::tile_payload::WienerNsLrSourceBlock>,
+    lr_unit_filters: Vec<crate::tile_payload::WienerNsLrUnitFilter>,
     /// Per-luma-MI-unit AV2 §7.13.2.1 far-edge availability (`num4AboveRight`,
     /// `num4BelowLeft`, in luma 4x4 units), recorded at PER-TRANSFORM granularity by
     /// [`Self::record_block_decoded_far_edge`] — each transform's own
@@ -232,6 +292,22 @@ pub(in crate::runtime_minimal) struct FullReconLumaLeaf {
     pub written: bool,
 }
 
+#[derive(Clone)]
+struct PendingChromaTransform {
+    plane_id: PlaneId,
+    chroma_tx: usize,
+    x: usize,
+    y: usize,
+    block: LumaCoeffBlock,
+    chroma_mode: Option<SupportedChromaMode>,
+    angle_delta_y: i8,
+    cfl_params: Option<CflParams>,
+    num4_above_right: usize,
+    num4_below_left: usize,
+    qindex: u32,
+    tile_offset: ByteOffset,
+}
+
 /// Row-major per-luma-MI AV2 §7.13.2.1 far-edge availability grid, populated from
 /// the live §5.20.2.3 `BlockDecoded` state threaded through the tree-walk callback.
 struct FarEdgeAvailGrid {
@@ -243,7 +319,6 @@ struct FarEdgeAvailGrid {
 }
 
 impl FarEdgeAvailGrid {
-    #[cfg(test)]
     fn new(width_samples: usize, height_samples: usize) -> Self {
         let cols = width_samples.div_ceil(MI_SIZE);
         let rows = height_samples.div_ceil(MI_SIZE);
@@ -309,13 +384,11 @@ struct PlaneCoverage {
     /// block the walk decodes (admitted OR deferred — a deferred neighbour is still
     /// `AvailU`/`AvailL`), independent of `covered`. `None` where no block has been
     /// decoded into the unit yet (`AvailU`/`AvailL == 0`, an off-frame neighbour).
-    /// Only the luma plane (index 0) populates this; chroma `get_filt_type` reads a
-    /// separate `UVSmooth` state this sink does not model.
     y_modes: Vec<Option<IntraYMode>>,
+    chroma_modes: Vec<Option<SupportedChromaMode>>,
 }
 
 impl PlaneCoverage {
-    #[cfg(test)]
     fn new(width_samples: usize, height_samples: usize) -> Self {
         let cols = width_samples.div_ceil(MI_SIZE);
         let rows = height_samples.div_ceil(MI_SIZE);
@@ -325,6 +398,7 @@ impl PlaneCoverage {
             rows,
             covered: vec![false; cells],
             y_modes: vec![None; cells],
+            chroma_modes: vec![None; cells],
         }
     }
 
@@ -444,6 +518,35 @@ impl PlaneCoverage {
             .copied()
             .flatten()
     }
+
+    fn record_chroma_mode(
+        &mut self,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+        mode: SupportedChromaMode,
+    ) {
+        for r in mi_row..mi_row.saturating_add(mi_h) {
+            for c in mi_col..mi_col.saturating_add(mi_w) {
+                if !self.off_grid(c, r)
+                    && let Some(slot) = self.chroma_modes.get_mut(r * self.cols + c)
+                {
+                    *slot = Some(mode);
+                }
+            }
+        }
+    }
+
+    fn chroma_mode_at(&self, mi_col: usize, mi_row: usize) -> Option<SupportedChromaMode> {
+        if self.off_grid(mi_col, mi_row) {
+            return None;
+        }
+        self.chroma_modes
+            .get(mi_row * self.cols + mi_col)
+            .copied()
+            .flatten()
+    }
 }
 
 /// AV2 §7.13.2.17 intra edge filter strength selection process. Returns the
@@ -516,13 +619,175 @@ pub(super) fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta:
     strength
 }
 
+fn luma_lr_frame_coeffs(
+    plane: &splot_core::headers::frame::LrPlaneParams,
+    num_classes: usize,
+    offset: ByteOffset,
+) -> Result<Vec<[i16; WIENER_NS_LUMA_COEFFS]>> {
+    if num_classes == 0 {
+        return Err(luma_lr_filter_error(offset));
+    }
+    let Some(bank) = plane.frame_filter_bank.as_ref() else {
+        return Err(luma_lr_filter_error(offset));
+    };
+    if bank.classes.len() != num_classes {
+        return Err(luma_lr_filter_error(offset));
+    }
+    let mut coeffs = Vec::with_capacity(num_classes);
+    for class in &bank.classes {
+        let coeff: [i16; WIENER_NS_LUMA_COEFFS] = class
+            .coeffs
+            .as_slice()
+            .try_into()
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        coeffs.push(coeff);
+    }
+    Ok(coeffs)
+}
+
+fn lr_plane_source_sample<T: ReconSample>(
+    plane: PlaneId,
+    curr_plane: &[u16],
+    cdef_plane: &[u16],
+    plane_width: usize,
+    plane_height: usize,
+    bounds: &LoopRestorationSourceBounds,
+    x: isize,
+    y: isize,
+) -> ReconResult<T> {
+    let sample = loop_restoration_source_sample(plane, x, y, bounds)?;
+    if sample.x >= plane_width || sample.y >= plane_height {
+        return Err(ReconError::PcWienerInvalidBounds {
+            field: "LR source frame bounds",
+        });
+    }
+    let index = sample
+        .y
+        .checked_mul(plane_width)
+        .and_then(|row| row.checked_add(sample.x))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "LR source sample index",
+        })?;
+    let source = match sample.source {
+        LoopRestorationSource::CurrFrame => curr_plane,
+        LoopRestorationSource::CdefFrame => cdef_plane,
+    };
+    let Some(&value) = source.get(index) else {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: index.saturating_add(1),
+            actual: source.len(),
+        });
+    };
+    T::try_from_u16(value)
+}
+
+fn copy_lr_block<T: ReconSample>(
+    lr_plane: &mut [T],
+    plane_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    output: &[T],
+    offset: ByteOffset,
+) -> Result<()> {
+    if width == 0 || height == 0 {
+        return Err(luma_lr_filter_error(offset));
+    }
+    let expected = width
+        .checked_mul(height)
+        .ok_or_else(|| luma_lr_filter_error(offset))?;
+    if output.len() != expected {
+        return Err(luma_lr_filter_error(offset));
+    }
+    let end_x = x
+        .checked_add(width)
+        .ok_or_else(|| luma_lr_filter_error(offset))?;
+    if end_x > plane_width {
+        return Err(luma_lr_filter_error(offset));
+    }
+    for row in 0..height {
+        let dst_start = y
+            .checked_add(row)
+            .and_then(|target_y| target_y.checked_mul(plane_width))
+            .and_then(|row_start| row_start.checked_add(x))
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let dst_end = dst_start
+            .checked_add(width)
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let src_start = row
+            .checked_mul(width)
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let src_end = src_start
+            .checked_add(width)
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let Some(dst) = lr_plane.get_mut(dst_start..dst_end) else {
+            return Err(luma_lr_filter_error(offset));
+        };
+        let Some(src) = output.get(src_start..src_end) else {
+            return Err(luma_lr_filter_error(offset));
+        };
+        // splot-copy-ok: commit a validated fail-atomic LR block into luma scratch.
+        dst.copy_from_slice(src);
+    }
+    Ok(())
+}
+
+fn usize_to_isize_recon(value: usize, context: &'static str) -> ReconResult<isize> {
+    isize::try_from(value).map_err(|_| ReconError::ArithmeticOverflow { context })
+}
+
+fn source_coordinate_add_recon(
+    value: isize,
+    delta: isize,
+    context: &'static str,
+) -> ReconResult<isize> {
+    value
+        .checked_add(delta)
+        .ok_or(ReconError::ArithmeticOverflow { context })
+}
+
+fn mi_to_luma_start_recon(mi: usize, context: &'static str) -> ReconResult<usize> {
+    mi.checked_mul(MI_SIZE)
+        .ok_or(ReconError::ArithmeticOverflow { context })
+}
+
+fn mi_to_luma_end_recon(mi_end: usize, context: &'static str) -> ReconResult<usize> {
+    mi_to_luma_start_recon(mi_end, context)?
+        .checked_sub(1)
+        .ok_or(ReconError::ArithmeticOverflow { context })
+}
+
+fn luma_lr_filter_error(offset: ByteOffset) -> crate::error::DecodeError {
+    wienerns_lr_selectable_transform_record_error_reason(
+        offset,
+        "unsupported_wienerns_lr_selectable_transform_records_luma_lr_filter",
+    )
+}
+
+fn chroma_lr_unit_coeffs(
+    filters: &[crate::tile_payload::WienerNsLrUnitFilter],
+    block: &crate::tile_payload::WienerNsLrSourceBlock,
+    offset: ByteOffset,
+) -> Result<[i16; WIENER_NS_CHROMA_COEFFS]> {
+    let Some(filter) = filters.iter().find(|filter| {
+        filter.plane == block.plane
+            && filter.unit_row == block.unit_row
+            && filter.unit_col == block.unit_col
+    }) else {
+        return Err(luma_lr_filter_error(offset));
+    };
+    if filter.coeff_count != WIENER_NS_CHROMA_COEFFS {
+        return Err(luma_lr_filter_error(offset));
+    }
+    Ok(filter.coeffs)
+}
+
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// Allocates a sink whose workspace is sized to the ac0ej3 frame (a positive
     /// multiple of 64 in both dimensions for the gated tier), with 4:2:0 chroma
     /// derived internally. `T` matches the active sequence bit depth (§6.4.1):
-    /// `u16` for the 10-bit ac0ej3 stream. Only the test-only sink driver
-    /// constructs a sink; the public decode path threads `None`.
-    #[cfg(test)]
+    /// `u16` for the 10-bit ac0ej3 stream.
     pub(in crate::runtime_minimal) fn new(
         luma_width: usize,
         luma_height: usize,
@@ -530,6 +795,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         quant_reconstructable: bool,
         enable_ibp: bool,
         enable_intra_edge_filter: bool,
+        cfl_ds_filter_index: u8,
         sb_mib: usize,
     ) -> Result<Self> {
         let chroma_width = luma_width.div_ceil(2);
@@ -540,6 +806,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             quant_reconstructable,
             enable_ibp,
             enable_intra_edge_filter,
+            cfl_ds_filter_index,
+            luma_width,
+            luma_height,
             sb_mib,
             coverage: [
                 PlaneCoverage::new(luma_width, luma_height),
@@ -549,10 +818,647 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             reconstructed_luma_4x4: 0,
             reconstructed_chroma_4x4: 0,
             pending_intrabc_predictions: Vec::new(),
+            pending_chroma_transforms: Vec::new(),
+            deblock_blocks: Vec::new(),
+            chroma_deblock_blocks: [Vec::new(), Vec::new()],
+            cdef_grid: None,
+            ccso_grid: None,
+            tx_skip_grid: None,
+            lr_source_blocks: Vec::new(),
+            lr_unit_filters: Vec::new(),
             far_edge_avail: FarEdgeAvailGrid::new(luma_width, luma_height),
             full_recon: false,
             full_recon_luma_log: Vec::new(),
         })
+    }
+
+    /// Freezes the sink workspace into a decoded frame for runtime output.
+    #[allow(dead_code)]
+    pub(in crate::runtime_minimal) fn into_frame(mut self) -> Result<DecodedFrame<T>> {
+        self.replay_pending_chroma_transforms()?;
+        Ok(self.workspace.freeze()?)
+    }
+
+    /// Retains decoded transform geometry used by the post-tile deblocking pass.
+    pub(in crate::runtime_minimal) fn record_deblock_block(
+        &mut self,
+        mi_col: usize,
+        mi_row: usize,
+        n4w: usize,
+        n4h: usize,
+        luma_tx: usize,
+        chroma_tx: Option<usize>,
+        qindex: u32,
+    ) {
+        self.deblock_blocks
+            .push(super::super::deblock::DeblockBlock {
+                r: mi_row,
+                c: mi_col,
+                n4w,
+                n4h,
+                luma_tx,
+                chroma_tx,
+                qindex,
+            });
+    }
+
+    fn record_chroma_deblock_block(
+        &mut self,
+        plane_id: PlaneId,
+        x: usize,
+        y: usize,
+        chroma_tx: usize,
+        qindex: u32,
+    ) {
+        let Some((log2_width, log2_height)) = tx_size_log2(chroma_tx) else {
+            return;
+        };
+        let plane_index = match plane_id {
+            PlaneId::U => 0,
+            PlaneId::V => 1,
+            PlaneId::Y => return,
+        };
+        let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
+        self.chroma_deblock_blocks[plane_index].push(super::super::deblock::DeblockBlock {
+            r: (y / MI_SIZE).saturating_mul(2),
+            c: (x / MI_SIZE).saturating_mul(2),
+            n4w: mi_w.saturating_mul(2),
+            n4h: mi_h.saturating_mul(2),
+            luma_tx: chroma_tx,
+            chroma_tx: Some(chroma_tx),
+            qindex,
+        });
+    }
+
+    /// Retains the selectable walk's parsed CDEF unit grid for the final filter
+    /// chain. The plain [`Self::into_frame`] freeze intentionally ignores this
+    /// state so existing prefilter differentials keep observing `CurrFrame`
+    /// before in-loop filters.
+    pub(in crate::runtime_minimal) fn set_cdef_grid(
+        &mut self,
+        grid: Option<super::super::cdef::CdefUnitGrid>,
+    ) {
+        self.cdef_grid = grid;
+    }
+
+    /// Retains the selectable walk's parsed CCSO block-enable grid for the final
+    /// filter chain.
+    pub(in crate::runtime_minimal) fn set_ccso_grid(
+        &mut self,
+        grid: Option<super::super::ccso::CcsoUnitGrid>,
+    ) {
+        self.ccso_grid = grid;
+    }
+
+    /// Retains the frame's §7.20.4 `LrTxSkip` grid for PC-Wiener subclass
+    /// derivation during final luma restoration.
+    pub(in crate::runtime_minimal) fn set_tx_skip_grid(
+        &mut self,
+        grid: Option<super::WienerNsLrTxSkipGrid>,
+    ) {
+        self.tx_skip_grid = grid;
+    }
+
+    /// Retains active loop-restoration source blocks from the full selectable
+    /// walk for final LR filtering.
+    pub(in crate::runtime_minimal) fn set_lr_source_blocks(
+        &mut self,
+        blocks: Vec<crate::tile_payload::WienerNsLrSourceBlock>,
+    ) {
+        self.lr_source_blocks = blocks;
+    }
+
+    /// Retains entropy-coded per-unit Wiener NS filters from the full selectable
+    /// walk for final LR filtering.
+    pub(in crate::runtime_minimal) fn set_lr_unit_filters(
+        &mut self,
+        filters: Vec<crate::tile_payload::WienerNsLrUnitFilter>,
+    ) {
+        self.lr_unit_filters = filters;
+    }
+
+    /// Applies the currently wired post-tile filters, then freezes the sink
+    /// workspace for runtime output.
+    pub(in crate::runtime_minimal) fn into_filtered_frame(
+        mut self,
+        core: &splot_core::headers::frame::FrameHeaderCore,
+        deblock_quant_deltas: super::super::deblock::DeblockQuantDeltas,
+        offset: ByteOffset,
+    ) -> Result<DecodedFrame<T>> {
+        self.replay_pending_chroma_transforms()?;
+        let mi_rows = self.luma_height.div_ceil(MI_SIZE);
+        let mi_cols = self.luma_width.div_ceil(MI_SIZE);
+        if let Some(filter) = core.deblocking_filter_params
+            && filter.apply_deblocking_filter != [false; 4]
+        {
+            super::super::deblock::deblock_general_intra_frame(
+                &mut self.workspace,
+                &self.deblock_blocks,
+                [
+                    &self.chroma_deblock_blocks[0],
+                    &self.chroma_deblock_blocks[1],
+                ],
+                mi_rows,
+                mi_cols,
+                filter,
+                deblock_quant_deltas,
+                self.bit_depth,
+            )
+            .map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_deblock_filter",
+                )
+            })?;
+        }
+        let deblocked_luma = self.plane_snapshot(
+            PlaneId::Y,
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_deblocked_luma_snapshot",
+        )?;
+        let deblocked_u = self.plane_snapshot(
+            PlaneId::U,
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
+        )?;
+        let deblocked_v = self.plane_snapshot(
+            PlaneId::V,
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
+        )?;
+        if let (Some(grid), Some(strengths)) = (
+            self.cdef_grid.as_ref(),
+            super::super::cdef::cdef_frame_strengths(core),
+        ) {
+            super::super::cdef::cdef_general_intra_frame_indexed(
+                &mut self.workspace,
+                &strengths,
+                grid,
+                mi_rows,
+                mi_cols,
+                self.bit_depth,
+            )
+            .map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_cdef_filter",
+                )
+            })?;
+        }
+        if let Some(grid) = self.ccso_grid.as_ref() {
+            super::super::ccso::ccso_frame(
+                &mut self.workspace,
+                &deblocked_luma,
+                core,
+                grid,
+                mi_rows,
+                mi_cols,
+                self.bit_depth,
+            )
+            .map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
+                )
+            })?;
+        }
+        let cdef_luma = self.plane_snapshot(
+            PlaneId::Y,
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_cdef_luma_snapshot",
+        )?;
+        let cdef_u = self.plane_snapshot(
+            PlaneId::U,
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
+        )?;
+        let cdef_v = self.plane_snapshot(
+            PlaneId::V,
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
+        )?;
+        let lr_source_blocks = core::mem::take(&mut self.lr_source_blocks);
+        let lr_unit_filters = core::mem::take(&mut self.lr_unit_filters);
+        self.apply_luma_lr(core, offset, &lr_source_blocks, &deblocked_luma, &cdef_luma)?;
+        self.apply_chroma_lr(
+            core,
+            offset,
+            PlaneId::U,
+            &lr_source_blocks,
+            &lr_unit_filters,
+            &deblocked_u,
+            &cdef_u,
+            &deblocked_luma,
+            &cdef_luma,
+        )?;
+        self.apply_chroma_lr(
+            core,
+            offset,
+            PlaneId::V,
+            &lr_source_blocks,
+            &lr_unit_filters,
+            &deblocked_v,
+            &cdef_v,
+            &deblocked_luma,
+            &cdef_luma,
+        )?;
+        Ok(self.workspace.freeze()?)
+    }
+
+    fn plane_snapshot(
+        &self,
+        plane: PlaneId,
+        offset: ByteOffset,
+        reason: &'static str,
+    ) -> Result<Vec<u16>> {
+        self.workspace
+            .samples(plane)
+            .map_err(|_| wienerns_lr_selectable_transform_record_error_reason(offset, reason))
+            .map(|samples| samples.iter().map(|sample| sample.to_u16()).collect())
+    }
+
+    fn apply_luma_lr(
+        &mut self,
+        core: &splot_core::headers::frame::FrameHeaderCore,
+        offset: ByteOffset,
+        lr_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
+        curr_luma: &[u16],
+        cdef_luma: &[u16],
+    ) -> Result<()> {
+        let Some(lr_params) = core.lr_params.as_ref() else {
+            return Ok(());
+        };
+        let Some(plane) = lr_params.planes.first() else {
+            return Ok(());
+        };
+        if plane.restoration_type != FrameRestorationType::WienerNonsep
+            || !plane.frame_filters_on
+            || !lr_source_blocks
+                .iter()
+                .any(|block| block.plane == PlaneId::Y.index())
+        {
+            return Ok(());
+        }
+
+        let qindex = core
+            .quantization_params
+            .as_ref()
+            .ok_or_else(|| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_missing_quantization",
+                )
+            })?
+            .base_q_idx;
+        let num_classes = usize::from(plane.num_filter_classes.unwrap_or(1));
+        let coeffs = luma_lr_frame_coeffs(plane, num_classes, offset)?;
+        let filter_set_index = pc_wiener_filter_set_index(qindex);
+        let mut lr_luma = Vec::with_capacity(cdef_luma.len());
+        for &sample in cdef_luma {
+            lr_luma.push(T::try_from_u16(sample).map_err(|_| luma_lr_filter_error(offset))?);
+        }
+
+        for block in lr_source_blocks
+            .iter()
+            .filter(|block| block.plane == PlaneId::Y.index())
+        {
+            self.apply_luma_lr_block(
+                offset,
+                block,
+                curr_luma,
+                cdef_luma,
+                qindex,
+                num_classes,
+                filter_set_index,
+                &coeffs,
+                &mut lr_luma,
+            )?;
+        }
+
+        let rect = PlaneRect::new(0, 0, self.luma_width, self.luma_height)
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        self.workspace
+            .write_rect(PlaneId::Y, rect, &lr_luma, self.luma_width)
+            .map_err(|_| luma_lr_filter_error(offset))
+    }
+
+    fn plane_dimensions(&self, plane_id: PlaneId) -> (usize, usize) {
+        match plane_id {
+            PlaneId::Y => (self.luma_width, self.luma_height),
+            PlaneId::U | PlaneId::V => (self.luma_width.div_ceil(2), self.luma_height.div_ceil(2)),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_chroma_lr(
+        &mut self,
+        core: &splot_core::headers::frame::FrameHeaderCore,
+        offset: ByteOffset,
+        plane_id: PlaneId,
+        lr_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
+        lr_unit_filters: &[crate::tile_payload::WienerNsLrUnitFilter],
+        curr_chroma: &[u16],
+        cdef_chroma: &[u16],
+        curr_luma: &[u16],
+        cdef_luma: &[u16],
+    ) -> Result<()> {
+        let Some(lr_params) = core.lr_params.as_ref() else {
+            return Ok(());
+        };
+        let Some(plane) = lr_params.planes.get(plane_id.index()) else {
+            return Ok(());
+        };
+        let plane_index = plane_id.index();
+        if plane.restoration_type != FrameRestorationType::WienerNonsep
+            || !lr_source_blocks
+                .iter()
+                .any(|block| block.plane == plane_index)
+        {
+            return Ok(());
+        }
+        if plane.frame_filters_on {
+            return Err(luma_lr_filter_error(offset));
+        }
+
+        let (plane_width, plane_height) = self.plane_dimensions(plane_id);
+        let expected_samples = plane_width
+            .checked_mul(plane_height)
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        if curr_chroma.len() != expected_samples || cdef_chroma.len() != expected_samples {
+            return Err(luma_lr_filter_error(offset));
+        }
+        let mut lr_chroma = Vec::with_capacity(cdef_chroma.len());
+        for &sample in cdef_chroma {
+            lr_chroma.push(T::try_from_u16(sample).map_err(|_| luma_lr_filter_error(offset))?);
+        }
+
+        for block in lr_source_blocks
+            .iter()
+            .filter(|block| block.plane == plane_index)
+        {
+            self.apply_chroma_lr_block(
+                offset,
+                plane_id,
+                block,
+                lr_unit_filters,
+                curr_chroma,
+                cdef_chroma,
+                curr_luma,
+                cdef_luma,
+                &mut lr_chroma,
+            )?;
+        }
+
+        let rect = PlaneRect::new(0, 0, plane_width, plane_height)
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        self.workspace
+            .write_rect(plane_id, rect, &lr_chroma, plane_width)
+            .map_err(|_| luma_lr_filter_error(offset))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_chroma_lr_block(
+        &self,
+        offset: ByteOffset,
+        plane_id: PlaneId,
+        block: &crate::tile_payload::WienerNsLrSourceBlock,
+        lr_unit_filters: &[crate::tile_payload::WienerNsLrUnitFilter],
+        curr_chroma: &[u16],
+        cdef_chroma: &[u16],
+        curr_luma: &[u16],
+        cdef_luma: &[u16],
+        lr_chroma: &mut [T],
+    ) -> Result<()> {
+        let (plane_width, plane_height) = self.plane_dimensions(plane_id);
+        let coeffs = chroma_lr_unit_coeffs(lr_unit_filters, block, offset)?;
+        let sample_count = block
+            .width
+            .checked_mul(block.height)
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let mut output = vec![T::default(); sample_count];
+        let params = WienerNsChromaFilter {
+            x: block.x,
+            y: block.y,
+            width: block.width,
+            height: block.height,
+            output_stride: block.width,
+            bit_depth: self.bit_depth,
+            coeffs: &coeffs,
+            subsampling_x: 1,
+            subsampling_y: 1,
+            luma_start_x: block.luma_start_x,
+            luma_end_x: block.luma_end_x,
+            mi_rows: self.luma_height.div_ceil(MI_SIZE),
+            cfl_ds_filter_index: self.cfl_ds_filter_index,
+        };
+        let chroma_bounds = super::wienerns_lr_source_block_bounds(block, 1, 1);
+        let luma_bounds = super::wienerns_lr_source_block_bounds(block, 1, 1);
+        let source_error = core::cell::RefCell::new(None::<ReconError>);
+        wiener_ns_filter_chroma_block(
+            &mut output,
+            &params,
+            |x, y| {
+                let sample = lr_plane_source_sample::<T>(
+                    plane_id,
+                    curr_chroma,
+                    cdef_chroma,
+                    plane_width,
+                    plane_height,
+                    &chroma_bounds,
+                    x,
+                    y,
+                );
+                match sample {
+                    Ok(sample) => sample,
+                    Err(error) => {
+                        if source_error.borrow().is_none() {
+                            *source_error.borrow_mut() = Some(error);
+                        }
+                        T::default()
+                    }
+                }
+            },
+            |x, y| {
+                let sample = lr_plane_source_sample::<T>(
+                    PlaneId::Y,
+                    curr_luma,
+                    cdef_luma,
+                    self.luma_width,
+                    self.luma_height,
+                    &luma_bounds,
+                    x,
+                    y,
+                );
+                match sample {
+                    Ok(sample) => sample,
+                    Err(error) => {
+                        if source_error.borrow().is_none() {
+                            *source_error.borrow_mut() = Some(error);
+                        }
+                        T::default()
+                    }
+                }
+            },
+        )
+        .map_err(|_| luma_lr_filter_error(offset))?;
+        if source_error.into_inner().is_some() {
+            return Err(luma_lr_filter_error(offset));
+        }
+        copy_lr_block(
+            lr_chroma,
+            plane_width,
+            block.x,
+            block.y,
+            block.width,
+            block.height,
+            &output,
+            offset,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_luma_lr_block(
+        &self,
+        offset: ByteOffset,
+        block: &crate::tile_payload::WienerNsLrSourceBlock,
+        curr_luma: &[u16],
+        cdef_luma: &[u16],
+        qindex: u32,
+        num_classes: usize,
+        filter_set_index: usize,
+        coeffs: &[[i16; WIENER_NS_LUMA_COEFFS]],
+        lr_luma: &mut [T],
+    ) -> Result<()> {
+        let sample_count = block
+            .width
+            .checked_mul(block.height)
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let subclasses = if num_classes > 1 {
+            Some(self.luma_lr_subclasses(
+                offset,
+                block,
+                curr_luma,
+                cdef_luma,
+                qindex,
+                num_classes,
+                filter_set_index,
+                sample_count,
+            )?)
+        } else {
+            None
+        };
+        let mut output = vec![T::default(); sample_count];
+        let params = WienerNsLumaFilter {
+            width: block.width,
+            height: block.height,
+            output_stride: block.width,
+            bit_depth: self.bit_depth,
+            coeffs_by_class: coeffs,
+            subclasses: subclasses.as_deref(),
+        };
+        let bounds = super::wienerns_lr_source_block_bounds(block, 0, 0);
+        let block_x = usize_to_isize_recon(block.x, "luma LR block x")
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let block_y = usize_to_isize_recon(block.y, "luma LR block y")
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let source_error = core::cell::RefCell::new(None::<ReconError>);
+        wiener_ns_filter_luma_block(&mut output, &params, |dx, dy| {
+            let x = source_coordinate_add_recon(block_x, dx, "luma LR source x");
+            let y = source_coordinate_add_recon(block_y, dy, "luma LR source y");
+            let sample = match (x, y) {
+                (Ok(x), Ok(y)) => lr_plane_source_sample::<T>(
+                    PlaneId::Y,
+                    curr_luma,
+                    cdef_luma,
+                    self.luma_width,
+                    self.luma_height,
+                    &bounds,
+                    x,
+                    y,
+                ),
+                (Err(error), _) | (_, Err(error)) => Err(error),
+            };
+            match sample {
+                Ok(sample) => sample,
+                Err(error) => {
+                    if source_error.borrow().is_none() {
+                        *source_error.borrow_mut() = Some(error);
+                    }
+                    T::default()
+                }
+            }
+        })
+        .map_err(|_| luma_lr_filter_error(offset))?;
+        if source_error.into_inner().is_some() {
+            return Err(luma_lr_filter_error(offset));
+        }
+        copy_lr_block(
+            lr_luma,
+            self.luma_width,
+            block.x,
+            block.y,
+            block.width,
+            block.height,
+            &output,
+            offset,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn luma_lr_subclasses(
+        &self,
+        offset: ByteOffset,
+        block: &crate::tile_payload::WienerNsLrSourceBlock,
+        curr_luma: &[u16],
+        cdef_luma: &[u16],
+        qindex: u32,
+        num_classes: usize,
+        filter_set_index: usize,
+        sample_count: usize,
+    ) -> Result<Vec<usize>> {
+        let Some(tx_skip_grid) = self.tx_skip_grid.as_ref() else {
+            return Err(luma_lr_filter_error(offset));
+        };
+        let bounds = super::wienerns_lr_source_block_bounds(block, 0, 0);
+        let block_start_x = (block.x >> 6) << 6;
+        let block_end_x = super::pc_wiener_block_end_x(block, block_start_x)
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let params = PcWienerClassifyParams {
+            x: usize_to_isize_recon(block.x, "luma LR PC-Wiener x")
+                .map_err(|_| luma_lr_filter_error(offset))?,
+            y: usize_to_isize_recon(block.y, "luma LR PC-Wiener y")
+                .map_err(|_| luma_lr_filter_error(offset))?,
+            bit_depth: self.bit_depth,
+            base_q_idx: qindex,
+            block_start_x,
+            block_end_x,
+            luma_stripe_start_y: block.luma_stripe_start_y,
+            luma_stripe_end_y: block.luma_stripe_end_y,
+            tile_start_y: mi_to_luma_start_recon(block.tile_mi_row_start, "luma LR tile start y")
+                .map_err(|_| luma_lr_filter_error(offset))?,
+            tile_end_y: mi_to_luma_end_recon(block.tile_mi_row_end, "luma LR tile end y")
+                .map_err(|_| luma_lr_filter_error(offset))?,
+        };
+        let classification = pc_wiener_classify::<T, _, _>(
+            &params,
+            |x, y| {
+                lr_plane_source_sample(
+                    PlaneId::Y,
+                    curr_luma,
+                    cdef_luma,
+                    self.luma_width,
+                    self.luma_height,
+                    &bounds,
+                    x,
+                    y,
+                )
+            },
+            |lookup| tx_skip_grid.lookup(super::wienerns_lr_tx_skip_lookup_from_pc(lookup)),
+        )
+        .map_err(|_| luma_lr_filter_error(offset))?;
+        let subclass = pc_wiener_subclass(num_classes, filter_set_index, classification.class)
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        Ok(vec![subclass; sample_count])
     }
 
     /// The coverage-grid index for a plane: luma 0, chroma U 1, chroma V 2. U and
@@ -563,6 +1469,70 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             PlaneId::Y => 0,
             PlaneId::U => 1,
             PlaneId::V => 2,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn defer_chroma_transform(
+        &mut self,
+        plane_id: PlaneId,
+        chroma_tx: usize,
+        x: usize,
+        y: usize,
+        block: &LumaCoeffBlock,
+        chroma_mode: Option<SupportedChromaMode>,
+        angle_delta_y: i8,
+        cfl_params: Option<CflParams>,
+        num4_above_right: usize,
+        num4_below_left: usize,
+        qindex: u32,
+        tile_offset: ByteOffset,
+    ) {
+        self.pending_chroma_transforms.push(PendingChromaTransform {
+            plane_id,
+            chroma_tx,
+            x,
+            y,
+            block: block.clone(),
+            chroma_mode,
+            angle_delta_y,
+            cfl_params,
+            num4_above_right,
+            num4_below_left,
+            qindex,
+            tile_offset,
+        });
+    }
+
+    fn replay_pending_chroma_transforms(&mut self) -> Result<()> {
+        loop {
+            let pending = core::mem::take(&mut self.pending_chroma_transforms);
+            if pending.is_empty() {
+                return Ok(());
+            }
+            let before = self.reconstructed_chroma_4x4;
+            for transform in pending {
+                self.reconstruct_chroma_transform(
+                    transform.plane_id,
+                    transform.chroma_tx,
+                    transform.x,
+                    transform.y,
+                    &transform.block,
+                    transform.chroma_mode,
+                    transform.angle_delta_y,
+                    transform.cfl_params,
+                    transform.num4_above_right,
+                    transform.num4_below_left,
+                    transform.qindex,
+                    transform.tile_offset,
+                )?;
+            }
+            if self.pending_chroma_transforms.is_empty() {
+                return Ok(());
+            }
+            if self.reconstructed_chroma_4x4 == before {
+                return Ok(());
+            }
         }
     }
 
@@ -603,9 +1573,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// Per §7.13.2 (the prediction-dispatch IBP gate) the modifier runs when
     /// `enable_ibp == 1`, `useDip == 0`, `mode == DC_PRED`, `!(w == 4 && h == 4)`,
     /// and `plane == 0 || UVMode != UV_CFL_PRED`. The caller has already established
-    /// `mode == DC_PRED` (the sink admits only DC luma / chroma) and `useDip == 0`
-    /// (DIP is deferred), and the sink never admits a `UV_CFL_PRED` chroma leaf, so
-    /// here it reduces to `enable_ibp && !(w == 4 && h == 4)`.
+    /// `mode == DC_PRED` and `useDip == 0`; CfL uses its own base-prediction path
+    /// because `UVMode == UV_CFL_PRED` disables this modifier.
     const fn ibp_dc_applies(&self, log2_width: u32, log2_height: u32) -> bool {
         self.enable_ibp && !(log2_width == 2 && log2_height == 2)
     }
@@ -641,6 +1610,27 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             }
         }
         true
+    }
+
+    fn smooth_edge_availability_samples(
+        &self,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+    ) -> Option<(usize, usize)> {
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        let left_run = mi_col
+            .checked_sub(1)
+            .map_or(0, |left| coverage.covered_run_len(left, mi_row, 0, 1, mi_h));
+        let above_run = mi_row.checked_sub(1).map_or(0, |above| {
+            coverage.covered_run_len(mi_col, above, 1, 0, mi_w)
+        });
+        if left_run == 0 && above_run == 0 && (mi_col > 0 || mi_row > 0) {
+            return None;
+        }
+        Some((left_run * MI_SIZE, above_run * MI_SIZE))
     }
 
     /// Whether the §7.13.2.8 cardinal prediction a block at `(mi_col, mi_row)` of
@@ -815,6 +1805,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         use_tcq: bool,
         mi_w: usize,
         mi_h: usize,
+        mrl_sec_index: Option<u8>,
         tile_offset: ByteOffset,
     ) -> Result<bool> {
         let mrl = usize::from(mrl_index);
@@ -826,9 +1817,24 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let mrl_delta = MRL_INDEX_TO_DELTA[mrl.min(3)];
         let nominal_angle = i32::from(nominal) + i32::from(angle_delta_y) * ANGLE_STEP + mrl_delta;
         let p_angle = wide_angle_mapping(w, h, nominal_angle);
+        let not4x4 = !(w == 4 && h == 4);
         if 90 < p_angle && p_angle < 180 {
             if mrl != 0 {
-                return Ok(false); // §7.13.2.8 zone-2 middle MRL is unmodelled
+                return self.try_reconstruct_two_sided_middle_mrl(
+                    mi_col,
+                    mi_row,
+                    log2_width,
+                    log2_height,
+                    p_angle,
+                    block,
+                    qindex,
+                    use_tcq,
+                    mi_w,
+                    mi_h,
+                    mrl,
+                    mrl_sec_index == Some(1) && not4x4,
+                    tile_offset,
+                );
             }
             return self.try_reconstruct_two_sided_middle(
                 mi_col,
@@ -845,6 +1851,51 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             );
         }
         let one_sided = (0 < p_angle && p_angle < 90) || (180 < p_angle && p_angle < 270);
+        if mrl != 0 && (p_angle == 90 || p_angle == 180) {
+            let direction = if p_angle == 90 {
+                IntraCardinalDirection::Vertical
+            } else {
+                IntraCardinalDirection::Horizontal
+            };
+            let secondary_mrl = mrl_sec_index == Some(1) && not4x4;
+            if !self.full_recon
+                && !self.cardinal_mrl_edge_reconstructed(
+                    direction,
+                    mi_col,
+                    mi_row,
+                    mi_w,
+                    mi_h,
+                    mrl,
+                    secondary_mrl,
+                )
+            {
+                return Ok(false);
+            }
+            let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+            let above_mrl_index = self.above_mrl_index(mi_row, mrl);
+            reconstruct_general_intra_cardinal_mrl_luma_block_into(
+                &mut self.workspace,
+                block,
+                direction,
+                x,
+                y,
+                log2_width,
+                log2_height,
+                qindex,
+                mrl,
+                above_mrl_index,
+                secondary_mrl,
+                use_tcq,
+                self.bit_depth,
+            )
+            .map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_recon_luma_cardinal_mrl_write",
+                )
+            })?;
+            return Ok(true);
+        }
         if !one_sided {
             return Ok(false);
         }
@@ -854,7 +1905,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Ok(angle) = IntraDirectionalAngle::try_from_p_angle(p_angle_u16) else {
             return Ok(false);
         };
-        let not4x4 = !(w == 4 && h == 4);
         let apply_ibp = self.enable_ibp && not4x4;
         let angle_delta_even = angle_delta_y % 2 == 0;
         let use_ibp = apply_ibp && angle_delta_even && mrl == 0; // §7.13.2.7 IBP needs MrlIndex == 0
@@ -920,23 +1970,41 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     mrl_index: mrl,
                     above_mrl_index: self.above_mrl_index(mi_row, mrl),
                 };
-                reconstruct_general_intra_one_sided_neighbour_block_into(
-                    &mut self.workspace,
-                    block,
-                    p_angle_u16,
-                    PlaneId::Y,
-                    x,
-                    y,
-                    log2_width,
-                    log2_height,
-                    qindex,
-                    num4_above_right,
-                    above_mrl_inputs,
-                    use_tcq,
-                    self.bit_depth,
-                    edge_filter,
-                )
-                .map_err(|_| {
+                let secondary_mrl = mrl != 0 && mrl_sec_index == Some(1) && not4x4;
+                let result = if secondary_mrl {
+                    reconstruct_general_intra_mrl_secondary_above_block_into(
+                        &mut self.workspace,
+                        block,
+                        p_angle_u16,
+                        x,
+                        y,
+                        log2_width,
+                        log2_height,
+                        qindex,
+                        num4_above_right,
+                        above_mrl_inputs,
+                        use_tcq,
+                        self.bit_depth,
+                    )
+                } else {
+                    reconstruct_general_intra_one_sided_neighbour_block_into(
+                        &mut self.workspace,
+                        block,
+                        p_angle_u16,
+                        PlaneId::Y,
+                        x,
+                        y,
+                        log2_width,
+                        log2_height,
+                        qindex,
+                        num4_above_right,
+                        above_mrl_inputs,
+                        use_tcq,
+                        self.bit_depth,
+                        edge_filter,
+                    )
+                };
+                result.map_err(|_| {
                     wienerns_lr_selectable_transform_record_error_reason(
                         tile_offset,
                         "unsupported_wienerns_lr_selectable_transform_records_recon_luma_one_sided_above_write",
@@ -944,9 +2012,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 })?;
             }
             IntraDirectionalAngleEdge::Left => {
-                if mrl != 0 {
-                    return Ok(false); // DEFER zone-3 MRL: pAngle 181 mismatches avmdec
-                }
                 let Some(num4_below_left) = self.one_sided_left_coverage(
                     mi_col,
                     mi_row,
@@ -958,24 +2023,43 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     return Ok(false);
                 };
                 let have_above = self.left_leaf_has_above_row(mi_col, mi_row);
-                reconstruct_general_intra_one_sided_left_neighbour_block_into(
-                    &mut self.workspace,
-                    block,
-                    p_angle_u16,
-                    PlaneId::Y,
-                    x,
-                    y,
-                    log2_width,
-                    log2_height,
-                    qindex,
-                    num4_below_left,
-                    have_above,
-                    mrl,
-                    use_tcq,
-                    self.bit_depth,
-                    edge_filter,
-                )
-                .map_err(|_| {
+                let secondary_mrl = mrl != 0 && mrl_sec_index == Some(1) && not4x4;
+                let result = if secondary_mrl {
+                    reconstruct_general_intra_mrl_secondary_left_block_into(
+                        &mut self.workspace,
+                        block,
+                        p_angle_u16,
+                        x,
+                        y,
+                        log2_width,
+                        log2_height,
+                        qindex,
+                        num4_below_left,
+                        have_above,
+                        mrl,
+                        use_tcq,
+                        self.bit_depth,
+                    )
+                } else {
+                    reconstruct_general_intra_one_sided_left_neighbour_block_into(
+                        &mut self.workspace,
+                        block,
+                        p_angle_u16,
+                        PlaneId::Y,
+                        x,
+                        y,
+                        log2_width,
+                        log2_height,
+                        qindex,
+                        num4_below_left,
+                        have_above,
+                        mrl,
+                        use_tcq,
+                        self.bit_depth,
+                        edge_filter,
+                    )
+                };
+                result.map_err(|_| {
                     wienerns_lr_selectable_transform_record_error_reason(
                         tile_offset,
                         "unsupported_wienerns_lr_selectable_transform_records_recon_luma_one_sided_left_write",
@@ -1106,6 +2190,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             &mut self.workspace,
             block,
             p_angle_u16,
+            PlaneId::Y,
             x,
             y,
             log2_width,
@@ -1195,6 +2280,59 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Ok(true)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn try_reconstruct_two_sided_middle_mrl(
+        &mut self,
+        mi_col: usize,
+        mi_row: usize,
+        log2_width: u32,
+        log2_height: u32,
+        p_angle: i32,
+        block: &LumaCoeffBlock,
+        qindex: u32,
+        use_tcq: bool,
+        mi_w: usize,
+        mi_h: usize,
+        mrl_index: usize,
+        secondary_mrl: bool,
+        tile_offset: ByteOffset,
+    ) -> Result<bool> {
+        let Ok(p_angle_u16) = u16::try_from(p_angle) else {
+            return Ok(false);
+        };
+        if !self.full_recon
+            && !self.two_sided_middle_neighbours_reconstructed(mi_col, mi_row, mi_w, mi_h)
+        {
+            return Ok(false);
+        }
+        let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+        let above_mrl_index = self.above_mrl_index(mi_row, mrl_index);
+        let is_sb_boundary = self.sb_mib != 0 && mi_row.is_multiple_of(self.sb_mib);
+        reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
+            &mut self.workspace,
+            block,
+            p_angle_u16,
+            x,
+            y,
+            log2_width,
+            log2_height,
+            qindex,
+            mrl_index,
+            above_mrl_index,
+            is_sb_boundary,
+            secondary_mrl,
+            use_tcq,
+            self.bit_depth,
+        )
+        .map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_recon_luma_two_sided_middle_mrl_write",
+            )
+        })?;
+        Ok(true)
+    }
+
     /// Whether the §7.13.2.8 zone-2 above row (`mi_row - 1` over the block's `mi_w`
     /// columns), left column (`mi_col - 1` over `mi_h` rows), AND the diagonal corner
     /// unit `(mi_col - 1, mi_row - 1)` are all reconstructed by this sink. Zone-2
@@ -1218,6 +2356,60 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             return false;
         }
         (mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(left, r))
+    }
+
+    fn cardinal_mrl_edge_reconstructed(
+        &self,
+        direction: IntraCardinalDirection,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+        mrl_index: usize,
+        secondary_mrl: bool,
+    ) -> bool {
+        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+        let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
+        match direction {
+            IntraCardinalDirection::Vertical => {
+                let Some(primary_row) = mi_row
+                    .checked_sub(1)
+                    .and_then(|row| row.checked_sub(self.above_mrl_index(mi_row, mrl_index)))
+                else {
+                    return false;
+                };
+                if !(mi_col..mi_col.saturating_add(mi_w)).all(|c| covered(c, primary_row)) {
+                    return false;
+                }
+                if secondary_mrl {
+                    let Some(immediate_row) = mi_row.checked_sub(1) else {
+                        return false;
+                    };
+                    (mi_col..mi_col.saturating_add(mi_w)).all(|c| covered(c, immediate_row))
+                } else {
+                    true
+                }
+            }
+            IntraCardinalDirection::Horizontal => {
+                let Some(primary_col) = mi_col
+                    .checked_sub(1)
+                    .and_then(|col| col.checked_sub(mrl_index))
+                else {
+                    return false;
+                };
+                if !(mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(primary_col, r)) {
+                    return false;
+                }
+                if secondary_mrl {
+                    let Some(immediate_col) = mi_col.checked_sub(1) else {
+                        return false;
+                    };
+                    (mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(immediate_col, r))
+                } else {
+                    true
+                }
+            }
+        }
     }
 
     /// zone-1 above-edge coverage guard. Verifies the §7.13.2.1 corner unit
@@ -1466,6 +2658,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         leaf_y_mode: Option<IntraYMode>,
         directional: Option<SupportedDirectionalLumaMode>,
         mrl_index: u8,
+        mrl_sec_index: Option<u8>,
         angle_delta_y: i8,
         qindex: u32,
         use_tcq: bool,
@@ -1573,6 +2766,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                             use_tcq,
                             mi_w,
                             mi_h,
+                            mrl_sec_index,
                             tile_offset,
                         ),
                         None => Ok(false),
@@ -1685,6 +2879,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     use_tcq,
                     mi_w,
                     mi_h,
+                    mrl_sec_index,
                     tile_offset,
                 );
                 if !self.routed_angular_wrote(result)? {
@@ -1780,15 +2975,689 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Ok(())
     }
 
+    fn reconstruct_cfl_chroma_transform(
+        &mut self,
+        plane_id: PlaneId,
+        x: usize,
+        y: usize,
+        log2_width: u32,
+        log2_height: u32,
+        block: &LumaCoeffBlock,
+        cfl_params: CflParams,
+        num4_above_right: usize,
+        num4_below_left: usize,
+        qindex: u32,
+    ) -> core::result::Result<bool, GeneralIntraResidualError> {
+        let width = 1usize << log2_width;
+        let height = 1usize << log2_height;
+        if cfl_params.index == CflIndex::Multi {
+            let Some(prediction) = self.mhccp_prediction(
+                plane_id,
+                x,
+                y,
+                width,
+                height,
+                cfl_params,
+                num4_above_right,
+                num4_below_left,
+            )?
+            else {
+                return Ok(false);
+            };
+            let out = if block.all_zero {
+                prediction
+            } else {
+                reconstruct_general_intra_block_rect_with_prediction(
+                    &block.quant,
+                    &prediction,
+                    qindex,
+                    plane_id,
+                    log2_width,
+                    log2_height,
+                    block.plane_tx_type,
+                    false,
+                    self.bit_depth,
+                )?
+            };
+            let block_size = IntraRectBlockSize::new(
+                u8::try_from(log2_width).unwrap_or(u8::MAX),
+                u8::try_from(log2_height).unwrap_or(u8::MAX),
+            )?;
+            self.workspace
+                .write_rect_block(plane_id, x, y, block_size, &out)?;
+            return Ok(true);
+        }
+        if self.cfl_filter_index().is_none() {
+            return Ok(false);
+        }
+        let block_size = IntraRectBlockSize::new(
+            u8::try_from(log2_width).unwrap_or(u8::MAX),
+            u8::try_from(log2_height).unwrap_or(u8::MAX),
+        )?;
+        let edges = self
+            .workspace
+            .intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+        let dc = if width > 32 || height > 32 {
+            predict_intra_dc_subsampled_rect_value(self.bit_depth, block_size, edges.as_dc_edges())?
+        } else {
+            predict_intra_dc_rect_value(self.bit_depth, block_size, edges.as_dc_edges())?
+        };
+        let mut prediction = vec![dc; width.saturating_mul(height)];
+        self.apply_cfl_prediction(plane_id, x, y, width, height, cfl_params, &mut prediction)?;
+        let out = if block.all_zero {
+            prediction
+        } else {
+            reconstruct_general_intra_block_rect_with_prediction(
+                &block.quant,
+                &prediction,
+                qindex,
+                plane_id,
+                log2_width,
+                log2_height,
+                block.plane_tx_type,
+                false,
+                self.bit_depth,
+            )?
+        };
+        self.workspace
+            .write_rect_block(plane_id, x, y, block_size, &out)?;
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mhccp_prediction(
+        &self,
+        plane_id: PlaneId,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        cfl_params: CflParams,
+        num4_above_right: usize,
+        num4_below_left: usize,
+    ) -> core::result::Result<Option<Vec<T>>, GeneralIntraResidualError> {
+        let Some(mh_dir) = cfl_params.mh_dir else {
+            return Ok(None);
+        };
+        if mh_dir > 2 || self.cfl_filter_index().is_none() {
+            return Ok(None);
+        }
+        let Some(refs) = self.mhccp_references(
+            plane_id,
+            x,
+            y,
+            width,
+            height,
+            num4_above_right,
+            num4_below_left,
+        )?
+        else {
+            return Ok(None);
+        };
+        let params = self.derive_mhccp_params(&refs, mh_dir);
+        let max = i64::from(self.bit_depth.max_sample());
+        let mid = 1i64 << (u32::from(self.bit_depth.bits()) - 1);
+        let mut prediction = Vec::with_capacity(width.saturating_mul(height));
+        for row in 0..height {
+            for col in 0..width {
+                let center_index = (refs.above + row) * refs.width + refs.left + col;
+                let center = refs.luma[center_index];
+                let linear = match mh_dir {
+                    0 => center,
+                    1 => {
+                        let top_row = refs.above.saturating_add(row).saturating_sub(1);
+                        refs.luma[top_row * refs.width + refs.left + col]
+                    }
+                    _ => {
+                        let left_col = refs.left.saturating_add(col).saturating_sub(1);
+                        refs.luma[(refs.above + row) * refs.width + left_col]
+                    }
+                };
+                let vector = [
+                    linear,
+                    round2(
+                        center.saturating_mul(center),
+                        u32::from(self.bit_depth.bits()),
+                    ),
+                    mid,
+                ];
+                let mut predicted = 0i64;
+                for k in 0..MHCCP_PARAM_COUNT {
+                    predicted = predicted
+                        .saturating_add(mul_fixed32_adapt(params[k], vector[k], MHCCP_BITS));
+                }
+                let sample = clip3(0, max, predicted) as u16;
+                prediction.push(T::try_from_u16(sample)?);
+            }
+        }
+        Ok(Some(prediction))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mhccp_references(
+        &self,
+        plane_id: PlaneId,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        num4_above_right: usize,
+        num4_below_left: usize,
+    ) -> core::result::Result<Option<MhccpRefs>, GeneralIntraResidualError> {
+        let have_above = y > 0;
+        let have_left = x > 0;
+        let above = if have_above { y.min(2) } else { 0 };
+        let left = if have_left { x.min(2) } else { 0 };
+        let luma_mi_row = y / 2;
+        let sb_height_luma = self.sb_mib.saturating_mul(MI_SIZE);
+        let sb_start_luma_y = if self.sb_mib == 0 {
+            0
+        } else {
+            (luma_mi_row / self.sb_mib).saturating_mul(sb_height_luma)
+        };
+        let sb_chroma_y = sb_start_luma_y / 2;
+        let min_chroma_ref_y = sb_chroma_y.saturating_sub(1);
+        let min_luma_ref_y = isize::try_from(sb_start_luma_y)
+            .ok()
+            .and_then(|sb_y| sb_y.checked_sub(1));
+        let extra_right = if have_above && width > 4 {
+            num4_above_right.saturating_mul(MI_SIZE).min(width)
+        } else {
+            0
+        };
+        let extra_bottom = if have_left && height > 4 {
+            num4_below_left.saturating_mul(MI_SIZE).min(height)
+        } else {
+            0
+        };
+        let frame_right = self.chroma_width_for_sample_reads().saturating_sub(x);
+        let frame_bottom = self.chroma_height_for_sample_reads().saturating_sub(y);
+        let ref_width = left
+            .saturating_add(width)
+            .saturating_add(extra_right)
+            .min(64)
+            .min(left.saturating_add(frame_right));
+        let ref_height = above
+            .saturating_add(height)
+            .saturating_add(extra_bottom)
+            .min(64)
+            .min(above.saturating_add(frame_bottom));
+        if ref_width < left.saturating_add(width) || ref_height < above.saturating_add(height) {
+            return Ok(None);
+        }
+
+        let mut luma = vec![0i64; ref_width.saturating_mul(ref_height)];
+        let mut chroma = vec![0i64; ref_width.saturating_mul(ref_height)];
+        for row in 0..ref_height {
+            for col in 0..ref_width {
+                let chroma_x = x + col - left;
+                let chroma_y = y + row - above;
+                let is_ref = row < above || col < left;
+                if is_ref {
+                    let ref_chroma_y = chroma_y.max(min_chroma_ref_y);
+                    if !self.chroma_sample_reconstructed(plane_id, chroma_x, ref_chroma_y) {
+                        return Ok(None);
+                    }
+                    chroma[row * ref_width + col] = i64::from(
+                        self.clamped_chroma_sample(plane_id, chroma_x, ref_chroma_y)?
+                            .to_u16(),
+                    );
+                }
+                if mhccp_luma_ref_available(row, col, above, left, width, height) {
+                    let clamp_x = col == 0;
+                    let clamp_y = row == 0;
+                    if !self.mhccp_luma_q3_sample_reconstructed(
+                        chroma_x,
+                        chroma_y,
+                        clamp_x,
+                        clamp_y,
+                        min_luma_ref_y,
+                    ) {
+                        return Ok(None);
+                    }
+                    luma[row * ref_width + col] = self.cfl_luma_q3_with_min_y(
+                        chroma_x,
+                        chroma_y,
+                        clamp_x,
+                        clamp_y,
+                        min_luma_ref_y,
+                    )? >> 3;
+                }
+            }
+        }
+        Ok(Some(MhccpRefs {
+            width: ref_width,
+            height: ref_height,
+            above,
+            left,
+            luma,
+            chroma,
+        }))
+    }
+
+    fn derive_mhccp_params(&self, refs: &MhccpRefs, mh_dir: u8) -> [i64; MHCCP_PARAM_COUNT] {
+        let mid = 1i64 << (u32::from(self.bit_depth.bits()) - 1);
+        let mut ata = [[0i64; MHCCP_PARAM_COUNT]; MHCCP_PARAM_COUNT];
+        let mut b = [0i64; MHCCP_PARAM_COUNT];
+        let mut count = 0usize;
+        if refs.above > 0 || refs.left > 0 {
+            for row in 1..refs.height.saturating_sub(1) {
+                for col in 1..refs.width.saturating_sub(1) {
+                    if row >= refs.above && col >= refs.left {
+                        continue;
+                    }
+                    let center = refs.luma[row * refs.width + col];
+                    let linear = match mh_dir {
+                        0 => center,
+                        1 => refs.luma[(row - 1) * refs.width + col],
+                        _ => refs.luma[row * refs.width + col - 1],
+                    };
+                    let vector = [
+                        linear,
+                        round2(
+                            center.saturating_mul(center),
+                            u32::from(self.bit_depth.bits()),
+                        ),
+                        mid,
+                    ];
+                    let target = refs.chroma[row * refs.width + col];
+                    for i0 in 0..MHCCP_PARAM_COUNT {
+                        for i1 in i0..MHCCP_PARAM_COUNT {
+                            ata[i0][i1] = ata[i0][i1].saturating_add(vector[i0] * vector[i1]);
+                        }
+                        b[i0] = b[i0].saturating_add(vector[i0] * target);
+                    }
+                    count = count.saturating_add(1);
+                }
+            }
+        }
+        if count == 0 {
+            return [0, 0, 1i64 << MHCCP_BITS];
+        }
+        let matrix_shift = MHCCP_BITS as i32 + 6
+            - 2 * i32::from(self.bit_depth.bits())
+            - ceil_log2_usize(count) as i32;
+        if matrix_shift > 0 {
+            let shift = matrix_shift as u32;
+            for i0 in 0..MHCCP_PARAM_COUNT {
+                for i1 in i0..MHCCP_PARAM_COUNT {
+                    ata[i0][i1] <<= shift;
+                }
+                b[i0] <<= shift;
+            }
+        } else if matrix_shift < 0 {
+            let shift = (-matrix_shift) as u32;
+            for i0 in 0..MHCCP_PARAM_COUNT {
+                for i1 in i0..MHCCP_PARAM_COUNT {
+                    ata[i0][i1] >>= shift;
+                }
+                b[i0] >>= shift;
+            }
+        }
+        gaussian_elimination_mhccp(ata, b, self.bit_depth)
+    }
+
+    fn chroma_sample_reconstructed(&self, plane_id: PlaneId, x: usize, y: usize) -> bool {
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        coverage.is_covered(x / MI_SIZE, y / MI_SIZE)
+    }
+
+    fn mhccp_luma_q3_sample_reconstructed(
+        &self,
+        chroma_x: usize,
+        chroma_y: usize,
+        clamp_x: bool,
+        clamp_y: bool,
+        min_luma_ref_y: Option<isize>,
+    ) -> bool {
+        let Some(filter_index) = self.cfl_filter_index() else {
+            return false;
+        };
+        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+        let max_x = self.luma_width.saturating_sub(1) as isize;
+        let max_y = self.luma_height.saturating_sub(1) as isize;
+        let luma_x = chroma_x.saturating_mul(2) as isize;
+        let luma_y = chroma_y.saturating_mul(2) as isize;
+        for (dy_index, dy) in [-1isize, 0, 1].into_iter().enumerate() {
+            for (dx_index, dx) in [-1isize, 0, 1].into_iter().enumerate() {
+                if CFL_FILTERS_420[filter_index][dy_index][dx_index] == 0 {
+                    continue;
+                }
+                let sx = luma_x + if clamp_x { dx.max(0) } else { dx };
+                let mut sy = luma_y + if clamp_y { dy.max(0) } else { dy };
+                if let Some(min_y) = min_luma_ref_y {
+                    sy = sy.max(min_y);
+                }
+                let sample_x = sx.clamp(0, max_x) as usize;
+                let sample_y = sy.clamp(0, max_y) as usize;
+                if !coverage.is_covered(sample_x / MI_SIZE, sample_y / MI_SIZE) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn cfl_luma_q3_with_min_y(
+        &self,
+        chroma_x: usize,
+        chroma_y: usize,
+        clamp_x: bool,
+        clamp_y: bool,
+        min_luma_ref_y: Option<isize>,
+    ) -> core::result::Result<i64, GeneralIntraResidualError> {
+        let Some(filter_index) = self.cfl_filter_index() else {
+            return Ok(0);
+        };
+        let luma_x = (chroma_x.saturating_mul(2)) as isize;
+        let luma_y = (chroma_y.saturating_mul(2)) as isize;
+        let mut total = 0i64;
+        for (dy_index, dy) in [-1isize, 0, 1].into_iter().enumerate() {
+            for (dx_index, dx) in [-1isize, 0, 1].into_iter().enumerate() {
+                let weight = CFL_FILTERS_420[filter_index][dy_index][dx_index];
+                if weight == 0 {
+                    continue;
+                }
+                let sx = luma_x + if clamp_x { dx.max(0) } else { dx };
+                let mut sy = luma_y + if clamp_y { dy.max(0) } else { dy };
+                if let Some(min_y) = min_luma_ref_y {
+                    sy = sy.max(min_y);
+                }
+                total += weight * i64::from(self.clamped_luma_sample(sx, sy)?.to_u16());
+            }
+        }
+        Ok(total)
+    }
+
+    fn cfl_above_min_luma_ref_y(&self, chroma_y: usize) -> Option<isize> {
+        if self.sb_mib == 0 {
+            return None;
+        }
+        let luma_mi_row = chroma_y / 2;
+        let sb_height_luma = self.sb_mib.saturating_mul(MI_SIZE);
+        let sb_start_luma_y = (luma_mi_row / self.sb_mib).saturating_mul(sb_height_luma);
+        isize::try_from(sb_start_luma_y)
+            .ok()
+            .and_then(|sb_y| sb_y.checked_sub(1))
+    }
+
+    fn apply_cfl_prediction(
+        &self,
+        plane_id: PlaneId,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        cfl_params: CflParams,
+        prediction: &mut [T],
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        let alpha_q3 = self.cfl_alpha_q3(plane_id, x, y, width, height, cfl_params)?;
+        let luma_avg = self.cfl_luma_average_q3(x, y, width, height)?;
+        let max = i64::from(self.bit_depth.max_sample());
+        for row in 0..height {
+            let chroma_y = y.saturating_add(row);
+            let luma_y = chroma_y.saturating_mul(2);
+            let clamp_y = row == 0 || luma_y % 64 == 0;
+            for col in 0..width {
+                let chroma_x = x.saturating_add(col);
+                let luma_x = chroma_x.saturating_mul(2);
+                let clamp_x = col == 0 || luma_x % 64 == 0;
+                let luma = self.cfl_luma_q3(chroma_x, chroma_y, clamp_x, clamp_y)?;
+                let scaled_luma = round2_signed(alpha_q3 * (luma - luma_avg), CFL_ALPHA_SHIFT);
+                let index = row * width + col;
+                let dc = i64::from(prediction[index].to_u16());
+                let clipped = clip3(0, max, dc + scaled_luma) as u16;
+                prediction[index] = T::try_from_u16(clipped)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn cfl_alpha_q3(
+        &self,
+        plane_id: PlaneId,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        cfl_params: CflParams,
+    ) -> core::result::Result<i64, GeneralIntraResidualError> {
+        let alpha_q3 = match cfl_params.index {
+            CflIndex::Explicit => {
+                let alpha = match plane_id {
+                    PlaneId::U => cfl_params.alpha_u,
+                    PlaneId::V => cfl_params.alpha_v,
+                    PlaneId::Y => 0,
+                };
+                i64::from(alpha) * CFL_ALPHA_SCALE
+            }
+            CflIndex::DerivedAlpha => self.derive_cfl_alpha_q3(plane_id, x, y, width, height)?,
+            CflIndex::Multi => 0,
+        };
+        Ok(alpha_q3)
+    }
+
+    fn derive_cfl_alpha_q3(
+        &self,
+        plane_id: PlaneId,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) -> core::result::Result<i64, GeneralIntraResidualError> {
+        let have_above = y > 0;
+        let have_left = x > 0;
+        let (mut num_above, mut num_left) = if have_above && have_left {
+            if width > height.saturating_mul(2) {
+                (NUM_REF_SAM_CFL, 0)
+            } else if height > width.saturating_mul(2) {
+                (0, NUM_REF_SAM_CFL)
+            } else {
+                (NUM_REF_SAM_CFL >> 1, NUM_REF_SAM_CFL >> 1)
+            }
+        } else {
+            (
+                if have_above { NUM_REF_SAM_CFL } else { 0 },
+                if have_left { NUM_REF_SAM_CFL } else { 0 },
+            )
+        };
+        num_above = num_above.min(width);
+        num_left = num_left.min(height);
+
+        let mut count = 0i64;
+        let mut sum_x = 0i64;
+        let mut sum_y = 0i64;
+        let mut sum_xy = 0i64;
+        let mut sum_xx = 0i64;
+        if num_above > 0 {
+            let min_luma_ref_y = self.cfl_above_min_luma_ref_y(y);
+            let step = (width / num_above).max(1);
+            let start = if step == 1 { 0 } else { step >> 1 };
+            for col in (start..width).step_by(step) {
+                let chroma_x = x.saturating_add(col);
+                let luma_x = chroma_x.saturating_mul(2);
+                let clamp_x = col == 0 || luma_x % 64 == 0;
+                let luma =
+                    self.cfl_luma_q3_with_min_y(chroma_x, y - 1, clamp_x, false, min_luma_ref_y)?
+                        >> 3;
+                let chroma = i64::from(
+                    self.clamped_chroma_sample(plane_id, chroma_x, y - 1)?
+                        .to_u16(),
+                );
+                sum_x += luma;
+                sum_y += chroma;
+                sum_xy += luma * chroma;
+                sum_xx += luma * luma;
+                count += 1;
+            }
+        }
+        if num_left > 0 {
+            let step = (height / num_left).max(1);
+            let start = if step == 1 { 0 } else { step >> 1 };
+            for row in (start..height).step_by(step) {
+                let chroma_y = y.saturating_add(row);
+                let luma_y = chroma_y.saturating_mul(2);
+                let clamp_y = row == 0 || luma_y % 64 == 0;
+                let luma = self.cfl_luma_q3(x - 1, chroma_y, false, clamp_y)? >> 3;
+                let chroma = i64::from(
+                    self.clamped_chroma_sample(plane_id, x - 1, chroma_y)?
+                        .to_u16(),
+                );
+                sum_x += luma;
+                sum_y += chroma;
+                sum_xy += luma * chroma;
+                sum_xx += luma * luma;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return Ok(0);
+        }
+        let der = sum_xx - (sum_x * sum_x) / count;
+        let nor = sum_xy - (sum_x * sum_y) / count;
+        if der == 0 || nor == 0 {
+            return Ok(0);
+        }
+        Ok(i64::from(resolve_division(
+            nor,
+            der,
+            CFL_DERIVED_ALPHA_SHIFT,
+        )))
+    }
+
+    fn cfl_luma_region_reconstructed(
+        &self,
+        chroma_x: usize,
+        chroma_y: usize,
+        log2_width: u32,
+        log2_height: u32,
+    ) -> bool {
+        let luma_mi_col = chroma_x / 2;
+        let luma_mi_row = chroma_y / 2;
+        let luma_mi_w = (1usize << log2_width).div_ceil(2);
+        let luma_mi_h = (1usize << log2_height).div_ceil(2);
+        self.coverage[Self::coverage_index(PlaneId::Y)].region_fully_covered(
+            luma_mi_col,
+            luma_mi_row,
+            luma_mi_w,
+            luma_mi_h,
+        )
+    }
+
+    fn cfl_luma_average_q3(
+        &self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) -> core::result::Result<i64, GeneralIntraResidualError> {
+        let step_w = if width > 32 { 2 } else { 1 };
+        let step_h = if height > 32 { 2 } else { 1 };
+        let mut sum = 0u64;
+        let mut count = 0u64;
+        if let Some(above_y) = y.checked_sub(1) {
+            let min_luma_ref_y = self.cfl_above_min_luma_ref_y(y);
+            for col in (0..width).step_by(step_w) {
+                let chroma_x = x.saturating_add(col);
+                let luma_x = chroma_x.saturating_mul(2);
+                let clamp_x = col == 0 || luma_x % 64 == 0;
+                sum = sum.saturating_add(self.cfl_luma_q3_with_min_y(
+                    chroma_x,
+                    above_y,
+                    clamp_x,
+                    false,
+                    min_luma_ref_y,
+                )? as u64);
+                count = count.saturating_add(1);
+            }
+        }
+        if let Some(left_x) = x.checked_sub(1) {
+            for row in (0..height).step_by(step_h) {
+                let chroma_y = y.saturating_add(row);
+                let luma_y = chroma_y.saturating_mul(2);
+                let clamp_y = row == 0 || luma_y % 64 == 0;
+                sum =
+                    sum.saturating_add(self.cfl_luma_q3(left_x, chroma_y, false, clamp_y)? as u64);
+                count = count.saturating_add(1);
+            }
+        }
+        if count == 0 {
+            return Ok(i64::from(8u16 << (self.bit_depth.bits() - 1)));
+        }
+        let max = (8u16 << self.bit_depth.bits()).saturating_sub(1);
+        Ok(i64::from(approx_divide(sum, count)?.min(max)))
+    }
+
+    fn cfl_luma_q3(
+        &self,
+        chroma_x: usize,
+        chroma_y: usize,
+        clamp_x: bool,
+        clamp_y: bool,
+    ) -> core::result::Result<i64, GeneralIntraResidualError> {
+        let Some(filter_index) = self.cfl_filter_index() else {
+            return Ok(0);
+        };
+        let luma_x = (chroma_x.saturating_mul(2)) as isize;
+        let luma_y = (chroma_y.saturating_mul(2)) as isize;
+        let mut total = 0i64;
+        for (dy_index, dy) in [-1isize, 0, 1].into_iter().enumerate() {
+            for (dx_index, dx) in [-1isize, 0, 1].into_iter().enumerate() {
+                let weight = CFL_FILTERS_420[filter_index][dy_index][dx_index];
+                if weight == 0 {
+                    continue;
+                }
+                let sx = luma_x + if clamp_x { dx.max(0) } else { dx };
+                let sy = luma_y + if clamp_y { dy.max(0) } else { dy };
+                total += weight * i64::from(self.clamped_luma_sample(sx, sy)?.to_u16());
+            }
+        }
+        Ok(total)
+    }
+
+    fn clamped_luma_sample(&self, x: isize, y: isize) -> splot_recon::Result<T> {
+        let max_x = self.luma_width.saturating_sub(1) as isize;
+        let max_y = self.luma_height.saturating_sub(1) as isize;
+        let sx = x.clamp(0, max_x) as usize;
+        let sy = y.clamp(0, max_y) as usize;
+        self.workspace.reconstructed_sample(PlaneId::Y, sx, sy)
+    }
+
+    fn clamped_chroma_sample(
+        &self,
+        plane_id: PlaneId,
+        x: usize,
+        y: usize,
+    ) -> splot_recon::Result<T> {
+        let sx = x.min(self.chroma_width_for_sample_reads().saturating_sub(1));
+        let sy = y.min(self.chroma_height_for_sample_reads().saturating_sub(1));
+        self.workspace.reconstructed_sample(plane_id, sx, sy)
+    }
+
+    const fn chroma_width_for_sample_reads(&self) -> usize {
+        self.luma_width.div_ceil(2)
+    }
+
+    const fn chroma_height_for_sample_reads(&self) -> usize {
+        self.luma_height.div_ceil(2)
+    }
+
+    const fn cfl_filter_index(&self) -> Option<usize> {
+        match self.cfl_ds_filter_index {
+            0 | 3 => Some(0),
+            1 => Some(1),
+            2 => Some(2),
+            _ => None,
+        }
+    }
+
     /// Reconstructs one chroma (U or V) transform block at the given chroma-plane
     /// sample position into the workspace. The block is DEFERRED unless ALL of the
-    /// proven subset holds: `chroma_mode` is `DC_PRED` (chroma never uses the
-    /// §7.14.4 TCQ term); the frame dequant matches the zero-`QuantizerDeltas`
-    /// assumption (`quant_reconstructable`); the residual is the proven primitive
-    /// kind ([`residual_is_reconstructable`]: `all_zero` flat-DC, or a square
-    /// non-`all_zero` block with no IST — chroma is never FSC); and the §7.13.2
-    /// DC-prediction edges are off-frame or already reconstructed by this sink. The
-    /// `(x, y)` sample position must be MI-aligned (chroma transforms are).
+    /// proven subset holds: the frame dequant matches the zero-`QuantizerDeltas`
+    /// assumption (`quant_reconstructable`); the residual is reconstructable; and
+    /// the §7.13.2 DC-prediction/CfL reference inputs are off-frame or already
+    /// reconstructed by this sink. The `(x, y)` sample position must be MI-aligned
+    /// (chroma transforms are).
     #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime_minimal) fn reconstruct_chroma_transform(
         &mut self,
@@ -1798,10 +3667,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         y: usize,
         block: &LumaCoeffBlock,
         chroma_mode: Option<SupportedChromaMode>,
+        angle_delta_y: i8,
+        cfl_params: Option<CflParams>,
+        num4_above_right: usize,
+        num4_below_left: usize,
         qindex: u32,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        if chroma_mode != Some(SupportedChromaMode::Dc) || !self.quant_reconstructable {
+        if !self.quant_reconstructable {
             return Ok(());
         }
         let Some((log2_width, log2_height)) = tx_size_log2(chroma_tx) else {
@@ -1812,32 +3685,911 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
         let (mi_col, mi_row) = (x / MI_SIZE, y / MI_SIZE);
         let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
-        if !self.dc_edges_reconstructed(plane_id, mi_col, mi_row, mi_w, mi_h) {
+        if let Some(cfl_params) = cfl_params {
+            let edges_ok = self.dc_edges_reconstructed(plane_id, mi_col, mi_row, mi_w, mi_h);
+            let width = 1usize << log2_width;
+            let height = 1usize << log2_height;
+            let alpha_q3 = self
+                .cfl_alpha_q3(plane_id, x, y, width, height, cfl_params)
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        tile_offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_recon_chroma_write",
+                    )
+                })?;
+            let luma_ok =
+                alpha_q3 == 0 || self.cfl_luma_region_reconstructed(x, y, log2_width, log2_height);
+            if !edges_ok || !luma_ok {
+                self.defer_chroma_transform(
+                    plane_id,
+                    chroma_tx,
+                    x,
+                    y,
+                    block,
+                    chroma_mode,
+                    angle_delta_y,
+                    Some(cfl_params),
+                    num4_above_right,
+                    num4_below_left,
+                    qindex,
+                    tile_offset,
+                );
+                return Ok(());
+            }
+            let wrote = self
+                .reconstruct_cfl_chroma_transform(
+                    plane_id,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    block,
+                    cfl_params,
+                    num4_above_right,
+                    num4_below_left,
+                    qindex,
+                )
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        tile_offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_recon_chroma_write",
+                    )
+                })?;
+            if !wrote {
+                self.defer_chroma_transform(
+                    plane_id,
+                    chroma_tx,
+                    x,
+                    y,
+                    block,
+                    chroma_mode,
+                    angle_delta_y,
+                    Some(cfl_params),
+                    num4_above_right,
+                    num4_below_left,
+                    qindex,
+                    tile_offset,
+                );
+                return Ok(());
+            }
+            let marked =
+                self.coverage[Self::coverage_index(plane_id)].mark(mi_col, mi_row, mi_w, mi_h);
+            self.reconstructed_chroma_4x4 = self.reconstructed_chroma_4x4.saturating_add(marked);
+            self.record_chroma_deblock_block(plane_id, x, y, chroma_tx, qindex);
             return Ok(());
         }
-        let ibp_dc = self.ibp_dc_applies(log2_width, log2_height);
-        reconstruct_general_intra_block_rect_into(
-            &mut self.workspace,
-            block,
-            plane_id,
-            x,
-            y,
-            log2_width,
-            log2_height,
-            qindex,
-            false,
-            ibp_dc,
-            self.bit_depth,
-        )
+        let Some(chroma_mode) = chroma_mode else {
+            return Ok(());
+        };
+        self.coverage[Self::coverage_index(plane_id)].record_chroma_mode(
+            mi_col,
+            mi_row,
+            mi_w,
+            mi_h,
+            chroma_mode,
+        );
+        if self.full_recon && Self::chroma_direction_base_angle(chroma_mode).is_some() {
+            if self.try_reconstruct_chroma_follow_angle(
+                plane_id,
+                chroma_mode,
+                angle_delta_y,
+                chroma_tx,
+                x,
+                y,
+                log2_width,
+                log2_height,
+                block,
+                num4_above_right,
+                num4_below_left,
+                qindex,
+                tile_offset,
+            )? {
+                return Ok(());
+            }
+            self.defer_chroma_transform(
+                plane_id,
+                chroma_tx,
+                x,
+                y,
+                block,
+                Some(chroma_mode),
+                angle_delta_y,
+                cfl_params,
+                num4_above_right,
+                num4_below_left,
+                qindex,
+                tile_offset,
+            );
+            return Ok(());
+        }
+        match chroma_mode {
+            SupportedChromaMode::Dc => {
+                let edges_ok = self.dc_edges_reconstructed(plane_id, mi_col, mi_row, mi_w, mi_h);
+                if !edges_ok {
+                    self.defer_chroma_transform(
+                        plane_id,
+                        chroma_tx,
+                        x,
+                        y,
+                        block,
+                        Some(chroma_mode),
+                        angle_delta_y,
+                        cfl_params,
+                        num4_above_right,
+                        num4_below_left,
+                        qindex,
+                        tile_offset,
+                    );
+                    return Ok(());
+                }
+                let ibp_dc = self.ibp_dc_applies(log2_width, log2_height);
+                reconstruct_general_intra_block_rect_into(
+                    &mut self.workspace,
+                    block,
+                    plane_id,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    false,
+                    ibp_dc,
+                    self.bit_depth,
+                )
+            }
+            SupportedChromaMode::Paeth if self.full_recon => {
+                if !self.paeth_edges_reconstructed(plane_id, mi_col, mi_row, mi_w, mi_h) {
+                    self.defer_chroma_transform(
+                        plane_id,
+                        chroma_tx,
+                        x,
+                        y,
+                        block,
+                        Some(chroma_mode),
+                        angle_delta_y,
+                        cfl_params,
+                        num4_above_right,
+                        num4_below_left,
+                        qindex,
+                        tile_offset,
+                    );
+                    return Ok(());
+                }
+                reconstruct_general_intra_luma_paeth_neighbour_block_into(
+                    &mut self.workspace,
+                    block,
+                    plane_id,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    false,
+                    self.bit_depth,
+                )
+            }
+            SupportedChromaMode::VerticalFollow if self.full_recon => {
+                let edge_ok = self.cardinal_edge_reconstructed(
+                    IntraCardinalDirection::Vertical,
+                    plane_id,
+                    mi_col,
+                    mi_row,
+                    mi_w,
+                    mi_h,
+                );
+                if !edge_ok {
+                    self.defer_chroma_transform(
+                        plane_id,
+                        chroma_tx,
+                        x,
+                        y,
+                        block,
+                        Some(chroma_mode),
+                        angle_delta_y,
+                        cfl_params,
+                        num4_above_right,
+                        num4_below_left,
+                        qindex,
+                        tile_offset,
+                    );
+                    return Ok(());
+                }
+                reconstruct_general_intra_chroma_block_into(
+                    &mut self.workspace,
+                    block,
+                    plane_id,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    chroma_mode,
+                    num4_above_right,
+                    num4_below_left,
+                    self.bit_depth,
+                )
+            }
+            SupportedChromaMode::HorizontalFollow | SupportedChromaMode::Horizontal
+                if self.full_recon =>
+            {
+                let edge_ok = self.cardinal_edge_reconstructed(
+                    IntraCardinalDirection::Horizontal,
+                    plane_id,
+                    mi_col,
+                    mi_row,
+                    mi_w,
+                    mi_h,
+                );
+                if !edge_ok {
+                    self.defer_chroma_transform(
+                        plane_id,
+                        chroma_tx,
+                        x,
+                        y,
+                        block,
+                        Some(chroma_mode),
+                        angle_delta_y,
+                        cfl_params,
+                        num4_above_right,
+                        num4_below_left,
+                        qindex,
+                        tile_offset,
+                    );
+                    return Ok(());
+                }
+                reconstruct_general_intra_chroma_block_into(
+                    &mut self.workspace,
+                    block,
+                    plane_id,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    chroma_mode,
+                    num4_above_right,
+                    num4_below_left,
+                    self.bit_depth,
+                )
+            }
+            SupportedChromaMode::Smooth
+            | SupportedChromaMode::SmoothVertical
+            | SupportedChromaMode::SmoothHorizontal
+                if self.full_recon =>
+            {
+                let smooth_mode = match chroma_mode {
+                    SupportedChromaMode::Smooth => IntraSmoothMode::Smooth,
+                    SupportedChromaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
+                    SupportedChromaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
+                    _ => return Ok(()),
+                };
+                let edge_samples =
+                    self.smooth_edge_availability_samples(plane_id, mi_col, mi_row, mi_w, mi_h);
+                let Some((left_samples, above_samples)) = edge_samples else {
+                    self.defer_chroma_transform(
+                        plane_id,
+                        chroma_tx,
+                        x,
+                        y,
+                        block,
+                        Some(chroma_mode),
+                        angle_delta_y,
+                        cfl_params,
+                        num4_above_right,
+                        num4_below_left,
+                        qindex,
+                        tile_offset,
+                    );
+                    return Ok(());
+                };
+                if !self.smooth_edges_reconstructable(
+                    plane_id,
+                    mi_col,
+                    mi_row,
+                    mi_w,
+                    mi_h,
+                    chroma_mode,
+                    num4_above_right,
+                    num4_below_left,
+                    left_samples,
+                    above_samples,
+                ) {
+                    self.defer_chroma_transform(
+                        plane_id,
+                        chroma_tx,
+                        x,
+                        y,
+                        block,
+                        Some(chroma_mode),
+                        angle_delta_y,
+                        cfl_params,
+                        num4_above_right,
+                        num4_below_left,
+                        qindex,
+                        tile_offset,
+                    );
+                    return Ok(());
+                }
+                reconstruct_general_intra_chroma_smooth_available_edges_into(
+                    &mut self.workspace,
+                    block,
+                    plane_id,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    smooth_mode,
+                    left_samples,
+                    above_samples,
+                    num4_above_right,
+                    num4_below_left,
+                    self.bit_depth,
+                )
+            }
+            mode if self.full_recon && log2_width == log2_height => {
+                let edges_ok = self.dc_edges_reconstructed(plane_id, mi_col, mi_row, mi_w, mi_h);
+                if !edges_ok {
+                    self.defer_chroma_transform(
+                        plane_id,
+                        chroma_tx,
+                        x,
+                        y,
+                        block,
+                        Some(chroma_mode),
+                        angle_delta_y,
+                        cfl_params,
+                        num4_above_right,
+                        num4_below_left,
+                        qindex,
+                        tile_offset,
+                    );
+                    return Ok(());
+                }
+                reconstruct_general_intra_chroma_block_into(
+                    &mut self.workspace,
+                    block,
+                    plane_id,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    mode,
+                    num4_above_right,
+                    num4_below_left,
+                    self.bit_depth,
+                )
+            }
+            _ => return Ok(()),
+        }
         .map_err(|_| {
             wienerns_lr_selectable_transform_record_error_reason(
                 tile_offset,
                 "unsupported_wienerns_lr_selectable_transform_records_recon_chroma_write",
             )
         })?;
+        self.finish_chroma_reconstruction(
+            plane_id, x, y, chroma_tx, qindex, mi_col, mi_row, mi_w, mi_h,
+        );
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn smooth_edges_reconstructable(
+        &self,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+        mode: SupportedChromaMode,
+        num4_above_right: usize,
+        num4_below_left: usize,
+        left_samples: usize,
+        above_samples: usize,
+    ) -> bool {
+        let width = mi_w * MI_SIZE;
+        let height = mi_h * MI_SIZE;
+        if mi_col > 0 && left_samples < height {
+            return false;
+        }
+        if mi_row > 0 && above_samples < width {
+            return false;
+        }
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        if matches!(
+            mode,
+            SupportedChromaMode::Smooth | SupportedChromaMode::SmoothVertical
+        ) && mi_col > 0
+            && num4_below_left > 0
+        {
+            let Some(left_col) = mi_col.checked_sub(1) else {
+                return false;
+            };
+            if !coverage.is_covered(left_col, mi_row.saturating_add(mi_h)) {
+                return false;
+            }
+        }
+        if matches!(
+            mode,
+            SupportedChromaMode::Smooth | SupportedChromaMode::SmoothHorizontal
+        ) && mi_row > 0
+            && num4_above_right > 0
+        {
+            let Some(above_row) = mi_row.checked_sub(1) else {
+                return false;
+            };
+            if !coverage.is_covered(mi_col.saturating_add(mi_w), above_row) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn paeth_edges_reconstructed(
+        &self,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+    ) -> bool {
+        if !self.dc_edges_reconstructed(plane_id, mi_col, mi_row, mi_w, mi_h) {
+            return false;
+        }
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        match (mi_col.checked_sub(1), mi_row.checked_sub(1)) {
+            (Some(left), Some(above)) => coverage.is_covered(left, above),
+            _ => true,
+        }
+    }
+
+    fn chroma_two_sided_middle_edges_reconstructed(
+        &self,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+    ) -> bool {
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        let (Some(above), Some(left)) = (mi_row.checked_sub(1), mi_col.checked_sub(1)) else {
+            return false;
+        };
+        let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
+        if !covered(left, above) {
+            return false;
+        }
+        if !(mi_col..mi_col.saturating_add(mi_w)).all(|c| covered(c, above)) {
+            return false;
+        }
+        (mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(left, r))
+    }
+
+    fn mark_chroma_coverage(
+        &mut self,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+    ) {
         let marked = self.coverage[Self::coverage_index(plane_id)].mark(mi_col, mi_row, mi_w, mi_h);
         self.reconstructed_chroma_4x4 = self.reconstructed_chroma_4x4.saturating_add(marked);
-        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_chroma_reconstruction(
+        &mut self,
+        plane_id: PlaneId,
+        x: usize,
+        y: usize,
+        chroma_tx: usize,
+        qindex: u32,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        mi_h: usize,
+    ) {
+        self.record_chroma_deblock_block(plane_id, x, y, chroma_tx, qindex);
+        self.mark_chroma_coverage(plane_id, mi_col, mi_row, mi_w, mi_h);
+    }
+
+    fn chroma_direction_base_angle(mode: SupportedChromaMode) -> Option<(i32, bool)> {
+        match mode {
+            SupportedChromaMode::VerticalFollow => Some((90, true)),
+            SupportedChromaMode::Vertical => Some((90, false)),
+            SupportedChromaMode::HorizontalFollow => Some((180, true)),
+            SupportedChromaMode::D45Follow => Some((45, true)),
+            SupportedChromaMode::D135Follow => Some((135, true)),
+            SupportedChromaMode::D113Follow => Some((113, true)),
+            SupportedChromaMode::D157Follow => Some((157, true)),
+            SupportedChromaMode::D203Follow => Some((203, true)),
+            SupportedChromaMode::D67Follow => Some((67, true)),
+            SupportedChromaMode::D45 => Some((45, false)),
+            SupportedChromaMode::D67 => Some((67, false)),
+            SupportedChromaMode::D135 => Some((135, false)),
+            SupportedChromaMode::D113 => Some((113, false)),
+            SupportedChromaMode::D203 => Some((203, false)),
+            SupportedChromaMode::D157 => Some((157, false)),
+            _ => None,
+        }
+    }
+
+    fn chroma_one_sided_above_edges_reconstructed(
+        &self,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        mi_w: usize,
+        num4_above_right: usize,
+    ) -> bool {
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        let Some(above) = mi_row.checked_sub(1) else {
+            return false;
+        };
+        let Some(corner) = mi_col.checked_sub(1) else {
+            return false;
+        };
+        let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
+        if !covered(corner, above) {
+            return false;
+        }
+        if !(mi_col..mi_col.saturating_add(mi_w)).all(|c| covered(c, above)) {
+            return false;
+        }
+        let right_edge = mi_col.saturating_add(mi_w);
+        (0..num4_above_right).all(|offset| covered(right_edge.saturating_add(offset), above))
+    }
+
+    fn chroma_leaf_has_above_row(&self, plane_id: PlaneId, mi_col: usize, mi_row: usize) -> bool {
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        mi_row
+            .checked_sub(1)
+            .is_some_and(|above| !coverage.off_grid(mi_col, above))
+    }
+
+    fn chroma_one_sided_left_edges_reconstructed(
+        &self,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        mi_h: usize,
+        num4_below_left: usize,
+        have_above: bool,
+    ) -> bool {
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        let Some(left) = mi_col.checked_sub(1) else {
+            return false;
+        };
+        let covered = |c: usize, r: usize| !coverage.off_grid(c, r) && coverage.is_covered(c, r);
+        if have_above {
+            let Some(above) = mi_row.checked_sub(1) else {
+                return false;
+            };
+            if !covered(left, above) {
+                return false;
+            }
+        }
+        if !(mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(left, r)) {
+            return false;
+        }
+        let bottom_edge = mi_row.saturating_add(mi_h);
+        (0..num4_below_left).all(|offset| covered(left, bottom_edge.saturating_add(offset)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_reconstruct_chroma_follow_angle(
+        &mut self,
+        plane_id: PlaneId,
+        mode: SupportedChromaMode,
+        angle_delta_y: i8,
+        chroma_tx: usize,
+        x: usize,
+        y: usize,
+        log2_width: u32,
+        log2_height: u32,
+        block: &LumaCoeffBlock,
+        num4_above_right: usize,
+        num4_below_left: usize,
+        qindex: u32,
+        tile_offset: ByteOffset,
+    ) -> Result<bool> {
+        let Some((base_angle, inherit_luma_delta)) = Self::chroma_direction_base_angle(mode) else {
+            return Ok(false);
+        };
+        let width = 1u32 << log2_width;
+        let height = 1u32 << log2_height;
+        let angle_delta = if inherit_luma_delta { angle_delta_y } else { 0 };
+        if !matches!(
+            mode,
+            SupportedChromaMode::VerticalFollow
+                | SupportedChromaMode::HorizontalFollow
+                | SupportedChromaMode::D45Follow
+                | SupportedChromaMode::D45
+                | SupportedChromaMode::D67Follow
+                | SupportedChromaMode::D67
+                | SupportedChromaMode::D113Follow
+                | SupportedChromaMode::D135Follow
+                | SupportedChromaMode::D157Follow
+                | SupportedChromaMode::D203Follow
+        ) && angle_delta != 0
+            && width != height
+        {
+            return Ok(false);
+        }
+        let p_angle = wide_angle_mapping(
+            width,
+            height,
+            base_angle + i32::from(angle_delta) * ANGLE_STEP,
+        );
+        let (mi_col, mi_row) = (x / MI_SIZE, y / MI_SIZE);
+        let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
+        if p_angle == 90 || p_angle == 180 {
+            let direction = if p_angle == 90 {
+                IntraCardinalDirection::Vertical
+            } else {
+                IntraCardinalDirection::Horizontal
+            };
+            if !self.cardinal_edge_reconstructed(direction, plane_id, mi_col, mi_row, mi_w, mi_h) {
+                return Ok(false);
+            }
+            reconstruct_general_intra_cardinal_neighbour_block_into(
+                &mut self.workspace,
+                block,
+                direction,
+                plane_id,
+                x,
+                y,
+                log2_width,
+                log2_height,
+                qindex,
+                false,
+                self.bit_depth,
+            )
+            .map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_recon_chroma_angle_write",
+                )
+            })?;
+            self.finish_chroma_reconstruction(
+                plane_id, x, y, chroma_tx, qindex, mi_col, mi_row, mi_w, mi_h,
+            );
+            return Ok(true);
+        }
+        let Ok(p_angle_u16) = u16::try_from(p_angle) else {
+            return Ok(false);
+        };
+        let Ok(angle) = IntraDirectionalAngle::try_from_p_angle(p_angle_u16) else {
+            if p_angle <= 90 || p_angle >= 180 {
+                return Ok(false);
+            }
+            if !self
+                .chroma_two_sided_middle_edges_reconstructed(plane_id, mi_col, mi_row, mi_w, mi_h)
+            {
+                return Ok(false);
+            }
+            let Some(filters) = self.resolve_chroma_two_sided_middle_edge_filters(
+                plane_id,
+                mi_col,
+                mi_row,
+                width,
+                height,
+                p_angle,
+                tile_offset,
+            )?
+            else {
+                return Ok(false);
+            };
+            reconstruct_general_intra_middle_neighbour_rect_block_into(
+                &mut self.workspace,
+                block,
+                p_angle_u16,
+                plane_id,
+                x,
+                y,
+                log2_width,
+                log2_height,
+                qindex,
+                false,
+                self.bit_depth,
+                filters,
+            )
+            .map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_recon_chroma_angle_write",
+                )
+            })?;
+            self.finish_chroma_reconstruction(
+                plane_id, x, y, chroma_tx, qindex, mi_col, mi_row, mi_w, mi_h,
+            );
+            return Ok(true);
+        };
+        let not4x4 = !(width == 4 && height == 4);
+        let apply_ibp_filter = self.enable_ibp && not4x4;
+        let apply_ibp = false;
+        let Some(edge_filter) = self.resolve_chroma_one_sided_edge_filter(
+            plane_id,
+            mi_col,
+            mi_row,
+            width,
+            height,
+            p_angle,
+            apply_ibp_filter,
+            tile_offset,
+        )?
+        else {
+            return Ok(false);
+        };
+        if apply_ibp {
+            let zone1 = p_angle < 90;
+            let second_angle_i = if zone1 { p_angle + 180 } else { p_angle - 180 };
+            let Ok(second_angle) = u16::try_from(second_angle_i) else {
+                return Ok(false);
+            };
+            if IntraDirectionalAngle::try_from_p_angle(second_angle).is_err() {
+                return Ok(false);
+            }
+            let Some(secondary_edge_filter) = self.resolve_chroma_ibp_secondary_edge_filter(
+                plane_id,
+                mi_col,
+                mi_row,
+                width,
+                height,
+                p_angle,
+                tile_offset,
+            )?
+            else {
+                return Ok(false);
+            };
+            let have_above = self.chroma_leaf_has_above_row(plane_id, mi_col, mi_row);
+            let (primary_ok, secondary_ok, primary_num4, secondary_num4) = if zone1 {
+                (
+                    self.chroma_one_sided_above_edges_reconstructed(
+                        plane_id,
+                        mi_col,
+                        mi_row,
+                        mi_w,
+                        num4_above_right,
+                    ),
+                    self.chroma_one_sided_left_edges_reconstructed(
+                        plane_id,
+                        mi_col,
+                        mi_row,
+                        mi_h,
+                        num4_below_left,
+                        have_above,
+                    ),
+                    num4_above_right,
+                    num4_below_left,
+                )
+            } else {
+                (
+                    self.chroma_one_sided_left_edges_reconstructed(
+                        plane_id,
+                        mi_col,
+                        mi_row,
+                        mi_h,
+                        num4_below_left,
+                        have_above,
+                    ),
+                    self.chroma_one_sided_above_edges_reconstructed(
+                        plane_id,
+                        mi_col,
+                        mi_row,
+                        mi_w,
+                        num4_above_right,
+                    ),
+                    num4_below_left,
+                    num4_above_right,
+                )
+            };
+            if !primary_ok || !secondary_ok {
+                return Ok(false);
+            }
+            reconstruct_general_intra_one_sided_ibp_luma_block_into(
+                &mut self.workspace,
+                block,
+                p_angle_u16,
+                plane_id,
+                x,
+                y,
+                log2_width,
+                log2_height,
+                qindex,
+                primary_num4,
+                edge_filter,
+                IbpSecondary {
+                    second_angle,
+                    edge_filter: secondary_edge_filter,
+                    num4_far: secondary_num4,
+                },
+                false,
+                self.bit_depth,
+            )
+            .map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_recon_chroma_angle_write",
+                )
+            })?;
+            self.finish_chroma_reconstruction(
+                plane_id, x, y, chroma_tx, qindex, mi_col, mi_row, mi_w, mi_h,
+            );
+            return Ok(true);
+        }
+        let write_result = match angle.required_edge() {
+            IntraDirectionalAngleEdge::Above => {
+                if !self.chroma_one_sided_above_edges_reconstructed(
+                    plane_id,
+                    mi_col,
+                    mi_row,
+                    mi_w,
+                    num4_above_right,
+                ) {
+                    return Ok(false);
+                }
+                reconstruct_general_intra_one_sided_neighbour_block_into(
+                    &mut self.workspace,
+                    block,
+                    p_angle_u16,
+                    plane_id,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    num4_above_right,
+                    OneSidedAboveMrl::default(),
+                    false,
+                    self.bit_depth,
+                    edge_filter,
+                )
+            }
+            IntraDirectionalAngleEdge::Left => {
+                let have_above = self.chroma_leaf_has_above_row(plane_id, mi_col, mi_row);
+                if !self.chroma_one_sided_left_edges_reconstructed(
+                    plane_id,
+                    mi_col,
+                    mi_row,
+                    mi_h,
+                    num4_below_left,
+                    have_above,
+                ) {
+                    return Ok(false);
+                }
+                reconstruct_general_intra_one_sided_left_neighbour_block_into(
+                    &mut self.workspace,
+                    block,
+                    p_angle_u16,
+                    plane_id,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    num4_below_left,
+                    have_above,
+                    0,
+                    false,
+                    self.bit_depth,
+                    edge_filter,
+                )
+            }
+        };
+        write_result.map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_recon_chroma_angle_write",
+            )
+        })?;
+        self.finish_chroma_reconstruction(
+            plane_id, x, y, chroma_tx, qindex, mi_col, mi_row, mi_w, mi_h,
+        );
+        Ok(true)
     }
 
     /// Reconstructs one §7.13.3.18 IntrABC luma block into the workspace by copying
@@ -1925,6 +4677,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let marked = self.coverage[Self::coverage_index(PlaneId::Y)]
             .mark(tgt_mi_col, tgt_mi_row, tgt_mi_w, tgt_mi_h);
         self.reconstructed_luma_4x4 = self.reconstructed_luma_4x4.saturating_add(marked);
+        if self.full_recon {
+            self.full_recon_luma_log.push(FullReconLumaLeaf {
+                mi_col: tgt_mi_col,
+                mi_row: tgt_mi_row,
+                x: target.x(),
+                y: target.y(),
+                width: target.width(),
+                height: target.height(),
+                mode: "INTRABC",
+                written: true,
+            });
+        }
         Ok(())
     }
 
@@ -1980,13 +4744,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 /// Drives the ac0ej3 `TX_MODE_SELECT` selectable transform-record walk with a
 /// reconstruction sink attached and returns the populated sink, for the
 /// region-verification test. The walk reconstructs the verified NON-IntrABC DC
-/// region into the sink's workspace in decode order, then (for the ac0ej3 stream)
-/// fails closed at the first active IntrABC block — the returned sink retains
-/// everything reconstructed before that point, so the test can compare the first
-/// superblock against the pre-filter reconstruction oracle. The public decode path
-/// never calls this (it runs the handoff with no sink and emits no frame). This is
-/// a 10-bit (`u16`) driver: the ac0ej3 sequence is 10-bit 4:2:0.
-#[cfg(test)]
+/// region into the sink's workspace in decode order. This is a 10-bit (`u16`)
+/// driver for the active Wiener-NS LR selectable-transform path.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     bytes: &[u8],
@@ -2014,6 +4773,10 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         .intra
         .as_ref()
         .is_some_and(|intra| intra.enable_intra_edge_filter);
+    let cfl_ds_filter_index = sequence
+        .intra
+        .as_ref()
+        .map_or(0, |intra| intra.cfl_ds_filter_index);
     let sb_size = sequence.partition.as_ref().map_or(
         splot_core::headers::sequence::SuperblockSize::Block64x64,
         splot_core::headers::sequence::SequencePartitionConfig::seq_sb_size,
@@ -2026,6 +4789,7 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         frame_quant_reconstructable(core),
         enable_ibp,
         enable_intra_edge_filter,
+        cfl_ds_filter_index,
         sb_mib,
     )?;
     let mut sink = if full_recon {
@@ -2043,7 +4807,19 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         core,
         Some(&mut sink),
     ) {
-        Ok(_) => Ok(sink),
+        Ok(handoff) => {
+            let tx_skip_grid = super::derive_wienerns_lr_tx_skip_grid_retention(
+                handoff.tx_skip_rows,
+                handoff.tx_skip_cols,
+                &handoff.records,
+            )?;
+            sink.set_cdef_grid(handoff.cdef_grid);
+            sink.set_ccso_grid(handoff.ccso_grid);
+            sink.set_tx_skip_grid(Some(tx_skip_grid));
+            sink.set_lr_source_blocks(handoff.active_source_blocks);
+            sink.set_lr_unit_filters(handoff.unit_filters);
+            Ok(sink)
+        }
         Err(crate::error::DecodeError::UnsupportedFeature { unsupported })
             if unsupported.reason() == EXPECTED_RECON_FRONTIER_REASON =>
         {
@@ -2060,16 +4836,136 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
 /// the test loudly. The §7.20.4 `live_frame_samples_unpopulated` gate is where the
 /// parse-only public-decode path stops (decoded CurrFrame / CdefFrame samples are
 /// still unpopulated for storage-backed FilterClass retention).
-#[cfg(test)]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
     "unsupported_wienerns_lr_selectable_live_frame_samples_unpopulated";
+
+fn mhccp_luma_ref_available(
+    row: usize,
+    col: usize,
+    above: usize,
+    left: usize,
+    width: usize,
+    height: usize,
+) -> bool {
+    (row < above || col < left.saturating_add(width))
+        && (row < above.saturating_add(height) || col < left)
+}
+
+fn gaussian_elimination_mhccp(
+    ata: [[i64; MHCCP_PARAM_COUNT]; MHCCP_PARAM_COUNT],
+    b: [i64; MHCCP_PARAM_COUNT],
+    bit_depth: BitDepth,
+) -> [i64; MHCCP_PARAM_COUNT] {
+    let mut c = [[0i64; MHCCP_PARAM_COUNT + 1]; MHCCP_PARAM_COUNT];
+    for i in 0..MHCCP_PARAM_COUNT {
+        for j in 0..MHCCP_PARAM_COUNT {
+            c[i][j] = if j >= i { ata[i][j] } else { ata[j][i] };
+        }
+        c[i][i] = c[i][i].saturating_add(2i64 << (u32::from(bit_depth.bits()) - 8));
+        c[i][MHCCP_PARAM_COUNT] = b[i];
+    }
+
+    for i in 0..MHCCP_PARAM_COUNT {
+        let diag = c[i][i].unsigned_abs().max(1);
+        let (scale, shift) = mhccp_division_scale_shift(diag);
+        for j in i + 1..=MHCCP_PARAM_COUNT {
+            c[i][j] = mul_fixed32_adapt(c[i][j], scale, shift);
+        }
+        for j in i + 1..MHCCP_PARAM_COUNT {
+            let scale_factor = c[j][i];
+            for k in i + 1..=MHCCP_PARAM_COUNT {
+                let delta = mul_fixed32_adapt(scale_factor, c[i][k], MHCCP_BITS);
+                c[j][k] = c[j][k].saturating_sub(delta);
+            }
+        }
+    }
+
+    let mut params = [0i64; MHCCP_PARAM_COUNT];
+    for i in (0..MHCCP_PARAM_COUNT).rev() {
+        params[i] = c[i][MHCCP_PARAM_COUNT];
+        for j in i + 1..MHCCP_PARAM_COUNT {
+            params[i] = params[i].saturating_sub(mul_fixed32_adapt(c[i][j], params[j], MHCCP_BITS));
+        }
+    }
+    params
+}
+
+fn mhccp_division_scale_shift(denom: u64) -> (i64, u32) {
+    let shift = floor_log2_u64(denom);
+    let delta = shift as i32 - DIV_PREC_BITS as i32;
+    let norm_diff_tmp = if delta >= 0 {
+        let delta = delta as u32;
+        let bias = if delta > 0 { 1u64 << (delta - 1) } else { 0 };
+        ((denom.saturating_add(bias)) >> delta) as i64
+    } else {
+        let left_shift = (-delta) as u32;
+        if left_shift >= i64::BITS {
+            i64::MAX
+        } else {
+            let max = (i64::MAX as u64) >> left_shift;
+            let clipped = denom.min(max);
+            (clipped << left_shift) as i64
+        }
+    };
+    let norm_diff_clip = clip3(1, (1i64 << (DIV_PREC_BITS + 1)) - 1, norm_diff_tmp);
+    let norm_diff = norm_diff_clip & ((1i64 << DIV_PREC_BITS) - 1);
+    let index = ((norm_diff >> DIV_INTR_BITS) as usize).min(DIVISION_POW2_W.len() - 1);
+    let norm_diff2 = norm_diff - DIVISION_POW2_O[index];
+    let squared = (norm_diff2.saturating_mul(norm_diff2)) >> DIV_PREC_BITS;
+    let mut scale = ((DIVISION_POW2_W[index].saturating_mul(squared)) >> DIV_PREC_BITS_POW2)
+        - (norm_diff2 >> 1)
+        + DIVISION_POW2_B[index];
+    scale <<= MHCCP_BITS - DIV_PREC_BITS;
+    (scale, shift)
+}
+
+fn mul_fixed32_adapt(a: i64, b: i64, shift: u32) -> i64 {
+    let bits_a = bit_width_abs(a);
+    let bits_b = bit_width_abs(b);
+    let need = bits_a.saturating_add(bits_b).saturating_sub(29);
+    let s1 = need >> 1;
+    let s2 = need - s1;
+    let adj = shift as i32 - (s1 + s2) as i32;
+    let product = (a >> s1).saturating_mul(b >> s2);
+    if adj <= 0 {
+        product
+    } else if adj > 29 {
+        0
+    } else {
+        round2_signed(product, adj as u32)
+    }
+}
+
+fn bit_width_abs(value: i64) -> u32 {
+    let magnitude = value.unsigned_abs();
+    if magnitude == 0 {
+        1
+    } else {
+        u64::BITS - magnitude.leading_zeros()
+    }
+}
+
+fn floor_log2_u64(value: u64) -> u32 {
+    if value == 0 {
+        0
+    } else {
+        u64::BITS - 1 - value.leading_zeros()
+    }
+}
+
+fn ceil_log2_usize(value: usize) -> u32 {
+    if value <= 1 {
+        0
+    } else {
+        usize::BITS - (value - 1).leading_zeros()
+    }
+}
 
 /// Whether the frame's §5.18.6 quantization matches the reconstruction primitive's
 /// zero-`QuantizerDeltas` assumption: no per-plane DC/AC quantizer delta and no
 /// quantizer matrix. When `false` the sink must reconstruct nothing (the primitive
 /// would dequantize with the wrong DC/AC quantizers), so the gate defers — the safe
 /// choice. ac0ej3's verified frame has no such delta.
-#[cfg(test)]
 fn frame_quant_reconstructable(core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
     let deltas_zero = core.quantization_params.as_ref().is_none_or(|q| {
         q.delta_q_y_dc == 0
