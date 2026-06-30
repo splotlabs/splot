@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::headers::frame::{CcsoPlaneParams, FrameHeaderCore};
+use splot_core::headers::frame::{CcsoPlaneParams, FrameHeaderCore, ccso_quant_step};
 use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, ReconSample};
 
 const CCSO_PLANES: usize = 3;
 const CCSO_OFFSET: [i32; 8] = [0, 1, -1, 3, -3, 7, -7, -10];
-const CCSO_QUANT_SZ: [[i32; 4]; 4] = [
-    [16, 8, 32, 0],
-    [56, 40, 64, 128],
-    [48, 24, 96, 192],
-    [80, 112, 160, 256],
-];
 
 /// Parsed CCSO block enable grid, one cell per CCSO luma unit.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -167,7 +161,7 @@ fn ccso_plane<T: ReconSample>(
     let edge_clf = params.ccso_edge_clf.ok_or(CcsoError::Params)?;
     let scale_idx = params.ccso_scale_idx.ok_or(CcsoError::Params)?;
     let quant_idx = params.ccso_quant_idx.ok_or(CcsoError::Params)?;
-    let quant_step = ccso_quant_step(scale_idx, quant_idx);
+    let quant_step = i32::from(ccso_quant_step(scale_idx, quant_idx));
     let max_edge_interval = if bo_only {
         1usize
     } else if edge_clf {
@@ -309,14 +303,6 @@ fn ccso_score(diff: i32, quant_step: i32, edge_clf: bool) -> usize {
     } else {
         usize::from(diff >= -quant_step)
     }
-}
-
-fn ccso_quant_step(scale_idx: u8, quant_idx: u8) -> i32 {
-    CCSO_QUANT_SZ
-        .get(usize::from(scale_idx))
-        .and_then(|row| row.get(usize::from(quant_idx)))
-        .copied()
-        .unwrap_or(0)
 }
 
 fn ccso_sample_offsets(ext_filter: u8) -> Result<[(isize, isize); 2], CcsoError> {

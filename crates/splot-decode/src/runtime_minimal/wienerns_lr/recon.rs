@@ -494,15 +494,14 @@ impl PlaneCoverage {
         mi_h: usize,
         mode: IntraYMode,
     ) {
-        for r in mi_row..mi_row.saturating_add(mi_h) {
-            for c in mi_col..mi_col.saturating_add(mi_w) {
-                if !self.off_grid(c, r)
-                    && let Some(slot) = self.y_modes.get_mut(r * self.cols + c)
-                {
-                    *slot = Some(mode);
-                }
-            }
-        }
+        record_plane_mode(
+            self.cols,
+            self.rows,
+            &mut self.y_modes,
+            (mi_col, mi_row),
+            (mi_w, mi_h),
+            mode,
+        );
     }
 
     /// The §5.20.5.3 `YModes[mi_row][mi_col]` decoded into this MI unit, or `None`
@@ -525,15 +524,14 @@ impl PlaneCoverage {
         mi_h: usize,
         mode: SupportedChromaMode,
     ) {
-        for r in mi_row..mi_row.saturating_add(mi_h) {
-            for c in mi_col..mi_col.saturating_add(mi_w) {
-                if !self.off_grid(c, r)
-                    && let Some(slot) = self.chroma_modes.get_mut(r * self.cols + c)
-                {
-                    *slot = Some(mode);
-                }
-            }
-        }
+        record_plane_mode(
+            self.cols,
+            self.rows,
+            &mut self.chroma_modes,
+            (mi_col, mi_row),
+            (mi_w, mi_h),
+            mode,
+        );
     }
 
     fn chroma_mode_at(&self, mi_col: usize, mi_row: usize) -> Option<SupportedChromaMode> {
@@ -544,6 +542,28 @@ impl PlaneCoverage {
             .get(mi_row * self.cols + mi_col)
             .copied()
             .flatten()
+    }
+}
+
+fn record_plane_mode<T: Copy>(
+    cols: usize,
+    rows: usize,
+    slots: &mut [Option<T>],
+    origin: (usize, usize),
+    size: (usize, usize),
+    mode: T,
+) {
+    let (mi_col, mi_row) = origin;
+    let (mi_w, mi_h) = size;
+    for r in mi_row..mi_row.saturating_add(mi_h) {
+        for c in mi_col..mi_col.saturating_add(mi_w) {
+            if c < cols
+                && r < rows
+                && let Some(slot) = slots.get_mut(r * cols + c)
+            {
+                *slot = Some(mode);
+            }
+        }
     }
 }
 

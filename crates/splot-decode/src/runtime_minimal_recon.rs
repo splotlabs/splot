@@ -614,24 +614,18 @@ fn resolve_smooth_above_right_sentinel<T: ReconSample>(
     have_above: bool,
     num4_above_right: usize,
 ) -> core::result::Result<Option<T>, GeneralIntraResidualError> {
-    if !have_above || num4_above_right == 0 {
-        return Ok(None);
-    }
-    let plane = workspace.plane(plane_id)?;
-    let storage_width = plane.storage_size().width();
-    let Some(max_x) = storage_width.checked_sub(1) else {
-        return Ok(None);
-    };
-    let Some(above_row) = y.checked_sub(1) else {
-        return Ok(None);
-    };
-    let x_plus_w = x.saturating_add(side);
-    let sentinel_col = x_plus_w.min(max_x);
-    if x_plus_w > max_x {
-        return Ok(None);
-    }
-    let sentinel = workspace.reconstructed_sample(plane_id, sentinel_col, above_row)?;
-    Ok(Some(sentinel))
+    resolve_smooth_sentinel(
+        workspace,
+        SmoothSentinelRequest {
+            plane_id,
+            x,
+            y,
+            side,
+            have_edge: have_above,
+            extension: num4_above_right,
+            kind: SmoothSentinelKind::AboveRight,
+        },
+    )
 }
 
 /// Resolves the AV2 § 7.13.2.1 bottom-left sentinel `LeftCol[h]` for a SMOOTH
@@ -645,23 +639,86 @@ fn resolve_smooth_bottom_left_sentinel<T: ReconSample>(
     have_left: bool,
     num4_below_left: usize,
 ) -> core::result::Result<Option<T>, GeneralIntraResidualError> {
-    if !have_left || num4_below_left == 0 {
+    resolve_smooth_sentinel(
+        workspace,
+        SmoothSentinelRequest {
+            plane_id,
+            x,
+            y,
+            side: height,
+            have_edge: have_left,
+            extension: num4_below_left,
+            kind: SmoothSentinelKind::BottomLeft,
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+enum SmoothSentinelKind {
+    AboveRight,
+    BottomLeft,
+}
+
+#[derive(Clone, Copy)]
+struct SmoothSentinelRequest {
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    side: usize,
+    have_edge: bool,
+    extension: usize,
+    kind: SmoothSentinelKind,
+}
+
+fn resolve_smooth_sentinel<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    request: SmoothSentinelRequest,
+) -> core::result::Result<Option<T>, GeneralIntraResidualError> {
+    let SmoothSentinelRequest {
+        plane_id,
+        x,
+        y,
+        side,
+        have_edge,
+        extension,
+        kind,
+    } = request;
+    if !have_edge || extension == 0 {
         return Ok(None);
     }
-    let plane = workspace.plane(plane_id)?;
-    let storage_height = plane.storage_size().height();
-    let Some(max_y) = storage_height.checked_sub(1) else {
-        return Ok(None);
-    };
-    let Some(left_col) = x.checked_sub(1) else {
-        return Ok(None);
-    };
-    let y_plus_h = y.saturating_add(height);
-    if y_plus_h > max_y {
-        return Ok(None);
+    let storage = workspace.plane(plane_id)?.storage_size();
+    match kind {
+        SmoothSentinelKind::AboveRight => {
+            let Some(max_x) = storage.width().checked_sub(1) else {
+                return Ok(None);
+            };
+            let Some(sample_y) = y.checked_sub(1) else {
+                return Ok(None);
+            };
+            let sample_x = x.saturating_add(side);
+            if sample_x > max_x {
+                return Ok(None);
+            }
+            Ok(Some(
+                workspace.reconstructed_sample(plane_id, sample_x, sample_y)?,
+            ))
+        }
+        SmoothSentinelKind::BottomLeft => {
+            let Some(max_y) = storage.height().checked_sub(1) else {
+                return Ok(None);
+            };
+            let Some(sample_x) = x.checked_sub(1) else {
+                return Ok(None);
+            };
+            let sample_y = y.saturating_add(side);
+            if sample_y > max_y {
+                return Ok(None);
+            }
+            Ok(Some(
+                workspace.reconstructed_sample(plane_id, sample_x, sample_y)?,
+            ))
+        }
     }
-    let sentinel = workspace.reconstructed_sample(plane_id, left_col, y_plus_h)?;
-    Ok(Some(sentinel))
 }
 
 /// Copies `samples` into a length-`edge_len` edge, repeating the last sample to

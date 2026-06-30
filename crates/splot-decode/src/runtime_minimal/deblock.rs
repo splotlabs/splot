@@ -75,6 +75,29 @@ struct MiBlockInfo {
     skip: bool,
 }
 
+impl MiBlockInfo {
+    const fn from_block(block: DeblockBlock) -> Self {
+        let DeblockBlock {
+            r,
+            c,
+            n4w: _,
+            n4h: _,
+            luma_tx,
+            chroma_tx,
+            qindex,
+            skip,
+        } = block;
+        Self {
+            base_row: r,
+            base_col: c,
+            luma_tx,
+            chroma_tx,
+            qindex,
+            skip,
+        }
+    }
+}
+
 /// Applies AV2 § 7.17 deblocking in place.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
@@ -569,7 +592,7 @@ fn build_mi_grid(
     cells.resize(count, None);
 
     for block in blocks {
-        let info = block_info(*block);
+        let info = MiBlockInfo::from_block(*block);
         for rr in block.r..block.r + block.n4h {
             for cc in block.c..block.c + block.n4w {
                 if rr < mi_rows && cc < mi_cols {
@@ -583,7 +606,7 @@ fn build_mi_grid(
 
 fn overlay_mi_grid(grid: &mut MiGrid, blocks: &[DeblockBlock], mi_rows: usize, mi_cols: usize) {
     for block in blocks {
-        let info = block_info(*block);
+        let info = MiBlockInfo::from_block(*block);
         for rr in block.r..block.r + block.n4h {
             for cc in block.c..block.c + block.n4w {
                 if rr < mi_rows && cc < mi_cols {
@@ -591,17 +614,6 @@ fn overlay_mi_grid(grid: &mut MiGrid, blocks: &[DeblockBlock], mi_rows: usize, m
                 }
             }
         }
-    }
-}
-
-const fn block_info(block: DeblockBlock) -> MiBlockInfo {
-    MiBlockInfo {
-        base_row: block.r,
-        base_col: block.c,
-        luma_tx: block.luma_tx,
-        chroma_tx: block.chroma_tx,
-        qindex: block.qindex,
-        skip: block.skip,
     }
 }
 
