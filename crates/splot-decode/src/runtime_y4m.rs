@@ -30,7 +30,7 @@ const MINIMAL_Y4M_CHROMA_HEIGHT: u64 = 32;
 
 pub(crate) fn encode_y4m_stream_from_plan(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<u8>> {
     let limits = options.limits();

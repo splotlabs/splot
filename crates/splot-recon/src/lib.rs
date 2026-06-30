@@ -85,7 +85,8 @@ pub use intra_directional::{IntraCardinalDirection, predict_intra_cardinal_direc
 pub use intra_directional_angle::{
     IntraDirectionalAngle, IntraDirectionalAngleEdge, IntraDirectionalAngleEdges,
     IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
-    IntraMiddleDirectionalAngleIdifEdges, apply_intra_edge_filter, filter_intra_edge_corner,
+    IntraMiddleDirectionalAngleIdifEdges, IntraMiddleDirectionalAngleIdifMrlEdges,
+    apply_intra_edge_filter, filter_intra_edge_corner,
     predict_intra_directional_angle_rect_from_p_angle_into,
     predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_from_p_angle_into,
@@ -94,6 +95,7 @@ pub use intra_directional_angle::{
     predict_intra_middle_directional_angle_rect_from_p_angle_into,
     predict_intra_middle_directional_angle_rect_idif_from_p_angle_into,
     predict_intra_middle_directional_angle_rect_idif_into,
+    predict_intra_middle_directional_angle_rect_idif_mrl_into,
     predict_intra_middle_directional_angle_rect_into,
 };
 pub use intra_ibp_angular::{apply_ibp_dr_blend_rect, ibp_blend_fires};
@@ -115,8 +117,9 @@ pub use loop_restoration::{
     loop_restoration_source_sample_value,
 };
 pub use pc_wiener::{
-    PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES,
-    PcWienerClassification, PcWienerClassifyParams, PcWienerTxSkipLookup, pc_wiener_classify,
+    PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_FULL_CLASSES, PC_WIENER_LUT_CLASSES,
+    PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES, PcWienerClassification, PcWienerClassifyParams,
+    PcWienerTxSkipLookup, pc_wiener_classify, pc_wiener_filter_set_index, pc_wiener_subclass,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;

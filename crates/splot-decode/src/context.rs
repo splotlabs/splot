@@ -76,7 +76,7 @@ impl DecodeContext {
     /// Returns [`crate::DecodeError`] for malformed sources, unsupported
     /// structures, local decode resource-limit failures, or pool failures.
     pub fn plan_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<DecodeStreamPlan> {
-        self.pool.install(|| plan_byte_stream(bytes, options))
+        self.pool.install(|| plan_byte_stream(bytes, &options))
     }
 
     /// Decodes the documented minimal tier and returns a deterministic hash report.
@@ -96,7 +96,12 @@ impl DecodeContext {
     ) -> Result<DecodeHashReport> {
         let plan = self.plan_bytes(bytes, options)?;
         self.pool.install(|| {
-            crate::runtime_hash::decode_hash_report_from_plan(bytes, options, &plan, self.threads())
+            crate::runtime_hash::decode_hash_report_from_plan(
+                bytes,
+                &options,
+                &plan,
+                self.threads(),
+            )
         })
     }
 
@@ -121,7 +126,7 @@ impl DecodeContext {
         let plan = self.plan_bytes(bytes, options)?;
         let raw = self
             .pool
-            .install(|| crate::runtime_raw::encode_raw_stream_from_plan(bytes, options, &plan))?;
+            .install(|| crate::runtime_raw::encode_raw_stream_from_plan(bytes, &options, &plan))?;
         std::io::Write::write_all(&mut writer, &raw).map_err(|source| {
             DecodeOutputError::io(DecodeOutputOperation::WriteRawStream, source)
         })?;
@@ -149,7 +154,7 @@ impl DecodeContext {
         let plan = self.plan_bytes(bytes, options)?;
         let y4m = self
             .pool
-            .install(|| crate::runtime_y4m::encode_y4m_stream_from_plan(bytes, options, &plan))?;
+            .install(|| crate::runtime_y4m::encode_y4m_stream_from_plan(bytes, &options, &plan))?;
         std::io::Write::write_all(&mut writer, &y4m).map_err(|source| {
             DecodeOutputError::io(DecodeOutputOperation::WriteY4mStream, source)
         })?;
@@ -170,7 +175,7 @@ impl DecodeContext {
         input: DecodeStreamInput<'_>,
         options: DecodeOptions,
     ) -> Result<DecodeStreamPlan> {
-        self.pool.install(|| plan_stream(input, options))
+        self.pool.install(|| plan_stream(input, &options))
     }
 
     /// Builds a deterministic tile-payload boundary plan inside this context's

@@ -14,7 +14,9 @@
 //!
 //! Feature tracking: `RECON-PC-WIENER-CLASSIFICATION`.
 
-use splot_tables::tables::loop_restoration::PC_WIENER_LUT_TO_CLASS;
+use splot_tables::tables::loop_restoration::{
+    PC_WIENER_LUT_TO_CLASS, PC_WIENER_SUB_CLASSIFY, PC_WIENER_SUB_CLASSIFY2,
+};
 
 use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
@@ -29,6 +31,10 @@ pub const PC_WIENER_FEATURE_WINDOW_SIDE: usize = 6;
 
 /// Number of entries in AV2 § 9.8 `Pc_Wiener_Lut_To_Class`.
 pub const PC_WIENER_LUT_INPUTS: usize = 4096;
+/// Number of AV2 § 9.8 PC-Wiener LUT classes.
+pub const PC_WIENER_LUT_CLASSES: usize = 256;
+/// Number of AV2 § 9.8 PC-Wiener filter classes in the full classifier.
+pub const PC_WIENER_FULL_CLASSES: usize = 64;
 
 /// AV2 § 3 `PC_WIENER_PREC_FEATURE`.
 const PC_WIENER_PREC_FEATURE: u32 = 14;
@@ -206,6 +212,71 @@ where
         lut_input,
         class,
     })
+}
+
+/// Returns the AVM/AV2 PC-Wiener filter-set index for a frame quantizer.
+///
+/// The AVM helper accepts an additional qindex offset used by some runtime
+/// contexts; the normative § 7.20.4 classifier uses `base_q_idx`.
+#[must_use]
+pub const fn pc_wiener_filter_set_index(base_q_idx: u32) -> usize {
+    if base_q_idx < 130 {
+        0
+    } else if base_q_idx < 190 {
+        1
+    } else if base_q_idx < 220 {
+        2
+    } else {
+        3
+    }
+}
+
+/// Maps a § 7.20.4 full PC-Wiener class to a caller-requested subclass count.
+///
+/// `num_classes` accepts the AV2-supported target counts 1, 2, 3, 4, 6, 8, 12,
+/// 16, and 64. `filter_set_index` is from [`pc_wiener_filter_set_index`].
+///
+/// # Errors
+/// Returns [`ReconError`] if any index or class count is outside the generated
+/// § 9.8 table domain.
+pub fn pc_wiener_subclass(
+    num_classes: usize,
+    filter_set_index: usize,
+    full_class: u8,
+) -> Result<usize> {
+    let class_index = usize::from(full_class);
+    if class_index >= PC_WIENER_LUT_CLASSES || filter_set_index >= PC_WIENER_SUB_CLASSIFY.len() {
+        return Err(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener subclass table index",
+        });
+    }
+    let value = if num_classes == PC_WIENER_FULL_CLASSES {
+        PC_WIENER_SUB_CLASSIFY[filter_set_index][class_index]
+    } else {
+        let Some(target_index) = pc_wiener_subclass_target_index(num_classes) else {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "PC-Wiener subclass target count",
+            });
+        };
+        PC_WIENER_SUB_CLASSIFY2[filter_set_index][target_index][class_index]
+    };
+    usize::try_from(value).map_err(|_| ReconError::PcWienerInvalidBounds {
+        field: "PC-Wiener subclass table value",
+    })
+}
+
+const fn pc_wiener_subclass_target_index(num_classes: usize) -> Option<usize> {
+    match num_classes {
+        1 => Some(0),
+        2 => Some(1),
+        3 => Some(2),
+        4 => Some(3),
+        6 => Some(4),
+        8 => Some(5),
+        12 => Some(6),
+        16 => Some(7),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

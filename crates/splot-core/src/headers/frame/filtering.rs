@@ -114,6 +114,21 @@ pub struct DeblockingFilterParams {
     pub df_delta_q: [i32; 4],
 }
 
+impl DeblockingFilterParams {
+    /// Creates parsed deblocking-filter parameters from already-derived fields.
+    pub const fn new(
+        apply_deblocking_filter: [bool; 4],
+        df_delta_q_present: [bool; 4],
+        df_delta_q: [i32; 4],
+    ) -> Self {
+        Self {
+            apply_deblocking_filter,
+            df_delta_q_present,
+            df_delta_q,
+        }
+    }
+}
+
 /// Parsed `gdf_params()` (AV2 v1.0.0 § 5.18.7.9).
 ///
 /// Fields after `gdf_frame_enable` are present only when GDF is frame-enabled (the

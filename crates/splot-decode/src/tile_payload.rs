@@ -52,8 +52,8 @@ pub(crate) use cdf::block_context::{
 pub(crate) use cdf::{FrameCdfSubset, MvCdfSelector, TileCdfSelector, TileCdfSubset};
 pub(crate) use coeff_state::{CoeffContextReset, TileCoeffContextState};
 pub(crate) use general_intra_block::{
-    GeneralIntraBlockModeError, GeneralIntraBlockModes, GeneralIntraChromaModeContext,
-    GeneralIntraChromaToolConfig, decode_general_intra_block_modes,
+    CflIndex, CflParams, GeneralIntraBlockModeError, GeneralIntraBlockModes,
+    GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig, decode_general_intra_block_modes,
     decode_general_intra_chroma_block_mode, decode_general_intra_luma_block_mode,
 };
 pub(crate) use general_intra_residual::{
@@ -69,9 +69,11 @@ pub(crate) use input::{
     TileGroupPositionFacts, plan_derived_tile_payload_boundary,
 };
 pub(crate) use intra_joint_modes::{TileFscModeState, TileIntraJointModeState, TileUsesMrlsState};
-pub(crate) use partition_traversal::WienerNsLrSourceBlock;
 pub(crate) use partition_traversal::{
     DecodeBlockFrontier, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
+};
+pub(crate) use partition_traversal::{
+    TileLoopRestorationRootFrontier, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, TilePartitionTraversalUnsupported,
@@ -80,7 +82,8 @@ pub(crate) use runtime_frontier::{
     GeneralIntraMultiblockError, MinimalRuntimeBlockSymbolFrontierError,
     MinimalRuntimePartitionFrontierError, MinimalRuntimeReconstructionTrace,
     consume_minimal_runtime_lr_unit_frontier, decode_general_intra_multiblock_tree,
-    frame_mi_dimensions, plan_minimal_runtime_block_symbol_frontier,
+    decode_general_intra_multiblock_tree_with_lr_source_blocks, frame_mi_dimensions,
+    plan_minimal_runtime_block_symbol_frontier,
 };
 
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";

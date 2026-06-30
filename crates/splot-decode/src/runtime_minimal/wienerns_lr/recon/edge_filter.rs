@@ -18,8 +18,38 @@ use super::{
     luma_sample_origin,
 };
 use crate::Result;
-use crate::tile_payload::IntraYMode;
+use crate::tile_payload::{IntraYMode, SupportedChromaMode};
 use splot_core::span::ByteOffset;
+
+#[derive(Clone, Copy)]
+struct EdgeFilterBlock {
+    mi_col: usize,
+    mi_row: usize,
+    w: u32,
+    h: u32,
+    p_angle: i32,
+    tile_offset: ByteOffset,
+}
+
+impl EdgeFilterBlock {
+    const fn new(geometry: (usize, usize, u32, u32, i32), tile_offset: ByteOffset) -> Self {
+        let (mi_col, mi_row, w, h, p_angle) = geometry;
+        Self {
+            mi_col,
+            mi_row,
+            w,
+            h,
+            p_angle,
+            tile_offset,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct EdgeSmoothness {
+    above: bool,
+    left: bool,
+}
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// Resolves the §7.13.2.7 step-1 filters for BOTH edges of a zone-2 leaf into a
@@ -37,63 +67,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         p_angle: i32,
         tile_offset: ByteOffset,
     ) -> Result<Option<TwoSidedMiddleEdgeFilters>> {
-        if !self.enable_intra_edge_filter {
-            return Ok(Some(TwoSidedMiddleEdgeFilters {
-                above: OneSidedEdgeFilter::default(),
-                left: OneSidedEdgeFilter::default(),
-            }));
-        }
-        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
-        let smooth = |mode: Option<IntraYMode>| mode.is_some_and(IntraYMode::is_smooth);
-        let above_smooth = smooth(
-            mi_row
-                .checked_sub(1)
-                .and_then(|r| coverage.y_mode_at(mi_col, r)),
-        );
-        let left_smooth = smooth(
-            mi_col
-                .checked_sub(1)
-                .and_then(|c| coverage.y_mode_at(c, mi_row)),
-        );
-        let filter_type = above_smooth || left_smooth;
-        let corner_applies = (w + h) >= 24;
-        let above_spec = OneSidedEdgeSpec {
-            orientation: EdgeOrientation::Above,
-            filter_type,
-            angle_delta: p_angle - 90,
-            need_far: false,
-        };
-        let left_spec = OneSidedEdgeSpec {
-            orientation: EdgeOrientation::Left,
-            filter_type,
-            angle_delta: p_angle - 180,
-            need_far: false,
-        };
-        let Some(above) = self.assemble_one_sided_edge_filter(
-            above_spec,
-            corner_applies,
-            w,
-            h,
-            mi_col,
-            mi_row,
-            tile_offset,
-        )?
-        else {
-            return Ok(None);
-        };
-        let Some(left) = self.assemble_one_sided_edge_filter(
-            left_spec,
-            corner_applies,
-            w,
-            h,
-            mi_col,
-            mi_row,
-            tile_offset,
-        )?
-        else {
-            return Ok(None);
-        };
-        Ok(Some(TwoSidedMiddleEdgeFilters { above, left }))
+        let block = EdgeFilterBlock::new((mi_col, mi_row, w, h, p_angle), tile_offset);
+        self.resolve_two_sided_middle_edge_filters_for_plane(
+            PlaneId::Y,
+            self.luma_edge_smoothness(block),
+            block,
+        )
     }
 
     /// Resolves the §7.13.2.7 step-1 edge-filter / corner-filter inputs for a
@@ -128,68 +107,52 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         apply_ibp: bool,
         tile_offset: ByteOffset,
     ) -> Result<Option<OneSidedEdgeFilter>> {
-        if !self.enable_intra_edge_filter {
-            return Ok(Some(OneSidedEdgeFilter::default()));
-        }
-        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
-        let smooth = |mode: Option<IntraYMode>| mode.is_some_and(IntraYMode::is_smooth);
-        let above_smooth = smooth(
-            mi_row
-                .checked_sub(1)
-                .and_then(|r| coverage.y_mode_at(mi_col, r)),
-        );
-        let left_smooth = smooth(
-            mi_col
-                .checked_sub(1)
-                .and_then(|c| coverage.y_mode_at(c, mi_row)),
-        );
-        let zone1 = p_angle < 90;
-        let (mut need_above, mut need_left) = if zone1 { (true, false) } else { (false, true) };
-        let (mut filter_type_above, mut filter_type_left) = (above_smooth, left_smooth);
-        let mut angle_above = p_angle - 90;
-        let mut angle_left = p_angle - 180;
-        let mut need_right = zone1;
-        let mut need_bottom = !zone1;
-        if apply_ibp {
-            need_above = true;
-            need_left = true;
-            need_right |= p_angle > 180;
-            need_bottom |= p_angle < 90;
-            if angle_above > 90 {
-                angle_above -= 180;
-            }
-            if angle_left < -90 {
-                angle_left += 180;
-            }
-        } else {
-            let filter_type = above_smooth || left_smooth;
-            filter_type_above = filter_type;
-            filter_type_left = filter_type;
-        }
-        let corner_applies = need_above && need_left && (w + h) >= 24;
-        let read_edge = if zone1 {
-            OneSidedEdgeSpec {
-                orientation: EdgeOrientation::Above,
-                filter_type: filter_type_above,
-                angle_delta: angle_above,
-                need_far: need_right,
-            }
-        } else {
-            OneSidedEdgeSpec {
-                orientation: EdgeOrientation::Left,
-                filter_type: filter_type_left,
-                angle_delta: angle_left,
-                need_far: need_bottom,
-            }
-        };
-        self.assemble_one_sided_edge_filter(
-            read_edge,
-            corner_applies,
-            w,
-            h,
-            mi_col,
-            mi_row,
-            tile_offset,
+        let block = EdgeFilterBlock::new((mi_col, mi_row, w, h, p_angle), tile_offset);
+        self.resolve_one_sided_edge_filter_for_plane(
+            PlaneId::Y,
+            self.luma_edge_smoothness(block),
+            block,
+            apply_ibp,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_chroma_one_sided_edge_filter(
+        &self,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        w: u32,
+        h: u32,
+        p_angle: i32,
+        apply_ibp: bool,
+        tile_offset: ByteOffset,
+    ) -> Result<Option<OneSidedEdgeFilter>> {
+        let block = EdgeFilterBlock::new((mi_col, mi_row, w, h, p_angle), tile_offset);
+        self.resolve_one_sided_edge_filter_for_plane(
+            plane_id,
+            self.chroma_edge_smoothness(plane_id, block),
+            block,
+            apply_ibp,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_chroma_two_sided_middle_edge_filters(
+        &self,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        w: u32,
+        h: u32,
+        p_angle: i32,
+        tile_offset: ByteOffset,
+    ) -> Result<Option<TwoSidedMiddleEdgeFilters>> {
+        let block = EdgeFilterBlock::new((mi_col, mi_row, w, h, p_angle), tile_offset);
+        self.resolve_two_sided_middle_edge_filters_for_plane(
+            plane_id,
+            self.chroma_edge_smoothness(plane_id, block),
+            block,
         )
     }
 
@@ -210,86 +173,221 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         p_angle: i32,
         tile_offset: ByteOffset,
     ) -> Result<Option<OneSidedEdgeFilter>> {
+        let block = EdgeFilterBlock::new((mi_col, mi_row, w, h, p_angle), tile_offset);
+        self.resolve_ibp_secondary_edge_filter_for_plane(
+            PlaneId::Y,
+            self.luma_edge_smoothness(block),
+            block,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_chroma_ibp_secondary_edge_filter(
+        &self,
+        plane_id: PlaneId,
+        mi_col: usize,
+        mi_row: usize,
+        w: u32,
+        h: u32,
+        p_angle: i32,
+        tile_offset: ByteOffset,
+    ) -> Result<Option<OneSidedEdgeFilter>> {
+        let block = EdgeFilterBlock::new((mi_col, mi_row, w, h, p_angle), tile_offset);
+        self.resolve_ibp_secondary_edge_filter_for_plane(
+            plane_id,
+            self.chroma_edge_smoothness(plane_id, block),
+            block,
+        )
+    }
+
+    fn luma_edge_smoothness(&self, block: EdgeFilterBlock) -> EdgeSmoothness {
+        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+        let above = block
+            .mi_row
+            .checked_sub(1)
+            .and_then(|r| coverage.y_mode_at(block.mi_col, r))
+            .is_some_and(IntraYMode::is_smooth);
+        let left = block
+            .mi_col
+            .checked_sub(1)
+            .and_then(|c| coverage.y_mode_at(c, block.mi_row))
+            .is_some_and(IntraYMode::is_smooth);
+        EdgeSmoothness { above, left }
+    }
+
+    fn chroma_edge_smoothness(&self, plane_id: PlaneId, block: EdgeFilterBlock) -> EdgeSmoothness {
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
+        let above = block
+            .mi_row
+            .checked_sub(1)
+            .and_then(|r| coverage.chroma_mode_at(block.mi_col, r))
+            .is_some_and(chroma_mode_is_smooth);
+        let left = block
+            .mi_col
+            .checked_sub(1)
+            .and_then(|c| coverage.chroma_mode_at(c, block.mi_row))
+            .is_some_and(chroma_mode_is_smooth);
+        EdgeSmoothness { above, left }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_two_sided_middle_edge_filters_for_plane(
+        &self,
+        plane_id: PlaneId,
+        smoothness: EdgeSmoothness,
+        block: EdgeFilterBlock,
+    ) -> Result<Option<TwoSidedMiddleEdgeFilters>> {
+        if !self.enable_intra_edge_filter {
+            return Ok(Some(TwoSidedMiddleEdgeFilters {
+                above: OneSidedEdgeFilter::default(),
+                left: OneSidedEdgeFilter::default(),
+            }));
+        }
+        let filter_type = smoothness.above || smoothness.left;
+        let corner_applies = (block.w + block.h) >= 24;
+        let above_spec = OneSidedEdgeSpec {
+            orientation: EdgeOrientation::Above,
+            filter_type,
+            angle_delta: block.p_angle - 90,
+            need_far: false,
+        };
+        let left_spec = OneSidedEdgeSpec {
+            orientation: EdgeOrientation::Left,
+            filter_type,
+            angle_delta: block.p_angle - 180,
+            need_far: false,
+        };
+        let Some(above) = self.assemble_one_sided_edge_filter_for_plane(
+            plane_id,
+            above_spec,
+            corner_applies,
+            block,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(left) = self.assemble_one_sided_edge_filter_for_plane(
+            plane_id,
+            left_spec,
+            corner_applies,
+            block,
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(TwoSidedMiddleEdgeFilters { above, left }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_one_sided_edge_filter_for_plane(
+        &self,
+        plane_id: PlaneId,
+        smoothness: EdgeSmoothness,
+        block: EdgeFilterBlock,
+        apply_ibp: bool,
+    ) -> Result<Option<OneSidedEdgeFilter>> {
         if !self.enable_intra_edge_filter {
             return Ok(Some(OneSidedEdgeFilter::default()));
         }
-        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
-        let smooth = |mode: Option<IntraYMode>| mode.is_some_and(IntraYMode::is_smooth);
-        let above_smooth = smooth(
-            mi_row
-                .checked_sub(1)
-                .and_then(|r| coverage.y_mode_at(mi_col, r)),
-        );
-        let left_smooth = smooth(
-            mi_col
-                .checked_sub(1)
-                .and_then(|c| coverage.y_mode_at(c, mi_row)),
-        );
-        let zone1 = p_angle < 90;
-        let mut angle_above = p_angle - 90;
-        let mut angle_left = p_angle - 180;
+        let zone1 = block.p_angle < 90;
+        let (mut need_above, mut need_left) = if zone1 { (true, false) } else { (false, true) };
+        let (mut filter_type_above, mut filter_type_left) = (smoothness.above, smoothness.left);
+        let mut angle_above = block.p_angle - 90;
+        let mut angle_left = block.p_angle - 180;
+        let mut need_right = zone1;
+        let mut need_bottom = !zone1;
+        if apply_ibp {
+            need_above = true;
+            need_left = true;
+            need_right |= block.p_angle > 180;
+            need_bottom |= block.p_angle < 90;
+            if angle_above > 90 {
+                angle_above -= 180;
+            }
+            if angle_left < -90 {
+                angle_left += 180;
+            }
+        } else {
+            let filter_type = smoothness.above || smoothness.left;
+            filter_type_above = filter_type;
+            filter_type_left = filter_type;
+        }
+        let corner_applies = need_above && need_left && (block.w + block.h) >= 24;
+        let read_edge = if zone1 {
+            OneSidedEdgeSpec {
+                orientation: EdgeOrientation::Above,
+                filter_type: filter_type_above,
+                angle_delta: angle_above,
+                need_far: need_right,
+            }
+        } else {
+            OneSidedEdgeSpec {
+                orientation: EdgeOrientation::Left,
+                filter_type: filter_type_left,
+                angle_delta: angle_left,
+                need_far: need_bottom,
+            }
+        };
+        self.assemble_one_sided_edge_filter_for_plane(plane_id, read_edge, corner_applies, block)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_ibp_secondary_edge_filter_for_plane(
+        &self,
+        plane_id: PlaneId,
+        smoothness: EdgeSmoothness,
+        block: EdgeFilterBlock,
+    ) -> Result<Option<OneSidedEdgeFilter>> {
+        if !self.enable_intra_edge_filter {
+            return Ok(Some(OneSidedEdgeFilter::default()));
+        }
+        let zone1 = block.p_angle < 90;
+        let mut angle_above = block.p_angle - 90;
+        let mut angle_left = block.p_angle - 180;
         if angle_above > 90 {
             angle_above -= 180;
         }
         if angle_left < -90 {
             angle_left += 180;
         }
-        let need_right = zone1 || p_angle > 180;
-        let need_bottom = !zone1 || p_angle < 90;
-        let corner_applies = (w + h) >= 24;
+        let need_right = zone1 || block.p_angle > 180;
+        let need_bottom = !zone1 || block.p_angle < 90;
+        let corner_applies = (block.w + block.h) >= 24;
         let secondary_edge = if zone1 {
             OneSidedEdgeSpec {
                 orientation: EdgeOrientation::Left,
-                filter_type: left_smooth,
+                filter_type: smoothness.left,
                 angle_delta: angle_left,
                 need_far: need_bottom,
             }
         } else {
             OneSidedEdgeSpec {
                 orientation: EdgeOrientation::Above,
-                filter_type: above_smooth,
+                filter_type: smoothness.above,
                 angle_delta: angle_above,
                 need_far: need_right,
             }
         };
-        self.assemble_one_sided_edge_filter(
+        self.assemble_one_sided_edge_filter_for_plane(
+            plane_id,
             secondary_edge,
             corner_applies,
-            w,
-            h,
-            mi_col,
-            mi_row,
-            tile_offset,
+            block,
         )
     }
 
-    /// Assembles a [`OneSidedEdgeFilter`] for one edge (above or left) from its
-    /// resolved §7.13.2.7 spec: the §7.13.2.17 strength, the §7.13.2.7 `numPx`
-    /// storage clamp, and the §7.13.2.14 corner's opposite-edge `[0]` sample read
-    /// diagonally — an above edge reads `LeftCol[0] = CurrFrame[y][x-1]`, a left
-    /// edge reads `AboveRow[0] = CurrFrame[y-1][x]`.
-    /// Shared by the read-edge ([`Self::resolve_one_sided_edge_filter`]) and the
-    /// IBP secondary-edge ([`Self::resolve_ibp_secondary_edge_filter`]) resolution.
-    /// Returns `None` (defer) when the corner fires but its opposite sample is
-    /// off-grid or uncovered. In full-recon mode the "uncovered by this sink" half of
-    /// that gate is dropped (a genuinely off-frame corner still defers): the
-    /// decode-order-prior opposite sample is always written, so only the gated path's
-    /// conservative coverage check is skipped.
     #[allow(clippy::too_many_arguments)]
-    fn assemble_one_sided_edge_filter(
+    fn assemble_one_sided_edge_filter_for_plane(
         &self,
+        plane_id: PlaneId,
         edge: OneSidedEdgeSpec,
         corner_applies: bool,
-        w: u32,
-        h: u32,
-        mi_col: usize,
-        mi_row: usize,
-        tile_offset: ByteOffset,
+        block: EdgeFilterBlock,
     ) -> Result<Option<OneSidedEdgeFilter>> {
-        let coverage = &self.coverage[Self::coverage_index(PlaneId::Y)];
+        let coverage = &self.coverage[Self::coverage_index(plane_id)];
         let (strength_a, strength_b, primary, secondary) = match edge.orientation {
-            EdgeOrientation::Above => (w, h, w, h),
-            EdgeOrientation::Left => (h, w, h, w),
+            EdgeOrientation::Above => (block.w, block.h, block.w, block.h),
+            EdgeOrientation::Left => (block.h, block.w, block.h, block.w),
         };
         let strength = intra_edge_filter_strength(
             strength_a,
@@ -297,8 +395,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             u8::from(edge.filter_type),
             edge.angle_delta,
         );
-        let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
-        let plane = self.workspace.plane(PlaneId::Y)?;
+        let (x, y) = luma_sample_origin(block.mi_col, block.mi_row, block.tile_offset)?;
+        let plane = self.workspace.plane(plane_id)?;
         let storage = plane.storage_size();
         let (origin, max_axis) = match edge.orientation {
             EdgeOrientation::Above => (x, storage.width()),
@@ -310,39 +408,60 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .and_then(|v| v.checked_add(1))
             .ok_or_else(|| {
                 wienerns_lr_selectable_transform_record_error_reason(
-                    tile_offset,
+                    block.tile_offset,
                     "unsupported_wienerns_lr_one_sided_edge_filter_numpx_overflow",
                 )
             })?;
         let corner_opposite = if corner_applies {
-            let (opp_col, opp_row, sample_x, sample_y) = match edge.orientation {
-                EdgeOrientation::Above => (
-                    mi_col.checked_sub(1),
-                    Some(mi_row),
-                    x.checked_sub(1),
-                    Some(y),
-                ),
-                EdgeOrientation::Left => (
-                    Some(mi_col),
-                    mi_row.checked_sub(1),
-                    Some(x),
-                    y.checked_sub(1),
-                ),
-            };
-            let (Some(opp_col), Some(opp_row)) = (opp_col, opp_row) else {
-                return Ok(None);
-            };
-            if coverage.off_grid(opp_col, opp_row)
-                || (!self.full_recon && !coverage.is_covered(opp_col, opp_row))
-            {
-                return Ok(None);
-            }
-            let (Some(sx), Some(sy)) = (sample_x, sample_y) else {
-                return Ok(None);
+            let sample = if plane_id == PlaneId::Y {
+                let (opp_col, opp_row, sample_x, sample_y) = match edge.orientation {
+                    EdgeOrientation::Above => (
+                        block.mi_col.checked_sub(1),
+                        Some(block.mi_row),
+                        x.checked_sub(1),
+                        Some(y),
+                    ),
+                    EdgeOrientation::Left => (
+                        Some(block.mi_col),
+                        block.mi_row.checked_sub(1),
+                        Some(x),
+                        y.checked_sub(1),
+                    ),
+                };
+                let (Some(opp_col), Some(opp_row)) = (opp_col, opp_row) else {
+                    return Ok(None);
+                };
+                if coverage.off_grid(opp_col, opp_row)
+                    || (!self.full_recon && !coverage.is_covered(opp_col, opp_row))
+                {
+                    return Ok(None);
+                }
+                let (Some(sx), Some(sy)) = (sample_x, sample_y) else {
+                    return Ok(None);
+                };
+                (sx, sy)
+            } else {
+                let (opp_cell, sample) = match edge.orientation {
+                    EdgeOrientation::Above => (
+                        block.mi_col.checked_sub(1).map(|col| (col, block.mi_row)),
+                        x.checked_sub(1).map(|sx| (sx, y)),
+                    ),
+                    EdgeOrientation::Left => (
+                        block.mi_row.checked_sub(1).map(|row| (block.mi_col, row)),
+                        y.checked_sub(1).map(|sy| (x, sy)),
+                    ),
+                };
+                let (Some((opp_col, opp_row)), Some((sx, sy))) = (opp_cell, sample) else {
+                    return Ok(None);
+                };
+                if coverage.off_grid(opp_col, opp_row) || !coverage.is_covered(opp_col, opp_row) {
+                    return Ok(None);
+                }
+                (sx, sy)
             };
             Some(
                 self.workspace
-                    .reconstructed_sample(PlaneId::Y, sx, sy)?
+                    .reconstructed_sample(plane_id, sample.0, sample.1)?
                     .to_u16(),
             )
         } else {
@@ -354,4 +473,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             corner_opposite,
         }))
     }
+}
+
+fn chroma_mode_is_smooth(mode: SupportedChromaMode) -> bool {
+    matches!(
+        mode,
+        SupportedChromaMode::Smooth
+            | SupportedChromaMode::SmoothVertical
+            | SupportedChromaMode::SmoothHorizontal
+    )
 }

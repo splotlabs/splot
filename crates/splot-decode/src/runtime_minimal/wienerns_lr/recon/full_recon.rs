@@ -1,18 +1,31 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! DIAGNOSTIC-ONLY full-reconstruction support for the ac0ej3 sink.
+//! Full-reconstruction support for the ac0ej3 sink.
 //!
-//! Test-only (`#[cfg(test)]`) infrastructure powering the `SPLOT_AC0EJ3_FULL_RECON`
-//! whole-frame differential: a per-leaf decode-order log, the per-transform far-edge
-//! `num4` sources that replace the conservative coverage gates in full-recon mode,
-//! and the primitive-error swallowing that lets one unwired frame-edge / mode case
-//! defer instead of aborting the walk. None of this affects the shipped gated sink
-//! (every method is a no-op or unused unless [`WienerNsLrReconSink::into_full_recon`]
-//! flips `full_recon` to `true`).
+//! Full-reconstruction support for the ac0ej3 sink: a per-leaf decode-order log and
+//! the per-transform far-edge `num4` sources that replace the conservative coverage
+//! gates in full-recon mode. The gated sink stays unchanged; full recon fails loud
+//! when a leaf cannot be reconstructed.
+
+use splot_core::span::ByteOffset;
 
 use super::{FullReconLumaLeaf, MI_SIZE, WienerNsLrReconSink};
 use crate::Result;
+use crate::runtime_minimal::inter::mv_scaling::PlaneScaling;
+use crate::runtime_minimal::wienerns_lr::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
+use crate::tile_payload::{GeneralIntraResidualError, IntraYMode, SupportedDirectionalLumaMode};
+use splot_recon::{
+    BitDepth, InterpolationFilter, PlaneId, PlaneRect, ReconSample, ReferencePlaneView,
+    SubpelPredictParams, subpel_predict_block,
+};
+
+pub(super) fn full_recon_deferred_leaf_error(offset: ByteOffset) -> crate::error::DecodeError {
+    wienerns_lr_selectable_transform_record_error_reason(
+        offset,
+        "unsupported_wienerns_lr_selectable_transform_records_full_recon_deferred_leaf",
+    )
+}
 
 /// Which §7.13.2.1 far edge a directional one-sided leaf reads: zone-1 above-right or
 /// zone-3 below-left. Selects the [`WienerNsLrReconSink::full_recon_far_edge`] override
@@ -24,14 +37,6 @@ pub(super) enum FarEdgeSide {
     /// `num4BelowLeft` (AVM `has_bottom_left`) for a zone-3 left-reading leaf.
     BelowLeft,
 }
-use crate::runtime_minimal::inter::mv_scaling::PlaneScaling;
-use crate::runtime_minimal::wienerns_lr::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
-use crate::tile_payload::{GeneralIntraResidualError, IntraYMode, SupportedDirectionalLumaMode};
-use splot_core::span::ByteOffset;
-use splot_recon::{
-    BitDepth, InterpolationFilter, PlaneId, PlaneRect, ReconSample, ReferencePlaneView,
-    SubpelPredictParams, subpel_predict_block,
-};
 
 /// Builds the §7.13.3.18 `BILINEAR` IntrABC sub-pel parameters for a `w` x `h`
 /// target from its §7.13.3.17 `scaling` (`startX` / `startY` / `stepX` / `stepY`
@@ -60,12 +65,9 @@ pub(in crate::runtime_minimal) fn intrabc_bilinear_params(
 }
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
-    /// Switches this sink into the DIAGNOSTIC-ONLY full-reconstruction mode (see the
-    /// `full_recon` field). Used ONLY by the `SPLOT_AC0EJ3_FULL_RECON` ignored
-    /// harness, which reconstructs every luma leaf in decode order and diffs the whole
-    /// frame against the AVM pre-filter oracle. The shipped oracle-pin tests never call
-    /// this, so the gated path is untouched.
-    #[cfg(test)]
+    /// Switches this sink into the full-reconstruction mode (see the `full_recon`
+    /// field), reconstructing every luma leaf in decode order with recorded
+    /// per-transform far-edge availability.
     pub(in crate::runtime_minimal) fn into_full_recon(mut self) -> Self {
         self.full_recon = true;
         self
@@ -208,12 +210,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         &self.full_recon_luma_log
     }
 
-    /// Records a DEFERRED (unwritten) luma leaf and returns `Ok(())` — the shared
-    /// "this dispatch arm could not reconstruct the leaf" exit. A NO-OP record for the
-    /// gated sink (so the shipped early-return behaviour is unchanged), it folds the
-    /// repeated record-then-return at every defer site into one `return self.defer…(…)`.
-    /// The `Result` return is what lets the callers tail-return it.
-    #[allow(clippy::unnecessary_wraps)]
+    /// Records a DEFERRED (unwritten) luma leaf. The gated sink keeps the existing
+    /// early-return behavior; full recon converts the defer into an Unsupported
+    /// diagnostic so runtime output cannot freeze fill samples as decoded pixels.
     pub(super) fn defer_full_recon_leaf(
         &mut self,
         mi_col: usize,
@@ -221,18 +220,20 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         log2_width: u32,
         log2_height: u32,
         mode: &'static str,
+        tile_offset: ByteOffset,
     ) -> Result<()> {
         self.record_full_recon_leaf(mi_col, mi_row, log2_width, log2_height, mode, false);
+        if self.full_recon {
+            return Err(full_recon_deferred_leaf_error(tile_offset));
+        }
         Ok(())
     }
 
     /// Resolves a §7.13.2 luma predictor primitive result. Returns `Ok(true)` when the
     /// primitive wrote the leaf (the caller then marks it). On a primitive error: the
-    /// GATED path maps it to the named transform-record diagnostic and propagates (the
-    /// shipped fail-closed behaviour); the FULL-RECON path treats it as a DEFERRED leaf
-    /// (records it unwritten and returns `Ok(false)`) so one unwired frame-edge / mode
-    /// case does not abort the whole-frame differential. `reason` is the diagnostic
-    /// reason string for the gated propagation.
+    /// GATED path maps it to the named transform-record diagnostic and propagates; the
+    /// full-recon path records the unwritten leaf and returns Unsupported. `reason` is
+    /// the diagnostic reason string for the gated propagation.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_luma_predict(
         &mut self,
@@ -250,7 +251,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
         if self.full_recon {
             self.record_full_recon_leaf(mi_col, mi_row, log2_width, log2_height, mode, false);
-            return Ok(false);
+            return Err(full_recon_deferred_leaf_error(tile_offset));
         }
         Err(wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
@@ -260,13 +261,16 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
     /// Collapses a [`Self::try_reconstruct_one_sided_angular`] routing outcome into
     /// "did the angular path write the leaf". `Ok(true)` reconstructed it; `Ok(false)`
-    /// DEFERRED it (the caller records the unwritten leaf and falls through). A primitive
-    /// error propagates in the GATED sink (shipped fail-closed) but is treated as a defer
-    /// in FULL-RECON so one unwired case does not abort the whole-frame differential.
-    pub(super) fn routed_angular_wrote(&self, routed: Result<bool>) -> Result<bool> {
+    /// DEFERRED it. A primitive error propagates in the gated sink and becomes an
+    /// Unsupported diagnostic in full-recon output.
+    pub(super) fn routed_angular_wrote(
+        &self,
+        routed: Result<bool>,
+        tile_offset: ByteOffset,
+    ) -> Result<bool> {
         match routed {
             Ok(wrote) => Ok(wrote),
-            Err(_) if self.full_recon => Ok(false),
+            Err(_) if self.full_recon => Err(full_recon_deferred_leaf_error(tile_offset)),
             Err(error) => Err(error),
         }
     }

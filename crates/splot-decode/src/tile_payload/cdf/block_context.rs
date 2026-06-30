@@ -186,14 +186,36 @@ pub(crate) enum SupportedChromaMode {
     D157Follow,
     /// AV2 `V_PRED` from the directional-follow branch.
     VerticalFollow,
+    /// AV2 `V_PRED` from an explicit non-follow `uv_mode`.
+    Vertical,
     /// AV2 `H_PRED` from the directional-follow branch.
     HorizontalFollow,
     /// AV2 `H_PRED` from an explicit non-follow `uv_mode`.
     Horizontal,
     /// AV2 `D45_PRED` from the directional-follow branch.
     D45Follow,
+    /// AV2 `D67_PRED` from the directional-follow branch.
+    D67Follow,
+    /// AV2 `D45_PRED` from an explicit non-follow `uv_mode`.
+    D45,
+    /// AV2 `D67_PRED` from an explicit non-follow `uv_mode`.
+    D67,
+    /// AV2 `D135_PRED` from an explicit non-follow `uv_mode`.
+    D135,
+    /// AV2 `D113_PRED` from an explicit non-follow `uv_mode`.
+    D113,
     /// AV2 `D203_PRED` from the directional-follow branch.
     D203Follow,
+    /// AV2 `D203_PRED` from an explicit non-follow `uv_mode`.
+    D203,
+    /// AV2 `D157_PRED` from an explicit non-follow `uv_mode`.
+    D157,
+    /// AV2 `PAETH_PRED` from an explicit non-follow `uv_mode`.
+    Paeth,
+    /// AV2 `SMOOTH_V_PRED`.
+    SmoothVertical,
+    /// AV2 `SMOOTH_H_PRED`.
+    SmoothHorizontal,
 }
 
 #[rustfmt::skip]
@@ -206,17 +228,22 @@ const CHROMA_FOLLOW_BY_Y_MODE: [Option<SupportedChromaMode>; 13] = [
     Some(SupportedChromaMode::D113Follow),
     Some(SupportedChromaMode::D157Follow),
     Some(SupportedChromaMode::D203Follow),
-    None, None, None, None, None,
+    Some(SupportedChromaMode::D67Follow),
+    None, None, None, None,
 ];
 
 #[rustfmt::skip]
 const CHROMA_EXPLICIT_BY_MODE: [Option<SupportedChromaMode>; 13] = [
     Some(SupportedChromaMode::Dc),
-    None,
+    Some(SupportedChromaMode::Vertical),
     Some(SupportedChromaMode::Horizontal),
-    None, None, None, None, None, None,
+    Some(SupportedChromaMode::D45), Some(SupportedChromaMode::D135),
+    Some(SupportedChromaMode::D113), Some(SupportedChromaMode::D157),
+    Some(SupportedChromaMode::D203), Some(SupportedChromaMode::D67),
     Some(SupportedChromaMode::Smooth),
-    None, None, None,
+    Some(SupportedChromaMode::SmoothVertical),
+    Some(SupportedChromaMode::SmoothHorizontal),
+    Some(SupportedChromaMode::Paeth),
 ];
 
 /// AV2 § 5.20.5.3 `Default_Mode_List_Uv`.
@@ -240,6 +267,12 @@ fn get_intra_uv_mode_set(y_mode: IntraYMode, uv_mode: u8) -> Option<u8> {
         }
     }
     None
+}
+
+/// Resolves AV2 § 5.20.5.3 coded `uv_mode` through
+/// `Default_Mode_List_Uv` / directional-follow rules to the actual `UVMode`.
+pub(crate) fn resolved_chroma_uv_mode(y_mode: IntraYMode, uv_mode: u8) -> Option<u8> {
+    get_intra_uv_mode_set(y_mode, uv_mode)
 }
 
 /// Resolves the supported chroma predictor from AV2 § 5.20.5.3 `uv_mode`.
@@ -694,6 +727,22 @@ mod tests {
         assert_eq!(get_intra_uv_mode_set(d135, 0), Some(IntraYMode::D135_PRED));
     }
 
+    fn assert_supported_chroma_mode(
+        y_mode: IntraYMode,
+        uv_mode: u8,
+        expected_uv_mode: u8,
+        expected_supported: SupportedChromaMode,
+    ) {
+        assert_eq!(
+            get_intra_uv_mode_set(y_mode, uv_mode),
+            Some(expected_uv_mode)
+        );
+        assert_eq!(
+            supported_chroma_mode(y_mode, uv_mode),
+            Some(expected_supported)
+        );
+    }
+
     #[test]
     fn supported_directional_admits_middle_d45_and_d203_but_rejects_d67() {
         assert_eq!(
@@ -721,11 +770,11 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_directional_follow_resolves_d113_for_uv_mode_zero() {
-        let d113 = IntraYMode(IntraYMode::D113_PRED);
-        assert_eq!(get_intra_uv_mode_set(d113, 0), Some(IntraYMode::D113_PRED));
-        assert_eq!(
-            supported_chroma_mode(d113, 0),
-            Some(SupportedChromaMode::D113Follow)
+        assert_supported_chroma_mode(
+            IntraYMode(IntraYMode::D113_PRED),
+            0,
+            IntraYMode::D113_PRED,
+            SupportedChromaMode::D113Follow,
         );
     }
 
@@ -744,21 +793,31 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_directional_follow_resolves_d157_for_uv_mode_zero() {
-        let d157 = IntraYMode(IntraYMode::D157_PRED);
-        assert_eq!(get_intra_uv_mode_set(d157, 0), Some(IntraYMode::D157_PRED));
-        assert_eq!(
-            supported_chroma_mode(d157, 0),
-            Some(SupportedChromaMode::D157Follow)
+        assert_supported_chroma_mode(
+            IntraYMode(IntraYMode::D157_PRED),
+            0,
+            IntraYMode::D157_PRED,
+            SupportedChromaMode::D157Follow,
         );
     }
 
     #[test]
     fn supported_chroma_mode_directional_follow_resolves_d203_for_uv_mode_zero() {
-        let d203 = IntraYMode(IntraYMode::D203_PRED);
-        assert_eq!(get_intra_uv_mode_set(d203, 0), Some(IntraYMode::D203_PRED));
-        assert_eq!(
-            supported_chroma_mode(d203, 0),
-            Some(SupportedChromaMode::D203Follow)
+        assert_supported_chroma_mode(
+            IntraYMode(IntraYMode::D203_PRED),
+            0,
+            IntraYMode::D203_PRED,
+            SupportedChromaMode::D203Follow,
+        );
+    }
+
+    #[test]
+    fn supported_chroma_mode_directional_follow_resolves_d67_for_uv_mode_zero() {
+        assert_supported_chroma_mode(
+            IntraYMode(IntraYMode::D67_PRED),
+            0,
+            IntraYMode::D67_PRED,
+            SupportedChromaMode::D67Follow,
         );
     }
 
@@ -773,23 +832,71 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_directional_follow_resolves_d135_for_uv_mode_zero() {
-        let d135 = IntraYMode(IntraYMode::D135_PRED);
-        assert_eq!(get_intra_uv_mode_set(d135, 0), Some(IntraYMode::D135_PRED));
-        assert_eq!(
-            supported_chroma_mode(d135, 0),
-            Some(SupportedChromaMode::D135Follow)
+        assert_supported_chroma_mode(
+            IntraYMode(IntraYMode::D135_PRED),
+            0,
+            IntraYMode::D135_PRED,
+            SupportedChromaMode::D135Follow,
         );
     }
 
     #[test]
-    fn supported_chroma_mode_non_follow_d135_is_not_supported() {
-        let input = (IntraYMode::DC_PRED, 8);
-        assert_eq!(
-            (
-                get_intra_uv_mode_set(input.0, input.1),
-                supported_chroma_mode(input.0, input.1)
-            ),
-            (Some(IntraYMode::D135_PRED), None)
+    fn supported_chroma_mode_explicit_d135_uses_non_follow_mode() {
+        assert_supported_chroma_mode(
+            IntraYMode::DC_PRED,
+            8,
+            IntraYMode::D135_PRED,
+            SupportedChromaMode::D135,
+        );
+    }
+
+    #[test]
+    fn supported_chroma_mode_explicit_d203_uses_non_follow_mode() {
+        assert_supported_chroma_mode(
+            IntraYMode::DC_PRED,
+            12,
+            IntraYMode::D203_PRED,
+            SupportedChromaMode::D203,
+        );
+    }
+
+    #[test]
+    fn supported_chroma_mode_d67_luma_can_select_explicit_d203() {
+        assert_supported_chroma_mode(
+            IntraYMode(IntraYMode::D67_PRED),
+            12,
+            IntraYMode::D203_PRED,
+            SupportedChromaMode::D203,
+        );
+    }
+
+    #[test]
+    fn supported_chroma_mode_explicit_d157_uses_non_follow_mode() {
+        assert_supported_chroma_mode(
+            IntraYMode::DC_PRED,
+            11,
+            IntraYMode::D157_PRED,
+            SupportedChromaMode::D157,
+        );
+    }
+
+    #[test]
+    fn supported_chroma_mode_explicit_paeth_uses_non_follow_mode() {
+        assert_supported_chroma_mode(
+            IntraYMode::DC_PRED,
+            4,
+            IntraYMode::PAETH_PRED,
+            SupportedChromaMode::Paeth,
+        );
+    }
+
+    #[test]
+    fn supported_chroma_mode_directional_luma_can_select_explicit_paeth() {
+        assert_supported_chroma_mode(
+            IntraYMode(IntraYMode::D45_PRED),
+            5,
+            IntraYMode::PAETH_PRED,
+            SupportedChromaMode::Paeth,
         );
     }
 
@@ -801,7 +908,10 @@ mod tests {
             supported_chroma_mode(dc, 1),
             Some(SupportedChromaMode::Smooth)
         );
-        assert_eq!(supported_chroma_mode(dc, 5), None);
+        assert_eq!(
+            supported_chroma_mode(dc, 5),
+            Some(SupportedChromaMode::Vertical)
+        );
     }
 
     #[test]

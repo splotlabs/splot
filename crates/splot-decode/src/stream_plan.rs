@@ -560,7 +560,7 @@ impl fmt::Display for DecodeUnsupportedStructure {
 
 pub(crate) fn plan_stream(
     input: DecodeStreamInput<'_>,
-    options: DecodeOptions,
+    options: &DecodeOptions,
 ) -> Result<DecodeStreamPlan> {
     let limits = options.limits();
     limits.ensure(DecodeLimitName::MaxInputBytes, input.input_len_bytes)?;

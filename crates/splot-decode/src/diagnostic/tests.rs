@@ -13,7 +13,7 @@ use crate::{
 
 #[test]
 fn malformed_source_report_has_stable_fields() {
-    let error = plan_byte_stream(&[0x05, 0x10], DecodeOptions::default()).unwrap_err();
+    let error = plan_byte_stream(&[0x05, 0x10], &DecodeOptions::default()).unwrap_err();
 
     let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
 
@@ -37,7 +37,7 @@ fn malformed_source_report_has_stable_fields() {
 fn resource_limit_report_has_measured_values() {
     let options =
         DecodeOptions::new(DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(0)));
-    let error = plan_byte_stream(&[0x01, 0x08], options).unwrap_err();
+    let error = plan_byte_stream(&[0x01, 0x08], &options).unwrap_err();
 
     let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
 
@@ -79,7 +79,7 @@ fn lr_source_read_resource_limit_cites_source_read_process() {
 
 #[test]
 fn unsupported_structure_report_uses_planner_metadata() {
-    let error = plan_byte_stream(&[0x01, 0x14], DecodeOptions::default()).unwrap_err();
+    let error = plan_byte_stream(&[0x01, 0x14], &DecodeOptions::default()).unwrap_err();
 
     let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
 
@@ -101,7 +101,7 @@ fn unsupported_structure_report_uses_planner_metadata() {
 
 #[test]
 fn runtime_unsupported_report_summarizes_successful_plan() {
-    let plan = plan_byte_stream(&[0x01, 0x10], DecodeOptions::default()).unwrap();
+    let plan = plan_byte_stream(&[0x01, 0x10], &DecodeOptions::default()).unwrap();
 
     let report = DecodeDiagnosticReport::runtime_unsupported(&plan);
 

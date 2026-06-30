@@ -122,7 +122,7 @@ pub(super) fn decode_general_minimal_intra_frame(
     frame_envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    options: DecodeOptions,
+    options: &DecodeOptions,
     header: IvfHeader,
 ) -> Result<MinimalRuntimeFrame> {
     let mut tile_plan = derive_tile_plan(
@@ -303,19 +303,19 @@ fn decode_general_intra_frame_into<T: ReconSample>(
         )
     })?;
 
-    let apply = core
-        .deblocking_filter_params
-        .map_or([false; 4], |filter| filter.apply_deblocking_filter);
-    super::deblock::deblock_general_intra_frame(
-        &mut workspace,
-        &deblock_blocks,
-        mi_rows,
-        mi_cols,
-        apply,
-        qindex,
-        bit_depth,
-    )
-    .map_err(|error| general_intra_deblock_error(error, tile_offset))?;
+    if let Some(filter) = core.deblocking_filter_params {
+        super::deblock::deblock_general_intra_frame(
+            &mut workspace,
+            &deblock_blocks,
+            [&[], &[]],
+            mi_rows,
+            mi_cols,
+            filter,
+            super::deblock_quant_deltas(sequence, core),
+            bit_depth,
+        )
+        .map_err(|error| general_intra_deblock_error(error, tile_offset))?;
+    }
 
     if let Some(params) = cdef_frame_params(core) {
         super::cdef::cdef_general_intra_frame(&mut workspace, params, mi_rows, mi_cols, bit_depth)
@@ -325,19 +325,7 @@ fn decode_general_intra_frame_into<T: ReconSample>(
     Ok(workspace.freeze()?)
 }
 fn cdef_frame_params(core: &FrameHeaderCore) -> Option<super::cdef::CdefFrameParams> {
-    let cdef = core.cdef_params.as_ref()?;
-    if !cdef.cdef_frame_enable {
-        return None;
-    }
-    let damping = i32::from(cdef.cdef_damping?);
-    let set = cdef.strengths.first()?;
-    Some(super::cdef::CdefFrameParams {
-        y_pri: i32::from(set.y_pri_strength),
-        y_sec: i32::from(set.y_sec_strength),
-        uv_pri: i32::from(set.uv_pri_strength),
-        uv_sec: i32::from(set.uv_sec_strength),
-        damping,
-    })
+    super::cdef::cdef_frame_strengths(core)?.into_iter().next()
 }
 fn general_intra_cdef_error(_error: super::cdef::CdefError, offset: ByteOffset) -> DecodeError {
     general_intra_at!(
@@ -574,6 +562,7 @@ fn leaf_mode(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
     GeneralIntraLeafMode::luma(
         modes.intra_joint_mode,
         modes.y_mode,
+        modes.angle_delta_y,
         modes.fsc_mode,
         modes.uses_mrls,
     )
@@ -650,6 +639,8 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
         n4h: block.height4(),
         luma_tx: transforms.luma_tx(),
         chroma_tx: transforms.chroma_tx(),
+        qindex,
+        skip: false,
     });
     Ok(())
 }
@@ -692,9 +683,19 @@ fn ensure_supported_chroma_capability(
     let above_left = full_sb && neighbours.has_above() && neighbours.has_left();
     let left_only = full_sb && !neighbours.has_above() && neighbours.has_left();
     match mode {
-        SupportedChromaMode::Dc | SupportedChromaMode::D203Follow => Ok(()),
-        SupportedChromaMode::Smooth if full_sb => Ok(()),
-        SupportedChromaMode::Smooth => Err(unsupported_chroma(
+        SupportedChromaMode::Dc | SupportedChromaMode::D203Follow | SupportedChromaMode::D203 => {
+            Ok(())
+        }
+        SupportedChromaMode::Smooth
+        | SupportedChromaMode::SmoothVertical
+        | SupportedChromaMode::SmoothHorizontal
+            if full_sb =>
+        {
+            Ok(())
+        }
+        SupportedChromaMode::Smooth
+        | SupportedChromaMode::SmoothVertical
+        | SupportedChromaMode::SmoothHorizontal => Err(unsupported_chroma(
             "general_intra_smooth_chroma_subblock",
             missing_capability_message!(
                 "intra.chroma.smooth",
@@ -702,13 +703,17 @@ fn ensure_supported_chroma_capability(
                 block = "subpartition",
             ),
         )),
-        SupportedChromaMode::D135Follow | SupportedChromaMode::Horizontal
+        SupportedChromaMode::D135Follow
+        | SupportedChromaMode::D135
+        | SupportedChromaMode::Horizontal
             if full_sb && neighbours.is_top_left() =>
         {
             Ok(())
         }
-        SupportedChromaMode::D135Follow if left_only || above_left => Ok(()),
-        SupportedChromaMode::D135Follow => Err(unsupported_chroma(
+        SupportedChromaMode::D135Follow | SupportedChromaMode::D135 if left_only || above_left => {
+            Ok(())
+        }
+        SupportedChromaMode::D135Follow | SupportedChromaMode::D135 => Err(unsupported_chroma(
             "general_intra_directional_chroma_neighbour",
             missing_capability_message!(
                 "intra.chroma.directional.d135",
@@ -716,8 +721,8 @@ fn ensure_supported_chroma_capability(
                 block = "non_full_sb_or_first_col",
             ),
         )),
-        SupportedChromaMode::D113Follow if above_left => Ok(()),
-        SupportedChromaMode::D113Follow => Err(unsupported_chroma(
+        SupportedChromaMode::D113Follow | SupportedChromaMode::D113 if above_left => Ok(()),
+        SupportedChromaMode::D113Follow | SupportedChromaMode::D113 => Err(unsupported_chroma(
             "general_intra_directional_d113_chroma_neighbour",
             missing_capability_message!(
                 "intra.chroma.directional.d113",
@@ -734,24 +739,48 @@ fn ensure_supported_chroma_capability(
                 block = "non_full_sb_or_not_first_row",
             ),
         )),
-        SupportedChromaMode::D45Follow if above_left && neighbours.num_above_right() > 0 => Ok(()),
-        SupportedChromaMode::D45Follow => Err(unsupported_chroma(
+        SupportedChromaMode::D157 => Err(unsupported_chroma(
+            "general_intra_directional_d157_chroma_explicit",
+            missing_capability_message!(
+                "intra.chroma.directional.d157",
+                neighbour = "above_left",
+                block = "full_recon_only",
+            ),
+        )),
+        SupportedChromaMode::D45Follow
+        | SupportedChromaMode::D45
+        | SupportedChromaMode::D67Follow
+        | SupportedChromaMode::D67
+            if above_left && neighbours.num_above_right() > 0 =>
+        {
+            Ok(())
+        }
+        SupportedChromaMode::D45Follow
+        | SupportedChromaMode::D45
+        | SupportedChromaMode::D67Follow
+        | SupportedChromaMode::D67 => Err(unsupported_chroma(
             "general_intra_directional_d45_chroma_neighbour",
             missing_capability_message!(
-                "intra.chroma.directional.d45",
+                "intra.chroma.directional.above_right",
                 neighbour = "above_right",
                 block = "non_full_sb_or_edge",
             ),
         )),
-        SupportedChromaMode::VerticalFollow if full_sb && neighbours.has_above() => Ok(()),
-        SupportedChromaMode::VerticalFollow => Err(unsupported_chroma(
-            "general_intra_cardinal_vertical_chroma",
-            missing_capability_message!(
-                "intra.chroma.cardinal.vertical",
-                neighbour = "above",
-                block = "non_full_sb_or_first_row",
-            ),
-        )),
+        SupportedChromaMode::VerticalFollow | SupportedChromaMode::Vertical
+            if full_sb && neighbours.has_above() =>
+        {
+            Ok(())
+        }
+        SupportedChromaMode::VerticalFollow | SupportedChromaMode::Vertical => {
+            Err(unsupported_chroma(
+                "general_intra_cardinal_vertical_chroma",
+                missing_capability_message!(
+                    "intra.chroma.cardinal.vertical",
+                    neighbour = "above",
+                    block = "non_full_sb_or_first_row",
+                ),
+            ))
+        }
         SupportedChromaMode::HorizontalFollow if full_sb && neighbours.has_left() => Ok(()),
         SupportedChromaMode::HorizontalFollow => Err(unsupported_chroma(
             "general_intra_cardinal_horizontal_chroma",
@@ -767,6 +796,14 @@ fn ensure_supported_chroma_capability(
                 "intra.chroma.horizontal",
                 neighbour = "top_left_only",
                 block = "non_full_sb_or_neighbour",
+            ),
+        )),
+        SupportedChromaMode::Paeth => Err(unsupported_chroma(
+            "general_intra_paeth_chroma",
+            missing_capability_message!(
+                "intra.chroma.paeth",
+                neighbour = "above_left",
+                block = "full_recon_only",
             ),
         )),
     }

@@ -468,7 +468,7 @@ fn reconstruct_ac0ej3_sink() -> WienerNsLrReconSink<u16> {
     let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
     let options = DecodeOptions::default();
     let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-    reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan, false)
+    reconstruct_ac0ej3_intra_region_from_plan(&bytes, &options, &plan, false)
         .expect("reconstruct ac0ej3 region")
 }
 
@@ -481,7 +481,7 @@ fn reconstruct_ac0ej3_full_recon_sink() -> WienerNsLrReconSink<u16> {
     let bytes = std::fs::read(&path).expect("read ac0ej3 fixture");
     let options = DecodeOptions::default();
     let plan = context().plan_bytes(&bytes, options).expect("plan ac0ej3");
-    reconstruct_ac0ej3_intra_region_from_plan(&bytes, options, &plan, true)
+    reconstruct_ac0ej3_intra_region_from_plan(&bytes, &options, &plan, true)
         .expect("full-recon ac0ej3 region")
 }
 
@@ -1453,16 +1453,14 @@ fn ac0ej3_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
 
     let mut first_block: Option<(usize, usize)> = None;
     let mut first_clean_block: Option<(usize, usize)> = None;
-    let mut first_unwritten: Option<usize> = None;
+    let mut unwritten = Vec::new();
     let mut covered_samples = 0usize;
     let mut unwired: std::collections::BTreeMap<&'static str, usize> =
         std::collections::BTreeMap::new();
     for (idx, leaf) in sink.full_recon_luma_log().iter().enumerate() {
         if !leaf.written {
             *unwired.entry(leaf.mode).or_default() += 1;
-            if first_unwritten.is_none() {
-                first_unwritten = Some(idx);
-            }
+            unwritten.push(idx);
             continue;
         }
         let mut block_mismatch = 0usize;
@@ -1563,11 +1561,20 @@ fn ac0ej3_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
             eprintln!("NO decode-order mismatch found among written leaves (full bit-exact!)");
         }
     }
-    if let Some(idx) = first_unwritten {
+    if let Some(&idx) = unwritten.first() {
         eprintln!(
             "FIRST decode-order UNWRITTEN (fill root) leaf: {}",
             describe(idx)
         );
+    }
+    if !unwritten.is_empty() {
+        eprintln!(
+            "ALL decode-order UNWRITTEN (fill root) leaves ({}):",
+            unwritten.len()
+        );
+        for &idx in &unwritten {
+            eprintln!("    {}", describe(idx));
+        }
     }
     if let Some((idx, n)) = first_clean_block {
         eprintln!(

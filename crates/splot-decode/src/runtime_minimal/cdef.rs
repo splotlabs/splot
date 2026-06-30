@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
     BitDepth, CDEF_DIRECTIONS, CDEF_UV_DIR, CdefSampleTaps, CdefTap, CurrentFrameWorkspace,
     PlaneId, ReconSample, cdef_direction, cdef_filter_sample,
@@ -8,6 +9,7 @@ use splot_recon::{
 
 const MI_SIZE: usize = 4;
 const MI_SIZE_LOG2: u32 = 2;
+const CDEF_UNIT_MI: usize = 16;
 const STEP4: usize = 2;
 
 const UNAVAILABLE_TAP: CdefTap = CdefTap {
@@ -28,6 +30,122 @@ pub(crate) struct CdefFrameParams {
     pub(crate) uv_sec: i32,
     /// CDEF damping.
     pub(crate) damping: i32,
+}
+
+pub(crate) fn cdef_frame_strengths(core: &FrameHeaderCore) -> Option<Vec<CdefFrameParams>> {
+    let cdef = core.cdef_params.as_ref()?;
+    if !cdef.cdef_frame_enable {
+        return None;
+    }
+    let damping = i32::from(cdef.cdef_damping?);
+    let mut strengths = Vec::with_capacity(cdef.strengths.len());
+    for set in &cdef.strengths {
+        strengths.push(CdefFrameParams {
+            y_pri: i32::from(set.y_pri_strength),
+            y_sec: i32::from(set.y_sec_strength),
+            uv_pri: i32::from(set.uv_pri_strength),
+            uv_sec: i32::from(set.uv_sec_strength),
+            damping,
+        });
+    }
+    Some(strengths)
+}
+
+/// Parsed CDEF strength index grid, one cell per 64x64 luma filter block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CdefUnitGrid {
+    rows: usize,
+    cols: usize,
+    values: Vec<Option<usize>>,
+}
+
+impl CdefUnitGrid {
+    /// Creates a row-major CDEF unit grid.
+    pub(crate) fn new(
+        rows: usize,
+        cols: usize,
+        values: Vec<Option<usize>>,
+    ) -> Result<Self, CdefError> {
+        validate_grid_len(rows, cols, values.len())?;
+        Ok(Self { rows, cols, values })
+    }
+
+    fn constant(mi_rows: usize, mi_cols: usize, value: usize) -> Result<Self, CdefError> {
+        let rows = mi_rows.div_ceil(CDEF_UNIT_MI);
+        let cols = mi_cols.div_ceil(CDEF_UNIT_MI);
+        let values_len = rows.checked_mul(cols).ok_or(CdefError::Geometry)?;
+        Ok(Self {
+            rows,
+            cols,
+            values: vec![Some(value); values_len],
+        })
+    }
+
+    fn strength_for_mi(&self, mi_row: usize, mi_col: usize) -> Result<Option<usize>, CdefError> {
+        let row = mi_row / CDEF_UNIT_MI;
+        let col = mi_col / CDEF_UNIT_MI;
+        if row >= self.rows || col >= self.cols {
+            return Ok(None);
+        }
+        self.values
+            .get(row * self.cols + col)
+            .copied()
+            .ok_or(CdefError::Geometry)
+    }
+}
+
+/// Parsed CDEF skip decisions, one cell per luma 4x4 block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CdefSkipGrid {
+    rows: usize,
+    cols: usize,
+    values: Vec<bool>,
+}
+
+impl CdefSkipGrid {
+    /// Creates a row-major CDEF skip grid.
+    pub(crate) fn new(rows: usize, cols: usize, values: Vec<bool>) -> Result<Self, CdefError> {
+        validate_grid_len(rows, cols, values.len())?;
+        Ok(Self { rows, cols, values })
+    }
+
+    fn all_skipped_8x8(
+        &self,
+        mi_row: usize,
+        mi_col: usize,
+        mi_rows: usize,
+        mi_cols: usize,
+    ) -> Result<bool, CdefError> {
+        let row_end = mi_row.saturating_add(STEP4).min(mi_rows);
+        let col_end = mi_col.saturating_add(STEP4).min(mi_cols);
+        if row_end <= mi_row || col_end <= mi_col {
+            return Ok(false);
+        }
+        for row in mi_row..row_end {
+            for col in mi_col..col_end {
+                if row >= self.rows || col >= self.cols {
+                    return Err(CdefError::Geometry);
+                }
+                let skipped = self
+                    .values
+                    .get(row * self.cols + col)
+                    .copied()
+                    .ok_or(CdefError::Geometry)?;
+                if !skipped {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+}
+
+fn validate_grid_len(rows: usize, cols: usize, len: usize) -> Result<(), CdefError> {
+    if len == rows.checked_mul(cols).ok_or(CdefError::Geometry)? {
+        Ok(())
+    } else {
+        Err(CdefError::Geometry)
+    }
 }
 
 struct PlaneSnapshot {
@@ -82,25 +200,67 @@ pub(crate) fn cdef_general_intra_frame<T: ReconSample>(
     mi_cols: usize,
     bit_depth: BitDepth,
 ) -> Result<(), CdefError> {
+    let grid = CdefUnitGrid::constant(mi_rows, mi_cols, 0)?;
+    cdef_general_intra_frame_indexed(
+        workspace,
+        &[params],
+        &grid,
+        None,
+        mi_rows,
+        mi_cols,
+        bit_depth,
+    )
+}
+
+/// Applies AV2 § 7.18 CDEF using the parsed per-unit strength index grid.
+pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    strengths: &[CdefFrameParams],
+    grid: &CdefUnitGrid,
+    skip_grid: Option<&CdefSkipGrid>,
+    mi_rows: usize,
+    mi_cols: usize,
+    bit_depth: BitDepth,
+) -> Result<(), CdefError> {
     let coeff_shift = u32::from(bit_depth.bits()) - 8;
     let max_sample = i32::from(bit_depth.max_sample());
 
     let sub_x = 1usize;
     let sub_y = 1usize;
 
-    let luma_w = mi_cols * MI_SIZE;
-    let luma_h = mi_rows * MI_SIZE;
-    let chroma_w = luma_w >> sub_x;
-    let chroma_h = luma_h >> sub_y;
+    let luma_size = workspace
+        .plane(PlaneId::Y)
+        .map_err(|_| CdefError::Workspace)?
+        .storage_size();
+    let u_size = workspace
+        .plane(PlaneId::U)
+        .map_err(|_| CdefError::Workspace)?
+        .storage_size();
+    let v_size = workspace
+        .plane(PlaneId::V)
+        .map_err(|_| CdefError::Workspace)?
+        .storage_size();
 
-    let luma_snap = PlaneSnapshot::capture(workspace, PlaneId::Y, luma_w, luma_h)?;
-    let u_snap = PlaneSnapshot::capture(workspace, PlaneId::U, chroma_w, chroma_h)?;
-    let v_snap = PlaneSnapshot::capture(workspace, PlaneId::V, chroma_w, chroma_h)?;
+    let luma_snap =
+        PlaneSnapshot::capture(workspace, PlaneId::Y, luma_size.width(), luma_size.height())?;
+    let u_snap = PlaneSnapshot::capture(workspace, PlaneId::U, u_size.width(), u_size.height())?;
+    let v_snap = PlaneSnapshot::capture(workspace, PlaneId::V, v_size.width(), v_size.height())?;
 
     let mut r = 0usize;
     while r < mi_rows {
         let mut c = 0usize;
         while c < mi_cols {
+            let Some(strength_index) = grid.strength_for_mi(r, c)? else {
+                c += STEP4;
+                continue;
+            };
+            if let Some(skip_grid) = skip_grid
+                && skip_grid.all_skipped_8x8(r, c, mi_rows, mi_cols)?
+            {
+                c += STEP4;
+                continue;
+            }
+            let params = *strengths.get(strength_index).ok_or(CdefError::Geometry)?;
             cdef_block(
                 workspace,
                 &CdefBlockCtx {
@@ -174,12 +334,19 @@ fn cdef_block<T: ReconSample>(
 ) -> Result<(), CdefError> {
     let x0 = ctx.c << MI_SIZE_LOG2;
     let y0 = ctx.r << MI_SIZE_LOG2;
+    let block_w = 8.min(luma_snap.width.saturating_sub(x0));
+    let block_h = 8.min(luma_snap.height.saturating_sub(y0));
+    if block_w == 0 || block_h == 0 {
+        return Ok(());
+    }
     let mut block = [[0i32; 8]; 8];
     for (i, row) in block.iter_mut().enumerate() {
         for (j, cell) in row.iter_mut().enumerate() {
-            let sample = luma_snap
-                .get((x0 + j) as isize, (y0 + i) as isize)
-                .ok_or(CdefError::Geometry)?;
+            let sample = luma_snap.get(
+                (x0 + j.min(block_w - 1)) as isize,
+                (y0 + i.min(block_h - 1)) as isize,
+            );
+            let sample = sample.ok_or(CdefError::Geometry)?;
             *cell = (sample >> ctx.coeff_shift) - 128;
         }
     }
@@ -243,8 +410,8 @@ fn cdef_filter_plane<T: ReconSample>(
     let sub_y = if ctx.sub > 0 { ctx.frame_sub_y } else { 0 };
     let x0 = (ctx.c * MI_SIZE) >> sub_x;
     let y0 = (ctx.r * MI_SIZE) >> sub_y;
-    let w = 8 >> sub_x;
-    let h = 8 >> sub_y;
+    let w = (8 >> sub_x).min(snap.width.saturating_sub(x0));
+    let h = (8 >> sub_y).min(snap.height.saturating_sub(y0));
 
     for i in 0..h {
         for j in 0..w {
@@ -378,36 +545,39 @@ mod tests {
     }
 
     #[test]
-    fn small_ringing_step_is_deringed_within_bounds() {
-        let mut ws = workspace_8bit(64, 64, 100);
-        for y in 0..8 {
-            for x in 0..8 {
-                let v = if (x + y) % 2 == 0 { 103 } else { 97 };
-                ws.set_reconstructed_sample(PlaneId::Y, x, y, v).unwrap();
-            }
-        }
-        let before: Vec<u8> = (0..8)
-            .flat_map(|y| (0..8).map(move |x| (x, y)))
-            .map(|(x, y)| ws.reconstructed_sample(PlaneId::Y, x, y).unwrap())
-            .collect();
+    fn partial_coded_edge_blocks_do_not_exceed_plane_bounds() {
+        let width = 18usize;
+        let height = 10usize;
+        let mut ws = workspace_8bit(width, height, 100);
         cdef_general_intra_frame(
             &mut ws,
             CdefFrameParams {
                 y_pri: 4,
                 y_sec: 4,
-                uv_pri: 0,
-                uv_sec: 0,
+                uv_pri: 2,
+                uv_sec: 4,
                 damping: 4,
             },
-            16,
-            16,
+            height.div_ceil(MI_SIZE),
+            width.div_ceil(MI_SIZE),
             BitDepth::Eight,
         )
         .unwrap();
-        let after: Vec<u8> = (0..8)
-            .flat_map(|y| (0..8).map(move |x| (x, y)))
-            .map(|(x, y)| ws.reconstructed_sample(PlaneId::Y, x, y).unwrap())
-            .collect();
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            assert!(
+                ws.samples(plane).unwrap().iter().all(|&s| s == 100),
+                "flat partial-edge plane remains unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn small_ringing_step_is_deringed_within_bounds() {
+        let mut ws = workspace_8bit(64, 64, 100);
+        seed_luma_ripple(&mut ws);
+        let before = luma_8x8(&ws);
+        cdef_general_intra_frame(&mut ws, cdef_ripple_params(), 16, 16, BitDepth::Eight).unwrap();
+        let after = luma_8x8(&ws);
         assert_ne!(before, after, "the ripple block must be filtered (changed)");
         assert!(
             after.iter().all(|&s| (97..=103).contains(&s)),
@@ -418,6 +588,65 @@ mod tests {
             100,
             "far flat region untouched"
         );
+    }
+
+    #[test]
+    fn skip_grid_leaves_all_skipped_8x8_unfiltered() {
+        let (before, after) = run_skip_grid_ripple(vec![true; 16 * 16]);
+        assert_eq!(before, after, "all-skipped CDEF block bypasses filtering");
+    }
+
+    #[test]
+    fn skip_grid_filters_mixed_8x8() {
+        let mut skip_values = vec![true; 16 * 16];
+        skip_values[0] = false;
+        let (before, after) = run_skip_grid_ripple(skip_values);
+        assert_ne!(before, after, "mixed CDEF block still filters");
+    }
+
+    fn run_skip_grid_ripple(skip_values: Vec<bool>) -> (Vec<u8>, Vec<u8>) {
+        let mut ws = workspace_8bit(64, 64, 100);
+        seed_luma_ripple(&mut ws);
+        let before = luma_8x8(&ws);
+        let grid = CdefUnitGrid::constant(16, 16, 0).unwrap();
+        let skip = CdefSkipGrid::new(16, 16, skip_values).unwrap();
+        cdef_general_intra_frame_indexed(
+            &mut ws,
+            &[cdef_ripple_params()],
+            &grid,
+            Some(&skip),
+            16,
+            16,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        (before, luma_8x8(&ws))
+    }
+
+    fn seed_luma_ripple(ws: &mut CurrentFrameWorkspace<u8>) {
+        for y in 0..8 {
+            for x in 0..8 {
+                let v = if (x + y) % 2 == 0 { 103 } else { 97 };
+                ws.set_reconstructed_sample(PlaneId::Y, x, y, v).unwrap();
+            }
+        }
+    }
+
+    fn luma_8x8(ws: &CurrentFrameWorkspace<u8>) -> Vec<u8> {
+        (0..8)
+            .flat_map(|y| (0..8).map(move |x| (x, y)))
+            .map(|(x, y)| ws.reconstructed_sample(PlaneId::Y, x, y).unwrap())
+            .collect()
+    }
+
+    const fn cdef_ripple_params() -> CdefFrameParams {
+        CdefFrameParams {
+            y_pri: 4,
+            y_sec: 4,
+            uv_pri: 0,
+            uv_sec: 0,
+            damping: 4,
+        }
     }
 
     #[test]

@@ -790,9 +790,9 @@ fn error_signature(error: DecodeError) -> String {
 fn plan_bytes_error_signature(
     threads: ThreadCount,
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
 ) -> String {
-    error_signature(context(threads).plan_bytes(bytes, options).unwrap_err())
+    error_signature(context(threads).plan_bytes(bytes, *options).unwrap_err())
 }
 
 #[test]
@@ -812,9 +812,9 @@ fn byte_planning_errors_are_deterministic_across_thread_policies() {
         (&unsupported[..], DecodeOptions::default()),
         (&limit[..], limit_options),
     ] {
-        let one = plan_bytes_error_signature(ThreadCount::from(1usize), bytes, options);
-        let auto = plan_bytes_error_signature(ThreadCount::Auto, bytes, options);
-        let fixed = plan_bytes_error_signature(ThreadCount::from(4usize), bytes, options);
+        let one = plan_bytes_error_signature(ThreadCount::from(1usize), bytes, &options);
+        let auto = plan_bytes_error_signature(ThreadCount::Auto, bytes, &options);
+        let fixed = plan_bytes_error_signature(ThreadCount::from(4usize), bytes, &options);
 
         assert_eq!(one, auto);
         assert_eq!(one, fixed);

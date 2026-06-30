@@ -5,7 +5,7 @@
 //!
 //! Feature tracking: `DECODE-LIMITS-RUNTIME-API`.
 
-use core::fmt;
+use core::{fmt, num::NonZeroU64};
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_MAX_OBUS: u64 = 16_384;
@@ -29,18 +29,23 @@ const MAX_HOST_ALLOCATION_LEN: u64 = isize::MAX as u64;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeOptions {
     limits: DecodeLimits,
+    output_frame_limit: Option<NonZeroU64>,
 }
 
 impl DecodeOptions {
     /// Default decoder options with finite resource limits.
     pub const DEFAULT: Self = Self {
         limits: DecodeLimits::DEFAULT,
+        output_frame_limit: None,
     };
 
     /// Creates decoder options from caller-provided resource limits.
     #[must_use]
     pub const fn new(limits: DecodeLimits) -> Self {
-        Self { limits }
+        Self {
+            limits,
+            output_frame_limit: None,
+        }
     }
 
     /// Returns the configured resource limits.
@@ -52,7 +57,20 @@ impl DecodeOptions {
     /// Returns a copy with the configured resource limits replaced.
     #[must_use]
     pub const fn with_limits(self, limits: DecodeLimits) -> Self {
-        Self { limits }
+        Self { limits, ..self }
+    }
+
+    /// Returns the optional caller-requested output-frame limit.
+    #[must_use]
+    pub const fn output_frame_limit(self) -> Option<NonZeroU64> {
+        self.output_frame_limit
+    }
+
+    /// Returns a copy with an optional caller-requested output-frame limit.
+    #[must_use]
+    pub const fn with_output_frame_limit(mut self, limit: Option<NonZeroU64>) -> Self {
+        self.output_frame_limit = limit;
+        self
     }
 }
 

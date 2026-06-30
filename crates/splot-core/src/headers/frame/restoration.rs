@@ -80,7 +80,7 @@ const CCSO_QUANT_SZ: [[u16; 4]; 4] = [
 /// indices (which the f(2) reads can never produce in-band) map to `0` rather than panicking.
 /// Shared with the § 5.18.7.12 writer ([`crate::write::frame_restoration`]) so the
 /// edge-clf-suppression derivation never drifts between parser and writer.
-pub(crate) fn ccso_quant_step(scale_idx: u8, quant_idx: u8) -> u16 {
+pub fn ccso_quant_step(scale_idx: u8, quant_idx: u8) -> u16 {
     CCSO_QUANT_SZ
         .get(usize::from(scale_idx))
         .and_then(|row| row.get(usize::from(quant_idx)))

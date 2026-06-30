@@ -26,8 +26,8 @@ use crate::tile_payload::{
 
 use super::*;
 
-/// Reconstructs one square chroma plane block in decode order into the
-/// workspace, dispatching on the resolved § 5.20.5.3 `UVMode`:
+/// Reconstructs one chroma plane block in decode order into the workspace,
+/// dispatching on the resolved § 5.20.5.3 `UVMode`:
 ///
 /// - [`SupportedChromaMode::Dc`] delegates to the § 7.13.2.4 DC reconstruction
 ///   ([`reconstruct_general_intra_block_into`]).
@@ -51,7 +51,8 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
     plane_id: PlaneId,
     x: usize,
     y: usize,
-    log2_side: u32,
+    log2_width: u32,
+    log2_height: u32,
     qindex: u32,
     mode: SupportedChromaMode,
     num4_above_right: usize,
@@ -59,8 +60,18 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     match mode {
-        SupportedChromaMode::Dc => reconstruct_general_intra_block_into(
-            workspace, block, plane_id, x, y, log2_side, qindex, false, bit_depth,
+        SupportedChromaMode::Dc => reconstruct_general_intra_block_rect_into(
+            workspace,
+            block,
+            plane_id,
+            x,
+            y,
+            log2_width,
+            log2_height,
+            qindex,
+            false,
+            false,
+            bit_depth,
         ),
         SupportedChromaMode::Smooth => reconstruct_general_intra_chroma_smooth_into(
             workspace,
@@ -68,17 +79,60 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             plane_id,
             x,
             y,
-            log2_side,
+            log2_width,
+            log2_height,
             qindex,
+            IntraSmoothMode::Smooth,
             num4_above_right,
+            num4_below_left,
             bit_depth,
         ),
-        SupportedChromaMode::D135Follow if x == 0 && y == 0 => {
+        SupportedChromaMode::SmoothVertical => reconstruct_general_intra_chroma_smooth_into(
+            workspace,
+            block,
+            plane_id,
+            x,
+            y,
+            log2_width,
+            log2_height,
+            qindex,
+            IntraSmoothMode::SmoothVertical,
+            num4_above_right,
+            num4_below_left,
+            bit_depth,
+        ),
+        SupportedChromaMode::SmoothHorizontal => reconstruct_general_intra_chroma_smooth_into(
+            workspace,
+            block,
+            plane_id,
+            x,
+            y,
+            log2_width,
+            log2_height,
+            qindex,
+            IntraSmoothMode::SmoothHorizontal,
+            num4_above_right,
+            num4_below_left,
+            bit_depth,
+        ),
+        SupportedChromaMode::Paeth => reconstruct_general_intra_luma_paeth_neighbour_block_into(
+            workspace,
+            block,
+            plane_id,
+            x,
+            y,
+            log2_width,
+            log2_height,
+            qindex,
+            false,
+            bit_depth,
+        ),
+        SupportedChromaMode::D135Follow | SupportedChromaMode::D135 if x == 0 && y == 0 => {
             reconstruct_general_intra_chroma_directional_first_into(
-                workspace, block, plane_id, x, y, log2_side, qindex, bit_depth,
+                workspace, block, plane_id, x, y, log2_width, qindex, bit_depth,
             )
         }
-        SupportedChromaMode::D135Follow => {
+        SupportedChromaMode::D135Follow | SupportedChromaMode::D135 => {
             reconstruct_general_intra_directional_neighbour_block_into(
                 workspace,
                 block,
@@ -86,13 +140,13 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 plane_id,
                 x,
                 y,
-                log2_side,
+                log2_width,
                 qindex,
                 false,
                 bit_depth,
             )
         }
-        SupportedChromaMode::D113Follow => {
+        SupportedChromaMode::D113Follow | SupportedChromaMode::D113 => {
             reconstruct_general_intra_directional_neighbour_block_into(
                 workspace,
                 block,
@@ -100,13 +154,13 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 plane_id,
                 x,
                 y,
-                log2_side,
+                log2_width,
                 qindex,
                 false,
                 bit_depth,
             )
         }
-        SupportedChromaMode::D157Follow => {
+        SupportedChromaMode::D157Follow | SupportedChromaMode::D157 => {
             reconstruct_general_intra_directional_neighbour_block_into(
                 workspace,
                 block,
@@ -114,13 +168,13 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 plane_id,
                 x,
                 y,
-                log2_side,
+                log2_width,
                 qindex,
                 false,
                 bit_depth,
             )
         }
-        SupportedChromaMode::VerticalFollow => {
+        SupportedChromaMode::VerticalFollow | SupportedChromaMode::Vertical => {
             reconstruct_general_intra_cardinal_neighbour_block_into(
                 workspace,
                 block,
@@ -128,8 +182,8 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 plane_id,
                 x,
                 y,
-                log2_side,
-                log2_side,
+                log2_width,
+                log2_height,
                 qindex,
                 false,
                 bit_depth,
@@ -143,27 +197,47 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 plane_id,
                 x,
                 y,
-                log2_side,
-                log2_side,
+                log2_width,
+                log2_height,
                 qindex,
                 false,
                 bit_depth,
             )
         }
-        SupportedChromaMode::Horizontal => {
+        SupportedChromaMode::Horizontal if x == 0 && y == 0 => {
             reconstruct_general_intra_chroma_cardinal_horizontal_first_into(
-                workspace, block, plane_id, x, y, log2_side, qindex, bit_depth,
+                workspace, block, plane_id, x, y, log2_width, qindex, bit_depth,
             )
         }
-        SupportedChromaMode::D45Follow => reconstruct_general_intra_one_sided_neighbour_block_into(
+        SupportedChromaMode::Horizontal => reconstruct_general_intra_cardinal_neighbour_block_into(
             workspace,
             block,
-            45,
+            IntraCardinalDirection::Horizontal,
             plane_id,
             x,
             y,
-            log2_side,
-            log2_side,
+            log2_width,
+            log2_height,
+            qindex,
+            false,
+            bit_depth,
+        ),
+        SupportedChromaMode::D45Follow
+        | SupportedChromaMode::D45
+        | SupportedChromaMode::D67Follow
+        | SupportedChromaMode::D67 => reconstruct_general_intra_one_sided_neighbour_block_into(
+            workspace,
+            block,
+            match mode {
+                SupportedChromaMode::D45Follow | SupportedChromaMode::D45 => 45,
+                SupportedChromaMode::D67Follow | SupportedChromaMode::D67 => 67,
+                _ => unreachable!(),
+            },
+            plane_id,
+            x,
+            y,
+            log2_width,
+            log2_height,
             qindex,
             num4_above_right,
             OneSidedAboveMrl::default(),
@@ -171,7 +245,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             bit_depth,
             OneSidedEdgeFilter::default(),
         ),
-        SupportedChromaMode::D203Follow => {
+        SupportedChromaMode::D203Follow | SupportedChromaMode::D203 => {
             reconstruct_general_intra_one_sided_left_neighbour_block_into(
                 workspace,
                 block,
@@ -179,8 +253,8 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 plane_id,
                 x,
                 y,
-                log2_side,
-                log2_side,
+                log2_width,
+                log2_height,
                 qindex,
                 num4_below_left,
                 false, // have_above: unchanged chroma §7.13.2.1 corner `CurrFrame[y][x-1]`
@@ -312,9 +386,12 @@ fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
     plane_id: PlaneId,
     x: usize,
     y: usize,
-    log2_side: u32,
+    log2_width: u32,
+    log2_height: u32,
     qindex: u32,
+    smooth_mode: IntraSmoothMode,
     num4_above_right: usize,
+    num4_below_left: usize,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     reconstruct_general_intra_smooth_over_edges_into(
@@ -323,10 +400,51 @@ fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
         plane_id,
         x,
         y,
-        log2_side,
+        log2_width,
+        log2_height,
         qindex,
-        IntraSmoothMode::Smooth,
+        smooth_mode,
         num4_above_right,
+        num4_below_left,
+        false,
+        bit_depth,
+    )
+}
+
+/// Reconstructs one rectangular § 7.13.2.13 `SMOOTH_PRED` chroma block using
+/// caller-provided § 7.13.2.1 availability counts for the already reconstructed
+/// left and above edges.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_chroma_smooth_available_edges_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    smooth_mode: IntraSmoothMode,
+    available_left_samples: usize,
+    available_above_samples: usize,
+    num4_above_right: usize,
+    num4_below_left: usize,
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    reconstruct_general_intra_smooth_over_available_edges_into(
+        workspace,
+        block,
+        plane_id,
+        x,
+        y,
+        log2_width,
+        log2_height,
+        qindex,
+        smooth_mode,
+        Some(available_left_samples),
+        Some(available_above_samples),
+        num4_above_right,
+        num4_below_left,
         false,
         bit_depth,
     )

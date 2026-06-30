@@ -948,6 +948,15 @@ fn tx_set(
     Ok(TX_SET_INTRA_1)
 }
 
+pub(crate) fn resolve_mode_to_txfm_plane_tx_type(
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    is_inter: bool,
+    lossless: bool,
+    config: CoeffOrdinaryBranchModeToTxfmBaseConfig,
+) -> Result<usize, CoeffOrdinaryBranchError> {
+    mode_to_txfm_plane_tx_type(geometry, is_inter, lossless, config, DEFAULT_TX_SIZE_TABLES)
+}
+
 fn mode_to_txfm_plane_tx_type(
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     is_inter: bool,

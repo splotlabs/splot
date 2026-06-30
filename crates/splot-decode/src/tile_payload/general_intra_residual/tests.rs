@@ -666,6 +666,7 @@ fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
         frame_facts(false, false, false, false),
         0,
         0,
+        0,
         false,
         TransformToolResidualMetadata {
             luma_tx_type: expected,
@@ -686,6 +687,7 @@ fn luma_txtype_residual_staged_base_config_derives_coeff_tool_flags() {
     ] {
         let config = staged_transform_tool_lossless_base_config(
             frame_facts_with_coeff_tools(true, true),
+            0,
             0,
             0,
             false,
