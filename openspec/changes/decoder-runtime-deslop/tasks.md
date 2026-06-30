@@ -22,6 +22,13 @@
 
 - [x] 3.1 Regenerate feature/status docs.
 - [x] 3.2 Run focused decoder tests and `cargo xtask ci`.
+  - 2026-06-30: `cargo check --workspace --all-targets --locked`
+  - 2026-06-30: `cargo test -p splot-decode --lib runtime_minimal --locked`
+  - 2026-06-30: `cargo test -p splot-recon --lib intra_directional_angle --locked`
+  - 2026-06-30: `cargo xtask check-comment-density`
+  - 2026-06-30: `cargo xtask check-duplication`
+  - 2026-06-30: `cargo xtask check-ai-slop`
+  - 2026-06-30: `cargo xtask ci`
 
 ## 4. Rust File Orchestration
 
