@@ -113,11 +113,7 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
 
             for r in (0..mi_rows).step_by(plane_pass.row_step) {
                 for c in (0..mi_cols).step_by(plane_pass.col_step) {
-                    deblock_filter_edge(
-                        workspace,
-                        plane_grid,
-                        plane_pass.edge_context(r, c, mi_rows, mi_cols),
-                    )?;
+                    deblock_filter_edge(workspace, plane_grid, plane_pass.edge_context(r, c))?;
                 }
             }
         }
@@ -168,15 +164,13 @@ impl PlanePass {
         })
     }
 
-    fn edge_context(self, row: usize, col: usize, mi_rows: usize, mi_cols: usize) -> EdgeContext {
+    fn edge_context(self, row: usize, col: usize) -> EdgeContext {
         EdgeContext {
             plane: self.plane,
             plane_id: self.plane_id,
             pass: self.pass,
             row,
             col,
-            mi_rows,
-            mi_cols,
             plane_sub_x: self.plane_sub_x,
             plane_sub_y: self.plane_sub_y,
             df_delta_q: self.df_delta_q,
@@ -193,8 +187,6 @@ struct EdgeContext {
     pass: usize,
     row: usize,
     col: usize,
-    mi_rows: usize,
-    mi_cols: usize,
     plane_sub_x: usize,
     plane_sub_y: usize,
     df_delta_q: i32,
@@ -213,8 +205,6 @@ fn deblock_filter_edge<T: ReconSample>(
         pass,
         row,
         col,
-        mi_rows,
-        mi_cols,
         plane_sub_x,
         plane_sub_y,
         df_delta_q,
@@ -300,8 +290,7 @@ fn deblock_filter_edge<T: ReconSample>(
     };
     let mut filter_size = usize::try_from(filter_size).unwrap_or(0);
 
-    let plane_width = (mi_cols * MI_SIZE) >> plane_sub_x;
-    let plane_height = (mi_rows * MI_SIZE) >> plane_sub_y;
+    let (plane_width, plane_height) = coded_plane_dimensions(workspace, plane_id)?;
     if plane == 0 {
         if x_p + dx * 16 > plane_width || y_p + dy * 16 > plane_height {
             filter_size = filter_size.min(16);
@@ -407,6 +396,17 @@ fn choose_filter_width<T: ReconSample>(
     )
     .map_err(|_| DeblockError::FilterChoice)?;
     Ok(width)
+}
+
+fn coded_plane_dimensions<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+) -> Result<(usize, usize), DeblockError> {
+    let plane = workspace
+        .plane(plane_id)
+        .map_err(|_| DeblockError::Workspace)?;
+    let storage_size = plane.storage_size();
+    Ok((storage_size.width(), storage_size.height()))
 }
 
 #[derive(Clone, Copy)]
@@ -786,6 +786,23 @@ mod tests {
     }
 
     #[test]
+    fn deblock_bounds_use_coded_plane_storage_for_partial_edge_frame() {
+        let workspace = yuv420_workspace(18, 14, 100);
+        assert_eq!(
+            coded_plane_dimensions(&workspace, PlaneId::Y).unwrap(),
+            (18, 14)
+        );
+        assert_eq!(
+            coded_plane_dimensions(&workspace, PlaneId::U).unwrap(),
+            (9, 7)
+        );
+        assert_eq!(
+            coded_plane_dimensions(&workspace, PlaneId::V).unwrap(),
+            (9, 7)
+        );
+    }
+
+    #[test]
     fn mi_grid_covers_decoded_blocks() {
         let blocks = [DeblockBlock {
             r: 0,
@@ -826,8 +843,6 @@ mod tests {
                 pass: 0,
                 row: 0,
                 col: 5,
-                mi_rows: 4,
-                mi_cols: 16,
                 plane_sub_x: 0,
                 plane_sub_y: 0,
                 df_delta_q: 0,
@@ -858,8 +873,6 @@ mod tests {
                 pass: 0,
                 row: 0,
                 col: 5,
-                mi_rows: 4,
-                mi_cols: 16,
                 plane_sub_x: 0,
                 plane_sub_y: 0,
                 df_delta_q: 0,
