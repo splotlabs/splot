@@ -7800,6 +7800,42 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "INFRA-CI-PIPELINE-SPEEDUPS"
+name = "CI pipeline speedups"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/main.rs"
+openspec_change = "ci-pipeline-speedups"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Removes the redundant explicit `cargo build --workspace --all-targets --locked` pass from `cargo xtask ci` and `.github/workflows/ci.yml` because the preceding all-target clippy pass plus all-target tests already compile the workspace. GitHub CI also sets `CARGO_INCREMENTAL=0`, bumps the cargo cache namespace so future target caches are smaller, and caches the pinned `dupehound` binary so warm runs skip `cargo install`. No codec behavior, AV2 status, diagnostics, dependency graph, or test coverage changes."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "not-applicable"
+avm_diff = "not-applicable"
+perf = "done"
+
+[feature.proof]
+tests = []
+commands = [
+    "cargo xtask check-feature-status",
+    "cargo xtask ci",
+]
+fixtures = [".github/workflows/ci.yml", "README.md", "docs/agents/commands.md"]
+diagnostics = []
+
+[[feature]]
 id = "DECODE-GENERIC-RUNTIME-DESLOP"
 name = "Decoder generic runtime deslop"
 category = "infrastructure"

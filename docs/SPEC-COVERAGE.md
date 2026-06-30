@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 451 feature(s); 391 cite a spec section.
+Matrix version 1. Last reviewed 2026-06-15. 452 feature(s); 391 cite a spec section.
 
 One row per (spec section, feature) pair, in spec order; a feature citing both a syntax and a semantics section appears under both. The canonical status source is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md).
 
@@ -1537,7 +1537,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 
 ## Features without a spec section
 
-60 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
+61 feature(s) track conformance, encoder, CLI, automation, or documentation work with no single spec section; see [FEATURE-STATUS.md](./FEATURE-STATUS.md):
 
 - `AV2-IVF-CONTAINER` — IVF container support
 - `CLI-INSPECT` — splot inspect command
@@ -1576,6 +1576,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 - `ENC-SYNTAX-IR` — Encoder syntax planning IR
 - `ENC-Y4M-INPUT` — Y4M input reader integration
 - `INFRA-AI-SLOP-GATE` — AI-slop comment gate
+- `INFRA-CI-PIPELINE-SPEEDUPS` — CI pipeline speedups
 - `INFRA-COMMENT-DENSITY-RATCHET` — Comment-density ratchet
 - `INFRA-DECODER-CRATE-SCAFFOLDING` — Decoder and reconstruction crate scaffolding
 - `INFRA-DUPEHOUND-DUPLICATION-GATE` — Duplicate-code budget gate

@@ -204,8 +204,8 @@ One command is the acceptance gate:
 cargo xtask ci
 ```
 
-It runs the local acceptance pipeline: `fmt`, `clippy -D warnings`, build,
-tests, doctests, rustdoc, spell-check (`typos`), unused dependencies
+It runs the local acceptance pipeline: `fmt`, `clippy -D warnings`, tests,
+doctests, rustdoc, spell-check (`typos`), unused dependencies
 (`cargo-machete`), supply-chain policy (`cargo-deny`), license headers,
 dependency direction, spec-mirror integrity, generated table drift,
 feature-status drift, decoder-support drift, and the diagnostics registry. CI adds
