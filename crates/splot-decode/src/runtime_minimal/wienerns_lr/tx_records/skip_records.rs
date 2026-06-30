@@ -60,6 +60,7 @@ pub(super) fn record_skipped_selectable_residuals(
                 record.tx_size,
                 fixed_largest_420_chroma_tx_size_from_luma_4x4(record.cols, record.rows),
                 recon.qindex,
+                true,
             );
         }
         if !recon.is_intrabc {

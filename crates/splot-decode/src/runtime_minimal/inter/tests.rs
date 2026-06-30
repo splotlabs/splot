@@ -1250,7 +1250,7 @@ fn mhccp_sequence_tool_rejects_before_tile_decode() {
 }
 
 #[test]
-fn leading_key_payload_extra_obu_reaches_chroma_tool_gate_after_key_header() {
+fn leading_key_payload_extra_obu_rejected_before_tile_decode() {
     let repacked = repack_first_record_with_extra_regular_tile_group(TEN_BIT_INTRA_FIXTURE);
     let options = DecodeOptions::default();
     let plan = plan_fixture(&repacked, &options);
@@ -1261,16 +1261,10 @@ fn leading_key_payload_extra_obu_reaches_chroma_tool_gate_after_key_header() {
     let Err(error) = decode_minimal_frames_from_plan(&repacked, &options, &plan) else {
         panic!("10-bit leading payload with an extra OBU must fail closed");
     };
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("leading payload must be an unsupported-feature error");
-    };
-    assert_eq!(unsupported.reason(), "unsupported_cfl_intra");
-    assert_eq!(unsupported.matrix_row(), "ac0ej3-sequence-chroma-frontier");
     assert_eq!(
-        unsupported.feature_id(),
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER"
+        unsupported_reason(error),
+        "unexpected_leading_obu_after_key"
     );
-    assert_eq!(unsupported.spec_section(), "5.20.5.6");
 }
 
 #[test]

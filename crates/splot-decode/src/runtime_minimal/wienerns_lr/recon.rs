@@ -681,6 +681,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         luma_tx: usize,
         chroma_tx: Option<usize>,
         qindex: u32,
+        skip: bool,
     ) {
         self.deblock_blocks
             .push(super::super::deblock::DeblockBlock {
@@ -691,6 +692,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 luma_tx,
                 chroma_tx,
                 qindex,
+                skip,
             });
     }
 
@@ -719,6 +721,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             luma_tx: chroma_tx,
             chroma_tx: Some(chroma_tx),
             qindex,
+            skip: false,
         });
     }
 

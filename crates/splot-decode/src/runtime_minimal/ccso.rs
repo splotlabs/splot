@@ -4,7 +4,6 @@
 use splot_core::headers::frame::{CcsoPlaneParams, FrameHeaderCore};
 use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, ReconSample};
 
-const MI_SIZE: usize = 4;
 const CCSO_PLANES: usize = 3;
 const CCSO_OFFSET: [i32; 8] = [0, 1, -1, 3, -3, 7, -7, -10];
 const CCSO_QUANT_SZ: [[i32; 4]; 4] = [
@@ -88,8 +87,8 @@ pub(crate) fn ccso_frame<T: ReconSample>(
     curr_luma: &[u16],
     core: &FrameHeaderCore,
     grid: &CcsoUnitGrid,
-    mi_rows: usize,
-    mi_cols: usize,
+    _mi_rows: usize,
+    _mi_cols: usize,
     bit_depth: BitDepth,
 ) -> Result<(), CcsoError> {
     if !grid.active() {
@@ -98,8 +97,9 @@ pub(crate) fn ccso_frame<T: ReconSample>(
     let Some(params) = core.ccso_params.as_ref() else {
         return Ok(());
     };
-    let luma_width = mi_cols.checked_mul(MI_SIZE).ok_or(CcsoError::Geometry)?;
-    let luma_height = mi_rows.checked_mul(MI_SIZE).ok_or(CcsoError::Geometry)?;
+    let luma_size = workspace.info().coded_luma_size();
+    let luma_width = luma_size.width();
+    let luma_height = luma_size.height();
     if curr_luma.len()
         < luma_width
             .checked_mul(luma_height)
@@ -126,8 +126,6 @@ pub(crate) fn ccso_frame<T: ReconSample>(
             plane,
             plane_params,
             grid,
-            mi_rows,
-            mi_cols,
             bit_depth,
         )?;
     }
@@ -143,14 +141,17 @@ fn ccso_plane<T: ReconSample>(
     plane: usize,
     params: &CcsoPlaneParams,
     grid: &CcsoUnitGrid,
-    mi_rows: usize,
-    mi_cols: usize,
     bit_depth: BitDepth,
 ) -> Result<(), CcsoError> {
     let sub_x = usize::from(plane > 0);
     let sub_y = usize::from(plane > 0);
-    let plane_width = mi_cols.checked_mul(MI_SIZE).ok_or(CcsoError::Geometry)? >> sub_x;
-    let plane_height = mi_rows.checked_mul(MI_SIZE).ok_or(CcsoError::Geometry)? >> sub_y;
+    let plane_id = plane_id(plane);
+    let plane_size = workspace
+        .plane(plane_id)
+        .map_err(|_| CcsoError::Workspace)?
+        .storage_size();
+    let plane_width = plane_size.width();
+    let plane_height = plane_size.height();
     let ccso_luma_log2 = grid.ccso_luma_size_log2();
     let shift_x = ccso_luma_log2
         .checked_sub(u32::try_from(sub_x).map_err(|_| CcsoError::Geometry)?)
@@ -190,8 +191,6 @@ fn ccso_plane<T: ReconSample>(
         .bits()
         .checked_sub(max_band_log2)
         .ok_or(CcsoError::Params)?;
-    let plane_id = plane_id(plane);
-
     for y in (0..plane_height).step_by(blk_h) {
         for x in (0..plane_width).step_by(blk_w) {
             let unit_row = (y << sub_y) >> ccso_luma_log2;
@@ -356,4 +355,65 @@ pub(crate) enum CcsoError {
     /// Sample conversion failed.
     #[error("CCSO sample conversion failed")]
     Sample,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::super::test_support::yuv420_workspace;
+    use super::*;
+
+    fn bo_plane(offset_idx: u8) -> CcsoPlaneParams {
+        CcsoPlaneParams {
+            ccso_planes: true,
+            ccso_bo_only: Some(true),
+            ccso_scale_idx: Some(0),
+            ccso_quant_idx: Some(0),
+            ccso_ext_filter: Some(0),
+            ccso_edge_clf: Some(false),
+            ccso_max_band_log2: Some(1),
+            ccso_offset_idx: vec![offset_idx; 2],
+        }
+    }
+
+    fn full_luma_grid(width: usize, height: usize) -> CcsoUnitGrid {
+        let grid_cols = width.div_ceil(4);
+        let grid_rows = height.div_ceil(4);
+        let cells = grid_rows * grid_cols;
+        CcsoUnitGrid::new(
+            true,
+            0,
+            [true, false, false],
+            [vec![1; cells], vec![0; cells], vec![0; cells]],
+            grid_rows,
+            grid_cols,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn luma_ccso_filters_partial_coded_edge_block() {
+        let width = 18;
+        let height = 10;
+        let mut workspace = yuv420_workspace(width, height, 100);
+        let curr_luma = vec![100u16; width * height];
+        ccso_plane(
+            &mut workspace,
+            &curr_luma,
+            width,
+            height,
+            0,
+            &bo_plane(1),
+            &full_luma_grid(width, height),
+            BitDepth::Eight,
+        )
+        .unwrap();
+        assert_eq!(
+            workspace
+                .reconstructed_sample(PlaneId::Y, width - 1, height - 1)
+                .unwrap(),
+            101,
+            "CCSO must process the bottom-right partial coded block"
+        );
+    }
 }

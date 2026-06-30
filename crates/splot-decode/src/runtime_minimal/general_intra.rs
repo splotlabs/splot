@@ -640,6 +640,7 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
         luma_tx: transforms.luma_tx(),
         chroma_tx: transforms.chroma_tx(),
         qindex,
+        skip: false,
     });
     Ok(())
 }

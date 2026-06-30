@@ -442,6 +442,10 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
             "minimal tier requires one selected key frame candidate",
         )
     })?;
+    let stop_after_key_frame = output_frame_limit_reached(options, 1);
+    if !full_recon_key_frame || !stop_after_key_frame {
+        reject_extra_leading_key_payload_obus(leading_obus)?;
+    }
     if !full_recon_key_frame {
         ensure_wienerns_lr_unit_runtime_frontier(
             bytes,
@@ -454,7 +458,6 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
             &key_core,
         )?;
         ensure_sequence_chroma_tools_before_tile_decode(&sequence, sequence_envelope.offset)?;
-        reject_extra_leading_key_payload_obus(leading_obus)?;
     }
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
 

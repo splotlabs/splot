@@ -32,6 +32,8 @@ pub(crate) struct DeblockBlock {
     pub(crate) chroma_tx: Option<usize>,
     /// Current luma AC qindex for this transform block.
     pub(crate) qindex: u32,
+    /// Whether this decoded block used the skip residual path.
+    pub(crate) skip: bool,
 }
 
 /// Frame-level quantizer-index deltas used by chroma deblocking.
@@ -70,6 +72,7 @@ struct MiBlockInfo {
     luma_tx: usize,
     chroma_tx: Option<usize>,
     qindex: u32,
+    skip: bool,
 }
 
 /// Applies AV2 § 7.17 deblocking in place.
@@ -264,7 +267,7 @@ fn deblock_filter_edge<T: ReconSample>(
     let prev_tx_col_base = prev.base_col;
     let prev_tx_row_base = prev.base_row;
 
-    let skip = false;
+    let skip = curr.skip;
     let is_sub_pu_edge = false;
 
     let x_r = x_p - base_x;
@@ -598,6 +601,7 @@ const fn block_info(block: DeblockBlock) -> MiBlockInfo {
         luma_tx: block.luma_tx,
         chroma_tx: block.chroma_tx,
         qindex: block.qindex,
+        skip: block.skip,
     }
 }
 
@@ -636,6 +640,7 @@ mod tests {
                     luma_tx: 3,
                     chroma_tx: Some(2),
                     qindex: 100,
+                    skip: false,
                 });
             }
         }
@@ -678,6 +683,27 @@ mod tests {
             BitDepth::Eight,
         )
         .unwrap();
+    }
+
+    fn edge_test_grid(curr_skip: bool) -> MiGrid {
+        let mut cells = vec![None; 4 * 16];
+        cells[4] = Some(MiBlockInfo {
+            base_row: 0,
+            base_col: 2,
+            luma_tx: 3,
+            chroma_tx: None,
+            qindex: 100,
+            skip: false,
+        });
+        cells[5] = Some(MiBlockInfo {
+            base_row: 0,
+            base_col: 0,
+            luma_tx: 3,
+            chroma_tx: None,
+            qindex: 100,
+            skip: curr_skip,
+        });
+        MiGrid { mi_cols: 16, cells }
     }
 
     fn assert_smoothed_step(p0: u8, q0: u8, reason: &str) {
@@ -769,6 +795,7 @@ mod tests {
             luma_tx: 3,
             chroma_tx: Some(2),
             qindex: 100,
+            skip: false,
         }];
         let grid = build_mi_grid(&blocks, 16, 16).unwrap();
         assert!(grid.get(0, 0).is_some(), "top-left MI is covered");
@@ -784,6 +811,68 @@ mod tests {
         assert_eq!((info.base_row, info.base_col), (0, 0));
         assert_eq!(plane_tx(0, info), Some(3), "luma tx index");
         assert_eq!(plane_tx(1, info), Some(2), "chroma tx index");
+    }
+
+    #[test]
+    fn skip_suppresses_internal_tx_edge_filtering() {
+        let mut skipped = yuv420_workspace(64, 16, 100);
+        fill_rect(&mut skipped, PlaneId::Y, 20..64, 0..16, 108);
+        deblock_filter_edge(
+            &mut skipped,
+            &edge_test_grid(true),
+            EdgeContext {
+                plane: 0,
+                plane_id: PlaneId::Y,
+                pass: 0,
+                row: 0,
+                col: 5,
+                mi_rows: 4,
+                mi_cols: 16,
+                plane_sub_x: 0,
+                plane_sub_y: 0,
+                df_delta_q: 0,
+                quant_delta: 0,
+                bit_depth: BitDepth::Eight,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            skipped.reconstructed_sample(PlaneId::Y, 19, 0).unwrap(),
+            100,
+            "skipped internal edge leaves the previous tap unchanged"
+        );
+        assert_eq!(
+            skipped.reconstructed_sample(PlaneId::Y, 20, 0).unwrap(),
+            108,
+            "skipped internal edge leaves the current tap unchanged"
+        );
+
+        let mut coded = yuv420_workspace(64, 16, 100);
+        fill_rect(&mut coded, PlaneId::Y, 20..64, 0..16, 108);
+        deblock_filter_edge(
+            &mut coded,
+            &edge_test_grid(false),
+            EdgeContext {
+                plane: 0,
+                plane_id: PlaneId::Y,
+                pass: 0,
+                row: 0,
+                col: 5,
+                mi_rows: 4,
+                mi_cols: 16,
+                plane_sub_x: 0,
+                plane_sub_y: 0,
+                df_delta_q: 0,
+                quant_delta: 0,
+                bit_depth: BitDepth::Eight,
+            },
+        )
+        .unwrap();
+        assert_smoothed_step(
+            coded.reconstructed_sample(PlaneId::Y, 19, 0).unwrap(),
+            coded.reconstructed_sample(PlaneId::Y, 20, 0).unwrap(),
+            "coded internal edge still filters",
+        );
     }
 
     #[test]

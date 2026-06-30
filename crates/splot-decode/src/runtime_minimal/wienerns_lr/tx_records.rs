@@ -1451,6 +1451,7 @@ fn decode_luma_records_for_chunk(
                 record.tx_size,
                 fixed_largest_420_chroma_tx_size_from_luma_4x4(record.cols, record.rows),
                 recon.qindex,
+                false,
             );
             sink.reconstruct_luma_transform(
                 record.col,
