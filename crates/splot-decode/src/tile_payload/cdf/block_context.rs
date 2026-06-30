@@ -656,13 +656,20 @@ mod tests {
     fn y_mode_offset_escape_reconstructs_d135() {
         let escape = reconstruct_y_mode_offset_escape_top_left(3)
             .expect("y_mode_offset 3 reconstructs a mode");
-        assert_eq!(escape.y_mode, IntraYMode(IntraYMode::D135_PRED));
-        assert_eq!(escape.angle_delta_y, 0);
         assert_eq!(
-            escape.y_mode.supported_directional(),
-            Some(SupportedDirectionalLumaMode::D135)
+            (
+                escape.y_mode,
+                escape.angle_delta_y,
+                escape.y_mode.supported_directional(),
+                escape.y_mode.is_directional()
+            ),
+            (
+                IntraYMode(IntraYMode::D135_PRED),
+                0,
+                Some(SupportedDirectionalLumaMode::D135),
+                true
+            )
         );
-        assert!(escape.y_mode.is_directional());
     }
 
     #[test]
@@ -776,9 +783,14 @@ mod tests {
 
     #[test]
     fn supported_chroma_mode_non_follow_d135_is_not_supported() {
-        let dc = IntraYMode::DC_PRED;
-        assert_eq!(get_intra_uv_mode_set(dc, 8), Some(IntraYMode::D135_PRED));
-        assert_eq!(supported_chroma_mode(dc, 8), None);
+        let input = (IntraYMode::DC_PRED, 8);
+        assert_eq!(
+            (
+                get_intra_uv_mode_set(input.0, input.1),
+                supported_chroma_mode(input.0, input.1)
+            ),
+            (Some(IntraYMode::D135_PRED), None)
+        );
     }
 
     #[test]

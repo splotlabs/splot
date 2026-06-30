@@ -486,10 +486,10 @@ mod tests {
         let mut input = default_input();
         input.n4w = 8;
         let before = symbols.consumed_bits();
-        assert!(
-            read_compound_average_syntax(&mut dec_tile, &mut symbols, input, ByteOffset::new(0),)
-                .is_err()
-        );
-        assert_eq!(symbols.consumed_bits(), before);
+        let result =
+            read_compound_average_syntax(&mut dec_tile, &mut symbols, input, ByteOffset::new(0));
+
+        assert!(result.is_err());
+        assert_eq!(before, symbols.consumed_bits());
     }
 }

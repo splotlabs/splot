@@ -1127,6 +1127,15 @@ pub(super) fn validate_directional_edge<T: ReconSample>(
     expected_len: usize,
     bit_depth: BitDepth,
 ) -> Result<()> {
+    validate_edge(edge, samples, expected_len, bit_depth)
+}
+
+fn validate_edge<T: ReconSample>(
+    edge: IntraDirectionalAngleEdge,
+    samples: &[T],
+    expected_len: usize,
+    bit_depth: BitDepth,
+) -> Result<()> {
     if samples.len() != expected_len {
         return Err(ReconError::IntraDirectionalAngleEdgeLengthMismatch {
             edge,
@@ -1149,15 +1158,6 @@ pub(super) fn validate_directional_edge<T: ReconSample>(
     }
 
     Ok(())
-}
-
-fn validate_edge<T: ReconSample>(
-    edge: IntraDirectionalAngleEdge,
-    samples: &[T],
-    expected_len: usize,
-    bit_depth: BitDepth,
-) -> Result<()> {
-    validate_directional_edge(edge, samples, expected_len, bit_depth)
 }
 
 fn validate_middle_edge<T: ReconSample>(

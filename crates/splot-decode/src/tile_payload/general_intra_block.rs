@@ -725,10 +725,10 @@ mod tests {
     fn symbols_at_block_start<'payload>(
         work_unit: &mut DecodeTileWorkUnit<'payload>,
     ) -> SymbolDecoder<'payload> {
-        let rows = vec![vec![BLOCK_256X256; 16]; 16];
+        let rows: Vec<Vec<usize>> = (0..16).map(|_| vec![BLOCK_256X256; 16]).collect();
         let mi0_rows: Vec<&[usize]> = rows.iter().map(Vec::as_slice).collect();
         let mi1_rows: Vec<&[usize]> = rows.iter().map(Vec::as_slice).collect();
-        let edge = vec![BLOCK_256X256; 16];
+        let edge = [BLOCK_256X256; 16];
         let context =
             TilePartitionContextState::new([&mi0_rows, &mi1_rows], [&edge, &edge], [&edge, &edge]);
         let frame = TilePartitionFrameFacts::new(

@@ -477,12 +477,7 @@ fn cardinal_edges<'a, T: ReconSample>(
     left: &'a [T],
     above: &'a [T],
 ) -> IntraDirectionalAngleEdges<'a, T> {
-    match (selector >> 2) & 0b0000_0011 {
-        0 => IntraDirectionalAngleEdges::new(None, None),
-        1 => IntraDirectionalAngleEdges::left(left),
-        2 => IntraDirectionalAngleEdges::above(above),
-        _ => IntraDirectionalAngleEdges::both(left, above),
-    }
+    directional_edges(selector, 2, left, above)
 }
 
 fn directional_angle_edges<'a, T: ReconSample>(
@@ -490,7 +485,16 @@ fn directional_angle_edges<'a, T: ReconSample>(
     left: &'a [T],
     above: &'a [T],
 ) -> IntraDirectionalAngleEdges<'a, T> {
-    match (selector >> 3) & 0b0000_0011 {
+    directional_edges(selector, 3, left, above)
+}
+
+fn directional_edges<'a, T: ReconSample>(
+    selector: u8,
+    shift: u8,
+    left: &'a [T],
+    above: &'a [T],
+) -> IntraDirectionalAngleEdges<'a, T> {
+    match (selector >> shift) & 0b0000_0011 {
         0 => IntraDirectionalAngleEdges::new(None, None),
         1 => IntraDirectionalAngleEdges::left(left),
         2 => IntraDirectionalAngleEdges::above(above),

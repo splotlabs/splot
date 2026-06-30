@@ -56,25 +56,21 @@ const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
 fn setup_start(
     payload: &[u8],
 ) -> Option<(TileCdfSubset, SymbolDecoder<'_>, NonZeroCoeffBlockStart)> {
-    setup_start_with_input(
-        payload,
-        NonZeroCoeffBlockStartInput {
-            block: AllZeroCoeffBlockInput {
-                plane: 0,
-                x4: 0,
-                y4: 0,
-                w4: 2,
-                h4: 2,
-            },
-            eob: NonZeroCoeffEobContextInput {
-                plane: 0,
-                is_inter: false,
-                tx_width_log2: 3,
-                tx_height_log2: 3,
-                coeff_cdf_q_ctx: 0,
-            },
-        },
-    )
+    let block = AllZeroCoeffBlockInput {
+        plane: 0,
+        x4: 0,
+        y4: 0,
+        w4: 2,
+        h4: 2,
+    };
+    let eob = NonZeroCoeffEobContextInput {
+        plane: 0,
+        is_inter: false,
+        tx_width_log2: 3,
+        tx_height_log2: 3,
+        coeff_cdf_q_ctx: 0,
+    };
+    setup_start_with_input(payload, NonZeroCoeffBlockStartInput { block, eob })
 }
 
 fn setup_start_and_walk<'a>(
