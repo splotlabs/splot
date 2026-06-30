@@ -56,7 +56,7 @@ fn decode_eight(fixture: &[u8]) -> DecodedFrame<u8> {
     let options = DecodeOptions::default();
     let context = decode_context();
     let plan = context.plan_bytes(fixture, options).expect("plan");
-    decode_minimal_frame_from_plan(fixture, options, &plan)
+    decode_minimal_frame_from_plan(fixture, &options, &plan)
         .expect("decode")
         .into_frame_eight()
 }
@@ -69,7 +69,7 @@ fn decode_ten(fixture: &[u8]) -> DecodedFrame<u16> {
     let options = DecodeOptions::default();
     let context = decode_context();
     let plan = context.plan_bytes(fixture, options).expect("plan");
-    decode_minimal_frame_from_plan(fixture, options, &plan)
+    decode_minimal_frame_from_plan(fixture, &options, &plan)
         .expect("decode")
         .into_frame_ten()
 }
@@ -251,7 +251,7 @@ fn assert_decode_rejects(fixture: &[u8], reason: &str) {
     let options = DecodeOptions::default();
     let context = decode_context();
     let plan = context.plan_bytes(fixture, options).expect("plan");
-    match decode_minimal_frame_from_plan(fixture, options, &plan) {
+    match decode_minimal_frame_from_plan(fixture, &options, &plan) {
         Ok(_) => panic!("expected an unsupported-feature rejection for reason {reason}, decoded"),
         Err(DecodeError::UnsupportedFeature { unsupported }) => {
             assert_eq!(unsupported.reason(), reason);

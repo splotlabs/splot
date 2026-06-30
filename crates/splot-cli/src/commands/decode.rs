@@ -496,7 +496,7 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let output_format = target.format();
 
     let options = DecodeOptions::default().with_output_frame_limit(args.limit);
-    let report = match read_decode_input(&args.input, options)? {
+    let report = match read_decode_input(&args.input, &options)? {
         DecodeInputRead::Bytes(bytes) => {
             let context = DecodeContext::new(DecodeRuntimeConfig::new(args.threads))?;
             match target {
@@ -511,13 +511,13 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
                     }
                 }
                 DecodeOutputTarget::Y4m { path } => {
-                    match decode_y4m_to_file(&context, &bytes, options, path) {
+                    match decode_y4m_to_file(&context, &bytes, &options, path) {
                         Ok(()) => return Ok(ExitCode::SUCCESS),
                         Err(error) => decode_report_from_error(&error)?,
                     }
                 }
                 DecodeOutputTarget::Raw { path } => {
-                    match decode_raw_to_file(&context, &bytes, options, path) {
+                    match decode_raw_to_file(&context, &bytes, &options, path) {
                         Ok(()) => return Ok(ExitCode::SUCCESS),
                         Err(error) => decode_report_from_error(&error)?,
                     }
@@ -544,11 +544,11 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
 fn decode_y4m_to_file(
     context: &DecodeContext,
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
     let mut y4m = Vec::new();
-    context.decode_y4m_bytes(bytes, options, &mut y4m)?;
+    context.decode_y4m_bytes(bytes, *options, &mut y4m)?;
     publish_y4m_output(path, &y4m)
 }
 
@@ -559,11 +559,11 @@ fn publish_y4m_output(path: &Path, y4m: &[u8]) -> core::result::Result<(), Decod
 fn decode_raw_to_file(
     context: &DecodeContext,
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
     let mut raw = Vec::new();
-    context.decode_raw_bytes(bytes, options, &mut raw)?;
+    context.decode_raw_bytes(bytes, *options, &mut raw)?;
     publish_raw_output(path, &raw)
 }
 
@@ -797,7 +797,7 @@ fn output_io(operation: DecodeOutputOperation, source: io::Error) -> DecodeError
     DecodeOutputError::io(operation, source).into()
 }
 
-fn read_decode_input(path: &Path, options: DecodeOptions) -> Result<DecodeInputRead> {
+fn read_decode_input(path: &Path, options: &DecodeOptions) -> Result<DecodeInputRead> {
     let mut file = File::open(path)
         .with_context(|| format!("failed to read input file: {}", path.display()))?;
 
@@ -827,7 +827,7 @@ fn read_decode_input(path: &Path, options: DecodeOptions) -> Result<DecodeInputR
     Ok(DecodeInputRead::Bytes(bytes))
 }
 
-fn input_byte_limit_error(options: DecodeOptions, actual: u64) -> Option<DecodeLimitError> {
+fn input_byte_limit_error(options: &DecodeOptions, actual: u64) -> Option<DecodeLimitError> {
     options
         .limits()
         .ensure(DecodeLimitName::MaxInputBytes, actual)

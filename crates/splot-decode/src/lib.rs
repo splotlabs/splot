@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(
-    clippy::large_types_passed_by_value,
-    clippy::manual_checked_ops,
-    clippy::needless_range_loop,
-    clippy::too_many_arguments
-)]
-
 //! `splot-decode` - scaffold for the future AV2 decode driver.
 //!
 //! This crate will coordinate parsed AV2 bitstream facts from `splot-core` with

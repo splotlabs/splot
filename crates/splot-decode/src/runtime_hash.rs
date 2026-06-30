@@ -18,7 +18,7 @@ use crate::{DecodeOptions, DecodeStreamPlan};
 
 pub(crate) fn decode_hash_report_from_plan(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     resolved_threads: NonZeroUsize,
 ) -> Result<DecodeHashReport> {

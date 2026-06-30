@@ -73,6 +73,7 @@ struct MiBlockInfo {
 }
 
 /// Applies AV2 § 7.17 deblocking in place.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     blocks: &[DeblockBlock],

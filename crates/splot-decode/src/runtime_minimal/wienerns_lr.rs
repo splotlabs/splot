@@ -413,7 +413,7 @@ const WIENER_NS_CHROMA_SOURCE_TAPS: [(isize, isize); WIENER_NS_CHROMA_SOURCE_TAP
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     key_candidate: &DecodePlannedObu,
     key_envelope: ObuEnvelope<'_>,
@@ -522,7 +522,7 @@ pub(super) fn ensure_wienerns_lr_unit_runtime_frontier(
 #[allow(clippy::too_many_arguments)]
 fn consume_wienerns_lr_unit_frontier(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     key_candidate: &DecodePlannedObu,
     key_envelope: ObuEnvelope<'_>,
@@ -657,7 +657,7 @@ pub(super) fn derive_wienerns_lr_live_storage_allocation(
 #[allow(clippy::too_many_arguments)]
 fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     key_candidate: &DecodePlannedObu,
     key_envelope: ObuEnvelope<'_>,

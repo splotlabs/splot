@@ -105,7 +105,7 @@ pub(super) fn decode_minimal_inter_frame(
     frame_envelope: ObuEnvelope<'_>,
     core: FrameHeaderCore,
     sequence: &SequenceHeader,
-    options: DecodeOptions,
+    options: &DecodeOptions,
     header: IvfHeader,
     reference: &InterReferenceState<'_>,
 ) -> Result<(MinimalRuntimeFrame, FrameHeaderCore)> {

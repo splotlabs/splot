@@ -197,7 +197,7 @@ impl MinimalRuntimeFrame {
 #[cfg(test)]
 pub(crate) fn decode_minimal_frame_from_plan(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<MinimalRuntimeFrame> {
     let mut frames = decode_minimal_frames_from_plan(bytes, options, plan)?;
@@ -213,7 +213,7 @@ pub(crate) fn decode_minimal_frame_from_plan(
 #[cfg(test)]
 fn reconstruct_ac0ej3_intra_region_from_plan(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     full_recon: bool,
 ) -> Result<wienerns_lr::WienerNsLrReconSink<u16>> {
@@ -251,14 +251,14 @@ fn reconstruct_ac0ej3_intra_region_from_plan(
 }
 pub(crate) fn decode_minimal_frames_from_plan(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<MinimalRuntimeFrame>> {
     decode_minimal_frames_from_plan_with_ivf_preflight(bytes, options, plan, |_| Ok(()))
 }
 fn decode_minimal_key_frame(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
@@ -363,7 +363,7 @@ fn route_wienerns_lr_selectable_full_recon(
 #[allow(clippy::too_many_arguments)]
 fn decode_wienerns_lr_selectable_full_recon_key_frame(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
@@ -394,7 +394,7 @@ fn decode_wienerns_lr_selectable_full_recon_key_frame(
 
 pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     preflight: impl FnOnce(IvfHeader) -> Result<()>,
 ) -> Result<Vec<MinimalRuntimeFrame>> {
@@ -584,7 +584,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     Ok(frames)
 }
 
-fn output_frame_limit_reached(options: DecodeOptions, output_frame_count: usize) -> bool {
+fn output_frame_limit_reached(options: &DecodeOptions, output_frame_count: usize) -> bool {
     options
         .output_frame_limit()
         .is_some_and(|limit| output_frame_count as u64 >= limit.get())
@@ -1312,7 +1312,7 @@ fn derive_tile_plan_with<'a>(
     envelope: ObuEnvelope<'a>,
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
-    options: DecodeOptions,
+    options: &DecodeOptions,
     kind: TileFactsKind,
 ) -> Result<crate::tile_payload::DecodeTilePayloadPlan<'a>> {
     let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
@@ -1350,7 +1350,7 @@ fn derive_tile_plan<'a>(
     envelope: ObuEnvelope<'a>,
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
-    options: DecodeOptions,
+    options: &DecodeOptions,
 ) -> Result<crate::tile_payload::DecodeTilePayloadPlan<'a>> {
     derive_tile_plan_with(
         plan,
@@ -1370,7 +1370,7 @@ fn derive_inter_tile_plan<'a>(
     envelope: ObuEnvelope<'a>,
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
-    options: DecodeOptions,
+    options: &DecodeOptions,
 ) -> Result<crate::tile_payload::DecodeTilePayloadPlan<'a>> {
     derive_tile_plan_with(
         plan,

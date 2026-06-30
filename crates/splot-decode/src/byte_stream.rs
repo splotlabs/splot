@@ -24,7 +24,7 @@ use crate::{DecodeLimitName, DecodeLimits, DecodeOptions};
 /// This entry point enforces byte-traversal limits while walking the source and
 /// then reuses the existing parsed-stream planner for layer selection and
 /// unsupported-structure classification.
-pub(crate) fn plan_byte_stream(bytes: &[u8], options: DecodeOptions) -> Result<DecodeStreamPlan> {
+pub(crate) fn plan_byte_stream(bytes: &[u8], options: &DecodeOptions) -> Result<DecodeStreamPlan> {
     let input_len_bytes = bytes.len() as u64;
     let limits = options.limits();
     limits.ensure(DecodeLimitName::MaxInputBytes, input_len_bytes)?;
@@ -233,7 +233,7 @@ mod tests {
             DecodeLimits::unlimited().with_max_obus(crate::DecodeLimitThreshold::Max(1)),
         );
 
-        let error = plan_byte_stream(&bytes, options).unwrap_err();
+        let error = plan_byte_stream(&bytes, &options).unwrap_err();
 
         assert!(matches!(
             error,
@@ -250,7 +250,7 @@ mod tests {
             DecodeLimits::unlimited().with_max_obus(crate::DecodeLimitThreshold::Max(1)),
         );
 
-        let error = plan_byte_stream(&bytes, options).unwrap_err();
+        let error = plan_byte_stream(&bytes, &options).unwrap_err();
 
         assert!(matches!(
             error,
@@ -264,7 +264,7 @@ mod tests {
     fn malformed_suffix_is_reported_after_unsupported_prefix() {
         let bytes = [0x01, 0x14, 0x05, 0x10];
 
-        let error = plan_byte_stream(&bytes, DecodeOptions::default()).unwrap_err();
+        let error = plan_byte_stream(&bytes, &DecodeOptions::default()).unwrap_err();
 
         assert!(matches!(
             error,
@@ -282,7 +282,7 @@ mod tests {
                 .with_max_frames_to_decode(crate::DecodeLimitThreshold::Max(1)),
         );
 
-        let error = plan_byte_stream(&bytes, options).unwrap_err();
+        let error = plan_byte_stream(&bytes, &options).unwrap_err();
 
         assert!(matches!(
             error,
@@ -300,7 +300,7 @@ mod tests {
                 .with_max_frames_to_decode(crate::DecodeLimitThreshold::Max(1)),
         );
 
-        let error = plan_byte_stream(&bytes, options).unwrap_err();
+        let error = plan_byte_stream(&bytes, &options).unwrap_err();
 
         assert!(matches!(
             error,

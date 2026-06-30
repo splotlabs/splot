@@ -181,6 +181,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn resolve_chroma_ibp_secondary_edge_filter(
         &self,
         plane_id: PlaneId,

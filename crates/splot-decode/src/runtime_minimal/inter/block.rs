@@ -41,7 +41,7 @@ pub(super) fn decode_inter_blocks(
     frame_envelope: splot_core::annexb::ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    options: DecodeOptions,
+    options: &DecodeOptions,
     frame_interpolation_filter: FrameInterpolationFilter,
     num_total_refs: usize,
     reference_select: bool,

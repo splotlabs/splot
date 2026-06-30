@@ -13,7 +13,7 @@ use crate::{DecodeOptions, DecodeStreamPlan};
 
 pub(crate) fn encode_raw_stream_from_plan(
     bitstream: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<u8>> {
     let outputs =

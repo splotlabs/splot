@@ -1612,6 +1612,7 @@ fn read_wiener_ns_lr_units_for_plane(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_wiener_ns_lr_unit(
     plane: usize,
     frame_filters_on: bool,

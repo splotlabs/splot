@@ -122,7 +122,7 @@ pub(super) fn decode_general_minimal_intra_frame(
     frame_envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    options: DecodeOptions,
+    options: &DecodeOptions,
     header: IvfHeader,
 ) -> Result<MinimalRuntimeFrame> {
     let mut tile_plan = derive_tile_plan(

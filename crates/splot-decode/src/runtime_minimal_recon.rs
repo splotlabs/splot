@@ -541,6 +541,7 @@ fn reconstruct_general_intra_smooth_over_available_edges_into<T: ReconSample>(
 /// `AboveRow[w]` (the real reconstructed above-right sample when decoded, or
 /// `None` to keep the clamped last in-block above sample / no-above fallback).
 /// `bottom_left_sentinel` is the symmetric `LeftCol[h]`.
+#[allow(clippy::too_many_arguments)]
 fn build_smooth_edges<T: ReconSample>(
     left_neighbour: Option<&[T]>,
     above_neighbour: Option<&[T]>,
@@ -1563,6 +1564,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cardinal_mrl_luma_prediction<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     direction: IntraCardinalDirection,

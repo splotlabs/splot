@@ -747,7 +747,7 @@ impl SelectableLumaTxGrid {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn derive_wienerns_lr_selectable_transform_record_handoff(
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     key_candidate: &DecodePlannedObu,
     key_envelope: ObuEnvelope<'_>,

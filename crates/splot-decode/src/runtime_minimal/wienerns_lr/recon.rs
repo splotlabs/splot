@@ -645,6 +645,7 @@ fn luma_lr_frame_coeffs(
     Ok(coeffs)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lr_plane_source_sample<T: ReconSample>(
     plane: PlaneId,
     curr_plane: &[u16],
@@ -681,6 +682,7 @@ fn lr_plane_source_sample<T: ReconSample>(
     T::try_from_u16(value)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn copy_lr_block<T: ReconSample>(
     lr_plane: &mut [T],
     plane_width: usize,
@@ -788,6 +790,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// multiple of 64 in both dimensions for the gated tier), with 4:2:0 chroma
     /// derived internally. `T` matches the active sequence bit depth (§6.4.1):
     /// `u16` for the 10-bit ac0ej3 stream.
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime_minimal) fn new(
         luma_width: usize,
         luma_height: usize,
@@ -840,6 +843,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 
     /// Retains decoded transform geometry used by the post-tile deblocking pass.
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime_minimal) fn record_deblock_block(
         &mut self,
         mi_col: usize,
@@ -2358,6 +2362,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         (mi_row..mi_row.saturating_add(mi_h)).all(|r| covered(left, r))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn cardinal_mrl_edge_reconstructed(
         &self,
         direction: IntraCardinalDirection,
@@ -2975,6 +2980,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reconstruct_cfl_chroma_transform(
         &mut self,
         plane_id: PlaneId,
@@ -3150,11 +3156,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let left = if have_left { x.min(2) } else { 0 };
         let luma_mi_row = y / 2;
         let sb_height_luma = self.sb_mib.saturating_mul(MI_SIZE);
-        let sb_start_luma_y = if self.sb_mib == 0 {
-            0
-        } else {
-            (luma_mi_row / self.sb_mib).saturating_mul(sb_height_luma)
-        };
+        let sb_start_luma_y = luma_mi_row
+            .checked_div(self.sb_mib)
+            .map_or(0, |sb_row| sb_row.saturating_mul(sb_height_luma));
         let sb_chroma_y = sb_start_luma_y / 2;
         let min_chroma_ref_y = sb_chroma_y.saturating_sub(1);
         let min_luma_ref_y = isize::try_from(sb_start_luma_y)
@@ -3280,16 +3284,16 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if matrix_shift > 0 {
             let shift = matrix_shift as u32;
             for i0 in 0..MHCCP_PARAM_COUNT {
-                for i1 in i0..MHCCP_PARAM_COUNT {
-                    ata[i0][i1] <<= shift;
+                for value in ata[i0].iter_mut().take(MHCCP_PARAM_COUNT).skip(i0) {
+                    *value <<= shift;
                 }
                 b[i0] <<= shift;
             }
         } else if matrix_shift < 0 {
             let shift = (-matrix_shift) as u32;
             for i0 in 0..MHCCP_PARAM_COUNT {
-                for i1 in i0..MHCCP_PARAM_COUNT {
-                    ata[i0][i1] >>= shift;
+                for value in ata[i0].iter_mut().take(MHCCP_PARAM_COUNT).skip(i0) {
+                    *value >>= shift;
                 }
                 b[i0] >>= shift;
             }
@@ -3381,6 +3385,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .and_then(|sb_y| sb_y.checked_sub(1))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_cfl_prediction(
         &self,
         plane_id: PlaneId,
@@ -3471,7 +3476,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let mut sum_xx = 0i64;
         if num_above > 0 {
             let min_luma_ref_y = self.cfl_above_min_luma_ref_y(y);
-            let step = (width / num_above).max(1);
+            let step = width.checked_div(num_above).unwrap_or(0).max(1);
             let start = if step == 1 { 0 } else { step >> 1 };
             for col in (start..width).step_by(step) {
                 let chroma_x = x.saturating_add(col);
@@ -3492,7 +3497,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             }
         }
         if num_left > 0 {
-            let step = (height / num_left).max(1);
+            let step = height.checked_div(num_left).unwrap_or(0).max(1);
             let start = if step == 1 { 0 } else { step >> 1 };
             for row in (start..height).step_by(step) {
                 let chroma_y = y.saturating_add(row);
@@ -4749,7 +4754,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 #[allow(clippy::too_many_arguments)]
 pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     bytes: &[u8],
-    options: crate::DecodeOptions,
+    options: &crate::DecodeOptions,
     plan: &crate::DecodeStreamPlan,
     key_candidate: &crate::DecodePlannedObu,
     key_envelope: splot_core::annexb::ObuEnvelope<'_>,
@@ -4868,14 +4873,20 @@ fn gaussian_elimination_mhccp(
     for i in 0..MHCCP_PARAM_COUNT {
         let diag = c[i][i].unsigned_abs().max(1);
         let (scale, shift) = mhccp_division_scale_shift(diag);
-        for j in i + 1..=MHCCP_PARAM_COUNT {
-            c[i][j] = mul_fixed32_adapt(c[i][j], scale, shift);
+        for value in c[i].iter_mut().take(MHCCP_PARAM_COUNT + 1).skip(i + 1) {
+            *value = mul_fixed32_adapt(*value, scale, shift);
         }
-        for j in i + 1..MHCCP_PARAM_COUNT {
-            let scale_factor = c[j][i];
-            for k in i + 1..=MHCCP_PARAM_COUNT {
-                let delta = mul_fixed32_adapt(scale_factor, c[i][k], MHCCP_BITS);
-                c[j][k] = c[j][k].saturating_sub(delta);
+        let pivot_row = c[i];
+        for row in c.iter_mut().take(MHCCP_PARAM_COUNT).skip(i + 1) {
+            let scale_factor = row[i];
+            for (value, pivot) in row
+                .iter_mut()
+                .zip(pivot_row)
+                .take(MHCCP_PARAM_COUNT + 1)
+                .skip(i + 1)
+            {
+                let delta = mul_fixed32_adapt(scale_factor, pivot, MHCCP_BITS);
+                *value = value.saturating_sub(delta);
             }
         }
     }
