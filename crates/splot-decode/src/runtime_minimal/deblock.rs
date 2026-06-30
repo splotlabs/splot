@@ -444,11 +444,11 @@ fn apply_sample_filter<T: ReconSample>(
     deblock_sample_filter(&mut line, &params).map_err(|_| DeblockError::SampleFilter)?;
 
     for (idx, (&new, &old)) in line.iter().zip(before.iter()).enumerate() {
-        let (fx, fy) = perp.offset(idx as isize - params.boundary as isize)?;
         let changed = new.to_u16() != old.to_u16();
         if !changed {
             continue;
         }
+        let (fx, fy) = perp.offset(idx as isize - params.boundary as isize)?;
         workspace
             .set_reconstructed_sample(plane_id, fx, fy, new)
             .map_err(|_| DeblockError::Workspace)?;
@@ -734,6 +734,29 @@ mod tests {
                 .all(|&s| s == 100),
             "no-op deblock leaves the workspace untouched"
         );
+    }
+
+    #[test]
+    fn unchanged_border_taps_do_not_require_in_frame_write_coordinates() {
+        let mut workspace = yuv420_workspace(16, 16, 100);
+        apply_sample_filter(
+            &mut workspace,
+            PlaneId::Y,
+            PerpLine::new(4, 0, 1, 0),
+            DeblockSampleFilter {
+                boundary: GATHER_HALF,
+                q_thr: 1,
+                max_width_neg: GATHER_HALF,
+                max_width_pos: GATHER_HALF,
+                q_thresh_mult: 1,
+                w_mult_neg: 1,
+                w_mult_pos: 1,
+                prev_lossless: true,
+                curr_lossless: true,
+                bit_depth: BitDepth::Eight,
+            },
+        )
+        .unwrap();
     }
 
     #[test]

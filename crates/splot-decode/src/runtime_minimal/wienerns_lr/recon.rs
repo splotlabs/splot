@@ -29,18 +29,12 @@
 //! walk, and asserts the populated workspace region is bit-exact against the AVM
 //! pre-filter reconstruction oracle.
 
-use splot_core::headers::frame::FrameRestorationType;
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::math::{approx_divide, clip3, resolve_division, round2, round2_signed};
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, IntraCardinalDirection, IntraDirectionalAngle,
-    IntraDirectionalAngleEdge, IntraRectBlockSize, IntraSmoothMode, LoopRestorationSource,
-    LoopRestorationSourceBounds, PcWienerClassifyParams, PlaneId, PlaneRect, ReconError,
-    ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS, WIENER_NS_LUMA_COEFFS,
-    WienerNsChromaFilter, WienerNsLumaFilter, loop_restoration_source_sample, pc_wiener_classify,
-    pc_wiener_filter_set_index, pc_wiener_subclass, predict_intra_dc_rect_value,
-    predict_intra_dc_subsampled_rect_value, wiener_ns_filter_chroma_block,
-    wiener_ns_filter_luma_block,
+    IntraDirectionalAngleEdge, IntraRectBlockSize, IntraSmoothMode, PlaneId, PlaneRect,
+    ReconSample, predict_intra_dc_rect_value, predict_intra_dc_subsampled_rect_value,
 };
 
 use crate::Result;
@@ -619,172 +613,6 @@ pub(super) fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta:
     strength
 }
 
-fn luma_lr_frame_coeffs(
-    plane: &splot_core::headers::frame::LrPlaneParams,
-    num_classes: usize,
-    offset: ByteOffset,
-) -> Result<Vec<[i16; WIENER_NS_LUMA_COEFFS]>> {
-    if num_classes == 0 {
-        return Err(luma_lr_filter_error(offset));
-    }
-    let Some(bank) = plane.frame_filter_bank.as_ref() else {
-        return Err(luma_lr_filter_error(offset));
-    };
-    if bank.classes.len() != num_classes {
-        return Err(luma_lr_filter_error(offset));
-    }
-    let mut coeffs = Vec::with_capacity(num_classes);
-    for class in &bank.classes {
-        let coeff: [i16; WIENER_NS_LUMA_COEFFS] = class
-            .coeffs
-            .as_slice()
-            .try_into()
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        coeffs.push(coeff);
-    }
-    Ok(coeffs)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lr_plane_source_sample<T: ReconSample>(
-    plane: PlaneId,
-    curr_plane: &[u16],
-    cdef_plane: &[u16],
-    plane_width: usize,
-    plane_height: usize,
-    bounds: &LoopRestorationSourceBounds,
-    x: isize,
-    y: isize,
-) -> ReconResult<T> {
-    let sample = loop_restoration_source_sample(plane, x, y, bounds)?;
-    if sample.x >= plane_width || sample.y >= plane_height {
-        return Err(ReconError::PcWienerInvalidBounds {
-            field: "LR source frame bounds",
-        });
-    }
-    let index = sample
-        .y
-        .checked_mul(plane_width)
-        .and_then(|row| row.checked_add(sample.x))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "LR source sample index",
-        })?;
-    let source = match sample.source {
-        LoopRestorationSource::CurrFrame => curr_plane,
-        LoopRestorationSource::CdefFrame => cdef_plane,
-    };
-    let Some(&value) = source.get(index) else {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: index.saturating_add(1),
-            actual: source.len(),
-        });
-    };
-    T::try_from_u16(value)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn copy_lr_block<T: ReconSample>(
-    lr_plane: &mut [T],
-    plane_width: usize,
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    output: &[T],
-    offset: ByteOffset,
-) -> Result<()> {
-    if width == 0 || height == 0 {
-        return Err(luma_lr_filter_error(offset));
-    }
-    let expected = width
-        .checked_mul(height)
-        .ok_or_else(|| luma_lr_filter_error(offset))?;
-    if output.len() != expected {
-        return Err(luma_lr_filter_error(offset));
-    }
-    let end_x = x
-        .checked_add(width)
-        .ok_or_else(|| luma_lr_filter_error(offset))?;
-    if end_x > plane_width {
-        return Err(luma_lr_filter_error(offset));
-    }
-    for row in 0..height {
-        let dst_start = y
-            .checked_add(row)
-            .and_then(|target_y| target_y.checked_mul(plane_width))
-            .and_then(|row_start| row_start.checked_add(x))
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let dst_end = dst_start
-            .checked_add(width)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let src_start = row
-            .checked_mul(width)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let src_end = src_start
-            .checked_add(width)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let Some(dst) = lr_plane.get_mut(dst_start..dst_end) else {
-            return Err(luma_lr_filter_error(offset));
-        };
-        let Some(src) = output.get(src_start..src_end) else {
-            return Err(luma_lr_filter_error(offset));
-        };
-        // splot-copy-ok: commit a validated fail-atomic LR block into luma scratch.
-        dst.copy_from_slice(src);
-    }
-    Ok(())
-}
-
-fn usize_to_isize_recon(value: usize, context: &'static str) -> ReconResult<isize> {
-    isize::try_from(value).map_err(|_| ReconError::ArithmeticOverflow { context })
-}
-
-fn source_coordinate_add_recon(
-    value: isize,
-    delta: isize,
-    context: &'static str,
-) -> ReconResult<isize> {
-    value
-        .checked_add(delta)
-        .ok_or(ReconError::ArithmeticOverflow { context })
-}
-
-fn mi_to_luma_start_recon(mi: usize, context: &'static str) -> ReconResult<usize> {
-    mi.checked_mul(MI_SIZE)
-        .ok_or(ReconError::ArithmeticOverflow { context })
-}
-
-fn mi_to_luma_end_recon(mi_end: usize, context: &'static str) -> ReconResult<usize> {
-    mi_to_luma_start_recon(mi_end, context)?
-        .checked_sub(1)
-        .ok_or(ReconError::ArithmeticOverflow { context })
-}
-
-fn luma_lr_filter_error(offset: ByteOffset) -> crate::error::DecodeError {
-    wienerns_lr_selectable_transform_record_error_reason(
-        offset,
-        "unsupported_wienerns_lr_selectable_transform_records_luma_lr_filter",
-    )
-}
-
-fn chroma_lr_unit_coeffs(
-    filters: &[crate::tile_payload::WienerNsLrUnitFilter],
-    block: &crate::tile_payload::WienerNsLrSourceBlock,
-    offset: ByteOffset,
-) -> Result<[i16; WIENER_NS_CHROMA_COEFFS]> {
-    let Some(filter) = filters.iter().find(|filter| {
-        filter.plane == block.plane
-            && filter.unit_row == block.unit_row
-            && filter.unit_col == block.unit_col
-    }) else {
-        return Err(luma_lr_filter_error(offset));
-    };
-    if filter.coeff_count != WIENER_NS_CHROMA_COEFFS {
-        return Err(luma_lr_filter_error(offset));
-    }
-    Ok(filter.coeffs)
-}
-
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// Allocates a sink whose workspace is sized to the ac0ej3 frame (a positive
     /// multiple of 64 in both dimensions for the gated tier), with 4:2:0 chroma
@@ -990,6 +818,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             offset,
             "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
         )?;
+        let cdef_skip_grid = self.cdef_skip_grid(core, mi_rows, mi_cols, offset)?;
         if let (Some(grid), Some(strengths)) = (
             self.cdef_grid.as_ref(),
             super::super::cdef::cdef_frame_strengths(core),
@@ -998,6 +827,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 &mut self.workspace,
                 &strengths,
                 grid,
+                cdef_skip_grid.as_ref(),
                 mi_rows,
                 mi_cols,
                 self.bit_depth,
@@ -1043,7 +873,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         )?;
         let lr_source_blocks = core::mem::take(&mut self.lr_source_blocks);
         let lr_unit_filters = core::mem::take(&mut self.lr_unit_filters);
-        self.apply_luma_lr(core, offset, &lr_source_blocks, &deblocked_luma, &cdef_luma)?;
+        self.apply_luma_lr(
+            core,
+            offset,
+            &lr_source_blocks,
+            &lr_unit_filters,
+            &deblocked_luma,
+            &cdef_luma,
+        )?;
         self.apply_chroma_lr(
             core,
             offset,
@@ -1079,390 +916,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .samples(plane)
             .map_err(|_| wienerns_lr_selectable_transform_record_error_reason(offset, reason))
             .map(|samples| samples.iter().map(|sample| sample.to_u16()).collect())
-    }
-
-    fn apply_luma_lr(
-        &mut self,
-        core: &splot_core::headers::frame::FrameHeaderCore,
-        offset: ByteOffset,
-        lr_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
-        curr_luma: &[u16],
-        cdef_luma: &[u16],
-    ) -> Result<()> {
-        let Some(lr_params) = core.lr_params.as_ref() else {
-            return Ok(());
-        };
-        let Some(plane) = lr_params.planes.first() else {
-            return Ok(());
-        };
-        if plane.restoration_type != FrameRestorationType::WienerNonsep
-            || !plane.frame_filters_on
-            || !lr_source_blocks
-                .iter()
-                .any(|block| block.plane == PlaneId::Y.index())
-        {
-            return Ok(());
-        }
-
-        let qindex = core
-            .quantization_params
-            .as_ref()
-            .ok_or_else(|| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_missing_quantization",
-                )
-            })?
-            .base_q_idx;
-        let num_classes = usize::from(plane.num_filter_classes.unwrap_or(1));
-        let coeffs = luma_lr_frame_coeffs(plane, num_classes, offset)?;
-        let filter_set_index = pc_wiener_filter_set_index(qindex);
-        let mut lr_luma = Vec::with_capacity(cdef_luma.len());
-        for &sample in cdef_luma {
-            lr_luma.push(T::try_from_u16(sample).map_err(|_| luma_lr_filter_error(offset))?);
-        }
-
-        for block in lr_source_blocks
-            .iter()
-            .filter(|block| block.plane == PlaneId::Y.index())
-        {
-            self.apply_luma_lr_block(
-                offset,
-                block,
-                curr_luma,
-                cdef_luma,
-                qindex,
-                num_classes,
-                filter_set_index,
-                &coeffs,
-                &mut lr_luma,
-            )?;
-        }
-
-        let rect = PlaneRect::new(0, 0, self.luma_width, self.luma_height)
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        self.workspace
-            .write_rect(PlaneId::Y, rect, &lr_luma, self.luma_width)
-            .map_err(|_| luma_lr_filter_error(offset))
-    }
-
-    fn plane_dimensions(&self, plane_id: PlaneId) -> (usize, usize) {
-        match plane_id {
-            PlaneId::Y => (self.luma_width, self.luma_height),
-            PlaneId::U | PlaneId::V => (self.luma_width.div_ceil(2), self.luma_height.div_ceil(2)),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn apply_chroma_lr(
-        &mut self,
-        core: &splot_core::headers::frame::FrameHeaderCore,
-        offset: ByteOffset,
-        plane_id: PlaneId,
-        lr_source_blocks: &[crate::tile_payload::WienerNsLrSourceBlock],
-        lr_unit_filters: &[crate::tile_payload::WienerNsLrUnitFilter],
-        curr_chroma: &[u16],
-        cdef_chroma: &[u16],
-        curr_luma: &[u16],
-        cdef_luma: &[u16],
-    ) -> Result<()> {
-        let Some(lr_params) = core.lr_params.as_ref() else {
-            return Ok(());
-        };
-        let Some(plane) = lr_params.planes.get(plane_id.index()) else {
-            return Ok(());
-        };
-        let plane_index = plane_id.index();
-        if plane.restoration_type != FrameRestorationType::WienerNonsep
-            || !lr_source_blocks
-                .iter()
-                .any(|block| block.plane == plane_index)
-        {
-            return Ok(());
-        }
-        if plane.frame_filters_on {
-            return Err(luma_lr_filter_error(offset));
-        }
-
-        let (plane_width, plane_height) = self.plane_dimensions(plane_id);
-        let expected_samples = plane_width
-            .checked_mul(plane_height)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        if curr_chroma.len() != expected_samples || cdef_chroma.len() != expected_samples {
-            return Err(luma_lr_filter_error(offset));
-        }
-        let mut lr_chroma = Vec::with_capacity(cdef_chroma.len());
-        for &sample in cdef_chroma {
-            lr_chroma.push(T::try_from_u16(sample).map_err(|_| luma_lr_filter_error(offset))?);
-        }
-
-        for block in lr_source_blocks
-            .iter()
-            .filter(|block| block.plane == plane_index)
-        {
-            self.apply_chroma_lr_block(
-                offset,
-                plane_id,
-                block,
-                lr_unit_filters,
-                curr_chroma,
-                cdef_chroma,
-                curr_luma,
-                cdef_luma,
-                &mut lr_chroma,
-            )?;
-        }
-
-        let rect = PlaneRect::new(0, 0, plane_width, plane_height)
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        self.workspace
-            .write_rect(plane_id, rect, &lr_chroma, plane_width)
-            .map_err(|_| luma_lr_filter_error(offset))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn apply_chroma_lr_block(
-        &self,
-        offset: ByteOffset,
-        plane_id: PlaneId,
-        block: &crate::tile_payload::WienerNsLrSourceBlock,
-        lr_unit_filters: &[crate::tile_payload::WienerNsLrUnitFilter],
-        curr_chroma: &[u16],
-        cdef_chroma: &[u16],
-        curr_luma: &[u16],
-        cdef_luma: &[u16],
-        lr_chroma: &mut [T],
-    ) -> Result<()> {
-        let (plane_width, plane_height) = self.plane_dimensions(plane_id);
-        let coeffs = chroma_lr_unit_coeffs(lr_unit_filters, block, offset)?;
-        let sample_count = block
-            .width
-            .checked_mul(block.height)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let mut output = vec![T::default(); sample_count];
-        let params = WienerNsChromaFilter {
-            x: block.x,
-            y: block.y,
-            width: block.width,
-            height: block.height,
-            output_stride: block.width,
-            bit_depth: self.bit_depth,
-            coeffs: &coeffs,
-            subsampling_x: 1,
-            subsampling_y: 1,
-            luma_start_x: block.luma_start_x,
-            luma_end_x: block.luma_end_x,
-            mi_rows: self.luma_height.div_ceil(MI_SIZE),
-            cfl_ds_filter_index: self.cfl_ds_filter_index,
-        };
-        let chroma_bounds = super::wienerns_lr_source_block_bounds(block, 1, 1);
-        let luma_bounds = super::wienerns_lr_source_block_bounds(block, 1, 1);
-        let source_error = core::cell::RefCell::new(None::<ReconError>);
-        wiener_ns_filter_chroma_block(
-            &mut output,
-            &params,
-            |x, y| {
-                let sample = lr_plane_source_sample::<T>(
-                    plane_id,
-                    curr_chroma,
-                    cdef_chroma,
-                    plane_width,
-                    plane_height,
-                    &chroma_bounds,
-                    x,
-                    y,
-                );
-                match sample {
-                    Ok(sample) => sample,
-                    Err(error) => {
-                        if source_error.borrow().is_none() {
-                            *source_error.borrow_mut() = Some(error);
-                        }
-                        T::default()
-                    }
-                }
-            },
-            |x, y| {
-                let sample = lr_plane_source_sample::<T>(
-                    PlaneId::Y,
-                    curr_luma,
-                    cdef_luma,
-                    self.luma_width,
-                    self.luma_height,
-                    &luma_bounds,
-                    x,
-                    y,
-                );
-                match sample {
-                    Ok(sample) => sample,
-                    Err(error) => {
-                        if source_error.borrow().is_none() {
-                            *source_error.borrow_mut() = Some(error);
-                        }
-                        T::default()
-                    }
-                }
-            },
-        )
-        .map_err(|_| luma_lr_filter_error(offset))?;
-        if source_error.into_inner().is_some() {
-            return Err(luma_lr_filter_error(offset));
-        }
-        copy_lr_block(
-            lr_chroma,
-            plane_width,
-            block.x,
-            block.y,
-            block.width,
-            block.height,
-            &output,
-            offset,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn apply_luma_lr_block(
-        &self,
-        offset: ByteOffset,
-        block: &crate::tile_payload::WienerNsLrSourceBlock,
-        curr_luma: &[u16],
-        cdef_luma: &[u16],
-        qindex: u32,
-        num_classes: usize,
-        filter_set_index: usize,
-        coeffs: &[[i16; WIENER_NS_LUMA_COEFFS]],
-        lr_luma: &mut [T],
-    ) -> Result<()> {
-        let sample_count = block
-            .width
-            .checked_mul(block.height)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let subclasses = if num_classes > 1 {
-            Some(self.luma_lr_subclasses(
-                offset,
-                block,
-                curr_luma,
-                cdef_luma,
-                qindex,
-                num_classes,
-                filter_set_index,
-                sample_count,
-            )?)
-        } else {
-            None
-        };
-        let mut output = vec![T::default(); sample_count];
-        let params = WienerNsLumaFilter {
-            width: block.width,
-            height: block.height,
-            output_stride: block.width,
-            bit_depth: self.bit_depth,
-            coeffs_by_class: coeffs,
-            subclasses: subclasses.as_deref(),
-        };
-        let bounds = super::wienerns_lr_source_block_bounds(block, 0, 0);
-        let block_x = usize_to_isize_recon(block.x, "luma LR block x")
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        let block_y = usize_to_isize_recon(block.y, "luma LR block y")
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        let source_error = core::cell::RefCell::new(None::<ReconError>);
-        wiener_ns_filter_luma_block(&mut output, &params, |dx, dy| {
-            let x = source_coordinate_add_recon(block_x, dx, "luma LR source x");
-            let y = source_coordinate_add_recon(block_y, dy, "luma LR source y");
-            let sample = match (x, y) {
-                (Ok(x), Ok(y)) => lr_plane_source_sample::<T>(
-                    PlaneId::Y,
-                    curr_luma,
-                    cdef_luma,
-                    self.luma_width,
-                    self.luma_height,
-                    &bounds,
-                    x,
-                    y,
-                ),
-                (Err(error), _) | (_, Err(error)) => Err(error),
-            };
-            match sample {
-                Ok(sample) => sample,
-                Err(error) => {
-                    if source_error.borrow().is_none() {
-                        *source_error.borrow_mut() = Some(error);
-                    }
-                    T::default()
-                }
-            }
-        })
-        .map_err(|_| luma_lr_filter_error(offset))?;
-        if source_error.into_inner().is_some() {
-            return Err(luma_lr_filter_error(offset));
-        }
-        copy_lr_block(
-            lr_luma,
-            self.luma_width,
-            block.x,
-            block.y,
-            block.width,
-            block.height,
-            &output,
-            offset,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn luma_lr_subclasses(
-        &self,
-        offset: ByteOffset,
-        block: &crate::tile_payload::WienerNsLrSourceBlock,
-        curr_luma: &[u16],
-        cdef_luma: &[u16],
-        qindex: u32,
-        num_classes: usize,
-        filter_set_index: usize,
-        sample_count: usize,
-    ) -> Result<Vec<usize>> {
-        let Some(tx_skip_grid) = self.tx_skip_grid.as_ref() else {
-            return Err(luma_lr_filter_error(offset));
-        };
-        let bounds = super::wienerns_lr_source_block_bounds(block, 0, 0);
-        let block_start_x = (block.x >> 6) << 6;
-        let block_end_x = super::pc_wiener_block_end_x(block, block_start_x)
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        let params = PcWienerClassifyParams {
-            x: usize_to_isize_recon(block.x, "luma LR PC-Wiener x")
-                .map_err(|_| luma_lr_filter_error(offset))?,
-            y: usize_to_isize_recon(block.y, "luma LR PC-Wiener y")
-                .map_err(|_| luma_lr_filter_error(offset))?,
-            bit_depth: self.bit_depth,
-            base_q_idx: qindex,
-            block_start_x,
-            block_end_x,
-            luma_stripe_start_y: block.luma_stripe_start_y,
-            luma_stripe_end_y: block.luma_stripe_end_y,
-            tile_start_y: mi_to_luma_start_recon(block.tile_mi_row_start, "luma LR tile start y")
-                .map_err(|_| luma_lr_filter_error(offset))?,
-            tile_end_y: mi_to_luma_end_recon(block.tile_mi_row_end, "luma LR tile end y")
-                .map_err(|_| luma_lr_filter_error(offset))?,
-        };
-        let classification = pc_wiener_classify::<T, _, _>(
-            &params,
-            |x, y| {
-                lr_plane_source_sample(
-                    PlaneId::Y,
-                    curr_luma,
-                    cdef_luma,
-                    self.luma_width,
-                    self.luma_height,
-                    &bounds,
-                    x,
-                    y,
-                )
-            },
-            |lookup| tx_skip_grid.lookup(super::wienerns_lr_tx_skip_lookup_from_pc(lookup)),
-        )
-        .map_err(|_| luma_lr_filter_error(offset))?;
-        let subclass = pc_wiener_subclass(num_classes, filter_set_index, classification.class)
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        Ok(vec![subclass; sample_count])
     }
 
     /// The coverage-grid index for a plane: luma 0, chroma U 1, chroma V 2. U and
@@ -5069,6 +4522,7 @@ fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool) -> bool {
 }
 
 mod edge_filter;
+mod final_filters;
 mod full_recon;
 use full_recon::{
     ANGLE_STEP, FarEdgeSide, MRL_INDEX_TO_DELTA, full_recon_mode_label, wide_angle_mapping,

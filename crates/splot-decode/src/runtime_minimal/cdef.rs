@@ -66,9 +66,7 @@ impl CdefUnitGrid {
         cols: usize,
         values: Vec<Option<usize>>,
     ) -> Result<Self, CdefError> {
-        if values.len() != rows.checked_mul(cols).ok_or(CdefError::Geometry)? {
-            return Err(CdefError::Geometry);
-        }
+        validate_grid_len(rows, cols, values.len())?;
         Ok(Self { rows, cols, values })
     }
 
@@ -93,6 +91,60 @@ impl CdefUnitGrid {
             .get(row * self.cols + col)
             .copied()
             .ok_or(CdefError::Geometry)
+    }
+}
+
+/// Parsed CDEF skip decisions, one cell per luma 4x4 block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CdefSkipGrid {
+    rows: usize,
+    cols: usize,
+    values: Vec<bool>,
+}
+
+impl CdefSkipGrid {
+    /// Creates a row-major CDEF skip grid.
+    pub(crate) fn new(rows: usize, cols: usize, values: Vec<bool>) -> Result<Self, CdefError> {
+        validate_grid_len(rows, cols, values.len())?;
+        Ok(Self { rows, cols, values })
+    }
+
+    fn all_skipped_8x8(
+        &self,
+        mi_row: usize,
+        mi_col: usize,
+        mi_rows: usize,
+        mi_cols: usize,
+    ) -> Result<bool, CdefError> {
+        let row_end = mi_row.saturating_add(STEP4).min(mi_rows);
+        let col_end = mi_col.saturating_add(STEP4).min(mi_cols);
+        if row_end <= mi_row || col_end <= mi_col {
+            return Ok(false);
+        }
+        for row in mi_row..row_end {
+            for col in mi_col..col_end {
+                if row >= self.rows || col >= self.cols {
+                    return Err(CdefError::Geometry);
+                }
+                let skipped = self
+                    .values
+                    .get(row * self.cols + col)
+                    .copied()
+                    .ok_or(CdefError::Geometry)?;
+                if !skipped {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+}
+
+fn validate_grid_len(rows: usize, cols: usize, len: usize) -> Result<(), CdefError> {
+    if len == rows.checked_mul(cols).ok_or(CdefError::Geometry)? {
+        Ok(())
+    } else {
+        Err(CdefError::Geometry)
     }
 }
 
@@ -149,7 +201,15 @@ pub(crate) fn cdef_general_intra_frame<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> Result<(), CdefError> {
     let grid = CdefUnitGrid::constant(mi_rows, mi_cols, 0)?;
-    cdef_general_intra_frame_indexed(workspace, &[params], &grid, mi_rows, mi_cols, bit_depth)
+    cdef_general_intra_frame_indexed(
+        workspace,
+        &[params],
+        &grid,
+        None,
+        mi_rows,
+        mi_cols,
+        bit_depth,
+    )
 }
 
 /// Applies AV2 § 7.18 CDEF using the parsed per-unit strength index grid.
@@ -157,6 +217,7 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     strengths: &[CdefFrameParams],
     grid: &CdefUnitGrid,
+    skip_grid: Option<&CdefSkipGrid>,
     mi_rows: usize,
     mi_cols: usize,
     bit_depth: BitDepth,
@@ -184,6 +245,12 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
                 c += STEP4;
                 continue;
             };
+            if let Some(skip_grid) = skip_grid
+                && skip_grid.all_skipped_8x8(r, c, mi_rows, mi_cols)?
+            {
+                c += STEP4;
+                continue;
+            }
             let params = *strengths.get(strength_index).ok_or(CdefError::Geometry)?;
             cdef_block(
                 workspace,
@@ -464,34 +531,10 @@ mod tests {
     #[test]
     fn small_ringing_step_is_deringed_within_bounds() {
         let mut ws = workspace_8bit(64, 64, 100);
-        for y in 0..8 {
-            for x in 0..8 {
-                let v = if (x + y) % 2 == 0 { 103 } else { 97 };
-                ws.set_reconstructed_sample(PlaneId::Y, x, y, v).unwrap();
-            }
-        }
-        let before: Vec<u8> = (0..8)
-            .flat_map(|y| (0..8).map(move |x| (x, y)))
-            .map(|(x, y)| ws.reconstructed_sample(PlaneId::Y, x, y).unwrap())
-            .collect();
-        cdef_general_intra_frame(
-            &mut ws,
-            CdefFrameParams {
-                y_pri: 4,
-                y_sec: 4,
-                uv_pri: 0,
-                uv_sec: 0,
-                damping: 4,
-            },
-            16,
-            16,
-            BitDepth::Eight,
-        )
-        .unwrap();
-        let after: Vec<u8> = (0..8)
-            .flat_map(|y| (0..8).map(move |x| (x, y)))
-            .map(|(x, y)| ws.reconstructed_sample(PlaneId::Y, x, y).unwrap())
-            .collect();
+        seed_luma_ripple(&mut ws);
+        let before = luma_8x8(&ws);
+        cdef_general_intra_frame(&mut ws, cdef_ripple_params(), 16, 16, BitDepth::Eight).unwrap();
+        let after = luma_8x8(&ws);
         assert_ne!(before, after, "the ripple block must be filtered (changed)");
         assert!(
             after.iter().all(|&s| (97..=103).contains(&s)),
@@ -502,6 +545,65 @@ mod tests {
             100,
             "far flat region untouched"
         );
+    }
+
+    #[test]
+    fn skip_grid_leaves_all_skipped_8x8_unfiltered() {
+        let (before, after) = run_skip_grid_ripple(vec![true; 16 * 16]);
+        assert_eq!(before, after, "all-skipped CDEF block bypasses filtering");
+    }
+
+    #[test]
+    fn skip_grid_filters_mixed_8x8() {
+        let mut skip_values = vec![true; 16 * 16];
+        skip_values[0] = false;
+        let (before, after) = run_skip_grid_ripple(skip_values);
+        assert_ne!(before, after, "mixed CDEF block still filters");
+    }
+
+    fn run_skip_grid_ripple(skip_values: Vec<bool>) -> (Vec<u8>, Vec<u8>) {
+        let mut ws = workspace_8bit(64, 64, 100);
+        seed_luma_ripple(&mut ws);
+        let before = luma_8x8(&ws);
+        let grid = CdefUnitGrid::constant(16, 16, 0).unwrap();
+        let skip = CdefSkipGrid::new(16, 16, skip_values).unwrap();
+        cdef_general_intra_frame_indexed(
+            &mut ws,
+            &[cdef_ripple_params()],
+            &grid,
+            Some(&skip),
+            16,
+            16,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        (before, luma_8x8(&ws))
+    }
+
+    fn seed_luma_ripple(ws: &mut CurrentFrameWorkspace<u8>) {
+        for y in 0..8 {
+            for x in 0..8 {
+                let v = if (x + y) % 2 == 0 { 103 } else { 97 };
+                ws.set_reconstructed_sample(PlaneId::Y, x, y, v).unwrap();
+            }
+        }
+    }
+
+    fn luma_8x8(ws: &CurrentFrameWorkspace<u8>) -> Vec<u8> {
+        (0..8)
+            .flat_map(|y| (0..8).map(move |x| (x, y)))
+            .map(|(x, y)| ws.reconstructed_sample(PlaneId::Y, x, y).unwrap())
+            .collect()
+    }
+
+    const fn cdef_ripple_params() -> CdefFrameParams {
+        CdefFrameParams {
+            y_pri: 4,
+            y_sec: 4,
+            uv_pri: 0,
+            uv_sec: 0,
+            damping: 4,
+        }
     }
 
     #[test]
