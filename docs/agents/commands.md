@@ -12,13 +12,16 @@ cargo xtask ci
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
-- `cargo build --workspace --all-targets --locked`
 - `cargo test --workspace --all-targets --locked`
 - `cargo test --doc --workspace --locked`
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`
 - run-if-present external checks: `typos`, `cargo machete`, `cargo deny check
   bans licenses sources`, and `openspec validate --all --no-interactive`
 - repository gates listed below
+
+The gate intentionally skips a separate `cargo build --workspace --all-targets`
+pass: all-target clippy and all-target tests already compile those targets, and
+the extra build profile pass only duplicates work.
 
 CI installs `typos`, `cargo-machete`, and `cargo-deny`, so those checks gate in
 CI. OpenSpec validation is conditional in CI and local runs: it runs when the

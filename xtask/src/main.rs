@@ -348,7 +348,6 @@ fn run_ci() -> Result<()> {
         "-D",
         "warnings",
     ])?;
-    run_cargo(&["build", "--workspace", "--all-targets", "--locked"])?;
     run_cargo(&["test", "--workspace", "--all-targets", "--locked"])?;
     run_cargo(&["test", "--doc", "--workspace", "--locked"])?;
     run_cargo_with_env(

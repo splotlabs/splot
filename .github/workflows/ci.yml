@@ -11,6 +11,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
 
 # Cancel superseded runs on the same ref (e.g. rapid pushes to a PR branch) so CI
 # spends its minutes on the latest commit instead of stale ones.
@@ -43,9 +44,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-v2-
 
       # Prebuilt binaries for the external-tool checks — far faster than
       # `cargo install`, and the same binaries `cargo xtask ci` runs locally.
@@ -54,10 +55,21 @@ jobs:
         with:
           tool: typos,cargo-machete
 
+      - name: Cache dupehound binary
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cargo/bin/dupehound
+          key: ${{ runner.os }}-dupehound-0.1.2
+
       # Duplicate-code detector (https://github.com/Rafaelpta/dupehound). Pinned so
       # the budget count is reproducible; the same binary `cargo xtask ci` runs.
       - name: Install dupehound
-        run: cargo install dupehound@0.1.2 --locked
+        run: |
+          if command -v dupehound >/dev/null 2>&1 && [ "$(dupehound --version)" = "dupehound 0.1.2" ]; then
+            dupehound --version
+          else
+            cargo install dupehound@0.1.2 --locked --force
+          fi
 
       - name: Check Conventional Commits
         env:
@@ -80,7 +92,6 @@ jobs:
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo build --workspace --all-targets --locked
       - run: cargo test --workspace --all-targets --locked
       # `--all-targets` skips doctests, so run them explicitly.
       - run: cargo test --doc --workspace --locked

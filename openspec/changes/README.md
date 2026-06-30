@@ -26,6 +26,7 @@ same id in the matrix, the OpenSpec folder, and the GitHub issue/PR.
 | Change | Feature IDs | State |
 |---|---|---|
 | `avm-differential-harness` | `CONF-AVM-DIFF-HARNESS` | proposed |
+| `ci-pipeline-speedups` | `INFRA-CI-PIPELINE-SPEEDUPS` | in-progress (implemented; pending review) |
 | `closed-loop-nonuniform-4x4` | `ENC-CLOSED-LOOP-NONUNIFORM-4X4` | blocked (artifact incomplete: design=ready) |
 | `coeff-all-zero-context-state` | `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE` | blocked (invalid OpenSpec metadata; ✖ Error: Invalid YAML in metadata file: Source contains multiple documents; please use YAML.parseAllDocuments() at line 3, column 1:) |
 | `coeff-general-walk-coeff-br` | `ENC-COEFF-GENERAL-WALK-COEFF-BR` | blocked (artifact incomplete: design=ready) |
