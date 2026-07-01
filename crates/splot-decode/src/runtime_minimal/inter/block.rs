@@ -541,6 +541,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             )?;
             let block_qindex = delta_q_state.qindex_u32();
             let residual = if prelude.skip_flag {
+                reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
                 None
             } else {
                 Some(read_inter_residual(
@@ -791,6 +792,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             interp_filter_symbol(interp),
             false,
         );
+        reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
         let placed = placed_block(InterBlock {
             ref_frame0: compound.ref_frame0,
             ref_frame1: Some(compound.ref_frame1),

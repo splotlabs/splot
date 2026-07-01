@@ -246,8 +246,13 @@ pub(crate) fn parse_inter_shared_tail(
     trace_tail_position(reader, "after_cdef");
 
     let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(false), seq.chroma_format_idc);
+    let lr_num_total_refs = if frame_type == FrameType::Switch {
+        0
+    } else {
+        num_total_refs
+    };
     let lr_reference_filter_counts =
-        lr_reference_filter_counts(reference_state, &control.ref_frame_idx, num_total_refs);
+        lr_reference_filter_counts(reference_state, &control.ref_frame_idx, lr_num_total_refs);
     match parse_lr_params_for_inter(
         reader,
         coded_lossless,
@@ -255,7 +260,7 @@ pub(crate) fn parse_inter_shared_tail(
         seq.restoration,
         lr_geometry,
         quantization.base_q_idx,
-        num_total_refs,
+        lr_num_total_refs,
         lr_reference_filter_counts,
     )? {
         LrParseOutcome::Parsed(lr) => {

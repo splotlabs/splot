@@ -882,23 +882,42 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
-    let unsupported_tools = core
-        .quantization_params
-        .is_none_or(|quant| quant.base_q_idx == 0)
-        || core
-            .segmentation_params
-            .as_ref()
-            .is_none_or(|seg| seg.segmentation_enabled)
-        || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
-        || core
-            .delta_q_params
-            .is_none_or(|delta| delta.delta_q_present)
-        || core
-            .lossless_info
-            .as_ref()
-            .is_none_or(|lossless| lossless.coded_lossless)
-        || core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable)
-        || core.inter_tail.as_ref().is_none_or(|tail| tail.apply_grain);
+    let unsupported_tools =
+        core.quantization_params
+            .is_none_or(|quant| quant.base_q_idx == 0)
+            || core
+                .segmentation_params
+                .as_ref()
+                .is_none_or(|seg| seg.segmentation_enabled)
+            || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
+            || core
+                .delta_q_params
+                .is_none_or(|delta| delta.delta_q_present)
+            || core
+                .lossless_info
+                .as_ref()
+                .is_none_or(|lossless| lossless.coded_lossless)
+            || sequence
+                .inter
+                .as_ref()
+                .is_none_or(|inter| inter.enable_flex_mvres)
+            || core
+                .deblocking_filter_params
+                .as_ref()
+                .is_none_or(|filter| filter.apply_deblocking_filter != [false; 4])
+            || core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable)
+            || core
+                .cdef_params
+                .as_ref()
+                .is_none_or(|cdef| cdef.cdef_frame_enable)
+            || core.lr_params.as_ref().is_none_or(|lr| lr.uses_lr)
+            || core.ccso_params.as_ref().is_none_or(|ccso| {
+                ccso.ccso_frame_flag.unwrap_or(false) || !ccso.planes.is_empty()
+            })
+            || core
+                .inter_tail
+                .as_ref()
+                .is_none_or(|tail| tail.apply_grain || tail.skip_mode_present);
     if std::env::var_os("SPLOT_TRACE_INTER_FRAME_TOOLS").is_some() {
         eprintln!(
             "inter tools offset={} base_q={:?} segmentation={:?} qmatrix={:?} delta_q={:?} lossless={:?} deblock={:?} gdf={:?} cdef={:?} lr={:?} ccso={:?} tail={:?}",

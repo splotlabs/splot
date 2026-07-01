@@ -289,8 +289,11 @@ fn ten_bit_base_q255_fails_closed_frozen_tier() {
 }
 
 #[test]
-fn ten_bit_inter_reaches_inter_exit_symbol_frontier() {
-    assert_decode_rejects(TWO_FRAME_INTER_10BIT_FIXTURE, "inter_exit_symbol");
+fn ten_bit_inter_fails_closed_on_unsupported_frame_tools() {
+    assert_decode_rejects(
+        TWO_FRAME_INTER_10BIT_FIXTURE,
+        "inter_unsupported_frame_tools",
+    );
 }
 
 #[test]
