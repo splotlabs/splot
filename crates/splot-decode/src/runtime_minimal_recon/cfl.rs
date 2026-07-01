@@ -14,6 +14,10 @@ use crate::tile_payload::{
     reconstruct_general_intra_block_rect_with_prediction,
 };
 
+use super::mhccp::{
+    MHCCP_BITS, MHCCP_PARAM_COUNT, MhccpRefs, derive_mhccp_params, mul_fixed32_adapt,
+};
+
 const MI_SIZE: usize = 4;
 const CFL_FILTERS_420: [[[i64; 3]; 3]; 3] = [
     [[0, 0, 0], [0, 2, 2], [0, 2, 2]],
@@ -24,26 +28,6 @@ const CFL_ALPHA_SHIFT: u32 = 11;
 const CFL_ALPHA_SCALE: i64 = 32;
 const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
 const NUM_REF_SAM_CFL: usize = 8;
-#[doc = "AV2 § 3 symbols and § 7.13.6 MHCCP process constants."]
-const MHCCP_BITS: u32 = 16;
-const MHCCP_PARAM_COUNT: usize = 3;
-const DIV_PREC_BITS: u32 = 14;
-const DIV_PREC_BITS_POW2: u32 = 8;
-const DIV_SLOT_BITS: u32 = 3;
-const DIV_INTR_BITS: u32 = DIV_PREC_BITS - DIV_SLOT_BITS;
-#[doc = "AV2 § 7.13.6 `get_division_scale_shift` lookup tables."]
-const DIVISION_POW2_W: [i64; 8] = [214, 153, 113, 86, 67, 53, 43, 35];
-const DIVISION_POW2_O: [i64; 8] = [4822, 5952, 6624, 6792, 6408, 5424, 3792, 1466];
-const DIVISION_POW2_B: [i64; 8] = [12784, 12054, 11670, 11583, 11764, 12195, 12870, 13782];
-
-struct MhccpRefs {
-    width: usize,
-    height: usize,
-    above: usize,
-    left: usize,
-    luma: Vec<i64>,
-    chroma: Vec<i64>,
-}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
@@ -628,64 +612,6 @@ fn mhccp_references<T: ReconSample>(
     })
 }
 
-fn derive_mhccp_params(refs: &MhccpRefs, mh_dir: u8, bit_depth: BitDepth) -> [i64; 3] {
-    let mid = 1i64 << (u32::from(bit_depth.bits()) - 1);
-    let mut ata = [[0i64; MHCCP_PARAM_COUNT]; MHCCP_PARAM_COUNT];
-    let mut b = [0i64; MHCCP_PARAM_COUNT];
-    let mut count = 0usize;
-    if refs.above > 0 || refs.left > 0 {
-        for row in 1..refs.height.saturating_sub(1) {
-            for col in 1..refs.width.saturating_sub(1) {
-                if row >= refs.above && col >= refs.left {
-                    continue;
-                }
-                let center = refs.luma[row * refs.width + col];
-                let linear = match mh_dir {
-                    0 => center,
-                    1 => refs.luma[(row - 1) * refs.width + col],
-                    _ => refs.luma[row * refs.width + col - 1],
-                };
-                let vector = [
-                    linear,
-                    round2(center.saturating_mul(center), u32::from(bit_depth.bits())),
-                    mid,
-                ];
-                let target = refs.chroma[row * refs.width + col];
-                for i0 in 0..MHCCP_PARAM_COUNT {
-                    for i1 in i0..MHCCP_PARAM_COUNT {
-                        ata[i0][i1] = ata[i0][i1].saturating_add(vector[i0] * vector[i1]);
-                    }
-                    b[i0] = b[i0].saturating_add(vector[i0] * target);
-                }
-                count = count.saturating_add(1);
-            }
-        }
-    }
-    if count == 0 {
-        return [0, 0, 1i64 << MHCCP_BITS];
-    }
-    let matrix_shift =
-        MHCCP_BITS as i32 + 6 - 2 * i32::from(bit_depth.bits()) - ceil_log2_usize(count) as i32;
-    if matrix_shift > 0 {
-        let shift = matrix_shift as u32;
-        for i0 in 0..MHCCP_PARAM_COUNT {
-            for value in ata[i0].iter_mut().take(MHCCP_PARAM_COUNT).skip(i0) {
-                *value <<= shift;
-            }
-            b[i0] <<= shift;
-        }
-    } else if matrix_shift < 0 {
-        let shift = (-matrix_shift) as u32;
-        for i0 in 0..MHCCP_PARAM_COUNT {
-            for value in ata[i0].iter_mut().take(MHCCP_PARAM_COUNT).skip(i0) {
-                *value >>= shift;
-            }
-            b[i0] >>= shift;
-        }
-    }
-    gaussian_elimination_mhccp(ata, b, bit_depth)
-}
-
 fn cfl_luma_q3_with_min_y<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     chroma_x: usize,
@@ -766,120 +692,4 @@ fn mhccp_luma_ref_available(
 ) -> bool {
     (row < above || col < left.saturating_add(width))
         && (row < above.saturating_add(height) || col < left)
-}
-
-fn gaussian_elimination_mhccp(
-    ata: [[i64; MHCCP_PARAM_COUNT]; MHCCP_PARAM_COUNT],
-    b: [i64; MHCCP_PARAM_COUNT],
-    bit_depth: BitDepth,
-) -> [i64; MHCCP_PARAM_COUNT] {
-    let mut c = [[0i64; MHCCP_PARAM_COUNT + 1]; MHCCP_PARAM_COUNT];
-    for i in 0..MHCCP_PARAM_COUNT {
-        for j in 0..MHCCP_PARAM_COUNT {
-            c[i][j] = if j >= i { ata[i][j] } else { ata[j][i] };
-        }
-        c[i][i] = c[i][i].saturating_add(2i64 << (u32::from(bit_depth.bits()) - 8));
-        c[i][MHCCP_PARAM_COUNT] = b[i];
-    }
-
-    for i in 0..MHCCP_PARAM_COUNT {
-        let diag = c[i][i].unsigned_abs().max(1);
-        let (scale, shift) = mhccp_division_scale_shift(diag);
-        for value in c[i].iter_mut().take(MHCCP_PARAM_COUNT + 1).skip(i + 1) {
-            *value = mul_fixed32_adapt(*value, scale, shift);
-        }
-        let pivot_row = c[i];
-        for row in c.iter_mut().take(MHCCP_PARAM_COUNT).skip(i + 1) {
-            let scale_factor = row[i];
-            for (value, pivot) in row
-                .iter_mut()
-                .zip(pivot_row)
-                .take(MHCCP_PARAM_COUNT + 1)
-                .skip(i + 1)
-            {
-                let delta = mul_fixed32_adapt(scale_factor, pivot, MHCCP_BITS);
-                *value = value.saturating_sub(delta);
-            }
-        }
-    }
-
-    let mut params = [0i64; MHCCP_PARAM_COUNT];
-    for i in (0..MHCCP_PARAM_COUNT).rev() {
-        params[i] = c[i][MHCCP_PARAM_COUNT];
-        for j in i + 1..MHCCP_PARAM_COUNT {
-            params[i] = params[i].saturating_sub(mul_fixed32_adapt(c[i][j], params[j], MHCCP_BITS));
-        }
-    }
-    params
-}
-
-fn mhccp_division_scale_shift(denom: u64) -> (i64, u32) {
-    let shift = floor_log2_u64(denom);
-    let delta = shift as i32 - DIV_PREC_BITS as i32;
-    let norm_diff_tmp = if delta >= 0 {
-        let delta = delta as u32;
-        let bias = if delta > 0 { 1u64 << (delta - 1) } else { 0 };
-        ((denom.saturating_add(bias)) >> delta) as i64
-    } else {
-        let left_shift = (-delta) as u32;
-        if left_shift >= i64::BITS {
-            i64::MAX
-        } else {
-            let max = (i64::MAX as u64) >> left_shift;
-            let clipped = denom.min(max);
-            (clipped << left_shift) as i64
-        }
-    };
-    let norm_diff_clip = clip3(1, (1i64 << (DIV_PREC_BITS + 1)) - 1, norm_diff_tmp);
-    let norm_diff = norm_diff_clip & ((1i64 << DIV_PREC_BITS) - 1);
-    let index = ((norm_diff >> DIV_INTR_BITS) as usize).min(DIVISION_POW2_W.len() - 1);
-    let norm_diff2 = norm_diff - DIVISION_POW2_O[index];
-    let squared = (norm_diff2.saturating_mul(norm_diff2)) >> DIV_PREC_BITS;
-    let mut scale = ((DIVISION_POW2_W[index].saturating_mul(squared)) >> DIV_PREC_BITS_POW2)
-        - (norm_diff2 >> 1)
-        + DIVISION_POW2_B[index];
-    scale <<= MHCCP_BITS - DIV_PREC_BITS;
-    (scale, shift)
-}
-
-fn mul_fixed32_adapt(a: i64, b: i64, shift: u32) -> i64 {
-    let bits_a = bit_width_abs(a);
-    let bits_b = bit_width_abs(b);
-    let need = bits_a.saturating_add(bits_b).saturating_sub(29);
-    let s1 = need >> 1;
-    let s2 = need - s1;
-    let adj = shift as i32 - (s1 + s2) as i32;
-    let product = (a >> s1).saturating_mul(b >> s2);
-    if adj <= 0 {
-        product
-    } else if adj > 29 {
-        0
-    } else {
-        round2_signed(product, adj as u32)
-    }
-}
-
-fn bit_width_abs(value: i64) -> u32 {
-    let magnitude = value.unsigned_abs();
-    if magnitude == 0 {
-        1
-    } else {
-        u64::BITS - magnitude.leading_zeros()
-    }
-}
-
-fn floor_log2_u64(value: u64) -> u32 {
-    if value == 0 {
-        0
-    } else {
-        u64::BITS - 1 - value.leading_zeros()
-    }
-}
-
-fn ceil_log2_usize(value: usize) -> u32 {
-    if value <= 1 {
-        0
-    } else {
-        usize::BITS - (value - 1).leading_zeros()
-    }
 }

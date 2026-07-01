@@ -158,13 +158,23 @@ fn motion_compensate_single_block_into<T: ReconSample>(
     interp: InterpolationFilter,
     offset: ByteOffset,
 ) -> Result<()> {
-    for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+    motion_compensate_planes(workspace, |workspace, plane, sub_x, sub_y| {
         predict_plane(
             workspace, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
-        )?;
+        )
+    })
+}
+
+fn motion_compensate_planes<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    mut predict: impl FnMut(&mut CurrentFrameWorkspace<T>, PlaneId, u32, u32) -> Result<()>,
+) -> Result<()> {
+    for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+        predict(workspace, plane, sub_x, sub_y)?;
     }
     Ok(())
 }
+
 fn motion_compensate_compound_average_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CompoundMcBlock<'_, T>,
@@ -194,7 +204,7 @@ fn motion_compensate_single_warp_block_into<T: ReconSample>(
     warp_params: [i64; 6],
     offset: ByteOffset,
 ) -> Result<()> {
-    for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+    motion_compensate_planes(workspace, |workspace, plane, sub_x, sub_y| {
         predict_warp_plane(
             workspace,
             reference,
@@ -204,9 +214,8 @@ fn motion_compensate_single_warp_block_into<T: ReconSample>(
             sub_x,
             sub_y,
             offset,
-        )?;
-    }
-    Ok(())
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

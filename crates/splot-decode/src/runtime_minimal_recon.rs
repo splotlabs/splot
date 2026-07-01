@@ -35,11 +35,15 @@ use crate::tile_payload::{
 
 mod cfl;
 mod chroma_directional;
+mod mhccp;
 
 pub(crate) use cfl::reconstruct_general_intra_chroma_cfl_block_into;
 pub(crate) use chroma_directional::{
     reconstruct_general_intra_chroma_block_into,
     reconstruct_general_intra_chroma_smooth_available_edges_into,
+};
+pub(crate) use mhccp::{
+    MHCCP_BITS, MHCCP_PARAM_COUNT, MhccpRefs, derive_mhccp_params, mul_fixed32_adapt,
 };
 
 const MINIMAL_LUMA_WIDTH: usize = 64;

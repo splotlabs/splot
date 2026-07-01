@@ -199,14 +199,12 @@ impl<'a> FrameReferenceStateView<'a> {
         ref_frame_width: &'a [u32],
         ref_frame_height: &'a [u32],
     ) -> Self {
-        Self {
-            ref_valid: Some(ref_valid),
-            ref_order_hint: Some(ref_order_hint),
-            ref_frame_width: Some(ref_frame_width),
-            ref_frame_height: Some(ref_frame_height),
-            ref_base_q_idx: None,
-            lr_frame_filter_class_counts: None,
-        }
+        let mut view = Self::unknown();
+        view.ref_valid = Some(ref_valid);
+        view.ref_order_hint = Some(ref_order_hint);
+        view.ref_frame_width = Some(ref_frame_width);
+        view.ref_frame_height = Some(ref_frame_height);
+        view
     }
 
     /// Builds a reference state that additionally models `RefBaseQIdx[]` (AV2 § 7.23),
@@ -230,14 +228,10 @@ impl<'a> FrameReferenceStateView<'a> {
         ref_frame_height: &'a [u32],
         ref_base_q_idx: &'a [u32],
     ) -> Self {
-        Self {
-            ref_valid: Some(ref_valid),
-            ref_order_hint: Some(ref_order_hint),
-            ref_frame_width: Some(ref_frame_width),
-            ref_frame_height: Some(ref_frame_height),
-            ref_base_q_idx: Some(ref_base_q_idx),
-            lr_frame_filter_class_counts: None,
-        }
+        let mut view =
+            Self::from_slots(ref_valid, ref_order_hint, ref_frame_width, ref_frame_height);
+        view.ref_base_q_idx = Some(ref_base_q_idx);
+        view
     }
 
     /// Adds retained per-slot LR frame-filter class counts to an existing reference-state view.

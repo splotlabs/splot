@@ -1182,6 +1182,7 @@ mod tests {
     use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 
     use super::super::cdf::FrameCdfSubset;
+    use super::super::encode_symbol_sequence;
     use super::super::partition_allowed::PartitionFeatureFlags;
     use super::super::partition_traversal::tests::make_work_unit as make_test_work_unit;
     use super::super::partition_traversal::{
@@ -1247,21 +1248,6 @@ mod tests {
             SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
         )
         .unwrap()
-    }
-
-    fn encode_symbol_sequence(sequence: &[(TileCdfSelector, u8)]) -> Vec<u8> {
-        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut encoder = SymbolEncoder::with_config(
-            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
-        );
-        for &(selector, value) in sequence {
-            tile.with_row_mut(selector, |row| {
-                encoder.write_symbol(row, Symbol::new(value))
-            })
-            .unwrap()
-            .unwrap();
-        }
-        encoder.finish().unwrap().into_bytes()
     }
 
     const SB_N4: usize = 16;

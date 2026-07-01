@@ -475,7 +475,7 @@ fn frame_sb_size_index(seq_sb_size: SuperblockSize, frame_is_intra: bool) -> usi
     }
 }
 
-fn chroma_subsampling(chroma: ChromaFormatIdc) -> (bool, bool) {
+pub(crate) fn chroma_subsampling(chroma: ChromaFormatIdc) -> (bool, bool) {
     match chroma {
         ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (true, true),
         ChromaFormatIdc::Yuv422 => (true, false),
@@ -641,66 +641,59 @@ mod tests {
     {
         let context =
             DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
-        context
-            .pool()
-            .install(move || with_minimal_work_unit_inner(bytes, f))
-    }
+        context.pool().install(move || {
+            let context =
+                DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
+            let plan = context.plan_bytes(bytes, DecodeOptions::default()).unwrap();
+            let candidate = plan.frame_candidates().next().unwrap();
 
-    fn with_minimal_work_unit_inner<R>(
-        bytes: &[u8],
-        f: impl FnOnce(&mut DecodeTileWorkUnit<'_>, &SequenceHeader, &FrameHeaderCore) -> R,
-    ) -> R {
-        let context =
-            DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
-        let plan = context.plan_bytes(bytes, DecodeOptions::default()).unwrap();
-        let candidate = plan.frame_candidates().next().unwrap();
+            let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(bytes) else {
+                panic!("minimal fixture must parse as IVF");
+            };
+            let frame = ivf.frames.first().unwrap();
+            let [_, sequence_envelope, frame_envelope] = frame.obus.as_slice() else {
+                panic!("minimal fixture must contain temporal delimiter, sequence, and frame OBUs");
+            };
 
-        let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(bytes) else {
-            panic!("minimal fixture must parse as IVF");
-        };
-        let frame = ivf.frames.first().unwrap();
-        let [_, sequence_envelope, frame_envelope] = frame.obus.as_slice() else {
-            panic!("minimal fixture must contain temporal delimiter, sequence, and frame OBUs");
-        };
+            let mut sequence_reader = BitReader::new(
+                sequence_envelope.payload,
+                sequence_envelope.payload_offset(),
+            );
+            let sequence = parse_sequence_header(&mut sequence_reader).unwrap();
 
-        let mut sequence_reader = BitReader::new(
-            sequence_envelope.payload,
-            sequence_envelope.payload_offset(),
-        );
-        let sequence = parse_sequence_header(&mut sequence_reader).unwrap();
+            let mut frame_reader =
+                BitReader::new(frame_envelope.payload, frame_envelope.payload_offset());
+            assert_ne!(frame_reader.read_bit().unwrap(), 0);
+            let frame_input = FrameHeaderParseInput {
+                obu_type: frame_envelope.header.obu_type,
+                first_picture_in_tu: true,
+                active_sequence: Some(&sequence),
+                mfh_record: None,
+                reference_state: FrameReferenceStateView::unknown(),
+                mode: FrameHeaderParseMode::Core,
+            };
+            let core = parse_frame_header_core(&mut frame_reader, &frame_input).unwrap();
 
-        let mut frame_reader =
-            BitReader::new(frame_envelope.payload, frame_envelope.payload_offset());
-        assert_ne!(frame_reader.read_bit().unwrap(), 0);
-        let frame_input = FrameHeaderParseInput {
-            obu_type: frame_envelope.header.obu_type,
-            first_picture_in_tu: true,
-            active_sequence: Some(&sequence),
-            mfh_record: None,
-            reference_state: FrameReferenceStateView::unknown(),
-            mode: FrameHeaderParseMode::Core,
-        };
-        let core = parse_frame_header_core(&mut frame_reader, &frame_input).unwrap();
+            let tq = sequence.transform_quant_entropy.as_ref().unwrap();
+            let coeff = FrameCandidateCoeffFacts::from_tq(tq);
+            let facts = FrameCandidateTileFacts::from_frame_core(&core, coeff).unwrap();
+            let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
+            let input = FrameCandidateTileBoundaryInput::new(
+                &plan,
+                candidate,
+                bytes,
+                *frame_envelope,
+                TileGroupPositionFacts::new(true, true),
+                facts,
+                cdf,
+                DecodeLimits::DEFAULT,
+            );
+            let mut tile_plan = plan_derived_tile_payload_boundary(&input).unwrap();
+            let [work_unit] = tile_plan.work_units_mut() else {
+                panic!("minimal fixture must derive one tile work unit");
+            };
 
-        let tq = sequence.transform_quant_entropy.as_ref().unwrap();
-        let coeff = FrameCandidateCoeffFacts::from_tq(tq);
-        let facts = FrameCandidateTileFacts::from_frame_core(&core, coeff).unwrap();
-        let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
-        let input = FrameCandidateTileBoundaryInput::new(
-            &plan,
-            candidate,
-            bytes,
-            *frame_envelope,
-            TileGroupPositionFacts::new(true, true),
-            facts,
-            cdf,
-            DecodeLimits::DEFAULT,
-        );
-        let mut tile_plan = plan_derived_tile_payload_boundary(&input).unwrap();
-        let [work_unit] = tile_plan.work_units_mut() else {
-            panic!("minimal fixture must derive one tile work unit");
-        };
-
-        f(work_unit, &sequence, &core)
+            f(work_unit, &sequence, &core)
+        })
     }
 }

@@ -3,7 +3,7 @@
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{FrameHeaderCore, FrameType, MvPrecision, TxMode};
-use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{
@@ -49,7 +49,7 @@ use crate::tile_payload::{
     GeneralIntraMultiblockError, GeneralIntraTreeWalkError, IsCflContext, LumaCoeffBlock,
     TileBlockDecodedState, TileCdfSelector, TileCdfSubset, TileCoeffContextState, TileFscModeState,
     TileIntraJointModeState, TilePartitionTraversalError, TileUsesMrlsState,
-    TransformToolResidualPolicy, decode_general_intra_multiblock_tree,
+    TransformToolResidualPolicy, chroma_subsampling, decode_general_intra_multiblock_tree,
     decode_general_intra_plane_coeffs, frame_mi_dimensions, get_plane_residual_size,
 };
 
@@ -1492,7 +1492,7 @@ fn read_inter_residual(
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<InterResidual> {
-    let (subsampling_x, subsampling_y) = chroma_subsampling(sequence);
+    let (subsampling_x, subsampling_y) = chroma_subsampling(sequence.general.chroma_format_idc);
     let width_chunks = (n4w >> 4).max(1);
     let height_chunks = (n4h >> 4).max(1);
     let multi_chunk = width_chunks > 1 || height_chunks > 1;
@@ -2047,14 +2047,6 @@ fn table_value_usize(
         .copied()
         .ok_or_else(|| residual_geometry_error(tile_offset))?;
     usize::try_from(value).map_err(|_| residual_geometry_error(tile_offset))
-}
-
-const fn chroma_subsampling(sequence: &SequenceHeader) -> (bool, bool) {
-    match sequence.general.chroma_format_idc {
-        ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (true, true),
-        ChromaFormatIdc::Yuv422 => (true, false),
-        ChromaFormatIdc::Yuv444 => (false, false),
-    }
 }
 
 fn residual_geometry_error(tile_offset: ByteOffset) -> super::super::DecodeError {

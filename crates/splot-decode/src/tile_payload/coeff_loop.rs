@@ -826,26 +826,32 @@ mod tests {
 
     #[test]
     fn nonzero_coeff_eob_applies_eob_extra_and_refinement_bits() {
-        let eob = nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 6,
-            eob_extra: true,
-            eob_extra_bits: 0b110,
-        })
-        .unwrap();
-
-        assert_eq!(eob.eob(), 31);
+        assert_nonzero_coeff_eob(
+            NonZeroCoeffEobInput {
+                eob_pt: 6,
+                eob_extra: true,
+                eob_extra_bits: 0b110,
+            },
+            31,
+        );
     }
 
     #[test]
     fn nonzero_coeff_eob_reaches_max_av2_eob() {
-        let eob = nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 11,
-            eob_extra: true,
-            eob_extra_bits: 0xFF,
-        })
-        .unwrap();
+        assert_nonzero_coeff_eob(
+            NonZeroCoeffEobInput {
+                eob_pt: 11,
+                eob_extra: true,
+                eob_extra_bits: 0xFF,
+            },
+            1024,
+        );
+    }
 
-        assert_eq!(eob.eob(), 1024);
+    fn assert_nonzero_coeff_eob(input: NonZeroCoeffEobInput, expected: usize) {
+        let eob = nonzero_coeff_eob(input).unwrap();
+
+        assert_eq!(eob.eob(), expected);
     }
 
     #[test]

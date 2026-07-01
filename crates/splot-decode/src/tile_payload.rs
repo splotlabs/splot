@@ -28,6 +28,8 @@ mod partition_allowed;
 mod partition_size;
 mod partition_traversal;
 mod runtime_frontier;
+#[cfg(test)]
+mod test_support;
 
 use core::fmt;
 
@@ -91,11 +93,13 @@ pub(crate) use partition_traversal::{
 };
 pub(crate) use runtime_frontier::{
     GeneralIntraMultiblockError, MinimalRuntimeBlockSymbolFrontierError,
-    MinimalRuntimePartitionFrontierError, MinimalRuntimeReconstructionTrace,
+    MinimalRuntimePartitionFrontierError, MinimalRuntimeReconstructionTrace, chroma_subsampling,
     consume_minimal_runtime_lr_unit_frontier, decode_general_intra_multiblock_tree,
     decode_general_intra_multiblock_tree_with_lr_source_blocks, frame_mi_dimensions,
     plan_minimal_runtime_block_symbol_frontier,
 };
+#[cfg(test)]
+pub(crate) use test_support::encode_symbol_sequence;
 
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";
 pub(crate) const TILE_PAYLOAD_DECODE_FEATURE_ID: &str = "DECODE-TILE-PAYLOAD-BOUNDARY";

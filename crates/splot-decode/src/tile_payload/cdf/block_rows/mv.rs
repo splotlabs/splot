@@ -60,6 +60,22 @@ macro_rules! visit_mv_cdf_rows {
     };
 }
 
+macro_rules! joint_shell_class_row_match {
+    ($rows:expr, $precision:expr, $shell_set:expr, $mv_ctx:expr, $slice:ident) => {
+        match ($precision, $shell_set) {
+            (3, 0) => Ok($rows.joint_shell3_class0[$mv_ctx].$slice()),
+            (3, 1) => Ok($rows.joint_shell3_class1[$mv_ctx].$slice()),
+            (4, 0) => Ok($rows.joint_shell4_class0[$mv_ctx].$slice()),
+            (4, 1) => Ok($rows.joint_shell4_class1[$mv_ctx].$slice()),
+            (5, 0) => Ok($rows.joint_shell5_class0[$mv_ctx].$slice()),
+            (5, 1) => Ok($rows.joint_shell5_class1[$mv_ctx].$slice()),
+            (6, 0) => Ok($rows.joint_shell6_class0[$mv_ctx].$slice()),
+            (6, 1) => Ok($rows.joint_shell6_class1[$mv_ctx].$slice()),
+            _ => Err(precision_error($precision)),
+        }
+    };
+}
+
 /// CDF selector for the AV2 § 5.20.7.20 `read_mv()` row family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MvCdfSelector {
@@ -334,17 +350,7 @@ impl MvCdfRows {
         mv_ctx: usize,
     ) -> Result<&[i32], TileCdfError> {
         checked_shell_class_axes(precision, shell_set, mv_ctx)?;
-        match (precision, shell_set) {
-            (3, 0) => Ok(self.joint_shell3_class0[mv_ctx].as_slice()),
-            (3, 1) => Ok(self.joint_shell3_class1[mv_ctx].as_slice()),
-            (4, 0) => Ok(self.joint_shell4_class0[mv_ctx].as_slice()),
-            (4, 1) => Ok(self.joint_shell4_class1[mv_ctx].as_slice()),
-            (5, 0) => Ok(self.joint_shell5_class0[mv_ctx].as_slice()),
-            (5, 1) => Ok(self.joint_shell5_class1[mv_ctx].as_slice()),
-            (6, 0) => Ok(self.joint_shell6_class0[mv_ctx].as_slice()),
-            (6, 1) => Ok(self.joint_shell6_class1[mv_ctx].as_slice()),
-            _ => Err(precision_error(precision)),
-        }
+        joint_shell_class_row_match!(self, precision, shell_set, mv_ctx, as_slice)
     }
 
     fn joint_shell_class_row_mut(
@@ -354,17 +360,7 @@ impl MvCdfRows {
         mv_ctx: usize,
     ) -> Result<&mut [i32], TileCdfError> {
         checked_shell_class_axes(precision, shell_set, mv_ctx)?;
-        match (precision, shell_set) {
-            (3, 0) => Ok(self.joint_shell3_class0[mv_ctx].as_mut_slice()),
-            (3, 1) => Ok(self.joint_shell3_class1[mv_ctx].as_mut_slice()),
-            (4, 0) => Ok(self.joint_shell4_class0[mv_ctx].as_mut_slice()),
-            (4, 1) => Ok(self.joint_shell4_class1[mv_ctx].as_mut_slice()),
-            (5, 0) => Ok(self.joint_shell5_class0[mv_ctx].as_mut_slice()),
-            (5, 1) => Ok(self.joint_shell5_class1[mv_ctx].as_mut_slice()),
-            (6, 0) => Ok(self.joint_shell6_class0[mv_ctx].as_mut_slice()),
-            (6, 1) => Ok(self.joint_shell6_class1[mv_ctx].as_mut_slice()),
-            _ => Err(precision_error(precision)),
-        }
+        joint_shell_class_row_match!(self, precision, shell_set, mv_ctx, as_mut_slice)
     }
 }
 
