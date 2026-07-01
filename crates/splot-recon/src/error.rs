@@ -902,6 +902,49 @@ pub enum ReconError {
         /// Right predictor sample count.
         right_len: usize,
     },
+    /// A § 7.13.3.19 block-warp caller supplied unsupported chroma subsampling
+    /// factors. AV2 planes use only `0` or `1` for each axis.
+    #[error(
+        "unsupported block-warp subsampling ({subsampling_x}, {subsampling_y}); expected each axis 0 or 1"
+    )]
+    WarpSubsamplingUnsupported {
+        /// Caller-supplied horizontal subsampling (`subX`).
+        subsampling_x: u8,
+        /// Caller-supplied vertical subsampling (`subY`).
+        subsampling_y: u8,
+    },
+    /// A § 7.13.3.19 block-warp reference-clipping region was not representable
+    /// as an inclusive non-negative rectangle.
+    #[error("invalid block-warp reference bounds x={first_x}..{last_x}, y={first_y}..{last_y}")]
+    WarpReferenceBoundsInvalid {
+        /// Inclusive left reference bound (`firstX`).
+        first_x: i64,
+        /// Inclusive top reference bound (`firstY`).
+        first_y: i64,
+        /// Inclusive right reference bound (`lastX`).
+        last_x: i64,
+        /// Inclusive bottom reference bound (`lastY`).
+        last_y: i64,
+    },
+    /// The § 7.13.3.21 setup-shear process rejected the supplied warp model.
+    #[error("invalid block-warp shear: alpha {alpha}, beta {beta}, gamma {gamma}, delta {delta}")]
+    WarpInvalidShear {
+        /// Reduced horizontal scale delta (`alpha`).
+        alpha: i64,
+        /// Reduced horizontal shear (`beta`).
+        beta: i64,
+        /// Reduced vertical shear (`gamma`).
+        gamma: i64,
+        /// Reduced vertical scale delta (`delta`).
+        delta: i64,
+    },
+    /// A derived § 7.13.3.19 `Warped_Filters` row index was outside the
+    /// generated § 9.5 table.
+    #[error("block-warp filter offset {offset} is outside the generated Warped_Filters table")]
+    WarpFilterOffsetOutOfRange {
+        /// Derived filter row index (`offs`).
+        offset: i64,
+    },
 }
 
 #[cfg(test)]

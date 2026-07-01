@@ -4,12 +4,14 @@
 //! SHELL-coded motion-vector CDF rows for AV2 § 5.20.7.20.
 
 use splot_core::tables::cdf::{
-    DEFAULT_COL_MV_GREATER_CDF, DEFAULT_COL_MV_INDEX_CDF, DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF,
-    DEFAULT_JOINT_SHELL_SET_CDF, DEFAULT_JOINT_SHELL3_CLASS0_CDF, DEFAULT_JOINT_SHELL3_CLASS1_CDF,
+    DEFAULT_AMVD_INDICES_CDF, DEFAULT_COL_MV_GREATER_CDF, DEFAULT_COL_MV_INDEX_CDF,
+    DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF, DEFAULT_JOINT_SHELL_SET_CDF,
+    DEFAULT_JOINT_SHELL3_CLASS0_CDF, DEFAULT_JOINT_SHELL3_CLASS1_CDF,
+    DEFAULT_JOINT_SHELL4_CLASS0_CDF, DEFAULT_JOINT_SHELL4_CLASS1_CDF,
     DEFAULT_JOINT_SHELL5_CLASS0_CDF, DEFAULT_JOINT_SHELL5_CLASS1_CDF,
     DEFAULT_JOINT_SHELL6_CLASS0_CDF, DEFAULT_JOINT_SHELL6_CLASS1_CDF,
-    DEFAULT_SHELL_OFFSET_CLASS2_CDF, DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF,
-    DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF,
+    DEFAULT_MV_JOINT_ADAPTIVE_CDF, DEFAULT_SHELL_OFFSET_CLASS2_CDF,
+    DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF, DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF,
 };
 
 use super::super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_rows, scale_cdf_rows};
@@ -22,6 +24,8 @@ const SHELL_OFFSET_OTHER_CLASS_BANKS: usize = 16;
 
 type JointShellSetCdfRows = [[i32; CDF_ROW_LEN]; MV_CONTEXTS];
 type JointShell3ClassCdfRows = [[i32; 8]; MV_CONTEXTS];
+type JointShell4Class0CdfRows = [[i32; 8]; MV_CONTEXTS];
+type JointShell4Class1CdfRows = [[i32; 9]; MV_CONTEXTS];
 type JointShell5ClassCdfRows = [[i32; 9]; MV_CONTEXTS];
 type JointShell6ClassCdfRows = [[i32; 9]; MV_CONTEXTS];
 type JointShellLastTwoCdfRows = [[i32; CDF_ROW_LEN]; MV_CONTEXTS];
@@ -31,12 +35,16 @@ type ShellOffsetOtherClassCdfRows =
     [[[i32; CDF_ROW_LEN]; SHELL_OFFSET_OTHER_CLASS_BANKS]; MV_CONTEXTS];
 type ColMvGreaterCdfRows = [[[i32; CDF_ROW_LEN]; COL_MV_GREATER_BANKS]; MV_CONTEXTS];
 type ColMvIndexCdfRows = [[[i32; CDF_ROW_LEN]; COL_MV_INDEX_BANKS]; MV_CONTEXTS];
+type AmvdJointCdfRows = [[i32; 5]; 1];
+type AmvdIndexCdfRows = [[i32; 9]; 2];
 
 macro_rules! visit_mv_cdf_rows {
     ($visit:ident) => {
         $visit!(joint_shell_set);
         $visit!(joint_shell3_class0);
         $visit!(joint_shell3_class1);
+        $visit!(joint_shell4_class0);
+        $visit!(joint_shell4_class1);
         $visit!(joint_shell5_class0);
         $visit!(joint_shell5_class1);
         $visit!(joint_shell6_class0);
@@ -47,6 +55,24 @@ macro_rules! visit_mv_cdf_rows {
         $visit!(shell_offset_other_class.flatten());
         $visit!(col_mv_greater.flatten());
         $visit!(col_mv_index.flatten());
+        $visit!(amvd_joint);
+        $visit!(amvd_index);
+    };
+}
+
+macro_rules! joint_shell_class_row_match {
+    ($rows:expr, $precision:expr, $shell_set:expr, $mv_ctx:expr, $slice:ident) => {
+        match ($precision, $shell_set) {
+            (3, 0) => Ok($rows.joint_shell3_class0[$mv_ctx].$slice()),
+            (3, 1) => Ok($rows.joint_shell3_class1[$mv_ctx].$slice()),
+            (4, 0) => Ok($rows.joint_shell4_class0[$mv_ctx].$slice()),
+            (4, 1) => Ok($rows.joint_shell4_class1[$mv_ctx].$slice()),
+            (5, 0) => Ok($rows.joint_shell5_class0[$mv_ctx].$slice()),
+            (5, 1) => Ok($rows.joint_shell5_class1[$mv_ctx].$slice()),
+            (6, 0) => Ok($rows.joint_shell6_class0[$mv_ctx].$slice()),
+            (6, 1) => Ok($rows.joint_shell6_class1[$mv_ctx].$slice()),
+            _ => Err(precision_error($precision)),
+        }
     };
 }
 
@@ -105,6 +131,13 @@ pub(crate) enum MvCdfSelector {
         /// `Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)`.
         ctx: usize,
     },
+    /// `TileAmvdJointCdf`.
+    AmvdJoint,
+    /// `TileAmvdIndexCdf[comp]`.
+    AmvdIndex {
+        /// `comp == 0` for row and `comp == 1` for column.
+        comp: usize,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,6 +145,8 @@ pub(super) struct MvCdfRows {
     joint_shell_set: JointShellSetCdfRows,
     joint_shell3_class0: JointShell3ClassCdfRows,
     joint_shell3_class1: JointShell3ClassCdfRows,
+    joint_shell4_class0: JointShell4Class0CdfRows,
+    joint_shell4_class1: JointShell4Class1CdfRows,
     joint_shell5_class0: JointShell5ClassCdfRows,
     joint_shell5_class1: JointShell5ClassCdfRows,
     joint_shell6_class0: JointShell6ClassCdfRows,
@@ -122,6 +157,8 @@ pub(super) struct MvCdfRows {
     shell_offset_other_class: ShellOffsetOtherClassCdfRows,
     col_mv_greater: ColMvGreaterCdfRows,
     col_mv_index: ColMvIndexCdfRows,
+    amvd_joint: AmvdJointCdfRows,
+    amvd_index: AmvdIndexCdfRows,
 }
 
 impl MvCdfRows {
@@ -130,6 +167,8 @@ impl MvCdfRows {
             joint_shell_set: [DEFAULT_JOINT_SHELL_SET_CDF; MV_CONTEXTS],
             joint_shell3_class0: [DEFAULT_JOINT_SHELL3_CLASS0_CDF; MV_CONTEXTS],
             joint_shell3_class1: [DEFAULT_JOINT_SHELL3_CLASS1_CDF; MV_CONTEXTS],
+            joint_shell4_class0: [DEFAULT_JOINT_SHELL4_CLASS0_CDF; MV_CONTEXTS],
+            joint_shell4_class1: [DEFAULT_JOINT_SHELL4_CLASS1_CDF; MV_CONTEXTS],
             joint_shell5_class0: [DEFAULT_JOINT_SHELL5_CLASS0_CDF; MV_CONTEXTS],
             joint_shell5_class1: [DEFAULT_JOINT_SHELL5_CLASS1_CDF; MV_CONTEXTS],
             joint_shell6_class0: [DEFAULT_JOINT_SHELL6_CLASS0_CDF; MV_CONTEXTS],
@@ -140,6 +179,8 @@ impl MvCdfRows {
             shell_offset_other_class: [DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF; MV_CONTEXTS],
             col_mv_greater: [DEFAULT_COL_MV_GREATER_CDF; MV_CONTEXTS],
             col_mv_index: [DEFAULT_COL_MV_INDEX_CDF; MV_CONTEXTS],
+            amvd_joint: [DEFAULT_MV_JOINT_ADAPTIVE_CDF],
+            amvd_index: DEFAULT_AMVD_INDICES_CDF,
         }
     }
 
@@ -203,6 +244,10 @@ impl MvCdfRows {
                 "ctx",
                 TileCdfArray::ColMvIndex,
             ),
+            MvCdfSelector::AmvdJoint => Ok(self.amvd_joint[0].as_slice()),
+            MvCdfSelector::AmvdIndex { comp } => {
+                checked_cdf_row(&self.amvd_index, comp, "comp", TileCdfArray::AmvdIndex)
+            }
         }
     }
 
@@ -266,6 +311,10 @@ impl MvCdfRows {
                 "ctx",
                 TileCdfArray::ColMvIndex,
             ),
+            MvCdfSelector::AmvdJoint => Ok(self.amvd_joint[0].as_mut_slice()),
+            MvCdfSelector::AmvdIndex { comp } => {
+                checked_cdf_row_mut(&mut self.amvd_index, comp, "comp", TileCdfArray::AmvdIndex)
+            }
         }
     }
 
@@ -301,15 +350,7 @@ impl MvCdfRows {
         mv_ctx: usize,
     ) -> Result<&[i32], TileCdfError> {
         checked_shell_class_axes(precision, shell_set, mv_ctx)?;
-        match (precision, shell_set) {
-            (3, 0) => Ok(self.joint_shell3_class0[mv_ctx].as_slice()),
-            (3, 1) => Ok(self.joint_shell3_class1[mv_ctx].as_slice()),
-            (5, 0) => Ok(self.joint_shell5_class0[mv_ctx].as_slice()),
-            (5, 1) => Ok(self.joint_shell5_class1[mv_ctx].as_slice()),
-            (6, 0) => Ok(self.joint_shell6_class0[mv_ctx].as_slice()),
-            (6, 1) => Ok(self.joint_shell6_class1[mv_ctx].as_slice()),
-            _ => Err(precision_error(precision)),
-        }
+        joint_shell_class_row_match!(self, precision, shell_set, mv_ctx, as_slice)
     }
 
     fn joint_shell_class_row_mut(
@@ -319,15 +360,7 @@ impl MvCdfRows {
         mv_ctx: usize,
     ) -> Result<&mut [i32], TileCdfError> {
         checked_shell_class_axes(precision, shell_set, mv_ctx)?;
-        match (precision, shell_set) {
-            (3, 0) => Ok(self.joint_shell3_class0[mv_ctx].as_mut_slice()),
-            (3, 1) => Ok(self.joint_shell3_class1[mv_ctx].as_mut_slice()),
-            (5, 0) => Ok(self.joint_shell5_class0[mv_ctx].as_mut_slice()),
-            (5, 1) => Ok(self.joint_shell5_class1[mv_ctx].as_mut_slice()),
-            (6, 0) => Ok(self.joint_shell6_class0[mv_ctx].as_mut_slice()),
-            (6, 1) => Ok(self.joint_shell6_class1[mv_ctx].as_mut_slice()),
-            _ => Err(precision_error(precision)),
-        }
+        joint_shell_class_row_match!(self, precision, shell_set, mv_ctx, as_mut_slice)
     }
 }
 
@@ -352,7 +385,7 @@ fn checked_shell_class_axes(
             max_exclusive: MV_CONTEXTS,
         });
     }
-    if matches!(precision, 3 | 5 | 6) {
+    if matches!(precision, 3..=6) {
         Ok(())
     } else {
         Err(precision_error(precision))

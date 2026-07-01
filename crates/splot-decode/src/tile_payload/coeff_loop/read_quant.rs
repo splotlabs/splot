@@ -377,13 +377,22 @@ fn read_literal(
     width: u32,
     syntax: &'static str,
 ) -> Result<u32, CoeffReadQuantError> {
-    symbols
+    let trace_raw = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let raw_before = trace_raw.then(|| symbols.checkpoint());
+    let value = symbols
         .read_literal(width)
         .map_err(|source| CoeffReadQuantError::LiteralRead {
             index,
             syntax,
             source,
-        })
+        })?;
+    if let Some(raw_before) = raw_before {
+        eprintln!(
+            "raw_literal kind=coeff_quant syntax={syntax} index={index} width={width} value={value} checkpoint_before={raw_before:?} checkpoint_after={:?}",
+            symbols.checkpoint(),
+        );
+    }
+    Ok(value)
 }
 
 fn checked_add(

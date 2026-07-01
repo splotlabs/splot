@@ -149,6 +149,7 @@ fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
             above_mrl_index: 2,
         },
         false,
+        None,
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
@@ -163,6 +164,32 @@ fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
         .collect();
     assert_eq!(got, expected);
     assert!(!got.contains(&200));
+}
+
+#[test]
+fn zone1_above_edge_uses_first_above_sample_as_corner_at_first_column() {
+    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let pattern: Vec<u8> = (0..16).map(|i| 20 + i).collect();
+    lay_above_row(&mut ws, 7, 4, &pattern);
+
+    let edge = build_one_sided_above_idif_edge(
+        &ws,
+        PlaneId::Y,
+        0,
+        8,
+        4,
+        4,
+        1,
+        0,
+        0,
+        OneSidedEdgeFilter::default(),
+    )
+    .unwrap();
+
+    assert_eq!(edge[0], pattern[0]);
+    assert_eq!(edge[1], pattern[0]);
+    assert_eq!(edge[2], pattern[0]);
+    assert_eq!(edge[3], pattern[1]);
 }
 
 #[test]
@@ -268,6 +295,7 @@ fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
         3,
         0,
         false,
+        None,
         BitDepth::Eight,
         TwoSidedMiddleEdgeFilters {
             above: OneSidedEdgeFilter::default(),
@@ -344,6 +372,7 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
         true,
         0,
         false,
+        None,
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
@@ -479,6 +508,7 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
         true,
         1, // mrl_index
         false,
+        None,
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
@@ -514,6 +544,7 @@ fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
         5, // log2_height = 5 -> 32
         0,
         false,
+        None,
         BitDepth::Eight,
     )
     .unwrap();
@@ -551,6 +582,7 @@ fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
         6, // log2_height = 6 -> 64
         0,
         false,
+        None,
         BitDepth::Eight,
     )
     .unwrap();
@@ -592,6 +624,7 @@ fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
         5, // log2_height = 5 -> 32
         0,
         false,
+        None,
         BitDepth::Eight,
     )
     .unwrap();
@@ -602,6 +635,46 @@ fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
                 ws.reconstructed_sample(PlaneId::Y, 64 + col, row).unwrap(),
                 70,
                 "no-above V_PRED 64x32 sample ({},{row}) must be the flat left corner left[0]=70",
+                64 + col,
+            );
+        }
+    }
+}
+
+/// §7.13.2.1 NO-ABOVE FALLBACK GUARD for zone-1 directional luma: with no above
+/// row and a real left edge, `AboveRow[i]` is synthesized from the block's
+/// top-left left neighbour (`left[0]`) before the D45/D67 one-sided projection.
+#[test]
+fn zone1_d45_top_edge_synthesizes_above_from_left_corner() {
+    let mut ws = new_general_intra_workspace::<u8>(96, 64, BitDepth::Eight).unwrap();
+    let left_col: Vec<u8> = (0..16).map(|y| 91 + y as u8).collect();
+    lay_left_col(&mut ws, 63, 4, &left_col);
+
+    reconstruct_general_intra_one_sided_neighbour_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        36,
+        PlaneId::Y,
+        64,
+        0,
+        4,
+        4,
+        0,
+        0,
+        OneSidedAboveMrl::default(),
+        false,
+        None,
+        BitDepth::Eight,
+        OneSidedEdgeFilter::default(),
+    )
+    .unwrap();
+
+    for row in 0..16 {
+        for col in 0..16 {
+            assert_eq!(
+                ws.reconstructed_sample(PlaneId::Y, 64 + col, row).unwrap(),
+                91,
+                "top-row D45 sample ({},{row}) must use synthesized AboveRow from left[0]",
                 64 + col,
             );
         }
@@ -629,6 +702,7 @@ fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
         6, // log2_height = 6 -> 64
         0,
         false,
+        None,
         BitDepth::Eight,
     )
     .unwrap();
@@ -960,6 +1034,7 @@ fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
             num4_far: 0, // below-left clamps to left_in[7]
         },
         false,
+        None,
         BitDepth::Eight,
     )
     .unwrap();

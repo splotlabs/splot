@@ -11,6 +11,7 @@ const NON_DIRECTIONAL_MODES_COUNT: u8 = 5;
 const DC_PRED_JOINT_MODE: u8 = 0;
 const NO_MRL: u8 = 0;
 const NO_FSC: u8 = 0;
+pub(crate) const PALETTE_MAX_SIZE: usize = 8;
 const JOINT_NEIGHBOUR_SAMPLES: [NeighbourSample; 2] =
     [NeighbourSample::LeftBottom, NeighbourSample::AboveRight];
 const NPOS_NEIGHBOUR_SAMPLES: [NeighbourSample; 4] = [
@@ -115,6 +116,127 @@ pub(crate) struct TileIntraJointModeState {
     grid: MiGrid<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LumaPalette {
+    size: u8,
+    colors: [u16; PALETTE_MAX_SIZE],
+}
+
+impl LumaPalette {
+    pub(crate) fn new(size: u8, colors: [u16; PALETTE_MAX_SIZE]) -> Option<Self> {
+        let size_usize = usize::from(size);
+        if !(2..=PALETTE_MAX_SIZE).contains(&size_usize) {
+            return None;
+        }
+        Some(Self { size, colors })
+    }
+
+    pub(crate) const fn size(self) -> usize {
+        self.size as usize
+    }
+
+    pub(crate) fn colors(self) -> [u16; PALETTE_MAX_SIZE] {
+        self.colors
+    }
+
+    pub(crate) fn sample(self, color_index: u8) -> Option<u16> {
+        let color_index = usize::from(color_index);
+        (color_index < self.size()).then_some(self.colors[color_index])
+    }
+}
+
+/// Tile-local luma `PaletteSizes` / `PaletteColors` state for §5.20.8 cache lookup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TileLumaPaletteState {
+    grid: MiGrid<Option<LumaPalette>>,
+}
+
+impl TileLumaPaletteState {
+    pub(crate) fn new(
+        mi_rows: usize,
+        mi_cols: usize,
+        sb_size4: usize,
+    ) -> Result<Self, TileLumaPaletteStateError> {
+        let grid = MiGrid::new(
+            mi_rows,
+            mi_cols,
+            None::<LumaPalette>,
+            |mi_rows, mi_cols| TileLumaPaletteStateError::EmptyDimensions { mi_rows, mi_cols },
+            |operation, left, right| TileLumaPaletteStateError::ArithmeticOverflow {
+                operation,
+                left,
+                right,
+            },
+            |source| TileLumaPaletteStateError::Allocation { source },
+            require_nonzero(sb_size4, TileLumaPaletteStateError::EmptySuperblockSize),
+        )?;
+        Ok(Self { grid })
+    }
+
+    pub(crate) fn palette_cache(&self, r: usize, c: usize) -> ([u16; 2 * PALETTE_MAX_SIZE], usize) {
+        const MIN_SB_SIZE4: usize = 16;
+
+        let above = if r != 0 && !r.is_multiple_of(MIN_SB_SIZE4) {
+            self.grid.cell(r - 1, c).flatten()
+        } else {
+            None
+        };
+        let left = c
+            .checked_sub(1)
+            .and_then(|col| self.grid.cell(r, col).flatten());
+        let mut cache = [0u16; 2 * PALETTE_MAX_SIZE];
+        let mut len = 0usize;
+        let mut above_idx = 0usize;
+        let mut left_idx = 0usize;
+        let mut above_remaining = above.map_or(0, LumaPalette::size);
+        let mut left_remaining = left.map_or(0, LumaPalette::size);
+        let above_colors = above.map_or([0; PALETTE_MAX_SIZE], LumaPalette::colors);
+        let left_colors = left.map_or([0; PALETTE_MAX_SIZE], LumaPalette::colors);
+
+        while above_remaining > 0 && left_remaining > 0 {
+            push_palette_cache(&mut cache, &mut len, above_colors[above_idx]);
+            above_idx += 1;
+            above_remaining -= 1;
+            push_palette_cache(&mut cache, &mut len, left_colors[left_idx]);
+            left_idx += 1;
+            left_remaining -= 1;
+        }
+        while above_remaining > 0 {
+            push_palette_cache(&mut cache, &mut len, above_colors[above_idx]);
+            above_idx += 1;
+            above_remaining -= 1;
+        }
+        while left_remaining > 0 {
+            push_palette_cache(&mut cache, &mut len, left_colors[left_idx]);
+            left_idx += 1;
+            left_remaining -= 1;
+        }
+        (cache, len)
+    }
+
+    pub(crate) fn record_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        palette: Option<LumaPalette>,
+    ) {
+        self.grid.record_block((r, c), (n4w, n4h), palette);
+    }
+
+    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
+        self.grid.record_block((r, c), (n4w, n4h), None);
+    }
+}
+
+fn push_palette_cache(cache: &mut [u16; 2 * PALETTE_MAX_SIZE], len: &mut usize, value: u16) {
+    if *len < cache.len() {
+        cache[*len] = value;
+        *len += 1;
+    }
+}
+
 impl TileIntraJointModeState {
     /// Creates a `DC_PRED`-initialized `IntraJointModes` grid.
     pub(crate) fn new(
@@ -180,6 +302,11 @@ impl TileIntraJointModeState {
         joint_mode: u8,
     ) {
         self.grid.record_block((r, c), (n4w, n4h), joint_mode);
+    }
+
+    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
+        self.grid
+            .record_block((r, c), (n4w, n4h), DC_PRED_JOINT_MODE);
     }
 }
 
@@ -248,6 +375,10 @@ impl TileUsesMrlsState {
     ) {
         self.grid.record_block((r, c), (n4w, n4h), uses_mrls);
     }
+
+    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
+        self.grid.record_block((r, c), (n4w, n4h), NO_MRL);
+    }
 }
 
 /// Tile-local AV2 § 5.20.5.3 `FscModes[r][c]` grid.
@@ -296,6 +427,10 @@ impl TileFscModeState {
         fsc_mode: u8,
     ) {
         self.grid.record_block((r, c), (n4w, n4h), fsc_mode);
+    }
+
+    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
+        self.grid.record_block((r, c), (n4w, n4h), NO_FSC);
     }
 
     fn neighbour_fsc_modes(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> [u8; 2] {
@@ -481,6 +616,22 @@ pub(crate) enum TileFscModeStateError {
 }
 
 #[derive(Debug, thiserror::Error)]
+pub(crate) enum TileLumaPaletteStateError {
+    #[error("intra luma palette state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
+    EmptyDimensions { mi_rows: usize, mi_cols: usize },
+    #[error("intra luma palette state requires non-empty superblock size")]
+    EmptySuperblockSize,
+    #[error("intra luma palette state arithmetic overflow in {operation}: {left} * {right}")]
+    ArithmeticOverflow {
+        operation: &'static str,
+        left: usize,
+        right: usize,
+    },
+    #[error("intra luma palette state allocation failed: {source}")]
+    Allocation { source: TryReserveError },
+}
+
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum TileUsesMrlsStateError {
     #[error("intra UsesMrls state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
     EmptyDimensions { mi_rows: usize, mi_cols: usize },
@@ -561,6 +712,10 @@ impl TileIntraYModeState {
         );
     }
 
+    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
+        self.grid.record_block((r, c), (n4w, n4h), None);
+    }
+
     /// Reads the stored luma mode facts for a chroma-only SDP block.
     pub(crate) fn y_mode_facts_at(&self, row: usize, col: usize) -> Option<TileIntraYModeFacts> {
         self.grid.cell(row, col).flatten()
@@ -624,6 +779,19 @@ mod tests {
         state.record_block(0, 16, 16, 16, D135_JOINT_MODE);
         state.record_block(16, 0, 16, 16, D135_JOINT_MODE);
         assert_eq!(state.y_mode_index_ctx(16, 16, 16, 16), 2);
+    }
+
+    #[test]
+    fn non_intra_block_resets_directional_neighbour_to_dc() {
+        let mut state = TileIntraJointModeState::new(64, 64).unwrap();
+        state.record_block(32, 0, 16, 16, D135_JOINT_MODE);
+        state.record_block(16, 16, 16, 16, D135_JOINT_MODE);
+        assert_eq!(state.y_mode_index_ctx(32, 16, 16, 16), 2);
+
+        state.record_non_intra_block(32, 0, 16, 16);
+        state.record_non_intra_block(16, 16, 16, 16);
+        assert_eq!(state.neighbour_joint_modes(32, 16, 16, 16), [0, 0]);
+        assert_eq!(state.y_mode_index_ctx(32, 16, 16, 16), 0);
     }
 
     #[test]

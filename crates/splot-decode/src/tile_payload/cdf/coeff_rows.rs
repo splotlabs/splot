@@ -18,6 +18,14 @@ use splot_core::tables::cdf::{
 
 use super::{TileCdfArray, TileCdfError, avg_cdf_rows, scale_cdf_rows};
 
+fn replicate_q_context_rows<T: Copy, const N: usize>(rows: &mut [T; N], q: usize) {
+    for idx in 0..N {
+        if idx != q {
+            rows.copy_within(q..=q, idx);
+        }
+    }
+}
+
 const COEFF_CDF_Q_CONTEXTS: usize = 4;
 const TX_SIZE_CONTEXTS: usize = 5;
 const FSC_TX_SIZE_CONTEXTS: usize = 3;
@@ -258,6 +266,30 @@ impl CoeffCdfRows {
             coeff_br_idtx: DEFAULT_COEFF_BR_IDTX_CDF,
             idtx_sign: DEFAULT_IDTX_SIGN_CDF,
         }
+    }
+
+    pub(crate) fn replicate_q_context(
+        &mut self,
+        coeff_cdf_q_ctx: usize,
+    ) -> Result<(), TileCdfError> {
+        let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBase, coeff_cdf_q_ctx)?;
+        replicate_q_context_rows(&mut self.coeff_base, q);
+        replicate_q_context_rows(&mut self.coeff_base_ph, q);
+        replicate_q_context_rows(&mut self.coeff_base_uv, q);
+        replicate_q_context_rows(&mut self.coeff_base_lf, q);
+        replicate_q_context_rows(&mut self.coeff_base_lf_uv, q);
+        replicate_q_context_rows(&mut self.coeff_base_eob, q);
+        replicate_q_context_rows(&mut self.coeff_base_eob_uv, q);
+        replicate_q_context_rows(&mut self.coeff_base_bob, q);
+        replicate_q_context_rows(&mut self.coeff_base_idtx, q);
+        replicate_q_context_rows(&mut self.coeff_base_lf_eob, q);
+        replicate_q_context_rows(&mut self.coeff_base_lf_eob_uv, q);
+        replicate_q_context_rows(&mut self.coeff_br, q);
+        replicate_q_context_rows(&mut self.coeff_br_uv, q);
+        replicate_q_context_rows(&mut self.coeff_br_lf, q);
+        replicate_q_context_rows(&mut self.coeff_br_idtx, q);
+        replicate_q_context_rows(&mut self.idtx_sign, q);
+        Ok(())
     }
 }
 

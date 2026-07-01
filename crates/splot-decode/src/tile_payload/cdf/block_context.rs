@@ -88,9 +88,25 @@ impl IntraYMode {
     #[cfg(test)]
     pub(crate) const V_PRED_FOR_TEST: Self = Self(Self::V_PRED);
 
+    /// AV2 § 9.2 `D45_PRED` luma mode, for tests.
+    #[cfg(test)]
+    pub(crate) const D45_PRED_FOR_TEST: Self = Self(Self::D45_PRED);
+
+    /// AV2 § 9.2 `D67_PRED` luma mode, for tests.
+    #[cfg(test)]
+    pub(crate) const D67_PRED_FOR_TEST: Self = Self(Self::D67_PRED);
+
     /// AV2 § 9.2 `D135_PRED` luma mode, for tests.
     #[cfg(test)]
     pub(crate) const D135_PRED_FOR_TEST: Self = Self(Self::D135_PRED);
+
+    /// AV2 § 9.2 `D113_PRED` luma mode, for tests.
+    #[cfg(test)]
+    pub(crate) const D113_PRED_FOR_TEST: Self = Self(Self::D113_PRED);
+
+    /// AV2 § 9.2 `D157_PRED` luma mode, for tests.
+    #[cfg(test)]
+    pub(crate) const D157_PRED_FOR_TEST: Self = Self(Self::D157_PRED);
 
     /// AV2 § 9.2 `PAETH_PRED` luma mode, for tests.
     #[cfg(test)]
@@ -156,6 +172,8 @@ pub(crate) enum SupportedDirectionalLumaMode {
     D45,
     /// AV2 `D203_PRED`.
     D203,
+    /// AV2 `D67_PRED`.
+    D67,
 }
 
 #[rustfmt::skip]
@@ -168,7 +186,8 @@ const SUPPORTED_DIRECTIONAL_LUMA_BY_MODE: [Option<SupportedDirectionalLumaMode>;
     Some(SupportedDirectionalLumaMode::D113),
     Some(SupportedDirectionalLumaMode::D157),
     Some(SupportedDirectionalLumaMode::D203),
-    None, None, None, None, None,
+    Some(SupportedDirectionalLumaMode::D67),
+    None, None, None, None,
 ];
 
 /// Supported chroma intra modes.
@@ -744,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn supported_directional_admits_middle_d45_and_d203_but_rejects_d67() {
+    fn supported_directional_admits_all_av2_directional_luma_modes() {
         assert_eq!(
             IntraYMode(IntraYMode::D45_PRED).supported_directional(),
             Some(SupportedDirectionalLumaMode::D45)
@@ -765,7 +784,10 @@ mod tests {
             IntraYMode(IntraYMode::D157_PRED).supported_directional(),
             Some(SupportedDirectionalLumaMode::D157)
         );
-        assert_eq!(IntraYMode(8).supported_directional(), None);
+        assert_eq!(
+            IntraYMode(IntraYMode::D67_PRED).supported_directional(),
+            Some(SupportedDirectionalLumaMode::D67)
+        );
     }
 
     #[test]

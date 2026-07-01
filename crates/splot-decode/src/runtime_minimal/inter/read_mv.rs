@@ -12,12 +12,16 @@ const MAX_COL_TRUNCATED_UNARY_VAL: usize = 2;
 const NUM_CTX_COL_MV_INDEX: usize = 4;
 const MV_LOW: i32 = -(1 << 16);
 const MV_UPP: i32 = 1 << 16;
+const AMVD_INDEX_TO_MVD: [i32; 9] = [0, 2, 4, 6, 8, 16, 32, 64, 128];
 
 /// AV2 Table 6.19 `MV_PRECISION_ONE_PEL`.
 pub(in crate::runtime_minimal) const MV_PRECISION_ONE_PEL: u8 = 3;
+/// AV2 Table 6.19 `MV_PRECISION_HALF_PEL`.
+pub(in crate::runtime_minimal) const MV_PRECISION_HALF_PEL: u8 = 4;
 /// AV2 Table 6.19 `MV_PRECISION_QUARTER_PEL`.
 pub(in crate::runtime_minimal) const MV_PRECISION_QUARTER_PEL: u8 = 5;
-const MV_PRECISION_EIGHTH_PEL: u8 = 6;
+/// AV2 Table 6.19 `MV_PRECISION_EIGHTH_PEL`.
+pub(in crate::runtime_minimal) const MV_PRECISION_EIGHTH_PEL: u8 = 6;
 
 /// AV2 §3 `MV_INTRABC_CONTEXT`.
 pub(in crate::runtime_minimal) const MV_INTRABC_CONTEXT: usize = 1;
@@ -32,10 +36,19 @@ pub(in crate::runtime_minimal) struct MvReadConfig {
 }
 
 impl MvReadConfig {
+    #[allow(dead_code)]
     const INTER_EIGHTH_PEL: Self = Self {
         precision: MV_PRECISION_EIGHTH_PEL,
         mv_ctx: INTER_MV_CONTEXT,
     };
+
+    /// Configuration for inter `read_mv()` from §5.20.7.20.
+    pub(in crate::runtime_minimal) const fn inter(precision: u8) -> Self {
+        Self {
+            precision,
+            mv_ctx: INTER_MV_CONTEXT,
+        }
+    }
 
     /// Configuration for IntrABC `read_mv()` from §5.20.5.4.
     pub(in crate::runtime_minimal) const fn intrabc(precision: u8) -> Self {
@@ -43,6 +56,10 @@ impl MvReadConfig {
             precision,
             mv_ctx: MV_INTRABC_CONTEXT,
         }
+    }
+
+    pub(in crate::runtime_minimal) const fn precision(self) -> u8 {
+        self.precision
     }
 }
 
@@ -58,12 +75,42 @@ pub(in crate::runtime_minimal) const fn mv_clamp_to_integer(v: i32) -> i32 {
 }
 
 /// Reads the signed MV difference for the single-reference EighthPel NEWMV path.
+#[allow(dead_code)]
 pub(super) fn read_newmv_block_mvd(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     tile_offset: ByteOffset,
 ) -> Result<Mv> {
     read_newmv_block_mvd_with_config(cdfs, symbols, tile_offset, MvReadConfig::INTER_EIGHTH_PEL)
+}
+
+pub(super) fn read_newmv_block_mvd_magnitude(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    tile_offset: ByteOffset,
+    config: MvReadConfig,
+) -> Result<Mv> {
+    read_newmv_block_mvd_magnitude_with_config(cdfs, symbols, tile_offset, config)
+}
+
+/// Reads the AV2 §5.20.7.21 adaptive-MVD vector for the NEWMV path.
+pub(super) fn read_newmv_amvd_block_mvd(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    tile_offset: ByteOffset,
+) -> Result<Mv> {
+    let joint = read_symbol(cdfs, symbols, MvCdfSelector::AmvdJoint, tile_offset)?;
+    let row = if matches!(joint, 2 | 3) {
+        read_amvd_component(cdfs, symbols, 0, tile_offset)?
+    } else {
+        0
+    };
+    let col = if matches!(joint, 1 | 3) {
+        read_amvd_component(cdfs, symbols, 1, tile_offset)?
+    } else {
+        0
+    };
+    Ok(Mv { row, col })
 }
 
 /// Reads the configured §5.20.7.20 SHELL-coded MV delta and explicit sign pass.
@@ -73,12 +120,61 @@ pub(in crate::runtime_minimal) fn read_newmv_block_mvd_with_config(
     tile_offset: ByteOffset,
     config: MvReadConfig,
 ) -> Result<Mv> {
+    let diff = read_newmv_block_mvd_magnitude_with_config(cdfs, symbols, tile_offset, config)?;
+    apply_inter_mvd_signs(diff, symbols, tile_offset, config, false, 1)
+}
+
+pub(in crate::runtime_minimal) fn read_newmv_block_mvd_magnitude_with_config(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    tile_offset: ByteOffset,
+    config: MvReadConfig,
+) -> Result<Mv> {
     validate_config(config, tile_offset)?;
     let (diff_row, diff_col) = read_shell_diff(cdfs, symbols, tile_offset, config)?;
+    Ok(Mv {
+        row: diff_row,
+        col: diff_col,
+    })
+}
 
-    let row = apply_sign(diff_row, symbols, tile_offset)?;
-    let col = apply_sign(diff_col, symbols, tile_offset)?;
-
+pub(in crate::runtime_minimal) fn apply_inter_mvd_signs(
+    magnitude: Mv,
+    symbols: &mut SymbolDecoder<'_>,
+    tile_offset: ByteOffset,
+    config: MvReadConfig,
+    derive_last_sign: bool,
+    derive_threshold: usize,
+) -> Result<Mv> {
+    let mut row = magnitude.row;
+    let mut col = magnitude.col;
+    if row < 0 || col < 0 {
+        return Err(mv_overflow(tile_offset));
+    }
+    let nonzero_count = usize::from(row != 0) + usize::from(col != 0);
+    let derive = derive_last_sign && nonzero_count >= derive_threshold;
+    let shift = u32::from(MV_PRECISION_EIGHTH_PEL - config.precision());
+    let sum = (row >> shift) + (col >> shift);
+    if row != 0 {
+        let sign = if derive && col == 0 {
+            u8::try_from(sum & 1).map_err(|_| mv_overflow(tile_offset))?
+        } else {
+            read_bypass_bit(symbols, tile_offset)?
+        };
+        if sign != 0 {
+            row = -row;
+        }
+    }
+    if col != 0 {
+        let sign = if derive {
+            u8::try_from(sum & 1).map_err(|_| mv_overflow(tile_offset))?
+        } else {
+            read_bypass_bit(symbols, tile_offset)?
+        };
+        if sign != 0 {
+            col = -col;
+        }
+    }
     Ok(Mv { row, col })
 }
 
@@ -148,6 +244,29 @@ fn read_shell_diff(
     let diff_row = i32::try_from(diff_row).map_err(|_| mv_overflow(tile_offset))?;
     let diff_col = i32::try_from(diff_col).map_err(|_| mv_overflow(tile_offset))?;
     Ok((diff_row, diff_col))
+}
+
+fn read_amvd_component(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    comp: usize,
+    tile_offset: ByteOffset,
+) -> Result<i32> {
+    let symbol = read_symbol(
+        cdfs,
+        symbols,
+        MvCdfSelector::AmvdIndex { comp },
+        tile_offset,
+    )?;
+    let index = usize::from(symbol) + 1;
+    amvd_index_to_mvd(index, tile_offset)
+}
+
+fn amvd_index_to_mvd(index: usize, tile_offset: ByteOffset) -> Result<i32> {
+    AMVD_INDEX_TO_MVD
+        .get(index)
+        .copied()
+        .ok_or_else(|| mv_symbol_error(tile_offset))
 }
 
 fn read_shell_class_offset(
@@ -267,7 +386,10 @@ fn validate_config(config: MvReadConfig, tile_offset: ByteOffset) -> Result<()> 
         return Err(mv_overflow(tile_offset));
     }
     match config.precision {
-        MV_PRECISION_ONE_PEL | MV_PRECISION_QUARTER_PEL | MV_PRECISION_EIGHTH_PEL => Ok(()),
+        MV_PRECISION_ONE_PEL
+        | MV_PRECISION_HALF_PEL
+        | MV_PRECISION_QUARTER_PEL
+        | MV_PRECISION_EIGHTH_PEL => Ok(()),
         _ => Err(mv_overflow(tile_offset)),
     }
 }
@@ -289,6 +411,7 @@ fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i64, tile_offset: ByteOffset) -> 
     i64::try_from(result).map_err(|_| mv_overflow(tile_offset))
 }
 
+#[allow(dead_code)]
 fn apply_sign(
     magnitude: i32,
     symbols: &mut SymbolDecoder<'_>,
@@ -313,19 +436,37 @@ fn read_symbol(
 }
 
 fn read_bypass_bit(symbols: &mut SymbolDecoder<'_>, tile_offset: ByteOffset) -> Result<u8> {
-    symbols
+    let trace = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let before = trace.then(|| symbols.checkpoint());
+    let value = symbols
         .read_bool()
         .map(u8::from)
-        .map_err(|_| mv_symbol_error(tile_offset))
+        .map_err(|_| mv_symbol_error(tile_offset))?;
+    if let Some(before) = before {
+        eprintln!(
+            "raw_literal kind=mv_bypass width=1 value={value} checkpoint_before={before:?} checkpoint_after={:?}",
+            symbols.checkpoint(),
+        );
+    }
+    Ok(value)
 }
 
 fn read_literal(symbols: &mut SymbolDecoder<'_>, n: u32, tile_offset: ByteOffset) -> Result<u32> {
     if n == 0 {
         return Ok(0);
     }
-    symbols
+    let trace = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let before = trace.then(|| symbols.checkpoint());
+    let value = symbols
         .read_literal(n)
-        .map_err(|_| mv_symbol_error(tile_offset))
+        .map_err(|_| mv_symbol_error(tile_offset))?;
+    if let Some(before) = before {
+        eprintln!(
+            "raw_literal kind=mv_literal width={n} value={value} checkpoint_before={before:?} checkpoint_after={:?}",
+            symbols.checkpoint(),
+        );
+    }
+    Ok(value)
 }
 
 fn mv_symbol_error(tile_offset: ByteOffset) -> crate::error::DecodeError {

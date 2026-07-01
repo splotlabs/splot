@@ -16,8 +16,8 @@
 //! parser/writer decoupling, `&self`/`&mut self` accessor pairs. The goal is to
 //! *prevent new* duplication (the PR ratchet) and *reduce* the production
 //! duplication that hurts maintainability (this budget), never to force a zero
-//! that would require deleting intentional code. The scope is dupehound's
-//! default, which excludes `#[test]` bodies — see `check_duplication`.
+//! that would require deleting intentional code. The scope excludes test bodies
+//! and source test-module files — see `check_duplication`.
 //!
 //! Like the other external-tool checks (`typos`, `cargo-machete`, `cargo-deny`),
 //! this follows the run-if-present policy: it is mandatory in CI (the workflow
@@ -34,6 +34,7 @@ use crate::tool_available;
 
 /// Committed budget file, relative to the workspace root.
 const BUDGET_PATH: &str = "tools/dupehound/budget.toml";
+const TEST_MODULE_EXCLUDES: &[&str] = &["*_tests.rs", "*/tests.rs"];
 
 /// The `[budget]`-less top-level of `tools/dupehound/budget.toml`.
 #[derive(Debug, Deserialize)]
@@ -105,11 +106,14 @@ fn read_budget(root: &Path) -> Result<Budget> {
 }
 
 fn scan(root: &Path) -> Result<ScanReport> {
-    let display = "dupehound scan <root> --json";
+    let display = "dupehound scan <root> --exclude-tests --exclude '*_tests.rs' --exclude '*/tests.rs' --json";
     eprintln!("> {display}");
-    let output = Command::new("dupehound")
-        .arg("scan")
-        .arg(root)
+    let mut command = Command::new("dupehound");
+    command.arg("scan").arg(root).arg("--exclude-tests");
+    for pattern in TEST_MODULE_EXCLUDES {
+        command.arg("--exclude").arg(pattern);
+    }
+    let output = command
         .arg("--json")
         .output()
         .with_context(|| format!("failed to spawn `{display}`"))?;

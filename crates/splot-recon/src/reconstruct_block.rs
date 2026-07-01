@@ -26,6 +26,7 @@
 use crate::dequant_process::{DequantBlockParams, dequantize_block};
 use crate::inverse_transform_2d_outer::{InverseTransform2dOuter, inverse_transform_2d_outer};
 use crate::reconstruct::reconstruct_add_residual;
+use crate::secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform};
 use crate::{ReconSample, Result};
 
 /// Reconstructs one transform block from its decoded quantized coefficients,
@@ -62,7 +63,45 @@ pub fn reconstruct_transform_block_residual<T: ReconSample>(
     residual_scratch: &mut [i32],
     out: &mut [T],
 ) -> Result<()> {
+    reconstruct_transform_block_residual_with_secondary(
+        prediction,
+        quant,
+        dequant_params,
+        transform,
+        None,
+        dequant_scratch,
+        residual_scratch,
+        out,
+    )
+}
+
+/// Reconstructs one transform block like [`reconstruct_transform_block_residual`],
+/// with an optional AV2 § 7.15.3 secondary inverse transform applied between
+/// § 7.14.4 dequantization and § 7.15.4 primary inverse transform.
+///
+/// `secondary` must already be resolved from the caller's block syntax
+/// (`YMode`, `AngleDeltaY`, `MrlIndex`, `PlaneTxType`, `most_probable_stx_set`,
+/// and `sec_tx_type`). Passing `None` is identical to
+/// [`reconstruct_transform_block_residual`].
+///
+/// # Errors
+/// Propagates the first failing primitive: dequantization, secondary transform,
+/// primary inverse transform, or residual addition.
+#[allow(clippy::too_many_arguments)]
+pub fn reconstruct_transform_block_residual_with_secondary<T: ReconSample>(
+    prediction: &[T],
+    quant: &[i32],
+    dequant_params: &DequantBlockParams,
+    transform: &InverseTransform2dOuter,
+    secondary: Option<&SecondaryInverseTransform>,
+    dequant_scratch: &mut [i32],
+    residual_scratch: &mut [i32],
+    out: &mut [T],
+) -> Result<()> {
     dequantize_block(dequant_params, quant, dequant_scratch)?;
+    if let Some(params) = secondary {
+        secondary_inverse_transform(dequant_scratch, params)?;
+    }
     inverse_transform_2d_outer(transform, dequant_scratch, residual_scratch)?;
     reconstruct_add_residual(prediction, residual_scratch, transform.bit_depth, out)?;
     Ok(())

@@ -22,7 +22,7 @@ const CCSO_SYMBOL_RANGE_REASON: &str =
     "unsupported_wienerns_lr_selectable_transform_records_ccso_symbol_range";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct CcsoState {
+pub(in crate::runtime_minimal) struct CcsoState {
     pub(super) active: bool,
     pub(super) shift: u32,
     pub(super) plane_enabled: [bool; CCSO_PLANES],
@@ -32,7 +32,7 @@ pub(super) struct CcsoState {
 }
 
 impl CcsoState {
-    pub(super) fn new(
+    pub(in crate::runtime_minimal) fn new(
         mi_rows: usize,
         mi_cols: usize,
         sequence: &SequenceHeader,
@@ -81,7 +81,7 @@ impl CcsoState {
         }
     }
 
-    pub(super) fn read_for_block(
+    pub(in crate::runtime_minimal) fn read_for_block(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit<'_>,
         symbols: &mut SymbolDecoder<'_>,
@@ -158,7 +158,10 @@ impl CcsoState {
         unit_row.checked_mul(self.grid_cols)?.checked_add(unit_col)
     }
 
-    pub(super) fn into_grid(self, tile_offset: ByteOffset) -> Result<Option<CcsoUnitGrid>> {
+    pub(in crate::runtime_minimal) fn into_grid(
+        self,
+        tile_offset: ByteOffset,
+    ) -> Result<Option<CcsoUnitGrid>> {
         if !self.active {
             return Ok(None);
         }

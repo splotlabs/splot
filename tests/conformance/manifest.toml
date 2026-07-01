@@ -266,8 +266,8 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-key-inter-64x64.ivf"
-description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input; validates clean."
-expect = "clean"
+description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input. It references custom quantizer-matrix levels without an in-band QM OBU, so standalone validation flags the external-HLS dependency once the inter shared tail reaches setup_qm_params()."
+expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
 
 [[vector]]
 path = "vectors/valid/syn-2frame-inter-64x64.ivf"
@@ -522,8 +522,8 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-inter-96x64.ivf"
-description = "Non-square key + inter frames at 96x64; validates clean."
-expect = "clean"
+description = "Non-square key + inter frames at 96x64. It references custom quantizer-matrix levels without an in-band QM OBU, so standalone validation flags the external-HLS dependency once the inter shared tail reaches setup_qm_params()."
+expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
 
 [[vector]]
 path = "vectors/valid/syn-intra-64x64-10bit.ivf"
@@ -532,23 +532,25 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-ops-64x64.ivf"
-description = "Stream carrying an OBU_OPERATING_POINT_SET (--enable-operating-point-sets); validates clean."
-expect = "clean"
+description = "Stream carrying an OBU_OPERATING_POINT_SET (--enable-operating-point-sets). It references custom quantizer-matrix levels without an in-band QM OBU, so standalone validation flags the external-HLS dependency once the inter shared tail reaches setup_qm_params()."
+expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
 
 # These two are VALID AVM streams that AVM produces for EXTERNAL-HLS provision:
 # AVM's --enable-lcr emits a local LCR referencing an absent global LCR, and
 # --enable-qm emits using_qmatrix referencing a QM level with no QM OBU in-band.
-# Validated standalone (external HLS disabled), the validator CORRECTLY flags the
-# missing resource (§7.3.8.3 / §7.3.8.9) — a real differential check that splot's
+# Validated standalone (external HLS disabled), the validator CORRECTLY flags
+# missing resources (§7.3.8.3 / §7.3.8.9) — real differential checks that splot's
 # availability diagnostics fire on reference-encoder output.
 
 [[vector]]
 path = "vectors/needs-external-hls/syn-lcr-64x64.ivf"
 description = """
 AVM --enable-lcr stream: a local layer configuration record references a global \
-LCR id that is not present in-band. Standalone (external HLS disabled), the \
-validator emits the §7.3.8.3 global-LCR-unavailable diagnostic."""
-expect = { diagnostics = ["lcr/global-lcr-unavailable"] }
+LCR id that is not present in-band, and later frames reference QM levels without \
+an in-band QM OBU. Standalone (external HLS disabled), the validator emits the \
+§7.3.8.3 global-LCR-unavailable diagnostic and the §7.3.8.9 \
+qm-level-unavailable diagnostic."""
+expect = { diagnostics = ["lcr/global-lcr-unavailable", "frame-header/qm-level-unavailable"] }
 
 [[vector]]
 path = "vectors/needs-external-hls/syn-qm-64x64.ivf"

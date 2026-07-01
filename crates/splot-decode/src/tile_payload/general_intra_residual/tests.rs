@@ -111,6 +111,54 @@ fn txb_skip_tx_size_ctx_is_total_for_out_of_range_tx_size() {
     assert_eq!(txb_skip_tx_size_ctx(TX_SIZE_SQR.len()), 0);
 }
 
+#[test]
+fn split_luma_transform_partition_records_follow_raster_order() {
+    let records =
+        luma_transform_records_for_partition(64, 32, TX_16X16, TX_PARTITION_SPLIT).unwrap();
+    let coords: Vec<(usize, usize, usize)> = records
+        .iter()
+        .map(|record| (record.x, record.y, record.tx_size))
+        .collect();
+
+    assert_eq!(
+        coords,
+        vec![
+            (64, 32, TX_8X8),
+            (72, 32, TX_8X8),
+            (64, 40, TX_8X8),
+            (72, 40, TX_8X8),
+        ]
+    );
+}
+
+#[test]
+fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
+    let records =
+        luma_transform_records_for_partition(64, 32, TX_16X16, TX_PARTITION_SPLIT).unwrap();
+    assert!(!luma_partition_record_fills_block(
+        true,
+        records.len(),
+        records[0],
+        64,
+        32
+    ));
+    assert_eq!(txb_skip_ctx_luma(0, 0, false, false), 1);
+    assert_eq!(txb_skip_ctx_luma(0, 0, true, false), 0);
+
+    let unpartitioned = [LumaTransformPartitionRecord {
+        x: 64,
+        y: 32,
+        tx_size: TX_16X16,
+    }];
+    assert!(luma_partition_record_fills_block(
+        true,
+        unpartitioned.len(),
+        unpartitioned[0],
+        64,
+        32
+    ));
+}
+
 #[allow(clippy::fn_params_excessive_bools)]
 fn frame_facts(
     enable_idtx_intra: bool,
@@ -761,6 +809,23 @@ fn dctonly_residual_lr_handoff_admits_chroma_non_dct_tx_set() {
         1,
         TX_8X8,
         false,
+        1,
+        None,
+        ActiveIntraIstResidualPolicy::Reject,
+        ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
+        &PAYLOAD,
+    );
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn dctonly_residual_lr_handoff_admits_inter_chroma_non_dct_tx_set() {
+    let result = ensure_with_test_payload_and_policy(
+        frame_facts(false, false, false, false),
+        2,
+        TX_8X8,
+        true,
         1,
         None,
         ActiveIntraIstResidualPolicy::Reject,

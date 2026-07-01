@@ -7,6 +7,7 @@
 //! `DECODE-COEFF-SIGN-SOURCE-DERIVE`.
 
 use std::collections::TryReserveError;
+use std::env;
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
@@ -276,16 +277,18 @@ fn derive_coeff_sign_source(
     }
 
     if entry.row() == 0 && entry.col() == 0 && config.plane == 0 {
+        let ctx = dc_sign_ctx(
+            config.above_dc,
+            config.left_dc,
+            config.x4,
+            config.y4,
+            config.w4,
+            config.h4,
+        );
+        trace_dc_sign_context(entry, level, config, ctx);
         return CoeffSignReadSource::Cdf {
             syntax: CoeffSignCdfSyntax::DcSign,
-            selector: config.dc_selector(dc_sign_ctx(
-                config.above_dc,
-                config.left_dc,
-                config.x4,
-                config.y4,
-                config.w4,
-                config.h4,
-            )),
+            selector: config.dc_selector(ctx),
         };
     }
 
@@ -303,6 +306,40 @@ fn derive_coeff_sign_source(
     }
 
     CoeffSignReadSource::SignBit
+}
+
+fn trace_dc_sign_context(
+    entry: CoeffScanEntry,
+    level: u32,
+    config: CoeffSignSourceDeriveConfig<'_>,
+    ctx: usize,
+) {
+    if env::var_os("SPLOT_TRACE_DC_SIGN_CTX").is_none() {
+        return;
+    }
+    eprintln!(
+        "splot dc_sign_ctx plane={} qctx={} hidden={} x4={} y4={} w4={} h4={} scan_index={} row={} col={} level={} ctx={} above={:?} left={:?}",
+        config.plane,
+        config.coeff_cdf_q_ctx,
+        usize::from(config.is_hidden),
+        config.x4,
+        config.y4,
+        config.w4,
+        config.h4,
+        entry.scan_index(),
+        entry.row(),
+        entry.col(),
+        level,
+        ctx,
+        context_window(config.above_dc, config.x4, config.w4),
+        context_window(config.left_dc, config.y4, config.h4),
+    );
+}
+
+fn context_window(values: &[u8], start: usize, len: usize) -> &[u8] {
+    let bounded_start = start.min(values.len());
+    let bounded_end = bounded_start.saturating_add(len).min(values.len());
+    &values[bounded_start..bounded_end]
 }
 
 /// Reads ordinary non-FSC §5.20.7.27 coefficient signs over checked scan entries.
@@ -390,10 +427,24 @@ pub(crate) fn read_preflighted_nonzero_coeff_sign(
             (CoeffSignReadSymbol::Cdf { syntax, symbol }, symbol != 0)
         }
         CoeffSignReadSource::SignBit => {
+            let trace = env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+            let before = trace.then(|| symbols.checkpoint());
             let bit = symbols
                 .read_literal(1)
                 .map_err(|source| CoeffSignReadError::LiteralRead { source })?
                 != 0;
+            if let Some(before) = before {
+                eprintln!(
+                    "raw_literal kind=coeff_sign width=1 value={} scan={} pos={} row={} col={} level={} checkpoint_before={before:?} checkpoint_after={:?}",
+                    u8::from(bit),
+                    input.entry.scan_index(),
+                    input.entry.pos(),
+                    input.entry.row(),
+                    input.entry.col(),
+                    level,
+                    symbols.checkpoint(),
+                );
+            }
             (CoeffSignReadSymbol::SignBit { bit }, bit)
         }
     };

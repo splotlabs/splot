@@ -1790,7 +1790,7 @@ fn frame_header_core_inter_shared_tail_segmentation_on_stops_unmodeled() {
 }
 
 #[test]
-fn frame_header_core_inter_shared_tail_ccso_on_stops_before_any_tail_bit() {
+fn frame_header_core_inter_shared_tail_ccso_on_reaches_complete_tail() {
     let mut seq = minimal_inter_seq_64();
     seq.ccso.enable_ccso = true;
     let mut bits = Bits::default();
@@ -1801,14 +1801,11 @@ fn frame_header_core_inter_shared_tail_ccso_on_stops_before_any_tail_bit() {
     let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
     let (core, _) =
         parse_body_with_ref(&data, ObuType::RegularTileGroup, false, &seq, None, &rs).unwrap();
-    assert!(matches!(
-        core.status,
-        FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
-    ));
-    assert!(
-        core.quantization_params.is_none() && core.setup_qm_params.is_none(),
-        "the admission gate stops before any shared-tail bit, so no setup_qm is exposed"
-    );
+    assert_eq!(core.status, FrameHeaderParseStatus::InterHeaderComplete);
+    assert!(core.quantization_params.is_some());
+    assert!(core.setup_qm_params.is_some());
+    assert!(core.ccso_params.is_some());
+    assert!(core.inter_tail.is_some());
     assert_eq!(
         core.inter.as_ref().unwrap().stop,
         Some(crate::headers::frame::inter::InterStop::ReachedSharedTail)

@@ -23,14 +23,34 @@ struct SourceLineAllowance {
 
 const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
     SourceLineAllowance {
+        path: "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+        max_lines: 3_000,
+        reason: "temporary ac0ej3 general-intra runtime frontier before module split",
+    },
+    SourceLineAllowance {
+        path: "crates/splot-decode/src/runtime_minimal/inter/block.rs",
+        max_lines: 3_000,
+        reason: "temporary ac0ej3 inter-block runtime frontier before module split",
+    },
+    SourceLineAllowance {
         path: "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon.rs",
         max_lines: 5_200,
         reason: "temporary ac0ej3 selectable-reconstruction frontier before module split",
     },
     SourceLineAllowance {
+        path: "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs",
+        max_lines: 2_600,
+        reason: "temporary ac0ej3 selectable-transform-record frontier before module split",
+    },
+    SourceLineAllowance {
         path: "crates/splot-decode/src/runtime_minimal_recon.rs",
-        max_lines: 3_000,
+        max_lines: 3_500,
         reason: "temporary ac0ej3 intra-reconstruction frontier before module split",
+    },
+    SourceLineAllowance {
+        path: "crates/splot-decode/src/tile_payload/partition_traversal.rs",
+        max_lines: 3_000,
+        reason: "temporary ac0ej3 partition-traversal frontier before module split",
     },
 ];
 

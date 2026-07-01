@@ -561,32 +561,15 @@ fn coefficient_fsc_quant_pass_reads_quant_and_writes_signed_quant() {
 }
 
 #[test]
-fn coefficient_fsc_quant_pass_preserves_zero_entries_and_quant_signs() {
+fn coefficient_fsc_quant_pass_starts_sign_and_quant_at_bob() {
     let payload = find_payload(4, |pass| {
-        pass.sign_reads()[0].level() == 0
-            && pass.sign_reads()[1].level() == 0
-            && pass.sign_reads()[2..].iter().any(|read| read.level() != 0)
+        pass.level_walk().bob() == 2 && pass.sign_reads().iter().any(|read| read.level() != 0)
     });
     let pass = run_pass(&payload, 4).unwrap();
 
-    assert_eq!(pass.sign_entries().len(), 4);
-    assert_eq!(pass.read_quants().len(), 4);
-    for index in 0..2 {
-        let entry = pass.sign_entries()[index];
-        assert_eq!(pass.sign_reads()[index].level(), 0);
-        assert_eq!(pass.read_quants()[index].quant_input().quant, 0);
-        assert_eq!(pass.block().quant_at(entry.pos()).unwrap(), 0);
-        assert_eq!(
-            pass.block()
-                .quant_sign_at(entry.row(), entry.col())
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            pass.read_quants()[index].path(),
-            CoeffReadQuantPath::BelowThreshold
-        );
-    }
+    assert_eq!(pass.sign_entries(), pass.level_walk().entries());
+    assert_eq!(pass.sign_entries().len(), 2);
+    assert_eq!(pass.read_quants().len(), 2);
     for sign in pass.sign_reads().iter().filter(|read| read.level() != 0) {
         let expected = if sign.sign() { -1 } else { 1 };
         assert_eq!(

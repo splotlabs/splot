@@ -158,6 +158,10 @@ pub struct FrameReferenceStateView<'a> {
     /// at-most-one-valid-slot behavior — the unmodeled `RefBaseQIdx` makes a
     /// multi-valid-slot derivation an honest `UnmodeledDerivation` stop.
     pub ref_base_q_idx: Option<&'a [u32]>,
+    /// Per-slot retained frame-level Wiener-NS filter class counts for Y/U/V. The inter
+    /// `lr_params()` frame-filter dictionary uses these counts when reading the next
+    /// frame's frame-level Wiener-NS match indices.
+    pub lr_frame_filter_class_counts: Option<&'a [[u8; 3]]>,
 }
 
 impl<'a> FrameReferenceStateView<'a> {
@@ -171,6 +175,7 @@ impl<'a> FrameReferenceStateView<'a> {
             ref_frame_width: None,
             ref_frame_height: None,
             ref_base_q_idx: None,
+            lr_frame_filter_class_counts: None,
         }
     }
 
@@ -194,13 +199,12 @@ impl<'a> FrameReferenceStateView<'a> {
         ref_frame_width: &'a [u32],
         ref_frame_height: &'a [u32],
     ) -> Self {
-        Self {
-            ref_valid: Some(ref_valid),
-            ref_order_hint: Some(ref_order_hint),
-            ref_frame_width: Some(ref_frame_width),
-            ref_frame_height: Some(ref_frame_height),
-            ref_base_q_idx: None,
-        }
+        let mut view = Self::unknown();
+        view.ref_valid = Some(ref_valid);
+        view.ref_order_hint = Some(ref_order_hint);
+        view.ref_frame_width = Some(ref_frame_width);
+        view.ref_frame_height = Some(ref_frame_height);
+        view
     }
 
     /// Builds a reference state that additionally models `RefBaseQIdx[]` (AV2 § 7.23),
@@ -224,13 +228,17 @@ impl<'a> FrameReferenceStateView<'a> {
         ref_frame_height: &'a [u32],
         ref_base_q_idx: &'a [u32],
     ) -> Self {
-        Self {
-            ref_valid: Some(ref_valid),
-            ref_order_hint: Some(ref_order_hint),
-            ref_frame_width: Some(ref_frame_width),
-            ref_frame_height: Some(ref_frame_height),
-            ref_base_q_idx: Some(ref_base_q_idx),
-        }
+        let mut view =
+            Self::from_slots(ref_valid, ref_order_hint, ref_frame_width, ref_frame_height);
+        view.ref_base_q_idx = Some(ref_base_q_idx);
+        view
+    }
+
+    /// Adds retained per-slot LR frame-filter class counts to an existing reference-state view.
+    #[must_use]
+    pub const fn with_lr_frame_filter_class_counts(mut self, counts: &'a [[u8; 3]]) -> Self {
+        self.lr_frame_filter_class_counts = Some(counts);
+        self
     }
 }
 
@@ -739,7 +747,7 @@ fn parse_inter_path(
         if control.stop == Some(InterStop::ReachedSharedTail) {
             core.frame_size = control.frame_size;
             shared_tail_ran = true;
-            parse_inter_shared_tail(reader, core, seq, &control, frame_type)?;
+            parse_inter_shared_tail(reader, core, seq, &control, frame_type, reference_state)?;
         }
         Ok(())
     })();
@@ -773,6 +781,9 @@ fn finish_inter_control(
     }
     if let Some(flags) = control.refresh_frame_flags {
         core.refresh_frame_flags = Some(flags);
+    }
+    if let Some(force_integer_mv) = control.force_integer_mv {
+        core.force_integer_mv = Some(force_integer_mv);
     }
     core.disable_cdf_update = control.disable_cdf_update;
     core.inter = Some(control);

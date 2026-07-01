@@ -6,7 +6,7 @@
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 
-use super::{MV_LOW, MV_UPP, mv_clamp_to_integer, read_ns};
+use super::{MV_LOW, MV_UPP, amvd_index_to_mvd, mv_clamp_to_integer, read_ns};
 
 #[test]
 fn mv_clamp_to_integer_is_identity_in_range() {
@@ -48,4 +48,14 @@ fn read_ns_returns_values_in_range() {
             "NS({n}) returned {value}, outside 0..{n}"
         );
     }
+}
+
+#[test]
+fn amvd_index_table_matches_spec_values() {
+    let offset = ByteOffset::new(0);
+    let values: Vec<i32> = (0..=8)
+        .map(|index| amvd_index_to_mvd(index, offset).unwrap())
+        .collect();
+    assert_eq!(values, [0, 2, 4, 6, 8, 16, 32, 64, 128]);
+    assert!(amvd_index_to_mvd(9, offset).is_err());
 }

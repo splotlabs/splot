@@ -22,12 +22,12 @@ use splot_core::tables::cdf::{
     DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_INTRA_TX_TYPE_SET2_CDF,
     DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF,
     DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
-    DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_SEC_TX_TYPE_CDF,
-    DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
-    DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF,
-    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
-    DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
-    DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_PALETTE_Y_MODE_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF,
+    DEFAULT_TX_PARTITION_TYPE_CDF, DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
+    DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF,
+    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 fn coeff(selector: CoeffCdfSelector) -> TileCdfSelector {
@@ -124,6 +124,7 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
     assert_eq!(frame.rows().cfl_alpha(), &DEFAULT_CFL_ALPHA_CDF);
     assert_eq!(frame.rows().cfl_mhccp(), &DEFAULT_CFL_MHCCP_CDF);
     assert_eq!(frame.rows().cfl_mh_dir(), &DEFAULT_CFL_MH_DIR_CDF);
+    assert_eq!(frame.rows().palette_y_mode(), &DEFAULT_PALETTE_Y_MODE_CDF);
     assert_eq!(frame.rows().v_txb_skip(), &DEFAULT_V_TXB_SKIP_CDF);
     assert_eq!(frame.rows().eob_extra(), &DEFAULT_EOB_EXTRA_CDF);
     assert_eq!(frame.rows().comp_mode(), &DEFAULT_COMP_MODE_CDF);
@@ -231,6 +232,10 @@ fn cfl_cdf_selectors_match_generated_defaults_and_check_bounds() {
             "cfl_mh_dir size_group {size_group}"
         );
     }
+    assert_eq!(
+        tile.row(TileCdfSelector::PaletteYMode).unwrap(),
+        DEFAULT_PALETTE_Y_MODE_CDF.as_slice()
+    );
 
     assert_selector_out_of_range(
         &tile,

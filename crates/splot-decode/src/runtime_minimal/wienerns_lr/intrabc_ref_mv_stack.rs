@@ -424,7 +424,7 @@ pub(super) struct SpatialIntrabcScan {
 /// (`mvref_common.c:1515`-`1523`). A dedup-by-value match ADDS the new weight to the
 /// existing entry (`ref_mv_weight[index] += weight`, `mvref_common.c:873`), so a
 /// value placed by several adjacent scans accumulates. The candidates are returned
-/// in scan ORDER (steps 7 → 8 → 9 → 10 → 12 → 14); the subsequent § 7.12.2.19
+/// in scan ORDER (steps 7 → 8 → 9 → 10 → 11 → 12 → 14); the subsequent § 7.12.2.19
 /// max-weight-to-slot-0 reorder is applied by [`intrabc_ref_stack_admission`] (which
 /// threads the real `enable_drl_reorder` flag) before the stack is built.
 pub(super) fn spatial_intrabc_scan(
@@ -477,6 +477,19 @@ pub(super) fn spatial_intrabc_scan(
         above.step10,
         ADJACENT_SMVP_WEIGHT,
     );
+    if bh4 <= MAX_SMVP_AXIS_MI
+        && let Some(left_col) = col.checked_sub(1)
+        && let Some(r) = row.checked_add(bh4)
+    {
+        push_deduped(
+            &geometry,
+            &lookup,
+            &mut candidates,
+            r,
+            left_col,
+            ADJACENT_SMVP_WEIGHT,
+        );
+    }
     push_above_probe(
         &geometry,
         &lookup,
@@ -795,8 +808,8 @@ fn push_deduped(
 }
 
 /// Whether any AV2 § 7.12.2 spatial position this decoder does NOT model exactly
-/// (the step-11 below-bottom-left probe, the still-unmodelled above-row probes,
-/// and the § 7.12.2.5 deltaCol = -3 non-adjacent scan) holds an IntrABC neighbour
+/// (the still-unmodelled above-row probes and the § 7.12.2.5 deltaCol = -3
+/// non-adjacent scan) holds an IntrABC neighbour
 /// whose block vector is NOT already a modelled candidate. A duplicate block
 /// vector contributes nothing in AVM, so it does not force a defer; a new one
 /// would extend the stack unfaithfully, so it does.
@@ -815,14 +828,8 @@ fn spatial_scan_unmodelled_has_new_bv(
     let row = geometry.mi_row;
     let col = geometry.mi_col;
     let bw4 = geometry.n4w;
+    let trace = std::env::var_os("SPLOT_TRACE_INTRABC_REF_STACK").is_some();
     let is_new = |mv: Option<Mv>| mv.is_some_and(|mv| !modelled.iter().any(|entry| entry.mv == mv));
-    if geometry.n4h <= MAX_SMVP_AXIS_MI
-        && let Some(left_col) = col.checked_sub(1)
-        && let Some(r) = row.checked_add(geometry.n4h)
-        && is_new(lookup_in_grid(geometry, lookup, r, left_col))
-    {
-        return true;
-    }
     if let Some(above_row) = row.checked_sub(1) {
         let modelled_cols = [above.step8, above.step10, above.step12, above.step14];
         // § 7.12.2.1 step 12: SB-border reach is `Max(2, bw4)`; left reach carries 8x8 parity.
@@ -834,7 +841,24 @@ fn spatial_scan_unmodelled_has_new_bv(
             if modelled_cols.contains(&Some(c)) {
                 continue;
             }
-            if is_new(lookup_in_grid(geometry, lookup, above_row, c)) {
+            if let Some(mv) = lookup_in_grid(geometry, lookup, above_row, c)
+                && is_new(Some(mv))
+            {
+                if trace {
+                    eprintln!(
+                        "intrabc ref_stack unmodelled_probe kind=above_row mi=({}, {}) probe=({}, {}) mv={:?} modelled={:?} modelled_cols={:?} leftmost={} rightmost={} sb_border={}",
+                        row,
+                        col,
+                        above_row,
+                        c,
+                        mv,
+                        modelled,
+                        modelled_cols,
+                        leftmost,
+                        rightmost,
+                        above.is_sb_border
+                    );
+                }
                 return true;
             }
         }
@@ -843,7 +867,14 @@ fn spatial_scan_unmodelled_has_new_bv(
         let bottom = row.checked_add(geometry.n4h.saturating_sub(1));
         let probes = [bottom, Some(row)];
         for r in probes.into_iter().flatten() {
-            if is_new(lookup_in_grid(geometry, lookup, r, deep_col)) {
+            if let Some(mv) = lookup_in_grid(geometry, lookup, r, deep_col)
+                && is_new(Some(mv))
+            {
+                if trace {
+                    eprintln!(
+                        "intrabc ref_stack unmodelled_probe kind=deep_left mi=({row}, {col}) probe=({r}, {deep_col}) mv={mv:?} modelled={modelled:?}",
+                    );
+                }
                 return true;
             }
         }
@@ -965,7 +996,7 @@ impl DrlReorderMode {
     /// `nearest`: `DRL_REORDER_ALWAYS || (DRL_REORDER_CONSTRAINT && !useTemporalFirst
     /// && nearest >= 4)` (`docs/spec/av2/1.0.0/07-decoding-process.md` ~line 3449;
     /// `mvref_common.c:2473`-`2475`). `useTemporalFirst` is 0 for IBC.
-    const fn use_sort(self, nearest: usize) -> bool {
+    pub(super) const fn use_sort(self, nearest: usize) -> bool {
         match self {
             Self::Disabled => false,
             Self::Constraint => nearest >= 4,
@@ -981,7 +1012,7 @@ impl DrlReorderMode {
 /// index wins ties; the swap runs only when `max_idx != 0`. Operates ONLY on the
 /// nearest prefix (BEFORE the § 7.12.2.21 bank fill and § 7.12.2.20 default fill,
 /// which are weight-independent).
-fn sort_nearest_max_weight_to_slot0(candidates: &mut [WeightedBv]) {
+pub(super) fn sort_nearest_max_weight_to_slot0(candidates: &mut [WeightedBv]) {
     let Some((first, rest)) = candidates.split_first() else {
         return;
     };

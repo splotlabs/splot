@@ -49,10 +49,18 @@ struct ChildCallBuilder {
     chroma_offset: bool,
     tree_type: PartitionTreeType,
     cfl_allowed_in_sdp: bool,
+    child_extended_sdp_allowed: bool,
+    intra_region: bool,
 }
 
 impl ChildCallBuilder {
-    fn new(call: TilePartitionCall, chroma_offset: bool) -> Self {
+    fn new(
+        call: TilePartitionCall,
+        partition: PartitionType,
+        sub_size: BlockSize,
+        frame: TilePartitionFrameFacts,
+        chroma_offset: bool,
+    ) -> Self {
         Self {
             calls: TilePartitionChildCalls::new(call),
             parent_size: Some(call.b_size),
@@ -60,6 +68,10 @@ impl ChildCallBuilder {
             chroma_offset,
             tree_type: call.tree_type(),
             cfl_allowed_in_sdp: call.cfl_allowed_in_sdp(),
+            child_extended_sdp_allowed: super::extended_sdp_allowed_for_child(
+                frame, call, partition, sub_size,
+            ),
+            intra_region: call.intra_region,
         }
     }
 
@@ -109,6 +121,8 @@ impl ChildCallBuilder {
             has_chroma,
             self.tree_type,
             chroma_ref,
+            self.child_extended_sdp_allowed,
+            self.intra_region,
         );
         call.set_cfl_allowed_in_sdp(self.cfl_allowed_in_sdp);
         self.calls.push(call)
@@ -246,7 +260,7 @@ pub(super) fn child_calls(
     let half_w = num4x4wide >> 1;
     let half_h = num4x4high >> 1;
     let has_chroma_before_offset = call.has_chroma && !chroma_offset;
-    let mut children = ChildCallBuilder::new(call, chroma_offset);
+    let mut children = ChildCallBuilder::new(call, partition, sub_size, frame, chroma_offset);
     match partition {
         PartitionType::None => {}
         PartitionType::Horz => {

@@ -85,7 +85,7 @@ Toolchain: Rust **1.96.0**, edition **2024**, resolver **3**.
 crates/splot-core      AV2 bitstream model + parsers (no other splot-* dependency)
 crates/splot-parallel  approved concurrency primitives (Rayon pool + bounded crossbeam queues); no other splot-* dependency
 crates/splot-tables    dependency-free generated AV2 § 9 spec tables shared across crates (no other splot-* dependency)
-crates/splot-recon     reconstruction primitives -> splot-tables
+crates/splot-recon     reconstruction primitives -> splot-core, splot-tables
 crates/splot-decode    decoder diagnostics + planning + minimal hash/Y4M runtime -> splot-core, splot-parallel, splot-recon
 crates/splot-validate  parser-driven conformance diagnostics -> splot-core
 crates/splot-encode    future encoder API + borrowed input views -> splot-core, splot-parallel, splot-recon, splot-tables
@@ -99,7 +99,7 @@ Hard dependency rules:
 - `splot-core`, `splot-parallel`, and `splot-tables` depend on no other
   `splot-*` crate.
 - `splot-tables` has no external crate dependencies.
-- `splot-recon` depends only on `splot-tables`.
+- `splot-recon` depends only on `splot-core` and `splot-tables`.
 - `splot-decode` depends only on `splot-core`, `splot-parallel`, and
   `splot-recon`.
 - `splot-validate` depends only on `splot-core`.

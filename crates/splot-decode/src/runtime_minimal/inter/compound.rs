@@ -8,9 +8,7 @@ use super::{Mv, unsupported_compound_at};
 use crate::Result;
 use crate::tile_payload::{TileCdfSelector, TileCdfSubset};
 
-const COMPOUND_REFERENCE: u8 = 1;
 const COMPOUND_MODE_NEAR_NEARMV: u8 = 0;
-const COMP_MODE_CTX_NO_NEIGHBOUR: usize = 1;
 const COMP_REF_CTX_NO_NEIGHBOUR: usize = 1;
 const COMP_REF1_BIT_TYPE_SAME_SIDE: usize = 0;
 const FULL_SB_N4: usize = 16;
@@ -73,18 +71,6 @@ pub(super) fn read_compound_average_syntax(
             .map(splot_core::symbol::Symbol::get)
             .map_err(|_| compound_symbol_read_error(tile_offset))
     };
-
-    let comp_mode = read_symbol(TileCdfSelector::CompMode {
-        ctx: COMP_MODE_CTX_NO_NEIGHBOUR,
-    })?;
-    if comp_mode != COMPOUND_REFERENCE {
-        return Err(compound_cap!(
-            "compound_block_single_reference",
-            tile_offset,
-            "inter.compound.comp_mode != COMPOUND_REFERENCE",
-            SPEC_READ_REF_FRAMES
-        ));
-    }
 
     if input.num_same_ref_compound > 1 {
         let comp_ref0 = read_symbol(TileCdfSelector::CompRef0 {
@@ -265,14 +251,6 @@ mod tests {
         encode_symbol(
             &mut enc_tile,
             &mut encoder,
-            TileCdfSelector::CompMode {
-                ctx: COMP_MODE_CTX_NO_NEIGHBOUR,
-            },
-            COMPOUND_REFERENCE,
-        );
-        encode_symbol(
-            &mut enc_tile,
-            &mut encoder,
             TileCdfSelector::IsJoint { ctx: 1 },
             0,
         );
@@ -305,9 +283,6 @@ mod tests {
         );
         symbols.exit_symbol().unwrap();
         for selector in [
-            TileCdfSelector::CompMode {
-                ctx: COMP_MODE_CTX_NO_NEIGHBOUR,
-            },
             TileCdfSelector::IsJoint { ctx: 1 },
             TileCdfSelector::CompoundModeNonJoint { ctx: 0 },
         ] {
@@ -319,44 +294,9 @@ mod tests {
     }
 
     #[test]
-    fn compound_average_rejects_single_reference_comp_mode() {
-        let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut encoder = SymbolEncoder::new();
-        encode_symbol(
-            &mut enc_tile,
-            &mut encoder,
-            TileCdfSelector::CompMode {
-                ctx: COMP_MODE_CTX_NO_NEIGHBOUR,
-            },
-            0,
-        );
-        let bytes = encoder.finish().unwrap().into_bytes();
-
-        let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut symbols = symbol_decoder(&bytes);
-        assert!(
-            read_compound_average_syntax(
-                &mut dec_tile,
-                &mut symbols,
-                default_input(),
-                ByteOffset::new(0),
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
     fn compound_average_reads_same_ref_compound_ref_symbols() {
         let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut encoder = SymbolEncoder::new();
-        encode_symbol(
-            &mut enc_tile,
-            &mut encoder,
-            TileCdfSelector::CompMode {
-                ctx: COMP_MODE_CTX_NO_NEIGHBOUR,
-            },
-            COMPOUND_REFERENCE,
-        );
         encode_symbol(
             &mut enc_tile,
             &mut encoder,
@@ -426,14 +366,6 @@ mod tests {
         encode_symbol(
             &mut enc_tile,
             &mut encoder,
-            TileCdfSelector::CompMode {
-                ctx: COMP_MODE_CTX_NO_NEIGHBOUR,
-            },
-            COMPOUND_REFERENCE,
-        );
-        encode_symbol(
-            &mut enc_tile,
-            &mut encoder,
             TileCdfSelector::IsJoint { ctx: 1 },
             1,
         );
@@ -459,10 +391,8 @@ mod tests {
         encode_symbol(
             &mut enc_tile,
             &mut encoder,
-            TileCdfSelector::CompMode {
-                ctx: COMP_MODE_CTX_NO_NEIGHBOUR,
-            },
-            COMPOUND_REFERENCE,
+            TileCdfSelector::IsJoint { ctx: 1 },
+            0,
         );
         let bytes = encoder.finish().unwrap().into_bytes();
 

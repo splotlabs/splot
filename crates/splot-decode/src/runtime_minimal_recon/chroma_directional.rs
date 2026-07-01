@@ -186,6 +186,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 log2_height,
                 qindex,
                 false,
+                None,
                 bit_depth,
             )
         }
@@ -201,6 +202,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 log2_height,
                 qindex,
                 false,
+                None,
                 bit_depth,
             )
         }
@@ -220,6 +222,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             log2_height,
             qindex,
             false,
+            None,
             bit_depth,
         ),
         SupportedChromaMode::D45Follow
@@ -242,6 +245,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             num4_above_right,
             OneSidedAboveMrl::default(),
             false,
+            None,
             bit_depth,
             OneSidedEdgeFilter::default(),
         ),
@@ -260,6 +264,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 false, // have_above: unchanged chroma §7.13.2.1 corner `CurrFrame[y][x-1]`
                 0,     // mrl_index: chroma follow uses the immediate reference line
                 false,
+                None,
                 bit_depth,
                 OneSidedEdgeFilter::default(),
             )
@@ -407,6 +412,7 @@ fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
         num4_above_right,
         num4_below_left,
         false,
+        None,
         bit_depth,
     )
 }
@@ -446,6 +452,7 @@ pub(crate) fn reconstruct_general_intra_chroma_smooth_available_edges_into<T: Re
         num4_above_right,
         num4_below_left,
         false,
+        None,
         bit_depth,
     )
 }

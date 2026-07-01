@@ -269,6 +269,8 @@ pub struct InterControl {
     pub max_drl_bits_minus_1: Option<u32>,
     /// `FrameMvPrecision` (mirror :4885-4917), when derived.
     pub mv_precision: Option<MvPrecision>,
+    /// `force_integer_mv` from `screen_content_params()` (§ 5.18.3.3), when read on the inter path.
+    pub force_integer_mv: Option<bool>,
     /// `interpolation_filter` from `read_interpolation_filter()` (§ 5.18.5.1), when read.
     pub interpolation_filter: Option<InterpolationFilter>,
     /// `frame_enabled_motion_modes[INTERINTRA..MOTION_MODES]` (mirror :4921-4939), when read.
@@ -708,6 +710,7 @@ fn parse_inter_reference_region(
         }
     };
     control.mv_precision = Some(mv_precision);
+    control.force_integer_mv = Some(scc.force_integer_mv);
     let _ = seq.enable_flex_mvres;
 
     control.interpolation_filter = Some(read_interpolation_filter(reader)?);

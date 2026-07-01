@@ -354,10 +354,19 @@ fn read_rect_partition(
     };
 
     let uneven_4way_partition_type = if do_uneven_4way_partition {
+        let trace_raw = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+        let raw_before = trace_raw.then(|| symbols.checkpoint());
         let value = symbols
             .read_literal(1)
             .map_err(PartitionDecisionError::Literal)?
             != 0;
+        if let Some(raw_before) = raw_before {
+            eprintln!(
+                "raw_literal kind=partition reason=uneven_4way_partition_type width=1 value={} checkpoint_before={raw_before:?} checkpoint_after={:?}",
+                u8::from(value),
+                symbols.checkpoint(),
+            );
+        }
         trace.uneven_4way_partition_type = Some(value);
         value
     } else {
@@ -411,7 +420,35 @@ fn read_partition_bool(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<bool, PartitionDecisionError> {
-    symbol_to_bool(syntax, cdfs.read_partition_entry_symbol(selector, symbols)?)
+    let trace = std::env::var_os("SPLOT_TRACE_PARTITION_SYMBOLS").is_some();
+    let before = trace.then(|| symbols.checkpoint());
+    let row_before = if trace {
+        cdfs.row(selector).ok().map(<[i32]>::to_vec)
+    } else {
+        None
+    };
+    let symbol = cdfs.read_partition_entry_symbol(selector, symbols)?;
+    if trace {
+        let after = symbols.checkpoint();
+        eprintln!(
+            "partition bool syntax={} selector={:?} value={} before_bits={} after_bits={} before_symbols={} after_symbols={} before_state=({}, {}, {}) after_state=({}, {}, {}) row_before={:?}",
+            syntax,
+            selector,
+            symbol.get(),
+            before.map_or(0, |checkpoint| checkpoint.consumed_bits.get()),
+            after.consumed_bits.get(),
+            before.map_or(0, |checkpoint| checkpoint.symbol_count),
+            after.symbol_count,
+            before.map_or(0, |checkpoint| checkpoint.symbol_max_bits),
+            before.map_or(0, |checkpoint| checkpoint.symbol_value),
+            before.map_or(0, |checkpoint| checkpoint.symbol_range),
+            after.symbol_max_bits,
+            after.symbol_value,
+            after.symbol_range,
+            row_before,
+        );
+    }
+    symbol_to_bool(syntax, symbol)
 }
 
 fn symbol_to_bool(syntax: &'static str, symbol: Symbol) -> Result<bool, PartitionDecisionError> {

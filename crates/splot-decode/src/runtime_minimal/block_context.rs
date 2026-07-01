@@ -62,10 +62,6 @@ impl BlockRect {
     pub(super) const fn is_top_left(self) -> bool {
         !self.has_above() && !self.has_left()
     }
-
-    pub(super) fn is_row_aligned_to(self, size4: usize) -> bool {
-        size4 != 0 && self.row4.is_multiple_of(size4)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,6 +87,14 @@ impl TxShape {
 
     pub(super) const fn height_log2(self) -> u32 {
         self.height_log2
+    }
+
+    pub(super) const fn width4(self) -> usize {
+        1usize << (self.width_log2 - 2)
+    }
+
+    pub(super) const fn height4(self) -> usize {
+        1usize << (self.height_log2 - 2)
     }
 
     pub(super) const fn is_square(self) -> bool {
@@ -192,6 +196,7 @@ impl NeighbourAvailability {
 pub(super) struct BlockCtx {
     block: BlockRect,
     tx: TxShape,
+    chroma_ref: Option<(BlockRect, TxShape)>,
     frame_mi_cols: usize,
     frame_mi_rows: usize,
     bit_depth: BitDepth,
@@ -210,6 +215,7 @@ impl BlockCtx {
         Self {
             block,
             tx,
+            chroma_ref: None,
             frame_mi_cols,
             frame_mi_rows,
             bit_depth,
@@ -225,34 +231,48 @@ impl BlockCtx {
         self.bit_depth
     }
 
+    pub(super) const fn frame_mi_cols(self) -> usize {
+        self.frame_mi_cols
+    }
+
+    pub(super) const fn frame_mi_rows(self) -> usize {
+        self.frame_mi_rows
+    }
+
+    pub(super) const fn chroma(self) -> ChromaSampling {
+        self.chroma
+    }
+
+    pub(super) const fn with_chroma_ref(mut self, block: BlockRect, tx: TxShape) -> Self {
+        self.chroma_ref = Some((block, tx));
+        self
+    }
+
     pub(super) const fn is_top_left(self) -> bool {
         self.block.is_top_left()
     }
 
     pub(super) fn plane_block(self, plane: PlaneId) -> PlaneBlock {
+        let (block, tx) = self.plane_geometry(plane);
         let (sub_x, sub_y) = self.chroma.subsampling(plane);
         PlaneBlock {
-            x: (self.block.col4 * 4) >> sub_x,
-            y: (self.block.row4 * 4) >> sub_y,
-            width4: self.block.width4 >> sub_x,
-            height4: self.block.height4 >> sub_y,
-            tx: self.tx.subsampled(sub_x, sub_y),
+            x: (block.col4 * 4) >> sub_x,
+            y: (block.row4 * 4) >> sub_y,
+            width4: block.width4 >> sub_x,
+            height4: block.height4 >> sub_y,
+            tx: tx.subsampled(sub_x, sub_y),
         }
     }
 
     pub(super) fn neighbours(self, plane: PlaneId) -> NeighbourAvailability {
+        let (block, _) = self.plane_geometry(plane);
         let plane_block = self.plane_block(plane);
         let (sub_x, _) = self.chroma.subsampling(plane);
-        let above_decoded_cols = self.frame_mi_cols.saturating_sub(self.block.col4) >> sub_x;
+        let above_decoded_cols = self.frame_mi_cols.saturating_sub(block.col4) >> sub_x;
         let num_above_right = above_decoded_cols
             .saturating_sub(plane_block.width4())
             .min(plane_block.width4());
-        NeighbourAvailability::new(
-            self.block.has_above(),
-            self.block.has_left(),
-            num_above_right,
-            0,
-        )
+        NeighbourAvailability::new(block.has_above(), block.has_left(), num_above_right, 0)
     }
 
     pub(super) fn neighbours_from_block_decoded(
@@ -260,17 +280,25 @@ impl BlockCtx {
         plane: PlaneId,
         block_decoded: &crate::tile_payload::TileBlockDecodedState,
     ) -> NeighbourAvailability {
+        let (block, _) = self.plane_geometry(plane);
         let plane_block = self.plane_block(plane);
         let (sub_x, sub_y) = self.chroma.subsampling(plane);
         let sb_mask = block_decoded.sb_size4().saturating_sub(1);
-        let x4 = (self.block.col4 & sb_mask) >> sub_x;
-        let y4 = (self.block.row4 & sb_mask) >> sub_y;
+        let x4 = (block.col4 & sb_mask) >> sub_x;
+        let y4 = (block.row4 & sb_mask) >> sub_y;
         NeighbourAvailability::new(
-            self.block.has_above(),
-            self.block.has_left(),
+            block.has_above(),
+            block.has_left(),
             block_decoded.count_top_right_avail(plane.index(), x4, y4, plane_block.width4()),
             block_decoded.count_bottom_left_avail(plane.index(), x4, y4, plane_block.height4()),
         )
+    }
+
+    fn plane_geometry(self, plane: PlaneId) -> (BlockRect, TxShape) {
+        match (plane, self.chroma_ref) {
+            (PlaneId::Y, _) | (_, None) => (self.block, self.tx),
+            (PlaneId::U | PlaneId::V, Some(chroma_ref)) => chroma_ref,
+        }
     }
 }
 
@@ -324,6 +352,22 @@ mod tests {
         assert_eq!((u.x(), u.y()), (32, 16));
         assert_eq!((u.width4(), u.height4()), (8, 4));
         assert_eq!((u.tx().width_log2(), u.tx().height_log2()), (5, 4));
+    }
+
+    #[test]
+    fn plane_blocks_use_chroma_ref_geometry_for_420_chroma() {
+        let chroma_ref = BlockRect::new(24, 206, 2, 4);
+        let chroma_tx = TxShape::from_luma_4x4(2, 4).expect("valid chroma reference transform");
+        let ctx = ctx(24, 207, 1, 4).with_chroma_ref(chroma_ref, chroma_tx);
+
+        let y = ctx.plane_block(PlaneId::Y);
+        assert_eq!((y.x(), y.y()), (828, 96));
+        assert_eq!((y.width4(), y.height4()), (1, 4));
+
+        let u = ctx.plane_block(PlaneId::U);
+        assert_eq!((u.x(), u.y()), (412, 48));
+        assert_eq!((u.width4(), u.height4()), (1, 2));
+        assert_eq!((u.tx().width_log2(), u.tx().height_log2()), (2, 3));
     }
 
     #[test]

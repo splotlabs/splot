@@ -186,7 +186,7 @@ pub(super) fn checked_fsc_sign_entries(
             config_height: config.tx_height,
         });
     }
-    let entries = fsc_sign_entries(block, level_walk.seg_eob(), scan)?;
+    let entries = fsc_sign_entries(block, level_walk.bob(), level_walk.seg_eob(), scan)?;
     for entry in entries.iter().copied() {
         preflight_entry(block, entry)?;
     }
@@ -195,6 +195,7 @@ pub(super) fn checked_fsc_sign_entries(
 
 pub(super) fn fsc_sign_entries(
     block: &TransformCoeffBlockState,
+    bob: usize,
     seg_eob: usize,
     scan: &[u16],
 ) -> Result<Vec<CoeffScanEntry>, CoeffFscSignPassError> {
@@ -207,8 +208,8 @@ pub(super) fn fsc_sign_entries(
     let width = block.width();
     let coeff_count = block.level().len();
     let mut entries = Vec::new();
-    entries.try_reserve(seg_eob)?;
-    for (scan_index, &scan_pos) in scan.iter().enumerate().take(seg_eob) {
+    entries.try_reserve(seg_eob.saturating_sub(bob))?;
+    for (scan_index, &scan_pos) in scan.iter().enumerate().take(seg_eob).skip(bob) {
         let pos = usize::from(scan_pos);
         if pos >= coeff_count {
             return Err(CoeffFscSignPassError::ScanPositionOutOfRange {

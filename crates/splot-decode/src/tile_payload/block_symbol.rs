@@ -465,6 +465,7 @@ mod tests {
 
     const BLOCK_64X64: usize = 12;
     const BLOCK_256X256: usize = 18;
+    const CLEAR_PARTITION_CONTEXT: usize = 0;
     const PAYLOAD: [u8; 2] = [0x12, 0xFB];
 
     fn symbols_at_block_frontier<'payload>(
@@ -473,8 +474,8 @@ mod tests {
         let rows = vec![vec![BLOCK_256X256; 16]; 16];
         let mi0_rows: Vec<&[usize]> = rows.iter().map(Vec::as_slice).collect();
         let mi1_rows: Vec<&[usize]> = rows.iter().map(Vec::as_slice).collect();
-        let left = vec![BLOCK_256X256; 16];
-        let above = vec![BLOCK_256X256; 16];
+        let left = vec![CLEAR_PARTITION_CONTEXT; 16];
+        let above = vec![CLEAR_PARTITION_CONTEXT; 16];
         let context = TilePartitionContextState::new(
             [&mi0_rows, &mi1_rows],
             [&left, &left],

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+#[cfg(test)]
+use splot_recon::BitDepth;
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect,
-    ReferencePlaneView, SubpelPredictParams, VisibleRows, blend_compound_average_equal,
-    subpel_predict_block, subpel_predict_block_compound_intermediate,
+    CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect, ReconSample,
+    ReferencePlaneView, SubpelPredictParams, VisibleRows, WARPED_BLOCK_SIZE,
+    WarpPredictBlockParams, blend_compound_average_equal, subpel_predict_block,
+    subpel_predict_block_compound_intermediate, warp_predict_block,
 };
 
 use super::mv_scaling::derive_plane_scaling;
@@ -24,15 +27,15 @@ pub(super) struct McBlockRect {
     pub(super) luma_h: usize,
 }
 #[derive(Clone, Copy, Debug)]
-pub(super) struct InterBlockParams<'a> {
+pub(super) struct InterBlockParams<'a, T: ReconSample> {
     rect: McBlockRect,
-    prediction: InterPrediction<'a>,
+    prediction: InterPrediction<'a, T>,
     interp: InterpolationFilter,
 }
 
-impl<'a> InterBlockParams<'a> {
+impl<'a, T: ReconSample> InterBlockParams<'a, T> {
     pub(super) const fn single(
-        reference: &'a DecodedFrame<u8>,
+        reference: &'a DecodedFrame<T>,
         rect: McBlockRect,
         mv: Mv,
         interp: InterpolationFilter,
@@ -44,8 +47,8 @@ impl<'a> InterBlockParams<'a> {
         }
     }
     pub(super) const fn compound_average(
-        reference0: &'a DecodedFrame<u8>,
-        reference1: &'a DecodedFrame<u8>,
+        reference0: &'a DecodedFrame<T>,
+        reference1: &'a DecodedFrame<T>,
         rect: McBlockRect,
         mv0: Mv,
         mv1: Mv,
@@ -62,32 +65,50 @@ impl<'a> InterBlockParams<'a> {
             interp,
         }
     }
+    pub(super) const fn single_warp(
+        reference: &'a DecodedFrame<T>,
+        rect: McBlockRect,
+        warp_params: [i64; 6],
+    ) -> Self {
+        Self {
+            rect,
+            prediction: InterPrediction::SingleWarp {
+                reference,
+                warp_params,
+            },
+            interp: InterpolationFilter::EightTap,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug)]
-enum InterPrediction<'a> {
+enum InterPrediction<'a, T: ReconSample> {
     Single {
-        reference: &'a DecodedFrame<u8>,
+        reference: &'a DecodedFrame<T>,
         mv: Mv,
     },
+    SingleWarp {
+        reference: &'a DecodedFrame<T>,
+        warp_params: [i64; 6],
+    },
     CompoundAverage {
-        reference0: &'a DecodedFrame<u8>,
-        reference1: &'a DecodedFrame<u8>,
+        reference0: &'a DecodedFrame<T>,
+        reference1: &'a DecodedFrame<T>,
         mv0: Mv,
         mv1: Mv,
     },
 }
 #[derive(Clone, Copy, Debug)]
-struct CompoundMcBlock<'a> {
-    reference0: &'a DecodedFrame<u8>,
-    reference1: &'a DecodedFrame<u8>,
+struct CompoundMcBlock<'a, T: ReconSample> {
+    reference0: &'a DecodedFrame<T>,
+    reference1: &'a DecodedFrame<T>,
     rect: McBlockRect,
     mv0: Mv,
     mv1: Mv,
     interp: InterpolationFilter,
 }
-pub(super) fn motion_compensate_inter_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
-    block: InterBlockParams<'_>,
+pub(super) fn motion_compensate_inter_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: InterBlockParams<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
     match block.prediction {
@@ -97,6 +118,16 @@ pub(super) fn motion_compensate_inter_block_into(
             block.rect,
             mv,
             block.interp,
+            offset,
+        ),
+        InterPrediction::SingleWarp {
+            reference,
+            warp_params,
+        } => motion_compensate_single_warp_block_into(
+            workspace,
+            reference,
+            block.rect,
+            warp_params,
             offset,
         ),
         InterPrediction::CompoundAverage {
@@ -119,24 +150,34 @@ pub(super) fn motion_compensate_inter_block_into(
     }
 }
 
-fn motion_compensate_single_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
-    reference: &DecodedFrame<u8>,
+fn motion_compensate_single_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    reference: &DecodedFrame<T>,
     rect: McBlockRect,
     mv: Mv,
     interp: InterpolationFilter,
     offset: ByteOffset,
 ) -> Result<()> {
-    for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+    motion_compensate_planes(workspace, |workspace, plane, sub_x, sub_y| {
         predict_plane(
             workspace, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
-        )?;
+        )
+    })
+}
+
+fn motion_compensate_planes<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    mut predict: impl FnMut(&mut CurrentFrameWorkspace<T>, PlaneId, u32, u32) -> Result<()>,
+) -> Result<()> {
+    for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+        predict(workspace, plane, sub_x, sub_y)?;
     }
     Ok(())
 }
-fn motion_compensate_compound_average_block_into(
-    workspace: &mut CurrentFrameWorkspace<u8>,
-    block: CompoundMcBlock<'_>,
+
+fn motion_compensate_compound_average_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: CompoundMcBlock<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
     for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
@@ -156,10 +197,31 @@ fn motion_compensate_compound_average_block_into(
     }
     Ok(())
 }
+fn motion_compensate_single_warp_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    reference: &DecodedFrame<T>,
+    rect: McBlockRect,
+    warp_params: [i64; 6],
+    offset: ByteOffset,
+) -> Result<()> {
+    motion_compensate_planes(workspace, |workspace, plane, sub_x, sub_y| {
+        predict_warp_plane(
+            workspace,
+            reference,
+            plane,
+            rect,
+            warp_params,
+            sub_x,
+            sub_y,
+            offset,
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
-fn predict_plane(
-    workspace: &mut CurrentFrameWorkspace<u8>,
-    reference: &DecodedFrame<u8>,
+fn predict_plane<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    reference: &DecodedFrame<T>,
     plane: PlaneId,
     rect: McBlockRect,
     mv: Mv,
@@ -202,14 +264,14 @@ fn predict_plane(
         first_y: scaling.first_y,
         last_x: scaling.last_x,
         last_y: scaling.last_y,
-        bit_depth: BitDepth::Eight,
+        bit_depth: workspace.info().bit_depth(),
     };
     let predicted = subpel_predict_block(&view, &params)?;
 
-    let packed: Vec<u8> = predicted
+    let packed: Vec<T> = predicted
         .iter()
-        .map(|&v| u8::try_from(v).unwrap_or(u8::MAX))
-        .collect();
+        .map(|&v| T::try_from_u16(v))
+        .collect::<splot_recon::Result<Vec<T>>>()?;
 
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
     workspace.write_rect(plane, rect, &packed, block_w)?;
@@ -217,10 +279,68 @@ fn predict_plane(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn predict_compound_plane(
-    workspace: &mut CurrentFrameWorkspace<u8>,
-    reference0: &DecodedFrame<u8>,
-    reference1: &DecodedFrame<u8>,
+fn predict_warp_plane<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    reference: &DecodedFrame<T>,
+    plane: PlaneId,
+    rect: McBlockRect,
+    warp_params: [i64; 6],
+    sub_x: u32,
+    sub_y: u32,
+    offset: ByteOffset,
+) -> Result<()> {
+    let (samples, ref_width, ref_height, _, _) = reference_plane_samples(reference, plane, offset)?;
+    let view = ReferencePlaneView::new(&samples, ref_width, ref_height)?;
+
+    let plane_x = rect.luma_x >> sub_x;
+    let plane_y = rect.luma_y >> sub_y;
+    let block_w = rect.luma_w >> sub_x;
+    let block_h = rect.luma_h >> sub_y;
+    let bit_depth = workspace.info().bit_depth();
+    if block_w < WARPED_BLOCK_SIZE || block_h < WARPED_BLOCK_SIZE {
+        return Err(unsupported_at(
+            "inter_warp_small_block_fallback_unimplemented",
+            offset,
+            "minimal inter motion compensation does not yet implement ext_block_warp for warped blocks smaller than 8x8",
+            "7.13.3.7",
+        ));
+    }
+
+    for local_y in (0..block_h).step_by(WARPED_BLOCK_SIZE) {
+        for local_x in (0..block_w).step_by(WARPED_BLOCK_SIZE) {
+            let params = WarpPredictBlockParams {
+                warp_params,
+                block_x: (plane_x + local_x) as i64,
+                block_y: (plane_y + local_y) as i64,
+                subsampling_x: sub_x as u8,
+                subsampling_y: sub_y as u8,
+                first_x: 0,
+                first_y: 0,
+                last_x: ref_width as i64 - 1,
+                last_y: ref_height as i64 - 1,
+                bit_depth,
+            };
+            let predicted = warp_predict_block(&view, &params)?;
+            let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
+            let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
+            let mut packed: Vec<T> = Vec::with_capacity(write_w.saturating_mul(write_h));
+            for row in 0..write_h {
+                for col in 0..write_w {
+                    packed.push(T::try_from_u16(predicted[row * WARPED_BLOCK_SIZE + col])?);
+                }
+            }
+            let rect = PlaneRect::new(plane_x + local_x, plane_y + local_y, write_w, write_h)?;
+            workspace.write_rect(plane, rect, &packed, write_w)?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn predict_compound_plane<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    reference0: &DecodedFrame<T>,
+    reference1: &DecodedFrame<T>,
     plane: PlaneId,
     rect: McBlockRect,
     mv0: Mv,
@@ -279,7 +399,7 @@ fn predict_compound_plane(
         first_y: scaling0.first_y,
         last_x: scaling0.last_x,
         last_y: scaling0.last_y,
-        bit_depth: BitDepth::Eight,
+        bit_depth: workspace.info().bit_depth(),
     };
     let params1 = SubpelPredictParams {
         interp,
@@ -293,23 +413,23 @@ fn predict_compound_plane(
         first_y: scaling1.first_y,
         last_x: scaling1.last_x,
         last_y: scaling1.last_y,
-        bit_depth: BitDepth::Eight,
+        bit_depth: workspace.info().bit_depth(),
     };
     let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0)?;
     let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1)?;
-    let blended = blend_compound_average_equal(&pred0, &pred1, BitDepth::Eight)?;
+    let blended = blend_compound_average_equal(&pred0, &pred1, workspace.info().bit_depth())?;
 
-    let packed: Vec<u8> = blended
+    let packed: Vec<T> = blended
         .iter()
-        .map(|&v| u8::try_from(v).unwrap_or(u8::MAX))
-        .collect();
+        .map(|&v| T::try_from_u16(v))
+        .collect::<splot_recon::Result<Vec<T>>>()?;
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
     workspace.write_rect(plane, rect, &packed, block_w)?;
     Ok(())
 }
 
-fn reference_plane_samples(
-    reference: &DecodedFrame<u8>,
+fn reference_plane_samples<T: ReconSample>(
+    reference: &DecodedFrame<T>,
     plane: PlaneId,
     offset: ByteOffset,
 ) -> Result<(Vec<u16>, usize, usize, i64, i64)> {
@@ -326,9 +446,9 @@ fn reference_plane_samples(
     let ref_height = visible.height();
 
     let mut samples: Vec<u16> = Vec::with_capacity(ref_width.saturating_mul(ref_height));
-    let rows: VisibleRows<'_, u8> = ref_plane.visible_rows();
+    let rows: VisibleRows<'_, T> = ref_plane.visible_rows();
     for row in rows {
-        samples.extend(row.iter().map(|&s| u16::from(s)));
+        samples.extend(row.iter().map(|&s| s.to_u16()));
     }
 
     let luma_visible = reference.y().visible_size();

@@ -36,6 +36,7 @@
 
 use crate::bitio::BitReader;
 use crate::error::Result;
+use crate::headers::frame::size::ceil_log2;
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 
 mod wienerns;
@@ -225,9 +226,8 @@ pub struct LrPlaneParams {
     pub restoration_type: FrameRestorationType,
     /// `frame_filters_on[plane]`: whether the plane signals a frame-level Wiener filter.
     pub frame_filters_on: bool,
-    /// `NumFilterClasses` derived from `num_filter_classes_idx` (plane 0 only, when
-    /// `frame_filters_on[0]` and not temporal — always non-temporal on the intra path);
-    /// `None` when not signalled.
+    /// `NumFilterClasses` derived from `num_filter_classes_idx` when
+    /// `frame_filters_on[plane]` is set and not temporal; `None` when not signalled.
     pub num_filter_classes: Option<u8>,
     /// Parsed frame-level `FrameLrWienerNs[plane]` bank from
     /// `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.20.10.6), present only when
@@ -316,6 +316,60 @@ pub fn parse_lr_params(
     geometry: LrGeometry,
     base_q_idx: u32,
 ) -> Result<LrParseOutcome> {
+    parse_lr_params_with_references(
+        reader,
+        coded_lossless,
+        num_planes,
+        *view,
+        geometry,
+        base_q_idx,
+        0,
+        [0; 3],
+    )
+}
+
+/// Parses `lr_params()` for a non-switch inter path with `NumTotalRefs` already derived.
+///
+/// The inter grammar differs from the intra wrapper only when a Wiener-NS-capable plane has
+/// `frame_filters_on[plane] == 1`: § 5.18.7.11 reads `temporal_pred_flag[plane]` when
+/// `NumTotalRefs > 0`, and reads `rst_ref_pic_idx` when that flag is set and more than one
+/// reference is available. Temporal-copy filter banks are represented by
+/// `frame_filters_on == true` with no local `frame_filter_bank`; runtime consumers already
+/// treat that as an unsupported reconstruction input until reference-filter state is modeled.
+#[allow(clippy::too_many_arguments)]
+pub fn parse_lr_params_for_inter(
+    reader: &mut BitReader<'_>,
+    coded_lossless: bool,
+    num_planes: u8,
+    view: CoreSeqRestorationView,
+    geometry: LrGeometry,
+    base_q_idx: u32,
+    num_ref_frames: u32,
+    reference_filter_counts: [usize; 3],
+) -> Result<LrParseOutcome> {
+    parse_lr_params_with_references(
+        reader,
+        coded_lossless,
+        num_planes,
+        view,
+        geometry,
+        base_q_idx,
+        num_ref_frames,
+        reference_filter_counts,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_lr_params_with_references(
+    reader: &mut BitReader<'_>,
+    coded_lossless: bool,
+    num_planes: u8,
+    view: CoreSeqRestorationView,
+    geometry: LrGeometry,
+    base_q_idx: u32,
+    num_ref_frames: u32,
+    reference_filter_counts: [usize; 3],
+) -> Result<LrParseOutcome> {
     let _ = base_q_idx; // `get_filter_set_index(base_q_idx)` signals no bits (SubclassLookup only).
     if coded_lossless || !view.enable_restoration {
         return Ok(LrParseOutcome::Parsed(LrParams {
@@ -328,10 +382,11 @@ pub fn parse_lr_params(
     let mut uses_luma_lr = false;
     let mut uses_chroma_lr = false;
     let mut planes: Vec<LrPlaneParams> = Vec::with_capacity(usize::from(num_planes));
+    let mut temporal_pred_flags: Vec<bool> = Vec::with_capacity(usize::from(num_planes));
 
     for plane in 0..usize::from(num_planes) {
         let is_chroma = plane > 0;
-        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(*view, is_chroma);
+        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(view, is_chroma);
         let tool_index = reader.read_ns(n)?;
         let tool = index_to_tool.get(tool_index as usize).copied().unwrap_or(0);
         let restoration_type = FrameRestorationType::from_tool(tool);
@@ -346,6 +401,7 @@ pub fn parse_lr_params(
 
         let mut frame_filters_on = false;
         let mut num_filter_classes: Option<u8> = None;
+        let mut temporal_pred_flag = false;
 
         if matches!(
             restoration_type,
@@ -353,15 +409,31 @@ pub fn parse_lr_params(
         ) {
             frame_filters_on = reader.read_flag()?;
             if frame_filters_on && plane == 0 {
-                let idx = reader.read_bits_u8(3)?;
-                let classes = DECODE_NUM_FILTER_CLASSES
-                    .get(usize::from(idx))
-                    .copied()
-                    .unwrap_or(1);
-                num_filter_classes = Some(classes);
+                if num_ref_frames > 0 {
+                    temporal_pred_flag = reader.read_flag()?;
+                }
+                if temporal_pred_flag && num_ref_frames > 1 {
+                    let n = ceil_log2(num_ref_frames);
+                    let _rst_ref_pic_idx = reader.read_f(n)?;
+                }
+                if !temporal_pred_flag && max_num_filter_classes(plane) > 1 {
+                    let idx = reader.read_bits_u8(3)?;
+                    let classes = DECODE_NUM_FILTER_CLASSES
+                        .get(usize::from(idx))
+                        .copied()
+                        .unwrap_or(1);
+                    num_filter_classes = Some(classes);
+                }
+            } else if frame_filters_on && num_ref_frames > 0 {
+                temporal_pred_flag = reader.read_flag()?;
+                if temporal_pred_flag && num_ref_frames > 1 {
+                    let n = ceil_log2(num_ref_frames);
+                    let _rst_ref_pic_idx = reader.read_f(n)?;
+                }
             }
         }
 
+        temporal_pred_flags.push(temporal_pred_flag);
         planes.push(LrPlaneParams {
             restoration_type,
             frame_filters_on,
@@ -392,14 +464,18 @@ pub fn parse_lr_params(
     loop_restoration_size[2] = loop_restoration_size[1];
 
     for (plane, plane_params) in planes.iter_mut().enumerate() {
-        if plane_params.frame_filters_on {
-            let classes = if plane == 0 {
-                plane_params.num_filter_classes.unwrap_or(1)
-            } else {
-                1
-            };
-            plane_params.frame_filter_bank =
-                Some(parse_frame_wiener_ns_filter(reader, plane, classes, *view)?);
+        if plane_params.frame_filters_on
+            && !temporal_pred_flags.get(plane).copied().unwrap_or(false)
+        {
+            let classes = plane_params.num_filter_classes.unwrap_or(1);
+            let num_ref_filters = reference_filter_counts.get(plane).copied().unwrap_or(0);
+            plane_params.frame_filter_bank = Some(parse_frame_wiener_ns_filter(
+                reader,
+                plane,
+                classes,
+                num_ref_filters,
+                view,
+            )?);
         }
     }
 
@@ -455,6 +531,10 @@ pub(crate) fn lr_plane_tool_table(
     let allow_switchable = tools_count > 2;
     let n = tools_count as u32 + u32::from(allow_switchable);
     (index_to_tool, tools_count, n)
+}
+
+const fn max_num_filter_classes(_plane: usize) -> u8 {
+    DECODE_NUM_FILTER_CLASSES[DECODE_NUM_FILTER_CLASSES.len() - 1]
 }
 
 /// `LoopRestorationSize` when restoration is disabled or before any signalling
@@ -530,6 +610,38 @@ pub fn parse_ccso_params(
     num_planes: u8,
     view: &CoreSeqCcsoView,
 ) -> Result<CcsoParams> {
+    parse_ccso_params_with_references(reader, coded_lossless, num_planes, *view, None)
+}
+
+/// Parses `ccso_params()` for a non-switch inter path with `NumTotalRefs` already derived.
+///
+/// When a plane enables CCSO, § 5.18.7.12 reads the inter-only `reuse_ccso` and
+/// `sb_reuse_ccso` flags. If `reuse_ccso` is set, the direct per-plane coefficients are not
+/// present; the returned plane keeps those direct fields as `None`, matching the existing
+/// "not locally available" representation used by runtime/frontier checks.
+pub fn parse_ccso_params_for_inter(
+    reader: &mut BitReader<'_>,
+    coded_lossless: bool,
+    num_planes: u8,
+    view: CoreSeqCcsoView,
+    num_ref_frames: u32,
+) -> Result<CcsoParams> {
+    parse_ccso_params_with_references(
+        reader,
+        coded_lossless,
+        num_planes,
+        view,
+        Some(num_ref_frames),
+    )
+}
+
+fn parse_ccso_params_with_references(
+    reader: &mut BitReader<'_>,
+    coded_lossless: bool,
+    num_planes: u8,
+    view: CoreSeqCcsoView,
+    inter_num_ref_frames: Option<u32>,
+) -> Result<CcsoParams> {
     if coded_lossless || !view.enable_ccso {
         return Ok(CcsoParams {
             ccso_frame_flag: None,
@@ -564,6 +676,20 @@ pub fn parse_ccso_params(
         };
 
         if ccso_planes {
+            let mut reuse_ccso = false;
+            if let Some(num_ref_frames) = inter_num_ref_frames {
+                reuse_ccso = reader.read_flag()?;
+                let sb_reuse_ccso = reader.read_flag()?;
+                if (reuse_ccso || sb_reuse_ccso) && num_ref_frames > 1 {
+                    let n = ceil_log2(num_ref_frames);
+                    let _ccso_ref_idx = reader.read_f(n)?;
+                }
+            }
+            if reuse_ccso {
+                planes.push(plane_params);
+                continue;
+            }
+
             let ccso_bo_only = reader.read_flag()?;
             let ccso_scale_idx = reader.read_bits_u8(2)?;
             let (ccso_quant_idx, ccso_ext_filter, ccso_edge_clf) = if ccso_bo_only {
@@ -805,6 +931,78 @@ mod tests {
     }
 
     #[test]
+    fn lr_inter_temporal_flag_zero_still_parses_local_wienerns_bank() {
+        let mut bits = Bits::default();
+        bits.ns(1, 2); // plane 0 -> RESTORE_WIENER_NONSEP
+        bits.bit(1); // frame_filters_on[0]
+        bits.bit(0); // temporal_pred_flag[0]
+        bits.f(1, 3); // num_filter_classes_idx -> 2 classes
+        bits.ns(0, 2); // plane 1 -> RESTORE_NONE
+        bits.ns(0, 2); // plane 2 -> RESTORE_NONE
+        bits.bit(1); // lr_luma_use_half_size
+        bits.bit(0); // class 1 match_index == 1
+        bits.bit(1); // merged[0]
+        bits.bit(1); // merged[1]
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let outcome = parse_lr_params_for_inter(
+            &mut r,
+            false,
+            3,
+            restoration_enabled_without_luma_pc(),
+            geom_128_420(),
+            100,
+            1,
+            [0; 3],
+        )
+        .unwrap();
+        match outcome {
+            LrParseOutcome::Parsed(params) => {
+                assert!(params.planes[0].frame_filters_on);
+                assert_eq!(params.planes[0].num_filter_classes, Some(2));
+                assert!(params.planes[0].frame_filter_bank.is_some());
+            }
+            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
+                panic!("expected Parsed, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn lr_inter_temporal_flag_one_skips_local_wienerns_bank() {
+        let mut bits = Bits::default();
+        bits.ns(1, 2); // plane 0 -> RESTORE_WIENER_NONSEP
+        bits.bit(1); // frame_filters_on[0]
+        bits.bit(1); // temporal_pred_flag[0], rst_ref_pic_idx inferred 0 for one ref
+        bits.ns(0, 2); // plane 1 -> RESTORE_NONE
+        bits.ns(0, 2); // plane 2 -> RESTORE_NONE
+        bits.bit(1); // lr_luma_use_half_size
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let outcome = parse_lr_params_for_inter(
+            &mut r,
+            false,
+            3,
+            restoration_enabled_without_luma_pc(),
+            geom_128_420(),
+            100,
+            1,
+            [0; 3],
+        )
+        .unwrap();
+        match outcome {
+            LrParseOutcome::Parsed(params) => {
+                assert!(params.planes[0].frame_filters_on);
+                assert_eq!(params.planes[0].num_filter_classes, None);
+                assert!(params.planes[0].frame_filter_bank.is_none());
+            }
+            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
+                panic!("expected Parsed, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
     fn lr_eof_mid_tool_index_is_structured_error() {
         let mut r = reader(&[]);
         assert!(matches!(
@@ -940,6 +1138,45 @@ mod tests {
         assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
         assert!(!params.planes[1].ccso_planes);
         assert!(params.planes[1].ccso_offset_idx.is_empty());
+    }
+
+    #[test]
+    fn ccso_inter_reuse_flags_zero_parse_direct_plane_fields() {
+        let mut bits = Bits::default();
+        bits.bit(1); // ccso_frame_flag
+        bits.bit(1); // ccso_planes[0]
+        bits.bit(0); // reuse_ccso[0]
+        bits.bit(0); // sb_reuse_ccso[0]
+        bits.bit(1); // ccso_bo_only[0]
+        bits.f(0, 2); // ccso_scale_idx[0]
+        bits.f(0, 3); // ccso_max_band_log2[0]
+        bits.tu(0, 7); // ccso_offset_idx
+        bits.bit(0); // ccso_planes[1]
+        bits.bit(0); // ccso_planes[2]
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let params = parse_ccso_params_for_inter(&mut r, false, 3, ccso_enabled(), 1).unwrap();
+        assert_eq!(params.planes.len(), 3);
+        assert_eq!(params.planes[0].ccso_bo_only, Some(true));
+        assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
+    }
+
+    #[test]
+    fn ccso_inter_reuse_flag_one_skips_direct_plane_fields() {
+        let mut bits = Bits::default();
+        bits.bit(1); // ccso_frame_flag
+        bits.bit(1); // ccso_planes[0]
+        bits.bit(1); // reuse_ccso[0]
+        bits.bit(0); // sb_reuse_ccso[0], ccso_ref_idx inferred 0 for one ref
+        bits.bit(0); // ccso_planes[1]
+        bits.bit(0); // ccso_planes[2]
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let params = parse_ccso_params_for_inter(&mut r, false, 3, ccso_enabled(), 1).unwrap();
+        assert_eq!(params.planes.len(), 3);
+        assert!(params.planes[0].ccso_planes);
+        assert_eq!(params.planes[0].ccso_bo_only, None);
+        assert!(params.planes[0].ccso_offset_idx.is_empty());
     }
 
     #[test]

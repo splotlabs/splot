@@ -12,8 +12,8 @@ use super::block_decoded_state::TileBlockDecodedState;
 use super::block_symbol::{MinimalBlockSymbolTraceError, consume_minimal_block_symbol_trace};
 use super::intra_joint_modes::{
     IsCflContext, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
-    TileIntraJointModeStateError, TileUsesMrlsState, TileUsesMrlsStateError, TileUvCflState,
-    TileUvCflStateError,
+    TileIntraJointModeStateError, TileLumaPaletteState, TileLumaPaletteStateError,
+    TileUsesMrlsState, TileUsesMrlsStateError, TileUvCflState, TileUvCflStateError,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::PartitionType;
@@ -73,6 +73,8 @@ pub(crate) enum MinimalRuntimePartitionFrontierError {
     UsesMrlsState(#[from] TileUsesMrlsStateError),
     #[error("minimal runtime intra FscModes state failed: {0}")]
     FscModeState(#[from] TileFscModeStateError),
+    #[error("minimal runtime luma palette state failed: {0}")]
+    LumaPaletteState(#[from] TileLumaPaletteStateError),
     #[error("minimal runtime intra UVCfls state failed: {0}")]
     UvCflState(#[from] TileUvCflStateError),
     #[error("minimal runtime partition frontier mismatch: {reason}")]
@@ -155,6 +157,7 @@ where
         &TileIntraJointModeState,
         &TileUsesMrlsState,
         &TileFscModeState,
+        &TileLumaPaletteState,
         IsCflContext,
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
@@ -180,6 +183,7 @@ where
         &TileIntraJointModeState,
         &TileUsesMrlsState,
         &TileFscModeState,
+        &TileLumaPaletteState,
         IsCflContext,
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
@@ -203,6 +207,7 @@ where
         &TileIntraJointModeState,
         &TileUsesMrlsState,
         &TileFscModeState,
+        &TileLumaPaletteState,
         IsCflContext,
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
@@ -223,6 +228,8 @@ where
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
     let mut fsc_modes = TileFscModeState::new(mi_rows, mi_cols, sb_size4)
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
+    let mut palette_y = TileLumaPaletteState::new(mi_rows, mi_cols, sb_size4)
+        .map_err(MinimalRuntimePartitionFrontierError::from)?;
     let mut uv_cfls = TileUvCflState::new(mi_rows, mi_cols)
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
     let output: GeneralIntraPartitionTreeOutput<'payload> = decode_general_intra_partition_tree(
@@ -232,6 +239,7 @@ where
         &mut joint_modes,
         &mut uses_mrls,
         &mut fsc_modes,
+        &mut palette_y,
         &mut uv_cfls,
         limits,
         retain_lr_source_blocks,
@@ -467,7 +475,7 @@ fn frame_sb_size_index(seq_sb_size: SuperblockSize, frame_is_intra: bool) -> usi
     }
 }
 
-fn chroma_subsampling(chroma: ChromaFormatIdc) -> (bool, bool) {
+pub(crate) fn chroma_subsampling(chroma: ChromaFormatIdc) -> (bool, bool) {
     match chroma {
         ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (true, true),
         ChromaFormatIdc::Yuv422 => (true, false),
@@ -626,59 +634,66 @@ mod tests {
 
     fn with_minimal_work_unit<R>(
         bytes: &[u8],
-        f: impl FnOnce(&mut DecodeTileWorkUnit<'_>, &SequenceHeader, &FrameHeaderCore) -> R,
-    ) -> R {
+        f: impl FnOnce(&mut DecodeTileWorkUnit<'_>, &SequenceHeader, &FrameHeaderCore) -> R + Send,
+    ) -> R
+    where
+        R: Send,
+    {
         let context =
             DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
-        let plan = context.plan_bytes(bytes, DecodeOptions::default()).unwrap();
-        let candidate = plan.frame_candidates().next().unwrap();
+        context.pool().install(move || {
+            let context =
+                DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
+            let plan = context.plan_bytes(bytes, DecodeOptions::default()).unwrap();
+            let candidate = plan.frame_candidates().next().unwrap();
 
-        let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(bytes) else {
-            panic!("minimal fixture must parse as IVF");
-        };
-        let frame = ivf.frames.first().unwrap();
-        let [_, sequence_envelope, frame_envelope] = frame.obus.as_slice() else {
-            panic!("minimal fixture must contain temporal delimiter, sequence, and frame OBUs");
-        };
+            let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(bytes) else {
+                panic!("minimal fixture must parse as IVF");
+            };
+            let frame = ivf.frames.first().unwrap();
+            let [_, sequence_envelope, frame_envelope] = frame.obus.as_slice() else {
+                panic!("minimal fixture must contain temporal delimiter, sequence, and frame OBUs");
+            };
 
-        let mut sequence_reader = BitReader::new(
-            sequence_envelope.payload,
-            sequence_envelope.payload_offset(),
-        );
-        let sequence = parse_sequence_header(&mut sequence_reader).unwrap();
+            let mut sequence_reader = BitReader::new(
+                sequence_envelope.payload,
+                sequence_envelope.payload_offset(),
+            );
+            let sequence = parse_sequence_header(&mut sequence_reader).unwrap();
 
-        let mut frame_reader =
-            BitReader::new(frame_envelope.payload, frame_envelope.payload_offset());
-        assert_ne!(frame_reader.read_bit().unwrap(), 0);
-        let frame_input = FrameHeaderParseInput {
-            obu_type: frame_envelope.header.obu_type,
-            first_picture_in_tu: true,
-            active_sequence: Some(&sequence),
-            mfh_record: None,
-            reference_state: FrameReferenceStateView::unknown(),
-            mode: FrameHeaderParseMode::Core,
-        };
-        let core = parse_frame_header_core(&mut frame_reader, &frame_input).unwrap();
+            let mut frame_reader =
+                BitReader::new(frame_envelope.payload, frame_envelope.payload_offset());
+            assert_ne!(frame_reader.read_bit().unwrap(), 0);
+            let frame_input = FrameHeaderParseInput {
+                obu_type: frame_envelope.header.obu_type,
+                first_picture_in_tu: true,
+                active_sequence: Some(&sequence),
+                mfh_record: None,
+                reference_state: FrameReferenceStateView::unknown(),
+                mode: FrameHeaderParseMode::Core,
+            };
+            let core = parse_frame_header_core(&mut frame_reader, &frame_input).unwrap();
 
-        let tq = sequence.transform_quant_entropy.as_ref().unwrap();
-        let coeff = FrameCandidateCoeffFacts::from_tq(tq);
-        let facts = FrameCandidateTileFacts::from_frame_core(&core, coeff).unwrap();
-        let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
-        let input = FrameCandidateTileBoundaryInput::new(
-            &plan,
-            candidate,
-            bytes,
-            *frame_envelope,
-            TileGroupPositionFacts::new(true, true),
-            facts,
-            cdf,
-            DecodeLimits::DEFAULT,
-        );
-        let mut tile_plan = plan_derived_tile_payload_boundary(&input).unwrap();
-        let [work_unit] = tile_plan.work_units_mut() else {
-            panic!("minimal fixture must derive one tile work unit");
-        };
+            let tq = sequence.transform_quant_entropy.as_ref().unwrap();
+            let coeff = FrameCandidateCoeffFacts::from_tq(tq);
+            let facts = FrameCandidateTileFacts::from_frame_core(&core, coeff).unwrap();
+            let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
+            let input = FrameCandidateTileBoundaryInput::new(
+                &plan,
+                candidate,
+                bytes,
+                *frame_envelope,
+                TileGroupPositionFacts::new(true, true),
+                facts,
+                cdf,
+                DecodeLimits::DEFAULT,
+            );
+            let mut tile_plan = plan_derived_tile_payload_boundary(&input).unwrap();
+            let [work_unit] = tile_plan.work_units_mut() else {
+                panic!("minimal fixture must derive one tile work unit");
+            };
 
-        f(work_unit, &sequence, &core)
+            f(work_unit, &sequence, &core)
+        })
     }
 }

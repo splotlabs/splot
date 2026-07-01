@@ -18,7 +18,10 @@ use super::cdf::block_context::{
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
-use super::intra_joint_modes::{TileFscModeState, TileIntraJointModeState, TileUsesMrlsState};
+use super::intra_joint_modes::{
+    LumaPalette, PALETTE_MAX_SIZE, TileFscModeState, TileIntraJointModeState, TileLumaPaletteState,
+    TileUsesMrlsState,
+};
 
 const CHROMA_MODE_COUNT: u8 = 8;
 const UV_INTRA_MODES_CFL_NOT_ALLOWED: u8 = 13;
@@ -44,7 +47,16 @@ const CFL_MH_DIR_REASON: &str = "intra_cfl_mh_dir";
 const FSC_MODE_REASON: &str = "intra_fsc_mode";
 const MRL_INDEX_REASON: &str = "intra_mrl_index";
 const MRL_SEC_INDEX_REASON: &str = "intra_mrl_sec_index";
+const PALETTE_Y_MODE_REASON: &str = "intra_palette_y_mode";
+const PALETTE_Y_SIZE_REASON: &str = "intra_palette_y_size";
+const PALETTE_CACHE_REASON: &str = "intra_palette_color_cache";
+const PALETTE_COLOR_REASON: &str = "intra_palette_color";
+const PALETTE_EXTRA_BITS_REASON: &str = "intra_palette_extra_bits";
+const PALETTE_DELTA_REASON: &str = "intra_palette_delta";
 const FSC_MAX_SAMPLES: usize = 32;
+const PALETTE_MIN_BLOCK_SIZE_INDEX: usize = 3;
+const PALETTE_MAX_SAMPLES: usize = 64;
+const INTER_FSC_MODE_CONTEXT: usize = 3;
 const FSC_BSIZE_GROUPS: [usize; 29] = [
     0, 1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 3, 3, 4, 4, 6, 6, 4, 4, 6, 6,
 ];
@@ -58,6 +70,7 @@ pub(crate) struct GeneralIntraChromaToolConfig {
     enable_mhccp: bool,
     enable_idtx_intra: bool,
     enable_mrls: bool,
+    allow_screen_content_tools: bool,
 }
 
 impl GeneralIntraChromaToolConfig {
@@ -68,6 +81,7 @@ impl GeneralIntraChromaToolConfig {
             enable_mhccp,
             enable_idtx_intra: false,
             enable_mrls: false,
+            allow_screen_content_tools: false,
         }
     }
 
@@ -80,6 +94,15 @@ impl GeneralIntraChromaToolConfig {
     #[must_use]
     pub(crate) const fn with_enable_mrls(mut self, enable_mrls: bool) -> Self {
         self.enable_mrls = enable_mrls;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn with_allow_screen_content_tools(
+        mut self,
+        allow_screen_content_tools: bool,
+    ) -> Self {
+        self.allow_screen_content_tools = allow_screen_content_tools;
         self
     }
 
@@ -126,6 +149,7 @@ pub(crate) struct GeneralIntraBlockModes {
     pub(crate) mrl_sec_index: Option<u8>,
     pub(crate) fsc_mode: u8,
     pub(crate) uses_mrls: u8,
+    pub(crate) palette_y: Option<LumaPalette>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,6 +209,13 @@ impl GeneralIntraChromaBlockMode {
     pub(crate) const fn cfl_params(self) -> Option<CflParams> {
         self.cfl_params
     }
+
+    pub(crate) fn supported_chroma_mode(self, y_mode: IntraYMode) -> Option<SupportedChromaMode> {
+        if self.is_cfl {
+            return None;
+        }
+        supported_chroma_mode(y_mode, self.uv_mode)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -205,6 +236,57 @@ impl GeneralIntraLumaBlockMode {
 }
 
 impl GeneralIntraBlockModes {
+    pub(crate) const fn luma_only(luma: GeneralIntraLumaBlockMode) -> Self {
+        Self {
+            y_mode: luma.y_mode,
+            angle_delta_y: luma.angle_delta_y,
+            uv_mode: 0,
+            coeff_uv_mode: 0,
+            is_cfl: false,
+            cfl_params: None,
+            intra_joint_mode: luma.intra_joint_mode,
+            mrl_index: luma.mrl_index,
+            mrl_sec_index: luma.mrl_sec_index,
+            fsc_mode: luma.fsc_mode,
+            uses_mrls: luma.uses_mrls,
+            palette_y: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn from_luma_chroma(
+        luma: GeneralIntraLumaBlockMode,
+        chroma: GeneralIntraChromaBlockMode,
+    ) -> Self {
+        Self::from_luma_chroma_palette(luma, chroma, None)
+    }
+
+    pub(crate) const fn from_luma_chroma_palette(
+        luma: GeneralIntraLumaBlockMode,
+        chroma: GeneralIntraChromaBlockMode,
+        palette_y: Option<LumaPalette>,
+    ) -> Self {
+        Self {
+            y_mode: luma.y_mode,
+            angle_delta_y: luma.angle_delta_y,
+            uv_mode: chroma.uv_mode,
+            coeff_uv_mode: chroma.coeff_uv_mode,
+            is_cfl: chroma.is_cfl,
+            cfl_params: chroma.cfl_params,
+            intra_joint_mode: luma.intra_joint_mode,
+            mrl_index: luma.mrl_index,
+            mrl_sec_index: luma.mrl_sec_index,
+            fsc_mode: luma.fsc_mode,
+            uses_mrls: luma.uses_mrls,
+            palette_y,
+        }
+    }
+
+    pub(crate) const fn with_palette_y(mut self, palette_y: Option<LumaPalette>) -> Self {
+        self.palette_y = palette_y;
+        self
+    }
+
     pub(crate) fn luma_is_dc(&self) -> bool {
         self.y_mode == IntraYMode::DC_PRED
     }
@@ -243,6 +325,10 @@ impl GeneralIntraBlockModes {
     pub(crate) const fn uses_active_fsc(&self) -> bool {
         self.fsc_mode != 0
     }
+
+    pub(crate) const fn palette_y(&self) -> Option<LumaPalette> {
+        self.palette_y
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -275,6 +361,8 @@ pub(crate) enum GeneralIntraBlockModeError {
         "general intra mode-info modeIdx {mode_idx} with directional-neighbour ctx {ctx} requires §5.20.5.5 reorder support"
     )]
     UnsupportedDirectionalNeighbourReorder { ctx: usize, mode_idx: usize },
+    #[error("general intra mode-info decoded invalid luma palette size {palette_size}")]
+    InvalidPaletteYSize { palette_size: usize },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -291,9 +379,46 @@ pub(crate) fn decode_general_intra_luma_block_mode(
     block_n4w: usize,
     block_n4h: usize,
 ) -> Result<GeneralIntraLumaBlockMode, GeneralIntraBlockModeError> {
+    decode_general_intra_luma_block_mode_with_fsc_context(
+        work_unit,
+        symbols,
+        chroma_tools,
+        joint_modes,
+        uses_mrls,
+        fsc_modes,
+        true,
+        block_size_index,
+        block_r,
+        block_c,
+        block_n4w,
+        block_n4h,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    chroma_tools: GeneralIntraChromaToolConfig,
+    joint_modes: &TileIntraJointModeState,
+    uses_mrls: &TileUsesMrlsState,
+    fsc_modes: &TileFscModeState,
+    use_neighbor_fsc_context: bool,
+    block_size_index: usize,
+    block_r: usize,
+    block_c: usize,
+    block_n4w: usize,
+    block_n4h: usize,
+) -> Result<GeneralIntraLumaBlockMode, GeneralIntraBlockModeError> {
     let mode_ctx = joint_modes.y_mode_index_ctx(block_r, block_c, block_n4w, block_n4h);
     let neighbour_joint_modes =
         joint_modes.neighbour_joint_modes(block_r, block_c, block_n4w, block_n4h);
+    if std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some() {
+        eprintln!(
+            "intra luma block start=({block_r},{block_c}) n4=({block_n4w}x{block_n4h}) bsize={block_size_index} mode_ctx={mode_ctx} neighbours={neighbour_joint_modes:?} checkpoint={:?}",
+            symbols.checkpoint(),
+        );
+    }
 
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
 
@@ -309,13 +434,15 @@ pub(crate) fn decode_general_intra_luma_block_mode(
     let fsc_mode = if allow_fsc_intra(chroma_tools, block_n4w, block_n4h) {
         let bsize_group = fsc_bsize_group(block_size_index)
             .ok_or(GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { block_size_index })?;
+        let ctx = if use_neighbor_fsc_context {
+            fsc_modes.fsc_mode_ctx(block_r, block_c, block_n4w, block_n4h)
+        } else {
+            INTER_FSC_MODE_CONTEXT
+        };
         read_symbol(
             cdfs,
             symbols,
-            TileCdfSelector::FscMode {
-                ctx: fsc_modes.fsc_mode_ctx(block_r, block_c, block_n4w, block_n4h),
-                bsize_group,
-            },
+            TileCdfSelector::FscMode { ctx, bsize_group },
             FSC_MODE_REASON,
         )?
     } else {
@@ -367,21 +494,109 @@ pub(crate) fn decode_general_intra_block_modes(
     joint_modes: &TileIntraJointModeState,
     uses_mrls: &TileUsesMrlsState,
     fsc_modes: &TileFscModeState,
+    palette_state: &TileLumaPaletteState,
     is_cfl_ctx: usize,
     block_size_index: usize,
     block_r: usize,
     block_c: usize,
     block_n4w: usize,
     block_n4h: usize,
+    bit_depth_bits: u32,
 ) -> Result<GeneralIntraBlockModes, GeneralIntraBlockModeError> {
-    let luma = decode_general_intra_luma_block_mode(
+    decode_general_intra_block_modes_with_fsc_context(
         work_unit,
         symbols,
         chroma_tools,
         joint_modes,
         uses_mrls,
         fsc_modes,
+        true,
+        palette_state,
+        is_cfl_ctx,
         block_size_index,
+        block_r,
+        block_c,
+        block_n4w,
+        block_n4h,
+        block_size_index,
+        block_n4w,
+        block_n4h,
+        bit_depth_bits,
+    )
+}
+
+#[allow(dead_code, clippy::too_many_arguments)]
+pub(crate) fn decode_general_intra_block_modes_with_chroma_size(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    chroma_tools: GeneralIntraChromaToolConfig,
+    joint_modes: &TileIntraJointModeState,
+    uses_mrls: &TileUsesMrlsState,
+    fsc_modes: &TileFscModeState,
+    palette_state: &TileLumaPaletteState,
+    is_cfl_ctx: usize,
+    luma_block_size_index: usize,
+    block_r: usize,
+    block_c: usize,
+    block_n4w: usize,
+    block_n4h: usize,
+    chroma_block_size_index: usize,
+    chroma_n4w: usize,
+    chroma_n4h: usize,
+    bit_depth_bits: u32,
+) -> Result<GeneralIntraBlockModes, GeneralIntraBlockModeError> {
+    decode_general_intra_block_modes_with_fsc_context(
+        work_unit,
+        symbols,
+        chroma_tools,
+        joint_modes,
+        uses_mrls,
+        fsc_modes,
+        true,
+        palette_state,
+        is_cfl_ctx,
+        luma_block_size_index,
+        block_r,
+        block_c,
+        block_n4w,
+        block_n4h,
+        chroma_block_size_index,
+        chroma_n4w,
+        chroma_n4h,
+        bit_depth_bits,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    chroma_tools: GeneralIntraChromaToolConfig,
+    joint_modes: &TileIntraJointModeState,
+    uses_mrls: &TileUsesMrlsState,
+    fsc_modes: &TileFscModeState,
+    use_neighbor_fsc_context: bool,
+    palette_state: &TileLumaPaletteState,
+    is_cfl_ctx: usize,
+    luma_block_size_index: usize,
+    block_r: usize,
+    block_c: usize,
+    block_n4w: usize,
+    block_n4h: usize,
+    chroma_block_size_index: usize,
+    chroma_n4w: usize,
+    chroma_n4h: usize,
+    bit_depth_bits: u32,
+) -> Result<GeneralIntraBlockModes, GeneralIntraBlockModeError> {
+    let luma = decode_general_intra_luma_block_mode_with_fsc_context(
+        work_unit,
+        symbols,
+        chroma_tools,
+        joint_modes,
+        uses_mrls,
+        fsc_modes,
+        use_neighbor_fsc_context,
+        luma_block_size_index,
         block_r,
         block_c,
         block_n4w,
@@ -393,24 +608,128 @@ pub(crate) fn decode_general_intra_block_modes(
         chroma_tools,
         GeneralIntraChromaModeContext::shared_or_non_sdp(is_cfl_ctx),
         luma.y_mode,
-        block_size_index,
+        chroma_block_size_index,
+        chroma_n4w,
+        chroma_n4h,
+    )?;
+    let palette_y = read_general_intra_palette_y_mode(
+        work_unit,
+        symbols,
+        chroma_tools,
+        palette_state,
+        luma.y_mode,
+        luma_block_size_index,
+        block_r,
+        block_c,
         block_n4w,
         block_n4h,
+        bit_depth_bits,
     )?;
 
-    Ok(GeneralIntraBlockModes {
-        y_mode: luma.y_mode,
-        angle_delta_y: luma.angle_delta_y,
-        uv_mode: uv_mode.uv_mode(),
-        coeff_uv_mode: uv_mode.coeff_uv_mode,
-        is_cfl: uv_mode.is_cfl(),
-        cfl_params: uv_mode.cfl_params(),
-        intra_joint_mode: luma.intra_joint_mode,
-        mrl_index: luma.mrl_index,
-        mrl_sec_index: luma.mrl_sec_index,
-        fsc_mode: luma.fsc_mode,
-        uses_mrls: luma.uses_mrls,
-    })
+    Ok(GeneralIntraBlockModes::from_luma_chroma_palette(
+        luma, uv_mode, palette_y,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_general_intra_palette_y_mode(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    chroma_tools: GeneralIntraChromaToolConfig,
+    palette_state: &TileLumaPaletteState,
+    y_mode: IntraYMode,
+    block_size_index: usize,
+    block_r: usize,
+    block_c: usize,
+    block_n4w: usize,
+    block_n4h: usize,
+    bit_depth_bits: u32,
+) -> Result<Option<LumaPalette>, GeneralIntraBlockModeError> {
+    if !palette_y_mode_allowed(chroma_tools, y_mode, block_size_index, block_n4w, block_n4h) {
+        return Ok(None);
+    }
+
+    let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
+    let has_palette_y = read_symbol(
+        cdfs,
+        symbols,
+        TileCdfSelector::PaletteYMode,
+        PALETTE_Y_MODE_REASON,
+    )?;
+    if has_palette_y != 0 {
+        let palette_size = usize::from(read_symbol(
+            cdfs,
+            symbols,
+            TileCdfSelector::PaletteYSize,
+            PALETTE_Y_SIZE_REASON,
+        )?) + 2;
+        let colors = read_palette_colors_y(
+            symbols,
+            palette_state,
+            block_r,
+            block_c,
+            palette_size,
+            bit_depth_bits,
+        )?;
+        return LumaPalette::new(palette_size as u8, colors)
+            .ok_or(GeneralIntraBlockModeError::InvalidPaletteYSize { palette_size })
+            .map(Some);
+    }
+    Ok(None)
+}
+
+fn read_palette_colors_y(
+    symbols: &mut SymbolDecoder<'_>,
+    palette_state: &TileLumaPaletteState,
+    block_r: usize,
+    block_c: usize,
+    palette_size: usize,
+    bit_depth_bits: u32,
+) -> Result<[u16; PALETTE_MAX_SIZE], GeneralIntraBlockModeError> {
+    if !(2..=PALETTE_MAX_SIZE).contains(&palette_size) {
+        return Err(GeneralIntraBlockModeError::InvalidPaletteYSize { palette_size });
+    }
+    let (cache, cache_len) = palette_state.palette_cache(block_r, block_c);
+    let mut colors = [0u16; PALETTE_MAX_SIZE];
+    let mut idx = 0usize;
+    for &cached in cache.iter().take(cache_len) {
+        if idx >= palette_size {
+            break;
+        }
+        if read_literal_u8(symbols, 1, PALETTE_CACHE_REASON)? != 0 {
+            colors[idx] = cached;
+            idx += 1;
+        }
+    }
+    if idx < palette_size {
+        colors[idx] = read_literal_u16(symbols, bit_depth_bits, PALETTE_COLOR_REASON)?;
+        idx += 1;
+        if idx < palette_size {
+            let min_bits = bit_depth_bits.saturating_sub(3);
+            let mut bits =
+                min_bits + u32::from(read_literal_u8(symbols, 2, PALETTE_EXTRA_BITS_REASON)?);
+            let max_sample = (1u32 << bit_depth_bits) - 1;
+            let mut range = max_sample.saturating_sub(u32::from(colors[idx - 1]));
+            while idx < palette_size {
+                let delta = read_literal_u16(symbols, bits, PALETTE_DELTA_REASON)? + 1;
+                let value = u32::from(colors[idx - 1])
+                    .saturating_add(u32::from(delta))
+                    .min(max_sample);
+                colors[idx] = value as u16;
+                range = range.saturating_sub(value.saturating_sub(u32::from(colors[idx - 1])));
+                bits = bits.min(ceil_log2_u32(range));
+                idx += 1;
+            }
+        }
+    }
+    colors[..palette_size].sort_unstable();
+    if std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some() {
+        eprintln!(
+            "intra palette y block=({block_r},{block_c}) size={palette_size} colors={:?}",
+            &colors[..palette_size]
+        );
+    }
+    Ok(colors)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -430,6 +749,13 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
         && cfl_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h);
     let mhccp_allowed = mode_context.cfl_allowed_in_sdp
         && mhccp_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h);
+    if std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some() {
+        eprintln!(
+            "intra chroma block y_mode={y_mode:?} n4=({block_n4w}x{block_n4h}) bsize={block_size_index} is_cfl_ctx={} cfl_allowed={cfl_allowed} mhccp_allowed={mhccp_allowed} checkpoint={:?}",
+            mode_context.is_cfl_ctx,
+            symbols.checkpoint(),
+        );
+    }
     if cfl_allowed || mhccp_allowed {
         let is_cfl = read_symbol(
             cdfs,
@@ -464,12 +790,19 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
         UV_MODE_REASON,
     )?;
 
+    let mut uv_mode_idx = None;
     let uv_mode = if uv_mode_base == CHROMA_MODE_COUNT - 1 {
-        let uv_mode_idx = read_literal_u8(symbols, UV_MODE_IDX_BITS, UV_MODE_IDX_REASON)?;
-        uv_mode_base.saturating_add(uv_mode_idx)
+        let idx = read_literal_u8(symbols, UV_MODE_IDX_BITS, UV_MODE_IDX_REASON)?;
+        uv_mode_idx = Some(idx);
+        uv_mode_base.saturating_add(idx)
     } else {
         uv_mode_base
     };
+    if std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE").is_some() {
+        eprintln!(
+            "general intra chroma mode y_mode={y_mode:?} block_n4=({block_n4w}x{block_n4h}) uv_mode_base={uv_mode_base} uv_mode_idx={uv_mode_idx:?} uv_mode={uv_mode}"
+        );
+    }
 
     if uv_mode >= UV_INTRA_MODES_CFL_NOT_ALLOWED {
         return Err(GeneralIntraBlockModeError::InvalidUvMode { uv_mode });
@@ -716,6 +1049,20 @@ fn allow_fsc_intra(
         && block_n4h.saturating_mul(4) <= FSC_MAX_SAMPLES
 }
 
+fn palette_y_mode_allowed(
+    chroma_tools: GeneralIntraChromaToolConfig,
+    y_mode: IntraYMode,
+    block_size_index: usize,
+    block_n4w: usize,
+    block_n4h: usize,
+) -> bool {
+    chroma_tools.allow_screen_content_tools
+        && y_mode == IntraYMode::DC_PRED
+        && block_size_index >= PALETTE_MIN_BLOCK_SIZE_INDEX
+        && block_n4w.saturating_mul(4) <= PALETTE_MAX_SAMPLES
+        && block_n4h.saturating_mul(4) <= PALETTE_MAX_SAMPLES
+}
+
 fn fsc_bsize_group(block_size_index: usize) -> Option<usize> {
     FSC_BSIZE_GROUPS.get(block_size_index).copied()
 }
@@ -741,9 +1088,25 @@ fn read_symbol(
     selector: TileCdfSelector,
     reason: &'static str,
 ) -> Result<u8, GeneralIntraBlockModeError> {
-    cdfs.read_block_symbol_trace(selector, symbols)
+    let trace = std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some();
+    let before = trace.then(|| symbols.checkpoint());
+    let row_before = if trace {
+        cdfs.row(selector).ok().map(<[i32]>::to_vec)
+    } else {
+        None
+    };
+    let value = cdfs
+        .read_block_symbol_trace(selector, symbols)
         .map(splot_core::symbol::Symbol::get)
-        .map_err(|source| GeneralIntraBlockModeError::SymbolRead { reason, source })
+        .map_err(|source| GeneralIntraBlockModeError::SymbolRead { reason, source })?;
+    if trace {
+        eprintln!(
+            "intra symbol reason={reason} selector={selector:?} value={value} before={:?} after={:?} row_before={row_before:?}",
+            before,
+            symbols.checkpoint(),
+        );
+    }
+    Ok(value)
 }
 
 fn read_literal_u8(
@@ -751,10 +1114,63 @@ fn read_literal_u8(
     bits: u32,
     reason: &'static str,
 ) -> Result<u8, GeneralIntraBlockModeError> {
-    symbols
+    let trace = std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some();
+    let trace_raw = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let before = trace.then(|| symbols.checkpoint());
+    let raw_before = trace_raw.then(|| symbols.checkpoint());
+    let value = symbols
         .read_literal(bits)
         .map(|value| value as u8)
-        .map_err(|source| GeneralIntraBlockModeError::Literal { reason, source })
+        .map_err(|source| GeneralIntraBlockModeError::Literal { reason, source })?;
+    if trace {
+        eprintln!(
+            "intra literal reason={reason} bits={bits} value={value} before={before:?} after={:?}",
+            symbols.checkpoint(),
+        );
+    }
+    if let Some(raw_before) = raw_before {
+        eprintln!(
+            "raw_literal kind=intra_mode reason={reason} width={bits} value={value} checkpoint_before={raw_before:?} checkpoint_after={:?}",
+            symbols.checkpoint(),
+        );
+    }
+    Ok(value)
+}
+
+fn read_literal_u16(
+    symbols: &mut SymbolDecoder<'_>,
+    bits: u32,
+    reason: &'static str,
+) -> Result<u16, GeneralIntraBlockModeError> {
+    let trace = std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some();
+    let trace_raw = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let before = trace.then(|| symbols.checkpoint());
+    let raw_before = trace_raw.then(|| symbols.checkpoint());
+    let value = symbols
+        .read_literal(bits)
+        .map(|value| value as u16)
+        .map_err(|source| GeneralIntraBlockModeError::Literal { reason, source })?;
+    if trace {
+        eprintln!(
+            "intra literal reason={reason} bits={bits} value={value} before={before:?} after={:?}",
+            symbols.checkpoint(),
+        );
+    }
+    if let Some(raw_before) = raw_before {
+        eprintln!(
+            "raw_literal kind=intra_mode reason={reason} width={bits} value={value} checkpoint_before={raw_before:?} checkpoint_after={:?}",
+            symbols.checkpoint(),
+        );
+    }
+    Ok(value)
+}
+
+const fn ceil_log2_u32(value: u32) -> u32 {
+    if value < 2 {
+        0
+    } else {
+        u32::BITS - (value - 1).leading_zeros()
+    }
 }
 
 #[cfg(test)]
@@ -766,6 +1182,7 @@ mod tests {
     use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 
     use super::super::cdf::FrameCdfSubset;
+    use super::super::encode_symbol_sequence;
     use super::super::partition_allowed::PartitionFeatureFlags;
     use super::super::partition_traversal::tests::make_work_unit as make_test_work_unit;
     use super::super::partition_traversal::{
@@ -779,6 +1196,7 @@ mod tests {
     const BLOCK_16X16: usize = 6;
     const BLOCK_64X64: usize = 12;
     const BLOCK_256X256: usize = 18;
+    const CLEAR_PARTITION_CONTEXT: usize = 0;
     const PAYLOAD: [u8; 2] = [0x12, 0xFB];
 
     fn make_work_unit(payload: &[u8]) -> DecodeTileWorkUnit<'_> {
@@ -791,7 +1209,7 @@ mod tests {
         let rows: Vec<Vec<usize>> = (0..16).map(|_| vec![BLOCK_256X256; 16]).collect();
         let mi0_rows: Vec<&[usize]> = rows.iter().map(Vec::as_slice).collect();
         let mi1_rows: Vec<&[usize]> = rows.iter().map(Vec::as_slice).collect();
-        let edge = [BLOCK_256X256; 16];
+        let edge = [CLEAR_PARTITION_CONTEXT; 16];
         let context =
             TilePartitionContextState::new([&mi0_rows, &mi1_rows], [&edge, &edge], [&edge, &edge]);
         let frame = TilePartitionFrameFacts::new(
@@ -832,21 +1250,6 @@ mod tests {
         .unwrap()
     }
 
-    fn encode_symbol_sequence(sequence: &[(TileCdfSelector, u8)]) -> Vec<u8> {
-        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut encoder = SymbolEncoder::with_config(
-            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
-        );
-        for &(selector, value) in sequence {
-            tile.with_row_mut(selector, |row| {
-                encoder.write_symbol(row, Symbol::new(value))
-            })
-            .unwrap()
-            .unwrap();
-        }
-        encoder.finish().unwrap().into_bytes()
-    }
-
     const SB_N4: usize = 16;
     const D135_JOINT_MODE: u8 = 36;
     const SMOOTH_V_JOINT_MODE: u8 = 2;
@@ -861,6 +1264,10 @@ mod tests {
 
     fn empty_fsc_modes() -> TileFscModeState {
         TileFscModeState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
+    }
+
+    fn empty_palette_state() -> TileLumaPaletteState {
+        TileLumaPaletteState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
     }
 
     #[test]
@@ -895,12 +1302,14 @@ mod tests {
             &joint_modes,
             &uses_mrls,
             &empty_fsc_modes(),
+            &empty_palette_state(),
             0,
             BLOCK_64X64,
             0,
             0,
             SB_N4,
             SB_N4,
+            8,
         )
         .unwrap();
 
@@ -928,12 +1337,14 @@ mod tests {
             &joint_modes,
             &uses_mrls,
             &empty_fsc_modes(),
+            &empty_palette_state(),
             0,
             BLOCK_64X64,
             0,
             SB_N4,
             SB_N4,
             SB_N4,
+            8,
         )
         .unwrap();
         assert_eq!(modes.y_mode, IntraYMode::DC_PRED);
@@ -955,12 +1366,14 @@ mod tests {
             &joint_modes,
             &uses_mrls,
             &empty_fsc_modes(),
+            &empty_palette_state(),
             0,
             BLOCK_64X64,
             0,
             SB_N4,
             SB_N4,
             SB_N4,
+            8,
         )
         .unwrap();
 
@@ -1073,6 +1486,137 @@ mod tests {
         assert_eq!(luma.y_mode, IntraYMode::DC_PRED);
         assert_eq!(luma.fsc_mode, 1);
         assert_eq!(symbols.symbol_count(), 3);
+    }
+
+    #[test]
+    fn mixed_region_fsc_mode_uses_inter_context() {
+        let bsize_group = fsc_bsize_group(BLOCK_16X16).unwrap();
+        let payload = encode_symbol_sequence(&[
+            (TileCdfSelector::YModeSet, 0),
+            (TileCdfSelector::YModeIndex { ctx: 0 }, 0),
+            (
+                TileCdfSelector::FscMode {
+                    ctx: INTER_FSC_MODE_CONTEXT,
+                    bsize_group,
+                },
+                1,
+            ),
+        ]);
+        let mut work_unit = make_work_unit(&payload);
+        let mut symbols = symbol_decoder(&payload);
+        let joint_modes = empty_joint_modes();
+        let uses_mrls = empty_uses_mrls();
+        let mut fsc_modes = TileFscModeState::new(2 * SB_N4, 2 * SB_N4, SB_N4).unwrap();
+        fsc_modes.record_block(7, 11, 1, 1, 1);
+        fsc_modes.record_block(11, 7, 1, 1, 1);
+
+        let luma = decode_general_intra_luma_block_mode_with_fsc_context(
+            &mut work_unit,
+            &mut symbols,
+            GeneralIntraChromaToolConfig::disabled().with_enable_idtx_intra(true),
+            &joint_modes,
+            &uses_mrls,
+            &fsc_modes,
+            false,
+            BLOCK_16X16,
+            8,
+            8,
+            4,
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(luma.fsc_mode, 1);
+        assert_eq!(symbols.symbol_count(), 3);
+    }
+
+    #[test]
+    fn inactive_palette_y_mode_is_consumed_after_chroma_mode() {
+        let payload = encode_symbol_sequence(&[
+            (TileCdfSelector::YModeSet, 0),
+            (TileCdfSelector::YModeIndex { ctx: 0 }, 0),
+            (TileCdfSelector::UvModeCflNotAllowed { ctx: 0 }, 1),
+            (TileCdfSelector::PaletteYMode, 0),
+        ]);
+        let mut work_unit = make_work_unit(&payload);
+        let mut symbols = symbol_decoder(&payload);
+        let joint_modes = empty_joint_modes();
+        let uses_mrls = empty_uses_mrls();
+
+        let modes = decode_general_intra_block_modes(
+            &mut work_unit,
+            &mut symbols,
+            GeneralIntraChromaToolConfig::disabled().with_allow_screen_content_tools(true),
+            &joint_modes,
+            &uses_mrls,
+            &empty_fsc_modes(),
+            &empty_palette_state(),
+            0,
+            BLOCK_16X16,
+            0,
+            0,
+            4,
+            4,
+            8,
+        )
+        .unwrap();
+
+        assert_eq!(modes.y_mode, IntraYMode::DC_PRED);
+        assert_eq!(modes.uv_mode, 1);
+        assert_eq!(symbols.symbol_count(), 4);
+        assert_eq!(symbols.finish().unwrap().symbol_count, 4);
+    }
+
+    #[test]
+    fn active_palette_y_mode_reads_size_and_literal_colors() {
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut encoder = SymbolEncoder::with_config(
+            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+        );
+        for (selector, value) in [
+            (TileCdfSelector::YModeSet, 0),
+            (TileCdfSelector::YModeIndex { ctx: 0 }, 0),
+            (TileCdfSelector::UvModeCflNotAllowed { ctx: 0 }, 1),
+            (TileCdfSelector::PaletteYMode, 1),
+            (TileCdfSelector::PaletteYSize, 0),
+        ] {
+            tile.with_row_mut(selector, |row| {
+                encoder.write_symbol(row, Symbol::new(value))
+            })
+            .unwrap()
+            .unwrap();
+        }
+        encoder.write_literal(10, 8).unwrap();
+        encoder.write_literal(0, 2).unwrap();
+        encoder.write_literal(3, 5).unwrap();
+        let payload = encoder.finish().unwrap().into_bytes();
+        let mut work_unit = make_work_unit(&payload);
+        let mut symbols = symbol_decoder(&payload);
+        let joint_modes = empty_joint_modes();
+        let uses_mrls = empty_uses_mrls();
+
+        let modes = decode_general_intra_block_modes(
+            &mut work_unit,
+            &mut symbols,
+            GeneralIntraChromaToolConfig::disabled().with_allow_screen_content_tools(true),
+            &joint_modes,
+            &uses_mrls,
+            &empty_fsc_modes(),
+            &empty_palette_state(),
+            0,
+            BLOCK_16X16,
+            0,
+            0,
+            4,
+            4,
+            8,
+        )
+        .unwrap();
+
+        let palette = modes.palette_y().expect("active palette");
+        assert_eq!(palette.size(), 2);
+        assert_eq!(&palette.colors()[..2], &[10, 14]);
+        assert_eq!(symbols.symbol_count(), 20);
     }
 
     #[test]

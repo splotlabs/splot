@@ -95,7 +95,11 @@ fn direct_eob_read(
             != 0;
         (
             eob_extra,
-            read_eob_literal(symbols, (eob_pt - 3) as u32, "eob_extra_bit")?,
+            read_eob_literal(
+                symbols,
+                eob_extra_bits_width(eob_pt)? as u32,
+                "eob_extra_bit",
+            )?,
         )
     } else {
         (false, 0)
@@ -827,7 +831,7 @@ fn read_nonzero_coeff_eob_reads_eob_extra_and_literal_refinements() {
     .unwrap();
 
     assert_eq!(read.eob(), direct);
-    assert!(read.eob_extra_bits() < (1 << (read.eob().eob_pt() - 3)));
+    assert!(read.eob_extra_bits() < (1 << eob_extra_bits_width(read.eob().eob_pt()).unwrap()));
 }
 
 #[test]
