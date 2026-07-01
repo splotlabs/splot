@@ -67,9 +67,11 @@ const WARP_PARAM_REDUCE_BITS: u32 = 6;
 const WARP_TRANS_INTEGER_BITS: u32 = 12;
 const WARP_DELTA_STEP_BITS: u32 = 10;
 const WARPEDMODEL_TRANS_CLAMP: i64 = 1 << (WARPEDMODEL_PREC_BITS + WARP_TRANS_INTEGER_BITS - 1);
+#[doc = "AV2 § 9.2 `Size_Group[BLOCK_SIZES]`."]
 const SIZE_GROUP_LOOKUP: [usize; 29] = [
     0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 1, 1, 2, 2, 1, 1, 2, 2,
 ];
+#[doc = "AV2 § 9.2 `Wedge_Bits[BLOCK_SIZES] != 0`."]
 const WEDGE_USED_BY_BSIZE: [bool; 29] = [
     false, false, false, true, true, true, true, true, true, true, true, true, true, false, false,
     false, false, false, false, false, false, true, true, true, true, false, false, true, true,
@@ -89,7 +91,7 @@ fn trace_inter_block_mode(mi_row: usize, mi_col: usize) -> bool {
     }
     let Some(window) = std::env::var("SPLOT_TRACE_INTER_BLOCK_WINDOW").ok() else {
         return (mi_row == 0 && mi_col <= 256)
-            || (mi_row >= 8 && mi_row <= 12 && (144..=156).contains(&mi_col))
+            || ((8..=12).contains(&mi_row) && (144..=156).contains(&mi_col))
             || (mi_row == 16 && mi_col == 128);
     };
     let Some((rows, cols)) = window.split_once(',') else {
@@ -325,10 +327,11 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
 }
 
 fn trace_symbol_frame_marker(offset: ByteOffset) {
+    use std::io::Write as _;
+
     let Some(path) = std::env::var_os("SPLOT_SYMBOL_TRACE") else {
         return;
     };
-    use std::io::Write as _;
     if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
         let _ = writeln!(file, "# inter frame offset={}", offset.get());
     }
@@ -945,6 +948,14 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             n4h,
             tile_offset,
         )?;
+        if warp_inter_intra.enabled {
+            return Err(inter_cap!(
+                "inter_warp_interintra_unimplemented",
+                tile_offset,
+                "inter.warp_inter_intra prediction",
+                "7.13.3"
+            ));
+        }
         let residual = if skip == 0 {
             if !residual_quantizer_deltas_are_zero {
                 return Err(inter_cap!(
@@ -977,6 +988,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 tile_offset,
             )?)
         } else {
+            reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
             None
         };
         if std::env::var_os("SPLOT_TRACE_INTER_BLOCK_MODE").is_some() {
@@ -1108,6 +1120,14 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         },
         tile_offset,
     )?;
+    if bawp != BawpSyntax::default() {
+        return Err(inter_cap!(
+            "inter_bawp_prediction_unimplemented",
+            tile_offset,
+            "inter.bawp_prediction",
+            "7.13.3.1"
+        ));
+    }
     if trace_first_row {
         eprintln!(
             "inter block bawp r={mi_row} c={mi_col} luma={} chroma={} allow={} frame_switch={} checkpoint={:?}",
@@ -1457,6 +1477,7 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
 
 const INTER_UV_MODE_DC: usize = 0;
 
+#[allow(clippy::too_many_arguments)]
 fn read_inter_residual(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
@@ -1931,6 +1952,7 @@ fn push_inter_residual_block(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_inter_residual_plane(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
@@ -2108,6 +2130,7 @@ fn resolve_interp_filter(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn trace_interp_filter_context(
     kind: &'static str,
     mi_row: usize,
@@ -2208,6 +2231,7 @@ fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
         .unwrap_or(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_warp_inter_mode_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -2625,6 +2649,14 @@ fn read_warp_delta_syntax(
     n4h: usize,
     tile_offset: ByteOffset,
 ) -> Result<([i64; 6], u8)> {
+    if ref_warp_idx != 0 {
+        return Err(inter_cap!(
+            "inter_warp_ref_candidate_unimplemented",
+            tile_offset,
+            "inter.warp_param_stack reference",
+            "5.20.7.7"
+        ));
+    }
     let mut params = IDENTITY_WARP_PARAMS;
     let use_six_param = sequence
         .inter
@@ -2855,7 +2887,7 @@ fn read_bawp_syntax(
         let explicit_bawp_scale = cdfs
             .read_block_symbol_trace(TileCdfSelector::ExplicitBawpScale, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?;
-        luma_flag = luma_flag.saturating_add(explicit_bawp_scale.get() as u8);
+        luma_flag = luma_flag.saturating_add(explicit_bawp_scale.get());
     }
     let chroma_flag = if input.has_chroma {
         cdfs.read_block_symbol_trace(TileCdfSelector::UseBawpChroma, symbols)

@@ -2667,7 +2667,7 @@ pub(crate) struct TwoSidedMiddleEdgeFilters {
 /// § 7.13.2.17 strength. The edges are then spec-extended (`Edge[-2] = Edge[-1]`,
 /// `Edge[side] = Edge[side + 1] = Edge[side - 1]`) into the IDIF logical range
 /// `[-2 ..= side + 1]` and the generalized middle IDIF runs at the leaf's `pAngle`.
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,

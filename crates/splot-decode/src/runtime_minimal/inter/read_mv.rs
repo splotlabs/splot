@@ -36,6 +36,7 @@ pub(in crate::runtime_minimal) struct MvReadConfig {
 }
 
 impl MvReadConfig {
+    #[allow(dead_code)]
     const INTER_EIGHTH_PEL: Self = Self {
         precision: MV_PRECISION_EIGHTH_PEL,
         mv_ctx: INTER_MV_CONTEXT,
@@ -74,6 +75,7 @@ pub(in crate::runtime_minimal) const fn mv_clamp_to_integer(v: i32) -> i32 {
 }
 
 /// Reads the signed MV difference for the single-reference EighthPel NEWMV path.
+#[allow(dead_code)]
 pub(super) fn read_newmv_block_mvd(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -409,6 +411,7 @@ fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i64, tile_offset: ByteOffset) -> 
     i64::try_from(result).map_err(|_| mv_overflow(tile_offset))
 }
 
+#[allow(dead_code)]
 fn apply_sign(
     magnitude: i32,
     symbols: &mut SymbolDecoder<'_>,

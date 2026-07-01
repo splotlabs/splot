@@ -62,10 +62,6 @@ impl BlockRect {
     pub(super) const fn is_top_left(self) -> bool {
         !self.has_above() && !self.has_left()
     }
-
-    pub(super) fn is_row_aligned_to(self, size4: usize) -> bool {
-        size4 != 0 && self.row4.is_multiple_of(size4)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

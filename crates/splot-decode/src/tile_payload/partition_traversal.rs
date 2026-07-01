@@ -395,6 +395,7 @@ impl TilePartitionCall {
         }
     }
 
+    #[allow(dead_code)]
     const fn with_extended_sdp_allowed(self, extended_sdp_allowed: bool) -> Self {
         Self {
             extended_sdp_allowed,
@@ -1838,7 +1839,14 @@ fn read_wiener_ns_lr_unit(
         })??
         .get()
         != 0;
-    trace_wiener_ns_lr_unit(plane, unit_row, unit_col, use_wiener_ns, symbols, trace_row);
+    trace_wiener_ns_lr_unit(
+        plane,
+        unit_row,
+        unit_col,
+        use_wiener_ns,
+        symbols,
+        trace_row.as_deref(),
+    );
     lr_activity.record(plane, unit_row, unit_col, use_wiener_ns)?;
     if use_wiener_ns && !frame_filters_on {
         let filter =
@@ -1863,7 +1871,7 @@ fn trace_wiener_ns_lr_unit(
     unit_col: usize,
     active: bool,
     symbols: &SymbolDecoder<'_>,
-    row_before: Option<Vec<i32>>,
+    row_before: Option<&[i32]>,
 ) {
     if std::env::var_os("SPLOT_TRACE_LR_SYNTAX").is_none() {
         return;
@@ -2544,7 +2552,7 @@ fn should_read_extended_sdp_region_type(
     {
         return Ok(false);
     }
-    Ok(is_bsize_allowed_for_extended_sdp(call.b_size, partition)?)
+    is_bsize_allowed_for_extended_sdp(call.b_size, partition)
 }
 
 fn trace_extended_sdp_region_type(

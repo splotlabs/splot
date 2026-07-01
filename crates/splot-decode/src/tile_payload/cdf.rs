@@ -561,6 +561,7 @@ pub(crate) enum TileCdfSelector {
     WienerNsBase,
     Coeff(CoeffCdfSelector),
 }
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TileCdfArray {
     DoSplit,
@@ -801,6 +802,7 @@ pub(crate) enum TileCdfError {
     #[error(
         "{array}[{plane_start}][{index}] block size {block_size} is outside 0..{max_exclusive}"
     )]
+    #[allow(dead_code)]
     PartitionNeighborBlockSizeOutOfRange {
         array: &'static str,
         plane_start: usize,
@@ -1599,6 +1601,7 @@ impl TileCdfRows {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) const fn region_type(&self) -> &RegionTypeCdfRows {
         &self.region_type
     }

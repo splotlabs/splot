@@ -288,6 +288,14 @@ fn predict_warp_plane<T: ReconSample>(
     let block_w = rect.luma_w >> sub_x;
     let block_h = rect.luma_h >> sub_y;
     let bit_depth = workspace.info().bit_depth();
+    if block_w < WARPED_BLOCK_SIZE || block_h < WARPED_BLOCK_SIZE {
+        return Err(unsupported_at(
+            "inter_warp_small_block_fallback_unimplemented",
+            offset,
+            "minimal inter motion compensation does not yet implement ext_block_warp for warped blocks smaller than 8x8",
+            "7.13.3.7",
+        ));
+    }
 
     for local_y in (0..block_h).step_by(WARPED_BLOCK_SIZE) {
         for local_x in (0..block_w).step_by(WARPED_BLOCK_SIZE) {

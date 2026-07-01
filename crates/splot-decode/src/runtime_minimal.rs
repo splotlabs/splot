@@ -532,7 +532,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     }
     reference.update(
         0,
-        frame_ref_update_from_core(&key_core, key_envelope.offset, frames[0].frame_cdfs.clone())?,
+        &frame_ref_update_from_core(&key_core, key_envelope.offset, frames[0].frame_cdfs.clone())?,
     );
     if output_frame_limit_reached(options, output_frame_indices.len()) {
         return select_output_frames(frames, output_frame_indices);
@@ -687,7 +687,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                 retained_frame_bytes = next_retained_frame_bytes;
                 reference.update(
                     frame_index,
-                    frame_ref_update_from_core(
+                    &frame_ref_update_from_core(
                         &inter_core,
                         inter_envelope.offset,
                         frames[frame_index].frame_cdfs.clone(),
@@ -720,7 +720,7 @@ fn output_frame_limit_reached(options: &DecodeOptions, output_frame_count: usize
 }
 
 fn frame_is_output(core: &FrameHeaderCore) -> bool {
-    core.immediate_output_frame == Some(true)
+    core.immediate_output_frame == Some(true) || core.implicit_output_frame == Some(true)
 }
 
 fn select_output_frames(
@@ -1600,6 +1600,7 @@ fn derive_tile_plan<'a>(
         None,
     )
 }
+#[allow(clippy::too_many_arguments)]
 fn derive_inter_tile_plan<'a>(
     plan: &'a DecodeStreamPlan,
     candidate: &'a DecodePlannedObu,

@@ -207,6 +207,7 @@ impl IntraLumaPlan {
     }
 }
 
+#[allow(dead_code)]
 fn plan_luma_prediction_from_parts(
     luma_is_dc: bool,
     nondc: Option<SupportedNonDcLumaMode>,
@@ -274,6 +275,7 @@ fn plan_nondc_luma(
     }
 }
 
+#[allow(dead_code)]
 fn plan_directional_luma(
     mode: SupportedDirectionalLumaMode,
     block_ctx: BlockCtx,

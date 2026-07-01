@@ -112,7 +112,7 @@ impl RuntimeReferenceBuffer {
     }
 
     /// Applies the § 7.23 refresh for a decoded frame.
-    pub(super) fn update(&mut self, frame_index: usize, update: FrameRefUpdate) {
+    pub(super) fn update(&mut self, frame_index: usize, update: &FrameRefUpdate) {
         if self.started {
             self.frame_counter = self.frame_counter.wrapping_add(1);
         }
@@ -124,7 +124,7 @@ impl RuntimeReferenceBuffer {
             }
             let valid = !update.is_key_or_switch || first;
             first = false;
-            slot.refresh(frame_index, &update, valid);
+            slot.refresh(frame_index, update, valid);
         }
         let _ = self.frame_counter;
     }
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn key_refresh_marks_only_first_slot_valid() {
         let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-        buf.update(0, key_update());
+        buf.update(0, &key_update());
         assert_eq!(buf.valid_count(), 1);
         assert!(buf.slots[0].valid);
         assert!(!buf.slots[1].valid);
@@ -290,8 +290,8 @@ mod tests {
     #[test]
     fn inter_refresh_adds_a_second_valid_slot() {
         let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-        buf.update(0, key_update());
-        buf.update(1, inter_update(false));
+        buf.update(0, &key_update());
+        buf.update(1, &inter_update(false));
         assert_eq!(buf.valid_count(), 2);
         assert!(buf.slots[0].valid);
         assert!(buf.slots[1].valid);
@@ -305,8 +305,8 @@ mod tests {
     #[test]
     fn per_slot_adaptation_is_tracked_independently() {
         let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-        buf.update(0, key_update());
-        buf.update(1, inter_update(true));
+        buf.update(0, &key_update());
+        buf.update(1, &inter_update(true));
         assert!(!buf.slots[0].adapted);
         assert!(buf.slots[1].adapted);
         assert!(!buf.slots[0].is_inter);

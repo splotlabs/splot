@@ -421,9 +421,18 @@ fn bridge_frame_keeps_bridge_specific_unsupported_reason() {
 
 #[test]
 fn unsupported_minimal_tier_gates_are_structured() {
+    let ctx = DecodeContext::new(DecodeRuntimeConfig::new(splot_parallel::ThreadCount::from(
+        1,
+    )))
+    .unwrap();
+    ctx.pool()
+        .install(unsupported_minimal_tier_gates_are_structured_inner);
+}
+
+fn unsupported_minimal_tier_gates_are_structured_inner() {
     let payload = [0x80];
     let framing = one_tile_framing(&payload);
-    let cases = [
+    let cases = vec![
         (
             TileFrameFacts::new(
                 ObuType::OpenLoopKey,

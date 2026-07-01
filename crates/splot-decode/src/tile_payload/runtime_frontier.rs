@@ -634,6 +634,20 @@ mod tests {
 
     fn with_minimal_work_unit<R>(
         bytes: &[u8],
+        f: impl FnOnce(&mut DecodeTileWorkUnit<'_>, &SequenceHeader, &FrameHeaderCore) -> R + Send,
+    ) -> R
+    where
+        R: Send,
+    {
+        let context =
+            DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
+        context
+            .pool()
+            .install(move || with_minimal_work_unit_inner(bytes, f))
+    }
+
+    fn with_minimal_work_unit_inner<R>(
+        bytes: &[u8],
         f: impl FnOnce(&mut DecodeTileWorkUnit<'_>, &SequenceHeader, &FrameHeaderCore) -> R,
     ) -> R {
         let context =

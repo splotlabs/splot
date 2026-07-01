@@ -872,8 +872,7 @@ fn spatial_scan_unmodelled_has_new_bv(
             {
                 if trace {
                     eprintln!(
-                        "intrabc ref_stack unmodelled_probe kind=deep_left mi=({}, {}) probe=({}, {}) mv={:?} modelled={:?}",
-                        row, col, r, deep_col, mv, modelled
+                        "intrabc ref_stack unmodelled_probe kind=deep_left mi=({row}, {col}) probe=({r}, {deep_col}) mv={mv:?} modelled={modelled:?}",
                     );
                 }
                 return true;

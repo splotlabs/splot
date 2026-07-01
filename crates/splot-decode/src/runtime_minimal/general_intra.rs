@@ -1063,6 +1063,7 @@ fn rect_luma_mrl_plan_for_parts(
     })
 }
 
+#[allow(dead_code)]
 fn rect_luma_plan_for_parts(
     nondc: Option<SupportedNonDcLumaMode>,
     directional_p_angle: Option<u16>,
@@ -1514,7 +1515,7 @@ fn ten_bit_general_intra_chroma_admitted(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn execute_general_intra_residual_plan<T: ReconSample>(
     residual_plan: GeneralIntraResidualPlan,
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
@@ -1639,7 +1640,10 @@ fn ensure_supported_chroma_capability(
         {
             Ok(())
         }
-        SupportedChromaMode::D135Follow | SupportedChromaMode::D135
+        SupportedChromaMode::D135Follow
+        | SupportedChromaMode::D135
+        | SupportedChromaMode::D157Follow
+        | SupportedChromaMode::D157
             if left_only || above_left || middle_subblock =>
         {
             Ok(())
@@ -1665,11 +1669,6 @@ fn ensure_supported_chroma_capability(
                 block = "non_full_sb_or_edge",
             ),
         )),
-        SupportedChromaMode::D157Follow | SupportedChromaMode::D157
-            if left_only || above_left || middle_subblock =>
-        {
-            Ok(())
-        }
         SupportedChromaMode::D157Follow | SupportedChromaMode::D157 => Err(unsupported_chroma(
             "general_intra_directional_d157_chroma_neighbour",
             missing_capability_message!(
@@ -1697,8 +1696,11 @@ fn ensure_supported_chroma_capability(
                 block = "non_full_sb_or_edge",
             ),
         )),
-        SupportedChromaMode::VerticalFollow | SupportedChromaMode::Vertical
-            if (full_sb && has_edge) || (cardinal_subblock && has_edge) =>
+        SupportedChromaMode::VerticalFollow
+        | SupportedChromaMode::Vertical
+        | SupportedChromaMode::HorizontalFollow
+        | SupportedChromaMode::Horizontal
+            if (cardinal_subblock || full_sb) && has_edge =>
         {
             Ok(())
         }
@@ -1711,11 +1713,6 @@ fn ensure_supported_chroma_capability(
                     block = "non_full_sb_or_first_row",
                 ),
             ))
-        }
-        SupportedChromaMode::HorizontalFollow | SupportedChromaMode::Horizontal
-            if (full_sb && has_edge) || (cardinal_subblock && has_edge) =>
-        {
-            Ok(())
         }
         SupportedChromaMode::HorizontalFollow => Err(unsupported_chroma(
             "general_intra_cardinal_horizontal_chroma",

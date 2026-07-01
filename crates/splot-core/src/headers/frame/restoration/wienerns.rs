@@ -232,9 +232,7 @@ fn read_match_indices(
             predict_group_from_prior_matches(&match_indices, group_counts)
         };
 
-        let group = if only_group_available(group_counts, pred_group) {
-            pred_group
-        } else if reader.read_bit()? == 0 {
+        let group = if only_group_available(group_counts, pred_group) || reader.read_bit()? == 0 {
             pred_group
         } else {
             let zero_group = first_zero_group(group_counts, pred_group);
@@ -335,7 +333,7 @@ fn read_wiener_ns_subset(reader: &mut BitReader<'_>, plane_is_chroma: bool) -> R
 fn most_probable_group(c: usize, counts: [usize; 3]) -> usize {
     let group_count_0 = c + 1;
     if group_count_0 > 2 || counts[1] > 2 {
-        return if group_count_0 > counts[1] { 0 } else { 1 };
+        return usize::from(group_count_0 <= counts[1]);
     }
     if group_count_0 >= counts[1] && group_count_0 >= counts[2] {
         0

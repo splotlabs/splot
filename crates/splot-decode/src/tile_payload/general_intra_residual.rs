@@ -151,6 +151,7 @@ const INTER_TX_TYPE_INDEX_COUNT: usize = 8;
 const IST_DIR_SIZE: usize = 7;
 const IST_REDUCE_SET_SIZE_ADST_ADST: usize = 4;
 
+#[doc = "AV2 § 7.15.3 secondary transform process inverse IST maps."]
 #[rustfmt::skip]
 const INV_MOST_PROBABLE_STX_MAPPING: [[usize; IST_DIR_SIZE]; 12] = [
     [6, 1, 0, 5, 4, 3, 2],
@@ -167,6 +168,7 @@ const INV_MOST_PROBABLE_STX_MAPPING: [[usize; IST_DIR_SIZE]; 12] = [
     [1, 6, 0, 4, 2, 5, 3],
 ];
 
+#[doc = "AV2 § 7.15.3 secondary transform process inverse IST maps."]
 #[rustfmt::skip]
 const INV_MOST_PROBABLE_STX_MAPPING_ADST: [[usize; IST_REDUCE_SET_SIZE_ADST_ADST]; 12] = [
     [3, 1, 0, 2],
@@ -404,7 +406,7 @@ fn read_luma_transform_partition_prelude(
     fsc_mode: bool,
     is_inter: bool,
 ) -> Result<(), GeneralIntraResidualError> {
-    if context.mi_size <= BLOCK_4X4 {
+    if context.mi_size == BLOCK_4X4 {
         return Ok(());
     }
     let max_tx_size =
@@ -561,7 +563,7 @@ fn read_luma_transform_partition_records(
     is_inter: bool,
     reduced_tx_set: usize,
 ) -> Result<Vec<LumaTransformPartitionRecord>, GeneralIntraResidualError> {
-    if context.mi_size <= BLOCK_4X4 {
+    if context.mi_size == BLOCK_4X4 {
         return Ok(vec![luma_transform_record(start_x, start_y, tx_size)]);
     }
     let max_tx_size =

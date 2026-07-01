@@ -213,8 +213,8 @@ fn resolve_signed_divisor(d: i64) -> Result<(u32, i64)> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ProjectedCenter {
-    ix4: i64,
-    iy4: i64,
+    x4_int: i64,
+    y4_int: i64,
     sx4: i64,
     sy4: i64,
 }
@@ -260,8 +260,8 @@ fn project_section_center(params: &WarpPredictBlockParams) -> Result<ProjectedCe
     let y4 = dst_y >> params.subsampling_y;
     let mask = (1 << WARPEDMODEL_PREC_BITS) - 1;
     Ok(ProjectedCenter {
-        ix4: x4 >> WARPEDMODEL_PREC_BITS,
-        iy4: y4 >> WARPEDMODEL_PREC_BITS,
+        x4_int: x4 >> WARPEDMODEL_PREC_BITS,
+        y4_int: y4 >> WARPEDMODEL_PREC_BITS,
         sx4: x4 & mask,
         sy4: y4 & mask,
     })
@@ -290,13 +290,17 @@ fn build_intermediate(
                     context: "block-warp horizontal phase",
                 })?;
             let taps = warped_filter_row(sx)?;
-            let ref_row = clip3(params.first_y, params.last_y, projected.iy4 + i64::from(i1));
+            let ref_row = clip3(
+                params.first_y,
+                params.last_y,
+                projected.y4_int + i64::from(i1),
+            );
             let mut sum = 0i64;
             for (i3, &tap) in taps.iter().enumerate() {
                 let ref_col = clip3(
                     params.first_x,
                     params.last_x,
-                    projected.ix4 + i64::from(i2) - 3 + i3 as i64,
+                    projected.x4_int + i64::from(i2) - 3 + i3 as i64,
                 );
                 sum += i64::from(tap) * reference.sample(ref_row as usize, ref_col as usize);
             }
@@ -445,11 +449,15 @@ mod tests {
                 let taps = &WARPED_FILTERS[offset];
                 let mut sum = 0i64;
                 for (i3, &tap) in taps.iter().enumerate() {
-                    let rr = clip(params.first_y, params.last_y, projected.iy4 + i64::from(i1));
+                    let rr = clip(
+                        params.first_y,
+                        params.last_y,
+                        projected.y4_int + i64::from(i1),
+                    );
                     let cc = clip(
                         params.first_x,
                         params.last_x,
-                        projected.ix4 + i64::from(i2) - 3 + i3 as i64,
+                        projected.x4_int + i64::from(i2) - 3 + i3 as i64,
                     );
                     sum += i64::from(tap) * fetch(rr, cc);
                 }

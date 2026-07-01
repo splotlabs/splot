@@ -253,6 +253,7 @@ impl GeneralIntraBlockModes {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) const fn from_luma_chroma(
         luma: GeneralIntraLumaBlockMode,
         chroma: GeneralIntraChromaBlockMode,
@@ -524,7 +525,7 @@ pub(crate) fn decode_general_intra_block_modes(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_block_modes_with_chroma_size(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
@@ -630,6 +631,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn read_general_intra_palette_y_mode(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,

@@ -320,7 +320,7 @@ pub fn parse_lr_params(
         reader,
         coded_lossless,
         num_planes,
-        view,
+        *view,
         geometry,
         base_q_idx,
         0,
@@ -336,11 +336,12 @@ pub fn parse_lr_params(
 /// reference is available. Temporal-copy filter banks are represented by
 /// `frame_filters_on == true` with no local `frame_filter_bank`; runtime consumers already
 /// treat that as an unsupported reconstruction input until reference-filter state is modeled.
+#[allow(clippy::too_many_arguments)]
 pub fn parse_lr_params_for_inter(
     reader: &mut BitReader<'_>,
     coded_lossless: bool,
     num_planes: u8,
-    view: &CoreSeqRestorationView,
+    view: CoreSeqRestorationView,
     geometry: LrGeometry,
     base_q_idx: u32,
     num_ref_frames: u32,
@@ -363,7 +364,7 @@ fn parse_lr_params_with_references(
     reader: &mut BitReader<'_>,
     coded_lossless: bool,
     num_planes: u8,
-    view: &CoreSeqRestorationView,
+    view: CoreSeqRestorationView,
     geometry: LrGeometry,
     base_q_idx: u32,
     num_ref_frames: u32,
@@ -385,7 +386,7 @@ fn parse_lr_params_with_references(
 
     for plane in 0..usize::from(num_planes) {
         let is_chroma = plane > 0;
-        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(*view, is_chroma);
+        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(view, is_chroma);
         let tool_index = reader.read_ns(n)?;
         let tool = index_to_tool.get(tool_index as usize).copied().unwrap_or(0);
         let restoration_type = FrameRestorationType::from_tool(tool);
@@ -473,7 +474,7 @@ fn parse_lr_params_with_references(
                 plane,
                 classes,
                 num_ref_filters,
-                *view,
+                view,
             )?);
         }
     }
@@ -609,7 +610,7 @@ pub fn parse_ccso_params(
     num_planes: u8,
     view: &CoreSeqCcsoView,
 ) -> Result<CcsoParams> {
-    parse_ccso_params_with_references(reader, coded_lossless, num_planes, view, None)
+    parse_ccso_params_with_references(reader, coded_lossless, num_planes, *view, None)
 }
 
 /// Parses `ccso_params()` for a non-switch inter path with `NumTotalRefs` already derived.
@@ -622,7 +623,7 @@ pub fn parse_ccso_params_for_inter(
     reader: &mut BitReader<'_>,
     coded_lossless: bool,
     num_planes: u8,
-    view: &CoreSeqCcsoView,
+    view: CoreSeqCcsoView,
     num_ref_frames: u32,
 ) -> Result<CcsoParams> {
     parse_ccso_params_with_references(
@@ -638,7 +639,7 @@ fn parse_ccso_params_with_references(
     reader: &mut BitReader<'_>,
     coded_lossless: bool,
     num_planes: u8,
-    view: &CoreSeqCcsoView,
+    view: CoreSeqCcsoView,
     inter_num_ref_frames: Option<u32>,
 ) -> Result<CcsoParams> {
     if coded_lossless || !view.enable_ccso {
@@ -948,7 +949,7 @@ mod tests {
             &mut r,
             false,
             3,
-            &restoration_enabled_without_luma_pc(),
+            restoration_enabled_without_luma_pc(),
             geom_128_420(),
             100,
             1,
@@ -982,7 +983,7 @@ mod tests {
             &mut r,
             false,
             3,
-            &restoration_enabled_without_luma_pc(),
+            restoration_enabled_without_luma_pc(),
             geom_128_420(),
             100,
             1,
@@ -1154,7 +1155,7 @@ mod tests {
         bits.bit(0); // ccso_planes[2]
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let params = parse_ccso_params_for_inter(&mut r, false, 3, &ccso_enabled(), 1).unwrap();
+        let params = parse_ccso_params_for_inter(&mut r, false, 3, ccso_enabled(), 1).unwrap();
         assert_eq!(params.planes.len(), 3);
         assert_eq!(params.planes[0].ccso_bo_only, Some(true));
         assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
@@ -1171,7 +1172,7 @@ mod tests {
         bits.bit(0); // ccso_planes[2]
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let params = parse_ccso_params_for_inter(&mut r, false, 3, &ccso_enabled(), 1).unwrap();
+        let params = parse_ccso_params_for_inter(&mut r, false, 3, ccso_enabled(), 1).unwrap();
         assert_eq!(params.planes.len(), 3);
         assert!(params.planes[0].ccso_planes);
         assert_eq!(params.planes[0].ccso_bo_only, None);

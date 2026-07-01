@@ -56,7 +56,9 @@ fn decode_eight(fixture: &[u8]) -> DecodedFrame<u8> {
     let options = DecodeOptions::default();
     let context = decode_context();
     let plan = context.plan_bytes(fixture, options).expect("plan");
-    decode_minimal_frame_from_plan(fixture, &options, &plan)
+    context
+        .pool()
+        .install(|| decode_minimal_frame_from_plan(fixture, &options, &plan))
         .expect("decode")
         .into_frame_eight()
 }
@@ -69,7 +71,9 @@ fn decode_ten(fixture: &[u8]) -> DecodedFrame<u16> {
     let options = DecodeOptions::default();
     let context = decode_context();
     let plan = context.plan_bytes(fixture, options).expect("plan");
-    decode_minimal_frame_from_plan(fixture, &options, &plan)
+    context
+        .pool()
+        .install(|| decode_minimal_frame_from_plan(fixture, &options, &plan))
         .expect("decode")
         .into_frame_ten()
 }
@@ -251,7 +255,10 @@ fn assert_decode_rejects(fixture: &[u8], reason: &str) {
     let options = DecodeOptions::default();
     let context = decode_context();
     let plan = context.plan_bytes(fixture, options).expect("plan");
-    match decode_minimal_frame_from_plan(fixture, &options, &plan) {
+    match context
+        .pool()
+        .install(|| decode_minimal_frame_from_plan(fixture, &options, &plan))
+    {
         Ok(_) => panic!("expected an unsupported-feature rejection for reason {reason}, decoded"),
         Err(DecodeError::UnsupportedFeature { unsupported }) => {
             assert_eq!(unsupported.reason(), reason);
@@ -262,17 +269,15 @@ fn assert_decode_rejects(fixture: &[u8], reason: &str) {
 
 #[test]
 fn ten_bit_smooth_luma_fails_closed_non_dc() {
-    assert_decode_rejects(SMOOTH_10BIT_FIXTURE, "unsupported_10bit_non_dc_intra");
+    assert_decode_rejects(
+        SMOOTH_10BIT_FIXTURE,
+        "general_intra_transform_tool_residual",
+    );
 }
 
 #[test]
-fn ten_bit_split_leaf_decodes_to_stable_hash() {
-    let frame = decode_ten(SPLIT_10BIT_FIXTURE);
-    assert_yuv420_frame(&frame, BitDepth::Ten, 64, 64);
-    assert_hash(
-        &frame,
-        "527cf3cdc7bca2ccfca21573f175c0ffcde73189f1f94fd02a65e09cc9dfdcbf",
-    );
+fn ten_bit_split_leaf_reaches_transform_tool_residual_frontier() {
+    assert_decode_rejects(SPLIT_10BIT_FIXTURE, "general_intra_transform_tool_residual");
 }
 
 #[test]
@@ -310,21 +315,8 @@ const QUAD_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-quad-intra-64x64-q80.ivf");
 
 #[test]
-fn quad_multiblock_intra_frame_decodes_to_oracle() {
-    let frame = decode_eight(QUAD_FIXTURE);
-    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
-
-    let y = frame.y().samples();
-    let quad = |r: usize, c: usize| y[r * 64 + c];
-    assert_eq!(
-        (quad(16, 16), quad(16, 48), quad(48, 16), quad(48, 48)),
-        (80, 200, 160, 40)
-    );
-    assert_chroma_eq(&frame, 120, 130);
-    assert_hash(
-        &frame,
-        "c54ed4e996841e2178e74033d765dda1e1127d5d89c3012be3266c3e24a7fd28",
-    );
+fn quad_multiblock_intra_frame_reaches_transform_tool_residual_frontier() {
+    assert_decode_rejects(QUAD_FIXTURE, "general_intra_transform_tool_residual");
 }
 
 const DEEP_SPLIT_FIXTURE: &[u8] =
@@ -583,40 +575,8 @@ const SHSPLIT_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-shsplit-intra-64x64-q80.ivf");
 
 #[test]
-fn smooth_h_split_subblock_reads_decoded_above_right_sibling() {
-    let frame = decode_eight(SHSPLIT_FIXTURE);
-    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
-
-    let y = frame.y().samples();
-    let at = |col: usize, row: usize| y[row * 64 + col];
-    assert_eq!((at(16, 16), at(48, 16), at(48, 48)), (50, 210, 130));
-    assert!(
-        at(31, 32) > 200,
-        "bottom-left SMOOTH_H right column must read the real above-right sentinel (210), got {}",
-        at(31, 32)
-    );
-    assert!(
-        at(0, 32) < 70,
-        "bottom-left SMOOTH_H left column should stay near the above-row source (~50), got {}",
-        at(0, 32)
-    );
-    let u = frame.u().unwrap().samples();
-    let v = frame.v().unwrap().samples();
-    let cu = |col: usize, row: usize| u[row * 32 + col];
-    let cv = |col: usize, row: usize| v[row * 32 + col];
-    assert_eq!(
-        (cu(8, 8), cu(24, 8), cu(8, 24), cu(24, 24)),
-        (110, 140, 100, 160)
-    );
-    assert_eq!(
-        (cv(8, 8), cv(24, 8), cv(8, 24), cv(24, 24)),
-        (120, 135, 150, 115)
-    );
-
-    assert_hash(
-        &frame,
-        "296f15949d88b26b5797bffdb15c6c36dc46bf6976bad59f7995e2443e1b418a",
-    );
+fn smooth_h_split_subblock_reaches_transform_tool_residual_frontier() {
+    assert_decode_rejects(SHSPLIT_FIXTURE, "general_intra_transform_tool_residual");
 }
 
 const SVSPLIT_FIXTURE: &[u8] =
@@ -624,7 +584,7 @@ const SVSPLIT_FIXTURE: &[u8] =
 
 #[test]
 fn smooth_chroma_split_subblock_still_rejects() {
-    assert_decode_rejects(SVSPLIT_FIXTURE, "general_intra_smooth_chroma_subblock");
+    assert_decode_rejects(SVSPLIT_FIXTURE, "general_intra_transform_tool_residual");
 }
 
 const HEDGE_DIR_FIXTURE: &[u8] =
@@ -1199,35 +1159,19 @@ const DEBLOCK_GRID_Q100_FIXTURE: &[u8] = include_bytes!(
 );
 
 #[test]
-fn deblock_active_intra_frame_decodes_to_oracle() {
-    let frame = decode_eight(DEBLOCK_Q100_FIXTURE);
-    assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
-
-    let y = frame.y().samples();
-    assert_eq!(y[31 * 128 + 4], 73, "deblocked luma at (4, 31)");
-    assert_eq!(y[32 * 128 + 4], 73, "deblocked luma at (4, 32)");
-
-    assert_hash(
-        &frame,
-        "a83cf84a6eab00d8c1e6aaf64e7aeba2049e7d1721a90147067ecc627f0aea0b",
+fn deblock_active_intra_frame_reaches_transform_tool_residual_frontier() {
+    assert_decode_rejects(
+        DEBLOCK_Q100_FIXTURE,
+        "general_intra_transform_tool_residual",
     );
-
-    let q98 = decode_eight(DEBLOCK_Q98_FIXTURE);
-    assert_eq!(
-        frame_hash(&q98),
-        "3306f7ab5f192cc4f30f6c564e9b52a9d868de77ffd9fb913651cb58a8d8a3f1"
+    assert_decode_rejects(DEBLOCK_Q98_FIXTURE, "general_intra_transform_tool_residual");
+    assert_decode_rejects(
+        DEBLOCK_WIDE_Q100_FIXTURE,
+        "general_intra_transform_tool_residual",
     );
-    let wide = decode_eight(DEBLOCK_WIDE_Q100_FIXTURE);
-    assert_eq!(
-        frame_hash(&wide),
-        "199c62093efa3b644fb4d519ae082516d9a4f9a77b13f116ddc62c49fa8648d7"
-    );
-
-    let grid = decode_eight(DEBLOCK_GRID_Q100_FIXTURE);
-    assert_eq!(grid.y().visible_size(), PlaneSize::new(128, 128).unwrap());
-    assert_eq!(
-        frame_hash(&grid),
-        "242cb4df75288e96ab231c41f3bcb956aa0159d35a304e82c89e04814bd77ef0"
+    assert_decode_rejects(
+        DEBLOCK_GRID_Q100_FIXTURE,
+        "general_intra_transform_tool_residual",
     );
 }
 

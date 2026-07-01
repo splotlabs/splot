@@ -408,6 +408,7 @@ fn resolve_initial_frame_cdfs(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn trace_initial_frame_cdfs<T: ReconSample>(
     current_base_q_idx: u32,
     current_order_hint: i32,
@@ -687,6 +688,7 @@ pub(super) struct InterBlock {
     pub(super) mv1: Mv,
     pub(super) interp: ReconInterpolationFilter,
     pub(super) warp_params: Option<[i64; 6]>,
+    #[allow(dead_code)]
     pub(super) bawp: BawpSyntax,
     pub(super) residual: Option<InterResidual>,
 }
@@ -724,6 +726,7 @@ pub(super) struct InterReferenceState<'a, T: ReconSample> {
     pub(super) ref_frame_height: Vec<u32>,
     pub(super) ref_base_q_idx: Vec<u32>,
     pub(super) ref_is_inter: Vec<bool>,
+    #[allow(dead_code)]
     pub(super) ref_adapted: Vec<bool>,
     pub(super) lr_frame_filter_class_counts: Vec<[u8; 3]>,
     pub(super) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,

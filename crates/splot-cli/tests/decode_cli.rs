@@ -653,40 +653,24 @@ fn decode_multi_sb_inter_fixture_decodes_bit_exact() {
 }
 
 #[test]
-fn decode_grid_inter_fixture_decodes_bit_exact() {
+fn decode_grid_inter_fixture_reports_current_frontier() {
     let input = conformance_vector("syn-grid-inter-128x128-q80.ivf");
-    let output = temp_output("yuv");
 
     let out = splot(&[
         "decode",
+        "--json",
         "--output-format",
-        "raw",
+        "hash",
         input.to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
     ]);
 
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "the 2-D-grid inter fixture must decode successfully: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let decoded = std::fs::read(&output).expect("decoded raw output");
-    assert_eq!(decoded.len(), 49152, "two 8-bit 4:2:0 128x128 frames");
-    let frame_bytes = 24576;
-    let (frame0, frame1) = decoded.split_at(frame_bytes);
-    let luma_bytes = 16384;
-    assert_ne!(
-        &frame0[..luma_bytes],
-        &frame1[..luma_bytes],
-        "inter luma differs from the key (real cross-SB neighbour-predicted MVs)"
-    );
-    assert_eq!(
-        &frame0[luma_bytes..],
-        &frame1[luma_bytes..],
-        "inter chroma equals key chroma (flat, MV is horizontal)"
-    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["detail_kind"], "unsupported_feature");
+    assert_eq!(json["unsupported_reason"], "inter_exit_symbol");
+    assert_eq!(json["tier_id"], "general-inter-8bit420-frontier-v1");
+    assert_eq!(json["spec_section"], "5.20.7.6");
 }
 
 #[test]

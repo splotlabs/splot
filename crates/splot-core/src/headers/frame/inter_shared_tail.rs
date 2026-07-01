@@ -88,7 +88,8 @@ use crate::headers::frame::quant::{
     parse_delta_q_params, parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
 };
 use crate::headers::frame::restoration::{
-    LrGeometry, LrParseOutcome, parse_ccso_params_for_inter, parse_lr_params_for_inter,
+    LrGeometry, LrParseOutcome, parse_ccso_params, parse_ccso_params_for_inter,
+    parse_lr_params_for_inter,
 };
 use crate::headers::frame::tail::{TxMode, parse_film_grain_config, read_tx_mode};
 use crate::headers::frame::tiling::parse_tile_info;
@@ -251,7 +252,7 @@ pub(crate) fn parse_inter_shared_tail(
         reader,
         coded_lossless,
         seq.quant.num_planes,
-        &seq.restoration,
+        seq.restoration,
         lr_geometry,
         quantization.base_q_idx,
         num_total_refs,
@@ -272,13 +273,17 @@ pub(crate) fn parse_inter_shared_tail(
     }
     trace_tail_position(reader, "after_lr");
 
-    core.ccso_params = Some(parse_ccso_params_for_inter(
-        reader,
-        coded_lossless,
-        seq.quant.num_planes,
-        &seq.ccso,
-        num_total_refs,
-    )?);
+    core.ccso_params = Some(if frame_type == FrameType::Switch {
+        parse_ccso_params(reader, coded_lossless, seq.quant.num_planes, &seq.ccso)?
+    } else {
+        parse_ccso_params_for_inter(
+            reader,
+            coded_lossless,
+            seq.quant.num_planes,
+            seq.ccso,
+            num_total_refs,
+        )?
+    });
     trace_tail_position(reader, "after_ccso");
 
     store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);

@@ -1385,8 +1385,8 @@ fn palette_color_index_context(
         0
     };
     let mut write_idx = color_count;
-    for read_idx in 0..color_status.len() {
-        if !color_status[read_idx] && write_idx < color_order.len() {
+    for (read_idx, status) in color_status.iter().enumerate() {
+        if !status && write_idx < color_order.len() {
             color_order[write_idx] = read_idx as u8;
             write_idx += 1;
         }

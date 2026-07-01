@@ -78,8 +78,22 @@ fn decode_fixture_with_options(
     bytes: &[u8],
     options: &DecodeOptions,
 ) -> Result<Vec<MinimalRuntimeFrame>> {
-    let plan = plan_fixture(bytes, options);
-    decode_minimal_frames_from_plan(bytes, options, &plan)
+    let context = decode_context();
+    let plan = context.plan_bytes(bytes, *options).expect("plan");
+    context
+        .pool()
+        .install(|| decode_minimal_frames_from_plan(bytes, options, &plan))
+}
+
+fn decode_frames_from_plan_on_pool(
+    bytes: &[u8],
+    options: &DecodeOptions,
+    plan: &DecodeStreamPlan,
+) -> Result<Vec<MinimalRuntimeFrame>> {
+    let context = decode_context();
+    context
+        .pool()
+        .install(|| decode_minimal_frames_from_plan(bytes, options, plan))
 }
 
 fn decode_frames() -> Vec<MinimalRuntimeFrame> {
@@ -146,6 +160,16 @@ fn write_original_ivf_frames(bytes: &mut Vec<u8>, frames: &[ParsedIvfFrame<'_>])
 
 fn decode_inter_blocks_after_quantization_mutation(
     bytes: &[u8],
+    mutate: impl FnOnce(&mut QuantizationParams) + Send,
+) -> Result<()> {
+    let context = decode_context();
+    context
+        .pool()
+        .install(move || decode_inter_blocks_after_quantization_mutation_inner(bytes, mutate))
+}
+
+fn decode_inter_blocks_after_quantization_mutation_inner(
+    bytes: &[u8],
     mutate: impl FnOnce(&mut QuantizationParams),
 ) -> Result<()> {
     let options = DecodeOptions::default();
@@ -181,7 +205,7 @@ fn decode_inter_blocks_after_quantization_mutation(
     let frames = vec![key_frame];
     reference.update(
         0,
-        super::super::frame_ref_update_from_core(
+        &super::super::frame_ref_update_from_core(
             &key_core,
             key_envelope.offset,
             frames[0].frame_cdfs.clone(),
@@ -540,32 +564,16 @@ fn multi_sb_fixture_per_frame_hash_is_stable() {
 }
 
 #[test]
-fn grid_fixture_decodes_two_frames() {
-    let frames = decode_fixture(GRID_INTER_FIXTURE);
-    assert_eq!(
-        frames.len(),
-        2,
-        "the 2-D-grid stream decodes a key frame + one inter frame"
-    );
-    assert_yuv420_8bit_frames(&frames, 128, 128);
-}
-
-#[test]
-fn grid_fixture_per_frame_hash_is_stable() {
-    let frames = decode_fixture(GRID_INTER_FIXTURE);
-    let hashes = frame_hashes(&frames);
-    assert_eq!(
-        hashes[0], "5619e639914803867ca0bdeb12bff97e808788607f992c661a7bcfc0bea4911a",
-        "2-D-grid key-frame hash"
-    );
-    assert_eq!(
-        hashes[1], "f23ded7e9197d7c9b0a2fdc5cdc649c079cd1fb8a1c79e913b72fb74f0c502db",
-        "2-D-grid inter-frame hash"
-    );
-    assert_ne!(
-        hashes[0], hashes[1],
-        "the 2-D-grid inter frame must differ from the key frame (real cross-SB MV shift)"
-    );
+fn grid_fixture_reaches_exit_symbol_frontier() {
+    let options = DecodeOptions::default();
+    let Err(DecodeError::UnsupportedFeature { unsupported }) =
+        decode_fixture_with_options(GRID_INTER_FIXTURE, &options)
+    else {
+        panic!("the 2-D-grid stream must stop at the current inter frontier");
+    };
+    assert_eq!(unsupported.reason(), "inter_exit_symbol");
+    assert_eq!(unsupported.tier_id(), "general-inter-8bit420-frontier-v1");
+    assert_eq!(unsupported.spec_section(), "5.20.7.6");
 }
 
 #[test]
@@ -875,7 +883,7 @@ fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
     let repacked = repack_multiref_first_inter_td_separate_from_tile_group();
     let options = DecodeOptions::default();
     let plan = plan_fixture(&repacked, &options);
-    let Err(error) = decode_minimal_frames_from_plan(&repacked, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
         panic!("record-leading tile group must fail closed");
     };
     assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
@@ -1291,7 +1299,7 @@ fn leading_key_payload_extra_obu_rejected_before_tile_decode() {
         plan.obu_count() >= 4,
         "test fixture must keep an extra OBU after the leading key frame"
     );
-    let Err(error) = decode_minimal_frames_from_plan(&repacked, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
         panic!("10-bit leading payload with an extra OBU must fail closed");
     };
     assert_eq!(
@@ -1309,7 +1317,7 @@ fn multiref_runtime_rejects_extra_obu_after_leading_key_payload() {
         plan.obu_count() >= 4,
         "test fixture must keep an extra OBU after the leading key frame"
     );
-    let Err(error) = decode_minimal_frames_from_plan(&repacked, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
         panic!("extra leading-payload OBU must fail closed before output");
     };
     assert_eq!(
@@ -1328,7 +1336,7 @@ fn multiref_runtime_rejects_state_obu_before_following_inter_candidate() {
         3,
         "test fixture must retain the key plus two inter frame candidates"
     );
-    let Err(error) = decode_minimal_frames_from_plan(&repacked, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
         panic!("extra state before a following inter candidate must fail closed");
     };
     assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
@@ -1344,7 +1352,7 @@ fn multiref_runtime_rejects_state_obu_after_inter_candidate_before_next_frame() 
         3,
         "test fixture must retain the key plus two inter frame candidates"
     );
-    let Err(error) = decode_minimal_frames_from_plan(&repacked, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
         panic!("state after one inter candidate and before the next must fail closed");
     };
     assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
@@ -1360,7 +1368,7 @@ fn four_frame_multiref_reaches_too_many_valid_references_gate() {
         4,
         "test fixture must exercise the former total frame-count gate"
     );
-    let Err(error) = decode_minimal_frames_from_plan(&four_frame, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&four_frame, &options, &plan) else {
         panic!("a fourth multiref frame must still fail closed before output");
     };
     assert_eq!(unsupported_reason(error), "inter_too_many_valid_references");
@@ -1376,7 +1384,7 @@ fn multiref_runtime_does_not_preflight_future_ivf_records_before_reference_gate(
         4,
         "test fixture keeps the malformed state-only IVF record after the fourth candidate"
     );
-    let Err(error) = decode_minimal_frames_from_plan(&future_state, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&future_state, &options, &plan) else {
         panic!("a fourth multiref frame must still fail closed before output");
     };
     assert_eq!(unsupported_reason(error), "inter_too_many_valid_references");

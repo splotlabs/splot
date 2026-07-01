@@ -190,12 +190,8 @@ impl TileLumaPaletteState {
         let mut left_idx = 0usize;
         let mut above_remaining = above.map_or(0, LumaPalette::size);
         let mut left_remaining = left.map_or(0, LumaPalette::size);
-        let above_colors = above
-            .map(LumaPalette::colors)
-            .unwrap_or([0; PALETTE_MAX_SIZE]);
-        let left_colors = left
-            .map(LumaPalette::colors)
-            .unwrap_or([0; PALETTE_MAX_SIZE]);
+        let above_colors = above.map_or([0; PALETTE_MAX_SIZE], LumaPalette::colors);
+        let left_colors = left.map_or([0; PALETTE_MAX_SIZE], LumaPalette::colors);
 
         while above_remaining > 0 && left_remaining > 0 {
             push_palette_cache(&mut cache, &mut len, above_colors[above_idx]);

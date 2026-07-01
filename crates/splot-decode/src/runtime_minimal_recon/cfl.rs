@@ -24,12 +24,14 @@ const CFL_ALPHA_SHIFT: u32 = 11;
 const CFL_ALPHA_SCALE: i64 = 32;
 const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
 const NUM_REF_SAM_CFL: usize = 8;
+#[doc = "AV2 § 3 symbols and § 7.13.6 MHCCP process constants."]
 const MHCCP_BITS: u32 = 16;
 const MHCCP_PARAM_COUNT: usize = 3;
 const DIV_PREC_BITS: u32 = 14;
 const DIV_PREC_BITS_POW2: u32 = 8;
 const DIV_SLOT_BITS: u32 = 3;
 const DIV_INTR_BITS: u32 = DIV_PREC_BITS - DIV_SLOT_BITS;
+#[doc = "AV2 § 7.13.6 `get_division_scale_shift` lookup tables."]
 const DIVISION_POW2_W: [i64; 8] = [214, 153, 113, 86, 67, 53, 43, 35];
 const DIVISION_POW2_O: [i64; 8] = [4822, 5952, 6624, 6792, 6408, 5424, 3792, 1466];
 const DIVISION_POW2_B: [i64; 8] = [12784, 12054, 11670, 11583, 11764, 12195, 12870, 13782];
@@ -361,6 +363,7 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     )))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cfl_luma_average_q3<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     x: usize,

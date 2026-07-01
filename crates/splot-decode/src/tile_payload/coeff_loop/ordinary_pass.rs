@@ -915,14 +915,31 @@ fn trace_ordinary_coeff_enabled(
     if std::env::var_os("SPLOT_TRACE_ORDINARY_COEFF_PASS").is_none() {
         return false;
     }
-    if std::env::var_os("SPLOT_TRACE_ORDINARY_COEFF_TARGET").is_none() {
+    let Some(target) = std::env::var("SPLOT_TRACE_ORDINARY_COEFF_TARGET").ok() else {
         return true;
-    }
-    config.plane == 0
-        && sign_config.x4 == 136
-        && sign_config.y4 == 0
-        && sign_config.w4 == 4
-        && sign_config.h4 == 16
+    };
+    let mut parts = target.split(',');
+    let Some(plane) = parts.next().and_then(|part| part.parse::<usize>().ok()) else {
+        return false;
+    };
+    let Some(x4) = parts.next().and_then(|part| part.parse::<usize>().ok()) else {
+        return false;
+    };
+    let Some(y4) = parts.next().and_then(|part| part.parse::<usize>().ok()) else {
+        return false;
+    };
+    let Some(w4) = parts.next().and_then(|part| part.parse::<usize>().ok()) else {
+        return false;
+    };
+    let Some(h4) = parts.next().and_then(|part| part.parse::<usize>().ok()) else {
+        return false;
+    };
+    parts.next().is_none()
+        && config.plane == plane
+        && sign_config.x4 == x4
+        && sign_config.y4 == y4
+        && sign_config.w4 == w4
+        && sign_config.h4 == h4
 }
 
 fn should_trace_coeff_entry(index: usize, level: u32) -> bool {

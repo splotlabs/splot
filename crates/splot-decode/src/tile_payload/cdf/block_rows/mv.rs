@@ -389,7 +389,7 @@ fn checked_shell_class_axes(
             max_exclusive: MV_CONTEXTS,
         });
     }
-    if matches!(precision, 3 | 4 | 5 | 6) {
+    if matches!(precision, 3..=6) {
         Ok(())
     } else {
         Err(precision_error(precision))

@@ -10,6 +10,8 @@ use rayon::ThreadPool;
 use crate::error::ParallelError;
 use crate::thread_count::ThreadCount;
 
+const WORKER_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+
 /// A codec context's single owned worker pool, wrapping a *local* Rayon
 /// [`ThreadPool`]. The global Rayon pool is never used.
 #[derive(Clone, Debug)]
@@ -32,6 +34,7 @@ impl WorkerPool {
         let inner = rayon::ThreadPoolBuilder::new()
             .num_threads(threads.get())
             .thread_name(|index| format!("splot-worker-{index}"))
+            .stack_size(WORKER_STACK_SIZE_BYTES)
             .build()?;
         Ok(Self {
             inner: Arc::new(inner),
