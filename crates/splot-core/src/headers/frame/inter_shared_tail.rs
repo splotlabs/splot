@@ -80,13 +80,15 @@ use crate::headers::frame::filtering::{
     GdfGeometry, parse_cdef_params, parse_deblocking_filter_params, parse_gdf_params,
 };
 use crate::headers::frame::global_motion::{GlobalMotionInput, parse_global_motion_params};
-use crate::headers::frame::info::{CoreSeqView, FrameHeaderCore, FrameHeaderParseStatus};
+use crate::headers::frame::info::{
+    CoreSeqView, FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView,
+};
 use crate::headers::frame::inter::InterControl;
 use crate::headers::frame::quant::{
     parse_delta_q_params, parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
 };
 use crate::headers::frame::restoration::{
-    LrGeometry, LrParseOutcome, parse_ccso_params, parse_lr_params,
+    LrGeometry, LrParseOutcome, parse_ccso_params_for_inter, parse_lr_params_for_inter,
 };
 use crate::headers::frame::tail::{TxMode, parse_film_grain_config, read_tx_mode};
 use crate::headers::frame::tiling::parse_tile_info;
@@ -148,18 +150,10 @@ pub(crate) fn parse_inter_shared_tail(
     seq: &CoreSeqView,
     control: &InterControl,
     frame_type: FrameType,
+    reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
     let tip_frame_as_output = false;
     let num_total_refs = control.num_total_refs.unwrap_or(0);
-
-    let lr_inter_arm_possible = seq.restoration.enable_restoration && num_total_refs > 0;
-    let ccso_inter_arm_possible = seq.ccso.enable_ccso;
-    if lr_inter_arm_possible || ccso_inter_arm_possible {
-        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
-            feature_id: FRAME_HEADER_INFO_FEATURE,
-        };
-        return Ok(());
-    }
 
     let Some(frame_size) = core.frame_size else {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
@@ -167,6 +161,7 @@ pub(crate) fn parse_inter_shared_tail(
         };
         return Ok(());
     };
+    trace_tail_position(reader, "start");
     core.tile_info = match parse_tile_info(reader, &seq.tile, frame_size, false, false, false) {
         Ok(tile_info) => Some(tile_info),
         Err(Error::Unimplemented { feature }) => {
@@ -177,8 +172,10 @@ pub(crate) fn parse_inter_shared_tail(
         }
         Err(error) => return Err(error),
     };
+    trace_tail_position(reader, "after_tile_info");
 
     let quantization = parse_quantization_params(reader, &seq.quant, tip_frame_as_output)?;
+    trace_tail_position(reader, "after_quant");
 
     let segmentation_enabled = reader.read_flag()?;
     if segmentation_enabled {
@@ -188,10 +185,13 @@ pub(crate) fn parse_inter_shared_tail(
         return Ok(());
     }
     let segmentation = crate::headers::frame::segmentation::SegmentationParams::disabled();
+    trace_tail_position(reader, "after_segmentation");
 
     let qm = parse_setup_qm_params(reader, &seq.quant, segmentation.segmentation_enabled)?;
+    trace_tail_position(reader, "after_qm");
 
     let delta_q = parse_delta_q_params(reader, quantization.base_q_idx)?;
+    trace_tail_position(reader, "after_delta_q");
 
     let lossless = parse_lossless_info(
         reader,
@@ -213,6 +213,7 @@ pub(crate) fn parse_inter_shared_tail(
         read_allow_df_sub_pu,
         None,
     )?);
+    trace_tail_position(reader, "after_deblock");
 
     let gdf = {
         let Some(tile_info) = core.tile_info.as_ref() else {
@@ -233,6 +234,7 @@ pub(crate) fn parse_inter_shared_tail(
         parse_gdf_params(reader, coded_lossless, &seq.filter, geometry)?
     };
     core.gdf_params = Some(gdf);
+    trace_tail_position(reader, "after_gdf");
 
     core.cdef_params = Some(parse_cdef_params(
         reader,
@@ -240,15 +242,20 @@ pub(crate) fn parse_inter_shared_tail(
         seq.quant.num_planes,
         &seq.filter,
     )?);
+    trace_tail_position(reader, "after_cdef");
 
     let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(false), seq.chroma_format_idc);
-    match parse_lr_params(
+    let lr_reference_filter_counts =
+        lr_reference_filter_counts(reference_state, &control.ref_frame_idx, num_total_refs);
+    match parse_lr_params_for_inter(
         reader,
         coded_lossless,
         seq.quant.num_planes,
         &seq.restoration,
         lr_geometry,
         quantization.base_q_idx,
+        num_total_refs,
+        lr_reference_filter_counts,
     )? {
         LrParseOutcome::Parsed(lr) => {
             core.lr_params = Some(lr);
@@ -263,17 +270,48 @@ pub(crate) fn parse_inter_shared_tail(
             return Ok(());
         }
     }
+    trace_tail_position(reader, "after_lr");
 
-    core.ccso_params = Some(parse_ccso_params(
+    core.ccso_params = Some(parse_ccso_params_for_inter(
         reader,
         coded_lossless,
         seq.quant.num_planes,
         &seq.ccso,
+        num_total_refs,
     )?);
+    trace_tail_position(reader, "after_ccso");
 
     store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);
 
     parse_inter_tail_arms(reader, core, seq, control, frame_type, coded_lossless)
+}
+
+fn lr_reference_filter_counts(
+    reference_state: &FrameReferenceStateView<'_>,
+    ref_frame_idx: &[u32],
+    num_total_refs: u32,
+) -> [usize; 3] {
+    let Some(slot_counts) = reference_state.lr_frame_filter_class_counts else {
+        return [0; 3];
+    };
+    let mut counts = [0usize; 3];
+    for slot in ref_frame_idx.iter().take(num_total_refs as usize) {
+        let slot = *slot as usize;
+        if reference_state
+            .ref_valid
+            .and_then(|valid| valid.get(slot).copied())
+            == Some(false)
+        {
+            continue;
+        }
+        let Some(planes) = slot_counts.get(slot) else {
+            continue;
+        };
+        counts[0] = counts[0].saturating_add(usize::from(planes[0]));
+        counts[1] = counts[1].saturating_add(usize::from(planes[1]) + usize::from(planes[2]));
+        counts[2] = counts[2].saturating_add(usize::from(planes[2]) + usize::from(planes[1]));
+    }
+    counts
 }
 
 /// Parses the § 5.18.2 inter tail after `ccso_params()` (mirror :5307-5341) and sets the
@@ -360,6 +398,17 @@ fn parse_inter_tail_arms(
     });
     core.status = FrameHeaderParseStatus::InterHeaderComplete;
     Ok(())
+}
+
+fn trace_tail_position(reader: &BitReader<'_>, label: &str) {
+    if std::env::var_os("SPLOT_TRACE_INTER_HEADER_BITS").is_some() {
+        eprintln!(
+            "inter header bits {label} byte={} bit={} consumed={}",
+            reader.byte_offset().get(),
+            reader.bit_offset().get(),
+            reader.consumed_bits()
+        );
+    }
 }
 
 /// Stores the parsed shared-structure-cluster facts on `core`. Deferred until the borrows

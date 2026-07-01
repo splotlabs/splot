@@ -3,7 +3,7 @@
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams, TxMode};
-use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::span::ByteOffset;
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{
@@ -18,7 +18,7 @@ use crate::tile_payload::{
     GeneralIntraBlockModeError, GeneralIntraChromaToolConfig, GeneralIntraMultiblockError,
     GeneralIntraResidualError, GeneralIntraTreeWalkError, MinimalRuntimePartitionFrontierError,
     TileCoeffContextState, TilePartitionTraversalError, TilePartitionTraversalUnsupported,
-    TransformToolResidualPolicy, decode_general_intra_block_modes,
+    TransformToolResidualPolicy, decode_general_intra_block_modes_with_fsc_context,
     decode_general_intra_multiblock_tree, decode_general_intra_plane_coeffs, frame_mi_dimensions,
 };
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
@@ -30,8 +30,8 @@ use super::{
     AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID, AC0EJ3_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW,
     AC0EJ3_LR_SOURCE_READ_FEATURE_ID, AC0EJ3_LR_SOURCE_READ_MATRIX_ROW,
     AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID, AC0EJ3_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
-    derive_tile_plan, ensure_sequence_chroma_tools_before_tile_decode, unsupported_at,
-    unsupported_feature_at,
+    derive_tile_plan, effective_allow_screen_content_tools,
+    ensure_sequence_chroma_tools_before_tile_decode, unsupported_at, unsupported_feature_at,
 };
 
 const LR_MI_SIZE: usize = 4;
@@ -43,12 +43,12 @@ const PC_WIENER_FEATURE_SOURCE_READ_OFFSETS: [(isize, isize); 7] =
     [(0, 0), (0, -1), (0, 1), (1, -1), (-1, 1), (1, 1), (-1, -1)];
 
 mod diagnostics;
-mod intrabc_records;
+pub(in crate::runtime_minimal) mod intrabc_records;
 mod intrabc_ref_mv_stack;
 mod live_storage;
 mod recon;
 mod source_read_math;
-mod tx_records;
+pub(in crate::runtime_minimal) mod tx_records;
 
 pub(super) use self::recon::reconstruct_ac0ej3_selectable_intra_region;
 #[cfg(test)]
@@ -724,7 +724,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
         sequence,
         core,
         limits,
-        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, is_cfl_ctx, _block_decoded| {
+        |work_unit, symbols, frontier, joint_modes, uses_mrls, fsc_modes, palette_state, is_cfl_ctx, _block_decoded| {
             let n4w = frontier
                 .b_size
                 .num_4x4_wide()
@@ -745,19 +745,28 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                     "5.20.3.1",
                 ));
             }
-            let modes = decode_general_intra_block_modes(
+            let use_neighbor_fsc_context =
+                core.frame_is_intra == Some(true) || !frontier.is_mixed_region();
+            let modes = decode_general_intra_block_modes_with_fsc_context(
                 work_unit,
                 symbols,
-                GeneralIntraChromaToolConfig::disabled(),
+                GeneralIntraChromaToolConfig::disabled()
+                    .with_allow_screen_content_tools(effective_allow_screen_content_tools(core)),
                 joint_modes,
                 uses_mrls,
                 fsc_modes,
+                use_neighbor_fsc_context,
+                palette_state,
                 is_cfl_ctx.get(),
                 frontier.b_size.index(),
                 frontier.r,
                 frontier.c,
                 n4w,
                 n4h,
+                frontier.b_size.index(),
+                n4w,
+                n4h,
+                bit_depth_bits(sequence),
             )
             .map_err(|error| {
                 wienerns_lr_live_transform_record_mode_error(
@@ -780,9 +789,11 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 luma_x,
                 luma_y,
                 true,
+                None,
                 false,
                 modes.coeff_uv_mode(),
                 0,
+                false,
                 false,
                 false,
                 TransformToolResidualPolicy::Allow,
@@ -825,11 +836,13 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 chroma_x,
                 chroma_y,
                 true,
+                None,
                 false,
                 modes.coeff_uv_mode(),
                 angle_delta_uv,
                 false,
                 false,
+                modes.fsc_mode != 0,
                 TransformToolResidualPolicy::Allow,
             )
             .map_err(|error| {
@@ -848,11 +861,13 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 chroma_x,
                 chroma_y,
                 true,
+                None,
                 !u.all_zero,
                 modes.coeff_uv_mode(),
                 angle_delta_uv,
                 false,
                 false,
+                modes.fsc_mode != 0,
                 TransformToolResidualPolicy::Allow,
             )
             .map_err(|error| {
@@ -883,6 +898,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
     symbols
         .exit_symbol()
         .map_err(|_| wienerns_lr_live_transform_record_handoff_error(tile_offset))?;
+    tile.apply_frame_end_cdf_update();
 
     Ok(WienerNsLrLiveTransformRecordHandoff {
         tx_skip_rows,
@@ -890,6 +906,7 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
         records,
         active_source_blocks: Vec::new(),
         unit_filters: Vec::new(),
+        frame_cdfs: tile.frame_cdfs(),
         cdef_grid: None,
         ccso_grid: None,
     })
@@ -1122,6 +1139,15 @@ fn wienerns_lr_transform_record_setup_error(
                 "8.3.2",
             )
         }
+        MinimalRuntimePartitionFrontierError::LumaPaletteState(_) => {
+            wienerns_lr_transform_record_unsupported(
+                scope,
+                "unsupported_wienerns_lr_live_transform_record_setup_luma_palette_state",
+                offset,
+                "Wiener NS LR transform records need luma palette neighbour state.",
+                "5.20.8.1",
+            )
+        }
         MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => {
             wienerns_lr_transform_record_unsupported(
                 scope,
@@ -1175,6 +1201,15 @@ fn wienerns_lr_transform_record_traversal_error(
             "Partition traversal cannot maintain FscModes state for Wiener NS LR records.",
             "8.3.2",
         ),
+        TilePartitionTraversalError::LumaPaletteState(_) => {
+            wienerns_lr_transform_record_unsupported(
+                scope,
+                "unsupported_wienerns_lr_live_transform_record_luma_palette_state",
+                offset,
+                "Partition traversal cannot maintain luma palette state for Wiener NS LR records.",
+                "5.20.8.1",
+            )
+        }
         TilePartitionTraversalError::Size(_) => wienerns_lr_transform_record_unsupported(
             scope,
             "unsupported_wienerns_lr_live_transform_record_partition_size",
@@ -1236,6 +1271,15 @@ fn wienerns_lr_transform_record_traversal_error(
                 "unsupported_wienerns_lr_live_transform_record_invalid_partition_subsize",
                 offset,
                 "Partition choice produced no valid child block size.",
+                "5.20.3.1",
+            )
+        }
+        TilePartitionTraversalError::InvalidRegionType { .. } => {
+            wienerns_lr_transform_record_unsupported(
+                scope,
+                "unsupported_wienerns_lr_live_transform_record_invalid_region_type",
+                offset,
+                "Extended SDP region type syntax is outside the Wiener NS LR record subset.",
                 "5.20.3.1",
             )
         }
@@ -1400,6 +1444,15 @@ fn wienerns_lr_live_transform_record_mode_error(
                 offset,
                 "Active MHCCP chroma prediction is outside the Wiener NS LR record subset.",
                 "5.20.5.6",
+            )
+        }
+        GeneralIntraBlockModeError::InvalidPaletteYSize { .. } => {
+            wienerns_lr_transform_record_unsupported(
+                scope,
+                "invalid_wienerns_lr_live_transform_record_palette_y_size",
+                offset,
+                "Decoded luma palette size is outside the valid range.",
+                "5.20.8.1",
             )
         }
         GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder { .. } => {
@@ -2414,4 +2467,11 @@ fn has_wienerns_frame_filter_bank(core: &FrameHeaderCore) -> bool {
             .iter()
             .any(|plane| plane.frame_filter_bank.is_some())
     })
+}
+
+fn bit_depth_bits(sequence: &SequenceHeader) -> u32 {
+    match sequence.general.bit_depth_idc {
+        BitDepthIdc::Eight => 8,
+        BitDepthIdc::Ten => 10,
+    }
 }

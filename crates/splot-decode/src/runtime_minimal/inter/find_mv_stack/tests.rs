@@ -48,7 +48,42 @@ fn record_inter_ref(
     mv: Mv,
     skip: bool,
 ) {
-    grid.record_block(r, c, N4_32, N4_32, true, ref_frame0, mode, mv, skip);
+    grid.record_block(
+        r,
+        c,
+        N4_32,
+        N4_32,
+        true,
+        ref_frame0,
+        None,
+        mode,
+        mv,
+        skip,
+        SWITCHABLE_FILTERS,
+        false,
+    );
+}
+
+fn record_warp_inter(
+    grid: &mut NeighbourMvGrid,
+    r: usize,
+    c: usize,
+    mode: NeighbourYMode,
+    mv: Mv,
+    skip: bool,
+) {
+    grid.record_warp_block(
+        r,
+        c,
+        N4_32,
+        N4_32,
+        0,
+        mode,
+        mv,
+        skip,
+        SWITCHABLE_FILTERS,
+        false,
+    );
 }
 
 fn grid_with_block0() -> NeighbourMvGrid {
@@ -65,6 +100,7 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
     let ctx = find_mode_ctx(&grid, &block0);
     assert_eq!(ctx.new_mv_context, 0, "top-left NewMvContext");
     assert_eq!(ctx.new_mv_count, 0, "top-left NewMvCount");
+    assert_eq!(ctx.warp_mv_count, 0, "top-left WarpMvCount");
 
     let nctx = block_neighbour_ctx(&grid, &block0);
     assert_eq!(nctx.is_inter_ctx, 0, "no-neighbour is_inter ctx");
@@ -77,6 +113,162 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
     let stack = find_mv_stack(&grid, &block0, Mv::ZERO);
     assert_eq!(stack.num_mv_found(), 1, "only the zero global-MV fallback");
     assert_eq!(stack.candidate(0), Mv::ZERO, "fallback candidate is zero");
+}
+
+#[test]
+fn interp_filter_context_uses_matching_reference_neighbours() {
+    let mut grid = empty_grid();
+    grid.record_block(
+        N4_32,
+        0,
+        N4_32,
+        N4_32,
+        true,
+        0,
+        None,
+        NeighbourYMode::Other,
+        Mv::ZERO,
+        false,
+        0,
+        false,
+    );
+    grid.record_block(
+        0,
+        N4_32,
+        N4_32,
+        N4_32,
+        true,
+        0,
+        None,
+        NeighbourYMode::Other,
+        Mv::ZERO,
+        false,
+        1,
+        false,
+    );
+    let block = block_at(N4_32, N4_32);
+
+    let nctx = block_neighbour_ctx(&grid, &block);
+    assert_eq!(
+        nctx.interp_filter_ctx(0, false),
+        3,
+        "two different neighbour filters use the sentinel context"
+    );
+
+    let mut one_matching = empty_grid();
+    one_matching.record_block(
+        N4_32,
+        0,
+        N4_32,
+        N4_32,
+        true,
+        0,
+        None,
+        NeighbourYMode::Other,
+        Mv::ZERO,
+        false,
+        1,
+        false,
+    );
+    one_matching.record_block(
+        0,
+        N4_32,
+        N4_32,
+        N4_32,
+        true,
+        1,
+        None,
+        NeighbourYMode::Other,
+        Mv::ZERO,
+        false,
+        0,
+        false,
+    );
+    let nctx = block_neighbour_ctx(&one_matching, &block);
+    assert_eq!(
+        nctx.interp_filter_ctx(0, false),
+        1,
+        "only neighbours using RefFrame[0] contribute their filter"
+    );
+
+    let nctx = block_neighbour_ctx(&empty_grid(), &block_at(0, 0));
+    assert_eq!(
+        nctx.interp_filter_ctx(0, false),
+        SWITCHABLE_FILTERS as usize
+    );
+    assert_eq!(
+        nctx.interp_filter_ctx(0, true),
+        usize::from(SWITCHABLE_FILTERS) + INTER_FILTER_COMP_OFFSET
+    );
+}
+
+#[test]
+fn interp_filter_context_suppresses_above_neighbours_at_sb_top() {
+    let mut grid = empty_sb_grid();
+    grid.record_block(
+        0,
+        0,
+        N4_64,
+        N4_64,
+        true,
+        0,
+        None,
+        NeighbourYMode::Other,
+        BLOCK0_MV,
+        false,
+        0,
+        false,
+    );
+    let block = sb_block_at(N4_64, 0);
+
+    let nctx = block_neighbour_ctx(&grid, &block);
+    assert!(
+        !nctx.has_neighbour,
+        "top-of-superblock neighbour context suppresses above probes"
+    );
+    assert_eq!(
+        nctx.interp_filter_ctx(0, false),
+        SWITCHABLE_FILTERS as usize
+    );
+}
+
+#[test]
+fn amvd_context_counts_same_reference_amvd_neighbours() {
+    let mut grid = empty_grid();
+    grid.record_block(
+        N4_32,
+        0,
+        N4_32,
+        N4_32,
+        true,
+        0,
+        None,
+        NeighbourYMode::NewMv,
+        Mv::ZERO,
+        false,
+        SWITCHABLE_FILTERS,
+        true,
+    );
+    grid.record_block(
+        0,
+        N4_32,
+        N4_32,
+        N4_32,
+        true,
+        1,
+        None,
+        NeighbourYMode::NewMv,
+        Mv::ZERO,
+        false,
+        SWITCHABLE_FILTERS,
+        true,
+    );
+    let block = block_at(N4_32, N4_32);
+
+    let nctx = block_neighbour_ctx(&grid, &block);
+    assert_eq!(nctx.amvd_ctx(0), 1);
+    assert_eq!(nctx.amvd_ctx(1), 1);
+    assert_eq!(nctx.amvd_ctx(2), 0);
 }
 
 #[test]
@@ -102,6 +294,19 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
         stack.candidate(0),
         BLOCK0_MV,
         "RefMvIdx 0 predicts block 0's MV"
+    );
+}
+
+#[test]
+fn warp_mode_context_counts_matching_warp_neighbours() {
+    let mut grid = empty_grid();
+    record_warp_inter(&mut grid, 0, 0, NeighbourYMode::Other, BLOCK0_MV, true);
+    let block1 = block_at(0, N4_32);
+
+    let ctx = find_mode_ctx(&grid, &block1);
+    assert_eq!(
+        ctx.warp_mv_count, 2,
+        "leftA and leftB both see the warp neighbour"
     );
 }
 
@@ -154,8 +359,11 @@ fn intra_neighbour_does_not_contribute() {
         N4_32,
         false,
         -1,
+        None,
         NeighbourYMode::Other,
         Mv::ZERO,
+        false,
+        SWITCHABLE_FILTERS,
         false,
     );
     let block1 = block_at(0, N4_32);
@@ -317,7 +525,20 @@ fn record_sb(
     mv: Mv,
     skip: bool,
 ) {
-    grid.record_block(r, c, N4_64, N4_64, true, 0, mode, mv, skip);
+    grid.record_block(
+        r,
+        c,
+        N4_64,
+        N4_64,
+        true,
+        0,
+        None,
+        mode,
+        mv,
+        skip,
+        SWITCHABLE_FILTERS,
+        false,
+    );
 }
 
 #[test]
@@ -335,8 +556,8 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
 
     let nctx = block_neighbour_ctx(&grid, &sb2);
     assert!(
-        nctx.has_neighbour,
-        "SB2 in SB row 1 has a decoded above neighbour (SB0)"
+        !nctx.has_neighbour,
+        "top-of-superblock neighbour context ignores the decoded above SB"
     );
 
     let stack = find_mv_stack(&grid, &sb2, Mv::ZERO);

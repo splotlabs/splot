@@ -8,6 +8,8 @@
 //! gates in full-recon mode. The gated sink stays unchanged; full recon fails loud
 //! when a leaf cannot be reconstructed.
 
+use std::env;
+
 use splot_core::span::ByteOffset;
 
 use super::{FullReconLumaLeaf, MI_SIZE, WienerNsLrReconSink};
@@ -222,6 +224,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         mode: &'static str,
         tile_offset: ByteOffset,
     ) -> Result<()> {
+        if env::var_os("SPLOT_TRACE_FULL_RECON_DEFER").is_some() {
+            eprintln!(
+                "full_recon_defer mi=({}, {}) log2={}x{} mode={} offset={}",
+                mi_col,
+                mi_row,
+                log2_width,
+                log2_height,
+                mode,
+                tile_offset.get()
+            );
+        }
         self.record_full_recon_leaf(mi_col, mi_row, log2_width, log2_height, mode, false);
         if self.full_recon {
             return Err(full_recon_deferred_leaf_error(tile_offset));

@@ -6,6 +6,7 @@ const PRIMARY_REF_CHOOSE: u8 = 8;
 const INITIAL_QP_DIFF: i64 = 512;
 
 /// Resolved saved-CDF source for AV2 § 5 `set_primary_ref_frame_and_ctx`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ResolvedCdfLoad {
     /// The frame initializes CDFs from defaults.
     Default,

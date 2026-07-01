@@ -28,9 +28,24 @@ impl TileCdfSubset {
         selector: TileCdfSelector,
         symbol_decoder: &mut SymbolDecoder<'_>,
     ) -> Result<Symbol, BlockSymbolTraceReadError> {
-        self.with_row_mut(selector, |row| symbol_decoder.read_symbol(row))
+        let trace = std::env::var_os("SPLOT_TRACE_CDF_SELECTORS").is_some();
+        let trace_row = trace
+            .then(|| self.row(selector).ok().map(<[i32]>::to_vec))
+            .flatten();
+        let checkpoint_before = trace.then(|| symbol_decoder.checkpoint());
+        let symbol = self
+            .with_row_mut(selector, |row| symbol_decoder.read_symbol(row))
             .map_err(BlockSymbolTraceReadError::Cdf)?
-            .map_err(BlockSymbolTraceReadError::Symbol)
+            .map_err(BlockSymbolTraceReadError::Symbol)?;
+        if trace {
+            eprintln!(
+                "cdf selector={selector:?} value={} symbols={} row_before={trace_row:?} checkpoint_before={checkpoint_before:?} checkpoint_after={:?}",
+                symbol.get(),
+                symbol_decoder.symbol_count(),
+                symbol_decoder.checkpoint(),
+            );
+        }
+        Ok(symbol)
     }
 }
 
@@ -40,6 +55,8 @@ mod tests {
 
     use splot_core::span::ByteOffset;
     use splot_core::symbol::{CdfUpdateMode, SymbolDecoderConfig};
+
+    use crate::tile_payload::MvCdfSelector;
 
     use super::super::FrameCdfSubset;
     use super::*;
@@ -61,6 +78,7 @@ mod tests {
         TileCdfSelector::CflAlpha { ctx: 0 },
         TileCdfSelector::CflMhccp,
         TileCdfSelector::CflMhDir { size_group: 0 },
+        TileCdfSelector::PaletteYMode,
         TileCdfSelector::IntrabcMode,
         TileCdfSelector::IntrabcPrecision,
         TileCdfSelector::FscMode {
@@ -68,6 +86,14 @@ mod tests {
             bsize_group: 0,
         },
         TileCdfSelector::DeltaQ,
+        TileCdfSelector::IsWarp { ctx: 0 },
+        TileCdfSelector::WarpMv,
+        TileCdfSelector::WarpIdx { ctx: 0 },
+        TileCdfSelector::WarpWithMvd,
+        TileCdfSelector::WarpPrecision { block_size: 5 },
+        TileCdfSelector::WarpDeltaParamLow { index_type: 0 },
+        TileCdfSelector::WarpDeltaParamHigh { index_type: 1 },
+        TileCdfSelector::WarpDeltaParamSign,
         TileCdfSelector::VTxbSkip {
             coeff_cdf_q_ctx: 1,
             ctx: 3,
@@ -84,6 +110,13 @@ mod tests {
         TileCdfSelector::MostProbableStxSetAdst,
         TileCdfSelector::CctxType,
         TileCdfSelector::UseWienerNs,
+        TileCdfSelector::UseAmvd { index: 4, ctx: 0 },
+        TileCdfSelector::ReadMv(MvCdfSelector::AmvdJoint),
+        TileCdfSelector::ReadMv(MvCdfSelector::AmvdIndex { comp: 0 }),
+        TileCdfSelector::UseBawp,
+        TileCdfSelector::UseBawpChroma,
+        TileCdfSelector::ExplicitBawp { ctx: 0 },
+        TileCdfSelector::ExplicitBawpScale,
     ];
 
     fn decoder(mode: CdfUpdateMode) -> SymbolDecoder<'static> {

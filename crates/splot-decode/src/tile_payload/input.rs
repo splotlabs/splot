@@ -20,7 +20,7 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::BitstreamFormat;
 use splot_core::types::ObuType;
 
-use super::cdf::TileCdfPolicyInput;
+use super::cdf::{FrameCdfSubset, TileCdfPolicyInput};
 use super::{
     DecodeTilePayloadPlan, TileBruPath, TileCoeffFrameFacts, TileCoeffFrameFactsInput,
     TileFrameFacts, TileGridFacts, TilePayloadBoundaryError, TilePayloadBoundaryInput,
@@ -358,7 +358,7 @@ impl TileGroupPositionFacts {
 }
 
 /// Input to the crate-private tile-payload derivation bridge.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct FrameCandidateTileBoundaryInput<'payload, 'facts> {
     plan: &'facts DecodeStreamPlan,
     candidate: &'facts DecodePlannedObu,
@@ -368,6 +368,7 @@ pub(crate) struct FrameCandidateTileBoundaryInput<'payload, 'facts> {
     facts: FrameCandidateTileFacts<'facts>,
     cdf: FrameCandidateCdfFacts,
     limits: DecodeLimits,
+    initial_cdfs: Option<FrameCdfSubset>,
 }
 
 impl<'payload, 'facts> FrameCandidateTileBoundaryInput<'payload, 'facts> {
@@ -393,7 +394,14 @@ impl<'payload, 'facts> FrameCandidateTileBoundaryInput<'payload, 'facts> {
             facts,
             cdf,
             limits,
+            initial_cdfs: None,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_initial_cdfs(mut self, initial_cdfs: FrameCdfSubset) -> Self {
+        self.initial_cdfs = Some(initial_cdfs);
+        self
     }
 }
 
@@ -579,6 +587,21 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
         input.cdf.avg_cdf_type,
         input.facts.context_update_tile_id,
     );
+    let mut frame = TileFrameFacts::new(
+        input.facts.obu_type,
+        input.facts.frame_is_intra,
+        input.position.is_first_tile_group,
+        input.position.is_last_tile_group,
+        input.facts.is_bridge,
+        TileBruPath::NotUsed,
+        input.facts.base_q_idx,
+        input.facts.disable_cdf_update,
+    )
+    .with_coeff_frame_facts(input.facts.coeff_frame_facts)
+    .with_cdf_policy(cdf_policy);
+    if let Some(cdfs) = input.initial_cdfs.as_ref() {
+        frame = frame.with_initial_cdfs(cdfs.clone());
+    }
     let boundary_input = TilePayloadBoundaryInput::new(
         payload,
         payload_base,
@@ -596,18 +619,7 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
             input.facts.mi_col_starts,
             input.facts.mi_row_starts,
         ),
-        TileFrameFacts::new(
-            input.facts.obu_type,
-            input.facts.frame_is_intra,
-            input.position.is_first_tile_group,
-            input.position.is_last_tile_group,
-            input.facts.is_bridge,
-            TileBruPath::NotUsed,
-            input.facts.base_q_idx,
-            input.facts.disable_cdf_update,
-        )
-        .with_coeff_frame_facts(input.facts.coeff_frame_facts)
-        .with_cdf_policy(cdf_policy),
+        frame,
         input.limits,
     );
 

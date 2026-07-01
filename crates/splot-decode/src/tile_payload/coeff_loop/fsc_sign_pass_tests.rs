@@ -115,12 +115,9 @@ fn coefficient_fsc_sign_pass_reads_idtx_signs_and_writes_quant_signs() {
     assert_eq!(pass.level_walk().bob(), 2);
     assert_eq!(pass.level_walk().seg_eob(), 4);
     assert_eq!(pass.level_reads().len(), 2);
-    assert_eq!(pass.sign_entries().len(), 4);
-    assert_eq!(pass.sign_reads().len(), 4);
-    assert_eq!(pass.sign_reads()[0].level(), 0);
-    assert_eq!(pass.sign_reads()[1].level(), 0);
-    assert_eq!(pass.sign_reads()[0].symbol(), CoeffFscSignReadSymbol::None);
-    assert_eq!(pass.sign_reads()[1].symbol(), CoeffFscSignReadSymbol::None);
+    assert_eq!(pass.sign_entries().len(), 2);
+    assert_eq!(pass.sign_reads().len(), 2);
+    assert_eq!(pass.sign_entries(), pass.level_walk().entries());
     for read in pass.sign_reads().iter().filter(|read| read.level() != 0) {
         assert!(matches!(
             read.symbol(),
@@ -151,18 +148,18 @@ fn coefficient_fsc_sign_pass_reads_idtx_signs_and_writes_quant_signs() {
 #[test]
 fn coefficient_fsc_sign_pass_derives_context_from_written_quant_sign() {
     let payload = find_payload(4, |pass| {
-        pass.sign_reads()[2].level() != 0
-            && pass.sign_reads()[3].level() != 0
+        pass.sign_reads()[0].level() != 0
+            && pass.sign_reads()[1].level() != 0
             && matches!(
-                pass.sign_inputs()[3].source,
+                pass.sign_inputs()[1].source,
                 CoeffFscSignReadSource::IdtxSign {
                     selector: CoeffCdfSelector::IdtxSign { ctx, .. }
                 } if ctx > 0
             )
     });
     let pass = run_pass(&payload, 4).unwrap();
-    let first = pass.sign_reads()[2];
-    let second = pass.sign_reads()[3];
+    let first = pass.sign_reads()[0];
+    let second = pass.sign_reads()[1];
     let expected_base_ctx = if first.sign() { 2 } else { 1 };
     let expected_ctx = if second.level() > COEFF_BASE_RANGE {
         expected_base_ctx + 2
@@ -177,7 +174,7 @@ fn coefficient_fsc_sign_pass_derives_context_from_written_quant_sign() {
         expected_quant_sign(first.sign())
     );
     assert!(matches!(
-        pass.sign_inputs()[3].source,
+        pass.sign_inputs()[1].source,
         CoeffFscSignReadSource::IdtxSign {
             selector: CoeffCdfSelector::IdtxSign { ctx, .. }
         } if ctx == expected_ctx

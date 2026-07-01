@@ -152,15 +152,15 @@ pub struct GdfParams {
 /// One `(i)` strength set parsed in `cdef_params()` (AV2 v1.0.0 § 5.18.7.10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CdefStrengthSet {
-    /// `cdef_y_pri_strength[i]` (`0` when `cdef_y_pri_zero`, else `f(4)`).
+    /// Primary luma strength derived from the packed AVM CDEF strength value.
     pub y_pri_strength: u8,
-    /// `cdef_y_sec_strength[i]` (`f(2)`, with the `3 -> 4` remap applied).
+    /// Secondary luma strength derived from the packed AVM CDEF strength value, with the
+    /// `3 -> 4` remap applied.
     pub y_sec_strength: u8,
-    /// `cdef_uv_pri_strength[i]` (`NumPlanes > 1` only; `0` when `cdef_uv_pri_zero`,
-    /// else `f(4)`).
+    /// Primary chroma strength derived from the packed AVM CDEF strength value.
     pub uv_pri_strength: u8,
-    /// `cdef_uv_sec_strength[i]` (`NumPlanes > 1` only; `f(2)`, with the `3 -> 4`
-    /// remap applied).
+    /// Secondary chroma strength derived from the packed AVM CDEF strength value, with the
+    /// `3 -> 4` remap applied.
     pub uv_sec_strength: u8,
 }
 
@@ -529,26 +529,9 @@ pub fn parse_cdef_params(
 
     let mut strengths = Vec::with_capacity(usize::from(cdef_strengths).min(MAX_CDEF_STRENGTHS));
     for _ in 0..cdef_strengths {
-        let y_pri_strength = if reader.read_flag()? {
-            0
-        } else {
-            reader.read_bits_u8(4)?
-        };
-        let mut y_sec_strength = reader.read_bits_u8(2)?;
-        if y_sec_strength == 3 {
-            y_sec_strength += 1;
-        }
+        let (y_pri_strength, y_sec_strength) = read_cdef_strength(reader)?;
         let (uv_pri_strength, uv_sec_strength) = if num_planes > 1 {
-            let uv_pri = if reader.read_flag()? {
-                0
-            } else {
-                reader.read_bits_u8(4)?
-            };
-            let mut uv_sec = reader.read_bits_u8(2)?;
-            if uv_sec == 3 {
-                uv_sec += 1;
-            }
-            (uv_pri, uv_sec)
+            read_cdef_strength(reader)?
         } else {
             (0, 0)
         };
@@ -567,6 +550,20 @@ pub fn parse_cdef_params(
         cdef_on_skip_txfm_frame_enable: Some(cdef_on_skip_txfm_frame_enable),
         strengths,
     })
+}
+
+fn read_cdef_strength(reader: &mut BitReader<'_>) -> Result<(u8, u8)> {
+    let packed = if reader.read_flag()? {
+        reader.read_bits_u8(2)?
+    } else {
+        reader.read_bits_u8(6)?
+    };
+    let pri = packed / 4;
+    let mut sec = packed % 4;
+    if sec == 3 {
+        sec = 4;
+    }
+    Ok((pri, sec))
 }
 
 #[cfg(test)]
@@ -912,16 +909,14 @@ mod tests {
         bits.f(1, 2); // cdef_damping_minus_3 -> CdefDamping = 4
         bits.f(1, 3); // cdef_strengths_minus_1 -> CdefStrengths = 2
         bits.bit(1); // cdef_on_skip_txfm_frame_enable (adaptive -> read)
-        bits.bit(0); // cdef_y_pri_zero == 0 -> read f(4)
-        bits.f(9, 4); // cdef_y_pri_strength[0]
-        bits.f(3, 2); // cdef_y_sec_strength[0] == 3 -> 4
-        bits.bit(1); // cdef_uv_pri_zero == 1 -> 0
-        bits.f(2, 2); // cdef_uv_sec_strength[0]
-        bits.bit(1); // cdef_y_pri_zero == 1 -> 0
-        bits.f(1, 2); // cdef_y_sec_strength[1]
-        bits.bit(0); // cdef_uv_pri_zero == 0 -> read f(4)
-        bits.f(5, 4); // cdef_uv_pri_strength[1]
-        bits.f(3, 2); // cdef_uv_sec_strength[1] == 3 -> 4
+        bits.bit(0); // luma strength[0] >= 4
+        bits.f(39, 6); // 9 * 4 + 3 -> pri 9, sec 4
+        bits.bit(1); // uv strength[0] < 4
+        bits.f(2, 2); // 0 * 4 + 2
+        bits.bit(1); // luma strength[1] < 4
+        bits.f(1, 2); // 0 * 4 + 1
+        bits.bit(0); // uv strength[1] >= 4
+        bits.f(23, 6); // 5 * 4 + 3 -> pri 5, sec 4
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_cdef_params(&mut r, false, 3, &base_filter()).unwrap();
@@ -947,9 +942,8 @@ mod tests {
         bits.f(0, 2); // cdef_damping_minus_3
         bits.f(0, 3); // cdef_strengths_minus_1 -> 1 strength
         bits.bit(1); // cdef_on_skip_txfm_frame_enable
-        bits.bit(0); // cdef_y_pri_zero
-        bits.f(7, 4); // cdef_y_pri_strength[0]
-        bits.f(1, 2); // cdef_y_sec_strength[0]
+        bits.bit(0); // luma strength >= 4
+        bits.f(29, 6); // 7 * 4 + 1
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_cdef_params(&mut r, false, 1, &base_filter()).unwrap();
@@ -967,10 +961,10 @@ mod tests {
         bits.bit(1); // cdef_frame_enable
         bits.f(0, 2); // damping
         bits.f(0, 3); // strengths -> 1
-        bits.bit(1); // cdef_y_pri_zero
-        bits.f(0, 2); // cdef_y_sec_strength
-        bits.bit(1); // cdef_uv_pri_zero
-        bits.f(0, 2); // cdef_uv_sec_strength
+        bits.bit(1); // luma strength < 4
+        bits.f(0, 2); // luma packed strength
+        bits.bit(1); // uv strength < 4
+        bits.f(0, 2); // uv packed strength
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_cdef_params(&mut r, false, 3, &filter).unwrap();
@@ -981,10 +975,10 @@ mod tests {
         bits.bit(1); // cdef_frame_enable
         bits.f(0, 2); // damping
         bits.f(0, 3); // strengths -> 1
-        bits.bit(1); // cdef_y_pri_zero
-        bits.f(0, 2); // cdef_y_sec_strength
-        bits.bit(1); // cdef_uv_pri_zero
-        bits.f(0, 2); // cdef_uv_sec_strength
+        bits.bit(1); // luma strength < 4
+        bits.f(0, 2); // luma packed strength
+        bits.bit(1); // uv strength < 4
+        bits.f(0, 2); // uv packed strength
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_cdef_params(&mut r, false, 3, &filter).unwrap();
@@ -999,10 +993,10 @@ mod tests {
         bits.f(0, 2); // damping
         bits.f(0, 3); // strengths -> 1
         bits.bit(1); // cdef_on_skip_txfm (adaptive -> read)
-        bits.bit(1); // cdef_y_pri_zero
-        bits.f(0, 2); // cdef_y_sec_strength
-        bits.bit(1); // cdef_uv_pri_zero
-        bits.f(0, 2); // cdef_uv_sec_strength
+        bits.bit(1); // luma strength < 4
+        bits.f(0, 2); // luma packed strength
+        bits.bit(1); // uv strength < 4
+        bits.f(0, 2); // uv packed strength
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_cdef_params(&mut r, false, 3, &filter).unwrap();

@@ -22,8 +22,8 @@ use splot_recon::{BitDepth, DecodedFrame, DecodedFrameHashInput};
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
-    FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, GeneralIntraBlockModeError,
-    GeneralIntraResidualError, MinimalBlockSymbolTraceError,
+    FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCdfSubset,
+    GeneralIntraBlockModeError, GeneralIntraResidualError, MinimalBlockSymbolTraceError,
     MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
     MinimalRuntimeReconstructionTrace, TileGroupPositionFacts, TilePartitionTraversalError,
 };
@@ -98,6 +98,16 @@ const AC0EJ3_LUMA_TXTYPE_RESIDUAL_HANDOFF_FEATURE_ID: &str =
 const AC0EJ3_LUMA_TXTYPE_RESIDUAL_HANDOFF_MATRIX_ROW: &str = "ac0ej3-luma-txtype-residual-handoff";
 const AC0EJ3_DCTONLY_RESIDUAL_FRONTIER_FEATURE_ID: &str = "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER";
 const AC0EJ3_DCTONLY_RESIDUAL_FRONTIER_MATRIX_ROW: &str = "ac0ej3-dctonly-residual-frontier";
+
+pub(crate) fn effective_allow_screen_content_tools(core: &FrameHeaderCore) -> bool {
+    core.allow_screen_content_tools
+        .or_else(|| {
+            core.inter
+                .as_ref()
+                .and_then(|inter| inter.allow_screen_content_tools)
+        })
+        .unwrap_or(false)
+}
 const AC0EJ3_INTRA_IST_ZERO_FRONTIER_FEATURE_ID: &str = "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER";
 const AC0EJ3_INTRA_IST_ZERO_FRONTIER_MATRIX_ROW: &str = "ac0ej3-intra-ist-zero-frontier";
 const MINIMAL_WIDTH: u32 = 64;
@@ -138,6 +148,7 @@ fn deblock_quant_deltas(
 
 pub(crate) struct MinimalRuntimeFrame {
     pub(crate) frame: MinimalRuntimeDecodedFrame,
+    pub(crate) frame_cdfs: FrameCdfSubset,
     pub(crate) frame_rate_numerator: u32,
     pub(crate) frame_rate_denominator: u32,
 }
@@ -150,6 +161,16 @@ impl MinimalRuntimeFrame {
                 "unsupported_10bit_reference_retention",
                 None,
                 missing_capability_message!("reference.retention bit_depth=10"),
+            )),
+        }
+    }
+    pub(crate) fn frame_ten(&self) -> Result<&DecodedFrame<u16>> {
+        match &self.frame {
+            MinimalRuntimeDecodedFrame::Ten(frame) => Ok(frame),
+            MinimalRuntimeDecodedFrame::Eight(_) => Err(unsupported(
+                "unsupported_8bit_reference_for_10bit_decode",
+                None,
+                "minimal inter runtime requires reference frames to match the active 10-bit storage",
             )),
         }
     }
@@ -238,7 +259,7 @@ fn reconstruct_ac0ej3_intra_region_from_plan(
             "ac0ej3 reconstruction requires one key frame candidate",
         )
     })?;
-    wienerns_lr::reconstruct_ac0ej3_selectable_intra_region(
+    Ok(wienerns_lr::reconstruct_ac0ej3_selectable_intra_region(
         bytes,
         options,
         plan,
@@ -247,7 +268,8 @@ fn reconstruct_ac0ej3_intra_region_from_plan(
         &sequence,
         &key_core,
         full_recon,
-    )
+    )?
+    .sink)
 }
 pub(crate) fn decode_minimal_frames_from_plan(
     bytes: &[u8],
@@ -327,6 +349,8 @@ fn decode_minimal_key_frame(
     };
     let reconstruction_trace =
         verify_flat_minimal_tile_trace(tile, sequence, &core, options.limits())?;
+    tile.apply_frame_end_cdf_update();
+    let frame_cdfs = tile.frame_cdfs();
     let tile_size = tile.tile_size();
 
     let limits = options.limits();
@@ -342,6 +366,7 @@ fn decode_minimal_key_frame(
 
     Ok(MinimalRuntimeFrame {
         frame: MinimalRuntimeDecodedFrame::Eight(frame),
+        frame_cdfs,
         frame_rate_numerator: header.timebase_denominator,
         frame_rate_denominator: header.timebase_numerator,
     })
@@ -371,7 +396,7 @@ fn decode_wienerns_lr_selectable_full_recon_key_frame(
     core: &FrameHeaderCore,
     header: IvfHeader,
 ) -> Result<MinimalRuntimeFrame> {
-    let sink = reconstruct_ac0ej3_selectable_intra_region(
+    let region = reconstruct_ac0ej3_selectable_intra_region(
         bytes,
         options,
         plan,
@@ -382,11 +407,12 @@ fn decode_wienerns_lr_selectable_full_recon_key_frame(
         true,
     )?;
     Ok(MinimalRuntimeFrame {
-        frame: MinimalRuntimeDecodedFrame::Ten(sink.into_filtered_frame(
+        frame: MinimalRuntimeDecodedFrame::Ten(region.sink.into_filtered_frame(
             core,
             deblock_quant_deltas(sequence, core),
             frame_envelope.offset,
         )?),
+        frame_cdfs: region.frame_cdfs,
         frame_rate_numerator: header.timebase_denominator,
         frame_rate_denominator: header.timebase_numerator,
     })
@@ -442,8 +468,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
             "minimal tier requires one selected key frame candidate",
         )
     })?;
-    let stop_after_key_frame = output_frame_limit_reached(options, 1);
-    if !full_recon_key_frame || !stop_after_key_frame {
+    if !full_recon_key_frame {
         reject_extra_leading_key_payload_obus(leading_obus)?;
     }
     if !full_recon_key_frame {
@@ -477,9 +502,10 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     let mut reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
 
     let mut frames = Vec::new();
+    let mut output_frame_indices = Vec::new();
     let mut retained_frame_bytes = 0;
+    let mut output_frame_bytes = 0;
     let mut next_unvalidated_following_ivf_record = 1;
-    ensure_output_frame_count_limit(options.limits(), 1)?;
     ensure_retained_frame_byte_limits_for_core(
         options.limits(),
         retained_frame_bytes,
@@ -498,20 +524,23 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     retained_frame_bytes =
         ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
     frames.push(key_frame);
+    if frame_is_output(&key_core) {
+        ensure_output_frame_count_limit(options.limits(), output_frame_indices.len() as u64 + 1)?;
+        output_frame_bytes =
+            ensure_output_frame_byte_limits(options.limits(), output_frame_bytes, &frames[0])?;
+        output_frame_indices.push(0);
+    }
     reference.update(
         0,
-        frame_ref_update_from_core(&key_core, key_envelope.offset)?,
+        frame_ref_update_from_core(&key_core, key_envelope.offset, frames[0].frame_cdfs.clone())?,
     );
-    if output_frame_limit_reached(options, frames.len()) {
-        return Ok(frames);
+    if output_frame_limit_reached(options, output_frame_indices.len()) {
+        return select_output_frames(frames, output_frame_indices);
     }
 
     for next_candidate in candidates {
         match next_candidate.obu_type() {
             ObuType::RegularTileGroup => {
-                let next_output_frame_count =
-                    checked_add(DecodeLimitName::MaxOutputFrames, frames.len() as u64, 1)?;
-                ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
                 let inter_envelope = following_inter_envelope(
                     ivf,
                     next_candidate,
@@ -524,53 +553,150 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                         missing_capability_message!("inter.reference_count valid_refs>2"),
                     ));
                 }
-                let (store, meta) = reference.build_store(&frames)?;
-                let inter_state = inter::InterReferenceState {
-                    store: &store,
-                    ref_valid: meta.ref_valid,
-                    ref_order_hint: meta.ref_order_hint,
-                    ref_frame_width: meta.ref_frame_width,
-                    ref_frame_height: meta.ref_frame_height,
-                    ref_base_q_idx: meta.ref_base_q_idx,
-                    ref_is_inter: meta.ref_is_inter,
-                    ref_adapted: meta.ref_adapted,
+                let (inter_frame, inter_core, frame_cdfs) = match sequence.general.bit_depth_idc {
+                    BitDepthIdc::Eight => {
+                        let (store, meta) = reference.build_store_eight(&frames)?;
+                        let inter_state = inter::InterReferenceState {
+                            store: &store,
+                            ref_valid: meta.ref_valid,
+                            ref_order_hint: meta.ref_order_hint,
+                            ref_frame_width: meta.ref_frame_width,
+                            ref_frame_height: meta.ref_frame_height,
+                            ref_base_q_idx: meta.ref_base_q_idx,
+                            ref_is_inter: meta.ref_is_inter,
+                            ref_adapted: meta.ref_adapted,
+                            lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
+                            ref_frame_cdfs: meta.ref_frame_cdfs,
+                        };
+                        let inter_core = inter::parse_validated_inter_frame_core(
+                            inter_envelope,
+                            &sequence,
+                            &inter_state,
+                        )?;
+                        if frame_is_output(&inter_core) {
+                            let next_output_frame_count = checked_add(
+                                DecodeLimitName::MaxOutputFrames,
+                                output_frame_indices.len() as u64,
+                                1,
+                            )?;
+                            ensure_output_frame_count_limit(
+                                options.limits(),
+                                next_output_frame_count,
+                            )?;
+                        }
+                        ensure_retained_frame_byte_limits_for_core(
+                            options.limits(),
+                            retained_frame_bytes,
+                            &inter_core,
+                            inter_envelope.offset,
+                        )?;
+                        let (frame, inter_core, frame_cdfs) = inter::decode_minimal_inter_frame(
+                            plan,
+                            next_candidate,
+                            bytes,
+                            inter_envelope,
+                            inter_core,
+                            &sequence,
+                            options,
+                            header,
+                            &inter_state,
+                            BitDepth::Eight,
+                        )?;
+                        (
+                            MinimalRuntimeDecodedFrame::Eight(frame),
+                            inter_core,
+                            frame_cdfs,
+                        )
+                    }
+                    BitDepthIdc::Ten => {
+                        let (store, meta) = reference.build_store_ten(&frames)?;
+                        let inter_state = inter::InterReferenceState {
+                            store: &store,
+                            ref_valid: meta.ref_valid,
+                            ref_order_hint: meta.ref_order_hint,
+                            ref_frame_width: meta.ref_frame_width,
+                            ref_frame_height: meta.ref_frame_height,
+                            ref_base_q_idx: meta.ref_base_q_idx,
+                            ref_is_inter: meta.ref_is_inter,
+                            ref_adapted: meta.ref_adapted,
+                            lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
+                            ref_frame_cdfs: meta.ref_frame_cdfs,
+                        };
+                        let inter_core = inter::parse_validated_inter_frame_core(
+                            inter_envelope,
+                            &sequence,
+                            &inter_state,
+                        )?;
+                        if frame_is_output(&inter_core) {
+                            let next_output_frame_count = checked_add(
+                                DecodeLimitName::MaxOutputFrames,
+                                output_frame_indices.len() as u64,
+                                1,
+                            )?;
+                            ensure_output_frame_count_limit(
+                                options.limits(),
+                                next_output_frame_count,
+                            )?;
+                        }
+                        ensure_retained_frame_byte_limits_for_core(
+                            options.limits(),
+                            retained_frame_bytes,
+                            &inter_core,
+                            inter_envelope.offset,
+                        )?;
+                        let (frame, inter_core, frame_cdfs) = inter::decode_minimal_inter_frame(
+                            plan,
+                            next_candidate,
+                            bytes,
+                            inter_envelope,
+                            inter_core,
+                            &sequence,
+                            options,
+                            header,
+                            &inter_state,
+                            BitDepth::Ten,
+                        )?;
+                        (
+                            MinimalRuntimeDecodedFrame::Ten(frame),
+                            inter_core,
+                            frame_cdfs,
+                        )
+                    }
                 };
-                let inter_core = inter::parse_validated_inter_frame_core(
-                    inter_envelope,
-                    &sequence,
-                    &inter_state,
-                )?;
-                ensure_retained_frame_byte_limits_for_core(
-                    options.limits(),
-                    retained_frame_bytes,
-                    &inter_core,
-                    inter_envelope.offset,
-                )?;
-                let (inter_frame, inter_core) = inter::decode_minimal_inter_frame(
-                    plan,
-                    next_candidate,
-                    bytes,
-                    inter_envelope,
-                    inter_core,
-                    &sequence,
-                    options,
-                    header,
-                    &inter_state,
-                )?;
+                let inter_frame = MinimalRuntimeFrame {
+                    frame: inter_frame,
+                    frame_cdfs,
+                    frame_rate_numerator: header.timebase_denominator,
+                    frame_rate_denominator: header.timebase_numerator,
+                };
+                let should_output = frame_is_output(&inter_core);
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
                     retained_frame_bytes,
                     &inter_frame,
                 )?;
-                drop(store);
                 let frame_index = frames.len();
+                if should_output {
+                    output_frame_bytes = ensure_output_frame_byte_limits(
+                        options.limits(),
+                        output_frame_bytes,
+                        &inter_frame,
+                    )?;
+                }
                 frames.push(inter_frame);
                 retained_frame_bytes = next_retained_frame_bytes;
                 reference.update(
                     frame_index,
-                    frame_ref_update_from_core(&inter_core, inter_envelope.offset)?,
+                    frame_ref_update_from_core(
+                        &inter_core,
+                        inter_envelope.offset,
+                        frames[frame_index].frame_cdfs.clone(),
+                    )?,
                 );
-                if output_frame_limit_reached(options, frames.len()) {
+                if should_output {
+                    output_frame_indices.push(frame_index);
+                }
+                if output_frame_limit_reached(options, output_frame_indices.len()) {
                     break;
                 }
             }
@@ -584,13 +710,36 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
         }
     }
 
-    Ok(frames)
+    select_output_frames(frames, output_frame_indices)
 }
 
 fn output_frame_limit_reached(options: &DecodeOptions, output_frame_count: usize) -> bool {
     options
         .output_frame_limit()
         .is_some_and(|limit| output_frame_count as u64 >= limit.get())
+}
+
+fn frame_is_output(core: &FrameHeaderCore) -> bool {
+    core.immediate_output_frame == Some(true)
+}
+
+fn select_output_frames(
+    frames: Vec<MinimalRuntimeFrame>,
+    output_frame_indices: Vec<usize>,
+) -> Result<Vec<MinimalRuntimeFrame>> {
+    let mut frames = frames.into_iter().map(Some).collect::<Vec<_>>();
+    let mut outputs = Vec::with_capacity(output_frame_indices.len());
+    for index in output_frame_indices {
+        let output = frames.get_mut(index).and_then(Option::take).ok_or_else(|| {
+            unsupported(
+                "displayed_frame_index_unavailable",
+                None,
+                "minimal runtime output ordering references a decoded frame that is unavailable",
+            )
+        })?;
+        outputs.push(output);
+    }
+    Ok(outputs)
 }
 fn following_inter_envelope<'a>(
     ivf: &'a ParsedIvfBitstream<'a>,
@@ -616,6 +765,10 @@ fn following_inter_envelope<'a>(
             ObuType::RegularTileGroup,
             "missing_inter_regular_tile_group",
         )?;
+        if is_leading_record_regular_after_key(ivf_frame_index, position, ivf_frame.obus.as_slice())
+        {
+            return Ok(inter_envelope);
+        }
         let Some(td_envelope) = position
             .checked_sub(1)
             .and_then(|previous| ivf_frame.obus.get(previous))
@@ -641,22 +794,60 @@ fn following_inter_envelope<'a>(
     ))
 }
 
+fn is_leading_record_regular_after_key(
+    ivf_frame_index: usize,
+    position: usize,
+    obus: &[ObuEnvelope<'_>],
+) -> bool {
+    ivf_frame_index == 0
+        && position >= 3
+        && require_minimal_obu_order(obus).is_ok()
+        && obus
+            .iter()
+            .skip(3)
+            .all(|envelope| envelope.header.obu_type == ObuType::RegularTileGroup)
+}
+
 fn require_following_ivf_obu_order_through(
     ivf: &ParsedIvfBitstream<'_>,
     next_unvalidated_following_ivf_record: &mut usize,
     target_ivf_frame_index: usize,
 ) -> Result<()> {
     let validation_end = target_ivf_frame_index.saturating_add(1);
-    for frame in ivf
+    for (ivf_frame_index, frame) in ivf
         .frames
         .iter()
+        .enumerate()
         .take(validation_end)
         .skip(*next_unvalidated_following_ivf_record)
     {
-        require_inter_obu_order(frame.obus.as_slice())?;
+        require_following_ivf_record_obu_order(frame.obus.as_slice(), ivf_frame_index)?;
     }
     *next_unvalidated_following_ivf_record =
         (*next_unvalidated_following_ivf_record).max(validation_end);
+    Ok(())
+}
+
+fn require_following_ivf_record_obu_order(
+    obus: &[ObuEnvelope<'_>],
+    ivf_frame_index: usize,
+) -> Result<()> {
+    if ivf_frame_index == 0 {
+        require_leading_ivf_obu_order(obus)
+    } else {
+        require_inter_obu_order(obus)
+    }
+}
+
+fn require_leading_ivf_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
+    require_minimal_obu_order(obus)?;
+    for envelope in obus.iter().skip(3) {
+        require_obu_type(
+            *envelope,
+            ObuType::RegularTileGroup,
+            "unexpected_leading_obu_after_key",
+        )?;
+    }
     Ok(())
 }
 
@@ -792,7 +983,7 @@ fn ensure_retained_frame_byte_limits_for_bytes(
     frame_bytes: u64,
 ) -> Result<u64> {
     let next_retained_frame_bytes = checked_add(
-        DecodeLimitName::MaxOutputBytes,
+        DecodeLimitName::MaxReferenceStoreBytes,
         retained_frame_bytes,
         frame_bytes,
     )?;
@@ -800,12 +991,26 @@ fn ensure_retained_frame_byte_limits_for_bytes(
         DecodeLimitName::MaxReferenceStoreBytes,
         next_retained_frame_bytes,
     )?;
-    limits.ensure(DecodeLimitName::MaxOutputBytes, next_retained_frame_bytes)?;
     Ok(next_retained_frame_bytes)
 }
 
 fn retained_decoded_frame_bytes(frame: &MinimalRuntimeFrame) -> Result<u64> {
     Ok(frame.byte_len()? as u64)
+}
+
+fn ensure_output_frame_byte_limits(
+    limits: crate::DecodeLimits,
+    output_frame_bytes: u64,
+    frame: &MinimalRuntimeFrame,
+) -> Result<u64> {
+    let frame_bytes = frame.byte_len()? as u64;
+    let next_output_frame_bytes = checked_add(
+        DecodeLimitName::MaxOutputBytes,
+        output_frame_bytes,
+        frame_bytes,
+    )?;
+    limits.ensure(DecodeLimitName::MaxOutputBytes, next_output_frame_bytes)?;
+    Ok(next_output_frame_bytes)
 }
 
 fn verify_flat_minimal_tile_trace(
@@ -900,6 +1105,7 @@ fn decode_minimal_partition_frontier_error(
         | MinimalRuntimePartitionFrontierError::UsesMrlsState(_)
         | MinimalRuntimePartitionFrontierError::FscModeState(_)
         | MinimalRuntimePartitionFrontierError::UvCflState(_)
+        | MinimalRuntimePartitionFrontierError::LumaPaletteState(_)
         | MinimalRuntimePartitionFrontierError::Traversal(_)
         | MinimalRuntimePartitionFrontierError::UnexpectedFrontier { .. } => unsupported_at(
             "minimal_tile_partition_frontier",
@@ -1105,6 +1311,7 @@ fn parse_frame_core(
 fn frame_ref_update_from_core(
     core: &FrameHeaderCore,
     offset: ByteOffset,
+    frame_cdfs: FrameCdfSubset,
 ) -> Result<reference_buffer::FrameRefUpdate> {
     let refresh_frame_flags = core.refresh_frame_flags.ok_or_else(|| {
         unsupported_at(
@@ -1142,7 +1349,29 @@ fn frame_ref_update_from_core(
         is_key_or_switch: core.is_key_frame,
         is_inter,
         adapted,
+        frame_cdfs,
+        lr_frame_filter_class_counts: lr_frame_filter_class_counts(core),
     })
+}
+
+fn lr_frame_filter_class_counts(core: &FrameHeaderCore) -> [u8; 3] {
+    let mut counts = [0u8; 3];
+    let Some(lr) = core.lr_params.as_ref() else {
+        return counts;
+    };
+    for (plane, params) in lr.planes.iter().enumerate().take(3) {
+        if !params.frame_filters_on {
+            continue;
+        }
+        let classes = params
+            .frame_filter_bank
+            .as_ref()
+            .map(|bank| bank.classes.len())
+            .or_else(|| params.num_filter_classes.map(usize::from))
+            .unwrap_or(1);
+        counts[plane] = u8::try_from(classes).unwrap_or(u8::MAX);
+    }
+    counts
 }
 
 fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
@@ -1317,6 +1546,7 @@ fn derive_tile_plan_with<'a>(
     core: &'a FrameHeaderCore,
     options: &DecodeOptions,
     kind: TileFactsKind,
+    initial_cdfs: Option<FrameCdfSubset>,
 ) -> Result<crate::tile_payload::DecodeTilePayloadPlan<'a>> {
     let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
         unsupported_at(
@@ -1332,7 +1562,7 @@ fn derive_tile_plan_with<'a>(
     }
     .map_err(decode_tile_boundary_error)?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
-    let input = FrameCandidateTileBoundaryInput::new(
+    let mut input = FrameCandidateTileBoundaryInput::new(
         plan,
         candidate,
         bytes,
@@ -1342,6 +1572,9 @@ fn derive_tile_plan_with<'a>(
         cdf,
         options.limits(),
     );
+    if let Some(cdfs) = initial_cdfs {
+        input = input.with_initial_cdfs(cdfs);
+    }
     crate::tile_payload::plan_derived_tile_payload_boundary(&input)
         .map_err(decode_tile_boundary_error)
 }
@@ -1364,6 +1597,7 @@ fn derive_tile_plan<'a>(
         core,
         options,
         TileFactsKind::Intra,
+        None,
     )
 }
 fn derive_inter_tile_plan<'a>(
@@ -1374,6 +1608,7 @@ fn derive_inter_tile_plan<'a>(
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
     options: &DecodeOptions,
+    initial_cdfs: FrameCdfSubset,
 ) -> Result<crate::tile_payload::DecodeTilePayloadPlan<'a>> {
     derive_tile_plan_with(
         plan,
@@ -1384,6 +1619,7 @@ fn derive_inter_tile_plan<'a>(
         core,
         options,
         TileFactsKind::Inter,
+        Some(initial_cdfs),
     )
 }
 

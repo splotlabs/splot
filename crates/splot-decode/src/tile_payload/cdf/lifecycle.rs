@@ -92,6 +92,7 @@ impl TileCdfRows {
         scale_rows!(fsc_mode.flatten());
         scale_rows!(mrl_index);
         scale_rows!(mrl_sec_index);
+        scale_rows!(region_type);
         self.block.scale_counts_for_frame_end_update();
     }
 }

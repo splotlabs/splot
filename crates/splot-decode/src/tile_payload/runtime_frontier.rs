@@ -12,8 +12,8 @@ use super::block_decoded_state::TileBlockDecodedState;
 use super::block_symbol::{MinimalBlockSymbolTraceError, consume_minimal_block_symbol_trace};
 use super::intra_joint_modes::{
     IsCflContext, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
-    TileIntraJointModeStateError, TileUsesMrlsState, TileUsesMrlsStateError, TileUvCflState,
-    TileUvCflStateError,
+    TileIntraJointModeStateError, TileLumaPaletteState, TileLumaPaletteStateError,
+    TileUsesMrlsState, TileUsesMrlsStateError, TileUvCflState, TileUvCflStateError,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::PartitionType;
@@ -73,6 +73,8 @@ pub(crate) enum MinimalRuntimePartitionFrontierError {
     UsesMrlsState(#[from] TileUsesMrlsStateError),
     #[error("minimal runtime intra FscModes state failed: {0}")]
     FscModeState(#[from] TileFscModeStateError),
+    #[error("minimal runtime luma palette state failed: {0}")]
+    LumaPaletteState(#[from] TileLumaPaletteStateError),
     #[error("minimal runtime intra UVCfls state failed: {0}")]
     UvCflState(#[from] TileUvCflStateError),
     #[error("minimal runtime partition frontier mismatch: {reason}")]
@@ -155,6 +157,7 @@ where
         &TileIntraJointModeState,
         &TileUsesMrlsState,
         &TileFscModeState,
+        &TileLumaPaletteState,
         IsCflContext,
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
@@ -180,6 +183,7 @@ where
         &TileIntraJointModeState,
         &TileUsesMrlsState,
         &TileFscModeState,
+        &TileLumaPaletteState,
         IsCflContext,
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
@@ -203,6 +207,7 @@ where
         &TileIntraJointModeState,
         &TileUsesMrlsState,
         &TileFscModeState,
+        &TileLumaPaletteState,
         IsCflContext,
         &TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
@@ -223,6 +228,8 @@ where
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
     let mut fsc_modes = TileFscModeState::new(mi_rows, mi_cols, sb_size4)
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
+    let mut palette_y = TileLumaPaletteState::new(mi_rows, mi_cols, sb_size4)
+        .map_err(MinimalRuntimePartitionFrontierError::from)?;
     let mut uv_cfls = TileUvCflState::new(mi_rows, mi_cols)
         .map_err(MinimalRuntimePartitionFrontierError::from)?;
     let output: GeneralIntraPartitionTreeOutput<'payload> = decode_general_intra_partition_tree(
@@ -232,6 +239,7 @@ where
         &mut joint_modes,
         &mut uses_mrls,
         &mut fsc_modes,
+        &mut palette_y,
         &mut uv_cfls,
         limits,
         retain_lr_source_blocks,

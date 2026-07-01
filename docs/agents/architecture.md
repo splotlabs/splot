@@ -12,7 +12,7 @@ change belongs. `docs/ARCHITECTURE.md`, `docs/CONCURRENCY.md`, and
   primitives. It has no other `splot-*` dependency.
 - `splot-tables`: generated AV2 § 9 tables shared across crates. It has no
   `splot-*` dependency and no external crate dependency.
-- `splot-recon`: reconstruction primitives over `splot-tables`.
+- `splot-recon`: reconstruction primitives over `splot-core` and `splot-tables`.
 - `splot-decode`: decoder diagnostics, stream planning, and minimal hash/Y4M
   runtime over `splot-core`, `splot-parallel`, and `splot-recon`.
 - `splot-validate`: parser-driven conformance diagnostics over `splot-core`.

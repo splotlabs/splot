@@ -806,6 +806,9 @@ mod tests {
             ..input(BLOCK_4X8)
         };
         assert!(!is_partition_allowed(mixed, PartitionType::Horz).unwrap());
+        let initialized = init_allowed_partitions(mixed).unwrap();
+        assert_eq!(initialized.num_allowed(), 1);
+        assert!(initialized.allowed().contains(PartitionType::None));
     }
 
     #[test]

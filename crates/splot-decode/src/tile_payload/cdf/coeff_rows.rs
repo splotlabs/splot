@@ -259,6 +259,30 @@ impl CoeffCdfRows {
             idtx_sign: DEFAULT_IDTX_SIGN_CDF,
         }
     }
+
+    pub(crate) fn replicate_q_context(
+        &mut self,
+        coeff_cdf_q_ctx: usize,
+    ) -> Result<(), TileCdfError> {
+        let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBase, coeff_cdf_q_ctx)?;
+        self.coeff_base = [self.coeff_base[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_base_ph = [self.coeff_base_ph[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_base_uv = [self.coeff_base_uv[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_base_lf = [self.coeff_base_lf[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_base_lf_uv = [self.coeff_base_lf_uv[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_base_eob = [self.coeff_base_eob[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_base_eob_uv = [self.coeff_base_eob_uv[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_base_bob = [self.coeff_base_bob[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_base_idtx = [self.coeff_base_idtx[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_base_lf_eob = [self.coeff_base_lf_eob[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_base_lf_eob_uv = [self.coeff_base_lf_eob_uv[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_br = [self.coeff_br[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_br_uv = [self.coeff_br_uv[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_br_lf = [self.coeff_br_lf[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff_br_idtx = [self.coeff_br_idtx[q]; COEFF_CDF_Q_CONTEXTS];
+        self.idtx_sign = [self.idtx_sign[q]; COEFF_CDF_Q_CONTEXTS];
+        Ok(())
+    }
 }
 
 macro_rules! coeff_cdf_row {

@@ -10,16 +10,27 @@ use splot_core::tables::cdf::{
     DEFAULT_CWP_IDX_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF,
     DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF,
     DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF,
-    DEFAULT_INTER_TX_TYPE_INDEX_SET1_CDF, DEFAULT_INTER_TX_TYPE_INDEX_SET2_CDF,
-    DEFAULT_INTER_TX_TYPE_LONG_CDF, DEFAULT_INTER_TX_TYPE_OFFSET_SET1_CDF,
-    DEFAULT_INTER_TX_TYPE_OFFSET_SET2_CDF, DEFAULT_INTER_TX_TYPE_SET1_CDF,
-    DEFAULT_INTER_TX_TYPE_SET2_CDF, DEFAULT_INTER_TX_TYPE_SET3_CDF, DEFAULT_INTER_TX_TYPE_SET4_CDF,
-    DEFAULT_INTERP_FILTER_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
-    DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF,
-    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
-    DEFAULT_MOST_PROBABLE_STX_SET_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF,
-    DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF,
-    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
+    DEFAULT_EXPLICIT_BAWP_CDF, DEFAULT_EXPLICIT_BAWP_SCALE_CDF, DEFAULT_IDENTITY_ROW_Y_CDF,
+    DEFAULT_INTER_INTRA_MODE_CDF, DEFAULT_INTER_TX_TYPE_INDEX_SET1_CDF,
+    DEFAULT_INTER_TX_TYPE_INDEX_SET2_CDF, DEFAULT_INTER_TX_TYPE_LONG_CDF,
+    DEFAULT_INTER_TX_TYPE_OFFSET_SET1_CDF, DEFAULT_INTER_TX_TYPE_OFFSET_SET2_CDF,
+    DEFAULT_INTER_TX_TYPE_SET1_CDF, DEFAULT_INTER_TX_TYPE_SET2_CDF, DEFAULT_INTER_TX_TYPE_SET3_CDF,
+    DEFAULT_INTER_TX_TYPE_SET4_CDF, DEFAULT_INTERP_FILTER_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF,
+    DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF,
+    DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_IS_WARP_CDF,
+    DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
+    DEFAULT_PALETTE_SIZE_2_Y_COLOR_CDF, DEFAULT_PALETTE_SIZE_3_Y_COLOR_CDF,
+    DEFAULT_PALETTE_SIZE_4_Y_COLOR_CDF, DEFAULT_PALETTE_SIZE_5_Y_COLOR_CDF,
+    DEFAULT_PALETTE_SIZE_6_Y_COLOR_CDF, DEFAULT_PALETTE_SIZE_7_Y_COLOR_CDF,
+    DEFAULT_PALETTE_SIZE_8_Y_COLOR_CDF, DEFAULT_PALETTE_Y_MODE_CDF, DEFAULT_PALETTE_Y_SIZE_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF,
+    DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_AMVD_CDF, DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF,
+    DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
+    DEFAULT_WARP_DELTA_PARAM_HIGH_CDF, DEFAULT_WARP_DELTA_PARAM_LOW_CDF,
+    DEFAULT_WARP_DELTA_PARAM_SIGN_CDF, DEFAULT_WARP_IDX_CDF, DEFAULT_WARP_INTER_INTRA_CDF,
+    DEFAULT_WARP_MV_CDF, DEFAULT_WARP_PRECISION_CDF, DEFAULT_WARP_WITH_MVD_CDF,
+    DEFAULT_WEDGE_ANGLE_CDF, DEFAULT_WEDGE_DIST1_CDF, DEFAULT_WEDGE_DIST2_CDF,
+    DEFAULT_WEDGE_INTER_INTRA_CDF, DEFAULT_WEDGE_QUAD_CDF, DEFAULT_WIENER_NS_BASE_CDF,
     DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
     DEFAULT_Y_MODE_OFFSET_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
@@ -57,6 +68,18 @@ const DC_SIGN_CONTEXTS: usize = 3;
 const IS_INTER_CONTEXTS: usize = 4;
 const SKIP_CONTEXTS: usize = 6;
 const SINGLE_MODE_CONTEXTS: usize = 5;
+const WARP_MODE_CONTEXTS: usize = 5;
+const WARP_IDX_CONTEXTS: usize = 3;
+const WARP_DELTA_PARAM_CONTEXTS: usize = 2;
+const WARP_DELTA_PARAM_CDF_ROW_LEN: usize = 9;
+const BLOCK_SIZE_CONTEXTS: usize = 29;
+const BLOCK_SIZE_GROUPS: usize = 4;
+const INTERINTRA_MODE_ROW_LEN: usize = 5;
+const WEDGE_QUAD_ROW_LEN: usize = 5;
+const WEDGE_ANGLE_CONTEXTS: usize = 4;
+const WEDGE_ANGLE_ROW_LEN: usize = 6;
+const WEDGE_DIST1_ROW_LEN: usize = 5;
+const WEDGE_DIST2_ROW_LEN: usize = 4;
 const DRL_MODE_IDX_BANKS: usize = 3;
 const DRL_MODE_CONTEXTS: usize = 5;
 const REF_CONTEXTS: usize = 3;
@@ -69,6 +92,9 @@ const COMP_GROUP_IDX_CONTEXTS: usize = 12;
 const CWP_IDX_CONTEXTS: usize = 4;
 const COMP_REF1_BIT_TYPES: usize = 2;
 const INTERP_FILTER_CONTEXTS: usize = 16;
+const AMVD_MODE_CONTEXTS: usize = 9;
+const AMVD_CONTEXTS: usize = 3;
+const BAWP_SCALES_CONTEXTS: usize = 3;
 const WIENER_NS_LENGTH_CONTEXTS: usize = 2;
 const WIENER_NS_BASE_CDF_ROW_LEN: usize = 5;
 const INTRA_TX_TYPE_LONG_SIZE_CONTEXTS: usize = 4;
@@ -96,6 +122,8 @@ const SEC_TX_TYPE_ROW_LEN: usize = 5;
 const MOST_PROBABLE_STX_SET_ROW_LEN: usize = 8;
 const MOST_PROBABLE_STX_SET_ADST_ROW_LEN: usize = 5;
 const CCTX_TYPE_CDF_ROW_LEN: usize = 8;
+const PALETTE_ROW_FLAG_CONTEXTS: usize = 4;
+const PALETTE_COLOR_CONTEXTS: usize = 5;
 
 pub(crate) type YModeSetCdfRow = [i32; Y_MODE_SET_CDF_ROW_LEN];
 pub(crate) type YModeIndexCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; Y_MODE_INDEX_CONTEXTS];
@@ -116,6 +144,21 @@ pub(crate) type DcSignCdfRows =
 pub(crate) type IsInterCdfRows = [[i32; CDF_ROW_LEN]; IS_INTER_CONTEXTS];
 pub(crate) type SkipCdfRows = [[i32; CDF_ROW_LEN]; SKIP_CONTEXTS];
 pub(crate) type SingleModeCdfRows = [[i32; 4]; SINGLE_MODE_CONTEXTS];
+pub(crate) type IsWarpCdfRows = [[i32; CDF_ROW_LEN]; WARP_MODE_CONTEXTS];
+pub(crate) type WarpMvCdfRow = [i32; CDF_ROW_LEN];
+pub(crate) type WarpIdxCdfRows = [[i32; CDF_ROW_LEN]; WARP_IDX_CONTEXTS];
+pub(crate) type WarpWithMvdCdfRow = [i32; CDF_ROW_LEN];
+pub(crate) type WarpPrecisionCdfRows = [[i32; CDF_ROW_LEN]; BLOCK_SIZE_CONTEXTS];
+pub(crate) type WarpDeltaParamCdfRows =
+    [[i32; WARP_DELTA_PARAM_CDF_ROW_LEN]; WARP_DELTA_PARAM_CONTEXTS];
+pub(crate) type WarpDeltaParamSignCdfRow = [i32; CDF_ROW_LEN];
+pub(crate) type WarpInterIntraCdfRows = [[i32; CDF_ROW_LEN]; BLOCK_SIZE_GROUPS];
+pub(crate) type InterIntraModeCdfRows = [[i32; INTERINTRA_MODE_ROW_LEN]; BLOCK_SIZE_GROUPS];
+pub(crate) type WedgeInterIntraCdfRow = [i32; CDF_ROW_LEN];
+pub(crate) type WedgeQuadCdfRow = [i32; WEDGE_QUAD_ROW_LEN];
+pub(crate) type WedgeAngleCdfRows = [[i32; WEDGE_ANGLE_ROW_LEN]; WEDGE_ANGLE_CONTEXTS];
+pub(crate) type WedgeDist1CdfRow = [i32; WEDGE_DIST1_ROW_LEN];
+pub(crate) type WedgeDist2CdfRow = [i32; WEDGE_DIST2_ROW_LEN];
 pub(crate) type DrlModeCdfRows = [[[i32; CDF_ROW_LEN]; DRL_MODE_CONTEXTS]; DRL_MODE_IDX_BANKS];
 pub(crate) type SingleRefCdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
 pub(crate) type CompModeCdfRows = [[i32; CDF_ROW_LEN]; COMP_MODE_CONTEXTS];
@@ -127,6 +170,10 @@ pub(crate) type CwpIdxCdfRows = [[i32; CDF_ROW_LEN]; CWP_IDX_CONTEXTS];
 pub(crate) type CompRef0CdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
 pub(crate) type CompRef1CdfRows =
     [[[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; COMP_REF1_BIT_TYPES]; REF_CONTEXTS];
+pub(crate) type UseAmvdCdfRows = [[[i32; CDF_ROW_LEN]; AMVD_CONTEXTS]; AMVD_MODE_CONTEXTS];
+pub(crate) type UseBawpCdfRow = [i32; CDF_ROW_LEN];
+pub(crate) type ExplicitBawpCdfRows = [[i32; CDF_ROW_LEN]; BAWP_SCALES_CONTEXTS];
+pub(crate) type ExplicitBawpScaleCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type UseWienerNsCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type WienerNsLengthCdfRows = [[i32; CDF_ROW_LEN]; WIENER_NS_LENGTH_CONTEXTS];
 pub(crate) type WienerNsUvSymCdfRow = [i32; CDF_ROW_LEN];
@@ -165,6 +212,16 @@ pub(crate) type SecTxTypeCdfRows =
 pub(crate) type MostProbableStxSetCdfRow = [i32; MOST_PROBABLE_STX_SET_ROW_LEN];
 pub(crate) type MostProbableStxSetAdstCdfRow = [i32; MOST_PROBABLE_STX_SET_ADST_ROW_LEN];
 pub(crate) type CctxTypeCdfRow = [i32; CCTX_TYPE_CDF_ROW_LEN];
+pub(crate) type PaletteYModeCdfRow = [i32; CDF_ROW_LEN];
+pub(crate) type PaletteYSizeCdfRow = [i32; 8];
+pub(crate) type IdentityRowYCdfRows = [[i32; 4]; PALETTE_ROW_FLAG_CONTEXTS];
+pub(crate) type PaletteSize2YColorCdfRows = [[i32; 3]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize3YColorCdfRows = [[i32; 4]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize4YColorCdfRows = [[i32; 5]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize5YColorCdfRows = [[i32; 6]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize6YColorCdfRows = [[i32; 7]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize7YColorCdfRows = [[i32; 8]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize8YColorCdfRows = [[i32; 9]; PALETTE_COLOR_CONTEXTS];
 pub(crate) type InterpFilterCdfRows = [[i32; 4]; INTERP_FILTER_CONTEXTS];
 
 pub(crate) type EobPt16CdfRows = [[[i32; 6]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
@@ -243,6 +300,37 @@ pub(crate) enum BlockCdfSelector {
     SingleMode {
         ctx: usize,
     },
+    IsWarp {
+        ctx: usize,
+    },
+    WarpMv,
+    WarpIdx {
+        ctx: usize,
+    },
+    WarpWithMvd,
+    WarpPrecision {
+        block_size: usize,
+    },
+    WarpDeltaParamLow {
+        index_type: usize,
+    },
+    WarpDeltaParamHigh {
+        index_type: usize,
+    },
+    WarpDeltaParamSign,
+    WarpInterIntra {
+        bsize_group: usize,
+    },
+    InterIntraMode {
+        bsize_group: usize,
+    },
+    WedgeInterIntra,
+    WedgeQuad,
+    WedgeAngle {
+        quad: usize,
+    },
+    WedgeDist1,
+    WedgeDist2,
     DrlMode {
         idx: usize,
         ctx: usize,
@@ -279,6 +367,16 @@ pub(crate) enum BlockCdfSelector {
     InterpFilter {
         ctx: usize,
     },
+    UseBawp,
+    UseBawpChroma,
+    UseAmvd {
+        index: usize,
+        ctx: usize,
+    },
+    ExplicitBawp {
+        ctx: usize,
+    },
+    ExplicitBawpScale,
     UseWienerNs,
     WienerNsLength {
         plane_ctx: usize,
@@ -335,6 +433,15 @@ pub(crate) enum BlockCdfSelector {
     MostProbableStxSet,
     MostProbableStxSetAdst,
     CctxType,
+    PaletteYMode,
+    PaletteYSize,
+    IdentityRowY {
+        ctx: usize,
+    },
+    PaletteYColorIndex {
+        palette_size: usize,
+        ctx: usize,
+    },
     Coeff(CoeffCdfSelector),
 }
 
@@ -364,6 +471,21 @@ pub(crate) struct BlockCdfRows {
     pub(super) is_inter: IsInterCdfRows,
     pub(super) skip: SkipCdfRows,
     pub(super) single_mode: SingleModeCdfRows,
+    pub(super) is_warp: IsWarpCdfRows,
+    pub(super) warp_mv: WarpMvCdfRow,
+    pub(super) warp_idx: WarpIdxCdfRows,
+    pub(super) warp_with_mvd: WarpWithMvdCdfRow,
+    pub(super) warp_precision: WarpPrecisionCdfRows,
+    pub(super) warp_delta_param_low: WarpDeltaParamCdfRows,
+    pub(super) warp_delta_param_high: WarpDeltaParamCdfRows,
+    pub(super) warp_delta_param_sign: WarpDeltaParamSignCdfRow,
+    pub(super) warp_inter_intra: WarpInterIntraCdfRows,
+    pub(super) inter_intra_mode: InterIntraModeCdfRows,
+    pub(super) wedge_inter_intra: WedgeInterIntraCdfRow,
+    pub(super) wedge_quad: WedgeQuadCdfRow,
+    pub(super) wedge_angle: WedgeAngleCdfRows,
+    pub(super) wedge_dist1: WedgeDist1CdfRow,
+    pub(super) wedge_dist2: WedgeDist2CdfRow,
     pub(super) drl_mode: DrlModeCdfRows,
     pub(super) single_ref: SingleRefCdfRows,
     pub(super) comp_mode: CompModeCdfRows,
@@ -375,6 +497,11 @@ pub(crate) struct BlockCdfRows {
     pub(super) comp_ref1: CompRef1CdfRows,
     read_mv: MvCdfRows,
     pub(super) interp_filter: InterpFilterCdfRows,
+    pub(super) use_amvd: UseAmvdCdfRows,
+    pub(super) use_bawp: UseBawpCdfRow,
+    pub(super) use_bawp_chroma: UseBawpCdfRow,
+    pub(super) explicit_bawp: ExplicitBawpCdfRows,
+    pub(super) explicit_bawp_scale: ExplicitBawpScaleCdfRow,
     pub(super) use_wiener_ns: UseWienerNsCdfRow,
     pub(super) wiener_ns_length: WienerNsLengthCdfRows,
     pub(super) wiener_ns_uv_sym: WienerNsUvSymCdfRow,
@@ -396,6 +523,16 @@ pub(crate) struct BlockCdfRows {
     pub(super) most_probable_stx_set: MostProbableStxSetCdfRow,
     pub(super) most_probable_stx_set_adst: MostProbableStxSetAdstCdfRow,
     pub(super) cctx_type: CctxTypeCdfRow,
+    pub(super) palette_y_mode: PaletteYModeCdfRow,
+    pub(super) palette_y_size: PaletteYSizeCdfRow,
+    pub(super) identity_row_y: IdentityRowYCdfRows,
+    pub(super) palette_size_2_y_color: PaletteSize2YColorCdfRows,
+    pub(super) palette_size_3_y_color: PaletteSize3YColorCdfRows,
+    pub(super) palette_size_4_y_color: PaletteSize4YColorCdfRows,
+    pub(super) palette_size_5_y_color: PaletteSize5YColorCdfRows,
+    pub(super) palette_size_6_y_color: PaletteSize6YColorCdfRows,
+    pub(super) palette_size_7_y_color: PaletteSize7YColorCdfRows,
+    pub(super) palette_size_8_y_color: PaletteSize8YColorCdfRows,
     pub(super) coeff: CoeffCdfRows,
 }
 
@@ -566,6 +703,77 @@ macro_rules! block_cdf_row {
                 $get,
                 $as_slice
             ),
+            BlockCdfSelector::IsWarp { ctx } => block_row_slice!(
+                $self.is_warp,
+                ctx,
+                "ctx",
+                TileCdfArray::IsWarp,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::WarpMv => Ok($self.warp_mv.$as_slice()),
+            BlockCdfSelector::WarpIdx { ctx } => block_row_slice!(
+                $self.warp_idx,
+                ctx,
+                "ctx",
+                TileCdfArray::WarpIdx,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::WarpWithMvd => Ok($self.warp_with_mvd.$as_slice()),
+            BlockCdfSelector::WarpPrecision { block_size } => block_row_slice!(
+                $self.warp_precision,
+                block_size,
+                "block_size",
+                TileCdfArray::WarpPrecision,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::WarpDeltaParamLow { index_type } => block_row_slice!(
+                $self.warp_delta_param_low,
+                index_type,
+                "index_type",
+                TileCdfArray::WarpDeltaParamLow,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::WarpDeltaParamHigh { index_type } => block_row_slice!(
+                $self.warp_delta_param_high,
+                index_type,
+                "index_type",
+                TileCdfArray::WarpDeltaParamHigh,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::WarpDeltaParamSign => Ok($self.warp_delta_param_sign.$as_slice()),
+            BlockCdfSelector::WarpInterIntra { bsize_group } => block_row_slice!(
+                $self.warp_inter_intra,
+                bsize_group,
+                "bsize_group",
+                TileCdfArray::WarpInterIntra,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::InterIntraMode { bsize_group } => block_row_slice!(
+                $self.inter_intra_mode,
+                bsize_group,
+                "bsize_group",
+                TileCdfArray::InterIntraMode,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::WedgeInterIntra => Ok($self.wedge_inter_intra.$as_slice()),
+            BlockCdfSelector::WedgeQuad => Ok($self.wedge_quad.$as_slice()),
+            BlockCdfSelector::WedgeAngle { quad } => block_row_slice!(
+                $self.wedge_angle,
+                quad,
+                "quad",
+                TileCdfArray::WedgeAngle,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::WedgeDist1 => Ok($self.wedge_dist1.$as_slice()),
+            BlockCdfSelector::WedgeDist2 => Ok($self.wedge_dist2.$as_slice()),
             BlockCdfSelector::DrlMode { idx, ctx } => {
                 let bank =
                     checked_block_row!($self.drl_mode, idx, "idx", TileCdfArray::DrlMode, $get)?;
@@ -667,6 +875,27 @@ macro_rules! block_cdf_row {
                 $get,
                 $as_slice
             ),
+            BlockCdfSelector::UseBawp => Ok($self.use_bawp.$as_slice()),
+            BlockCdfSelector::UseBawpChroma => Ok($self.use_bawp_chroma.$as_slice()),
+            BlockCdfSelector::UseAmvd { index, ctx } => {
+                let bank = checked_block_row!(
+                    $self.use_amvd,
+                    index,
+                    "index",
+                    TileCdfArray::UseAmvd,
+                    $get
+                )?;
+                block_row_slice!(bank, ctx, "ctx", TileCdfArray::UseAmvd, $get, $as_slice)
+            }
+            BlockCdfSelector::ExplicitBawp { ctx } => block_row_slice!(
+                $self.explicit_bawp,
+                ctx,
+                "ctx",
+                TileCdfArray::ExplicitBawp,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::ExplicitBawpScale => Ok($self.explicit_bawp_scale.$as_slice()),
             BlockCdfSelector::UseWienerNs => Ok($self.use_wiener_ns.$as_slice()),
             BlockCdfSelector::WienerNsLength { plane_ctx } => block_row_slice!(
                 $self.wiener_ns_length,
@@ -837,6 +1066,39 @@ macro_rules! block_cdf_row {
                 Ok($self.most_probable_stx_set_adst.$as_slice())
             }
             BlockCdfSelector::CctxType => Ok($self.cctx_type.$as_slice()),
+            BlockCdfSelector::PaletteYMode => Ok($self.palette_y_mode.$as_slice()),
+            BlockCdfSelector::PaletteYSize => Ok($self.palette_y_size.$as_slice()),
+            BlockCdfSelector::IdentityRowY { ctx } => block_row_slice!(
+                $self.identity_row_y,
+                ctx,
+                "ctx",
+                TileCdfArray::IdentityRowY,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::PaletteYColorIndex { palette_size, ctx } => {
+                let ctx = checked_context(
+                    TileCdfArray::PaletteYColorIndex,
+                    "ctx",
+                    ctx,
+                    PALETTE_COLOR_CONTEXTS,
+                )?;
+                match palette_size {
+                    2 => Ok($self.palette_size_2_y_color[ctx].$as_slice()),
+                    3 => Ok($self.palette_size_3_y_color[ctx].$as_slice()),
+                    4 => Ok($self.palette_size_4_y_color[ctx].$as_slice()),
+                    5 => Ok($self.palette_size_5_y_color[ctx].$as_slice()),
+                    6 => Ok($self.palette_size_6_y_color[ctx].$as_slice()),
+                    7 => Ok($self.palette_size_7_y_color[ctx].$as_slice()),
+                    8 => Ok($self.palette_size_8_y_color[ctx].$as_slice()),
+                    _ => Err(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::PaletteYColorIndex,
+                        index_name: "palette_size",
+                        actual: palette_size,
+                        max_exclusive: 9,
+                    }),
+                }
+            }
             BlockCdfSelector::Coeff(selector) => $self.coeff.$delegate(selector),
         }
     };
@@ -867,6 +1129,21 @@ macro_rules! block_cdf_count_rows {
         $rows!(is_inter);
         $rows!(skip);
         $rows!(single_mode);
+        $rows!(is_warp);
+        $row!(warp_mv);
+        $rows!(warp_idx);
+        $row!(warp_with_mvd);
+        $rows!(warp_precision);
+        $rows!(warp_delta_param_low);
+        $rows!(warp_delta_param_high);
+        $row!(warp_delta_param_sign);
+        $rows!(warp_inter_intra);
+        $rows!(inter_intra_mode);
+        $row!(wedge_inter_intra);
+        $row!(wedge_quad);
+        $rows!(wedge_angle);
+        $row!(wedge_dist1);
+        $row!(wedge_dist2);
         $rows!(drl_mode.flatten());
         $rows!(single_ref.flatten());
         $rows!(comp_mode);
@@ -878,6 +1155,11 @@ macro_rules! block_cdf_count_rows {
         $rows!(comp_ref1.flatten().flatten());
         $read_mv
         $rows!(interp_filter);
+        $rows!(use_amvd.flatten());
+        $row!(use_bawp);
+        $row!(use_bawp_chroma);
+        $rows!(explicit_bawp);
+        $row!(explicit_bawp_scale);
         $row!(use_wiener_ns);
         $rows!(wiener_ns_length);
         $row!(wiener_ns_uv_sym);
@@ -899,6 +1181,16 @@ macro_rules! block_cdf_count_rows {
         $row!(most_probable_stx_set);
         $row!(most_probable_stx_set_adst);
         $row!(cctx_type);
+        $row!(palette_y_mode);
+        $row!(palette_y_size);
+        $rows!(identity_row_y);
+        $rows!(palette_size_2_y_color);
+        $rows!(palette_size_3_y_color);
+        $rows!(palette_size_4_y_color);
+        $rows!(palette_size_5_y_color);
+        $rows!(palette_size_6_y_color);
+        $rows!(palette_size_7_y_color);
+        $rows!(palette_size_8_y_color);
         $coeff
     }};
 }
@@ -930,6 +1222,21 @@ impl BlockCdfRows {
             is_inter: DEFAULT_IS_INTER_CDF,
             skip: DEFAULT_SKIP_CDF,
             single_mode: DEFAULT_SINGLE_MODE_CDF,
+            is_warp: DEFAULT_IS_WARP_CDF,
+            warp_mv: DEFAULT_WARP_MV_CDF,
+            warp_idx: DEFAULT_WARP_IDX_CDF,
+            warp_with_mvd: DEFAULT_WARP_WITH_MVD_CDF,
+            warp_precision: DEFAULT_WARP_PRECISION_CDF,
+            warp_delta_param_low: DEFAULT_WARP_DELTA_PARAM_LOW_CDF,
+            warp_delta_param_high: DEFAULT_WARP_DELTA_PARAM_HIGH_CDF,
+            warp_delta_param_sign: DEFAULT_WARP_DELTA_PARAM_SIGN_CDF,
+            warp_inter_intra: DEFAULT_WARP_INTER_INTRA_CDF,
+            inter_intra_mode: DEFAULT_INTER_INTRA_MODE_CDF,
+            wedge_inter_intra: DEFAULT_WEDGE_INTER_INTRA_CDF,
+            wedge_quad: DEFAULT_WEDGE_QUAD_CDF,
+            wedge_angle: DEFAULT_WEDGE_ANGLE_CDF,
+            wedge_dist1: DEFAULT_WEDGE_DIST1_CDF,
+            wedge_dist2: DEFAULT_WEDGE_DIST2_CDF,
             drl_mode: DEFAULT_DRL_MODE_CDF,
             single_ref: DEFAULT_SINGLE_REF_CDF,
             comp_mode: DEFAULT_COMP_MODE_CDF,
@@ -941,6 +1248,11 @@ impl BlockCdfRows {
             comp_ref1: DEFAULT_COMP_REF1_CDF,
             read_mv: MvCdfRows::from_defaults(),
             interp_filter: DEFAULT_INTERP_FILTER_CDF,
+            use_amvd: DEFAULT_USE_AMVD_CDF,
+            use_bawp: DEFAULT_USE_BAWP_CDF,
+            use_bawp_chroma: DEFAULT_USE_BAWP_CHROMA_CDF,
+            explicit_bawp: DEFAULT_EXPLICIT_BAWP_CDF,
+            explicit_bawp_scale: DEFAULT_EXPLICIT_BAWP_SCALE_CDF,
             use_wiener_ns: DEFAULT_USE_WIENER_NS_CDF,
             wiener_ns_length: DEFAULT_WIENER_NS_LENGTH_CDF,
             wiener_ns_uv_sym: DEFAULT_WIENER_NS_UV_SYM_CDF,
@@ -962,8 +1274,37 @@ impl BlockCdfRows {
             most_probable_stx_set: DEFAULT_MOST_PROBABLE_STX_SET_CDF,
             most_probable_stx_set_adst: DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
             cctx_type: DEFAULT_CCTX_TYPE_CDF,
+            palette_y_mode: DEFAULT_PALETTE_Y_MODE_CDF,
+            palette_y_size: DEFAULT_PALETTE_Y_SIZE_CDF,
+            identity_row_y: DEFAULT_IDENTITY_ROW_Y_CDF,
+            palette_size_2_y_color: DEFAULT_PALETTE_SIZE_2_Y_COLOR_CDF,
+            palette_size_3_y_color: DEFAULT_PALETTE_SIZE_3_Y_COLOR_CDF,
+            palette_size_4_y_color: DEFAULT_PALETTE_SIZE_4_Y_COLOR_CDF,
+            palette_size_5_y_color: DEFAULT_PALETTE_SIZE_5_Y_COLOR_CDF,
+            palette_size_6_y_color: DEFAULT_PALETTE_SIZE_6_Y_COLOR_CDF,
+            palette_size_7_y_color: DEFAULT_PALETTE_SIZE_7_Y_COLOR_CDF,
+            palette_size_8_y_color: DEFAULT_PALETTE_SIZE_8_Y_COLOR_CDF,
             coeff: CoeffCdfRows::from_defaults(),
         }
+    }
+
+    pub(crate) fn replicate_coeff_q_context(
+        &mut self,
+        coeff_cdf_q_ctx: usize,
+    ) -> Result<(), TileCdfError> {
+        let q = checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
+        self.txb_skip = [self.txb_skip[q]; COEFF_CDF_Q_CONTEXTS];
+        self.v_txb_skip = [self.v_txb_skip[q]; COEFF_CDF_Q_CONTEXTS];
+        self.eob_extra = [self.eob_extra[q]; COEFF_CDF_Q_CONTEXTS];
+        self.eob_pt_16 = [self.eob_pt_16[q]; COEFF_CDF_Q_CONTEXTS];
+        self.eob_pt_32 = [self.eob_pt_32[q]; COEFF_CDF_Q_CONTEXTS];
+        self.eob_pt_64 = [self.eob_pt_64[q]; COEFF_CDF_Q_CONTEXTS];
+        self.eob_pt_128 = [self.eob_pt_128[q]; COEFF_CDF_Q_CONTEXTS];
+        self.eob_pt_256 = [self.eob_pt_256[q]; COEFF_CDF_Q_CONTEXTS];
+        self.eob_pt_512 = [self.eob_pt_512[q]; COEFF_CDF_Q_CONTEXTS];
+        self.eob_pt_1024 = [self.eob_pt_1024[q]; COEFF_CDF_Q_CONTEXTS];
+        self.dc_sign = [self.dc_sign[q]; COEFF_CDF_Q_CONTEXTS];
+        self.coeff.replicate_q_context(q)
     }
 
     pub(crate) fn row(&self, selector: BlockCdfSelector) -> Result<&[i32], TileCdfError> {
@@ -1184,6 +1525,11 @@ impl BlockCdfRows {
     #[cfg(test)]
     pub(crate) const fn cctx_type(&self) -> &CctxTypeCdfRow {
         &self.cctx_type
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn palette_y_mode(&self) -> &PaletteYModeCdfRow {
+        &self.palette_y_mode
     }
 }
 

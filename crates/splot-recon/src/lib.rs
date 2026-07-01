@@ -43,6 +43,7 @@ mod secondary_transform;
 mod subpel_mc;
 mod transform_params;
 mod views;
+mod warp_prediction;
 mod wienerns_chroma_filter;
 mod wienerns_filter;
 mod workspace;
@@ -123,7 +124,9 @@ pub use pc_wiener::{
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
-pub use reconstruct_block::reconstruct_transform_block_residual;
+pub use reconstruct_block::{
+    reconstruct_transform_block_residual, reconstruct_transform_block_residual_with_secondary,
+};
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,
     ReferenceRefreshMask, ReferenceRefreshOutcome, ReferenceRefreshSlots, ReferenceSlot,
@@ -135,6 +138,9 @@ pub use subpel_mc::{
 };
 pub use transform_params::{TransformPass, dpcm_direction, get_transform_1d_type, transform_shift};
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
+pub use warp_prediction::{
+    IDENTITY_WARP_PARAMS, WARPED_BLOCK_SIZE, WarpPredictBlockParams, warp_predict_block,
+};
 pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAPS, WienerNsChromaFilter,
     wiener_ns_filter_chroma_block,

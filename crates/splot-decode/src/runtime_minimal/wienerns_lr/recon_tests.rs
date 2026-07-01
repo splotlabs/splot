@@ -32,8 +32,8 @@ const DCT_DCT: usize = 0;
 const ADST_ADST: usize = 3;
 
 /// A placeholder §7.13.3.17 scaling for the INTEGER-DV copy tests: the copy path
-/// (`source.size() == target.size()`) never reads it (only the fractional-DV
-/// bilinear path consumes `start`/`step`), so a zero scaling is inert here.
+/// never reads it (only the fractional-DV bilinear path consumes `start`/`step`),
+/// so a zero scaling is inert here.
 fn unused_scaling() -> PlaneScaling {
     PlaneScaling {
         start_x: 0,
@@ -306,11 +306,7 @@ fn ist_nonzero_dc_leaf_is_deferred() {
 #[test]
 fn full_recon_deferred_luma_leaf_returns_unsupported() {
     let mut sink = sink().into_full_recon();
-    let mut block = coeff_block_16x16();
-    block.intra_ist = Some(crate::tile_payload::IntraIstSyntax {
-        sec_tx_type: 1,
-        most_probable_stx_set: Some(0),
-    });
+    let block = coeff_block_16x16();
 
     let error = sink
         .reconstruct_luma_transform(
@@ -325,7 +321,7 @@ fn full_recon_deferred_luma_leaf_returns_unsupported() {
             0,
             149,
             true,
-            false,
+            true,
             false,
             ByteOffset::new(0),
         )
@@ -1085,8 +1081,15 @@ fn intrabc_integer_skip_copy_reconstructs_target_from_reconstructed_source() {
     let (mut sink, before) = sink_with_origin_dc();
     let source = PlaneRect::new(0, 0, 16, 16).unwrap();
     let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-    sink.reconstruct_intrabc_block(source, target, unused_scaling(), true, ByteOffset::new(0))
-        .unwrap();
+    sink.reconstruct_intrabc_block(
+        source,
+        target,
+        unused_scaling(),
+        false,
+        true,
+        ByteOffset::new(0),
+    )
+    .unwrap();
     assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 512);
     assert_eq!(sink.reconstructed_sample(PlaneId::Y, 15, 47).unwrap(), 512);
     assert_eq!(sink.reconstructed_counts().0, before + 16);
@@ -1153,7 +1156,7 @@ fn intrabc_fractional_dv_runs_bilinear_subpel_predictor() {
 
     let source = PlaneRect::new(0, 32, w + 1, h).unwrap(); // fractional: +1 right border
     let target = PlaneRect::new(tgt_x, tgt_y, w, h).unwrap();
-    sink.reconstruct_intrabc_block(source, target, scaling, true, ByteOffset::new(0))
+    sink.reconstruct_intrabc_block(source, target, scaling, true, true, ByteOffset::new(0))
         .unwrap();
 
     for dy in 0..h {
@@ -1179,8 +1182,15 @@ fn intrabc_copy_with_unreconstructed_source_is_deferred() {
     let mut sink = sink();
     let source = PlaneRect::new(0, 0, 16, 16).unwrap();
     let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-    sink.reconstruct_intrabc_block(source, target, unused_scaling(), true, ByteOffset::new(0))
-        .unwrap();
+    sink.reconstruct_intrabc_block(
+        source,
+        target,
+        unused_scaling(),
+        false,
+        true,
+        ByteOffset::new(0),
+    )
+    .unwrap();
     assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 0);
     assert_eq!(sink.reconstructed_counts().0, 0);
 }
@@ -1194,8 +1204,15 @@ fn intrabc_unaligned_source_with_uncovered_trailing_mi_is_deferred() {
     let (mut sink, before) = sink_with_origin_dc();
     let source = PlaneRect::new(2, 0, 16, 16).unwrap();
     let target = PlaneRect::new(2, 32, 16, 16).unwrap();
-    sink.reconstruct_intrabc_block(source, target, unused_scaling(), true, ByteOffset::new(0))
-        .unwrap();
+    sink.reconstruct_intrabc_block(
+        source,
+        target,
+        unused_scaling(),
+        false,
+        true,
+        ByteOffset::new(0),
+    )
+    .unwrap();
     assert_eq!(sink.reconstructed_sample(PlaneId::Y, 2, 32).unwrap(), 0);
     assert_eq!(sink.reconstructed_counts().0, before);
 }
@@ -1211,8 +1228,15 @@ fn intrabc_non_skip_copy_writes_prediction_without_marking_coverage() {
     let (mut sink, before) = sink_with_origin_dc();
     let source = PlaneRect::new(0, 0, 16, 16).unwrap();
     let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-    sink.reconstruct_intrabc_block(source, target, unused_scaling(), false, ByteOffset::new(0))
-        .unwrap();
+    sink.reconstruct_intrabc_block(
+        source,
+        target,
+        unused_scaling(),
+        false,
+        false,
+        ByteOffset::new(0),
+    )
+    .unwrap();
     assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 512);
     assert_eq!(sink.reconstructed_counts().0, before);
 }
@@ -1254,8 +1278,15 @@ fn intrabc_non_skip_residual_leaf_adds_residual_onto_copied_prediction() {
     let before = sink.reconstructed_counts().0;
     let source = PlaneRect::new(0, 0, 16, 16).unwrap();
     let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-    sink.reconstruct_intrabc_block(source, target, unused_scaling(), false, ByteOffset::new(0))
-        .unwrap();
+    sink.reconstruct_intrabc_block(
+        source,
+        target,
+        unused_scaling(),
+        false,
+        false,
+        ByteOffset::new(0),
+    )
+    .unwrap();
     sink.reconstruct_luma_transform(
         0,
         8,
@@ -1339,8 +1370,15 @@ fn intrabc_non_skip_residual_leaf_with_real_ist_is_deferred() {
     let before = sink.reconstructed_counts().0;
     let source = PlaneRect::new(0, 0, 16, 16).unwrap();
     let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-    sink.reconstruct_intrabc_block(source, target, unused_scaling(), false, ByteOffset::new(0))
-        .unwrap();
+    sink.reconstruct_intrabc_block(
+        source,
+        target,
+        unused_scaling(),
+        false,
+        false,
+        ByteOffset::new(0),
+    )
+    .unwrap();
     let mut residual = coeff_block_16x16();
     residual.intra_ist = Some(crate::tile_payload::IntraIstSyntax {
         sec_tx_type: 1,
@@ -1367,15 +1405,22 @@ fn intrabc_non_skip_residual_leaf_with_real_ist_is_deferred() {
     assert_eq!(sink.reconstructed_counts().0, before);
 }
 
-/// A fractional-vector IntrABC block (source and target differ in shape — the
-/// BILINEAR border) is DEFERRED: the copy primitive only models the integer copy.
+/// A fractional-vector IntrABC block is DEFERRED in the gated sink: the bilinear
+/// path is diagnostic full-recon-only.
 #[test]
 fn intrabc_fractional_vector_block_is_deferred() {
     let (mut sink, before) = sink_with_origin_dc();
-    let source = PlaneRect::new(0, 0, 17, 17).unwrap();
+    let source = PlaneRect::new(0, 0, 16, 16).unwrap();
     let target = PlaneRect::new(0, 32, 16, 16).unwrap();
-    sink.reconstruct_intrabc_block(source, target, unused_scaling(), true, ByteOffset::new(0))
-        .unwrap();
+    sink.reconstruct_intrabc_block(
+        source,
+        target,
+        unused_scaling(),
+        true,
+        true,
+        ByteOffset::new(0),
+    )
+    .unwrap();
     assert_eq!(sink.reconstructed_sample(PlaneId::Y, 0, 32).unwrap(), 0);
     assert_eq!(sink.reconstructed_counts().0, before);
 }

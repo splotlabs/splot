@@ -6,7 +6,8 @@
 use core::ops::Range;
 
 use super::super::cdf::{
-    FrameCdfSubset, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy,
+    FrameCdfSubset, TileCdfPolicyInput, TileCdfSelector, TileCdfWorkUnitBoundary,
+    tile_cdf_save_policy,
 };
 use super::super::{
     SymbolInitBoundary, TileBruPath, TileCoeffFrameFacts, TileCoeffFrameFactsInput,
@@ -16,7 +17,8 @@ use super::*;
 use crate::{DecodeLayerSelection, DecodeLimitError, DecodeLimitThreshold, DecodeObuSourceKind};
 use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::{ByteOffset, ByteSpan};
-use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::DEFAULT_Y_MODE_SET_CDF;
 
 const BLOCK_4X4: usize = 0;
@@ -25,14 +27,21 @@ const BLOCK_16X16: usize = 6;
 const BLOCK_32X32: usize = 9;
 const BLOCK_64X64: usize = 12;
 const BLOCK_128X128: usize = 15;
+const BLOCK_32X8: usize = 22;
+const PARTITION_CONTEXT_4X4: usize = 63;
 
 static ROW_4X4: [usize; 64] = [BLOCK_4X4; 64];
 static ROW_16X16: [usize; 64] = [BLOCK_16X16; 64];
+static ROW_CONTEXT_4X4: [usize; 64] = [PARTITION_CONTEXT_4X4; 64];
 static GRID0: [&[usize]; 2] = [&ROW_4X4, &ROW_16X16];
 static GRID1: [&[usize]; 2] = [&ROW_4X4, &ROW_16X16];
 
 fn context() -> TilePartitionContextState<'static> {
-    TilePartitionContextState::new([&GRID0, &GRID1], [&ROW_4X4, &ROW_4X4], [&ROW_4X4, &ROW_4X4])
+    TilePartitionContextState::new(
+        [&GRID0, &GRID1],
+        [&ROW_CONTEXT_4X4, &ROW_CONTEXT_4X4],
+        [&ROW_CONTEXT_4X4, &ROW_CONTEXT_4X4],
+    )
 }
 
 fn frame(sb_size: usize) -> TilePartitionFrameFacts {
@@ -182,6 +191,21 @@ fn assert_frontier_unsupported(
     ));
 }
 
+fn encode_symbol_sequence(sequence: &[(TileCdfSelector, u8)]) -> Vec<u8> {
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::with_config(
+        SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    );
+    for &(selector, value) in sequence {
+        tile.with_row_mut(selector, |row| {
+            encoder.write_symbol(row, Symbol::new(value))
+        })
+        .unwrap()
+        .unwrap();
+    }
+    encoder.finish().unwrap().into_bytes()
+}
+
 fn root_call(b_size: usize) -> TilePartitionCall {
     TilePartitionCall::root(0, 0, BlockSize::new(b_size).unwrap(), true)
 }
@@ -241,6 +265,30 @@ fn child_calls_thread_chroma_reference_to_chroma_offset_descendants() {
             "chroma-offset child must reference the parent §5.20.4.1 chroma geometry"
         );
     }
+}
+
+#[test]
+fn shared_mixed_chroma_ref_size_mismatch_forces_inter() {
+    let work_unit = make_work_unit(&[0x80], CdfUpdateMode::Enabled);
+    let symbols = symbol_decoder_for_work_unit(&work_unit).unwrap();
+    let chroma_ref = ChromaRefGeometry::new(28, 184, BlockSize::new(BLOCK_32X8).unwrap());
+    let call = TilePartitionCall::child(
+        30,
+        184,
+        BlockSize::new(BLOCK_4X8).unwrap(),
+        Some(BlockSize::new(BLOCK_32X8).unwrap()),
+        true,
+        false,
+        PartitionTreeType::Shared,
+        Some(chroma_ref),
+        true,
+        false,
+    );
+
+    let frontier =
+        decode_block_frontier(call, frame(BLOCK_64X64), call.b_size, true, None, &symbols);
+
+    assert!(frontier.shared_mixed_chroma_ref_forces_inter());
 }
 
 #[test]
@@ -492,7 +540,7 @@ fn non_origin_tile_start_availability_uses_tile_bounds() {
 #[test]
 fn non_origin_tile_square_split_does_not_read_neighbors_outside_tile() {
     static EMPTY_GRID: [&[usize]; 0] = [];
-    static LONG_ROW: [usize; 256] = [BLOCK_4X4; 256];
+    static LONG_ROW: [usize; 256] = [PARTITION_CONTEXT_4X4; 256];
     let sparse_context = TilePartitionContextState::new(
         [&EMPTY_GRID, &EMPTY_GRID],
         [&LONG_ROW, &LONG_ROW],
@@ -566,6 +614,21 @@ fn split_child_sdp_recognizes_nested_64x64_shared_roots() {
 }
 
 #[test]
+fn extended_sdp_propagates_through_large_parent_to_eligible_child() {
+    let root = root_call(BLOCK_128X128);
+    let sub_size = valid_subsize(PartitionType::Split, root.b_size).unwrap();
+    let mut facts = frame(BLOCK_128X128);
+    facts.enable_extended_sdp = true;
+    facts.frame_is_intra = false;
+    let children = child_calls(root, PartitionType::Split, sub_size, facts, false).unwrap();
+    let child = children.as_slice()[0];
+
+    assert_eq!(child.b_size.index(), BLOCK_64X64);
+    assert!(child.extended_sdp_allowed);
+    assert!(should_read_extended_sdp_region_type(facts, child, PartitionType::Horz).unwrap());
+}
+
+#[test]
 fn root_sdp_luma_partition_none_reaches_frontier() {
     let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     let mut facts = frame(BLOCK_64X64);
@@ -590,6 +653,71 @@ fn intra_extended_sdp_sequence_flag_is_inactive_for_traversal() {
 
     assert_eq!(plan.frontier.b_size.index(), BLOCK_32X32);
     assert_eq!(plan.symbol_count_after(), 1);
+}
+
+#[test]
+fn inter_extended_sdp_root_does_not_consume_region_type() {
+    let payload = encode_symbol_sequence(&[(TileCdfSelector::RegionType { ctx: 2 }, MIXED_REGION)]);
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        &payload,
+        ByteOffset::new(0),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    )
+    .unwrap();
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let mut facts = frame(BLOCK_32X32);
+    facts.enable_extended_sdp = true;
+    facts.frame_is_intra = false;
+
+    let (call, using_extended_sdp) = read_extended_sdp_region_type(
+        facts,
+        root_call(BLOCK_32X32),
+        PartitionType::Horz,
+        &mut cdfs,
+        &mut symbols,
+    )
+    .unwrap();
+
+    assert!(!using_extended_sdp);
+    assert_eq!(call.tree_type(), PartitionTreeType::Shared);
+    assert!(!call.intra_region);
+    assert_eq!(symbols.symbol_count(), 0);
+}
+
+#[test]
+fn inter_extended_sdp_mixed_child_consumes_region_type() {
+    let payload = encode_symbol_sequence(&[(TileCdfSelector::RegionType { ctx: 2 }, MIXED_REGION)]);
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        &payload,
+        ByteOffset::new(0),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    )
+    .unwrap();
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let mut facts = frame(BLOCK_64X64);
+    facts.enable_extended_sdp = true;
+    facts.frame_is_intra = false;
+    let call = TilePartitionCall::child(
+        0,
+        0,
+        BlockSize::new(BLOCK_32X32).unwrap(),
+        Some(BlockSize::new(BLOCK_64X64).unwrap()),
+        false,
+        true,
+        PartitionTreeType::Shared,
+        None,
+        true,
+        false,
+    );
+
+    let (call, using_extended_sdp) =
+        read_extended_sdp_region_type(facts, call, PartitionType::Horz, &mut cdfs, &mut symbols)
+            .unwrap();
+
+    assert!(!using_extended_sdp);
+    assert_eq!(call.tree_type(), PartitionTreeType::Shared);
+    assert!(!call.intra_region);
+    assert_eq!(symbols.symbol_count(), 1);
 }
 
 #[test]
@@ -905,7 +1033,9 @@ fn unsupported_gates_are_explicit() {
     let mut extended_sdp = frame(BLOCK_32X32);
     extended_sdp.enable_extended_sdp = true;
     extended_sdp.frame_is_intra = false;
-    assert_frontier_unsupported(extended_sdp, TilePartitionTraversalUnsupported::ExtendedSdp);
+    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let plan = frontier(&mut work_unit, extended_sdp, context()).unwrap();
+    assert_eq!(plan.symbol_count_after(), 1);
 
     let mut read_lr = frame(BLOCK_32X32);
     read_lr.loop_restoration = TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;

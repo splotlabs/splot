@@ -147,7 +147,7 @@ fn write_original_ivf_frames(bytes: &mut Vec<u8>, frames: &[ParsedIvfFrame<'_>])
 fn decode_inter_blocks_after_quantization_mutation(
     bytes: &[u8],
     mutate: impl FnOnce(&mut QuantizationParams),
-) -> Result<usize> {
+) -> Result<()> {
     let options = DecodeOptions::default();
     let plan = plan_fixture(bytes, &options);
     let parsed = parse_ivf_fixture(bytes, "inter");
@@ -181,7 +181,11 @@ fn decode_inter_blocks_after_quantization_mutation(
     let frames = vec![key_frame];
     reference.update(
         0,
-        super::super::frame_ref_update_from_core(&key_core, key_envelope.offset)?,
+        super::super::frame_ref_update_from_core(
+            &key_core,
+            key_envelope.offset,
+            frames[0].frame_cdfs.clone(),
+        )?,
     );
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
@@ -191,7 +195,7 @@ fn decode_inter_blocks_after_quantization_mutation(
         inter_candidate,
         &mut next_unvalidated_following_ivf_record,
     )?;
-    let (store, meta) = reference.build_store(&frames)?;
+    let (store, meta) = reference.build_store_eight(&frames)?;
     let inter_state = super::InterReferenceState {
         store: &store,
         ref_valid: meta.ref_valid,
@@ -201,6 +205,8 @@ fn decode_inter_blocks_after_quantization_mutation(
         ref_base_q_idx: meta.ref_base_q_idx,
         ref_is_inter: meta.ref_is_inter,
         ref_adapted: meta.ref_adapted,
+        lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
+        ref_frame_cdfs: meta.ref_frame_cdfs,
     };
     let mut core = super::parse_inter_frame_core(inter_envelope, &sequence, &inter_state)?;
     mutate(
@@ -221,7 +227,28 @@ fn decode_inter_blocks_after_quantization_mutation(
         !tail.reference_select,
         "helper covers single-reference fixtures"
     );
-    let blocks = super::block::decode_inter_blocks(
+    let frame_size = core.frame_size.expect("fixture inter core has frame size");
+    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace::<u8>(
+        frame_size.width as usize,
+        frame_size.height as usize,
+        BitDepth::Eight,
+    )?;
+    let ref_frame_idx = inter.ref_frame_idx.clone();
+    let qindex = core
+        .quantization_params
+        .expect("fixture inter core has quantization params")
+        .base_q_idx;
+    let luma_use_tcq = core
+        .lossless_info
+        .as_ref()
+        .is_some_and(|lossless| lossless.allow_tcq);
+    let residual_use_ddt = sequence
+        .transform_quant_entropy
+        .as_ref()
+        .is_some_and(|tq| tq.enable_inter_ddt);
+    let initial_cdfs =
+        super::resolve_initial_frame_cdfs(&core, &sequence, &inter_state, inter_envelope.offset)?;
+    super::block::decode_inter_blocks(
         &plan,
         inter_candidate,
         bytes,
@@ -239,8 +266,16 @@ fn decode_inter_blocks_after_quantization_mutation(
             .inter
             .as_ref()
             .map_or(0, |seq_inter| seq_inter.num_same_ref_compound),
+        &ref_frame_idx,
+        &inter_state,
+        &mut workspace,
+        qindex,
+        luma_use_tcq,
+        residual_use_ddt,
+        BitDepth::Eight,
+        initial_cdfs,
     )?;
-    Ok(blocks.len())
+    Ok(())
 }
 
 fn unsupported_reason(error: DecodeError) -> &'static str {
@@ -378,12 +413,10 @@ fn skip_zero_residual_rejects_nonzero_effective_quantizer_deltas() {
 
 #[test]
 fn skip_one_inter_allows_nonzero_effective_quantizer_deltas() {
-    let blocks =
-        decode_inter_blocks_after_quantization_mutation(TWO_FRAME_INTER_FIXTURE, |quant| {
-            quant.delta_q_y_dc = 1;
-        })
-        .expect("skip == 1 reads no residual and must not hit the residual dequant guard");
-    assert_eq!(blocks, 1);
+    decode_inter_blocks_after_quantization_mutation(TWO_FRAME_INTER_FIXTURE, |quant| {
+        quant.delta_q_y_dc = 1;
+    })
+    .expect("skip == 1 reads no residual and must not hit the residual dequant guard");
 }
 
 #[test]

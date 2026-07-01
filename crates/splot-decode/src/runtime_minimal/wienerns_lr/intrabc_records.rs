@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, MvPrecision};
 use splot_core::headers::sequence::{DrlReorder, SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
@@ -22,7 +22,8 @@ use super::super::inter::{
 };
 use super::intrabc_ref_mv_stack::{
     DrlReorderMode, IntrabcRefMvBank, IntrabcStackAdmission, IntrabcStackGeometry,
-    SpatialIntrabcScan, SpatialScanGeometry, intrabc_ref_stack_admission, spatial_intrabc_scan,
+    SpatialIntrabcScan, SpatialScanGeometry, build_intrabc_ref_mv_stack,
+    intrabc_ref_stack_admission, spatial_intrabc_scan,
 };
 use super::recon::WienerNsLrReconSink;
 use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
@@ -34,17 +35,17 @@ const SKIP_CONTEXT_MAX: usize = 2;
 
 /// Result of the §5.20.5.3 `use_intrabc` / `read_skip` prefix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct IntrabcUseSkip {
-    pub(super) use_intrabc: bool,
-    pub(super) skip_flag: bool,
+pub(in crate::runtime_minimal) struct IntrabcUseSkip {
+    pub(in crate::runtime_minimal) use_intrabc: bool,
+    pub(in crate::runtime_minimal) skip_flag: bool,
 }
 
 /// Luma/shared mode-info facts retained by the transform-record handoff.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct IntrabcBlockPrelude {
-    pub(super) use_intrabc: bool,
-    pub(super) is_inter: bool,
-    pub(super) skip_flag: bool,
+pub(in crate::runtime_minimal) struct IntrabcBlockPrelude {
+    pub(in crate::runtime_minimal) use_intrabc: bool,
+    pub(in crate::runtime_minimal) is_inter: bool,
+    pub(in crate::runtime_minimal) skip_flag: bool,
     #[cfg_attr(
         not(test),
         allow(
@@ -52,11 +53,11 @@ pub(super) struct IntrabcBlockPrelude {
             reason = "retained IntrABC mode-info facts are part of the parse/prediction handoff"
         )
     )]
-    pub(super) intrabc: Option<IntrabcInfo>,
+    pub(in crate::runtime_minimal) intrabc: Option<IntrabcInfo>,
 }
 
 impl IntrabcBlockPrelude {
-    pub(super) const fn from_use_skip(
+    pub(in crate::runtime_minimal) const fn from_use_skip(
         use_skip: IntrabcUseSkip,
         intrabc: Option<IntrabcInfo>,
     ) -> Self {
@@ -76,6 +77,7 @@ pub(super) struct IntrabcBlockContext {
     col: usize,
     b_size: usize,
     is_chroma_part: bool,
+    mixed_region: bool,
 }
 
 impl IntrabcBlockContext {
@@ -85,6 +87,7 @@ impl IntrabcBlockContext {
             col: frontier.c,
             b_size: frontier.b_size.index(),
             is_chroma_part: frontier.is_chroma_part(),
+            mixed_region: frontier.is_mixed_region(),
         }
     }
 
@@ -95,20 +98,42 @@ impl IntrabcBlockContext {
             col,
             b_size,
             is_chroma_part,
+            mixed_region: true,
+        }
+    }
+
+    #[cfg(test)]
+    const fn new_with_mixed_region(
+        row: usize,
+        col: usize,
+        b_size: usize,
+        is_chroma_part: bool,
+        mixed_region: bool,
+    ) -> Self {
+        Self {
+            row,
+            col,
+            b_size,
+            is_chroma_part,
+            mixed_region,
         }
     }
 }
 
 /// Current block geometry for §5.20.5.3 IntrABC context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct IntrabcBlockGeometry {
+pub(in crate::runtime_minimal) struct IntrabcBlockGeometry {
     block: IntrabcBlockContext,
     n4w: usize,
     n4h: usize,
 }
 
 impl IntrabcBlockGeometry {
-    pub(super) fn from_frontier(frontier: &DecodeBlockFrontier, n4w: usize, n4h: usize) -> Self {
+    pub(in crate::runtime_minimal) fn from_frontier(
+        frontier: &DecodeBlockFrontier,
+        n4w: usize,
+        n4h: usize,
+    ) -> Self {
         Self {
             block: IntrabcBlockContext::from_frontier(frontier),
             n4w,
@@ -131,7 +156,7 @@ impl IntrabcBlockGeometry {
     )
 )]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct IntrabcInfo {
+pub(in crate::runtime_minimal) struct IntrabcInfo {
     pub(super) intrabc_mode: u8,
     pub(super) ref_mv_idx: usize,
     pub(super) mv_precision: u8,
@@ -152,7 +177,7 @@ pub(super) struct IntrabcBlockVector {
     pub(super) col: i32,
 }
 
-/// Checked luma current-frame copy geometry derived from an IntrABC block vector.
+/// Checked luma current-frame prediction geometry derived from an IntrABC block vector.
 #[cfg_attr(
     not(test),
     allow(
@@ -161,10 +186,13 @@ pub(super) struct IntrabcBlockVector {
     )
 )]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct IntrabcPredictionGeometry {
-    pub(super) scaling: PlaneScaling,
-    pub(super) source: PlaneRect,
-    pub(super) target: PlaneRect,
+pub(in crate::runtime_minimal) struct IntrabcPredictionGeometry {
+    pub(in crate::runtime_minimal) scaling: PlaneScaling,
+    pub(in crate::runtime_minimal) fractional: bool,
+    /// The integer-copy source rectangle. For fractional vectors, the bilinear
+    /// predictor reads through `scaling` and §7.13.3.18 reference clipping instead.
+    pub(in crate::runtime_minimal) source: PlaneRect,
+    pub(in crate::runtime_minimal) target: PlaneRect,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -333,7 +361,7 @@ impl From<IntrabcBlockVector> for Mv {
 
 /// Tile-local neighbour state for IntrABC and skip contexts used by §8.3.2.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct TileIntrabcPreludeState {
+pub(in crate::runtime_minimal) struct TileIntrabcPreludeState {
     mi_rows: usize,
     mi_cols: usize,
     sb_size4: usize,
@@ -351,7 +379,7 @@ struct IntrabcBlockFacts {
 }
 
 impl TileIntrabcPreludeState {
-    pub(super) fn new(
+    pub(in crate::runtime_minimal) fn new(
         mi_rows: usize,
         mi_cols: usize,
         sequence: &SequenceHeader,
@@ -384,7 +412,7 @@ impl TileIntrabcPreludeState {
         })
     }
 
-    pub(super) fn record_block(
+    pub(in crate::runtime_minimal) fn record_block(
         &mut self,
         row: usize,
         col: usize,
@@ -420,13 +448,13 @@ impl TileIntrabcPreludeState {
     }
 
     /// Resets the §7.12.2 ref-MV bank when entering a new superblock row.
-    pub(super) fn prepare_for_block(&mut self, row: usize, col: usize) {
+    pub(in crate::runtime_minimal) fn prepare_for_block(&mut self, row: usize, col: usize) {
         if self.enable_refmvbank {
             self.bank.enter_block_superblock(row, col);
         }
     }
 
-    pub(super) fn intrabc_ctx(
+    pub(in crate::runtime_minimal) fn intrabc_ctx(
         &self,
         row: usize,
         col: usize,
@@ -629,7 +657,7 @@ impl TileIntrabcPreludeState {
     }
 }
 
-pub(super) fn read_intrabc_use_and_skip(
+pub(in crate::runtime_minimal) fn read_intrabc_use_and_skip(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     state: &TileIntrabcPreludeState,
@@ -681,7 +709,7 @@ pub(super) fn read_intrabc_use_and_skip(
 /// so it trusts the decoded DV: an integer DV copies the (possibly cross-SB) source
 /// and a fractional DV runs the §7.13.3.18 bilinear predictor.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn read_intrabc_info(
+pub(in crate::runtime_minimal) fn read_intrabc_info(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     state: &TileIntrabcPreludeState,
@@ -709,6 +737,7 @@ pub(super) fn read_intrabc_info(
                 prediction.source,
                 prediction.target,
                 prediction.scaling,
+                prediction.fractional,
                 skip_flag,
                 tile_offset,
             )?;
@@ -755,12 +784,7 @@ fn read_intrabc_info_syntax(
     core: &FrameHeaderCore,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfoSyntax> {
-    let force_integer_mv = core.force_integer_mv.ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_missing_mv_precision",
-        )
-    })?;
+    let force_integer_mv = resolve_intrabc_force_integer_mv(core, tile_offset)?;
     let max_bvp_drl_bits_minus_1 = max_bvp_drl_bits_minus_1(sequence, core, tile_offset)?;
     let m = usize::try_from(max_bvp_drl_bits_minus_1)
         .ok()
@@ -831,6 +855,32 @@ fn read_intrabc_info_syntax(
     })
 }
 
+fn resolve_intrabc_force_integer_mv(
+    core: &FrameHeaderCore,
+    tile_offset: ByteOffset,
+) -> Result<bool> {
+    if let Some(force_integer_mv) = core.force_integer_mv {
+        return Ok(force_integer_mv);
+    }
+    let Some(inter) = core.inter.as_ref() else {
+        return Err(wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_missing_mv_precision",
+        ));
+    };
+    if let Some(force_integer_mv) = inter.force_integer_mv {
+        return Ok(force_integer_mv);
+    }
+    match inter.mv_precision {
+        Some(MvPrecision::OnePel) => Ok(true),
+        Some(MvPrecision::HalfPel | MvPrecision::QuarterPel | MvPrecision::EighthPel) => Ok(false),
+        Some(_) | None => Err(wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_missing_mv_precision",
+        )),
+    }
+}
+
 fn ensure_intrabc_ref_stack_supported(
     state: &TileIntrabcPreludeState,
     sequence: &SequenceHeader,
@@ -849,6 +899,13 @@ fn ensure_intrabc_ref_stack_supported(
         max_bvp_drl_bits_minus_1: syntax.max_bvp_drl_bits_minus_1,
     };
     let spatial = state.spatial_intrabc_scan(geometry);
+    trace_intrabc_ref_stack(
+        state,
+        stack_geometry,
+        &spatial,
+        syntax.ref_mv_idx,
+        tile_offset,
+    );
     match intrabc_ref_stack_admission(
         state.bank(),
         stack_geometry,
@@ -863,6 +920,45 @@ fn ensure_intrabc_ref_stack_supported(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack",
         )),
     }
+}
+
+fn trace_intrabc_ref_stack(
+    state: &TileIntrabcPreludeState,
+    stack_geometry: IntrabcStackGeometry,
+    spatial: &SpatialIntrabcScan,
+    ref_mv_idx: usize,
+    tile_offset: ByteOffset,
+) {
+    if std::env::var_os("SPLOT_TRACE_INTRABC_REF_STACK").is_none() {
+        return;
+    }
+    let mut nearest: Vec<_> = spatial.candidates.clone();
+    if state.drl_reorder.use_sort(nearest.len()) && nearest.len() > 1 {
+        super::intrabc_ref_mv_stack::sort_nearest_max_weight_to_slot0(&mut nearest);
+    }
+    let sorted: Vec<Mv> = nearest.iter().map(|entry| entry.mv).collect();
+    let stack = build_intrabc_ref_mv_stack(
+        state.bank(),
+        stack_geometry,
+        state.enable_refmvbank,
+        &sorted,
+    );
+    eprintln!(
+        "intrabc ref_stack offset={} mi=({}, {}) n4={}x{} ref_mv_idx={} spatial_defer={} spatial={:?} sorted={:?} bank={:?} stack={:?} enable_refmvbank={} drl_reorder={:?}",
+        tile_offset.get(),
+        stack_geometry.mi_row,
+        stack_geometry.mi_col,
+        stack_geometry.n4w,
+        stack_geometry.n4h,
+        ref_mv_idx,
+        spatial.defer,
+        spatial.candidates,
+        sorted,
+        state.bank().entries(),
+        stack,
+        state.enable_refmvbank,
+        state.drl_reorder,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -934,7 +1030,7 @@ fn assign_intrabc_mv(
     Ok(block_mv.into())
 }
 
-pub(super) fn derive_intrabc_luma_prediction_geometry(
+pub(in crate::runtime_minimal) fn derive_intrabc_luma_prediction_geometry(
     core: &FrameHeaderCore,
     geometry: IntrabcBlockGeometry,
     info: IntrabcInfo,
@@ -950,14 +1046,51 @@ pub(super) fn derive_intrabc_luma_prediction_geometry(
         &domain,
         tile_offset,
     )?;
-    let source = intrabc_luma_source_envelope(target, info.block_mv, tile_offset)?;
-    if !source.is_within(domain.storage) || !rect_is_within_rect(source, domain.tile_bounds) {
+    let fractional = intrabc_block_vector_is_fractional(info.block_mv);
+    let source = if fractional {
+        target
+    } else {
+        intrabc_luma_source_envelope(target, info.block_mv, tile_offset)?
+    };
+    if !fractional
+        && (!source.is_within(domain.storage) || !rect_is_within_rect(source, domain.tile_bounds))
+    {
+        if std::env::var_os("SPLOT_TRACE_INTRABC_GEOMETRY").is_some() {
+            eprintln!(
+                "intrabc geometry source_bounds offset={} mi=({}, {}) n4={}x{} block_px=({}, {}) {}x{} mv=({}, {}) target=({}, {}) {}x{} source=({}, {}) {}x{} storage={}x{} tile=({}, {}) {}x{}",
+                tile_offset.get(),
+                geometry.block.row,
+                geometry.block.col,
+                geometry.n4w,
+                geometry.n4h,
+                block.x,
+                block.y,
+                block.width,
+                block.height,
+                info.block_mv.row,
+                info.block_mv.col,
+                target.x(),
+                target.y(),
+                target.width(),
+                target.height(),
+                source.x(),
+                source.y(),
+                source.width(),
+                source.height(),
+                domain.storage.width(),
+                domain.storage.height(),
+                domain.tile_bounds.x(),
+                domain.tile_bounds.y(),
+                domain.tile_bounds.width(),
+                domain.tile_bounds.height(),
+            );
+        }
         return Err(wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_source_bounds",
         ));
     }
-    if rects_overlap(source, target) {
+    if !fractional && rects_overlap(source, target) {
         return Err(wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_mv_validity",
@@ -977,9 +1110,14 @@ pub(super) fn derive_intrabc_luma_prediction_geometry(
     );
     Ok(IntrabcPredictionGeometry {
         scaling,
+        fractional,
         source,
         target,
     })
+}
+
+const fn intrabc_block_vector_is_fractional(block_mv: IntrabcBlockVector) -> bool {
+    block_mv.row & 7 != 0 || block_mv.col & 7 != 0
 }
 
 fn intrabc_clamped_target(
@@ -1491,6 +1629,20 @@ fn intrabc_luma_source_envelope(
             )
         })?;
     if source_x < 0 || source_y < 0 {
+        if std::env::var_os("SPLOT_TRACE_INTRABC_GEOMETRY").is_some() {
+            eprintln!(
+                "intrabc geometry source_negative offset={} target=({}, {}) {}x{} mv=({}, {}) source=({}, {})",
+                tile_offset.get(),
+                target.x(),
+                target.y(),
+                target.width(),
+                target.height(),
+                block_mv.row,
+                block_mv.col,
+                source_x,
+                source_y,
+            );
+        }
         return Err(wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_source_bounds",
@@ -1551,7 +1703,14 @@ fn intrabc_use_is_coded(
     n4w: usize,
     n4h: usize,
 ) -> bool {
-    core.allow_intrabc == Some(true)
+    let allow_intrabc = core.allow_intrabc == Some(true)
+        || core
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.allow_intrabc == Some(true));
+    let region_allows_intrabc = core.frame_is_intra != Some(false) || block.mixed_region;
+    allow_intrabc
+        && region_allows_intrabc
         && !block.is_chroma_part
         && n4w <= 64 / MI_SIZE
         && n4h <= 64 / MI_SIZE

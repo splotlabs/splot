@@ -99,6 +99,7 @@ pub(super) fn parse_frame_wiener_ns_filter(
     reader: &mut BitReader<'_>,
     plane: usize,
     num_filter_classes: u8,
+    num_ref_filters: usize,
     view: CoreSeqRestorationView,
 ) -> Result<WienerNsFrameFilterBank> {
     let plane_is_chroma = plane > 0;
@@ -115,7 +116,7 @@ pub(super) fn parse_frame_wiener_ns_filter(
     };
     let nopcw = view.lr_pc_wiener_disabled;
 
-    let match_indices = read_match_indices(reader, plane_is_chroma, num_classes, nopcw)?;
+    let match_indices = read_match_indices(reader, plane, num_classes, num_ref_filters, nopcw)?;
     let merged = read_merged_flags(reader, num_classes)?;
     let mut ref_bank = vec![[[0i16; WIENER_NS_CHROMA_COEFFS]; LR_BANK_SIZE]; num_classes];
     let mut bank_size = vec![0usize; num_classes];
@@ -212,58 +213,49 @@ pub(super) fn parse_frame_wiener_ns_filter(
 
 fn read_match_indices(
     reader: &mut BitReader<'_>,
-    plane_is_chroma: bool,
+    plane: usize,
     num_classes: usize,
+    num_ref_filters: usize,
     nopcw: bool,
 ) -> Result<Vec<usize>> {
-    let mut group_counts = [
+    let group_counts = [
         num_classes,
-        0usize,
-        if plane_is_chroma || nopcw {
-            0
-        } else {
-            64usize.saturating_sub(num_classes)
-        },
+        capped_reference_filter_count(plane, num_classes, num_ref_filters, nopcw),
+        sampled_pc_wiener_filter_count(plane, num_classes, num_ref_filters, nopcw),
     ];
-    let group_base = [0usize, group_counts[0], group_counts[0] + group_counts[1]];
-    let mut group_hits = [0usize; 3];
     let mut match_indices = Vec::with_capacity(num_classes);
 
     for c in 0..num_classes {
-        group_counts[0] = c + 1;
         let pred_group = if c == 0 {
-            if group_counts[1] > 2 {
-                1
-            } else {
-                predict_group(group_counts)
-            }
+            most_probable_group(c, group_counts)
         } else {
-            predict_group(group_hits)
+            predict_group_from_prior_matches(&match_indices, group_counts)
         };
 
-        let (num_zeros, alt_group) = alternate_group(group_counts, pred_group);
-        let use_alt_group = if num_zeros == 2 {
-            false
+        let group = if only_group_available(group_counts, pred_group) {
+            pred_group
+        } else if reader.read_bit()? == 0 {
+            pred_group
         } else {
-            reader.read_flag()?
-        };
-        let group = if use_alt_group {
-            if num_zeros == 1 {
-                alt_group
+            let zero_group = first_zero_group(group_counts, pred_group);
+            if let Some(zero_group) = zero_group {
+                3usize.saturating_sub(pred_group + zero_group)
             } else {
-                let group_bit = usize::from(reader.read_bit()?);
-                if pred_group <= group_bit {
-                    group_bit + 1
+                let group_bit = reader.read_bit()?;
+                if group_bit != 0 {
+                    [2usize, 2, 1][pred_group]
                 } else {
-                    group_bit
+                    [1usize, 0, 0][pred_group]
                 }
             }
-        } else {
-            pred_group
         };
 
-        let n = group_counts[group];
-        let base = group_base[group];
+        let n = if group == 0 {
+            c + 1
+        } else {
+            group_counts[group]
+        };
+        let base = group_base(group, group_counts);
         let match_index = if n == 1 {
             base
         } else {
@@ -277,10 +269,47 @@ fn read_match_indices(
             )?;
             usize::try_from(decoded).unwrap_or(base)
         };
-        group_hits[group] += 1;
         match_indices.push(match_index);
     }
     Ok(match_indices)
+}
+
+const fn num_dictionary_slots(num_classes: usize, nopcw: bool) -> usize {
+    let _ = num_classes;
+    if nopcw { 16 } else { 64 }
+}
+
+const fn max_num_base_filters(num_classes: usize, nopcw: bool) -> usize {
+    num_dictionary_slots(num_classes, nopcw).saturating_sub(num_classes)
+}
+
+const fn sampled_pc_wiener_filter_count(
+    plane: usize,
+    num_classes: usize,
+    num_ref_filters: usize,
+    nopcw: bool,
+) -> usize {
+    if plane != 0 || nopcw {
+        0
+    } else {
+        let available = max_num_base_filters(num_classes, false).saturating_sub(num_ref_filters);
+        if available > 64 { 64 } else { available }
+    }
+}
+
+const fn capped_reference_filter_count(
+    plane: usize,
+    num_classes: usize,
+    num_ref_filters: usize,
+    nopcw: bool,
+) -> usize {
+    let min_pc_wiener = if plane == 0 && !nopcw { 16 } else { 0 };
+    let allowed = max_num_base_filters(num_classes, nopcw).saturating_sub(min_pc_wiener);
+    if num_ref_filters > allowed {
+        allowed
+    } else {
+        num_ref_filters
+    }
 }
 
 fn read_merged_flags(reader: &mut BitReader<'_>, num_classes: usize) -> Result<Vec<bool>> {
@@ -303,22 +332,25 @@ fn read_wiener_ns_subset(reader: &mut BitReader<'_>, plane_is_chroma: bool) -> R
     Ok(subset)
 }
 
-fn alternate_group(group_counts: [usize; 3], pred_group: usize) -> (u8, usize) {
-    let mut num_zeros = 0u8;
-    let mut alt_group = 0usize;
-    for (i, count) in group_counts.iter().enumerate() {
-        if i != pred_group {
-            if *count == 0 {
-                num_zeros += 1;
-            } else {
-                alt_group = i;
-            }
-        }
+fn most_probable_group(c: usize, counts: [usize; 3]) -> usize {
+    let group_count_0 = c + 1;
+    if group_count_0 > 2 || counts[1] > 2 {
+        return if group_count_0 > counts[1] { 0 } else { 1 };
     }
-    (num_zeros, alt_group)
+    if group_count_0 >= counts[1] && group_count_0 >= counts[2] {
+        0
+    } else if counts[1] >= counts[2] {
+        1
+    } else {
+        2
+    }
 }
 
-fn predict_group(counts: [usize; 3]) -> usize {
+fn predict_group_from_prior_matches(match_indices: &[usize], group_counts: [usize; 3]) -> usize {
+    let mut counts = [0usize; 3];
+    for &match_index in match_indices {
+        counts[index_to_group(match_index, group_counts)] += 1;
+    }
     let mut pred = 0usize;
     for i in 1..=2 {
         if counts[i] > counts[pred] {
@@ -326,6 +358,38 @@ fn predict_group(counts: [usize; 3]) -> usize {
         }
     }
     pred
+}
+
+fn index_to_group(match_index: usize, group_counts: [usize; 3]) -> usize {
+    if match_index < group_counts[0] {
+        0
+    } else if match_index < group_counts[0] + group_counts[1] {
+        1
+    } else {
+        2
+    }
+}
+
+fn only_group_available(group_counts: [usize; 3], pred_group: usize) -> bool {
+    group_counts
+        .iter()
+        .enumerate()
+        .all(|(group, count)| group == pred_group || *count == 0)
+}
+
+fn first_zero_group(group_counts: [usize; 3], pred_group: usize) -> Option<usize> {
+    group_counts
+        .iter()
+        .enumerate()
+        .find_map(|(group, count)| (group != pred_group && *count == 0).then_some(group))
+}
+
+const fn group_base(group: usize, group_counts: [usize; 3]) -> usize {
+    match group {
+        0 => 0,
+        1 => group_counts[0],
+        _ => group_counts[0] + group_counts[1],
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -426,7 +490,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let bank =
-            parse_frame_wiener_ns_filter(&mut r, 0, 2, restoration_without_pc_wiener()).unwrap();
+            parse_frame_wiener_ns_filter(&mut r, 0, 2, 0, restoration_without_pc_wiener()).unwrap();
 
         assert_eq!(r.consumed_bits(), 3);
         assert_eq!(bank.classes.len(), 2);
@@ -436,6 +500,22 @@ mod tests {
         assert!(bank.classes.iter().all(|class| class.ref_bank == 0));
         assert!(bank.classes.iter().all(|class| class.coeffs.len() == 16));
         assert!(bank.classes.iter().all(|class| class.coeffs == vec![0; 16]));
+    }
+
+    #[test]
+    fn luma_reference_filter_group_reads_selection_bit() {
+        let mut bits = Bits::default();
+        bits.bit(0); // keep c=0 in the predicted previous-class group, not the ref group.
+        bits.bit(1); // merged[0]
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let bank =
+            parse_frame_wiener_ns_filter(&mut r, 0, 1, 1, restoration_without_pc_wiener()).unwrap();
+
+        assert_eq!(r.consumed_bits(), 2);
+        assert_eq!(bank.classes.len(), 1);
+        assert_eq!(bank.classes[0].match_index, 0);
+        assert!(bank.classes[0].merged);
     }
 
     #[test]
@@ -452,7 +532,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let bank =
-            parse_frame_wiener_ns_filter(&mut r, 0, 1, restoration_without_pc_wiener()).unwrap();
+            parse_frame_wiener_ns_filter(&mut r, 0, 1, 0, restoration_without_pc_wiener()).unwrap();
 
         assert_eq!(bank.classes.len(), 1);
         let class = &bank.classes[0];
@@ -466,7 +546,7 @@ mod tests {
     fn eof_inside_frame_bank_is_structured_error() {
         let mut r = reader(&[]);
         assert!(
-            parse_frame_wiener_ns_filter(&mut r, 0, 1, restoration_without_pc_wiener()).is_err()
+            parse_frame_wiener_ns_filter(&mut r, 0, 1, 0, restoration_without_pc_wiener()).is_err()
         );
     }
 }

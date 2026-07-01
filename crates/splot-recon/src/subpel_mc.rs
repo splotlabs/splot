@@ -310,7 +310,7 @@ impl<'a> ReferencePlaneView<'a> {
     /// read additionally clamps to the view's own `width`/`height` so it is total
     /// even if a caller passes a clipping region wider than the actual plane
     /// (defense in depth — the function never indexes out of bounds).
-    fn sample(&self, row: usize, col: usize) -> i64 {
+    pub(crate) fn sample(&self, row: usize, col: usize) -> i64 {
         let row = row.min(self.height - 1);
         let col = col.min(self.width - 1);
         i64::from(self.samples[row * self.width + col])

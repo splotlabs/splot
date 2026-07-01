@@ -266,8 +266,13 @@ fn ten_bit_smooth_luma_fails_closed_non_dc() {
 }
 
 #[test]
-fn ten_bit_split_leaf_fails_closed_non_64x64() {
-    assert_decode_rejects(SPLIT_10BIT_FIXTURE, "unsupported_10bit_non_64x64_leaf");
+fn ten_bit_split_leaf_decodes_to_stable_hash() {
+    let frame = decode_ten(SPLIT_10BIT_FIXTURE);
+    assert_yuv420_frame(&frame, BitDepth::Ten, 64, 64);
+    assert_hash(
+        &frame,
+        "527cf3cdc7bca2ccfca21573f175c0ffcde73189f1f94fd02a65e09cc9dfdcbf",
+    );
 }
 
 #[test]
@@ -279,11 +284,8 @@ fn ten_bit_base_q255_fails_closed_frozen_tier() {
 }
 
 #[test]
-fn ten_bit_inter_fails_closed_reference_retention() {
-    assert_decode_rejects(
-        TWO_FRAME_INTER_10BIT_FIXTURE,
-        "unsupported_10bit_reference_retention",
-    );
+fn ten_bit_inter_reaches_inter_exit_symbol_frontier() {
+    assert_decode_rejects(TWO_FRAME_INTER_10BIT_FIXTURE, "inter_exit_symbol");
 }
 
 #[test]

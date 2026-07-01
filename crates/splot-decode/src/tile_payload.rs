@@ -51,24 +51,37 @@ pub(crate) use cdf::block_context::{
 };
 pub(crate) use cdf::{FrameCdfSubset, MvCdfSelector, TileCdfSelector, TileCdfSubset};
 pub(crate) use coeff_state::{CoeffContextReset, TileCoeffContextState};
+#[cfg(test)]
+pub(crate) use general_intra_block::GeneralIntraLumaBlockMode;
 pub(crate) use general_intra_block::{
     CflIndex, CflParams, GeneralIntraBlockModeError, GeneralIntraBlockModes,
-    GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig, decode_general_intra_block_modes,
-    decode_general_intra_chroma_block_mode, decode_general_intra_luma_block_mode,
+    GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
+    decode_general_intra_block_modes, decode_general_intra_block_modes_with_chroma_size,
+    decode_general_intra_block_modes_with_fsc_context, decode_general_intra_chroma_block_mode,
+    decode_general_intra_luma_block_mode, decode_general_intra_luma_block_mode_with_fsc_context,
+    read_general_intra_palette_y_mode,
 };
 pub(crate) use general_intra_residual::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, GeneralIntraResidualError,
-    IntraIstSyntax, LumaCoeffBlock, LumaTransformTypeContext, TransformToolResidualPolicy,
-    decode_general_intra_plane_coeffs, reconstruct_general_intra_block,
-    reconstruct_general_intra_block_rect_with_prediction,
+    IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext, LumaTransformTypeContext,
+    PositionedLumaCoeffBlock, TransformToolResidualPolicy,
+    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
+    reconstruct_general_intra_block, reconstruct_general_intra_block_rect_with_prediction,
+    reconstruct_general_intra_block_rect_with_prediction_and_ddt,
     reconstruct_general_intra_block_with_prediction,
+    reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
 };
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
     TileGroupPositionFacts, plan_derived_tile_payload_boundary,
 };
-pub(crate) use intra_joint_modes::{TileFscModeState, TileIntraJointModeState, TileUsesMrlsState};
+pub(crate) use intra_joint_modes::IsCflContext;
+pub(crate) use intra_joint_modes::{
+    LumaPalette, TileFscModeState, TileIntraJointModeState, TileLumaPaletteState, TileUsesMrlsState,
+};
+pub(crate) use partition_allowed::get_plane_residual_size;
+pub(crate) use partition_size::BlockSize;
 pub(crate) use partition_traversal::{
     DecodeBlockFrontier, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
 };
@@ -89,7 +102,7 @@ pub(crate) use runtime_frontier::{
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";
 pub(crate) const TILE_PAYLOAD_DECODE_FEATURE_ID: &str = "DECODE-TILE-PAYLOAD-BOUNDARY";
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct TilePayloadBoundaryInput<'payload, 'facts> {
     payload: &'payload [u8],
     payload_base: ByteOffset,
@@ -197,7 +210,7 @@ impl<'a> TileGridFacts<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileFrameFacts {
     obu_type: ObuType,
     is_frame_intra: bool,
@@ -209,6 +222,7 @@ pub(crate) struct TileFrameFacts {
     coeff_frame_facts: TileCoeffFrameFacts,
     disable_cdf_update: bool,
     cdf_policy: TileCdfPolicyInput,
+    initial_cdfs: Option<FrameCdfSubset>,
 }
 
 impl TileFrameFacts {
@@ -235,6 +249,7 @@ impl TileFrameFacts {
             coeff_frame_facts: TileCoeffFrameFacts::default_for_base_q(base_q_idx),
             disable_cdf_update,
             cdf_policy: TileCdfPolicyInput::single_tile_default(),
+            initial_cdfs: None,
         }
     }
 
@@ -250,6 +265,12 @@ impl TileFrameFacts {
     #[must_use]
     pub(crate) const fn with_cdf_policy(mut self, cdf_policy: TileCdfPolicyInput) -> Self {
         self.cdf_policy = cdf_policy;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_initial_cdfs(mut self, initial_cdfs: FrameCdfSubset) -> Self {
+        self.initial_cdfs = Some(initial_cdfs);
         self
     }
 }
@@ -521,6 +542,15 @@ impl<'a> DecodeTileWorkUnit<'a> {
 
     pub(crate) fn cdf_mut(&mut self) -> &mut TileCdfWorkUnitBoundary {
         &mut self.cdf
+    }
+
+    pub(crate) fn apply_frame_end_cdf_update(&mut self) {
+        self.cdf.apply_completed_tile_to_saved(self.tile_num);
+        self.cdf.frame_end_update_cdf_subset();
+    }
+
+    pub(crate) fn frame_cdfs(&self) -> FrameCdfSubset {
+        self.cdf.frame_cdfs_clone()
     }
 }
 
@@ -870,7 +900,10 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         symbol_max_bits: symbol.symbol_max_bits(),
         cdf_update_mode,
     };
-    let frame_cdfs = FrameCdfSubset::from_defaults();
+    let frame_cdfs = match &input.frame.initial_cdfs {
+        Some(cdfs) => cdfs.clone(),
+        None => FrameCdfSubset::default_for_base_q(input.frame.base_q_idx)?,
+    };
     let cdf_policy = input
         .frame
         .cdf_policy

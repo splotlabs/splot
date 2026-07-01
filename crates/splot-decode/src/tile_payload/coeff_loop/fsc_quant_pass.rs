@@ -717,7 +717,12 @@ pub(crate) fn apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
         });
     }
 
+    let trace = trace_fsc_block_enabled(context);
+    let before = trace.then(|| symbols.checkpoint());
     let pass = apply_nonzero_coeff_fsc_quant_pass(cdfs, symbols, level_pass, scan, config)?;
+    if trace {
+        trace_fsc_block(context, before, symbols.checkpoint(), &pass);
+    }
     let quant_state = pass.quant_state();
     state
         .update_after_coeffs(CoeffContextUpdate {
@@ -731,6 +736,76 @@ pub(crate) fn apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
         })
         .map_err(CoeffFscQuantPassError::ContextUpdate)?;
     Ok(pass)
+}
+
+fn trace_fsc_block_enabled(context: CoeffFscContextCommitConfig) -> bool {
+    let Some(value) = std::env::var_os("SPLOT_TRACE_FSC_BLOCK") else {
+        return false;
+    };
+    let value = value.to_string_lossy();
+    if value.is_empty() || value == "1" {
+        return true;
+    }
+    let Some((y4, x4)) = value.split_once(',') else {
+        return true;
+    };
+    let Ok(y4) = y4.parse::<usize>() else {
+        return false;
+    };
+    let Ok(x4) = x4.parse::<usize>() else {
+        return false;
+    };
+    context.y4 == y4 && context.x4 == x4
+}
+
+fn trace_fsc_block(
+    context: CoeffFscContextCommitConfig,
+    before: Option<splot_core::symbol::SymbolDecoderCheckpoint>,
+    after: splot_core::symbol::SymbolDecoderCheckpoint,
+    pass: &NonZeroCoeffFscQuantPass,
+) {
+    eprintln!(
+        "fsc block y4={} x4={} w4={} h4={} before={:?} after={:?} eob={} bob={} seg_eob={} level_reads={} sign_entries={} read_quants={} cul_level={} dc_category={}",
+        context.y4,
+        context.x4,
+        context.w4,
+        context.h4,
+        before,
+        after,
+        pass.eob_read().eob().eob(),
+        pass.level_walk().bob(),
+        pass.level_walk().seg_eob(),
+        pass.level_reads().len(),
+        pass.sign_entries().len(),
+        pass.read_quants().len(),
+        pass.quant_state().cul_level(),
+        pass.quant_state().dc_category(),
+    );
+    for (index, ((entry, input), read_quant)) in pass
+        .sign_entries()
+        .iter()
+        .copied()
+        .zip(pass.sign_inputs().iter().copied())
+        .zip(pass.read_quants().iter().copied())
+        .enumerate()
+    {
+        let sign = pass.sign_reads()[index];
+        let write = pass.quant_state().writes()[index];
+        eprintln!(
+            "fsc entry index={} scan={} pos={} row={} col={} level={} source={:?} sign_symbol={:?} sign={} read_quant={:?} quant={} checkpoint_after_entry_unavailable",
+            index,
+            entry.scan_index(),
+            entry.pos(),
+            entry.row(),
+            entry.col(),
+            input.level,
+            input.source,
+            sign.symbol(),
+            sign.sign(),
+            read_quant.path(),
+            write.quant(),
+        );
+    }
 }
 
 struct FscInterleavedQuantPass {

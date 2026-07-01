@@ -11,11 +11,12 @@
 use splot_recon::{DecodedFrame, ReferenceFrameStore, ReferenceSlot};
 
 use crate::error::Result;
+use crate::tile_payload::FrameCdfSubset;
 
 use super::MinimalRuntimeFrame;
 
 /// One modeled § 7.23 reference slot.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Slot {
     valid: bool,
     order_hint: u32,
@@ -24,7 +25,9 @@ struct Slot {
     base_q_idx: u32,
     is_inter: bool,
     adapted: bool,
+    lr_frame_filter_class_counts: [u8; 3],
     frame_index: Option<usize>,
+    frame_cdfs: Option<FrameCdfSubset>,
 }
 
 impl Slot {
@@ -36,10 +39,12 @@ impl Slot {
         base_q_idx: 0,
         is_inter: false,
         adapted: false,
+        lr_frame_filter_class_counts: [0; 3],
         frame_index: None,
+        frame_cdfs: None,
     };
 
-    fn refresh(&mut self, frame_index: usize, update: FrameRefUpdate, valid: bool) {
+    fn refresh(&mut self, frame_index: usize, update: &FrameRefUpdate, valid: bool) {
         *self = Self {
             valid,
             order_hint: update.order_hint,
@@ -48,13 +53,15 @@ impl Slot {
             base_q_idx: update.base_q_idx,
             is_inter: update.is_inter,
             adapted: update.adapted,
+            lr_frame_filter_class_counts: update.lr_frame_filter_class_counts,
             frame_index: Some(frame_index),
+            frame_cdfs: Some(update.frame_cdfs.clone()),
         };
     }
 }
 
 /// Per-frame § 7.23 refresh inputs.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct FrameRefUpdate {
     /// Slot refresh bitmask.
     pub(super) refresh_frame_flags: u32,
@@ -72,6 +79,10 @@ pub(super) struct FrameRefUpdate {
     pub(super) is_inter: bool,
     /// Whether the stored frame adapted its CDFs.
     pub(super) adapted: bool,
+    /// Per-plane retained frame-level Wiener-NS filter class counts.
+    pub(super) lr_frame_filter_class_counts: [u8; 3],
+    /// Saved frame CDF context for later cross-frame CDF initialization.
+    pub(super) frame_cdfs: FrameCdfSubset,
 }
 
 /// The minimal-tier § 7.23 reference-frame buffer over `num_ref_frames` active slots.
@@ -113,7 +124,7 @@ impl RuntimeReferenceBuffer {
             }
             let valid = !update.is_key_or_switch || first;
             first = false;
-            slot.refresh(frame_index, update, valid);
+            slot.refresh(frame_index, &update, valid);
         }
         let _ = self.frame_counter;
     }
@@ -124,16 +135,35 @@ impl RuntimeReferenceBuffer {
     }
 
     /// Builds the borrowed reference store and metadata for the next inter frame.
-    pub(super) fn build_store<'a>(
+    pub(super) fn build_store_eight<'a>(
         &self,
         frames: &'a [MinimalRuntimeFrame],
     ) -> Result<(ReferenceFrameStore<&'a DecodedFrame<u8>>, ReferenceMetadata)> {
+        self.build_store(frames, MinimalRuntimeFrame::frame_eight)
+    }
+
+    /// Builds the borrowed 10-bit reference store and metadata for the next inter frame.
+    pub(super) fn build_store_ten<'a>(
+        &self,
+        frames: &'a [MinimalRuntimeFrame],
+    ) -> Result<(
+        ReferenceFrameStore<&'a DecodedFrame<u16>>,
+        ReferenceMetadata,
+    )> {
+        self.build_store(frames, MinimalRuntimeFrame::frame_ten)
+    }
+
+    fn build_store<'a, T: splot_recon::ReconSample>(
+        &self,
+        frames: &'a [MinimalRuntimeFrame],
+        frame_view: impl Fn(&'a MinimalRuntimeFrame) -> Result<&'a DecodedFrame<T>>,
+    ) -> Result<(ReferenceFrameStore<&'a DecodedFrame<T>>, ReferenceMetadata)> {
         let num = self.slots.len();
-        let mut store: ReferenceFrameStore<&'a DecodedFrame<u8>> =
+        let mut store: ReferenceFrameStore<&'a DecodedFrame<T>> =
             ReferenceFrameStore::with_capacity(num)?;
         let mut meta = ReferenceMetadata::with_capacity(num);
         for (i, slot) in self.slots.iter().enumerate() {
-            meta.push_slot(*slot);
+            meta.push_slot(slot);
             if !slot.valid {
                 continue;
             }
@@ -152,7 +182,7 @@ impl RuntimeReferenceBuffer {
                 )
             })?;
             let reference_slot = ReferenceSlot::new(i)?;
-            store.put(reference_slot, frame.frame_eight()?)?;
+            store.put(reference_slot, frame_view(frame)?)?;
         }
         Ok((store, meta))
     }
@@ -175,6 +205,10 @@ pub(super) struct ReferenceMetadata {
     pub(super) ref_is_inter: Vec<bool>,
     /// Whether the frame stored in slot `i` adapted its CDFs.
     pub(super) ref_adapted: Vec<bool>,
+    /// Retained frame-level Wiener-NS filter class counts per slot and plane.
+    pub(super) lr_frame_filter_class_counts: Vec<[u8; 3]>,
+    /// Saved frame CDF context per slot.
+    pub(super) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
 }
 
 impl ReferenceMetadata {
@@ -187,10 +221,12 @@ impl ReferenceMetadata {
             ref_base_q_idx: Vec::with_capacity(num),
             ref_is_inter: Vec::with_capacity(num),
             ref_adapted: Vec::with_capacity(num),
+            lr_frame_filter_class_counts: Vec::with_capacity(num),
+            ref_frame_cdfs: Vec::with_capacity(num),
         }
     }
 
-    fn push_slot(&mut self, slot: Slot) {
+    fn push_slot(&mut self, slot: &Slot) {
         self.ref_valid.push(slot.valid);
         self.ref_order_hint.push(slot.order_hint);
         self.ref_frame_width.push(slot.width);
@@ -198,6 +234,9 @@ impl ReferenceMetadata {
         self.ref_base_q_idx.push(slot.base_q_idx);
         self.ref_is_inter.push(slot.is_inter);
         self.ref_adapted.push(slot.adapted);
+        self.lr_frame_filter_class_counts
+            .push(slot.lr_frame_filter_class_counts);
+        self.ref_frame_cdfs.push(slot.frame_cdfs.clone());
     }
 }
 
@@ -216,6 +255,8 @@ mod tests {
             is_key_or_switch: true,
             is_inter: false,
             adapted: false,
+            lr_frame_filter_class_counts: [1, 0, 0],
+            frame_cdfs: FrameCdfSubset::from_defaults(),
         }
     }
 
@@ -229,6 +270,8 @@ mod tests {
             is_key_or_switch: false,
             is_inter: true,
             adapted,
+            lr_frame_filter_class_counts: [0, 0, 0],
+            frame_cdfs: FrameCdfSubset::from_defaults(),
         }
     }
 
@@ -241,6 +284,7 @@ mod tests {
         assert!(!buf.slots[1].valid);
         assert_eq!(buf.slots[0].base_q_idx, 70);
         assert_eq!(buf.slots[0].frame_index, Some(0));
+        assert_eq!(buf.slots[0].lr_frame_filter_class_counts, [1, 0, 0]);
     }
 
     #[test]

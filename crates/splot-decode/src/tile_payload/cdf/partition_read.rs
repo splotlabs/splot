@@ -28,9 +28,18 @@ impl TileCdfSubset {
         selector: TileCdfSelector,
         symbol_decoder: &mut SymbolDecoder<'_>,
     ) -> Result<Symbol, PartitionEntrySymbolReadError> {
-        self.with_row_mut(selector, |row| symbol_decoder.read_symbol(row))
+        let symbol = self
+            .with_row_mut(selector, |row| symbol_decoder.read_symbol(row))
             .map_err(PartitionEntrySymbolReadError::Cdf)?
-            .map_err(PartitionEntrySymbolReadError::Symbol)
+            .map_err(PartitionEntrySymbolReadError::Symbol)?;
+        if std::env::var_os("SPLOT_TRACE_CDF_SELECTORS").is_some() {
+            eprintln!(
+                "cdf selector={selector:?} value={} symbols={}",
+                symbol.get(),
+                symbol_decoder.symbol_count()
+            );
+        }
+        Ok(symbol)
     }
 }
 

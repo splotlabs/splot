@@ -15,6 +15,15 @@ const BLOCK_256X256_INDEX: usize = 18;
 const PLANE_COUNT: usize = 2;
 const LUMA_PLANE: usize = 0;
 const CHROMA_PLANE: usize = 1;
+const CLEAR_PARTITION_CONTEXT: usize = 0;
+const PARTITION_CONTEXT_ABOVE: [usize; 29] = [
+    63, 63, 62, 62, 62, 60, 60, 60, 56, 56, 56, 48, 48, 48, 32, 32, 32, 0, 0, 63, 60, 62, 56, 60,
+    48, 63, 56, 62, 48,
+];
+const PARTITION_CONTEXT_LEFT: [usize; 29] = [
+    63, 62, 63, 62, 60, 62, 60, 56, 60, 56, 48, 56, 48, 32, 48, 32, 0, 32, 0, 60, 63, 56, 62, 48,
+    60, 56, 63, 48, 62,
+];
 
 type MiSizeRow = Vec<usize>;
 type MiSizeGrid = Vec<MiSizeRow>;
@@ -87,7 +96,7 @@ impl TileMiSizeState {
     /// Resets the left MI-size partition context for a new superblock row.
     pub(crate) fn clear_left_context(&mut self) {
         for line in &mut self.left_mi_sizes {
-            line.fill(BLOCK_256X256_INDEX);
+            line.fill(CLEAR_PARTITION_CONTEXT);
         }
     }
 
@@ -133,12 +142,14 @@ impl TileMiSizeState {
     ) -> Result<(), TileMiSizeStateError> {
         let region = self.validated_region(plane, r, c, mi_size)?;
         let mi_size_index = mi_size.index();
+        let above_partition_context = partition_context_above(mi_size_index)?;
+        let left_partition_context = partition_context_left(mi_size_index)?;
         let cols = region.col_range();
         for row in region.row_range() {
             self.mi_sizes[plane][row][cols.clone()].fill(mi_size_index);
-            self.left_mi_sizes[plane][row] = mi_size_index;
+            self.left_mi_sizes[plane][row] = left_partition_context;
         }
-        self.above_mi_sizes[plane][cols].fill(mi_size_index);
+        self.above_mi_sizes[plane][cols].fill(above_partition_context);
         Ok(())
     }
 
@@ -276,6 +287,12 @@ pub(crate) enum TileMiSizeStateError {
     Allocation(#[from] TryReserveError),
     #[error("MI-size state block-size lookup failed: {0}")]
     Size(#[from] PartitionSizeError),
+    #[error("{table} block size {block_size} is outside 0..{max_exclusive}")]
+    PartitionContextBlockSizeOutOfRange {
+        table: &'static str,
+        block_size: usize,
+        max_exclusive: usize,
+    },
     #[error("{coordinate} coordinate overflow: {base} + {offset}")]
     CoordinateOverflow {
         coordinate: &'static str,
@@ -378,7 +395,7 @@ fn filled_grid(rows: usize, cols: usize) -> Result<MiSizeGrid, TileMiSizeStateEr
     let mut grid = Vec::new();
     grid.try_reserve_exact(rows)?;
     for _ in 0..rows {
-        grid.push(filled_line(cols)?);
+        grid.push(filled_row(cols, BLOCK_256X256_INDEX)?);
     }
     Ok(grid)
 }
@@ -388,10 +405,44 @@ fn filled_lines(len: usize) -> Result<PlaneLines, TileMiSizeStateError> {
 }
 
 fn filled_line(len: usize) -> Result<MiSizeRow, TileMiSizeStateError> {
+    filled_row(len, CLEAR_PARTITION_CONTEXT)
+}
+
+fn filled_row(len: usize, value: usize) -> Result<MiSizeRow, TileMiSizeStateError> {
     let mut line = Vec::new();
     line.try_reserve_exact(len)?;
-    line.resize(len, BLOCK_256X256_INDEX);
+    line.resize(len, value);
     Ok(line)
+}
+
+fn partition_context_above(mi_size_index: usize) -> Result<usize, TileMiSizeStateError> {
+    partition_context_value(
+        "PartitionContextAbove",
+        &PARTITION_CONTEXT_ABOVE,
+        mi_size_index,
+    )
+}
+
+fn partition_context_left(mi_size_index: usize) -> Result<usize, TileMiSizeStateError> {
+    partition_context_value(
+        "PartitionContextLeft",
+        &PARTITION_CONTEXT_LEFT,
+        mi_size_index,
+    )
+}
+
+fn partition_context_value(
+    table: &'static str,
+    values: &'static [usize],
+    mi_size_index: usize,
+) -> Result<usize, TileMiSizeStateError> {
+    values.get(mi_size_index).copied().ok_or(
+        TileMiSizeStateError::PartitionContextBlockSizeOutOfRange {
+            table,
+            block_size: mi_size_index,
+            max_exclusive: values.len(),
+        },
+    )
 }
 
 fn plane_row_slices(
@@ -441,10 +492,10 @@ mod tests {
                 for col in 0..3 {
                     assert_eq!(state.mi_size_at(plane, row, col), BLOCK_256X256);
                 }
-                assert_eq!(state.left_mi_size_at(plane, row), BLOCK_256X256);
+                assert_eq!(state.left_mi_size_at(plane, row), CLEAR_PARTITION_CONTEXT);
             }
             for col in 0..3 {
-                assert_eq!(state.above_mi_size_at(plane, col), BLOCK_256X256);
+                assert_eq!(state.above_mi_size_at(plane, col), CLEAR_PARTITION_CONTEXT);
             }
         }
         assert_eq!(state.mi_sizes[0].len(), 16);
@@ -491,15 +542,21 @@ mod tests {
             for col in 2..6 {
                 assert_eq!(state.mi_size_at(0, row, col), BLOCK_16X8);
             }
-            assert_eq!(state.left_mi_size_at(0, row), BLOCK_16X8);
+            assert_eq!(
+                state.left_mi_size_at(0, row),
+                partition_context_left(BLOCK_16X8).unwrap()
+            );
         }
         for col in 2..6 {
-            assert_eq!(state.above_mi_size_at(0, col), BLOCK_16X8);
+            assert_eq!(
+                state.above_mi_size_at(0, col),
+                partition_context_above(BLOCK_16X8).unwrap()
+            );
         }
         assert_eq!(state.mi_size_at(0, 0, 2), BLOCK_256X256);
         assert_eq!(state.mi_size_at(1, 1, 2), BLOCK_256X256);
-        assert_eq!(state.left_mi_size_at(0, 0), BLOCK_256X256);
-        assert_eq!(state.above_mi_size_at(0, 1), BLOCK_256X256);
+        assert_eq!(state.left_mi_size_at(0, 0), CLEAR_PARTITION_CONTEXT);
+        assert_eq!(state.above_mi_size_at(0, 1), CLEAR_PARTITION_CONTEXT);
     }
 
     #[test]
@@ -513,12 +570,18 @@ mod tests {
                 assert_eq!(state.mi_size_at(1, row, col), BLOCK_8X8);
                 assert_eq!(state.mi_size_at(0, row, col), BLOCK_256X256);
             }
-            assert_eq!(state.left_mi_size_at(1, row), BLOCK_8X8);
-            assert_eq!(state.left_mi_size_at(0, row), BLOCK_256X256);
+            assert_eq!(
+                state.left_mi_size_at(1, row),
+                partition_context_left(BLOCK_8X8).unwrap()
+            );
+            assert_eq!(state.left_mi_size_at(0, row), CLEAR_PARTITION_CONTEXT);
         }
         for col in 1..3 {
-            assert_eq!(state.above_mi_size_at(1, col), BLOCK_8X8);
-            assert_eq!(state.above_mi_size_at(0, col), BLOCK_256X256);
+            assert_eq!(
+                state.above_mi_size_at(1, col),
+                partition_context_above(BLOCK_8X8).unwrap()
+            );
+            assert_eq!(state.above_mi_size_at(0, col), CLEAR_PARTITION_CONTEXT);
         }
     }
 
@@ -532,10 +595,16 @@ mod tests {
             for col in 16..32 {
                 assert_eq!(state.mi_size_at(0, row, col), BLOCK_64X64);
             }
-            assert_eq!(state.left_mi_size_at(0, row), BLOCK_64X64);
+            assert_eq!(
+                state.left_mi_size_at(0, row),
+                partition_context_left(BLOCK_64X64).unwrap()
+            );
         }
         for col in 16..32 {
-            assert_eq!(state.above_mi_size_at(0, col), BLOCK_64X64);
+            assert_eq!(
+                state.above_mi_size_at(0, col),
+                partition_context_above(BLOCK_64X64).unwrap()
+            );
         }
     }
 

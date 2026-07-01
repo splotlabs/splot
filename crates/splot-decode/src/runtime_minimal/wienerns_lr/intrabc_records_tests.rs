@@ -4,7 +4,7 @@
 //! Unit tests for the bounded IntrABC syntax handoff ([`super`]).
 
 use splot_core::headers::frame::{
-    FrameSize, IntrabcParams, TxMode, build_minimal_intra_clk_core,
+    FrameSize, InterControl, IntrabcParams, MvPrecision, TxMode, build_minimal_intra_clk_core,
     build_minimal_intra_sequence_header,
 };
 use splot_core::span::ByteOffset;
@@ -105,6 +105,30 @@ fn decoder(payload: &[u8]) -> SymbolDecoder<'_> {
 fn state() -> TileIntrabcPreludeState {
     let (sequence, _) = selectable_fixture();
     TileIntrabcPreludeState::new(64, 64, &sequence, ByteOffset::new(0)).unwrap()
+}
+
+#[test]
+fn resolve_force_integer_mv_from_inter_mv_precision_when_flat_mirror_missing() {
+    let (_, mut core) = selectable_fixture();
+    core.force_integer_mv = None;
+    let mut inter = InterControl::default();
+    inter.mv_precision = Some(MvPrecision::QuarterPel);
+    core.inter = Some(inter);
+
+    assert!(!resolve_intrabc_force_integer_mv(&core, no_off()).unwrap());
+}
+
+#[test]
+fn inter_non_mixed_region_does_not_code_intrabc_use() {
+    let (_, mut core) = selectable_fixture();
+    core.frame_is_intra = Some(false);
+    core.allow_intrabc = None;
+    let mut inter = InterControl::default();
+    inter.allow_intrabc = Some(true);
+    core.inter = Some(inter);
+    let block = IntrabcBlockContext::new_with_mixed_region(0, 0, 2, false, false);
+
+    assert!(!intrabc_use_is_coded(&core, block, 4, 4));
 }
 
 /// Runs the live `read_intrabc_use_and_skip` → `read_intrabc_info` sequence over
@@ -399,6 +423,7 @@ fn intrabc_newmv_geometry_derives_integer_luma_copy_rectangles() {
 
     assert_eq!(prediction.target, PlaneRect::new(0, 80, 16, 16).unwrap());
     assert_eq!(prediction.source, PlaneRect::new(0, 16, 16, 16).unwrap());
+    assert!(!prediction.fractional);
     assert_eq!(prediction.scaling.start_x >> 10, 0);
     assert_eq!(prediction.scaling.start_y >> 10, 16);
     assert_eq!((prediction.scaling.start_x >> 6) & 15, 0);
@@ -429,6 +454,7 @@ fn intrabc_nearmv_geometry_derives_integer_luma_copy_rectangles() {
 
     assert_eq!(prediction.target, PlaneRect::new(0, 80, 16, 16).unwrap());
     assert_eq!(prediction.source, PlaneRect::new(0, 16, 16, 16).unwrap());
+    assert!(!prediction.fractional);
     assert_eq!(prediction.scaling.start_x >> 10, 0);
     assert_eq!(prediction.scaling.start_y >> 10, 16);
     assert_eq!((prediction.scaling.start_x >> 6) & 15, 0);
@@ -452,10 +478,35 @@ fn intrabc_geometry_derives_bilinear_fractional_luma_prediction_region() {
             .unwrap();
 
     assert_eq!(prediction.target, PlaneRect::new(32, 32, 16, 16).unwrap());
-    assert_eq!(prediction.source, PlaneRect::new(32, 15, 16, 17).unwrap());
+    assert_eq!(prediction.source, prediction.target);
+    assert!(prediction.fractional);
     assert_eq!(prediction.scaling.start_x >> 10, 32);
     assert_eq!(prediction.scaling.start_y >> 10, 15);
     assert_eq!((prediction.scaling.start_x >> 6) & 15, 0);
+    assert_ne!((prediction.scaling.start_y >> 6) & 15, 0);
+}
+
+#[test]
+fn intrabc_geometry_admits_fractional_border_extension_at_frame_top() {
+    let (_, core) = selectable_large_frame_fixture();
+    let block = IntrabcBlockContext::new(0, 8, 2, false);
+    let geometry = IntrabcBlockGeometry::new(block, 4, 4);
+    let info = IntrabcInfo {
+        intrabc_mode: 0,
+        ref_mv_idx: 0,
+        mv_precision: MV_PRECISION_QUARTER_PEL,
+        block_mv: IntrabcBlockVector { row: -4, col: 0 },
+    };
+
+    let prediction =
+        derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
+            .unwrap();
+
+    assert_eq!(prediction.target, PlaneRect::new(32, 0, 16, 16).unwrap());
+    assert_eq!(prediction.source, prediction.target);
+    assert!(prediction.fractional);
+    assert_eq!(prediction.scaling.start_x >> 10, 32);
+    assert_eq!(prediction.scaling.start_y >> 10, -1);
     assert_ne!((prediction.scaling.start_y >> 6) & 15, 0);
 }
 
@@ -481,6 +532,7 @@ fn intrabc_geometry_uses_mi_domain_for_partial_edge_frame() {
 
     assert_eq!(prediction.target, PlaneRect::new(0, 8, 16, 8).unwrap());
     assert_eq!(prediction.source, PlaneRect::new(0, 0, 16, 8).unwrap());
+    assert!(!prediction.fractional);
     assert_eq!(prediction.scaling.start_x >> 10, 0);
     assert_eq!(prediction.scaling.start_y >> 10, 0);
 }
@@ -603,6 +655,7 @@ fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
 
     assert_eq!(prediction.target, PlaneRect::new(0, 8, 16, 8).unwrap());
     assert_eq!(prediction.source, PlaneRect::new(0, 0, 16, 8).unwrap());
+    assert!(!prediction.fractional);
     assert_eq!(prediction.target.size(), prediction.source.size());
 }
 

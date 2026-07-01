@@ -46,20 +46,21 @@ use crate::runtime_minimal_recon::{
     reconstruct_general_intra_cardinal_neighbour_block_into,
     reconstruct_general_intra_chroma_block_into,
     reconstruct_general_intra_chroma_smooth_available_edges_into,
+    reconstruct_general_intra_luma_dc_rect_block_with_ist_into,
     reconstruct_general_intra_luma_paeth_neighbour_block_into,
+    reconstruct_general_intra_luma_smooth_rect_block_into,
     reconstruct_general_intra_middle_neighbour_rect_block_into,
     reconstruct_general_intra_mrl_secondary_above_block_into,
     reconstruct_general_intra_mrl_secondary_left_block_into,
     reconstruct_general_intra_one_sided_ibp_luma_block_into,
     reconstruct_general_intra_one_sided_left_neighbour_block_into,
     reconstruct_general_intra_one_sided_neighbour_block_into,
-    reconstruct_general_intra_two_sided_middle_luma_block_into,
     reconstruct_general_intra_two_sided_middle_luma_mrl_block_into,
     reconstruct_intrabc_block_residual_rect_into,
 };
 use crate::tile_payload::{
-    CflIndex, CflParams, GeneralIntraResidualError, IntraYMode, LumaCoeffBlock,
-    SupportedChromaMode, SupportedDirectionalLumaMode,
+    CflIndex, CflParams, FrameCdfSubset, GeneralIntraResidualError, IntraYMode, LumaCoeffBlock,
+    LumaTransformTypeContext, SupportedChromaMode, SupportedDirectionalLumaMode,
     reconstruct_general_intra_block_rect_with_prediction,
 };
 
@@ -77,6 +78,11 @@ const CFL_ALPHA_SHIFT: u32 = 11;
 const CFL_ALPHA_SCALE: i64 = 32;
 const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
 const NUM_REF_SAM_CFL: usize = 8;
+
+pub(in crate::runtime_minimal) struct Ac0ej3SelectableIntraRegion {
+    pub(in crate::runtime_minimal) sink: WienerNsLrReconSink<u16>,
+    pub(in crate::runtime_minimal) frame_cdfs: FrameCdfSubset,
+}
 const MHCCP_BITS: u32 = 16;
 const MHCCP_PARAM_COUNT: usize = 3;
 const DIV_PREC_BITS: u32 = 14;
@@ -1330,6 +1336,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     mi_h,
                     mrl,
                     mrl_sec_index == Some(1) && not4x4,
+                    LumaTransformTypeContext::with_mrl_indices(
+                        mode,
+                        angle_delta_y,
+                        mrl_index,
+                        mrl_sec_index,
+                    ),
                     tile_offset,
                 );
             }
@@ -1344,6 +1356,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 use_tcq,
                 mi_w,
                 mi_h,
+                LumaTransformTypeContext::with_mrl_indices(
+                    mode,
+                    angle_delta_y,
+                    mrl_index,
+                    mrl_sec_index,
+                ),
                 tile_offset,
             );
         }
@@ -1419,6 +1437,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 use_tcq,
                 mi_w,
                 mi_h,
+                LumaTransformTypeContext::with_mrl_indices(
+                    mode,
+                    angle_delta_y,
+                    mrl_index,
+                    mrl_sec_index,
+                ),
                 tile_offset,
             );
         }
@@ -1497,6 +1521,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         num4_above_right,
                         above_mrl_inputs,
                         use_tcq,
+                        Some(LumaTransformTypeContext::with_mrl_indices(
+                            mode,
+                            angle_delta_y,
+                            mrl_index,
+                            mrl_sec_index,
+                        )),
                         self.bit_depth,
                         edge_filter,
                     )
@@ -1552,6 +1582,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         have_above,
                         mrl,
                         use_tcq,
+                        Some(LumaTransformTypeContext::with_mrl_indices(
+                            mode,
+                            angle_delta_y,
+                            mrl_index,
+                            mrl_sec_index,
+                        )),
                         self.bit_depth,
                         edge_filter,
                     )
@@ -1596,6 +1632,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         use_tcq: bool,
         mi_w: usize,
         mi_h: usize,
+        luma_context: LumaTransformTypeContext,
         tile_offset: ByteOffset,
     ) -> Result<bool> {
         let w = 1u32 << log2_width;
@@ -1701,6 +1738,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 num4_far: secondary_num4,
             },
             use_tcq,
+            Some(luma_context),
             self.bit_depth,
         )
         .map_err(|_| {
@@ -1737,6 +1775,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         use_tcq: bool,
         mi_w: usize,
         mi_h: usize,
+        luma_context: LumaTransformTypeContext,
         tile_offset: ByteOffset,
     ) -> Result<bool> {
         let Ok(p_angle_u16) = u16::try_from(p_angle) else {
@@ -1749,22 +1788,34 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         {
             return Ok(false);
         }
-        let Some(filters) =
-            self.resolve_two_sided_middle_edge_filters(mi_col, mi_row, w, h, p_angle, tile_offset)?
-        else {
-            return Ok(false);
+        let filters = match self.resolve_two_sided_middle_edge_filters(
+            mi_col,
+            mi_row,
+            w,
+            h,
+            p_angle,
+            tile_offset,
+        )? {
+            Some(filters) => filters,
+            None if self.full_recon => TwoSidedMiddleEdgeFilters {
+                above: OneSidedEdgeFilter::default(),
+                left: OneSidedEdgeFilter::default(),
+            },
+            None => return Ok(false),
         };
         let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
-        reconstruct_general_intra_two_sided_middle_luma_block_into(
+        reconstruct_general_intra_middle_neighbour_rect_block_into(
             &mut self.workspace,
             block,
             p_angle_u16,
+            PlaneId::Y,
             x,
             y,
             log2_width,
             log2_height,
             qindex,
             use_tcq,
+            Some(luma_context),
             self.bit_depth,
             filters,
         )
@@ -1792,6 +1843,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         mi_h: usize,
         mrl_index: usize,
         secondary_mrl: bool,
+        luma_context: LumaTransformTypeContext,
         tile_offset: ByteOffset,
     ) -> Result<bool> {
         let Ok(p_angle_u16) = u16::try_from(p_angle) else {
@@ -1819,6 +1871,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             is_sb_boundary,
             secondary_mrl,
             use_tcq,
+            Some(luma_context),
             self.bit_depth,
         )
         .map_err(|_| {
@@ -2180,7 +2233,50 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             self.coverage[Self::coverage_index(PlaneId::Y)]
                 .record_y_mode(mi_col, mi_row, mi_w, mi_h, mode);
         }
-        if !residual_is_reconstructable(block, fsc_mode) {
+        let allow_full_recon_cardinal_ist = mrl_index == 0
+            && matches!(
+                directional,
+                Some(
+                    SupportedDirectionalLumaMode::Horizontal
+                        | SupportedDirectionalLumaMode::Vertical
+                )
+            );
+        let allow_full_recon_luma_ist = self.full_recon
+            && !fsc_mode
+            && block_has_real_ist(block)
+            && leaf_y_mode.is_some_and(|mode| {
+                mode == IntraYMode::DC_PRED
+                    || mode.supported_nondc().is_some()
+                    || allow_full_recon_cardinal_ist
+                    || full_recon_mode_uses_supported_directional_edge(
+                        mode,
+                        angle_delta_y,
+                        mrl_index,
+                        mrl_sec_index,
+                        log2_width,
+                        log2_height,
+                    )
+            });
+        if !residual_is_reconstructable(block, fsc_mode) && !allow_full_recon_luma_ist {
+            if std::env::var_os("SPLOT_TRACE_FULL_RECON_DEFER").is_some() {
+                eprintln!(
+                    "full_recon_residual_defer mi=({}, {}) tx_size={} log2={}x{} mode={} directional={:?} angle_delta_y={} mrl_index={} mrl_sec_index={:?} all_zero={} fsc_mode={} intra_ist={:?} offset={}",
+                    mi_col,
+                    mi_row,
+                    tx_size,
+                    log2_width,
+                    log2_height,
+                    full_recon_mode_label(leaf_y_mode, directional, is_intrabc),
+                    directional,
+                    angle_delta_y,
+                    mrl_index,
+                    mrl_sec_index,
+                    block.all_zero,
+                    fsc_mode,
+                    block.intra_ist,
+                    tile_offset.get()
+                );
+            }
             return self.defer_full_recon_leaf(
                 mi_col,
                 mi_row,
@@ -2225,19 +2321,40 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
                 let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
                 let ibp_dc = self.ibp_dc_applies(log2_width, log2_height);
-                let result = reconstruct_general_intra_block_rect_into(
-                    &mut self.workspace,
-                    block,
-                    PlaneId::Y,
-                    x,
-                    y,
-                    log2_width,
-                    log2_height,
-                    qindex,
-                    use_tcq,
-                    ibp_dc,
-                    self.bit_depth,
-                );
+                let result = if block_has_real_ist(block) {
+                    reconstruct_general_intra_luma_dc_rect_block_with_ist_into(
+                        &mut self.workspace,
+                        block,
+                        x,
+                        y,
+                        log2_width,
+                        log2_height,
+                        qindex,
+                        use_tcq,
+                        ibp_dc,
+                        self.bit_depth,
+                        LumaTransformTypeContext::with_mrl_indices(
+                            IntraYMode::DC_PRED,
+                            angle_delta_y,
+                            mrl_index,
+                            mrl_sec_index,
+                        ),
+                    )
+                } else {
+                    reconstruct_general_intra_block_rect_into(
+                        &mut self.workspace,
+                        block,
+                        PlaneId::Y,
+                        x,
+                        y,
+                        log2_width,
+                        log2_height,
+                        qindex,
+                        use_tcq,
+                        ibp_dc,
+                        self.bit_depth,
+                    )
+                };
                 if !self.finish_luma_predict(
                     &result,
                     mi_col,
@@ -2318,6 +2435,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         log2_height,
                         qindex,
                         use_tcq,
+                        leaf_y_mode.map(|mode| {
+                            LumaTransformTypeContext::with_mrl_indices(
+                                mode,
+                                angle_delta_y,
+                                mrl_index,
+                                mrl_sec_index,
+                            )
+                        }),
                         self.bit_depth,
                     );
                     if !self.finish_luma_predict(
@@ -2369,6 +2494,57 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     "PAETH_PRED",
                     tile_offset,
                     "unsupported_wienerns_lr_selectable_transform_records_recon_luma_paeth_write",
+                )? {
+                    return Ok(());
+                }
+            }
+            (Some(mode), None) if self.full_recon && mode.supported_nondc().is_some() => {
+                let Some(smooth_mode) = mode.supported_nondc() else {
+                    return self.defer_full_recon_leaf(
+                        mi_col,
+                        mi_row,
+                        log2_width,
+                        log2_height,
+                        full_recon_mode_label(leaf_y_mode, directional, is_intrabc),
+                        tile_offset,
+                    );
+                };
+                let (x, y) = luma_sample_origin(mi_col, mi_row, tile_offset)?;
+                let num4_above_right = self
+                    .full_recon_far_edge(mi_col, mi_row, FarEdgeSide::AboveRight)
+                    .unwrap_or(0);
+                let num4_below_left = self
+                    .full_recon_far_edge(mi_col, mi_row, FarEdgeSide::BelowLeft)
+                    .unwrap_or(0);
+                let result = reconstruct_general_intra_luma_smooth_rect_block_into(
+                    &mut self.workspace,
+                    block,
+                    smooth_mode,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    qindex,
+                    use_tcq,
+                    num4_above_right,
+                    num4_below_left,
+                    Some(LumaTransformTypeContext::with_mrl_indices(
+                        mode,
+                        angle_delta_y,
+                        mrl_index,
+                        mrl_sec_index,
+                    )),
+                    self.bit_depth,
+                );
+                if !self.finish_luma_predict(
+                    &result,
+                    mi_col,
+                    mi_row,
+                    log2_width,
+                    log2_height,
+                    full_recon_mode_label(leaf_y_mode, directional, is_intrabc),
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_recon_luma_smooth_write",
                 )? {
                     return Ok(());
                 }
@@ -3863,6 +4039,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 log2_height,
                 qindex,
                 false,
+                None,
                 self.bit_depth,
             )
             .map_err(|_| {
@@ -3911,6 +4088,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 log2_height,
                 qindex,
                 false,
+                None,
                 self.bit_depth,
                 filters,
             )
@@ -4025,6 +4203,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     num4_far: secondary_num4,
                 },
                 false,
+                None,
                 self.bit_depth,
             )
             .map_err(|_| {
@@ -4062,6 +4241,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     num4_above_right,
                     OneSidedAboveMrl::default(),
                     false,
+                    None,
                     self.bit_depth,
                     edge_filter,
                 )
@@ -4092,6 +4272,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     have_above,
                     0,
                     false,
+                    None,
                     self.bit_depth,
                     edge_filter,
                 )
@@ -4145,21 +4326,22 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ///   this conservative coverage gate: it reconstructs every block in decode order,
     ///   so the integer-DV source — always above-left of the target — is written.)
     ///
-    /// `source` / `target` are the §7.13.3.18 luma copy rectangles (sample units);
-    /// `scaling` is the §7.13.3.17 reference-block location / step (`startX` /
-    /// `startY` / `stepX` / `stepY`) used by the fractional-DV bilinear predictor.
+    /// `source` / `target` are the §7.13.3.18 integer-copy luma rectangles (sample
+    /// units); for `fractional`, `source` is ignored and `scaling` drives the
+    /// §7.13.3.18 bilinear predictor with reference clipping.
     pub(in crate::runtime_minimal) fn reconstruct_intrabc_block(
         &mut self,
         source: PlaneRect,
         target: PlaneRect,
         scaling: PlaneScaling,
+        fractional: bool,
         skip_flag: bool,
         tile_offset: ByteOffset,
     ) -> Result<()> {
         if !self.quant_reconstructable {
             return Ok(());
         }
-        if source.size() != target.size() {
+        if fractional {
             if !self.is_full_recon()
                 || !self.reconstruct_intrabc_fractional_into(target, scaling, tile_offset)?
             {
@@ -4273,7 +4455,7 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
     sequence: &splot_core::headers::sequence::SequenceHeader,
     core: &splot_core::headers::frame::FrameHeaderCore,
     full_recon: bool,
-) -> Result<WienerNsLrReconSink<u16>> {
+) -> Result<Ac0ej3SelectableIntraRegion> {
     let frame_size = core.frame_size.ok_or_else(|| {
         super::super::unsupported_at(
             "missing_frame_size_for_recon",
@@ -4337,17 +4519,21 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
                 handoff.tx_skip_cols,
                 &handoff.records,
             )?;
+            let frame_cdfs = handoff.frame_cdfs;
             sink.set_cdef_grid(handoff.cdef_grid);
             sink.set_ccso_grid(handoff.ccso_grid);
             sink.set_tx_skip_grid(Some(tx_skip_grid));
             sink.set_lr_source_blocks(handoff.active_source_blocks);
             sink.set_lr_unit_filters(handoff.unit_filters);
-            Ok(sink)
+            Ok(Ac0ej3SelectableIntraRegion { sink, frame_cdfs })
         }
         Err(crate::error::DecodeError::UnsupportedFeature { unsupported })
             if unsupported.reason() == EXPECTED_RECON_FRONTIER_REASON =>
         {
-            Ok(sink)
+            Ok(Ac0ej3SelectableIntraRegion {
+                sink,
+                frame_cdfs: FrameCdfSubset::from_defaults(),
+            })
         }
         Err(other) => Err(other),
     }
@@ -4583,8 +4769,46 @@ fn residual_is_reconstructable(block: &LumaCoeffBlock, fsc_mode: bool) -> bool {
     if block.all_zero {
         return true;
     }
-    let real_ist = block.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0);
-    !(real_ist || fsc_mode)
+    !(block_has_real_ist(block) || fsc_mode)
+}
+
+fn block_has_real_ist(block: &LumaCoeffBlock) -> bool {
+    block.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0)
+}
+
+fn full_recon_mode_uses_supported_directional_edge(
+    mode: IntraYMode,
+    angle_delta_y: i8,
+    mrl_index: u8,
+    mrl_sec_index: Option<u8>,
+    log2_width: u32,
+    log2_height: u32,
+) -> bool {
+    if mrl_sec_index == Some(1) || !mode.is_directional() {
+        return false;
+    }
+    let Some(nominal) = mode.mode_to_angle() else {
+        return false;
+    };
+    let Some(w) = 1u32.checked_shl(log2_width) else {
+        return false;
+    };
+    let Some(h) = 1u32.checked_shl(log2_height) else {
+        return false;
+    };
+    let Some(&mrl_delta) = MRL_INDEX_TO_DELTA.get(usize::from(mrl_index)) else {
+        return false;
+    };
+    let Some(nominal_angle) = i32::from(nominal)
+        .checked_add(i32::from(angle_delta_y) * ANGLE_STEP)
+        .and_then(|angle| angle.checked_add(mrl_delta))
+    else {
+        return false;
+    };
+    let p_angle = wide_angle_mapping(w, h, nominal_angle);
+    (0 < p_angle && p_angle < 90)
+        || (90 < p_angle && p_angle < 180)
+        || (180 < p_angle && p_angle < 270)
 }
 
 mod edge_filter;

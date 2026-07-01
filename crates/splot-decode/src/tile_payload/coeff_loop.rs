@@ -4,6 +4,7 @@
 //! Coefficient-loop foundation helpers.
 
 use std::collections::TryReserveError;
+use std::env;
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
@@ -24,6 +25,9 @@ const EOB_MULTISIZE_LOG2_CAP: usize = 5;
 const EOB_MULTISIZE_OFFSET: usize = 4;
 const MIN_NONZERO_EOB_PT: usize = 1;
 const MAX_NONZERO_EOB_PT: usize = 11;
+const EOB_GROUP_START: [usize; MAX_NONZERO_EOB_PT + 1] =
+    [0, 1, 2, 3, 5, 9, 17, 33, 65, 129, 257, 513];
+const EOB_OFFSET_BITS: [usize; MAX_NONZERO_EOB_PT + 1] = [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 pub(crate) mod base_level_pass;
 pub(crate) mod base_symbol;
 mod branch;
@@ -321,7 +325,7 @@ pub(crate) fn nonzero_coeff_eob(
         });
     }
 
-    let extra_bits_width = eob_pt - 3;
+    let extra_bits_width = eob_extra_bits_width(eob_pt)?;
     let max_eob_extra_bits = (1usize << extra_bits_width) - 1;
     if input.eob_extra_bits > max_eob_extra_bits {
         return Err(CoeffLoopContextError::EobExtraBitsOutOfRange {
@@ -331,9 +335,9 @@ pub(crate) fn nonzero_coeff_eob(
         });
     }
 
-    let base = (1usize << (eob_pt - 2)) + 1;
+    let base = EOB_GROUP_START[eob_pt];
     let extra = if input.eob_extra {
-        1usize << (eob_pt - 3)
+        1usize << extra_bits_width
     } else {
         0
     };
@@ -348,6 +352,8 @@ pub(crate) fn read_nonzero_coeff_eob(
     symbols: &mut SymbolDecoder<'_>,
     input: NonZeroCoeffEobSymbolInput,
 ) -> Result<NonZeroCoeffEobSymbolRead, CoeffLoopContextError> {
+    let trace = std::env::var_os("SPLOT_TRACE_COEFF_EOB").is_some();
+    let before = trace.then(|| symbols.checkpoint());
     let eob_pt_symbol = cdfs
         .read_block_symbol_trace(
             TileCdfSelector::EobPt {
@@ -372,7 +378,7 @@ pub(crate) fn read_nonzero_coeff_eob(
             )?
             .get()
             != 0;
-        let width = (eob_pt - 3) as u32;
+        let width = eob_extra_bits_width(eob_pt)? as u32;
         (
             eob_extra,
             read_eob_literal(symbols, width, "eob_extra_bit")?,
@@ -386,6 +392,23 @@ pub(crate) fn read_nonzero_coeff_eob(
         eob_extra,
         eob_extra_bits: eob_extra_bits as usize,
     })?;
+    if let Some(before) = before {
+        eprintln!(
+            "coeff eob size={:?} qctx={} eob_ctx={} eob_pt_symbol={} eob_pt_extra_width={} eob_pt_extra={} eob_pt={} eob_extra={} eob_extra_bits={} eob={} checkpoint_before={:?} checkpoint_after={:?}",
+            input.size,
+            input.coeff_cdf_q_ctx,
+            input.eob_ctx,
+            eob_pt_symbol,
+            eob_pt_extra_width,
+            eob_pt_extra,
+            eob_pt,
+            eob_extra,
+            eob_extra_bits,
+            eob.eob(),
+            before,
+            symbols.checkpoint(),
+        );
+    }
     Ok(NonZeroCoeffEobSymbolRead {
         eob,
         eob_pt_symbol,
@@ -466,6 +489,14 @@ fn resolved_eob_pt(eob_pt_symbol: u8, eob_pt_extra_width: u32, eob_pt_extra: u32
     }
 }
 
+fn eob_extra_bits_width(eob_pt: usize) -> Result<usize, CoeffLoopContextError> {
+    EOB_OFFSET_BITS
+        .get(eob_pt)
+        .copied()
+        .map(|width| width.saturating_sub(1))
+        .ok_or(CoeffLoopContextError::InvalidEobPoint { eob_pt })
+}
+
 fn read_eob_literal(
     symbols: &mut SymbolDecoder<'_>,
     width: u32,
@@ -474,9 +505,18 @@ fn read_eob_literal(
     if width == 0 {
         return Ok(0);
     }
-    symbols
+    let trace = env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let before = trace.then(|| symbols.checkpoint());
+    let value = symbols
         .read_literal(width)
-        .map_err(|source| CoeffLoopContextError::EobLiteralRead { syntax, source })
+        .map_err(|source| CoeffLoopContextError::EobLiteralRead { syntax, source })?;
+    if let Some(before) = before {
+        eprintln!(
+            "raw_literal kind=eob syntax={syntax} width={width} value={value} checkpoint_before={before:?} checkpoint_after={:?}",
+            symbols.checkpoint(),
+        );
+    }
+    Ok(value)
 }
 
 fn bounded_or<T: Copy + Into<u32>>(values: &[T], start: usize, count: usize) -> u32 {
@@ -787,13 +827,13 @@ mod tests {
     #[test]
     fn nonzero_coeff_eob_applies_eob_extra_and_refinement_bits() {
         let eob = nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 5,
+            eob_pt: 6,
             eob_extra: true,
-            eob_extra_bits: 0b10,
+            eob_extra_bits: 0b110,
         })
         .unwrap();
 
-        assert_eq!(eob.eob(), 15);
+        assert_eq!(eob.eob(), 31);
     }
 
     #[test]
@@ -855,18 +895,18 @@ mod tests {
     #[test]
     fn nonzero_coeff_eob_rejects_out_of_range_refinement_bits() {
         let err = nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 5,
+            eob_pt: 4,
             eob_extra: false,
-            eob_extra_bits: 0b100,
+            eob_extra_bits: 0b10,
         })
         .unwrap_err();
 
         assert!(matches!(
             err,
             CoeffLoopContextError::EobExtraBitsOutOfRange {
-                eob_pt: 5,
-                eob_extra_bits: 4,
-                max_eob_extra_bits: 3
+                eob_pt: 4,
+                eob_extra_bits: 2,
+                max_eob_extra_bits: 1
             }
         ));
     }

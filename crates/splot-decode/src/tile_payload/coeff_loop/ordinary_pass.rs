@@ -525,6 +525,13 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
     let base_level_pass =
         apply_nonzero_coeff_base_derived_level_pass(cdfs, symbols, input.start, walk, base_config)?;
     let first_pass = base_level_pass.first_pass();
+    trace_ordinary_coeff_base_pass(
+        base_config,
+        sign_config,
+        &base_level_pass,
+        symbols.checkpoint(),
+        "after-base",
+    );
     let sign_inputs = derive_nonzero_coeff_sign_inputs(
         base_level_pass.block(),
         base_level_pass.walk(),
@@ -571,6 +578,15 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
             config: quant_config,
         },
     )?;
+    trace_ordinary_coeff_tail_pass(
+        base_config,
+        sign_config,
+        &sign_inputs,
+        &sign_reads,
+        &quant_pass,
+        symbols.checkpoint(),
+        "after-tail",
+    );
 
     Ok(NonZeroCoeffOrdinaryDerivedBasePass {
         base_level_pass,
@@ -778,4 +794,137 @@ fn apply_interleaved_sign_and_quant_pass(
         sign_reads,
         NonZeroCoeffQuantPass::from_interleaved_parts(read_quants, quant_state),
     ))
+}
+
+fn trace_ordinary_coeff_base_pass(
+    config: CoeffBaseDerivedLevelPassConfig,
+    sign_config: CoeffOrdinaryDerivedSignPassConfig<'_>,
+    pass: &NonZeroCoeffBaseDerivedLevelPass,
+    checkpoint: splot_core::symbol::SymbolDecoderCheckpoint,
+    stage: &'static str,
+) {
+    if !trace_ordinary_coeff_enabled(config, sign_config) {
+        return;
+    }
+    eprintln!(
+        "ordinary coeff {stage} plane={} qctx={} tx_size_ctx={} size={}x{} x4={} y4={} w4={} h4={} tx_class={:?} parity_hiding={} tcq={} eob={} eob_pt={} base_reads={} sum_abs1={} num_nonzero={} hidden={} tcq_state={} checkpoint={:?}",
+        config.plane,
+        config.coeff_cdf_q_ctx,
+        config.tx_size_ctx,
+        config.tx_width,
+        config.tx_height,
+        sign_config.x4,
+        sign_config.y4,
+        sign_config.w4,
+        sign_config.h4,
+        config.tx_class,
+        config.parity_hiding,
+        config.use_tcq,
+        pass.eob_read().eob().eob(),
+        pass.eob_read().eob().eob_pt(),
+        pass.base_reads().len(),
+        pass.first_pass().sum_abs1(),
+        pass.first_pass().num_nonzero(),
+        pass.first_pass().is_hidden(),
+        pass.first_pass().tcq_state(),
+        checkpoint,
+    );
+    for (index, (input, read)) in pass
+        .derived_inputs()
+        .iter()
+        .copied()
+        .zip(pass.base_reads().iter().copied())
+        .enumerate()
+    {
+        if should_trace_coeff_entry(index, read.level()) {
+            eprintln!(
+                "ordinary coeff base index={} scan={} pos={} row={} col={} source={:?} base_symbol={} base_range={:?} level={} input_base_levels={}",
+                index,
+                read.entry().scan_index(),
+                read.entry().pos(),
+                read.entry().row(),
+                read.entry().col(),
+                input.base,
+                read.base_symbol(),
+                read.base_range_symbol(),
+                read.level(),
+                input.base_levels,
+            );
+        }
+    }
+}
+
+fn trace_ordinary_coeff_tail_pass(
+    config: CoeffBaseDerivedLevelPassConfig,
+    sign_config: CoeffOrdinaryDerivedSignPassConfig<'_>,
+    sign_inputs: &[CoeffSignReadInput],
+    sign_reads: &[CoeffSignRead],
+    quant_pass: &NonZeroCoeffQuantPass,
+    checkpoint: splot_core::symbol::SymbolDecoderCheckpoint,
+    stage: &'static str,
+) {
+    if !trace_ordinary_coeff_enabled(config, sign_config) {
+        return;
+    }
+    eprintln!(
+        "ordinary coeff {stage} plane={} qctx={} tx_size_ctx={} size={}x{} x4={} y4={} w4={} h4={} sign_reads={} quant_reads={} cul_level={} dc_category={} checkpoint={:?}",
+        config.plane,
+        config.coeff_cdf_q_ctx,
+        config.tx_size_ctx,
+        config.tx_width,
+        config.tx_height,
+        sign_config.x4,
+        sign_config.y4,
+        sign_config.w4,
+        sign_config.h4,
+        sign_reads.len(),
+        quant_pass.read_quants().len(),
+        quant_pass.quant_state().cul_level(),
+        quant_pass.quant_state().dc_category(),
+        checkpoint,
+    );
+    for (index, ((input, sign), quant)) in sign_inputs
+        .iter()
+        .copied()
+        .zip(sign_reads.iter().copied())
+        .zip(quant_pass.read_quants().iter().copied())
+        .enumerate()
+    {
+        if should_trace_coeff_entry(index, sign.level()) {
+            eprintln!(
+                "ordinary coeff tail index={} scan={} pos={} row={} col={} sign_source={:?} sign_symbol={:?} sign={} level={} quant_path={:?}",
+                index,
+                sign.entry().scan_index(),
+                sign.entry().pos(),
+                sign.entry().row(),
+                sign.entry().col(),
+                input.source,
+                sign.symbol(),
+                sign.sign(),
+                sign.level(),
+                quant.path(),
+            );
+        }
+    }
+}
+
+fn trace_ordinary_coeff_enabled(
+    config: CoeffBaseDerivedLevelPassConfig,
+    sign_config: CoeffOrdinaryDerivedSignPassConfig<'_>,
+) -> bool {
+    if std::env::var_os("SPLOT_TRACE_ORDINARY_COEFF_PASS").is_none() {
+        return false;
+    }
+    if std::env::var_os("SPLOT_TRACE_ORDINARY_COEFF_TARGET").is_none() {
+        return true;
+    }
+    config.plane == 0
+        && sign_config.x4 == 136
+        && sign_config.y4 == 0
+        && sign_config.w4 == 4
+        && sign_config.h4 == 16
+}
+
+fn should_trace_coeff_entry(index: usize, level: u32) -> bool {
+    index < 8 || level != 0
 }

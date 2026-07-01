@@ -15,18 +15,29 @@ const MI_SIZE: i32 = 4;
 struct NeighbourCell {
     is_inter: bool,
     ref_frame0: i8,
+    ref_frame1: Option<i8>,
     y_mode: NeighbourYMode,
     mv: Mv,
     skip: bool,
+    interp_filter: u8,
+    use_amvd: bool,
+    is_warp: bool,
 }
 
 const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     is_inter: false,
     ref_frame0: -1,
+    ref_frame1: None,
     y_mode: NeighbourYMode::Other,
     mv: Mv::ZERO,
     skip: false,
+    interp_filter: SWITCHABLE_FILTERS,
+    use_amvd: false,
+    is_warp: false,
 };
+
+const SWITCHABLE_FILTERS: u8 = 3;
+const INTER_FILTER_COMP_OFFSET: usize = SWITCHABLE_FILTERS as usize + 1;
 
 /// Luma mode class needed by § 7.11.3 `has_newmv_for_list`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,16 +76,89 @@ impl NeighbourMvGrid {
         n4h: usize,
         is_inter: bool,
         ref_frame0: i8,
+        ref_frame1: Option<i8>,
         y_mode: NeighbourYMode,
         mv: Mv,
         skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+    ) {
+        self.record_block_with_warp(
+            r,
+            c,
+            n4w,
+            n4h,
+            is_inter,
+            ref_frame0,
+            ref_frame1,
+            y_mode,
+            mv,
+            skip,
+            interp_filter,
+            use_amvd,
+            false,
+        );
+    }
+
+    /// Records a decoded warp block's mode info into every covered MI cell.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_warp_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        ref_frame0: i8,
+        y_mode: NeighbourYMode,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+    ) {
+        self.record_block_with_warp(
+            r,
+            c,
+            n4w,
+            n4h,
+            true,
+            ref_frame0,
+            None,
+            y_mode,
+            mv,
+            skip,
+            interp_filter,
+            use_amvd,
+            true,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_block_with_warp(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        is_inter: bool,
+        ref_frame0: i8,
+        ref_frame1: Option<i8>,
+        y_mode: NeighbourYMode,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+        is_warp: bool,
     ) {
         let cell = NeighbourCell {
             is_inter,
             ref_frame0,
+            ref_frame1,
             y_mode,
             mv,
             skip,
+            interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
+            use_amvd,
+            is_warp,
         };
         for rr in r..r.saturating_add(n4h) {
             if rr >= self.mi_rows {
@@ -149,6 +233,17 @@ impl RelativeProbe {
         grid.get(row, col)
     }
 
+    fn neighbour_context_cell(
+        self,
+        grid: &NeighbourMvGrid,
+        block: &MvBlockContext,
+    ) -> Option<NeighbourCell> {
+        if self.delta_row < 0 && block.is_sb_border() {
+            return None;
+        }
+        self.cell(grid, block)
+    }
+
     fn stack_cell(
         self,
         grid: &NeighbourMvGrid,
@@ -172,6 +267,20 @@ impl RelativeProbe {
 
         (row, col, delta_col)
     }
+
+    fn warp_context_cell(
+        self,
+        grid: &NeighbourMvGrid,
+        block: &MvBlockContext,
+    ) -> Option<NeighbourCell> {
+        let row = block.mi_row as i32 + self.delta_row;
+        let mut delta_col = self.delta_col;
+        if self.delta_row < 0 && block.is_sb_border() {
+            delta_col -= (block.mi_col & 1) as i32;
+        }
+        let col = block.mi_col as i32 + delta_col;
+        grid.get(row, col)
+    }
 }
 
 fn immediate_spatial_probes(block: &MvBlockContext) -> [RelativeProbe; 4] {
@@ -182,6 +291,25 @@ fn immediate_spatial_probes(block: &MvBlockContext) -> [RelativeProbe; 4] {
         RelativeProbe::new(-1, bw4 - 1),
         RelativeProbe::new(0, -1),
         RelativeProbe::new(-1, 0),
+    ]
+}
+
+fn warp_context_spatial_probes(block: &MvBlockContext) -> [Option<RelativeProbe>; 4] {
+    let bw4 = block.bw4 as i32;
+    let bh4 = block.bh4 as i32;
+    let is_sb_border = block.is_sb_border();
+    [
+        Some(RelativeProbe::new(bh4 - 1, -1)),
+        Some(RelativeProbe::new(
+            -1,
+            if is_sb_border {
+                (bw4 - 2).max(0)
+            } else {
+                bw4 - 1
+            },
+        )),
+        Some(RelativeProbe::new(0, -1)),
+        (bw4 >= if is_sb_border { 4 } else { 2 }).then_some(RelativeProbe::new(-1, 0)),
     ]
 }
 
@@ -213,7 +341,11 @@ fn optional_probe(enabled: bool, delta_row: i32, delta_col: i32) -> Option<Relat
 }
 
 fn matches_block_ref(cell: NeighbourCell, block: &MvBlockContext) -> bool {
-    cell.is_inter && cell.ref_frame0 == block.ref_frame0
+    neighbour_matches_ref(cell, block.ref_frame0)
+}
+
+fn neighbour_matches_ref(cell: NeighbourCell, ref_frame: i8) -> bool {
+    cell.is_inter && (cell.ref_frame0 == ref_frame || cell.ref_frame1 == Some(ref_frame))
 }
 
 /// The result of § 7.11.2 `find_mode_ctx` for single prediction: the
@@ -225,11 +357,14 @@ pub(super) struct ModeContext {
     pub(super) new_mv_context: usize,
     /// AV2 § 7.11.2 `NewMvCount` (0..=3): the number of NEW-MV neighbours found.
     pub(super) new_mv_count: usize,
+    /// AV2 § 7.11.2 `WarpMvCount`: matching warp-mode neighbours.
+    pub(super) warp_mv_count: usize,
 }
 
 /// AV2 § 7.11.2 `find_mode_ctx` for single prediction.
 pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> ModeContext {
     let mut new_mv_count = 0usize;
+    let mut warp_mv_count = 0usize;
     let mut found = [false; 4];
 
     for (slot, probe) in found.iter_mut().zip(immediate_spatial_probes(block)) {
@@ -244,6 +379,14 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
         }
         *slot = true;
     }
+    for probe in warp_context_spatial_probes(block).into_iter().flatten() {
+        let Some(cell) = probe.warp_context_cell(grid, block) else {
+            continue;
+        };
+        if matches_block_ref(cell, block) && cell.is_warp {
+            warp_mv_count = (warp_mv_count + 1).min(4);
+        }
+    }
 
     let [left_a, above_a, left_b, above_b] = found;
     let nearest_match = usize::from(above_a || above_b) + usize::from(left_a || left_b);
@@ -251,6 +394,7 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
     ModeContext {
         new_mv_context,
         new_mv_count,
+        warp_mv_count,
     }
 }
 
@@ -264,6 +408,8 @@ pub(super) struct BlockNeighbourContext {
     /// True when `NNumBuf >= 1`.
     pub(super) has_neighbour: bool,
     ref_counts: [u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS],
+    cells: [NeighbourCell; 2],
+    cell_count: usize,
 }
 
 impl BlockNeighbourContext {
@@ -287,6 +433,103 @@ impl BlockNeighbourContext {
             core::cmp::Ordering::Less => 0,
             core::cmp::Ordering::Greater => 2,
         })
+    }
+
+    /// AV2 `comp_inter` / reference-mode context used when `reference_select` is active.
+    pub(super) fn comp_mode_ctx(
+        &self,
+        ref_frame_idx: &[u32],
+        ref_order_hint: &[u32],
+        current_order_hint: i32,
+    ) -> usize {
+        match self.cell_count {
+            0 => 1,
+            1 => {
+                let neighbour = self.cells[0];
+                if neighbour.ref_frame1.is_some() {
+                    3
+                } else {
+                    usize::from(is_backward_ref_frame(
+                        neighbour,
+                        ref_frame_idx,
+                        ref_order_hint,
+                        current_order_hint,
+                    ))
+                }
+            }
+            _ => {
+                let first = self.cells[0];
+                let second = self.cells[1];
+                match (first.ref_frame1.is_some(), second.ref_frame1.is_some()) {
+                    (false, false) => usize::from(
+                        is_backward_ref_frame(
+                            first,
+                            ref_frame_idx,
+                            ref_order_hint,
+                            current_order_hint,
+                        ) ^ is_backward_ref_frame(
+                            second,
+                            ref_frame_idx,
+                            ref_order_hint,
+                            current_order_hint,
+                        ),
+                    ),
+                    (false, true) => {
+                        2 + usize::from(
+                            is_backward_ref_frame(
+                                first,
+                                ref_frame_idx,
+                                ref_order_hint,
+                                current_order_hint,
+                            ) || !first.is_inter,
+                        )
+                    }
+                    (true, false) => {
+                        2 + usize::from(
+                            is_backward_ref_frame(
+                                second,
+                                ref_frame_idx,
+                                ref_order_hint,
+                                current_order_hint,
+                            ) || !second.is_inter,
+                        )
+                    }
+                    (true, true) => 4,
+                }
+            }
+        }
+    }
+
+    /// AV2 § 8.3.2 `interp_filter` context for switchable interpolation.
+    pub(super) fn interp_filter_ctx(&self, ref_frame0: i8, ref_frame1_is_inter: bool) -> usize {
+        let mut neighbour_filter_type = [SWITCHABLE_FILTERS; 2];
+        for (slot, cell) in self.cells.iter().take(self.cell_count).enumerate() {
+            if neighbour_matches_ref(*cell, ref_frame0) {
+                neighbour_filter_type[slot] = cell.interp_filter.min(SWITCHABLE_FILTERS);
+            }
+        }
+
+        let [left_type, above_type] = neighbour_filter_type;
+        let mut ctx = usize::from(ref_frame1_is_inter) * INTER_FILTER_COMP_OFFSET;
+        if left_type == above_type {
+            ctx += usize::from(left_type);
+        } else if left_type == SWITCHABLE_FILTERS {
+            ctx += usize::from(above_type);
+        } else if above_type == SWITCHABLE_FILTERS {
+            ctx += usize::from(left_type);
+        } else {
+            ctx += usize::from(SWITCHABLE_FILTERS);
+        }
+        ctx
+    }
+
+    /// AV2 § 8.3.2 `use_amvd` context for the current single-reference block.
+    pub(super) fn amvd_ctx(&self, ref_frame0: i8) -> usize {
+        self.cells
+            .iter()
+            .take(self.cell_count)
+            .filter(|cell| cell.is_inter && cell.ref_frame0 == ref_frame0 && cell.use_amvd)
+            .count()
     }
 }
 
@@ -326,12 +569,72 @@ pub(super) fn block_neighbour_ctx(
         }
     }
 
+    trace_neighbour_context(block, &buf, num_buf, is_inter_ctx, skip_ctx);
+
     BlockNeighbourContext {
         is_inter_ctx,
         skip_ctx,
         has_neighbour: num_buf >= 1,
         ref_counts,
+        cells: buf,
+        cell_count: num_buf,
     }
+}
+
+fn trace_neighbour_context(
+    block: &MvBlockContext,
+    cells: &[NeighbourCell; 2],
+    cell_count: usize,
+    is_inter_ctx: usize,
+    skip_ctx: usize,
+) {
+    let Some(target) = std::env::var("SPLOT_TRACE_NEIGHBOUR_CTX").ok() else {
+        return;
+    };
+    let Some((row, col)) = target.split_once(':') else {
+        return;
+    };
+    let Ok(row) = row.parse::<usize>() else {
+        return;
+    };
+    let Ok(col) = col.parse::<usize>() else {
+        return;
+    };
+    if block.mi_row != row || block.mi_col != col {
+        return;
+    }
+    eprintln!(
+        "neighbour ctx r={} c={} bw4={} bh4={} count={} is_inter_ctx={} skip_ctx={} cells={:?}",
+        block.mi_row,
+        block.mi_col,
+        block.bw4,
+        block.bh4,
+        cell_count,
+        is_inter_ctx,
+        skip_ctx,
+        &cells[..cell_count],
+    );
+}
+
+fn is_backward_ref_frame(
+    cell: NeighbourCell,
+    ref_frame_idx: &[u32],
+    ref_order_hint: &[u32],
+    current_order_hint: i32,
+) -> bool {
+    if !cell.is_inter || cell.ref_frame0 < 0 {
+        return false;
+    }
+    let Some(&slot) = ref_frame_idx.get(cell.ref_frame0 as usize) else {
+        return false;
+    };
+    let Some(&order_hint) = ref_order_hint.get(slot as usize) else {
+        return false;
+    };
+    let Ok(order_hint) = i32::try_from(order_hint) else {
+        return false;
+    };
+    (order_hint - current_order_hint).clamp(-127, 127) > 0
 }
 
 fn collect_neighbour_context_cells(
@@ -345,7 +648,7 @@ fn collect_neighbour_context_cells(
         if len >= cells.len() {
             break;
         }
-        if let Some(cell) = probe.cell(grid, block) {
+        if let Some(cell) = probe.neighbour_context_cell(grid, block) {
             cells[len] = cell;
             len += 1;
         }
@@ -362,6 +665,7 @@ pub(super) struct MvStack {
 
 impl MvStack {
     /// `NumMvFound`: the number of candidate MVs.
+    #[cfg(test)]
     pub(super) fn num_mv_found(&self) -> usize {
         self.stack.len()
     }

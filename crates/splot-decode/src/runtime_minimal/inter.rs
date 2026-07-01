@@ -5,22 +5,22 @@ use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, QuantizationParams, TipFrameMode, TxMode,
+    FrameHeaderParseStatus, FrameReferenceStateView, QuantizationParams, TipFrameMode,
     parse_frame_header_core,
 };
-use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
+use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
     BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
-    PlaneId as ReconPlaneId, ReferenceFrameStore, ReferenceSlot,
+    PlaneId as ReconPlaneId, ReconSample, ReferenceFrameStore, ReferenceSlot,
 };
 
 use super::{
-    DecodeOptions, DecodePlannedObu, DecodeStreamPlan, IvfHeader, MinimalRuntimeDecodedFrame,
-    MinimalRuntimeFrame, Result, ensure_runtime_limits,
+    DecodeOptions, DecodePlannedObu, DecodeStreamPlan, IvfHeader, Result, ensure_runtime_limits,
 };
 use crate::error::{DecodeError, DecodeUnsupportedFeature};
+use crate::tile_payload::FrameCdfSubset;
 const FEATURE_ID: &str = "DECODE-FIRST-INTER-FRAME-FRONTIER";
 const MATRIX_ROW: &str = "first-inter-frame-frontier";
 const TIER_ID: &str = "general-inter-8bit420-frontier-v1";
@@ -98,7 +98,7 @@ impl Mv {
     const ZERO: Self = Self { row: 0, col: 0 };
 }
 #[allow(clippy::too_many_arguments)]
-pub(super) fn decode_minimal_inter_frame(
+pub(super) fn decode_minimal_inter_frame<T: ReconSample>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],
@@ -106,9 +106,10 @@ pub(super) fn decode_minimal_inter_frame(
     core: FrameHeaderCore,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
-    header: IvfHeader,
-    reference: &InterReferenceState<'_>,
-) -> Result<(MinimalRuntimeFrame, FrameHeaderCore)> {
+    _header: IvfHeader,
+    reference: &InterReferenceState<'_, T>,
+    bit_depth: BitDepth,
+) -> Result<(DecodedFrame<T>, FrameHeaderCore, FrameCdfSubset)> {
     let offset = frame_envelope.offset;
 
     if frame_envelope.header.obu_type != ObuType::RegularTileGroup {
@@ -120,57 +121,8 @@ pub(super) fn decode_minimal_inter_frame(
         ));
     }
 
-    let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
     let current_order_hint = i32::try_from(core.order_hint_lsb.unwrap_or(0)).unwrap_or(i32::MAX);
-    if let Some(inter_ctrl) = core.inter.as_ref() {
-        let (enable_avg_cdf, avg_cdf_type) = sequence
-            .transform_quant_entropy
-            .as_ref()
-            .map_or((false, 1u8), |tq| (tq.enable_avg_cdf, tq.avg_cdf_type));
-        let load = resolve_cdf_load(
-            inter_ctrl.signal_primary_ref_frame,
-            inter_ctrl.primary_ref_frame,
-            inter_ctrl.disable_cross_frame_cdf_init,
-            &inter_ctrl.ref_frame_idx,
-            &reference.ref_is_inter,
-            &reference.ref_base_q_idx,
-            &reference.ref_order_hint,
-            &reference.ref_frame_width,
-            &reference.ref_frame_height,
-            current_base_q_idx,
-            current_order_hint,
-            enable_avg_cdf,
-            avg_cdf_type,
-        );
-        if let ResolvedCdfLoad::OutOfRangePrimary = load {
-            return Err(inter_cap!(
-                "inter_primary_ref_out_of_range",
-                offset,
-                "inter.primary_ref_frame out of range",
-                SPEC_HEADER
-            ));
-        }
-        if let ResolvedCdfLoad::LoadSlot { primary, blend } = load {
-            if reference.ref_adapted.get(primary as usize).copied() == Some(true) {
-                return Err(inter_cap!(
-                    "inter_cdf_inheritance_unmodeled",
-                    offset,
-                    "inter.cdf.saved_primary",
-                    SPEC_HEADER
-                ));
-            }
-            if let Some(blend_slot) = blend
-                && reference.ref_adapted.get(blend_slot as usize).copied() == Some(true)
-            {
-                return Err(inter_cap!(
-                    "inter_blend_cdf_unmodeled",
-                    offset,
-                    "inter.cdf.blend_saved",
-                    SPEC_HEADER
-                ));
-            }
-        }
-    }
+    let initial_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
 
     let order_hint_bits = sequence
         .inter
@@ -230,16 +182,7 @@ pub(super) fn decode_minimal_inter_frame(
         .as_ref()
         .ok_or_else(|| inter_missing!("inter_missing_tail", offset, "inter.tail", SPEC_HEADER))?;
     let num_total_refs = inter.num_total_refs.unwrap_or(0);
-    if tail.reference_select {
-        if num_total_refs != 2 {
-            return Err(compound_cap!(
-                "compound_unsupported_num_total_refs",
-                offset,
-                "inter.compound.num_total_refs != 2",
-                SPEC_MODE_INFO
-            ));
-        }
-    } else if num_total_refs != 1 && num_total_refs != 2 {
+    if num_total_refs != 1 && num_total_refs != 2 {
         return Err(inter_cap!(
             "inter_unsupported_num_total_refs",
             offset,
@@ -257,7 +200,8 @@ pub(super) fn decode_minimal_inter_frame(
         ));
     }
 
-    let compound_is_joint_ctx = if tail.reference_select {
+    let block_reference_select = tail.reference_select && num_total_refs >= 2;
+    let compound_is_joint_ctx = if block_reference_select {
         validate_compound_sequence_subset(sequence, &core, offset)?;
         Some(compound_is_joint_context(
             &ref_frame_idx,
@@ -309,6 +253,7 @@ pub(super) fn decode_minimal_inter_frame(
             sequence,
             &core,
             options,
+            initial_cdfs.clone(),
         )?;
         let [tile] = tile_plan.work_units_mut() else {
             return Err(inter_cap!(
@@ -320,13 +265,7 @@ pub(super) fn decode_minimal_inter_frame(
         };
         tile.tile_size()
     };
-    ensure_runtime_limits(
-        limits,
-        frame_width,
-        frame_height,
-        tile_size,
-        BitDepth::Eight,
-    )?;
+    ensure_runtime_limits(limits, frame_width, frame_height, tile_size, bit_depth)?;
 
     let interpolation_filter = inter.interpolation_filter.ok_or_else(|| {
         inter_missing!(
@@ -337,28 +276,10 @@ pub(super) fn decode_minimal_inter_frame(
         )
     })?;
 
-    let blocks = decode_inter_blocks(
-        plan,
-        candidate,
-        bytes,
-        frame_envelope,
-        sequence,
-        &core,
-        options,
-        interpolation_filter,
-        num_total_refs as usize,
-        tail.reference_select,
-        compound_is_joint_ctx,
-        sequence
-            .inter
-            .as_ref()
-            .map_or(0, |seq_inter| seq_inter.num_same_ref_compound),
-    )?;
-
-    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace::<u8>(
+    let mut workspace = crate::runtime_minimal_recon::new_general_intra_workspace::<T>(
         frame_width as usize,
         frame_height as usize,
-        splot_recon::BitDepth::Eight,
+        bit_depth,
     )?;
     let qindex = core
         .quantization_params
@@ -375,49 +296,171 @@ pub(super) fn decode_minimal_inter_frame(
         .lossless_info
         .as_ref()
         .is_some_and(|lossless| lossless.allow_tcq);
+    let residual_use_ddt = sequence
+        .transform_quant_entropy
+        .as_ref()
+        .is_some_and(|tq| tq.enable_inter_ddt);
 
-    for placed in &blocks {
-        let rect = mc::McBlockRect {
-            luma_x: placed.luma_x,
-            luma_y: placed.luma_y,
-            luma_w: placed.luma_w,
-            luma_h: placed.luma_h,
-        };
-        let block_params =
-            resolve_inter_block_params(&ref_frame_idx, reference, placed, rect, offset)?;
-        mc::motion_compensate_inter_block_into(&mut workspace, block_params, offset)?;
-        if let Some(residual) = placed.block.residual.as_ref() {
-            add_inter_residual_to_workspace(
-                &mut workspace,
-                residual,
-                placed.luma_x,
-                placed.luma_y,
-                qindex,
-                luma_use_tcq,
-                offset,
-            )?;
-        }
-    }
+    let frame_cdfs = decode_inter_blocks(
+        plan,
+        candidate,
+        bytes,
+        frame_envelope,
+        sequence,
+        &core,
+        options,
+        interpolation_filter,
+        num_total_refs as usize,
+        block_reference_select,
+        compound_is_joint_ctx,
+        sequence
+            .inter
+            .as_ref()
+            .map_or(0, |seq_inter| seq_inter.num_same_ref_compound),
+        &ref_frame_idx,
+        reference,
+        &mut workspace,
+        qindex,
+        luma_use_tcq,
+        residual_use_ddt,
+        bit_depth,
+        initial_cdfs,
+    )?;
 
     let frame = workspace.freeze()?;
 
-    Ok((
-        MinimalRuntimeFrame {
-            frame: MinimalRuntimeDecodedFrame::Eight(frame),
-            frame_rate_numerator: header.timebase_denominator,
-            frame_rate_denominator: header.timebase_numerator,
-        },
-        core,
-    ))
+    Ok((frame, core, frame_cdfs))
 }
 
-fn resolve_inter_block_params<'a>(
+fn resolve_initial_frame_cdfs(
+    core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<'_, impl ReconSample>,
+    offset: ByteOffset,
+) -> Result<FrameCdfSubset> {
+    let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
+    let current_order_hint = i32::try_from(core.order_hint_lsb.unwrap_or(0)).unwrap_or(i32::MAX);
+    let default_cdfs = || {
+        FrameCdfSubset::default_for_base_q(current_base_q_idx).map_err(|_| {
+            inter_cap!(
+                "inter_cdf_default_init",
+                offset,
+                "inter.cdf.default_init",
+                SPEC_HEADER
+            )
+        })
+    };
+    let Some(inter_ctrl) = core.inter.as_ref() else {
+        return default_cdfs();
+    };
+    let (enable_avg_cdf, avg_cdf_type) = sequence
+        .transform_quant_entropy
+        .as_ref()
+        .map_or((false, 1u8), |tq| (tq.enable_avg_cdf, tq.avg_cdf_type));
+    let cdf_load = resolve_cdf_load(
+        inter_ctrl.signal_primary_ref_frame,
+        inter_ctrl.primary_ref_frame,
+        inter_ctrl.disable_cross_frame_cdf_init,
+        &inter_ctrl.ref_frame_idx,
+        &reference.ref_is_inter,
+        &reference.ref_base_q_idx,
+        &reference.ref_order_hint,
+        &reference.ref_frame_width,
+        &reference.ref_frame_height,
+        current_base_q_idx,
+        current_order_hint,
+        enable_avg_cdf,
+        avg_cdf_type,
+    );
+    trace_initial_frame_cdfs(
+        current_base_q_idx,
+        current_order_hint,
+        inter_ctrl.signal_primary_ref_frame,
+        inter_ctrl.primary_ref_frame,
+        inter_ctrl.disable_cross_frame_cdf_init,
+        enable_avg_cdf,
+        avg_cdf_type,
+        &inter_ctrl.ref_frame_idx,
+        reference,
+        cdf_load,
+    );
+    match cdf_load {
+        ResolvedCdfLoad::Default => default_cdfs(),
+        ResolvedCdfLoad::OutOfRangePrimary => Err(inter_cap!(
+            "inter_primary_ref_out_of_range",
+            offset,
+            "inter.primary_ref_frame out of range",
+            SPEC_HEADER
+        )),
+        ResolvedCdfLoad::LoadSlot {
+            primary,
+            blend: None,
+        } => reference.cdfs_for_slot(primary, offset),
+        ResolvedCdfLoad::LoadSlot {
+            primary: _,
+            blend: Some(_),
+        } => Err(inter_cap!(
+            "inter_blend_cdf_unmodeled",
+            offset,
+            "inter.cdf.blend_saved",
+            SPEC_HEADER
+        )),
+    }
+}
+
+fn trace_initial_frame_cdfs<T: ReconSample>(
+    current_base_q_idx: u32,
+    current_order_hint: i32,
+    signal_primary_ref_frame: Option<bool>,
+    primary_ref_frame: Option<u8>,
+    disable_cross_frame_cdf_init: Option<bool>,
+    enable_avg_cdf: bool,
+    avg_cdf_type: u8,
     ref_frame_idx: &[u32],
-    reference: &'a InterReferenceState<'a>,
+    reference: &InterReferenceState<'_, T>,
+    cdf_load: ResolvedCdfLoad,
+) {
+    if std::env::var_os("SPLOT_TRACE_CDF_LIFECYCLE").is_none() {
+        return;
+    }
+    let ref_size: Vec<_> = reference
+        .ref_frame_width
+        .iter()
+        .zip(&reference.ref_frame_height)
+        .map(|(w, h)| (*w, *h))
+        .collect();
+    let ref_has_cdfs: Vec<_> = reference
+        .ref_frame_cdfs
+        .iter()
+        .map(Option::is_some)
+        .collect();
+    eprintln!(
+        "cdf lifecycle base_q={} order_hint={} signal_primary_ref_frame={:?} primary_ref_frame={:?} disable_cross_frame_cdf_init={:?} enable_avg_cdf={} avg_cdf_type={} ref_frame_idx={:?} ref_valid={:?} ref_is_inter={:?} ref_base_q_idx={:?} ref_order_hint={:?} ref_size={:?} ref_has_cdfs={:?} load={:?}",
+        current_base_q_idx,
+        current_order_hint,
+        signal_primary_ref_frame,
+        primary_ref_frame,
+        disable_cross_frame_cdf_init,
+        enable_avg_cdf,
+        avg_cdf_type,
+        ref_frame_idx,
+        reference.ref_valid,
+        reference.ref_is_inter,
+        reference.ref_base_q_idx,
+        reference.ref_order_hint,
+        ref_size,
+        ref_has_cdfs,
+        cdf_load,
+    );
+}
+
+pub(in crate::runtime_minimal::inter) fn resolve_inter_block_params<'a, T: ReconSample>(
+    ref_frame_idx: &[u32],
+    reference: &'a InterReferenceState<'a, T>,
     placed: &PlacedInterBlock,
     rect: mc::McBlockRect,
     offset: ByteOffset,
-) -> Result<mc::InterBlockParams<'a>> {
+) -> Result<mc::InterBlockParams<'a, T>> {
     let ref_frame0 =
         resolve_block_reference_frame(ref_frame_idx, reference, placed.block.ref_frame0, offset)?;
     Ok(if let Some(ref_frame1) = placed.block.ref_frame1 {
@@ -431,17 +474,19 @@ fn resolve_inter_block_params<'a>(
             placed.block.mv1,
             placed.block.interp,
         )
+    } else if let Some(warp_params) = placed.block.warp_params {
+        mc::InterBlockParams::single_warp(ref_frame0, rect, warp_params)
     } else {
         mc::InterBlockParams::single(ref_frame0, rect, placed.block.mv, placed.block.interp)
     })
 }
 
-fn resolve_block_reference_frame<'a>(
+fn resolve_block_reference_frame<'a, T: ReconSample>(
     ref_frame_idx: &[u32],
-    reference: &'a InterReferenceState<'a>,
+    reference: &'a InterReferenceState<'a, T>,
     ref_frame: i8,
     offset: ByteOffset,
-) -> Result<&'a DecodedFrame<u8>> {
+) -> Result<&'a DecodedFrame<T>> {
     let ref_slot = ref_frame_idx
         .get(ref_frame as usize)
         .copied()
@@ -537,7 +582,7 @@ fn validate_compound_sequence_subset(
 
 fn compound_is_joint_context(
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_>,
+    reference: &InterReferenceState<'_, impl ReconSample>,
     current_order_hint: i32,
     offset: ByteOffset,
 ) -> Result<usize> {
@@ -597,16 +642,14 @@ fn compound_is_joint_context_from_order_hints(
 fn get_relative_dist(a: i32, b: i32) -> i32 {
     (a - b).clamp(-127, 127)
 }
-const INTER_LUMA_LOG2_SIDE: u32 = 6;
-const INTER_CHROMA_LOG2_SIDE: u32 = 5;
 #[allow(clippy::too_many_arguments)]
-fn add_inter_residual_to_workspace(
-    workspace: &mut splot_recon::CurrentFrameWorkspace<u8>,
+pub(in crate::runtime_minimal::inter) fn add_inter_residual_to_workspace(
+    workspace: &mut splot_recon::CurrentFrameWorkspace<impl ReconSample>,
     residual: &InterResidual,
-    luma_x: usize,
-    luma_y: usize,
     qindex: u32,
     luma_use_tcq: bool,
+    residual_use_ddt: bool,
+    bit_depth: BitDepth,
     offset: ByteOffset,
 ) -> Result<()> {
     let map_recon = |_| {
@@ -617,44 +660,20 @@ fn add_inter_residual_to_workspace(
             SPEC_MC
         )
     };
-    let chroma_x = luma_x >> 1;
-    let chroma_y = luma_y >> 1;
-    for (block, plane, x, y, log2_side, use_tcq) in [
-        (
-            &residual.luma,
-            ReconPlaneId::Y,
-            luma_x,
-            luma_y,
-            INTER_LUMA_LOG2_SIDE,
-            luma_use_tcq,
-        ),
-        (
-            &residual.u,
-            ReconPlaneId::U,
-            chroma_x,
-            chroma_y,
-            INTER_CHROMA_LOG2_SIDE,
-            false,
-        ),
-        (
-            &residual.v,
-            ReconPlaneId::V,
-            chroma_x,
-            chroma_y,
-            INTER_CHROMA_LOG2_SIDE,
-            false,
-        ),
-    ] {
-        crate::runtime_minimal_recon::reconstruct_inter_block_residual_into(
+    for block in &residual.blocks {
+        let use_tcq = block.plane == ReconPlaneId::Y && luma_use_tcq;
+        crate::runtime_minimal_recon::reconstruct_inter_block_residual_rect_into(
             workspace,
-            block,
-            plane,
-            x,
-            y,
-            log2_side,
+            &block.coeffs,
+            block.plane,
+            block.x,
+            block.y,
+            block.log2_width,
+            block.log2_height,
             qindex,
             use_tcq,
-            splot_recon::BitDepth::Eight,
+            residual_use_ddt,
+            bit_depth,
         )
         .map_err(map_recon)?;
     }
@@ -667,7 +686,14 @@ pub(super) struct InterBlock {
     pub(super) mv: Mv,
     pub(super) mv1: Mv,
     pub(super) interp: ReconInterpolationFilter,
+    pub(super) warp_params: Option<[i64; 6]>,
+    pub(super) bawp: BawpSyntax,
     pub(super) residual: Option<InterResidual>,
+}
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct BawpSyntax {
+    pub(super) luma_flag: u8,
+    pub(super) chroma_flag: bool,
 }
 #[derive(Clone, Debug)]
 pub(super) struct PlacedInterBlock {
@@ -679,12 +705,19 @@ pub(super) struct PlacedInterBlock {
 }
 #[derive(Clone, Debug)]
 pub(super) struct InterResidual {
-    pub(super) luma: crate::tile_payload::LumaCoeffBlock,
-    pub(super) u: crate::tile_payload::LumaCoeffBlock,
-    pub(super) v: crate::tile_payload::LumaCoeffBlock,
+    pub(super) blocks: Vec<InterResidualBlock>,
 }
-pub(super) struct InterReferenceState<'a> {
-    pub(super) store: &'a ReferenceFrameStore<&'a DecodedFrame<u8>>,
+#[derive(Clone, Debug)]
+pub(super) struct InterResidualBlock {
+    pub(super) plane: ReconPlaneId,
+    pub(super) x: usize,
+    pub(super) y: usize,
+    pub(super) log2_width: u32,
+    pub(super) log2_height: u32,
+    pub(super) coeffs: crate::tile_payload::LumaCoeffBlock,
+}
+pub(super) struct InterReferenceState<'a, T: ReconSample> {
+    pub(super) store: &'a ReferenceFrameStore<&'a DecodedFrame<T>>,
     pub(super) ref_valid: Vec<bool>,
     pub(super) ref_order_hint: Vec<u32>,
     pub(super) ref_frame_width: Vec<u32>,
@@ -692,13 +725,30 @@ pub(super) struct InterReferenceState<'a> {
     pub(super) ref_base_q_idx: Vec<u32>,
     pub(super) ref_is_inter: Vec<bool>,
     pub(super) ref_adapted: Vec<bool>,
+    pub(super) lr_frame_filter_class_counts: Vec<[u8; 3]>,
+    pub(super) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
 }
 
-impl InterReferenceState<'_> {
-    fn frame_for_slot(&self, slot: u32) -> Option<&DecodedFrame<u8>> {
+impl<T: ReconSample> InterReferenceState<'_, T> {
+    fn frame_for_slot(&self, slot: u32) -> Option<&DecodedFrame<T>> {
         let slot = ReferenceSlot::new(slot as usize).ok()?;
         self.store.get(slot).ok().flatten().copied()
     }
+
+    fn cdfs_for_slot(&self, slot: u32, offset: ByteOffset) -> Result<FrameCdfSubset> {
+        self.ref_frame_cdfs
+            .get(slot as usize)
+            .and_then(Clone::clone)
+            .ok_or_else(|| {
+                inter_missing!(
+                    "inter_missing_reference_cdf_context",
+                    offset,
+                    "inter.cdf.saved_primary",
+                    SPEC_HEADER
+                )
+            })
+    }
+
     fn header_view(&self) -> FrameReferenceStateView<'_> {
         FrameReferenceStateView::from_slots_with_base_q_idx(
             &self.ref_valid,
@@ -707,12 +757,13 @@ impl InterReferenceState<'_> {
             &self.ref_frame_height,
             &self.ref_base_q_idx,
         )
+        .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
     }
 }
 pub(super) fn parse_validated_inter_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<'_>,
+    reference: &InterReferenceState<'_, impl ReconSample>,
 ) -> Result<FrameHeaderCore> {
     let core = parse_inter_frame_core(envelope, sequence, reference)?;
     validate_inter_frame_core(&core, sequence, envelope.offset)?;
@@ -721,7 +772,7 @@ pub(super) fn parse_validated_inter_frame_core(
 fn parse_inter_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<'_>,
+    reference: &InterReferenceState<'_, impl ReconSample>,
 ) -> Result<FrameHeaderCore> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     let is_first_tile_group = reader.read_bit().map_err(|_| {
@@ -778,11 +829,11 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
-    if core.show_existing_frame != Some(false) || core.immediate_output_frame != Some(true) {
+    if core.show_existing_frame != Some(false) {
         return Err(inter_cap!(
             "inter_unsupported_output_control",
             offset,
-            "inter.output_control",
+            "inter.show_existing_frame",
             SPEC_HEADER
         ));
     }
@@ -796,26 +847,19 @@ fn validate_inter_frame_core(
     };
     let width = frame_size.width;
     let height = frame_size.height;
-    let superblock_grid = width != 0
-        && height != 0
-        && width.is_multiple_of(super::MINIMAL_WIDTH)
-        && height.is_multiple_of(super::MINIMAL_HEIGHT);
-    if !superblock_grid {
+    if width == 0 || height == 0 {
         return Err(inter_cap!(
             "inter_unsupported_frame_size",
             offset,
-            "inter.frame_size not aligned to 64x64 superblocks",
+            "inter.frame_size empty",
             SPEC_HEADER
         ));
     }
-    if sequence
-        .partition
-        .is_none_or(|partition| partition.seq_sb_size() != SuperblockSize::Block64x64)
-    {
+    if sequence.partition.is_none() {
         return Err(inter_cap!(
             "inter_unsupported_superblock_size",
             offset,
-            "inter.superblock_size != 64x64",
+            "inter.superblock_size unavailable",
             SPEC_HEADER
         ));
     }
@@ -835,7 +879,7 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
-    if core
+    let unsupported_tools = core
         .quantization_params
         .is_none_or(|quant| quant.base_q_idx == 0)
         || core
@@ -850,31 +894,96 @@ fn validate_inter_frame_core(
             .lossless_info
             .as_ref()
             .is_none_or(|lossless| lossless.coded_lossless)
-        || core
-            .deblocking_filter_params
-            .is_none_or(|filter| filter.apply_deblocking_filter != [false; 4])
         || core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable)
-        || core
-            .cdef_params
-            .as_ref()
-            .is_none_or(|cdef| cdef.cdef_frame_enable)
-        || core.lr_params.as_ref().is_none_or(|lr| lr.uses_lr)
-        || core
-            .ccso_params
-            .as_ref()
-            .is_none_or(|ccso| ccso.ccso_frame_flag.is_some() || !ccso.planes.is_empty())
-        || core.inter_tail.as_ref().is_none_or(|tail| {
-            tail.apply_grain || tail.tx_mode != TxMode::Largest || tail.skip_mode_present
-        })
-        || core.inter.as_ref().is_none_or(|inter| {
-            inter
-                .frame_enabled_motion_modes
-                .is_some_and(|modes| modes.iter().any(|&enabled| enabled))
-        })
-        || sequence.inter.as_ref().is_none_or(|seq_inter| {
-            seq_inter.enable_flex_mvres || seq_inter.enable_adaptive_mvd || seq_inter.enable_bawp
-        })
-    {
+        || core.inter_tail.as_ref().is_none_or(|tail| tail.apply_grain);
+    if std::env::var_os("SPLOT_TRACE_INTER_FRAME_TOOLS").is_some() {
+        eprintln!(
+            "inter tools offset={} base_q={:?} segmentation={:?} qmatrix={:?} delta_q={:?} lossless={:?} deblock={:?} gdf={:?} cdef={:?} lr={:?} ccso={:?} tail={:?}",
+            offset.get(),
+            core.quantization_params.map(|quant| quant.base_q_idx),
+            core.segmentation_params
+                .as_ref()
+                .map(|seg| seg.segmentation_enabled),
+            core.setup_qm_params.as_ref().map(|qm| qm.using_qmatrix),
+            core.delta_q_params
+                .as_ref()
+                .map(|delta| delta.delta_q_present),
+            core.lossless_info
+                .as_ref()
+                .map(|lossless| lossless.coded_lossless),
+            core.deblocking_filter_params
+                .as_ref()
+                .map(|filter| filter.apply_deblocking_filter),
+            core.gdf_params.as_ref().map(|gdf| gdf.gdf_frame_enable),
+            core.cdef_params.as_ref().map(|cdef| cdef.cdef_frame_enable),
+            core.lr_params.as_ref().map(|lr| lr.uses_lr),
+            core.ccso_params
+                .as_ref()
+                .map(|ccso| (ccso.ccso_frame_flag, ccso.planes.len())),
+            core.inter_tail.as_ref().map(|tail| {
+                (
+                    tail.apply_grain,
+                    tail.tx_mode,
+                    tail.reference_select,
+                    tail.skip_mode_present,
+                    tail.allow_bawp,
+                    tail.use_global_motion,
+                )
+            }),
+        );
+        if let Some(ccso) = core.ccso_params.as_ref() {
+            eprintln!(
+                "inter ccso detail offset={} frame_flag={:?} planes={:?}",
+                offset.get(),
+                ccso.ccso_frame_flag,
+                ccso.planes
+                    .iter()
+                    .map(|plane| (
+                        plane.ccso_planes,
+                        plane.ccso_bo_only,
+                        plane.ccso_scale_idx,
+                        plane.ccso_quant_idx,
+                        plane.ccso_ext_filter,
+                        plane.ccso_edge_clf,
+                        plane.ccso_max_band_log2,
+                        plane.ccso_offset_idx.len(),
+                    ))
+                    .collect::<Vec<_>>()
+            );
+        }
+        if let Some(lr) = core.lr_params.as_ref() {
+            eprintln!(
+                "inter lr detail offset={} sizes={:?} planes={:?}",
+                offset.get(),
+                lr.loop_restoration_size,
+                lr.planes
+                    .iter()
+                    .map(|plane| (
+                        plane.restoration_type,
+                        plane.frame_filters_on,
+                        plane.num_filter_classes,
+                        plane
+                            .frame_filter_bank
+                            .as_ref()
+                            .map(|bank| bank.classes.len()),
+                    ))
+                    .collect::<Vec<_>>()
+            );
+        }
+        if let Some(inter) = core.inter.as_ref() {
+            eprintln!(
+                "inter ref detail offset={} num_total_refs={:?} ref_frame_idx={:?} use_bru={:?} bru_ref={:?} bru_inactive={:?} use_ref_frame_mvs={:?}",
+                offset.get(),
+                inter.num_total_refs,
+                inter.ref_frame_idx,
+                inter.use_bru,
+                inter.bru_ref,
+                inter.bru_inactive,
+                inter.use_ref_frame_mvs,
+            );
+        }
+    }
+    if unsupported_tools {
         return Err(inter_cap!(
             "inter_unsupported_frame_tools",
             offset,
