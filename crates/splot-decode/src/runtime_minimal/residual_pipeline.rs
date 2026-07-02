@@ -686,13 +686,13 @@ impl ResidualPlanePlan {
     /// `BlockDecoded` counts. The above-row MRL read offset zeroes only at a
     /// superblock boundary; interior units sit below sibling units, never at
     /// one, so they read the full `MrlIndex` line (AVM `above_mrl_idx` rule).
+    /// § 5.20.6.3 `LumaTxMiddle` units pass `allowCorners = 0` (§ 5.20.7.24),
+    /// zeroing the top-right/bottom-left counts; modes consuming those counts
+    /// defer until the zeroed-count variant lands.
     fn transform_unit_plan(
         &self,
         block: &PositionedLumaCoeffBlock,
     ) -> core::result::Result<ResidualPlanePlan, GeneralIntraResidualError> {
-        // § 5.20.6.3 `LumaTxMiddle` units pass `allowCorners = 0`
-        // (§ 5.20.7.24), zeroing the top-right/bottom-left counts; modes that
-        // consume those counts defer until the zeroed-count variant lands.
         let corner_free = matches!(
             self.reconstruction,
             ResidualReconstructionPlan::Rect { .. }

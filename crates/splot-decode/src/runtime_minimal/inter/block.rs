@@ -1678,8 +1678,10 @@ struct InterIntraPlanePrediction<T> {
 /// Predicts the § 5.20.7.22 interintra intra predictor for every plane of the
 /// block into caller-owned snapshots (edges are read from already-reconstructed
 /// neighbours, so this runs before motion compensation overwrites the block).
-/// Interintra needs `MiSize >= 8x8`, so with 4:2:0 the chroma geometry always
-/// mirrors luma (`sub8x8Inter` never holds) and every plane blends.
+/// Blocks whose chroma belongs to another leaf (§ 5.20.7.22 `sub8x8Inter`,
+/// chroma-offset shared partitions) cannot reach this blend today: their
+/// sub-8x8 chroma plane fail-closes in the warp small-block defer first. When
+/// that defer lifts, U/V must be skipped unless the block carries its chroma.
 fn predict_interintra_planes<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
