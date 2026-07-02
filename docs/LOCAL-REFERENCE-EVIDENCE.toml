@@ -2766,3 +2766,159 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-cdefuv-q170-raw-md5"
 right = "dav2d-cdefuv-q170-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-2frame-deblock-inter-32x32-10bit-q100"
+feature_id = "DECODE-FIRST-INTER-FRAME-FRONTIER"
+decoder_support_rows = ["first-inter-frame-frontier"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the two-frame 10-bit 4:2:0 32x32 inter IVF fixture whose INTER frame activates the full 7.17 deblocking pass set (apply_deblocking_filter = [true,true,true,true]; CDEF/LR/CCSO frame-inactive), the first committed deblock-active inter decode target for the shared final filter pipeline; splot reproduces that raw output byte-for-byte."
+recorded_at = "2026-07-02"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2frame-deblock-inter-32x32-10bit-q100.ivf"
+sha256 = "76ebb9ccd75ca79e28e8d451d4d09ec140d9ee23523c6f10a111ab6e216bd10e"
+size_bytes = 244
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally with avmenc from a project-owned synthetic two-frame 10-bit I420 input (separable smooth sinusoidal luma ramp - horizontal plus vertical sine, no diagonal term, many distinct values per 16x16 block to avoid the screen-content auto-detector; frame 1 phase-shifted; structured chroma) at fixed --qp=100 --sb-size=64, single tile, kf-max-dist 2, cpu-used 4, with warped motion (all modes), global motion, interintra (all modes), TIP, skip-mode, extended segmentation, delta-q, aq, GDF, TCQ, inter-DDT, IntraBC, smooth-intra, angle-delta, FSC, Wiener-NS and BAWP disabled and deblocking/CDEF/restoration/CCSO left enabled; the RD search activates all four deblocking passes on the inter frame and leaves CDEF/LR/CCSO frame-inactive. The encode is deterministic (a byte-identical re-encode reproduces the committed IVF). AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --i420 --rawvideo output MD5 for {fixture:input}."
+output_digest_id = "avm-2frame-deblock-inter-32x32-10bit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "29381ec960496d7a604acd63abd43cd3"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf --muxer yuv output MD5 for {fixture:input}."
+output_digest_id = "dav2d-2frame-deblock-inter-32x32-10bit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "29381ec960496d7a604acd63abd43cd3"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-2frame-deblock-inter-32x32-10bit-raw-md5"
+right = "dav2d-2frame-deblock-inter-32x32-10bit-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-2frame-cdef-inter-64x32-10bit-q120"
+feature_id = "DECODE-FIRST-INTER-FRAME-FRONTIER"
+decoder_support_rows = ["first-inter-frame-frontier"]
+kind = "reference-output-agreement"
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the two-frame 10-bit 4:2:0 64x32 inter IVF fixture whose INTER frame activates CDEF (cdef_frame_enable = true; deblock/LR/CCSO inactive) with TX_MODE_SELECT, the first committed CDEF-active inter decode target; splot reproduces that raw output byte-for-byte."
+recorded_at = "2026-07-02"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2frame-cdef-inter-64x32-10bit-q120.ivf"
+sha256 = "f6462ea929e225b03d707b21f2af44c2aaeaf3932f61248e484e0f727c01153a"
+size_bytes = 382
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally with avmenc from a project-owned synthetic two-frame 10-bit I420 edge-grid input (sinusoid base plus strong axis-aligned 8-sample edge grid at weight 0.3, phase-shifted on frame 1) at fixed --qp=120 --sb-size=64, single tile, kf-max-dist 2, cpu-used 4, with the same broad tool disable-set as the deblock fixture and additionally deblocking, restoration, CCSO and CCTX disabled so the RD search picks CDEF as the only ringing filter (AVM RD-disables CDEF whenever deblocking is available for this content class). The encode is deterministic. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --i420 --rawvideo output MD5 for {fixture:input}."
+output_digest_id = "avm-2frame-cdef-inter-64x32-10bit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "0293c73bb82f8ce13aa1a24ab1a9d294"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "f4f96cb06bb3cd3f31e29e1f190f1c0e373ab352"
+version_summary = "dav2d 0.0.1-191-gf4f96cb0 (commit f4f96cb0), decoded with --demuxer ivf; exact version output not archived."
+command_summary = "Local dav2d --demuxer ivf --muxer yuv output MD5 for {fixture:input}."
+output_digest_id = "dav2d-2frame-cdef-inter-64x32-10bit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "0293c73bb82f8ce13aa1a24ab1a9d294"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-2frame-cdef-inter-64x32-10bit-raw-md5"
+right = "dav2d-2frame-cdef-inter-64x32-10bit-raw-md5"
+
+[[evidence]]
+id = "lref-avm-syn-2frame-ccso-inter-32x32-10bit-q100"
+feature_id = "DECODE-FIRST-INTER-FRAME-FRONTIER"
+decoder_support_rows = ["first-inter-frame-frontier"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output MD5 recorded for the two-frame 10-bit 4:2:0 32x32 inter IVF fixture whose INTER frame codes CCSO fresh on all three planes (ccso_frame_flag = true, reuse_ccso = sb_reuse_ccso = false, 72 CCSO units per plane; deblock/CDEF/LR inactive), the first committed CCSO-active inter decode target; splot reproduces that raw output byte-for-byte. dav2d DISAGREES with AVM on this stream (its AV2 CCSO application diverges, consistent with the documented dav2d full-toolset AV2 mis-decode finding), so per the avmdec-only oracle decision this entry records the AVM run alone and asserts splot-vs-AVM equality via the committed decode tests."
+recorded_at = "2026-07-02"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2frame-ccso-inter-32x32-10bit-q100.ivf"
+sha256 = "a7c7919d74b1ff819731b12571b2312875c19fc4956de365fddd9757fde45ad9"
+size_bytes = 362
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally with avmenc from the same project-owned synthetic two-frame 10-bit I420 separable-sinusoid input as the deblock fixture at fixed --qp=100 --sb-size=64, single tile, kf-max-dist 2, cpu-used 4, with the same broad tool disable-set and additionally deblocking, CDEF, restoration and CCTX disabled while CCSO stays enabled, so the encoder codes CCSO fresh on the inter frame (with deblocking enabled the encoder either leaves CCSO frame-inactive or picks reference reuse, which the decoder defers). The encode is deterministic. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --i420 --rawvideo output MD5 for {fixture:input}."
+output_digest_id = "avm-2frame-ccso-inter-32x32-10bit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "ce742b18cb360e822b96e6808b8d5bdc"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "avm-inspect"
+tool = "avm"
+executable_name = "inspect"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM inspection-build examples/inspect from the same checkout; its --dump-recon output is documented as equal to avmdec output."
+command_summary = "Local inspect --dump-recon raw output MD5 for {fixture:input}."
+output_digest_id = "avm-inspect-2frame-ccso-inter-32x32-10bit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "ce742b18cb360e822b96e6808b8d5bdc"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-2frame-ccso-inter-32x32-10bit-raw-md5"
+right = "avm-inspect-2frame-ccso-inter-32x32-10bit-raw-md5"

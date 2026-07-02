@@ -39,6 +39,18 @@ const TWO_FRAME_INTER_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64-10bit.ivf"
 );
 
+const DEBLOCK_INTER_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-2frame-deblock-inter-32x32-10bit-q100.ivf"
+);
+
+const CDEF_INTER_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-2frame-cdef-inter-64x32-10bit-q120.ivf"
+);
+
+const CCSO_INTER_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-2frame-ccso-inter-32x32-10bit-q100.ivf"
+);
+
 const TWO_FRAME_SUBPEL_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-subpel-inter-64x64.ivf"
 );
@@ -358,19 +370,68 @@ fn ten_bit_flex_mvres_inter_fixture_decodes_avm_bit_exact() {
         2,
         "the 10-bit flex-mvres stream decodes a key frame + one inter frame"
     );
-    let hashes: Vec<String> = frames
+    assert_eq!(
+        ten_bit_frame_hashes(&frames),
+        [
+            "973eb3fc4b112c865f939dc1339824ca0b2a1522ca2b5ec70311afb459436e2d",
+            "071c44ed4bf3bce19d530834f741bc852b9eff5163c1f3012ea94ad1f5a890c5"
+        ],
+        "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
+    );
+}
+
+fn ten_bit_frame_hashes(frames: &[MinimalRuntimeFrame]) -> Vec<String> {
+    frames
         .iter()
         .map(|output| {
             DecodedFrameHashInput::new(output.frame_ten().expect("10-bit frame"))
                 .compute_hash()
                 .to_hex()
         })
-        .collect();
+        .collect()
+}
+
+#[test]
+fn deblock_active_inter_fixture_decodes_avm_bit_exact() {
+    let frames = decode_fixture(DEBLOCK_INTER_10BIT_FIXTURE);
     assert_eq!(
-        hashes,
+        frames.len(),
+        2,
+        "key frame + one deblock-active inter frame"
+    );
+    assert_eq!(
+        ten_bit_frame_hashes(&frames),
         [
-            "973eb3fc4b112c865f939dc1339824ca0b2a1522ca2b5ec70311afb459436e2d",
-            "071c44ed4bf3bce19d530834f741bc852b9eff5163c1f3012ea94ad1f5a890c5"
+            "9978e070c5ec6d67a4338ce86cfac42b4a5e833f9502a91da6bd3f3c3220239c",
+            "6232ef9d0a3a82875a7d48341029b3cbc0ba03fe452f758851203bd00004208b"
+        ],
+        "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
+    );
+}
+
+#[test]
+fn cdef_active_inter_fixture_decodes_avm_bit_exact() {
+    let frames = decode_fixture(CDEF_INTER_10BIT_FIXTURE);
+    assert_eq!(frames.len(), 2, "key frame + one CDEF-active inter frame");
+    assert_eq!(
+        ten_bit_frame_hashes(&frames),
+        [
+            "a3b6f98ab490ab31d2febd7d238d543ff3826f2ff6ef53c167d17bfb66bfb254",
+            "55f282e51d2df475fa845926b4328dbf0061e811ec283417be375a6d43860ec3"
+        ],
+        "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
+    );
+}
+
+#[test]
+fn ccso_active_inter_fixture_decodes_avm_bit_exact() {
+    let frames = decode_fixture(CCSO_INTER_10BIT_FIXTURE);
+    assert_eq!(frames.len(), 2, "key frame + one CCSO-active inter frame");
+    assert_eq!(
+        ten_bit_frame_hashes(&frames),
+        [
+            "95399be9043a0fd3fb501d4708303825d82c189ba5e0b8eed4f41f3f005b3137",
+            "0ffefc28c772da1b372dafdeff9bce414449a20f36e170ec24fffbefd5780cd3"
         ],
         "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
     );
