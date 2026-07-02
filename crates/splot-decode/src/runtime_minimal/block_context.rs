@@ -157,6 +157,16 @@ pub(super) struct NeighbourAvailability {
 }
 
 impl NeighbourAvailability {
+    /// § 5.20.7.24 `allowCorners == 0`: the same availability with the
+    /// top-right/bottom-left counts zeroed.
+    pub(super) const fn without_corners(self) -> Self {
+        Self {
+            num_above_right: 0,
+            num_below_left: 0,
+            ..self
+        }
+    }
+
     const fn new(
         has_above: bool,
         has_left: bool,

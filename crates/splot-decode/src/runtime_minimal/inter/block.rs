@@ -1207,11 +1207,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             n4w,
             n4h,
             ref_frame0,
-            if warp_mode == WarpInterMode::WarpNewmv {
-                NeighbourYMode::NewMv
-            } else {
-                NeighbourYMode::Other
-            },
+            NeighbourYMode::Other,
             warp.mv,
             skip == 1,
             interp_filter_symbol(ReconInterpolationFilter::EightTap),

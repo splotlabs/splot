@@ -156,6 +156,9 @@ struct ResidualPlanePlan {
     residual_height4: usize,
     fsc_mode: bool,
     txb_skip_fsc_mode: bool,
+    /// § 5.20.7.24 `allowCorners == 0` (a § 5.20.6.3 middle transform unit):
+    /// the top-right/bottom-left availability counts read as zero.
+    zero_corners: bool,
     reconstruction: ResidualReconstructionPlan,
 }
 
@@ -481,6 +484,7 @@ impl ResidualPlanePlan {
             residual_height4,
             fsc_mode,
             txb_skip_fsc_mode,
+            zero_corners: false,
             reconstruction,
         })
     }
@@ -693,24 +697,6 @@ impl ResidualPlanePlan {
         &self,
         block: &PositionedLumaCoeffBlock,
     ) -> core::result::Result<ResidualPlanePlan, GeneralIntraResidualError> {
-        let corner_free = matches!(
-            self.reconstruction,
-            ResidualReconstructionPlan::Rect { .. }
-                | ResidualReconstructionPlan::LumaRectCardinal { .. }
-                | ResidualReconstructionPlan::LumaRectPaeth { .. }
-                | ResidualReconstructionPlan::LumaSquare {
-                    plan: IntraLumaPlan::Dc
-                        | IntraLumaPlan::CardinalNeighbour { .. }
-                        | IntraLumaPlan::PaethNeighbour
-                        | IntraLumaPlan::DirectionalMiddle { .. },
-                    ..
-                }
-        );
-        if block.middle && !corner_free {
-            return Err(GeneralIntraResidualError::UnsupportedTransformPartition {
-                reason: "general_intra_partitioned_middle_unit_corners",
-            });
-        }
         let reconstruction = match self.reconstruction {
             ResidualReconstructionPlan::Rect { .. }
             | ResidualReconstructionPlan::LumaRectCardinal { .. }
@@ -834,6 +820,7 @@ impl ResidualPlanePlan {
             tx,
             residual_width4: width4.max(1),
             residual_height4: height4.max(1),
+            zero_corners: block.middle,
             reconstruction,
             ..*self
         })
@@ -942,6 +929,21 @@ impl ResidualPlanePlan {
         self.tx.width4() == self.residual_width4 && self.tx.height4() == self.residual_height4
     }
 
+    /// § 5.20.7.24 availability counts for the luma prediction arms, zeroed
+    /// when `allowCorners == 0` for this transform unit.
+    fn luma_corner_neighbours(
+        self,
+        block_ctx: BlockCtx,
+        block_decoded: &TileBlockDecodedState,
+    ) -> super::block_context::NeighbourAvailability {
+        let neighbours = block_ctx.neighbours_from_block_decoded(PlaneId::Y, block_decoded);
+        if self.zero_corners {
+            neighbours.without_corners()
+        } else {
+            neighbours
+        }
+    }
+
     fn reconstruct<T: ReconSample>(
         self,
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -979,7 +981,7 @@ impl ResidualPlanePlan {
                 enable_ibp,
             ),
             ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq } => {
-                let neighbours = block_ctx.neighbours_from_block_decoded(PlaneId::Y, block_decoded);
+                let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
                 crate::runtime_minimal_recon::reconstruct_general_intra_luma_smooth_rect_block_into(
                     workspace,
                     coeffs,
@@ -1046,7 +1048,7 @@ impl ResidualPlanePlan {
                 secondary_mrl,
                 use_tcq,
             } => {
-                let neighbours = block_ctx.neighbours_from_block_decoded(PlaneId::Y, block_decoded);
+                let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
                 let mrl = crate::runtime_minimal_recon::OneSidedAboveMrl {
                     mrl_index,
                     above_mrl_index,
@@ -1087,7 +1089,7 @@ impl ResidualPlanePlan {
                 }
             }
             ResidualReconstructionPlan::LumaRectOneSidedAbove { p_angle, use_tcq } => {
-                let neighbours = block_ctx.neighbours_from_block_decoded(PlaneId::Y, block_decoded);
+                let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
                 crate::runtime_minimal_recon::reconstruct_general_intra_one_sided_neighbour_block_into(
                     workspace,
                     coeffs,
@@ -1112,7 +1114,7 @@ impl ResidualPlanePlan {
                 secondary_mrl,
                 use_tcq,
             } => {
-                let neighbours = block_ctx.neighbours_from_block_decoded(PlaneId::Y, block_decoded);
+                let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
                 if secondary_mrl {
                     crate::runtime_minimal_recon::reconstruct_general_intra_mrl_secondary_left_block_into(
                         workspace,
@@ -1172,7 +1174,7 @@ impl ResidualPlanePlan {
                 block_ctx.bit_depth(),
             ),
             ResidualReconstructionPlan::LumaRectOneSidedLeft { p_angle, use_tcq } => {
-                let neighbours = block_ctx.neighbours_from_block_decoded(PlaneId::Y, block_decoded);
+                let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
                 crate::runtime_minimal_recon::reconstruct_general_intra_one_sided_left_neighbour_block_into(
                     workspace,
                     coeffs,
