@@ -450,6 +450,25 @@ fn ccso_active_inter_fixture_decodes_avm_bit_exact() {
 }
 
 #[test]
+fn comp_ref_allowed_follows_the_spec_block_size_arms() {
+    for (n4w, n4h, allowed) in [
+        (1, 1, false),
+        (1, 2, false),
+        (2, 1, false),
+        (1, 4, true),
+        (4, 1, true),
+        (2, 2, true),
+        (16, 16, true),
+    ] {
+        assert_eq!(
+            super::block::is_comp_ref_allowed(n4w, n4h),
+            allowed,
+            "is_comp_ref_allowed({n4w}, {n4h})"
+        );
+    }
+}
+
+#[test]
 fn same_ref_compound_fixture_defers_at_the_block_comp_mode_read() {
     let Err(error) =
         decode_fixture_with_options(SAMEREF_COMPOUND_10BIT_FIXTURE, &DecodeOptions::default())

@@ -809,7 +809,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
     }
 
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-    let uses_compound = if reference_select {
+    let uses_compound = if reference_select && is_comp_ref_allowed(n4w, n4h) {
         read_block_reference_mode(
             cdfs,
             symbols,
@@ -1579,6 +1579,12 @@ fn reconstruct_intrabc_luma_predictor<T: ReconSample>(
                 SPEC_MODE_INFO
             )
         })
+}
+
+/// AV2 § 5.20.7.10 `is_comp_ref_allowed()`: `Min(w, h) >= 8 ||
+/// is_thin_4xn_nx4_block()`, in units of 4-sample mode-info columns/rows.
+pub(super) fn is_comp_ref_allowed(n4w: usize, n4h: usize) -> bool {
+    n4w.min(n4h) >= 2 || (n4w == 1 && n4h >= 4) || (n4h == 1 && n4w >= 4)
 }
 
 fn read_block_reference_mode(

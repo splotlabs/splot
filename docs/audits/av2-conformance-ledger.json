@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "d7fb78613611421b6b60c2038928f2a84c4642c6",
+  "audited_commit": "a1a76bd514abb66f1d5649ddba764194cb31e3df",
   "outcome": "success",
   "files": [
     {
@@ -1556,7 +1556,7 @@
     },
     {
       "path": "crates/splot-core/src/write/frame_restoration.rs",
-      "sha256": "4b580555d5c3cdf50094a57c3c49e2d259219cfa65ed7be4e78363e75e9688b7",
+      "sha256": "e14257117499053cf4430d4d81c9dd468ee255c2acac9bea54c4cd8d350a3a57",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "ENC-BITSTREAM-WRITER"
@@ -2112,7 +2112,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter.rs",
-      "sha256": "7aa2afdc56d32c93dfa2458c3e17dcc142315555b9aa9d3bbd4de312745f329d",
+      "sha256": "076ec5144fba97590ca2b269e087498a8bad7c67306cb677b96795b6d893d37e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-FIRST-INTER-FRAME-FRONTIER",
@@ -2124,7 +2124,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "4be51a74418d800a21ef7c8d9948884f5be6eb2d58be20d6fe5b95e423170703",
+      "sha256": "d64e3113f5f4ff22f1e37da4a9e04e25df27796067aa90e6553f47a50c7c480d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2246,7 +2246,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/tests.rs",
-      "sha256": "94c8c9c3029ba334dbb0776c24bce323ef53c90447c4d12a880bb2cf501a7f2d",
+      "sha256": "280b7e0e4199404c55b5c53a509aa4b9305dbff8de1b2aca17d080e7f137bc62",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "AV2-5.18.7-SEGMENTATION-TILING",
@@ -29327,6 +29327,13 @@
     {
       "path": "tests/conformance/vectors/valid/syn-2frame-inter-residual-64x64.ivf",
       "sha256": "f540bef2f8e5ab510e7ac3c061379fe6fdefb3b0ca68334ac9dcf3b038e3d6a5",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-2frame-sameref-compound-64x32-10bit-q150.ivf",
+      "sha256": "d0a83ae53e5ef9ff9009a1c1c1679eca71935234601d1ec7752061957b3381d4",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"

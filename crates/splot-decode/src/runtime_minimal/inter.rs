@@ -1054,15 +1054,15 @@ fn validate_inter_frame_core(
         ));
     }
     if core.lr_params.as_ref().is_some_and(|lr| {
-        lr.planes
-            .iter()
-            .any(|plane| plane.frame_filters_on && plane.num_filter_classes.unwrap_or(1) > 1)
+        lr.planes.first().is_some_and(|plane| {
+            plane.frame_filters_on && plane.num_filter_classes.unwrap_or(1) > 1
+        })
     }) {
         return Err(inter_cap!(
             "inter_lr_multiclass_tx_skip_unimplemented",
             offset,
             "inter.lr.multiclass_tx_skip_grid",
-            "5.18.7.9"
+            "5.18.7.11"
         ));
     }
     Ok(())
