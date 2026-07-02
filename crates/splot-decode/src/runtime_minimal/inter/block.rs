@@ -328,6 +328,11 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
     let mut chroma_deblock_blocks: [Vec<super::super::deblock::DeblockBlock>; 2] =
         [Vec::new(), Vec::new()];
     let mut decoded_any = false;
+    let mut ref_mv_bank = sequence
+        .inter
+        .as_ref()
+        .is_some_and(|inter| inter.enable_refmvbank)
+        .then(super::find_mv_stack::RefMvBank::new);
     let limits = options.limits();
     trace_symbol_frame_marker(offset);
     let walk = decode_general_intra_multiblock_tree_with_lr_source_blocks(
@@ -356,6 +361,7 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
                 &mut delta_q_state,
                 &mut intrabc_state,
                 &mut mv_grid,
+                &mut ref_mv_bank,
                 sb_h4,
                 mi_rows,
                 mi_cols,
@@ -471,6 +477,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
     delta_q_state: &mut DeltaQState,
     intrabc_state: &mut TileIntrabcPreludeState,
     mv_grid: &mut NeighbourMvGrid,
+    ref_mv_bank: &mut Option<super::find_mv_stack::RefMvBank>,
     sb_h4: usize,
     mi_rows: usize,
     mi_cols: usize,
@@ -554,6 +561,9 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         mi_cols,
     };
 
+    if let Some(bank) = ref_mv_bank.as_mut() {
+        bank.reset_for_leaf(mv_grid, mi_row, mi_col, sb_h4);
+    }
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
 
     let is_inter = if frontier.is_luma_part() || frontier.is_chroma_part() {
@@ -927,6 +937,19 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             false,
             BlockPrecisionRecord::most_probable(frame_mv_precision(core, tile_offset)?),
         );
+        if let Some(bank) = ref_mv_bank.as_mut() {
+            bank.update_for_block(
+                compound.ref_frame0,
+                Some(compound.ref_frame1),
+                compound.mv0,
+                Some(compound.mv1),
+                mi_row,
+                mi_col,
+                n4w,
+                n4h,
+                sb_h4,
+            );
+        }
         reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
         record_inter_deblock_geometry(
             deblock_blocks,
@@ -1049,7 +1072,14 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         );
     }
     if let Some(warp_mode) = warp_mode {
-        let stack = find_mv_stack(mv_grid, &block_ctx, Mv::ZERO);
+        let stack = find_mv_stack(
+            mv_grid,
+            &block_ctx,
+            Mv::ZERO,
+            ref_mv_bank
+                .as_ref()
+                .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2)),
+        );
         if std::env::var_os("SPLOT_TRACE_INTER_BLOCK_MODE").is_some() {
             eprintln!(
                 "inter block warp-selected r={mi_row} c={mi_col} b={} n4={}x{} mode={warp_mode:?} stack0={:?} checkpoint={:?}",
@@ -1216,6 +1246,11 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             warp.warp_params,
             warp.block_precision,
         );
+        if let Some(bank) = ref_mv_bank.as_mut() {
+            bank.update_for_block(
+                ref_frame0, None, warp.mv, None, mi_row, mi_col, n4w, n4h, sb_h4,
+            );
+        }
         intrabc_state.record_block(
             frontier.r,
             frontier.c,
@@ -1351,7 +1386,14 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         n4h,
         tile_offset,
     )?;
-    let stack = find_mv_stack(mv_grid, &block_ctx, Mv::ZERO);
+    let stack = find_mv_stack(
+        mv_grid,
+        &block_ctx,
+        Mv::ZERO,
+        ref_mv_bank
+            .as_ref()
+            .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2)),
+    );
 
     let ref_mv_idx = if single_mode == SINGLE_MODE_NEARMV || single_mode == SINGLE_MODE_NEWMV {
         read_drl_idx(
@@ -1546,6 +1588,9 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         use_amvd,
         precision,
     );
+    if let Some(bank) = ref_mv_bank.as_mut() {
+        bank.update_for_block(ref_frame0, None, mv, None, mi_row, mi_col, n4w, n4h, sb_h4);
+    }
     intrabc_state.record_block(
         frontier.r,
         frontier.c,

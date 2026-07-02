@@ -1141,11 +1141,281 @@ pub(super) fn find_warp_samples(
     WarpSampleCollection::Samples(samples)
 }
 
+/// AV2 § 3 `REF_MV_BANK_SIZE` (entries per bank list).
+const REF_MV_BANK_SIZE: usize = 4;
+/// AV2 § 3 `BANK_REFS_PER_FRAME`.
+const BANK_REFS_PER_FRAME: i32 = 9;
+/// AV2 § 3 `MAX_RMB_SB_HITS`.
+const MAX_RMB_SB_HITS: u32 = 64;
+/// AV2 § 3 `MAX_PR_NUM`.
+const MAX_PR_NUM: usize = 16;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct RefMvBankEntry {
+    key: i32,
+    mv0: Mv,
+    mv1: Mv,
+}
+
+/// AV2 § 7.12.2.21 / § 5.20.2.2 reference motion-vector bank: nine ring
+/// buffers of recent block MVs, reset (and re-seeded from the row above) at
+/// each superblock, filled into the MV stack after the spatial scan.
+/// Compound weights (`cwp`) are not retained: every admitted producer uses
+/// `CWP_EQUAL`.
+pub(super) struct RefMvBank {
+    entries: [[RefMvBankEntry; REF_MV_BANK_SIZE]; BANK_REFS_PER_FRAME as usize],
+    sizes: [usize; BANK_REFS_PER_FRAME as usize],
+    starts: [usize; BANK_REFS_PER_FRAME as usize],
+    sb_hits: u32,
+    remain_hits: i32,
+    unit_hits: i32,
+    current_sb: Option<(usize, usize)>,
+}
+
+impl RefMvBank {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: [[RefMvBankEntry::default(); REF_MV_BANK_SIZE]; BANK_REFS_PER_FRAME as usize],
+            sizes: [0; BANK_REFS_PER_FRAME as usize],
+            starts: [0; BANK_REFS_PER_FRAME as usize],
+            sb_hits: 0,
+            remain_hits: 0,
+            unit_hits: 0,
+            current_sb: None,
+        }
+    }
+
+    /// § 7.12.2.21 `get_rmb_list_index` for the single-prediction subset.
+    fn list_index(ref_frame0: i8, ref_frame1: Option<i8>) -> usize {
+        match (ref_frame0, ref_frame1) {
+            (r0, None) if (0..=5).contains(&r0) => r0 as usize,
+            (0, Some(0)) => 6,
+            (0, Some(1)) => 7,
+            _ => 8,
+        }
+    }
+
+    fn bank_key(ref_frame0: i8, ref_frame1: Option<i8>) -> i32 {
+        match ref_frame1 {
+            Some(r1) => i32::from(ref_frame0) + (i32::from(r1) + 1) * BANK_REFS_PER_FRAME,
+            None => i32::from(ref_frame0),
+        }
+    }
+
+    /// § 5.20.2.2 `reset_refmv_bank`, invoked at the first leaf of each
+    /// superblock (detected from the leaf coordinates); re-seeds from the
+    /// decoded row above unless this is the top superblock row.
+    pub(super) fn reset_for_leaf(
+        &mut self,
+        grid: &NeighbourMvGrid,
+        mi_row: usize,
+        mi_col: usize,
+        sb_size4: usize,
+    ) {
+        let sb = (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1));
+        if self.current_sb == Some(sb) {
+            return;
+        }
+        self.current_sb = Some(sb);
+        self.sb_hits = 0;
+        self.remain_hits = 0;
+        self.unit_hits = 0;
+        for size in &mut self.sizes {
+            *size = 0;
+        }
+        for start in &mut self.starts {
+            *start = 0;
+        }
+        let sb_row = sb.0 * sb_size4;
+        let sb_col = sb.1 * sb_size4;
+        if sb_row == 0 {
+            return;
+        }
+        let cand_row = sb_row as i32 - 1;
+        let mut cand_col = sb_col as i32;
+        let mut row_hits = 0;
+        while (cand_col as usize) < grid.mi_cols
+            && (cand_col as usize) < sb_col + sb_size4
+            && row_hits < 4
+        {
+            let cand_col2 = (cand_col >> 1) << 1;
+            let mut step = 1i32;
+            if let Some(cell) = grid.get(cand_row, cand_col2) {
+                if cell.is_inter {
+                    row_hits += 1;
+                    self.update(
+                        cell.ref_frame0,
+                        cell.ref_frame1,
+                        cell.mv,
+                        cell.mv1,
+                        false,
+                        0,
+                        0,
+                    );
+                }
+                step = (cell.bw4 as i32).max(1);
+            }
+            cand_col += step;
+        }
+    }
+
+    /// § 5.20.7 `update_ref_mv_count` unit-budget bookkeeping.
+    fn update_unit_budget(
+        &mut self,
+        mi_row: usize,
+        mi_col: usize,
+        n4w: usize,
+        n4h: usize,
+        sb_size4: usize,
+    ) {
+        let unit_size4 = (sb_size4 >> 3).max(1);
+        let unit_count = ((n4w / unit_size4).max(1) * (n4h / unit_size4).max(1)) as i32;
+        if mi_row % sb_size4 == 0 && mi_col % sb_size4 == 0 {
+            self.remain_hits = unit_count.max(4);
+            self.unit_hits = 0;
+        } else if mi_row % unit_size4 == 0 && mi_col % unit_size4 == 0 {
+            self.remain_hits += unit_count;
+            self.unit_hits = 0;
+        }
+    }
+
+    /// § 5.20.7 per-block bank update (`fromWithinSb == 1`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn update_for_block(
+        &mut self,
+        ref_frame0: i8,
+        ref_frame1: Option<i8>,
+        mv: Mv,
+        mv1: Option<Mv>,
+        mi_row: usize,
+        mi_col: usize,
+        n4w: usize,
+        n4h: usize,
+        sb_size4: usize,
+    ) {
+        if self.sb_hits >= MAX_RMB_SB_HITS {
+            return;
+        }
+        self.update_unit_budget(mi_row, mi_col, n4w, n4h, sb_size4);
+        if self.remain_hits == 0 || self.unit_hits >= 16 {
+            return;
+        }
+        self.remain_hits -= 1;
+        self.unit_hits += 1;
+        self.update(ref_frame0, ref_frame1, mv, mv1, true, 0, 0);
+    }
+
+    /// § 5.20.7 `update_ref_mv_bank` tail: move-to-tail on match, else append.
+    fn update(
+        &mut self,
+        ref_frame0: i8,
+        ref_frame1: Option<i8>,
+        mv: Mv,
+        mv1: Option<Mv>,
+        from_within_sb: bool,
+        _mi_row: usize,
+        _mi_col: usize,
+    ) {
+        if from_within_sb {
+            self.sb_hits += 1;
+        } else {
+            self.sb_hits = self.sb_hits.saturating_add(1);
+        }
+        let list = Self::list_index(ref_frame0, ref_frame1);
+        let entry = RefMvBankEntry {
+            key: Self::bank_key(ref_frame0, ref_frame1),
+            mv0: mv,
+            mv1: mv1.unwrap_or(Mv::ZERO),
+        };
+        let count = self.sizes[list];
+        let start = self.starts[list];
+        let mut found = None;
+        for i in 0..count {
+            let idx = (start + i) % REF_MV_BANK_SIZE;
+            if self.entries[list][idx] == entry {
+                found = Some(i);
+                break;
+            }
+        }
+        if let Some(found) = found {
+            for i in found..count.saturating_sub(1) {
+                let idx0 = (start + i) % REF_MV_BANK_SIZE;
+                let idx1 = (start + i + 1) % REF_MV_BANK_SIZE;
+                self.entries[list][idx0] = self.entries[list][idx1];
+            }
+            let tail = (start + count - 1) % REF_MV_BANK_SIZE;
+            self.entries[list][tail] = entry;
+        } else if count < REF_MV_BANK_SIZE {
+            let tail = (start + count) % REF_MV_BANK_SIZE;
+            self.entries[list][tail] = entry;
+            self.sizes[list] = count + 1;
+        } else {
+            self.entries[list][start] = entry;
+            self.starts[list] = (start + 1) % REF_MV_BANK_SIZE;
+        }
+    }
+
+    /// § 7.12.2.21 fill: newest-first bank candidates appended to the stack
+    /// with the § check_rmb_cand prune and in-frame bounds checks.
+    fn fill(
+        &self,
+        block: &MvBlockContext,
+        entries: &mut Vec<MvStackEntry>,
+        max_ref_mv_count: usize,
+        prune_count: &mut usize,
+    ) {
+        let list = Self::list_index(block.ref_frame0, block.ref_frame1);
+        let key = Self::bank_key(block.ref_frame0, block.ref_frame1);
+        let count = self.sizes[list];
+        let start = self.starts[list];
+        for i in (0..count).rev() {
+            if entries.len() >= max_ref_mv_count {
+                return;
+            }
+            let idx = (start + i) % REF_MV_BANK_SIZE;
+            let candidate = self.entries[list][idx];
+            if candidate.key != key {
+                continue;
+            }
+            let mut duplicate = false;
+            if *prune_count < MAX_PR_NUM {
+                for entry in entries.iter() {
+                    *prune_count += 1;
+                    if entry.mv == candidate.mv0 {
+                        duplicate = true;
+                        break;
+                    }
+                }
+            }
+            if duplicate {
+                continue;
+            }
+            let bw = block.bw4 as i32 * MI_SIZE;
+            let bh = block.bh4 as i32 * MI_SIZE;
+            let ref_y = block.mi_row as i32 * MI_SIZE + candidate.mv0.row / 8;
+            let ref_x = block.mi_col as i32 * MI_SIZE + candidate.mv0.col / 8;
+            if ref_x <= -bw
+                || ref_y <= -bh
+                || ref_x >= block.mi_cols as i32 * MI_SIZE
+                || ref_y >= block.mi_rows as i32 * MI_SIZE
+            {
+                continue;
+            }
+            entries.push(MvStackEntry {
+                mv: candidate.mv0,
+                weight: 0,
+                offsets: (0, 0),
+            });
+        }
+    }
+}
+
 /// AV2 § 7.12.2 `find_mv_stack` for the spatial-only single-prediction subset.
 pub(super) fn find_mv_stack(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     global_mv: Mv,
+    bank: Option<(&RefMvBank, usize)>,
 ) -> MvStack {
     let mut entries: Vec<MvStackEntry> = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
 
@@ -1155,6 +1425,10 @@ pub(super) fn find_mv_stack(
 
     // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.5 Scan col,
     // §7.12.2.19 Sorting, and §7.12.2.20 large-block (>32x32) MVP processes
+    if let Some((bank, max_ref_mv_count)) = bank {
+        let mut prune_count = 0usize;
+        bank.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
+    }
     extra_search(block, global_mv, &mut entries);
 
     let stack: Vec<(Mv, (i32, i32))> = entries

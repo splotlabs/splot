@@ -661,8 +661,12 @@ fn parse_inter_reference_region(
 
     let tip_gate = seq.enable_tip && use_ref_frame_mvs && num_total_refs >= 2 && !bru_inactive;
     if tip_gate {
-        control.stop = Some(InterStop::PoisonedReferenceState);
-        return Ok(());
+        // § 5.18.2 `tip_frame_mode` f(1): 0 keeps TIP disabled and continues
+        // the shared tail; 1 needs the TIP frame cluster, not yet modeled.
+        if reader.read_flag()? {
+            control.stop = Some(InterStop::PoisonedReferenceState);
+            return Ok(());
+        }
     }
     control.tip_frame_mode = Some(TipFrameMode::Disabled);
     if !bru_inactive && !ctx.is_bridge {
@@ -1531,7 +1535,7 @@ mod tests {
     }
 
     #[test]
-    fn tip_gate_stops_poisoned_on_past_future_refs() {
+    fn tip_gate_stops_poisoned_on_tip_frame_mode() {
         let mut bits = Bits::default();
         bits.bit(0); // signal_primary_ref_frame
         bits.bit(0); // disable_cross_frame_cdf_init
@@ -1542,6 +1546,7 @@ mod tests {
         bits.f(1, 3); // ref_frame_idx[1]
         bits.bit(1); // use_ref_frame_mvs = 1
         bits.bit(0); // tmvp_sample_step_minus_1 (num_total_refs>1, sb 128 != 64x64)
+        bits.bit(1); // tip_frame_mode = 1 (the unmodeled TIP cluster)
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let mut seq = inter_seq();

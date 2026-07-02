@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a7fbce1d94c1ea74e9a40859f17fce2eb4b7ed80",
+  "audited_commit": "78d31560a51e2f95759f2916acf4a4751a08763d",
   "outcome": "success",
   "files": [
     {
@@ -915,7 +915,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/inter.rs",
-      "sha256": "4dc3f0375472bf4712961583192930df2bd9bd6c167cf89f4a1719dd1a19de12",
+      "sha256": "d7792cc56ef9753046c379f03123b13406d3ba95e610deb6f02ab80f996d7479",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "DECODE-INTER-MULTIREF-RUNTIME"
@@ -2131,7 +2131,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "40d07e0eb42afcfee1cc46ceea389fa109b1a0fca4535205499b6aff99146c28",
+      "sha256": "f69fde7c54c140ea0591f530001b7bab7fee10a860d13ffde94badd4cd7f58e3",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2162,7 +2162,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
-      "sha256": "d133ce454c5d8106a6dd7e6e2740b23ac68caa66853c9f89b199631f97dc363b",
+      "sha256": "6259f459d8b0de28310a1f72e1d5158422ad18140f68c7707026804950c6a03b",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
@@ -2172,7 +2172,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs",
-      "sha256": "adc2a3504cb2c84de9ec5e663797ed5fb18e146faedd1263d9ba0e1a346a5c47",
+      "sha256": "be606ef67cfb6d1c1560a4c22965917b2d3a71085161b094f968687202af31a9",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
