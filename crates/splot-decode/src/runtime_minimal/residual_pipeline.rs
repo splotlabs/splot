@@ -698,7 +698,13 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::Rect { .. }
                 | ResidualReconstructionPlan::LumaRectCardinal { .. }
                 | ResidualReconstructionPlan::LumaRectPaeth { .. }
-                | ResidualReconstructionPlan::LumaSquare { .. }
+                | ResidualReconstructionPlan::LumaSquare {
+                    plan: IntraLumaPlan::Dc
+                        | IntraLumaPlan::CardinalNeighbour { .. }
+                        | IntraLumaPlan::PaethNeighbour
+                        | IntraLumaPlan::DirectionalMiddle { .. },
+                    ..
+                }
         );
         if block.middle && !corner_free {
             return Err(GeneralIntraResidualError::UnsupportedTransformPartition {
