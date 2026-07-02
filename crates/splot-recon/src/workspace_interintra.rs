@@ -97,10 +97,11 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// AV2 § 7.13.3.25 block adaptive weighted prediction application:
-    /// `CurrFrame = Clip1((orig * alpha + beta) >> 8)` in place over the rect.
+    /// `CurrFrame = Clip1((orig * alpha + beta) >> 8)` in place over the
+    /// rect, dropping frame-edge overhang like the reconstruction writes.
     ///
     /// # Errors
-    /// Returns [`ReconError`] when the plane is absent, the target rectangle
+    /// Returns [`ReconError`] when the plane is absent, the rectangle origin
     /// is out of bounds, or a scaled sample cannot be stored.
     pub fn apply_bawp_rect(
         &mut self,
@@ -114,23 +115,25 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         let rect = super::block_rect(x, y, size)?;
         let max_sample = i64::from(self.info().bit_depth().max_sample());
         self.plane_mut(plane)?
-            .apply_bawp_rect(rect, size, alpha, beta, max_sample)
+            .apply_bawp_rect(rect, alpha, beta, max_sample)
     }
 }
 
 impl<T: ReconSample> CurrentFramePlane<T> {
+    /// Scales the clamped-to-storage rectangle in place: motion compensation
+    /// drops frame-edge overhang on write, so the BAWP scale covers the same
+    /// clamped samples.
     fn apply_bawp_rect(
         &mut self,
         rect: crate::PlaneRect,
-        size: IntraRectBlockSize,
         alpha: i64,
         beta: i64,
         max_sample: i64,
     ) -> Result<()> {
-        self.ensure_rect(rect)?;
-        for i in 0..size.height() {
+        let rect = self.clamp_rect_to_storage(rect)?;
+        for i in 0..rect.height() {
             let row_start = self.sample_index(rect.x(), rect.y() + i)?;
-            for j in 0..size.width() {
+            for j in 0..rect.width() {
                 let orig = i64::from(self.samples[row_start + j].to_u16());
                 let scaled = ((orig * alpha + beta) >> 8).clamp(0, max_sample);
                 let stored = u16::try_from(scaled)

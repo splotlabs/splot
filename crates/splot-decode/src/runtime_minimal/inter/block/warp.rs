@@ -140,7 +140,8 @@ fn local_warp_estimation(
             by[1] += ls_product(sy, dy) + 8;
         }
     }
-    let det = a[0][0] * a[1][1] - a[0][1] * a[0][1];
+    let det = i128::from(a[0][0]) * i128::from(a[1][1]) - i128::from(a[0][1]) * i128::from(a[0][1]);
+    let det = i64::try_from(det).map_err(|_| geometry_error())?;
     let mut params = IDENTITY_WARP_PARAMS;
     if det == 0 {
         set_warp_translation(&mut params, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;

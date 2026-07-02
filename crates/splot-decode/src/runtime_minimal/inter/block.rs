@@ -1175,6 +1175,16 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             WarpInterIntraSyntax::default()
         };
         let warp_interintra_mode = interintra_prediction_mode(warp_inter_intra, tile_offset)?;
+        if warp_interintra_mode.is_some()
+            && (!frontier.has_chroma || frontier.chroma_ref_geometry().size() != frontier.b_size)
+        {
+            return Err(inter_cap!(
+                "inter_interintra_sub8x8_chroma_unimplemented",
+                tile_offset,
+                "inter.interintra.sub8x8_chroma",
+                "5.20.7.22"
+            ));
+        }
         let residual = if skip == 0 {
             if !residual_quantizer_deltas_are_zero {
                 return Err(inter_cap!(
@@ -1764,9 +1774,9 @@ struct InterIntraPlanePrediction<T> {
 /// block into caller-owned snapshots (edges are read from already-reconstructed
 /// neighbours, so this runs before motion compensation overwrites the block).
 /// Blocks whose chroma belongs to another leaf (§ 5.20.7.22 `sub8x8Inter`,
-/// chroma-offset shared partitions) cannot reach this blend today: their
-/// sub-8x8 chroma plane fail-closes in the warp small-block defer first. When
-/// that defer lifts, U/V must be skipped unless the block carries its chroma.
+/// `MiSize != ChromaMiSize`) never reach this blend: the parse arm defers
+/// them, because their chroma needs the aggregated sub-8x8 prediction and no
+/// interintra blend rather than this per-plane path.
 fn predict_interintra_planes<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
