@@ -75,23 +75,6 @@ pub struct WarpPredictBlockParams {
 }
 
 /// Runs the AV2 § 7.13.3.19 block-warp convolution for one single-reference 8x8
-/// prediction section and returns row-major samples after the final `Clip1`.
-///
-/// The caller supplies an already-derived affine warp model and the current-plane
-/// top-left coordinate of the 8x8 section. This function computes the section
-/// center projection, validates the § 7.13.3.21 shear, applies the generated § 9.5
-/// `Warped_Filters` table in the horizontal and vertical passes, clips reference
-/// reads to `[firstX, lastX] x [firstY, lastY]`, and returns the 64 predicted
-/// samples for the non-compound write path.
-///
-/// # Errors
-///
-/// Returns [`ReconError::WarpSubsamplingUnsupported`] for non-AV2 subsampling
-/// factors, [`ReconError::WarpReferenceBoundsInvalid`] for a negative or empty
-/// reference rectangle, [`ReconError::WarpInvalidShear`] when setup-shear rejects
-/// the model, [`ReconError::WarpFilterOffsetOutOfRange`] for a derived filter row
-/// outside the generated table, and [`ReconError::ArithmeticOverflow`] if public
-/// caller inputs exceed the checked arithmetic envelope.
 /// AV2 § 3 `EXT_WARP_TAPS`.
 const EXT_WARP_TAPS: usize = 6;
 /// AV2 § 3 `EXT_WARP_ROUND_BITS` = `WARPEDMODEL_PREC_BITS - EXT_WARP_PHASES_LOG2`.
@@ -174,6 +157,23 @@ pub fn ext_warp_predict_unit(
     Ok(out)
 }
 
+/// prediction section and returns row-major samples after the final `Clip1`.
+///
+/// The caller supplies an already-derived affine warp model and the current-plane
+/// top-left coordinate of the 8x8 section. This function computes the section
+/// center projection, validates the § 7.13.3.21 shear, applies the generated § 9.5
+/// `Warped_Filters` table in the horizontal and vertical passes, clips reference
+/// reads to `[firstX, lastX] x [firstY, lastY]`, and returns the 64 predicted
+/// samples for the non-compound write path.
+///
+/// # Errors
+///
+/// Returns [`ReconError::WarpSubsamplingUnsupported`] for non-AV2 subsampling
+/// factors, [`ReconError::WarpReferenceBoundsInvalid`] for a negative or empty
+/// reference rectangle, [`ReconError::WarpInvalidShear`] when setup-shear rejects
+/// the model, [`ReconError::WarpFilterOffsetOutOfRange`] for a derived filter row
+/// outside the generated table, and [`ReconError::ArithmeticOverflow`] if public
+/// caller inputs exceed the checked arithmetic envelope.
 pub fn warp_predict_block(
     reference: &ReferencePlaneView<'_>,
     params: &WarpPredictBlockParams,

@@ -23,6 +23,8 @@ extend-exclude = [
 # real false positive by running `typos`. Keep this list minimal and justified.
 
 [default.extend-words]
+# AV2 § 7.13.3.20 integer-position variables (ix4/iy4).
+iy = "iy"
 # AV2 / codec domain terms, each confirmed a false positive against `typos` output.
 # These are real spec identifiers, not misspellings:
 ist = "ist"  # enable_intra_ist / enable_inter_ist — AV2 Intra/Inter Secondary Transform sequence-header flags

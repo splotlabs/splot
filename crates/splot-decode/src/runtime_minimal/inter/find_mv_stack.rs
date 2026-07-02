@@ -16,7 +16,8 @@ const MI_SIZE: i32 = 4;
 pub(super) enum MotionMode {
     /// `SIMPLE` (0).
     Simple,
-    /// `INTERINTRA` (1).
+    /// `INTERINTRA` (1). Not yet produced: SIMPLE-path interintra defers.
+    #[allow(dead_code)]
     InterIntra,
     /// `LOCALWARP` (2).
     LocalWarp,
@@ -1243,15 +1244,7 @@ impl RefMvBank {
             if let Some(cell) = grid.get(cand_row, cand_col2) {
                 if cell.is_inter {
                     row_hits += 1;
-                    self.update(
-                        cell.ref_frame0,
-                        cell.ref_frame1,
-                        cell.mv,
-                        cell.mv1,
-                        false,
-                        0,
-                        0,
-                    );
+                    self.update(cell.ref_frame0, cell.ref_frame1, cell.mv, cell.mv1, false);
                 }
                 step = (cell.bw4 as i32).max(1);
             }
@@ -1270,10 +1263,10 @@ impl RefMvBank {
     ) {
         let unit_size4 = (sb_size4 >> 3).max(1);
         let unit_count = ((n4w / unit_size4).max(1) * (n4h / unit_size4).max(1)) as i32;
-        if mi_row % sb_size4 == 0 && mi_col % sb_size4 == 0 {
+        if mi_row.is_multiple_of(sb_size4) && mi_col.is_multiple_of(sb_size4) {
             self.remain_hits = unit_count.max(4);
             self.unit_hits = 0;
-        } else if mi_row % unit_size4 == 0 && mi_col % unit_size4 == 0 {
+        } else if mi_row.is_multiple_of(unit_size4) && mi_col.is_multiple_of(unit_size4) {
             self.remain_hits += unit_count;
             self.unit_hits = 0;
         }
@@ -1302,7 +1295,7 @@ impl RefMvBank {
         }
         self.remain_hits -= 1;
         self.unit_hits += 1;
-        self.update(ref_frame0, ref_frame1, mv, mv1, true, 0, 0);
+        self.update(ref_frame0, ref_frame1, mv, mv1, true);
     }
 
     /// § 5.20.7 `update_ref_mv_bank` tail: move-to-tail on match, else append.
@@ -1313,8 +1306,6 @@ impl RefMvBank {
         mv: Mv,
         mv1: Option<Mv>,
         from_within_sb: bool,
-        _mi_row: usize,
-        _mi_col: usize,
     ) {
         if from_within_sb {
             self.sb_hits += 1;

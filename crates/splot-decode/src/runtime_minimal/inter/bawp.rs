@@ -71,10 +71,10 @@ fn apply_bawp_plane<T: ReconSample>(
             "7.13.3.25"
         )
     };
-    let x = placed.luma_x >> sub_x;
-    let y = placed.luma_y >> sub_y;
-    let w = placed.luma_w >> sub_x;
-    let h = placed.luma_h >> sub_y;
+    let plane_x = placed.luma_x >> sub_x;
+    let plane_y = placed.luma_y >> sub_y;
+    let plane_w = placed.luma_w >> sub_x;
+    let plane_h = placed.luma_h >> sub_y;
     let (ref_samples, ref_width, ref_height) = reference_plane(reference, plane, tile_offset)?;
     let dy = to_fullmv(mv.row);
     let dx = to_fullmv(mv.col);
@@ -85,26 +85,26 @@ fn apply_bawp_plane<T: ReconSample>(
     let plane_width = i64::try_from(ref_width).map_err(|_| bounds_error())?;
     let plane_height = i64::try_from(ref_height).map_err(|_| bounds_error())?;
     let (bw, bh) = (
-        i64::try_from(w).map_err(|_| bounds_error())?,
-        i64::try_from(h).map_err(|_| bounds_error())?,
+        i64::try_from(plane_w).map_err(|_| bounds_error())?,
+        i64::try_from(plane_h).map_err(|_| bounds_error())?,
     );
     if ref_x < 1 || ref_y < 1 || ref_x + bw > plane_width || ref_y + bh > plane_height {
         return Err(bounds_error());
     }
 
-    if !w.is_power_of_two() || !h.is_power_of_two() {
+    if !plane_w.is_power_of_two() || !plane_h.is_power_of_two() {
         return Err(bounds_error());
     }
     let size = IntraRectBlockSize::new(
-        u8::try_from(w.trailing_zeros()).map_err(|_| bounds_error())?,
-        u8::try_from(h.trailing_zeros()).map_err(|_| bounds_error())?,
+        u8::try_from(plane_w.trailing_zeros()).map_err(|_| bounds_error())?,
+        u8::try_from(plane_h.trailing_zeros()).map_err(|_| bounds_error())?,
     )
     .map_err(|_| bounds_error())?;
 
-    let avail_up = y > 0;
-    let avail_left = x > 0;
-    let bw2 = (if plane == PlaneId::Y { 16 } else { 8 }).min(w);
-    let bh2 = (if plane == PlaneId::Y { 16 } else { 8 }).min(h);
+    let avail_up = plane_y > 0;
+    let avail_left = plane_x > 0;
+    let bw2 = (if plane == PlaneId::Y { 16 } else { 8 }).min(plane_w);
+    let bh2 = (if plane == PlaneId::Y { 16 } else { 8 }).min(plane_h);
     let width = if bw2 == 12 { 8 } else { bw2 };
     let height = if bh2 == 12 { 8 } else { bh2 };
     let (num_up, num_left) = if avail_up && avail_left {
@@ -128,7 +128,7 @@ fn apply_bawp_plane<T: ReconSample>(
     };
 
     let edges = workspace
-        .intra_dc_edges_for_rect(plane, x, y, size)
+        .intra_dc_edges_for_rect(plane, plane_x, plane_y, size)
         .map_err(|_| bounds_error())?;
     let ref_at = |row: i64, col: i64| -> Result<i64> {
         let index = usize::try_from(row * plane_width + col).map_err(|_| bounds_error())?;
@@ -143,9 +143,8 @@ fn apply_bawp_plane<T: ReconSample>(
     let mut sum_xx = 0i64;
     let mut sum_xy = 0i64;
     let mut count = 0i64;
-    if num_up > 0 {
+    if let Some(step) = width.checked_div(num_up).filter(|_| num_up > 0) {
         let above = edges.above_samples().ok_or_else(bounds_error)?;
-        let step = width / num_up;
         let mut i = step >> 1;
         while i < width {
             let recon = i64::from(above.get(i).ok_or_else(bounds_error)?.to_u16());
@@ -161,9 +160,8 @@ fn apply_bawp_plane<T: ReconSample>(
         }
         count += i64::try_from(num_up).map_err(|_| bounds_error())?;
     }
-    if num_left > 0 {
+    if let Some(step) = height.checked_div(num_left).filter(|_| num_left > 0) {
         let left = edges.left_samples().ok_or_else(bounds_error)?;
-        let step = height / num_left;
         let mut i = step >> 1;
         while i < height {
             let recon = i64::from(left.get(i).ok_or_else(bounds_error)?.to_u16());
@@ -209,7 +207,7 @@ fn apply_bawp_plane<T: ReconSample>(
     };
 
     workspace
-        .apply_bawp_rect(plane, x, y, size, alpha, beta)
+        .apply_bawp_rect(plane, plane_x, plane_y, size, alpha, beta)
         .map_err(|_| bounds_error())?;
     Ok(if plane == PlaneId::Y {
         alpha

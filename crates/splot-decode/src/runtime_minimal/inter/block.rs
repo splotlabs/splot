@@ -1358,8 +1358,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             .ref_order_hint
             .get(slot as usize)
             .copied()
-            .map(|hint| i32::try_from(hint).unwrap_or(i32::MAX))
-            .unwrap_or(0);
+            .map_or(0, |hint| i32::try_from(hint).unwrap_or(i32::MAX));
         BawpSyntax {
             ref_dist_gt4: super::get_relative_dist(ref_hint, current_order_hint as i32).abs() > 4,
             ..bawp

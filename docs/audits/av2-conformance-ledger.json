@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "78d31560a51e2f95759f2916acf4a4751a08763d",
+  "audited_commit": "ec1d4a09fd5789484e58ee1e49e96475f2e6fc85",
   "outcome": "success",
   "files": [
     {
@@ -251,7 +251,7 @@
     },
     {
       "path": "_typos.toml",
-      "sha256": "97a221ac6aa0f11c8e62bbf20b844bf2336e9abf347bf296bc1833dc9b513cb9",
+      "sha256": "35fe4a954ed8ea6431ab300b9bd8d470a3de2dd098aa9b8712039d990ffdd11e",
       "scope_kind": "repository-process",
       "feature_ids": [
         "AV2-5.17.5-METADATA-HDR-CLL"
@@ -2124,14 +2124,14 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/bawp.rs",
-      "sha256": "a29e431381a81a235e0ed3bfd9e970ae5c1fd0230b0967b00ad6ba74a4ae55d7",
+      "sha256": "6d2bdbedc451e03e7c83ad67cfb1ff47d5a11d3060a0bb6290ebd36658e8daa1",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "f69fde7c54c140ea0591f530001b7bab7fee10a860d13ffde94badd4cd7f58e3",
+      "sha256": "7e409ba2b620c3190b94d15bd6f3d977022acc605f881b3cf8a9fda3c703586e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2162,7 +2162,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
-      "sha256": "6259f459d8b0de28310a1f72e1d5158422ad18140f68c7707026804950c6a03b",
+      "sha256": "a7d55b51f20f2df3488b937b18e941e2c3a05fae4dfc63e9363e810a0f60d2c2",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
@@ -4072,7 +4072,7 @@
     },
     {
       "path": "crates/splot-recon/src/intra_dc_math.rs",
-      "sha256": "b4d97231ba1dbacddd50ffe768cb0860033353f28478a7db15950110b9f1a513",
+      "sha256": "f4fed59689b59c9ac0f84654058b9e7e1c8eacfd68ebcca7f1463da52350df74",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -4292,7 +4292,7 @@
     },
     {
       "path": "crates/splot-recon/src/warp_prediction.rs",
-      "sha256": "a9f957680ab4db9266ac37011d1f86efd63a0632aac09efb543c0bd292f4890e",
+      "sha256": "529cdce4ca12d2e10dc342ff28a84e39e86dfe785acace59ccd87fa3673869f4",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-SUBPEL-MC"
@@ -7069,7 +7069,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "609b386de6827d3920a4c933195661336045e621b2f0d9c6fca13553bfc57fa2",
+      "sha256": "a0e1fec82b78ae73df95932e7910de2698228b7bd985a037cc7450d858dccb17",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
