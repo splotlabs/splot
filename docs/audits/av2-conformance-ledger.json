@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "6c52bf2f2611c27c18958f49a39f11e7539e21e7",
+  "audited_commit": "8cd1e37a19616f1ea03c175a8ac8e1993fdddf6d",
   "outcome": "success",
   "files": [
     {
@@ -2112,7 +2112,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter.rs",
-      "sha256": "71a8796ab657b7e9d61da70dae60fe7081c02f4b14e9ab4b31b826ab79246372",
+      "sha256": "c095d7f27871ca2ff8a146984e3392533b67ea046104648238cbb03c22d02576",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-FIRST-INTER-FRAME-FRONTIER",
@@ -2282,7 +2282,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/residual_pipeline.rs",
-      "sha256": "05eae5ba53d7b91db7a131389c307356ab71326c0e5bf962de9a077f76ae82c9",
+      "sha256": "6405dc7590863184b6307a1bc0a4e5119a1f5c4d53bb13d8fdd5ab5c1d84a29b",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -7054,7 +7054,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "0b4245195f75c0de468ecaf8d048defa5f57876e943b06a52c3677188023d1f0",
+      "sha256": "a7bf2ffa7665a89a7be94dbbe6b6e5816f9de8a57eb0580e37c8e32a1b3cdcef",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -25589,6 +25589,27 @@
       "feature_ids": [
         "DECODE-GENERAL-INTRA-RECT-PARTITION"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-filter-pipeline/proposal.md",
+      "sha256": "cf4d1ffb002c1ecf9bdf8ac6bf06d3be2c5a34606644f405a85829612ca7357d",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-filter-pipeline/specs/decoder-support/spec.md",
+      "sha256": "f62ce6d4857c4b1fcd4c949c949d96581714667fbc6af746ea701788c85718c3",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-filter-pipeline/tasks.md",
+      "sha256": "ed732626403aca0e2ea60e36ef0faf2e6eb1f391157695cdc4cc8fcc2c57a254",
+      "scope_kind": "openspec",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
