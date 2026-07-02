@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "440af47419e1588c15501edd96e4c717c17025ab",
+  "audited_commit": "9d106929d001f42ff7bd8e9adcfad7a1ea160e6f",
   "outcome": "success",
   "files": [
     {
@@ -915,7 +915,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/inter.rs",
-      "sha256": "8a176c6833f716d1bdd38141464d2e05e49e17e0e39256956ee7ad55fae6611e",
+      "sha256": "f6cddf9886506157a0f5d9bddcf85502d07430692f659291316db397774ffc8c",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "DECODE-INTER-MULTIREF-RUNTIME"

@@ -1536,16 +1536,20 @@ mod tests {
     #[test]
     fn tip_gate_stops_poisoned_on_tip_frame_mode() {
         let mut bits = Bits::default();
-        bits.bit(0); // signal_primary_ref_frame
-        bits.bit(0); // disable_cross_frame_cdf_init
-        bits.f(0, 8); // refresh_frame_flags
-        bits.bit(1); // frame_explicit_ref_frame_map
-        bits.f(2, 3); // num_total_refs = 2
-        bits.f(0, 3); // ref_frame_idx[0]
-        bits.f(1, 3); // ref_frame_idx[1]
-        bits.bit(1); // use_ref_frame_mvs = 1
-        bits.bit(0); // tmvp_sample_step_minus_1 (num_total_refs>1, sb 128 != 64x64)
-        bits.bit(1); // tip_frame_mode = 1 (the unmodeled TIP cluster)
+        for (value, width) in [
+            (0, 1), // signal_primary_ref_frame
+            (0, 1), // disable_cross_frame_cdf_init
+            (0, 8), // refresh_frame_flags
+            (1, 1), // frame_explicit_ref_frame_map
+            (2, 3), // num_total_refs = 2
+            (0, 3), // ref_frame_idx[0]
+            (1, 3), // ref_frame_idx[1]
+            (1, 1), // use_ref_frame_mvs = 1
+            (0, 1), // tmvp_sample_step_minus_1 (num_total_refs>1, sb 128 != 64x64)
+            (1, 1), // tip_frame_mode = 1 (the unmodeled TIP cluster)
+        ] {
+            bits.f(value, width);
+        }
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let mut seq = inter_seq();
@@ -1553,10 +1557,20 @@ mod tests {
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
         let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
-        assert_eq!(control.use_ref_frame_mvs, Some(true));
-        assert_eq!(control.tmvp_sample_step_minus_1, Some(false));
-        assert_eq!(control.tip_frame_mode, None);
-        assert_eq!(control.stop, Some(InterStop::PoisonedReferenceState));
+        assert_eq!(
+            (
+                control.use_ref_frame_mvs,
+                control.tmvp_sample_step_minus_1,
+                control.tip_frame_mode,
+                control.stop,
+            ),
+            (
+                Some(true),
+                Some(false),
+                None,
+                Some(InterStop::PoisonedReferenceState),
+            )
+        );
     }
 
     #[test]
