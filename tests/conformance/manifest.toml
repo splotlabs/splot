@@ -634,3 +634,14 @@ NEGATIVE decode pin proving the frame decodes to the block's comp_mode read \
 (entropy-synced with AVM accounting) and then defers fail-closed at \
 `compound_missing_is_joint_context` instead of rejecting the whole frame."""
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-3frame-simple-interintra-64x64-10bit.ivf"
+description = """
+Three-frame 10-bit 4:2:0 64x64 inter stream (IVF) whose INTER frames code \
+SIMPLE-path interintra blocks (motion_mode INTERINTRA via the § 5.20.7.14 \
+use_interintra read; II_V/II_H smooth-mask). Validates clean; committed as \
+the NEGATIVE decode pin for the `inter_interintra_unimplemented` defer — the \
+SIMPLE-path § 5.20.7.15 tail and prediction are not yet admitted (zero \
+occurrences in the mission stream's first 32 coded frames)."""
+expect = "clean"

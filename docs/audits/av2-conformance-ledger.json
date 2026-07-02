@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "dc72f1ef42529c82efc33966c6413d504b5dd2cc",
+  "audited_commit": "a29cca94d7bd9d3d1117f302b099b3672bab72a5",
   "outcome": "success",
   "files": [
     {
@@ -2246,7 +2246,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/tests.rs",
-      "sha256": "45c4435b0f43ac89fee9e26678b60a40ab61ecd2b9646b8ad0943f240f49aead",
+      "sha256": "c1f8afc1c637438e17c6d7dd17e2594b6823e3eaa4d501e864d4cef71535f6ec",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "AV2-5.18.7-SEGMENTATION-TILING",
@@ -4328,6 +4328,13 @@
     {
       "path": "crates/splot-recon/src/workspace_edges.rs",
       "sha256": "7a728f6c244fb690dfe29a4c1cf7b7090e753a94ea2ff9c767a9c28b278b4e59",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/workspace_interintra.rs",
+      "sha256": "e66483b23650cf072b87f4cc1f16e23901e87f2d15be8788ed68fe22a27c4608",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -7055,7 +7062,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "a7bf2ffa7665a89a7be94dbbe6b6e5816f9de8a57eb0580e37c8e32a1b3cdcef",
+      "sha256": "4043b533b3b43e82d29c4044c3fdc7a7eb90d6d0f219b23b0e63bc16895e995d",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -29231,7 +29238,7 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "47c3a4318a34f5a103a58217dd460c1c3b116e66aa389a908dcbfca06b008757",
+      "sha256": "126a840b9dcd4e1398f6f04237fd7068912f2f70c175e6455361eb6ed6494c64",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS",

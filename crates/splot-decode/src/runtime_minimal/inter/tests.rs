@@ -63,6 +63,10 @@ const SAMEREF_COMPOUND_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-sameref-compound-64x32-10bit-q150.ivf"
 );
 
+const SIMPLE_INTERINTRA_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-3frame-simple-interintra-64x64-10bit.ivf"
+);
+
 const TWO_FRAME_SUBPEL_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-subpel-inter-64x64.ivf"
 );
@@ -466,6 +470,16 @@ fn comp_ref_allowed_follows_the_spec_block_size_arms() {
             "is_comp_ref_allowed({n4w}, {n4h})"
         );
     }
+}
+
+#[test]
+fn simple_path_interintra_fixture_defers_fail_closed() {
+    let Err(error) =
+        decode_fixture_with_options(SIMPLE_INTERINTRA_10BIT_FIXTURE, &DecodeOptions::default())
+    else {
+        panic!("the fixture pins the SIMPLE-path interintra defer");
+    };
+    assert_eq!(unsupported_reason(error), "inter_interintra_unimplemented");
 }
 
 #[test]
