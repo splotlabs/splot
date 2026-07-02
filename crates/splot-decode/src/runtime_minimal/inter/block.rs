@@ -34,8 +34,8 @@ use super::compound::{
     CompoundParseInput, read_compound_mode_syntax, read_compound_reference_pair,
 };
 use super::find_mv_stack::{
-    BlockNeighbourContext, BlockPrecisionRecord, MotionMode, MvBlockContext, NeighbourMvGrid,
-    NeighbourYMode, block_neighbour_ctx, find_mode_ctx, find_mv_stack,
+    BlockNeighbourContext, BlockPrecisionRecord, ModeContext, MotionMode, MvBlockContext,
+    NeighbourMvGrid, NeighbourYMode, block_neighbour_ctx, find_mode_ctx, find_mv_stack,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
@@ -69,6 +69,7 @@ const MAX_WARP_REF_CANDIDATES: usize = 4;
 const WARP_DELTA_NUM_SYMBOLS_LOW: u8 = 8;
 const WARP_DELTA_NUM_SYMBOLS_HIGH: u8 = 8;
 const WARPEDMODEL_PREC_BITS: u32 = 16;
+const MI_SIZE_LOG2: u32 = 2;
 const WARP_PARAM_REDUCE_BITS: u32 = 6;
 const WARP_TRANS_INTEGER_BITS: u32 = 12;
 const WARP_DELTA_STEP_BITS: u32 = 10;
@@ -1060,7 +1061,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             );
         }
         let mv_config = inter_mv_read_config(core, tile_offset)?;
-        if warp_mode == WarpInterMode::WarpNewmv {
+        let motion_mode = if warp_mode == WarpInterMode::WarpNewmv {
             read_warp_newmv_motion_mode_syntax(
                 cdfs,
                 symbols,
@@ -1068,10 +1069,31 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 &neighbour_ctx,
                 mode_ctx.warp_sample_found,
                 tile_offset,
-            )?;
-        }
-        let warp = match warp_mode {
-            WarpInterMode::WarpNewmv => read_warp_newmv_delta_syntax(
+            )?
+        } else {
+            MotionMode::DeltaWarp
+        };
+        let warp = match (warp_mode, motion_mode) {
+            (WarpInterMode::WarpNewmv, MotionMode::ExtendWarp) => read_warp_extend_syntax(
+                cdfs,
+                symbols,
+                sequence,
+                core,
+                &neighbour_ctx,
+                mv_config,
+                mv_grid,
+                &block_ctx,
+                &mode_ctx,
+                mi_row,
+                mi_col,
+                n4w,
+                n4h,
+                &stack,
+                mode_ctx.new_mv_context,
+                max_drl_bits_minus_1,
+                tile_offset,
+            )?,
+            (WarpInterMode::WarpNewmv, _) => read_warp_newmv_delta_syntax(
                 cdfs,
                 symbols,
                 sequence,
@@ -1088,7 +1110,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 max_drl_bits_minus_1,
                 tile_offset,
             )?,
-            WarpInterMode::Warpmv => read_warpmv_delta_syntax(
+            (WarpInterMode::Warpmv, _) => read_warpmv_delta_syntax(
                 cdfs,
                 symbols,
                 mv_config,
@@ -1191,7 +1213,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             skip == 1,
             interp_filter_symbol(ReconInterpolationFilter::EightTap),
             false,
-            MotionMode::DeltaWarp,
+            motion_mode,
             warp.warp_params,
             warp.block_precision,
         );
@@ -2137,8 +2159,8 @@ fn read_warp_inter_mode_syntax(
 
 /// § 5.20.7.14 `read_motion_mode` WARP_NEWMV branch: the `use_extend_warp`
 /// and `use_local_warp` reads, gated on § 7.11.4 `WarpSampleFound[ 0 ]` and
-/// the frame-enabled motion modes. EXTENDWARP / LOCALWARP prediction is
-/// beyond the frontier, so a set flag defers; both zero resolves DELTAWARP.
+/// the frame-enabled motion modes. LOCALWARP prediction is beyond the
+/// frontier, so that flag defers; otherwise the selected mode is returned.
 fn read_warp_newmv_motion_mode_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -2146,48 +2168,138 @@ fn read_warp_newmv_motion_mode_syntax(
     neighbour_ctx: &BlockNeighbourContext,
     warp_sample_found: bool,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<MotionMode> {
     let frame_modes = core
         .inter
         .as_ref()
         .and_then(|inter| inter.frame_enabled_motion_modes)
         .unwrap_or([false; splot_core::headers::frame::MOTION_MODES]);
-    let mut read_deferring_flag = |selector: TileCdfSelector, defer| -> Result<()> {
+    let mut read_flag = |selector: TileCdfSelector| -> Result<bool> {
         let flag = cdfs
             .read_block_symbol_trace(selector, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?;
-        if flag.get() != 0 {
-            return Err(defer);
-        }
-        Ok(())
+        Ok(flag.get() != 0)
     };
-    if warp_sample_found && frame_modes[splot_core::headers::frame::EXTENDWARP] {
-        read_deferring_flag(
-            TileCdfSelector::UseExtendWarp {
-                ctx: neighbour_ctx.use_extend_warp_ctx(),
-            },
-            inter_cap!(
-                "inter_warp_extend_unimplemented",
-                tile_offset,
-                "inter.warp_extend prediction",
-                "5.20.7.14"
-            ),
-        )?;
+    if warp_sample_found
+        && frame_modes[splot_core::headers::frame::EXTENDWARP]
+        && read_flag(TileCdfSelector::UseExtendWarp {
+            ctx: neighbour_ctx.use_extend_warp_ctx(),
+        })?
+    {
+        return Ok(MotionMode::ExtendWarp);
     }
-    if warp_sample_found && frame_modes[splot_core::headers::frame::LOCALWARP] {
-        read_deferring_flag(
-            TileCdfSelector::UseLocalWarp {
-                ctx: neighbour_ctx.use_local_warp_ctx(),
-            },
-            inter_cap!(
-                "inter_warp_localwarp_unimplemented",
-                tile_offset,
-                "inter.local_warp prediction",
-                "5.20.7.14"
-            ),
-        )?;
+    if warp_sample_found
+        && frame_modes[splot_core::headers::frame::LOCALWARP]
+        && read_flag(TileCdfSelector::UseLocalWarp {
+            ctx: neighbour_ctx.use_local_warp_ctx(),
+        })?
+    {
+        return Err(inter_cap!(
+            "inter_warp_localwarp_unimplemented",
+            tile_offset,
+            "inter.local_warp prediction",
+            "5.20.7.14"
+        ));
     }
-    Ok(())
+    Ok(MotionMode::DeltaWarp)
+}
+
+/// § 4.8 `Round2` over a signed § 7.13.3.24 projection difference: the
+/// spec's integer form `(x + (1 << (n - 1))) >> n` with an arithmetic shift
+/// (AVM `ROUND_POWER_OF_TWO_64`), NOT the sign-magnitude `Round2Signed`.
+const fn warp_round2(value: i64, n: u32) -> i64 {
+    if n == 0 {
+        return value;
+    }
+    (value + (1i64 << (n - 1))) >> n
+}
+
+/// § 7.13.3.24 extend-warp estimation: extends the base neighbour's warp
+/// model through the block's signalled MV. The global-motion `params` arm is
+/// statically unreachable (global-motion frames defer at the frame gate).
+#[allow(clippy::too_many_arguments)]
+fn extend_warp_estimation(
+    mv_grid: &NeighbourMvGrid,
+    block_ctx: &MvBlockContext,
+    mode_ctx: &ModeContext,
+    stack: &super::find_mv_stack::MvStack,
+    ref_mv_idx: usize,
+    mv: Mv,
+    mi_row: usize,
+    mi_col: usize,
+    n4w: usize,
+    n4h: usize,
+    tile_offset: ByteOffset,
+) -> Result<[i64; 6]> {
+    let (mut delta_row, mut delta_col) = stack.candidate_offsets(ref_mv_idx);
+    if delta_row != -1 && delta_col != -1 {
+        let Some((fallback_row, fallback_col)) = mode_ctx.extend_delta else {
+            return Err(inter_cap!(
+                "inter_warp_extend_base_missing",
+                tile_offset,
+                "inter.warp_extend.base_position",
+                "7.13.3.24"
+            ));
+        };
+        delta_row = fallback_row;
+        delta_col = fallback_col;
+    }
+    let params = match super::find_mv_stack::extend_warp_neighbour_params(
+        mv_grid, block_ctx, delta_row, delta_col,
+    ) {
+        super::find_mv_stack::ExtendWarpNeighbour::Params(params) => params,
+        super::find_mv_stack::ExtendWarpNeighbour::List1MvUnretained => {
+            return Err(inter_cap!(
+                "inter_warp_extend_list1_mv_unretained",
+                tile_offset,
+                "inter.warp_extend.second_list_neighbour_mv",
+                "7.13.3.24"
+            ));
+        }
+        super::find_mv_stack::ExtendWarpNeighbour::Missing => {
+            return Err(inter_cap!(
+                "inter_warp_extend_base_missing",
+                tile_offset,
+                "inter.warp_extend.base_position",
+                "7.13.3.24"
+            ));
+        }
+    };
+    let geometry_error = || warp_model_error(tile_offset);
+    let mid_y = i64::try_from(mi_row * 4 + n4h * 2).map_err(|_| geometry_error())? - 1;
+    let mid_x = i64::try_from(mi_col * 4 + n4w * 2).map_err(|_| geometry_error())? - 1;
+    let proj_mid_x =
+        (mid_x << WARPEDMODEL_PREC_BITS) + (i64::from(mv.col) << (WARPEDMODEL_PREC_BITS - 3));
+    let proj_mid_y =
+        (mid_y << WARPEDMODEL_PREC_BITS) + (i64::from(mv.row) << (WARPEDMODEL_PREC_BITS - 3));
+    let mut extended = IDENTITY_WARP_PARAMS;
+    extended[0] = 0;
+    extended[1] = 0;
+    let neighbour_is_above = delta_row == -1 && delta_col >= 0;
+    if neighbour_is_above {
+        extended[2] = params[2];
+        extended[4] = params[4];
+        let above_x = mid_x;
+        let above_y = i64::try_from(mi_row * 4).map_err(|_| geometry_error())? - 1;
+        let proj_above_x = params[2] * above_x + params[3] * above_y + params[0];
+        let proj_above_y = params[4] * above_x + params[5] * above_y + params[1];
+        let shift = n4h.trailing_zeros() + MI_SIZE_LOG2 - 1;
+        extended[3] = warp_round2(proj_mid_x - proj_above_x, shift);
+        extended[5] = warp_round2(proj_mid_y - proj_above_y, shift);
+    } else {
+        extended[3] = params[3];
+        extended[5] = params[5];
+        let left_x = i64::try_from(mi_col * 4).map_err(|_| geometry_error())? - 1;
+        let left_y = mid_y;
+        let proj_left_x = params[2] * left_x + params[3] * left_y + params[0];
+        let proj_left_y = params[4] * left_x + params[5] * left_y + params[1];
+        let shift = n4w.trailing_zeros() + MI_SIZE_LOG2 - 1;
+        extended[2] = warp_round2(proj_mid_x - proj_left_x, shift);
+        extended[4] = warp_round2(proj_mid_y - proj_left_y, shift);
+    }
+    reduce_warp_model(&mut extended);
+    set_warp_translation(&mut extended, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
+    Ok(extended)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2266,6 +2378,79 @@ fn inter_mvd_sign_derivation_allowed(
     }
     frame_config.precision() <= MV_PRECISION_QUARTER_PEL
         && config.precision() < MV_PRECISION_QUARTER_PEL
+}
+
+/// § 5.20.7.13 EXTENDWARP tail: DRL, block precision, and the NEWMV MVD —
+/// no `warp_idx` loop and no `read_warp_delta` — then the § 7.13.3.24
+/// extension of the base neighbour's model through the signalled MV.
+#[allow(clippy::too_many_arguments)]
+fn read_warp_extend_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    neighbour_ctx: &BlockNeighbourContext,
+    mv_config: MvReadConfig,
+    mv_grid: &NeighbourMvGrid,
+    block_ctx: &MvBlockContext,
+    mode_ctx: &ModeContext,
+    mi_row: usize,
+    mi_col: usize,
+    n4w: usize,
+    n4h: usize,
+    stack: &super::find_mv_stack::MvStack,
+    new_mv_context: usize,
+    max_drl_bits_minus_1: u32,
+    tile_offset: ByteOffset,
+) -> Result<ParsedWarpNewmv> {
+    let ref_mv_idx = read_drl_idx(
+        cdfs,
+        symbols,
+        new_mv_context,
+        max_drl_bits_minus_1,
+        tile_offset,
+    )?;
+    let block_precision = read_block_mv_precision_syntax(
+        cdfs,
+        symbols,
+        sequence,
+        core,
+        neighbour_ctx,
+        mv_config.precision(),
+        true,
+        false,
+        tile_offset,
+    )?;
+    let block_config = MvReadConfig::inter(block_precision.mv_precision);
+    let pred_mv = lowered_pred_mv(block_precision, stack.candidate(ref_mv_idx));
+    let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, block_config)?;
+    let diff = apply_inter_mvd_signs(magnitude, symbols, tile_offset, block_config, false, 1)?;
+    let mv = Mv {
+        row: mv_clamp_to_integer(pred_mv.row + diff.row),
+        col: mv_clamp_to_integer(pred_mv.col + diff.col),
+    };
+    let warp_params = extend_warp_estimation(
+        mv_grid,
+        block_ctx,
+        mode_ctx,
+        stack,
+        ref_mv_idx,
+        mv,
+        mi_row,
+        mi_col,
+        n4w,
+        n4h,
+        tile_offset,
+    )?;
+    Ok(ParsedWarpNewmv {
+        mv,
+        warp_params,
+        ref_mv_idx,
+        ref_warp_idx: 0,
+        precision_idx: 0,
+        warpmv_with_mvd: false,
+        block_precision,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

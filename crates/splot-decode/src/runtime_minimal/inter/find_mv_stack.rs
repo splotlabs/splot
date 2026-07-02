@@ -968,6 +968,56 @@ impl MvStack {
     }
 }
 
+/// The § 7.13.3.24 neighbour-parameter lookup at the extend-warp base
+/// position: a warp neighbour supplies its stored model, otherwise the
+/// neighbour's translational MV lifts to a warp model. The global-motion arm
+/// is statically unreachable (frames signalling `use_global_motion` defer at
+/// the frame gate, so `GmType` is always `IDENTITY` here).
+pub(super) enum ExtendWarpNeighbour {
+    /// The § 7 `params` array for the extension math.
+    Params([i64; 6]),
+    /// The base cell needs the second reference list's MV, which the grid
+    /// does not retain yet.
+    List1MvUnretained,
+    /// No decoded cell at the base position.
+    Missing,
+}
+
+/// Resolves the § 7.13.3.24 `params` for the neighbour at
+/// `(MiRow + deltaRow, MiCol + deltaCol)`.
+pub(super) fn extend_warp_neighbour_params(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    delta_row: i32,
+    delta_col: i32,
+) -> ExtendWarpNeighbour {
+    let Some(cell) = grid.get(
+        block.mi_row as i32 + delta_row,
+        block.mi_col as i32 + delta_col,
+    ) else {
+        return ExtendWarpNeighbour::Missing;
+    };
+    if cell.is_warp()
+        && let Some(params) = cell.warp_params
+    {
+        return ExtendWarpNeighbour::Params(params);
+    }
+    let neighbour_mv = if cell.ref_frame0 == block.ref_frame0 {
+        Some(cell.mv)
+    } else {
+        cell.mv1
+    };
+    let Some(mv) = neighbour_mv else {
+        return ExtendWarpNeighbour::List1MvUnretained;
+    };
+    let mut params = splot_recon::IDENTITY_WARP_PARAMS;
+    params[0] = i64::from(mv.col) << (WARPEDMODEL_PREC_BITS - 3);
+    params[1] = i64::from(mv.row) << (WARPEDMODEL_PREC_BITS - 3);
+    ExtendWarpNeighbour::Params(params)
+}
+
+const WARPEDMODEL_PREC_BITS: u32 = 16;
+
 /// AV2 § 7.12.2 `find_mv_stack` for the spatial-only single-prediction subset.
 pub(super) fn find_mv_stack(
     grid: &NeighbourMvGrid,
