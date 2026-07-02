@@ -64,7 +64,7 @@ const SAMEREF_COMPOUND_10BIT_FIXTURE: &[u8] = include_bytes!(
 );
 
 const SIMPLE_INTERINTRA_10BIT_FIXTURE: &[u8] = include_bytes!(
-    "../../../../../tests/conformance/vectors/valid/syn-3frame-simple-interintra-64x64-10bit.ivf"
+    "../../../../../tests/conformance/vectors/valid/syn-3frame-simple-interintra-64x32-10bit.ivf"
 );
 
 const TWO_FRAME_SUBPEL_FIXTURE: &[u8] = include_bytes!(

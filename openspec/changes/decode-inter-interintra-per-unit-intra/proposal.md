@@ -26,7 +26,10 @@ placeholder first reference, diverging from the § 5.20.7.6 order.
   § 5.20.7.24 per-transform-unit prediction loop: per-unit re-scoped
   plans over the single-rect reconstruction arms, `BlockDecoded` marked
   per unit, per-unit above-MRL read offsets, and the previously missing
-  IBP-DC arm on the intra-in-inter DC path.
+  IBP-DC arm on the intra-in-inter LUMA DC path. The chroma DC arm on the
+  same path still omits the § 7.13.2.12 modifier for non-CfL chroma
+  (unreachable on any known stream today; named follow-up for the batch
+  that first admits non-CfL chroma DC intra-in-inter output).
 
 ## Impact
 

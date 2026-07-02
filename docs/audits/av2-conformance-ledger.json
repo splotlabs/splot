@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a29cca94d7bd9d3d1117f302b099b3672bab72a5",
+  "audited_commit": "a7ea702ed15fb1d7c35cb307b18175483ba9a084",
   "outcome": "success",
   "files": [
     {
@@ -2246,7 +2246,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/tests.rs",
-      "sha256": "c1f8afc1c637438e17c6d7dd17e2594b6823e3eaa4d501e864d4cef71535f6ec",
+      "sha256": "f329ac0a2a715c029f1782f60af3c59aa2bb4578df6cc688e5b213a95f9341b0",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "AV2-5.18.7-SEGMENTATION-TILING",
@@ -4312,7 +4312,7 @@
     },
     {
       "path": "crates/splot-recon/src/workspace.rs",
-      "sha256": "9f5babd9bbec486f81b7a84119dd261d7c2b0472cf1448d33ee82ba26fed0937",
+      "sha256": "9c846e07c960ddf8c908757acbcd73f8fb87b66e1b424cc2f6ed5d72a4ddf768",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-CURRENT-FRAME-WORKSPACE",
@@ -4334,7 +4334,7 @@
     },
     {
       "path": "crates/splot-recon/src/workspace_interintra.rs",
-      "sha256": "e66483b23650cf072b87f4cc1f16e23901e87f2d15be8788ed68fe22a27c4608",
+      "sha256": "1772c561147e6984f64fda5e182579dca672f6017638ee7ab3b49df6829684ef",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -7062,7 +7062,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "4043b533b3b43e82d29c4044c3fdc7a7eb90d6d0f219b23b0e63bc16895e995d",
+      "sha256": "609b386de6827d3920a4c933195661336045e621b2f0d9c6fca13553bfc57fa2",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -25713,6 +25713,29 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/decode-inter-interintra-per-unit-intra/proposal.md",
+      "sha256": "8a56ee96e5ffe6ecf402b7128164664492d7291fa7b5c1d376490516ff5a7b0c",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-FIRST-INTER-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-interintra-per-unit-intra/specs/decoder-support/spec.md",
+      "sha256": "86d806864a8662a3dbc656ca09555d8ecf1e41f4a945e87bbf3a603d48ce3d37",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-interintra-per-unit-intra/tasks.md",
+      "sha256": "bc56b8d6878cb064fe04bd0e49b596caa4381da981681b756646afbd9761a916",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/decode-inter-multi-sb-spatial/proposal.md",
       "sha256": "3bdca5b0306c9a1cc5cea2fcf4478c4cd494e6410cb19e6edae52e0620677266",
       "scope_kind": "openspec",
@@ -29238,7 +29261,7 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "126a840b9dcd4e1398f6f04237fd7068912f2f70c175e6455361eb6ed6494c64",
+      "sha256": "fa5abc4e2dc8a83bb1303d7db81da57a8ee796997ff7837d9bb4fb89f2e6535c",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS",
@@ -29453,6 +29476,13 @@
     {
       "path": "tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf",
       "sha256": "7f2d6a2f0cf2c4248a12e598d74efdf7e63e012902c6bf2de29b455c07a57e0d",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-3frame-simple-interintra-64x32-10bit.ivf",
+      "sha256": "298c4e654d708e57daaad29878d22d75a44777e65b3bdd79839260fc154ff149",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"

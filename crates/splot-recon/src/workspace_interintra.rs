@@ -3,7 +3,7 @@
 
 //! AV2 § 7.13.3.29 intra mode variant mask and § 7.13.3.30 interintra blend.
 
-use super::{CurrentFramePlane, CurrentFrameWorkspace, block_rect};
+use super::{CurrentFramePlane, CurrentFrameWorkspace, checked_sample_block_rect};
 use crate::{IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result};
 
 /// AV2 § 7.13.3.29 `Ii_Weights_1d[128]` smooth-interintra blending weights.
@@ -59,14 +59,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         mode: InterIntraMode,
         intra: &[T],
     ) -> Result<()> {
-        if intra.len() != size.sample_count() {
-            return Err(ReconError::WorkspaceWriteLengthMismatch {
-                plane,
-                expected: size.sample_count(),
-                actual: intra.len(),
-            });
-        }
-        let rect = block_rect(x, y, size)?;
+        let rect = checked_sample_block_rect(plane, x, y, size, intra.len())?;
         self.plane_mut(plane)?
             .blend_smooth_interintra_rect(rect, size, mode, intra)
     }

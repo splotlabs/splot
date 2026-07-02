@@ -20,7 +20,7 @@ SHALL defer before any output.
 - **THEN** both frames match the pinned avmdec-verified hashes
 
 #### Scenario: SIMPLE-path interintra defers
-- **GIVEN** `syn-3frame-simple-interintra-64x64-10bit.ivf`
+- **GIVEN** `syn-3frame-simple-interintra-64x32-10bit.ivf`
 - **WHEN** the stream is decoded
 - **THEN** decode rejects with `inter_interintra_unimplemented` before
   any output

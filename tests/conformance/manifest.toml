@@ -636,9 +636,9 @@ NEGATIVE decode pin proving the frame decodes to the block's comp_mode read \
 expect = "clean"
 
 [[vector]]
-path = "vectors/valid/syn-3frame-simple-interintra-64x64-10bit.ivf"
+path = "vectors/valid/syn-3frame-simple-interintra-64x32-10bit.ivf"
 description = """
-Three-frame 10-bit 4:2:0 64x64 inter stream (IVF) whose INTER frames code \
+Three-frame 10-bit 4:2:0 64x32 inter stream (IVF) whose INTER frames code \
 SIMPLE-path interintra blocks (motion_mode INTERINTRA via the § 5.20.7.14 \
 use_interintra read; II_V/II_H smooth-mask). Validates clean; committed as \
 the NEGATIVE decode pin for the `inter_interintra_unimplemented` defer — the \
