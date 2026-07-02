@@ -449,7 +449,7 @@ fn predict_compound_plane<T: ReconSample>(
     Ok(())
 }
 
-fn reference_plane_samples<T: ReconSample>(
+pub(super) fn reference_plane_samples<T: ReconSample>(
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     offset: ByteOffset,

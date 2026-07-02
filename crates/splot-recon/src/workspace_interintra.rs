@@ -95,6 +95,57 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     }
 }
 
+impl<T: ReconSample> CurrentFrameWorkspace<T> {
+    /// AV2 § 7.13.3.25 block adaptive weighted prediction application:
+    /// `CurrFrame = Clip1((orig * alpha + beta) >> 8)` in place over the rect.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the plane is absent, the target rectangle
+    /// is out of bounds, or a scaled sample cannot be stored.
+    pub fn apply_bawp_rect(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        alpha: i64,
+        beta: i64,
+    ) -> Result<()> {
+        let rect = super::block_rect(x, y, size)?;
+        let max_sample = i64::from(self.info().bit_depth().max_sample());
+        self.plane_mut(plane)?
+            .apply_bawp_rect(rect, size, alpha, beta, max_sample)
+    }
+}
+
+impl<T: ReconSample> CurrentFramePlane<T> {
+    fn apply_bawp_rect(
+        &mut self,
+        rect: crate::PlaneRect,
+        size: IntraRectBlockSize,
+        alpha: i64,
+        beta: i64,
+        max_sample: i64,
+    ) -> Result<()> {
+        self.ensure_rect(rect)?;
+        for i in 0..size.height() {
+            let row_start = self.sample_index(rect.x(), rect.y() + i)?;
+            for j in 0..size.width() {
+                let orig = i64::from(self.samples[row_start + j].to_u16());
+                let scaled = ((orig * alpha + beta) >> 8).clamp(0, max_sample);
+                let stored = u16::try_from(scaled)
+                    .ok()
+                    .and_then(|value| T::try_from_u16(value).ok())
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "bawp scaled sample storage",
+                    })?;
+                self.samples[row_start + j] = stored;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

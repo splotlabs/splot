@@ -1314,19 +1314,29 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         },
         tile_offset,
     )?;
-    if bawp != BawpSyntax::default() {
-        return Err(inter_cap!(
-            "inter_bawp_prediction_unimplemented",
-            tile_offset,
-            "inter.bawp_prediction",
-            "7.13.3.1"
-        ));
-    }
+    let bawp = if bawp.enabled {
+        let slot = usize::try_from(ref_frame0)
+            .ok()
+            .and_then(|list_ref| ref_frame_idx.get(list_ref).copied())
+            .unwrap_or(0);
+        let ref_hint = reference
+            .ref_order_hint
+            .get(slot as usize)
+            .copied()
+            .map(|hint| i32::try_from(hint).unwrap_or(i32::MAX))
+            .unwrap_or(0);
+        BawpSyntax {
+            ref_dist_gt4: super::get_relative_dist(ref_hint, current_order_hint as i32).abs() > 4,
+            ..bawp
+        }
+    } else {
+        bawp
+    };
     if trace_first_row {
         eprintln!(
             "inter block bawp r={mi_row} c={mi_col} luma={} chroma={} allow={} frame_switch={} checkpoint={:?}",
-            bawp.luma_flag,
-            bawp.chroma_flag,
+            bawp.enabled,
+            bawp.chroma,
             allow_bawp,
             frame_is_switch,
             symbols.checkpoint()
@@ -1825,6 +1835,35 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
     let block_params =
         super::resolve_inter_block_params(ref_frame_idx, reference, placed, rect, tile_offset)?;
     mc::motion_compensate_inter_block_into(workspace, block_params, tile_offset)?;
+    if placed.block.bawp.enabled {
+        let slot = usize::try_from(placed.block.ref_frame0)
+            .ok()
+            .and_then(|list_ref| ref_frame_idx.get(list_ref).copied())
+            .ok_or_else(|| {
+                inter_missing!(
+                    "inter_missing_reference_frame",
+                    tile_offset,
+                    "inter.bawp.reference_frame",
+                    super::SPEC_REFERENCE
+                )
+            })?;
+        let ref_frame = reference.frame_for_slot(slot).ok_or_else(|| {
+            inter_missing!(
+                "inter_missing_reference_frame",
+                tile_offset,
+                "inter.bawp.reference_frame",
+                super::SPEC_REFERENCE
+            )
+        })?;
+        super::bawp::apply_bawp(
+            workspace,
+            ref_frame,
+            placed,
+            placed.block.bawp,
+            placed.block.mv,
+            tile_offset,
+        )?;
+    }
     if let (Some(predictions), Some(mode)) = (intra_predictions, placed.block.interintra) {
         for prediction in predictions {
             workspace
@@ -3142,23 +3181,20 @@ fn read_bawp_syntax(
         return Ok(BawpSyntax::default());
     }
 
-    let mut luma_flag = 1u8;
+    let list_index = explicit_bawp_context(input.single_mode, input.use_amvd);
     let explicit_bawp = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::ExplicitBawp {
-                ctx: explicit_bawp_context(input.single_mode, input.use_amvd),
-            },
-            symbols,
-        )
+        .read_block_symbol_trace(TileCdfSelector::ExplicitBawp { ctx: list_index }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?;
-    if explicit_bawp.get() != 0 {
-        luma_flag = luma_flag.saturating_add(1);
-        let explicit_bawp_scale = cdfs
-            .read_block_symbol_trace(TileCdfSelector::ExplicitBawpScale, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?;
-        luma_flag = luma_flag.saturating_add(explicit_bawp_scale.get());
-    }
-    let chroma_flag = if input.has_chroma {
+    let explicit = explicit_bawp.get() != 0;
+    let explicit_scale_positive = if explicit {
+        cdfs.read_block_symbol_trace(TileCdfSelector::ExplicitBawpScale, symbols)
+            .map_err(|_| symbol_read_error(tile_offset))?
+            .get()
+            != 0
+    } else {
+        false
+    };
+    let chroma = if input.has_chroma {
         cdfs.read_block_symbol_trace(TileCdfSelector::UseBawpChroma, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?
             .get()
@@ -3168,8 +3204,12 @@ fn read_bawp_syntax(
     };
 
     Ok(BawpSyntax {
-        luma_flag,
-        chroma_flag,
+        enabled: true,
+        explicit,
+        explicit_scale_positive,
+        list_index: list_index as u8,
+        ref_dist_gt4: false,
+        chroma,
     })
 }
 

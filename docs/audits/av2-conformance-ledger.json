@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "72202caab80da5a37f7a7296ed72da47e30fcdba",
+  "audited_commit": "d42dac296e08bcc3ff2982bf25ff63c3ffc06a0c",
   "outcome": "success",
   "files": [
     {
@@ -2112,7 +2112,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter.rs",
-      "sha256": "66c7fd9cc446d12ee818237abe33c4fc03948a4f978b618944fca5fc147c52cc",
+      "sha256": "96509936fdfe8e5c20ec3615d5b80a32b2fb41a73ff67e7c550fa0a2458cf731",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-FIRST-INTER-FRAME-FRONTIER",
@@ -2124,7 +2124,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "82733bc562a41069a2563b8b43d9ac4c27fca02aa1a9df366833da80c2084345",
+      "sha256": "40d07e0eb42afcfee1cc46ceea389fa109b1a0fca4535205499b6aff99146c28",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2193,7 +2193,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/mc.rs",
-      "sha256": "85f3bb06329f03758636f22209a2bd1cb9ea3c889e0664ba630c134333534f9b",
+      "sha256": "b07e9383a9128ac70c5298a04f448027530360191c29e6175d6720b695da44d5",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2259,7 +2259,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/intra_prediction.rs",
-      "sha256": "25a2a87a9160c8bc5d5ad3840bfbef9c184da5c7bd6b99e505c2016ac5f09a25",
+      "sha256": "ef3b4b7b8bcbd36f00c9fd806e41e2b504381bb29fee5d0e9679b12429cee7e2",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2282,7 +2282,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/residual_pipeline.rs",
-      "sha256": "e39c5353840e06ac69d332ae04ac51ca53f29a4a56265836f964bc4b3e8b6ece",
+      "sha256": "960526a65d4e943f7e59ce8c126abfa70d3f1366d6ef61c1e97e1c28277dc600",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -4334,7 +4334,7 @@
     },
     {
       "path": "crates/splot-recon/src/workspace_interintra.rs",
-      "sha256": "1772c561147e6984f64fda5e182579dca672f6017638ee7ab3b49df6829684ef",
+      "sha256": "b3d73d2667b78861d67b55f828b4253229ba03344ea3d10f8dba0607fe3a0ac1",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"

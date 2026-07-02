@@ -307,7 +307,7 @@ fn directional_p_angle(y_mode: IntraYMode, angle_delta_y: i8) -> Option<u16> {
     u16::try_from(angle).ok()
 }
 
-const fn directional_mode_p_angle(mode: SupportedDirectionalLumaMode) -> u16 {
+pub(super) const fn directional_mode_p_angle(mode: SupportedDirectionalLumaMode) -> u16 {
     match mode {
         SupportedDirectionalLumaMode::Vertical => 90,
         SupportedDirectionalLumaMode::Horizontal => 180,

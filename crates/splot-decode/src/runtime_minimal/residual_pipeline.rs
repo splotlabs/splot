@@ -783,6 +783,23 @@ impl ResidualPlanePlan {
                 plan: IntraLumaPlan::DirectionalOneSidedLeft { p_angle },
                 use_tcq,
             } => ResidualReconstructionPlan::LumaRectOneSidedLeft { p_angle, use_tcq },
+            ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::DirectionalNeighbour { mode },
+                use_tcq,
+            } => {
+                let p_angle = super::intra_prediction::directional_mode_p_angle(mode);
+                if p_angle < 90 {
+                    ResidualReconstructionPlan::LumaRectOneSidedAbove { p_angle, use_tcq }
+                } else if p_angle > 180 {
+                    ResidualReconstructionPlan::LumaRectOneSidedLeft { p_angle, use_tcq }
+                } else {
+                    ResidualReconstructionPlan::LumaRectMiddle { p_angle, use_tcq }
+                }
+            }
+            ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::NonDcNeighbour { mode },
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq },
             _ => {
                 if std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_BITS").is_some() {
                     eprintln!(
