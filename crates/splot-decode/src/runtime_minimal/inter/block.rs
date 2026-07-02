@@ -437,6 +437,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         bh4: n4h,
         sb_h4,
         ref_frame0: SINGLE_REF_FRAME0,
+        ref_frame1: None,
         mi_rows,
         mi_cols,
     };

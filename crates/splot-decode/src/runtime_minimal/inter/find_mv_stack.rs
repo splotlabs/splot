@@ -17,6 +17,8 @@ struct NeighbourCell {
     ref_frame0: i8,
     ref_frame1: Option<i8>,
     y_mode: NeighbourYMode,
+    newmv_for_list0: bool,
+    newmv_for_list1: bool,
     mv: Mv,
     skip: bool,
     interp_filter: u8,
@@ -29,6 +31,8 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     ref_frame0: -1,
     ref_frame1: None,
     y_mode: NeighbourYMode::Other,
+    newmv_for_list0: false,
+    newmv_for_list1: false,
     mv: Mv::ZERO,
     skip: false,
     interp_filter: SWITCHABLE_FILTERS,
@@ -154,11 +158,61 @@ impl NeighbourMvGrid {
             ref_frame0,
             ref_frame1,
             y_mode,
+            newmv_for_list0: matches!(y_mode, NeighbourYMode::NewMv),
+            newmv_for_list1: false,
             mv,
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
             is_warp,
+        };
+        for rr in r..r.saturating_add(n4h) {
+            if rr >= self.mi_rows {
+                break;
+            }
+            for cc in c..c.saturating_add(n4w) {
+                if cc >= self.mi_cols {
+                    break;
+                }
+                self.cells[rr * self.mi_cols + cc] = Some(cell);
+            }
+        }
+    }
+
+    /// Records decoded compound mode info with per-reference-list NEWMV state.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_block_with_newmv_lists(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        ref_frame0: i8,
+        ref_frame1: i8,
+        list0_is_newmv: bool,
+        list1_is_newmv: bool,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+    ) {
+        let cell = NeighbourCell {
+            is_inter: true,
+            ref_frame0,
+            ref_frame1: Some(ref_frame1),
+            y_mode: if list0_is_newmv {
+                NeighbourYMode::NewMv
+            } else {
+                NeighbourYMode::Other
+            },
+            newmv_for_list0: list0_is_newmv,
+            newmv_for_list1: list1_is_newmv,
+            mv,
+            skip,
+            interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
+            use_amvd,
+            is_warp: false,
         };
         for rr in r..r.saturating_add(n4h) {
             if rr >= self.mi_rows {
@@ -201,6 +255,8 @@ pub(super) struct MvBlockContext {
     pub(super) sb_h4: usize,
     /// `RefFrame[0]`: the block's single-reference frame index.
     pub(super) ref_frame0: i8,
+    /// `RefFrame[1]`, or `None` for single-reference mode context.
+    pub(super) ref_frame1: Option<i8>,
     /// `MiRows`: the frame MI height (for § 5.20.9.4 clamp bounds).
     pub(super) mi_rows: usize,
     /// `MiCols`: the frame MI width (for § 5.20.9.5 clamp bounds).
@@ -348,6 +404,25 @@ fn neighbour_matches_ref(cell: NeighbourCell, ref_frame: i8) -> bool {
     cell.is_inter && (cell.ref_frame0 == ref_frame || cell.ref_frame1 == Some(ref_frame))
 }
 
+fn mode_ctx_match_newmv(cell: NeighbourCell, block: &MvBlockContext) -> Option<bool> {
+    if !cell.is_inter {
+        return None;
+    }
+    let Some(block_ref1) = block.ref_frame1 else {
+        if cell.ref_frame0 == block.ref_frame0 {
+            return Some(cell.newmv_for_list0);
+        }
+        if cell.ref_frame1 == Some(block.ref_frame0) && cell.ref_frame0 != block.ref_frame0 {
+            return Some(cell.newmv_for_list1);
+        }
+        return None;
+    };
+    if cell.ref_frame0 == block.ref_frame0 && cell.ref_frame1 == Some(block_ref1) {
+        return Some(cell.newmv_for_list0 || cell.newmv_for_list1);
+    }
+    None
+}
+
 /// The result of § 7.11.2 `find_mode_ctx` for single prediction: the
 /// `NewMvContext` and the `NewMvCount` a later block uses for the § 8.3.2
 /// `single_mode` / DRL CDF contexts.
@@ -371,10 +446,10 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
         let Some(cell) = probe.cell(grid, block) else {
             continue;
         };
-        if !matches_block_ref(cell, block) {
+        let Some(is_newmv) = mode_ctx_match_newmv(cell, block) else {
             continue;
-        }
-        if matches!(cell.y_mode, NeighbourYMode::NewMv) {
+        };
+        if is_newmv {
             new_mv_count = (new_mv_count + 1).min(3);
         }
         *slot = true;
