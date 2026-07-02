@@ -892,11 +892,8 @@ pub(super) fn find_mv_stack(
         scan_mv_stack_probe(grid, block, probe, &mut entries);
     }
 
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.5 Scan col process
-
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.19 Sorting process
-
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): §7.12.2.20 large-block (>32x32) MVP
+    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.5 Scan col,
+    // §7.12.2.19 Sorting, and §7.12.2.20 large-block (>32x32) MVP processes
     extra_search(block, global_mv, &mut entries);
 
     let stack: Vec<Mv> = entries

@@ -601,3 +601,27 @@ inactive), the first committed CCSO-active inter target. splot decode \
 --output-format raw reproduces the local avmdec --i420 --rawvideo output \
 byte-for-byte (md5 ce742b18cb360e822b96e6808b8d5bdc). Validates clean."""
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-ccso-reuse-inter-64x64-10bit.ivf"
+description = """
+Two-frame 10-bit 4:2:0 64x64 inter stream (IVF) from a project-owned static \
+synthetic input whose INTER frame signals § 5.18.7.12 CCSO reference reuse \
+(sb_reuse_ccso = 1). Validates clean; committed as the NEGATIVE decode pin for \
+the `inter_ccso_reuse_unimplemented` defer (reference filter-control retention \
+is not implemented), guarding against a silent regression to a desync or a \
+confident-wrong decode."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-txsplit-intra-inter-64x64-10bit-q100.ivf"
+description = """
+Two-frame 10-bit 4:2:0 64x64 inter stream (IVF) whose INTER frame codes an \
+intra block with a perpendicular multi-transform-unit split — the § 5.20.7.24 \
+per-transform-unit intra prediction case the decoder defers (interior units \
+must predict from just-reconstructed sibling samples). avmdec decodes it; \
+splot previously emitted a confident-wrong right-band (documented in the b02 \
+mission notes). Validates clean; committed as the NEGATIVE decode pin for the \
+`general_intra_transform_partition` defer and as the ready oracle for the \
+per-unit prediction change."""
+expect = "clean"

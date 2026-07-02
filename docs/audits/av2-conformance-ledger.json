@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "8cd1e37a19616f1ea03c175a8ac8e1993fdddf6d",
+  "audited_commit": "b70f9b343d53675c429051084b63dcc2ff3e7e3a",
   "outcome": "success",
   "files": [
     {
@@ -2124,7 +2124,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "0d50a8a1b25aff6b2e05fa3a0363d89516f6c249b0bf2debf5e1026623c2e195",
+      "sha256": "4be51a74418d800a21ef7c8d9948884f5be6eb2d58be20d6fe5b95e423170703",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2155,7 +2155,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
-      "sha256": "816ed839be71ebc67d423d75b6a897121e32840e18acde4e818fe7a8c0ee0d1d",
+      "sha256": "968ec6648e4e7fbb33c523dbd17c2291d96a031d7308ad8805759e7d0047ea40",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
@@ -2246,7 +2246,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/tests.rs",
-      "sha256": "70e9e366f46d3670906e4ac0f2e0359cde49a3f993c4d2d4e8eeb88e13cd2f01",
+      "sha256": "68d5342382741f8190070f9eed7f5d3d0c2b7bb4925ae0a8a815cec3d1e19f0e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "AV2-5.18.7-SEGMENTATION-TILING",
@@ -2336,7 +2336,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon.rs",
-      "sha256": "5fef335a305491c00ca1bfbec6f98d7e9430f4a7f5070c71d7bdcf716ee1f244",
+      "sha256": "a678738fa908bae28c27b1d62b37ad8f3b9a194bf081e2c7dce11e4adfaf8e5e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
@@ -3009,7 +3009,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
-      "sha256": "32c7de5ae7377395f485ab16d16fcfb67d1c0d0d0aeaf569e3e3f5dd0ec36d31",
+      "sha256": "8c9f64abd9d72190592b991bed167959f33b2b6507c7b3c0af3aa30d768d12ac",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
@@ -3017,6 +3017,7 @@
         "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER",
         "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER",
         "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF",
+        "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-GENERAL-INTRA-FRAME-RECON",
         "DECODE-GENERAL-INTRA-LUMA-COEFFS"
       ],
@@ -29230,7 +29231,7 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "d56119e8d9b911b354d9df59e590981860b16bd6c6fdf9590d510f19eb244efe",
+      "sha256": "6b8a8c1523436899916607a9325e097ba473ee0d946cb2e7605980a30139c34a",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS",

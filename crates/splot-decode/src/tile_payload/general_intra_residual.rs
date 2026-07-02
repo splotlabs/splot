@@ -1267,6 +1267,7 @@ fn ensure_transform_tool_residual_handoff(
     if frame_facts.lossless_for_segment(SEGMENT_ID) != Some(false) {
         return unsupported_transform_tool_residual("unsupported_dctonly_residual_lossless");
     }
+    // TODO(spec: DECODE-FIRST-INTER-FRAME-FRONTIER): 5.20.7.27 is_cctx_allowed also excludes non-4:2:0 >=32x32 chroma; exact for the admitted 4:2:0 subset.
     if plane == 1 && frame_facts.enable_cctx() && (is_inter || eob != 1) {
         let cctx_type = read_chroma_cctx_type(cdfs, symbols, input.active_chroma_policy)?;
         if is_inter && cctx_type != 0 {
