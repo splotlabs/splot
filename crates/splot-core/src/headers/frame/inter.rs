@@ -83,11 +83,11 @@ const MAX_REF_MV_STACK_SIZE: u32 = 6;
 
 /// `MOTION_MODES` (AV2 v1.0.0 § 3): the number of motion modes, bounding the
 /// `frame_enabled_motion_modes[mode]` loop (§ 5.18.2 mirror :4921).
-const MOTION_MODES: usize = 5;
+pub const MOTION_MODES: usize = 5;
 
 /// `INTERINTRA` (AV2 v1.0.0 § 3): the first motion-mode index read in the
 /// `frame_enabled_motion_modes` loop (§ 5.18.2 mirror :4921).
-const INTERINTRA: usize = 1;
+pub const INTERINTRA: usize = 1;
 
 /// `PRIMARY_REF_NONE` (AV2 v1.0.0 § 3).
 const PRIMARY_REF_NONE: u8 = 7;

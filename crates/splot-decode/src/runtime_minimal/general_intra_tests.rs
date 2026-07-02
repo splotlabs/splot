@@ -246,9 +246,6 @@ const FLAT_Q255_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-10bit-q255.ivf"
 );
 
-const TWO_FRAME_INTER_10BIT_FIXTURE: &[u8] =
-    include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64-10bit.ivf");
-
 fn assert_decode_rejects(fixture: &[u8], reason: &str) {
     use crate::error::DecodeError;
 
@@ -285,14 +282,6 @@ fn ten_bit_base_q255_fails_closed_frozen_tier() {
     assert_decode_rejects(
         FLAT_Q255_10BIT_FIXTURE,
         "unsupported_10bit_frozen_minimal_tier",
-    );
-}
-
-#[test]
-fn ten_bit_inter_fails_closed_on_unsupported_frame_tools() {
-    assert_decode_rejects(
-        TWO_FRAME_INTER_10BIT_FIXTURE,
-        "inter_unsupported_frame_tools",
     );
 }
 

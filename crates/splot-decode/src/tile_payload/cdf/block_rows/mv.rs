@@ -6,6 +6,8 @@
 use splot_core::tables::cdf::{
     DEFAULT_AMVD_INDICES_CDF, DEFAULT_COL_MV_GREATER_CDF, DEFAULT_COL_MV_INDEX_CDF,
     DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF, DEFAULT_JOINT_SHELL_SET_CDF,
+    DEFAULT_JOINT_SHELL0_CLASS0_CDF, DEFAULT_JOINT_SHELL0_CLASS1_CDF,
+    DEFAULT_JOINT_SHELL1_CLASS0_CDF, DEFAULT_JOINT_SHELL1_CLASS1_CDF,
     DEFAULT_JOINT_SHELL3_CLASS0_CDF, DEFAULT_JOINT_SHELL3_CLASS1_CDF,
     DEFAULT_JOINT_SHELL4_CLASS0_CDF, DEFAULT_JOINT_SHELL4_CLASS1_CDF,
     DEFAULT_JOINT_SHELL5_CLASS0_CDF, DEFAULT_JOINT_SHELL5_CLASS1_CDF,
@@ -23,6 +25,9 @@ const COL_MV_INDEX_BANKS: usize = 4;
 const SHELL_OFFSET_OTHER_CLASS_BANKS: usize = 16;
 
 type JointShellSetCdfRows = [[i32; CDF_ROW_LEN]; MV_CONTEXTS];
+type JointShell0Class0CdfRows = [[i32; 6]; MV_CONTEXTS];
+type JointShell0Class1CdfRows = [[i32; 7]; MV_CONTEXTS];
+type JointShell1ClassCdfRows = [[i32; 7]; MV_CONTEXTS];
 type JointShell3ClassCdfRows = [[i32; 8]; MV_CONTEXTS];
 type JointShell4Class0CdfRows = [[i32; 8]; MV_CONTEXTS];
 type JointShell4Class1CdfRows = [[i32; 9]; MV_CONTEXTS];
@@ -41,6 +46,10 @@ type AmvdIndexCdfRows = [[i32; 9]; 2];
 macro_rules! visit_mv_cdf_rows {
     ($visit:ident) => {
         $visit!(joint_shell_set);
+        $visit!(joint_shell0_class0);
+        $visit!(joint_shell0_class1);
+        $visit!(joint_shell1_class0);
+        $visit!(joint_shell1_class1);
         $visit!(joint_shell3_class0);
         $visit!(joint_shell3_class1);
         $visit!(joint_shell4_class0);
@@ -63,6 +72,10 @@ macro_rules! visit_mv_cdf_rows {
 macro_rules! joint_shell_class_row_match {
     ($rows:expr, $precision:expr, $shell_set:expr, $mv_ctx:expr, $slice:ident) => {
         match ($precision, $shell_set) {
+            (0, 0) => Ok($rows.joint_shell0_class0[$mv_ctx].$slice()),
+            (0, 1) => Ok($rows.joint_shell0_class1[$mv_ctx].$slice()),
+            (1, 0) => Ok($rows.joint_shell1_class0[$mv_ctx].$slice()),
+            (1, 1) => Ok($rows.joint_shell1_class1[$mv_ctx].$slice()),
             (3, 0) => Ok($rows.joint_shell3_class0[$mv_ctx].$slice()),
             (3, 1) => Ok($rows.joint_shell3_class1[$mv_ctx].$slice()),
             (4, 0) => Ok($rows.joint_shell4_class0[$mv_ctx].$slice()),
@@ -86,7 +99,7 @@ pub(crate) enum MvCdfSelector {
     },
     /// `TileJointShellPClassQCdf[MvCtx]`.
     JointShellClass {
-        /// `P == MvPrecision` (`3`, `5`, or `6` in the supported subset).
+        /// `P == MvPrecision` (Table 6.19; `2` never occurs as a block precision).
         precision: usize,
         /// `Q == shell_set`.
         shell_set: usize,
@@ -143,6 +156,10 @@ pub(crate) enum MvCdfSelector {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct MvCdfRows {
     joint_shell_set: JointShellSetCdfRows,
+    joint_shell0_class0: JointShell0Class0CdfRows,
+    joint_shell0_class1: JointShell0Class1CdfRows,
+    joint_shell1_class0: JointShell1ClassCdfRows,
+    joint_shell1_class1: JointShell1ClassCdfRows,
     joint_shell3_class0: JointShell3ClassCdfRows,
     joint_shell3_class1: JointShell3ClassCdfRows,
     joint_shell4_class0: JointShell4Class0CdfRows,
@@ -165,6 +182,10 @@ impl MvCdfRows {
     pub(super) fn from_defaults() -> Self {
         Self {
             joint_shell_set: [DEFAULT_JOINT_SHELL_SET_CDF; MV_CONTEXTS],
+            joint_shell0_class0: [DEFAULT_JOINT_SHELL0_CLASS0_CDF; MV_CONTEXTS],
+            joint_shell0_class1: [DEFAULT_JOINT_SHELL0_CLASS1_CDF; MV_CONTEXTS],
+            joint_shell1_class0: [DEFAULT_JOINT_SHELL1_CLASS0_CDF; MV_CONTEXTS],
+            joint_shell1_class1: [DEFAULT_JOINT_SHELL1_CLASS1_CDF; MV_CONTEXTS],
             joint_shell3_class0: [DEFAULT_JOINT_SHELL3_CLASS0_CDF; MV_CONTEXTS],
             joint_shell3_class1: [DEFAULT_JOINT_SHELL3_CLASS1_CDF; MV_CONTEXTS],
             joint_shell4_class0: [DEFAULT_JOINT_SHELL4_CLASS0_CDF; MV_CONTEXTS],
@@ -385,7 +406,7 @@ fn checked_shell_class_axes(
             max_exclusive: MV_CONTEXTS,
         });
     }
-    if matches!(precision, 3..=6) {
+    if matches!(precision, 0 | 1 | 3..=6) {
         Ok(())
     } else {
         Err(precision_error(precision))

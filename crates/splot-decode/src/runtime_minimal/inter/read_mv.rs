@@ -14,6 +14,12 @@ const MV_LOW: i32 = -(1 << 16);
 const MV_UPP: i32 = 1 << 16;
 const AMVD_INDEX_TO_MVD: [i32; 9] = [0, 2, 4, 6, 8, 16, 32, 64, 128];
 
+/// AV2 Table 6.19 `MV_PRECISION_EIGHT_PEL`.
+pub(in crate::runtime_minimal) const MV_PRECISION_EIGHT_PEL: u8 = 0;
+/// AV2 Table 6.19 `MV_PRECISION_FOUR_PEL`.
+pub(in crate::runtime_minimal) const MV_PRECISION_FOUR_PEL: u8 = 1;
+/// AV2 Table 6.19 `MV_PRECISION_TWO_PEL`.
+pub(in crate::runtime_minimal) const MV_PRECISION_TWO_PEL: u8 = 2;
 /// AV2 Table 6.19 `MV_PRECISION_ONE_PEL`.
 pub(in crate::runtime_minimal) const MV_PRECISION_ONE_PEL: u8 = 3;
 /// AV2 Table 6.19 `MV_PRECISION_HALF_PEL`.
@@ -71,6 +77,30 @@ pub(in crate::runtime_minimal) const fn mv_clamp_to_integer(v: i32) -> i32 {
         MV_UPP - 8
     } else {
         v
+    }
+}
+
+/// AV2 §5.20.7.13 `lower_mv_precision(precision, candMv)`: rounds a candidate
+/// motion vector to the requested Table 6.19 precision.
+pub(in crate::runtime_minimal) fn lower_mv_precision(precision: u8, mv: Mv) -> Mv {
+    let bits = u32::from(MV_PRECISION_EIGHTH_PEL - precision);
+    let radix = 1i32 << bits;
+    let round = |component: i32| -> i32 {
+        let a = component.abs();
+        let a_int = (a - 1 + (radix >> 1)) >> bits;
+        let mut rounded = if component >= 0 {
+            a_int << bits
+        } else {
+            -(a_int << bits)
+        };
+        if (a_int << bits) != a {
+            rounded = rounded.clamp(MV_LOW + radix, MV_UPP - radix);
+        }
+        rounded
+    };
+    Mv {
+        row: round(mv.row),
+        col: round(mv.col),
     }
 }
 
@@ -386,7 +416,9 @@ fn validate_config(config: MvReadConfig, tile_offset: ByteOffset) -> Result<()> 
         return Err(mv_overflow(tile_offset));
     }
     match config.precision {
-        MV_PRECISION_ONE_PEL
+        MV_PRECISION_EIGHT_PEL
+        | MV_PRECISION_FOUR_PEL
+        | MV_PRECISION_ONE_PEL
         | MV_PRECISION_HALF_PEL
         | MV_PRECISION_QUARTER_PEL
         | MV_PRECISION_EIGHTH_PEL => Ok(()),

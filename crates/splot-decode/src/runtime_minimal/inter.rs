@@ -897,10 +897,7 @@ fn validate_inter_frame_core(
                 .lossless_info
                 .as_ref()
                 .is_none_or(|lossless| lossless.coded_lossless)
-            || sequence
-                .inter
-                .as_ref()
-                .is_none_or(|inter| inter.enable_flex_mvres)
+            || sequence.inter.is_none()
             || core
                 .deblocking_filter_params
                 .as_ref()
@@ -920,8 +917,16 @@ fn validate_inter_frame_core(
                 .is_none_or(|tail| tail.apply_grain || tail.skip_mode_present);
     if std::env::var_os("SPLOT_TRACE_INTER_FRAME_TOOLS").is_some() {
         eprintln!(
-            "inter tools offset={} base_q={:?} segmentation={:?} qmatrix={:?} delta_q={:?} lossless={:?} deblock={:?} gdf={:?} cdef={:?} lr={:?} ccso={:?} tail={:?}",
+            "inter tools offset={} flex_mvres={:?} allow_tcq={:?} inter_ddt={:?} base_q={:?} segmentation={:?} qmatrix={:?} delta_q={:?} lossless={:?} deblock={:?} gdf={:?} cdef={:?} lr={:?} ccso={:?} tail={:?}",
             offset.get(),
+            sequence.inter.as_ref().map(|inter| inter.enable_flex_mvres),
+            core.lossless_info
+                .as_ref()
+                .map(|lossless| lossless.allow_tcq),
+            sequence
+                .transform_quant_entropy
+                .as_ref()
+                .map(|tq| tq.enable_inter_ddt),
             core.quantization_params.map(|quant| quant.base_q_idx),
             core.segmentation_params
                 .as_ref()

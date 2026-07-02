@@ -24,6 +24,7 @@ struct NeighbourCell {
     interp_filter: u8,
     use_amvd: bool,
     is_warp: bool,
+    precision: BlockPrecisionRecord,
 }
 
 const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
@@ -38,7 +39,48 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     interp_filter: SWITCHABLE_FILTERS,
     use_amvd: false,
     is_warp: false,
+    precision: BlockPrecisionRecord {
+        use_most_probable_precision: false,
+        mv_precision: 0,
+    },
 };
+
+/// § 5.20.7.13 `UseMostProbablePrecisions` / `MvPrecisions` grid values for one block.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct BlockPrecisionRecord {
+    /// `UseMostProbablePrecisions[ r ][ c ]`.
+    pub(super) use_most_probable_precision: bool,
+    /// `MvPrecisions[ r ][ c ]` (Table 6.19 code).
+    pub(super) mv_precision: u8,
+}
+
+impl BlockPrecisionRecord {
+    /// The § 5.20.7.13 inter path that keeps `MvPrecision = FrameMvPrecision`
+    /// (`use_most_probable_precision = 1`).
+    pub(super) const fn most_probable(mv_precision: u8) -> Self {
+        Self {
+            use_most_probable_precision: true,
+            mv_precision,
+        }
+    }
+
+    /// The § 5.20.5.3 / § 5.20.7.12 intra and IntrABC grid values and the
+    /// explicit `pb_mv_precision` path (`use_most_probable_precision = 0`).
+    pub(super) const fn explicit(mv_precision: u8) -> Self {
+        Self {
+            use_most_probable_precision: false,
+            mv_precision,
+        }
+    }
+}
+
+impl Default for BlockPrecisionRecord {
+    /// The § 5.20.7.13 non-flex inter path: `use_most_probable_precision = 1`
+    /// at the `MV_PRECISION_EIGHTH_PEL` frame default.
+    fn default() -> Self {
+        Self::most_probable(super::read_mv::MV_PRECISION_EIGHTH_PEL)
+    }
+}
 
 const SWITCHABLE_FILTERS: u8 = 3;
 const INTER_FILTER_COMP_OFFSET: usize = SWITCHABLE_FILTERS as usize + 1;
@@ -86,6 +128,7 @@ impl NeighbourMvGrid {
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
+        precision: BlockPrecisionRecord,
     ) {
         self.record_block_with_warp(
             r,
@@ -101,6 +144,7 @@ impl NeighbourMvGrid {
             interp_filter,
             use_amvd,
             false,
+            precision,
         );
     }
 
@@ -118,6 +162,7 @@ impl NeighbourMvGrid {
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
+        precision: BlockPrecisionRecord,
     ) {
         self.record_block_with_warp(
             r,
@@ -133,6 +178,7 @@ impl NeighbourMvGrid {
             interp_filter,
             use_amvd,
             true,
+            precision,
         );
     }
 
@@ -152,6 +198,7 @@ impl NeighbourMvGrid {
         interp_filter: u8,
         use_amvd: bool,
         is_warp: bool,
+        precision: BlockPrecisionRecord,
     ) {
         let cell = NeighbourCell {
             is_inter,
@@ -165,6 +212,7 @@ impl NeighbourMvGrid {
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
             is_warp,
+            precision,
         };
         for rr in r..r.saturating_add(n4h) {
             if rr >= self.mi_rows {
@@ -213,6 +261,7 @@ impl NeighbourMvGrid {
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
             is_warp: false,
+            precision: BlockPrecisionRecord::default(),
         };
         for rr in r..r.saturating_add(n4h) {
             if rr >= self.mi_rows {
@@ -287,17 +336,6 @@ impl RelativeProbe {
         let row = block.mi_row as i32 + self.delta_row;
         let col = block.mi_col as i32 + self.delta_col;
         grid.get(row, col)
-    }
-
-    fn neighbour_context_cell(
-        self,
-        grid: &NeighbourMvGrid,
-        block: &MvBlockContext,
-    ) -> Option<NeighbourCell> {
-        if self.delta_row < 0 && block.is_sb_border() {
-            return None;
-        }
-        self.cell(grid, block)
     }
 
     fn stack_cell(
@@ -474,6 +512,11 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
 }
 
 /// § 5.20.7.2 neighbour-buffer-derived § 8.3.2 contexts.
+///
+/// Carries both spec neighbour lists: `NPosBuf` (any in-frame neighbour) feeds
+/// `is_inter`/`skip_flag`/`use_amvd`/`comp_mode`/`single_ref`; `NPos` (which
+/// also drops the row above the superblock) feeds `interp_filter` and the
+/// per-block MV-precision contexts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct BlockNeighbourContext {
     /// AV2 § 8.3.2 `is_inter` context: from `NNumBuf` + `NIntra[]`.
@@ -485,6 +528,8 @@ pub(super) struct BlockNeighbourContext {
     ref_counts: [u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS],
     cells: [NeighbourCell; 2],
     cell_count: usize,
+    npos_cells: [NeighbourCell; 2],
+    npos_count: usize,
 }
 
 impl BlockNeighbourContext {
@@ -578,7 +623,7 @@ impl BlockNeighbourContext {
     /// AV2 § 8.3.2 `interp_filter` context for switchable interpolation.
     pub(super) fn interp_filter_ctx(&self, ref_frame0: i8, ref_frame1_is_inter: bool) -> usize {
         let mut neighbour_filter_type = [SWITCHABLE_FILTERS; 2];
-        for (slot, cell) in self.cells.iter().take(self.cell_count).enumerate() {
+        for (slot, cell) in self.npos_cells.iter().take(self.npos_count).enumerate() {
             if neighbour_matches_ref(*cell, ref_frame0) {
                 neighbour_filter_type[slot] = cell.interp_filter.min(SWITCHABLE_FILTERS);
             }
@@ -606,6 +651,27 @@ impl BlockNeighbourContext {
             .filter(|cell| cell.is_inter && cell.ref_frame0 == ref_frame0 && cell.use_amvd)
             .count()
     }
+
+    /// AV2 § 8.3.2 `use_most_probable_precision` context: neighbour count with
+    /// `UseMostProbablePrecisions[ NPos ]` set.
+    pub(super) fn most_probable_precision_ctx(&self) -> usize {
+        self.npos_cells
+            .iter()
+            .take(self.npos_count)
+            .filter(|cell| cell.precision.use_most_probable_precision)
+            .count()
+    }
+
+    /// AV2 § 8.3.2 `pb_mv_precision` context: `1` when any neighbour's
+    /// `MvPrecisions[ NPos ]` is below `FrameMvPrecision`.
+    pub(super) fn pb_mv_precision_ctx(&self, frame_precision: u8) -> usize {
+        usize::from(
+            self.npos_cells
+                .iter()
+                .take(self.npos_count)
+                .any(|cell| cell.precision.mv_precision < frame_precision),
+        )
+    }
 }
 
 /// Derives the § 5.20.7.2 neighbour buffer contexts for a block.
@@ -613,7 +679,8 @@ pub(super) fn block_neighbour_ctx(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
 ) -> BlockNeighbourContext {
-    let (buf, num_buf) = collect_neighbour_context_cells(grid, block);
+    let lists = collect_neighbour_context_cells(grid, block);
+    let (buf, num_buf) = (lists.buf, lists.buf_len);
 
     let n_intra_0 = num_buf >= 1 && !buf[0].is_inter;
     let n_intra_1 = num_buf >= 2 && !buf[1].is_inter;
@@ -636,9 +703,14 @@ pub(super) fn block_neighbour_ctx(
 
     let mut ref_counts = [0u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS];
     for cell in buf.iter().take(num_buf) {
-        if cell.is_inter && cell.ref_frame0 >= 0 {
-            let r = cell.ref_frame0 as usize;
-            if let Some(slot) = ref_counts.get_mut(r) {
+        if !cell.is_inter {
+            continue;
+        }
+        for ref_frame in [Some(cell.ref_frame0), cell.ref_frame1] {
+            let Some(ref_frame) = ref_frame.filter(|&ref_frame| ref_frame >= 0) else {
+                continue;
+            };
+            if let Some(slot) = ref_counts.get_mut(ref_frame as usize) {
                 *slot = slot.saturating_add(1);
             }
         }
@@ -653,6 +725,8 @@ pub(super) fn block_neighbour_ctx(
         ref_counts,
         cells: buf,
         cell_count: num_buf,
+        npos_cells: lists.npos,
+        npos_count: lists.npos_len,
     }
 }
 
@@ -712,24 +786,43 @@ fn is_backward_ref_frame(
     (order_hint - current_order_hint).clamp(-127, 127) > 0
 }
 
+/// The two § 5.20.7.2 neighbour lists: `buf` = `NPosBuf` (any in-frame
+/// neighbour) and `npos` = `NPos` (additionally drops the row above the
+/// superblock boundary).
+struct NeighbourContextLists {
+    buf: [NeighbourCell; 2],
+    buf_len: usize,
+    npos: [NeighbourCell; 2],
+    npos_len: usize,
+}
+
 fn collect_neighbour_context_cells(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
-) -> ([NeighbourCell; 2], usize) {
-    let mut cells = [EMPTY_NEIGHBOUR_CELL; 2];
-    let mut len = 0usize;
+) -> NeighbourContextLists {
+    let mut lists = NeighbourContextLists {
+        buf: [EMPTY_NEIGHBOUR_CELL; 2],
+        buf_len: 0,
+        npos: [EMPTY_NEIGHBOUR_CELL; 2],
+        npos_len: 0,
+    };
 
     for probe in immediate_spatial_probes(block) {
-        if len >= cells.len() {
-            break;
+        let Some(cell) = probe.cell(grid, block) else {
+            continue;
+        };
+        if lists.buf_len < lists.buf.len() {
+            lists.buf[lists.buf_len] = cell;
+            lists.buf_len += 1;
         }
-        if let Some(cell) = probe.neighbour_context_cell(grid, block) {
-            cells[len] = cell;
-            len += 1;
+        let above_sb_boundary = probe.delta_row < 0 && block.is_sb_border();
+        if !above_sb_boundary && lists.npos_len < lists.npos.len() {
+            lists.npos[lists.npos_len] = cell;
+            lists.npos_len += 1;
         }
     }
 
-    (cells, len)
+    lists
 }
 
 /// § 7.12.2 `RefStackMv` candidates for single prediction.

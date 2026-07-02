@@ -35,6 +35,10 @@ use crate::{
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
+const TWO_FRAME_INTER_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64-10bit.ivf"
+);
+
 const TWO_FRAME_SUBPEL_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-subpel-inter-64x64.ivf"
 );
@@ -347,6 +351,32 @@ fn two_frame_inter_fixture_decodes_both_frames_bit_exact() {
 }
 
 #[test]
+fn ten_bit_flex_mvres_inter_fixture_decodes_avm_bit_exact() {
+    let frames = decode_fixture(TWO_FRAME_INTER_10BIT_FIXTURE);
+    assert_eq!(
+        frames.len(),
+        2,
+        "the 10-bit flex-mvres stream decodes a key frame + one inter frame"
+    );
+    let hashes: Vec<String> = frames
+        .iter()
+        .map(|output| {
+            DecodedFrameHashInput::new(output.frame_ten().expect("10-bit frame"))
+                .compute_hash()
+                .to_hex()
+        })
+        .collect();
+    assert_eq!(
+        hashes,
+        [
+            "973eb3fc4b112c865f939dc1339824ca0b2a1522ca2b5ec70311afb459436e2d",
+            "071c44ed4bf3bce19d530834f741bc852b9eff5163c1f3012ea94ad1f5a890c5"
+        ],
+        "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
+    );
+}
+
+#[test]
 fn inter_frame_is_a_bit_exact_copy_of_the_key_frame() {
     let frames = decode_frames();
     let key = frames[0].frame();
@@ -564,16 +594,18 @@ fn multi_sb_fixture_per_frame_hash_is_stable() {
 }
 
 #[test]
-fn grid_fixture_reaches_exit_symbol_frontier() {
-    let options = DecodeOptions::default();
-    let Err(DecodeError::UnsupportedFeature { unsupported }) =
-        decode_fixture_with_options(GRID_INTER_FIXTURE, &options)
-    else {
-        panic!("the 2-D-grid stream must stop at the current inter frontier");
-    };
-    assert_eq!(unsupported.reason(), "inter_exit_symbol");
-    assert_eq!(unsupported.tier_id(), "general-inter-8bit420-frontier-v1");
-    assert_eq!(unsupported.spec_section(), "5.20.7.6");
+fn grid_fixture_decodes_avm_bit_exact() {
+    let frames = decode_fixture(GRID_INTER_FIXTURE);
+    assert_eq!(frames.len(), 2, "key frame + one 2-D-grid inter frame");
+    let hashes = frame_hashes(&frames);
+    assert_eq!(
+        hashes,
+        [
+            "5619e639914803867ca0bdeb12bff97e808788607f992c661a7bcfc0bea4911a",
+            "f23ded7e9197d7c9b0a2fdc5cdc649c079cd1fb8a1c79e913b72fb74f0c502db"
+        ],
+        "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
+    );
 }
 
 #[test]
