@@ -1983,41 +1983,40 @@ fn read_warp_newmv_motion_mode_syntax(
         .as_ref()
         .and_then(|inter| inter.frame_enabled_motion_modes)
         .unwrap_or([false; splot_core::headers::frame::MOTION_MODES]);
-    if warp_sample_found && frame_modes[splot_core::headers::frame::EXTENDWARP] {
-        let use_extend_warp = cdfs
-            .read_block_symbol_trace(
-                TileCdfSelector::UseExtendWarp {
-                    ctx: neighbour_ctx.use_extend_warp_ctx(),
-                },
-                symbols,
-            )
+    let mut read_deferring_flag = |selector: TileCdfSelector, defer| -> Result<()> {
+        let flag = cdfs
+            .read_block_symbol_trace(selector, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?;
-        if use_extend_warp.get() != 0 {
-            return Err(inter_cap!(
+        if flag.get() != 0 {
+            return Err(defer);
+        }
+        Ok(())
+    };
+    if warp_sample_found && frame_modes[splot_core::headers::frame::EXTENDWARP] {
+        read_deferring_flag(
+            TileCdfSelector::UseExtendWarp {
+                ctx: neighbour_ctx.use_extend_warp_ctx(),
+            },
+            inter_cap!(
                 "inter_warp_extend_unimplemented",
                 tile_offset,
                 "inter.warp_extend prediction",
                 "5.20.7.14"
-            ));
-        }
+            ),
+        )?;
     }
     if warp_sample_found && frame_modes[splot_core::headers::frame::LOCALWARP] {
-        let use_local_warp = cdfs
-            .read_block_symbol_trace(
-                TileCdfSelector::UseLocalWarp {
-                    ctx: neighbour_ctx.use_local_warp_ctx(),
-                },
-                symbols,
-            )
-            .map_err(|_| symbol_read_error(tile_offset))?;
-        if use_local_warp.get() != 0 {
-            return Err(inter_cap!(
+        read_deferring_flag(
+            TileCdfSelector::UseLocalWarp {
+                ctx: neighbour_ctx.use_local_warp_ctx(),
+            },
+            inter_cap!(
                 "inter_warp_localwarp_unimplemented",
                 tile_offset,
                 "inter.local_warp prediction",
                 "5.20.7.14"
-            ));
-        }
+            ),
+        )?;
     }
     Ok(())
 }

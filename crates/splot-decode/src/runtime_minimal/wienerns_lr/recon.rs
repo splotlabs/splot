@@ -642,38 +642,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         cfl_ds_filter_index: u8,
         sb_mib: usize,
     ) -> Result<Self> {
-        let chroma_width = luma_width.div_ceil(2);
-        let chroma_height = luma_height.div_ceil(2);
-        Ok(Self {
-            workspace: new_general_intra_workspace::<T>(luma_width, luma_height, bit_depth)?,
+        Ok(Self::with_workspace(
+            new_general_intra_workspace::<T>(luma_width, luma_height, bit_depth)?,
+            luma_width,
+            luma_height,
             bit_depth,
             quant_reconstructable,
             enable_ibp,
             enable_intra_edge_filter,
             cfl_ds_filter_index,
-            luma_width,
-            luma_height,
             sb_mib,
-            coverage: [
-                PlaneCoverage::new(luma_width, luma_height),
-                PlaneCoverage::new(chroma_width, chroma_height),
-                PlaneCoverage::new(chroma_width, chroma_height),
-            ],
-            reconstructed_luma_4x4: 0,
-            reconstructed_chroma_4x4: 0,
-            pending_intrabc_predictions: Vec::new(),
-            pending_chroma_transforms: Vec::new(),
-            deblock_blocks: Vec::new(),
-            chroma_deblock_blocks: [Vec::new(), Vec::new()],
-            cdef_grid: None,
-            ccso_grid: None,
-            tx_skip_grid: None,
-            lr_source_blocks: Vec::new(),
-            lr_unit_filters: Vec::new(),
-            far_edge_avail: FarEdgeAvailGrid::new(luma_width, luma_height),
-            full_recon: false,
-            full_recon_luma_log: Vec::new(),
-        })
+        ))
     }
 
     /// Wraps an already-reconstructed workspace so the caller can run the
@@ -687,18 +666,43 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         luma_height: usize,
         bit_depth: BitDepth,
     ) -> Self {
+        Self::with_workspace(
+            workspace,
+            luma_width,
+            luma_height,
+            bit_depth,
+            false,
+            false,
+            false,
+            0,
+            16,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_workspace(
+        workspace: CurrentFrameWorkspace<T>,
+        luma_width: usize,
+        luma_height: usize,
+        bit_depth: BitDepth,
+        quant_reconstructable: bool,
+        enable_ibp: bool,
+        enable_intra_edge_filter: bool,
+        cfl_ds_filter_index: u8,
+        sb_mib: usize,
+    ) -> Self {
         let chroma_width = luma_width.div_ceil(2);
         let chroma_height = luma_height.div_ceil(2);
         Self {
             workspace,
             bit_depth,
-            quant_reconstructable: false,
-            enable_ibp: false,
-            enable_intra_edge_filter: false,
-            cfl_ds_filter_index: 0,
+            quant_reconstructable,
+            enable_ibp,
+            enable_intra_edge_filter,
+            cfl_ds_filter_index,
             luma_width,
             luma_height,
-            sb_mib: 16,
+            sb_mib,
             coverage: [
                 PlaneCoverage::new(luma_width, luma_height),
                 PlaneCoverage::new(chroma_width, chroma_height),
@@ -828,8 +832,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.lr_unit_filters = filters;
     }
 
-    /// Applies the currently wired post-tile filters, then freezes the sink
-    /// workspace for runtime output.
     /// Completes the intra reconstruction (pending chroma replays + the
     /// full-recon coverage check) before the final filter chain runs.
     pub(in crate::runtime_minimal) fn finish_intra_reconstruction(
@@ -4555,9 +4557,6 @@ fn frame_quant_reconstructable(core: &splot_core::headers::frame::FrameHeaderCor
     deltas_zero && no_qmatrix
 }
 
-/// Maps a §5.20.6 `TxSize` index to its `(log2_width, log2_height)` sample
-/// dimensions via the §9 `Tx_Width` / `Tx_Height` log2 tables, or `None` when the
-/// index is outside the 19-entry table range.
 /// § 7.17 chroma deblock geometry for one 4:2:0 chroma transform at
 /// plane-sample (`x`, `y`): chroma MI cells map ×2 onto the luma MI grid.
 /// Returns the chroma list index (U = 0, V = 1) with the record.
@@ -4590,6 +4589,9 @@ pub(in crate::runtime_minimal) fn chroma_transform_deblock_block(
     ))
 }
 
+/// Maps a §5.20.6 `TxSize` index to its `(log2_width, log2_height)` sample
+/// dimensions via the §9 `Tx_Width` / `Tx_Height` log2 tables, or `None` when the
+/// index is outside the 19-entry table range.
 fn tx_size_log2(tx_size: usize) -> Option<(u32, u32)> {
     let w = u32::try_from(*TX_WIDTH_LOG2.get(tx_size)?).ok()?;
     let h = u32::try_from(*TX_HEIGHT_LOG2.get(tx_size)?).ok()?;
