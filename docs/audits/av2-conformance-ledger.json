@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a1a76bd514abb66f1d5649ddba764194cb31e3df",
+  "audited_commit": "c2108b6a11d159c1532f4b45c0665c7b695db23b",
   "outcome": "success",
   "files": [
     {
@@ -2112,7 +2112,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter.rs",
-      "sha256": "076ec5144fba97590ca2b269e087498a8bad7c67306cb677b96795b6d893d37e",
+      "sha256": "f4c8fa9ff176dc0408ab5b355ea9f0b86aab454037a02abeae71c346c5d1beb3",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-FIRST-INTER-FRAME-FRONTIER",
