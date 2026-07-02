@@ -670,6 +670,8 @@ mod tests {
 
     fn ccso_off_plane() -> CcsoPlaneParams {
         CcsoPlaneParams {
+            reuse_ccso: false,
+            sb_reuse_ccso: false,
             ccso_planes: false,
             ccso_bo_only: None,
             ccso_scale_idx: None,
@@ -683,6 +685,8 @@ mod tests {
 
     fn ccso_bo_plane(max_band_log2: u8, offsets: Vec<u8>) -> CcsoPlaneParams {
         CcsoPlaneParams {
+            reuse_ccso: false,
+            sb_reuse_ccso: false,
             ccso_planes: true,
             ccso_bo_only: Some(true),
             ccso_scale_idx: Some(0),
@@ -870,6 +874,8 @@ mod tests {
 
     fn ccso_full_plane() -> CcsoPlaneParams {
         CcsoPlaneParams {
+            reuse_ccso: false,
+            sb_reuse_ccso: false,
             ccso_planes: true,
             ccso_bo_only: Some(false),
             ccso_scale_idx: Some(0),

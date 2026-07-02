@@ -1267,12 +1267,14 @@ fn ensure_transform_tool_residual_handoff(
     if frame_facts.lossless_for_segment(SEGMENT_ID) != Some(false) {
         return unsupported_transform_tool_residual("unsupported_dctonly_residual_lossless");
     }
-    if !is_inter && plane == 1 && frame_facts.enable_cctx() && eob != 1 {
-        metadata.cctx_type = Some(read_chroma_cctx_type(
-            cdfs,
-            symbols,
-            input.active_chroma_policy,
-        )?);
+    if plane == 1 && frame_facts.enable_cctx() && (is_inter || eob != 1) {
+        let cctx_type = read_chroma_cctx_type(cdfs, symbols, input.active_chroma_policy)?;
+        if is_inter && cctx_type != 0 {
+            return unsupported_transform_tool_residual(
+                "unsupported_inter_residual_cctx_transform",
+            );
+        }
+        metadata.cctx_type = Some(cctx_type);
     }
     let tx_set = transform_set(frame_facts, plane, tx_size, is_inter)?;
     let dct_forced = (!is_inter && plane == 0 && eob == 1)

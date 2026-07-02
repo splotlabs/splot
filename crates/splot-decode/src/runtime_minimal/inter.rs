@@ -1029,6 +1029,18 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
+    if core.ccso_params.as_ref().is_some_and(|ccso| {
+        ccso.planes
+            .iter()
+            .any(|plane| plane.reuse_ccso || plane.sb_reuse_ccso)
+    }) {
+        return Err(inter_cap!(
+            "inter_ccso_reuse_unimplemented",
+            offset,
+            "inter.ccso.reference_reuse",
+            "5.18.7.12"
+        ));
+    }
     Ok(())
 }
 
