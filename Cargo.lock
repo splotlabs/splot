@@ -732,6 +732,7 @@ dependencies = [
  "insta",
  "serde",
  "serde_json",
+ "sha2",
  "splot-core",
  "splot-decode",
  "splot-encode",

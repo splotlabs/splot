@@ -11,7 +11,7 @@ use splot_core::tables::cdf::{
     DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF,
     DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF,
     DEFAULT_EXPLICIT_BAWP_CDF, DEFAULT_EXPLICIT_BAWP_SCALE_CDF, DEFAULT_IDENTITY_ROW_Y_CDF,
-    DEFAULT_INTER_INTRA_MODE_CDF, DEFAULT_INTER_TX_TYPE_INDEX_SET1_CDF,
+    DEFAULT_INTER_INTRA_CDF, DEFAULT_INTER_INTRA_MODE_CDF, DEFAULT_INTER_TX_TYPE_INDEX_SET1_CDF,
     DEFAULT_INTER_TX_TYPE_INDEX_SET2_CDF, DEFAULT_INTER_TX_TYPE_LONG_CDF,
     DEFAULT_INTER_TX_TYPE_OFFSET_SET1_CDF, DEFAULT_INTER_TX_TYPE_OFFSET_SET2_CDF,
     DEFAULT_INTER_TX_TYPE_SET1_CDF, DEFAULT_INTER_TX_TYPE_SET2_CDF, DEFAULT_INTER_TX_TYPE_SET3_CDF,
@@ -23,8 +23,9 @@ use splot_core::tables::cdf::{
     DEFAULT_PALETTE_SIZE_4_Y_COLOR_CDF, DEFAULT_PALETTE_SIZE_5_Y_COLOR_CDF,
     DEFAULT_PALETTE_SIZE_6_Y_COLOR_CDF, DEFAULT_PALETTE_SIZE_7_Y_COLOR_CDF,
     DEFAULT_PALETTE_SIZE_8_Y_COLOR_CDF, DEFAULT_PALETTE_Y_MODE_CDF, DEFAULT_PALETTE_Y_SIZE_CDF,
-    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF,
-    DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_AMVD_CDF, DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF,
+    DEFAULT_PB_MV_PRECISION_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF,
+    DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_AMVD_CDF,
+    DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF,
     DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
     DEFAULT_WARP_DELTA_PARAM_HIGH_CDF, DEFAULT_WARP_DELTA_PARAM_LOW_CDF,
     DEFAULT_WARP_DELTA_PARAM_SIGN_CDF, DEFAULT_WARP_IDX_CDF, DEFAULT_WARP_INTER_INTRA_CDF,
@@ -94,6 +95,10 @@ const COMP_REF1_BIT_TYPES: usize = 2;
 const INTERP_FILTER_CONTEXTS: usize = 16;
 const AMVD_MODE_CONTEXTS: usize = 9;
 const AMVD_CONTEXTS: usize = 3;
+const MOST_PROBABLE_PRECISION_CONTEXTS: usize = 3;
+const PB_MV_PRECISION_CONTEXTS: usize = 2;
+const PB_MV_PRECISION_FRAME_CONTEXTS: usize = 3;
+const PB_MV_PRECISION_CDF_ROW_LEN: usize = 4;
 const BAWP_SCALES_CONTEXTS: usize = 3;
 const WIENER_NS_LENGTH_CONTEXTS: usize = 2;
 const WIENER_NS_BASE_CDF_ROW_LEN: usize = 5;
@@ -153,6 +158,7 @@ pub(crate) type WarpDeltaParamCdfRows =
     [[i32; WARP_DELTA_PARAM_CDF_ROW_LEN]; WARP_DELTA_PARAM_CONTEXTS];
 pub(crate) type WarpDeltaParamSignCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type WarpInterIntraCdfRows = [[i32; CDF_ROW_LEN]; BLOCK_SIZE_GROUPS];
+pub(crate) type InterIntraCdfRows = [[i32; CDF_ROW_LEN]; BLOCK_SIZE_GROUPS];
 pub(crate) type InterIntraModeCdfRows = [[i32; INTERINTRA_MODE_ROW_LEN]; BLOCK_SIZE_GROUPS];
 pub(crate) type WedgeInterIntraCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type WedgeQuadCdfRow = [i32; WEDGE_QUAD_ROW_LEN];
@@ -171,6 +177,11 @@ pub(crate) type CompRef0CdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1];
 pub(crate) type CompRef1CdfRows =
     [[[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; COMP_REF1_BIT_TYPES]; REF_CONTEXTS];
 pub(crate) type UseAmvdCdfRows = [[[i32; CDF_ROW_LEN]; AMVD_CONTEXTS]; AMVD_MODE_CONTEXTS];
+pub(crate) type UseMostProbablePrecisionCdfRows =
+    [[i32; CDF_ROW_LEN]; MOST_PROBABLE_PRECISION_CONTEXTS];
+pub(crate) type PbMvPrecisionCdfRows = [[[i32; PB_MV_PRECISION_CDF_ROW_LEN];
+    PB_MV_PRECISION_FRAME_CONTEXTS];
+    PB_MV_PRECISION_CONTEXTS];
 pub(crate) type UseBawpCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type ExplicitBawpCdfRows = [[i32; CDF_ROW_LEN]; BAWP_SCALES_CONTEXTS];
 pub(crate) type ExplicitBawpScaleCdfRow = [i32; CDF_ROW_LEN];
@@ -321,6 +332,9 @@ pub(crate) enum BlockCdfSelector {
     WarpInterIntra {
         bsize_group: usize,
     },
+    InterIntra {
+        bsize_group: usize,
+    },
     InterIntraMode {
         bsize_group: usize,
     },
@@ -372,6 +386,13 @@ pub(crate) enum BlockCdfSelector {
     UseAmvd {
         index: usize,
         ctx: usize,
+    },
+    UseMostProbablePrecision {
+        ctx: usize,
+    },
+    PbMvPrecision {
+        ctx: usize,
+        frame_ctx: usize,
     },
     ExplicitBawp {
         ctx: usize,
@@ -480,6 +501,7 @@ pub(crate) struct BlockCdfRows {
     pub(super) warp_delta_param_high: WarpDeltaParamCdfRows,
     pub(super) warp_delta_param_sign: WarpDeltaParamSignCdfRow,
     pub(super) warp_inter_intra: WarpInterIntraCdfRows,
+    pub(super) inter_intra: InterIntraCdfRows,
     pub(super) inter_intra_mode: InterIntraModeCdfRows,
     pub(super) wedge_inter_intra: WedgeInterIntraCdfRow,
     pub(super) wedge_quad: WedgeQuadCdfRow,
@@ -498,6 +520,8 @@ pub(crate) struct BlockCdfRows {
     read_mv: MvCdfRows,
     pub(super) interp_filter: InterpFilterCdfRows,
     pub(super) use_amvd: UseAmvdCdfRows,
+    pub(super) use_most_probable_precision: UseMostProbablePrecisionCdfRows,
+    pub(super) pb_mv_precision: PbMvPrecisionCdfRows,
     pub(super) use_bawp: UseBawpCdfRow,
     pub(super) use_bawp_chroma: UseBawpCdfRow,
     pub(super) explicit_bawp: ExplicitBawpCdfRows,
@@ -754,6 +778,14 @@ macro_rules! block_cdf_row {
                 $get,
                 $as_slice
             ),
+            BlockCdfSelector::InterIntra { bsize_group } => block_row_slice!(
+                $self.inter_intra,
+                bsize_group,
+                "bsize_group",
+                TileCdfArray::InterIntra,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::InterIntraMode { bsize_group } => block_row_slice!(
                 $self.inter_intra_mode,
                 bsize_group,
@@ -886,6 +918,31 @@ macro_rules! block_cdf_row {
                     $get
                 )?;
                 block_row_slice!(bank, ctx, "ctx", TileCdfArray::UseAmvd, $get, $as_slice)
+            }
+            BlockCdfSelector::UseMostProbablePrecision { ctx } => block_row_slice!(
+                $self.use_most_probable_precision,
+                ctx,
+                "ctx",
+                TileCdfArray::UseMostProbablePrecision,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::PbMvPrecision { ctx, frame_ctx } => {
+                let bank = checked_block_row!(
+                    $self.pb_mv_precision,
+                    ctx,
+                    "ctx",
+                    TileCdfArray::PbMvPrecision,
+                    $get
+                )?;
+                block_row_slice!(
+                    bank,
+                    frame_ctx,
+                    "frame_ctx",
+                    TileCdfArray::PbMvPrecision,
+                    $get,
+                    $as_slice
+                )
             }
             BlockCdfSelector::ExplicitBawp { ctx } => block_row_slice!(
                 $self.explicit_bawp,
@@ -1138,6 +1195,7 @@ macro_rules! block_cdf_count_rows {
         $rows!(warp_delta_param_high);
         $row!(warp_delta_param_sign);
         $rows!(warp_inter_intra);
+        $rows!(inter_intra);
         $rows!(inter_intra_mode);
         $row!(wedge_inter_intra);
         $row!(wedge_quad);
@@ -1156,6 +1214,8 @@ macro_rules! block_cdf_count_rows {
         $read_mv
         $rows!(interp_filter);
         $rows!(use_amvd.flatten());
+        $rows!(use_most_probable_precision);
+        $rows!(pb_mv_precision.flatten());
         $row!(use_bawp);
         $row!(use_bawp_chroma);
         $rows!(explicit_bawp);
@@ -1231,6 +1291,7 @@ impl BlockCdfRows {
             warp_delta_param_high: DEFAULT_WARP_DELTA_PARAM_HIGH_CDF,
             warp_delta_param_sign: DEFAULT_WARP_DELTA_PARAM_SIGN_CDF,
             warp_inter_intra: DEFAULT_WARP_INTER_INTRA_CDF,
+            inter_intra: DEFAULT_INTER_INTRA_CDF,
             inter_intra_mode: DEFAULT_INTER_INTRA_MODE_CDF,
             wedge_inter_intra: DEFAULT_WEDGE_INTER_INTRA_CDF,
             wedge_quad: DEFAULT_WEDGE_QUAD_CDF,
@@ -1249,6 +1310,8 @@ impl BlockCdfRows {
             read_mv: MvCdfRows::from_defaults(),
             interp_filter: DEFAULT_INTERP_FILTER_CDF,
             use_amvd: DEFAULT_USE_AMVD_CDF,
+            use_most_probable_precision: DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF,
+            pb_mv_precision: DEFAULT_PB_MV_PRECISION_CDF,
             use_bawp: DEFAULT_USE_BAWP_CDF,
             use_bawp_chroma: DEFAULT_USE_BAWP_CHROMA_CDF,
             explicit_bawp: DEFAULT_EXPLICIT_BAWP_CDF,

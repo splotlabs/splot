@@ -276,6 +276,37 @@ pub(crate) enum TransformToolResidualPolicy {
     },
 }
 
+impl TransformToolResidualPolicy {
+    /// `Allow` unless the sequence enables a transform tool, in which case the
+    /// caller-selected active-tool policies apply with no luma context.
+    pub(crate) fn from_sequence_tools(
+        sequence: &splot_core::headers::sequence::SequenceHeader,
+        active_intra_ist: ActiveIntraIstResidualPolicy,
+        active_chroma: ActiveChromaResidualPolicy,
+    ) -> Self {
+        sequence
+            .transform_quant_entropy
+            .as_ref()
+            .map_or(Self::Allow, |tq| {
+                if tq.enable_inter_ist
+                    || tq.enable_intra_ist
+                    || tq.enable_inter_ddt
+                    || tq.enable_cctx
+                    || tq.enable_fsc
+                    || tq.enable_idtx_intra
+                {
+                    Self::AdmitTransformToolSubset {
+                        luma: None,
+                        active_intra_ist,
+                        active_chroma,
+                    }
+                } else {
+                    Self::Allow
+                }
+            })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ActiveIntraIstResidualPolicy {
     Reject,

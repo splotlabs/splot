@@ -371,26 +371,11 @@ fn general_intra_chroma_tools(
 fn general_intra_transform_tool_residual_policy(
     sequence: &SequenceHeader,
 ) -> TransformToolResidualPolicy {
-    sequence
-        .transform_quant_entropy
-        .as_ref()
-        .map_or(TransformToolResidualPolicy::Allow, |tq| {
-            if tq.enable_inter_ist
-                || tq.enable_intra_ist
-                || tq.enable_inter_ddt
-                || tq.enable_cctx
-                || tq.enable_fsc
-                || tq.enable_idtx_intra
-            {
-                TransformToolResidualPolicy::AdmitTransformToolSubset {
-                    luma: None,
-                    active_intra_ist: ActiveIntraIstResidualPolicy::Reject,
-                    active_chroma: ActiveChromaResidualPolicy::Reject,
-                }
-            } else {
-                TransformToolResidualPolicy::Allow
-            }
-        })
+    TransformToolResidualPolicy::from_sequence_tools(
+        sequence,
+        ActiveIntraIstResidualPolicy::Reject,
+        ActiveChromaResidualPolicy::Reject,
+    )
 }
 
 fn sequence_cfl_ds_filter_index(sequence: &SequenceHeader) -> u8 {

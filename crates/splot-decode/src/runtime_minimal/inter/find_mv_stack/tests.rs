@@ -62,6 +62,7 @@ fn record_inter_ref(
         skip,
         SWITCHABLE_FILTERS,
         false,
+        BlockPrecisionRecord::default(),
     );
 }
 
@@ -84,6 +85,7 @@ fn record_warp_inter(
         skip,
         SWITCHABLE_FILTERS,
         false,
+        BlockPrecisionRecord::default(),
     );
 }
 
@@ -132,6 +134,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         false,
         0,
         false,
+        BlockPrecisionRecord::default(),
     );
     grid.record_block(
         0,
@@ -146,6 +149,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         false,
         1,
         false,
+        BlockPrecisionRecord::default(),
     );
     let block = block_at(N4_32, N4_32);
 
@@ -170,6 +174,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         false,
         1,
         false,
+        BlockPrecisionRecord::default(),
     );
     one_matching.record_block(
         0,
@@ -184,6 +189,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         false,
         0,
         false,
+        BlockPrecisionRecord::default(),
     );
     let nctx = block_neighbour_ctx(&one_matching, &block);
     assert_eq!(
@@ -219,17 +225,19 @@ fn interp_filter_context_suppresses_above_neighbours_at_sb_top() {
         false,
         0,
         false,
+        BlockPrecisionRecord::default(),
     );
     let block = sb_block_at(N4_64, 0);
 
     let nctx = block_neighbour_ctx(&grid, &block);
     assert!(
-        !nctx.has_neighbour,
-        "top-of-superblock neighbour context suppresses above probes"
+        nctx.has_neighbour,
+        "the NPosBuf list keeps the above-superblock neighbour"
     );
     assert_eq!(
         nctx.interp_filter_ctx(0, false),
-        SWITCHABLE_FILTERS as usize
+        SWITCHABLE_FILTERS as usize,
+        "the NPos list drops above probes at the superblock top row"
     );
 }
 
@@ -249,6 +257,7 @@ fn amvd_context_counts_same_reference_amvd_neighbours() {
         false,
         SWITCHABLE_FILTERS,
         true,
+        BlockPrecisionRecord::default(),
     );
     grid.record_block(
         0,
@@ -263,6 +272,7 @@ fn amvd_context_counts_same_reference_amvd_neighbours() {
         false,
         SWITCHABLE_FILTERS,
         true,
+        BlockPrecisionRecord::default(),
     );
     let block = block_at(N4_32, N4_32);
 
@@ -366,6 +376,7 @@ fn intra_neighbour_does_not_contribute() {
         false,
         SWITCHABLE_FILTERS,
         false,
+        BlockPrecisionRecord::default(),
     );
     let block1 = block_at(0, N4_32);
 
@@ -597,6 +608,7 @@ fn record_sb(
         skip,
         SWITCHABLE_FILTERS,
         false,
+        BlockPrecisionRecord::default(),
     );
 }
 
@@ -615,8 +627,12 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
 
     let nctx = block_neighbour_ctx(&grid, &sb2);
     assert!(
-        !nctx.has_neighbour,
-        "top-of-superblock neighbour context ignores the decoded above SB"
+        nctx.has_neighbour,
+        "the NPosBuf list keeps the decoded above SB across the SB-row boundary"
+    );
+    assert_eq!(
+        nctx.skip_ctx, 2,
+        "skip context counts both above-SB NPosBuf neighbours"
     );
 
     let stack = find_mv_stack(&grid, &sb2, Mv::ZERO);

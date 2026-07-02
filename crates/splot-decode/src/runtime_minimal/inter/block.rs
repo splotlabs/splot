@@ -30,13 +30,13 @@ use super::super::{
 };
 use super::compound::{CompoundParseInput, read_compound_average_syntax};
 use super::find_mv_stack::{
-    MvBlockContext, NeighbourMvGrid, NeighbourYMode, block_neighbour_ctx, find_mode_ctx,
-    find_mv_stack,
+    BlockNeighbourContext, BlockPrecisionRecord, MvBlockContext, NeighbourMvGrid, NeighbourYMode,
+    block_neighbour_ctx, find_mode_ctx, find_mv_stack,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
-    MvReadConfig, apply_inter_mvd_signs, mv_clamp_to_integer, read_newmv_amvd_block_mvd,
-    read_newmv_block_mvd_magnitude,
+    MV_PRECISION_TWO_PEL, MvReadConfig, apply_inter_mvd_signs, lower_mv_precision,
+    mv_clamp_to_integer, read_newmv_amvd_block_mvd, read_newmv_block_mvd_magnitude,
 };
 use super::{
     BawpSyntax, InterBlock, InterReferenceState, InterResidual, InterResidualBlock, Mv,
@@ -58,6 +58,7 @@ const INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET: usize = 4;
 const SINGLE_REF_FRAME0: i8 = 0;
 const MI_SIZE: usize = 4;
 const CHUNK_64_N4: usize = 16;
+const BLOCK_8X8: usize = 3;
 const BLOCK_64X64: usize = 12;
 const MAX_WARP_REF_CANDIDATES: usize = 4;
 const WARP_DELTA_NUM_SYMBOLS_LOW: u8 = 8;
@@ -584,6 +585,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 prelude.skip_flag,
                 interp_filter_no_neighbour_ctx(false) as u8,
                 false,
+                BlockPrecisionRecord::explicit(frame_mv_precision(core, tile_offset)?),
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude, tile_offset)?;
             trace_leaf_exit("intrabc", frontier, entry_checkpoint, symbols.checkpoint());
@@ -627,6 +629,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 false,
                 interp_filter_no_neighbour_ctx(false) as u8,
                 false,
+                BlockPrecisionRecord::explicit(frame_mv_precision(core, tile_offset)?),
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude, tile_offset)?;
         }
@@ -792,6 +795,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             skip == 1,
             interp_filter_symbol(interp),
             false,
+            BlockPrecisionRecord::most_probable(frame_mv_precision(core, tile_offset)?),
         );
         reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
         let placed = placed_block(InterBlock {
@@ -919,6 +923,8 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 cdfs,
                 symbols,
                 sequence,
+                core,
+                &neighbour_ctx,
                 mv_config,
                 frontier.b_size.index(),
                 mi_row,
@@ -1026,6 +1032,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             skip == 1,
             interp_filter_symbol(ReconInterpolationFilter::EightTap),
             false,
+            warp.block_precision,
         );
         intrabc_state.record_block(
             frontier.r,
@@ -1141,6 +1148,15 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             symbols.checkpoint()
         );
     }
+    read_inter_intra_flag_syntax(
+        cdfs,
+        symbols,
+        core,
+        frontier.b_size.index(),
+        n4w,
+        n4h,
+        tile_offset,
+    )?;
     let stack = find_mv_stack(mv_grid, &block_ctx, Mv::ZERO);
 
     let ref_mv_idx = if single_mode == SINGLE_MODE_NEARMV || single_mode == SINGLE_MODE_NEWMV {
@@ -1161,12 +1177,25 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         );
     }
 
+    let frame_mv_config = inter_mv_read_config(core, tile_offset)?;
+    let precision = read_block_mv_precision_syntax(
+        cdfs,
+        symbols,
+        sequence,
+        core,
+        &neighbour_ctx,
+        frame_mv_config.precision(),
+        single_mode == SINGLE_MODE_NEWMV,
+        use_amvd,
+        tile_offset,
+    )?;
+
     let pred_mv = stack.candidate(ref_mv_idx);
     let mv = match single_mode {
         SINGLE_MODE_GLOBALMV => Mv::ZERO,
         SINGLE_MODE_NEARMV => pred_mv,
         _ => {
-            let config = inter_mv_read_config(core, tile_offset)?;
+            let config = MvReadConfig::inter(precision.mv_precision);
             let diff = if use_amvd {
                 let magnitude = read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?;
                 apply_inter_mvd_signs(magnitude, symbols, tile_offset, config, false, 1)?
@@ -1182,10 +1211,16 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                         core,
                         single_mode,
                         use_amvd,
+                        frame_mv_config,
                         config,
                     ),
                     1,
                 )?
+            };
+            let pred_mv = if use_amvd {
+                pred_mv
+            } else {
+                lowered_pred_mv(precision, pred_mv)
             };
             Mv {
                 row: mv_clamp_to_integer(pred_mv.row + diff.row),
@@ -1305,6 +1340,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         skip == 1,
         interp_filter_symbol(interp),
         use_amvd,
+        precision,
     );
     intrabc_state.record_block(
         frontier.r,
@@ -1478,621 +1514,11 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
     Ok(())
 }
 
-const INTER_UV_MODE_DC: usize = 0;
+mod residual;
 
-#[allow(clippy::too_many_arguments)]
-fn read_inter_residual(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
-    symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    frontier: &DecodeBlockFrontier,
-    n4w: usize,
-    n4h: usize,
-    mi_rows: usize,
-    mi_cols: usize,
-    residual_tool_policy: TransformToolResidualPolicy,
-    tile_offset: ByteOffset,
-) -> Result<InterResidual> {
-    let (subsampling_x, subsampling_y) = chroma_subsampling(sequence.general.chroma_format_idc);
-    let width_chunks = (n4w >> 4).max(1);
-    let height_chunks = (n4h >> 4).max(1);
-    let multi_chunk = width_chunks > 1 || height_chunks > 1;
-    let mi_size_chunk = if multi_chunk {
-        BlockSize::new(BLOCK_64X64).map_err(|_| residual_geometry_error(tile_offset))?
-    } else {
-        frontier.b_size
-    };
-    let luma_tx_size = max_tx_size(frontier.b_size.index(), tile_offset)?;
-    let luma_tx_records = if inter_uses_selectable_tx_partitions(core) {
-        Some(derive_inter_luma_tx_records_for_block(
-            work_unit,
-            symbols,
-            frontier,
-            (mi_rows, mi_cols),
-            0,
-            tile_offset,
-        )?)
-    } else {
-        None
-    };
-    let mut blocks = Vec::new();
-
-    for start_chunk_y in (0..height_chunks).step_by(2) {
-        for start_chunk_x in (0..width_chunks).step_by(2) {
-            for chunk_y in start_chunk_y..(start_chunk_y + 2).min(height_chunks) {
-                for chunk_x in start_chunk_x..(start_chunk_x + 2).min(width_chunks) {
-                    let at_start = (!subsampling_x || chunk_x % 2 == 0)
-                        && (!subsampling_y || chunk_y % 2 == 0);
-                    let luma_chunk_x = frontier.c + (chunk_x << 4);
-                    let luma_chunk_y = frontier.r + (chunk_y << 4);
-                    read_inter_residual_luma_chunk(
-                        work_unit,
-                        symbols,
-                        coeff_ctx,
-                        &mut blocks,
-                        luma_tx_records.as_deref(),
-                        luma_tx_size,
-                        frontier,
-                        luma_chunk_x,
-                        luma_chunk_y,
-                        n4w,
-                        n4h,
-                        residual_tool_policy,
-                        tile_offset,
-                    )?;
-                    if frontier.has_chroma && at_start {
-                        read_inter_residual_chroma_group(
-                            work_unit,
-                            symbols,
-                            coeff_ctx,
-                            &mut blocks,
-                            frontier,
-                            mi_size_chunk,
-                            subsampling_x,
-                            subsampling_y,
-                            chunk_x,
-                            chunk_y,
-                            residual_tool_policy,
-                            tile_offset,
-                        )?;
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(InterResidual { blocks })
-}
-
-fn inter_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
-    core.inter_tail
-        .as_ref()
-        .is_some_and(|tail| tail.tx_mode == TxMode::Select)
-        && core
-            .lossless_info
-            .as_ref()
-            .is_some_and(|lossless| !lossless.lossless_array[0])
-}
-
-#[allow(clippy::too_many_arguments)]
-fn read_inter_residual_luma_chunk(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
-    symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    blocks: &mut Vec<InterResidualBlock>,
-    luma_tx_records: Option<&[SelectableLumaTxRecord]>,
-    tx_size: usize,
-    frontier: &DecodeBlockFrontier,
-    luma_chunk_x4: usize,
-    luma_chunk_y4: usize,
-    block_n4w: usize,
-    block_n4h: usize,
-    residual_tool_policy: TransformToolResidualPolicy,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let chunk_end_x4 = (frontier.c + block_n4w).min(luma_chunk_x4 + CHUNK_64_N4);
-    let chunk_end_y4 = (frontier.r + block_n4h).min(luma_chunk_y4 + CHUNK_64_N4);
-    if let Some(luma_tx_records) = luma_tx_records {
-        return read_inter_residual_luma_records_for_chunk(
-            work_unit,
-            symbols,
-            coeff_ctx,
-            blocks,
-            luma_tx_records,
-            frontier,
-            luma_chunk_x4,
-            luma_chunk_y4,
-            chunk_end_x4,
-            chunk_end_y4,
-            block_n4w,
-            block_n4h,
-            residual_tool_policy,
-            tile_offset,
-        );
-    }
-    let tx_w4 = tx_size_dimension("Tx_Width", &TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
-    let tx_h4 = tx_size_dimension("Tx_Height", &TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
-    let mut y4 = luma_chunk_y4;
-    while y4 < chunk_end_y4 {
-        let mut x4 = luma_chunk_x4;
-        while x4 < chunk_end_x4 {
-            let tx_fills_block = tx_w4 == block_n4w && tx_h4 == block_n4h;
-            if std::env::var_os("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS").is_some() {
-                let start_x = x4 * MI_SIZE;
-                let start_y = y4 * MI_SIZE;
-                if start_x >= 1760 && (160..=224).contains(&start_y) {
-                    eprintln!(
-                        "inter residual luma read r={} c={} b={} n4={}x{} chunk=({}, {}) start=({start_x},{start_y}) tx_size={tx_size} tx4={}x{} fills={tx_fills_block} has_chroma={} chroma_offset={} luma_part={} chroma_part={}",
-                        frontier.r,
-                        frontier.c,
-                        frontier.b_size.index(),
-                        block_n4w,
-                        block_n4h,
-                        luma_chunk_x4,
-                        luma_chunk_y4,
-                        tx_w4,
-                        tx_h4,
-                        frontier.has_chroma,
-                        frontier.chroma_offset,
-                        frontier.is_luma_part(),
-                        frontier.is_chroma_part()
-                    );
-                }
-            }
-            let coeffs = read_inter_residual_plane(
-                work_unit,
-                symbols,
-                coeff_ctx,
-                0,
-                tx_size,
-                x4 * MI_SIZE,
-                y4 * MI_SIZE,
-                tx_fills_block,
-                false,
-                residual_tool_policy,
-                tile_offset,
-            )?;
-            push_inter_residual_block(
-                blocks,
-                ReconPlaneId::Y,
-                x4,
-                y4,
-                tx_size,
-                coeffs,
-                tile_offset,
-            )?;
-            x4 = x4
-                .checked_add(tx_w4)
-                .ok_or_else(|| residual_geometry_error(tile_offset))?;
-        }
-        y4 = y4
-            .checked_add(tx_h4)
-            .ok_or_else(|| residual_geometry_error(tile_offset))?;
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn read_inter_residual_luma_records_for_chunk(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
-    symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    blocks: &mut Vec<InterResidualBlock>,
-    luma_tx_records: &[SelectableLumaTxRecord],
-    frontier: &DecodeBlockFrontier,
-    luma_chunk_x4: usize,
-    luma_chunk_y4: usize,
-    chunk_end_x4: usize,
-    chunk_end_y4: usize,
-    block_n4w: usize,
-    block_n4h: usize,
-    residual_tool_policy: TransformToolResidualPolicy,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let mut decoded_any = false;
-    for record in luma_tx_records.iter().copied().filter(|record| {
-        record.row >= luma_chunk_y4
-            && record.col >= luma_chunk_x4
-            && record.row < chunk_end_y4
-            && record.col < chunk_end_x4
-    }) {
-        decoded_any = true;
-        let tx_fills_block = record.cols == block_n4w && record.rows == block_n4h;
-        let trace_residual = std::env::var_os("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS").is_some();
-        let start_x = record.col * MI_SIZE;
-        let start_y = record.row * MI_SIZE;
-        let trace_this = trace_residual
-            && ((512..=640).contains(&start_x) && start_y <= 128
-                || (start_x >= 1760 && (160..=224).contains(&start_y)));
-        if trace_this {
-            eprintln!(
-                "inter residual luma read start r={} c={} b={} n4={}x{} chunk=({}, {}) start=({start_x},{start_y}) tx_size={} tx4={}x{} fills={tx_fills_block} has_chroma={} chroma_offset={} luma_part={} chroma_part={} checkpoint={:?}",
-                frontier.r,
-                frontier.c,
-                frontier.b_size.index(),
-                block_n4w,
-                block_n4h,
-                luma_chunk_x4,
-                luma_chunk_y4,
-                record.tx_size,
-                record.cols,
-                record.rows,
-                frontier.has_chroma,
-                frontier.chroma_offset,
-                frontier.is_luma_part(),
-                frontier.is_chroma_part(),
-                symbols.checkpoint()
-            );
-        }
-        let coeffs = read_inter_residual_plane(
-            work_unit,
-            symbols,
-            coeff_ctx,
-            0,
-            record.tx_size,
-            record.col * MI_SIZE,
-            record.row * MI_SIZE,
-            tx_fills_block,
-            false,
-            residual_tool_policy,
-            tile_offset,
-        )?;
-        if trace_this {
-            eprintln!(
-                "inter residual luma read done start=({start_x},{start_y}) tx_size={} all_zero={} eob={} checkpoint={:?}",
-                record.tx_size,
-                coeffs.all_zero,
-                coeffs.eob,
-                symbols.checkpoint()
-            );
-        }
-        push_inter_residual_block(
-            blocks,
-            ReconPlaneId::Y,
-            record.col,
-            record.row,
-            record.tx_size,
-            coeffs,
-            tile_offset,
-        )?;
-    }
-    if decoded_any {
-        Ok(())
-    } else {
-        Err(residual_geometry_error(tile_offset))
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn read_inter_residual_chroma_group(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
-    symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    blocks: &mut Vec<InterResidualBlock>,
-    frontier: &DecodeBlockFrontier,
-    mi_size_chunk: BlockSize,
-    subsampling_x: bool,
-    subsampling_y: bool,
-    chunk_x: usize,
-    chunk_y: usize,
-    residual_tool_policy: TransformToolResidualPolicy,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let chroma_ref = frontier.chroma_ref_geometry();
-    let chroma_mi_size = chroma_ref.size();
-    let chroma_ref_size = get_plane_residual_size(chroma_mi_size, 1, subsampling_x, subsampling_y)
-        .map_err(|_| residual_geometry_error(tile_offset))?
-        .valid()
-        .ok_or_else(|| residual_geometry_error(tile_offset))?;
-    let tx_size = max_tx_size(chroma_ref_size.index(), tile_offset)?;
-    let plane_source_size = if chroma_mi_size != frontier.b_size {
-        chroma_mi_size
-    } else {
-        mi_size_chunk
-    };
-    let plane_size = get_plane_residual_size(plane_source_size, 1, subsampling_x, subsampling_y)
-        .map_err(|_| residual_geometry_error(tile_offset))?
-        .valid()
-        .ok_or_else(|| residual_geometry_error(tile_offset))?;
-    let block_width_chunks = (frontier
-        .b_size
-        .num_4x4_wide()
-        .map_err(|_| residual_geometry_error(tile_offset))?
-        >> 4)
-        .max(1);
-    let block_height_chunks = (frontier
-        .b_size
-        .num_4x4_high()
-        .map_err(|_| residual_geometry_error(tile_offset))?
-        >> 4)
-        .max(1);
-    let mut num4x4_w = plane_size
-        .num_4x4_wide()
-        .map_err(|_| residual_geometry_error(tile_offset))?;
-    let mut num4x4_h = plane_size
-        .num_4x4_high()
-        .map_err(|_| residual_geometry_error(tile_offset))?;
-    if subsampling_x && chunk_x + 1 < block_width_chunks {
-        num4x4_w <<= 1;
-    }
-    if subsampling_y && chunk_y + 1 < block_height_chunks {
-        num4x4_h <<= 1;
-    }
-    let tx_w4 = tx_size_dimension("Tx_Width", &TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
-    let tx_h4 = tx_size_dimension("Tx_Height", &TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
-    let x_offset4 = (chunk_x << 4) >> usize::from(subsampling_x);
-    let y_offset4 = (chunk_y << 4) >> usize::from(subsampling_y);
-    let base_x4 = chroma_ref.col() >> usize::from(subsampling_x);
-    let base_y4 = chroma_ref.row() >> usize::from(subsampling_y);
-    let mut y4 = y_offset4;
-    while y4 < y_offset4 + num4x4_h {
-        let mut x4 = x_offset4;
-        while x4 < x_offset4 + num4x4_w {
-            let start_x = (base_x4 + x4) * MI_SIZE;
-            let start_y = (base_y4 + y4) * MI_SIZE;
-            let trace_this = std::env::var_os("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS").is_some()
-                && ((256..=320).contains(&start_x) && start_y <= 64
-                    || (start_x >= 880 && (80..=112).contains(&start_y)));
-            if trace_this {
-                eprintln!(
-                    "inter residual chroma read start block=({},{} b={}) local=({}, {}) start=({start_x},{start_y}) tx_size={tx_size} tx4={}x{} plane_size={}x{} checkpoint={:?}",
-                    frontier.r,
-                    frontier.c,
-                    frontier.b_size.index(),
-                    x4,
-                    y4,
-                    tx_w4,
-                    tx_h4,
-                    num4x4_w,
-                    num4x4_h,
-                    symbols.checkpoint()
-                );
-            }
-            let u = read_inter_residual_plane(
-                work_unit,
-                symbols,
-                coeff_ctx,
-                1,
-                tx_size,
-                start_x,
-                start_y,
-                tx_w4 == num4x4_w && tx_h4 == num4x4_h,
-                false,
-                residual_tool_policy,
-                tile_offset,
-            )?;
-            let u_nonzero = !u.all_zero;
-            if trace_this {
-                eprintln!(
-                    "inter residual chroma read u done start=({start_x},{start_y}) all_zero={} eob={} checkpoint={:?}",
-                    u.all_zero,
-                    u.eob,
-                    symbols.checkpoint()
-                );
-            }
-            push_inter_residual_block(
-                blocks,
-                ReconPlaneId::U,
-                base_x4 + x4,
-                base_y4 + y4,
-                tx_size,
-                u,
-                tile_offset,
-            )?;
-            let v = read_inter_residual_plane(
-                work_unit,
-                symbols,
-                coeff_ctx,
-                2,
-                tx_size,
-                start_x,
-                start_y,
-                tx_w4 == num4x4_w && tx_h4 == num4x4_h,
-                u_nonzero,
-                residual_tool_policy,
-                tile_offset,
-            )?;
-            if trace_this {
-                eprintln!(
-                    "inter residual chroma read v done start=({start_x},{start_y}) all_zero={} eob={} checkpoint={:?}",
-                    v.all_zero,
-                    v.eob,
-                    symbols.checkpoint()
-                );
-            }
-            push_inter_residual_block(
-                blocks,
-                ReconPlaneId::V,
-                base_x4 + x4,
-                base_y4 + y4,
-                tx_size,
-                v,
-                tile_offset,
-            )?;
-            x4 = x4
-                .checked_add(tx_w4)
-                .ok_or_else(|| residual_geometry_error(tile_offset))?;
-        }
-        y4 = y4
-            .checked_add(tx_h4)
-            .ok_or_else(|| residual_geometry_error(tile_offset))?;
-    }
-    Ok(())
-}
-
-fn push_inter_residual_block(
-    blocks: &mut Vec<InterResidualBlock>,
-    plane: ReconPlaneId,
-    x4: usize,
-    y4: usize,
-    tx_size: usize,
-    coeffs: LumaCoeffBlock,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let log2_width = tx_size_dimension("Tx_Width_Log2", &TX_WIDTH_LOG2, tx_size, tile_offset)?;
-    let log2_height = tx_size_dimension("Tx_Height_Log2", &TX_HEIGHT_LOG2, tx_size, tile_offset)?;
-    let log2_width = u32::try_from(log2_width).map_err(|_| residual_geometry_error(tile_offset))?;
-    let log2_height =
-        u32::try_from(log2_height).map_err(|_| residual_geometry_error(tile_offset))?;
-    blocks.try_reserve(1).map_err(|_| {
-        inter_cap!(
-            "inter_block_residual_allocation",
-            tile_offset,
-            "inter.residual.transform_block_list",
-            SPEC_MODE_INFO
-        )
-    })?;
-    blocks.push(InterResidualBlock {
-        plane,
-        x: x4 * MI_SIZE,
-        y: y4 * MI_SIZE,
-        log2_width,
-        log2_height,
-        coeffs,
-    });
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn read_inter_residual_plane(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
-    symbols: &mut SymbolDecoder<'_>,
-    coeff_ctx: &mut TileCoeffContextState,
-    plane: usize,
-    tx_size: usize,
-    start_x: usize,
-    start_y: usize,
-    tx_fills_block: bool,
-    chroma_eob_ctx: bool,
-    residual_tool_policy: TransformToolResidualPolicy,
-    tile_offset: ByteOffset,
-) -> Result<LumaCoeffBlock> {
-    decode_general_intra_plane_coeffs(
-        work_unit,
-        symbols,
-        coeff_ctx,
-        plane,
-        tx_size,
-        start_x,
-        start_y,
-        tx_fills_block,
-        None,
-        chroma_eob_ctx,
-        INTER_UV_MODE_DC,
-        0,
-        true,
-        false,
-        false,
-        residual_tool_policy,
-    )
-    .map_err(|error| {
-        if std::env::var_os("SPLOT_TRACE_INTER_RESIDUAL_ERROR").is_some() {
-            eprintln!(
-                "inter residual error offset={} plane={plane} tx_size={tx_size} start=({start_x},{start_y}) fills={tx_fills_block}: {error:?}",
-                tile_offset.get(),
-            );
-        }
-        residual_read_error(tile_offset)
-    })
-}
-
-fn transform_tool_residual_policy(sequence: &SequenceHeader) -> TransformToolResidualPolicy {
-    sequence
-        .transform_quant_entropy
-        .as_ref()
-        .map_or(TransformToolResidualPolicy::Allow, |tq| {
-            if tq.enable_inter_ist
-                || tq.enable_intra_ist
-                || tq.enable_inter_ddt
-                || tq.enable_cctx
-                || tq.enable_fsc
-                || tq.enable_idtx_intra
-            {
-                TransformToolResidualPolicy::AdmitTransformToolSubset {
-                    luma: None,
-                    active_intra_ist: ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-                    active_chroma: ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
-                }
-            } else {
-                TransformToolResidualPolicy::Allow
-            }
-        })
-}
-
-fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<usize> {
-    table_value_usize(
-        "Max_Tx_Size_Rect",
-        &MAX_TX_SIZE_RECT,
-        block_size,
-        tile_offset,
-    )
-}
-
-fn tx_size_dimension(
-    table: &'static str,
-    values: &[i32],
-    tx_size: usize,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
-    table_value_usize(table, values, tx_size, tile_offset)
-}
-
-fn table_value_usize(
-    _table: &'static str,
-    values: &[i32],
-    index: usize,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
-    let value = values
-        .get(index)
-        .copied()
-        .ok_or_else(|| residual_geometry_error(tile_offset))?;
-    usize::try_from(value).map_err(|_| residual_geometry_error(tile_offset))
-}
-
-fn residual_geometry_error(tile_offset: ByteOffset) -> super::super::DecodeError {
-    inter_cap!(
-        "inter_block_residual_geometry",
-        tile_offset,
-        "inter.residual.transform_geometry",
-        SPEC_MODE_INFO
-    )
-}
-
-fn reset_inter_skip_coeff_contexts(
-    coeff_ctx: &mut TileCoeffContextState,
-    frontier: &DecodeBlockFrontier,
-    n4w: usize,
-    n4h: usize,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let plane_count = 1 + usize::from(frontier.has_chroma) * (COEFF_CONTEXT_PLANES.len() - 1);
-    for &(plane, sub) in COEFF_CONTEXT_PLANES.iter().take(plane_count) {
-        coeff_ctx
-            .reset_block_context_plane(CoeffContextReset {
-                plane,
-                c: frontier.c,
-                r: frontier.r,
-                w4: n4w,
-                h4: n4h,
-                sub_x: sub,
-                sub_y: sub,
-            })
-            .map_err(|_| residual_geometry_error(tile_offset))?;
-    }
-    Ok(())
-}
-
-fn residual_read_error(tile_offset: ByteOffset) -> super::super::DecodeError {
-    inter_missing!(
-        "inter_block_residual_parse",
-        tile_offset,
-        "inter.residual.coefficients",
-        SPEC_MODE_INFO
-    )
-}
+use self::residual::{
+    read_inter_residual, reset_inter_skip_coeff_contexts, transform_tool_residual_policy,
+};
 
 fn resolve_interp_filter(
     cdfs: &mut TileCdfSubset,
@@ -2226,6 +1652,131 @@ fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
         .unwrap_or(false)
 }
 
+/// § 5.18.2 `FrameMvPrecision` as a Table 6.19 code.
+fn frame_mv_precision(core: &FrameHeaderCore, tile_offset: ByteOffset) -> Result<u8> {
+    Ok(inter_mv_read_config(core, tile_offset)?.precision())
+}
+
+/// § 5.18.2 `UsePerBlockMvPrecision`: `enable_flex_mvres` outside the
+/// `force_integer_mv` path (which pins `MV_PRECISION_ONE_PEL`).
+fn use_per_block_mv_precision(sequence: &SequenceHeader, core: &FrameHeaderCore) -> bool {
+    sequence
+        .inter
+        .as_ref()
+        .is_some_and(|inter| inter.enable_flex_mvres)
+        && !effective_force_integer_mv(core)
+}
+
+/// § 5.20.7.13 per-block MV precision: the `use_most_probable_precision` and
+/// `pb_mv_precision` reads plus the `adjustedPrecision` derivation.
+#[allow(clippy::too_many_arguments)]
+fn read_block_mv_precision_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    neighbour_ctx: &BlockNeighbourContext,
+    frame_precision: u8,
+    block_has_newmv: bool,
+    is_adaptive_mvd: bool,
+    tile_offset: ByteOffset,
+) -> Result<BlockPrecisionRecord> {
+    if is_adaptive_mvd
+        || !block_has_newmv
+        || !use_per_block_mv_precision(sequence, core)
+        || frame_precision < MV_PRECISION_HALF_PEL
+    {
+        return Ok(BlockPrecisionRecord::most_probable(frame_precision));
+    }
+    let use_most_probable = cdfs
+        .read_block_symbol_trace(
+            TileCdfSelector::UseMostProbablePrecision {
+                ctx: neighbour_ctx.most_probable_precision_ctx(),
+            },
+            symbols,
+        )
+        .map_err(|_| symbol_read_error(tile_offset))?;
+    if use_most_probable.get() != 0 {
+        return Ok(BlockPrecisionRecord::most_probable(frame_precision));
+    }
+    let pb_mv_precision = cdfs
+        .read_block_symbol_trace(
+            TileCdfSelector::PbMvPrecision {
+                ctx: neighbour_ctx.pb_mv_precision_ctx(frame_precision),
+                frame_ctx: usize::from(frame_precision - MV_PRECISION_HALF_PEL),
+            },
+            symbols,
+        )
+        .map_err(|_| symbol_read_error(tile_offset))?;
+    let adjusted = MV_PRECISION_ONE_PEL
+        .max(frame_precision - 2)
+        .checked_sub(pb_mv_precision.get())
+        .filter(|&adjusted| adjusted > 0)
+        .ok_or_else(|| symbol_read_error(tile_offset))?;
+    let mv_precision = if adjusted <= MV_PRECISION_TWO_PEL {
+        adjusted - 1
+    } else {
+        adjusted
+    };
+    Ok(BlockPrecisionRecord::explicit(mv_precision))
+}
+
+/// § 5.20.7.13 `assign_mv` predictor rounding: `lower_mv_precision` applies to
+/// NEWMV-family predictors below `MV_PRECISION_HALF_PEL`.
+fn lowered_pred_mv(precision: BlockPrecisionRecord, pred_mv: Mv) -> Mv {
+    if precision.mv_precision < MV_PRECISION_HALF_PEL {
+        lower_mv_precision(precision.mv_precision, pred_mv)
+    } else {
+        pred_mv
+    }
+}
+
+/// § 5.20.7.14 `read_motion_mode` SIMPLE-path prefix: the § 5.20.7.15
+/// `read_interintra_mode(0)` `inter_intra` flag, read for single-reference
+/// non-warp blocks of 8x8..=64x64 when the frame enables the INTERINTRA
+/// motion mode. Interintra prediction is beyond the current frontier, so a
+/// set flag defers; reading it keeps entropy sync for flag == 0. The other
+/// `motion_mode_allowed` bail-outs (skip_mode, BAWP, TIP/INTRA references,
+/// segmentation features) are already frontier-rejected before this point.
+fn read_inter_intra_flag_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    core: &FrameHeaderCore,
+    b_size: usize,
+    n4w: usize,
+    n4h: usize,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    let frame_enables_interintra = core
+        .inter
+        .as_ref()
+        .and_then(|inter| inter.frame_enabled_motion_modes)
+        .is_some_and(|modes| modes[splot_core::headers::frame::INTERINTRA]);
+    if !frame_enables_interintra || b_size < BLOCK_8X8 || n4w.max(n4h) > CHUNK_64_N4 {
+        return Ok(());
+    }
+    let bsize_group = *SIZE_GROUP_LOOKUP.get(b_size).ok_or_else(|| {
+        inter_cap!(
+            "inter_interintra_bsize_group",
+            tile_offset,
+            "inter.inter_intra block size out of range",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let inter_intra = cdfs
+        .read_block_symbol_trace(TileCdfSelector::InterIntra { bsize_group }, symbols)
+        .map_err(|_| symbol_read_error(tile_offset))?;
+    if inter_intra.get() != 0 {
+        return Err(inter_cap!(
+            "inter_interintra_unimplemented",
+            tile_offset,
+            "inter.inter_intra prediction",
+            "5.20.7.15"
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn read_warp_inter_mode_syntax(
     cdfs: &mut TileCdfSubset,
@@ -2267,6 +1818,7 @@ struct ParsedWarpNewmv {
     ref_warp_idx: usize,
     precision_idx: u8,
     warpmv_with_mvd: bool,
+    block_precision: BlockPrecisionRecord,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2316,6 +1868,7 @@ fn inter_mvd_sign_derivation_allowed(
     core: &FrameHeaderCore,
     single_mode: u8,
     use_amvd: bool,
+    frame_config: MvReadConfig,
     config: MvReadConfig,
 ) -> bool {
     if single_mode != SINGLE_MODE_NEWMV || use_amvd {
@@ -2331,7 +1884,8 @@ fn inter_mvd_sign_derivation_allowed(
     if effective_allow_screen_content_tools(core) {
         return false;
     }
-    config.precision() < MV_PRECISION_QUARTER_PEL
+    frame_config.precision() <= MV_PRECISION_QUARTER_PEL
+        && config.precision() < MV_PRECISION_QUARTER_PEL
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2339,6 +1893,8 @@ fn read_warp_newmv_delta_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    neighbour_ctx: &BlockNeighbourContext,
     mv_config: MvReadConfig,
     b_size: usize,
     mi_row: usize,
@@ -2358,9 +1914,21 @@ fn read_warp_newmv_delta_syntax(
         max_drl_bits_minus_1,
         tile_offset,
     )?;
-    let pred_mv = stack.candidate(ref_mv_idx);
-    let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, mv_config)?;
-    let diff = apply_inter_mvd_signs(magnitude, symbols, tile_offset, mv_config, false, 1)?;
+    let block_precision = read_block_mv_precision_syntax(
+        cdfs,
+        symbols,
+        sequence,
+        core,
+        neighbour_ctx,
+        mv_config.precision(),
+        true,
+        false,
+        tile_offset,
+    )?;
+    let block_config = MvReadConfig::inter(block_precision.mv_precision);
+    let pred_mv = lowered_pred_mv(block_precision, stack.candidate(ref_mv_idx));
+    let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, block_config)?;
+    let diff = apply_inter_mvd_signs(magnitude, symbols, tile_offset, block_config, false, 1)?;
     let mv = Mv {
         row: mv_clamp_to_integer(pred_mv.row + diff.row),
         col: mv_clamp_to_integer(pred_mv.col + diff.col),
@@ -2385,6 +1953,7 @@ fn read_warp_newmv_delta_syntax(
         ref_warp_idx,
         precision_idx,
         warpmv_with_mvd: false,
+        block_precision,
     })
 }
 
@@ -2426,6 +1995,7 @@ fn read_warpmv_delta_syntax(
         ref_warp_idx,
         precision_idx: 0,
         warpmv_with_mvd,
+        block_precision: BlockPrecisionRecord::most_probable(mv_config.precision()),
     })
 }
 

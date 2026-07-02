@@ -497,6 +497,9 @@ pub(crate) enum TileCdfSelector {
     WarpInterIntra {
         bsize_group: usize,
     },
+    InterIntra {
+        bsize_group: usize,
+    },
     InterIntraMode {
         bsize_group: usize,
     },
@@ -546,6 +549,13 @@ pub(crate) enum TileCdfSelector {
     UseAmvd {
         index: usize,
         ctx: usize,
+    },
+    UseMostProbablePrecision {
+        ctx: usize,
+    },
+    PbMvPrecision {
+        ctx: usize,
+        frame_ctx: usize,
     },
     UseBawp,
     UseBawpChroma,
@@ -634,6 +644,7 @@ pub(crate) enum TileCdfArray {
     WarpDeltaParamHigh,
     WarpDeltaParamSign,
     WarpInterIntra,
+    InterIntra,
     InterIntraMode,
     WedgeInterIntra,
     WedgeQuad,
@@ -650,6 +661,8 @@ pub(crate) enum TileCdfArray {
     CompRef1,
     CompRef0,
     UseAmvd,
+    UseMostProbablePrecision,
+    PbMvPrecision,
     ExplicitBawp,
     AmvdJoint,
     AmvdIndex,
@@ -736,6 +749,7 @@ crate::impl_reason_labels!(TileCdfArray {
     WarpDeltaParamHigh => "TileWarpDeltaParamHighCdf",
     WarpDeltaParamSign => "TileWarpDeltaParamSignCdf",
     WarpInterIntra => "TileWarpInterIntraCdf",
+    InterIntra => "TileInterIntraCdf",
     InterIntraMode => "TileInterIntraModeCdf",
     WedgeInterIntra => "TileWedgeInterIntraCdf",
     WedgeQuad => "TileWedgeQuadCdf",
@@ -752,6 +766,8 @@ crate::impl_reason_labels!(TileCdfArray {
     CompRef0 => "TileCompRef0Cdf",
     CompRef1 => "TileCompRef1Cdf",
     UseAmvd => "TileUseAmvdCdf",
+    UseMostProbablePrecision => "TileUseMostProbablePrecisionCdf",
+    PbMvPrecision => "TilePbMvPrecisionCdf",
     ExplicitBawp => "TileExplicitBawpCdf",
     AmvdJoint => "TileAmvdJointCdf",
     AmvdIndex => "TileAmvdIndexCdf",
@@ -1329,6 +1345,9 @@ macro_rules! tile_cdf_row {
             TileCdfSelector::WarpInterIntra { bsize_group } => $self
                 .block
                 .$block_row(BlockCdfSelector::WarpInterIntra { bsize_group }),
+            TileCdfSelector::InterIntra { bsize_group } => $self
+                .block
+                .$block_row(BlockCdfSelector::InterIntra { bsize_group }),
             TileCdfSelector::InterIntraMode { bsize_group } => $self
                 .block
                 .$block_row(BlockCdfSelector::InterIntraMode { bsize_group }),
@@ -1383,6 +1402,12 @@ macro_rules! tile_cdf_row {
             TileCdfSelector::UseAmvd { index, ctx } => $self
                 .block
                 .$block_row(BlockCdfSelector::UseAmvd { index, ctx }),
+            TileCdfSelector::UseMostProbablePrecision { ctx } => $self
+                .block
+                .$block_row(BlockCdfSelector::UseMostProbablePrecision { ctx }),
+            TileCdfSelector::PbMvPrecision { ctx, frame_ctx } => $self
+                .block
+                .$block_row(BlockCdfSelector::PbMvPrecision { ctx, frame_ctx }),
             TileCdfSelector::UseBawp => $self.block.$block_row(BlockCdfSelector::UseBawp),
             TileCdfSelector::UseBawpChroma => {
                 $self.block.$block_row(BlockCdfSelector::UseBawpChroma)

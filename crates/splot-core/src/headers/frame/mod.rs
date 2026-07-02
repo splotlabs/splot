@@ -77,7 +77,7 @@ pub use info::{
     parse_frame_header_core,
 };
 pub(crate) use info::{init_core_from_prefix, parse_core_body};
-pub use inter::{InterControl, InterStop, MvPrecision, TipFrameMode};
+pub use inter::{INTERINTRA, InterControl, InterStop, MvPrecision, TipFrameMode};
 pub(crate) use quant::get_qindex_ignore_delta_q;
 pub use quant::{
     CoreSeqQuantView, DeltaQParams, LosslessInfo, MAX_PIC_QM_NUM, QmSetLevels, QuantizationParams,

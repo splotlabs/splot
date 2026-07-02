@@ -786,7 +786,7 @@ fn intrabc_newmv_read_errors_use_intrabc_frontier_diagnostic() {
         &mut cdfs,
         &mut symbols,
         0,
-        0,
+        crate::runtime_minimal::inter::read_mv::MV_PRECISION_TWO_PEL,
         Mv { row: 0, col: 0 },
         ByteOffset::new(20),
     )

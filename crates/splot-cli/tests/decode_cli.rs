@@ -3,7 +3,7 @@
 
 //! End-to-end `splot decode` CLI contract tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -271,143 +271,15 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "7.20.4");
-    assert_eq!(json["matrix_row"], "ac0ej3-selectable-transform-records");
-    assert_eq!(
-        json["feature_id"],
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
-    );
+    assert_eq!(json["matrix_row"], "first-inter-frame-frontier");
+    assert_eq!(json["feature_id"], "DECODE-FIRST-INTER-FRAME-FRONTIER");
     assert_eq!(json["detail_kind"], "unsupported_feature");
+    assert_eq!(json["unsupported_reason"], "inter_unsupported_frame_tools");
     assert_eq!(
-        json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_live_frame_samples_unpopulated"
+        json["byte_offset"], 8345,
+        "the frontier holds at the first fully-tooled inter frame (deblock/CDEF/LR/CCSO \
+         enabled); frames 0-1 decode and output frame 0 is byte-identical to AVM"
     );
-    assert!(
-        json["message"]
-            .as_str()
-            .unwrap()
-            .contains("decoded CurrFrame and CdefFrame samples are still unpopulated"),
-        "diagnostic must describe the §7.20.4 unpopulated live-frame-samples frontier"
-    );
-    assert_eq!(json["byte_offset"], 74);
-    assert_ne!(
-        json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds",
-        "modelling the §7.13.2.1 single-neighbour cardinal fallback (origin-adjacent \
-         orthogonal sample) advanced ac0ej3 past the IntrABC prediction-geometry wall"
-    );
-    assert_ne!(
-        json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_block_bounds",
-        "the §5.20.6.1 `record_block` frame-edge clamp (AVM §5.20.3.2 block_coded) \
-         advanced ac0ej3 past the MI(256,0) bottom-edge block-bounds wall"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_residual_parse",
-        "the §5.20.7.27 coefficient context-write edge clamp (AVM av2_set_entropy_contexts) \
-         advanced ac0ej3 past the bottom-edge skipped-transform context-write wall"
-    );
-    assert_ne!(
-        json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_nonskip_residual",
-        "ac0ej3 must advance past the second §5.20.7.23 non-skip IntrABC residual gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_currframe_samples",
-        "ac0ej3 must advance past the first §7.13.3.18 IntrABC current-frame sample gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_dctonly_residual_luma_tx_type",
-        "ac0ej3 must advance past the former active luma transform-type residual gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_unsupported_intra_tool",
-        "ac0ej3 must advance past the former selectable intra-tool pre-tile gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_wienerns_lr_selectable_transform_records_ccso",
-        "ac0ej3 must advance past the former selectable CCSO pre-tile gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_uv_mode",
-        "ac0ej3 must advance past the former SDP chroma uv-mode desync gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_block_shape",
-        "ac0ej3 must advance past the luma-only narrow selectable transform-record gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_cfl_mode",
-        "ac0ej3 must advance past the active CfL mode-info gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_wienerns_lr_live_transform_record_mrl_mode",
-        "ac0ej3 must advance past the former active MRL mode-info gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_wienerns_lr_live_storage_unpopulated",
-        "ac0ej3 must advance past the former live-storage allocation gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_bitstream_desync",
-        "the §5.20.4.1 SDP chroma-reference MI-size fix removed the former §8.2.4 exit-budget over-read desync"
-    );
-    assert_ne!(
-        json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_chroma_offset_leaf",
-        "ac0ej3 must advance past the former chroma-offset selectable transform-record gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"],
-        "unsupported_wienerns_lr_selectable_transform_records_empty_transform",
-        "ac0ej3 must advance past the former empty-transform selectable transform-record gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_wienerns_filter_bank",
-        "ac0ej3 must advance past the parsed frame-level Wiener NS bank frontier"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_wienerns_filter",
-        "ac0ej3 must advance past the parser-only Wiener NS frontier"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_active_wienerns_lr_units",
-        "ac0ej3 must advance past the former active LR unit selection gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_wienerns_lr_classified_wiener",
-        "ac0ej3 must advance past the former classified-Wiener dependency gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_wienerns_lr_source_bounds",
-        "ac0ej3 must advance past the former source-bounds gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "incomplete_frame_header",
-        "ac0ej3 must complete the key-frame header before runtime rejection"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_cfl_intra",
-        "ac0ej3 must advance past the former sequence CFL gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_bit_depth",
-        "ac0ej3 must advance past the former sequence bit-depth gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unsupported_frame_candidate_count",
-        "ac0ej3 must advance past the former total frame-count gate"
-    );
-    assert_ne!(
-        json["unsupported_reason"], "unexpected_obu_order",
-        "ac0ej3 must advance past the former leading CLK-plus-tile-group framing gate"
-    );
-    assert_eq!(json["tier_id"], "minimal-intra-8bit420-hash-v1");
-    assert_eq!(json["output_format"], "hash");
 }
 
 #[test]
@@ -653,24 +525,27 @@ fn decode_multi_sb_inter_fixture_decodes_bit_exact() {
 }
 
 #[test]
-fn decode_grid_inter_fixture_reports_current_frontier() {
+fn decode_grid_inter_fixture_decodes_both_frames() {
     let input = conformance_vector("syn-grid-inter-128x128-q80.ivf");
+    let output = temp_output("yuv");
 
     let out = splot(&[
         "decode",
-        "--json",
         "--output-format",
-        "hash",
+        "raw",
         input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
     ]);
 
-    assert_eq!(out.status.code(), Some(1));
-    assert!(out.stderr.is_empty(), "stderr was not empty");
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["detail_kind"], "unsupported_feature");
-    assert_eq!(json["unsupported_reason"], "inter_exit_symbol");
-    assert_eq!(json["tier_id"], "general-inter-8bit420-frontier-v1");
-    assert_eq!(json["spec_section"], "5.20.7.6");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the 2-D-grid inter fixture must decode successfully: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let decoded = std::fs::read(&output).expect("decoded raw output");
+    assert_eq!(decoded.len(), 49152, "two 8-bit 4:2:0 128x128 frames");
 }
 
 #[test]
@@ -1225,4 +1100,195 @@ fn decode_threads_invalid_is_usage_error() {
         !stderr.contains("decode/unsupported-feature"),
         "stderr was: {stderr}"
     );
+}
+
+/// Raw-frame geometry for the AVM compare harness, derived from the IVF header.
+/// Ceiling: assumes 4:2:0 with two-byte samples (upgrade: read the sequence
+/// header bit depth once an 8-bit mission stream needs this harness).
+struct RawFrameGeometry {
+    width: usize,
+    height: usize,
+}
+
+impl RawFrameGeometry {
+    fn from_ivf_header(input: &Path) -> Option<Self> {
+        let mut header = [0u8; 32];
+        let mut file = std::fs::File::open(input).ok()?;
+        std::io::Read::read_exact(&mut file, &mut header).ok()?;
+        let width = usize::from(u16::from_le_bytes([header[12], header[13]]));
+        let height = usize::from(u16::from_le_bytes([header[14], header[15]]));
+        (width > 0 && height > 0).then_some(Self { width, height })
+    }
+
+    fn frame_bytes(&self) -> usize {
+        self.width * self.height * 3
+    }
+
+    fn locate(&self, offset_in_frame: usize) -> (char, usize, usize) {
+        let y_bytes = self.width * self.height * 2;
+        let u_bytes = y_bytes / 4;
+        let (plane, base, row_width) = if offset_in_frame < y_bytes {
+            ('Y', 0, self.width)
+        } else if offset_in_frame < y_bytes + u_bytes {
+            ('U', y_bytes, self.width / 2)
+        } else {
+            ('V', y_bytes + u_bytes, self.width / 2)
+        };
+        let sample = (offset_in_frame - base) / 2;
+        (plane, sample % row_width, sample / row_width)
+    }
+}
+
+fn per_frame_digest_line(index: usize, frame: &[u8]) -> String {
+    use sha2::Digest as _;
+    use std::fmt::Write as _;
+
+    let mut line = format!("{index:06} ");
+    for byte in sha2::Sha256::digest(frame) {
+        let _ = write!(line, "{byte:02x}");
+    }
+    line.push('\n');
+    line
+}
+
+/// The §10.1 mission harness: byte-compares splot raw decode output against the
+/// pinned AVM oracle (`avmdec --i420 --rawvideo`) and reports the first
+/// mismatching frame/plane/sample plus per-frame digest lists.
+#[test]
+#[ignore = "local mission harness; needs SPLOT_AC0EJ3_IVF (or the default fixture path) and an avmdec build (SPLOT_AVM_DECODER)"]
+fn ac0ej3_full_stream_avm_compare() {
+    let input = local_ac0ej3_path();
+    if !input.is_file() {
+        eprintln!("skip: ac0ej3 fixture missing at {}", input.display());
+        return;
+    }
+    let avmdec = std::env::var_os("SPLOT_AVM_DECODER")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join("Devel/avm/build_inspect/avmdec"))
+        })
+        .expect("set SPLOT_AVM_DECODER or HOME");
+    if !avmdec.is_file() {
+        eprintln!("skip: avmdec not found at {}", avmdec.display());
+        return;
+    }
+    let geometry = RawFrameGeometry::from_ivf_header(&input).expect("readable IVF header");
+    let work = std::env::var_os("SPLOT_AC0EJ3_WORK")
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("splot-ac0ej3-fullstream");
+    std::fs::create_dir_all(&work).expect("create harness work dir");
+    let limit = std::env::var("SPLOT_AC0EJ3_LIMIT").ok();
+    let tag = limit.as_deref().unwrap_or("full");
+
+    let avm_out = work.join(format!("avm-{tag}.yuv"));
+    if !avm_out.is_file() {
+        let mut command = std::process::Command::new(&avmdec);
+        command.arg(&input).args(["--i420", "--rawvideo", "-o"]);
+        command.arg(&avm_out);
+        if let Some(limit) = limit.as_deref() {
+            command.arg(format!("--limit={limit}"));
+        }
+        let status = command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("run avmdec");
+        assert!(
+            status.success(),
+            "avmdec failed; delete {avm_out:?} to retry"
+        );
+    }
+
+    let splot_out = work.join(format!("splot-{tag}.yuv"));
+    let mut args = vec!["decode", "--output-format", "raw", "-o"];
+    let splot_out_text = splot_out.to_str().expect("utf-8 work path").to_owned();
+    args.push(&splot_out_text);
+    let limit_arg = limit.as_deref().map(|limit| format!("--limit={limit}"));
+    if let Some(limit_arg) = limit_arg.as_deref() {
+        args.push(limit_arg);
+    }
+    let input_text = input.to_str().expect("utf-8 fixture path").to_owned();
+    args.push(&input_text);
+    let out = splot(&args);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "splot decode failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let frame_bytes = geometry.frame_bytes();
+    let mut avm = std::fs::File::open(&avm_out).expect("open AVM output");
+    let mut splot_file = std::fs::File::open(&splot_out).expect("open splot output");
+    let mut avm_frame = vec![0u8; frame_bytes];
+    let mut splot_frame = vec![0u8; frame_bytes];
+    let mut avm_digests = String::new();
+    let mut splot_digests = String::new();
+    let mut frame = 0usize;
+    let mut first_mismatch: Option<(usize, usize)> = None;
+    loop {
+        let avm_read = read_full_frame(&mut avm, &mut avm_frame);
+        let splot_read = read_full_frame(&mut splot_file, &mut splot_frame);
+        assert_eq!(
+            avm_read % frame_bytes,
+            0,
+            "AVM output truncated mid-frame at frame {frame}"
+        );
+        assert_eq!(
+            splot_read % frame_bytes,
+            0,
+            "splot output truncated mid-frame at frame {frame}"
+        );
+        if avm_read == 0 || splot_read == 0 {
+            assert_eq!(
+                avm_read, splot_read,
+                "frame-count divergence at frame {frame}: one stream ended first \
+                 (first byte mismatch so far: {first_mismatch:?})"
+            );
+            break;
+        }
+        avm_digests.push_str(&per_frame_digest_line(frame, &avm_frame));
+        splot_digests.push_str(&per_frame_digest_line(frame, &splot_frame));
+        if first_mismatch.is_none()
+            && let Some(offset) = avm_frame
+                .iter()
+                .zip(&splot_frame)
+                .position(|(avm_byte, splot_byte)| avm_byte != splot_byte)
+        {
+            first_mismatch = Some((frame, offset));
+        }
+        frame += 1;
+    }
+    std::fs::write(work.join(format!("avm-{tag}.frames.sha256")), &avm_digests)
+        .expect("write AVM digest list");
+    std::fs::write(
+        work.join(format!("splot-{tag}.frames.sha256")),
+        &splot_digests,
+    )
+    .expect("write splot digest list");
+
+    if let Some((frame, offset)) = first_mismatch {
+        let (plane, x, y) = geometry.locate(offset);
+        panic!(
+            "first mismatch: frame {frame} plane {plane} x={x} y={y} \
+             (byte {offset} in frame; digest lists under {})",
+            work.display()
+        );
+    }
+    eprintln!("byte-identical: {frame} frames of {frame_bytes} bytes");
+}
+
+fn read_full_frame(file: &mut std::fs::File, buf: &mut [u8]) -> usize {
+    use std::io::Read as _;
+
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        let read = file.read(&mut buf[filled..]).expect("read raw stream");
+        if read == 0 {
+            break;
+        }
+        filled += read;
+    }
+    filled
 }
