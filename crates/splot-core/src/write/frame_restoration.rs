@@ -475,6 +475,11 @@ fn check_ccso_encodable(
 /// Validates one [`CcsoPlaneParams`](crate::headers::frame::CcsoPlaneParams) is a plane the
 /// § 5.18.7.12 parser could have produced, before any bit is written.
 fn check_ccso_plane_encodable(plane: &crate::headers::frame::CcsoPlaneParams) -> WriteResult<()> {
+    if plane.reuse_ccso || plane.sb_reuse_ccso {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "ccso_inter_reuse",
+        });
+    }
     if !plane.ccso_planes {
         if plane.ccso_bo_only.is_some()
             || plane.ccso_scale_idx.is_some()

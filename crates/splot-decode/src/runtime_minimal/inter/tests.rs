@@ -59,6 +59,10 @@ const TXSPLIT_INTRA_INTER_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-txsplit-intra-inter-64x64-10bit-q100.ivf"
 );
 
+const SAMEREF_COMPOUND_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-2frame-sameref-compound-64x32-10bit-q150.ivf"
+);
+
 const TWO_FRAME_SUBPEL_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-subpel-inter-64x64.ivf"
 );
@@ -442,6 +446,19 @@ fn ccso_active_inter_fixture_decodes_avm_bit_exact() {
             "0ffefc28c772da1b372dafdeff9bce414449a20f36e170ec24fffbefd5780cd3"
         ],
         "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
+    );
+}
+
+#[test]
+fn same_ref_compound_fixture_defers_at_the_block_comp_mode_read() {
+    let Err(error) =
+        decode_fixture_with_options(SAMEREF_COMPOUND_10BIT_FIXTURE, &DecodeOptions::default())
+    else {
+        panic!("the fixture pins the same-reference compound defer");
+    };
+    assert_eq!(
+        unsupported_reason(error),
+        "compound_missing_is_joint_context"
     );
 }
 

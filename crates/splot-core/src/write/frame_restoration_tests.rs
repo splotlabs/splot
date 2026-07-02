@@ -904,6 +904,30 @@ mod tests {
     }
 
     #[test]
+    fn ccso_inter_reuse_flags_are_rejected() {
+        for set_reuse in [true, false] {
+            let mut plane = ccso_full_plane();
+            if set_reuse {
+                plane.reuse_ccso = true;
+            } else {
+                plane.sb_reuse_ccso = true;
+            }
+            let params = CcsoParams {
+                ccso_frame_flag: Some(true),
+                planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            };
+            let mut writer = BitWriter::new();
+            assert!(matches!(
+                write_ccso_params(&mut writer, &params, false, 3, &ccso_enabled()),
+                Err(WriteError::NonCanonicalFrameHeader {
+                    what: "ccso_inter_reuse"
+                })
+            ));
+            assert_eq!(writer.bit_len(), 0);
+        }
+    }
+
+    #[test]
     fn ccso_out_of_domain_quant_idx_is_rejected() {
         let mut plane = ccso_full_plane();
         plane.ccso_quant_idx = Some(4); // f(2) domain is 0..=3

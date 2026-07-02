@@ -625,3 +625,14 @@ mission notes). Validates clean; committed as the NEGATIVE decode pin for the \
 `general_intra_transform_partition` defer and as the ready oracle for the \
 per-unit prediction change."""
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-sameref-compound-64x32-10bit-q150.ivf"
+description = """
+Two-frame 10-bit 4:2:0 64x32 inter stream (IVF) whose single-reference INTER \
+frame signals reference_select and codes a same-reference COMPOUND block \
+(comp_mode = 1 with one physical reference). Validates clean; committed as the \
+NEGATIVE decode pin proving the frame decodes to the block's comp_mode read \
+(entropy-synced with AVM accounting) and then defers fail-closed at \
+`compound_missing_is_joint_context` instead of rejecting the whole frame."""
+expect = "clean"

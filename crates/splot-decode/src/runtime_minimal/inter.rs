@@ -201,7 +201,7 @@ pub(super) fn decode_minimal_inter_frame<T: ReconSample>(
     }
 
     let block_reference_select = tail.reference_select;
-    let compound_is_joint_ctx = if block_reference_select {
+    let compound_is_joint_ctx = if block_reference_select && ref_frame_idx.len() == 2 {
         validate_compound_sequence_subset(sequence, &core, offset)?;
         Some(compound_is_joint_context(
             &ref_frame_idx,
@@ -1039,6 +1039,30 @@ fn validate_inter_frame_core(
             offset,
             "inter.ccso.reference_reuse",
             "5.18.7.12"
+        ));
+    }
+    if core
+        .cdef_params
+        .as_ref()
+        .is_some_and(|cdef| cdef.cdef_on_skip_txfm_frame_enable == Some(false))
+    {
+        return Err(inter_cap!(
+            "inter_cdef_skip_grid_unimplemented",
+            offset,
+            "inter.cdef.skip_txfm_grid",
+            "5.18.7.10"
+        ));
+    }
+    if core.lr_params.as_ref().is_some_and(|lr| {
+        lr.planes
+            .iter()
+            .any(|plane| plane.frame_filters_on && plane.num_filter_classes.unwrap_or(1) > 1)
+    }) {
+        return Err(inter_cap!(
+            "inter_lr_multiclass_tx_skip_unimplemented",
+            offset,
+            "inter.lr.multiclass_tx_skip_grid",
+            "5.18.7.9"
         ));
     }
     Ok(())
