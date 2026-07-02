@@ -1018,6 +1018,129 @@ pub(super) fn extend_warp_neighbour_params(
 
 const WARPEDMODEL_PREC_BITS: u32 = 16;
 
+/// AV2 § 3 `LEAST_SQUARES_SAMPLES_MAX`.
+const LEAST_SQUARES_SAMPLES_MAX: usize = 8;
+
+/// The § 7.12.3 warp-sample collection outcome.
+pub(super) enum WarpSampleCollection {
+    /// `CandList[ 0 ][ .. ]` rows: `[ srcY, srcX, dstY, dstX ]` in eighth-pel.
+    Samples(Vec<[i64; 4]>),
+    /// A candidate matched on the second reference list, whose MV the grid
+    /// does not retain yet.
+    List1MvUnretained,
+}
+
+/// AV2 § 7.12.3 find warp samples for `ref = 0`.
+pub(super) fn find_warp_samples(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+) -> WarpSampleCollection {
+    let mut samples: Vec<[i64; 4]> = Vec::with_capacity(LEAST_SQUARES_SAMPLES_MAX);
+    let mi_row = block.mi_row as i32;
+    let mi_col = block.mi_col as i32;
+    let w4 = block.bw4 as i32;
+    let h4 = block.bh4 as i32;
+    let mi_rows = block.mi_rows as i32;
+    let mi_cols = block.mi_cols as i32;
+    let mut missing_list1 = false;
+    let mut add_sample = |samples: &mut Vec<[i64; 4]>, delta_row: i32, delta_col: i32| {
+        if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
+            return;
+        }
+        let Some(cell) = grid.get(mi_row + delta_row, mi_col + delta_col) else {
+            return;
+        };
+        let lists = [
+            (cell.ref_frame0 == block.ref_frame0 && cell.is_inter).then_some(Some(cell.mv)),
+            (cell.ref_frame1 == Some(block.ref_frame0)).then_some(cell.mv1),
+        ];
+        for list_mv in lists.into_iter().flatten() {
+            if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
+                return;
+            }
+            let Some(mv) = list_mv else {
+                missing_list1 = true;
+                continue;
+            };
+            let mid_y = (cell.base_r * 4 + cell.bh4 * 2) as i64 - 1;
+            let mid_x = (cell.base_c * 4 + cell.bw4 * 2) as i64 - 1;
+            samples.push([
+                mid_y * 8,
+                mid_x * 8,
+                mid_y * 8 + i64::from(mv.row),
+                mid_x * 8 + i64::from(mv.col),
+            ]);
+        }
+    };
+    let above_sample_stored = |delta_col: i32| -> bool {
+        let col = mi_col + delta_col;
+        if mi_row < 1 || col < 0 || col >= mi_cols {
+            return false;
+        }
+        let sb_mask = block.sb_h4 as i32 - 1;
+        if (mi_row & sb_mask) != 0 {
+            return true;
+        }
+        if col % 2 == 0 {
+            return true;
+        }
+        let src_w4 = grid.get(mi_row - 1, col).map_or(0, |cell| cell.bw4 as i32);
+        if src_w4 == 1 {
+            return false;
+        }
+        col + 1 < mi_cols
+    };
+    let mut do_top_left = true;
+    let mut do_top_right = true;
+    if mi_row > 0 {
+        let col_offset = grid
+            .get(mi_row - 1, mi_col)
+            .map_or(0, |cell| cell.base_c as i32 - mi_col);
+        if col_offset < 0 {
+            do_top_left = false;
+        }
+        let mut i = col_offset;
+        let limit = w4.min(mi_cols - mi_col);
+        while i < limit {
+            let src_w = grid
+                .get(mi_row - 1, mi_col + i)
+                .map_or(1, |cell| (cell.bw4 as i32).max(1));
+            if above_sample_stored(i) {
+                add_sample(&mut samples, -1, i);
+            }
+            i += src_w;
+        }
+        do_top_right = i == w4 && i < (mi_cols - mi_col);
+    }
+    if mi_col > 0 {
+        let row_offset = grid
+            .get(mi_row, mi_col - 1)
+            .map_or(0, |cell| cell.base_r as i32 - mi_row);
+        if row_offset < 0 {
+            do_top_left = false;
+        }
+        let mut i = row_offset;
+        let limit = h4.min(mi_rows - mi_row);
+        while i < limit {
+            let src_h = grid
+                .get(mi_row + i, mi_col - 1)
+                .map_or(1, |cell| (cell.bh4 as i32).max(1));
+            add_sample(&mut samples, i, -1);
+            i += src_h;
+        }
+    }
+    if do_top_left && above_sample_stored(-1) {
+        add_sample(&mut samples, -1, -1);
+    }
+    if do_top_right && w4 <= 16 && above_sample_stored(w4) {
+        add_sample(&mut samples, -1, w4);
+    }
+    if missing_list1 {
+        return WarpSampleCollection::List1MvUnretained;
+    }
+    WarpSampleCollection::Samples(samples)
+}
+
 /// AV2 § 7.12.2 `find_mv_stack` for the spatial-only single-prediction subset.
 pub(super) fn find_mv_stack(
     grid: &NeighbourMvGrid,

@@ -224,7 +224,7 @@ pub(crate) fn resolve_division(num: i64, den: i64, shift: u8) -> i16 {
 /// `DIV_LUT_BITS` bits of `D` after resetting its MSB, and the returned shift is
 /// `get_msb(D) + DIV_LUT_PREC_BITS`. Shared by the IBP DC modifier and the
 /// §7.13.2.9 IBP angular weights process.
-pub(crate) fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
+pub fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
     if den == 0 {
         return Err(ReconError::ArithmeticOverflow {
             context: "intra DC divisor resolution",

@@ -1074,25 +1074,28 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             MotionMode::DeltaWarp
         };
         let warp = match (warp_mode, motion_mode) {
-            (WarpInterMode::WarpNewmv, MotionMode::ExtendWarp) => read_warp_extend_syntax(
-                cdfs,
-                symbols,
-                sequence,
-                core,
-                &neighbour_ctx,
-                mv_config,
-                mv_grid,
-                &block_ctx,
-                &mode_ctx,
-                mi_row,
-                mi_col,
-                n4w,
-                n4h,
-                &stack,
-                mode_ctx.new_mv_context,
-                max_drl_bits_minus_1,
-                tile_offset,
-            )?,
+            (WarpInterMode::WarpNewmv, MotionMode::ExtendWarp | MotionMode::LocalWarp) => {
+                read_warp_extend_syntax(
+                    cdfs,
+                    symbols,
+                    sequence,
+                    core,
+                    &neighbour_ctx,
+                    mv_config,
+                    mv_grid,
+                    &block_ctx,
+                    &mode_ctx,
+                    motion_mode,
+                    mi_row,
+                    mi_col,
+                    n4w,
+                    n4h,
+                    &stack,
+                    mode_ctx.new_mv_context,
+                    max_drl_bits_minus_1,
+                    tile_offset,
+                )?
+            }
             (WarpInterMode::WarpNewmv, _) => read_warp_newmv_delta_syntax(
                 cdfs,
                 symbols,
@@ -2194,12 +2197,7 @@ fn read_warp_newmv_motion_mode_syntax(
             ctx: neighbour_ctx.use_local_warp_ctx(),
         })?
     {
-        return Err(inter_cap!(
-            "inter_warp_localwarp_unimplemented",
-            tile_offset,
-            "inter.local_warp prediction",
-            "5.20.7.14"
-        ));
+        return Ok(MotionMode::LocalWarp);
     }
     Ok(MotionMode::DeltaWarp)
 }
@@ -2212,6 +2210,96 @@ const fn warp_round2(value: i64, n: u32) -> i64 {
         return value;
     }
     (value + (1i64 << (n - 1))) >> n
+}
+
+/// AV2 § 3 `LS_MV_MAX`.
+const LS_MV_MAX: i64 = 256;
+
+/// § 7.13.3.23 `ls_product`.
+const fn ls_product(a: i64, b: i64) -> i64 {
+    ((a * b) >> 2) + (a + b)
+}
+
+/// § 7.13.3.23 warp estimation: integer least-squares fit over the § 7.12.3
+/// warp samples, falling back to a pure translation when the determinant is
+/// zero.
+#[allow(clippy::too_many_arguments)]
+fn local_warp_estimation(
+    samples: &[[i64; 4]],
+    mv: Mv,
+    mi_row: usize,
+    mi_col: usize,
+    n4w: usize,
+    n4h: usize,
+    tile_offset: ByteOffset,
+) -> Result<[i64; 6]> {
+    let geometry_error = || warp_model_error(tile_offset);
+    let mid_y = i64::try_from(mi_row * 4 + n4h * 2).map_err(|_| geometry_error())? - 1;
+    let mid_x = i64::try_from(mi_col * 4 + n4w * 2).map_err(|_| geometry_error())? - 1;
+    let suy = mid_y * 8;
+    let sux = mid_x * 8;
+    let duy = suy + i64::from(mv.row);
+    let dux = sux + i64::from(mv.col);
+    let mut a = [[0i64; 2]; 2];
+    let mut bx = [0i64; 2];
+    let mut by = [0i64; 2];
+    for sample in samples {
+        let sy = sample[0] - suy;
+        let sx = sample[1] - sux;
+        let dy = sample[2] - duy;
+        let dx = sample[3] - dux;
+        if (sx - dx).abs() < LS_MV_MAX && (sy - dy).abs() < LS_MV_MAX {
+            a[0][0] += ls_product(sx, sx) + 8;
+            a[0][1] += ls_product(sx, sy) + 4;
+            a[1][1] += ls_product(sy, sy) + 8;
+            bx[0] += ls_product(sx, dx) + 8;
+            bx[1] += ls_product(sy, dx) + 4;
+            by[0] += ls_product(sx, dy) + 4;
+            by[1] += ls_product(sy, dy) + 8;
+        }
+    }
+    let det = a[0][0] * a[1][1] - a[0][1] * a[0][1];
+    let mut params = IDENTITY_WARP_PARAMS;
+    if det == 0 {
+        set_warp_translation(&mut params, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
+        return Ok(params);
+    }
+    let (raw_shift, factor) =
+        splot_recon::resolve_divisor(det.unsigned_abs()).map_err(|_| geometry_error())?;
+    let div_factor = if det < 0 {
+        -i64::from(factor)
+    } else {
+        i64::from(factor)
+    };
+    let mut div_shift = i64::from(raw_shift) - i64::from(WARPEDMODEL_PREC_BITS);
+    let mut div_factor = div_factor;
+    if div_shift < 0 {
+        div_factor <<= -div_shift;
+        div_shift = 0;
+    }
+    let shift = u32::try_from(div_shift).map_err(|_| geometry_error())?;
+    let diag = |v: i64| -> i64 {
+        let product = i128::from(v) * i128::from(div_factor);
+        let magnitude = product.unsigned_abs();
+        let rounded = if shift == 0 {
+            magnitude
+        } else {
+            (magnitude + (1u128 << (shift - 1))) >> shift
+        };
+        let signed = if product < 0 {
+            -i128::try_from(rounded).unwrap_or(i128::MAX)
+        } else {
+            i128::try_from(rounded).unwrap_or(i128::MAX)
+        };
+        i64::try_from(signed.clamp(i128::from(i32::MIN), i128::from(i32::MAX))).unwrap_or_default()
+    };
+    params[2] = diag(a[1][1] * bx[0] - a[0][1] * bx[1]);
+    params[3] = diag(-a[0][1] * bx[0] + a[0][0] * bx[1]);
+    params[4] = diag(a[1][1] * by[0] - a[0][1] * by[1]);
+    params[5] = diag(-a[0][1] * by[0] + a[0][0] * by[1]);
+    reduce_warp_model(&mut params);
+    set_warp_translation(&mut params, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
+    Ok(params)
 }
 
 /// § 7.13.3.24 extend-warp estimation: extends the base neighbour's warp
@@ -2380,9 +2468,10 @@ fn inter_mvd_sign_derivation_allowed(
         && config.precision() < MV_PRECISION_QUARTER_PEL
 }
 
-/// § 5.20.7.13 EXTENDWARP tail: DRL, block precision, and the NEWMV MVD —
-/// no `warp_idx` loop and no `read_warp_delta` — then the § 7.13.3.24
-/// extension of the base neighbour's model through the signalled MV.
+/// § 5.20.7.13 EXTENDWARP / LOCALWARP tail: DRL, block precision, and the
+/// NEWMV MVD — no `warp_idx` loop and no `read_warp_delta` — then the
+/// mode's model derivation (§ 7.13.3.24 extension or § 7.13.3.23 least
+/// squares over the § 7.12.3 warp samples).
 #[allow(clippy::too_many_arguments)]
 fn read_warp_extend_syntax(
     cdfs: &mut TileCdfSubset,
@@ -2394,6 +2483,7 @@ fn read_warp_extend_syntax(
     mv_grid: &NeighbourMvGrid,
     block_ctx: &MvBlockContext,
     mode_ctx: &ModeContext,
+    motion_mode: MotionMode,
     mi_row: usize,
     mi_col: usize,
     n4w: usize,
@@ -2429,19 +2519,35 @@ fn read_warp_extend_syntax(
         row: mv_clamp_to_integer(pred_mv.row + diff.row),
         col: mv_clamp_to_integer(pred_mv.col + diff.col),
     };
-    let warp_params = extend_warp_estimation(
-        mv_grid,
-        block_ctx,
-        mode_ctx,
-        stack,
-        ref_mv_idx,
-        mv,
-        mi_row,
-        mi_col,
-        n4w,
-        n4h,
-        tile_offset,
-    )?;
+    let warp_params = if motion_mode == MotionMode::LocalWarp {
+        match super::find_mv_stack::find_warp_samples(mv_grid, block_ctx) {
+            super::find_mv_stack::WarpSampleCollection::Samples(samples) => {
+                local_warp_estimation(&samples, mv, mi_row, mi_col, n4w, n4h, tile_offset)?
+            }
+            super::find_mv_stack::WarpSampleCollection::List1MvUnretained => {
+                return Err(inter_cap!(
+                    "inter_warp_sample_list1_mv_unretained",
+                    tile_offset,
+                    "inter.local_warp.second_list_neighbour_mv",
+                    "7.12.3.2"
+                ));
+            }
+        }
+    } else {
+        extend_warp_estimation(
+            mv_grid,
+            block_ctx,
+            mode_ctx,
+            stack,
+            ref_mv_idx,
+            mv,
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            tile_offset,
+        )?
+    };
     Ok(ParsedWarpNewmv {
         mv,
         warp_params,

@@ -79,6 +79,7 @@ pub use intra::{
     predict_intra_dc_square_value,
 };
 pub use intra_basic::{IntraPaethEdge, IntraPaethEdges, predict_intra_paeth_rect_into};
+pub use intra_dc_math::resolve_divisor;
 pub use intra_dc_subsampled::{
     predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
 };
