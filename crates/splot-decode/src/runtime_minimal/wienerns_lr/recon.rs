@@ -830,20 +830,19 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
     /// Applies the currently wired post-tile filters, then freezes the sink
     /// workspace for runtime output.
-    pub(in crate::runtime_minimal) fn into_filtered_frame(
-        mut self,
-        core: &splot_core::headers::frame::FrameHeaderCore,
-        deblock_quant_deltas: super::super::deblock::DeblockQuantDeltas,
+    /// Completes the intra reconstruction (pending chroma replays + the
+    /// full-recon coverage check) before the final filter chain runs.
+    pub(in crate::runtime_minimal) fn finish_intra_reconstruction(
+        &mut self,
         offset: ByteOffset,
-    ) -> Result<DecodedFrame<T>> {
+    ) -> Result<()> {
         self.replay_pending_chroma_transforms()?;
-        self.ensure_full_recon_coverage_complete(offset)?;
-        self.apply_final_filters_and_freeze(core, deblock_quant_deltas, offset)
+        self.ensure_full_recon_coverage_complete(offset)
     }
 
     /// Runs the §7.2 in-loop filter chain (deblock → CDEF → CCSO → LR) over
     /// the reconstructed workspace and freezes the filtered frame.
-    pub(in crate::runtime_minimal) fn apply_final_filters_and_freeze(
+    pub(in crate::runtime_minimal) fn into_filtered_frame(
         mut self,
         core: &splot_core::headers::frame::FrameHeaderCore,
         deblock_quant_deltas: super::super::deblock::DeblockQuantDeltas,

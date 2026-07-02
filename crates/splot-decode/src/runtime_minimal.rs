@@ -406,8 +406,10 @@ fn decode_wienerns_lr_selectable_full_recon_key_frame(
         core,
         true,
     )?;
+    let mut sink = region.sink;
+    sink.finish_intra_reconstruction(frame_envelope.offset)?;
     Ok(MinimalRuntimeFrame {
-        frame: MinimalRuntimeDecodedFrame::Ten(region.sink.into_filtered_frame(
+        frame: MinimalRuntimeDecodedFrame::Ten(sink.into_filtered_frame(
             core,
             deblock_quant_deltas(sequence, core),
             frame_envelope.offset,

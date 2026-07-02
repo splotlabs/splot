@@ -341,7 +341,7 @@ pub(super) fn decode_minimal_inter_frame<T: ReconSample>(
     filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
     filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
     filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
-    let frame = filter_sink.apply_final_filters_and_freeze(
+    let frame = filter_sink.into_filtered_frame(
         &core,
         super::deblock_quant_deltas(sequence, &core),
         offset,

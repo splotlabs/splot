@@ -140,6 +140,7 @@ pub(super) struct InterFilterInputs {
 /// Records § 7.17 deblock geometry for one inter block: per decoded transform
 /// when residual was read, or the § 5.20.6.2 `Max_Tx_Size_Rect` tiling for a
 /// skipped block (which reads no transform symbols).
+#[allow(clippy::too_many_arguments)]
 fn record_inter_deblock_geometry(
     deblock_blocks: &mut Vec<super::super::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<super::super::deblock::DeblockBlock>; 2],
