@@ -550,6 +550,12 @@ pub(crate) enum TileCdfSelector {
         index: usize,
         ctx: usize,
     },
+    UseExtendWarp {
+        ctx: usize,
+    },
+    UseLocalWarp {
+        ctx: usize,
+    },
     UseMostProbablePrecision {
         ctx: usize,
     },
@@ -661,6 +667,8 @@ pub(crate) enum TileCdfArray {
     CompRef1,
     CompRef0,
     UseAmvd,
+    UseExtendWarp,
+    UseLocalWarp,
     UseMostProbablePrecision,
     PbMvPrecision,
     ExplicitBawp,
@@ -766,6 +774,8 @@ crate::impl_reason_labels!(TileCdfArray {
     CompRef0 => "TileCompRef0Cdf",
     CompRef1 => "TileCompRef1Cdf",
     UseAmvd => "TileUseAmvdCdf",
+    UseExtendWarp => "TileUseExtendWarpCdf",
+    UseLocalWarp => "TileUseLocalWarpCdf",
     UseMostProbablePrecision => "TileUseMostProbablePrecisionCdf",
     PbMvPrecision => "TilePbMvPrecisionCdf",
     ExplicitBawp => "TileExplicitBawpCdf",
@@ -1402,6 +1412,12 @@ macro_rules! tile_cdf_row {
             TileCdfSelector::UseAmvd { index, ctx } => $self
                 .block
                 .$block_row(BlockCdfSelector::UseAmvd { index, ctx }),
+            TileCdfSelector::UseExtendWarp { ctx } => $self
+                .block
+                .$block_row(BlockCdfSelector::UseExtendWarp { ctx }),
+            TileCdfSelector::UseLocalWarp { ctx } => $self
+                .block
+                .$block_row(BlockCdfSelector::UseLocalWarp { ctx }),
             TileCdfSelector::UseMostProbablePrecision { ctx } => $self
                 .block
                 .$block_row(BlockCdfSelector::UseMostProbablePrecision { ctx }),

@@ -49,8 +49,9 @@ use crate::tile_payload::{
     GeneralIntraMultiblockError, GeneralIntraTreeWalkError, IsCflContext, LumaCoeffBlock,
     TileBlockDecodedState, TileCdfSelector, TileCdfSubset, TileCoeffContextState, TileFscModeState,
     TileIntraJointModeState, TilePartitionTraversalError, TileUsesMrlsState,
-    TransformToolResidualPolicy, chroma_subsampling, decode_general_intra_multiblock_tree,
-    decode_general_intra_plane_coeffs, frame_mi_dimensions, get_plane_residual_size,
+    TransformToolResidualPolicy, chroma_subsampling,
+    decode_general_intra_multiblock_tree_with_lr_source_blocks, decode_general_intra_plane_coeffs,
+    frame_mi_dimensions, get_plane_residual_size,
 };
 
 const INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE: usize = 3;
@@ -125,6 +126,93 @@ enum WarpInterMode {
     WarpNewmv,
 }
 
+/// Per-frame filter state the inter block walk hands to the shared § 7.2
+/// final filter chain.
+pub(super) struct InterFilterInputs {
+    pub(super) deblock_blocks: Vec<super::super::deblock::DeblockBlock>,
+    pub(super) chroma_deblock_blocks: [Vec<super::super::deblock::DeblockBlock>; 2],
+    pub(super) cdef_grid: super::super::cdef::CdefUnitGrid,
+    pub(super) ccso_grid: Option<super::super::ccso::CcsoUnitGrid>,
+    pub(super) lr_source_blocks: Vec<crate::tile_payload::WienerNsLrSourceBlock>,
+    pub(super) lr_unit_filters: Vec<crate::tile_payload::WienerNsLrUnitFilter>,
+}
+
+/// Records § 7.17 deblock geometry for one inter block: per decoded transform
+/// when residual was read, or the § 5.20.6.2 `Max_Tx_Size_Rect` tiling for a
+/// skipped block (which reads no transform symbols).
+fn record_inter_deblock_geometry(
+    deblock_blocks: &mut Vec<super::super::deblock::DeblockBlock>,
+    chroma_deblock_blocks: &mut [Vec<super::super::deblock::DeblockBlock>; 2],
+    frontier: &DecodeBlockFrontier,
+    n4w: usize,
+    n4h: usize,
+    residual: Option<&InterResidual>,
+    qindex: u32,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    let Some(residual) = residual else {
+        let tx_size = self::residual::max_tx_size(frontier.b_size.index(), tile_offset)?;
+        let tx_w4 = self::residual::tx_size_dimension("Tx_Width", &TX_WIDTH, tx_size, tile_offset)?
+            / MI_SIZE;
+        let tx_h4 =
+            self::residual::tx_size_dimension("Tx_Height", &TX_HEIGHT, tx_size, tile_offset)?
+                / MI_SIZE;
+        for row4 in (0..n4h).step_by(tx_h4.max(1)) {
+            for col4 in (0..n4w).step_by(tx_w4.max(1)) {
+                deblock_blocks.push(super::super::deblock::DeblockBlock {
+                    r: frontier.r + row4,
+                    c: frontier.c + col4,
+                    n4w: tx_w4,
+                    n4h: tx_h4,
+                    luma_tx: tx_size,
+                    chroma_tx:
+                        super::super::wienerns_lr::fixed_largest_420_chroma_tx_size_from_luma_4x4(
+                            tx_w4, tx_h4,
+                        ),
+                    qindex,
+                    skip: true,
+                });
+            }
+        }
+        return Ok(());
+    };
+    for block in &residual.blocks {
+        match block.plane {
+            ReconPlaneId::Y => {
+                let tx_w4 = (1usize << block.log2_width) / MI_SIZE;
+                let tx_h4 = (1usize << block.log2_height) / MI_SIZE;
+                deblock_blocks.push(super::super::deblock::DeblockBlock {
+                    r: block.y / MI_SIZE,
+                    c: block.x / MI_SIZE,
+                    n4w: tx_w4,
+                    n4h: tx_h4,
+                    luma_tx: block.tx_size,
+                    chroma_tx:
+                        super::super::wienerns_lr::fixed_largest_420_chroma_tx_size_from_luma_4x4(
+                            tx_w4, tx_h4,
+                        ),
+                    qindex,
+                    skip: false,
+                });
+            }
+            ReconPlaneId::U | ReconPlaneId::V => {
+                if let Some((plane_index, record)) =
+                    super::super::wienerns_lr::chroma_transform_deblock_block(
+                        block.plane,
+                        block.x,
+                        block.y,
+                        block.tx_size,
+                        qindex,
+                    )
+                {
+                    chroma_deblock_blocks[plane_index].push(record);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_inter_blocks<T: ReconSample>(
     plan: &DecodeStreamPlan,
@@ -147,7 +235,7 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
     initial_cdfs: FrameCdfSubset,
-) -> Result<FrameCdfSubset> {
+) -> Result<(FrameCdfSubset, InterFilterInputs)> {
     let offset = frame_envelope.offset;
     let mut tile_plan = super::super::derive_inter_tile_plan(
         plan,
@@ -231,10 +319,12 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
     let frame_is_switch = core.frame_type == Some(FrameType::Switch);
 
     let mut deblock_blocks: Vec<super::super::deblock::DeblockBlock> = Vec::new();
+    let mut chroma_deblock_blocks: [Vec<super::super::deblock::DeblockBlock>; 2] =
+        [Vec::new(), Vec::new()];
     let mut decoded_any = false;
     let limits = options.limits();
     trace_symbol_frame_marker(offset);
-    let symbols = decode_general_intra_multiblock_tree(
+    let walk = decode_general_intra_multiblock_tree_with_lr_source_blocks(
         tile,
         sequence,
         core,
@@ -279,6 +369,7 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
                 block_decoded,
                 workspace,
                 &mut deblock_blocks,
+                &mut chroma_deblock_blocks,
                 luma_use_tcq,
                 residual_use_ddt,
                 ref_frame_idx,
@@ -297,6 +388,11 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
     )
     .map_err(|error| map_inter_multiblock_error(error, tile_offset))?;
 
+    let crate::tile_payload::GeneralIntraMultiblockOutput {
+        symbols,
+        active_source_blocks,
+        unit_filters,
+    } = walk;
     symbols.exit_symbol().map_err(|_| {
         if reference_select {
             compound_cap!(
@@ -324,7 +420,15 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
         ));
     }
     tile.apply_frame_end_cdf_update();
-    Ok(tile.frame_cdfs())
+    let filter_inputs = InterFilterInputs {
+        deblock_blocks,
+        chroma_deblock_blocks,
+        cdef_grid: cdef_state.into_grid(tile_offset)?,
+        ccso_grid: ccso_state.into_grid(tile_offset)?,
+        lr_source_blocks: active_source_blocks,
+        lr_unit_filters: unit_filters,
+    };
+    Ok((tile.frame_cdfs(), filter_inputs))
 }
 
 fn trace_symbol_frame_marker(offset: ByteOffset) {
@@ -380,6 +484,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
     block_decoded: &TileBlockDecodedState,
     workspace: &mut CurrentFrameWorkspace<T>,
     deblock_blocks: &mut Vec<super::super::deblock::DeblockBlock>,
+    chroma_deblock_blocks: &mut [Vec<super::super::deblock::DeblockBlock>; 2],
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     ref_frame_idx: &[u32],
@@ -561,6 +666,16 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                     tile_offset,
                 )?)
             };
+            record_inter_deblock_geometry(
+                deblock_blocks,
+                chroma_deblock_blocks,
+                frontier,
+                n4w,
+                n4h,
+                residual.as_ref(),
+                block_qindex,
+                tile_offset,
+            )?;
             if let Some(residual) = residual.as_ref() {
                 super::add_inter_residual_to_workspace(
                     workspace,
@@ -798,6 +913,16 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             BlockPrecisionRecord::most_probable(frame_mv_precision(core, tile_offset)?),
         );
         reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
+        record_inter_deblock_geometry(
+            deblock_blocks,
+            chroma_deblock_blocks,
+            frontier,
+            n4w,
+            n4h,
+            None,
+            block_qindex,
+            tile_offset,
+        )?;
         let placed = placed_block(InterBlock {
             ref_frame0: compound.ref_frame0,
             ref_frame1: Some(compound.ref_frame1),
@@ -918,6 +1043,16 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             );
         }
         let mv_config = inter_mv_read_config(core, tile_offset)?;
+        if warp_mode == WarpInterMode::WarpNewmv {
+            read_warp_newmv_motion_mode_syntax(
+                cdfs,
+                symbols,
+                core,
+                &neighbour_ctx,
+                mode_ctx.warp_sample_found,
+                tile_offset,
+            )?;
+        }
         let warp = match warp_mode {
             WarpInterMode::WarpNewmv => read_warp_newmv_delta_syntax(
                 cdfs,
@@ -1000,6 +1135,16 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
             None
         };
+        record_inter_deblock_geometry(
+            deblock_blocks,
+            chroma_deblock_blocks,
+            frontier,
+            n4w,
+            n4h,
+            residual.as_ref(),
+            delta_q_state.qindex_u32(),
+            tile_offset,
+        )?;
         if std::env::var_os("SPLOT_TRACE_INTER_BLOCK_MODE").is_some() {
             eprintln!(
                 "inter block warp r={mi_row} c={mi_col} mode={warp_mode:?} ref={ref_frame0} ref_mv_idx={} ref_warp_idx={} precision={} warpmv_with_mvd={} mv=({}, {}) params={:?} warp_inter_intra={:?} residual_blocks={} checkpoint={:?}",
@@ -1309,6 +1454,16 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
         None
     };
+    record_inter_deblock_geometry(
+        deblock_blocks,
+        chroma_deblock_blocks,
+        frontier,
+        n4w,
+        n4h,
+        residual.as_ref(),
+        delta_q_state.qindex_u32(),
+        tile_offset,
+    )?;
     if trace_first_row {
         eprintln!(
             "inter block r={mi_row} c={mi_col} b={} skip={skip} ref={ref_frame0} mode={single_mode} use_amvd={use_amvd} mv=({}, {}) residual_blocks={} checkpoint={:?}",
@@ -1808,6 +1963,62 @@ fn read_warp_inter_mode_syntax(
     } else {
         WarpInterMode::Warpmv
     }))
+}
+
+/// § 5.20.7.14 `read_motion_mode` WARP_NEWMV branch: the `use_extend_warp`
+/// and `use_local_warp` reads, gated on § 7.11.4 `WarpSampleFound[ 0 ]` and
+/// the frame-enabled motion modes. EXTENDWARP / LOCALWARP prediction is
+/// beyond the frontier, so a set flag defers; both zero resolves DELTAWARP.
+fn read_warp_newmv_motion_mode_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    core: &FrameHeaderCore,
+    neighbour_ctx: &BlockNeighbourContext,
+    warp_sample_found: bool,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    let frame_modes = core
+        .inter
+        .as_ref()
+        .and_then(|inter| inter.frame_enabled_motion_modes)
+        .unwrap_or([false; splot_core::headers::frame::MOTION_MODES]);
+    if warp_sample_found && frame_modes[splot_core::headers::frame::EXTENDWARP] {
+        let use_extend_warp = cdfs
+            .read_block_symbol_trace(
+                TileCdfSelector::UseExtendWarp {
+                    ctx: neighbour_ctx.use_extend_warp_ctx(),
+                },
+                symbols,
+            )
+            .map_err(|_| symbol_read_error(tile_offset))?;
+        if use_extend_warp.get() != 0 {
+            return Err(inter_cap!(
+                "inter_warp_extend_unimplemented",
+                tile_offset,
+                "inter.warp_extend prediction",
+                "5.20.7.14"
+            ));
+        }
+    }
+    if warp_sample_found && frame_modes[splot_core::headers::frame::LOCALWARP] {
+        let use_local_warp = cdfs
+            .read_block_symbol_trace(
+                TileCdfSelector::UseLocalWarp {
+                    ctx: neighbour_ctx.use_local_warp_ctx(),
+                },
+                symbols,
+            )
+            .map_err(|_| symbol_read_error(tile_offset))?;
+        if use_local_warp.get() != 0 {
+            return Err(inter_cap!(
+                "inter_warp_localwarp_unimplemented",
+                tile_offset,
+                "inter.local_warp prediction",
+                "5.20.7.14"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -25,15 +25,15 @@ use splot_core::tables::cdf::{
     DEFAULT_PALETTE_SIZE_8_Y_COLOR_CDF, DEFAULT_PALETTE_Y_MODE_CDF, DEFAULT_PALETTE_Y_SIZE_CDF,
     DEFAULT_PB_MV_PRECISION_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF,
     DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_AMVD_CDF,
-    DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF,
-    DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_WARP_DELTA_PARAM_HIGH_CDF, DEFAULT_WARP_DELTA_PARAM_LOW_CDF,
-    DEFAULT_WARP_DELTA_PARAM_SIGN_CDF, DEFAULT_WARP_IDX_CDF, DEFAULT_WARP_INTER_INTRA_CDF,
-    DEFAULT_WARP_MV_CDF, DEFAULT_WARP_PRECISION_CDF, DEFAULT_WARP_WITH_MVD_CDF,
-    DEFAULT_WEDGE_ANGLE_CDF, DEFAULT_WEDGE_DIST1_CDF, DEFAULT_WEDGE_DIST2_CDF,
-    DEFAULT_WEDGE_INTER_INTRA_CDF, DEFAULT_WEDGE_QUAD_CDF, DEFAULT_WIENER_NS_BASE_CDF,
-    DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
-    DEFAULT_Y_MODE_OFFSET_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_EXTEND_WARP_CDF,
+    DEFAULT_USE_LOCAL_WARP_CDF, DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF, DEFAULT_USE_WIENER_NS_CDF,
+    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WARP_DELTA_PARAM_HIGH_CDF,
+    DEFAULT_WARP_DELTA_PARAM_LOW_CDF, DEFAULT_WARP_DELTA_PARAM_SIGN_CDF, DEFAULT_WARP_IDX_CDF,
+    DEFAULT_WARP_INTER_INTRA_CDF, DEFAULT_WARP_MV_CDF, DEFAULT_WARP_PRECISION_CDF,
+    DEFAULT_WARP_WITH_MVD_CDF, DEFAULT_WEDGE_ANGLE_CDF, DEFAULT_WEDGE_DIST1_CDF,
+    DEFAULT_WEDGE_DIST2_CDF, DEFAULT_WEDGE_INTER_INTRA_CDF, DEFAULT_WEDGE_QUAD_CDF,
+    DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF,
+    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_OFFSET_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 mod mv;
@@ -96,6 +96,8 @@ const INTERP_FILTER_CONTEXTS: usize = 16;
 const AMVD_MODE_CONTEXTS: usize = 9;
 const AMVD_CONTEXTS: usize = 3;
 const MOST_PROBABLE_PRECISION_CONTEXTS: usize = 3;
+const USE_EXTEND_WARP_CONTEXTS: usize = 3;
+const USE_LOCAL_WARP_CONTEXTS: usize = 4;
 const PB_MV_PRECISION_CONTEXTS: usize = 2;
 const PB_MV_PRECISION_FRAME_CONTEXTS: usize = 3;
 const PB_MV_PRECISION_CDF_ROW_LEN: usize = 4;
@@ -177,6 +179,8 @@ pub(crate) type CompRef0CdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1];
 pub(crate) type CompRef1CdfRows =
     [[[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; COMP_REF1_BIT_TYPES]; REF_CONTEXTS];
 pub(crate) type UseAmvdCdfRows = [[[i32; CDF_ROW_LEN]; AMVD_CONTEXTS]; AMVD_MODE_CONTEXTS];
+pub(crate) type UseExtendWarpCdfRows = [[i32; CDF_ROW_LEN]; USE_EXTEND_WARP_CONTEXTS];
+pub(crate) type UseLocalWarpCdfRows = [[i32; CDF_ROW_LEN]; USE_LOCAL_WARP_CONTEXTS];
 pub(crate) type UseMostProbablePrecisionCdfRows =
     [[i32; CDF_ROW_LEN]; MOST_PROBABLE_PRECISION_CONTEXTS];
 pub(crate) type PbMvPrecisionCdfRows = [[[i32; PB_MV_PRECISION_CDF_ROW_LEN];
@@ -387,6 +391,12 @@ pub(crate) enum BlockCdfSelector {
         index: usize,
         ctx: usize,
     },
+    UseExtendWarp {
+        ctx: usize,
+    },
+    UseLocalWarp {
+        ctx: usize,
+    },
     UseMostProbablePrecision {
         ctx: usize,
     },
@@ -520,6 +530,8 @@ pub(crate) struct BlockCdfRows {
     read_mv: MvCdfRows,
     pub(super) interp_filter: InterpFilterCdfRows,
     pub(super) use_amvd: UseAmvdCdfRows,
+    pub(super) use_extend_warp: UseExtendWarpCdfRows,
+    pub(super) use_local_warp: UseLocalWarpCdfRows,
     pub(super) use_most_probable_precision: UseMostProbablePrecisionCdfRows,
     pub(super) pb_mv_precision: PbMvPrecisionCdfRows,
     pub(super) use_bawp: UseBawpCdfRow,
@@ -919,6 +931,22 @@ macro_rules! block_cdf_row {
                 )?;
                 block_row_slice!(bank, ctx, "ctx", TileCdfArray::UseAmvd, $get, $as_slice)
             }
+            BlockCdfSelector::UseExtendWarp { ctx } => block_row_slice!(
+                $self.use_extend_warp,
+                ctx,
+                "ctx",
+                TileCdfArray::UseExtendWarp,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::UseLocalWarp { ctx } => block_row_slice!(
+                $self.use_local_warp,
+                ctx,
+                "ctx",
+                TileCdfArray::UseLocalWarp,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::UseMostProbablePrecision { ctx } => block_row_slice!(
                 $self.use_most_probable_precision,
                 ctx,
@@ -1214,6 +1242,8 @@ macro_rules! block_cdf_count_rows {
         $read_mv
         $rows!(interp_filter);
         $rows!(use_amvd.flatten());
+        $rows!(use_extend_warp);
+        $rows!(use_local_warp);
         $rows!(use_most_probable_precision);
         $rows!(pb_mv_precision.flatten());
         $row!(use_bawp);
@@ -1310,6 +1340,8 @@ impl BlockCdfRows {
             read_mv: MvCdfRows::from_defaults(),
             interp_filter: DEFAULT_INTERP_FILTER_CDF,
             use_amvd: DEFAULT_USE_AMVD_CDF,
+            use_extend_warp: DEFAULT_USE_EXTEND_WARP_CDF,
+            use_local_warp: DEFAULT_USE_LOCAL_WARP_CDF,
             use_most_probable_precision: DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF,
             pb_mv_precision: DEFAULT_PB_MV_PRECISION_CDF,
             use_bawp: DEFAULT_USE_BAWP_CDF,

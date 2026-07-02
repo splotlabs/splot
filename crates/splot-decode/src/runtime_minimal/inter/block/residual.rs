@@ -477,6 +477,7 @@ fn push_inter_residual_block(
         plane,
         x: x4 * MI_SIZE,
         y: y4 * MI_SIZE,
+        tx_size,
         log2_width,
         log2_height,
         coeffs,
@@ -537,7 +538,7 @@ pub(super) fn transform_tool_residual_policy(
     )
 }
 
-fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<usize> {
+pub(super) fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<usize> {
     table_value_usize(
         "Max_Tx_Size_Rect",
         &MAX_TX_SIZE_RECT,
@@ -546,7 +547,7 @@ fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<usize> {
     )
 }
 
-fn tx_size_dimension(
+pub(super) fn tx_size_dimension(
     table: &'static str,
     values: &[i32],
     tx_size: usize,

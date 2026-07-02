@@ -301,7 +301,7 @@ pub(super) fn decode_minimal_inter_frame<T: ReconSample>(
         .as_ref()
         .is_some_and(|tq| tq.enable_inter_ddt);
 
-    let frame_cdfs = decode_inter_blocks(
+    let (frame_cdfs, filter_inputs) = decode_inter_blocks(
         plan,
         candidate,
         bytes,
@@ -327,7 +327,25 @@ pub(super) fn decode_minimal_inter_frame<T: ReconSample>(
         initial_cdfs,
     )?;
 
-    let frame = workspace.freeze()?;
+    let mut filter_sink = super::wienerns_lr::recon_final_filter_sink(
+        workspace,
+        frame_width as usize,
+        frame_height as usize,
+        bit_depth,
+    );
+    filter_sink.set_deblock_blocks(
+        filter_inputs.deblock_blocks,
+        filter_inputs.chroma_deblock_blocks,
+    );
+    filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
+    filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
+    filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
+    filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
+    let frame = filter_sink.apply_final_filters_and_freeze(
+        &core,
+        super::deblock_quant_deltas(sequence, &core),
+        offset,
+    )?;
 
     Ok((frame, core, frame_cdfs))
 }
@@ -714,6 +732,7 @@ pub(super) struct InterResidualBlock {
     pub(super) plane: ReconPlaneId,
     pub(super) x: usize,
     pub(super) y: usize,
+    pub(super) tx_size: usize,
     pub(super) log2_width: u32,
     pub(super) log2_height: u32,
     pub(super) coeffs: crate::tile_payload::LumaCoeffBlock,
@@ -882,39 +901,31 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
-    let unsupported_tools =
-        core.quantization_params
-            .is_none_or(|quant| quant.base_q_idx == 0)
-            || core
-                .segmentation_params
-                .as_ref()
-                .is_none_or(|seg| seg.segmentation_enabled)
-            || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
-            || core
-                .delta_q_params
-                .is_none_or(|delta| delta.delta_q_present)
-            || core
-                .lossless_info
-                .as_ref()
-                .is_none_or(|lossless| lossless.coded_lossless)
-            || sequence.inter.is_none()
-            || core
-                .deblocking_filter_params
-                .as_ref()
-                .is_none_or(|filter| filter.apply_deblocking_filter != [false; 4])
-            || core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable)
-            || core
-                .cdef_params
-                .as_ref()
-                .is_none_or(|cdef| cdef.cdef_frame_enable)
-            || core.lr_params.as_ref().is_none_or(|lr| lr.uses_lr)
-            || core.ccso_params.as_ref().is_none_or(|ccso| {
-                ccso.ccso_frame_flag.unwrap_or(false) || !ccso.planes.is_empty()
-            })
-            || core
-                .inter_tail
-                .as_ref()
-                .is_none_or(|tail| tail.apply_grain || tail.skip_mode_present);
+    let unsupported_tools = core
+        .quantization_params
+        .is_none_or(|quant| quant.base_q_idx == 0)
+        || core
+            .segmentation_params
+            .as_ref()
+            .is_none_or(|seg| seg.segmentation_enabled)
+        || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
+        || core
+            .delta_q_params
+            .is_none_or(|delta| delta.delta_q_present)
+        || core
+            .lossless_info
+            .as_ref()
+            .is_none_or(|lossless| lossless.coded_lossless)
+        || sequence.inter.is_none()
+        || core.deblocking_filter_params.is_none()
+        || core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable)
+        || core.cdef_params.is_none()
+        || core.lr_params.is_none()
+        || core.ccso_params.is_none()
+        || core
+            .inter_tail
+            .as_ref()
+            .is_none_or(|tail| tail.apply_grain || tail.skip_mode_present);
     if std::env::var_os("SPLOT_TRACE_INTER_FRAME_TOOLS").is_some() {
         eprintln!(
             "inter tools offset={} flex_mvres={:?} allow_tcq={:?} inter_ddt={:?} base_q={:?} segmentation={:?} qmatrix={:?} delta_q={:?} lossless={:?} deblock={:?} gdf={:?} cdef={:?} lr={:?} ccso={:?} tail={:?}",

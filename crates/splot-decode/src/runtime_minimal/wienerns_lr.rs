@@ -50,7 +50,18 @@ mod recon;
 mod source_read_math;
 pub(in crate::runtime_minimal) mod tx_records;
 
+pub(in crate::runtime_minimal) use self::recon::chroma_transform_deblock_block;
 pub(super) use self::recon::reconstruct_ac0ej3_selectable_intra_region;
+
+/// Wraps a reconstructed workspace in the shared § 7.2 final-filter sink.
+pub(in crate::runtime_minimal) fn recon_final_filter_sink<T: splot_recon::ReconSample>(
+    workspace: splot_recon::CurrentFrameWorkspace<T>,
+    luma_width: usize,
+    luma_height: usize,
+    bit_depth: splot_recon::BitDepth,
+) -> recon::WienerNsLrReconSink<T> {
+    recon::WienerNsLrReconSink::for_final_filtering(workspace, luma_width, luma_height, bit_depth)
+}
 #[cfg(test)]
 pub(super) use self::recon::{FullReconLumaLeaf, WienerNsLrReconSink};
 use self::tx_records::WienerNsLrLiveTransformRecordHandoff;
@@ -1008,7 +1019,10 @@ fn fixed_largest_tx_size_from_4x4(n4w: usize, n4h: usize) -> Option<usize> {
     tx_size_from_log2(w_log2, h_log2)
 }
 
-fn fixed_largest_420_chroma_tx_size_from_luma_4x4(n4w: usize, n4h: usize) -> Option<usize> {
+pub(in crate::runtime_minimal) fn fixed_largest_420_chroma_tx_size_from_luma_4x4(
+    n4w: usize,
+    n4h: usize,
+) -> Option<usize> {
     if n4w < 2 || n4h < 2 || !n4w.is_power_of_two() || !n4h.is_power_of_two() {
         return None;
     }
