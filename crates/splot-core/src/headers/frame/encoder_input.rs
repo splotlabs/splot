@@ -51,6 +51,7 @@ impl CoreSeqInterView {
             explicit_ref_frame_map: false,
             enable_bru: false,
             enable_tip: false,
+            enable_tip_output: false,
             seq_max_drl_bits_minus_1: 0,
             allow_frame_max_drl_bits: false,
             enable_flex_mvres: false,

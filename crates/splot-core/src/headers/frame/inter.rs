@@ -316,6 +316,9 @@ pub(crate) struct InterSeqView {
     pub enable_bru: bool,
     /// `enable_tip` (§ 5.4.6).
     pub enable_tip: bool,
+    /// `enable_tip_output` (§ 5.4.6): `EnableTipOutput` for the § 5.18.2
+    /// `tip_frame_mode` derived-versus-coded arm.
+    pub enable_tip_output: bool,
     /// `seq_max_drl_bits_minus_1` (§ 5.4.6).
     pub seq_max_drl_bits_minus_1: u32,
     /// `allow_frame_max_drl_bits` (§ 5.4.6).
@@ -661,8 +664,9 @@ fn parse_inter_reference_region(
 
     let tip_gate = seq.enable_tip && use_ref_frame_mvs && num_total_refs >= 2 && !bru_inactive;
     if tip_gate {
-        // 5.18.2: TIP-output OBUs derive TIP_FRAME_AS_OUTPUT with no coded bit; both TIP arms defer
-        if is_tip || reader.read_flag()? {
+        // 5.18.2: EnableTipOutput TIP OBUs derive TIP_FRAME_AS_OUTPUT uncoded; every TIP arm defers
+        let tip_mode_derived = seq.enable_tip_output && is_tip;
+        if (!tip_mode_derived && reader.read_flag()?) || is_tip {
             control.stop = Some(InterStop::PoisonedReferenceState);
             return Ok(());
         }
@@ -901,6 +905,7 @@ mod tests {
             enable_ref_frame_mvs: true,
             enable_bru: false,
             enable_tip: false,
+            enable_tip_output: false,
             seq_max_drl_bits_minus_1: 0,
             allow_frame_max_drl_bits: false,
             enable_flex_mvres: false,
@@ -1560,6 +1565,7 @@ mod tests {
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
             let mut seq = inter_seq();
             seq.enable_tip = true;
+            seq.enable_tip_output = tip_output_obu;
             let mut ctx = inter_ctx();
             if tip_output_obu {
                 ctx.obu_type = ObuType::RegularTip;

@@ -305,6 +305,9 @@ fn predict_warp_plane<T: ReconSample>(
     if skip_pred {
         for i4 in 0..block_h.div_euclid(4) {
             for j4 in 0..block_w.div_euclid(4) {
+                if plane_x + j4 * 4 >= ref_width || plane_y + i4 * 4 >= ref_height {
+                    continue;
+                }
                 let unit_x = (plane_x + (j4 & !1) * 4) as i64;
                 let unit_y = (plane_y + (i4 & !1) * 4) as i64;
                 let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(

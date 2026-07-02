@@ -1645,7 +1645,7 @@ fn frame_ref_update_from_core(
         width: frame_size.width,
         height: frame_size.height,
         base_q_idx,
-        is_key_or_switch: core.is_key_frame,
+        is_key_or_switch: core.is_key_frame || core.frame_type == Some(FrameType::Switch),
         is_inter,
         adapted,
         frame_cdfs,
