@@ -423,7 +423,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
     fsc_modes: &crate::tile_payload::TileFscModeState,
     palette_state: &crate::tile_payload::TileLumaPaletteState,
     is_cfl_ctx: IsCflContext,
-    block_decoded: &crate::tile_payload::TileBlockDecodedState,
+    block_decoded: &mut crate::tile_payload::TileBlockDecodedState,
     workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     deblock_blocks: &mut Vec<super::deblock::DeblockBlock>,
@@ -483,12 +483,17 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
     } else {
         None
     };
+    let enable_ibp = sequence
+        .intra
+        .as_ref()
+        .is_some_and(|intra| intra.enable_ibp);
     let chroma_tools = general_intra_chroma_tools(sequence, core);
     let cfl_ds_filter_index = sequence_cfl_ds_filter_index(sequence);
     let sb_mib = sequence_sb_mib(sequence);
 
     if frontier.is_chroma_part() {
         return decode_one_general_intra_chroma_part_block::<T>(
+            enable_ibp,
             work_unit,
             symbols,
             frontier,
@@ -643,6 +648,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
         || square_luma_needs_rect_residual_path(&modes, block_ctx, luma_use_tcq, sb_mib)
     {
         return decode_one_general_intra_rect_block::<T>(
+            enable_ibp,
             work_unit,
             symbols,
             frontier.has_chroma,
@@ -699,6 +705,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
         luma_tx_partition_context(core, frontier),
         transform_tool_residual_policy,
         qindex,
+        enable_ibp,
         tile_offset,
     )?;
 
@@ -707,6 +714,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
+    enable_ibp: bool,
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::tile_payload::DecodeBlockFrontier,
@@ -714,7 +722,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
     is_cfl_ctx: IsCflContext,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-    block_decoded: &crate::tile_payload::TileBlockDecodedState,
+    block_decoded: &mut crate::tile_payload::TileBlockDecodedState,
     workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     deblock_blocks: &mut Vec<super::deblock::DeblockBlock>,
@@ -804,6 +812,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         None,
         transform_tool_residual_policy,
         qindex,
+        enable_ibp,
         tile_offset,
     )?;
     Ok(GeneralIntraLeafMode::chroma(chroma.is_cfl()))
@@ -811,6 +820,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn decode_one_general_intra_rect_block<T: ReconSample>(
+    enable_ibp: bool,
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     has_chroma: bool,
@@ -823,7 +833,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
     transform_tool_residual_policy: TransformToolResidualPolicy,
     luma_tx_partition_context: Option<LumaTransformPartitionContext>,
     block_ctx: BlockCtx,
-    block_decoded: &crate::tile_payload::TileBlockDecodedState,
+    block_decoded: &mut crate::tile_payload::TileBlockDecodedState,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
     tile_offset: ByteOffset,
@@ -856,6 +866,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
         luma_tx_partition_context,
         transform_tool_residual_policy,
         qindex,
+        enable_ibp,
         tile_offset,
     )?;
     Ok(leaf_mode_for_block(modes, has_chroma))
@@ -1508,13 +1519,14 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_ctx: BlockCtx,
-    block_decoded: &crate::tile_payload::TileBlockDecodedState,
+    block_decoded: &mut crate::tile_payload::TileBlockDecodedState,
     deblock_blocks: &mut Vec<super::deblock::DeblockBlock>,
     uv_mode: usize,
     luma_transform_type_context: LumaTransformTypeContext,
     luma_tx_partition_context: Option<LumaTransformPartitionContext>,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     qindex: u32,
+    enable_ibp: bool,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     residual_plan
@@ -1529,6 +1541,7 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
             luma_tx_partition_context,
             transform_tool_residual_policy,
             qindex,
+            enable_ibp,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     let block = block_ctx.block();
@@ -1891,11 +1904,11 @@ fn general_intra_residual_error(
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
             )
         }
-        GeneralIntraResidualError::UnsupportedTransformPartition { .. } => {
+        GeneralIntraResidualError::UnsupportedTransformPartition { reason } => {
             general_intra_at!(
-                "general_intra_transform_partition",
+                reason,
                 offset,
-                missing_capability_message!("intra.residual.transform_partition", mode = "split"),
+                missing_capability_message!("intra.residual.transform_partition"),
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
             )
         }

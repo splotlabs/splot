@@ -27,12 +27,15 @@ use crate::{
 
 #[path = "workspace_edges.rs"]
 mod workspace_edges;
+#[path = "workspace_interintra.rs"]
+mod workspace_interintra;
 #[path = "workspace_intra_dc.rs"]
 mod workspace_intra_dc;
 #[path = "workspace_intra_directional_angle.rs"]
 mod workspace_intra_directional_angle;
 
 pub use workspace_edges::{CurrentFrameIntraEdges, WorkspaceRectRows};
+pub use workspace_interintra::InterIntraMode;
 
 /// Mutable current-frame reconstruction workspace.
 ///

@@ -149,7 +149,8 @@ pub use wienerns_filter::{
     WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAPS, WienerNsLumaFilter, wiener_ns_filter_luma_block,
 };
 pub use workspace::{
-    CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameWorkspace, WorkspaceRectRows,
+    CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameWorkspace, InterIntraMode,
+    WorkspaceRectRows,
 };
 pub use y4m::{
     Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,

@@ -159,7 +159,7 @@ where
         &TileFscModeState,
         &TileLumaPaletteState,
         IsCflContext,
-        &TileBlockDecodedState,
+        &mut TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
 {
     Ok(decode_general_intra_multiblock_tree_impl(
@@ -185,7 +185,7 @@ where
         &TileFscModeState,
         &TileLumaPaletteState,
         IsCflContext,
-        &TileBlockDecodedState,
+        &mut TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
 {
     decode_general_intra_multiblock_tree_impl(work_unit, sequence, core, limits, true, on_leaf)
@@ -209,7 +209,7 @@ where
         &TileFscModeState,
         &TileLumaPaletteState,
         IsCflContext,
-        &TileBlockDecodedState,
+        &mut TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
 {
     let frame = minimal_partition_frame_facts(sequence, core)?;

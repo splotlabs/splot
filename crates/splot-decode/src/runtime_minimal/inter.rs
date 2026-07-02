@@ -708,6 +708,7 @@ pub(super) struct InterBlock {
     pub(super) warp_params: Option<[i64; 6]>,
     #[allow(dead_code)]
     pub(super) bawp: BawpSyntax,
+    pub(super) interintra: Option<splot_recon::InterIntraMode>,
     pub(super) residual: Option<InterResidual>,
 }
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

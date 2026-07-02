@@ -492,15 +492,20 @@ fn ccso_reference_reuse_inter_fixture_defers_fail_closed() {
 }
 
 #[test]
-fn partitioned_intra_prediction_inter_fixture_defers_fail_closed() {
-    let Err(error) =
-        decode_fixture_with_options(TXSPLIT_INTRA_INTER_10BIT_FIXTURE, &DecodeOptions::default())
-    else {
-        panic!("the fixture pins the per-transform-unit intra prediction defer");
-    };
+fn partitioned_intra_prediction_inter_fixture_decodes_avm_bit_exact() {
+    let frames = decode_fixture(TXSPLIT_INTRA_INTER_10BIT_FIXTURE);
     assert_eq!(
-        unsupported_reason(error),
-        "general_intra_transform_partition"
+        frames.len(),
+        2,
+        "key frame + one inter frame with a perpendicular multi-unit intra split"
+    );
+    assert_eq!(
+        ten_bit_frame_hashes(&frames),
+        [
+            "49dcc6ac122a807aa0412154b398485b5afb8b745af91871a69c66378700fae5",
+            "708439b34b7954f9196fe7d26f87770d29492f49797ed65ffcb74bf937911856"
+        ],
+        "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
     );
 }
 
