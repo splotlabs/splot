@@ -1323,7 +1323,7 @@ where
         &TileFscModeState,
         &TileLumaPaletteState,
         IsCflContext,
-        &TileBlockDecodedState,
+        &mut TileBlockDecodedState,
     ) -> Result<GeneralIntraLeafMode, E>,
 {
     ensure_supported_traversal_frame(frame, false)?;
@@ -1488,7 +1488,7 @@ where
                         fsc_modes,
                         palette_y,
                         is_cfl_ctx,
-                        &block_decoded,
+                        &mut block_decoded,
                     )
                     .map_err(GeneralIntraTreeWalkError::Leaf)?;
                     let block_n4w = sub_size

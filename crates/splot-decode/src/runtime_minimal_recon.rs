@@ -136,6 +136,7 @@ pub(crate) fn reconstruct_general_intra_block_into<T: ReconSample>(
     log2_side: u32,
     qindex: u32,
     use_tcq: bool,
+    ibp_dc: bool,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
@@ -143,8 +144,29 @@ pub(crate) fn reconstruct_general_intra_block_into<T: ReconSample>(
     let block_size = IntraRectBlockSize::new(log2, log2)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
     let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?;
+    let mut prediction = vec![dc; side * side];
+    if ibp_dc {
+        apply_intra_ibp_dc_rect(
+            bit_depth,
+            block_size,
+            edges.as_dc_edges(),
+            &mut prediction,
+            side,
+        )?;
+    }
     let out = if block.all_zero {
-        vec![dc; side * side]
+        prediction
+    } else if ibp_dc {
+        reconstruct_general_intra_block_with_prediction(
+            &block.quant,
+            &prediction,
+            qindex,
+            plane_id,
+            log2_side,
+            block.plane_tx_type,
+            use_tcq,
+            bit_depth,
+        )?
     } else {
         reconstruct_general_intra_block(
             &block.quant,

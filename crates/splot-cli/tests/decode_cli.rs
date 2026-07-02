@@ -276,13 +276,13 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
-        "inter_warp_interintra_unimplemented"
+        "inter_warp_extend_unimplemented"
     );
     assert_eq!(
         json["byte_offset"], 8371,
-        "the frontier holds at the first WARPMV inter-intra block of coded frame 2; the \
-         in-loop filter chain and the warp motion-mode reads are admitted, and output \
-         frame 0 is byte-identical to AVM"
+        "the frontier holds at the first EXTENDWARP block of coded frame 2; smooth-mask \
+         interintra prediction and per-transform-unit intra prediction are admitted, and \
+         output frame 0 is byte-identical to AVM"
     );
 }
 

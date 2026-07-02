@@ -15,7 +15,7 @@ use super::{Mv, SPEC_MC, unsupported_at};
 use crate::Result;
 use splot_core::span::ByteOffset;
 
-const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =
+pub(super) const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =
     [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)];
 
 #[allow(clippy::struct_field_names)]

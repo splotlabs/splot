@@ -63,6 +63,10 @@ const SAMEREF_COMPOUND_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-sameref-compound-64x32-10bit-q150.ivf"
 );
 
+const SIMPLE_INTERINTRA_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-3frame-simple-interintra-64x32-10bit.ivf"
+);
+
 const TWO_FRAME_SUBPEL_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-subpel-inter-64x64.ivf"
 );
@@ -469,6 +473,16 @@ fn comp_ref_allowed_follows_the_spec_block_size_arms() {
 }
 
 #[test]
+fn simple_path_interintra_fixture_defers_fail_closed() {
+    let Err(error) =
+        decode_fixture_with_options(SIMPLE_INTERINTRA_10BIT_FIXTURE, &DecodeOptions::default())
+    else {
+        panic!("the fixture pins the SIMPLE-path interintra defer");
+    };
+    assert_eq!(unsupported_reason(error), "inter_interintra_unimplemented");
+}
+
+#[test]
 fn same_ref_compound_fixture_defers_at_the_block_comp_mode_read() {
     let Err(error) =
         decode_fixture_with_options(SAMEREF_COMPOUND_10BIT_FIXTURE, &DecodeOptions::default())
@@ -492,15 +506,20 @@ fn ccso_reference_reuse_inter_fixture_defers_fail_closed() {
 }
 
 #[test]
-fn partitioned_intra_prediction_inter_fixture_defers_fail_closed() {
-    let Err(error) =
-        decode_fixture_with_options(TXSPLIT_INTRA_INTER_10BIT_FIXTURE, &DecodeOptions::default())
-    else {
-        panic!("the fixture pins the per-transform-unit intra prediction defer");
-    };
+fn partitioned_intra_prediction_inter_fixture_decodes_avm_bit_exact() {
+    let frames = decode_fixture(TXSPLIT_INTRA_INTER_10BIT_FIXTURE);
     assert_eq!(
-        unsupported_reason(error),
-        "general_intra_transform_partition"
+        frames.len(),
+        2,
+        "key frame + one inter frame with a perpendicular multi-unit intra split"
+    );
+    assert_eq!(
+        ten_bit_frame_hashes(&frames),
+        [
+            "49dcc6ac122a807aa0412154b398485b5afb8b745af91871a69c66378700fae5",
+            "708439b34b7954f9196fe7d26f87770d29492f49797ed65ffcb74bf937911856"
+        ],
+        "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
     );
 }
 

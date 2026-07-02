@@ -2922,3 +2922,56 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-2frame-ccso-inter-32x32-10bit-raw-md5"
 right = "avm-inspect-2frame-ccso-inter-32x32-10bit-raw-md5"
+
+
+[[evidence]]
+id = "lref-avm-syn-2frame-txsplit-intra-inter-64x64-10bit-q100"
+feature_id = "DECODE-FIRST-INTER-FRAME-FRONTIER"
+decoder_support_rows = ["first-inter-frame-frontier"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output MD5 recorded for the two-frame 10-bit 4:2:0 64x64 inter IVF fixture whose INTER frame codes an intra block with a perpendicular multi-transform-unit split, the committed oracle for the section 5.20.7.24 per-transform-unit intra prediction loop (interior units predict from just-reconstructed sibling samples); splot reproduces that raw output byte-for-byte. Two distinct local AVM reference runs (avmdec and the inspection-build inspect --dump-recon) agree on the digest, and splot-vs-AVM equality is asserted via the committed decode tests."
+recorded_at = "2026-07-02"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2frame-txsplit-intra-inter-64x64-10bit-q100.ivf"
+sha256 = "c3a6bb3b8749d3920edc7fbf7c37229c3f7833111e362acb352fc398a789f0ec"
+size_bytes = 446
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally with avmenc from a project-owned synthetic two-frame 10-bit I420 separable-sinusoid input (the same generator family as the deblock fixture) at 64x64 --qp=100 with CCSO disabled, selected because its INTER frame codes an intra block whose transform partition splits perpendicular to the prediction source edge. The encode is deterministic. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout HEAD 457cd58681a747465661baccb1f32095bc5b7774, exact binary build commit not separately archived."
+command_summary = "Local avmdec --i420 --rawvideo output MD5 for {fixture:input}."
+output_digest_id = "avm-2frame-txsplit-intra-inter-64x64-10bit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "1d552f7116974e43b391ef903213805a"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "avm-inspect"
+tool = "avm"
+executable_name = "inspect"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM inspection-build examples/inspect from the same checkout; its --dump-recon output is documented as equal to avmdec output."
+command_summary = "Local inspect --dump-recon raw output MD5 for {fixture:input}."
+output_digest_id = "avm-inspect-2frame-txsplit-intra-inter-64x64-10bit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "1d552f7116974e43b391ef903213805a"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-2frame-txsplit-intra-inter-64x64-10bit-raw-md5"
+right = "avm-inspect-2frame-txsplit-intra-inter-64x64-10bit-raw-md5"

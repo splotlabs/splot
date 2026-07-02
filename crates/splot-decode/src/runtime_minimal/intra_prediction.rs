@@ -73,6 +73,7 @@ pub(super) fn plan_luma_prediction(
 
 impl IntraLumaPlan {
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct<T: ReconSample>(
         self,
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -81,6 +82,7 @@ impl IntraLumaPlan {
         block_decoded: &TileBlockDecodedState,
         qindex: u32,
         use_tcq: bool,
+        enable_ibp: bool,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let luma_block = block_ctx.plane_block(PlaneId::Y);
         let tx = luma_block.tx();
@@ -94,9 +96,13 @@ impl IntraLumaPlan {
         let neighbours = block_ctx.neighbours(PlaneId::Y);
         match self {
             Self::Palette { .. } => Err(GeneralIntraResidualError::UnexpectedBranch),
-            Self::Dc => crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
-                workspace, luma, PlaneId::Y, x, y, log2_side, qindex, use_tcq, bit_depth,
-            ),
+            Self::Dc => {
+                let ibp_dc = enable_ibp && log2_side != 2;
+                crate::runtime_minimal_recon::reconstruct_general_intra_block_into(
+                    workspace, luma, PlaneId::Y, x, y, log2_side, qindex, use_tcq, ibp_dc,
+                    bit_depth,
+                )
+            }
             Self::NonDcFirst { mode } => {
                 crate::runtime_minimal_recon::reconstruct_general_intra_luma_nondc_first_block_into(
                     workspace, luma, mode, x, y, log2_side, qindex, use_tcq, bit_depth,

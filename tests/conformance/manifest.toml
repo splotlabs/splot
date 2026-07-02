@@ -618,12 +618,10 @@ path = "vectors/valid/syn-2frame-txsplit-intra-inter-64x64-10bit-q100.ivf"
 description = """
 Two-frame 10-bit 4:2:0 64x64 inter stream (IVF) whose INTER frame codes an \
 intra block with a perpendicular multi-transform-unit split — the § 5.20.7.24 \
-per-transform-unit intra prediction case the decoder defers (interior units \
-must predict from just-reconstructed sibling samples). avmdec decodes it; \
-splot previously emitted a confident-wrong right-band (documented in the b02 \
-mission notes). Validates clean; committed as the NEGATIVE decode pin for the \
-`general_intra_transform_partition` defer and as the ready oracle for the \
-per-unit prediction change."""
+per-transform-unit intra prediction case (interior units predict from \
+just-reconstructed sibling samples). Committed while the decoder deferred it; \
+now the POSITIVE byte-exact pin for the per-unit prediction loop, decoded \
+identically to avmdec --i420 --rawvideo."""
 expect = "clean"
 
 [[vector]]
@@ -635,4 +633,15 @@ frame signals reference_select and codes a same-reference COMPOUND block \
 NEGATIVE decode pin proving the frame decodes to the block's comp_mode read \
 (entropy-synced with AVM accounting) and then defers fail-closed at \
 `compound_missing_is_joint_context` instead of rejecting the whole frame."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-3frame-simple-interintra-64x32-10bit.ivf"
+description = """
+Three-frame 10-bit 4:2:0 64x32 inter stream (IVF) whose INTER frames code \
+SIMPLE-path interintra blocks (motion_mode INTERINTRA via the § 5.20.7.14 \
+use_interintra read; II_V/II_H smooth-mask). Validates clean; committed as \
+the NEGATIVE decode pin for the `inter_interintra_unimplemented` defer — the \
+SIMPLE-path § 5.20.7.15 tail and prediction are not yet admitted (zero \
+occurrences in the mission stream's first 32 coded frames)."""
 expect = "clean"

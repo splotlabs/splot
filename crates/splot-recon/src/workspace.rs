@@ -27,12 +27,15 @@ use crate::{
 
 #[path = "workspace_edges.rs"]
 mod workspace_edges;
+#[path = "workspace_interintra.rs"]
+mod workspace_interintra;
 #[path = "workspace_intra_dc.rs"]
 mod workspace_intra_dc;
 #[path = "workspace_intra_directional_angle.rs"]
 mod workspace_intra_directional_angle;
 
 pub use workspace_edges::{CurrentFrameIntraEdges, WorkspaceRectRows};
+pub use workspace_interintra::InterIntraMode;
 
 /// Mutable current-frame reconstruction workspace.
 ///
@@ -316,15 +319,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         size: IntraRectBlockSize,
         samples: &[T],
     ) -> Result<()> {
-        if samples.len() != size.sample_count() {
-            return Err(ReconError::WorkspaceWriteLengthMismatch {
-                plane,
-                expected: size.sample_count(),
-                actual: samples.len(),
-            });
-        }
-
-        let rect = block_rect(x, y, size)?;
+        let rect = checked_sample_block_rect(plane, x, y, size, samples.len())?;
         self.write_rect(plane, rect, samples, size.width())
     }
 
@@ -910,6 +905,25 @@ fn chroma_plane_geometry(
         storage_size,
         PlaneRect::new(x, y, visible_size.width(), visible_size.height())?,
     )))
+}
+
+/// Validates a caller-supplied per-sample buffer against a block's rectangular
+/// sample count, then resolves the target rectangle.
+fn checked_sample_block_rect(
+    plane: PlaneId,
+    x: usize,
+    y: usize,
+    size: IntraRectBlockSize,
+    actual: usize,
+) -> Result<PlaneRect> {
+    if actual != size.sample_count() {
+        return Err(ReconError::WorkspaceWriteLengthMismatch {
+            plane,
+            expected: size.sample_count(),
+            actual,
+        });
+    }
+    block_rect(x, y, size)
 }
 
 fn block_rect(x: usize, y: usize, size: IntraRectBlockSize) -> Result<PlaneRect> {

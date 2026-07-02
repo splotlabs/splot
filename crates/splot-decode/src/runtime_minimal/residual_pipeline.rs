@@ -393,12 +393,13 @@ impl GeneralIntraResidualPlan {
         symbols: &mut SymbolDecoder<'_>,
         coeff_ctx: &mut TileCoeffContextState,
         workspace: &mut CurrentFrameWorkspace<T>,
-        block_decoded: &TileBlockDecodedState,
+        block_decoded: &mut TileBlockDecodedState,
         uv_mode: usize,
         luma_transform_type_context: LumaTransformTypeContext,
         luma_tx_partition_context: Option<LumaTransformPartitionContext>,
         transform_tool_residual_policy: TransformToolResidualPolicy,
         qindex: u32,
+        enable_ibp: bool,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let mut execute = |plane: ResidualPlanePlan, eob_u_nonzero| {
             let tx_partition_context = (plane.plane_id == PlaneId::Y)
@@ -416,6 +417,7 @@ impl GeneralIntraResidualPlan {
                 transform_tool_residual_policy,
                 qindex,
                 eob_u_nonzero,
+                enable_ibp,
             )
         };
 
@@ -490,13 +492,14 @@ impl ResidualPlanePlan {
         symbols: &mut SymbolDecoder<'_>,
         coeff_ctx: &mut TileCoeffContextState,
         workspace: &mut CurrentFrameWorkspace<T>,
-        block_decoded: &TileBlockDecodedState,
+        block_decoded: &mut TileBlockDecodedState,
         uv_mode: usize,
         luma_transform_type_context: LumaTransformTypeContext,
         luma_tx_partition_context: Option<LumaTransformPartitionContext>,
         transform_tool_residual_policy: TransformToolResidualPolicy,
         qindex: u32,
         eob_u_nonzero: bool,
+        enable_ibp: bool,
     ) -> core::result::Result<crate::tile_payload::LumaCoeffBlock, GeneralIntraResidualError> {
         let policy = transform_tool_policy_for_plane(
             transform_tool_residual_policy,
@@ -521,6 +524,7 @@ impl ResidualPlanePlan {
                 policy,
                 qindex,
                 palette_color_map.as_deref(),
+                enable_ibp,
             );
         }
         let trace_bits = std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_BITS").is_some();
@@ -566,6 +570,7 @@ impl ResidualPlanePlan {
             block_decoded,
             palette_color_map.as_deref(),
             qindex,
+            enable_ibp,
         )?;
         Ok(coeffs)
     }
@@ -577,13 +582,14 @@ impl ResidualPlanePlan {
         symbols: &mut SymbolDecoder<'_>,
         coeff_ctx: &mut TileCoeffContextState,
         workspace: &mut CurrentFrameWorkspace<T>,
-        block_decoded: &TileBlockDecodedState,
+        block_decoded: &mut TileBlockDecodedState,
         tx_partition_context: LumaTransformPartitionContext,
         uv_mode: usize,
         angle_delta_uv: i32,
         policy: TransformToolResidualPolicy,
         qindex: u32,
         palette_color_map: Option<&[u8]>,
+        enable_ibp: bool,
     ) -> core::result::Result<crate::tile_payload::LumaCoeffBlock, GeneralIntraResidualError> {
         let trace_bits = std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_BITS").is_some();
         let start_bits = symbols.consumed_bits().get();
@@ -626,40 +632,30 @@ impl ResidualPlanePlan {
                 block_decoded,
                 palette_color_map,
                 qindex,
+                enable_ibp,
             )?;
             return Ok(block.coeffs);
         }
 
-        if !partitioned_prediction_is_block_equivalent(&self, &blocks) {
-            return Err(GeneralIntraResidualError::UnsupportedTransformPartition {
-                reason: "general_intra_partitioned_interior_edge_prediction",
-            });
-        }
-        let prediction_only = zero_coeff_block();
-        self.reconstruct(
-            workspace,
-            &prediction_only,
-            block_decoded,
-            palette_color_map,
-            qindex,
-        )?;
-        let use_tcq = self.reconstruction.luma_use_tcq().unwrap_or(false);
-        let bit_depth = self.block_ctx.bit_depth();
+        let sb_mask = block_decoded.sb_size4().saturating_sub(1);
         for block in &blocks {
-            let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
-            crate::runtime_minimal_recon::reconstruct_inter_block_residual_rect_into(
+            let unit = self.transform_unit_plan(block)?;
+            unit.reconstruct(
                 workspace,
                 &block.coeffs,
-                PlaneId::Y,
-                block.x,
-                block.y,
-                log2_width,
-                log2_height,
+                block_decoded,
+                palette_color_map,
                 qindex,
-                use_tcq,
-                false,
-                bit_depth,
+                enable_ibp,
             )?;
+            let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
+            block_decoded.set_block(
+                0,
+                (block.y >> 2) & sb_mask,
+                (block.x >> 2) & sb_mask,
+                ((1usize << log2_width) >> 2).max(1),
+                ((1usize << log2_height) >> 2).max(1),
+            );
         }
         let summary = summarize_luma_partition(&blocks);
         if trace_bits {
@@ -681,6 +677,166 @@ impl ResidualPlanePlan {
             );
         }
         Ok(summary)
+    }
+
+    /// Re-scopes this plan to one § 5.20.7.24 transform unit: each unit runs
+    /// the same prediction process as a standalone block of the unit's
+    /// geometry, reading edges from the just-reconstructed workspace (so
+    /// interior units see sibling-unit samples) and the per-unit-maintained
+    /// `BlockDecoded` counts. The above-row MRL read offset zeroes only at a
+    /// superblock boundary; interior units sit below sibling units, never at
+    /// one, so they read the full `MrlIndex` line (AVM `above_mrl_idx` rule).
+    /// § 5.20.6.3 `LumaTxMiddle` units pass `allowCorners = 0` (§ 5.20.7.24),
+    /// zeroing the top-right/bottom-left counts; modes consuming those counts
+    /// defer until the zeroed-count variant lands.
+    fn transform_unit_plan(
+        &self,
+        block: &PositionedLumaCoeffBlock,
+    ) -> core::result::Result<ResidualPlanePlan, GeneralIntraResidualError> {
+        let corner_free = matches!(
+            self.reconstruction,
+            ResidualReconstructionPlan::Rect { .. }
+                | ResidualReconstructionPlan::LumaRectCardinal { .. }
+                | ResidualReconstructionPlan::LumaRectPaeth { .. }
+                | ResidualReconstructionPlan::LumaSquare {
+                    plan: IntraLumaPlan::Dc
+                        | IntraLumaPlan::CardinalNeighbour { .. }
+                        | IntraLumaPlan::PaethNeighbour
+                        | IntraLumaPlan::DirectionalMiddle { .. },
+                    ..
+                }
+        );
+        if block.middle && !corner_free {
+            return Err(GeneralIntraResidualError::UnsupportedTransformPartition {
+                reason: "general_intra_partitioned_middle_unit_corners",
+            });
+        }
+        let reconstruction = match self.reconstruction {
+            ResidualReconstructionPlan::Rect { .. }
+            | ResidualReconstructionPlan::LumaRectCardinal { .. }
+            | ResidualReconstructionPlan::LumaRectPaeth { .. }
+            | ResidualReconstructionPlan::LumaRectSmooth { .. }
+            | ResidualReconstructionPlan::LumaRectMiddle { .. }
+            | ResidualReconstructionPlan::LumaRectOneSidedAbove { .. }
+            | ResidualReconstructionPlan::LumaRectOneSidedLeft { .. }
+            | ResidualReconstructionPlan::LumaRectOneSidedLeftMrl { .. } => self.reconstruction,
+            ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
+                p_angle,
+                mrl_index,
+                above_mrl_index,
+                secondary_mrl,
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
+                p_angle,
+                mrl_index,
+                above_mrl_index: if block.y == self.y {
+                    above_mrl_index
+                } else {
+                    mrl_index
+                },
+                secondary_mrl,
+                use_tcq,
+            },
+            ResidualReconstructionPlan::LumaRectCardinalMrl {
+                direction,
+                mrl_index,
+                above_mrl_index,
+                secondary_mrl,
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectCardinalMrl {
+                direction,
+                mrl_index,
+                above_mrl_index: if block.y == self.y {
+                    above_mrl_index
+                } else {
+                    mrl_index
+                },
+                secondary_mrl,
+                use_tcq,
+            },
+            ResidualReconstructionPlan::LumaRectMiddleMrl {
+                p_angle,
+                mrl_index,
+                above_mrl_index,
+                is_sb_boundary,
+                secondary_mrl,
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectMiddleMrl {
+                p_angle,
+                mrl_index,
+                above_mrl_index: if block.y == self.y {
+                    above_mrl_index
+                } else {
+                    mrl_index
+                },
+                is_sb_boundary: is_sb_boundary && block.y == self.y,
+                secondary_mrl,
+                use_tcq,
+            },
+            ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::CardinalNeighbour { direction },
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectCardinal { direction, use_tcq },
+            ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::Dc,
+                use_tcq,
+            } => ResidualReconstructionPlan::Rect { use_tcq },
+            ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::PaethNeighbour,
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectPaeth { use_tcq },
+            ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::DirectionalMiddle { p_angle },
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectMiddle { p_angle, use_tcq },
+            ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::DirectionalOneSidedAbove { p_angle },
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectOneSidedAbove { p_angle, use_tcq },
+            ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::DirectionalOneSidedLeft { p_angle },
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectOneSidedLeft { p_angle, use_tcq },
+            _ => {
+                if std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_BITS").is_some() {
+                    eprintln!(
+                        "general intra partition defer recon={:?} xy=({}, {}) unit=({}, {}, tx={})",
+                        self.reconstruction, self.x, self.y, block.x, block.y, block.tx_size
+                    );
+                }
+                return Err(GeneralIntraResidualError::UnsupportedTransformPartition {
+                    reason: "general_intra_partitioned_interior_edge_prediction",
+                });
+            }
+        };
+        let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
+        let width4 = (1usize << log2_width) >> 2;
+        let height4 = (1usize << log2_height) >> 2;
+        let tx = TxShape::from_luma_4x4(width4.max(1), height4.max(1)).ok_or(
+            GeneralIntraResidualError::TransformPartitionGeometry {
+                table: "Tx_Width_Log2",
+                index: block.tx_size,
+            },
+        )?;
+        let block_ctx = BlockCtx::new(
+            BlockRect::new(block.y >> 2, block.x >> 2, width4.max(1), height4.max(1)),
+            tx,
+            self.block_ctx.frame_mi_cols(),
+            self.block_ctx.frame_mi_rows(),
+            self.block_ctx.bit_depth(),
+            self.block_ctx.chroma(),
+        );
+        Ok(ResidualPlanePlan {
+            block_ctx,
+            tx_size: block.tx_size,
+            x: block.x,
+            y: block.y,
+            tx,
+            residual_width4: width4.max(1),
+            residual_height4: height4.max(1),
+            reconstruction,
+            ..*self
+        })
     }
 
     fn read_palette_color_map(
@@ -793,6 +949,7 @@ impl ResidualPlanePlan {
         block_decoded: &TileBlockDecodedState,
         palette_color_map: Option<&[u8]>,
         qindex: u32,
+        enable_ibp: bool,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let block_ctx = self.block_ctx;
         match self.reconstruction {
@@ -812,9 +969,15 @@ impl ResidualPlanePlan {
                     block_ctx.bit_depth(),
                 )
             }
-            ResidualReconstructionPlan::LumaSquare { plan, use_tcq } => {
-                plan.reconstruct(workspace, coeffs, block_ctx, block_decoded, qindex, use_tcq)
-            }
+            ResidualReconstructionPlan::LumaSquare { plan, use_tcq } => plan.reconstruct(
+                workspace,
+                coeffs,
+                block_ctx,
+                block_decoded,
+                qindex,
+                use_tcq,
+                enable_ibp,
+            ),
             ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq } => {
                 let neighbours = block_ctx.neighbours_from_block_decoded(PlaneId::Y, block_decoded);
                 crate::runtime_minimal_recon::reconstruct_general_intra_luma_smooth_rect_block_into(
@@ -1117,6 +1280,9 @@ impl ResidualPlanePlan {
                 )
             }
             ResidualReconstructionPlan::Rect { use_tcq } => {
+                let ibp_dc = enable_ibp
+                    && self.plane_id == PlaneId::Y
+                    && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2);
                 crate::runtime_minimal_recon::reconstruct_general_intra_block_rect_into(
                     workspace,
                     coeffs,
@@ -1127,67 +1293,11 @@ impl ResidualPlanePlan {
                     self.tx.height_log2(),
                     qindex,
                     use_tcq,
-                    false,
+                    ibp_dc,
                     block_ctx.bit_depth(),
                 )
             }
         }
-    }
-}
-
-impl ResidualReconstructionPlan {
-    const fn luma_use_tcq(self) -> Option<bool> {
-        match self {
-            Self::LumaPalette { use_tcq, .. }
-            | Self::LumaSquare { use_tcq, .. }
-            | Self::LumaRectSmooth { use_tcq, .. }
-            | Self::LumaRectMiddle { use_tcq, .. }
-            | Self::LumaRectMiddleMrl { use_tcq, .. }
-            | Self::LumaRectOneSidedAboveMrl { use_tcq, .. }
-            | Self::LumaRectOneSidedLeftMrl { use_tcq, .. }
-            | Self::LumaRectCardinalMrl { use_tcq, .. }
-            | Self::LumaRectOneSidedAbove { use_tcq, .. }
-            | Self::LumaRectOneSidedLeft { use_tcq, .. }
-            | Self::LumaRectCardinal { use_tcq, .. }
-            | Self::LumaRectPaeth { use_tcq }
-            | Self::Rect { use_tcq } => Some(use_tcq),
-            Self::Chroma { .. } | Self::ChromaMiddle { .. } | Self::ChromaCfl { .. } => None,
-        }
-    }
-}
-
-/// § 5.20.7.24 requires per-transform-unit intra prediction, with interior
-/// units predicting from just-reconstructed sibling samples. The block-level
-/// predict-once shortcut below is provably equivalent only when every unit's
-/// prediction source edge coincides with the block edge: a single-source-edge
-/// cardinal mode split parallel to that edge (V_PRED over a vertical split
-/// shares the block's above row; H_PRED over a horizontal split shares the
-/// block's left column). Everything else defers until the per-unit
-/// prediction loop lands.
-fn partitioned_prediction_is_block_equivalent(
-    plan: &ResidualPlanePlan,
-    blocks: &[crate::tile_payload::PositionedLumaCoeffBlock],
-) -> bool {
-    let ResidualReconstructionPlan::LumaSquare {
-        plan: IntraLumaPlan::CardinalNeighbour { direction },
-        ..
-    } = plan.reconstruction
-    else {
-        return false;
-    };
-    match direction {
-        IntraCardinalDirection::Vertical => blocks.iter().all(|block| block.y == plan.y),
-        IntraCardinalDirection::Horizontal => blocks.iter().all(|block| block.x == plan.x),
-    }
-}
-
-fn zero_coeff_block() -> crate::tile_payload::LumaCoeffBlock {
-    crate::tile_payload::LumaCoeffBlock {
-        all_zero: true,
-        eob: 0,
-        quant: Vec::new(),
-        intra_ist: None,
-        plane_tx_type: 0,
     }
 }
 
