@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use super::MotionMode;
 use super::*;
 
 const BLOCK0_MV: Mv = Mv { row: 0, col: 48 };
@@ -85,6 +86,8 @@ fn record_warp_inter(
         skip,
         SWITCHABLE_FILTERS,
         false,
+        MotionMode::DeltaWarp,
+        splot_recon::IDENTITY_WARP_PARAMS,
         BlockPrecisionRecord::default(),
     );
 }

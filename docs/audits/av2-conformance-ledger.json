@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "59f179e1bf9eba2c7b5e541f4db94423921a8470",
+  "audited_commit": "fef31e94d2eceb783e3e7487ef3c9ff0afe1019f",
   "outcome": "success",
   "files": [
     {
@@ -2124,7 +2124,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "6779389570275b07e442c948cfb6da3872c4d0b67840efdf28583146f3f03e7f",
+      "sha256": "6863868b5fabd845983ac26b82ca9d7c9fbbffb5470e8d68a60b95b2dbef1067",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2155,7 +2155,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
-      "sha256": "968ec6648e4e7fbb33c523dbd17c2291d96a031d7308ad8805759e7d0047ea40",
+      "sha256": "75ab3cd77f8f172e63c1268753f516445e1d3f76c2c785f2337586eb8212e9b8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
@@ -2165,7 +2165,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs",
-      "sha256": "a06265a1d976399ab599f95c4bf55d1bd3c3b67c10ca0865d5dd5dc8c449b0db",
+      "sha256": "adc2a3504cb2c84de9ec5e663797ed5fb18e146faedd1263d9ba0e1a346a5c47",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2259,7 +2259,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/intra_prediction.rs",
-      "sha256": "25a2a87a9160c8bc5d5ad3840bfbef9c184da5c7bd6b99e505c2016ac5f09a25",
+      "sha256": "098a8d1c81a0f28356e61a66015c00c91e40aacd397e5c7641e2d5ac4188b070",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2282,7 +2282,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/residual_pipeline.rs",
-      "sha256": "0e5e27b791c707a4bf73e898ece6d218cf20e6988acc4b8f310a7f1a4fef0170",
+      "sha256": "5ad0380c8a45d121541355853b43b31518245547c52b26ee9b29ade7be7edf68",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2461,7 +2461,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal_recon.rs",
-      "sha256": "67c253312396c479f8bc1ff4e73b1f5479d98c1224e655fd12ca7ba1671e6f73",
+      "sha256": "c1e255bb740cae4dbdf85eaa754a68924cc86f946065b0090f88f55cd4c9ef0e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-ANGLE",
@@ -3009,7 +3009,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
-      "sha256": "1c14393235fc219784f1492790c6e20b8a26d94b7b13486bbd05076129066d32",
+      "sha256": "8c9f64abd9d72190592b991bed167959f33b2b6507c7b3c0af3aa30d768d12ac",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
@@ -3025,7 +3025,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/general_intra_residual/tests.rs",
-      "sha256": "56ecf06583a2598f0b5147a0548b0cbd1c03f6764359f2f932ecbcf92483c23e",
+      "sha256": "8e6f9a15f319809476ee4737aaf14cccadb27fadbb771aa652c864f22de69ab4",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"

@@ -34,8 +34,8 @@ use super::compound::{
     CompoundParseInput, read_compound_mode_syntax, read_compound_reference_pair,
 };
 use super::find_mv_stack::{
-    BlockNeighbourContext, BlockPrecisionRecord, MvBlockContext, NeighbourMvGrid, NeighbourYMode,
-    block_neighbour_ctx, find_mode_ctx, find_mv_stack,
+    BlockNeighbourContext, BlockPrecisionRecord, MotionMode, MvBlockContext, NeighbourMvGrid,
+    NeighbourYMode, block_neighbour_ctx, find_mode_ctx, find_mv_stack,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
@@ -1191,6 +1191,8 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             skip == 1,
             interp_filter_symbol(ReconInterpolationFilter::EightTap),
             false,
+            MotionMode::DeltaWarp,
+            warp.warp_params,
             warp.block_precision,
         );
         intrabc_state.record_block(

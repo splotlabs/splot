@@ -11,6 +11,28 @@ const MV_BORDER: i32 = 128;
 
 const MI_SIZE: i32 = 4;
 
+/// AV2 § 6.18 `MotionModes[ r ][ c ]` values in spec order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub(super) enum MotionMode {
+    /// `SIMPLE` (0).
+    Simple,
+    /// `INTERINTRA` (1).
+    InterIntra,
+    /// `LOCALWARP` (2).
+    LocalWarp,
+    /// `DELTAWARP` (3).
+    DeltaWarp,
+    /// `EXTENDWARP` (4).
+    ExtendWarp,
+}
+
+impl MotionMode {
+    /// § 8.3.2 warp-context predicate: `MotionModes[ .. ] >= LOCALWARP`.
+    const fn is_warp(self) -> bool {
+        matches!(self, Self::LocalWarp | Self::DeltaWarp | Self::ExtendWarp)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NeighbourCell {
     is_inter: bool,
@@ -20,11 +42,23 @@ struct NeighbourCell {
     newmv_for_list0: bool,
     newmv_for_list1: bool,
     mv: Mv,
+    mv1: Option<Mv>,
     skip: bool,
     interp_filter: u8,
     use_amvd: bool,
-    is_warp: bool,
+    motion_mode: MotionMode,
+    warp_params: Option<[i64; 6]>,
+    base_r: usize,
+    base_c: usize,
+    bw4: usize,
+    bh4: usize,
     precision: BlockPrecisionRecord,
+}
+
+impl NeighbourCell {
+    const fn is_warp(self) -> bool {
+        self.motion_mode.is_warp()
+    }
 }
 
 const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
@@ -35,10 +69,16 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     newmv_for_list0: false,
     newmv_for_list1: false,
     mv: Mv::ZERO,
+    mv1: None,
     skip: false,
     interp_filter: SWITCHABLE_FILTERS,
     use_amvd: false,
-    is_warp: false,
+    motion_mode: MotionMode::Simple,
+    warp_params: None,
+    base_r: 0,
+    base_c: 0,
+    bw4: 0,
+    bh4: 0,
     precision: BlockPrecisionRecord {
         use_most_probable_precision: false,
         mv_precision: 0,
@@ -143,7 +183,8 @@ impl NeighbourMvGrid {
             skip,
             interp_filter,
             use_amvd,
-            false,
+            MotionMode::Simple,
+            None,
             precision,
         );
     }
@@ -162,6 +203,8 @@ impl NeighbourMvGrid {
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
+        motion_mode: MotionMode,
+        warp_params: [i64; 6],
         precision: BlockPrecisionRecord,
     ) {
         self.record_block_with_warp(
@@ -177,7 +220,8 @@ impl NeighbourMvGrid {
             skip,
             interp_filter,
             use_amvd,
-            true,
+            motion_mode,
+            Some(warp_params),
             precision,
         );
     }
@@ -197,7 +241,8 @@ impl NeighbourMvGrid {
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
-        is_warp: bool,
+        motion_mode: MotionMode,
+        warp_params: Option<[i64; 6]>,
         precision: BlockPrecisionRecord,
     ) {
         let cell = NeighbourCell {
@@ -208,10 +253,16 @@ impl NeighbourMvGrid {
             newmv_for_list0: matches!(y_mode, NeighbourYMode::NewMv),
             newmv_for_list1: false,
             mv,
+            mv1: None,
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
-            is_warp,
+            motion_mode,
+            warp_params,
+            base_r: r,
+            base_c: c,
+            bw4: n4w,
+            bh4: n4h,
             precision,
         };
         for rr in r..r.saturating_add(n4h) {
@@ -257,10 +308,16 @@ impl NeighbourMvGrid {
             newmv_for_list0: list0_is_newmv,
             newmv_for_list1: list1_is_newmv,
             mv,
+            mv1: None,
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
-            is_warp: false,
+            motion_mode: MotionMode::Simple,
+            warp_params: None,
+            base_r: r,
+            base_c: c,
+            bw4: n4w,
+            bh4: n4h,
             precision: BlockPrecisionRecord::default(),
         };
         for rr in r..r.saturating_add(n4h) {
@@ -367,13 +424,20 @@ impl RelativeProbe {
         grid: &NeighbourMvGrid,
         block: &MvBlockContext,
     ) -> Option<NeighbourCell> {
-        let row = block.mi_row as i32 + self.delta_row;
+        let (delta_row, delta_col) = self.warp_context_delta(block);
+        grid.get(
+            block.mi_row as i32 + delta_row,
+            block.mi_col as i32 + delta_col,
+        )
+    }
+
+    /// § 7.11.4 probe delta after the superblock-border column adjustment.
+    fn warp_context_delta(self, block: &MvBlockContext) -> (i32, i32) {
         let mut delta_col = self.delta_col;
         if self.delta_row < 0 && block.is_sb_border() {
             delta_col -= (block.mi_col & 1) as i32;
         }
-        let col = block.mi_col as i32 + delta_col;
-        grid.get(row, col)
+        (self.delta_row, delta_col)
     }
 }
 
@@ -475,6 +539,13 @@ pub(super) struct ModeContext {
     /// § 7.11.4 `WarpSampleFound[ 0 ]`: a warp-scan probe hit an inter cell
     /// whose reference matches the block's first reference.
     pub(super) warp_sample_found: bool,
+    /// § 7.11.4 `WarpSampleFound[ 1 ]`: the same scan matched against the
+    /// block's second reference (compound only).
+    pub(super) warp_sample_found1: bool,
+    /// § 7.11.4 `ExtendDeltaRow` / `ExtendDeltaCol`: the first warp-scan
+    /// probe (post superblock-border adjustment) whose cell matched the
+    /// block's first reference.
+    pub(super) extend_delta: Option<(i32, i32)>,
 }
 
 /// AV2 § 7.11.2 `find_mode_ctx` for single prediction.
@@ -496,15 +567,25 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
         *slot = true;
     }
     let mut warp_sample_found = false;
+    let mut warp_sample_found1 = false;
+    let mut extend_delta = None;
     for probe in warp_context_spatial_probes(block).into_iter().flatten() {
         let Some(cell) = probe.warp_context_cell(grid, block) else {
             continue;
         };
         if matches_block_ref(cell, block) {
+            if !warp_sample_found {
+                extend_delta = Some(probe.warp_context_delta(block));
+            }
             warp_sample_found = true;
-            if cell.is_warp {
+            if cell.is_warp() {
                 warp_mv_count = (warp_mv_count + 1).min(4);
             }
+        }
+        if let Some(ref1) = block.ref_frame1
+            && neighbour_matches_ref(cell, ref1)
+        {
+            warp_sample_found1 = true;
         }
     }
 
@@ -516,6 +597,8 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
         new_mv_count,
         warp_mv_count,
         warp_sample_found,
+        warp_sample_found1,
+        extend_delta,
     }
 }
 
@@ -667,21 +750,18 @@ impl BlockNeighbourContext {
         self.npos_cells
             .iter()
             .take(self.npos_count)
-            .filter(|cell| cell.is_warp)
+            .filter(|cell| cell.is_warp())
             .count()
     }
 
     /// AV2 § 8.3.2 `use_local_warp` context: `hasWarp` plus the `NPos`
-    /// neighbour count with `MotionModes == LOCALWARP`. LOCALWARP blocks are
-    /// beyond the frontier, so no recorded neighbour can hold that mode yet;
-    /// widen the cell record with the motion mode when LOCALWARP decode lands.
+    /// neighbour count with `MotionModes == LOCALWARP`.
     pub(super) fn use_local_warp_ctx(&self) -> usize {
-        usize::from(
-            self.npos_cells
-                .iter()
-                .take(self.npos_count)
-                .any(|cell| cell.is_warp),
-        )
+        let cells = self.npos_cells.iter().take(self.npos_count);
+        usize::from(cells.clone().any(|cell| cell.is_warp()))
+            + cells
+                .filter(|cell| cell.motion_mode == MotionMode::LocalWarp)
+                .count()
     }
 
     /// AV2 § 8.3.2 `use_most_probable_precision` context: neighbour count with
@@ -860,7 +940,7 @@ fn collect_neighbour_context_cells(
 /// § 7.12.2 `RefStackMv` candidates for single prediction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct MvStack {
-    stack: Vec<Mv>,
+    stack: Vec<(Mv, (i32, i32))>,
 }
 
 impl MvStack {
@@ -874,9 +954,17 @@ impl MvStack {
     pub(super) fn candidate(&self, idx: usize) -> Mv {
         self.stack
             .get(idx)
-            .copied()
-            .or_else(|| self.stack.last().copied())
-            .unwrap_or(Mv::ZERO)
+            .or_else(|| self.stack.last())
+            .map_or(Mv::ZERO, |entry| entry.0)
+    }
+
+    /// Returns § 7.12.2 `RefStackRowOffset[idx]` / `RefStackColOffset[idx]`
+    /// (`(0, 0)` for candidates that did not come from an adjacent scan).
+    pub(super) fn candidate_offsets(&self, idx: usize) -> (i32, i32) {
+        self.stack
+            .get(idx)
+            .or_else(|| self.stack.last())
+            .map_or((0, 0), |entry| entry.1)
     }
 }
 
@@ -896,9 +984,9 @@ pub(super) fn find_mv_stack(
     // §7.12.2.19 Sorting, and §7.12.2.20 large-block (>32x32) MVP processes
     extra_search(block, global_mv, &mut entries);
 
-    let stack: Vec<Mv> = entries
+    let stack: Vec<(Mv, (i32, i32))> = entries
         .into_iter()
-        .map(|entry| clamp_mv(block, entry.mv))
+        .map(|entry| (clamp_mv(block, entry.mv), entry.offsets))
         .collect();
 
     MvStack { stack }
@@ -908,6 +996,7 @@ pub(super) fn find_mv_stack(
 struct MvStackEntry {
     mv: Mv,
     weight: u32,
+    offsets: (i32, i32),
 }
 
 fn scan_mv_stack_probe(
@@ -935,9 +1024,11 @@ fn scan_mv_stack_probe(
         }
     }
 
+    let (_, _, adjusted_delta_col) = probe.stack_target(block);
     entries.push(MvStackEntry {
         mv: cell.mv,
         weight,
+        offsets: (probe.delta_row, adjusted_delta_col),
     });
 }
 
@@ -952,6 +1043,7 @@ fn extra_search(block: &MvBlockContext, global_mv: Mv, entries: &mut Vec<MvStack
             entries.push(MvStackEntry {
                 mv: global_mv,
                 weight: 0,
+                offsets: (0, 0),
             });
         }
     }
