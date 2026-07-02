@@ -1414,8 +1414,7 @@ pub(super) fn find_mv_stack(
         scan_mv_stack_probe(grid, block, probe, &mut entries);
     }
 
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.5 Scan col,
-    // §7.12.2.19 Sorting, and §7.12.2.20 large-block (>32x32) MVP processes
+    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): 7.12.2.5 Scan col, 7.12.2.19 Sorting, 7.12.2.20 large-block MVP
     if let Some((bank, max_ref_mv_count)) = bank {
         let mut prune_count = 0usize;
         bank.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);

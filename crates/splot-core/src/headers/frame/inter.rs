@@ -661,8 +661,7 @@ fn parse_inter_reference_region(
 
     let tip_gate = seq.enable_tip && use_ref_frame_mvs && num_total_refs >= 2 && !bru_inactive;
     if tip_gate {
-        // § 5.18.2 `tip_frame_mode` f(1): 0 keeps TIP disabled and continues
-        // the shared tail; 1 needs the TIP frame cluster, not yet modeled.
+        // 5.18.2 tip_frame_mode; 1 = the unmodeled TIP frame cluster
         if reader.read_flag()? {
             control.stop = Some(InterStop::PoisonedReferenceState);
             return Ok(());

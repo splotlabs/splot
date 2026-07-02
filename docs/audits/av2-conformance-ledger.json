@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "ec1d4a09fd5789484e58ee1e49e96475f2e6fc85",
+  "audited_commit": "d32b115ca2d4306285082ca58723dcc3449505b9",
   "outcome": "success",
   "files": [
     {
@@ -915,7 +915,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/inter.rs",
-      "sha256": "d7792cc56ef9753046c379f03123b13406d3ba95e610deb6f02ab80f996d7479",
+      "sha256": "8a176c6833f716d1bdd38141464d2e05e49e17e0e39256956ee7ad55fae6611e",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "DECODE-INTER-MULTIREF-RUNTIME"
@@ -2131,7 +2131,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "7e409ba2b620c3190b94d15bd6f3d977022acc605f881b3cf8a9fda3c703586e",
+      "sha256": "28bfd8e23ea958f9079e931d911f12e79b7a124ecd44a1a86b8bc189f64c8b7b",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2162,7 +2162,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
-      "sha256": "a7d55b51f20f2df3488b937b18e941e2c3a05fae4dfc63e9363e810a0f60d2c2",
+      "sha256": "c803542f6ea50c533515985b997752d46d814f120a2de8ed91ea550bd949ae77",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
@@ -26016,6 +26016,29 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/decode-inter-warp-bawp-output-order/proposal.md",
+      "sha256": "b19a2a07e204c68c20202cd9726932847f4ba1fea68b5f8825412762bcb56110",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-FIRST-INTER-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-warp-bawp-output-order/specs/decoder-support/spec.md",
+      "sha256": "d469a72f6b74b74112c06b648f712c57c39bd636ec1072316832b440c358b798",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-warp-bawp-output-order/tasks.md",
+      "sha256": "15cd425ddab2d3f27ed33fd26625e3f10221db7247dec630ff2f31f7305ad64c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/decode-ivf-grouped-frame-units/proposal.md",
       "sha256": "fd3b592d84177f20e8cf05951e9d489deea4d5912e01697892f7381b570ef834",
       "scope_kind": "openspec",
@@ -30116,7 +30139,7 @@
     },
     {
       "path": "xtask/src/source_lines.rs",
-      "sha256": "d3faf73ca3bc619fb02ed30dbcdde7839a994dc9d3fcad25213e30c85b81c316",
+      "sha256": "96faede1817ed8ceb235e656f682e90676029a8920e0f3ef471ecf8361d8f132",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "XTASK-SOURCE-LINES"
