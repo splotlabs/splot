@@ -81,8 +81,13 @@ pub(in crate::runtime_minimal) const fn mv_clamp_to_integer(v: i32) -> i32 {
 }
 
 /// AV2 §5.20.7.13 `lower_mv_precision(precision, candMv)`: rounds a candidate
-/// motion vector to the requested Table 6.19 precision.
+/// motion vector to the requested Table 6.19 precision. Eighth-pel input is
+/// already on the grid (`radix == 1`), where `Round2(a - 1, 0)` would diverge
+/// from the identity.
 pub(in crate::runtime_minimal) fn lower_mv_precision(precision: u8, mv: Mv) -> Mv {
+    if precision >= MV_PRECISION_EIGHTH_PEL {
+        return mv;
+    }
     let bits = u32::from(MV_PRECISION_EIGHTH_PEL - precision);
     let radix = 1i32 << bits;
     let round = |component: i32| -> i32 {

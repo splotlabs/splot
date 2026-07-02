@@ -7,8 +7,9 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 
 use super::{
-    MV_LOW, MV_PRECISION_EIGHT_PEL, MV_PRECISION_FOUR_PEL, MV_PRECISION_ONE_PEL, MV_UPP, Mv,
-    amvd_index_to_mvd, lower_mv_precision, mv_clamp_to_integer, read_ns,
+    MV_LOW, MV_PRECISION_EIGHT_PEL, MV_PRECISION_EIGHTH_PEL, MV_PRECISION_FOUR_PEL,
+    MV_PRECISION_ONE_PEL, MV_UPP, Mv, amvd_index_to_mvd, lower_mv_precision, mv_clamp_to_integer,
+    read_ns,
 };
 
 #[test]
@@ -82,4 +83,11 @@ fn lower_mv_precision_rounds_asymmetric_components_per_spec() {
 
     let on_grid = lower_mv_precision(MV_PRECISION_ONE_PEL, Mv { row: -32, col: 8 });
     assert_eq!(on_grid, Mv { row: -32, col: 8 });
+
+    let eighth_pel = lower_mv_precision(MV_PRECISION_EIGHTH_PEL, Mv { row: 5, col: -3 });
+    assert_eq!(
+        eighth_pel,
+        Mv { row: 5, col: -3 },
+        "radix 1 is the identity"
+    );
 }
