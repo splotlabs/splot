@@ -532,7 +532,13 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     )?;
     let key_implicit = key_core.implicit_output_frame == Some(true);
     let key_immediate = key_core.immediate_output_frame == Some(true);
-    let evicted = scheduler.refresh(key_update.refresh_frame_flags, 0, key_hint, key_implicit);
+    let evicted = scheduler.refresh(
+        key_update.refresh_frame_flags,
+        0,
+        key_hint,
+        key_implicit,
+        true,
+    );
     output_frame_bytes =
         charge_emitted_outputs(options, &frames, &scheduler, &evicted, output_frame_bytes)?;
     reference.update(0, &key_update);
@@ -699,11 +705,14 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                 )?;
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
                 let inter_immediate = inter_core.immediate_output_frame == Some(true);
+                let inter_key_or_switch =
+                    inter_core.is_key_frame || inter_core.frame_type == Some(FrameType::Switch);
                 let evicted = scheduler.refresh(
                     inter_update.refresh_frame_flags,
                     frame_index,
                     inter_hint,
                     inter_implicit,
+                    inter_key_or_switch,
                 );
                 output_frame_bytes = charge_emitted_outputs(
                     options,
@@ -717,7 +726,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                     inter_update.refresh_frame_flags,
                     inter_hint,
                     inter_implicit || inter_immediate,
-                    inter_core.is_key_frame || inter_core.frame_type == Some(FrameType::Switch),
+                    inter_key_or_switch,
                 );
                 if inter_immediate && !scheduler.already_emitted(frame_index) {
                     let emitted = scheduler.on_immediate(frame_index, inter_hint);
@@ -761,6 +770,8 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
 }
 
 /// Charges the output count/byte limits for newly emitted display frames.
+/// Frames past the caller's `output_frame_limit` are discarded before
+/// output, so they are not charged.
 fn charge_emitted_outputs(
     options: &DecodeOptions,
     frames: &[MinimalRuntimeFrame],
@@ -771,8 +782,16 @@ fn charge_emitted_outputs(
     if newly.is_empty() {
         return Ok(output_frame_bytes);
     }
-    ensure_output_frame_count_limit(options.limits(), scheduler.emitted.len() as u64)?;
-    for &frame_index in newly {
+    let requested = options
+        .output_frame_limit()
+        .map_or(u64::MAX, std::num::NonZeroU64::get);
+    let emitted_total = (scheduler.emitted.len() as u64).min(requested);
+    ensure_output_frame_count_limit(options.limits(), emitted_total)?;
+    let first_new = scheduler.emitted.len() - newly.len();
+    for (offset, &frame_index) in newly.iter().enumerate() {
+        if (first_new + offset) as u64 >= requested {
+            break;
+        }
         let frame = frames.get(frame_index).ok_or_else(|| {
             unsupported(
                 "displayed_frame_index_unavailable",
@@ -880,15 +899,18 @@ impl OutputScheduler {
     /// releases a held eligible frame (§ 7.21.6 with the slot), then stores
     /// the current frame, so a later slot's flush chain can output the
     /// current frame. Already-output frames are never re-held (§ 7.21.4
-    /// eligibility excludes them).
+    /// eligibility excludes them), and a key/switch frame is eligible only
+    /// through its first refreshed slot (§ 7.23 `RefValid = first`).
     fn refresh(
         &mut self,
         refresh_frame_flags: u32,
         frame_index: usize,
         ordering: u32,
         implicit: bool,
+        is_key_or_switch: bool,
     ) -> Vec<usize> {
         let mut newly = Vec::new();
+        let mut first = true;
         for slot in 0..self.pending.len() {
             if (refresh_frame_flags >> slot) & 1 == 0 {
                 continue;
@@ -898,8 +920,10 @@ impl OutputScheduler {
                 self.emit(held_index, &mut newly);
                 self.output_successive(held_ordering, &mut newly);
             }
-            self.pending[slot] = (implicit && !self.emitted.contains(&frame_index))
+            let valid = !is_key_or_switch || first;
+            self.pending[slot] = (implicit && valid && !self.emitted.contains(&frame_index))
                 .then_some((frame_index, ordering));
+            first = false;
         }
         newly
     }
