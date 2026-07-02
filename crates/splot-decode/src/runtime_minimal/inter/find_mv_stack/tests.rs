@@ -19,6 +19,7 @@ fn block_at(mi_row: usize, mi_col: usize) -> MvBlockContext {
         bh4: N4_32,
         sb_h4: SB_H4_64,
         ref_frame0: 0,
+        ref_frame1: None,
         mi_rows: MI_DIM,
         mi_cols: MI_DIM,
     }
@@ -404,6 +405,63 @@ fn mismatched_reference_neighbour_does_not_contribute() {
 }
 
 #[test]
+fn single_ref_mode_ctx_matches_compound_list1_without_counting_list0_newmv() {
+    let mut grid = empty_grid();
+    grid.record_block_with_newmv_lists(
+        0,
+        0,
+        N4_32,
+        N4_32,
+        1,
+        0,
+        true,
+        false,
+        BLOCK0_MV,
+        true,
+        SWITCHABLE_FILTERS,
+        false,
+    );
+    let block1 = block_at(0, N4_32);
+
+    let ctx = find_mode_ctx(&grid, &block1);
+    assert_eq!(
+        ctx.new_mv_count, 0,
+        "list-1 ref match must not count list-0 NEWMV"
+    );
+    assert_eq!(
+        ctx.new_mv_context, 1,
+        "left list-1 match contributes nearestMatch only"
+    );
+}
+
+#[test]
+fn single_ref_mode_ctx_counts_compound_list1_newmv_when_list1_matches() {
+    let mut grid = empty_grid();
+    grid.record_block_with_newmv_lists(
+        0,
+        0,
+        N4_32,
+        N4_32,
+        1,
+        0,
+        false,
+        true,
+        BLOCK0_MV,
+        true,
+        SWITCHABLE_FILTERS,
+        false,
+    );
+    let block1 = block_at(0, N4_32);
+
+    let ctx = find_mode_ctx(&grid, &block1);
+    assert_eq!(
+        ctx.new_mv_count, 2,
+        "both left probes count the matching list-1 NEWMV"
+    );
+    assert_eq!(ctx.new_mv_context, 3, "left NEWMV context");
+}
+
+#[test]
 fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
     let mut grid = empty_grid();
     record_inter(&mut grid, 0, 0, NeighbourYMode::Other, BLOCK0_MV, true);
@@ -508,6 +566,7 @@ fn sb_block_at(mi_row: usize, mi_col: usize) -> MvBlockContext {
         bh4: N4_64,
         sb_h4: SB_H4_64,
         ref_frame0: 0,
+        ref_frame1: None,
         mi_rows: GRID_MI_DIM,
         mi_cols: GRID_MI_DIM,
     }
