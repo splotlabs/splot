@@ -241,6 +241,7 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
             &key_core,
             key_envelope.offset,
             frames[0].frame_cdfs.clone(),
+            key_core.order_hint_lsb.unwrap_or(0),
         )?,
     );
 

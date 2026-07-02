@@ -1159,10 +1159,12 @@ struct RefMvBankEntry {
 }
 
 /// AV2 § 7.12.2.21 / § 5.20.2.2 reference motion-vector bank: nine ring
-/// buffers of recent block MVs, reset (and re-seeded from the row above) at
-/// each superblock, filled into the MV stack after the spatial scan.
-/// Compound weights (`cwp`) are not retained: every admitted producer uses
-/// `CWP_EQUAL`.
+/// buffers of recent block MVs, filled into the MV stack after the spatial
+/// scan. Contents persist across superblocks and are cleared once per
+/// superblock row (§ 5.20.2 `clear_left_context`); the per-superblock
+/// reset zeroes only the hit counters and re-seeds by appending from the
+/// row above. Compound weights (`cwp`) are not retained: every admitted
+/// producer uses `CWP_EQUAL`.
 pub(super) struct RefMvBank {
     entries: [[RefMvBankEntry; REF_MV_BANK_SIZE]; BANK_REFS_PER_FRAME as usize],
     sizes: [usize; BANK_REFS_PER_FRAME as usize],
@@ -1204,7 +1206,9 @@ impl RefMvBank {
     }
 
     /// § 5.20.2.2 `reset_refmv_bank`, invoked at the first leaf of each
-    /// superblock (detected from the leaf coordinates); re-seeds from the
+    /// superblock (detected from the leaf coordinates): zeroes the hit
+    /// counters, clears the bank contents only on a superblock-row
+    /// transition (§ 5.20.2 `clear_left_context`), and re-seeds from the
     /// decoded row above unless this is the top superblock row.
     pub(super) fn reset_for_leaf(
         &mut self,
@@ -1217,15 +1221,18 @@ impl RefMvBank {
         if self.current_sb == Some(sb) {
             return;
         }
+        let new_sb_row = self.current_sb.is_none_or(|(row, _)| row != sb.0);
         self.current_sb = Some(sb);
         self.sb_hits = 0;
         self.remain_hits = 0;
         self.unit_hits = 0;
-        for size in &mut self.sizes {
-            *size = 0;
-        }
-        for start in &mut self.starts {
-            *start = 0;
+        if new_sb_row {
+            for size in &mut self.sizes {
+                *size = 0;
+            }
+            for start in &mut self.starts {
+                *start = 0;
+            }
         }
         let sb_row = sb.0 * sb_size4;
         let sb_col = sb.1 * sb_size4;
@@ -1270,6 +1277,23 @@ impl RefMvBank {
             self.remain_hits += unit_count;
             self.unit_hits = 0;
         }
+    }
+
+    /// § 5.20.7 `update_ref_mv_count` for non-inter blocks: accrues the
+    /// unit budget without a bank write, under the same
+    /// `RefMvBankHits < MAX_RMB_SB_HITS` gate as the inter arm.
+    pub(super) fn update_count_for_non_inter(
+        &mut self,
+        mi_row: usize,
+        mi_col: usize,
+        n4w: usize,
+        n4h: usize,
+        sb_size4: usize,
+    ) {
+        if self.sb_hits >= MAX_RMB_SB_HITS {
+            return;
+        }
+        self.update_unit_budget(mi_row, mi_col, n4w, n4h, sb_size4);
     }
 
     /// § 5.20.7 per-block bank update (`fromWithinSb == 1`).
@@ -1401,7 +1425,9 @@ impl RefMvBank {
     }
 }
 
-/// AV2 § 7.12.2 `find_mv_stack` for the spatial-only single-prediction subset.
+/// AV2 § 7.12.2 `find_mv_stack` for the spatial-only single-prediction
+/// subset. `PruneCount` starts at zero and is shared across the spatial
+/// scan, the § 7.12.2.21 bank fill, and the § 7.12.2.20 global-MV dedup.
 pub(super) fn find_mv_stack(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -1409,17 +1435,17 @@ pub(super) fn find_mv_stack(
     bank: Option<(&RefMvBank, usize)>,
 ) -> MvStack {
     let mut entries: Vec<MvStackEntry> = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
+    let mut prune_count = 0usize;
 
     for probe in mv_stack_spatial_probes(block).into_iter().flatten() {
-        scan_mv_stack_probe(grid, block, probe, &mut entries);
+        scan_mv_stack_probe(grid, block, probe, &mut entries, &mut prune_count);
     }
 
     // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): 7.12.2.5 Scan col, 7.12.2.19 Sorting, 7.12.2.20 large-block MVP
     if let Some((bank, max_ref_mv_count)) = bank {
-        let mut prune_count = 0usize;
         bank.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
     }
-    extra_search(block, global_mv, &mut entries);
+    extra_search(block, global_mv, &mut entries, &mut prune_count);
 
     let stack: Vec<(Mv, (i32, i32))> = entries
         .into_iter()
@@ -1441,26 +1467,29 @@ fn scan_mv_stack_probe(
     block: &MvBlockContext,
     probe: RelativeProbe,
     entries: &mut Vec<MvStackEntry>,
+    prune_count: &mut usize,
 ) {
     let Some((cell, weight)) = probe.stack_cell(grid, block) else {
         return;
     };
 
-    if entries.len() >= MAX_REF_MV_STACK_SIZE {
-        return;
-    }
-
     if !matches_block_ref(cell, block) {
         return;
     }
 
-    for entry in entries.iter_mut() {
-        if entry.mv == cell.mv {
-            entry.weight = entry.weight.saturating_add(weight);
-            return;
+    if *prune_count < MAX_PR_NUM {
+        for entry in entries.iter_mut() {
+            *prune_count += 1;
+            if entry.mv == cell.mv {
+                entry.weight = entry.weight.saturating_add(weight);
+                return;
+            }
         }
     }
 
+    if entries.len() >= MAX_REF_MV_STACK_SIZE {
+        return;
+    }
     let (_, _, adjusted_delta_col) = probe.stack_target(block);
     entries.push(MvStackEntry {
         mv: cell.mv,
@@ -1469,13 +1498,27 @@ fn scan_mv_stack_probe(
     });
 }
 
-fn extra_search(block: &MvBlockContext, global_mv: Mv, entries: &mut Vec<MvStackEntry>) {
+fn extra_search(
+    block: &MvBlockContext,
+    global_mv: Mv,
+    entries: &mut Vec<MvStackEntry>,
+    prune_count: &mut usize,
+) {
     for entry in entries.iter_mut() {
         entry.mv = clamp_mv(block, entry.mv);
     }
 
     if entries.len() < MAX_REF_MV_STACK_SIZE {
-        let already_present = entries.iter().any(|entry| entry.mv == global_mv);
+        let mut already_present = false;
+        if *prune_count < MAX_PR_NUM {
+            for entry in entries.iter() {
+                *prune_count += 1;
+                if entry.mv == global_mv {
+                    already_present = true;
+                    break;
+                }
+            }
+        }
         if !already_present {
             entries.push(MvStackEntry {
                 mv: global_mv,

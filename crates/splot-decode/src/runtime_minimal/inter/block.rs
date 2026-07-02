@@ -718,6 +718,9 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 BlockPrecisionRecord::explicit(frame_mv_precision(core, tile_offset)?),
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude, tile_offset)?;
+            if let Some(bank) = ref_mv_bank.as_mut() {
+                bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, sb_h4);
+            }
             trace_leaf_exit("intrabc", frontier, entry_checkpoint, symbols.checkpoint());
             return Ok(non_intra_leaf_mode(frontier));
         }
@@ -762,6 +765,9 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 BlockPrecisionRecord::explicit(frame_mv_precision(core, tile_offset)?),
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude, tile_offset)?;
+            if let Some(bank) = ref_mv_bank.as_mut() {
+                bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, sb_h4);
+            }
         }
         trace_leaf_exit("intra", frontier, entry_checkpoint, symbols.checkpoint());
         return Ok(leaf);
@@ -1376,15 +1382,17 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             symbols.checkpoint()
         );
     }
-    read_inter_intra_flag_syntax(
-        cdfs,
-        symbols,
-        core,
-        frontier.b_size.index(),
-        n4w,
-        n4h,
-        tile_offset,
-    )?;
+    if !bawp.enabled {
+        read_inter_intra_flag_syntax(
+            cdfs,
+            symbols,
+            core,
+            frontier.b_size.index(),
+            n4w,
+            n4h,
+            tile_offset,
+        )?;
+    }
     let stack = find_mv_stack(
         mv_grid,
         &block_ctx,
@@ -2172,9 +2180,11 @@ fn lowered_pred_mv(precision: BlockPrecisionRecord, pred_mv: Mv) -> Mv {
 /// `read_interintra_mode(0)` `inter_intra` flag, read for single-reference
 /// non-warp blocks of 8x8..=64x64 when the frame enables the INTERINTRA
 /// motion mode. Interintra prediction is beyond the current frontier, so a
-/// set flag defers; reading it keeps entropy sync for flag == 0. The other
-/// `motion_mode_allowed` bail-outs (skip_mode, BAWP, TIP/INTRA references,
-/// segmentation features) are already frontier-rejected before this point.
+/// set flag defers; reading it keeps entropy sync for flag == 0.
+/// `use_bawp` zeroes `motion_mode_allowed` (05:13818), so the caller skips
+/// this read for BAWP blocks; the other bail-outs (skip_mode, TIP/INTRA
+/// references, segmentation features) are frontier-rejected before this
+/// point.
 fn read_inter_intra_flag_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

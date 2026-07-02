@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "d32b115ca2d4306285082ca58723dcc3449505b9",
+  "audited_commit": "440af47419e1588c15501edd96e4c717c17025ab",
   "outcome": "success",
   "files": [
     {
@@ -359,7 +359,7 @@
     },
     {
       "path": "crates/splot-cli/tests/decode_cli.rs",
-      "sha256": "4dcb4d6e99853e7e8683e7f7bffc23df781d96a92db92b03dc54cee3304d3039",
+      "sha256": "42014e7412670437932282fa5a11c9a3755ff9b9adebb3ac517e6f2b9c4128a2",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "DECODE-BYTE-STREAM-PLANNER",
@@ -2011,7 +2011,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal.rs",
-      "sha256": "2807f67f63c5f1755302325e760f8152d0a5a97b007b10c79f9d6beaf110d415",
+      "sha256": "cf26e6d5c84d2988919a22518282bfb5e9b6894361f7b41ed4f171629d26b9c9",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
@@ -2131,7 +2131,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "28bfd8e23ea958f9079e931d911f12e79b7a124ecd44a1a86b8bc189f64c8b7b",
+      "sha256": "335b9297acd824f7ba2a4dfde31902a70f4a8831f66af17ea50dbade610df412",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2142,6 +2142,13 @@
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block/residual.rs",
       "sha256": "225d03f045dfebc6c681f490647fe859a4566abeda326be2b4bd946199e9ea43",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/runtime_minimal/inter/block/warp.rs",
+      "sha256": "1a1bf321749b861afd1830543851c74ff36f68c507834621f6e74af5b2f780f7",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2162,7 +2169,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
-      "sha256": "c803542f6ea50c533515985b997752d46d814f120a2de8ed91ea550bd949ae77",
+      "sha256": "092cece0369daff6cf9325fc5ec34622c14a48bb004a27b43236b267a2b2b510",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
@@ -2200,7 +2207,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/mc.rs",
-      "sha256": "b07e9383a9128ac70c5298a04f448027530360191c29e6175d6720b695da44d5",
+      "sha256": "41a44e6a1156aa81182cc26538bacd4c2dc75761c34c37bebca2a90fe4fce462",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2253,7 +2260,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/tests.rs",
-      "sha256": "f329ac0a2a715c029f1782f60af3c59aa2bb4578df6cc688e5b213a95f9341b0",
+      "sha256": "2ed7307e4626614e17ec4be37b91ec4dceb6768e7b20bca798e3ae008d80a054",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "AV2-5.18.7-SEGMENTATION-TILING",
@@ -26017,7 +26024,7 @@
     },
     {
       "path": "openspec/changes/decode-inter-warp-bawp-output-order/proposal.md",
-      "sha256": "b19a2a07e204c68c20202cd9726932847f4ba1fea68b5f8825412762bcb56110",
+      "sha256": "7bb71c9fffcafc2f750528b2ca21709639cc1c59da1d579d5868777070a7b881",
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-FIRST-INTER-FRAME-FRONTIER"
@@ -26026,7 +26033,7 @@
     },
     {
       "path": "openspec/changes/decode-inter-warp-bawp-output-order/specs/decoder-support/spec.md",
-      "sha256": "d469a72f6b74b74112c06b648f712c57c39bd636ec1072316832b440c358b798",
+      "sha256": "d7b573e564e62dfba8f9d38c2b730647ff850c1a0dce220530150472eba19b61",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"

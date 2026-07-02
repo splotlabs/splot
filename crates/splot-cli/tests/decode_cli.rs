@@ -274,15 +274,12 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["matrix_row"], "first-inter-frame-frontier");
     assert_eq!(json["feature_id"], "DECODE-FIRST-INTER-FRAME-FRONTIER");
     assert_eq!(json["detail_kind"], "unsupported_feature");
+    assert_eq!(json["unsupported_reason"], "inter_unsupported_frame_tools");
     assert_eq!(
-        json["unsupported_reason"],
-        "inter_warp_extend_unimplemented"
-    );
-    assert_eq!(
-        json["byte_offset"], 8371,
-        "the frontier holds at the first EXTENDWARP block of coded frame 2; smooth-mask \
-         interintra prediction and per-transform-unit intra prediction are admitted, and \
-         output frame 0 is byte-identical to AVM"
+        json["byte_offset"], 12431,
+        "the frontier holds at coded frame 3's header (temporal MVs / use_ref_frame_mvs); \
+         the warp family, BAWP, and display-order output scheduling are admitted, coded \
+         frame 2 parses end-to-end, and output frame 0 is byte-identical to AVM"
     );
 }
 
