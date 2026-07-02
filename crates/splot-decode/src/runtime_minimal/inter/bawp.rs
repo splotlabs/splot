@@ -21,6 +21,9 @@ const fn to_fullmv(mv: i32) -> i32 {
 /// above/left templates (or the explicit-scale arm) and `Clip1`-scaling the
 /// block in place. Runs after motion compensation and before the residual;
 /// BAWP blocks never carry interintra or warp (§ 5.20.7.14 excludes them).
+/// Template availability is frame-origin-based: the decode entry enforces a
+/// single tile, so the § 5.20.7.15 tile-relative `AvailU`/`AvailL` reduce to
+/// the frame origin here.
 pub(super) fn apply_bawp<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     reference: &DecodedFrame<T>,
@@ -85,8 +88,12 @@ fn apply_bawp_plane<T: ReconSample>(
     let plane_width = i64::try_from(ref_width).map_err(|_| bounds_error())?;
     let plane_height = i64::try_from(ref_height).map_err(|_| bounds_error())?;
     let (bw, bh) = (
-        i64::try_from(plane_w).map_err(|_| bounds_error())?,
-        i64::try_from(plane_h).map_err(|_| bounds_error())?,
+        i64::try_from(plane_w)
+            .map_err(|_| bounds_error())?
+            .min(plane_width - i64::try_from(plane_x).map_err(|_| bounds_error())?),
+        i64::try_from(plane_h)
+            .map_err(|_| bounds_error())?
+            .min(plane_height - i64::try_from(plane_y).map_err(|_| bounds_error())?),
     );
     if ref_x < 1 || ref_y < 1 || ref_x + bw > plane_width || ref_y + bh > plane_height {
         return Err(bounds_error());
@@ -103,29 +110,13 @@ fn apply_bawp_plane<T: ReconSample>(
 
     let avail_up = plane_y > 0;
     let avail_left = plane_x > 0;
-    let bw2 = (if plane == PlaneId::Y { 16 } else { 8 }).min(plane_w);
-    let bh2 = (if plane == PlaneId::Y { 16 } else { 8 }).min(plane_h);
-    let width = if bw2 == 12 { 8 } else { bw2 };
-    let height = if bh2 == 12 { 8 } else { bh2 };
-    let (num_up, num_left) = if avail_up && avail_left {
-        if width == 16 && height == 16 {
-            (16, 16)
-        } else if width > 4 && height > 4 {
-            (8, 8)
-        } else if width < 16 && height < 16 {
-            (4, 4)
-        } else if width == 16 {
-            (16, 0)
-        } else {
-            (0, 16)
-        }
-    } else if avail_up {
-        (width, 0)
-    } else if avail_left {
-        (0, height)
-    } else {
-        (0, 0)
-    };
+    let (width, height, num_up, num_left) = bawp_template_counts(
+        usize::try_from(bw).map_err(|_| bounds_error())?,
+        usize::try_from(bh).map_err(|_| bounds_error())?,
+        plane == PlaneId::Y,
+        avail_up,
+        avail_left,
+    );
 
     let edges = workspace
         .intra_dc_edges_for_rect(plane, plane_x, plane_y, size)
@@ -224,4 +215,70 @@ fn reference_plane<T: ReconSample>(
     let (samples, width, height, _, _) =
         super::mc::reference_plane_samples(reference, plane, tile_offset)?;
     Ok((samples, width, height))
+}
+
+/// § 7.13.3.25 template geometry: the in-plane clamped block size (`bw`,
+/// `bh`) selects the sampled template extents and counts; the `12 -> 8`
+/// arms serve exactly the clamped frame-edge sizes.
+fn bawp_template_counts(
+    bw: usize,
+    bh: usize,
+    luma: bool,
+    avail_up: bool,
+    avail_left: bool,
+) -> (usize, usize, usize, usize) {
+    let cap = if luma { 16 } else { 8 };
+    let bw2 = cap.min(bw);
+    let bh2 = cap.min(bh);
+    let width = if bw2 == 12 { 8 } else { bw2 };
+    let height = if bh2 == 12 { 8 } else { bh2 };
+    let (num_up, num_left) = if avail_up && avail_left {
+        if width == 16 && height == 16 {
+            (16, 16)
+        } else if width > 4 && height > 4 {
+            (8, 8)
+        } else if width < 16 && height < 16 {
+            (4, 4)
+        } else if width == 16 {
+            (16, 0)
+        } else {
+            (0, 16)
+        }
+    } else if avail_up {
+        (width, 0)
+    } else if avail_left {
+        (0, height)
+    } else {
+        (0, 0)
+    };
+    (width, height, num_up, num_left)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bawp_template_counts;
+
+    #[test]
+    fn template_counts_follow_the_clamped_size_table() {
+        for (case, expected) in [
+            ((16, 16, true, true, true), (16, 16, 16, 16)),
+            ((12, 16, true, true, true), (8, 16, 8, 8)),
+            ((16, 12, true, true, true), (16, 8, 8, 8)),
+            ((4, 4, true, true, true), (4, 4, 4, 4)),
+            ((16, 4, true, true, true), (16, 4, 16, 0)),
+            ((4, 16, true, true, true), (4, 16, 0, 16)),
+            ((32, 8, true, true, false), (16, 8, 16, 0)),
+            ((8, 32, true, false, true), (8, 16, 0, 16)),
+            ((32, 32, false, true, true), (8, 8, 8, 8)),
+            ((12, 12, false, true, true), (8, 8, 8, 8)),
+            ((64, 64, true, false, false), (16, 16, 0, 0)),
+        ] {
+            let (bw, bh, luma, up, left) = case;
+            assert_eq!(
+                bawp_template_counts(bw, bh, luma, up, left),
+                expected,
+                "bw={bw} bh={bh} luma={luma} up={up} left={left}"
+            );
+        }
+    }
 }

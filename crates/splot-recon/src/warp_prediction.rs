@@ -679,4 +679,38 @@ mod tests {
             Err(ReconError::WarpInvalidShear { .. })
         ));
     }
+
+    #[test]
+    fn ext_warp_identity_reproduces_the_colocated_unit() {
+        let (ref_w, ref_h) = (32usize, 32usize);
+        let samples = build_ref(ref_w, ref_h);
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let params = default_params(8, 12, ref_w as i64, ref_h as i64);
+        for (i4, j4) in [(0usize, 0usize), (1, 1)] {
+            let out = ext_warp_predict_unit(&view, &params, i4, j4).unwrap();
+            for r in 0..4 {
+                for c in 0..4 {
+                    let src = samples[(12 + i4 * 4 + r) * ref_w + 8 + j4 * 4 + c];
+                    assert_eq!(out[r * 4 + c], src, "i4={i4} j4={j4} r={r} c={c}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ext_warp_integer_translation_shifts_the_source_window() {
+        let (ref_w, ref_h) = (32usize, 32usize);
+        let samples = build_ref(ref_w, ref_h);
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let mut params = default_params(8, 12, ref_w as i64, ref_h as i64);
+        params.warp_params[0] = 3 << WARPEDMODEL_PREC_BITS;
+        params.warp_params[1] = 2 << WARPEDMODEL_PREC_BITS;
+        let out = ext_warp_predict_unit(&view, &params, 0, 1).unwrap();
+        for r in 0..4 {
+            for c in 0..4 {
+                let src = samples[(12 + 2 + r) * ref_w + 8 + 4 + 3 + c];
+                assert_eq!(out[r * 4 + c], src, "r={r} c={c}");
+            }
+        }
+    }
 }

@@ -469,7 +469,10 @@ fn predict_compound_plane<T: ReconSample>(
 /// derives the unit's translational MV (`get_sub_block_warp_mv` with
 /// `rnd == 0`), applies the § 5.20.9.4 / § 5.20.9.5 MV clamps and the
 /// § 7.13.3.17 unscaled scaling, and narrows the reference read window to
-/// the projected span with -3/+4 tap margins.
+/// the projected span with -3/+4 tap margins. Bounds derive from the
+/// visible reference geometry on the admitted equal-size unscaled-reference
+/// surface; the § 7.13.3.15 `is_scaled` arm and non-8-aligned mi padding
+/// are beyond the frontier (upstream gates defer both).
 #[allow(clippy::too_many_arguments)]
 fn ext_warp_unit_bounds(
     rect: McBlockRect,
