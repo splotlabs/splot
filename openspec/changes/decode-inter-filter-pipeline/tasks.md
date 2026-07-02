@@ -20,5 +20,9 @@
 - [x] 4.1 Commit deblock/CDEF/CCSO-active inter fixtures, each byte-exact
       vs avmdec (manifest + local-reference evidence + pinned hash tests).
 - [x] 4.2 Frame-0 sentinel and all committed fixtures unchanged.
-- [ ] 4.3 Root-cause and fix the sweep's remaining mismatch findings
-      (M1-M3 confident-wrong bands, M4 residual desync) before merge.
+- [x] 4.3 Root-cause the sweep's mismatch findings and close the
+      confident-wrong surface: multi-transform-unit intra prediction defers
+      unless the split is provably block-equivalent (§ 5.20.7.24 per-unit
+      prediction is the follow-on change, oracle streams retained), and the
+      invented num_total_refs >= 2 clause on reference_select is dropped
+      (1-reference reference_select frames defer at the compound context).

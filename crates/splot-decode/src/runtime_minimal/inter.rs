@@ -200,7 +200,7 @@ pub(super) fn decode_minimal_inter_frame<T: ReconSample>(
         ));
     }
 
-    let block_reference_select = tail.reference_select && num_total_refs >= 2;
+    let block_reference_select = tail.reference_select;
     let compound_is_joint_ctx = if block_reference_select {
         validate_compound_sequence_subset(sequence, &core, offset)?;
         Some(compound_is_joint_context(

@@ -630,6 +630,11 @@ impl ResidualPlanePlan {
             return Ok(block.coeffs);
         }
 
+        if !partitioned_prediction_is_block_equivalent(&self, &blocks) {
+            return Err(GeneralIntraResidualError::UnsupportedTransformPartition {
+                reason: "general_intra_partitioned_interior_edge_prediction",
+            });
+        }
         let prediction_only = zero_coeff_block();
         self.reconstruct(
             workspace,
@@ -1148,6 +1153,31 @@ impl ResidualReconstructionPlan {
             | Self::Rect { use_tcq } => Some(use_tcq),
             Self::Chroma { .. } | Self::ChromaMiddle { .. } | Self::ChromaCfl { .. } => None,
         }
+    }
+}
+
+/// § 5.20.7.24 requires per-transform-unit intra prediction, with interior
+/// units predicting from just-reconstructed sibling samples. The block-level
+/// predict-once shortcut below is provably equivalent only when every unit's
+/// prediction source edge coincides with the block edge: a single-source-edge
+/// cardinal mode split parallel to that edge (V_PRED over a vertical split
+/// shares the block's above row; H_PRED over a horizontal split shares the
+/// block's left column). Everything else defers until the per-unit
+/// prediction loop lands.
+fn partitioned_prediction_is_block_equivalent(
+    plan: &ResidualPlanePlan,
+    blocks: &[crate::tile_payload::PositionedLumaCoeffBlock],
+) -> bool {
+    let ResidualReconstructionPlan::LumaSquare {
+        plan: IntraLumaPlan::CardinalNeighbour { direction },
+        ..
+    } = plan.reconstruction
+    else {
+        return false;
+    };
+    match direction {
+        IntraCardinalDirection::Vertical => blocks.iter().all(|block| block.y == plan.y),
+        IntraCardinalDirection::Horizontal => blocks.iter().all(|block| block.x == plan.x),
     }
 }
 
