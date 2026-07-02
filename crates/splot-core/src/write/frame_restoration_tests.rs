@@ -670,6 +670,8 @@ mod tests {
 
     fn ccso_off_plane() -> CcsoPlaneParams {
         CcsoPlaneParams {
+            reuse_ccso: false,
+            sb_reuse_ccso: false,
             ccso_planes: false,
             ccso_bo_only: None,
             ccso_scale_idx: None,
@@ -683,6 +685,8 @@ mod tests {
 
     fn ccso_bo_plane(max_band_log2: u8, offsets: Vec<u8>) -> CcsoPlaneParams {
         CcsoPlaneParams {
+            reuse_ccso: false,
+            sb_reuse_ccso: false,
             ccso_planes: true,
             ccso_bo_only: Some(true),
             ccso_scale_idx: Some(0),
@@ -870,6 +874,8 @@ mod tests {
 
     fn ccso_full_plane() -> CcsoPlaneParams {
         CcsoPlaneParams {
+            reuse_ccso: false,
+            sb_reuse_ccso: false,
             ccso_planes: true,
             ccso_bo_only: Some(false),
             ccso_scale_idx: Some(0),
@@ -895,6 +901,30 @@ mod tests {
             })
         ));
         assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
+    fn ccso_inter_reuse_flags_are_rejected() {
+        for set_reuse in [true, false] {
+            let mut plane = ccso_full_plane();
+            if set_reuse {
+                plane.reuse_ccso = true;
+            } else {
+                plane.sb_reuse_ccso = true;
+            }
+            let params = CcsoParams {
+                ccso_frame_flag: Some(true),
+                planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            };
+            let mut writer = BitWriter::new();
+            assert!(matches!(
+                write_ccso_params(&mut writer, &params, false, 3, &ccso_enabled()),
+                Err(WriteError::NonCanonicalFrameHeader {
+                    what: "ccso_inter_reuse"
+                })
+            ));
+            assert_eq!(writer.bit_len(), 0);
+        }
     }
 
     #[test]

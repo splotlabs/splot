@@ -472,6 +472,9 @@ pub(super) struct ModeContext {
     pub(super) new_mv_count: usize,
     /// AV2 § 7.11.2 `WarpMvCount`: matching warp-mode neighbours.
     pub(super) warp_mv_count: usize,
+    /// § 7.11.4 `WarpSampleFound[ 0 ]`: a warp-scan probe hit an inter cell
+    /// whose reference matches the block's first reference.
+    pub(super) warp_sample_found: bool,
 }
 
 /// AV2 § 7.11.2 `find_mode_ctx` for single prediction.
@@ -492,12 +495,16 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
         }
         *slot = true;
     }
+    let mut warp_sample_found = false;
     for probe in warp_context_spatial_probes(block).into_iter().flatten() {
         let Some(cell) = probe.warp_context_cell(grid, block) else {
             continue;
         };
-        if matches_block_ref(cell, block) && cell.is_warp {
-            warp_mv_count = (warp_mv_count + 1).min(4);
+        if matches_block_ref(cell, block) {
+            warp_sample_found = true;
+            if cell.is_warp {
+                warp_mv_count = (warp_mv_count + 1).min(4);
+            }
         }
     }
 
@@ -508,6 +515,7 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
         new_mv_context,
         new_mv_count,
         warp_mv_count,
+        warp_sample_found,
     }
 }
 
@@ -650,6 +658,30 @@ impl BlockNeighbourContext {
             .take(self.cell_count)
             .filter(|cell| cell.is_inter && cell.ref_frame0 == ref_frame0 && cell.use_amvd)
             .count()
+    }
+
+    /// AV2 § 8.3.2 `use_extend_warp` context: `NPos` neighbour count with
+    /// `MotionModes >= LOCALWARP` (every recorded warp block resolves to a
+    /// warp motion mode, so `is_warp` models the comparison exactly).
+    pub(super) fn use_extend_warp_ctx(&self) -> usize {
+        self.npos_cells
+            .iter()
+            .take(self.npos_count)
+            .filter(|cell| cell.is_warp)
+            .count()
+    }
+
+    /// AV2 § 8.3.2 `use_local_warp` context: `hasWarp` plus the `NPos`
+    /// neighbour count with `MotionModes == LOCALWARP`. LOCALWARP blocks are
+    /// beyond the frontier, so no recorded neighbour can hold that mode yet;
+    /// widen the cell record with the motion mode when LOCALWARP decode lands.
+    pub(super) fn use_local_warp_ctx(&self) -> usize {
+        usize::from(
+            self.npos_cells
+                .iter()
+                .take(self.npos_count)
+                .any(|cell| cell.is_warp),
+        )
     }
 
     /// AV2 § 8.3.2 `use_most_probable_precision` context: neighbour count with
@@ -860,11 +892,8 @@ pub(super) fn find_mv_stack(
         scan_mv_stack_probe(grid, block, probe, &mut entries);
     }
 
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.5 Scan col process
-
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.19 Sorting process
-
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): §7.12.2.20 large-block (>32x32) MVP
+    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.5 Scan col,
+    // §7.12.2.19 Sorting, and §7.12.2.20 large-block (>32x32) MVP processes
     extra_search(block, global_mv, &mut entries);
 
     let stack: Vec<Mv> = entries

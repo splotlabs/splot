@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "16b513c6b723b0c7959366d4619b3ac41d657576",
+  "audited_commit": "c2108b6a11d159c1532f4b45c0665c7b695db23b",
   "outcome": "success",
   "files": [
     {
@@ -359,7 +359,7 @@
     },
     {
       "path": "crates/splot-cli/tests/decode_cli.rs",
-      "sha256": "b5be0baed36ef6923e48543b00d83131078fbbd9a1d9100ec16c232cf6dd9921",
+      "sha256": "71953ed3f9e08958b1b886b3a0b02e1e3be6a414f4b7300cdc250d98fb0e1189",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "DECODE-BYTE-STREAM-PLANNER",
@@ -915,7 +915,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/inter.rs",
-      "sha256": "9e12767c87aff2d51d2041fdfde8672ac2f38b3f5c3c38cfe8ae1bb109a36a82",
+      "sha256": "4dc3f0375472bf4712961583192930df2bd9bd6c167cf89f4a1719dd1a19de12",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "DECODE-INTER-MULTIREF-RUNTIME"
@@ -933,7 +933,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/mod.rs",
-      "sha256": "ff6ff14a68bcb59581ceadd2f3a11cd5d4b27744a7529231f7ea1df057a43f41",
+      "sha256": "b454259b3f3e67bffa187323461cb9c656c59d677d10d0f8bc72f0ad36c9c21a",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18-FRAME-HEADER",
@@ -952,7 +952,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/restoration.rs",
-      "sha256": "131661411a1f41d58bd8826d3298d56d665db581585dc77b08fa1c6749eb3d91",
+      "sha256": "5795369f0d2b176179e2618bc356b92236931bc8c51c55b16b12a580a68daf15",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
@@ -1556,7 +1556,7 @@
     },
     {
       "path": "crates/splot-core/src/write/frame_restoration.rs",
-      "sha256": "81e28889029141fd559915f638fe48be4be192195bde6af0bae31eceb15f7fc4",
+      "sha256": "e14257117499053cf4430d4d81c9dd468ee255c2acac9bea54c4cd8d350a3a57",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "ENC-BITSTREAM-WRITER"
@@ -1565,14 +1565,14 @@
     },
     {
       "path": "crates/splot-core/src/write/frame_restoration_proptests.rs",
-      "sha256": "7aea6ced87daff2e2669550f9e763ca7b2aaa9d914e4760879a4902287b2b287",
+      "sha256": "65655ec33dfa60e8aa4bc0342092e6dcf32c157a2169e56e077abdf4359020fa",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/write/frame_restoration_tests.rs",
-      "sha256": "0398857504f8b481c366cfcec56a115fc901325a58fbe811a1209ff616550652",
+      "sha256": "a63a04aef27846636efe1f610a7d0ec98b4ce12df30e52485fa0831c8532e844",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
@@ -2011,7 +2011,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal.rs",
-      "sha256": "649aceffb5c7c318336482035d0cc9348921a4b736cd52fba037da44a0fc3190",
+      "sha256": "0ddfb3c2b2031493a1c37c4530fdbcd7b3828b2e45010cd3c73811e6938b306c",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
@@ -2057,7 +2057,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/ccso.rs",
-      "sha256": "f85e120e69cd696cd4284eb9284f98590bd6cd3029be12674d54ed1fce4a9321",
+      "sha256": "4f898c761554526cd92aaf8571ef63ab7c10ba1ae3d16254ebb96778c980f70c",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2082,7 +2082,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/general_intra.rs",
-      "sha256": "3254e5a99d400501ae7be0315f1c918d3483462fa4d67e253ea7fef6220a6c9c",
+      "sha256": "cc1ffdd45e53feaa4e1fc6cf6ca75581b8d632559df8cf07b1402b47c226d938",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-10BIT",
@@ -2112,7 +2112,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter.rs",
-      "sha256": "cfd7929596910551c4dcceff2235f8550daf1e43040cdeae37d2584d7ee904e7",
+      "sha256": "f4c8fa9ff176dc0408ab5b355ea9f0b86aab454037a02abeae71c346c5d1beb3",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-FIRST-INTER-FRAME-FRONTIER",
@@ -2124,12 +2124,19 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "669060399d6fcda368f20b630b379b52604d081b3fa51a0840562649516ff432",
+      "sha256": "d64e3113f5f4ff22f1e37da4a9e04e25df27796067aa90e6553f47a50c7c480d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
         "DECODE-INTER-RESIDUAL-DCT"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/runtime_minimal/inter/block/residual.rs",
+      "sha256": "225d03f045dfebc6c681f490647fe859a4566abeda326be2b4bd946199e9ea43",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -2148,7 +2155,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
-      "sha256": "cbaaa6bea43db6639a7bcdb0e48c52dd84a0c11c833d8105fe57b23fc1f1a953",
+      "sha256": "968ec6648e4e7fbb33c523dbd17c2291d96a031d7308ad8805759e7d0047ea40",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
@@ -2200,7 +2207,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/read_mv.rs",
-      "sha256": "7f2ef30c0137cf3b3f8cccac1b42e723bf25ae2d7eba3141e5b9501b0a72159f",
+      "sha256": "7dddbfa2702e15467aa196ae48c16c1c39a2defc797b50dc3f5a0f86f10155c8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-SUBPEL-MV"
@@ -2209,7 +2216,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/read_mv/tests.rs",
-      "sha256": "0d4b54f9b09c54204d558aa0f5af847fc4328e99398a473a62946ff0f0d5f213",
+      "sha256": "aee1a341a61cf7cca9c1d12ca2cca5a8b69f68abf0ebe24b745faccb4c2b2753",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2239,7 +2246,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/tests.rs",
-      "sha256": "4b2b61477be85e06eed1c6e79de28d8f8caebfe8556e83ea5dbf7ddc233f8ea1",
+      "sha256": "280b7e0e4199404c55b5c53a509aa4b9305dbff8de1b2aca17d080e7f137bc62",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "AV2-5.18.7-SEGMENTATION-TILING",
@@ -2275,14 +2282,14 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/residual_pipeline.rs",
-      "sha256": "05eae5ba53d7b91db7a131389c307356ab71326c0e5bf962de9a077f76ae82c9",
+      "sha256": "6405dc7590863184b6307a1bc0a4e5119a1f5c4d53bb13d8fdd5ab5c1d84a29b",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
-      "sha256": "14a9a7f422b4ce1fba6e50c4781871006eba9622e719533f7973b52638a32385",
+      "sha256": "18303a4ae1bf2ca27c6306df98e2a99479256fb430539539ef461d139d58ddf6",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
@@ -2329,7 +2336,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon.rs",
-      "sha256": "afaddd3541288f2c6fc50a46880432eba035c728a37b1fb5b34f7cc685881a36",
+      "sha256": "a678738fa908bae28c27b1d62b37ad8f3b9a194bf081e2c7dce11e4adfaf8e5e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
@@ -2359,7 +2366,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon_tests.rs",
-      "sha256": "d33b6e9fd2e08537574fbbf81484e105e33324e80f2041df8caaff665bda884d",
+      "sha256": "f6f157d35f9e13341946ff59818be154e06acdc8fac013b8f4d694065b4fa064",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2545,7 +2552,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload.rs",
-      "sha256": "0f852e66fbb9c7e1b39916d26780dd93f5161d3bdbe09df429e07f4ffc46cc9c",
+      "sha256": "263d85d1c4c5df19f09fb3c827ac373bb0af10bdb431e0d088bbd5349442b6ab",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-TILE-PAYLOAD-BOUNDARY"
@@ -2575,7 +2582,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/cdf.rs",
-      "sha256": "805a2c4b7064284dd076d775fc1945f6cecb085f8f554e0a043a4e84c6203c67",
+      "sha256": "391d1fc34ca55d89075a3ce86822e6cea6ad9c6910c56fd1a0e8d2987becd4a4",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-TILE-CDF-SELECTION-BOUNDARY"
@@ -2598,7 +2605,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/cdf/block_rows.rs",
-      "sha256": "e019dd95b2066a1bd49d41cc1cb63be4471368f24b204da1e6d6bbd7be12170e",
+      "sha256": "5115b11ad5065b955076355590831e75e58d5f11664744594372519cfc2fa19a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3002,7 +3009,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
-      "sha256": "6caa8605424fba7ca38722a1cde125a9d7a64415b8801616df1f0ee01fedd65c",
+      "sha256": "8c9f64abd9d72190592b991bed167959f33b2b6507c7b3c0af3aa30d768d12ac",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
@@ -3010,6 +3017,7 @@
         "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER",
         "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER",
         "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF",
+        "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-GENERAL-INTRA-FRAME-RECON",
         "DECODE-GENERAL-INTRA-LUMA-COEFFS"
       ],
@@ -7047,7 +7055,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "0b4245195f75c0de468ecaf8d048defa5f57876e943b06a52c3677188023d1f0",
+      "sha256": "a7bf2ffa7665a89a7be94dbbe6b6e5816f9de8a57eb0580e37c8e32a1b3cdcef",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -7507,7 +7515,7 @@
     },
     {
       "path": "docs/LOCAL-REFERENCE-EVIDENCE.toml",
-      "sha256": "e5c8dc093aff2a1718c417a07ad436815f0cc1e2c2a4dd920ce01db1d49e4fb9",
+      "sha256": "00866f0b05396703418a0205d2daa3bdc3dce78849f4b34bc06a20e3ff58dac4",
       "scope_kind": "docs",
       "feature_ids": [
         "DECODE-FIRST-INTER-FRAME-FRONTIER",
@@ -25585,6 +25593,48 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/decode-inter-filter-pipeline/proposal.md",
+      "sha256": "cf4d1ffb002c1ecf9bdf8ac6bf06d3be2c5a34606644f405a85829612ca7357d",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-filter-pipeline/specs/decoder-support/spec.md",
+      "sha256": "f62ce6d4857c4b1fcd4c949c949d96581714667fbc6af746ea701788c85718c3",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-filter-pipeline/tasks.md",
+      "sha256": "ed732626403aca0e2ea60e36ef0faf2e6eb1f391157695cdc4cc8fcc2c57a254",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-flex-mvres-frontier/proposal.md",
+      "sha256": "bd93ca30ce8870c73156e4cede3b552aa42721755137ff1855ddbb05c47f53f8",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-flex-mvres-frontier/specs/decoder-support/spec.md",
+      "sha256": "eef099f8509b113fe2c6caac47336a6a72a911bdaa87e0b82c2b0e2b04c9f1a5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-flex-mvres-frontier/tasks.md",
+      "sha256": "f0588e8aaf2da55b9c429f17ea8f57efd7799dedbe9c34f802ba3fd6f98d60e8",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/decode-inter-grid-spatial/proposal.md",
       "sha256": "ba522576a077f5002b9d2d1cc180a135135651b883a123fe8a07a13fc520676c",
       "scope_kind": "openspec",
@@ -29181,7 +29231,7 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "c2e9e82c2bac6a2b2f4a3cc9f8c897b64cebac0eeb8c72afb16f17f1f2b5920d",
+      "sha256": "67cc80d8f111c393ab9e7d44c5f314e26058c5ceff2be03164088f4c88ffe75a",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS",
@@ -29214,6 +29264,34 @@
     {
       "path": "tests/conformance/vectors/needs-external-hls/syn-qm-64x64.ivf",
       "sha256": "398a2529e1cd62fb9fe66d05ffd7b950e61601f030c4a18571e803889ef8ce7d",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-2frame-ccso-inter-32x32-10bit-q100.ivf",
+      "sha256": "a7c7919d74b1ff819731b12571b2312875c19fc4956de365fddd9757fde45ad9",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-2frame-ccso-reuse-inter-64x64-10bit.ivf",
+      "sha256": "c1383a1265d815f7ecbdbb16a3a13ae1c42b6f31afb9a95b29590b186a50e6b6",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-2frame-cdef-inter-64x32-10bit-q120.ivf",
+      "sha256": "f6462ea929e225b03d707b21f2af44c2aaeaf3932f61248e484e0f727c01153a",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-2frame-deblock-inter-32x32-10bit-q100.ivf",
+      "sha256": "76ebb9ccd75ca79e28e8d451d4d09ec140d9ee23523c6f10a111ab6e216bd10e",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"
@@ -29254,8 +29332,22 @@
       "outcome": "success"
     },
     {
+      "path": "tests/conformance/vectors/valid/syn-2frame-sameref-compound-64x32-10bit-q150.ivf",
+      "sha256": "d0a83ae53e5ef9ff9009a1c1c1679eca71935234601d1ec7752061957b3381d4",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "tests/conformance/vectors/valid/syn-2frame-subpel-inter-64x64.ivf",
       "sha256": "4bb2504e5c47e3431cdb705e588dbd6325af1f95a9cb2021e5a5343031091d40",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-2frame-txsplit-intra-inter-64x64-10bit-q100.ivf",
+      "sha256": "c3a6bb3b8749d3920edc7fbf7c37229c3f7833111e362acb352fc398a789f0ec",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"

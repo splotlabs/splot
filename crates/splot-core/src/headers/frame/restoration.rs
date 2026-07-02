@@ -557,6 +557,12 @@ pub(crate) const fn default_restoration_size(geometry: LrGeometry) -> [u32; 3] {
 pub struct CcsoPlaneParams {
     /// `ccso_planes[plane]`: whether CCSO is enabled for the plane.
     pub ccso_planes: bool,
+    /// `reuse_ccso[plane]` (inter frames): the plane's filter parameters are
+    /// copied from a reference frame instead of coded.
+    pub reuse_ccso: bool,
+    /// `sb_reuse_ccso[plane]` (inter frames): the per-superblock `ccso_blk`
+    /// enables are copied from a reference frame instead of coded (§ 5.20.10.2).
+    pub sb_reuse_ccso: bool,
     /// `ccso_bo_only[plane]`: a smaller set of CCSO parameters is present.
     pub ccso_bo_only: Option<bool>,
     /// `ccso_scale_idx[plane]` (`f(2)`).
@@ -666,6 +672,8 @@ fn parse_ccso_params_with_references(
         let ccso_planes = reader.read_flag()?;
         let mut plane_params = CcsoPlaneParams {
             ccso_planes,
+            reuse_ccso: false,
+            sb_reuse_ccso: false,
             ccso_bo_only: None,
             ccso_scale_idx: None,
             ccso_quant_idx: None,
@@ -680,6 +688,8 @@ fn parse_ccso_params_with_references(
             if let Some(num_ref_frames) = inter_num_ref_frames {
                 reuse_ccso = reader.read_flag()?;
                 let sb_reuse_ccso = reader.read_flag()?;
+                plane_params.reuse_ccso = reuse_ccso;
+                plane_params.sb_reuse_ccso = sb_reuse_ccso;
                 if (reuse_ccso || sb_reuse_ccso) && num_ref_frames > 1 {
                     let n = ceil_log2(num_ref_frames);
                     let _ccso_ref_idx = reader.read_f(n)?;

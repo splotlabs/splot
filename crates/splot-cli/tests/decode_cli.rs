@@ -274,11 +274,15 @@ fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
     assert_eq!(json["matrix_row"], "first-inter-frame-frontier");
     assert_eq!(json["feature_id"], "DECODE-FIRST-INTER-FRAME-FRONTIER");
     assert_eq!(json["detail_kind"], "unsupported_feature");
-    assert_eq!(json["unsupported_reason"], "inter_unsupported_frame_tools");
     assert_eq!(
-        json["byte_offset"], 8345,
-        "the frontier holds at the first fully-tooled inter frame (deblock/CDEF/LR/CCSO \
-         enabled); frames 0-1 decode and output frame 0 is byte-identical to AVM"
+        json["unsupported_reason"],
+        "inter_warp_interintra_unimplemented"
+    );
+    assert_eq!(
+        json["byte_offset"], 8371,
+        "the frontier holds at the first WARPMV inter-intra block of coded frame 2; the \
+         in-loop filter chain and the warp motion-mode reads are admitted, and output \
+         frame 0 is byte-identical to AVM"
     );
 }
 

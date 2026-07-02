@@ -642,10 +642,59 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         cfl_ds_filter_index: u8,
         sb_mib: usize,
     ) -> Result<Self> {
+        Ok(Self::with_workspace(
+            new_general_intra_workspace::<T>(luma_width, luma_height, bit_depth)?,
+            luma_width,
+            luma_height,
+            bit_depth,
+            quant_reconstructable,
+            enable_ibp,
+            enable_intra_edge_filter,
+            cfl_ds_filter_index,
+            sb_mib,
+        ))
+    }
+
+    /// Wraps an already-reconstructed workspace so the caller can run the
+    /// shared §7.2 final filter chain over it: feed the filter state via the
+    /// `set_*` / deblock-record methods, then finish with
+    /// [`Self::apply_final_filters_and_freeze`]. The intra-reconstruction
+    /// state (coverage, IntrABC, IBP flags) stays inert.
+    pub(in crate::runtime_minimal) fn for_final_filtering(
+        workspace: CurrentFrameWorkspace<T>,
+        luma_width: usize,
+        luma_height: usize,
+        bit_depth: BitDepth,
+    ) -> Self {
+        Self::with_workspace(
+            workspace,
+            luma_width,
+            luma_height,
+            bit_depth,
+            false,
+            false,
+            false,
+            0,
+            16,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_workspace(
+        workspace: CurrentFrameWorkspace<T>,
+        luma_width: usize,
+        luma_height: usize,
+        bit_depth: BitDepth,
+        quant_reconstructable: bool,
+        enable_ibp: bool,
+        enable_intra_edge_filter: bool,
+        cfl_ds_filter_index: u8,
+        sb_mib: usize,
+    ) -> Self {
         let chroma_width = luma_width.div_ceil(2);
         let chroma_height = luma_height.div_ceil(2);
-        Ok(Self {
-            workspace: new_general_intra_workspace::<T>(luma_width, luma_height, bit_depth)?,
+        Self {
+            workspace,
             bit_depth,
             quant_reconstructable,
             enable_ibp,
@@ -673,7 +722,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             far_edge_avail: FarEdgeAvailGrid::new(luma_width, luma_height),
             full_recon: false,
             full_recon_luma_log: Vec::new(),
-        })
+        }
     }
 
     /// Freezes the sink workspace into a decoded frame for runtime output.
@@ -709,7 +758,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             });
     }
 
-    fn record_chroma_deblock_block(
+    pub(in crate::runtime_minimal) fn record_chroma_deblock_block(
         &mut self,
         plane_id: PlaneId,
         x: usize,
@@ -717,25 +766,23 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         chroma_tx: usize,
         qindex: u32,
     ) {
-        let Some((log2_width, log2_height)) = tx_size_log2(chroma_tx) else {
+        let Some((plane_index, block)) =
+            chroma_transform_deblock_block(plane_id, x, y, chroma_tx, qindex)
+        else {
             return;
         };
-        let plane_index = match plane_id {
-            PlaneId::U => 0,
-            PlaneId::V => 1,
-            PlaneId::Y => return,
-        };
-        let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
-        self.chroma_deblock_blocks[plane_index].push(super::super::deblock::DeblockBlock {
-            r: (y / MI_SIZE).saturating_mul(2),
-            c: (x / MI_SIZE).saturating_mul(2),
-            n4w: mi_w.saturating_mul(2),
-            n4h: mi_h.saturating_mul(2),
-            luma_tx: chroma_tx,
-            chroma_tx: Some(chroma_tx),
-            qindex,
-            skip: false,
-        });
+        self.chroma_deblock_blocks[plane_index].push(block);
+    }
+
+    /// Hands over externally accumulated § 7.17 deblock geometry (luma list +
+    /// per-plane chroma lists) for the final filter chain.
+    pub(in crate::runtime_minimal) fn set_deblock_blocks(
+        &mut self,
+        luma: Vec<super::super::deblock::DeblockBlock>,
+        chroma: [Vec<super::super::deblock::DeblockBlock>; 2],
+    ) {
+        self.deblock_blocks = luma;
+        self.chroma_deblock_blocks = chroma;
     }
 
     /// Retains the selectable walk's parsed CDEF unit grid for the final filter
@@ -785,16 +832,24 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.lr_unit_filters = filters;
     }
 
-    /// Applies the currently wired post-tile filters, then freezes the sink
-    /// workspace for runtime output.
+    /// Completes the intra reconstruction (pending chroma replays + the
+    /// full-recon coverage check) before the final filter chain runs.
+    pub(in crate::runtime_minimal) fn finish_intra_reconstruction(
+        &mut self,
+        offset: ByteOffset,
+    ) -> Result<()> {
+        self.replay_pending_chroma_transforms()?;
+        self.ensure_full_recon_coverage_complete(offset)
+    }
+
+    /// Runs the §7.2 in-loop filter chain (deblock → CDEF → CCSO → LR) over
+    /// the reconstructed workspace and freezes the filtered frame.
     pub(in crate::runtime_minimal) fn into_filtered_frame(
         mut self,
         core: &splot_core::headers::frame::FrameHeaderCore,
         deblock_quant_deltas: super::super::deblock::DeblockQuantDeltas,
         offset: ByteOffset,
     ) -> Result<DecodedFrame<T>> {
-        self.replay_pending_chroma_transforms()?;
-        self.ensure_full_recon_coverage_complete(offset)?;
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
         if let Some(filter) = core.deblocking_filter_params
@@ -4500,6 +4555,38 @@ fn frame_quant_reconstructable(core: &splot_core::headers::frame::FrameHeaderCor
         .as_ref()
         .is_none_or(|qm| !qm.using_qmatrix);
     deltas_zero && no_qmatrix
+}
+
+/// § 7.17 chroma deblock geometry for one 4:2:0 chroma transform at
+/// plane-sample (`x`, `y`): chroma MI cells map ×2 onto the luma MI grid.
+/// Returns the chroma list index (U = 0, V = 1) with the record.
+pub(in crate::runtime_minimal) fn chroma_transform_deblock_block(
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    chroma_tx: usize,
+    qindex: u32,
+) -> Option<(usize, super::super::deblock::DeblockBlock)> {
+    let (log2_width, log2_height) = tx_size_log2(chroma_tx)?;
+    let plane_index = match plane_id {
+        PlaneId::U => 0,
+        PlaneId::V => 1,
+        PlaneId::Y => return None,
+    };
+    let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
+    Some((
+        plane_index,
+        super::super::deblock::DeblockBlock {
+            r: (y / MI_SIZE).saturating_mul(2),
+            c: (x / MI_SIZE).saturating_mul(2),
+            n4w: mi_w.saturating_mul(2),
+            n4h: mi_h.saturating_mul(2),
+            luma_tx: chroma_tx,
+            chroma_tx: Some(chroma_tx),
+            qindex,
+            skip: false,
+        },
+    ))
 }
 
 /// Maps a §5.20.6 `TxSize` index to its `(log2_width, log2_height)` sample

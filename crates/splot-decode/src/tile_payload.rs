@@ -92,8 +92,9 @@ pub(crate) use partition_traversal::{
     TilePartitionTraversalError, TilePartitionTraversalUnsupported,
 };
 pub(crate) use runtime_frontier::{
-    GeneralIntraMultiblockError, MinimalRuntimeBlockSymbolFrontierError,
-    MinimalRuntimePartitionFrontierError, MinimalRuntimeReconstructionTrace, chroma_subsampling,
+    GeneralIntraMultiblockError, GeneralIntraMultiblockOutput,
+    MinimalRuntimeBlockSymbolFrontierError, MinimalRuntimePartitionFrontierError,
+    MinimalRuntimeReconstructionTrace, chroma_subsampling,
     consume_minimal_runtime_lr_unit_frontier, decode_general_intra_multiblock_tree,
     decode_general_intra_multiblock_tree_with_lr_source_blocks, frame_mi_dimensions,
     plan_minimal_runtime_block_symbol_frontier,

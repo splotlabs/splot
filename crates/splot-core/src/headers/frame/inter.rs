@@ -89,6 +89,12 @@ pub const MOTION_MODES: usize = 5;
 /// `frame_enabled_motion_modes` loop (§ 5.18.2 mirror :4921).
 pub const INTERINTRA: usize = 1;
 
+/// `LOCALWARP` (AV2 v1.0.0 § 3).
+pub const LOCALWARP: usize = 2;
+
+/// `EXTENDWARP` (AV2 v1.0.0 § 3).
+pub const EXTENDWARP: usize = 4;
+
 /// `PRIMARY_REF_NONE` (AV2 v1.0.0 § 3).
 const PRIMARY_REF_NONE: u8 = 7;
 

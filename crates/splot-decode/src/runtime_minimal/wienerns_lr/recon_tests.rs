@@ -7,7 +7,6 @@
 
 use super::*;
 use crate::error::DecodeError;
-use crate::runtime_minimal::deblock::DeblockQuantDeltas;
 use crate::tile_payload::{WienerNsLrSourceBlock, WienerNsLrUnitFilter};
 use splot_core::headers::frame::{
     FrameRestorationType, LrPlaneParams, build_minimal_intra_clk_core,
@@ -336,13 +335,13 @@ fn full_recon_deferred_luma_leaf_returns_unsupported() {
 
 #[test]
 fn full_recon_filtered_frame_rejects_incomplete_coverage() {
-    let sink = WienerNsLrReconSink::<u16>::new(16, 16, BitDepth::Ten, true, false, false, 0, 16)
-        .unwrap()
-        .into_full_recon();
-    let (core, _) = build_minimal_intra_clk_core().unwrap();
+    let mut sink =
+        WienerNsLrReconSink::<u16>::new(16, 16, BitDepth::Ten, true, false, false, 0, 16)
+            .unwrap()
+            .into_full_recon();
 
     let error = sink
-        .into_filtered_frame(&core, DeblockQuantDeltas::ZERO, ByteOffset::new(0))
+        .finish_intra_reconstruction(ByteOffset::new(0))
         .err()
         .unwrap();
 

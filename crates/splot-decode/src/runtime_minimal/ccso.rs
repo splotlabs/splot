@@ -351,6 +351,8 @@ mod tests {
 
     fn bo_plane(offset_idx: u8) -> CcsoPlaneParams {
         CcsoPlaneParams {
+            reuse_ccso: false,
+            sb_reuse_ccso: false,
             ccso_planes: true,
             ccso_bo_only: Some(true),
             ccso_scale_idx: Some(0),

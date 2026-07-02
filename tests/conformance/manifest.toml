@@ -559,3 +559,80 @@ AVM --enable-qm stream: a frame has using_qmatrix == 1 referencing a quantizer \
 matrix level with no quantizer matrix OBU in-band. Standalone (external HLS \
 disabled), the validator emits the §7.3.8.9 qm-level-unavailable diagnostic."""
 expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
+
+[[vector]]
+path = "vectors/valid/syn-2frame-deblock-inter-32x32-10bit-q100.ivf"
+description = """
+Two-frame 10-bit 4:2:0 32x32 inter stream (IVF) from a project-owned synthetic \
+separable-sinusoid input (smooth non-diagonal luma ramp, many distinct values per \
+16x16 block to dodge the screen-content auto-detector; frame 1 phase-shifted) at \
+fixed --qp=100, --sb-size=64, single tile, with warp/global-motion/interintra/TIP/\
+skip-mode/segmentation/delta-q/GDF/TCQ/inter-DDT/IntraBC/smooth-intra/angle-delta/\
+FSC/Wiener-NS/BAWP disabled and the loop filters left enabled. The INTER frame \
+activates the full 7.17 deblocking pass set (apply_deblocking_filter = \
+[true,true,true,true]; CDEF/LR/CCSO frame-inactive), the first committed \
+deblock-active inter target for the shared final filter pipeline. splot decode \
+--output-format raw reproduces the local avmdec --i420 --rawvideo output \
+byte-for-byte (md5 29381ec960496d7a604acd63abd43cd3). Validates clean."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-cdef-inter-64x32-10bit-q120.ivf"
+description = """
+Two-frame 10-bit 4:2:0 64x32 inter stream (IVF) from a project-owned synthetic \
+edge-grid input (sinusoid base + strong axis-aligned 8-sample edge grid, weight \
+0.3; frame 1 phase-shifted) at fixed --qp=120 with deblocking/restoration/CCSO/\
+cctx additionally disabled so the RD search picks CDEF as the only ringing \
+filter. The INTER frame activates CDEF (cdef_frame_enable = true, deblock/LR/CCSO \
+inactive) with TX_MODE_SELECT, the first committed CDEF-active inter target. \
+splot decode --output-format raw reproduces the local avmdec --i420 --rawvideo \
+output byte-for-byte (md5 0293c73bb82f8ce13aa1a24ab1a9d294). Validates clean."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-ccso-inter-32x32-10bit-q100.ivf"
+description = """
+Two-frame 10-bit 4:2:0 32x32 inter stream (IVF) from the same project-owned \
+separable-sinusoid input as the deblock fixture at fixed --qp=100 with \
+deblocking/CDEF/restoration/cctx additionally disabled and CCSO left enabled. \
+The INTER frame codes CCSO fresh on all three planes (ccso_frame_flag = true, \
+reuse_ccso = sb_reuse_ccso = false, 72 CCSO units per plane; deblock/CDEF/LR \
+inactive), the first committed CCSO-active inter target. splot decode \
+--output-format raw reproduces the local avmdec --i420 --rawvideo output \
+byte-for-byte (md5 ce742b18cb360e822b96e6808b8d5bdc). Validates clean."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-ccso-reuse-inter-64x64-10bit.ivf"
+description = """
+Two-frame 10-bit 4:2:0 64x64 inter stream (IVF) from a project-owned static \
+synthetic input whose INTER frame signals § 5.18.7.12 CCSO reference reuse \
+(sb_reuse_ccso = 1). Validates clean; committed as the NEGATIVE decode pin for \
+the `inter_ccso_reuse_unimplemented` defer (reference filter-control retention \
+is not implemented), guarding against a silent regression to a desync or a \
+confident-wrong decode."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-txsplit-intra-inter-64x64-10bit-q100.ivf"
+description = """
+Two-frame 10-bit 4:2:0 64x64 inter stream (IVF) whose INTER frame codes an \
+intra block with a perpendicular multi-transform-unit split — the § 5.20.7.24 \
+per-transform-unit intra prediction case the decoder defers (interior units \
+must predict from just-reconstructed sibling samples). avmdec decodes it; \
+splot previously emitted a confident-wrong right-band (documented in the b02 \
+mission notes). Validates clean; committed as the NEGATIVE decode pin for the \
+`general_intra_transform_partition` defer and as the ready oracle for the \
+per-unit prediction change."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-sameref-compound-64x32-10bit-q150.ivf"
+description = """
+Two-frame 10-bit 4:2:0 64x32 inter stream (IVF) whose single-reference INTER \
+frame signals reference_select and codes a same-reference COMPOUND block \
+(comp_mode = 1 with one physical reference). Validates clean; committed as the \
+NEGATIVE decode pin proving the frame decodes to the block's comp_mode read \
+(entropy-synced with AVM accounting) and then defers fail-closed at \
+`compound_missing_is_joint_context` instead of rejecting the whole frame."""
+expect = "clean"

@@ -200,8 +200,8 @@ pub(super) fn decode_minimal_inter_frame<T: ReconSample>(
         ));
     }
 
-    let block_reference_select = tail.reference_select && num_total_refs >= 2;
-    let compound_is_joint_ctx = if block_reference_select {
+    let block_reference_select = tail.reference_select;
+    let compound_is_joint_ctx = if block_reference_select && ref_frame_idx.len() == 2 {
         validate_compound_sequence_subset(sequence, &core, offset)?;
         Some(compound_is_joint_context(
             &ref_frame_idx,
@@ -301,7 +301,7 @@ pub(super) fn decode_minimal_inter_frame<T: ReconSample>(
         .as_ref()
         .is_some_and(|tq| tq.enable_inter_ddt);
 
-    let frame_cdfs = decode_inter_blocks(
+    let (frame_cdfs, filter_inputs) = decode_inter_blocks(
         plan,
         candidate,
         bytes,
@@ -327,7 +327,25 @@ pub(super) fn decode_minimal_inter_frame<T: ReconSample>(
         initial_cdfs,
     )?;
 
-    let frame = workspace.freeze()?;
+    let mut filter_sink = super::wienerns_lr::recon_final_filter_sink(
+        workspace,
+        frame_width as usize,
+        frame_height as usize,
+        bit_depth,
+    );
+    filter_sink.set_deblock_blocks(
+        filter_inputs.deblock_blocks,
+        filter_inputs.chroma_deblock_blocks,
+    );
+    filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
+    filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
+    filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
+    filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
+    let frame = filter_sink.into_filtered_frame(
+        &core,
+        super::deblock_quant_deltas(sequence, &core),
+        offset,
+    )?;
 
     Ok((frame, core, frame_cdfs))
 }
@@ -714,6 +732,7 @@ pub(super) struct InterResidualBlock {
     pub(super) plane: ReconPlaneId,
     pub(super) x: usize,
     pub(super) y: usize,
+    pub(super) tx_size: usize,
     pub(super) log2_width: u32,
     pub(super) log2_height: u32,
     pub(super) coeffs: crate::tile_payload::LumaCoeffBlock,
@@ -882,39 +901,31 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
-    let unsupported_tools =
-        core.quantization_params
-            .is_none_or(|quant| quant.base_q_idx == 0)
-            || core
-                .segmentation_params
-                .as_ref()
-                .is_none_or(|seg| seg.segmentation_enabled)
-            || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
-            || core
-                .delta_q_params
-                .is_none_or(|delta| delta.delta_q_present)
-            || core
-                .lossless_info
-                .as_ref()
-                .is_none_or(|lossless| lossless.coded_lossless)
-            || sequence.inter.is_none()
-            || core
-                .deblocking_filter_params
-                .as_ref()
-                .is_none_or(|filter| filter.apply_deblocking_filter != [false; 4])
-            || core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable)
-            || core
-                .cdef_params
-                .as_ref()
-                .is_none_or(|cdef| cdef.cdef_frame_enable)
-            || core.lr_params.as_ref().is_none_or(|lr| lr.uses_lr)
-            || core.ccso_params.as_ref().is_none_or(|ccso| {
-                ccso.ccso_frame_flag.unwrap_or(false) || !ccso.planes.is_empty()
-            })
-            || core
-                .inter_tail
-                .as_ref()
-                .is_none_or(|tail| tail.apply_grain || tail.skip_mode_present);
+    let unsupported_tools = core
+        .quantization_params
+        .is_none_or(|quant| quant.base_q_idx == 0)
+        || core
+            .segmentation_params
+            .as_ref()
+            .is_none_or(|seg| seg.segmentation_enabled)
+        || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
+        || core
+            .delta_q_params
+            .is_none_or(|delta| delta.delta_q_present)
+        || core
+            .lossless_info
+            .as_ref()
+            .is_none_or(|lossless| lossless.coded_lossless)
+        || sequence.inter.is_none()
+        || core.deblocking_filter_params.is_none()
+        || core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable)
+        || core.cdef_params.is_none()
+        || core.lr_params.is_none()
+        || core.ccso_params.is_none()
+        || core
+            .inter_tail
+            .as_ref()
+            .is_none_or(|tail| tail.apply_grain || tail.skip_mode_present);
     if std::env::var_os("SPLOT_TRACE_INTER_FRAME_TOOLS").is_some() {
         eprintln!(
             "inter tools offset={} flex_mvres={:?} allow_tcq={:?} inter_ddt={:?} base_q={:?} segmentation={:?} qmatrix={:?} delta_q={:?} lossless={:?} deblock={:?} gdf={:?} cdef={:?} lr={:?} ccso={:?} tail={:?}",
@@ -1016,6 +1027,42 @@ fn validate_inter_frame_core(
             offset,
             "inter.frame_tools",
             SPEC_HEADER
+        ));
+    }
+    if core.ccso_params.as_ref().is_some_and(|ccso| {
+        ccso.planes
+            .iter()
+            .any(|plane| plane.reuse_ccso || plane.sb_reuse_ccso)
+    }) {
+        return Err(inter_cap!(
+            "inter_ccso_reuse_unimplemented",
+            offset,
+            "inter.ccso.reference_reuse",
+            "5.18.7.12"
+        ));
+    }
+    if core
+        .cdef_params
+        .as_ref()
+        .is_some_and(|cdef| cdef.cdef_on_skip_txfm_frame_enable == Some(false))
+    {
+        return Err(inter_cap!(
+            "inter_cdef_skip_grid_unimplemented",
+            offset,
+            "inter.cdef.skip_txfm_grid",
+            "5.18.7.10"
+        ));
+    }
+    if core.lr_params.as_ref().is_some_and(|lr| {
+        lr.planes.first().is_some_and(|plane| {
+            plane.frame_filters_on && plane.num_filter_classes.unwrap_or(1) > 1
+        })
+    }) {
+        return Err(inter_cap!(
+            "inter_lr_multiclass_tx_skip_unimplemented",
+            offset,
+            "inter.lr.multiclass_tx_skip_grid",
+            "5.18.7.11"
         ));
     }
     Ok(())
