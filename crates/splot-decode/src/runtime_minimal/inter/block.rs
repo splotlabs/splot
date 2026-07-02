@@ -28,7 +28,9 @@ use super::super::wienerns_lr::tx_records::{
 use super::super::{
     DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result, effective_allow_screen_content_tools,
 };
-use super::compound::{CompoundParseInput, read_compound_average_syntax};
+use super::compound::{
+    CompoundParseInput, read_compound_mode_syntax, read_compound_reference_pair,
+};
 use super::find_mv_stack::{
     BlockNeighbourContext, BlockPrecisionRecord, MvBlockContext, NeighbourMvGrid, NeighbourYMode,
     block_neighbour_ctx, find_mode_ctx, find_mv_stack,
@@ -550,7 +552,6 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
     };
 
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
-    let mode_ctx = find_mode_ctx(mv_grid, &block_ctx);
 
     let is_inter = if frontier.is_luma_part() || frontier.is_chroma_part() {
         0
@@ -838,14 +839,13 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 SPEC_MODE_INFO
             )
         })?;
-        let compound = read_compound_average_syntax(
+        let pair = read_compound_reference_pair(
             cdfs,
             symbols,
             CompoundParseInput {
                 num_total_refs,
                 num_same_ref_compound,
                 has_neighbour: neighbour_ctx.has_neighbour,
-                new_mv_context: mode_ctx.new_mv_context,
                 is_joint_ctx,
                 skip,
                 n4w,
@@ -855,6 +855,17 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 mi_rows,
                 mi_cols,
             },
+            tile_offset,
+        )?;
+        block_ctx.ref_frame0 = pair.0;
+        block_ctx.ref_frame1 = Some(pair.1);
+        let mode_ctx = find_mode_ctx(mv_grid, &block_ctx);
+        let compound = read_compound_mode_syntax(
+            cdfs,
+            symbols,
+            pair,
+            mode_ctx.new_mv_context,
+            is_joint_ctx,
             tile_offset,
         )?;
         let ref_mv_idx0 = read_drl_idx(
@@ -1004,6 +1015,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         SINGLE_REF_FRAME0
     };
     block_ctx.ref_frame0 = ref_frame0;
+    let mode_ctx = find_mode_ctx(mv_grid, &block_ctx);
     if trace_first_row {
         eprintln!(
             "inter block ref r={mi_row} c={mi_col} ref_frame0={ref_frame0} checkpoint={:?}",

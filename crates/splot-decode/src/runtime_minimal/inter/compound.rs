@@ -24,8 +24,6 @@ pub(super) struct CompoundParseInput {
     pub(super) num_same_ref_compound: u8,
     /// Whether this block has decoded spatial neighbours.
     pub(super) has_neighbour: bool,
-    /// § 7.11.2 / § 8.3.2 `NewMvContext` for `compound_mode_non_joint`.
-    pub(super) new_mv_context: usize,
     /// § 8.3.2 `is_joint` context.
     pub(super) is_joint_ctx: usize,
     /// Decoded § 5.20.5.10 `skip` flag.
@@ -57,13 +55,17 @@ pub(super) struct CompoundBlockSyntax {
     pub(super) mv1: Mv,
 }
 
-/// Reads §5.20.7 compound reference and mode symbols for COMPOUND_AVERAGE.
-pub(super) fn read_compound_average_syntax(
+/// Reads the §5.20.7.11 compound reference pair (`read_ref_frames` tail) for
+/// COMPOUND_AVERAGE and returns the selected `(RefFrame[0], RefFrame[1])`.
+///
+/// Per §5.20.7.6 the caller derives the block mode context from the returned
+/// pair before reading any mode symbol via [`read_compound_mode_syntax`].
+pub(super) fn read_compound_reference_pair(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CompoundParseInput,
     tile_offset: ByteOffset,
-) -> Result<CompoundBlockSyntax> {
+) -> Result<(i8, i8)> {
     gate_compound_subset(input, tile_offset)?;
 
     let mut read_symbol = |selector| {
@@ -102,9 +104,34 @@ pub(super) fn read_compound_average_syntax(
         }
     }
 
-    let is_joint = read_symbol(TileCdfSelector::IsJoint {
-        ctx: input.is_joint_ctx,
-    })?;
+    Ok((0, 1))
+}
+
+/// Reads the §5.20.7.6 compound mode symbols with the mode context derived
+/// from the selected reference pair.
+pub(super) fn read_compound_mode_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    pair: (i8, i8),
+    new_mv_context: usize,
+    is_joint_ctx: usize,
+    tile_offset: ByteOffset,
+) -> Result<CompoundBlockSyntax> {
+    if new_mv_context != 0 {
+        return Err(compound_cap!(
+            "compound_block_neighbour_context",
+            tile_offset,
+            "inter.compound.neighbour_context",
+            SPEC_INTER_BLOCK_MODE_INFO
+        ));
+    }
+    let mut read_symbol = |selector| {
+        cdfs.read_block_symbol_trace(selector, symbols)
+            .map(splot_core::symbol::Symbol::get)
+            .map_err(|_| compound_symbol_read_error(tile_offset))
+    };
+
+    let is_joint = read_symbol(TileCdfSelector::IsJoint { ctx: is_joint_ctx })?;
     if is_joint != 0 {
         return Err(compound_cap!(
             "compound_block_joint_mode",
@@ -115,7 +142,7 @@ pub(super) fn read_compound_average_syntax(
     }
 
     let compound_mode = read_symbol(TileCdfSelector::CompoundModeNonJoint {
-        ctx: input.new_mv_context,
+        ctx: new_mv_context,
     })?;
     if compound_mode != COMPOUND_MODE_NEAR_NEARMV {
         return Err(compound_cap!(
@@ -127,8 +154,8 @@ pub(super) fn read_compound_average_syntax(
     }
 
     Ok(CompoundBlockSyntax {
-        ref_frame0: 0,
-        ref_frame1: 1,
+        ref_frame0: pair.0,
+        ref_frame1: pair.1,
         mv0: Mv::ZERO,
         mv1: Mv::ZERO,
     })
@@ -149,7 +176,7 @@ fn gate_compound_subset(input: CompoundParseInput, tile_offset: ByteOffset) -> R
             SPEC_READ_REF_FRAMES,
         ),
         (
-            input.has_neighbour || input.new_mv_context != 0,
+            input.has_neighbour,
             "compound_block_neighbour_context",
             "unsupported capability: inter.compound.neighbour_context",
             SPEC_INTER_BLOCK_MODE_INFO,
@@ -232,7 +259,6 @@ mod tests {
             num_total_refs: 2,
             num_same_ref_compound: 0,
             has_neighbour: false,
-            new_mv_context: 0,
             is_joint_ctx: 1,
             skip: 1,
             n4w: 16,
@@ -242,6 +268,17 @@ mod tests {
             mi_rows: 16,
             mi_cols: 16,
         }
+    }
+
+    fn read_compound_average_syntax(
+        cdfs: &mut TileCdfSubset,
+        symbols: &mut SymbolDecoder<'_>,
+        input: CompoundParseInput,
+        tile_offset: ByteOffset,
+    ) -> Result<CompoundBlockSyntax> {
+        let is_joint_ctx = input.is_joint_ctx;
+        let pair = read_compound_reference_pair(cdfs, symbols, input, tile_offset)?;
+        read_compound_mode_syntax(cdfs, symbols, pair, 0, is_joint_ctx, tile_offset)
     }
 
     #[test]

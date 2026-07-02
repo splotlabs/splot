@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "c2108b6a11d159c1532f4b45c0665c7b695db23b",
+  "audited_commit": "4e9138b592f33b8688d05a6961a4757d26c5f0bb",
   "outcome": "success",
   "files": [
     {
@@ -2124,7 +2124,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "d64e3113f5f4ff22f1e37da4a9e04e25df27796067aa90e6553f47a50c7c480d",
+      "sha256": "6d1124690da35b1cf964c45ce94800a973b570bfe02821175c75d06de2e9be61",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2141,7 +2141,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/compound.rs",
-      "sha256": "1530f97877e70bab31a2e64c936bfa10541c3c2c539f5edf4e66f90cff009d59",
+      "sha256": "67e8cb0c21754130d8f0d1c956679d2d203b83a27019b4d16953f446763530cd",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
