@@ -297,13 +297,34 @@ fn predict_warp_plane<T: ReconSample>(
     let block_w = rect.luma_w >> sub_x;
     let block_h = rect.luma_h >> sub_y;
     let bit_depth = workspace.info().bit_depth();
-    if block_w < WARPED_BLOCK_SIZE || block_h < WARPED_BLOCK_SIZE {
-        return Err(unsupported_at(
-            "inter_warp_small_block_fallback_unimplemented",
-            offset,
-            "minimal inter motion compensation does not yet implement ext_block_warp for warped blocks smaller than 8x8",
-            "7.13.3.7",
-        ));
+    let skip_pred = !splot_recon::warp_shear_is_valid(warp_params)
+        || block_w < WARPED_BLOCK_SIZE
+        || block_h < WARPED_BLOCK_SIZE;
+    if skip_pred {
+        let params = WarpPredictBlockParams {
+            warp_params,
+            block_x: plane_x as i64,
+            block_y: plane_y as i64,
+            subsampling_x: sub_x as u8,
+            subsampling_y: sub_y as u8,
+            first_x: 0,
+            first_y: 0,
+            last_x: ref_width as i64 - 1,
+            last_y: ref_height as i64 - 1,
+            bit_depth,
+        };
+        for i4 in 0..block_h.div_euclid(4) {
+            for j4 in 0..block_w.div_euclid(4) {
+                let predicted = splot_recon::ext_warp_predict_unit(&view, &params, i4, j4)?;
+                let packed: Vec<T> = predicted
+                    .iter()
+                    .map(|&v| T::try_from_u16(v))
+                    .collect::<splot_recon::Result<Vec<T>>>()?;
+                let rect = PlaneRect::new(plane_x + j4 * 4, plane_y + i4 * 4, 4, 4)?;
+                workspace.write_rect(plane, rect, &packed, 4)?;
+            }
+        }
+        return Ok(());
     }
 
     for local_y in (0..block_h).step_by(WARPED_BLOCK_SIZE) {

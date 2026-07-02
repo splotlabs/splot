@@ -12,7 +12,7 @@
 //!
 //! Feature tracking: `RECON-SUBPEL-MC`.
 
-use splot_core::tables::warp_filter::WARPED_FILTERS;
+use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 
 use crate::error::{ReconError, Result};
 use crate::format::BitDepth;
@@ -92,6 +92,88 @@ pub struct WarpPredictBlockParams {
 /// the model, [`ReconError::WarpFilterOffsetOutOfRange`] for a derived filter row
 /// outside the generated table, and [`ReconError::ArithmeticOverflow`] if public
 /// caller inputs exceed the checked arithmetic envelope.
+/// AV2 § 3 `EXT_WARP_TAPS`.
+const EXT_WARP_TAPS: usize = 6;
+/// AV2 § 3 `EXT_WARP_ROUND_BITS` = `WARPEDMODEL_PREC_BITS - EXT_WARP_PHASES_LOG2`.
+const EXT_WARP_ROUND_BITS: u32 = 10;
+
+/// Reports whether the § 7.13.3.21 setup-shear process accepts a warp model,
+/// deciding the § 7.13.3.15 `skipPred` fallback to the extended block warp.
+#[must_use]
+pub fn warp_shear_is_valid(warp_params: [i64; 6]) -> bool {
+    setup_shear(warp_params).is_ok()
+}
+
+/// AV2 § 7.13.3.20 extended block warp (unscaled arm): predicts one 4x4 unit
+/// at `(j4, i4)` (in 4-sample units relative to the block's plane top-left) by
+/// projecting the unit centre through the warp model and running the fixed-
+/// phase `Ext_Warped_Filters` two-pass interpolation over the clipped
+/// reference window.
+///
+/// # Errors
+/// Returns [`ReconError`] for invalid reference bounds, a filter phase outside
+/// the generated table, or arithmetic overflow.
+#[allow(clippy::too_many_arguments)]
+pub fn ext_warp_predict_unit(
+    reference: &ReferencePlaneView<'_>,
+    params: &WarpPredictBlockParams,
+    i4: usize,
+    j4: usize,
+) -> Result<Vec<u16>> {
+    validate_params(params)?;
+    let sub_x = u32::from(params.subsampling_x);
+    let sub_y = u32::from(params.subsampling_y);
+    let src_x = (params.block_x + (j4 as i64) * 4 + 2) << sub_x;
+    let src_y = (params.block_y + (i4 as i64) * 4 + 2) << sub_y;
+    let dst_x =
+        params.warp_params[2] * src_x + params.warp_params[3] * src_y + params.warp_params[0];
+    let dst_y =
+        params.warp_params[4] * src_x + params.warp_params[5] * src_y + params.warp_params[1];
+    let x4 = dst_x >> sub_x;
+    let y4 = dst_y >> sub_y;
+    let ix4 = x4 >> WARPEDMODEL_PREC_BITS;
+    let sx4 = x4 & ((1 << WARPEDMODEL_PREC_BITS) - 1);
+    let iy4 = y4 >> WARPEDMODEL_PREC_BITS;
+    let sy4 = y4 & ((1 << WARPEDMODEL_PREC_BITS) - 1);
+    let phase = |s: i64| -> Result<&'static [i32; EXT_WARP_TAPS]> {
+        let offs = round2(s, EXT_WARP_ROUND_BITS);
+        usize::try_from(offs)
+            .ok()
+            .and_then(|offs| EXT_WARPED_FILTERS.get(offs))
+            .ok_or(ReconError::WarpFilterOffsetOutOfRange { offset: offs })
+    };
+    let taps_x = phase(sx4)?;
+    let fetch = |row: i64, col: i64| -> i64 {
+        let rr = clip3(params.first_y, params.last_y, row);
+        let cc = clip3(params.first_x, params.last_x, col);
+        reference.sample(rr as usize, cc as usize)
+    };
+    let mut intermediate = [0i64; 9 * 4];
+    for k in -4i64..5 {
+        for l in -2i64..2 {
+            let mut sum = 0i64;
+            for (m, &tap) in taps_x.iter().enumerate() {
+                sum += i64::from(tap) * fetch(iy4 + k, ix4 + l - 2 + m as i64);
+            }
+            intermediate[((k + 4) * 4 + (l + 2)) as usize] = round2(sum, INTER_ROUND0);
+        }
+    }
+    let taps_y = phase(sy4)?;
+    let max_sample = i64::from(params.bit_depth.max_sample());
+    let mut out = vec![0u16; 16];
+    for k in -2i64..2 {
+        for l in -2i64..2 {
+            let mut sum = 0i64;
+            for (m, &tap) in taps_y.iter().enumerate() {
+                sum += i64::from(tap) * intermediate[((k + m as i64 + 2) * 4 + (l + 2)) as usize];
+            }
+            let pred = round2(sum, INTER_ROUND1_NON_COMPOUND);
+            out[((k + 2) * 4 + (l + 2)) as usize] = clip3(0, max_sample, pred) as u16;
+        }
+    }
+    Ok(out)
+}
+
 pub fn warp_predict_block(
     reference: &ReferencePlaneView<'_>,
     params: &WarpPredictBlockParams,
@@ -479,7 +561,7 @@ mod tests {
                     let col = (i2 + 4) as usize;
                     sum += i64::from(tap) * intermediate[row * WARPED_BLOCK_SIZE + col];
                 }
-                let pred = round(sum, INTER_ROUND1_NON_COMPOUND);
+                let pred = round2(sum, INTER_ROUND1_NON_COMPOUND);
                 out[(i1 + 4) as usize * WARPED_BLOCK_SIZE + (i2 + 4) as usize] =
                     clip(0, max_sample, pred) as u16;
             }
