@@ -690,6 +690,21 @@ impl ResidualPlanePlan {
         &self,
         block: &PositionedLumaCoeffBlock,
     ) -> core::result::Result<ResidualPlanePlan, GeneralIntraResidualError> {
+        // § 5.20.6.3 `LumaTxMiddle` units pass `allowCorners = 0`
+        // (§ 5.20.7.24), zeroing the top-right/bottom-left counts; modes that
+        // consume those counts defer until the zeroed-count variant lands.
+        let corner_free = matches!(
+            self.reconstruction,
+            ResidualReconstructionPlan::Rect { .. }
+                | ResidualReconstructionPlan::LumaRectCardinal { .. }
+                | ResidualReconstructionPlan::LumaRectPaeth { .. }
+                | ResidualReconstructionPlan::LumaSquare { .. }
+        );
+        if block.middle && !corner_free {
+            return Err(GeneralIntraResidualError::UnsupportedTransformPartition {
+                reason: "general_intra_partitioned_middle_unit_corners",
+            });
+        }
         let reconstruction = match self.reconstruction {
             ResidualReconstructionPlan::Rect { .. }
             | ResidualReconstructionPlan::LumaRectCardinal { .. }
@@ -948,9 +963,15 @@ impl ResidualPlanePlan {
                     block_ctx.bit_depth(),
                 )
             }
-            ResidualReconstructionPlan::LumaSquare { plan, use_tcq } => {
-                plan.reconstruct(workspace, coeffs, block_ctx, block_decoded, qindex, use_tcq)
-            }
+            ResidualReconstructionPlan::LumaSquare { plan, use_tcq } => plan.reconstruct(
+                workspace,
+                coeffs,
+                block_ctx,
+                block_decoded,
+                qindex,
+                use_tcq,
+                enable_ibp,
+            ),
             ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq } => {
                 let neighbours = block_ctx.neighbours_from_block_decoded(PlaneId::Y, block_decoded);
                 crate::runtime_minimal_recon::reconstruct_general_intra_luma_smooth_rect_block_into(

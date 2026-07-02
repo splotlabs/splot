@@ -146,6 +146,7 @@ fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
     assert_eq!(txb_skip_ctx_luma(0, 0, true, false), 0);
 
     let unpartitioned = [LumaTransformPartitionRecord {
+        middle: false,
         x: 64,
         y: 32,
         tx_size: TX_16X16,

@@ -351,6 +351,9 @@ pub(crate) struct PositionedLumaCoeffBlock {
     pub(crate) x: usize,
     pub(crate) y: usize,
     pub(crate) tx_size: usize,
+    /// § 5.20.6.3 `LumaTxMiddle`: § 5.20.7.24 passes `allowCorners = 0` for
+    /// this unit, so the top-right/bottom-left availability counts are zero.
+    pub(crate) middle: bool,
     pub(crate) coeffs: LumaCoeffBlock,
 }
 
@@ -559,6 +562,7 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
             x: record.x,
             y: record.y,
             tx_size: record.tx_size,
+            middle: record.middle,
             coeffs,
         });
     }
@@ -580,6 +584,7 @@ struct LumaTransformPartitionRecord {
     x: usize,
     y: usize,
     tx_size: usize,
+    middle: bool,
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
@@ -752,54 +757,54 @@ fn luma_transform_records_for_partition(
     let row4 = start_y / MI_SIZE;
     let mut records = Vec::new();
     match tx_partition {
-        TX_PARTITION_NONE => push_luma_transform_record(&mut records, row4, col4, h4, w4)?,
+        TX_PARTITION_NONE => push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?,
         TX_PARTITION_HORZ => {
             h4 >>= 1;
-            push_luma_transform_record(&mut records, row4, col4, h4, w4)?;
-            push_luma_transform_record(&mut records, row4 + h4, col4, h4, w4)?;
+            push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?;
+            push_luma_transform_record(&mut records, row4 + h4, col4, h4, w4, false)?;
         }
         TX_PARTITION_VERT => {
             w4 >>= 1;
-            push_luma_transform_record(&mut records, row4, col4, h4, w4)?;
-            push_luma_transform_record(&mut records, row4, col4 + w4, h4, w4)?;
+            push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?;
+            push_luma_transform_record(&mut records, row4, col4 + w4, h4, w4, false)?;
         }
         TX_PARTITION_HORZ4 => {
             h4 >>= 2;
             for part in 0..4 {
-                push_luma_transform_record(&mut records, row4 + part * h4, col4, h4, w4)?;
+                push_luma_transform_record(&mut records, row4 + part * h4, col4, h4, w4, false)?;
             }
         }
         TX_PARTITION_VERT4 => {
             w4 >>= 2;
             for part in 0..4 {
-                push_luma_transform_record(&mut records, row4, col4 + part * w4, h4, w4)?;
+                push_luma_transform_record(&mut records, row4, col4 + part * w4, h4, w4, false)?;
             }
         }
         TX_PARTITION_HORZ5 => {
             h4 >>= 2;
             w4 >>= 1;
-            push_luma_transform_record(&mut records, row4, col4, h4, w4)?;
-            push_luma_transform_record(&mut records, row4, col4 + w4, h4, w4)?;
-            push_luma_transform_record(&mut records, row4 + h4, col4, h4 << 1, w4 << 1)?;
-            push_luma_transform_record(&mut records, row4 + h4 * 3, col4, h4, w4)?;
-            push_luma_transform_record(&mut records, row4 + h4 * 3, col4 + w4, h4, w4)?;
+            push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?;
+            push_luma_transform_record(&mut records, row4, col4 + w4, h4, w4, true)?;
+            push_luma_transform_record(&mut records, row4 + h4, col4, h4 << 1, w4 << 1, true)?;
+            push_luma_transform_record(&mut records, row4 + h4 * 3, col4, h4, w4, true)?;
+            push_luma_transform_record(&mut records, row4 + h4 * 3, col4 + w4, h4, w4, true)?;
         }
         TX_PARTITION_VERT5 => {
             h4 >>= 1;
             w4 >>= 2;
-            push_luma_transform_record(&mut records, row4, col4, h4, w4)?;
-            push_luma_transform_record(&mut records, row4 + h4, col4, h4, w4)?;
-            push_luma_transform_record(&mut records, row4, col4 + w4, h4 << 1, w4 << 1)?;
-            push_luma_transform_record(&mut records, row4, col4 + w4 * 3, h4, w4)?;
-            push_luma_transform_record(&mut records, row4 + h4, col4 + w4 * 3, h4, w4)?;
+            push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?;
+            push_luma_transform_record(&mut records, row4 + h4, col4, h4, w4, true)?;
+            push_luma_transform_record(&mut records, row4, col4 + w4, h4 << 1, w4 << 1, true)?;
+            push_luma_transform_record(&mut records, row4, col4 + w4 * 3, h4, w4, true)?;
+            push_luma_transform_record(&mut records, row4 + h4, col4 + w4 * 3, h4, w4, true)?;
         }
         TX_PARTITION_SPLIT => {
             w4 >>= 1;
             h4 >>= 1;
-            push_luma_transform_record(&mut records, row4, col4, h4, w4)?;
-            push_luma_transform_record(&mut records, row4, col4 + w4, h4, w4)?;
-            push_luma_transform_record(&mut records, row4 + h4, col4, h4, w4)?;
-            push_luma_transform_record(&mut records, row4 + h4, col4 + w4, h4, w4)?;
+            push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?;
+            push_luma_transform_record(&mut records, row4, col4 + w4, h4, w4, false)?;
+            push_luma_transform_record(&mut records, row4 + h4, col4, h4, w4, false)?;
+            push_luma_transform_record(&mut records, row4 + h4, col4 + w4, h4, w4, false)?;
         }
         _ => {
             return Err(unsupported_transform_partition(
@@ -816,6 +821,7 @@ fn push_luma_transform_record(
     col4: usize,
     h4: usize,
     w4: usize,
+    middle: bool,
 ) -> Result<(), GeneralIntraResidualError> {
     if h4 == 0 || w4 == 0 {
         return Err(unsupported_transform_partition(
@@ -844,12 +850,18 @@ fn push_luma_transform_record(
         x: col4 * MI_SIZE,
         y: row4 * MI_SIZE,
         tx_size,
+        middle,
     });
     Ok(())
 }
 
 const fn luma_transform_record(x: usize, y: usize, tx_size: usize) -> LumaTransformPartitionRecord {
-    LumaTransformPartitionRecord { x, y, tx_size }
+    LumaTransformPartitionRecord {
+        x,
+        y,
+        tx_size,
+        middle: false,
+    }
 }
 
 fn block_size_table_usize(

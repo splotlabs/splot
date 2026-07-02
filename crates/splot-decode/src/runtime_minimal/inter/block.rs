@@ -1101,14 +1101,18 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 tile_offset,
             )?,
         };
-        let warp_inter_intra = read_warp_inter_intra_syntax(
-            cdfs,
-            symbols,
-            frontier.b_size.index(),
-            n4w,
-            n4h,
-            tile_offset,
-        )?;
+        let warp_inter_intra = if warp_mode == WarpInterMode::Warpmv {
+            read_warp_inter_intra_syntax(
+                cdfs,
+                symbols,
+                frontier.b_size.index(),
+                n4w,
+                n4h,
+                tile_offset,
+            )?
+        } else {
+            WarpInterIntraSyntax::default()
+        };
         let warp_interintra_mode = interintra_prediction_mode(warp_inter_intra, tile_offset)?;
         let residual = if skip == 0 {
             if !residual_quantizer_deltas_are_zero {

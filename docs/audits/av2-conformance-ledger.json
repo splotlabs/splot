@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a7ea702ed15fb1d7c35cb307b18175483ba9a084",
+  "audited_commit": "fef31e94d2eceb783e3e7487ef3c9ff0afe1019f",
   "outcome": "success",
   "files": [
     {
@@ -2124,7 +2124,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "503fbae3750f1271110901c68c48c58519d91390a31cce0b658c5824426988cb",
+      "sha256": "74d5bee51d7c00664cb2cfffc408923600db6e392a7d6943f941c7f581307426",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2259,7 +2259,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/intra_prediction.rs",
-      "sha256": "098a8d1c81a0f28356e61a66015c00c91e40aacd397e5c7641e2d5ac4188b070",
+      "sha256": "25a2a87a9160c8bc5d5ad3840bfbef9c184da5c7bd6b99e505c2016ac5f09a25",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2282,7 +2282,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/residual_pipeline.rs",
-      "sha256": "5ad0380c8a45d121541355853b43b31518245547c52b26ee9b29ade7be7edf68",
+      "sha256": "74e3771f8413923eaa249adf346edd077243f4b492970a3c0aeb00c40c4ca3bc",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2461,7 +2461,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal_recon.rs",
-      "sha256": "c1e255bb740cae4dbdf85eaa754a68924cc86f946065b0090f88f55cd4c9ef0e",
+      "sha256": "67c253312396c479f8bc1ff4e73b1f5479d98c1224e655fd12ca7ba1671e6f73",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-ANGLE",
@@ -3009,7 +3009,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
-      "sha256": "8c9f64abd9d72190592b991bed167959f33b2b6507c7b3c0af3aa30d768d12ac",
+      "sha256": "1c14393235fc219784f1492790c6e20b8a26d94b7b13486bbd05076129066d32",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
@@ -3025,7 +3025,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/general_intra_residual/tests.rs",
-      "sha256": "8e6f9a15f319809476ee4737aaf14cccadb27fadbb771aa652c864f22de69ab4",
+      "sha256": "56ecf06583a2598f0b5147a0548b0cbd1c03f6764359f2f932ecbcf92483c23e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
