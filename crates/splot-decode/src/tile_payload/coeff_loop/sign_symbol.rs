@@ -426,8 +426,8 @@ pub(crate) fn read_preflighted_nonzero_coeff_sign(
             (CoeffSignReadSymbol::Cdf { syntax, symbol }, symbol != 0)
         }
         CoeffSignReadSource::SignBit => {
-            let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
-            let before = trace.then(|| symbols.checkpoint());
+            let before = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS")
+                .then(|| symbols.checkpoint());
             let bit = symbols
                 .read_literal(1)
                 .map_err(|source| CoeffSignReadError::LiteralRead { source })?

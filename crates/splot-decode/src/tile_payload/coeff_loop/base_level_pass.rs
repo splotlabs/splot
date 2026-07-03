@@ -20,7 +20,6 @@ use super::base_symbol::{
     CoeffBaseSymbolSource, read_coeff_base_symbol,
 };
 use super::branch::NonZeroCoeffBlockStart;
-use super::fsc_level_pass::expected_fsc_entry_pos as expected_entry_pos;
 use super::max_level::{
     COEFF_BASE_RANGE, CoeffTransformClass, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS,
     coeff_is_low_frequency,
@@ -141,6 +140,23 @@ impl NonZeroCoeffBaseDerivedLevelPass {
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         &self.block
     }
+
+    /// Splits the walk (shared) from the block (mutable) so the interleaved
+    /// sign/quant tail pass can write quantized values into this pass's block
+    /// without cloning it.
+    #[must_use]
+    pub(crate) const fn walk_and_block_mut(
+        &mut self,
+    ) -> (&NonZeroCoeffScanWalk, &mut TransformCoeffBlockState) {
+        (&self.walk, &mut self.block)
+    }
+
+    /// Consumes the pass, handing the block state to the caller without
+    /// copying it.
+    #[must_use]
+    pub(crate) fn into_block(self) -> TransformCoeffBlockState {
+        self.block
+    }
 }
 
 /// Error returned by the derived ordinary base/level first-pass boundary.
@@ -159,14 +175,6 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
     },
     #[error("coefficient base/level tx_width_log2 {tx_width_log2} does not match width {tx_width}")]
     TxWidthLog2Mismatch { tx_width_log2: u32, tx_width: usize },
-    #[error(
-        "coefficient base/level scan entry {entry:?} maps to position {expected_pos}, not {actual_pos}"
-    )]
-    ScanEntryPositionMismatch {
-        entry: CoeffScanEntry,
-        expected_pos: usize,
-        actual_pos: usize,
-    },
     #[error("coefficient base/level config cannot enable parity hiding and TCQ together")]
     InconsistentParityAndTcq,
     #[error("coefficient base/level entry {entry:?} used invalid tcqState {tcq_state}")]
@@ -219,6 +227,11 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     })
 }
 
+/// Validates config, geometry, and entry-count consistency before any symbol
+/// is consumed. Entry coordinates need no per-entry re-validation:
+/// `walk_nonzero_coeff_scan` bounds every scan position against the same block
+/// and derives the row/col pair from it, and the read loop's `set_level` still
+/// rejects any out-of-range coordinate before writing.
 fn preflight_pass(
     eob_read: NonZeroCoeffEobSymbolRead,
     block: &TransformCoeffBlockState,
@@ -250,18 +263,6 @@ fn preflight_pass(
             eob,
             entries: entries.len(),
         });
-    }
-    for entry in entries.iter().copied() {
-        block.level_at(entry.row(), entry.col())?;
-        block.quant_at(entry.pos())?;
-        let expected_pos = expected_entry_pos(block, entry)?;
-        if expected_pos != entry.pos() {
-            return Err(CoeffBaseDerivedLevelPassError::ScanEntryPositionMismatch {
-                entry,
-                expected_pos,
-                actual_pos: entry.pos(),
-            });
-        }
     }
     Ok(())
 }

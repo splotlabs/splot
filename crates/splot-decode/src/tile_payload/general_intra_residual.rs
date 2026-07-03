@@ -1054,7 +1054,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     Ok(LumaCoeffBlock {
         all_zero: false,
         eob: pass.eob_read().eob().eob(),
-        quant: pass.block().quant().to_vec(),
+        quant: pass.into_block().into_quant(),
         intra_ist: None,
         plane_tx_type: DCT_DCT,
     })
@@ -1180,7 +1180,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     Ok(LumaCoeffBlock {
         all_zero: false,
         eob,
-        quant: pass.block().quant().to_vec(),
+        quant: pass.into_block().into_quant(),
         intra_ist: metadata.intra_ist,
         plane_tx_type,
     })
@@ -2128,21 +2128,58 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     )
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
 
-    let mut dequant_scratch = vec![0i32; adjusted];
-    let mut residual_scratch = vec![0i32; samples];
     let mut out = vec![T::default(); samples];
-    reconstruct_transform_block_residual_with_secondary(
-        prediction,
-        quant,
-        &params,
-        &transform,
-        secondary,
-        &mut dequant_scratch,
-        &mut residual_scratch,
-        &mut out,
-    )
+    with_residual_scratch(|scratch| {
+        let dequant_scratch = &mut scratch.dequant[..adjusted.min(MAX_ADJUSTED_COEFFS)];
+        let residual_scratch = &mut scratch.residual[..samples.min(MAX_ORIGINAL_SAMPLES)];
+        reconstruct_transform_block_residual_with_secondary(
+            prediction,
+            quant,
+            &params,
+            &transform,
+            secondary,
+            dequant_scratch,
+            residual_scratch,
+            &mut out,
+        )
+    })
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
     Ok(out)
+}
+
+/// Maximum adjusted coefficient count (§ 7.15.4 caps each adjusted side at 32).
+const MAX_ADJUSTED_COEFFS: usize = 32 * 32;
+
+/// Maximum original transform-block sample count (a 64x64 transform).
+const MAX_ORIGINAL_SAMPLES: usize = 64 * 64;
+
+/// Reusable per-thread working buffers for the § 7.14.4 → § 7.15.4 residual
+/// chain; every used slot is fully overwritten by the chain before it is read.
+/// `InverseTransform2dOuter::resolve` bounds `adjusted <= 1024` and
+/// `samples <= 4096`, so the `min`-clamped slices are total and any
+/// inconsistency is rejected by the chain's own buffer-length checks.
+struct ResidualScratch {
+    dequant: [i32; MAX_ADJUSTED_COEFFS],
+    residual: [i32; MAX_ORIGINAL_SAMPLES],
+}
+
+thread_local! {
+    static RESIDUAL_SCRATCH: std::cell::Cell<Option<Box<ResidualScratch>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn with_residual_scratch<R>(f: impl FnOnce(&mut ResidualScratch) -> R) -> R {
+    RESIDUAL_SCRATCH.with(|cell| {
+        let mut scratch = cell.take().unwrap_or_else(|| {
+            Box::new(ResidualScratch {
+                dequant: [0; MAX_ADJUSTED_COEFFS],
+                residual: [0; MAX_ORIGINAL_SAMPLES],
+            })
+        });
+        let result = f(&mut scratch);
+        cell.set(Some(scratch));
+        result
+    })
 }
 
 fn intra_secondary_inverse_transform(
