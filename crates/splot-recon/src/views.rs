@@ -228,6 +228,13 @@ impl<'a, T: ReconSample> PlaneMut<'a, T> {
         self.samples
     }
 
+    /// Returns the full borrowed sample buffer mutably, including stride
+    /// padding. Callers own bit-depth range enforcement, exactly as with
+    /// [`Self::visible_rows_mut`].
+    pub fn samples_mut(&mut self) -> &mut [T] {
+        self.samples
+    }
+
     /// Borrows the plane immutably as a [`PlaneRef`].
     pub fn as_plane_ref(&self) -> PlaneRef<'_, T> {
         PlaneRef::from_parts(self.samples, self.stride_samples, self.visible_rect)
