@@ -25,7 +25,7 @@
 //! Feature tracking: `RECON-SUBPEL-MC`.
 
 use crate::error::{ReconError, Result};
-use crate::format::BitDepth;
+use crate::format::{BitDepth, ReconSample};
 use crate::math::{clip3, round2};
 
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
@@ -256,37 +256,29 @@ impl InterpolationFilter {
 
 /// A reference-plane sample view for the AV2 § 7.13.3.18 convolution.
 ///
-/// The plane is a row-major sample buffer of `width * height` samples; the
-/// kernel reads `ref[Clip3(firstY, lastY, refY)][Clip3(firstX, lastX, refX)]`,
-/// so the clipping bounds (a § 7.13.3.18 input) implement the reference-border
+/// The plane is a row-major sample buffer of `height` rows spaced `stride`
+/// samples apart; the kernel reads
+/// `ref[Clip3(firstY, lastY, refY)][Clip3(firstX, lastX, refX)]`, so the
+/// clipping bounds (a § 7.13.3.18 input) implement the reference-border
 /// extension without the caller copying a padded plane.
 #[derive(Clone, Copy, Debug)]
-pub struct ReferencePlaneView<'a> {
-    samples: &'a [u16],
+pub struct ReferencePlaneView<'a, T: ReconSample = u16> {
+    samples: &'a [T],
+    stride: usize,
     width: usize,
     height: usize,
 }
 
-impl<'a> ReferencePlaneView<'a> {
-    /// Builds a reference-plane view over a row-major `width * height` sample
-    /// buffer.
+impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
+    /// Builds a reference-plane view over a contiguous row-major
+    /// `width * height` sample buffer.
     ///
     /// # Errors
     ///
     /// Returns [`ReconError::SubpelReferencePlaneMismatch`] when `samples.len()`
     /// is not exactly `width * height`, or [`ReconError::ZeroDimension`] when a
     /// dimension is zero.
-    pub fn new(samples: &'a [u16], width: usize, height: usize) -> Result<Self> {
-        if width == 0 {
-            return Err(ReconError::ZeroDimension {
-                field: "subpel reference plane width",
-            });
-        }
-        if height == 0 {
-            return Err(ReconError::ZeroDimension {
-                field: "subpel reference plane height",
-            });
-        }
+    pub fn new(samples: &'a [T], width: usize, height: usize) -> Result<Self> {
         let expected = width
             .checked_mul(height)
             .ok_or(ReconError::ArithmeticOverflow {
@@ -298,11 +290,63 @@ impl<'a> ReferencePlaneView<'a> {
                 actual: samples.len(),
             });
         }
+        Self::from_strided(samples, width, width, height)
+    }
+
+    /// Builds a reference-plane view over `height` rows of `width` samples
+    /// spaced `stride` samples apart, borrowing the caller's plane storage
+    /// directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconError::ZeroDimension`] when a dimension is zero, or
+    /// [`ReconError::SubpelReferencePlaneMismatch`] when `stride < width` or
+    /// `samples` cannot cover the final row.
+    pub fn from_strided(
+        samples: &'a [T],
+        stride: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<Self> {
+        if width == 0 {
+            return Err(ReconError::ZeroDimension {
+                field: "subpel reference plane width",
+            });
+        }
+        if height == 0 {
+            return Err(ReconError::ZeroDimension {
+                field: "subpel reference plane height",
+            });
+        }
+        let required = height
+            .checked_sub(1)
+            .and_then(|rows| rows.checked_mul(stride))
+            .and_then(|prefix| prefix.checked_add(width))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "subpel reference plane size",
+            })?;
+        if stride < width || samples.len() < required {
+            return Err(ReconError::SubpelReferencePlaneMismatch {
+                expected: required,
+                actual: samples.len(),
+            });
+        }
         Ok(Self {
             samples,
+            stride,
             width,
             height,
         })
+    }
+
+    /// Returns the view width in samples.
+    pub const fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Returns the view height in samples.
+    pub const fn height(&self) -> usize {
+        self.height
     }
 
     /// Reads `ref[plane][row][col]`. The convolution clips the requested indices
@@ -310,10 +354,10 @@ impl<'a> ReferencePlaneView<'a> {
     /// read additionally clamps to the view's own `width`/`height` so it is total
     /// even if a caller passes a clipping region wider than the actual plane
     /// (defense in depth — the function never indexes out of bounds).
-    pub(crate) fn sample(&self, row: usize, col: usize) -> i64 {
+    pub fn sample(&self, row: usize, col: usize) -> i64 {
         let row = row.min(self.height - 1);
         let col = col.min(self.width - 1);
-        i64::from(self.samples[row * self.width + col])
+        i64::from(self.samples[row * self.stride + col].to_u16())
     }
 }
 
@@ -374,8 +418,8 @@ const MAX_BLOCK_DIM: usize = 128;
 /// 128-sample super-block side, [`ReconError::SubpelNegativeStep`] for a negative
 /// step, and [`ReconError::ArithmeticOverflow`] if the intermediate height cannot
 /// be derived.
-pub fn subpel_predict_block(
-    reference: &ReferencePlaneView<'_>,
+pub fn subpel_predict_block<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
 ) -> Result<Vec<u16>> {
     let output = subpel_predict_block_internal(reference, params, INTER_ROUND1_NON_COMPOUND)?;
@@ -401,8 +445,8 @@ pub fn subpel_predict_block(
 /// Returns the same errors as [`subpel_predict_block`]:
 /// [`ReconError::ZeroDimension`], [`ReconError::SubpelBlockDimensionUnsupported`],
 /// [`ReconError::SubpelNegativeStep`], and [`ReconError::ArithmeticOverflow`].
-pub fn subpel_predict_block_compound_intermediate(
-    reference: &ReferencePlaneView<'_>,
+pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
 ) -> Result<Vec<i32>> {
     subpel_predict_block_internal(reference, params, INTER_ROUND1_COMPOUND)
@@ -449,8 +493,8 @@ const fn compound_inter_post_round() -> u32 {
     2 * FILTER_BITS - (INTER_ROUND0 + INTER_ROUND1_COMPOUND)
 }
 
-fn subpel_predict_block_internal(
-    reference: &ReferencePlaneView<'_>,
+fn subpel_predict_block_internal<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     inter_round1: u32,
 ) -> Result<Vec<i32>> {
@@ -509,6 +553,15 @@ fn subpel_predict_block_internal(
     let h_filter = interp.pass_index(w as u32);
     let h_filter_rows = &SUBPEL_FILTERS[h_filter as usize];
 
+    // Unscaled horizontal step: the sub-pel phase is column-invariant, and when
+    // every clipped column read is the identity the whole tap window for a row
+    // is one contiguous `w + 7` slice. Reads and accumulation order match the
+    // general path exactly.
+    let x0 = start_x >> SCALE_SUBPEL_BITS;
+    let x_window_direct = step_x == 1 << SCALE_SUBPEL_BITS
+        && x0 - 3 >= first_x.max(0)
+        && x0 + w as i64 + 3 <= last_x.min(reference.width as i64 - 1);
+
     let mut intermediate = vec![0i32; intermediate_height * w];
     for r in 0..intermediate_height {
         let ref_row = clip3(
@@ -516,7 +569,26 @@ fn subpel_predict_block_internal(
             last_y,
             (start_y >> SCALE_SUBPEL_BITS) + r as i64 - 3,
         );
-        let ref_row = ref_row as usize;
+        let ref_row = (ref_row as usize).min(reference.height - 1);
+        let window = x_window_direct
+            .then(|| {
+                let row_base = ref_row * reference.stride + (x0 - 3) as usize;
+                reference.samples.get(row_base..row_base + w + NUM_TAPS - 1)
+            })
+            .flatten();
+        if let Some(window) = window {
+            let phase = ((start_x >> 6) & SUBPEL_MASK) as usize;
+            let taps = &h_filter_rows[phase];
+            let row_out = &mut intermediate[r * w..(r + 1) * w];
+            for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
+                let mut s: i64 = 0;
+                for (&tap, &sample) in taps.iter().zip(win) {
+                    s += i64::from(tap) * i64::from(sample.to_u16());
+                }
+                *out = round2(s, INTER_ROUND0) as i32;
+            }
+            continue;
+        }
         for c in 0..w {
             let p = start_x + step_x * c as i64;
             let phase = ((p >> 6) & SUBPEL_MASK) as usize;
@@ -534,6 +606,7 @@ fn subpel_predict_block_internal(
     let v_filter_rows = &SUBPEL_FILTERS[v_filter as usize];
 
     let mut output = vec![0i32; w * h];
+    let mut acc = [0i64; MAX_BLOCK_DIM];
     for r in 0..h {
         let p = (start_y & 1023) + step_y * r as i64;
         let phase = ((p >> 6) & SUBPEL_MASK) as usize;
@@ -545,13 +618,20 @@ fn subpel_predict_block_internal(
                 intermediate_height,
             });
         }
-        for c in 0..w {
-            let mut s: i64 = 0;
-            for (t, &tap) in taps.iter().enumerate() {
-                let row = base + t;
-                s += i64::from(tap) * i64::from(intermediate[row * w + c]);
+        // Tap rows are eight consecutive `w`-sample slices; accumulating one
+        // tap row at a time performs the same per-sample additions in the same
+        // ascending-tap order as the per-column loop it replaces.
+        let rows = &intermediate[base * w..(base + NUM_TAPS) * w];
+        let acc = &mut acc[..w];
+        acc.fill(0);
+        for (t, &tap) in taps.iter().enumerate() {
+            let tap = i64::from(tap);
+            for (a, &v) in acc.iter_mut().zip(&rows[t * w..(t + 1) * w]) {
+                *a += tap * i64::from(v);
             }
-            output[r * w + c] = round2(s, inter_round1) as i32;
+        }
+        for (out, &s) in output[r * w..(r + 1) * w].iter_mut().zip(acc.iter()) {
+            *out = round2(s, inter_round1) as i32;
         }
     }
 

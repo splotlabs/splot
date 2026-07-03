@@ -360,6 +360,112 @@ fn matches_independent_reference_over_many_cases() {
 }
 
 #[test]
+fn edge_positions_match_independent_reference() {
+    let ref_w = 24usize;
+    let ref_h = 24usize;
+    let mut state: u64 = 0x0fed_cba9_8765_4321;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as u32
+    };
+
+    let filters = [
+        InterpolationFilter::EightTap,
+        InterpolationFilter::EightTapSmooth,
+        InterpolationFilter::EightTapSharp,
+        InterpolationFilter::Bilinear,
+    ];
+    let dims = [2usize, 4, 8, 16];
+
+    for case in 0..2000 {
+        let samples: Vec<u16> = (0..(ref_w * ref_h))
+            .map(|_| (next() % 256) as u16)
+            .collect();
+        let samples = build_ref(samples, ref_w, ref_h);
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+
+        let w = dims[(next() % dims.len() as u32) as usize];
+        let h = dims[(next() % dims.len() as u32) as usize];
+        let interp = filters[(next() % filters.len() as u32) as usize];
+
+        // Positions from off the left/top edge to past the right/bottom edge
+        // so the clipped reads engage on some rows/columns and not others.
+        let base_x = (next() as i64 % (ref_w as i64 + 12)) - 6;
+        let base_y = (next() as i64 % (ref_h as i64 + 12)) - 6;
+        let phase_x = (next() % 16) as i64;
+        let phase_y = (next() % 16) as i64;
+
+        let params = SubpelPredictParams {
+            interp,
+            w,
+            h,
+            start_x: (base_x << SCALE_SUBPEL_BITS) + (phase_x << 6),
+            start_y: (base_y << SCALE_SUBPEL_BITS) + (phase_y << 6),
+            step_x: 1 << SCALE_SUBPEL_BITS,
+            step_y: 1 << SCALE_SUBPEL_BITS,
+            first_x: 0,
+            first_y: 0,
+            last_x: ref_w as i64 - 1,
+            last_y: ref_h as i64 - 1,
+            bit_depth: BitDepth::Eight,
+        };
+        let out = subpel_predict_block(&view, &params).unwrap();
+        let want = reference_subpel(&samples, ref_w, ref_h, &params);
+        assert_eq!(
+            out, want,
+            "case {case} w={w} h={h} bx={base_x} by={base_y} px={phase_x} py={phase_y}"
+        );
+    }
+}
+
+#[test]
+fn strided_view_matches_contiguous_view() {
+    let ref_w = 16usize;
+    let ref_h = 12usize;
+    let stride = 23usize;
+    let mut state: u64 = 0x5a5a_a5a5_5a5a_a5a5;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as u32
+    };
+    let contiguous: Vec<u16> = (0..(ref_w * ref_h)).map(|_| (next() % 1024) as u16).collect();
+    // Gutter samples carry sentinel values a correct strided read never touches.
+    let mut strided = vec![0x3fffu16 & 1023; stride * (ref_h - 1) + ref_w];
+    for row in 0..ref_h {
+        strided[row * stride..row * stride + ref_w]
+            .copy_from_slice(&contiguous[row * ref_w..(row + 1) * ref_w]);
+    }
+    let flat = ReferencePlaneView::new(&contiguous, ref_w, ref_h).unwrap();
+    let view = ReferencePlaneView::from_strided(&strided, stride, ref_w, ref_h).unwrap();
+
+    for (base_x, base_y, phase) in [(-4i64, -4i64, 5i64), (3, 2, 0), (10, 6, 9), (14, 10, 15)] {
+        let params = SubpelPredictParams {
+            interp: InterpolationFilter::EightTapSharp,
+            w: 8,
+            h: 8,
+            start_x: (base_x << SCALE_SUBPEL_BITS) + (phase << 6),
+            start_y: (base_y << SCALE_SUBPEL_BITS) + (phase << 6),
+            step_x: 1 << SCALE_SUBPEL_BITS,
+            step_y: 1 << SCALE_SUBPEL_BITS,
+            first_x: 0,
+            first_y: 0,
+            last_x: ref_w as i64 - 1,
+            last_y: ref_h as i64 - 1,
+            bit_depth: BitDepth::Ten,
+        };
+        assert_eq!(
+            subpel_predict_block(&view, &params).unwrap(),
+            subpel_predict_block(&flat, &params).unwrap(),
+            "bx={base_x} by={base_y} phase={phase}"
+        );
+    }
+}
+
+#[test]
 fn ten_bit_clip_uses_full_range() {
     let ref_w = 12usize;
     let ref_h = 12usize;

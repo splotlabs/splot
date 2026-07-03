@@ -5,7 +5,7 @@
 use splot_recon::BitDepth;
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect, ReconSample,
-    ReferencePlaneView, SubpelPredictParams, VisibleRows, WARPED_BLOCK_SIZE,
+    ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
     WarpPredictBlockParams, blend_compound_average_equal, subpel_predict_block,
     subpel_predict_block_compound_intermediate, warp_predict_block,
 };
@@ -231,9 +231,7 @@ fn predict_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let (samples, ref_width, ref_height, ref_mi_cols, ref_mi_rows) =
-        reference_plane_samples(reference, plane, offset)?;
-    let view = ReferencePlaneView::new(&samples, ref_width, ref_height)?;
+    let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
 
     let plane_x = rect.luma_x >> sub_x;
     let plane_y = rect.luma_y >> sub_y;
@@ -290,9 +288,8 @@ fn predict_warp_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let (samples, ref_width, ref_height, ref_mi_cols, ref_mi_rows) =
-        reference_plane_samples(reference, plane, offset)?;
-    let view = ReferencePlaneView::new(&samples, ref_width, ref_height)?;
+    let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
+    let (ref_width, ref_height) = (view.width(), view.height());
 
     let plane_x = rect.luma_x >> sub_x;
     let plane_y = rect.luma_y >> sub_y;
@@ -390,12 +387,8 @@ fn predict_compound_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let (samples0, ref_width0, ref_height0, ref_mi_cols0, ref_mi_rows0) =
-        reference_plane_samples(reference0, plane, offset)?;
-    let (samples1, ref_width1, ref_height1, ref_mi_cols1, ref_mi_rows1) =
-        reference_plane_samples(reference1, plane, offset)?;
-    let view0 = ReferencePlaneView::new(&samples0, ref_width0, ref_height0)?;
-    let view1 = ReferencePlaneView::new(&samples1, ref_width1, ref_height1)?;
+    let (view0, ref_mi_cols0, ref_mi_rows0) = reference_plane_view(reference0, plane, offset)?;
+    let (view1, ref_mi_cols1, ref_mi_rows1) = reference_plane_view(reference1, plane, offset)?;
 
     let plane_x = rect.luma_x >> sub_x;
     let plane_y = rect.luma_y >> sub_y;
@@ -547,11 +540,11 @@ fn ext_warp_unit_bounds(
     (first_x, first_y, last_x, last_y)
 }
 
-pub(super) fn reference_plane_samples<T: ReconSample>(
+pub(super) fn reference_plane_view<T: ReconSample>(
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     offset: ByteOffset,
-) -> Result<(Vec<u16>, usize, usize, i64, i64)> {
+) -> Result<(ReferencePlaneView<'_, T>, i64, i64)> {
     let Some(ref_plane) = reference.plane(plane) else {
         return Err(unsupported_at(
             "inter_reference_missing_plane",
@@ -560,21 +553,33 @@ pub(super) fn reference_plane_samples<T: ReconSample>(
             SPEC_MC,
         ));
     };
-    let visible = ref_plane.visible_size();
-    let ref_width = visible.width();
-    let ref_height = visible.height();
-
-    let mut samples: Vec<u16> = Vec::with_capacity(ref_width.saturating_mul(ref_height));
-    let rows: VisibleRows<'_, T> = ref_plane.visible_rows();
-    for row in rows {
-        samples.extend(row.iter().map(|&s| s.to_u16()));
-    }
+    let visible = ref_plane.visible_rect();
+    let stride = ref_plane.stride_samples();
+    let origin = visible
+        .y()
+        .checked_mul(stride)
+        .and_then(|row| row.checked_add(visible.x()));
+    let view = origin
+        .and_then(|start| ref_plane.samples().get(start..))
+        .ok_or(())
+        .and_then(|samples| {
+            ReferencePlaneView::from_strided(samples, stride, visible.width(), visible.height())
+                .map_err(|_| ())
+        })
+        .map_err(|()| {
+            unsupported_at(
+                "inter_reference_plane_geometry",
+                offset,
+                "minimal inter motion compensation requires a reference plane whose storage covers its visible rectangle",
+                SPEC_MC,
+            )
+        })?;
 
     let luma_visible = reference.y().visible_size();
     let ref_mi_cols = (luma_visible.width() as i64) / 4;
     let ref_mi_rows = (luma_visible.height() as i64) / 4;
 
-    Ok((samples, ref_width, ref_height, ref_mi_cols, ref_mi_rows))
+    Ok((view, ref_mi_cols, ref_mi_rows))
 }
 
 #[cfg(test)]
