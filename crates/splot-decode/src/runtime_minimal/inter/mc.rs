@@ -540,6 +540,39 @@ fn ext_warp_unit_bounds(
     (first_x, first_y, last_x, last_y)
 }
 
+/// § 7.13.3.18 fractional-vector IntraBC prediction: the CURRENT frame is the
+/// reference (`refIdx == -1`, reads clipped to the frame region,
+/// 07-decoding-process.md:7824-7828) and the separable convolution runs with
+/// the 2-tap BILINEAR `Subpel_Filters` row. Copies the reconstructed luma
+/// plane into the reference view per call — acceptable while fractional-DV
+/// blocks are rare; upgrade to a borrowed strided view if that changes.
+pub(super) fn intrabc_predict_fractional_luma_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    target: PlaneRect,
+    scaling: super::mv_scaling::PlaneScaling,
+) -> Result<()> {
+    let storage = workspace.plane(PlaneId::Y)?.storage_size();
+    let full = PlaneRect::new(0, 0, storage.width(), storage.height())?;
+    let mut samples: Vec<T> = Vec::with_capacity(storage.width().saturating_mul(storage.height()));
+    for row in workspace.rect_rows(PlaneId::Y, full)? {
+        samples.extend_from_slice(row);
+    }
+    let view = ReferencePlaneView::new(&samples, storage.width(), storage.height())?;
+    let params = crate::runtime_minimal::wienerns_lr::recon::full_recon::intrabc_bilinear_params(
+        scaling,
+        target.width(),
+        target.height(),
+        workspace.info().bit_depth(),
+    );
+    let predicted = subpel_predict_block(&view, &params)?;
+    let packed: Vec<T> = predicted
+        .iter()
+        .map(|&v| T::try_from_u16(v))
+        .collect::<splot_recon::Result<Vec<T>>>()?;
+    workspace.write_rect(PlaneId::Y, target, &packed, target.width())?;
+    Ok(())
+}
+
 pub(super) fn reference_plane_view<T: ReconSample>(
     reference: &DecodedFrame<T>,
     plane: PlaneId,

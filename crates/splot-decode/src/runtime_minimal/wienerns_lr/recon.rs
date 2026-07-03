@@ -4805,7 +4805,7 @@ fn full_recon_mode_uses_supported_directional_edge(
 
 mod edge_filter;
 mod final_filters;
-mod full_recon;
+pub(in crate::runtime_minimal) mod full_recon;
 use full_recon::{
     ANGLE_STEP, FarEdgeSide, MRL_INDEX_TO_DELTA, full_recon_deferred_leaf_error,
     full_recon_mode_label, wide_angle_mapping,

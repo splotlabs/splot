@@ -1764,6 +1764,13 @@ fn reconstruct_intrabc_luma_predictor<T: ReconSample>(
         info,
         tile_offset,
     )?;
+    if prediction.fractional {
+        return super::mc::intrabc_predict_fractional_luma_into(
+            workspace,
+            prediction.target,
+            prediction.scaling,
+        );
+    }
     if prediction.source.size() != prediction.target.size() {
         return Err(inter_cap!(
             "inter_intrabc_fractional_predictor",
