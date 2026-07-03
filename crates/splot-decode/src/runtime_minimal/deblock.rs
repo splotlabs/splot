@@ -160,40 +160,81 @@ fn deblock_plane_pass<T: ReconSample>(
     let stride = view.stride_samples();
     let samples = view.samples_mut();
 
-    // § 7.17 pass 0 filters vertical edges with purely horizontal perpendicular
-    // lines: every read and write of the edges at MI row `r` stays inside that
-    // row's 4 plane rows once the MI coverage fits the plane, so the 4-row
-    // bands are disjoint and their processing order cannot change the output.
+    // Pass 0 filters purely horizontal perpendicular lines and pass 1 purely
+    // vertical ones, so once the MI coverage fits the plane every read and
+    // write of one MI row's (pass 0) or MI column's (pass 1) edges stays
+    // inside its own four plane rows/columns: the bands below are disjoint
+    // and their processing order cannot change the output.
     let covered_rows = (mi_rows * MI_SIZE) >> plane_pass.plane_sub_y;
-    if plane_pass.pass == 0
-        && covered_rows <= height
-        && splot_parallel::on_multiworker_pool()
-        && let Some(band_len) = stride.checked_mul(MI_SIZE)
-        && band_len > 0
+    let covered_cols = (mi_cols * MI_SIZE) >> plane_pass.plane_sub_x;
+    if splot_parallel::on_multiworker_pool()
+        && (plane_pass.pass == 0 && covered_rows <= height
+            || plane_pass.pass == 1 && covered_cols <= width)
     {
-        let usable = stride.checked_mul(height).ok_or(DeblockError::Workspace)?;
-        let bands: Vec<(usize, &mut [T])> = samples
-            .get_mut(..usable)
-            .ok_or(DeblockError::Workspace)?
-            .chunks_mut(band_len)
-            .enumerate()
-            .collect();
-        return bands.into_par_iter().try_for_each(|(band_index, band)| {
-            let r = band_index * plane_pass.row_step;
-            if r >= mi_rows {
-                return Ok(());
+        let full = PlaneCtx::new(samples, stride, width, height)?;
+        let bands: Vec<(usize, PlaneCtx<'_, T>)> = if plane_pass.pass == 0 {
+            let mut bands = Vec::new();
+            let mut rows = full.rows.into_iter();
+            let mut y_origin = 0;
+            loop {
+                let band: Vec<&mut [T]> = rows.by_ref().take(MI_SIZE).collect();
+                if band.is_empty() {
+                    break;
+                }
+                let mi_row = (y_origin / MI_SIZE) * plane_pass.row_step;
+                bands.push((
+                    mi_row,
+                    PlaneCtx::band(band, width, height, 0, y_origin),
+                ));
+                y_origin += MI_SIZE;
             }
-            let y_origin = band_index * MI_SIZE;
-            let rows = band.len() / stride;
-            let mut ctx = PlaneCtx::band(band, stride, width, height, y_origin, rows)?;
+            bands
+        } else {
+            let mut columns: Vec<Vec<&mut [T]>> = Vec::new();
+            for row in full.rows {
+                for (band, chunk) in column_chunks(row, MI_SIZE).enumerate() {
+                    if columns.len() <= band {
+                        columns.resize_with(band + 1, Vec::new);
+                    }
+                    columns[band].push(chunk);
+                }
+            }
+            columns
+                .into_iter()
+                .enumerate()
+                .map(|(band, rows)| {
+                    let x_origin = band * MI_SIZE;
+                    let mi_col = band * plane_pass.col_step;
+                    (mi_col, PlaneCtx::band(rows, width, height, x_origin, 0))
+                })
+                .collect()
+        };
+        return bands.into_par_iter().try_for_each(|(mi_index, mut ctx)| {
             let mut strengths = StrengthCache::default();
-            for c in (0..mi_cols).step_by(plane_pass.col_step) {
-                deblock_filter_edge(
-                    &mut ctx,
-                    grid,
-                    plane_pass.edge_context(r, c),
-                    &mut strengths,
-                )?;
+            if plane_pass.pass == 0 {
+                if mi_index >= mi_rows {
+                    return Ok(());
+                }
+                for c in (0..mi_cols).step_by(plane_pass.col_step) {
+                    deblock_filter_edge(
+                        &mut ctx,
+                        grid,
+                        plane_pass.edge_context(mi_index, c),
+                        &mut strengths,
+                    )?;
+                }
+            } else {
+                if mi_index >= mi_cols {
+                    return Ok(());
+                }
+                for r in (0..mi_rows).step_by(plane_pass.row_step) {
+                    deblock_filter_edge(
+                        &mut ctx,
+                        grid,
+                        plane_pass.edge_context(r, mi_index),
+                        &mut strengths,
+                    )?;
+                }
             }
             Ok(())
         });
@@ -214,18 +255,19 @@ fn deblock_plane_pass<T: ReconSample>(
     Ok(())
 }
 
-/// Direct sample access for one plane pass, with the bounds proof hoisted out
-/// of the per-sample loops. `samples` holds the plane rows starting at
-/// `y_origin`; `width`/`height` stay the full plane dimensions so read
-/// clamping and write bounds are unchanged, and every access with
-/// `y_origin <= y < y_origin + rows` indexes in bounds. The § 7.17 vertical
-/// pass filters purely horizontal perpendicular lines, so a 4-row band slice
-/// covers every read and write its edges can make.
+/// Direct sample access for one plane pass over row slices, with the bounds
+/// proof hoisted out of the per-sample loops. `rows` holds the plane rows
+/// starting at `y_origin`, each starting at column `x_origin`; `width` and
+/// `height` stay the full plane dimensions so read clamping and write bounds
+/// are unchanged. § 7.17 pass 0 filters purely horizontal perpendicular
+/// lines and pass 1 purely vertical ones, so a 4-row band (pass 0) or a
+/// 4-column band (pass 1) covers every read and write its edges can make
+/// once the MI coverage fits the plane.
 struct PlaneCtx<'a, T: ReconSample> {
-    samples: &'a mut [T],
-    stride: usize,
+    rows: Vec<&'a mut [T]>,
     width: usize,
     height: usize,
+    x_origin: usize,
     y_origin: usize,
 }
 
@@ -237,41 +279,40 @@ impl<'a, T: ReconSample> PlaneCtx<'a, T> {
         height: usize,
     ) -> Result<Self, DeblockError> {
         let required = stride.checked_mul(height).ok_or(DeblockError::Workspace)?;
-        if width > stride || required > samples.len() {
+        if width > stride || stride == 0 || required > samples.len() {
             return Err(DeblockError::Workspace);
         }
         Ok(Self {
-            samples,
-            stride,
+            rows: samples.chunks_mut(stride).take(height).collect(),
             width,
             height,
+            x_origin: 0,
             y_origin: 0,
         })
     }
 
     fn band(
-        samples: &'a mut [T],
-        stride: usize,
+        rows: Vec<&'a mut [T]>,
         width: usize,
         height: usize,
+        x_origin: usize,
         y_origin: usize,
-        rows: usize,
-    ) -> Result<Self, DeblockError> {
-        let required = stride.checked_mul(rows).ok_or(DeblockError::Workspace)?;
-        if width > stride || required > samples.len() {
-            return Err(DeblockError::Workspace);
-        }
-        Ok(Self {
-            samples,
-            stride,
+    ) -> Self {
+        Self {
+            rows,
             width,
             height,
+            x_origin,
             y_origin,
-        })
+        }
     }
 
-    fn index(&self, x: usize, y: usize) -> usize {
-        (y - self.y_origin) * self.stride + x
+    fn sample(&self, x: usize, y: usize) -> T {
+        self.rows[y - self.y_origin][x - self.x_origin]
+    }
+
+    fn set_sample(&mut self, x: usize, y: usize, value: T) {
+        self.rows[y - self.y_origin][x - self.x_origin] = value;
     }
 }
 
@@ -371,6 +412,12 @@ struct EdgeContext {
     df_delta_q: i32,
     quant_delta: i32,
     bit_depth: BitDepth,
+}
+
+/// Splits a by-value row borrow into column chunks that keep the row's
+/// lifetime, so the chunks can be regrouped into per-band contexts.
+fn column_chunks<T>(row: &mut [T], size: usize) -> core::slice::ChunksMut<'_, T> {
+    row.chunks_mut(size)
 }
 
 fn deblock_filter_edge<T: ReconSample>(
@@ -620,8 +667,7 @@ fn apply_sample_filter<T: ReconSample>(
         if fx >= plane_ctx.width || fy >= plane_ctx.height {
             return Err(DeblockError::Workspace);
         }
-        let index = plane_ctx.index(fx, fy);
-        plane_ctx.samples[index] = new;
+        plane_ctx.set_sample(fx, fy, new);
     }
     Ok(())
 }
@@ -637,7 +683,7 @@ fn gather_line<T: ReconSample>(
         let offset = idx as isize - GATHER_HALF as isize;
         let sx = (perp.x as isize + offset * perp.dx as isize).clamp(0, max_x) as usize;
         let sy = (perp.y as isize + offset * perp.dy as isize).clamp(0, max_y) as usize;
-        *lane = plane_ctx.samples[plane_ctx.index(sx, sy)];
+        *lane = plane_ctx.sample(sx, sy);
     }
     line
 }
