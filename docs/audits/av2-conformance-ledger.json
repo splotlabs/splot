@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "2ac8022fca89d2108d67edc4887eb40631c0315a",
+  "audited_commit": "d8b8a4a77353380dca4f2f336a427155a44363ad",
   "outcome": "success",
   "files": [
     {
@@ -242,7 +242,7 @@
     },
     {
       "path": "Cargo.toml",
-      "sha256": "607a2fb4b0c75a9548fbc381d91e91e217f1fe42dd0090aab9137eb339bbb664",
+      "sha256": "1f31d4e1bfa6048ef0d8f04ad39a373446fcd00c1cc7b81b21380f10da04eb48",
       "scope_kind": "repository-process",
       "feature_ids": [
         "CONF-INSPECT-SNAPSHOTS"
@@ -2011,7 +2011,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal.rs",
-      "sha256": "57b4f303c0d69cfebca1e0af083c9d7bbd0d3bfccc8cc78c819a1f406615df83",
+      "sha256": "9e4d6d1f8cac1c3a49998dacc376c7987ab0a3f2e3b5f80f77e2c6b79fa435e8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
@@ -2082,7 +2082,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/general_intra.rs",
-      "sha256": "ef95914836ddd18837aec3b062da3c945a95ca2905d86c4de3b0a863fd574dc2",
+      "sha256": "42eef5afbe0e4793d7a38fbb9a4b0dcf2c888e7854bec971e8a280ff220a6441",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-10BIT",
@@ -2131,7 +2131,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "4c6f38d722c2bd074e0650d4310dc0820a919e7b07de990bab6aad65cd140719",
+      "sha256": "a1c1b598228c9d16501c2fe04815f8bd6a1e83c477ea16ba3137c275520de621",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2207,21 +2207,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/mc.rs",
-      "sha256": "ad2e99cfaede4d25a70382f98b1082543d875057d23cbea78a09775544cd81b3",
-      "scope_kind": "workspace:splot-decode",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/mc.rs",
-      "sha256": "ad2e99cfaede4d25a70382f98b1082543d875057d23cbea78a09775544cd81b3",
-      "scope_kind": "workspace:splot-decode",
-      "feature_ids": [],
-      "outcome": "success"
-    },
-    {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/mc.rs",
-      "sha256": "ad2e99cfaede4d25a70382f98b1082543d875057d23cbea78a09775544cd81b3",
+      "sha256": "99541579821b48884136d4d37172e00fa6420e30356b336dfad0cfd7eb8ccb4e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2286,6 +2272,13 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-decode/src/runtime_minimal/intra_edge.rs",
+      "sha256": "249e201df59ca3b8f428561efc07ab8bf79a1b0367bad486a4baa4eaa001054d",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-decode/src/runtime_minimal/intra_prediction.rs",
       "sha256": "ef3b4b7b8bcbd36f00c9fd806e41e2b504381bb29fee5d0e9679b12429cee7e2",
       "scope_kind": "workspace:splot-decode",
@@ -2310,14 +2303,14 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/residual_pipeline.rs",
-      "sha256": "2c90ba163030452513c2a3da170a54ddf0ade4c4d22d8a532f90de27112ab4dc",
+      "sha256": "56d65691cbdb63c2dc81c8117d5cbac45f6eb6fe2d90ad1f1e2d1c03e0d35cd5",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
-      "sha256": "18303a4ae1bf2ca27c6306df98e2a99479256fb430539539ef461d139d58ddf6",
+      "sha256": "0bb99a7daf9aaa58d11f28a1044f1a6da2a4bce1174d044240c1a5536b5bf270",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
@@ -2364,7 +2357,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon.rs",
-      "sha256": "a6642cb77eda535f8d16fdcb36e922c35c51c843b9ca3a993e73d85df69929f1",
+      "sha256": "bee710584be950d75415bf240967246ba28a835a00b1181a39ea2133a98fd8b8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
@@ -2491,7 +2484,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal_recon.rs",
-      "sha256": "67c253312396c479f8bc1ff4e73b1f5479d98c1224e655fd12ca7ba1671e6f73",
+      "sha256": "7202f46868a3ea3e7def1c49673b5ddb9a1731c7f2fd8a4d74f2a11d45102391",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-ANGLE",
@@ -2533,7 +2526,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal_recon/tests.rs",
-      "sha256": "cf17a74435419b8039988f37acf2ff6940352d39bfdbf04b91dfd63da02b3520",
+      "sha256": "ad2aa9ab2735ec06daf58983ea6427b361d47fdbad9f574c184703c5a80d760b",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3121,7 +3114,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/partition_traversal.rs",
-      "sha256": "65eb50231e8b30f6872ee580d6dc00de044803aafe1f30af22a61b556aa9e8f5",
+      "sha256": "871cf29511dc94093c6b75834cb3be82bcddbc70deb15ba954d1716d32dbc7db",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER",
@@ -4290,24 +4283,6 @@
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-SECONDARY-INVERSE-TRANSFORM"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "crates/splot-recon/src/subpel_mc.rs",
-      "sha256": "d2b6c201d8780ad47f0cc381e115c84463d016a809e5a6711ff2f56740a097e4",
-      "scope_kind": "workspace:splot-recon",
-      "feature_ids": [
-        "RECON-SUBPEL-MC"
-      ],
-      "outcome": "success"
-    },
-    {
-      "path": "crates/splot-recon/src/subpel_mc.rs",
-      "sha256": "d2b6c201d8780ad47f0cc381e115c84463d016a809e5a6711ff2f56740a097e4",
-      "scope_kind": "workspace:splot-recon",
-      "feature_ids": [
-        "RECON-SUBPEL-MC"
       ],
       "outcome": "success"
     },
@@ -26146,6 +26121,29 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/decode-per-unit-intra-edge-ibp/proposal.md",
+      "sha256": "7bdcc91a95c4d8178b23342aab289b8f6e5a4868df02c9c43c0b0f7cb3eace14",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-FIRST-INTER-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-per-unit-intra-edge-ibp/specs/decoder-support/spec.md",
+      "sha256": "a3e7dbfeceea7252faecd5c9a5c98bea7d02776e5028e0cda4b0ce4b44c3e939",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-per-unit-intra-edge-ibp/tasks.md",
+      "sha256": "f9cd79323865af459f5992f22cb042494f1ef50ca447a983b920ab9a2310e1a8",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/decoder-runtime-deslop/.openspec.yaml",
       "sha256": "d79442bd0715151f117b0e56fd41b924cf852f5aa5775b0093c1ba1e1c6013c1",
       "scope_kind": "openspec",
@@ -26770,6 +26768,20 @@
     {
       "path": "openspec/changes/optimize-decode-mc-hot-paths/proposal.md",
       "sha256": "7e3ba8091f1510afa499d018585f7db4f5f07434334a412806fda7e32a7b61af",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/optimize-decode-mc-hot-paths/specs/decoder-support/spec.md",
+      "sha256": "6d7677db1f5f9adc01f08bdba518eb6a245704783cc62b597e820f6b3b061c22",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/optimize-decode-mc-hot-paths/specs/runtime/spec.md",
+      "sha256": "1441fc0f22edcdacf9fb682f80f6e67c2fef47371f7f05aab73dfe3e59599d1a",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"

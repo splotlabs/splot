@@ -2479,6 +2479,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
     primary_num4_far: usize,
     primary_edge_filter: OneSidedEdgeFilter,
     secondary: IbpSecondary,
+    have_above: bool,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
     bit_depth: BitDepth,
@@ -2533,7 +2534,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             width,
             height,
             primary_num4_far,
-            true,
+            have_above,
             0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
             primary_edge_filter,
         )?;
@@ -2570,7 +2571,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             width,
             height,
             secondary.num4_far,
-            true,
+            have_above,
             0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
             secondary.edge_filter,
         )?;

@@ -1204,7 +1204,7 @@ impl ResidualPlanePlan {
                     w,
                     h,
                 )?;
-                if apply_ibp && luma_context.angle_delta_y() % 2 == 0 && edges.above && edges.left {
+                if apply_ibp && luma_context.angle_delta_y() % 2 == 0 && edges.left {
                     let secondary_filter = super::intra_edge::unit_edge_filter(
                         intra_edge,
                         workspace,
@@ -1233,6 +1233,7 @@ impl ResidualPlanePlan {
                             edge_filter: secondary_filter,
                             num4_far: neighbours.num_below_left(),
                         },
+                        edges.above,
                         use_tcq,
                         Some(luma_context),
                         block_ctx.bit_depth(),
@@ -1341,7 +1342,7 @@ impl ResidualPlanePlan {
                     w,
                     h,
                 )?;
-                if apply_ibp && luma_context.angle_delta_y() % 2 == 0 && edges.above && edges.left {
+                if apply_ibp && luma_context.angle_delta_y() % 2 == 0 {
                     let secondary_filter = super::intra_edge::unit_edge_filter(
                         intra_edge,
                         workspace,
@@ -1370,6 +1371,7 @@ impl ResidualPlanePlan {
                             edge_filter: secondary_filter,
                             num4_far: neighbours.num_above_right(),
                         },
+                        edges.above,
                         use_tcq,
                         Some(luma_context),
                         block_ctx.bit_depth(),
