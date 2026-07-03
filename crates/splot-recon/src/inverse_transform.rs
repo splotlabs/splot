@@ -80,6 +80,8 @@ pub fn inverse_transform_1d(
     bit_depth: BitDepth,
     out: &mut [i32],
 ) -> Result<()> {
+    use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+
     let sz = src.len();
     if !matches!(sz, 4 | 8 | 16 | 32) {
         return Err(ReconError::InvalidInverseTransformSize { size: sz });
@@ -93,7 +95,6 @@ pub fn inverse_transform_1d(
 
     let (lo, hi) = transform_clip_bounds(col_tx, bit_depth);
 
-    use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
     match sz {
         4 => {
             let kernel = match tx_type {

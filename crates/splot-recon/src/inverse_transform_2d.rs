@@ -104,7 +104,10 @@ pub struct InverseTransform2d {
 ///
 /// The whole computation is total and panic-free for valid shapes: the 1D
 /// transforms it calls are total, and the intermediate buffers are fixed-size
-/// stack arrays sized to the 32-element maximum adjusted dimension.
+/// stack arrays sized to the 32-element maximum adjusted dimension. Rows whose
+/// dequantized coefficients are all zero skip the row pass and fill their
+/// intermediate row with zeros — a bit-exact shortcut, since every 1D pass
+/// maps an all-zero input row to all zeros.
 ///
 /// # Errors
 /// Returns [`ReconError::InvalidInverseTransform2dShape`] if `log2_width` /
@@ -158,8 +161,6 @@ pub fn inverse_transform_2d(
         .zip(intermediate.chunks_exact_mut(w))
         .take(h)
     {
-        // Every 1D pass maps an all-zero row to all zeros (rescale, kernel sum,
-        // identity scale, Walsh-Hadamard, Round2, and Clip3 all fix 0).
         if dequant_row.iter().all(|&coeff| coeff == 0) {
             intermediate_row.fill(0);
             continue;
@@ -528,9 +529,12 @@ mod tests {
             lcg = lcg.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             ((lcg >> 33) as i32 % 4_001) - 1_777
         };
-        for (log2_w, log2_h, row_shift, col_shift) in
-            [(2u32, 2u32, 7u8, 10u8), (3, 4, 6, 12), (5, 5, 6, 12), (3, 2, 6, 13)]
-        {
+        for (log2_w, log2_h, row_shift, col_shift) in [
+            (2u32, 2u32, 7u8, 10u8),
+            (3, 4, 6, 12),
+            (5, 5, 6, 12),
+            (3, 2, 6, 13),
+        ] {
             let w = 1usize << log2_w;
             let h = 1usize << log2_h;
             let mut dequant = vec![0i32; w * h];

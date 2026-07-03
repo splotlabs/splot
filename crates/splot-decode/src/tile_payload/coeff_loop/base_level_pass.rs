@@ -227,6 +227,11 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     })
 }
 
+/// Validates config, geometry, and entry-count consistency before any symbol
+/// is consumed. Entry coordinates need no per-entry re-validation:
+/// `walk_nonzero_coeff_scan` bounds every scan position against the same block
+/// and derives the row/col pair from it, and the read loop's `set_level` still
+/// rejects any out-of-range coordinate before writing.
 fn preflight_pass(
     eob_read: NonZeroCoeffEobSymbolRead,
     block: &TransformCoeffBlockState,
@@ -259,10 +264,6 @@ fn preflight_pass(
             entries: entries.len(),
         });
     }
-    // Entry coordinates need no per-entry re-validation here:
-    // `walk_nonzero_coeff_scan` already bounds every scan position against the
-    // same block and derives row/col from it, and the read loop's `set_level`
-    // still rejects any out-of-range coordinate before writing.
     Ok(())
 }
 

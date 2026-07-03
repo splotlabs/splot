@@ -2133,10 +2133,6 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
 
     let mut out = vec![T::default(); samples];
     with_residual_scratch(|scratch| {
-        // `resolve` bounds each log2 dimension at 6 and the adjusted size at
-        // 32 per side, so `adjusted <= 1024` and `samples <= 4096`; the `min`
-        // keeps the slices total and any inconsistency is rejected by the
-        // buffer-length checks inside the residual chain.
         let dequant_scratch = &mut scratch.dequant[..adjusted.min(MAX_ADJUSTED_COEFFS)];
         let residual_scratch = &mut scratch.residual[..samples.min(MAX_ORIGINAL_SAMPLES)];
         reconstruct_transform_block_residual_with_secondary(
@@ -2162,6 +2158,9 @@ const MAX_ORIGINAL_SAMPLES: usize = 64 * 64;
 
 /// Reusable per-thread working buffers for the § 7.14.4 → § 7.15.4 residual
 /// chain; every used slot is fully overwritten by the chain before it is read.
+/// `InverseTransform2dOuter::resolve` bounds `adjusted <= 1024` and
+/// `samples <= 4096`, so the `min`-clamped slices are total and any
+/// inconsistency is rejected by the chain's own buffer-length checks.
 struct ResidualScratch {
     dequant: [i32; MAX_ADJUSTED_COEFFS],
     residual: [i32; MAX_ORIGINAL_SAMPLES],
