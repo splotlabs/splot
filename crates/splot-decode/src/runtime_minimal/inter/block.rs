@@ -10,7 +10,6 @@ use splot_core::tables::conversion::{
     MAX_TX_SIZE_RECT, TX_HEIGHT, TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2,
 };
 use splot_recon::PlaneId as ReconPlaneId;
-use splot_recon::math::round2_signed;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IDENTITY_WARP_PARAMS, InterIntraMode,
     InterpolationFilter as ReconInterpolationFilter, IntraCardinalDirection,
@@ -68,12 +67,13 @@ const BLOCK_64X64: usize = 12;
 const MAX_WARP_REF_CANDIDATES: usize = 4;
 const WARP_DELTA_NUM_SYMBOLS_LOW: u8 = 8;
 const WARP_DELTA_NUM_SYMBOLS_HIGH: u8 = 8;
-const WARPEDMODEL_PREC_BITS: u32 = 16;
+pub(super) const WARPEDMODEL_PREC_BITS: u32 = 16;
 const MI_SIZE_LOG2: u32 = 2;
-const WARP_PARAM_REDUCE_BITS: u32 = 6;
+pub(super) const WARP_PARAM_REDUCE_BITS: u32 = 6;
 const WARP_TRANS_INTEGER_BITS: u32 = 12;
 const WARP_DELTA_STEP_BITS: u32 = 10;
-const WARPEDMODEL_TRANS_CLAMP: i64 = 1 << (WARPEDMODEL_PREC_BITS + WARP_TRANS_INTEGER_BITS - 1);
+pub(super) const WARPEDMODEL_TRANS_CLAMP: i64 =
+    1 << (WARPEDMODEL_PREC_BITS + WARP_TRANS_INTEGER_BITS - 1);
 #[doc = "AV2 § 9.2 `Size_Group[BLOCK_SIZES]`."]
 const SIZE_GROUP_LOOKUP: [usize; 29] = [
     0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 1, 1, 2, 2, 1, 1, 2, 2,
@@ -333,6 +333,7 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
         .as_ref()
         .is_some_and(|inter| inter.enable_refmvbank)
         .then(super::find_mv_stack::RefMvBank::new);
+    let mut warp_param_bank = super::find_mv_stack::WarpParamBank::new();
     let limits = options.limits();
     trace_symbol_frame_marker(offset);
     let walk = decode_general_intra_multiblock_tree_with_lr_source_blocks(
@@ -362,6 +363,7 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
                 &mut intrabc_state,
                 &mut mv_grid,
                 &mut ref_mv_bank,
+                &mut warp_param_bank,
                 sb_h4,
                 mi_rows,
                 mi_cols,
@@ -478,6 +480,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
     intrabc_state: &mut TileIntrabcPreludeState,
     mv_grid: &mut NeighbourMvGrid,
     ref_mv_bank: &mut Option<super::find_mv_stack::RefMvBank>,
+    warp_param_bank: &mut super::find_mv_stack::WarpParamBank,
     sb_h4: usize,
     mi_rows: usize,
     mi_cols: usize,
@@ -564,6 +567,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
     if let Some(bank) = ref_mv_bank.as_mut() {
         bank.reset_for_leaf(mv_grid, mi_row, mi_col, sb_h4);
     }
+    warp_param_bank.reset_for_leaf(mv_grid, mi_row, mi_col, sb_h4);
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
 
     let is_inter = if frontier.is_luma_part() || frontier.is_chroma_part() {
@@ -1078,6 +1082,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         );
     }
     if let Some(warp_mode) = warp_mode {
+        let derive_wrl = n4w >= 2 && n4h >= 2;
         let stack = find_mv_stack(
             mv_grid,
             &block_ctx,
@@ -1085,6 +1090,8 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             ref_mv_bank
                 .as_ref()
                 .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2)),
+            warp_param_bank,
+            derive_wrl,
         );
         if std::env::var_os("SPLOT_TRACE_INTER_BLOCK_MODE").is_some() {
             eprintln!(
@@ -1262,6 +1269,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             warp.warp_params,
             warp.block_precision,
         );
+        warp_param_bank.update(ref_frame0, warp.warp_params);
         if let Some(bank) = ref_mv_bank.as_mut() {
             bank.update_for_block(
                 ref_frame0, None, warp.mv, None, mi_row, mi_col, n4w, n4h, sb_h4,
@@ -1410,6 +1418,8 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         ref_mv_bank
             .as_ref()
             .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2)),
+        warp_param_bank,
+        false,
     );
 
     let ref_mv_idx = if single_mode == SINGLE_MODE_NEARMV || single_mode == SINGLE_MODE_NEWMV {

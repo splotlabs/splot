@@ -116,7 +116,7 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
         "top-left block has no decoded neighbour"
     );
 
-    let stack = find_mv_stack(&grid, &block0, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &block0, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert_eq!(stack.num_mv_found(), 1, "only the zero global-MV fallback");
     assert_eq!(stack.candidate(0), Mv::ZERO, "fallback candidate is zero");
 }
@@ -302,7 +302,7 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
     assert_eq!(nctx.skip_ctx, 2, "two skip=1 neighbours -> skip ctx 2");
     assert!(nctx.has_neighbour, "block 1 has a decoded left neighbour");
 
-    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert!(stack.num_mv_found() >= 1, "at least one candidate");
     assert_eq!(
         stack.candidate(0),
@@ -333,7 +333,7 @@ fn block2_predicts_block0_mv_via_above_neighbour() {
     assert_eq!(ctx.new_mv_count, 2, "both above probes hit the NEWMV block");
     assert_eq!(ctx.new_mv_context, 3, "above-NEWMV NewMvContext");
 
-    let stack = find_mv_stack(&grid, &block2, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &block2, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert_eq!(
         stack.candidate(0),
         BLOCK0_MV,
@@ -355,7 +355,7 @@ fn block3_predicts_block0_mv_via_above_and_left() {
     let nctx = block_neighbour_ctx(&grid, &block3);
     assert_eq!(nctx.skip_ctx, 2, "two skip=1 neighbours -> skip ctx 2");
 
-    let stack = find_mv_stack(&grid, &block3, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &block3, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert_eq!(
         stack.candidate(0),
         BLOCK0_MV,
@@ -392,7 +392,7 @@ fn intra_neighbour_does_not_contribute() {
         "two intra neighbours -> is_inter ctx 3"
     );
 
-    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert_eq!(stack.num_mv_found(), 1, "intra neighbour not a candidate");
     assert_eq!(
         stack.candidate(0),
@@ -410,7 +410,7 @@ fn mismatched_reference_neighbour_does_not_contribute() {
     let ctx = find_mode_ctx(&grid, &block1);
     assert_eq!(ctx.new_mv_context, 0, "ref-mismatch gives mode ctx 0");
 
-    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert_eq!(
         stack.num_mv_found(),
         1,
@@ -482,7 +482,7 @@ fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
     record_inter(&mut grid, N4_32, 0, NeighbourYMode::Other, BLOCK0_MV, true);
     let block3 = block_at(N4_32, N4_32);
 
-    let stack = find_mv_stack(&grid, &block3, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &block3, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert_eq!(
         stack.num_mv_found(),
         2,
@@ -521,7 +521,7 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
     );
     let block3 = block_at(N4_32, N4_32);
 
-    let stack = find_mv_stack(&grid, &block3, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &block3, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert_eq!(
         stack.candidate(0),
         Mv { row: 0, col: 32 },
@@ -553,7 +553,7 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
 fn clamp_keeps_small_mvs_unchanged() {
     let grid = grid_with_block0();
     let block1 = block_at(0, N4_32);
-    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert_eq!(
         stack.candidate(0),
         BLOCK0_MV,
@@ -638,7 +638,7 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
         "skip context counts both above-SB NPosBuf neighbours"
     );
 
-    let stack = find_mv_stack(&grid, &sb2, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &sb2, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert_eq!(
         stack.candidate(0),
         BLOCK0_MV,
@@ -657,7 +657,7 @@ fn undecoded_later_sb_column_yields_no_candidate() {
         "an SB whose neighbours are all undecoded has no neighbour"
     );
 
-    let stack = find_mv_stack(&grid, &sb1, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &sb1, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert_eq!(
         stack.num_mv_found(),
         1,
@@ -684,7 +684,7 @@ fn bottom_right_sb_predicts_from_decoded_above_and_left() {
         "SB3 has decoded above + left neighbours"
     );
 
-    let stack = find_mv_stack(&grid, &sb3, Mv::ZERO, None);
+    let stack = find_mv_stack(&grid, &sb3, Mv::ZERO, None, &WarpParamBank::new(), false);
     assert_eq!(
         stack.candidate(0),
         BLOCK0_MV,

@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "907f9da2dd4329085c89cdc2f2b4a0de22301bb8",
+  "audited_commit": "47f2c76a7b2d58eb859e5b995ee30223d5dea0d2",
   "outcome": "success",
   "files": [
     {
@@ -2011,7 +2011,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal.rs",
-      "sha256": "cc198b3a006c9f0ea71f3b30e05b58db3d66da808e194c69dcc57b3f301a076f",
+      "sha256": "45b1780ad742a057d57e38c3768ae5ead525be732b8989186641119e7a2a644f",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
@@ -2131,7 +2131,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "2051882f7a65331e8dbb6ec66f7a7c9630bfebd99a71f3e123a679a4b727e30a",
+      "sha256": "98dc824c8dfdd006fb8a1481566752101b4ee8793b5481513a556407a0747808",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2148,7 +2148,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block/warp.rs",
-      "sha256": "06b671472fc881c99bc45c6ea2854b8a9b6fe2a1c212e5077f9b2a97821eef92",
+      "sha256": "32dd6975553931ad8512b922dfc4de46cc5feea55e42a6a022eb3645f0f44823",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2169,7 +2169,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
-      "sha256": "092cece0369daff6cf9325fc5ec34622c14a48bb004a27b43236b267a2b2b510",
+      "sha256": "3ebed2301fe567a5b3a5c5d68dea005b958eb807198c7302cb5c388cf683c2fd",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
@@ -2179,7 +2179,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs",
-      "sha256": "be606ef67cfb6d1c1560a4c22965917b2d3a71085161b094f968687202af31a9",
+      "sha256": "e2b30502eda08baf679ca1811710872a41370da46033b1b3b06df91d4860bebf",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"

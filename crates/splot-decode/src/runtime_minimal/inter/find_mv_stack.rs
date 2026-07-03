@@ -1,11 +1,30 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_recon::math::round2_signed;
+
 use super::Mv;
+use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
 
 /// AV2 § 3 `MAX_REF_MV_STACK_SIZE`: the maximum number of motion vectors in the
 /// stack.
 pub(super) const MAX_REF_MV_STACK_SIZE: usize = 6;
+
+/// AV2 § 3 `MAX_WARP_REF_CANDIDATES`: the § 7.12.2 `WarpParamStack` size.
+pub(super) const MAX_WARP_REF_CANDIDATES: usize = 4;
+
+/// AV2 § 7.12.2.20 `Default_Warp_Params`: the identity warp model.
+pub(super) const DEFAULT_WARP_PARAMS: [i64; 6] = [
+    0,
+    0,
+    1 << WARPEDMODEL_PREC_BITS,
+    0,
+    0,
+    1 << WARPEDMODEL_PREC_BITS,
+];
+
+/// AV2 § 3 `GM_TRANS_ONLY_PREC_DIFF = WARPEDMODEL_PREC_BITS - 3`.
+const GM_TRANS_ONLY_PREC_DIFF: u32 = WARPEDMODEL_PREC_BITS - 3;
 
 const MV_BORDER: i32 = 128;
 
@@ -942,6 +961,8 @@ fn collect_neighbour_context_cells(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct MvStack {
     stack: Vec<(Mv, (i32, i32))>,
+    warp: WarpParamStack,
+    block: MvBlockContext,
 }
 
 impl MvStack {
@@ -966,6 +987,45 @@ impl MvStack {
             .get(idx)
             .or_else(|| self.stack.last())
             .map_or((0, 0), |entry| entry.1)
+    }
+
+    /// Returns `WarpParamStack[idx]`; out-of-range indices resolve to the
+    /// identity default like the unfilled slots (§ 7.12.2 initialization).
+    pub(super) fn warp_candidate(&self, idx: usize) -> [i64; 6] {
+        self.warp
+            .slots
+            .get(idx)
+            .copied()
+            .unwrap_or(DEFAULT_WARP_PARAMS)
+    }
+
+    /// § 7.12.2.2 `get_warp_motion_vector`: projects the block's central luma
+    /// sample through `WarpParamStack[idx]` at the requested precision.
+    pub(super) fn warp_predicted_mv(&self, idx: usize, precision: u8) -> Mv {
+        let params = self.warp_candidate(idx);
+        let block = &self.block;
+        let x = block.mi_col as i64 * 4 + (block.bw4 as i64 * 4) / 2 - 1;
+        let y = block.mi_row as i64 * 4 + (block.bh4 as i64 * 4) / 2 - 1;
+        let one = 1i64 << WARPEDMODEL_PREC_BITS;
+        let xc = (params[2] - one) * x + params[3] * y + params[0];
+        let yc = params[4] * x + (params[5] - one) * y + params[1];
+        let (row, col) = if precision == super::read_mv::MV_PRECISION_EIGHTH_PEL {
+            (
+                round2_signed(yc, WARPEDMODEL_PREC_BITS - 3),
+                round2_signed(xc, WARPEDMODEL_PREC_BITS - 3),
+            )
+        } else {
+            (
+                round2_signed(yc, WARPEDMODEL_PREC_BITS - 2) * 2,
+                round2_signed(xc, WARPEDMODEL_PREC_BITS - 2) * 2,
+            )
+        };
+        let mv = clip_and_clamp_projected_mv(block, row, col);
+        if precision < super::read_mv::MV_PRECISION_HALF_PEL {
+            super::read_mv::lower_mv_precision(precision, mv)
+        } else {
+            mv
+        }
     }
 }
 
@@ -1016,8 +1076,6 @@ pub(super) fn extend_warp_neighbour_params(
     params[1] = i64::from(mv.row) << (WARPEDMODEL_PREC_BITS - 3);
     ExtendWarpNeighbour::Params(params)
 }
-
-const WARPEDMODEL_PREC_BITS: u32 = 16;
 
 /// AV2 § 3 `LEAST_SQUARES_SAMPLES_MAX`.
 const LEAST_SQUARES_SAMPLES_MAX: usize = 8;
@@ -1234,29 +1292,9 @@ impl RefMvBank {
                 *start = 0;
             }
         }
-        let sb_row = sb.0 * sb_size4;
-        let sb_col = sb.1 * sb_size4;
-        if sb_row == 0 {
-            return;
-        }
-        let cand_row = sb_row as i32 - 1;
-        let mut cand_col = sb_col as i32;
-        let mut row_hits = 0;
-        while (cand_col as usize) < grid.mi_cols
-            && (cand_col as usize) < sb_col + sb_size4
-            && row_hits < 4
-        {
-            let cand_col2 = (cand_col >> 1) << 1;
-            let mut step = 1i32;
-            if let Some(cell) = grid.get(cand_row, cand_col2) {
-                if cell.is_inter {
-                    row_hits += 1;
-                    self.update(cell.ref_frame0, cell.ref_frame1, cell.mv, cell.mv1, false);
-                }
-                step = (cell.bw4 as i32).max(1);
-            }
-            cand_col += step;
-        }
+        seed_walk_from_row_above(grid, sb.0 * sb_size4, sb.1 * sb_size4, sb_size4, |cell| {
+            self.update(cell.ref_frame0, cell.ref_frame1, cell.mv, cell.mv1, false);
+        });
     }
 
     /// § 5.20.7 `update_ref_mv_count` unit-budget bookkeeping.
@@ -1342,32 +1380,13 @@ impl RefMvBank {
             mv0: mv,
             mv1: mv1.unwrap_or(Mv::ZERO),
         };
-        let count = self.sizes[list];
-        let start = self.starts[list];
-        let mut found = None;
-        for i in 0..count {
-            let idx = (start + i) % REF_MV_BANK_SIZE;
-            if self.entries[list][idx] == entry {
-                found = Some(i);
-                break;
-            }
-        }
-        if let Some(found) = found {
-            for i in found..count.saturating_sub(1) {
-                let idx0 = (start + i) % REF_MV_BANK_SIZE;
-                let idx1 = (start + i + 1) % REF_MV_BANK_SIZE;
-                self.entries[list][idx0] = self.entries[list][idx1];
-            }
-            let tail = (start + count - 1) % REF_MV_BANK_SIZE;
-            self.entries[list][tail] = entry;
-        } else if count < REF_MV_BANK_SIZE {
-            let tail = (start + count) % REF_MV_BANK_SIZE;
-            self.entries[list][tail] = entry;
-            self.sizes[list] = count + 1;
-        } else {
-            self.entries[list][start] = entry;
-            self.starts[list] = (start + 1) % REF_MV_BANK_SIZE;
-        }
+        bank_ring_update(
+            &mut self.entries[list],
+            &mut self.sizes[list],
+            &mut self.starts[list],
+            entry,
+            |candidate| *candidate == entry,
+        );
     }
 
     /// § 7.12.2.21 fill: newest-first bank candidates appended to the stack
@@ -1425,34 +1444,244 @@ impl RefMvBank {
     }
 }
 
+/// § 5.20.2.2 row-above seed walk shared by the MV and warp banks: visits
+/// up to four decoded inter blocks along the row directly above the
+/// superblock (8x8-aligned columns), stepping by each candidate's width.
+fn seed_walk_from_row_above(
+    grid: &NeighbourMvGrid,
+    sb_row: usize,
+    sb_col: usize,
+    sb_size4: usize,
+    mut visit: impl FnMut(&NeighbourCell),
+) {
+    if sb_row == 0 {
+        return;
+    }
+    let cand_row = sb_row as i32 - 1;
+    let mut cand_col = sb_col as i32;
+    let mut row_hits = 0;
+    while (cand_col as usize) < grid.mi_cols
+        && (cand_col as usize) < sb_col + sb_size4
+        && row_hits < 4
+    {
+        let cand_col2 = (cand_col >> 1) << 1;
+        let mut step = 1i32;
+        if let Some(cell) = grid.get(cand_row, cand_col2) {
+            if cell.is_inter {
+                row_hits += 1;
+                visit(&cell);
+            }
+            step = (cell.bw4 as i32).max(1);
+        }
+        cand_col += step;
+    }
+}
+
+/// § 5.20.2.2 bank ring update shared by the MV and warp banks: a `matches`
+/// hit rotates the EXISTING entry to the tail (most-recently-used) without
+/// rewriting it; a miss appends, growing the ring or evicting the oldest.
+fn bank_ring_update<T: Copy>(
+    entries: &mut [T],
+    size: &mut usize,
+    start: &mut usize,
+    entry: T,
+    matches: impl Fn(&T) -> bool,
+) {
+    let capacity = entries.len();
+    let count = *size;
+    let mut found = None;
+    for i in 0..count {
+        let idx = (*start + i) % capacity;
+        if matches(&entries[idx]) {
+            found = Some(i);
+            break;
+        }
+    }
+    if let Some(found) = found {
+        let kept = entries[(*start + found) % capacity];
+        for i in found..count.saturating_sub(1) {
+            let idx0 = (*start + i) % capacity;
+            let idx1 = (*start + i + 1) % capacity;
+            entries[idx0] = entries[idx1];
+        }
+        let tail = (*start + count - 1) % capacity;
+        entries[tail] = kept;
+    } else if count < capacity {
+        let tail = (*start + count) % capacity;
+        entries[tail] = entry;
+        *size = count + 1;
+    } else {
+        entries[*start] = entry;
+        *start = (*start + 1) % capacity;
+    }
+}
+
+/// AV2 § 3 `WARP_PARAM_BANK_SIZE`.
+const WARP_PARAM_BANK_SIZE: usize = 4;
+/// AV2 § 3 `MAX_WARP_SB_HITS`.
+const MAX_WARP_SB_HITS: u32 = 64;
+/// AV2 § 3 `REFS_PER_FRAME`: the warp bank indexes by the plain reference
+/// index (05:10313), not the MV bank's nine-list mapping.
+const WARP_BANK_REFS: usize = 7;
+
+/// AV2 § 5.20.2.2 / § 5.20.7 warp parameter bank: a four-entry ring of
+/// recent warp models per reference frame, filled into the warp stack
+/// newest-first by the § 7.12.2.20 tail. Contents clear once per superblock
+/// row (§ 5.20.2 `clear_left_context`); the per-superblock reset zeroes only
+/// `WarpBankHits` and re-seeds list-0 models from the row above
+/// (`candFromSbAbove == 1`). Unlike the MV bank, the per-block update is
+/// unconditional for warp motion modes (05:10144) — no `enable_refmvbank` /
+/// BRU gate and no unit budget, only the flat `MAX_WARP_SB_HITS` cap.
+/// List-1 models stay behind the compound-warp defer.
+pub(super) struct WarpParamBank {
+    entries: [[[i64; 6]; WARP_PARAM_BANK_SIZE]; WARP_BANK_REFS],
+    sizes: [usize; WARP_BANK_REFS],
+    starts: [usize; WARP_BANK_REFS],
+    sb_hits: u32,
+    current_sb: Option<(usize, usize)>,
+}
+
+impl WarpParamBank {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: [[DEFAULT_WARP_PARAMS; WARP_PARAM_BANK_SIZE]; WARP_BANK_REFS],
+            sizes: [0; WARP_BANK_REFS],
+            starts: [0; WARP_BANK_REFS],
+            sb_hits: 0,
+            current_sb: None,
+        }
+    }
+
+    /// The § 5.20.2.2 warp-bank arm of `reset_refmv_bank` +
+    /// `clear_left_context`, invoked at the first leaf of each superblock.
+    pub(super) fn reset_for_leaf(
+        &mut self,
+        grid: &NeighbourMvGrid,
+        mi_row: usize,
+        mi_col: usize,
+        sb_size4: usize,
+    ) {
+        let sb = (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1));
+        if self.current_sb == Some(sb) {
+            return;
+        }
+        let new_sb_row = self.current_sb.is_none_or(|(row, _)| row != sb.0);
+        self.current_sb = Some(sb);
+        self.sb_hits = 0;
+        if new_sb_row {
+            self.sizes = [0; WARP_BANK_REFS];
+            self.starts = [0; WARP_BANK_REFS];
+        }
+        seed_walk_from_row_above(grid, sb.0 * sb_size4, sb.1 * sb_size4, sb_size4, |cell| {
+            if cell.is_warp()
+                && let Some(params) = cell.warp_params
+            {
+                self.update(cell.ref_frame0, params);
+            }
+        });
+    }
+
+    /// § 5.20.7 `update_warp_param_bank` for the single-reference surface:
+    /// `params_equal` compares only the non-translational members, and a hit
+    /// keeps the existing entry (its translation is not rewritten).
+    pub(super) fn update(&mut self, ref_frame0: i8, params: [i64; 6]) {
+        if self.sb_hits >= MAX_WARP_SB_HITS {
+            return;
+        }
+        self.sb_hits += 1;
+        let Some(ref_idx) = usize::try_from(ref_frame0)
+            .ok()
+            .filter(|&idx| idx < WARP_BANK_REFS)
+        else {
+            return;
+        };
+        bank_ring_update(
+            &mut self.entries[ref_idx],
+            &mut self.sizes[ref_idx],
+            &mut self.starts[ref_idx],
+            params,
+            |candidate| candidate[2..6] == params[2..6],
+        );
+    }
+
+    /// The § 7.12.2.20 warp tail: bank entries inserted newest-first.
+    fn fill(&self, ref_frame0: i8, warp: &mut WarpParamStack) {
+        let Some(ref_idx) = usize::try_from(ref_frame0)
+            .ok()
+            .filter(|&idx| idx < WARP_BANK_REFS)
+        else {
+            return;
+        };
+        let count = self.sizes[ref_idx];
+        let start = self.starts[ref_idx];
+        for i in (0..count).rev() {
+            let idx = (start + i) % WARP_PARAM_BANK_SIZE;
+            warp.insert(self.entries[ref_idx][idx]);
+        }
+    }
+}
+
 /// AV2 § 7.12.2 `find_mv_stack` for the spatial-only single-prediction
 /// subset. `PruneCount` starts at zero and is shared across the spatial
 /// scan, the § 7.12.2.21 bank fill, and the § 7.12.2.20 global-MV dedup.
+/// With `derive_wrl` (§ 5.18.2 `DeriveWrl`), the § 7.12.2 `WarpParamStack`
+/// is built alongside: corner-derived model (steps 4-5), the § 7.12.2.9
+/// spatial inserts fired from every scan point, then the step-22 tail (warp
+/// bank newest-first, `gm_params` — identity while global-motion frames
+/// defer at the frame gate — and two identity defaults). The § 7.12.2.5
+/// col-scan gap therefore also applies to the warp stack.
 pub(super) fn find_mv_stack(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     global_mv: Mv,
     bank: Option<(&RefMvBank, usize)>,
+    warp_bank: &WarpParamBank,
+    derive_wrl: bool,
 ) -> MvStack {
     let mut entries: Vec<MvStackEntry> = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
     let mut prune_count = 0usize;
+    let mut warp = derive_wrl.then(WarpParamStack::new);
 
-    for probe in mv_stack_spatial_probes(block).into_iter().flatten() {
-        scan_mv_stack_probe(grid, block, probe, &mut entries, &mut prune_count);
+    if let Some(warp) = warp.as_mut() {
+        generate_points_from_corners(grid, block, 0, warp);
+        if warp.num_found == 0 && block.bw4 <= 16 {
+            generate_points_from_corners(grid, block, 1, warp);
+        }
     }
 
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): 7.12.2.5 Scan col, 7.12.2.19 Sorting, 7.12.2.20 large-block MVP
+    for probe in mv_stack_spatial_probes(block).into_iter().flatten() {
+        scan_mv_stack_probe(
+            grid,
+            block,
+            probe,
+            &mut entries,
+            &mut prune_count,
+            warp.as_mut(),
+        );
+    }
+
+    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): 7.12.2.5 Scan col, 7.12.2.19 Sorting, 7.12.2.20 large-block MVP, 7.12.2.22 derived-SMVP fill
     if let Some((bank, max_ref_mv_count)) = bank {
         bank.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
     }
     extra_search(block, global_mv, &mut entries, &mut prune_count);
+    if let Some(warp) = warp.as_mut() {
+        warp_bank.fill(block.ref_frame0, warp);
+        for _ in 0..3 {
+            warp.insert(DEFAULT_WARP_PARAMS);
+        }
+    }
 
     let stack: Vec<(Mv, (i32, i32))> = entries
         .into_iter()
         .map(|entry| (clamp_mv(block, entry.mv), entry.offsets))
         .collect();
 
-    MvStack { stack }
+    MvStack {
+        stack,
+        warp: warp.unwrap_or_else(WarpParamStack::new),
+        block: *block,
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1468,10 +1697,15 @@ fn scan_mv_stack_probe(
     probe: RelativeProbe,
     entries: &mut Vec<MvStackEntry>,
     prune_count: &mut usize,
+    warp: Option<&mut WarpParamStack>,
 ) {
     let Some((cell, weight)) = probe.stack_cell(grid, block) else {
         return;
     };
+
+    if let Some(warp) = warp {
+        warp.add_scan_point(cell, block);
+    }
 
     if !matches_block_ref(cell, block) {
         return;
@@ -1526,6 +1760,217 @@ fn extra_search(
                 offsets: (0, 0),
             });
         }
+    }
+}
+
+/// AV2 § 7.12.2 `WarpParamStack` + `NumWarpFound`: at most four warp models,
+/// default-initialized to identity; § 7.12.2.11 inserts cap at the stack
+/// size with no deduplication of any kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct WarpParamStack {
+    slots: [[i64; 6]; MAX_WARP_REF_CANDIDATES],
+    num_found: usize,
+}
+
+impl WarpParamStack {
+    fn new() -> Self {
+        Self {
+            slots: [DEFAULT_WARP_PARAMS; MAX_WARP_REF_CANDIDATES],
+            num_found: 0,
+        }
+    }
+
+    /// § 7.12.2.11 insert warp candidate.
+    fn insert(&mut self, params: [i64; 6]) {
+        if self.num_found < MAX_WARP_REF_CANDIDATES {
+            self.slots[self.num_found] = params;
+            self.num_found += 1;
+        }
+    }
+
+    /// § 7.12.2.9 add warp motion vector: a decoded warp neighbour whose
+    /// list-0 reference matches the block's inserts its stored model.
+    fn add_scan_point(&mut self, cell: NeighbourCell, block: &MvBlockContext) {
+        if cell.is_inter
+            && cell.is_warp()
+            && cell.ref_frame0 == block.ref_frame0
+            && let Some(params) = cell.warp_params
+        {
+            self.insert(params);
+        }
+    }
+}
+
+/// § 7.12.2.3 generate points from corners: derives a warp model from the
+/// motion at three corners of the block and § 7.12.2.11-inserts it.
+fn generate_points_from_corners(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    iter: i32,
+    warp: &mut WarpParamStack,
+) {
+    let bw4 = block.bw4 as i32;
+    let bh4 = block.bh4 as i32;
+    let mut pts = [[0i64; 2]; 3];
+    let mut mvs = [[0i64; 2]; 3];
+    let mut found = 0usize;
+    for (delta_row, delta_col, adjust_col) in
+        [(-1, -1, iter), (-1, bw4 - 1, iter), (bh4 - 1, -1, 0)]
+    {
+        warp_corner(
+            grid, block, delta_row, delta_col, adjust_col, &mut pts, &mut mvs, &mut found,
+        );
+    }
+    if found != 3 {
+        return;
+    }
+    let mut ref_pts = [[0i64; 2]; 3];
+    let mut all_mvs_same = true;
+    for n in 0..3 {
+        for c in 0..2 {
+            ref_pts[n][c] =
+                (pts[n][c] << WARPEDMODEL_PREC_BITS) + (mvs[n][c] << GM_TRANS_ONLY_PREC_DIFF);
+            if mvs[n][c] != mvs[0][c] {
+                all_mvs_same = false;
+            }
+        }
+    }
+    if all_mvs_same || ref_pts.iter().flatten().any(|&value| value < 0) {
+        return;
+    }
+    let width_log2 = (block.bw4 as u32 * 4).trailing_zeros();
+    let height_log2 = (block.bh4 as u32 * 4).trailing_zeros();
+    let y0 = pts[0][0];
+    let x0 = pts[0][1];
+    let mut wmmat = [0i64; 6];
+    wmmat[2] = (ref_pts[1][1] - ref_pts[0][1]) >> width_log2;
+    wmmat[4] = (ref_pts[1][0] - ref_pts[0][0]) >> width_log2;
+    wmmat[3] = (ref_pts[2][1] - ref_pts[0][1]) >> height_log2;
+    wmmat[5] = (ref_pts[2][0] - ref_pts[0][0]) >> height_log2;
+    let wmmat0 = ref_pts[0][1] - wmmat[2] * x0 - wmmat[3] * y0;
+    let wmmat1 = ref_pts[0][0] - wmmat[4] * x0 - wmmat[5] * y0;
+    reduce_warp_model(&mut wmmat);
+    let high = WARPEDMODEL_TRANS_CLAMP - (1 << WARP_PARAM_REDUCE_BITS);
+    wmmat[0] = wmmat0.clamp(-WARPEDMODEL_TRANS_CLAMP, high);
+    wmmat[1] = wmmat1.clamp(-WARPEDMODEL_TRANS_CLAMP, high);
+    warp.insert(wmmat);
+}
+
+/// § 7.12.2.4 warp corner: records the corner position and motion (a warp
+/// neighbour projects its model at the corner; a translational neighbour
+/// contributes its per-list sub-MV).
+#[allow(clippy::too_many_arguments)]
+fn warp_corner(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    delta_row: i32,
+    delta_col: i32,
+    adjust_col: i32,
+    pts: &mut [[i64; 2]; 3],
+    mvs: &mut [[i64; 2]; 3],
+    found: &mut usize,
+) {
+    let mv_row = block.mi_row as i32 + delta_row;
+    let mv_col = block.mi_col as i32 + delta_col;
+    let is_sb_border = block.is_sb_border();
+    let delta_col = delta_col + adjust_col;
+    let mv_col2 = if delta_row < 0 && is_sb_border {
+        let mi_col = block.mi_col as i32;
+        (mi_col - (mi_col & 1)) + (delta_col - (delta_col & 1))
+    } else {
+        block.mi_col as i32 + delta_col
+    };
+    if is_sb_border && delta_col == 0 && block.bw4 <= 2 {
+        return;
+    }
+    let Some(cell) = grid.get(mv_row, mv_col2) else {
+        return;
+    };
+    if !cell.is_inter || *found >= 3 {
+        return;
+    }
+    for ref_list in 0..2usize {
+        let ref_matches = if ref_list == 0 {
+            cell.ref_frame0 == block.ref_frame0
+        } else {
+            cell.ref_frame1 == Some(block.ref_frame0)
+        };
+        if !ref_matches {
+            continue;
+        }
+        let corner_mv = if cell.is_warp() {
+            if ref_list > 0 {
+                return;
+            }
+            let Some(params) = cell.warp_params else {
+                return;
+            };
+            warp_motion_vector_at(params, block, mv_row + 1, mv_col + 1)
+        } else if ref_list == 0 {
+            cell.mv
+        } else {
+            let Some(mv1) = cell.mv1 else {
+                return;
+            };
+            mv1
+        };
+        pts[*found] = [i64::from(mv_row + 1) * 4, i64::from(mv_col + 1) * 4];
+        mvs[*found] = [i64::from(corner_mv.row), i64::from(corner_mv.col)];
+        *found += 1;
+        return;
+    }
+}
+
+/// § 7.12.2.4 `get_warp_motion_vector_xy_pos`: projects a 4x4 position
+/// through a neighbour's warp model into an eighth-pel motion vector.
+fn warp_motion_vector_at(
+    params: [i64; 6],
+    block: &MvBlockContext,
+    pos_row: i32,
+    pos_col: i32,
+) -> Mv {
+    let y = i64::from(pos_row) * 4;
+    let x = i64::from(pos_col) * 4;
+    let xc = (params[2] * x + params[3] * y + params[0]) - (x << WARPEDMODEL_PREC_BITS);
+    let yc = (params[4] * x + params[5] * y + params[1]) - (y << WARPEDMODEL_PREC_BITS);
+    clip_and_clamp_projected_mv(
+        block,
+        round2_signed(yc, WARPEDMODEL_PREC_BITS - 3),
+        round2_signed(xc, WARPEDMODEL_PREC_BITS - 3),
+    )
+}
+
+/// The shared § 7.12.2.2 / § 7.12.2.4 projection tail: the
+/// `MV_LOW + 1 .. MV_UPP - 1` clip, then the § 5.20.9.4/.5 clamps.
+fn clip_and_clamp_projected_mv(block: &MvBlockContext, row: i64, col: i64) -> Mv {
+    let bound = (1i64 << 16) - 1;
+    let row = row.clamp(-bound, bound);
+    let col = col.clamp(-bound, bound);
+    clamp_mv(
+        block,
+        Mv {
+            row: row as i32,
+            col: col as i32,
+        },
+    )
+}
+
+/// § 7.13.3.21-adjacent `reduce_warp_model` (07:8586-8604): quantizes the
+/// non-translational members to `WARP_PARAM_REDUCE_BITS` steps around the
+/// identity offsets.
+pub(super) fn reduce_warp_model(params: &mut [i64; 6]) {
+    let max_value = (1i64 << (WARPEDMODEL_PREC_BITS - 1)) - (1i64 << WARP_PARAM_REDUCE_BITS);
+    let min_value = -max_value;
+    for (index, param) in params.iter_mut().enumerate().skip(2) {
+        let offset = if index == 2 || index == 5 {
+            1i64 << WARPEDMODEL_PREC_BITS
+        } else {
+            0
+        };
+        let original = *param - offset;
+        let clamped = original.clamp(min_value, max_value);
+        *param =
+            (round2_signed(clamped, WARP_PARAM_REDUCE_BITS) << WARP_PARAM_REDUCE_BITS) + offset;
     }
 }
 
