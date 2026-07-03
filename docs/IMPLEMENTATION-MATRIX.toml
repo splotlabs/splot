@@ -20610,3 +20610,48 @@ commands = [
 ]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "INFRA-DECODE-SERIAL-HOT-PATHS"
+name = "Decode serial hot-path optimization"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.13.3.18", "7.17", "7.18", "7.19", "7.20.1", "7.20.3"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/trace_flags.rs"
+openspec_change = "optimize-decode-serial-hot-paths"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Bit-exact first-frame latency work on the serial decode spine, following INFRA-DECODE-FILTER-HOT-PATHS. Diagnostic SPLOT_TRACE_* env gates are cached once per process (trace_flags module; the per-symbol splot-core trace::emit hook fast-gates on a cached flag) and the shared \u00a74.8 Round2/Clip3 helpers are #[inline]. The selectable-tx grid is a per-thread scratch reset from its own records instead of a ~2MB None-fill per coding block; active LR unit membership is derived from two per-axis matching scans with tile-constant geometry hoisted; LR source blocks coalesce into row runs before filtering and the Wiener NS luma kernel validates its padded window once then filters row slices; the chroma filter memoizes the luma downsample per coordinate; filter-stage plane snapshots are taken only for stages that run. CDEF gains a per-block interior kernel with hoisted tap constants over u16 snapshots; deblock gathers/scatters stack-array lines over direct plane slices with a per-pass adaptive-strength memo; CCSO precomputes a per-plane offset LUT over a borrowed source. The coefficient path drops the per-TU TransformCoeffBlockState clone, DC-context-line clones, preflight re-walks, and quant-buffer copies, and reuses per-thread residual scratch; the inverse transform selects its 1-D kernel once per pass, skips zero coefficients and all-zero rows (bit-exact: adding zero), and rounds via i64 shift algebra with a proven bound. Motion compensation borrows reference planes through a strided generic ReferencePlaneView instead of flattening each plane per block, and the \u00a77.13.3.18 convolution takes an unscaled-step contiguous-row fast path with the general path as fallback. Raw \u00a76.16.13 serialization and frame-hash digests batch per row. Motivating 1080p10 first-frame decode drops from ~380 ms to ~170 ms median (raw sha256 unchanged); rewritten kernels carry old-vs-new equivalence tests."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "done"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/subpel_mc/tests.rs::edge_positions_match_independent_reference",
+    "crates/splot-recon/src/subpel_mc/tests.rs::strided_view_matches_contiguous_view",
+    "crates/splot-recon/src/inverse_transform.rs::tests::kernel_transform_matches_per_element_reference",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records_grid_tests.rs::with_selectable_tx_grid_reuses_scratch_without_cross_block_state",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon_tests.rs::luma_lr_coalesced_runs_match_per_block_dispatch_bit_exactly",
+]
+commands = [
+    "cargo test -p splot-core --lib",
+    "cargo test -p splot-recon --lib",
+    "cargo test -p splot-decode --lib",
+]
+fixtures = []
+diagnostics = []

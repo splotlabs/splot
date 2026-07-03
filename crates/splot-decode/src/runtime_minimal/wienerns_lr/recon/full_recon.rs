@@ -8,7 +8,6 @@
 //! gates in full-recon mode. The gated sink stays unchanged; full recon fails loud
 //! when a leaf cannot be reconstructed.
 
-
 use splot_core::span::ByteOffset;
 
 use super::{FullReconLumaLeaf, MI_SIZE, WienerNsLrReconSink};

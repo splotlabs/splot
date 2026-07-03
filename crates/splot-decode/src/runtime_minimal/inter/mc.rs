@@ -5,9 +5,9 @@
 use splot_recon::BitDepth;
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect, ReconSample,
-    ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
-    WarpPredictBlockParams, blend_compound_average_equal, subpel_predict_block,
-    subpel_predict_block_compound_intermediate, warp_predict_block,
+    ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
+    blend_compound_average_equal, subpel_predict_block, subpel_predict_block_compound_intermediate,
+    warp_predict_block,
 };
 
 use super::mv_scaling::derive_plane_scaling;

@@ -20,9 +20,7 @@ macro_rules! trace_flag {
 macro_rules! trace_value {
     ($name:literal) => {{
         static VALUE: ::std::sync::OnceLock<Option<String>> = ::std::sync::OnceLock::new();
-        VALUE
-            .get_or_init(|| ::std::env::var($name).ok())
-            .as_deref()
+        VALUE.get_or_init(|| ::std::env::var($name).ok()).as_deref()
     }};
 }
 

@@ -432,7 +432,9 @@ fn strided_view_matches_contiguous_view() {
             .wrapping_add(1_442_695_040_888_963_407);
         (state >> 33) as u32
     };
-    let contiguous: Vec<u16> = (0..(ref_w * ref_h)).map(|_| (next() % 1024) as u16).collect();
+    let contiguous: Vec<u16> = (0..(ref_w * ref_h))
+        .map(|_| (next() % 1024) as u16)
+        .collect();
     // Gutter samples carry sentinel values a correct strided read never touches.
     let mut strided = vec![0x3fffu16 & 1023; stride * (ref_h - 1) + ref_w];
     for row in 0..ref_h {

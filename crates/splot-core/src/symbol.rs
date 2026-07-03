@@ -653,7 +653,13 @@ mod trace {
         if !enabled() {
             return;
         }
-        emit_at(Location::caller(), kind, value, consumed_bits, symbol_max_bits);
+        emit_at(
+            Location::caller(),
+            kind,
+            value,
+            consumed_bits,
+            symbol_max_bits,
+        );
     }
 
     #[cold]
