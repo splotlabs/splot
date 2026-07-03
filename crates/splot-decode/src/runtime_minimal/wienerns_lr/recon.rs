@@ -739,7 +739,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
     /// Retains decoded transform geometry used by the post-tile deblocking pass.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime_minimal) fn record_deblock_block(
         &mut self,
         mi_col: usize,

@@ -309,9 +309,12 @@ fn lr_reference_filter_entries<'a>(
     reference_state: &FrameReferenceStateView<'a>,
     ref_frame_idx: &[u32],
     num_total_refs: u32,
-) -> [Vec<&'a [i16]>; 3] {
-    let mut entries: [Vec<&'a [i16]>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    let Some(slot_taps) = reference_state.lr_frame_filter_taps else {
+) -> [Vec<Option<&'a [i16]>>; 3] {
+    let mut entries: [Vec<Option<&'a [i16]>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let (Some(slot_taps), Some(slot_counts)) = (
+        reference_state.lr_frame_filter_taps,
+        reference_state.lr_frame_filter_class_counts,
+    ) else {
         return entries;
     };
     for slot in ref_frame_idx.iter().take(num_total_refs as usize) {
@@ -323,16 +326,16 @@ fn lr_reference_filter_entries<'a>(
         {
             continue;
         }
-        let Some(planes) = slot_taps.get(slot) else {
+        let (Some(planes), Some(counts)) = (slot_taps.get(slot), slot_counts.get(slot)) else {
             continue;
         };
-        for class in &planes[0] {
-            entries[0].push(class.as_slice());
+        for class in 0..usize::from(counts[0]) {
+            entries[0].push(planes[0].get(class).map(Vec::as_slice));
         }
         for (plane, checks) in [(1usize, [1usize, 2usize]), (2, [2, 1])] {
             for check in checks {
-                if let Some(class) = planes[check].first() {
-                    entries[plane].push(class.as_slice());
+                if counts[check] > 0 {
+                    entries[plane].push(planes[check].first().map(Vec::as_slice));
                 }
             }
         }

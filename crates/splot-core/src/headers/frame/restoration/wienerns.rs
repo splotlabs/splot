@@ -100,7 +100,7 @@ pub(super) fn parse_frame_wiener_ns_filter(
     plane: usize,
     num_filter_classes: u8,
     num_ref_filters: usize,
-    ref_taps: &[&[i16]],
+    ref_taps: &[Option<&[i16]>],
     view: CoreSeqRestorationView,
 ) -> Result<WienerNsFrameFilterBank> {
     let plane_is_chroma = plane > 0;
@@ -404,7 +404,7 @@ fn fill_first_slot_of_bank_with_filter_match(
     match_index: usize,
     num_classes: usize,
     capped_ref: usize,
-    ref_taps: &[&[i16]],
+    ref_taps: &[Option<&[i16]>],
     bank_ptr: &mut [usize],
     bank_size: &mut [usize],
     ref_bank: &mut [[[i16; WIENER_NS_CHROMA_COEFFS]; LR_BANK_SIZE]],
@@ -436,7 +436,7 @@ fn filter_match_coeff(
     match_index: usize,
     num_classes: usize,
     capped_ref: usize,
-    ref_taps: &[&[i16]],
+    ref_taps: &[Option<&[i16]>],
     frame_coeffs: &[Vec<i16>],
     j: usize,
 ) -> i16 {
@@ -452,6 +452,8 @@ fn filter_match_coeff(
     } else if match_index < num_classes + capped_ref {
         ref_taps
             .get(match_index - num_classes)
+            .copied()
+            .flatten()
             .and_then(|taps| taps.get(j))
             .copied()
             .unwrap_or(0)

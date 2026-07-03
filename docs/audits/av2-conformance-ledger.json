@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "d71758f86a8ec9fb611b9caa48a6616a04ea3dec",
+  "audited_commit": "cf47d06e75caabb73e7865d1e2f55e2257c094a0",
   "outcome": "success",
   "files": [
     {
@@ -924,7 +924,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/inter_shared_tail.rs",
-      "sha256": "b4ade2e17caddcbe0a5ccd2eeb13d238444b426723323a652c389a1ac2c2a659",
+      "sha256": "feed38bc5431395cc17d1480dbda2c608731a3abf796e68a2176bd098f1c0df9",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO"
@@ -952,14 +952,14 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/restoration.rs",
-      "sha256": "06b6d7e7226588e746d2a9235ebb567a93c09a8543d5ffe8dfa9c17a83ae91dd",
+      "sha256": "8976f5ab7092790cb53834e6db3d265d4469ae50ea074f555a4c36e74b61b05a",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/headers/frame/restoration/wienerns.rs",
-      "sha256": "4d98a9d7224591cb2ef9e6c3a869f6b57a570f132b5131e3dcd8878ed2bf5450",
+      "sha256": "e63c62e8be2a207c58a34ac009c21983dc30781db8fa77d7f9eedd8ad1a7622a",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER"

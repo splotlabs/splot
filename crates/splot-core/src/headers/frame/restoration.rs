@@ -347,7 +347,7 @@ pub fn parse_lr_params_for_inter(
     base_q_idx: u32,
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
-    reference_filter_taps: &[Vec<&[i16]>; 3],
+    reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
 ) -> Result<LrParseOutcome> {
     parse_lr_params_with_references(
         reader,
@@ -372,7 +372,7 @@ fn parse_lr_params_with_references(
     base_q_idx: u32,
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
-    reference_filter_taps: &[Vec<&[i16]>; 3],
+    reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
 ) -> Result<LrParseOutcome> {
     let _ = base_q_idx; // `get_filter_set_index(base_q_idx)` signals no bits (SubclassLookup only).
     if coded_lossless || !view.enable_restoration {
