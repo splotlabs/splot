@@ -292,7 +292,7 @@ fn decode_general_intra_frame_into<T: ReconSample>(
                 symbols,
                 frontier,
                 sequence,
-                None,
+                None, // is_general_minimal_intra holds enable_intra_edge_filter off
                 core,
                 joint_modes,
                 uses_mrls,
