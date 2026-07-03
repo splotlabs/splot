@@ -411,11 +411,11 @@ fn pc_wiener_lut_input(
     let mut lut_input = 0i64;
     for (i, feature) in features.iter().enumerate() {
         let qval = round2_signed(
-            feature
-                .checked_add(qval_given_tx_skip(&terms, i)?)
-                .ok_or(ReconError::ArithmeticOverflow {
+            feature.checked_add(qval_given_tx_skip(&terms, i)?).ok_or(
+                ReconError::ArithmeticOverflow {
                     context: "PC-Wiener feature qval",
-                })?,
+                },
+            )?,
             PC_WIENER_PREC_FEATURE,
         )
         .clamp(0, 255)

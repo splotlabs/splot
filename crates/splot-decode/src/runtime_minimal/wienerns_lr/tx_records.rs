@@ -1299,7 +1299,7 @@ pub(in crate::runtime_minimal) fn derive_inter_luma_tx_records_for_block(
                 let Some(tx_partition) = read_tx_partition_symbols(
                     work_unit,
                     symbols,
-                    &grid,
+                    grid,
                     row,
                     col,
                     max_tx_size,
