@@ -875,21 +875,48 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         }
-        let deblocked_luma = self.plane_snapshot(
-            PlaneId::Y,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_deblocked_luma_snapshot",
-        )?;
-        let deblocked_u = self.plane_snapshot(
-            PlaneId::U,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
-        )?;
-        let deblocked_v = self.plane_snapshot(
-            PlaneId::V,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
-        )?;
+        let lr_plane_active = |plane_index: usize| {
+            core.lr_params.as_ref().is_some_and(|lr| {
+                lr.planes.get(plane_index).is_some_and(|plane| {
+                    plane.restoration_type
+                        == splot_core::headers::frame::FrameRestorationType::WienerNonsep
+                })
+            }) && self
+                .lr_source_blocks
+                .iter()
+                .any(|block| block.plane == plane_index)
+        };
+        let luma_lr_active = lr_plane_active(PlaneId::Y.index());
+        let u_lr_active = lr_plane_active(PlaneId::U.index());
+        let v_lr_active = lr_plane_active(PlaneId::V.index());
+        let any_lr_active = luma_lr_active || u_lr_active || v_lr_active;
+        let deblocked_luma = if any_lr_active || self.ccso_grid.is_some() {
+            self.plane_snapshot(
+                PlaneId::Y,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_deblocked_luma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
+        let deblocked_u = if u_lr_active {
+            self.plane_snapshot(
+                PlaneId::U,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
+        let deblocked_v = if v_lr_active {
+            self.plane_snapshot(
+                PlaneId::V,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
         let cdef_skip_grid = self.cdef_skip_grid(core, mi_rows, mi_cols, offset)?;
         if let (Some(grid), Some(strengths)) = (
             self.cdef_grid.as_ref(),
@@ -928,21 +955,33 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         }
-        let cdef_luma = self.plane_snapshot(
-            PlaneId::Y,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_cdef_luma_snapshot",
-        )?;
-        let cdef_u = self.plane_snapshot(
-            PlaneId::U,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
-        )?;
-        let cdef_v = self.plane_snapshot(
-            PlaneId::V,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
-        )?;
+        let cdef_luma = if any_lr_active {
+            self.plane_snapshot(
+                PlaneId::Y,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_cdef_luma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
+        let cdef_u = if u_lr_active {
+            self.plane_snapshot(
+                PlaneId::U,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
+        let cdef_v = if v_lr_active {
+            self.plane_snapshot(
+                PlaneId::V,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
         let lr_source_blocks = core::mem::take(&mut self.lr_source_blocks);
         let lr_unit_filters = core::mem::take(&mut self.lr_unit_filters);
         self.apply_luma_lr(

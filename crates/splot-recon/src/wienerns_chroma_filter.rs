@@ -127,6 +127,7 @@ where
     let context = validate_chroma_params(output.len(), params)?;
 
     let max_sample = params.bit_depth.max_sample();
+    let mut luma_ds = LumaDsCache::new(params)?;
     let mut filtered = Vec::with_capacity(context.sample_count);
     for r in 0..params.height {
         for c in 0..params.width {
@@ -140,6 +141,7 @@ where
                 max_sample,
                 &mut chroma_source_sample,
                 &mut luma_source_sample,
+                &mut luma_ds,
             )?);
         }
     }
@@ -264,6 +266,85 @@ fn validate_chroma_params(
     })
 }
 
+/// Memoized § 7.20.3 `get_luma_sample` values keyed by chroma coordinate.
+///
+/// Adjacent chroma samples tap the same downsampled-luma positions up to 13
+/// times each; the cache resolves each position once. Entries are computed
+/// lazily on first read, so which positions reach the luma source — and the
+/// first out-of-range read that errors — match uncached filtering exactly.
+struct LumaDsCache {
+    values: Vec<Option<u16>>,
+    origin_x: isize,
+    origin_y: isize,
+    width: usize,
+}
+
+impl LumaDsCache {
+    fn new(params: &WienerNsChromaFilter<'_>) -> Result<Self> {
+        const CONTEXT: &str = "Wiener NS chroma luma cache geometry";
+        let width = params
+            .width
+            .checked_add(2 * WIENER_NS_CHROMA_TAP_RADIUS)
+            .ok_or(ReconError::ArithmeticOverflow { context: CONTEXT })?;
+        let height = params
+            .height
+            .checked_add(2 * WIENER_NS_CHROMA_TAP_RADIUS)
+            .ok_or(ReconError::ArithmeticOverflow { context: CONTEXT })?;
+        let cells = width
+            .checked_mul(height)
+            .ok_or(ReconError::ArithmeticOverflow { context: CONTEXT })?;
+        let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
+        let origin_x = checked_isize(params.x, CONTEXT)?
+            .checked_sub(radius)
+            .ok_or(ReconError::ArithmeticOverflow { context: CONTEXT })?;
+        let origin_y = checked_isize(params.y, CONTEXT)?
+            .checked_sub(radius)
+            .ok_or(ReconError::ArithmeticOverflow { context: CONTEXT })?;
+        Ok(Self {
+            values: vec![None; cells],
+            origin_x,
+            origin_y,
+            width,
+        })
+    }
+
+    fn slot(&mut self, x: isize, y: isize) -> Option<&mut Option<u16>> {
+        let col = usize::try_from(x.checked_sub(self.origin_x)?).ok()?;
+        let row = usize::try_from(y.checked_sub(self.origin_y)?).ok()?;
+        if col >= self.width {
+            return None;
+        }
+        let index = row.checked_mul(self.width)?.checked_add(col)?;
+        self.values.get_mut(index)
+    }
+
+    fn get_or_compute<T, F>(
+        &mut self,
+        context: &ChromaFilterContext,
+        x: isize,
+        y: isize,
+        max_sample: u16,
+        luma_source_sample: &mut F,
+    ) -> Result<u16>
+    where
+        T: ReconSample,
+        F: FnMut(isize, isize) -> T,
+    {
+        let Some(slot) = self.slot(x, y) else {
+            return get_luma_sample(context, x, y, max_sample, luma_source_sample);
+        };
+        if let Some(value) = *slot {
+            return Ok(value);
+        }
+        let value = get_luma_sample(context, x, y, max_sample, luma_source_sample)?;
+        if let Some(slot) = self.slot(x, y) {
+            *slot = Some(value);
+        }
+        Ok(value)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn filter_chroma_sample<T, C, L>(
     params: &WienerNsChromaFilter<'_>,
     context: &ChromaFilterContext,
@@ -272,6 +353,7 @@ fn filter_chroma_sample<T, C, L>(
     max_sample: u16,
     chroma_source_sample: &mut C,
     luma_source_sample: &mut L,
+    luma_ds: &mut LumaDsCache,
 ) -> Result<T>
 where
     T: ReconSample,
@@ -289,7 +371,7 @@ where
         s += diff * i64::from(params.coeffs[coeff_index]);
     }
 
-    let m_luma = get_luma_sample(context, x, y, max_sample, luma_source_sample)?;
+    let m_luma = luma_ds.get_or_compute(context, x, y, max_sample, luma_source_sample)?;
     for (tap_index, &(dy, dx, _)) in WIENER_NS_CONFIG_UV.iter().enumerate() {
         let coeff = params.coeffs[tap_index + WIENER_NS_CHROMA_COEFF_SLOTS];
         if coeff == 0 {
@@ -297,7 +379,8 @@ where
         }
         let tap_x = offset_coord(x, dx, "Wiener NS chroma luma tap x")?;
         let tap_y = offset_coord(y, dy, "Wiener NS chroma luma tap y")?;
-        let tap_luma = get_luma_sample(context, tap_x, tap_y, max_sample, luma_source_sample)?;
+        let tap_luma =
+            luma_ds.get_or_compute(context, tap_x, tap_y, max_sample, luma_source_sample)?;
         let diff = i64::from(tap_luma) - i64::from(m_luma);
         s += diff * i64::from(coeff);
     }
@@ -503,8 +586,12 @@ mod tests {
         assert_eq!(output, [101]);
     }
 
-    #[test]
-    fn luma_420_filter_index_zero_averages_two_by_two() {
+    /// Runs the 4:2:0 `get_luma_sample` single-output case for one
+    /// `cfl_ds_filter_index`, asserting the filtered sample lands on 101.
+    fn assert_luma_420_filters_to_101(
+        cfl_ds_filter_index: u8,
+        luma_at: impl Fn(isize, isize) -> u8,
+    ) {
         let mut coeffs = ZERO_CHROMA;
         coeffs[6] = 4;
         let mut output = [0u8; 1];
@@ -513,89 +600,46 @@ mod tests {
         params.subsampling_y = 1;
         params.luma_end_x = 7;
         params.mi_rows = 2;
-        params.cfl_ds_filter_index = 0;
+        params.cfl_ds_filter_index = cfl_ds_filter_index;
 
-        wiener_ns_filter_chroma_block(
-            &mut output,
-            &params,
-            |_x, _y| 100,
-            |x, y| match (x, y) {
-                (0, 0) => 10,
-                (1, 0) => 14,
-                (0, 1) => 18,
-                (1, 1) => 22,
-                (0, 2) => 30,
-                (1, 2) => 34,
-                (0, 3) => 38,
-                (1, 3) => 42,
-                _ => 0,
-            },
-        )
-        .unwrap();
+        wiener_ns_filter_chroma_block(&mut output, &params, |_x, _y| 100, luma_at).unwrap();
 
         assert_eq!(output, [101]);
+    }
+
+    fn two_by_two_luma_at(x: isize, y: isize) -> u8 {
+        match (x, y) {
+            (0, 0) => 10,
+            (1, 0) => 14,
+            (0, 1) => 18,
+            (1, 1) => 22,
+            (0, 2) => 30,
+            (1, 2) => 34,
+            (0, 3) => 38,
+            (1, 3) => 42,
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn luma_420_filter_index_zero_averages_two_by_two() {
+        assert_luma_420_filters_to_101(0, two_by_two_luma_at);
     }
 
     #[test]
     fn luma_420_filter_index_one_uses_vertical_left_column() {
-        let mut coeffs = ZERO_CHROMA;
-        coeffs[6] = 4;
-        let mut output = [0u8; 1];
-        let mut params = chroma_params(1, 1, 1, BitDepth::Eight, &coeffs);
-        params.subsampling_x = 1;
-        params.subsampling_y = 1;
-        params.luma_end_x = 7;
-        params.mi_rows = 2;
-        params.cfl_ds_filter_index = 1;
-
-        wiener_ns_filter_chroma_block(
-            &mut output,
-            &params,
-            |_x, _y| 100,
-            |x, y| match (x, y) {
-                (0, 0) => 10,
-                (0, 1) => 30,
-                (0, 2) => 50,
-                (0, 3) => 70,
-                _ => 0,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(output, [101]);
+        assert_luma_420_filters_to_101(1, |x, y| match (x, y) {
+            (0, 0) => 10,
+            (0, 1) => 30,
+            (0, 2) => 50,
+            (0, 3) => 70,
+            _ => 0,
+        });
     }
 
     #[test]
     fn luma_420_filter_index_three_maps_to_zero() {
-        let mut coeffs = ZERO_CHROMA;
-        coeffs[6] = 4;
-        let mut output = [0u8; 1];
-        let mut params = chroma_params(1, 1, 1, BitDepth::Eight, &coeffs);
-        params.subsampling_x = 1;
-        params.subsampling_y = 1;
-        params.luma_end_x = 7;
-        params.mi_rows = 2;
-        params.cfl_ds_filter_index = 3;
-
-        wiener_ns_filter_chroma_block(
-            &mut output,
-            &params,
-            |_x, _y| 100,
-            |x, y| match (x, y) {
-                (0, 0) => 10,
-                (1, 0) => 14,
-                (0, 1) => 18,
-                (1, 1) => 22,
-                (0, 2) => 30,
-                (1, 2) => 34,
-                (0, 3) => 38,
-                (1, 3) => 42,
-                _ => 0,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(output, [101]);
+        assert_luma_420_filters_to_101(3, two_by_two_luma_at);
     }
 
     #[test]
@@ -619,6 +663,57 @@ mod tests {
         .unwrap();
 
         assert_eq!(output, [101]);
+    }
+
+    /// A multi-sample block (shared downsampled-luma cache) must be
+    /// bit-identical to filtering every sample as its own 1x1 block (fresh
+    /// cache per sample), across chroma and luma taps at 4:2:0 subsampling.
+    #[test]
+    fn block_filtering_matches_per_sample_blocks_bit_exactly() {
+        let width = 9;
+        let height = 5;
+        let mut coeffs = ZERO_CHROMA;
+        coeffs[0] = 13;
+        coeffs[2] = -7;
+        coeffs[5] = 3;
+        coeffs[6] = 21;
+        coeffs[10] = -9;
+        coeffs[17] = 5;
+        let chroma_at =
+            |x: isize, y: isize| -> u16 { ((x * 31 + y * 17 + 512).rem_euclid(1024)) as u16 };
+        let luma_at =
+            |x: isize, y: isize| -> u16 { ((x * 13 + y * 41 + 700).rem_euclid(1024)) as u16 };
+        let mut params = chroma_params(width, height, width, BitDepth::Ten, &coeffs);
+        params.x = 6;
+        params.y = 4;
+        params.subsampling_x = 1;
+        params.subsampling_y = 1;
+        params.luma_start_x = 0;
+        params.luma_end_x = 63;
+        params.mi_rows = 16;
+        params.cfl_ds_filter_index = 0;
+
+        let mut block_output = vec![0u16; width * height];
+        wiener_ns_filter_chroma_block(&mut block_output, &params, chroma_at, luma_at).unwrap();
+
+        for r in 0..height {
+            for c in 0..width {
+                let mut single = [0u16; 1];
+                let mut single_params = params;
+                single_params.x = params.x + c;
+                single_params.y = params.y + r;
+                single_params.width = 1;
+                single_params.height = 1;
+                single_params.output_stride = 1;
+                wiener_ns_filter_chroma_block(&mut single, &single_params, chroma_at, luma_at)
+                    .unwrap();
+                assert_eq!(
+                    block_output[r * width + c],
+                    single[0],
+                    "cached block filtering diverged at ({c}, {r})"
+                );
+            }
+        }
     }
 
     #[test]

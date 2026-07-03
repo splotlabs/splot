@@ -245,33 +245,41 @@ pub fn wiener_ns_filter_luma_block_padded<T: ReconSample>(
     }
 
     let max_sample = params.bit_depth.max_sample();
+    let padded_width = params.width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+    let padded_rows = params.height + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+    let mut clean_rows = Vec::with_capacity(padded_rows);
+    for row_index in 0..padded_rows {
+        let row = padded_row(source.samples, stride, row_index, padded_width)?;
+        clean_rows.push(row.iter().all(|sample| sample.to_u16() <= max_sample));
+    }
+
     let mut filtered = Vec::with_capacity(sample_count);
+    let mut acc = vec![0i64; params.width];
     for r in 0..params.height {
-        for c in 0..params.width {
-            let sample_index = r * params.width + c;
-            let coeffs = coeffs_for_sample(params, sample_index);
-            let base = r * stride + c;
-            let m = validated_padded_sample(
+        let window_in_range = clean_rows
+            .get(r..r + 2 * WIENER_NS_LUMA_TAP_RADIUS + 1)
+            .is_some_and(|rows| rows.iter().all(|&clean| clean));
+        if window_in_range {
+            filter_padded_luma_row_in_range(
+                &mut filtered,
+                &mut acc,
                 source.samples,
-                base + center_offset,
-                c as isize,
-                r as isize,
+                stride,
+                r,
+                params,
                 max_sample,
             )?;
-            let mut s = i64::from(m) << WIENER_NS_PREC_BITS;
-            for (&offset, &(dy, dx, coeff_index)) in tap_offsets.iter().zip(&WIENER_NS_CONFIG_Y) {
-                let tap = validated_padded_sample(
-                    source.samples,
-                    base + offset,
-                    c as isize + dx,
-                    r as isize + dy,
-                    max_sample,
-                )?;
-                let diff = i64::from(tap) - i64::from(m);
-                s += diff * i64::from(coeffs[coeff_index]);
-            }
-            let value = round2(s, WIENER_NS_PREC_BITS).clamp(0, i64::from(max_sample));
-            filtered.push(T::try_from_u16(value as u16)?);
+        } else {
+            filter_padded_luma_row_validated(
+                &mut filtered,
+                source.samples,
+                stride,
+                &tap_offsets,
+                center_offset,
+                r,
+                params,
+                max_sample,
+            )?;
         }
     }
 
@@ -284,6 +292,156 @@ pub fn wiener_ns_filter_luma_block_padded<T: ReconSample>(
         output[dst_start..dst_end].copy_from_slice(&filtered[src_start..src_end]);
     }
 
+    Ok(())
+}
+
+fn padded_row<T: ReconSample>(
+    samples: &[T],
+    stride: usize,
+    row_index: usize,
+    padded_width: usize,
+) -> Result<&[T]> {
+    let start = row_index
+        .checked_mul(stride)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS padded row start",
+        })?;
+    let end = start
+        .checked_add(padded_width)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS padded row end",
+        })?;
+    samples
+        .get(start..end)
+        .ok_or(ReconError::BufferLengthMismatch {
+            expected: end,
+            actual: samples.len(),
+        })
+}
+
+/// Filters one output row whose full tap window is known in range, as
+/// row-slice arithmetic: taps outer, samples inner, over per-subclass
+/// segments. The i64 accumulation adds the same § 7.20.3 tap terms in config
+/// order, so the result is bit-identical to the per-sample path.
+fn filter_padded_luma_row_in_range<T: ReconSample>(
+    filtered: &mut Vec<T>,
+    acc: &mut [i64],
+    samples: &[T],
+    stride: usize,
+    r: usize,
+    params: &WienerNsLumaFilter<'_>,
+    max_sample: u16,
+) -> Result<()> {
+    const RADIUS: usize = WIENER_NS_LUMA_TAP_RADIUS;
+    let width = params.width;
+    let padded_width = width + 2 * RADIUS;
+    let mut rows: [&[T]; 2 * RADIUS + 1] = [&[]; 2 * RADIUS + 1];
+    for (dy, row) in rows.iter_mut().enumerate() {
+        *row = padded_row(samples, stride, r + dy, padded_width)?;
+    }
+    let segment_error = || ReconError::BufferLengthMismatch {
+        expected: width,
+        actual: 0,
+    };
+    let center = rows[RADIUS]
+        .get(RADIUS..RADIUS + width)
+        .ok_or_else(segment_error)?;
+
+    let row_start = r.checked_mul(width).ok_or(ReconError::ArithmeticOverflow {
+        context: "Wiener NS luma filter row start",
+    })?;
+    let mut segment_start = 0usize;
+    let mut segments: Vec<(usize, usize)> = Vec::new();
+    match params.subclasses {
+        None => segments.push((0, width)),
+        Some(subclasses) => {
+            let row_subclasses = subclasses
+                .get(row_start..row_start + width)
+                .ok_or_else(segment_error)?;
+            for run in row_subclasses.chunk_by(|a, b| a == b) {
+                segments.push((segment_start, run.len()));
+                segment_start += run.len();
+            }
+        }
+    }
+
+    for &(c0, len) in &segments {
+        let sample_index = row_start + c0;
+        let coeffs = params
+            .coeffs_by_class
+            .get(match params.subclasses {
+                Some(subclasses) => subclasses
+                    .get(sample_index)
+                    .copied()
+                    .ok_or_else(segment_error)?,
+                None => 0,
+            })
+            .ok_or_else(segment_error)?;
+        let seg = acc.get_mut(c0..c0 + len).ok_or_else(segment_error)?;
+        let center_seg = center.get(c0..c0 + len).ok_or_else(segment_error)?;
+        for (a, &m) in seg.iter_mut().zip(center_seg) {
+            *a = i64::from(m.to_u16()) << WIENER_NS_PREC_BITS;
+        }
+        for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y {
+            let coeff = i64::from(coeffs[coeff_index]);
+            let row = rows
+                .get(usize::try_from(dy + RADIUS as isize).map_err(|_| segment_error())?)
+                .ok_or_else(segment_error)?;
+            let offset = usize::try_from(dx + RADIUS as isize).map_err(|_| segment_error())?;
+            let taps = row
+                .get(c0 + offset..c0 + offset + len)
+                .ok_or_else(segment_error)?;
+            for ((a, &t), &m) in seg.iter_mut().zip(taps).zip(center_seg) {
+                *a += (i64::from(t.to_u16()) - i64::from(m.to_u16())) * coeff;
+            }
+        }
+        for &s in seg.iter() {
+            let value = round2(s, WIENER_NS_PREC_BITS).clamp(0, i64::from(max_sample));
+            filtered.push(T::try_from_u16(value as u16)?);
+        }
+    }
+    Ok(())
+}
+
+/// Per-sample § 7.20.3 filtering for rows whose padded window may hold
+/// out-of-range samples, preserving the original read-order error identity.
+#[allow(clippy::too_many_arguments)]
+fn filter_padded_luma_row_validated<T: ReconSample>(
+    filtered: &mut Vec<T>,
+    samples: &[T],
+    stride: usize,
+    tap_offsets: &[usize; WIENER_NS_LUMA_TAPS],
+    center_offset: usize,
+    r: usize,
+    params: &WienerNsLumaFilter<'_>,
+    max_sample: u16,
+) -> Result<()> {
+    for c in 0..params.width {
+        let sample_index = r * params.width + c;
+        let coeffs = coeffs_for_sample(params, sample_index);
+        let base = r * stride + c;
+        let m = validated_padded_sample(
+            samples,
+            base + center_offset,
+            c as isize,
+            r as isize,
+            max_sample,
+        )?;
+        let mut s = i64::from(m) << WIENER_NS_PREC_BITS;
+        for (&offset, &(dy, dx, coeff_index)) in tap_offsets.iter().zip(&WIENER_NS_CONFIG_Y) {
+            let tap = validated_padded_sample(
+                samples,
+                base + offset,
+                c as isize + dx,
+                r as isize + dy,
+                max_sample,
+            )?;
+            let diff = i64::from(tap) - i64::from(m);
+            s += diff * i64::from(coeffs[coeff_index]);
+        }
+        let value = round2(s, WIENER_NS_PREC_BITS).clamp(0, i64::from(max_sample));
+        filtered.push(T::try_from_u16(value as u16)?);
+    }
     Ok(())
 }
 
@@ -443,6 +601,25 @@ mod tests {
 
     const ZERO: [i16; WIENER_NS_LUMA_COEFFS] = [0; WIENER_NS_LUMA_COEFFS];
 
+    fn padded_from<T: ReconSample>(
+        height: usize,
+        stride: usize,
+        source_at: impl Fn(isize, isize) -> T,
+    ) -> Vec<T> {
+        let radius = WIENER_NS_LUMA_TAP_RADIUS;
+        let source_at = &source_at;
+        (0..height + 2 * radius)
+            .flat_map(move |row| {
+                (0..stride).map(move |col| {
+                    source_at(
+                        col as isize - radius as isize,
+                        row as isize - radius as isize,
+                    )
+                })
+            })
+            .collect()
+    }
+
     #[test]
     fn padded_and_callback_filters_match_bit_exactly() {
         let width = 7;
@@ -460,16 +637,7 @@ mod tests {
         let subclasses: Vec<usize> = (0..width * height).map(|i| i % 2).collect();
         let source_at =
             |x: isize, y: isize| -> u16 { ((x * 31 + y * 17 + 512).rem_euclid(1024)) as u16 };
-        let padded: Vec<u16> = (0..height + 2 * radius)
-            .flat_map(|row| {
-                (0..stride).map(move |col| {
-                    source_at(
-                        col as isize - radius as isize,
-                        row as isize - radius as isize,
-                    )
-                })
-            })
-            .collect();
+        let padded: Vec<u16> = padded_from(height, stride, source_at);
         let params = params(
             width,
             height,
@@ -487,6 +655,70 @@ mod tests {
         wiener_ns_filter_luma_block_padded(&mut padded_output, &params, &source).unwrap();
 
         assert_eq!(callback_output, padded_output);
+    }
+
+    #[test]
+    fn padded_and_callback_filters_match_bit_exactly_eight_bit_wide_block() {
+        let width = 23;
+        let height = 6;
+        let radius = WIENER_NS_LUMA_TAP_RADIUS;
+        let stride = width + 2 * radius + 2;
+        let mut class_a = ZERO;
+        class_a[1] = 7;
+        class_a[12] = -5;
+        let mut class_b = ZERO;
+        class_b[6] = 11;
+        class_b[14] = -2;
+        let coeffs = [class_a, class_b];
+        let subclasses: Vec<usize> = (0..width * height)
+            .map(|i| ((i % width) / 4 + i / width / 4) % 2)
+            .collect();
+        let source_at =
+            |x: isize, y: isize| -> u8 { ((x * 7 + y * 13 + 90).rem_euclid(256)) as u8 };
+        let padded: Vec<u8> = padded_from(height, stride, source_at);
+        let params = params(
+            width,
+            height,
+            width,
+            BitDepth::Eight,
+            &coeffs,
+            Some(&subclasses),
+        );
+
+        let mut callback_output = vec![0u8; width * height];
+        wiener_ns_filter_luma_block(&mut callback_output, &params, source_at).unwrap();
+
+        let mut padded_output = vec![0u8; width * height];
+        let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+        wiener_ns_filter_luma_block_padded(&mut padded_output, &params, &source).unwrap();
+
+        assert_eq!(callback_output, padded_output);
+    }
+
+    #[test]
+    fn out_of_range_sample_in_unread_window_corner_still_filters() {
+        let width = 5;
+        let height = 4;
+        let radius = WIENER_NS_LUMA_TAP_RADIUS;
+        let stride = width + 2 * radius;
+        let source_at =
+            |x: isize, y: isize| -> u16 { ((x * 19 + y * 5 + 300).rem_euclid(1024)) as u16 };
+        let mut padded: Vec<u16> = padded_from(height, stride, source_at);
+        padded[0] = u16::MAX;
+        let mut class = ZERO;
+        class[0] = 6;
+        class[13] = -9;
+        let coeffs = [class];
+        let params = params(width, height, width, BitDepth::Ten, &coeffs, None);
+
+        let mut expected = vec![0u16; width * height];
+        wiener_ns_filter_luma_block(&mut expected, &params, source_at).unwrap();
+
+        let mut padded_output = vec![0u16; width * height];
+        let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+        wiener_ns_filter_luma_block_padded(&mut padded_output, &params, &source).unwrap();
+
+        assert_eq!(expected, padded_output);
     }
 
     #[test]

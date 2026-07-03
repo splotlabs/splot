@@ -264,6 +264,66 @@ fn selectable_tx_grid_rejects_empty_transform_dimensions() {
 }
 
 #[test]
+fn selectable_tx_grid_reset_matches_fresh_grid_and_leaks_nothing() {
+    let mut fresh = SelectableLumaTxGrid::new(16, 16).unwrap();
+    apply_tx_partition(&mut fresh, 8, 4, TX_16X16, TX_PARTITION_HORZ).unwrap();
+    let expected = fresh.records_for_region(8, 4, 4, 4).unwrap();
+
+    let mut reused = SelectableLumaTxGrid::new(16, 16).unwrap();
+    apply_tx_partition(&mut reused, 0, 0, TX_32X32, TX_PARTITION_VERT5).unwrap();
+    reused.records_for_region(0, 0, 8, 8).unwrap();
+    reused.reset();
+
+    assert_eq!(
+        reused.records_for_region(0, 0, 8, 8).unwrap_err(),
+        SelectableTransformRecordError::Incomplete {
+            expected: 64,
+            actual: 0,
+        },
+        "reset must clear every previously set cell"
+    );
+    apply_tx_partition(&mut reused, 8, 4, TX_16X16, TX_PARTITION_HORZ).unwrap();
+    assert_eq!(reused.records_for_region(8, 4, 4, 4).unwrap(), expected);
+    assert_eq!(reused, fresh);
+}
+
+#[test]
+fn selectable_tx_grid_reset_clips_edge_overhanging_records() {
+    let mut grid = SelectableLumaTxGrid::new(6, 6).unwrap();
+    grid.set_tx_size(4, 4, 4, 4, false, false).unwrap();
+    grid.reset();
+
+    let fresh = SelectableLumaTxGrid::new(6, 6).unwrap();
+    assert_eq!(grid, fresh);
+}
+
+#[test]
+fn with_selectable_tx_grid_reuses_scratch_without_cross_block_state() {
+    let expected = with_selectable_tx_grid(16, 16, |grid| {
+        apply_tx_partition(grid, 8, 4, TX_16X16, TX_PARTITION_HORZ).unwrap();
+        grid.records_for_region(8, 4, 4, 4).unwrap()
+    })
+    .unwrap();
+
+    with_selectable_tx_grid(16, 16, |grid| {
+        apply_tx_partition(grid, 0, 0, TX_32X32, TX_PARTITION_VERT5).unwrap();
+        grid.records_for_region(0, 0, 8, 8).unwrap();
+    })
+    .unwrap();
+    let records = with_selectable_tx_grid(16, 16, |grid| {
+        assert!(grid.cells.iter().all(Option::is_none));
+        assert!(grid.records.is_empty());
+        apply_tx_partition(grid, 8, 4, TX_16X16, TX_PARTITION_HORZ).unwrap();
+        grid.records_for_region(8, 4, 4, 4).unwrap()
+    })
+    .unwrap();
+    assert_eq!(records, expected);
+
+    let resized = with_selectable_tx_grid(4, 4, |grid| (grid.rows, grid.cols, grid.cells.len()));
+    assert_eq!(resized.unwrap(), (4, 4, 16));
+}
+
+#[test]
 fn selectable_tx_grid_rejects_incomplete_region() {
     let mut grid = SelectableLumaTxGrid::new(4, 4).unwrap();
     grid.set_tx_size(0, 0, 2, 2, false, false).unwrap();

@@ -591,6 +591,35 @@ impl CdefState {
     }
 }
 
+std::thread_local! {
+    static SELECTABLE_TX_GRID_SCRATCH: std::cell::RefCell<Option<SelectableLumaTxGrid>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` with a per-thread reusable frame-sized grid reset to all-`None`
+/// cells, so each coding block avoids reallocating and refilling the grid.
+fn with_selectable_tx_grid<R>(
+    rows: usize,
+    cols: usize,
+    f: impl FnOnce(&mut SelectableLumaTxGrid) -> R,
+) -> std::result::Result<R, SelectableTransformRecordError> {
+    SELECTABLE_TX_GRID_SCRATCH.with(|slot| {
+        let taken = slot.try_borrow_mut().ok().and_then(|mut slot| slot.take());
+        let mut grid = match taken {
+            Some(mut grid) if grid.rows == rows && grid.cols == cols => {
+                grid.reset();
+                grid
+            }
+            _ => SelectableLumaTxGrid::new(rows, cols)?,
+        };
+        let result = f(&mut grid);
+        if let Ok(mut slot) = slot.try_borrow_mut() {
+            *slot = Some(grid);
+        }
+        Ok(result)
+    })
+}
+
 impl SelectableLumaTxGrid {
     fn new(rows: usize, cols: usize) -> std::result::Result<Self, SelectableTransformRecordError> {
         let cells = rows
@@ -604,6 +633,24 @@ impl SelectableLumaTxGrid {
             cells: vec![None; cells],
             records: Vec::new(),
         })
+    }
+
+    /// Restores the all-`None` cell state. `set_tx_size` writes cells only
+    /// inside rects it also records, so clearing the recorded rects (with the
+    /// same edge clipping) covers every set cell.
+    fn reset(&mut self) {
+        for record in &self.records {
+            let row_end = record.row.saturating_add(record.rows).min(self.rows);
+            let col_end = record.col.saturating_add(record.cols).min(self.cols);
+            for row in record.row..row_end {
+                let start = row.saturating_mul(self.cols).saturating_add(record.col);
+                let end = row.saturating_mul(self.cols).saturating_add(col_end);
+                if let Some(cells) = self.cells.get_mut(start..end) {
+                    cells.fill(None);
+                }
+            }
+        }
+        self.records.clear();
     }
 
     fn set_tx_size(
@@ -1203,24 +1250,18 @@ fn derive_selectable_luma_tx_records_for_block(
     context: SelectableTxSizeContext,
     tile_offset: ByteOffset,
 ) -> Result<Vec<SelectableLumaTxRecord>> {
-    let mut grid = SelectableLumaTxGrid::new(context.grid_size.0, context.grid_size.1)
-        .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
-    read_tx_size_selectable(
-        work_unit,
-        symbols,
-        frontier,
-        &mut grid,
-        context,
-        tile_offset,
-    )?;
-    let extent = frontier_4x4_extent(
-        frontier,
-        tile_offset,
-        selectable_reason!("region_width"),
-        selectable_reason!("region_height"),
-    )?;
-    grid.records_for_region(frontier.r, frontier.c, extent.rows, extent.cols)
-        .map_err(|error| selectable_transform_record_error(error, tile_offset))
+    with_selectable_tx_grid(context.grid_size.0, context.grid_size.1, |grid| {
+        read_tx_size_selectable(work_unit, symbols, frontier, grid, context, tile_offset)?;
+        let extent = frontier_4x4_extent(
+            frontier,
+            tile_offset,
+            selectable_reason!("region_width"),
+            selectable_reason!("region_height"),
+        )?;
+        grid.records_for_region(frontier.r, frontier.c, extent.rows, extent.cols)
+            .map_err(|error| selectable_transform_record_error(error, tile_offset))
+    })
+    .map_err(|error| selectable_transform_record_error(error, tile_offset))?
 }
 
 pub(in crate::runtime_minimal) fn derive_inter_luma_tx_records_for_block(
@@ -1231,8 +1272,7 @@ pub(in crate::runtime_minimal) fn derive_inter_luma_tx_records_for_block(
     fsc_mode: u8,
     tile_offset: ByteOffset,
 ) -> Result<Vec<SelectableLumaTxRecord>> {
-    let mut grid = SelectableLumaTxGrid::new(grid_size.0, grid_size.1)
-        .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+    with_selectable_tx_grid(grid_size.0, grid_size.1, |grid| {
     let b_size = frontier.b_size.index();
     if b_size == BLOCK_4X4 {
         grid.set_tx_size(frontier.r, frontier.c, 1, 1, false, false)
@@ -1259,7 +1299,7 @@ pub(in crate::runtime_minimal) fn derive_inter_luma_tx_records_for_block(
                 let Some(tx_partition) = read_tx_partition_symbols(
                     work_unit,
                     symbols,
-                    &grid,
+                    grid,
                     row,
                     col,
                     max_tx_size,
@@ -1277,7 +1317,7 @@ pub(in crate::runtime_minimal) fn derive_inter_luma_tx_records_for_block(
                         symbols.checkpoint(),
                     );
                 }
-                apply_tx_partition(&mut grid, row, col, max_tx_size, tx_partition)
+                apply_tx_partition(grid, row, col, max_tx_size, tx_partition)
                     .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
             }
         }
@@ -1300,6 +1340,8 @@ pub(in crate::runtime_minimal) fn derive_inter_luma_tx_records_for_block(
         );
     }
     Ok(records)
+    })
+    .map_err(|error| selectable_transform_record_error(error, tile_offset))?
 }
 
 #[allow(clippy::too_many_arguments)]
