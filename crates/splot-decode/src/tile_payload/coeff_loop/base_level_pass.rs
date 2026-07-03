@@ -150,6 +150,13 @@ impl NonZeroCoeffBaseDerivedLevelPass {
     ) -> (&NonZeroCoeffScanWalk, &mut TransformCoeffBlockState) {
         (&self.walk, &mut self.block)
     }
+
+    /// Consumes the pass, handing the block state to the caller without
+    /// copying it.
+    #[must_use]
+    pub(crate) fn into_block(self) -> TransformCoeffBlockState {
+        self.block
+    }
 }
 
 /// Error returned by the derived ordinary base/level first-pass boundary.

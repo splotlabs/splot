@@ -1057,7 +1057,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     Ok(LumaCoeffBlock {
         all_zero: false,
         eob: pass.eob_read().eob().eob(),
-        quant: pass.block().quant().to_vec(),
+        quant: pass.into_block().into_quant(),
         intra_ist: None,
         plane_tx_type: DCT_DCT,
     })
@@ -1183,7 +1183,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     Ok(LumaCoeffBlock {
         all_zero: false,
         eob,
-        quant: pass.block().quant().to_vec(),
+        quant: pass.into_block().into_quant(),
         intra_ist: metadata.intra_ist,
         plane_tx_type,
     })

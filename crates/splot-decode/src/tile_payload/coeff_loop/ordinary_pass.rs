@@ -297,6 +297,13 @@ impl NonZeroCoeffOrdinaryDerivedBasePass {
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         self.base_level_pass.block()
     }
+
+    /// Consumes the pass, handing the block state to the caller without
+    /// copying it.
+    #[must_use]
+    pub(crate) fn into_block(self) -> TransformCoeffBlockState {
+        self.base_level_pass.into_block()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
