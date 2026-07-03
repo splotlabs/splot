@@ -3328,7 +3328,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let max_y = self.luma_height.saturating_sub(1) as isize;
         let sx = x.clamp(0, max_x) as usize;
         let sy = y.clamp(0, max_y) as usize;
-        self.workspace.reconstructed_sample(PlaneId::Y, sx, sy)
+        self.direct_plane_sample(PlaneId::Y, sx, sy)
     }
 
     fn clamped_chroma_sample(
@@ -3339,7 +3339,25 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ) -> splot_recon::Result<T> {
         let sx = x.min(self.chroma_width_for_sample_reads().saturating_sub(1));
         let sy = y.min(self.chroma_height_for_sample_reads().saturating_sub(1));
-        self.workspace.reconstructed_sample(plane_id, sx, sy)
+        self.direct_plane_sample(plane_id, sx, sy)
+    }
+
+    /// Clamped-coordinate plane read on the CfL/MHCCP reference paths. The
+    /// callers clamp `(sx, sy)` to plane dimensions, which never exceed the
+    /// workspace storage, so the flat read always lands in-row; the checked
+    /// accessor remains as the fallback that reports the identical error for
+    /// an out-of-storage coordinate.
+    fn direct_plane_sample(
+        &self,
+        plane_id: PlaneId,
+        sx: usize,
+        sy: usize,
+    ) -> splot_recon::Result<T> {
+        let plane = self.workspace.plane(plane_id)?;
+        match plane.samples().get(sy * plane.stride_samples() + sx) {
+            Some(&sample) => Ok(sample),
+            None => self.workspace.reconstructed_sample(plane_id, sx, sy),
+        }
     }
 
     const fn chroma_width_for_sample_reads(&self) -> usize {

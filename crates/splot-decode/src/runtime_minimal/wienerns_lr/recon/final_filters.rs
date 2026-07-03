@@ -124,21 +124,29 @@ fn coalesced_lr_source_rows(
     lr_source_blocks: &[WienerNsLrSourceBlock],
     plane_index: usize,
 ) -> Vec<WienerNsLrSourceBlock> {
-    let mut blocks: Vec<&WienerNsLrSourceBlock> = lr_source_blocks
+    let mut rows: Vec<Vec<&WienerNsLrSourceBlock>> = Vec::new();
+    for block in lr_source_blocks
         .iter()
         .filter(|block| block.plane == plane_index)
-        .collect();
-    blocks.sort_unstable_by_key(|block| (block.y, block.x));
-    let mut runs: Vec<WienerNsLrSourceBlock> = Vec::new();
-    for block in blocks {
-        if let Some(run) = runs.last_mut()
-            && lr_blocks_mergeable(run, block)
-            && let Some(width) = run.width.checked_add(block.width)
-        {
-            run.width = width;
-            continue;
+    {
+        if rows.len() <= block.y {
+            rows.resize_with(block.y + 1, Vec::new);
         }
-        runs.push(*block);
+        rows[block.y].push(block);
+    }
+    let mut runs: Vec<WienerNsLrSourceBlock> = Vec::new();
+    for row in &mut rows {
+        row.sort_unstable_by_key(|block| block.x);
+        for block in row.iter().copied() {
+            if let Some(run) = runs.last_mut()
+                && lr_blocks_mergeable(run, block)
+                && let Some(width) = run.width.checked_add(block.width)
+            {
+                run.width = width;
+                continue;
+            }
+            runs.push(*block);
+        }
     }
     runs
 }

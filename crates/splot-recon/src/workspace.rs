@@ -605,10 +605,14 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 })?
                 - rect.width();
 
-            for column in 0..rect.width() {
-                let source_index = source_row_start + column;
-                let target_index = target_start + column;
-                validate_sample_value(self.plane, target_index, samples[source_index], max_sample)?;
+            let source_row = &samples[source_row_start..source_row_start + rect.width()];
+            if source_row
+                .iter()
+                .any(|sample| sample.to_u16() > max_sample)
+            {
+                for (column, &sample) in source_row.iter().enumerate() {
+                    validate_sample_value(self.plane, target_start + column, sample, max_sample)?;
+                }
             }
         }
 
