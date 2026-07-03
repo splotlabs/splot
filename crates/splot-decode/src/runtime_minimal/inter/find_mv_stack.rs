@@ -68,6 +68,10 @@ struct NeighbourCell {
     use_amvd: bool,
     motion_mode: MotionMode,
     warp_params: Option<[i64; 6]>,
+    /// § 7.13.3.20 `SubMvs[ r ][ c ][ 0 ]`: the covering 8x8 unit's warp
+    /// projection for warp blocks, the block MV otherwise (§ 7.12.2.12
+    /// `get_mv` reads this; the banks and § 7.12.3 read the block `mv`).
+    sub_mv: Mv,
     base_r: usize,
     base_c: usize,
     bw4: usize,
@@ -95,6 +99,7 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     use_amvd: false,
     motion_mode: MotionMode::Simple,
     warp_params: None,
+    sub_mv: Mv::ZERO,
     base_r: 0,
     base_c: 0,
     bw4: 0,
@@ -279,6 +284,7 @@ impl NeighbourMvGrid {
             use_amvd,
             motion_mode,
             warp_params,
+            sub_mv: mv,
             base_r: r,
             base_c: c,
             bw4: n4w,
@@ -292,6 +298,12 @@ impl NeighbourMvGrid {
             for cc in c..c.saturating_add(n4w) {
                 if cc >= self.mi_cols {
                     break;
+                }
+                let mut cell = cell;
+                if motion_mode.is_warp()
+                    && let Some(params) = warp_params
+                {
+                    cell.sub_mv = warp_sub_mv_at(params, r, c, rr, cc);
                 }
                 self.cells[rr * self.mi_cols + cc] = Some(cell);
             }
@@ -334,6 +346,7 @@ impl NeighbourMvGrid {
             use_amvd,
             motion_mode: MotionMode::Simple,
             warp_params: None,
+            sub_mv: mv,
             base_r: r,
             base_c: c,
             bw4: n4w,
@@ -1714,7 +1727,7 @@ fn scan_mv_stack_probe(
     if *prune_count < MAX_PR_NUM {
         for entry in entries.iter_mut() {
             *prune_count += 1;
-            if entry.mv == cell.mv {
+            if entry.mv == cell.sub_mv {
                 entry.weight = entry.weight.saturating_add(weight);
                 return;
             }
@@ -1726,7 +1739,7 @@ fn scan_mv_stack_probe(
     }
     let (_, _, adjusted_delta_col) = probe.stack_target(block);
     entries.push(MvStackEntry {
-        mv: cell.mv,
+        mv: cell.sub_mv,
         weight,
         offsets: (probe.delta_row, adjusted_delta_col),
     });
@@ -1761,6 +1774,54 @@ fn extra_search(
             });
         }
     }
+
+    if block.bw4 > 8 && block.bh4 > 8 {
+        let num = entries.len();
+        if num > 1 {
+            insert_mixture_candidate(entries, prune_count, 0, 1);
+            insert_mixture_candidate(entries, prune_count, 1, 0);
+        }
+        if num > 2 {
+            insert_mixture_candidate(entries, prune_count, 0, 2);
+            insert_mixture_candidate(entries, prune_count, 2, 0);
+            insert_mixture_candidate(entries, prune_count, 1, 2);
+            insert_mixture_candidate(entries, prune_count, 2, 1);
+        }
+    }
+}
+
+/// § 7.12.2.20 `insert_mvp_candidate` for blocks wider and taller than 32:
+/// a mixture of two existing candidates (row from `y_cand`, column from
+/// `x_cand`), budget-deduped against the stack, then appended.
+fn insert_mixture_candidate(
+    entries: &mut Vec<MvStackEntry>,
+    prune_count: &mut usize,
+    y_cand: usize,
+    x_cand: usize,
+) {
+    let (Some(y_entry), Some(x_entry)) = (entries.get(y_cand), entries.get(x_cand)) else {
+        return;
+    };
+    let candidate = Mv {
+        row: y_entry.mv.row,
+        col: x_entry.mv.col,
+    };
+    if entries.len() >= MAX_REF_MV_STACK_SIZE {
+        return;
+    }
+    if *prune_count < MAX_PR_NUM {
+        for entry in entries.iter() {
+            *prune_count += 1;
+            if entry.mv == candidate {
+                return;
+            }
+        }
+    }
+    entries.push(MvStackEntry {
+        mv: candidate,
+        weight: 0,
+        offsets: (0, 0),
+    });
 }
 
 /// AV2 § 7.12.2 `WarpParamStack` + `NumWarpFound`: at most four warp models,
@@ -1907,7 +1968,7 @@ fn warp_corner(
             };
             warp_motion_vector_at(params, block, mv_row + 1, mv_col + 1)
         } else if ref_list == 0 {
-            cell.mv
+            cell.sub_mv
         } else {
             let Some(mv1) = cell.mv1 else {
                 return;
@@ -1918,6 +1979,31 @@ fn warp_corner(
         mvs[*found] = [i64::from(corner_mv.row), i64::from(corner_mv.col)];
         *found += 1;
         return;
+    }
+}
+
+/// § 7.13.3.20 `SubMvs` projection: the covering 8x8 unit's center through
+/// the block's warp model, with the `MV_LOW/MV_UPP` clip but no block-level
+/// clamp.
+fn warp_sub_mv_at(params: [i64; 6], block_r: usize, block_c: usize, rr: usize, cc: usize) -> Mv {
+    let i8 = (rr.saturating_sub(block_r)) >> 1;
+    let j8 = (cc.saturating_sub(block_c)) >> 1;
+    let src_x = (block_c * 4 + j8 * 8 + 4) as i64;
+    let src_y = (block_r * 4 + i8 * 8 + 4) as i64;
+    let dst_x = params[2] * src_x + params[3] * src_y + params[0];
+    let dst_y = params[4] * src_x + params[5] * src_y + params[1];
+    let bound = (1i64 << 16) - 1;
+    Mv {
+        row: round2_signed(
+            dst_y - (src_y << WARPEDMODEL_PREC_BITS),
+            WARPEDMODEL_PREC_BITS - 3,
+        )
+        .clamp(-bound, bound) as i32,
+        col: round2_signed(
+            dst_x - (src_x << WARPEDMODEL_PREC_BITS),
+            WARPEDMODEL_PREC_BITS - 3,
+        )
+        .clamp(-bound, bound) as i32,
     }
 }
 

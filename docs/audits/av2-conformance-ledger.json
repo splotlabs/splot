@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "94bf4e35e88f34a85828c3cb07a9e2e0b47073d7",
+  "audited_commit": "8fb4cbb732343a752468f1ba010fac71d2ad15c0",
   "outcome": "success",
   "files": [
     {
@@ -2169,7 +2169,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
-      "sha256": "3ebed2301fe567a5b3a5c5d68dea005b958eb807198c7302cb5c388cf683c2fd",
+      "sha256": "979cecbc1980d96a5d7051d9016479aa4a592e08777d7879aa39d22ecd7d808f",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
