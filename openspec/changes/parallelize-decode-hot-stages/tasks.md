@@ -1,17 +1,18 @@
 # Tasks: parallelize-decode-hot-stages
 
-- [ ] 1. Extend `SPLOT_DECODE_TIMING` with per-stage runtime attribution and
-      distinct-worker tallies for parallel stages.
-- [ ] 2. Deblock: pool-width column bands for pass 1 with O(bands)
+- [x] 1. Extend `SPLOT_DECODE_TIMING` with per-stage runtime attribution and
+      distinct-worker tallies; add `current_pool_width` /
+      `current_worker_index` to `splot-parallel`.
+- [x] 2. Deblock: pool-width column bands for pass 1 with O(bands x rows)
       construction; build the MI grid once and clone for chroma overlays.
-- [ ] 3. CDEF: in-band context derivation and direct disjoint row-band
+- [x] 3. CDEF: disjoint plane row-band split (`FrameMut::into_planes` +
+      `PlaneMut::into_samples`), in-band context derivation, direct band
       writes on the pool.
-- [ ] 4. LR/CCSO: disjoint row-band parallel publication of per-block
-      outputs.
-- [ ] 5. Key-frame intra tile: capture per-TU descriptors during the serial
-      entropy parse; pool-parallel dequant + inverse transform; serial
-      prediction/add replay in parse order with equality coverage.
-- [ ] 6. Inter frames: placed-block descriptor capture, pool-parallel
-      hazard-free block reconstruction, parse-order commit replay.
-- [ ] 7. Determinism sweep across `--threads 1/2/4/8/10/auto`; before/after
-      stage table; `cargo xtask ci`.
+- [x] 4. LR/CCSO: one-pass all-plane run coalescing; row-disjoint banded
+      publication (`plane_bands::publish_rect_runs_parallel`) with a serial
+      `write_rect` fallback and parallel-vs-serial + fallback tests.
+- [x] 5. Determinism sweep across `--threads 1/2/4/8/10/auto`; before/after
+      stage table with Amdahl breakdown; `cargo xtask ci`.
+- [ ] 6. (Deferred, out of scope) Parse/reconstruction decoupling to
+      parallelise the single-tile entropy + prediction spine; documented as
+      the next bottleneck, requires architecture-scale change.

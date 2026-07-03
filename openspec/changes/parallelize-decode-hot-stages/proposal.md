@@ -8,46 +8,44 @@
 
 After `optimize-decode-serial-hot-paths`, `splot decode --output-format raw
 --limit=1` on the motivating 1920x1080 10-bit IVF stream ran at ~309 ms with
-`--threads 1` but only ~163 ms with `--threads 10` — a 1.9x speedup on 10
-workers, with pool workers idle ~80% of the run. Stage timing attributes the
-10-thread wall to a serial single-tile intra decode (~55 ms of interleaved
-entropy parse and reconstruction), filter stages with poor internal scaling
-(deblock 18.3→15.2 ms — its pass-1 column-band construction builds hundreds
-of thousands of per-row slice references serially; CDEF 55.6→17.5 ms and
-Wiener NS LR 119→25.7 ms — both publish their parallel outputs through
-serial per-rectangle write-back loops), and a serial inter-frame decode
-(~17 ms) that reconstructs each block inline during the entropy walk even
-though most inter blocks read only immutable reference frames.
+`--threads 1` but only ~163 ms with `--threads 10` — a ~1.9x speedup on 10
+workers, with pool workers idle most of the run. Stage timing attributed the
+10-thread wall to a serial single-tile intra decode (~48 ms of interleaved
+entropy parse and neighbour-dependent reconstruction), post-reconstruction
+filter stages with poor internal scaling (deblock pass 1 built hundreds of
+thousands of per-row slice references serially; CDEF and Wiener NS loop
+restoration published their parallel outputs through serial per-rectangle
+write-back loops), and a serial single-tile inter decode.
+
+The filter stages are the parallelisable portion: they run after
+reconstruction, read immutable snapshots, and write disjoint plane regions.
+The single-tile entropy decode and its raster-order neighbour-dependent
+prediction are fundamentally serial for a one-tile frame and are out of scope
+for this change.
 
 ## What
 
-Make the existing context-owned `WorkerPool` do real work in the measured
-hot stages, preserving bit-exact output and deterministic results across
-all `--threads` values:
+Make the context-owned `WorkerPool` do real work in the measured filter
+stages, preserving bit-exact output and deterministic results across all
+`--threads` values:
 
-- Extend `SPLOT_DECODE_TIMING` with per-stage runtime attribution
-  (tile parse, reconstruction stages, each filter stage, inter decode) plus
-  work-unit counts and distinct-worker tallies for parallel stages, so
-  thread-scaling behavior is visible per stage.
+- Extend `SPLOT_DECODE_TIMING` with per-stage runtime attribution (intra
+  tile, each filter stage, inter decode) plus work-unit counts and
+  distinct-worker tallies for parallel stages, so thread-scaling behaviour is
+  visible per stage. Add `current_pool_width`/`current_worker_index` to
+  `splot-parallel` for the attribution.
 - Deblock pass 1: replace the per-row column-chunk collection with
-  pool-width-sized column bands so band construction is O(bands), not
+  pool-width-sized column bands so band construction is O(bands x rows), not
   O(rows x columns); build the shared MI grid once and clone for chroma.
-- CDEF: derive per-band block contexts inside row-band tasks and write
-  filtered blocks directly into disjoint plane row bands, removing the
-  serial context build and the serial per-chunk write-back.
-- Wiener NS LR and CCSO: publish parallel per-block outputs through
-  disjoint row-band writes instead of a serial write-back loop.
-- Key-frame intra tile: split the interleaved walk into (1) the serial
-  entropy parse that captures per-transform-unit descriptors (coefficients,
-  mode facts, quantizer facts), (2) a pool-parallel dequant + inverse
-  transform stage into per-unit residual buffers, and (3) a serial
-  prediction/residual-add replay in exact parse order, preserving every
-  neighbor-pixel, CfL, and IntraBC dependency by construction.
-- Inter frames: capture placed-block descriptors during the serial entropy
-  walk; compute motion-compensated prediction + residual reconstruction for
-  hazard-free blocks (immutable reference reads, no current-frame reads) on
-  the pool; replay all block commits in parse order so intra-in-inter,
-  inter-intra, and IntraBC blocks see identical neighbor state.
+- CDEF: split the frame planes into disjoint mutable row bands, derive each
+  band's block contexts inside its task, and write filtered blocks directly
+  into the band, removing the serial context build and per-chunk write-back.
+- Wiener NS loop restoration and CCSO: coalesce all three planes' source runs
+  in one pass, then publish filtered rectangles through row-disjoint banded
+  writes (`plane_bands::publish_rect_runs_parallel`) with a serial
+  `write_rect` fallback.
+- Add `FrameMut::into_planes` and `PlaneMut::into_samples` to `splot-recon`
+  so the disjoint band splits are expressible in safe Rust.
 
 ## Non-goals
 
@@ -57,8 +55,9 @@ all `--threads` values:
 - No new pools, no global Rayon, no ad-hoc threads, no queues in hot loops,
   no new runtime or concurrency dependency.
 - No stream-specific logic; all changes are generic decoder paths.
-- No frame-level pipeline or wavefront prediction scheduler in this change;
-  the serial prediction replay is the documented remaining serial fraction.
+- No parse/reconstruction decoupling, wavefront prediction scheduler, or
+  deferred-reconstruction pipeline: the single-tile entropy + raster-order
+  prediction spine stays serial and is the documented remaining bottleneck.
 
 ## Acceptance criteria
 
@@ -67,8 +66,8 @@ all `--threads` values:
 - `SPLOT_DECODE_TIMING=1` reports per-stage times and worker attribution
   that explain the remaining serial fraction.
 - `--threads 1` wall time regresses by no more than 5%.
-- `--threads 10` wall time improves materially over the 1.9x baseline, with
-  the remaining serial fraction attributed to the single-tile entropy chain.
-- Existing splot-parallel / splot-recon / splot-decode tests pass; new
-  staged paths carry parallel-vs-serial equality tests.
+- The parallelisable filter portion scales at least 3x at `--threads 10`; the
+  remaining serial fraction is attributed to the single-tile entropy spine.
+- Existing splot-parallel / splot-recon / splot-decode tests pass; the new
+  banded publication carries parallel-vs-serial equality and fallback tests.
 - `cargo xtask ci` passes.

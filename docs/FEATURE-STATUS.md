@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 455 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 456 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -463,3 +463,4 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `INFRA-DECODE-FILTER-HOT-PATHS` | Decode filter hot-path optimization | infrastructure | infrastructure | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_minimal/wienerns_lr/recon/final_filters.rs` |
 | `INFRA-DECODE-SERIAL-HOT-PATHS` | Decode serial hot-path optimization | infrastructure | infrastructure | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/trace_flags.rs` |
 | `INFRA-DECODE-FIRST-FRAME-LATENCY` | Decode first-frame latency optimization | infrastructure | infrastructure | done | n/a | n/a | n/a | n/a | n/a | partial | done | n/a | `crates/splot-recon/src/wienerns_filter.rs` |
+| `INFRA-DECODE-PARALLEL-STAGES` | Decode filter-stage worker-pool parallelization | infrastructure | infrastructure | done | n/a | n/a | n/a | n/a | n/a | done | done | n/a | `crates/splot-decode/src/runtime_minimal/plane_bands.rs` |

@@ -167,12 +167,6 @@ fn deblock_plane_pass<T: ReconSample>(
         let timer = crate::timing::start();
         let tally = crate::timing::WorkerTally::new();
         let full = PlaneCtx::new(samples, stride, width, height)?;
-        // Pass 0 filters purely horizontal perpendicular lines, so a band of
-        // whole rows owns every read/write of its edges; pass 1 filters
-        // purely vertical ones, so a band of whole columns does. Band widths
-        // are multiples of MI_SIZE sized to a few units per worker: pass 1
-        // materializes one slice per row per band, so its band count stays
-        // low to keep construction O(rows x bands) cheap.
         let bands: Vec<(usize, usize, PlaneCtx<'_, T>)> = if plane_pass.pass == 0 {
             let plane_units = height.div_ceil(MI_SIZE);
             let units_per_band = plane_units.div_ceil(workers * 4).max(1);
@@ -291,9 +285,11 @@ fn deblock_plane_pass<T: ReconSample>(
 /// starting at `y_origin`, each starting at column `x_origin`; `width` and
 /// `height` stay the full plane dimensions so read clamping and write bounds
 /// are unchanged. § 7.17 pass 0 filters purely horizontal perpendicular
-/// lines and pass 1 purely vertical ones, so a 4-row band (pass 0) or a
-/// 4-column band (pass 1) covers every read and write its edges can make
-/// once the MI coverage fits the plane.
+/// lines and pass 1 purely vertical ones, so a band of whole rows (pass 0)
+/// or whole columns (pass 1) — any multiple of MI_SIZE, sized to a few units
+/// per worker — covers every read and write its edges can make once the MI
+/// coverage fits the plane, which is what makes the bands safe to filter
+/// concurrently.
 struct PlaneCtx<'a, T: ReconSample> {
     rows: Vec<&'a mut [T]>,
     width: usize,

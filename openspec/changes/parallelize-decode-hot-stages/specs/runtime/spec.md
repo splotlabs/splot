@@ -1,20 +1,21 @@
 # runtime delta: parallelize-decode-hot-stages
 
 Adds the parallel-stage constraints the decode runtime relies on after the
-hot decode/filter stages move onto the context-owned worker pool.
-Non-normative codec-runtime infrastructure: it adds no AV2 conformance
+hot post-reconstruction filter stages move onto the context-owned worker
+pool. Non-normative codec-runtime infrastructure: it adds no AV2 conformance
 coverage and changes no decoded output. Tracked by
 `INFRA-DECODE-PARALLEL-STAGES`.
 
 ## ADDED Requirements
 
-### Requirement: parallel decode stages are deterministic and disjoint
+### Requirement: parallel filter stages are deterministic and disjoint
 
-A decode or filter stage that runs on the context-owned worker pool SHALL
-produce byte-identical output for every resolved thread count, SHALL write
-only disjoint plane regions or task-local buffers merged in bitstream
-order, and SHALL keep every entropy-decode symbol read on the serial parse
-path. Tracked by `INFRA-DECODE-PARALLEL-STAGES`.
+A decode filter stage that runs on the context-owned worker pool SHALL
+produce byte-identical output for every resolved thread count, and SHALL
+write only disjoint plane regions or task-local buffers published in
+bitstream order, so no two workers ever write the same sample. A stage that
+cannot express its work as disjoint regions SHALL keep the serial path.
+Tracked by `INFRA-DECODE-PARALLEL-STAGES`.
 
 #### Scenario: thread sweep is byte-identical
 
@@ -22,31 +23,31 @@ path. Tracked by `INFRA-DECODE-PARALLEL-STAGES`.
   and `auto`
 - **THEN** the raw output bytes are identical across all runs
 
-### Requirement: deferred reconstruction replays in parse order
+### Requirement: banded publication fails loudly or falls back, never corrupts
 
-A reconstruction stage that defers work captured during the serial entropy
-parse SHALL replay ordered commits in exactly the original parse order, so
-neighbor-pixel dependencies (intra prediction edges, CfL luma reads,
-IntraBC source coverage) observe the same state as the interleaved decode.
-Deferred work computed on the pool SHALL depend only on captured descriptor
-data and immutable inputs. Tracked by `INFRA-DECODE-PARALLEL-STAGES`.
+Banded publication of filtered rectangles MUST fail loudly or fall back,
+never corrupt: when a rectangle does not fit the disjoint plane row band that
+owns its rows, the stage surfaces a typed error or returns control to a
+serial in-order write that rewrites every rectangle. Because filter outputs
+are disjoint, a partial parallel write before such a fallback leaves the same
+final plane as a pure serial write. Tracked by `INFRA-DECODE-PARALLEL-STAGES`.
 
-#### Scenario: staged intra equals interleaved intra
+#### Scenario: mis-banded write never yields silent corruption
 
-- **WHEN** a key-frame tile decodes through descriptor capture, parallel
-  residual reconstruction, and ordered replay
-- **THEN** the reconstructed frame equals the interleaved single-pass
-  decode bit-for-bit
+- **WHEN** a rectangle would fall outside the band that owns its rows
+- **THEN** the stage errors or takes the serial fallback, and the decoded
+  output stays byte-identical to the serial decode
 
 ### Requirement: parallel stages report scaling attribution
 
 When `SPLOT_DECODE_TIMING` is set, a pool-parallel decode stage SHALL
 report its work-unit count and the number of distinct workers that executed
-stage work, and a stage that chooses its serial fallback SHALL be
-attributable from the report. Tracked by `INFRA-DECODE-PARALLEL-STAGES`.
+stage work, and a stage that takes its serial fallback SHALL be
+attributable from the report. Timing SHALL stay fully disabled otherwise.
+Tracked by `INFRA-DECODE-PARALLEL-STAGES`.
 
 #### Scenario: timing explains thread usage
 
 - **WHEN** a stream decodes with `SPLOT_DECODE_TIMING=1 --threads 10`
 - **THEN** stderr reports per-stage times and worker counts that show which
-  stages used the pool
+  stages used the pool and which stayed serial
