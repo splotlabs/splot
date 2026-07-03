@@ -113,6 +113,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// Returns [`ReconError::MissingWorkspacePlane`] for absent chroma planes in
     /// monochrome workspaces.
+    #[inline]
     pub fn plane(&self, plane: PlaneId) -> Result<&CurrentFramePlane<T>> {
         match plane {
             PlaneId::Y => Ok(&self.y),
@@ -171,6 +172,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// Returns [`ReconError`] when the plane is absent or `(x, y)` falls outside
     /// the plane storage.
+    #[inline]
     pub fn reconstructed_sample(&self, plane: PlaneId, x: usize, y: usize) -> Result<T> {
         self.plane(plane)?.reconstructed_sample(x, y)
     }
@@ -515,6 +517,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// # Errors
     /// Returns [`ReconError::WorkspaceRectOutOfBounds`] when `(x, y)` falls
     /// outside the plane storage.
+    #[inline]
     pub fn reconstructed_sample(&self, x: usize, y: usize) -> Result<T> {
         // Validate the column against the storage width (not just the flat
         // index) so a column at or past the row stride is rejected instead of
@@ -820,6 +823,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         }
     }
 
+    #[inline]
     fn sample_index(&self, x: usize, y: usize) -> Result<usize> {
         let row_start =
             y.checked_mul(self.stride_samples)
