@@ -95,6 +95,11 @@ pub struct WienerNsFrameFilterClass {
     pub coeffs: Vec<i16>,
 }
 
+/// Parses a § 5.18 frame-level Wiener-NS filter bank. `ref_taps` are the
+/// retained taps of the § 5.18 `search_frame_filters` reference entries, in
+/// order; a `None` entry is a stored reference whose bank was LR
+/// temporal-copied rather than locally parsed, so a match that selects it
+/// fails closed (its taps were never retained).
 pub(super) fn parse_frame_wiener_ns_filter(
     reader: &mut BitReader<'_>,
     plane: usize,
@@ -122,6 +127,19 @@ pub(super) fn parse_frame_wiener_ns_filter(
     let ref_taps = ref_taps
         .get(..capped_ref.min(ref_taps.len()))
         .unwrap_or(&[]);
+    for &match_index in &match_indices {
+        if (num_classes..num_classes + capped_ref).contains(&match_index)
+            && ref_taps
+                .get(match_index - num_classes)
+                .copied()
+                .flatten()
+                .is_none()
+        {
+            return Err(crate::error::Error::Unimplemented {
+                feature: "lr_temporal_reference_filter_match",
+            });
+        }
+    }
     let merged = read_merged_flags(reader, num_classes)?;
     let mut ref_bank = vec![[[0i16; WIENER_NS_CHROMA_COEFFS]; LR_BANK_SIZE]; num_classes];
     let mut bank_size = vec![0usize; num_classes];
@@ -531,6 +549,54 @@ mod tests {
         assert!(bank.classes.iter().all(|class| class.ref_bank == 0));
         assert!(bank.classes.iter().all(|class| class.coeffs.len() == 16));
         assert!(bank.classes.iter().all(|class| class.coeffs == vec![0; 16]));
+    }
+
+    #[test]
+    fn luma_reference_match_resolves_retained_taps() {
+        let taps: Vec<i16> = (0..WIENER_NS_LUMA_COEFFS as i16).map(|v| v - 3).collect();
+        let ref_taps: [Option<&[i16]>; 1] = [Some(taps.as_slice())];
+        let mut bits = Bits::default();
+        bits.bit(1); // c=0 selects the reference group (match index 1).
+        bits.bit(1); // merged[0] -> class copies the reference bank slot verbatim.
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let bank = parse_frame_wiener_ns_filter(
+            &mut r,
+            0,
+            1,
+            1,
+            &ref_taps,
+            restoration_without_pc_wiener(),
+        )
+        .unwrap();
+
+        assert_eq!(bank.classes.len(), 1);
+        assert_eq!(bank.classes[0].match_index, 1);
+        assert_eq!(bank.classes[0].coeffs, taps);
+    }
+
+    #[test]
+    fn luma_reference_match_without_retained_taps_fails_closed() {
+        let ref_taps: [Option<&[i16]>; 1] = [None];
+        let mut bits = Bits::default();
+        bits.bit(1); // c=0 selects the reference group (match index 1).
+        bits.bit(1); // merged[0]
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let outcome = parse_frame_wiener_ns_filter(
+            &mut r,
+            0,
+            1,
+            1,
+            &ref_taps,
+            restoration_without_pc_wiener(),
+        );
+        assert!(matches!(
+            outcome,
+            Err(crate::error::Error::Unimplemented {
+                feature: "lr_temporal_reference_filter_match"
+            })
+        ));
     }
 
     #[test]
