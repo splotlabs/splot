@@ -81,6 +81,19 @@ impl WorkerPool {
     }
 }
 
+/// Returns whether the calling thread is a worker of an installed pool that
+/// has more than one thread.
+///
+/// Codec helpers that are usually driven inside [`WorkerPool::install`] but are
+/// also callable directly (for example from tests) use this to take their
+/// parallel path only when the context's workers are actually in scope and
+/// parallelism can help, so a bare call never falls back to Rayon's global
+/// pool and a one-thread pool never pays work-splitting overhead.
+#[must_use]
+pub fn on_multiworker_pool() -> bool {
+    rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -116,6 +129,15 @@ mod tests {
     fn install_runs_closure() {
         let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
         assert_eq!(pool.install(|| 21 * 2), 42);
+    }
+
+    #[test]
+    fn on_multiworker_pool_tracks_install_scope_and_width() {
+        assert!(!on_multiworker_pool());
+        let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
+        assert!(pool.install(on_multiworker_pool));
+        let single = WorkerPool::new(ThreadCount::Fixed(nz(1))).unwrap();
+        assert!(!single.install(on_multiworker_pool));
     }
 
     #[test]

@@ -194,7 +194,16 @@ const PARALLEL_CRATE_PREFIX: &str = "crates/splot-parallel/";
 /// Files exempt from the par-iter-outside-`install` rule (Rule 10) — for the rare
 /// legitimate case where the `install` scoping lives in a different file. Empty by
 /// default; add a path with a documented reason rather than weakening the rule.
-const PAR_ITER_RULE_ALLOWLIST: &[&str] = &[];
+///
+/// The decode filter stages below run inside `DecodeContext`'s
+/// `WorkerPool::install` (crates/splot-decode/src/context.rs) and gate their
+/// parallel path on `splot_parallel::on_multiworker_pool()`, so direct callers such
+/// as tests take the serial path instead of Rayon's global pool.
+const PAR_ITER_RULE_ALLOWLIST: &[&str] = &[
+    "crates/splot-decode/src/runtime_minimal/ccso.rs",
+    "crates/splot-decode/src/runtime_minimal/cdef.rs",
+    "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon/final_filters.rs",
+];
 
 /// Returns the unbounded-channel source needle matched in `text`, including braced
 /// import forms such as `use crossbeam_channel::{bounded, unbounded};`.

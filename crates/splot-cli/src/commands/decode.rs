@@ -23,6 +23,22 @@ use splot_parallel::ThreadCount;
 
 static OUTPUT_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// Starts an env-gated (`SPLOT_DECODE_TIMING`) phase timer.
+fn timing_start() -> Option<std::time::Instant> {
+    std::env::var_os("SPLOT_DECODE_TIMING").map(|_| std::time::Instant::now())
+}
+
+/// Emits one `splot.decode_timing` stderr line for a phase started via
+/// [`timing_start`].
+fn timing_report(phase: &str, started: Option<std::time::Instant>) {
+    if let Some(started) = started {
+        eprintln!(
+            "splot.decode_timing {phase}_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+}
+
 /// Output artifact selected for future `splot decode` success.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
@@ -495,16 +511,23 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
         .context("decode output target was not resolved")?;
     let output_format = target.format();
 
+    let total_started = timing_start();
     let options = DecodeOptions::default().with_output_frame_limit(args.limit);
-    let report = match read_decode_input(&args.input, &options)? {
+    let input_read_started = timing_start();
+    let input = read_decode_input(&args.input, &options)?;
+    timing_report("input_read", input_read_started);
+    let report = match input {
         DecodeInputRead::Bytes(bytes) => {
+            let context_started = timing_start();
             let context = DecodeContext::new(DecodeRuntimeConfig::new(args.threads))?;
+            timing_report("context_new", context_started);
             match target {
                 DecodeOutputTarget::Hash { path } => {
                     let _ = path;
                     match context.decode_hash_report_bytes(&bytes, options) {
                         Ok(report) => {
                             render_hash_report(&report, args.json)?;
+                            timing_report("total", total_started);
                             return Ok(ExitCode::SUCCESS);
                         }
                         Err(error) => decode_report_from_error(&error)?,
@@ -512,13 +535,19 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
                 }
                 DecodeOutputTarget::Y4m { path } => {
                     match decode_y4m_to_file(&context, &bytes, &options, path) {
-                        Ok(()) => return Ok(ExitCode::SUCCESS),
+                        Ok(()) => {
+                            timing_report("total", total_started);
+                            return Ok(ExitCode::SUCCESS);
+                        }
                         Err(error) => decode_report_from_error(&error)?,
                     }
                 }
                 DecodeOutputTarget::Raw { path } => {
                     match decode_raw_to_file(&context, &bytes, &options, path) {
-                        Ok(()) => return Ok(ExitCode::SUCCESS),
+                        Ok(()) => {
+                            timing_report("total", total_started);
+                            return Ok(ExitCode::SUCCESS);
+                        }
                         Err(error) => decode_report_from_error(&error)?,
                     }
                 }
@@ -564,7 +593,10 @@ fn decode_raw_to_file(
 ) -> core::result::Result<(), DecodeError> {
     let mut raw = Vec::new();
     context.decode_raw_bytes(bytes, *options, &mut raw)?;
-    publish_raw_output(path, &raw)
+    let publish_started = timing_start();
+    let published = publish_raw_output(path, &raw);
+    timing_report("output_publish", publish_started);
+    published
 }
 
 fn publish_raw_output(path: &Path, raw: &[u8]) -> core::result::Result<(), DecodeError> {

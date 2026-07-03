@@ -129,6 +129,15 @@ let outputs: Vec<Output> = ctx.pool().install(|| {
 Threads follow the same rule: never `std::thread::spawn` for codec work — every
 worker thread comes from the context's single `WorkerPool`, sized by `--threads`.
 
+**Callee-side parallelism.** A helper that normally runs inside the context's
+`install` scope but is also callable directly (for example from unit tests)
+must gate its parallel path on `splot_parallel::on_multiworker_pool()` and keep
+an equivalent serial path. The guard is true only on a worker of an installed
+pool with more than one thread, so a direct call can never reach Rayon's
+global pool and a one-thread pool never pays work-splitting overhead. Such
+files carry a documented entry in the concurrency gate's
+`PAR_ITER_RULE_ALLOWLIST` because the `install` call lives in another file.
+
 ## 6. Determinism contract
 
 Concurrency must never change observable output. Once real decode/encode work
