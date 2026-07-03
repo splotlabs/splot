@@ -29,9 +29,18 @@ filter loops without changing any filter math, tap tables, or rounding:
   feed the existing filter primitives a direct-indexed lookup.
 - Apply the same materialization to § 7.20.4 PC-Wiener classification reads
   and the § 7.20.3 chroma filter's chroma and luma source callbacks.
-- In CDEF, gather taps from a per-block materialized tile with the § 7.18
-  availability semantics precomputed, and batch the per-sample workspace
-  write-back.
+- In CDEF, gather taps from the snapshot with the § 7.18 availability check
+  reduced to one precomputed plane rectangle, hoist the per-strength
+  `constrain` damping adjustment out of the tap loop, and batch the per-sample
+  workspace write-back into per-block `write_rect` calls. Apply the same
+  snapshot/batch shape to § 7.19 CCSO.
+- Run the block-independent filter stages (§ 7.18 CDEF, § 7.19 CCSO, § 7.20
+  Wiener NS restoration blocks) as data-parallel maps on the context's owned
+  `WorkerPool` via `splot_parallel::prelude`, publishing results serially in
+  block order. A new `splot_parallel::on_multiworker_pool()` guard keeps
+  direct callers (tests) on the serial path so nothing can reach Rayon's
+  global pool, and a one-thread pool skips work-splitting overhead. Output is
+  identical across `--threads` policies.
 - Add an env-gated (`SPLOT_DECODE_TIMING`) decode phase trace on stderr so the
   attribution stays reproducible; disabled by default.
 
@@ -42,6 +51,8 @@ filter loops without changing any filter math, tap tables, or rounding:
 - No change to filter math, tap tables, rounding, or clamping.
 - No stream-specific logic; all changes are generic decoder paths.
 - No new dependency, no decoder architecture rewrite, no second decode path.
+- No new pools, no global Rayon pool, no scheduling-dependent output; the
+  parallel stages use only the context's existing owned `WorkerPool`.
 - No relaxation of § 7.21 output scheduling for `--limit` (held implicit
   frames still emit only when scheduling releases them).
 

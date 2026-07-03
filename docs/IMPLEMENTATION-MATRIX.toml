@@ -20566,3 +20566,47 @@ commands = [
 ]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "INFRA-DECODE-FILTER-HOT-PATHS"
+name = "Decode filter hot-path optimization"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.18", "7.19", "7.20.2", "7.20.3", "7.20.4"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon/final_filters.rs"
+openspec_change = "optimize-decode-filter-hot-paths"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Bit-exact first-frame latency work on the in-loop filter stage. The §7.20.2 source-sample selector is resolved once per restoration block into an LrSourceWindow (two x-extreme probes per row, since clipped x depends only on x and clipped y/source only on y), and the §7.20.3 luma filter, §7.20.4 PC-Wiener classification, chroma filter, and luma companion reads all consume the window directly; splot-recon gains a padded-source luma filter entry point (wiener_ns_filter_luma_block_padded, identical math, cross-checked bit-exact against the callback entry point) plus tap-table-tied read-reach constants WIENER_NS_LUMA_TAP_RADIUS / WIENER_NS_CHROMA_TAP_RADIUS / PC_WIENER_CLASSIFY_READ_RADIUS. CDEF captures plane snapshots by row slice, reduces the §7.18 CdefInside check to one precomputed plane rectangle, precomputes per-block signed tap offsets, hoists the per-strength constrain damping adjustment (constrain_with_adj proven equal to cdef_constrain by sweep test), and publishes each block with one validated write_rect; CCSO takes the same snapshot/batch shape. Block-independent filter stages (CDEF, CCSO, Wiener NS restoration blocks) run as data-parallel maps on the context's owned WorkerPool behind the new splot_parallel::on_multiworker_pool() guard with serial in-order publication, keeping output identical across --threads policies; direct callers (tests) take the serial path so Rayon's global pool is unreachable. An env-gated SPLOT_DECODE_TIMING stderr trace reports decode phase times. Motivating 1080p10 first-frame decode drops from 1240 ms to ~401 ms median (raw sha256 unchanged, full conformance-vector hash sweep unchanged)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "done"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/wienerns_filter.rs::tests::padded_and_callback_filters_match_bit_exactly",
+    "crates/splot-recon/src/cdef_filter.rs::tests::constrain_with_adj_matches_cdef_constrain",
+    "crates/splot-parallel/src/pool.rs::tests::on_multiworker_pool_tracks_install_scope_and_width",
+]
+commands = [
+    "cargo test -p splot-recon --lib",
+    "cargo test -p splot-decode --lib",
+    "cargo test -p splot-parallel --lib",
+    "cargo xtask check-concurrency-policy",
+]
+fixtures = []
+diagnostics = []
