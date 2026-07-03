@@ -217,14 +217,28 @@ pub fn wiener_ns_filter_luma_block_padded<T: ReconSample>(
     WienerNsLumaPaddedSource::new(source.samples, source.stride, params.width, params.height)?;
 
     let stride = source.stride;
-    let mut tap_offsets = [0isize; WIENER_NS_LUMA_TAPS];
-    let stride_i = isize::try_from(stride).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "Wiener NS padded source stride",
-    })?;
+    // Tap positions relative to the padded block origin: `(dy + radius) * stride
+    // + dx + radius` is non-negative for every config tap, so the tap loop is
+    // pure index addition off each output sample's padded-row base.
+    let mut tap_offsets = [0usize; WIENER_NS_LUMA_TAPS];
+    let center_offset = WIENER_NS_LUMA_TAP_RADIUS
+        .checked_mul(stride)
+        .and_then(|row| row.checked_add(WIENER_NS_LUMA_TAP_RADIUS))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS padded source stride",
+        })?;
     for (offset, &(dy, dx, _)) in tap_offsets.iter_mut().zip(&WIENER_NS_CONFIG_Y) {
-        *offset = dy
-            .checked_mul(stride_i)
-            .and_then(|row| row.checked_add(dx))
+        let row = usize::try_from(dy + WIENER_NS_LUMA_TAP_RADIUS as isize)
+            .map_err(|_| ReconError::ArithmeticOverflow {
+                context: "Wiener NS padded tap offset",
+            })?
+            .checked_mul(stride)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "Wiener NS padded tap offset",
+            })?;
+        *offset = usize::try_from(dx + WIENER_NS_LUMA_TAP_RADIUS as isize)
+            .ok()
+            .and_then(|col| row.checked_add(col))
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "Wiener NS padded tap offset",
             })?;
@@ -236,24 +250,19 @@ pub fn wiener_ns_filter_luma_block_padded<T: ReconSample>(
         for c in 0..params.width {
             let sample_index = r * params.width + c;
             let coeffs = coeffs_for_sample(params, sample_index);
-            let center = (r + WIENER_NS_LUMA_TAP_RADIUS) * stride + c + WIENER_NS_LUMA_TAP_RADIUS;
+            let base = r * stride + c;
             let m = validated_padded_sample(
                 source.samples,
-                center,
+                base + center_offset,
                 c as isize,
                 r as isize,
                 max_sample,
             )?;
             let mut s = i64::from(m) << WIENER_NS_PREC_BITS;
             for (&offset, &(dy, dx, coeff_index)) in tap_offsets.iter().zip(&WIENER_NS_CONFIG_Y) {
-                let tap_index = usize::try_from(center as isize + offset).map_err(|_| {
-                    ReconError::ArithmeticOverflow {
-                        context: "Wiener NS padded tap index",
-                    }
-                })?;
                 let tap = validated_padded_sample(
                     source.samples,
-                    tap_index,
+                    base + offset,
                     c as isize + dx,
                     r as isize + dy,
                     max_sample,

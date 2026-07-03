@@ -204,6 +204,10 @@ pub fn cdef_filter_sample(
     let tap_row = ((pri_str >> coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row];
     let sec_taps = CDEF_SEC_TAPS[tap_row];
+    // `constrain`'s dampingAdj depends only on the per-call strengths, so it is
+    // derived once per sample instead of once per tap.
+    let pri_adj = constrain_damping_adj(pri_str, damping);
+    let sec_adj = constrain_damping_adj(sec_str, damping);
 
     let mut sum = 0i32;
     let mut max = taps.center;
@@ -212,14 +216,15 @@ pub fn cdef_filter_sample(
         for sign_index in 0..2 {
             let p = taps.primary[k][sign_index];
             if p.available {
-                sum += pri_taps[k] * cdef_constrain(p.value - taps.center, pri_str, damping);
+                sum += pri_taps[k] * constrain_with_adj(p.value - taps.center, pri_str, pri_adj);
                 max = max.max(p.value);
                 min = min.min(p.value);
             }
             for dir_off_index in 0..2 {
                 let s = taps.secondary[k][sign_index][dir_off_index];
                 if s.available {
-                    sum += sec_taps[k] * cdef_constrain(s.value - taps.center, sec_str, damping);
+                    sum +=
+                        sec_taps[k] * constrain_with_adj(s.value - taps.center, sec_str, sec_adj);
                     max = max.max(s.value);
                     min = min.min(s.value);
                 }
@@ -229,6 +234,30 @@ pub fn cdef_filter_sample(
 
     let rounded = taps.center + ((8 + sum - i32::from(sum < 0)) >> 4);
     rounded.clamp(min, max)
+}
+
+const fn constrain_damping_adj(threshold: i32, damping: i32) -> i32 {
+    if threshold == 0 {
+        return 0;
+    }
+    let adj = damping - floor_log2(threshold as u32) as i32;
+    if adj < 0 { 0 } else { adj }
+}
+
+const fn constrain_with_adj(diff: i32, threshold: i32, damping_adj: i32) -> i32 {
+    if threshold == 0 {
+        return 0;
+    }
+    let abs = diff.abs();
+    let reduced = threshold - (abs >> damping_adj);
+    let magnitude = if reduced < 0 {
+        0
+    } else if reduced > abs {
+        abs
+    } else {
+        reduced
+    };
+    if diff < 0 { -magnitude } else { magnitude }
 }
 
 #[cfg(test)]
@@ -254,6 +283,22 @@ mod tests {
         let (y_dir, var) = cdef_direction(&block);
         assert_eq!(y_dir, 2, "row-varying block selects direction 2");
         assert!(var > 0, "a non-flat block has positive variance: var={var}");
+    }
+
+    #[test]
+    fn constrain_with_adj_matches_cdef_constrain() {
+        for threshold in [0, 1, 3, 8, 63, 256] {
+            for damping in [3, 5, 8] {
+                let adj = constrain_damping_adj(threshold, damping);
+                for diff in -300..=300 {
+                    assert_eq!(
+                        cdef_constrain(diff, threshold, damping),
+                        constrain_with_adj(diff, threshold, adj),
+                        "threshold={threshold} damping={damping} diff={diff}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
