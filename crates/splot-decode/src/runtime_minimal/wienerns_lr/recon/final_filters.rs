@@ -113,6 +113,131 @@ fn lr_unit_filter_for_block<'a>(
         .ok_or_else(|| luma_lr_filter_error(offset))
 }
 
+/// Merges one plane's source blocks into maximal horizontally contiguous runs
+/// whose every filter-visible input matches, so the § 7.20 filters and their
+/// materialized windows run once per run instead of once per 4x4/2x2 block.
+///
+/// Filter output depends only on a sample's absolute coordinate, the § 7.20.1/
+/// 7.20.2 bounds, the tile bounds, and the LR unit selection — all held equal
+/// by [`lr_blocks_mergeable`] — so a merged run is bit-identical to its parts.
+fn coalesced_lr_source_rows(
+    lr_source_blocks: &[WienerNsLrSourceBlock],
+    plane_index: usize,
+) -> Vec<WienerNsLrSourceBlock> {
+    let mut blocks: Vec<WienerNsLrSourceBlock> = lr_source_blocks
+        .iter()
+        .filter(|block| block.plane == plane_index)
+        .copied()
+        .collect();
+    blocks.sort_unstable_by_key(|block| (block.y, block.x));
+    let mut runs: Vec<WienerNsLrSourceBlock> = Vec::new();
+    for block in blocks {
+        if let Some(run) = runs.last_mut()
+            && lr_blocks_mergeable(run, &block)
+            && let Some(width) = run.width.checked_add(block.width)
+        {
+            run.width = width;
+            continue;
+        }
+        runs.push(block);
+    }
+    runs
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::*;
+
+    fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
+        WienerNsLrSourceBlock {
+            plane,
+            row: y / 4,
+            col: x / 4,
+            unit_row: 0,
+            unit_col: 0,
+            tile_mi_row_start: 0,
+            tile_mi_row_end: 4,
+            tile_mi_col_start: 0,
+            tile_mi_col_end: 4,
+            x,
+            y,
+            width: 4,
+            height: 4,
+            luma_start_x: 0,
+            luma_end_x: 15,
+            luma_start_y: 0,
+            luma_end_y: 15,
+            frame_luma_end_y: 15,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 15,
+        }
+    }
+
+    #[test]
+    fn merges_contiguous_row_blocks_and_splits_on_filter_visible_fields() {
+        let mut stripe_split = block(0, 8, 0);
+        stripe_split.luma_stripe_end_y = 7;
+        let mut unit_split = block(0, 12, 4);
+        unit_split.unit_col = 1;
+        let blocks = [
+            block(0, 4, 0),
+            block(1, 0, 0),
+            block(0, 0, 0),
+            stripe_split,
+            block(0, 12, 0),
+            block(0, 0, 4),
+            block(0, 4, 4),
+            block(0, 8, 4),
+            unit_split,
+        ];
+
+        let runs = coalesced_lr_source_rows(&blocks, 0);
+        let shapes: Vec<_> = runs
+            .iter()
+            .map(|run| (run.x, run.y, run.width, run.height))
+            .collect();
+        assert_eq!(
+            shapes,
+            vec![
+                (0, 0, 8, 4),
+                (8, 0, 4, 4),
+                (12, 0, 4, 4),
+                (0, 4, 12, 4),
+                (12, 4, 4, 4)
+            ],
+            "runs must merge contiguous same-row blocks and split when any \
+             filter-visible field differs"
+        );
+        assert!(runs.iter().all(|run| run.plane == 0));
+    }
+
+    #[test]
+    fn does_not_merge_across_row_gaps() {
+        let blocks = [block(0, 0, 0), block(0, 8, 0)];
+        let runs = coalesced_lr_source_rows(&blocks, 0);
+        assert_eq!(runs.len(), 2);
+    }
+}
+
+fn lr_blocks_mergeable(run: &WienerNsLrSourceBlock, next: &WienerNsLrSourceBlock) -> bool {
+    run.y == next.y
+        && run.height == next.height
+        && run.x.checked_add(run.width) == Some(next.x)
+        && run.unit_row == next.unit_row
+        && run.unit_col == next.unit_col
+        && run.tile_mi_row_start == next.tile_mi_row_start
+        && run.tile_mi_row_end == next.tile_mi_row_end
+        && run.tile_mi_col_start == next.tile_mi_col_start
+        && run.tile_mi_col_end == next.tile_mi_col_end
+        && run.luma_start_x == next.luma_start_x
+        && run.luma_end_x == next.luma_end_x
+        && run.luma_start_y == next.luma_start_y
+        && run.luma_end_y == next.luma_end_y
+        && run.frame_luma_end_y == next.frame_luma_end_y
+        && run.luma_stripe_start_y == next.luma_stripe_start_y
+        && run.luma_stripe_end_y == next.luma_stripe_end_y
+}
+
 fn clipped_lr_source_block(
     block: &WienerNsLrSourceBlock,
     plane_width: usize,
@@ -466,10 +591,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             }
         };
-        let y_blocks: Vec<&WienerNsLrSourceBlock> = lr_source_blocks
-            .iter()
-            .filter(|block| block.plane == PlaneId::Y.index())
-            .collect();
+        let y_blocks = coalesced_lr_source_rows(lr_source_blocks, PlaneId::Y.index());
         let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
             if splot_parallel::on_multiworker_pool() {
                 y_blocks
@@ -555,10 +677,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 cdef_luma,
             )
         };
-        let plane_blocks: Vec<&WienerNsLrSourceBlock> = lr_source_blocks
-            .iter()
-            .filter(|block| block.plane == plane_index)
-            .collect();
+        let plane_blocks = coalesced_lr_source_rows(lr_source_blocks, plane_index);
         let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
             if splot_parallel::on_multiworker_pool() {
                 plane_blocks
@@ -832,7 +951,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Some(tx_skip_grid) = self.tx_skip_grid.as_ref() else {
             return Err(luma_lr_filter_error(offset));
         };
-        let block_start_x = (block.x >> 6) << 6;
+        // § 7.20.4 BlockStartX is the 64-sample window containing the
+        // classified cell, so it derives from the cell's x, keeping merged
+        // runs identical to per-block dispatch across 64-sample boundaries.
+        let block_start_x = (class_x >> 6) << 6;
         let block_end_x = super::super::pc_wiener_block_end_x(block, block_start_x)
             .map_err(|_| luma_lr_filter_error(offset))?;
         let params = PcWienerClassifyParams {
