@@ -372,9 +372,7 @@ impl<T: ReconSample> LrSourceWindow<T> {
                     actual: source_row.len(),
                 },
             )?)?;
-            for _ in 0..pre {
-                samples.push(left_value);
-            }
+            samples.resize(samples.len().saturating_add(pre), left_value);
             if mid > 0 {
                 let mid_start = (x0 + pre as isize) as usize;
                 let mid_slice = source_row.get(mid_start..mid_start + mid).ok_or(
@@ -383,9 +381,17 @@ impl<T: ReconSample> LrSourceWindow<T> {
                         actual: source_row.len(),
                     },
                 )?;
-                for &value in mid_slice {
-                    samples.push(T::try_from_u16(value)?);
+                if let Some(&unstorable) = mid_slice.iter().find(|&&value| value > T::MAX_VALUE) {
+                    return Err(match T::try_from_u16(unstorable) {
+                        Err(error) => error,
+                        Ok(_) => OVERFLOW_WINDOW,
+                    });
                 }
+                samples.extend(
+                    mid_slice
+                        .iter()
+                        .map(|&value| T::try_from_u16(value).unwrap_or_default()),
+                );
             }
             let right_value = T::try_from_u16(*source_row.get(right.x).ok_or(
                 ReconError::BufferLengthMismatch {
@@ -393,9 +399,7 @@ impl<T: ReconSample> LrSourceWindow<T> {
                     actual: source_row.len(),
                 },
             )?)?;
-            for _ in 0..post {
-                samples.push(right_value);
-            }
+            samples.resize(samples.len().saturating_add(post), right_value);
         }
         Ok(Self {
             samples,
@@ -895,9 +899,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let mut cell_subclasses = vec![None; cell_cols * cell_rows];
         let mut subclasses = Vec::with_capacity(sample_count);
         for row in 0..block.height {
-            for col in 0..block.width {
-                let cell_row = row / MI_SIZE;
-                let cell_col = col / MI_SIZE;
+            let cell_row = row / MI_SIZE;
+            for cell_col in 0..cell_cols {
                 let cell_index = cell_row
                     .checked_mul(cell_cols)
                     .and_then(|start| start.checked_add(cell_col))
@@ -930,7 +933,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         *slot = Some(subclass);
                         subclass
                     };
-                subclasses.push(subclass);
+                let cell_start = cell_col.saturating_mul(MI_SIZE);
+                let cell_width = MI_SIZE.min(block.width.saturating_sub(cell_start));
+                subclasses.extend(core::iter::repeat_n(subclass, cell_width));
             }
         }
         Ok(subclasses)
