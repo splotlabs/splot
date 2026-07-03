@@ -140,6 +140,7 @@ pub struct PcWienerClassification {
 /// source samples outside the active bit-depth range, `LrTxSkip` values outside
 /// `0..=1`, and arithmetic overflow in coordinate or LUT derivation. The
 /// function mutates no caller-owned output or grid state.
+#[inline]
 pub fn pc_wiener_classify<T, FS, FT>(
     params: &PcWienerClassifyParams,
     mut source_sample: FS,
@@ -228,6 +229,7 @@ where
 /// The AVM helper accepts an additional qindex offset used by some runtime
 /// contexts; the normative § 7.20.4 classifier uses `base_q_idx`.
 #[must_use]
+#[inline]
 pub const fn pc_wiener_filter_set_index(base_q_idx: u32) -> usize {
     if base_q_idx < 130 {
         0
@@ -248,6 +250,7 @@ pub const fn pc_wiener_filter_set_index(base_q_idx: u32) -> usize {
 /// # Errors
 /// Returns [`ReconError`] if any index or class count is outside the generated
 /// § 9.8 table domain.
+#[inline]
 pub fn pc_wiener_subclass(
     num_classes: usize,
     filter_set_index: usize,
@@ -294,6 +297,7 @@ struct PcWienerFeatureValues {
     values: [i64; PC_WIENER_NUM_FEATURES],
 }
 
+#[inline]
 fn pc_wiener_features<T, F>(
     params: &PcWienerClassifyParams,
     x: isize,
@@ -362,6 +366,7 @@ where
     })
 }
 
+#[inline]
 fn source_value<T, F>(source_sample: &mut F, x: isize, y: isize, bit_depth: BitDepth) -> Result<i64>
 where
     T: ReconSample,
@@ -375,6 +380,7 @@ where
     Ok(i64::from(value))
 }
 
+#[inline]
 fn tx_skip_lookup(
     params: &PcWienerClassifyParams,
     x: isize,
@@ -401,6 +407,7 @@ fn tx_skip_lookup(
     })
 }
 
+#[inline]
 fn pc_wiener_lut_input(
     features: [i64; PC_WIENER_NUM_FEATURES],
     tx_skip: i64,
@@ -468,6 +475,7 @@ impl QvalTxSkipTerms {
     }
 }
 
+#[inline]
 fn qval_given_tx_skip(terms: &QvalTxSkipTerms, feature_index: usize) -> Result<i64> {
     let qstep_shift = QUANT_TABLE_BITS + 10;
     let qval = MODE_WEIGHTS[feature_index][0]
@@ -505,6 +513,7 @@ fn validate_params(params: &PcWienerClassifyParams) -> Result<()> {
     Ok(())
 }
 
+#[inline]
 fn clip_isize_to_usize_range(
     value: isize,
     low: usize,
@@ -520,10 +529,12 @@ fn clip_isize_to_usize_range(
     usize::try_from(clipped).map_err(|_| ReconError::PcWienerInvalidBounds { field })
 }
 
+#[inline]
 fn usize_to_isize(value: usize, context: &'static str) -> Result<isize> {
     isize::try_from(value).map_err(|_| ReconError::ArithmeticOverflow { context })
 }
 
+#[inline]
 fn coordinate_add(value: isize, delta: isize, context: &'static str) -> Result<isize> {
     value
         .checked_add(delta)
