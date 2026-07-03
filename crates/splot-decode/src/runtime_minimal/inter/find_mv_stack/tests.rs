@@ -720,3 +720,207 @@ fn single_ref_ctx_counts_a_ref0_neighbour() {
         "a ref-0 neighbour makes thisRefCount > nextRefsCount -> ctx 2"
     );
 }
+
+#[test]
+fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
+    let mut grid = empty_grid();
+    let spatial = [-3_i64 << 16, 5 << 16, 65536 + 1024, -192, 448, 65536 - 2048];
+    grid.record_warp_block(
+        8,
+        0,
+        N4_32,
+        N4_32,
+        0,
+        NeighbourYMode::Other,
+        Mv { row: -8, col: 24 },
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        MotionMode::LocalWarp,
+        spatial,
+        BlockPrecisionRecord::default(),
+    );
+    let mut bank = WarpParamBank::new();
+    let older = [1 << 16, 0, 65536 + 64, 0, 0, 65536];
+    let newer = [-2 << 16, 7 << 16, 65536 - 128, 320, -640, 65536 + 256];
+    bank.update(0, older);
+    bank.update(0, newer);
+
+    let stack = find_mv_stack(&grid, &block_at(8, 8), Mv::ZERO, None, &bank, true);
+    assert_eq!(stack.warp_candidate(0), spatial, "first spatial insert");
+    assert_eq!(
+        stack.warp_candidate(1),
+        spatial,
+        "the second scan point re-inserts the same neighbour: 7.12.2.11 never dedups"
+    );
+    assert_eq!(stack.warp_candidate(2), newer, "bank fills newest-first");
+    assert_eq!(stack.warp_candidate(3), older, "then the older bank entry");
+    assert_eq!(
+        stack.warp_candidate(4),
+        DEFAULT_WARP_PARAMS,
+        "out-of-range indices resolve to the identity default"
+    );
+
+    let no_wrl = find_mv_stack(&grid, &block_at(8, 8), Mv::ZERO, None, &bank, false);
+    assert_eq!(
+        no_wrl.warp_candidate(0),
+        DEFAULT_WARP_PARAMS,
+        "DeriveWrl == 0 leaves the stack default-initialized"
+    );
+}
+
+#[test]
+fn warp_bank_hit_keeps_the_original_translation_and_evicts_oldest() {
+    let mut bank = WarpParamBank::new();
+    let base = |trans: i64, scale: i64| [trans, -trans, 65536 + scale, 0, 0, 65536 - scale];
+    bank.update(0, base(1 << 16, 64));
+    bank.update(0, base(2 << 16, 128));
+    bank.update(0, base(9 << 16, 64));
+    let mut stack = WarpParamStack::new();
+    bank.fill(0, &mut stack);
+    assert_eq!(
+        stack.slots[0],
+        base(1 << 16, 64),
+        "params_equal on [2..6) rotates the EXISTING entry to the tail; its translation is kept"
+    );
+    assert_eq!(stack.slots[1], base(2 << 16, 128));
+    assert_eq!(stack.num_found, 2, "the hit did not grow the ring");
+
+    for scale in [192, 256, 320] {
+        bank.update(0, base(3 << 16, scale));
+    }
+    let mut stack = WarpParamStack::new();
+    bank.fill(0, &mut stack);
+    assert_eq!(stack.num_found, 4, "ring capacity");
+    assert_eq!(
+        stack.slots[3],
+        base(1 << 16, 64),
+        "oldest surviving entry after the size-4 ring evicted the front"
+    );
+}
+
+#[test]
+fn warp_bank_clears_per_superblock_row_and_reseeds_per_superblock() {
+    let mut grid = NeighbourMvGrid::new(64, 64).unwrap();
+    let above = [4 << 16, -6 << 16, 65536 + 512, 64, -128, 65536];
+    grid.record_warp_block(
+        15,
+        4,
+        2,
+        1,
+        0,
+        NeighbourYMode::Other,
+        Mv { row: 4, col: -12 },
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        MotionMode::ExtendWarp,
+        above,
+        BlockPrecisionRecord::default(),
+    );
+    let mut bank = WarpParamBank::new();
+    let carried = [7 << 16, 0, 65536 - 320, 0, 0, 65536 + 448];
+    bank.reset_for_leaf(&grid, 0, 0, 16);
+    bank.update(0, carried);
+
+    bank.reset_for_leaf(&grid, 0, 16, 16);
+    let mut stack = WarpParamStack::new();
+    bank.fill(0, &mut stack);
+    assert_eq!(
+        stack.num_found, 1,
+        "a same-row superblock transition keeps the bank contents"
+    );
+
+    bank.reset_for_leaf(&grid, 16, 0, 16);
+    let mut stack = WarpParamStack::new();
+    bank.fill(0, &mut stack);
+    assert_eq!(
+        stack.slots[0], above,
+        "the new superblock row cleared contents, then re-seeded the warp neighbour from the row above"
+    );
+    assert_eq!(
+        stack.num_found, 1,
+        "carried entry was cleared on the row transition"
+    );
+}
+
+#[test]
+fn corner_derivation_matches_the_hand_computed_model() {
+    let mut grid = empty_grid();
+    let mut record_cell = |r: usize, c: usize, mv: Mv| {
+        grid.record_block(
+            r,
+            c,
+            1,
+            1,
+            true,
+            0,
+            None,
+            NeighbourYMode::Other,
+            mv,
+            false,
+            SWITCHABLE_FILTERS,
+            false,
+            BlockPrecisionRecord::default(),
+        );
+    };
+    record_cell(3, 3, Mv { row: 0, col: 0 });
+    record_cell(3, 5, Mv { row: 0, col: 8 });
+    record_cell(5, 3, Mv { row: 0, col: 0 });
+    let block = MvBlockContext {
+        mi_row: 4,
+        mi_col: 4,
+        bw4: 2,
+        bh4: 2,
+        sb_h4: SB_H4_64,
+        ref_frame0: 0,
+        ref_frame1: None,
+        mi_rows: MI_DIM,
+        mi_cols: MI_DIM,
+    };
+    let stack = find_mv_stack(&grid, &block, Mv::ZERO, None, &WarpParamBank::new(), true);
+    assert_eq!(
+        stack.warp_candidate(0),
+        [-131072, 0, 73728, 0, 0, 65536],
+        "7.12.2.3 finite differences over the three corners (one px extra x-shift across 8 px)"
+    );
+    assert_eq!(
+        stack.warp_candidate(1),
+        DEFAULT_WARP_PARAMS,
+        "gm/default tail after the corner model"
+    );
+}
+
+#[test]
+fn warp_predicted_mv_projects_the_block_center() {
+    let mut bank = WarpParamBank::new();
+    let translation = [3 << 16, -2 << 16, 1 << 16, 0, 0, 1 << 16];
+    bank.update(0, translation);
+    let stack = find_mv_stack(&empty_grid(), &block_at(4, 8), Mv::ZERO, None, &bank, true);
+    assert_eq!(stack.warp_candidate(0), translation);
+    assert_eq!(
+        stack.warp_predicted_mv(0, super::super::read_mv::MV_PRECISION_EIGHTH_PEL),
+        Mv { row: -16, col: 24 },
+        "a pure-translation model projects to its eighth-pel translation"
+    );
+    assert_eq!(
+        stack.warp_predicted_mv(1, super::super::read_mv::MV_PRECISION_EIGHTH_PEL),
+        Mv::ZERO,
+        "identity default projects to zero"
+    );
+
+    let scale = [0, 0, (1 << 16) + 1024, 0, 0, 1 << 16];
+    let mut bank = WarpParamBank::new();
+    bank.update(0, scale);
+    let stack = find_mv_stack(&empty_grid(), &block_at(4, 8), Mv::ZERO, None, &bank, true);
+    assert_eq!(
+        stack.warp_predicted_mv(0, super::super::read_mv::MV_PRECISION_EIGHTH_PEL),
+        Mv { row: 0, col: 6 },
+        "xc = 1024 * center_x(47) rounds to 6 eighth-pel at PREC-3"
+    );
+    assert_eq!(
+        stack.warp_predicted_mv(0, super::super::read_mv::MV_PRECISION_HALF_PEL),
+        Mv { row: 0, col: 6 },
+        "non-eighth precisions round at PREC-2 then double"
+    );
+}

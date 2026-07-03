@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "47f2c76a7b2d58eb859e5b995ee30223d5dea0d2",
+  "audited_commit": "94bf4e35e88f34a85828c3cb07a9e2e0b47073d7",
   "outcome": "success",
   "files": [
     {
@@ -2179,7 +2179,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs",
-      "sha256": "e2b30502eda08baf679ca1811710872a41370da46033b1b3b06df91d4860bebf",
+      "sha256": "37cd79c9ff638ab993b3c99a196579fdee5ad073b6d1e80211544dff1a4b93b2",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
