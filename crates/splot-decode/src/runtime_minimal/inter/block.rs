@@ -821,6 +821,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             workspace,
             coeff_ctx,
             deblock_blocks,
+            chroma_deblock_blocks,
             block_qindex,
             luma_use_tcq,
             residual_tool_policy,

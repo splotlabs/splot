@@ -113,6 +113,10 @@ pub(super) enum RectChromaPlan {
 }
 
 impl ResidualBlockTransforms {
+    pub(super) const fn luma_tx(self) -> usize {
+        self.luma_tx
+    }
+
     pub(super) const fn chroma_tx(self) -> Option<usize> {
         self.chroma_tx
     }
@@ -423,6 +427,9 @@ impl GeneralIntraResidualPlan {
                 )
             };
 
+        if !self.planes.iter().any(|plane| plane.plane_id == PlaneId::Y) {
+            deblock.record_chroma_part_block();
+        }
         let mut u_nonzero = false;
         for &plane in &self.planes {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
@@ -450,12 +457,41 @@ impl GeneralIntraResidualPlan {
 /// origin) on every record.
 pub(super) struct DeblockRecorder<'a> {
     pub(super) blocks: &'a mut Vec<super::deblock::DeblockBlock>,
+    pub(super) chroma_blocks: &'a mut [Vec<super::deblock::DeblockBlock>; 2],
     pub(super) block_r: usize,
     pub(super) block_c: usize,
+    pub(super) block_w4: usize,
+    pub(super) block_h4: usize,
+    pub(super) luma_tx: usize,
     pub(super) chroma_tx: Option<usize>,
+    pub(super) qindex: u32,
 }
 
 impl DeblockRecorder<'_> {
+    /// An SDP chroma-part leaf has no luma plane, so its § 7.17 chroma
+    /// transform geometry is recorded into the per-plane chroma overlays
+    /// (the luma cells of these MI positions belong to the separate
+    /// luma-part leaf's records and must not be overwritten). Only the
+    /// intra-in-inter route reaches this — the pure-intra gate rejects SDP.
+    fn record_chroma_part_block(&mut self) {
+        for chroma in self.chroma_blocks.iter_mut() {
+            chroma.push(super::deblock::DeblockBlock {
+                r: self.block_r,
+                c: self.block_c,
+                block_r: self.block_r,
+                block_c: self.block_c,
+                chroma_base_r: self.block_r,
+                chroma_base_c: self.block_c,
+                n4w: self.block_w4,
+                n4h: self.block_h4,
+                luma_tx: self.luma_tx,
+                chroma_tx: self.chroma_tx,
+                qindex: self.qindex,
+                skip: false,
+            });
+        }
+    }
+
     fn record_luma_unit(
         &mut self,
         r: usize,
