@@ -4,8 +4,9 @@
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_parallel::prelude::*;
 use splot_recon::{
-    BitDepth, CDEF_DIRECTIONS, CDEF_UV_DIR, CdefSampleTaps, CdefTap, CurrentFrameWorkspace,
-    PlaneId, PlaneRect, ReconSample, cdef_direction, cdef_filter_sample,
+    BitDepth, CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_UV_DIR, CdefBlockFilter,
+    CdefSampleTaps, CdefTap, CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample,
+    cdef_direction, cdef_filter_block_interior, cdef_filter_sample,
 };
 
 const MI_SIZE: usize = 4;
@@ -152,7 +153,7 @@ fn validate_grid_len(rows: usize, cols: usize, len: usize) -> Result<(), CdefErr
 struct PlaneSnapshot {
     width: usize,
     height: usize,
-    samples: Vec<i32>,
+    samples: Vec<u16>,
 }
 
 impl PlaneSnapshot {
@@ -173,7 +174,7 @@ impl PlaneSnapshot {
             let start = y.checked_mul(stride).ok_or(CdefError::Geometry)?;
             let end = start.checked_add(width).ok_or(CdefError::Geometry)?;
             let row = backing.get(start..end).ok_or(CdefError::Workspace)?;
-            samples.extend(row.iter().map(|value| i32::from(value.to_u16())));
+            samples.extend(row.iter().map(|value| value.to_u16()));
         }
         Ok(Self {
             width,
@@ -190,7 +191,9 @@ impl PlaneSnapshot {
         if x >= self.width || y >= self.height {
             return None;
         }
-        self.samples.get(y * self.width + x).copied()
+        self.samples
+            .get(y * self.width + x)
+            .map(|&value| i32::from(value))
     }
 }
 
@@ -310,7 +313,9 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
 const CDEF_BLOCK_CHUNK: usize = 1024;
 
 /// One filtered plane rectangle: `(plane, target rect, samples, row stride)`.
-type CdefPlaneOutput<T> = (PlaneId, PlaneRect, Vec<T>, usize);
+/// The fixed array holds the leading `height * stride` samples of an at most
+/// 8x8 block.
+type CdefPlaneOutput<T> = (PlaneId, PlaneRect, [T; 64], usize);
 
 /// One block's filtered planes.
 type CdefBlockOutput<T> = [Option<CdefPlaneOutput<T>>; 3];
@@ -354,6 +359,13 @@ impl CdefBlockCtx {
     }
 }
 
+/// Derives one 8x8 block's § 7.18.1 strengths/direction and filters its planes.
+///
+/// The § 7.18.2 direction search runs only when a primary strength is nonzero
+/// (dir is forced to 0 otherwise, and var only rescales the luma primary
+/// strength, so a zero base stays zero). A plane whose effective strengths are
+/// both 0 yields `None`: the § 7.18.3 filter is then the identity (`constrain`
+/// returns 0, the clamp brackets the center), leaving the pre-CDEF samples.
 fn compute_cdef_block<T: ReconSample>(
     ctx: &CdefBlockCtx,
     luma_snap: &PlaneSnapshot,
@@ -367,37 +379,42 @@ fn compute_cdef_block<T: ReconSample>(
     if block_w == 0 || block_h == 0 {
         return Ok([None, None, None]);
     }
-    let mut block = [[0i32; 8]; 8];
-    for (i, row) in block.iter_mut().enumerate() {
-        for (j, cell) in row.iter_mut().enumerate() {
-            let sample = luma_snap.get(
-                (x0 + j.min(block_w - 1)) as isize,
-                (y0 + i.min(block_h - 1)) as isize,
-            );
-            let sample = sample.ok_or(CdefError::Geometry)?;
-            *cell = (sample >> ctx.coeff_shift) - 128;
-        }
-    }
-    let (y_dir, var) = cdef_direction(&block);
-
-    let pri_str = ctx.params.y_pri << ctx.coeff_shift;
+    let pri_base = ctx.params.y_pri << ctx.coeff_shift;
     let sec_str = ctx.params.y_sec << ctx.coeff_shift;
-    let dir = if pri_str == 0 { 0 } else { y_dir };
+    let uv_pri = ctx.params.uv_pri << ctx.coeff_shift;
+    let uv_sec = ctx.params.uv_sec << ctx.coeff_shift;
+
+    let (y_dir, var) = if pri_base == 0 && uv_pri == 0 {
+        (0, 0)
+    } else {
+        let mut block = [[0i32; 8]; 8];
+        for (i, row) in block.iter_mut().enumerate() {
+            let start = (y0 + i.min(block_h - 1)) * luma_snap.width + x0;
+            let src = luma_snap
+                .samples
+                .get(start..start + block_w)
+                .ok_or(CdefError::Geometry)?;
+            for (j, cell) in row.iter_mut().enumerate() {
+                *cell = (i32::from(src[j.min(block_w - 1)]) >> ctx.coeff_shift) - 128;
+            }
+        }
+        cdef_direction(&block)
+    };
+
+    let dir = if pri_base == 0 { 0 } else { y_dir };
     let var_str = if var >> 6 != 0 {
         floor_log2_i64(var >> 6).min(12)
     } else {
         0
     };
     let pri_str = if var != 0 {
-        (pri_str * (4 + var_str) + 8) >> 4
+        (pri_base * (4 + var_str) + 8) >> 4
     } else {
         0
     };
     let damping = ctx.params.damping + ctx.coeff_shift as i32;
     let y_filter = ctx.filter_ctx(pri_str, sec_str, damping, dir, 0);
 
-    let uv_pri = ctx.params.uv_pri << ctx.coeff_shift;
-    let uv_sec = ctx.params.uv_sec << ctx.coeff_shift;
     let uv_dir = if uv_pri == 0 {
         0
     } else {
@@ -405,10 +422,20 @@ fn compute_cdef_block<T: ReconSample>(
     };
     let uv_damping = ctx.params.damping + ctx.coeff_shift as i32 - 1;
     let uv_filter = ctx.filter_ctx(uv_pri, uv_sec, uv_damping, uv_dir, 1);
+
+    let plane_out = |identity: bool, plane, snap, filter: &CdefFilterCtx| {
+        if identity {
+            Ok(None)
+        } else {
+            compute_cdef_filter_plane::<T>(plane, snap, filter)
+        }
+    };
+    let y_zero = pri_str == 0 && sec_str == 0;
+    let uv_zero = uv_pri == 0 && uv_sec == 0;
     Ok([
-        compute_cdef_filter_plane::<T>(PlaneId::Y, luma_snap, &y_filter)?,
-        compute_cdef_filter_plane::<T>(PlaneId::U, u_snap, &uv_filter)?,
-        compute_cdef_filter_plane::<T>(PlaneId::V, v_snap, &uv_filter)?,
+        plane_out(y_zero, PlaneId::Y, luma_snap, &y_filter)?,
+        plane_out(uv_zero, PlaneId::U, u_snap, &uv_filter)?,
+        plane_out(uv_zero, PlaneId::V, v_snap, &uv_filter)?,
     ])
 }
 
@@ -450,46 +477,63 @@ fn compute_cdef_filter_plane<T: ReconSample>(
 
     let inside_x = ((ctx.mi_cols * MI_SIZE) >> sub_x).min(snap.width);
     let inside_y = ((ctx.mi_rows * MI_SIZE) >> sub_y).min(snap.height);
-    let offsets = CdefTapOffsets::for_direction(ctx.dir);
     let interior = x0 >= CDEF_TAP_REACH
         && y0 >= CDEF_TAP_REACH
         && x0 + w - 1 + CDEF_TAP_REACH < inside_x
         && y0 + h - 1 + CDEF_TAP_REACH < inside_y;
 
-    let mut filtered_block = Vec::new();
-    filtered_block
-        .try_reserve_exact(w.checked_mul(h).ok_or(CdefError::Geometry)?)
-        .map_err(|_| CdefError::Geometry)?;
-    for i in 0..h {
-        for j in 0..w {
-            let center = snap
-                .get((x0 + j) as isize, (y0 + i) as isize)
-                .ok_or(CdefError::Geometry)?;
-            let taps = gather_taps(
-                snap,
-                &offsets,
-                x0 + j,
-                y0 + i,
-                inside_x,
-                inside_y,
-                interior,
-                center,
-            );
-            let filtered = cdef_filter_sample(
-                &taps,
-                ctx.pri_str,
-                ctx.sec_str,
-                ctx.damping,
-                ctx.coeff_shift,
-            );
-            let clipped = filtered.clamp(0, ctx.max_sample);
-            let value = T::try_from_u16(u16::try_from(clipped).map_err(|_| CdefError::Geometry)?)
-                .map_err(|_| CdefError::Workspace)?;
-            filtered_block.push(value);
+    let mut filtered_block = [T::default(); 64];
+    if interior {
+        let mut pad = [0i32; CDEF_PADDED_AREA];
+        for r in 0..h + 2 * CDEF_TAP_REACH {
+            let start = (y0 - CDEF_TAP_REACH + r) * snap.width + (x0 - CDEF_TAP_REACH);
+            let src = snap
+                .samples
+                .get(start..start + w + 2 * CDEF_TAP_REACH)
+                .ok_or(CdefError::Workspace)?;
+            for (dst, &value) in pad[r * CDEF_PADDED_SIDE..].iter_mut().zip(src) {
+                *dst = i32::from(value);
+            }
+        }
+        let filter = CdefBlockFilter {
+            pri_str: ctx.pri_str,
+            sec_str: ctx.sec_str,
+            damping: ctx.damping,
+            dir: ctx.dir,
+            coeff_shift: ctx.coeff_shift,
+        };
+        let mut out = [0i32; 64];
+        cdef_filter_block_interior(&pad, w, h, &filter, &mut out);
+        for (dst, &filtered) in filtered_block.iter_mut().zip(&out).take(w * h) {
+            *dst = storage_sample::<T>(filtered, ctx.max_sample)?;
+        }
+    } else {
+        let offsets = CdefTapOffsets::for_direction(ctx.dir);
+        for i in 0..h {
+            for j in 0..w {
+                let center = snap
+                    .get((x0 + j) as isize, (y0 + i) as isize)
+                    .ok_or(CdefError::Geometry)?;
+                let taps = gather_taps(snap, &offsets, x0 + j, y0 + i, inside_x, inside_y, center);
+                let filtered = cdef_filter_sample(
+                    &taps,
+                    ctx.pri_str,
+                    ctx.sec_str,
+                    ctx.damping,
+                    ctx.coeff_shift,
+                );
+                filtered_block[i * w + j] = storage_sample::<T>(filtered, ctx.max_sample)?;
+            }
         }
     }
     let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
     Ok(Some((plane, rect, filtered_block, w)))
+}
+
+fn storage_sample<T: ReconSample>(filtered: i32, max_sample: i32) -> Result<T, CdefError> {
+    let clipped = filtered.clamp(0, max_sample);
+    T::try_from_u16(u16::try_from(clipped).map_err(|_| CdefError::Geometry)?)
+        .map_err(|_| CdefError::Workspace)
 }
 
 /// Maximum absolute § 7.18.3 `Cdef_Directions` offset in either axis.
@@ -524,7 +568,6 @@ impl CdefTapOffsets {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn gather_taps(
     snap: &PlaneSnapshot,
     offsets: &CdefTapOffsets,
@@ -532,16 +575,15 @@ fn gather_taps(
     y: usize,
     inside_x: usize,
     inside_y: usize,
-    interior: bool,
     center: i32,
 ) -> CdefSampleTaps {
     let fetch = |(dy, dx): (isize, isize)| -> CdefTap {
         let y = y as isize + dy;
         let x = x as isize + dx;
-        if interior || (x >= 0 && y >= 0 && (x as usize) < inside_x && (y as usize) < inside_y) {
+        if x >= 0 && y >= 0 && (x as usize) < inside_x && (y as usize) < inside_y {
             match snap.samples.get(y as usize * snap.width + x as usize) {
                 Some(&value) => CdefTap {
-                    value,
+                    value: i32::from(value),
                     available: true,
                 },
                 None => UNAVAILABLE_TAP,
@@ -736,6 +778,89 @@ mod tests {
             uv_sec: 0,
             damping: 4,
         }
+    }
+
+    #[test]
+    fn interior_fast_path_matches_per_sample_reference() {
+        let mut ws = workspace_8bit(64, 64, 100);
+        for y in 20..36usize {
+            for x in 20..36usize {
+                let v = (60 + (x * 7 + y * 13) % 130) as u8;
+                ws.set_reconstructed_sample(PlaneId::Y, x, y, v).unwrap();
+            }
+        }
+        let snap = PlaneSnapshot::capture(&ws, PlaneId::Y, 64, 64).unwrap();
+        for dir in 0..8usize {
+            for (pri_str, sec_str) in [(0, 3), (5, 0), (5, 3), (12, 4)] {
+                let ctx = CdefFilterCtx {
+                    r: 6,
+                    c: 6,
+                    pri_str,
+                    sec_str,
+                    damping: 4,
+                    dir,
+                    sub: 0,
+                    coeff_shift: 0,
+                    max_sample: 255,
+                    mi_rows: 16,
+                    mi_cols: 16,
+                    frame_sub_x: 1,
+                    frame_sub_y: 1,
+                };
+                let (_, rect, samples, stride) =
+                    compute_cdef_filter_plane::<u8>(PlaneId::Y, &snap, &ctx)
+                        .unwrap()
+                        .unwrap();
+                let offsets = CdefTapOffsets::for_direction(ctx.dir);
+                for i in 0..rect.height() {
+                    for j in 0..rect.width() {
+                        let x = rect.x() + j;
+                        let y = rect.y() + i;
+                        let center = snap.get(x as isize, y as isize).unwrap();
+                        let taps = gather_taps(&snap, &offsets, x, y, 64, 64, center);
+                        let expected = cdef_filter_sample(
+                            &taps,
+                            ctx.pri_str,
+                            ctx.sec_str,
+                            ctx.damping,
+                            ctx.coeff_shift,
+                        )
+                        .clamp(0, ctx.max_sample);
+                        assert_eq!(
+                            i32::from(samples[i * stride + j]),
+                            expected,
+                            "dir={dir} pri={pri_str} sec={sec_str} i={i} j={j}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_strengths_elide_all_writes() {
+        let mut ws = workspace_8bit(64, 64, 100);
+        seed_luma_ripple(&mut ws);
+        let before: Vec<u8> = ws.samples(PlaneId::Y).unwrap().to_vec();
+        cdef_general_intra_frame(
+            &mut ws,
+            CdefFrameParams {
+                y_pri: 0,
+                y_sec: 0,
+                uv_pri: 0,
+                uv_sec: 0,
+                damping: 4,
+            },
+            16,
+            16,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        assert_eq!(
+            before,
+            ws.samples(PlaneId::Y).unwrap(),
+            "all-zero strengths leave the ripple untouched"
+        );
     }
 
     #[test]
