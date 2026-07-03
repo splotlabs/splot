@@ -120,6 +120,7 @@ fn lr_unit_filter_for_block<'a>(
 /// Filter output depends only on a sample's absolute coordinate, the § 7.20.1/
 /// 7.20.2 bounds, the tile bounds, and the LR unit selection — all held equal
 /// by [`lr_blocks_mergeable`] — so a merged run is bit-identical to its parts.
+#[cfg(test)]
 fn coalesced_lr_source_rows(
     lr_source_blocks: &[WienerNsLrSourceBlock],
     plane_index: usize,
@@ -134,6 +135,30 @@ fn coalesced_lr_source_rows(
         }
         rows[block.y].push(block);
     }
+    coalesce_bucketed_lr_rows(rows)
+}
+
+/// One-pass [`coalesced_lr_source_rows`] for all three planes, so the block
+/// list is scanned once instead of once per plane.
+pub(super) fn coalesced_lr_source_rows_all(
+    lr_source_blocks: &[WienerNsLrSourceBlock],
+) -> [Vec<WienerNsLrSourceBlock>; 3] {
+    let mut rows: [Vec<Vec<&WienerNsLrSourceBlock>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for block in lr_source_blocks {
+        let Some(plane_rows) = rows.get_mut(block.plane) else {
+            continue;
+        };
+        if plane_rows.len() <= block.y {
+            plane_rows.resize_with(block.y + 1, Vec::new);
+        }
+        plane_rows[block.y].push(block);
+    }
+    rows.map(coalesce_bucketed_lr_rows)
+}
+
+fn coalesce_bucketed_lr_rows(
+    mut rows: Vec<Vec<&WienerNsLrSourceBlock>>,
+) -> Vec<WienerNsLrSourceBlock> {
     let mut runs: Vec<WienerNsLrSourceBlock> = Vec::new();
     for row in &mut rows {
         row.sort_unstable_by_key(|block| block.x);
@@ -465,11 +490,32 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// in block order. The workspace still holds the post-CDEF/CCSO samples
     /// the § 7.20.2 sources were snapshotted from, so only filtered block
     /// rectangles need publishing.
+    #[cfg(test)]
     pub(super) fn apply_luma_lr(
         &mut self,
         core: &FrameHeaderCore,
         offset: ByteOffset,
         lr_source_blocks: &[WienerNsLrSourceBlock],
+        lr_unit_filters: &[WienerNsLrUnitFilter],
+        curr_luma: &[u16],
+        cdef_luma: &[u16],
+    ) -> Result<()> {
+        self.apply_luma_lr_runs(
+            core,
+            offset,
+            &coalesced_lr_source_rows(lr_source_blocks, PlaneId::Y.index()),
+            lr_unit_filters,
+            curr_luma,
+            cdef_luma,
+        )
+    }
+
+    /// [`Self::apply_luma_lr`] over already-coalesced luma runs.
+    pub(super) fn apply_luma_lr_runs(
+        &mut self,
+        core: &FrameHeaderCore,
+        offset: ByteOffset,
+        y_blocks: &[WienerNsLrSourceBlock],
         lr_unit_filters: &[WienerNsLrUnitFilter],
         curr_luma: &[u16],
         cdef_luma: &[u16],
@@ -480,11 +526,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Some(plane) = lr_params.planes.first() else {
             return Ok(());
         };
-        if plane.restoration_type != FrameRestorationType::WienerNonsep
-            || !lr_source_blocks
-                .iter()
-                .any(|block| block.plane == PlaneId::Y.index())
-        {
+        if plane.restoration_type != FrameRestorationType::WienerNonsep || y_blocks.is_empty() {
             return Ok(());
         }
 
@@ -527,18 +569,79 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             }
         };
-        let y_blocks = coalesced_lr_source_rows(lr_source_blocks, PlaneId::Y.index());
         let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
             if splot_parallel::on_multiworker_pool() {
-                y_blocks.par_iter().map(&compute).collect::<Result<_>>()?
+                let timer = crate::timing::start();
+                let tally = crate::timing::WorkerTally::new();
+                let outputs = y_blocks
+                    .par_iter()
+                    .map(|block| {
+                        tally.note_worker();
+                        compute(block)
+                    })
+                    .collect::<Result<_>>()?;
+                crate::timing::report_detail(
+                    "lr_luma_blocks",
+                    timer,
+                    &format!(
+                        "units={} threads={} workers_used={}",
+                        y_blocks.len(),
+                        splot_parallel::current_pool_width(),
+                        tally.workers_used()
+                    ),
+                );
+                outputs
             } else {
                 y_blocks.iter().map(&compute).collect::<Result<_>>()?
             };
-        for (block, output) in &filtered {
+        self.publish_lr_outputs(PlaneId::Y, filtered, offset)
+    }
+
+    /// Publishes filtered LR rectangles: banded on the pool when installed,
+    /// with the serial in-order `write_rect` loop as the fallback shape.
+    fn publish_lr_outputs(
+        &mut self,
+        plane_id: PlaneId,
+        filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)>,
+        offset: ByteOffset,
+    ) -> Result<()> {
+        let timer = crate::timing::start();
+        let mut runs = Vec::with_capacity(filtered.len());
+        for (block, output) in filtered {
             let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
                 .map_err(|_| luma_lr_filter_error(offset))?;
+            runs.push((rect, output, block.width));
+        }
+        let result = self.publish_lr_runs(plane_id, &runs, offset);
+        crate::timing::report_detail("lr_publish", timer, &format!("plane={}", plane_id.index()));
+        result
+    }
+
+    fn publish_lr_runs(
+        &mut self,
+        plane_id: PlaneId,
+        runs: &[crate::runtime_minimal::plane_bands::RectRun<T>],
+        offset: ByteOffset,
+    ) -> Result<()> {
+        if splot_parallel::on_multiworker_pool() {
+            let mut frame = self.workspace.as_frame_mut();
+            let view = frame
+                .plane_mut(plane_id)
+                .ok_or_else(|| luma_lr_filter_error(offset))?;
+            let stride = view.stride_samples();
+            if crate::runtime_minimal::plane_bands::publish_rect_runs_parallel(
+                view.samples_mut(),
+                stride,
+                runs,
+            )
+            .is_some()
+            {
+                return Ok(());
+            }
+        }
+        for (rect, output, row_stride) in runs {
             self.workspace
-                .write_rect(PlaneId::Y, rect, output, block.width)
+                .write_rect(plane_id, *rect, output, *row_stride)
                 .map_err(|_| luma_lr_filter_error(offset))?;
         }
         Ok(())
@@ -555,12 +658,40 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// the same block independence and publication contract as
     /// [`Self::apply_luma_lr`].
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(super) fn apply_chroma_lr(
         &mut self,
         core: &FrameHeaderCore,
         offset: ByteOffset,
         plane_id: PlaneId,
         lr_source_blocks: &[WienerNsLrSourceBlock],
+        lr_unit_filters: &[WienerNsLrUnitFilter],
+        curr_chroma: &[u16],
+        cdef_chroma: &[u16],
+        curr_luma: &[u16],
+        cdef_luma: &[u16],
+    ) -> Result<()> {
+        self.apply_chroma_lr_runs(
+            core,
+            offset,
+            plane_id,
+            &coalesced_lr_source_rows(lr_source_blocks, plane_id.index()),
+            lr_unit_filters,
+            curr_chroma,
+            cdef_chroma,
+            curr_luma,
+            cdef_luma,
+        )
+    }
+
+    /// [`Self::apply_chroma_lr`] over already-coalesced plane runs.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn apply_chroma_lr_runs(
+        &mut self,
+        core: &FrameHeaderCore,
+        offset: ByteOffset,
+        plane_id: PlaneId,
+        plane_blocks: &[WienerNsLrSourceBlock],
         lr_unit_filters: &[WienerNsLrUnitFilter],
         curr_chroma: &[u16],
         cdef_chroma: &[u16],
@@ -574,11 +705,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             return Ok(());
         };
         let plane_index = plane_id.index();
-        if plane.restoration_type != FrameRestorationType::WienerNonsep
-            || !lr_source_blocks
-                .iter()
-                .any(|block| block.plane == plane_index)
-        {
+        if plane.restoration_type != FrameRestorationType::WienerNonsep || plane_blocks.is_empty() {
             return Ok(());
         }
         let frame_coeffs = if plane.frame_filters_on {
@@ -607,24 +734,33 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 cdef_luma,
             )
         };
-        let plane_blocks = coalesced_lr_source_rows(lr_source_blocks, plane_index);
         let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
             if splot_parallel::on_multiworker_pool() {
-                plane_blocks
+                let timer = crate::timing::start();
+                let tally = crate::timing::WorkerTally::new();
+                let outputs = plane_blocks
                     .par_iter()
-                    .map(&compute)
-                    .collect::<Result<_>>()?
+                    .map(|block| {
+                        tally.note_worker();
+                        compute(block)
+                    })
+                    .collect::<Result<_>>()?;
+                crate::timing::report_detail(
+                    "lr_chroma_blocks",
+                    timer,
+                    &format!(
+                        "plane={} units={} threads={} workers_used={}",
+                        plane_index,
+                        plane_blocks.len(),
+                        splot_parallel::current_pool_width(),
+                        tally.workers_used()
+                    ),
+                );
+                outputs
             } else {
                 plane_blocks.iter().map(&compute).collect::<Result<_>>()?
             };
-        for (block, output) in &filtered {
-            let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
-                .map_err(|_| luma_lr_filter_error(offset))?;
-            self.workspace
-                .write_rect(plane_id, rect, output, block.width)
-                .map_err(|_| luma_lr_filter_error(offset))?;
-        }
-        Ok(())
+        self.publish_lr_outputs(plane_id, filtered, offset)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -94,6 +94,30 @@ pub fn on_multiworker_pool() -> bool {
     rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1
 }
 
+/// Returns the calling worker's index within the installed pool, or `None`
+/// when the caller is not a pool worker.
+///
+/// Intended for low-overhead diagnostics (for example per-stage worker
+/// utilization attribution), not for scheduling decisions.
+#[must_use]
+pub fn current_worker_index() -> Option<usize> {
+    rayon::current_thread_index()
+}
+
+/// The worker count of the installed pool the caller runs on (`1` when the
+/// caller is not a pool worker).
+///
+/// Parallel stages use this to choose a work-unit grain that yields a few
+/// units per worker instead of thousands of tiny tasks.
+#[must_use]
+pub fn current_pool_width() -> usize {
+    if rayon::current_thread_index().is_some() {
+        rayon::current_num_threads()
+    } else {
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

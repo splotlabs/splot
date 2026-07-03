@@ -228,6 +228,15 @@ impl<'a, T: ReconSample> PlaneMut<'a, T> {
         self.samples
     }
 
+    /// Consumes the view, returning the full backing sample slice with the
+    /// view's own lifetime, so callers can partition it (for example with
+    /// `chunks_mut`) into disjoint regions that outlive the view value.
+    /// Callers own bit-depth range enforcement, exactly as with
+    /// [`Self::visible_rows_mut`].
+    pub fn into_samples(self) -> &'a mut [T] {
+        self.samples
+    }
+
     /// Returns the full borrowed sample buffer mutably, including stride
     /// padding. Callers own bit-depth range enforcement, exactly as with
     /// [`Self::visible_rows_mut`].
@@ -516,6 +525,21 @@ impl<'a, T: ReconSample> FrameMut<'a, T> {
             PlaneId::U => self.u.as_mut(),
             PlaneId::V => self.v.as_mut(),
         }
+    }
+
+    /// Splits the exclusive frame view into its disjoint per-plane views.
+    ///
+    /// The three planes borrow distinct storage, so callers can partition
+    /// each plane (for example into row bands) for parallel work without
+    /// aliasing.
+    pub fn into_planes(
+        self,
+    ) -> (
+        PlaneMut<'a, T>,
+        Option<PlaneMut<'a, T>>,
+        Option<PlaneMut<'a, T>>,
+    ) {
+        (self.y, self.u, self.v)
     }
 
     /// Borrows the frame immutably as a [`FrameRef`].

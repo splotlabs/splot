@@ -203,6 +203,7 @@ const PAR_ITER_RULE_ALLOWLIST: &[&str] = &[
     "crates/splot-decode/src/runtime_minimal/ccso.rs",
     "crates/splot-decode/src/runtime_minimal/cdef.rs",
     "crates/splot-decode/src/runtime_minimal/deblock.rs",
+    "crates/splot-decode/src/runtime_minimal/plane_bands.rs",
     "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon/final_filters.rs",
 ];
 

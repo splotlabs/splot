@@ -291,7 +291,27 @@ fn ccso_plane<T: ReconSample>(
         Ok((rect, filtered))
     };
     let outputs: Vec<(PlaneRect, Vec<T>)> = if splot_parallel::on_multiworker_pool() {
-        units.par_iter().map(compute).collect::<Result<_, _>>()?
+        let timer = crate::timing::start();
+        let tally = crate::timing::WorkerTally::new();
+        let outputs = units
+            .par_iter()
+            .map(|unit| {
+                tally.note_worker();
+                compute(unit)
+            })
+            .collect::<Result<_, _>>()?;
+        crate::timing::report_detail(
+            "ccso_units",
+            timer,
+            &format!(
+                "plane={} units={} threads={} workers_used={}",
+                plane_id.index(),
+                units.len(),
+                splot_parallel::current_pool_width(),
+                tally.workers_used()
+            ),
+        );
+        outputs
     } else {
         units.iter().map(compute).collect::<Result<_, _>>()?
     };

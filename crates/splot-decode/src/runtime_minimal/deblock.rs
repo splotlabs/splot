@@ -116,10 +116,7 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     }
 
     let grid = build_mi_grid(blocks, mi_rows, mi_cols)?;
-    let mut chroma_grids = [
-        build_mi_grid(blocks, mi_rows, mi_cols)?,
-        build_mi_grid(blocks, mi_rows, mi_cols)?,
-    ];
+    let mut chroma_grids = [grid.clone(), grid.clone()];
     overlay_mi_grid(&mut chroma_grids[0], chroma_blocks[0], mi_rows, mi_cols);
     overlay_mi_grid(&mut chroma_grids[1], chroma_blocks[1], mi_rows, mi_cols);
 
@@ -166,28 +163,39 @@ fn deblock_plane_pass<T: ReconSample>(
         && (plane_pass.pass == 0 && covered_rows <= height
             || plane_pass.pass == 1 && covered_cols <= width)
     {
+        let workers = splot_parallel::current_pool_width();
+        let timer = crate::timing::start();
+        let tally = crate::timing::WorkerTally::new();
         let full = PlaneCtx::new(samples, stride, width, height)?;
-        let bands: Vec<(usize, PlaneCtx<'_, T>)> = if plane_pass.pass == 0 {
+        let bands: Vec<(usize, usize, PlaneCtx<'_, T>)> = if plane_pass.pass == 0 {
+            let plane_units = height.div_ceil(MI_SIZE);
+            let units_per_band = plane_units.div_ceil(workers * 4).max(1);
             let mut bands = Vec::new();
             let mut rows = full.rows.into_iter();
             let mut y_origin = 0;
             loop {
-                let band: Vec<&mut [T]> = rows.by_ref().take(MI_SIZE).collect();
+                let band: Vec<&mut [T]> = rows.by_ref().take(units_per_band * MI_SIZE).collect();
                 if band.is_empty() {
                     break;
                 }
-                let mi_row = (y_origin / MI_SIZE) * plane_pass.row_step;
-                bands.push((mi_row, PlaneCtx::band(band, width, height, 0, y_origin)));
-                y_origin += MI_SIZE;
+                let unit_start = y_origin / MI_SIZE;
+                bands.push((
+                    unit_start,
+                    unit_start + units_per_band,
+                    PlaneCtx::band(band, width, height, 0, y_origin),
+                ));
+                y_origin += units_per_band * MI_SIZE;
             }
             bands
         } else {
-            let mut columns: Vec<Vec<&mut [T]>> = Vec::new();
+            let plane_units = width.div_ceil(MI_SIZE);
+            let units_per_band = plane_units.div_ceil(workers * 2).max(1);
+            let band_count = plane_units.div_ceil(units_per_band);
+            let mut columns: Vec<Vec<&mut [T]>> = (0..band_count)
+                .map(|_| Vec::with_capacity(height))
+                .collect();
             for row in full.rows {
-                for (band, chunk) in column_chunks(row, MI_SIZE).enumerate() {
-                    if columns.len() <= band {
-                        columns.resize_with(band + 1, Vec::new);
-                    }
+                for (band, chunk) in column_chunks(row, units_per_band * MI_SIZE).enumerate() {
                     columns[band].push(chunk);
                 }
             }
@@ -195,41 +203,66 @@ fn deblock_plane_pass<T: ReconSample>(
                 .into_iter()
                 .enumerate()
                 .map(|(band, rows)| {
-                    let x_origin = band * MI_SIZE;
-                    let mi_col = band * plane_pass.col_step;
-                    (mi_col, PlaneCtx::band(rows, width, height, x_origin, 0))
+                    let unit_start = band * units_per_band;
+                    let x_origin = unit_start * MI_SIZE;
+                    (
+                        unit_start,
+                        unit_start + units_per_band,
+                        PlaneCtx::band(rows, width, height, x_origin, 0),
+                    )
                 })
                 .collect()
         };
-        return bands.into_par_iter().try_for_each(|(mi_index, mut ctx)| {
-            let mut strengths = StrengthCache::default();
-            if plane_pass.pass == 0 {
-                if mi_index >= mi_rows {
-                    return Ok(());
+        let band_count = bands.len();
+        let result = bands
+            .into_par_iter()
+            .try_for_each(|(unit_start, unit_end, mut ctx)| {
+                tally.note_worker();
+                let mut strengths = StrengthCache::default();
+                if plane_pass.pass == 0 {
+                    for unit in unit_start..unit_end {
+                        let r = unit * plane_pass.row_step;
+                        if r >= mi_rows {
+                            break;
+                        }
+                        for c in (0..mi_cols).step_by(plane_pass.col_step) {
+                            deblock_filter_edge(
+                                &mut ctx,
+                                grid,
+                                plane_pass.edge_context(r, c),
+                                &mut strengths,
+                            )?;
+                        }
+                    }
+                } else {
+                    for unit in unit_start..unit_end {
+                        let c = unit * plane_pass.col_step;
+                        if c >= mi_cols {
+                            break;
+                        }
+                        for r in (0..mi_rows).step_by(plane_pass.row_step) {
+                            deblock_filter_edge(
+                                &mut ctx,
+                                grid,
+                                plane_pass.edge_context(r, c),
+                                &mut strengths,
+                            )?;
+                        }
+                    }
                 }
-                for c in (0..mi_cols).step_by(plane_pass.col_step) {
-                    deblock_filter_edge(
-                        &mut ctx,
-                        grid,
-                        plane_pass.edge_context(mi_index, c),
-                        &mut strengths,
-                    )?;
-                }
-            } else {
-                if mi_index >= mi_cols {
-                    return Ok(());
-                }
-                for r in (0..mi_rows).step_by(plane_pass.row_step) {
-                    deblock_filter_edge(
-                        &mut ctx,
-                        grid,
-                        plane_pass.edge_context(r, mi_index),
-                        &mut strengths,
-                    )?;
-                }
-            }
-            Ok(())
-        });
+                Ok(())
+            });
+        crate::timing::report_detail(
+            "deblock_pass_bands",
+            timer,
+            &format!(
+                "plane={} pass={} units={band_count} threads={workers} workers_used={}",
+                plane_pass.plane,
+                plane_pass.pass,
+                tally.workers_used()
+            ),
+        );
+        return result;
     }
 
     let mut ctx = PlaneCtx::new(samples, stride, width, height)?;
@@ -252,9 +285,11 @@ fn deblock_plane_pass<T: ReconSample>(
 /// starting at `y_origin`, each starting at column `x_origin`; `width` and
 /// `height` stay the full plane dimensions so read clamping and write bounds
 /// are unchanged. § 7.17 pass 0 filters purely horizontal perpendicular
-/// lines and pass 1 purely vertical ones, so a 4-row band (pass 0) or a
-/// 4-column band (pass 1) covers every read and write its edges can make
-/// once the MI coverage fits the plane.
+/// lines and pass 1 purely vertical ones, so a band of whole rows (pass 0)
+/// or whole columns (pass 1) — any multiple of MI_SIZE, sized to a few units
+/// per worker — covers every read and write its edges can make once the MI
+/// coverage fits the plane, which is what makes the bands safe to filter
+/// concurrently.
 struct PlaneCtx<'a, T: ReconSample> {
     rows: Vec<&'a mut [T]>,
     width: usize,
@@ -738,6 +773,7 @@ fn plane_index_to_id(plane: usize) -> PlaneId {
     }
 }
 
+#[derive(Clone)]
 struct MiGrid {
     mi_cols: usize,
     cells: Vec<Option<MiBlockInfo>>,

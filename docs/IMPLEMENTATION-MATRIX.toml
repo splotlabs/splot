@@ -20701,3 +20701,48 @@ commands = [
 ]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "INFRA-DECODE-PARALLEL-STAGES"
+name = "Decode filter-stage worker-pool parallelization"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.17", "7.18", "7.19", "7.20.3"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/runtime_minimal/plane_bands.rs"
+openspec_change = "parallelize-decode-hot-stages"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Measured `--threads` scaling follow-up to INFRA-DECODE-FIRST-FRAME-LATENCY. Baseline on the motivating 1080p10 IVF (`--limit=1` raw): ~309 ms at --threads 1 and ~163 ms at --threads 10 (~1.9x), with pool workers idle most of the run and SPLOT_DECODE_TIMING attributing the 10-thread wall to a serial single-tile intra decode plus post-reconstruction filter stages that scaled poorly. This slice moves the four post-reconstruction filter stages onto the context-owned WorkerPool with disjoint plane row bands and no serial write-back: deblock pass 1 uses pool-width column bands with O(bands x rows) construction and the MI grid built once and cloned for chroma; CDEF splits the planes into disjoint row bands (new FrameMut::into_planes / PlaneMut::into_samples in splot-recon), derives block contexts in-band, and writes filtered blocks directly; Wiener NS loop restoration and CCSO coalesce all three planes' source runs in one pass and publish filtered rectangles through row-disjoint banded writes (plane_bands::publish_rect_runs_parallel) with a serial write_rect fallback. SPLOT_DECODE_TIMING gains per-stage runtime attribution, distinct-worker tallies (new splot_parallel::current_pool_width / current_worker_index), and a per-thread reconstruction-sink split (key_intra_sink luma/chroma ms via an env-gated RAII accumulator). Warmed medians after: filters 183 ms -> 35 ms at --threads 10 (5.2x; CDEF 7.2x, Wiener NS LR 5.6x), overall raw `--limit=1` ~303 ms at --threads 1 and ~151 ms at --threads 10, raw sha256 byte-identical across --threads 1/2/4/8/10/auto. The parallelizable filter portion exceeds the 3x scaling target. The remaining single-tile intra tile (~48 ms) is sink-dominated: key_intra_sink attributes ~31 ms to the reconstruction sink (dequant + inverse transform + raster-order neighbour-dependent intra prediction + residual add + workspace write; ~16 ms luma + ~15 ms chroma) and only ~20 ms to the sequential arithmetic entropy decode and partition walk, so entropy is a minority. The only parallelizable slice is the sink's dequant+inverse-transform (a function of coefficients alone), which needs a full parse-then-reconstruct decoupling out of scope for this change; prediction stays raster-serial and inter decode (~15 ms) plus atomic fsync (~13 ms) stay serial. Bit-exactness and race-freedom of every banded stage were adversarially verified (disjoint-band proofs plus randomized geometry fuzzing) and each stage fails loudly or falls back to serial rather than corrupting."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "partial"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/runtime_minimal/plane_bands.rs::tests::parallel_banded_write_equals_serial_in_order",
+    "crates/splot-decode/src/runtime_minimal/plane_bands.rs::tests::partial_write_then_none_plus_serial_fallback_equals_serial",
+    "crates/splot-decode/src/runtime_minimal/deblock.rs::tests::banded_parallel_pass_matches_serial_output",
+]
+commands = [
+    "cargo test -p splot-parallel --locked",
+    "cargo test -p splot-recon --locked",
+    "cargo test -p splot-decode --locked",
+    "cargo build --release --locked",
+    "SPLOT_DECODE_TIMING=1 ./target/release/splot decode --quiet --threads 10 --output-format raw --limit=1 -o /tmp/ac0ej3-splot-t10.raw $SPLOT_AC0EJ3_IVF",
+]
+fixtures = []
+diagnostics = []
