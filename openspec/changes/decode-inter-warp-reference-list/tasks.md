@@ -17,11 +17,16 @@
 - [x] 2.1 § 7.13.3.20 `SubMvs` per-cell projections for warp blocks;
       § 7.12.2.12 `get_mv` consumers switched.
 - [x] 2.2 § 7.12.2.20 mixture candidates for >32x32 blocks.
+- [x] 2.3 § 7.12.2.19 strict-max-weight nearest reorder under the
+      sequence `DrlReorder` mode, suppressed by `useTemporalFirst`;
+      unit test pins both arms.
+- [x] 2.4 § 7.14.4 TCQ `dqDenom` extra shift gated on `TX_CLASS_2D`.
 
 ## 3. Verification
 - [x] 3.1 AVM-exact warp params/MVs at every pinned frame-2
       discriminator; mixture pick verified at the drl=3 block.
 - [x] 3.2 Frame-0 sentinel, 182-stream sweep, frontier pin unchanged.
-- [ ] 3.3 Frame-2 residual attribution loop (intra-in-inter tx-type
+- [x] 3.3 Frame-2 residual attribution loop (intra-in-inter tx-type
       chain, WARP_CAUSAL fit) until the parse-value dirt is owned by
-      named follow-ups.
+      named follow-ups (all 135 frame-2 MVs byte-exact; remaining
+      recon dirt owned by the § 7.13.2.9 IBP angular-blend follow-up).

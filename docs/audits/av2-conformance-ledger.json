@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "472b430063211c9a862a2304f51f4b83b312d41c",
+  "audited_commit": "aa45f726c5c8b3e5ece7b0c170068715549af90e",
   "outcome": "success",
   "files": [
     {
@@ -2131,7 +2131,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "1ba07d62ce13c30de28ca65ae74bd604e2780eb9abe5ca8f02628ebc8e937477",
+      "sha256": "09cd420cd1557b34e277094ba237bc92d77cda194ca85cb893c608a5bc7be288",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2169,7 +2169,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
-      "sha256": "86f831057512e72bb8de37637efc072a2ea0f2948ae59f2a42b82fa4a8f0c587",
+      "sha256": "9f35cb4f93441bea289c35456a117704196c072e326fc2479160dce9264fa349",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
@@ -2179,7 +2179,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs",
-      "sha256": "41aa9a4072c8aaa1b152cce85808f6465da8377591a9f38e6c90b18487ab025b",
+      "sha256": "70687e4971923973ce241fc261ef12dd325f6699828d57ecd1477b370b141abd",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -26047,7 +26047,7 @@
     },
     {
       "path": "openspec/changes/decode-inter-warp-reference-list/proposal.md",
-      "sha256": "440d4e3f85808154dd997e3d557ac73bc211c93426237ad3b3d23bef87474628",
+      "sha256": "2c7e25091f2836ebb715a166f57085d8124cf07a26ede6c0b3b1b84599a90c93",
       "scope_kind": "openspec",
       "feature_ids": [
         "DECODE-FIRST-INTER-FRAME-FRONTIER"
@@ -26063,7 +26063,7 @@
     },
     {
       "path": "openspec/changes/decode-inter-warp-reference-list/tasks.md",
-      "sha256": "9ae2fdac83e0f7ebaa254ddd882c81c1ba3f7d1e938a207c0405cace3075bf74",
+      "sha256": "bb8ffc43437ec02e5d05e1d57f79ce89031e83700be67f07327525333e19f981",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"

@@ -1644,6 +1644,7 @@ impl WarpParamBank {
 /// bank newest-first, `gm_params` — identity while global-motion frames
 /// defer at the frame gate — and two identity defaults). The § 7.12.2.5
 /// col-scan gap therefore also applies to the warp stack.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn find_mv_stack(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -1652,6 +1653,7 @@ pub(super) fn find_mv_stack(
     warp_bank: &WarpParamBank,
     derive_wrl: bool,
     drl_reorder: DrlReorder,
+    use_temporal_first: bool,
 ) -> MvStack {
     let mut entries: Vec<MvStackEntry> = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
     let mut prune_count = 0usize;
@@ -1679,7 +1681,7 @@ pub(super) fn find_mv_stack(
     let num_nearest = entries.len();
     let use_sort = match drl_reorder {
         DrlReorder::Always => true,
-        DrlReorder::Constraint => num_nearest >= 4,
+        DrlReorder::Constraint => !use_temporal_first && num_nearest >= 4,
         DrlReorder::Disabled => false,
     };
     if use_sort && num_nearest > 1 {
@@ -1739,6 +1741,10 @@ fn scan_mv_stack_probe(
         warp.add_scan_point(cell, block);
     }
 
+    if entries.len() >= MAX_REF_MV_STACK_SIZE {
+        return;
+    }
+
     if !matches_block_ref(cell, block) {
         return;
     }
@@ -1753,9 +1759,6 @@ fn scan_mv_stack_probe(
         }
     }
 
-    if entries.len() >= MAX_REF_MV_STACK_SIZE {
-        return;
-    }
     let (_, _, adjusted_delta_col) = probe.stack_target(block);
     entries.push(MvStackEntry {
         mv: cell.sub_mv,

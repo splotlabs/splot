@@ -125,6 +125,7 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(stack.num_mv_found(), 1, "only the zero global-MV fallback");
     assert_eq!(stack.candidate(0), Mv::ZERO, "fallback candidate is zero");
@@ -319,6 +320,7 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert!(stack.num_mv_found() >= 1, "at least one candidate");
     assert_eq!(
@@ -358,6 +360,7 @@ fn block2_predicts_block0_mv_via_above_neighbour() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         stack.candidate(0),
@@ -388,6 +391,7 @@ fn block3_predicts_block0_mv_via_above_and_left() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         stack.candidate(0),
@@ -433,6 +437,7 @@ fn intra_neighbour_does_not_contribute() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(stack.num_mv_found(), 1, "intra neighbour not a candidate");
     assert_eq!(
@@ -459,6 +464,7 @@ fn mismatched_reference_neighbour_does_not_contribute() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         stack.num_mv_found(),
@@ -539,6 +545,7 @@ fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         stack.num_mv_found(),
@@ -586,6 +593,7 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         stack.candidate(0),
@@ -626,6 +634,7 @@ fn clamp_keeps_small_mvs_unchanged() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         stack.candidate(0),
@@ -719,6 +728,7 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         stack.candidate(0),
@@ -746,6 +756,7 @@ fn undecoded_later_sb_column_yields_no_candidate() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         stack.num_mv_found(),
@@ -781,6 +792,7 @@ fn bottom_right_sb_predicts_from_decoded_above_and_left() {
         &WarpParamBank::new(),
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         stack.candidate(0),
@@ -851,6 +863,7 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
         &bank,
         true,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(stack.warp_candidate(0), spatial, "first spatial insert");
     assert_eq!(
@@ -874,6 +887,7 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
         &bank,
         false,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         no_wrl.warp_candidate(0),
@@ -999,10 +1013,11 @@ fn corner_derivation_matches_the_hand_computed_model() {
         &WarpParamBank::new(),
         true,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         stack.warp_candidate(0),
-        [-131072, 0, 73728, 0, 0, 65536],
+        [-131_072, 0, 73_728, 0, 0, 65_536],
         "7.12.2.3 finite differences over the three corners (one px extra x-shift across 8 px)"
     );
     assert_eq!(
@@ -1025,6 +1040,7 @@ fn warp_predicted_mv_projects_the_block_center() {
         &bank,
         true,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(stack.warp_candidate(0), translation);
     assert_eq!(
@@ -1049,6 +1065,7 @@ fn warp_predicted_mv_projects_the_block_center() {
         &bank,
         true,
         DrlReorder::Disabled,
+        false,
     );
     assert_eq!(
         stack.warp_predicted_mv(0, super::super::read_mv::MV_PRECISION_EIGHTH_PEL),
@@ -1059,5 +1076,94 @@ fn warp_predicted_mv_projects_the_block_center() {
         stack.warp_predicted_mv(0, super::super::read_mv::MV_PRECISION_HALF_PEL),
         Mv { row: 0, col: 6 },
         "non-eighth precisions round at PREC-2 then double"
+    );
+}
+
+fn record_unit_inter(grid: &mut NeighbourMvGrid, r: usize, c: usize, mv: Mv) {
+    grid.record_block(
+        r,
+        c,
+        1,
+        1,
+        true,
+        0,
+        None,
+        NeighbourYMode::NewMv,
+        mv,
+        true,
+        SWITCHABLE_FILTERS,
+        false,
+        BlockPrecisionRecord::default(),
+    );
+}
+
+#[test]
+fn constraint_reorder_promotes_max_weight_nearest_unless_temporal_first() {
+    let mut grid = empty_grid();
+    let first_mv = Mv { row: 0, col: 8 };
+    let heavy_mv = Mv { row: 0, col: 40 };
+    record_unit_inter(&mut grid, 11, 7, first_mv);
+    record_unit_inter(&mut grid, 7, 11, Mv { row: 0, col: 16 });
+    record_unit_inter(&mut grid, 8, 7, Mv { row: 0, col: 24 });
+    record_unit_inter(&mut grid, 7, 8, heavy_mv);
+    record_unit_inter(&mut grid, 12, 7, heavy_mv);
+    record_unit_inter(&mut grid, 7, 12, heavy_mv);
+    let block = MvBlockContext {
+        mi_row: 8,
+        mi_col: 8,
+        bw4: 4,
+        bh4: 4,
+        sb_h4: SB_H4_64,
+        ref_frame0: 0,
+        ref_frame1: None,
+        mi_rows: MI_DIM,
+        mi_cols: MI_DIM,
+    };
+
+    let sorted = find_mv_stack(
+        &grid,
+        &block,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Constraint,
+        false,
+    );
+    assert_eq!(
+        sorted.num_mv_found(),
+        5,
+        "four distinct nearest candidates plus the zero global fallback"
+    );
+    assert_eq!(
+        sorted.candidate(0),
+        heavy_mv,
+        "CONSTRAINT with numNearestCands >= 4 swaps the max-weight entry first"
+    );
+    assert_eq!(
+        sorted.candidate(3),
+        first_mv,
+        "the displaced slot-0 entry lands in the max-weight slot"
+    );
+
+    let unsorted = find_mv_stack(
+        &grid,
+        &block,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Constraint,
+        true,
+    );
+    assert_eq!(
+        unsorted.candidate(0),
+        first_mv,
+        "useTemporalFirst suppresses the CONSTRAINT reorder"
+    );
+    assert_eq!(
+        unsorted.candidate(3),
+        heavy_mv,
+        "scan order is preserved when the reorder is suppressed"
     );
 }

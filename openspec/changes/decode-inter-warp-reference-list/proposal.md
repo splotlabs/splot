@@ -33,6 +33,11 @@ indices select.
   `get_mv` consumers; the banks and § 7.12.3 keep the block MV.
 - Add the § 7.12.2.20 mixture candidates for blocks wider and taller
   than 32, budget-deduped under the shared `PruneCount`.
+- Apply the § 7.12.2.19 strict-max-weight nearest reorder when the
+  sequence selects it (`DrlReorder`), suppressed per § 7.12.2 when
+  `useTemporalFirst` holds for the block.
+- Gate the § 7.14.4 TCQ `dqDenom` extra shift on `TX_CLASS_2D`
+  transform classes.
 - Add a diagnostics-only `SPLOT_DUMP_CODED_FRAMES` decode-order frame
   dump (the § 7.21 scheduler removed decode-order output).
 
