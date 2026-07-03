@@ -93,9 +93,37 @@ pub fn inverse_transform_1d(
 
     let (lo, hi) = transform_clip_bounds(col_tx, bit_depth);
 
-    for (i, slot) in out.iter_mut().enumerate() {
-        let s = kernel_sum(src, tx_type, sz, i);
-        *slot = round2(s, shift).clamp(lo, hi) as i32;
+    use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+    match sz {
+        4 => {
+            let kernel = match tx_type {
+                Dct => &DCT_KERNEL4,
+                Adst => &ADST_KERNEL4,
+                Fdst | Ddtx | Fddt => &FDST_KERNEL4,
+            };
+            kernel_transform(src, kernel, false, shift, lo, hi, out);
+        }
+        8 => {
+            let (kernel, reversed) = match tx_type {
+                Dct => (&DCT_KERNEL8, false),
+                Adst => (&ADST_KERNEL8, false),
+                Fdst => (&FDST_KERNEL8, false),
+                Ddtx => (&DDTX_KERNEL8, false),
+                Fddt => (&DDTX_KERNEL8, true),
+            };
+            kernel_transform(src, kernel, reversed, shift, lo, hi, out);
+        }
+        16 => {
+            let (kernel, reversed) = match tx_type {
+                Dct => (&DCT_KERNEL16, false),
+                Adst => (&ADST_KERNEL16, false),
+                Fdst => (&FDST_KERNEL16, false),
+                Ddtx => (&DDTX_KERNEL16, false),
+                Fddt => (&DDTX_KERNEL16, true),
+            };
+            kernel_transform(src, kernel, reversed, shift, lo, hi, out);
+        }
+        _ => kernel_transform(src, &DCT_KERNEL32, false, shift, lo, hi, out),
     }
     Ok(())
 }
@@ -167,65 +195,54 @@ fn transform_clip_bounds(col_tx: bool, bit_depth: BitDepth) -> (i64, i64) {
     (-bound, bound - 1)
 }
 
-/// Computes `sum over j of kernel[j][i] * src[j]` for the § 7.15.2.1 dispatch.
+/// Applies one § 7.15.2.1 kernel matrix multiply: `out[i] = Clip3(lo, hi,
+/// Round2(sum over j of kernel[j][i] * src[j], shift))`, indexing the kernel
+/// column in reverse (`kernel[j][N - 1 - i]`) when `reversed` (the `FDDT`
+/// dispatch branch).
 ///
-/// `sz` is guaranteed to be 4, 8, 16, or 32 and `i` is in `0..sz` by the caller.
-fn kernel_sum(src: &[i32], tx_type: InverseTransform1dType, sz: usize, i: usize) -> i64 {
-    use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
-    let mut s: i64 = 0;
-    match sz {
-        4 => {
-            for (j, &coeff) in src.iter().enumerate() {
-                let k = match tx_type {
-                    Dct => DCT_KERNEL4[j][i],
-                    Adst => ADST_KERNEL4[j][i],
-                    Fdst | Ddtx | Fddt => FDST_KERNEL4[j][i],
-                };
-                s += i64::from(k) * i64::from(coeff);
-            }
+/// The accumulation runs kernel-row-major and skips zero coefficients (adding
+/// zero terms is an identity over the same `i64` sums). `src` and `out` have
+/// length `N` by the caller's dispatch; the `zip`s make the loops total either
+/// way. Every kernel entry has magnitude below `2^7`, so `|acc| <= N * 2^7 *
+/// 2^31 <= 2^43` and the multiply-accumulate cannot overflow `i64`.
+fn kernel_transform<const N: usize>(
+    src: &[i32],
+    kernel: &[[i32; N]; N],
+    reversed: bool,
+    shift: u8,
+    lo: i64,
+    hi: i64,
+    out: &mut [i32],
+) {
+    let mut acc = [0i64; N];
+    for (&coeff, kernel_row) in src.iter().zip(kernel.iter()) {
+        if coeff == 0 {
+            continue;
         }
-        8 => {
-            for (j, &coeff) in src.iter().enumerate() {
-                let k = match tx_type {
-                    Dct => DCT_KERNEL8[j][i],
-                    Adst => ADST_KERNEL8[j][i],
-                    Fdst => FDST_KERNEL8[j][i],
-                    Ddtx => DDTX_KERNEL8[j][i],
-                    Fddt => DDTX_KERNEL8[j][7 - i],
-                };
-                s += i64::from(k) * i64::from(coeff);
-            }
-        }
-        16 => {
-            for (j, &coeff) in src.iter().enumerate() {
-                let k = match tx_type {
-                    Dct => DCT_KERNEL16[j][i],
-                    Adst => ADST_KERNEL16[j][i],
-                    Fdst => FDST_KERNEL16[j][i],
-                    Ddtx => DDTX_KERNEL16[j][i],
-                    Fddt => DDTX_KERNEL16[j][15 - i],
-                };
-                s += i64::from(k) * i64::from(coeff);
-            }
-        }
-        _ => {
-            for (j, &coeff) in src.iter().enumerate() {
-                s += i64::from(DCT_KERNEL32[j][i]) * i64::from(coeff);
-            }
+        let c = i64::from(coeff);
+        for (slot, &k) in acc.iter_mut().zip(kernel_row.iter()) {
+            *slot += i64::from(k) * c;
         }
     }
-    s
+    if reversed {
+        acc.reverse();
+    }
+    for (slot, &value) in out.iter_mut().zip(acc.iter()) {
+        *slot = round2(value, shift).clamp(lo, hi) as i32;
+    }
 }
 
 /// AV2 § 4.8 `Round2(x, n)`: `n == 0` returns `x`, else `(x + (1 << (n - 1))) >> n`
 /// with arithmetic (sign-extending) shift.
 ///
-/// Total and panic-free for every `value` and `shift`: the rounding add is done
-/// in `i128` so even an extreme `value` near `2^62` (the identity transform's
-/// `i32::MIN * i32::MIN`) plus the rounding bias cannot overflow, and a `shift`
-/// at or above the `i64` width saturates to the arithmetic-shift limit instead of
-/// shifting out of range. The result always fits `i64` (it is no larger in
-/// magnitude than `value`).
+/// For `1 <= n < 64` this uses the floor-shift identity
+/// `Round2(x, n) == ((x >> (n - 1)) + 1) >> 1`: writing `x = q * 2^(n-1) + r`
+/// with `0 <= r < 2^(n-1)`, both sides equal `floor((q + 1) / 2)`. The `+ 1`
+/// cannot overflow because every caller bounds `|value|` at `2^62` (kernel
+/// accumulators stay below `2^43`; the identity transform's product is at most
+/// `|i32::MIN| * |i32::MIN| = 2^62`), so `(value >> (n - 1)) + 1 <= 2^62 + 1`.
+/// A `shift` at or above the `i64` width saturates to the arithmetic-shift
+/// limit instead of shifting out of range.
 fn round2(value: i64, shift: u8) -> i64 {
     if shift == 0 {
         return value;
@@ -234,7 +251,7 @@ fn round2(value: i64, shift: u8) -> i64 {
     if shift >= i64::BITS {
         return value >> (i64::BITS - 1);
     }
-    ((i128::from(value) + (1i128 << (shift - 1))) >> shift) as i64
+    ((value >> (shift - 1)) + 1) >> 1
 }
 
 #[cfg(test)]
@@ -400,6 +417,136 @@ mod tests {
                 out_len: 3
             })
         ));
+    }
+
+    fn round2_reference(value: i64, shift: u8) -> i64 {
+        if shift == 0 {
+            return value;
+        }
+        let shift = u32::from(shift);
+        if shift >= i64::BITS {
+            return value >> (i64::BITS - 1);
+        }
+        ((i128::from(value) + (1i128 << (shift - 1))) >> shift) as i64
+    }
+
+    #[test]
+    fn round2_shift_identity_matches_wide_reference() {
+        let values = [
+            0i64,
+            1,
+            -1,
+            2,
+            -2,
+            3,
+            -3,
+            7,
+            -7,
+            1017,
+            -1017,
+            123_456_789,
+            -123_456_789,
+            i64::from(i32::MAX),
+            i64::from(i32::MIN),
+            (1i64 << 43) - 1,
+            -(1i64 << 43),
+            (1i64 << 62) - 12_345,
+            1i64 << 62,
+            -(1i64 << 62),
+        ];
+        for &value in &values {
+            for shift in 1..=63u8 {
+                assert_eq!(
+                    round2(value, shift),
+                    round2_reference(value, shift),
+                    "round2({value}, {shift})"
+                );
+            }
+        }
+    }
+
+    fn reference_kernel_sum(
+        src: &[i32],
+        tx_type: InverseTransform1dType,
+        sz: usize,
+        i: usize,
+    ) -> i64 {
+        use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+        let mut s: i64 = 0;
+        for (j, &coeff) in src.iter().enumerate() {
+            let k = match sz {
+                4 => match tx_type {
+                    Dct => DCT_KERNEL4[j][i],
+                    Adst => ADST_KERNEL4[j][i],
+                    Fdst | Ddtx | Fddt => FDST_KERNEL4[j][i],
+                },
+                8 => match tx_type {
+                    Dct => DCT_KERNEL8[j][i],
+                    Adst => ADST_KERNEL8[j][i],
+                    Fdst => FDST_KERNEL8[j][i],
+                    Ddtx => DDTX_KERNEL8[j][i],
+                    Fddt => DDTX_KERNEL8[j][7 - i],
+                },
+                16 => match tx_type {
+                    Dct => DCT_KERNEL16[j][i],
+                    Adst => ADST_KERNEL16[j][i],
+                    Fdst => FDST_KERNEL16[j][i],
+                    Ddtx => DDTX_KERNEL16[j][i],
+                    Fddt => DDTX_KERNEL16[j][15 - i],
+                },
+                _ => DCT_KERNEL32[j][i],
+            };
+            s += i64::from(k) * i64::from(coeff);
+        }
+        s
+    }
+
+    #[test]
+    fn kernel_transform_matches_per_element_reference() {
+        use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+        let mut lcg: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move || {
+            lcg = lcg.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            ((lcg >> 33) as i32 % 40_000) - 17_331
+        };
+        for sz in [4usize, 8, 16, 32] {
+            for tx_type in [Dct, Adst, Fdst, Ddtx, Fddt] {
+                for (shift, col_tx, bit_depth) in [
+                    (0u8, true, BitDepth::Eight),
+                    (2, false, BitDepth::Ten),
+                    (7, true, BitDepth::Ten),
+                    (12, false, BitDepth::Eight),
+                ] {
+                    let mut src: Vec<i32> = (0..sz).map(|_| next()).collect();
+                    for slot in src.iter_mut().step_by(3) {
+                        *slot = 0;
+                    }
+                    let got = run(&src, tx_type, shift, col_tx, bit_depth);
+                    let (lo, hi) = transform_clip_bounds(col_tx, bit_depth);
+                    let expected: Vec<i32> = (0..sz)
+                        .map(|i| {
+                            let s = reference_kernel_sum(&src, tx_type, sz, i);
+                            round2_reference(s, shift).clamp(lo, hi) as i32
+                        })
+                        .collect();
+                    assert_eq!(got, expected, "sz={sz} tx={tx_type:?} shift={shift}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn all_zero_input_produces_all_zero_output_for_every_kernel() {
+        use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+        for sz in [4usize, 8, 16, 32] {
+            for tx_type in [Dct, Adst, Fdst, Ddtx, Fddt] {
+                for col_tx in [false, true] {
+                    let src = vec![0i32; sz];
+                    let out = run(&src, tx_type, 3, col_tx, BitDepth::Ten);
+                    assert_eq!(out, vec![0i32; sz], "sz={sz} tx={tx_type:?}");
+                }
+            }
+        }
     }
 
     #[test]

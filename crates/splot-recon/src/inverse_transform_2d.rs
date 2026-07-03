@@ -153,12 +153,27 @@ pub fn inverse_transform_2d(
         log2_size: log2_w,
         bit_depth: params.bit_depth,
     };
-    for i in 0..h {
-        for j in 0..w {
-            let coeff = dequant[i * w + j];
-            buf_in[j] = if odd_ratio { round2_2896(coeff) } else { coeff };
+    for (dequant_row, intermediate_row) in dequant
+        .chunks_exact(w)
+        .zip(intermediate.chunks_exact_mut(w))
+        .take(h)
+    {
+        // Every 1D pass maps an all-zero row to all zeros (rescale, kernel sum,
+        // identity scale, Walsh-Hadamard, Round2, and Clip3 all fix 0).
+        if dequant_row.iter().all(|&coeff| coeff == 0) {
+            intermediate_row.fill(0);
+            continue;
         }
-        run_1d(&buf_in[..w], &mut intermediate[i * w..i * w + w], row_pass)?;
+        if odd_ratio {
+            for (slot, &coeff) in buf_in.iter_mut().zip(dequant_row.iter()) {
+                *slot = round2_2896(coeff);
+            }
+        } else {
+            for (slot, &coeff) in buf_in.iter_mut().zip(dequant_row.iter()) {
+                *slot = coeff;
+            }
+        }
+        run_1d(&buf_in[..w], intermediate_row, row_pass)?;
     }
 
     let col_pass = Pass {
@@ -503,6 +518,76 @@ mod tests {
             got.iter().any(|&v| v != 0),
             "reference produced a trivial all-zero block"
         );
+    }
+
+    #[test]
+    fn sparse_blocks_match_manual_row_then_column_reference() {
+        let bd = BitDepth::Eight;
+        let mut lcg: u64 = 0xdead_beef_1234_5678;
+        let mut next = move || {
+            lcg = lcg.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            ((lcg >> 33) as i32 % 4_001) - 1_777
+        };
+        for (log2_w, log2_h, row_shift, col_shift) in
+            [(2u32, 2u32, 7u8, 10u8), (3, 4, 6, 12), (5, 5, 6, 12), (3, 2, 6, 13)]
+        {
+            let w = 1usize << log2_w;
+            let h = 1usize << log2_h;
+            let mut dequant = vec![0i32; w * h];
+            dequant[0] = next();
+            dequant[1] = next();
+            if h > 2 {
+                dequant[2 * w] = next();
+            }
+            let odd_ratio = log2_w.abs_diff(log2_h) % 2 == 1;
+
+            let mut got = vec![0i32; w * h];
+            inverse_transform_2d(
+                &params(log2_w, log2_h, false, adst(), dct(), row_shift, col_shift),
+                &dequant,
+                &mut got,
+            )
+            .unwrap();
+
+            let mut intermediate = vec![0i32; w * h];
+            for i in 0..h {
+                let row_in: Vec<i32> = (0..w)
+                    .map(|j| {
+                        let coeff = dequant[i * w + j];
+                        if odd_ratio { round2_2896(coeff) } else { coeff }
+                    })
+                    .collect();
+                let mut row_out = vec![0i32; w];
+                inverse_transform_1d(
+                    &row_in,
+                    InverseTransform1dType::Adst,
+                    row_shift,
+                    false,
+                    bd,
+                    &mut row_out,
+                )
+                .unwrap();
+                intermediate[i * w..(i + 1) * w].copy_from_slice(&row_out);
+            }
+            let mut expected = vec![0i32; w * h];
+            for j in 0..w {
+                let col_in: Vec<i32> = (0..h).map(|i| intermediate[i * w + j]).collect();
+                let mut col_out = vec![0i32; h];
+                inverse_transform_1d(
+                    &col_in,
+                    InverseTransform1dType::Dct,
+                    col_shift,
+                    true,
+                    bd,
+                    &mut col_out,
+                )
+                .unwrap();
+                for i in 0..h {
+                    expected[i * w + j] = col_out[i];
+                }
+            }
+            assert_eq!(got, expected, "shape {w}x{h}");
+        }
     }
 
     #[test]
