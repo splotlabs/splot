@@ -1234,7 +1234,7 @@ impl ResidualPlanePlan {
                             num4_far: neighbours.num_below_left(),
                         },
                         use_tcq,
-                        None,
+                        Some(luma_context),
                         block_ctx.bit_depth(),
                     )
                 } else {
@@ -1371,7 +1371,7 @@ impl ResidualPlanePlan {
                             num4_far: neighbours.num_above_right(),
                         },
                         use_tcq,
-                        None,
+                        Some(luma_context),
                         block_ctx.bit_depth(),
                     )
                 } else {
