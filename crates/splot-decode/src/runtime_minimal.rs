@@ -1637,7 +1637,7 @@ fn frame_ref_update_from_core(
                 "minimal multi-frame decode requires a parsed base_q_idx for the §7.23 update",
             )
         })?;
-    let is_inter = !core.is_key_frame;
+    let is_inter = core.frame_type == Some(FrameType::Inter);
     let adapted = core.disable_cdf_update != Some(true);
     Ok(reference_buffer::FrameRefUpdate {
         refresh_frame_flags,

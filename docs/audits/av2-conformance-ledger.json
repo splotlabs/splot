@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "f16da1f770a3cacf91e4a8481620988e53b54951",
+  "audited_commit": "907f9da2dd4329085c89cdc2f2b4a0de22301bb8",
   "outcome": "success",
   "files": [
     {
@@ -2011,7 +2011,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal.rs",
-      "sha256": "8602f4306792ea255da57735fced1c4b18ea58f07b421fc234ce9fee30920355",
+      "sha256": "cc198b3a006c9f0ea71f3b30e05b58db3d66da808e194c69dcc57b3f301a076f",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
