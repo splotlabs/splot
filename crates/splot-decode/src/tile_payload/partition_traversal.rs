@@ -550,6 +550,13 @@ pub(crate) struct GeneralIntraLeafMode {
 }
 
 impl GeneralIntraLeafMode {
+    /// § 7.13.2.16 `is_smooth` over the leaf's luma mode: `true` for
+    /// SMOOTH / SMOOTH_V / SMOOTH_H, `false` for other modes and for
+    /// chroma-part leaves (which carry no luma mode).
+    pub(crate) fn y_mode_is_smooth(&self) -> bool {
+        self.y_mode.is_some_and(IntraYMode::is_smooth)
+    }
+
     /// Leaf with a decoded luma mode (`TreeType != CHROMA_PART`).
     #[must_use]
     pub(crate) const fn luma(

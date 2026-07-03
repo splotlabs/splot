@@ -1033,6 +1033,7 @@ fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
             edge_filter: OneSidedEdgeFilter::default(),
             num4_far: 0, // below-left clamps to left_in[7]
         },
+        true,
         false,
         None,
         BitDepth::Eight,
