@@ -202,6 +202,11 @@ pub trait ReconSample: private::Sealed + Copy + Default + Send + Sync + 'static 
     fn supports_bit_depth(bit_depth: BitDepth) -> bool {
         Self::MAX_VALUE >= bit_depth.max_sample()
     }
+
+    /// Reinterprets a sample slice as `u16` storage when this type is `u16`,
+    /// letting reference readers borrow plane storage without a widening
+    /// copy; `None` for narrower storage types.
+    fn u16_slice(samples: &[Self]) -> Option<&[u16]>;
 }
 
 impl ReconSample for u8 {
@@ -219,6 +224,9 @@ impl ReconSample for u8 {
             max: Self::MAX_VALUE,
         })
     }
+    fn u16_slice(_samples: &[Self]) -> Option<&[u16]> {
+        None
+    }
 }
 
 impl ReconSample for u16 {
@@ -231,6 +239,9 @@ impl ReconSample for u16 {
 
     fn try_from_u16(value: u16) -> Result<Self> {
         Ok(value)
+    }
+    fn u16_slice(samples: &[Self]) -> Option<&[u16]> {
+        Some(samples)
     }
 }
 

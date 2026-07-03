@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "f2eae5f5084e71817f4b6db0b7af336420a907a3",
+  "audited_commit": "9b85f0c3da3a1d50ecfccd09ec2abe8837c88094",
   "outcome": "success",
   "files": [
     {
@@ -2207,7 +2207,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/mc.rs",
-      "sha256": "97dddd8f8eed7c6ff8b3f684d46512787b2c766f1afc0a8c0e721b85c7a1efd1",
+      "sha256": "32bc32b4e9f5805d7ea3ee54991c39f4f6bdd0ab1f4e9c64f0f3a0db49e36ede",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -4038,7 +4038,7 @@
     },
     {
       "path": "crates/splot-recon/src/format.rs",
-      "sha256": "130d545241338c6d9ce58ddd2e42d0118f46ed8e04d929720e500cc89e15946b",
+      "sha256": "feb4cef9170eb5bba0b8569d1c583f1f2ff50248d1f84e8585d5ce14f7c08ab3",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -4272,7 +4272,7 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc.rs",
-      "sha256": "a76ab5f06f369e8f78b9aa15e258a56186dad492ba2b2dae8847586e37908e8e",
+      "sha256": "9346f68af6becc380dc28c54b8cd6beaa209d1f6fd7c5aa231a54f9d706abb4b",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-SUBPEL-MC"
@@ -26724,6 +26724,20 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/optimize-decode-mc-hot-paths/proposal.md",
+      "sha256": "7e3ba8091f1510afa499d018585f7db4f5f07434334a412806fda7e32a7b61af",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/optimize-decode-mc-hot-paths/tasks.md",
+      "sha256": "8ed6af49ce5ca74f5f456cd829e46316ab6af7d902cb3b5c720a0a1547f87cf5",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/recon-deblock-adaptive-strength/.openspec.yaml",
       "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
       "scope_kind": "openspec",
@@ -29915,7 +29929,7 @@
     },
     {
       "path": "xtask/src/concurrency_policy.rs",
-      "sha256": "bc3f2322618163b92c26282ef16bdbfa3c51707aba647bae632f73255e68b112",
+      "sha256": "ea877b9f87b1a66a084371479f74c1c22261c23ee1792b70fe8947c4587aea59",
       "scope_kind": "workspace:xtask",
       "feature_ids": [],
       "outcome": "success"

@@ -5,9 +5,9 @@
 use splot_recon::BitDepth;
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect, ReconSample,
-    ReferencePlaneView, SubpelPredictParams, VisibleRows, WARPED_BLOCK_SIZE,
-    WarpPredictBlockParams, blend_compound_average_equal, subpel_predict_block,
-    subpel_predict_block_compound_intermediate, warp_predict_block,
+    ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
+    blend_compound_average_equal, subpel_predict_block, subpel_predict_block_compound_intermediate,
+    warp_predict_block,
 };
 
 use super::mv_scaling::derive_plane_scaling;
@@ -231,9 +231,9 @@ fn predict_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let (samples, ref_width, ref_height, ref_mi_cols, ref_mi_rows) =
-        reference_plane_samples(reference, plane, offset)?;
-    let view = ReferencePlaneView::new(&samples, ref_width, ref_height)?;
+    let source = reference_plane_source(reference, plane, offset)?;
+    let (ref_mi_cols, ref_mi_rows) = (source.mi_cols, source.mi_rows);
+    let view = source.view()?;
 
     let plane_x = rect.luma_x >> sub_x;
     let plane_y = rect.luma_y >> sub_y;
@@ -290,9 +290,10 @@ fn predict_warp_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let (samples, ref_width, ref_height, ref_mi_cols, ref_mi_rows) =
-        reference_plane_samples(reference, plane, offset)?;
-    let view = ReferencePlaneView::new(&samples, ref_width, ref_height)?;
+    let source = reference_plane_source(reference, plane, offset)?;
+    let (ref_mi_cols, ref_mi_rows) = (source.mi_cols, source.mi_rows);
+    let (ref_width, ref_height) = (source.width, source.height);
+    let view = source.view()?;
 
     let plane_x = rect.luma_x >> sub_x;
     let plane_y = rect.luma_y >> sub_y;
@@ -390,12 +391,12 @@ fn predict_compound_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let (samples0, ref_width0, ref_height0, ref_mi_cols0, ref_mi_rows0) =
-        reference_plane_samples(reference0, plane, offset)?;
-    let (samples1, ref_width1, ref_height1, ref_mi_cols1, ref_mi_rows1) =
-        reference_plane_samples(reference1, plane, offset)?;
-    let view0 = ReferencePlaneView::new(&samples0, ref_width0, ref_height0)?;
-    let view1 = ReferencePlaneView::new(&samples1, ref_width1, ref_height1)?;
+    let source0 = reference_plane_source(reference0, plane, offset)?;
+    let source1 = reference_plane_source(reference1, plane, offset)?;
+    let (ref_mi_cols0, ref_mi_rows0) = (source0.mi_cols, source0.mi_rows);
+    let (ref_mi_cols1, ref_mi_rows1) = (source1.mi_cols, source1.mi_rows);
+    let view0 = source0.view()?;
+    let view1 = source1.view()?;
 
     let plane_x = rect.luma_x >> sub_x;
     let plane_y = rect.luma_y >> sub_y;
@@ -547,11 +548,48 @@ fn ext_warp_unit_bounds(
     (first_x, first_y, last_x, last_y)
 }
 
-pub(super) fn reference_plane_samples<T: ReconSample>(
+/// A reference plane exposed to the § 7.13.3.18 readers: `u16` frames borrow
+/// their strided storage directly; narrower storage widens into an owned
+/// buffer once per call.
+pub(super) struct ReferencePlaneSource<'a> {
+    borrowed: Option<(&'a [u16], usize)>,
+    owned: Vec<u16>,
+    width: usize,
+    height: usize,
+    pub(super) mi_cols: i64,
+    pub(super) mi_rows: i64,
+}
+
+impl ReferencePlaneSource<'_> {
+    pub(super) fn view(&self) -> splot_recon::Result<ReferencePlaneView<'_>> {
+        match self.borrowed {
+            Some((samples, stride)) => {
+                ReferencePlaneView::with_stride(samples, stride, self.width, self.height)
+            }
+            None => ReferencePlaneView::new(&self.owned, self.width, self.height),
+        }
+    }
+
+    pub(super) fn linearized(self) -> (Vec<u16>, usize, usize) {
+        match self.borrowed {
+            Some((samples, stride)) => {
+                let mut owned = Vec::with_capacity(self.width * self.height);
+                for row in 0..self.height {
+                    let start = row * stride;
+                    owned.extend_from_slice(&samples[start..start + self.width]);
+                }
+                (owned, self.width, self.height)
+            }
+            None => (self.owned, self.width, self.height),
+        }
+    }
+}
+
+pub(super) fn reference_plane_source<T: ReconSample>(
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     offset: ByteOffset,
-) -> Result<(Vec<u16>, usize, usize, i64, i64)> {
+) -> Result<ReferencePlaneSource<'_>> {
     let Some(ref_plane) = reference.plane(plane) else {
         return Err(unsupported_at(
             "inter_reference_missing_plane",
@@ -561,20 +599,45 @@ pub(super) fn reference_plane_samples<T: ReconSample>(
         ));
     };
     let visible = ref_plane.visible_size();
-    let ref_width = visible.width();
-    let ref_height = visible.height();
-
-    let mut samples: Vec<u16> = Vec::with_capacity(ref_width.saturating_mul(ref_height));
-    let rows: VisibleRows<'_, T> = ref_plane.visible_rows();
-    for row in rows {
-        samples.extend(row.iter().map(|&s| s.to_u16()));
-    }
-
     let luma_visible = reference.y().visible_size();
-    let ref_mi_cols = (luma_visible.width() as i64) / 4;
-    let ref_mi_rows = (luma_visible.height() as i64) / 4;
+    let mi_cols = (luma_visible.width() as i64) / 4;
+    let mi_rows = (luma_visible.height() as i64) / 4;
+    let visible_rect = ref_plane.visible_rect();
+    let stride = ref_plane.stride_samples();
+    if let Some(samples) = T::u16_slice(ref_plane.samples()) {
+        let start = visible_rect.y() * stride + visible_rect.x();
+        return Ok(ReferencePlaneSource {
+            borrowed: Some((&samples[start..], stride)),
+            owned: Vec::new(),
+            width: visible.width(),
+            height: visible.height(),
+            mi_cols,
+            mi_rows,
+        });
+    }
+    let mut owned: Vec<u16> = Vec::with_capacity(visible.width().saturating_mul(visible.height()));
+    for row in ref_plane.visible_rows() {
+        owned.extend(row.iter().map(|&s| s.to_u16()));
+    }
+    Ok(ReferencePlaneSource {
+        borrowed: None,
+        owned,
+        width: visible.width(),
+        height: visible.height(),
+        mi_cols,
+        mi_rows,
+    })
+}
 
-    Ok((samples, ref_width, ref_height, ref_mi_cols, ref_mi_rows))
+pub(super) fn reference_plane_samples<T: ReconSample>(
+    reference: &DecodedFrame<T>,
+    plane: PlaneId,
+    offset: ByteOffset,
+) -> Result<(Vec<u16>, usize, usize, i64, i64)> {
+    let source = reference_plane_source(reference, plane, offset)?;
+    let (mi_cols, mi_rows) = (source.mi_cols, source.mi_rows);
+    let (samples, width, height) = source.linearized();
+    Ok((samples, width, height, mi_cols, mi_rows))
 }
 
 #[cfg(test)]
