@@ -36,6 +36,15 @@ pub const PC_WIENER_LUT_CLASSES: usize = 256;
 /// Number of AV2 § 9.8 PC-Wiener filter classes in the full classifier.
 pub const PC_WIENER_FULL_CLASSES: usize = 64;
 
+/// Maximum distance of any § 7.20.4 classification source read from the
+/// classified sample, in either axis (`PC_WIENER_LAG` plus the one-sample
+/// feature neighborhood).
+///
+/// Callers that pre-resolve § 7.20.2 source samples may materialize a window
+/// extending this many samples beyond the classified positions; classification
+/// never reads farther (the § 7.20.4 x clipping only lowers coordinates).
+pub const PC_WIENER_CLASSIFY_READ_RADIUS: usize = 5;
+
 /// AV2 § 3 `PC_WIENER_PREC_FEATURE`.
 const PC_WIENER_PREC_FEATURE: u32 = 14;
 /// AV2 § 3 `QUANT_TABLE_BITS`.
@@ -510,6 +519,15 @@ fn coordinate_add(value: isize, delta: isize, context: &'static str) -> Result<i
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_read_radius_covers_lead_lag_neighborhood() {
+        assert_eq!(
+            PC_WIENER_CLASSIFY_READ_RADIUS,
+            (PC_WIENER_LAG + 1).unsigned_abs()
+        );
+        assert!(PC_WIENER_CLASSIFY_READ_RADIUS >= (PC_WIENER_LEAD + 1).unsigned_abs());
+    }
 
     fn params(bit_depth: BitDepth) -> PcWienerClassifyParams {
         PcWienerClassifyParams {

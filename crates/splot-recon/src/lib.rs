@@ -119,9 +119,10 @@ pub use loop_restoration::{
     loop_restoration_source_sample_value,
 };
 pub use pc_wiener::{
-    PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_FULL_CLASSES, PC_WIENER_LUT_CLASSES,
-    PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES, PcWienerClassification, PcWienerClassifyParams,
-    PcWienerTxSkipLookup, pc_wiener_classify, pc_wiener_filter_set_index, pc_wiener_subclass,
+    PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_FULL_CLASSES,
+    PC_WIENER_LUT_CLASSES, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES, PcWienerClassification,
+    PcWienerClassifyParams, PcWienerTxSkipLookup, pc_wiener_classify, pc_wiener_filter_set_index,
+    pc_wiener_subclass,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
@@ -144,11 +145,12 @@ pub use warp_prediction::{
     warp_predict_block, warp_shear_is_valid,
 };
 pub use wienerns_chroma_filter::{
-    WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAPS, WienerNsChromaFilter,
-    wiener_ns_filter_chroma_block,
+    WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAPS,
+    WienerNsChromaFilter, wiener_ns_filter_chroma_block,
 };
 pub use wienerns_filter::{
-    WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAPS, WienerNsLumaFilter, wiener_ns_filter_luma_block,
+    WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS, WIENER_NS_LUMA_TAPS, WienerNsLumaFilter,
+    WienerNsLumaPaddedSource, wiener_ns_filter_luma_block, wiener_ns_filter_luma_block_padded,
 };
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameWorkspace, InterIntraMode,

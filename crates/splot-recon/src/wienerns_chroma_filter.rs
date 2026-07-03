@@ -25,6 +25,15 @@ pub const WIENER_NS_CHROMA_COEFFS: usize = 18;
 /// Number of chroma Wiener NS taps (`WIENER_NS_TAPS_UV`) in AV2 § 7.20.3.
 pub const WIENER_NS_CHROMA_TAPS: usize = 12;
 
+/// Maximum absolute § 7.20.3 `Wiener_Ns_Config_Uv` tap offset in either axis.
+///
+/// Callers that pre-resolve § 7.20.2 source samples may materialize a chroma
+/// window extending this many samples beyond the output block, and a luma
+/// companion window extending twice this many luma samples beyond the
+/// luma-scaled block; the `get_luma_sample` downsample neighborhood stays
+/// inside that reach.
+pub const WIENER_NS_CHROMA_TAP_RADIUS: usize = 2;
+
 /// Chroma-to-chroma Wiener NS taps use coefficient slots `0..6`; AV2 § 7.20.3
 /// indexes luma-tap coefficients as raw tap index `i + 6`.
 const WIENER_NS_CHROMA_COEFF_SLOTS: usize = 6;
@@ -403,6 +412,16 @@ mod tests {
     use super::*;
 
     const ZERO_CHROMA: [i16; WIENER_NS_CHROMA_COEFFS] = [0; WIENER_NS_CHROMA_COEFFS];
+
+    #[test]
+    fn chroma_tap_radius_covers_config_table() {
+        let max_offset = WIENER_NS_CONFIG_UV
+            .iter()
+            .map(|&(dy, dx, _)| dy.unsigned_abs().max(dx.unsigned_abs()))
+            .max()
+            .unwrap();
+        assert_eq!(WIENER_NS_CHROMA_TAP_RADIUS, max_offset);
+    }
 
     fn chroma_params(
         width: usize,
