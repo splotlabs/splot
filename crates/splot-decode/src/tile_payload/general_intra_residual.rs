@@ -2105,7 +2105,9 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
         v_ac: 0,
     };
     let pels = (orig_w * orig_h) as u32;
-    let dq_shift = u32::from(pels > 256) + u32::from(pels > 1024) + u32::from(use_tcq);
+    let tcq_two_d = use_tcq
+        && CoeffTransformClass::from_plane_tx_type(plane_tx_type) == CoeffTransformClass::TwoD;
+    let dq_shift = u32::from(pels > 256) + u32::from(pels > 1024) + u32::from(tcq_two_d);
     let dq_denom = 1u32 << dq_shift;
     let params = DequantBlockParams {
         dc_quant: dc_quantizer(plane_id, qindex, deltas, bit_depth),

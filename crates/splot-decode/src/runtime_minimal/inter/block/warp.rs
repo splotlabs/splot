@@ -6,6 +6,7 @@
 //! DRL+precision+MVD tail, least-squares and extension estimation, and the
 //! warp-delta parameter reads.
 
+use super::super::find_mv_stack::reduce_warp_model;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -501,6 +502,7 @@ pub(super) fn read_warp_newmv_delta_syntax(
         mi_col,
         n4w,
         n4h,
+        stack,
         tile_offset,
     )?;
     Ok(ParsedWarpNewmv {
@@ -533,7 +535,12 @@ pub(super) fn read_warpmv_delta_syntax(
     } else {
         false
     };
-    let base_mv = stack.candidate(0);
+    let base_precision = if warpmv_with_mvd {
+        mv_config.precision()
+    } else {
+        MV_PRECISION_EIGHTH_PEL
+    };
+    let base_mv = stack.warp_predicted_mv(ref_warp_idx, base_precision);
     let mv = if warpmv_with_mvd {
         let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, mv_config)?;
         let diff = apply_inter_mvd_signs(magnitude, symbols, tile_offset, mv_config, false, 1)?;
@@ -544,7 +551,9 @@ pub(super) fn read_warpmv_delta_syntax(
     } else {
         base_mv
     };
-    let warp_params = derive_warp_params_from_mv(mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
+    let mut warp_params = stack.warp_candidate(ref_warp_idx);
+    reduce_warp_model(&mut warp_params);
+    set_warp_translation(&mut warp_params, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
     Ok(ParsedWarpNewmv {
         mv,
         warp_params,
@@ -806,17 +815,10 @@ fn read_warp_delta_syntax(
     mi_col: usize,
     n4w: usize,
     n4h: usize,
+    stack: &super::super::find_mv_stack::MvStack,
     tile_offset: ByteOffset,
 ) -> Result<([i64; 6], u8)> {
-    if ref_warp_idx != 0 {
-        return Err(inter_cap!(
-            "inter_warp_ref_candidate_unimplemented",
-            tile_offset,
-            "inter.warp_param_stack reference",
-            "5.20.7.7"
-        ));
-    }
-    let mut params = IDENTITY_WARP_PARAMS;
+    let mut params = stack.warp_candidate(ref_warp_idx);
     let use_six_param = sequence
         .inter
         .as_ref()
@@ -857,20 +859,6 @@ fn read_warp_delta_syntax(
     reduce_warp_model(&mut params);
     set_warp_translation(&mut params, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
     Ok((params, precision_idx))
-}
-
-pub(super) fn derive_warp_params_from_mv(
-    mv: Mv,
-    mi_row: usize,
-    mi_col: usize,
-    n4w: usize,
-    n4h: usize,
-    tile_offset: ByteOffset,
-) -> Result<[i64; 6]> {
-    let mut params = IDENTITY_WARP_PARAMS;
-    reduce_warp_model(&mut params);
-    set_warp_translation(&mut params, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
-    Ok(params)
 }
 
 fn read_warp_delta_param(
@@ -935,22 +923,6 @@ fn read_warp_delta_param(
     signed
         .checked_shl(step_bits)
         .ok_or_else(|| warp_model_error(tile_offset))
-}
-
-fn reduce_warp_model(params: &mut [i64; 6]) {
-    let max_value = (1i64 << (WARPEDMODEL_PREC_BITS - 1)) - (1i64 << WARP_PARAM_REDUCE_BITS);
-    let min_value = -max_value;
-    for (index, param) in params.iter_mut().enumerate().skip(2) {
-        let offset = if index == 2 || index == 5 {
-            1i64 << WARPEDMODEL_PREC_BITS
-        } else {
-            0
-        };
-        let original = *param - offset;
-        let clamped = original.clamp(min_value, max_value);
-        *param =
-            (round2_signed(clamped, WARP_PARAM_REDUCE_BITS) << WARP_PARAM_REDUCE_BITS) + offset;
-    }
 }
 
 fn set_warp_translation(
