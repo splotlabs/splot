@@ -402,7 +402,7 @@ impl GeneralIntraResidualPlan {
         luma_tx_partition_context: Option<LumaTransformPartitionContext>,
         transform_tool_residual_policy: TransformToolResidualPolicy,
         qindex: u32,
-        intra_edge: super::intra_edge::IntraEdgeCtx<'_>,
+        intra_edge: super::intra_edge::IntraEdgeCtx,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let mut execute = |plane: ResidualPlanePlan, eob_u_nonzero| {
             let tx_partition_context = (plane.plane_id == PlaneId::Y)
@@ -503,7 +503,7 @@ impl ResidualPlanePlan {
         transform_tool_residual_policy: TransformToolResidualPolicy,
         qindex: u32,
         eob_u_nonzero: bool,
-        intra_edge: super::intra_edge::IntraEdgeCtx<'_>,
+        intra_edge: super::intra_edge::IntraEdgeCtx,
     ) -> core::result::Result<crate::tile_payload::LumaCoeffBlock, GeneralIntraResidualError> {
         let policy = transform_tool_policy_for_plane(
             transform_tool_residual_policy,
@@ -595,7 +595,7 @@ impl ResidualPlanePlan {
         policy: TransformToolResidualPolicy,
         qindex: u32,
         palette_color_map: Option<&[u8]>,
-        intra_edge: super::intra_edge::IntraEdgeCtx<'_>,
+        intra_edge: super::intra_edge::IntraEdgeCtx,
         luma_context: LumaTransformTypeContext,
     ) -> core::result::Result<crate::tile_payload::LumaCoeffBlock, GeneralIntraResidualError> {
         let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
@@ -1007,6 +1007,8 @@ impl ResidualPlanePlan {
         }
     }
 
+    /// § 5.20.7.24 availability counts for the luma prediction arms, zeroed
+    /// when `allowCorners == 0` for this transform unit.
     fn luma_corner_neighbours(
         self,
         block_ctx: BlockCtx,
@@ -1028,7 +1030,7 @@ impl ResidualPlanePlan {
         block_decoded: &TileBlockDecodedState,
         palette_color_map: Option<&[u8]>,
         qindex: u32,
-        intra_edge: super::intra_edge::IntraEdgeCtx<'_>,
+        intra_edge: super::intra_edge::IntraEdgeCtx,
         luma_context: LumaTransformTypeContext,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let block_ctx = self.block_ctx;
@@ -1078,10 +1080,12 @@ impl ResidualPlanePlan {
             }
             ResidualReconstructionPlan::LumaRectMiddle { p_angle, use_tcq } => {
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
+                let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
                 let edge_filters = super::intra_edge::unit_middle_edge_filters(
                     intra_edge,
                     workspace,
                     i32::from(p_angle),
+                    apply_ibp,
                     self.x,
                     self.y,
                     w,

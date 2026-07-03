@@ -324,7 +324,14 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
     let mut mv_grid = NeighbourMvGrid::new(mi_rows, mi_cols)
         .ok_or_else(|| inter_cap!("inter_mv_grid", offset, "inter.mv_grid", SPEC_MODE_INFO))?;
     let mut y_smooth = super::super::intra_edge::TileYSmoothGrid::new(mi_rows, mi_cols)
-        .ok_or_else(|| inter_cap!("inter_mv_grid", offset, "inter.mv_grid", SPEC_MODE_INFO))?;
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_y_smooth_grid",
+                offset,
+                "inter.y_smooth_grid",
+                SPEC_MODE_INFO
+            )
+        })?;
     let sb_h4 = superblock_h4(sequence, core).ok_or_else(|| {
         inter_missing!(
             "inter_sb_size",

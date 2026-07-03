@@ -44,6 +44,14 @@ impl TileYSmoothGrid {
         }
     }
 
+    /// §7.13.2.15/16 neighbour smoothness for the block at luma MI
+    /// (`mi_col`, `mi_row`): the cell above the origin and the cell to its
+    /// left. Off-grid neighbours contribute `false`.
+    pub(super) fn block_smoothness(&self, mi_col: usize, mi_row: usize) -> (bool, bool) {
+        let (col, row) = (mi_col as isize, mi_row as isize);
+        (self.at(col, row - 1), self.at(col - 1, row))
+    }
+
     /// Reads the smoothness at (`col`, `row`); off-grid reads are `false`.
     fn at(&self, col: isize, row: isize) -> bool {
         if col < 0 || row < 0 {
@@ -57,28 +65,20 @@ impl TileYSmoothGrid {
     }
 }
 
-/// The per-unit §7.13.2.7 inputs threaded through the residual pipeline.
+/// The per-block §7.13.2.7 inputs threaded through the residual pipeline.
+/// The smoothness pair is resolved once at the coding block's MI origin —
+/// §7.13.2.15/16 read `YModes[MiRow - 1][MiCol]` / `[MiRow][MiCol - 1]` of
+/// the BLOCK, and every transform unit of the block reuses it.
 #[derive(Clone, Copy)]
-pub(super) struct IntraEdgeCtx<'a> {
+pub(super) struct IntraEdgeCtx {
     /// §5.3 `enable_ibp`.
     pub(super) enable_ibp: bool,
     /// §5.3 `enable_intra_edge_filter`.
     pub(super) enable_intra_edge_filter: bool,
-    /// The tile smoothness grid; `None` on routes whose admission requires
-    /// `enable_intra_edge_filter == 0` (the derivation then never reads it).
-    pub(super) y_smooth: Option<&'a TileYSmoothGrid>,
-}
-
-impl IntraEdgeCtx<'_> {
-    /// §7.13.2.15/16 neighbour smoothness for the unit at luma MI
-    /// (`mi_col`, `mi_row`): the cell above and the cell to the left.
-    fn smoothness(&self, mi_col: usize, mi_row: usize) -> (bool, bool) {
-        let Some(grid) = self.y_smooth else {
-            return (false, false);
-        };
-        let (col, row) = (mi_col as isize, mi_row as isize);
-        (grid.at(col, row - 1), grid.at(col - 1, row))
-    }
+    /// §7.13.2.15 `is_smooth` of the block's above neighbour.
+    pub(super) above_smooth: bool,
+    /// §7.13.2.16 `is_smooth` of the block's left neighbour.
+    pub(super) left_smooth: bool,
 }
 
 /// The pure §7.13.2.7 step-1 shape of one read edge: which edge, its
@@ -250,7 +250,7 @@ pub(super) enum UnitEdgeRole {
 /// the no-op default when `enable_intra_edge_filter == 0`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn unit_edge_filter<T: ReconSample>(
-    ctx: IntraEdgeCtx<'_>,
+    ctx: IntraEdgeCtx,
     workspace: &CurrentFrameWorkspace<T>,
     p_angle: i32,
     role: UnitEdgeRole,
@@ -262,7 +262,7 @@ pub(super) fn unit_edge_filter<T: ReconSample>(
     if !ctx.enable_intra_edge_filter {
         return Ok(OneSidedEdgeFilter::default());
     }
-    let (above_smooth, left_smooth) = ctx.smoothness(x >> 2, y >> 2);
+    let (above_smooth, left_smooth) = (ctx.above_smooth, ctx.left_smooth);
     let spec = match role {
         UnitEdgeRole::Primary { apply_ibp } => {
             one_sided_read_edge_spec(above_smooth, left_smooth, p_angle, apply_ibp)
@@ -274,14 +274,18 @@ pub(super) fn unit_edge_filter<T: ReconSample>(
 
 /// Resolves the per-unit §7.13.2.7 filters for BOTH edges of a zone-2
 /// (`90 < pAngle < 180`) luma unit, or the no-op defaults when
-/// `enable_intra_edge_filter == 0`. Zone-2 has `applyIbp == 0` semantics for
-/// the filter shape: the OR'd `filterType` seeds both edges, `angleAbove =
-/// pAngle - 90`, `angleLeft = pAngle - 180`, no far spans, and the
-/// §7.13.2.14 corner fires at `(w + h) >= 24` (07:5637-5644).
+/// `enable_intra_edge_filter == 0`. `applyIbp` (`enable_ibp` and a
+/// non-4x4 unit — not zone-gated, 07:5611-5613) keeps the PER-EDGE
+/// §7.13.2.15/16 filter types; otherwise the OR'd `filterType` seeds both
+/// edges. `angleAbove = pAngle - 90`, `angleLeft = pAngle - 180` (in-range
+/// for zone-2 either way), no far spans, and the §7.13.2.14 corner fires
+/// at `(w + h) >= 24` (07:5619-5644).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn unit_middle_edge_filters<T: ReconSample>(
-    ctx: IntraEdgeCtx<'_>,
+    ctx: IntraEdgeCtx,
     workspace: &CurrentFrameWorkspace<T>,
     p_angle: i32,
+    apply_ibp: bool,
     x: usize,
     y: usize,
     w: u32,
@@ -293,18 +297,22 @@ pub(super) fn unit_middle_edge_filters<T: ReconSample>(
             left: OneSidedEdgeFilter::default(),
         });
     }
-    let (above_smooth, left_smooth) = ctx.smoothness(x >> 2, y >> 2);
-    let filter_type = above_smooth || left_smooth;
+    let ored = ctx.above_smooth || ctx.left_smooth;
+    let (filter_type_above, filter_type_left) = if apply_ibp {
+        (ctx.above_smooth, ctx.left_smooth)
+    } else {
+        (ored, ored)
+    };
     let above_spec = EdgeSpec {
         above: true,
-        filter_type,
+        filter_type: filter_type_above,
         angle_delta: p_angle - 90,
         need_far: false,
         corner_applies: true,
     };
     let left_spec = EdgeSpec {
         above: false,
-        filter_type,
+        filter_type: filter_type_left,
         angle_delta: p_angle - 180,
         need_far: false,
         corner_applies: true,

@@ -485,6 +485,9 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
     } else {
         None
     };
+    let (above_smooth, left_smooth) = y_smooth.map_or((false, false), |grid| {
+        grid.block_smoothness(frontier.c, frontier.r)
+    });
     let intra_edge = super::intra_edge::IntraEdgeCtx {
         enable_ibp: sequence
             .intra
@@ -494,7 +497,8 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
             .intra
             .as_ref()
             .is_some_and(|intra| intra.enable_intra_edge_filter),
-        y_smooth,
+        above_smooth,
+        left_smooth,
     };
     let chroma_tools = general_intra_chroma_tools(sequence, core);
     let cfl_ds_filter_index = sequence_cfl_ds_filter_index(sequence);
@@ -723,7 +727,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
-    intra_edge: super::intra_edge::IntraEdgeCtx<'_>,
+    intra_edge: super::intra_edge::IntraEdgeCtx,
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::tile_payload::DecodeBlockFrontier,
@@ -829,7 +833,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn decode_one_general_intra_rect_block<T: ReconSample>(
-    intra_edge: super::intra_edge::IntraEdgeCtx<'_>,
+    intra_edge: super::intra_edge::IntraEdgeCtx,
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     has_chroma: bool,
@@ -1535,7 +1539,7 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
     luma_tx_partition_context: Option<LumaTransformPartitionContext>,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     qindex: u32,
-    intra_edge: super::intra_edge::IntraEdgeCtx<'_>,
+    intra_edge: super::intra_edge::IntraEdgeCtx,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     residual_plan
