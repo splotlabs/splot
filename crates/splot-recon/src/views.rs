@@ -228,6 +228,13 @@ impl<'a, T: ReconSample> PlaneMut<'a, T> {
         self.samples
     }
 
+    /// Returns the full borrowed sample buffer mutably, including stride
+    /// padding. Callers own bit-depth range enforcement, exactly as with
+    /// [`Self::visible_rows_mut`].
+    pub fn samples_mut(&mut self) -> &mut [T] {
+        self.samples
+    }
+
     /// Borrows the plane immutably as a [`PlaneRef`].
     pub fn as_plane_ref(&self) -> PlaneRef<'_, T> {
         PlaneRef::from_parts(self.samples, self.stride_samples, self.visible_rect)
@@ -551,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn plane_ref_rejects_stride_smaller_than_visible_row() {
+    fn plane_ref_rejects_bad_stride_and_visible_rectangle_past_buffer() {
         let samples = [0_u8; 6];
         assert!(matches!(
             PlaneRef::new(&samples, 2, rect(0, 0, 3, 2)),
@@ -560,11 +567,6 @@ mod tests {
                 storage_width: 3
             })
         ));
-    }
-
-    #[test]
-    fn plane_ref_rejects_visible_rectangle_past_buffer() {
-        let samples = [0_u8; 6];
         assert!(matches!(
             PlaneRef::new(&samples, 3, rect(0, 0, 3, 3)),
             Err(ReconError::BufferLengthMismatch {

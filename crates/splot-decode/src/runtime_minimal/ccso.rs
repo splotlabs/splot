@@ -202,12 +202,20 @@ fn ccso_plane<T: ReconSample>(
             units.push((x, y));
         }
     }
+    if units.is_empty() {
+        return Ok(());
+    }
+    if luma_width == 0 || luma_height == 0 {
+        return Err(CcsoError::Geometry);
+    }
 
+    let offset_lut = ccso_offset_lut(params, expected_offsets)?;
     let source = workspace
         .plane(plane_id)
         .map_err(|_| CcsoError::Workspace)?;
     let plane_stride = source.stride_samples();
-    let plane_samples = source.samples().to_vec();
+    let plane_samples = source.samples();
+    let max_luma_x = luma_width - 1;
     let compute = |&(x, y): &(usize, usize)| -> Result<(PlaneRect, Vec<T>), CcsoError> {
         let y_end = plane_height.min(y.saturating_add(blk_h));
         let x_end = plane_width.min(x.saturating_add(blk_w));
@@ -217,41 +225,64 @@ fn ccso_plane<T: ReconSample>(
             .try_reserve_exact(width.checked_mul(y_end - y).ok_or(CcsoError::Geometry)?)
             .map_err(|_| CcsoError::Geometry)?;
         for y3 in y..y_end {
+            let y_luma = y3 << sub_y;
+            let center_row = clamped_luma_row(curr_luma, luma_width, luma_height, y_luma as isize)?;
+            let offset_rows = if bo_only {
+                None
+            } else {
+                Some((
+                    clamped_luma_row(
+                        curr_luma,
+                        luma_width,
+                        luma_height,
+                        y_luma as isize + sample_offsets[0].1,
+                    )?,
+                    clamped_luma_row(
+                        curr_luma,
+                        luma_width,
+                        luma_height,
+                        y_luma as isize + sample_offsets[1].1,
+                    )?,
+                ))
+            };
+            let row_start = y3.checked_mul(plane_stride).ok_or(CcsoError::Workspace)?;
+            let plane_row = plane_samples
+                .get(row_start..row_start.checked_add(x_end).ok_or(CcsoError::Workspace)?)
+                .ok_or(CcsoError::Workspace)?;
             for x3 in x..x_end {
-                let y_luma = y3 << sub_y;
                 let x_luma = x3 << sub_x;
-                let center = ccso_luma(curr_luma, luma_width, luma_height, x_luma, y_luma);
+                let center = center_row[x_luma.min(max_luma_x)];
                 let band = usize::from(center >> band_shift);
-                let (cls0, cls1) = if bo_only {
-                    (0usize, 0usize)
-                } else {
-                    let sample0 = ccso_luma_offset(
-                        curr_luma,
-                        luma_width,
-                        luma_height,
-                        x_luma,
-                        y_luma,
-                        sample_offsets[0],
-                    );
-                    let sample1 = ccso_luma_offset(
-                        curr_luma,
-                        luma_width,
-                        luma_height,
-                        x_luma,
-                        y_luma,
-                        sample_offsets[1],
-                    );
-                    (
-                        ccso_score(i32::from(sample0) - i32::from(center), quant_step, edge_clf),
-                        ccso_score(i32::from(sample1) - i32::from(center), quant_step, edge_clf),
-                    )
+                let (cls0, cls1) = match offset_rows {
+                    None => (0usize, 0usize),
+                    Some((row0, row1)) => {
+                        let sx0 = (x_luma as isize + sample_offsets[0].0)
+                            .clamp(0, max_luma_x as isize)
+                            as usize;
+                        let sx1 = (x_luma as isize + sample_offsets[1].0)
+                            .clamp(0, max_luma_x as isize)
+                            as usize;
+                        (
+                            ccso_score(
+                                i32::from(row0[sx0]) - i32::from(center),
+                                quant_step,
+                                edge_clf,
+                            ),
+                            ccso_score(
+                                i32::from(row1[sx1]) - i32::from(center),
+                                quant_step,
+                                edge_clf,
+                            ),
+                        )
+                    }
                 };
-                let offset = ccso_offset(params, max_edge_interval, max_band, band, cls0, cls1)?;
-                let sample = y3
-                    .checked_mul(plane_stride)
-                    .and_then(|row| row.checked_add(x3))
-                    .and_then(|index| plane_samples.get(index))
-                    .ok_or(CcsoError::Workspace)?;
+                if cls0 >= max_edge_interval || cls1 >= max_edge_interval || band >= max_band {
+                    return Err(CcsoError::Params);
+                }
+                let offset = *offset_lut
+                    .get((cls0 * max_edge_interval + cls1) * max_band + band)
+                    .ok_or(CcsoError::Params)?;
+                let sample = plane_row.get(x3).ok_or(CcsoError::Workspace)?;
                 let value = (i32::from(sample.to_u16()) + offset).clamp(0, max_sample);
                 filtered.push(T::try_from_u16(value as u16).map_err(|_| CcsoError::Sample)?);
             }
@@ -272,52 +303,37 @@ fn ccso_plane<T: ReconSample>(
     Ok(())
 }
 
-fn ccso_offset(
+/// Precomputes `CCSO_OFFSET[ccso_offset_idx[i]] * (scale + 1)` per LUT slot, so
+/// the per-sample lookup is one indexed load.
+fn ccso_offset_lut(
     params: &CcsoPlaneParams,
-    max_edge_interval: usize,
-    max_band: usize,
-    band: usize,
-    cls0: usize,
-    cls1: usize,
-) -> Result<i32, CcsoError> {
-    if cls0 >= max_edge_interval || cls1 >= max_edge_interval || band >= max_band {
-        return Err(CcsoError::Params);
+    expected_offsets: usize,
+) -> Result<Vec<i32>, CcsoError> {
+    let scale = i32::from(params.ccso_scale_idx.ok_or(CcsoError::Params)?) + 1;
+    let mut lut = Vec::new();
+    lut.try_reserve_exact(expected_offsets)
+        .map_err(|_| CcsoError::Geometry)?;
+    for &offset_idx in &params.ccso_offset_idx {
+        let base = CCSO_OFFSET
+            .get(usize::from(offset_idx))
+            .copied()
+            .ok_or(CcsoError::Params)?;
+        lut.push(base * scale);
     }
-    let index = cls0
-        .checked_mul(max_edge_interval)
-        .and_then(|v| v.checked_add(cls1))
-        .and_then(|v| v.checked_mul(max_band))
-        .and_then(|v| v.checked_add(band))
-        .ok_or(CcsoError::Geometry)?;
-    let offset_idx = params
-        .ccso_offset_idx
-        .get(index)
-        .copied()
-        .ok_or(CcsoError::Params)?;
-    let base = CCSO_OFFSET
-        .get(usize::from(offset_idx))
-        .copied()
-        .ok_or(CcsoError::Params)?;
-    Ok(base * (i32::from(params.ccso_scale_idx.ok_or(CcsoError::Params)?) + 1))
+    Ok(lut)
 }
 
-fn ccso_luma(curr_luma: &[u16], width: usize, height: usize, x: usize, y: usize) -> u16 {
-    let sx = x.min(width.saturating_sub(1));
-    let sy = y.min(height.saturating_sub(1));
-    curr_luma[sy * width + sx]
-}
-
-fn ccso_luma_offset(
+fn clamped_luma_row(
     curr_luma: &[u16],
     width: usize,
     height: usize,
-    x: usize,
-    y: usize,
-    offset: (isize, isize),
-) -> u16 {
-    let sx = (x as isize + offset.0).clamp(0, width.saturating_sub(1) as isize) as usize;
-    let sy = (y as isize + offset.1).clamp(0, height.saturating_sub(1) as isize) as usize;
-    curr_luma[sy * width + sx]
+    y: isize,
+) -> Result<&[u16], CcsoError> {
+    let sy = y.clamp(0, height.saturating_sub(1) as isize) as usize;
+    let start = sy.checked_mul(width).ok_or(CcsoError::Geometry)?;
+    curr_luma
+        .get(start..start.checked_add(width).ok_or(CcsoError::Geometry)?)
+        .ok_or(CcsoError::Geometry)
 }
 
 fn ccso_score(diff: i32, quant_step: i32, edge_clf: bool) -> usize {
@@ -400,6 +416,174 @@ mod tests {
             grid_cols,
         )
         .unwrap()
+    }
+
+    fn edge_plane(
+        ext_filter: u8,
+        edge_clf: bool,
+        max_band_log2: u8,
+        offset_count: usize,
+    ) -> CcsoPlaneParams {
+        CcsoPlaneParams {
+            reuse_ccso: false,
+            sb_reuse_ccso: false,
+            ccso_planes: true,
+            ccso_bo_only: Some(false),
+            ccso_scale_idx: Some(2),
+            ccso_quant_idx: Some(1),
+            ccso_ext_filter: Some(ext_filter),
+            ccso_edge_clf: Some(edge_clf),
+            ccso_max_band_log2: Some(max_band_log2),
+            ccso_offset_idx: (0..offset_count).map(|i| (i % 8) as u8).collect(),
+        }
+    }
+
+    fn full_grid(luma_width: usize, luma_height: usize) -> CcsoUnitGrid {
+        let grid_cols = luma_width.div_ceil(4);
+        let grid_rows = luma_height.div_ceil(4);
+        let cells = grid_rows * grid_cols;
+        CcsoUnitGrid::new(
+            true,
+            0,
+            [true; 3],
+            [vec![1; cells], vec![1; cells], vec![1; cells]],
+            grid_rows,
+            grid_cols,
+        )
+        .unwrap()
+    }
+
+    fn asymmetric_luma(width: usize, height: usize) -> Vec<u16> {
+        let mut state = 0x0123_4567_89ab_cdefu64;
+        (0..width * height)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                ((state >> 33) % 256) as u16
+            })
+            .collect()
+    }
+
+    fn ref_luma(curr: &[u16], w: usize, h: usize, x: usize, y: usize) -> u16 {
+        curr[y.min(h - 1) * w + x.min(w - 1)]
+    }
+
+    fn ref_luma_offset(
+        curr: &[u16],
+        w: usize,
+        h: usize,
+        x: usize,
+        y: usize,
+        offset: (isize, isize),
+    ) -> u16 {
+        let sx = (x as isize + offset.0).clamp(0, (w - 1) as isize) as usize;
+        let sy = (y as isize + offset.1).clamp(0, (h - 1) as isize) as usize;
+        curr[sy * w + sx]
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reference_filtered_sample(
+        pre: u8,
+        curr: &[u16],
+        lw: usize,
+        lh: usize,
+        x_luma: usize,
+        y_luma: usize,
+        params: &CcsoPlaneParams,
+        bit_depth: BitDepth,
+    ) -> u8 {
+        let edge_clf = params.ccso_edge_clf.unwrap();
+        let mei = if edge_clf { 2usize } else { 3 };
+        let max_band = 1usize << params.ccso_max_band_log2.unwrap();
+        let band_shift = bit_depth.bits() - params.ccso_max_band_log2.unwrap();
+        let quant_step = i32::from(ccso_quant_step(
+            params.ccso_scale_idx.unwrap(),
+            params.ccso_quant_idx.unwrap(),
+        ));
+        let offsets = ccso_sample_offsets(params.ccso_ext_filter.unwrap()).unwrap();
+        let center = ref_luma(curr, lw, lh, x_luma, y_luma);
+        let band = usize::from(center >> band_shift);
+        let s0 = ref_luma_offset(curr, lw, lh, x_luma, y_luma, offsets[0]);
+        let s1 = ref_luma_offset(curr, lw, lh, x_luma, y_luma, offsets[1]);
+        let cls0 = ccso_score(i32::from(s0) - i32::from(center), quant_step, edge_clf);
+        let cls1 = ccso_score(i32::from(s1) - i32::from(center), quant_step, edge_clf);
+        let index = (cls0 * mei + cls1) * max_band + band;
+        let base = CCSO_OFFSET[usize::from(params.ccso_offset_idx[index])];
+        let offset = base * (i32::from(params.ccso_scale_idx.unwrap()) + 1);
+        (i32::from(pre) + offset).clamp(0, i32::from(bit_depth.max_sample())) as u8
+    }
+
+    #[test]
+    fn ccso_matches_per_sample_reference_for_edge_classifiers() {
+        let luma_width = 18;
+        let luma_height = 10;
+        let curr_luma = asymmetric_luma(luma_width, luma_height);
+        let grid = full_grid(luma_width, luma_height);
+        for &(plane, ext_filter, edge_clf) in &[(0usize, 4u8, false), (1, 3, true), (2, 6, false)] {
+            let sub = usize::from(plane > 0);
+            let mei = if edge_clf { 2usize } else { 3 };
+            let params = edge_plane(ext_filter, edge_clf, 2, mei * mei * 4);
+            let mut workspace = yuv420_workspace(luma_width, luma_height, 0);
+            let plane_id = plane_id(plane);
+            let (pw, ph) = {
+                let size = workspace.plane(plane_id).unwrap().storage_size();
+                (size.width(), size.height())
+            };
+            let mut state = 0xdead_beef_cafe_f00du64;
+            for y in 0..ph {
+                for x in 0..pw {
+                    state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1_442_695_040_888_963_407);
+                    workspace
+                        .set_reconstructed_sample(plane_id, x, y, ((state >> 33) % 256) as u8)
+                        .unwrap();
+                }
+            }
+            let pre = workspace.samples(plane_id).unwrap().to_vec();
+            ccso_plane(
+                &mut workspace,
+                &curr_luma,
+                luma_width,
+                luma_height,
+                plane,
+                &params,
+                &grid,
+                BitDepth::Eight,
+            )
+            .unwrap();
+            let post = workspace.samples(plane_id).unwrap();
+            for y in 0..ph {
+                for x in 0..pw {
+                    let expected = reference_filtered_sample(
+                        pre[y * pw + x],
+                        &curr_luma,
+                        luma_width,
+                        luma_height,
+                        x << sub,
+                        y << sub,
+                        &params,
+                        BitDepth::Eight,
+                    );
+                    assert_eq!(
+                        post[y * pw + x],
+                        expected,
+                        "plane {plane} sample ({x}, {y}) ext_filter {ext_filter} edge_clf {edge_clf}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ccso_offset_lut_rejects_out_of_range_offset_index() {
+        let mut params = edge_plane(0, false, 2, 36);
+        params.ccso_offset_idx[7] = 8;
+        assert!(matches!(
+            ccso_offset_lut(&params, 36),
+            Err(CcsoError::Params)
+        ));
     }
 
     #[test]
