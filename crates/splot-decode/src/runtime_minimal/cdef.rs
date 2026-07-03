@@ -307,8 +307,11 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
 /// enough to keep buffered block outputs cache-resident.
 const CDEF_BLOCK_CHUNK: usize = 1024;
 
-/// One block's filtered planes: `(plane, target rect, samples, row stride)`.
-type CdefBlockOutput<T> = [Option<(PlaneId, PlaneRect, Vec<T>, usize)>; 3];
+/// One filtered plane rectangle: `(plane, target rect, samples, row stride)`.
+type CdefPlaneOutput<T> = (PlaneId, PlaneRect, Vec<T>, usize);
+
+/// One block's filtered planes.
+type CdefBlockOutput<T> = [Option<CdefPlaneOutput<T>>; 3];
 
 struct CdefBlockCtx {
     r: usize,
@@ -427,7 +430,7 @@ fn compute_cdef_filter_plane<T: ReconSample>(
     plane: PlaneId,
     snap: &PlaneSnapshot,
     ctx: &CdefFilterCtx,
-) -> Result<Option<(PlaneId, PlaneRect, Vec<T>, usize)>, CdefError> {
+) -> Result<Option<CdefPlaneOutput<T>>, CdefError> {
     let sub_x = if ctx.sub > 0 { ctx.frame_sub_x } else { 0 };
     let sub_y = if ctx.sub > 0 { ctx.frame_sub_y } else { 0 };
     let x0 = (ctx.c * MI_SIZE) >> sub_x;
@@ -548,9 +551,8 @@ fn gather_taps(
     for k in 0..2 {
         for sign_index in 0..2 {
             primary[k][sign_index] = fetch(offsets.primary[k][sign_index]);
-            for dir_off_index in 0..2 {
-                secondary[k][sign_index][dir_off_index] =
-                    fetch(offsets.secondary[k][sign_index][dir_off_index]);
+            for (dir_off_index, tap) in secondary[k][sign_index].iter_mut().enumerate() {
+                *tap = fetch(offsets.secondary[k][sign_index][dir_off_index]);
             }
         }
     }
