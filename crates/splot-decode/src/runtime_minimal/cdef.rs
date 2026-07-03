@@ -4,7 +4,7 @@
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
     BitDepth, CDEF_DIRECTIONS, CDEF_UV_DIR, CdefSampleTaps, CdefTap, CurrentFrameWorkspace,
-    PlaneId, ReconSample, cdef_direction, cdef_filter_sample,
+    PlaneId, PlaneRect, ReconSample, cdef_direction, cdef_filter_sample,
 };
 
 const MI_SIZE: usize = 4;
@@ -161,17 +161,18 @@ impl PlaneSnapshot {
         width: usize,
         height: usize,
     ) -> Result<Self, CdefError> {
+        let source = workspace.plane(plane).map_err(|_| CdefError::Workspace)?;
+        let stride = source.stride_samples();
+        let backing = source.samples();
         let mut samples = Vec::new();
         samples
             .try_reserve_exact(width.checked_mul(height).ok_or(CdefError::Geometry)?)
             .map_err(|_| CdefError::Geometry)?;
         for y in 0..height {
-            for x in 0..width {
-                let value = workspace
-                    .reconstructed_sample(plane, x, y)
-                    .map_err(|_| CdefError::Workspace)?;
-                samples.push(i32::from(value.to_u16()));
-            }
+            let start = y.checked_mul(stride).ok_or(CdefError::Geometry)?;
+            let end = start.checked_add(width).ok_or(CdefError::Geometry)?;
+            let row = backing.get(start..end).ok_or(CdefError::Workspace)?;
+            samples.extend(row.iter().map(|value| i32::from(value.to_u16())));
         }
         Ok(Self {
             width,
@@ -412,13 +413,25 @@ fn cdef_filter_plane<T: ReconSample>(
     let y0 = (ctx.r * MI_SIZE) >> sub_y;
     let w = (8 >> sub_x).min(snap.width.saturating_sub(x0));
     let h = (8 >> sub_y).min(snap.height.saturating_sub(y0));
+    if w == 0 || h == 0 {
+        return Ok(());
+    }
 
+    // § 7.18 CdefInside reduces to one plane-coordinate rectangle: the mi grid
+    // covers x < (MiCols * MI_SIZE) >> sub_x and y < (MiRows * MI_SIZE) >> sub_y.
+    let inside_x = ((ctx.mi_cols * MI_SIZE) >> sub_x).min(snap.width);
+    let inside_y = ((ctx.mi_rows * MI_SIZE) >> sub_y).min(snap.height);
+
+    let mut filtered_block = Vec::new();
+    filtered_block
+        .try_reserve_exact(w.checked_mul(h).ok_or(CdefError::Geometry)?)
+        .map_err(|_| CdefError::Geometry)?;
     for i in 0..h {
         for j in 0..w {
             let center = snap
                 .get((x0 + j) as isize, (y0 + i) as isize)
                 .ok_or(CdefError::Geometry)?;
-            let taps = gather_taps(snap, ctx, x0, y0, i, j, sub_x, sub_y, center);
+            let taps = gather_taps(snap, ctx, x0 + j, y0 + i, inside_x, inside_y, center);
             let filtered = cdef_filter_sample(
                 &taps,
                 ctx.pri_str,
@@ -429,38 +442,30 @@ fn cdef_filter_plane<T: ReconSample>(
             let clipped = filtered.clamp(0, ctx.max_sample);
             let value = T::try_from_u16(u16::try_from(clipped).map_err(|_| CdefError::Geometry)?)
                 .map_err(|_| CdefError::Workspace)?;
-            workspace
-                .set_reconstructed_sample(plane, x0 + j, y0 + i, value)
-                .map_err(|_| CdefError::Workspace)?;
+            filtered_block.push(value);
         }
     }
-    Ok(())
+    let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
+    workspace
+        .write_rect(plane, rect, &filtered_block, w)
+        .map_err(|_| CdefError::Workspace)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn gather_taps(
     snap: &PlaneSnapshot,
     ctx: &CdefFilterCtx,
-    x0: usize,
-    y0: usize,
-    i: usize,
-    j: usize,
-    sub_x: usize,
-    sub_y: usize,
+    x: usize,
+    y: usize,
+    inside_x: usize,
+    inside_y: usize,
     center: i32,
 ) -> CdefSampleTaps {
     let fetch = |dir: usize, k: usize, sign: i32| -> CdefTap {
-        let y = (y0 + i) as isize + sign as isize * CDEF_DIRECTIONS[dir][k][0] as isize;
-        let x = (x0 + j) as isize + sign as isize * CDEF_DIRECTIONS[dir][k][1] as isize;
-        let candidate_r = (y << sub_y) >> MI_SIZE_LOG2;
-        let candidate_c = (x << sub_x) >> MI_SIZE_LOG2;
-        let inside = candidate_r >= 0
-            && candidate_c >= 0
-            && (candidate_r as usize) < ctx.mi_rows
-            && (candidate_c as usize) < ctx.mi_cols;
-        if inside {
-            match snap.get(x, y) {
-                Some(value) => CdefTap {
+        let y = y as isize + sign as isize * CDEF_DIRECTIONS[dir][k][0] as isize;
+        let x = x as isize + sign as isize * CDEF_DIRECTIONS[dir][k][1] as isize;
+        if x >= 0 && y >= 0 && (x as usize) < inside_x && (y as usize) < inside_y {
+            match snap.samples.get(y as usize * snap.width + x as usize) {
+                Some(&value) => CdefTap {
                     value,
                     available: true,
                 },
