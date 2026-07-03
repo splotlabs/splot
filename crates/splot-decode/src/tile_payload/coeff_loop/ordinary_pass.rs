@@ -240,7 +240,6 @@ pub(crate) struct NonZeroCoeffOrdinaryDerivedBasePass {
     sign_inputs: Vec<CoeffSignReadInput>,
     sign_reads: Vec<CoeffSignRead>,
     quant_pass: NonZeroCoeffQuantPass,
-    block: TransformCoeffBlockState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -296,7 +295,7 @@ impl NonZeroCoeffOrdinaryDerivedBasePass {
 
     #[must_use]
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
-        &self.block
+        self.base_level_pass.block()
     }
 }
 
@@ -522,7 +521,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
     let sign_config = input.sign_config;
     let lossless = input.lossless;
     let walk = walk_nonzero_coeff_scan(&input.start, input.scan)?;
-    let base_level_pass =
+    let mut base_level_pass =
         apply_nonzero_coeff_base_derived_level_pass(cdfs, symbols, input.start, walk, base_config)?;
     let first_pass = base_level_pass.first_pass();
     trace_ordinary_coeff_base_pass(
@@ -562,13 +561,13 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         lossless,
         hr_level_avg: 0,
     };
-    let mut block = base_level_pass.block().clone();
+    let (walk, block) = base_level_pass.walk_and_block_mut();
     let (sign_reads, quant_pass) = apply_interleaved_sign_and_quant_pass(
         cdfs,
         symbols,
         InterleavedSignQuantPassInput {
-            block: &mut block,
-            walk: base_level_pass.walk(),
+            block,
+            walk,
             sign_inputs: &sign_inputs,
             sign_levels: &sign_levels,
             max_level_config: CoeffQuantPassMaxLevelConfig {
@@ -593,7 +592,6 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         sign_inputs,
         sign_reads,
         quant_pass,
-        block,
     })
 }
 
@@ -605,16 +603,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_context_commit(
     context: CoeffOrdinaryContextCommitConfig,
 ) -> Result<NonZeroCoeffOrdinaryDerivedBasePass, CoeffOrdinaryPassError> {
     let pass = apply_nonzero_coeff_ordinary_pass_with_derived_base(cdfs, symbols, input)?;
-    let quant_state = pass.quant_pass().quant_state();
-    state.update_after_coeffs(CoeffContextUpdate {
-        plane: context.plane,
-        x4: context.x4,
-        y4: context.y4,
-        w4: context.w4,
-        h4: context.h4,
-        cul_level: quant_state.cul_level(),
-        dc_category: quant_state.dc_category(),
-    })?;
+    commit_coeff_context(state, &pass, context)?;
     Ok(pass)
 }
 
@@ -632,10 +621,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
         lossless,
     } = input;
     let plane = base_config.plane;
-    let above_dc = clone_dc_context_line(state.above_dc(plane)?)?;
-    let left_dc = clone_dc_context_line(state.left_dc(plane)?)?;
-    apply_nonzero_coeff_ordinary_pass_with_context_commit(
-        state,
+    let pass = apply_nonzero_coeff_ordinary_pass_with_derived_base(
         cdfs,
         symbols,
         CoeffOrdinaryDerivedBasePassInput {
@@ -645,8 +631,8 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
             sign_config: CoeffOrdinaryDerivedSignPassConfig {
                 coeff_cdf_q_ctx: state_context.coeff_cdf_q_ctx,
                 plane_type: state_context.plane_type,
-                above_dc: &above_dc,
-                left_dc: &left_dc,
+                above_dc: state.above_dc(plane)?,
+                left_dc: state.left_dc(plane)?,
                 x4: state_context.x4,
                 y4: state_context.y4,
                 w4: state_context.w4,
@@ -654,6 +640,10 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
             },
             lossless,
         },
+    )?;
+    commit_coeff_context(
+        state,
+        &pass,
         CoeffOrdinaryContextCommitConfig {
             plane,
             x4: state_context.x4,
@@ -661,15 +651,26 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
             w4: state_context.w4,
             h4: state_context.h4,
         },
-    )
+    )?;
+    Ok(pass)
 }
 
-fn clone_dc_context_line(values: &[u8]) -> Result<Vec<u8>, CoeffOrdinaryPassError> {
-    let mut copy = Vec::new();
-    copy.try_reserve_exact(values.len())
-        .map_err(CoeffSignSourceDeriveError::from)?;
-    copy.extend_from_slice(values);
-    Ok(copy)
+fn commit_coeff_context(
+    state: &mut TileCoeffContextState,
+    pass: &NonZeroCoeffOrdinaryDerivedBasePass,
+    context: CoeffOrdinaryContextCommitConfig,
+) -> Result<(), CoeffOrdinaryPassError> {
+    let quant_state = pass.quant_pass().quant_state();
+    state.update_after_coeffs(CoeffContextUpdate {
+        plane: context.plane,
+        x4: context.x4,
+        y4: context.y4,
+        w4: context.w4,
+        h4: context.h4,
+        cul_level: quant_state.cul_level(),
+        dc_category: quant_state.dc_category(),
+    })?;
+    Ok(())
 }
 
 struct InterleavedSignQuantPassInput<'a> {

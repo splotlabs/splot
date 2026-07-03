@@ -141,6 +141,16 @@ impl NonZeroCoeffBaseDerivedLevelPass {
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         &self.block
     }
+
+    /// Splits the walk (shared) from the block (mutable) so the interleaved
+    /// sign/quant tail pass can write quantized values into this pass's block
+    /// without cloning it.
+    #[must_use]
+    pub(crate) const fn walk_and_block_mut(
+        &mut self,
+    ) -> (&NonZeroCoeffScanWalk, &mut TransformCoeffBlockState) {
+        (&self.walk, &mut self.block)
+    }
 }
 
 /// Error returned by the derived ordinary base/level first-pass boundary.
