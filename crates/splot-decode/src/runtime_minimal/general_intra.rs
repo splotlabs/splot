@@ -332,7 +332,7 @@ fn decode_general_intra_frame_into<T: ReconSample>(
         super::deblock::deblock_general_intra_frame(
             &mut workspace,
             &deblock_blocks,
-            [&[], &[]],
+            [&chroma_deblock_scratch[0], &chroma_deblock_scratch[1]],
             mi_rows,
             mi_cols,
             filter,
