@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "1acef81927a840e38cafbf1683e1bdcbaea010fe",
+  "audited_commit": "5eb89a8a9409e4b84644ef0b098c7b22b8c944da",
   "outcome": "success",
   "files": [
     {
@@ -2082,7 +2082,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/general_intra.rs",
-      "sha256": "fb2abb5001e20fc7e062c862fa0d37e4d57a3a73d1f1f9d3c3bd3749e8cc3999",
+      "sha256": "c3a9477ad87c7270668e9955eba085007c9ac1fd7216815e96e3c469a472d214",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-10BIT",
@@ -2131,7 +2131,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "e9319b098c9ebb8c4c2f5a220a5948a26276f16b2a32f34b1e5148a1c4a9ac48",
+      "sha256": "9d8a1c985179b47c8c51d963fb5043b3c31ab477ba145ffb45bddab68750f305",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2303,7 +2303,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/residual_pipeline.rs",
-      "sha256": "1fb848fae664a181c5be7550929a768b8ebb12a039f2ca57fd0cdc25330b3fea",
+      "sha256": "774996a2fe5b69d0103ba02a6e1432b151c1b2e1d229fdf94e7994abbfe4ea41",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
