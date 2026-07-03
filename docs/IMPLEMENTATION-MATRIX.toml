@@ -20656,3 +20656,48 @@ commands = [
 ]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "INFRA-DECODE-FIRST-FRAME-LATENCY"
+name = "Decode first-frame latency optimization"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.20.3", "7.20.4"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md",
+]
+crate = "splot-recon"
+module = "crates/splot-recon/src/wienerns_filter.rs"
+openspec_change = "optimize-decode-first-frame-latency"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Measured follow-up to INFRA-DECODE-SERIAL-HOT-PATHS for the 1080p10 first-frame decode frontier. Warmed baseline on the motivating IVF was 147.319 ms raw/default, 300.236 ms raw --threads 1, 135.324 ms hash/default, and 289.633 ms hash --threads 1; SPLOT_DECODE_TIMING attributed about 132 ms to runtime decode while input read, context construction, planning, and raw serialization were sub-2 ms each. This slice removes the luma Wiener NS in-range row segment Vec collection and adds hot PC-Wiener/Luma Wiener inline hints while preserving bit-exact output, fail-atomic helper behavior, owned-pool determinism, and no AV2 semantics changes. Final warmed medians were 144.664 ms raw/default, 284.383 ms raw --threads 1, 134.578 ms hash/default, and 276.009 ms hash --threads 1, so perf remains partial and the remaining hotspot is runtime reconstruction/final filtering rather than input/planning."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "partial"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/wienerns_filter.rs::tests::padded_and_callback_filters_match_bit_exactly",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::padded_and_callback_filters_match_bit_exactly_eight_bit_wide_block",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::padded_filter_rejects_source_sample_out_of_range",
+    "crates/splot-recon/src/pc_wiener.rs::tests",
+]
+commands = [
+    "cargo test -p splot-recon wiener --locked",
+    "cargo build --release --locked",
+    "SPLOT_DECODE_TIMING=1 ./target/release/splot decode --quiet --output-format raw --limit=1 -o /tmp/ac0ej3-splot-timing-1.raw $SPLOT_AC0EJ3_IVF",
+    "SPLOT_DECODE_TIMING=1 ./target/release/splot decode --quiet --output-format hash --limit=1 $SPLOT_AC0EJ3_IVF",
+]
+fixtures = []
+diagnostics = []

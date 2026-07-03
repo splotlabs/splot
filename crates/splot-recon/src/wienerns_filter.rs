@@ -111,6 +111,7 @@ pub struct WienerNsLumaFilter<'a> {
 /// out-of-range subclass maps, and source samples outside the active bit-depth
 /// range. The caller output is not modified unless all validation and filtering
 /// succeeds.
+#[inline]
 pub fn wiener_ns_filter_luma_block<T, F>(
     output: &mut [T],
     params: &WienerNsLumaFilter<'_>,
@@ -209,6 +210,7 @@ impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
 /// Returns the same typed [`ReconError`] values as
 /// [`wiener_ns_filter_luma_block`], including source samples outside the
 /// active bit-depth range.
+#[inline]
 pub fn wiener_ns_filter_luma_block_padded<T: ReconSample>(
     output: &mut [T],
     params: &WienerNsLumaFilter<'_>,
@@ -323,6 +325,7 @@ fn padded_row<T: ReconSample>(
 /// row-slice arithmetic: taps outer, samples inner, over per-subclass
 /// segments. The i64 accumulation adds the same § 7.20.3 tap terms in config
 /// order, so the result is bit-identical to the per-sample path.
+#[inline]
 fn filter_padded_luma_row_in_range<T: ReconSample>(
     filtered: &mut Vec<T>,
     acc: &mut [i64],
@@ -339,68 +342,103 @@ fn filter_padded_luma_row_in_range<T: ReconSample>(
     for (dy, row) in rows.iter_mut().enumerate() {
         *row = padded_row(samples, stride, r + dy, padded_width)?;
     }
-    let segment_error = || ReconError::BufferLengthMismatch {
-        expected: width,
-        actual: 0,
-    };
     let center = rows[RADIUS]
         .get(RADIUS..RADIUS + width)
-        .ok_or_else(segment_error)?;
+        .ok_or_else(|| luma_segment_error(width))?;
 
     let row_start = r.checked_mul(width).ok_or(ReconError::ArithmeticOverflow {
         context: "Wiener NS luma filter row start",
     })?;
-    let mut segment_start = 0usize;
-    let mut segments: Vec<(usize, usize)> = Vec::new();
     match params.subclasses {
-        None => segments.push((0, width)),
+        None => filter_padded_luma_segment(
+            filtered, acc, &rows, center, 0, width, 0, params, max_sample,
+        )?,
         Some(subclasses) => {
             let row_subclasses = subclasses
                 .get(row_start..row_start + width)
-                .ok_or_else(segment_error)?;
-            for run in row_subclasses.chunk_by(|a, b| a == b) {
-                segments.push((segment_start, run.len()));
-                segment_start += run.len();
+                .ok_or_else(|| luma_segment_error(width))?;
+            let mut segment_start = 0usize;
+            while segment_start < width {
+                let subclass = row_subclasses[segment_start];
+                let mut segment_end = segment_start + 1;
+                while segment_end < width && row_subclasses[segment_end] == subclass {
+                    segment_end += 1;
+                }
+                filter_padded_luma_segment(
+                    filtered,
+                    acc,
+                    &rows,
+                    center,
+                    segment_start,
+                    segment_end - segment_start,
+                    subclass,
+                    params,
+                    max_sample,
+                )?;
+                segment_start = segment_end;
             }
         }
     }
 
-    for &(c0, len) in &segments {
-        let sample_index = row_start + c0;
-        let coeffs = params
-            .coeffs_by_class
-            .get(match params.subclasses {
-                Some(subclasses) => subclasses
-                    .get(sample_index)
-                    .copied()
-                    .ok_or_else(segment_error)?,
-                None => 0,
-            })
-            .ok_or_else(segment_error)?;
-        let seg = acc.get_mut(c0..c0 + len).ok_or_else(segment_error)?;
-        let center_seg = center.get(c0..c0 + len).ok_or_else(segment_error)?;
-        for (a, &m) in seg.iter_mut().zip(center_seg) {
-            *a = i64::from(m.to_u16()) << WIENER_NS_PREC_BITS;
-        }
-        for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y {
-            let coeff = i64::from(coeffs[coeff_index]);
-            let row = rows
-                .get(usize::try_from(dy + RADIUS as isize).map_err(|_| segment_error())?)
-                .ok_or_else(segment_error)?;
-            let offset = usize::try_from(dx + RADIUS as isize).map_err(|_| segment_error())?;
-            let taps = row
-                .get(c0 + offset..c0 + offset + len)
-                .ok_or_else(segment_error)?;
-            for ((a, &t), &m) in seg.iter_mut().zip(taps).zip(center_seg) {
-                *a += (i64::from(t.to_u16()) - i64::from(m.to_u16())) * coeff;
-            }
-        }
-        for &s in seg.iter() {
-            let value = round2(s, WIENER_NS_PREC_BITS).clamp(0, i64::from(max_sample));
-            filtered.push(T::try_from_u16(value as u16)?);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn filter_padded_luma_segment<T: ReconSample>(
+    filtered: &mut Vec<T>,
+    acc: &mut [i64],
+    rows: &[&[T]; 2 * WIENER_NS_LUMA_TAP_RADIUS + 1],
+    center: &[T],
+    c0: usize,
+    len: usize,
+    subclass: usize,
+    params: &WienerNsLumaFilter<'_>,
+    max_sample: u16,
+) -> Result<()> {
+    const RADIUS: usize = WIENER_NS_LUMA_TAP_RADIUS;
+    let coeffs = params
+        .coeffs_by_class
+        .get(subclass)
+        .ok_or_else(|| luma_segment_error(params.width))?;
+    let seg = acc
+        .get_mut(c0..c0 + len)
+        .ok_or_else(|| luma_segment_error(params.width))?;
+    let center_seg = center
+        .get(c0..c0 + len)
+        .ok_or_else(|| luma_segment_error(params.width))?;
+    for (a, &m) in seg.iter_mut().zip(center_seg) {
+        *a = i64::from(m.to_u16()) << WIENER_NS_PREC_BITS;
+    }
+    for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y {
+        let coeff = i64::from(coeffs[coeff_index]);
+        let row = rows
+            .get(
+                usize::try_from(dy + RADIUS as isize)
+                    .map_err(|_| luma_segment_error(params.width))?,
+            )
+            .ok_or_else(|| luma_segment_error(params.width))?;
+        let offset =
+            usize::try_from(dx + RADIUS as isize).map_err(|_| luma_segment_error(params.width))?;
+        let taps = row
+            .get(c0 + offset..c0 + offset + len)
+            .ok_or_else(|| luma_segment_error(params.width))?;
+        for ((a, &t), &m) in seg.iter_mut().zip(taps).zip(center_seg) {
+            *a += (i64::from(t.to_u16()) - i64::from(m.to_u16())) * coeff;
         }
     }
+    for &s in seg.iter() {
+        let value = round2(s, WIENER_NS_PREC_BITS).clamp(0, i64::from(max_sample));
+        filtered.push(T::try_from_u16(value as u16)?);
+    }
     Ok(())
+}
+
+const fn luma_segment_error(width: usize) -> ReconError {
+    ReconError::BufferLengthMismatch {
+        expected: width,
+        actual: 0,
+    }
 }
 
 /// Per-sample § 7.20.3 filtering for rows whose padded window may hold
