@@ -5,6 +5,7 @@ use splot_core::headers::frame::{DeblockingFilterParams, QuantizationParams};
 use splot_core::tables::conversion::{
     Q_FIRST, Q_THRESH_MULTS, SIDE_THRESHOLDS, TX_HEIGHT, TX_WIDTH, W_MULT,
 };
+use splot_parallel::prelude::*;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, PlaneId,
     ReconSample, deblock_adaptive_filter_strength, deblock_filter_choice, deblock_filter_max_width,
@@ -157,7 +158,48 @@ fn deblock_plane_pass<T: ReconSample>(
         return Ok(());
     };
     let stride = view.stride_samples();
-    let mut ctx = PlaneCtx::new(view.samples_mut(), stride, width, height)?;
+    let samples = view.samples_mut();
+
+    // § 7.17 pass 0 filters vertical edges with purely horizontal perpendicular
+    // lines: every read and write of the edges at MI row `r` stays inside that
+    // row's 4 plane rows once the MI coverage fits the plane, so the 4-row
+    // bands are disjoint and their processing order cannot change the output.
+    let covered_rows = (mi_rows * MI_SIZE) >> plane_pass.plane_sub_y;
+    if plane_pass.pass == 0
+        && covered_rows <= height
+        && splot_parallel::on_multiworker_pool()
+        && let Some(band_len) = stride.checked_mul(MI_SIZE)
+        && band_len > 0
+    {
+        let usable = stride.checked_mul(height).ok_or(DeblockError::Workspace)?;
+        let bands: Vec<(usize, &mut [T])> = samples
+            .get_mut(..usable)
+            .ok_or(DeblockError::Workspace)?
+            .chunks_mut(band_len)
+            .enumerate()
+            .collect();
+        return bands.into_par_iter().try_for_each(|(band_index, band)| {
+            let r = band_index * plane_pass.row_step;
+            if r >= mi_rows {
+                return Ok(());
+            }
+            let y_origin = band_index * MI_SIZE;
+            let rows = band.len() / stride;
+            let mut ctx = PlaneCtx::band(band, stride, width, height, y_origin, rows)?;
+            let mut strengths = StrengthCache::default();
+            for c in (0..mi_cols).step_by(plane_pass.col_step) {
+                deblock_filter_edge(
+                    &mut ctx,
+                    grid,
+                    plane_pass.edge_context(r, c),
+                    &mut strengths,
+                )?;
+            }
+            Ok(())
+        });
+    }
+
+    let mut ctx = PlaneCtx::new(samples, stride, width, height)?;
     let mut strengths = StrengthCache::default();
     for r in (0..mi_rows).step_by(plane_pass.row_step) {
         for c in (0..mi_cols).step_by(plane_pass.col_step) {
@@ -173,14 +215,18 @@ fn deblock_plane_pass<T: ReconSample>(
 }
 
 /// Direct sample access for one plane pass, with the bounds proof hoisted out
-/// of the per-sample loops: `width <= stride` and `stride * height <=
-/// samples.len()` are validated once, so every clamped `(x, y)` with
-/// `x < width, y < height` indexes in bounds.
+/// of the per-sample loops. `samples` holds the plane rows starting at
+/// `y_origin`; `width`/`height` stay the full plane dimensions so read
+/// clamping and write bounds are unchanged, and every access with
+/// `y_origin <= y < y_origin + rows` indexes in bounds. The § 7.17 vertical
+/// pass filters purely horizontal perpendicular lines, so a 4-row band slice
+/// covers every read and write its edges can make.
 struct PlaneCtx<'a, T: ReconSample> {
     samples: &'a mut [T],
     stride: usize,
     width: usize,
     height: usize,
+    y_origin: usize,
 }
 
 impl<'a, T: ReconSample> PlaneCtx<'a, T> {
@@ -199,7 +245,33 @@ impl<'a, T: ReconSample> PlaneCtx<'a, T> {
             stride,
             width,
             height,
+            y_origin: 0,
         })
+    }
+
+    fn band(
+        samples: &'a mut [T],
+        stride: usize,
+        width: usize,
+        height: usize,
+        y_origin: usize,
+        rows: usize,
+    ) -> Result<Self, DeblockError> {
+        let required = stride.checked_mul(rows).ok_or(DeblockError::Workspace)?;
+        if width > stride || required > samples.len() {
+            return Err(DeblockError::Workspace);
+        }
+        Ok(Self {
+            samples,
+            stride,
+            width,
+            height,
+            y_origin,
+        })
+    }
+
+    fn index(&self, x: usize, y: usize) -> usize {
+        (y - self.y_origin) * self.stride + x
     }
 }
 
@@ -548,7 +620,8 @@ fn apply_sample_filter<T: ReconSample>(
         if fx >= plane_ctx.width || fy >= plane_ctx.height {
             return Err(DeblockError::Workspace);
         }
-        plane_ctx.samples[fy * plane_ctx.stride + fx] = new;
+        let index = plane_ctx.index(fx, fy);
+        plane_ctx.samples[index] = new;
     }
     Ok(())
 }
@@ -564,7 +637,7 @@ fn gather_line<T: ReconSample>(
         let offset = idx as isize - GATHER_HALF as isize;
         let sx = (perp.x as isize + offset * perp.dx as isize).clamp(0, max_x) as usize;
         let sy = (perp.y as isize + offset * perp.dy as isize).clamp(0, max_y) as usize;
-        *lane = plane_ctx.samples[sy * plane_ctx.stride + sx];
+        *lane = plane_ctx.samples[plane_ctx.index(sx, sy)];
     }
     line
 }
@@ -1224,5 +1297,50 @@ mod tests {
             100,
             "V plane untouched (apply[3] == false)"
         );
+    }
+
+    #[test]
+    fn banded_parallel_pass_matches_serial_output() {
+        use splot_parallel::{ThreadCount, WorkerPool};
+
+        let (mi_rows, mi_cols) = (16usize, 32usize);
+        let blocks = deblock_blocks(mi_rows, mi_cols);
+        let mut serial = yuv420_workspace_10bit(128, 64, 512);
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            splat_asymmetric(&mut serial, plane, 1023);
+        }
+        let mut parallel = yuv420_workspace_10bit(128, 64, 512);
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            splat_asymmetric(&mut parallel, plane, 1023);
+        }
+
+        let run = |ws: &mut CurrentFrameWorkspace<u16>| {
+            deblock_general_intra_frame(
+                ws,
+                &blocks,
+                [&[], &[]],
+                mi_rows,
+                mi_cols,
+                filter([true, true, true, true]),
+                DeblockQuantDeltas::ZERO,
+                BitDepth::Ten,
+            )
+            .unwrap();
+        };
+        run(&mut serial);
+        let pool = WorkerPool::new(ThreadCount::Fixed(4.try_into().unwrap())).unwrap();
+        assert!(pool.install(|| {
+            let active = splot_parallel::on_multiworker_pool();
+            run(&mut parallel);
+            active
+        }));
+
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            assert_eq!(
+                serial.samples(plane).unwrap(),
+                parallel.samples(plane).unwrap(),
+                "banded parallel pass 0 must match the serial pass for {plane:?}"
+            );
+        }
     }
 }
