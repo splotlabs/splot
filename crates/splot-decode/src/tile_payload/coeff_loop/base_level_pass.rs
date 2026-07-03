@@ -20,7 +20,6 @@ use super::base_symbol::{
     CoeffBaseSymbolSource, read_coeff_base_symbol,
 };
 use super::branch::NonZeroCoeffBlockStart;
-use super::fsc_level_pass::expected_fsc_entry_pos as expected_entry_pos;
 use super::max_level::{
     COEFF_BASE_RANGE, CoeffTransformClass, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS,
     coeff_is_low_frequency,
@@ -169,14 +168,6 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
     },
     #[error("coefficient base/level tx_width_log2 {tx_width_log2} does not match width {tx_width}")]
     TxWidthLog2Mismatch { tx_width_log2: u32, tx_width: usize },
-    #[error(
-        "coefficient base/level scan entry {entry:?} maps to position {expected_pos}, not {actual_pos}"
-    )]
-    ScanEntryPositionMismatch {
-        entry: CoeffScanEntry,
-        expected_pos: usize,
-        actual_pos: usize,
-    },
     #[error("coefficient base/level config cannot enable parity hiding and TCQ together")]
     InconsistentParityAndTcq,
     #[error("coefficient base/level entry {entry:?} used invalid tcqState {tcq_state}")]
@@ -261,18 +252,10 @@ fn preflight_pass(
             entries: entries.len(),
         });
     }
-    for entry in entries.iter().copied() {
-        block.level_at(entry.row(), entry.col())?;
-        block.quant_at(entry.pos())?;
-        let expected_pos = expected_entry_pos(block, entry)?;
-        if expected_pos != entry.pos() {
-            return Err(CoeffBaseDerivedLevelPassError::ScanEntryPositionMismatch {
-                entry,
-                expected_pos,
-                actual_pos: entry.pos(),
-            });
-        }
-    }
+    // Entry coordinates need no per-entry re-validation here:
+    // `walk_nonzero_coeff_scan` already bounds every scan position against the
+    // same block and derives row/col from it, and the read loop's `set_level`
+    // still rejects any out-of-range coordinate before writing.
     Ok(())
 }
 

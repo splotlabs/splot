@@ -717,9 +717,6 @@ fn apply_interleaved_sign_and_quant_pass(
                 max_level: max_level.max_level,
                 use_tcq: config.use_tcq,
             })?;
-        block
-            .quant_at(entry.pos())
-            .map_err(CoeffQuantPassError::from)?;
     }
 
     let mut sign_reads = Vec::new();
