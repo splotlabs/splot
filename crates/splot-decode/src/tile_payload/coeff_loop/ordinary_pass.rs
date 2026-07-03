@@ -908,14 +908,20 @@ fn trace_ordinary_coeff_tail_pass(
     }
 }
 
+static TRACE_ORDINARY_COEFF_PASS: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SPLOT_TRACE_ORDINARY_COEFF_PASS").is_some());
+
+static TRACE_ORDINARY_COEFF_TARGET: std::sync::LazyLock<Option<String>> =
+    std::sync::LazyLock::new(|| std::env::var("SPLOT_TRACE_ORDINARY_COEFF_TARGET").ok());
+
 fn trace_ordinary_coeff_enabled(
     config: CoeffBaseDerivedLevelPassConfig,
     sign_config: CoeffOrdinaryDerivedSignPassConfig<'_>,
 ) -> bool {
-    if std::env::var_os("SPLOT_TRACE_ORDINARY_COEFF_PASS").is_none() {
+    if !*TRACE_ORDINARY_COEFF_PASS {
         return false;
     }
-    let Some(target) = std::env::var("SPLOT_TRACE_ORDINARY_COEFF_TARGET").ok() else {
+    let Some(target) = TRACE_ORDINARY_COEFF_TARGET.as_deref() else {
         return true;
     };
     let mut parts = target.split(',');

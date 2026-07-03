@@ -371,14 +371,16 @@ fn read_one_bit(
     Ok(read_literal(symbols, index, 1, syntax)? != 0)
 }
 
+static TRACE_RAW_LITERALS: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some());
+
 fn read_literal(
     symbols: &mut SymbolDecoder<'_>,
     index: usize,
     width: u32,
     syntax: &'static str,
 ) -> Result<u32, CoeffReadQuantError> {
-    let trace_raw = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
-    let raw_before = trace_raw.then(|| symbols.checkpoint());
+    let raw_before = (*TRACE_RAW_LITERALS).then(|| symbols.checkpoint());
     let value = symbols
         .read_literal(width)
         .map_err(|source| CoeffReadQuantError::LiteralRead {

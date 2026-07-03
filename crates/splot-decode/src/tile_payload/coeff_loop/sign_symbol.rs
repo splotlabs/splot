@@ -308,13 +308,19 @@ fn derive_coeff_sign_source(
     CoeffSignReadSource::SignBit
 }
 
+static TRACE_DC_SIGN_CTX: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| env::var_os("SPLOT_TRACE_DC_SIGN_CTX").is_some());
+
+static TRACE_RAW_LITERALS: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some());
+
 fn trace_dc_sign_context(
     entry: CoeffScanEntry,
     level: u32,
     config: CoeffSignSourceDeriveConfig<'_>,
     ctx: usize,
 ) {
-    if env::var_os("SPLOT_TRACE_DC_SIGN_CTX").is_none() {
+    if !*TRACE_DC_SIGN_CTX {
         return;
     }
     eprintln!(
@@ -427,8 +433,7 @@ pub(crate) fn read_preflighted_nonzero_coeff_sign(
             (CoeffSignReadSymbol::Cdf { syntax, symbol }, symbol != 0)
         }
         CoeffSignReadSource::SignBit => {
-            let trace = env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
-            let before = trace.then(|| symbols.checkpoint());
+            let before = (*TRACE_RAW_LITERALS).then(|| symbols.checkpoint());
             let bit = symbols
                 .read_literal(1)
                 .map_err(|source| CoeffSignReadError::LiteralRead { source })?

@@ -45,6 +45,9 @@ use super::coeff_state::CoeffContextUpdate;
 use super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
 use super::{DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
+static TRACE_TXB_SKIP: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SPLOT_TRACE_TXB_SKIP").is_some());
+
 const TX_64X64: usize = 4;
 const TX_8X8: usize = 1;
 const TX_16X16: usize = 2;
@@ -959,7 +962,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         },
     };
 
-    if std::env::var_os("SPLOT_TRACE_TXB_SKIP").is_some() {
+    if *TRACE_TXB_SKIP {
         eprintln!(
             "txb_skip read plane={plane} tx_size={tx_size} tx_size_ctx={tx_size_ctx} start=({start_x},{start_y}) x4={x4} y4={y4} w4={w4} h4={h4} fills={tx_fills_block} is_inter={is_inter} fsc={fsc_mode} txb_fsc={txb_skip_fsc_mode} above_or={above_level_or} left_or={left_level_or} eob_u={eob_u_nonzero} selector={selector:?} checkpoint={:?}",
             symbols.checkpoint(),
@@ -972,7 +975,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         .map_err(|source| GeneralIntraResidualError::AllZeroRead { source })?
         .get()
         != 0;
-    if std::env::var_os("SPLOT_TRACE_TXB_SKIP").is_some() {
+    if *TRACE_TXB_SKIP {
         eprintln!(
             "txb_skip done plane={plane} start=({start_x},{start_y}) all_zero={all_zero} checkpoint={:?}",
             symbols.checkpoint(),
