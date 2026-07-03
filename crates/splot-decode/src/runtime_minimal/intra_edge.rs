@@ -246,14 +246,33 @@ pub(super) enum UnitEdgeRole {
     IbpSecondary,
 }
 
+/// The unit's §7.13.2.1 edge availability: the §7.13.2.7 strength filter
+/// only runs over an edge with real samples, and the §7.13.2.14 corner
+/// blend needs both edges.
+#[derive(Clone, Copy)]
+pub(super) struct UnitEdges {
+    /// The unit has an above row to read.
+    pub(super) above: bool,
+    /// The unit has a left column to read.
+    pub(super) left: bool,
+}
+
+impl UnitEdges {
+    const fn read_edge_available(self, above: bool) -> bool {
+        if above { self.above } else { self.left }
+    }
+}
+
 /// Resolves a per-unit §7.13.2.7 edge filter for a one-sided luma unit, or
-/// the no-op default when `enable_intra_edge_filter == 0`.
+/// the no-op default when `enable_intra_edge_filter == 0` or the read edge
+/// has no real samples.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn unit_edge_filter<T: ReconSample>(
     ctx: IntraEdgeCtx,
     workspace: &CurrentFrameWorkspace<T>,
     p_angle: i32,
     role: UnitEdgeRole,
+    edges: UnitEdges,
     x: usize,
     y: usize,
     w: u32,
@@ -263,12 +282,16 @@ pub(super) fn unit_edge_filter<T: ReconSample>(
         return Ok(OneSidedEdgeFilter::default());
     }
     let (above_smooth, left_smooth) = (ctx.above_smooth, ctx.left_smooth);
-    let spec = match role {
+    let mut spec = match role {
         UnitEdgeRole::Primary { apply_ibp } => {
             one_sided_read_edge_spec(above_smooth, left_smooth, p_angle, apply_ibp)
         }
         UnitEdgeRole::IbpSecondary => ibp_secondary_edge_spec(above_smooth, left_smooth, p_angle),
     };
+    if !edges.read_edge_available(spec.above) {
+        return Ok(OneSidedEdgeFilter::default());
+    }
+    spec.corner_applies = spec.corner_applies && edges.above && edges.left;
     assemble_unit_edge_filter(workspace, PlaneId::Y, &spec, x, y, w, h)
 }
 
@@ -286,6 +309,7 @@ pub(super) fn unit_middle_edge_filters<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     p_angle: i32,
     apply_ibp: bool,
+    edges: UnitEdges,
     x: usize,
     y: usize,
     w: u32,
@@ -303,24 +327,32 @@ pub(super) fn unit_middle_edge_filters<T: ReconSample>(
     } else {
         (ored, ored)
     };
+    let corner_applies = edges.above && edges.left;
     let above_spec = EdgeSpec {
         above: true,
         filter_type: filter_type_above,
         angle_delta: p_angle - 90,
         need_far: false,
-        corner_applies: true,
+        corner_applies,
     };
     let left_spec = EdgeSpec {
         above: false,
         filter_type: filter_type_left,
         angle_delta: p_angle - 180,
         need_far: false,
-        corner_applies: true,
+        corner_applies,
     };
-    Ok(TwoSidedMiddleEdgeFilters {
-        above: assemble_unit_edge_filter(workspace, PlaneId::Y, &above_spec, x, y, w, h)?,
-        left: assemble_unit_edge_filter(workspace, PlaneId::Y, &left_spec, x, y, w, h)?,
-    })
+    let above = if edges.above {
+        assemble_unit_edge_filter(workspace, PlaneId::Y, &above_spec, x, y, w, h)?
+    } else {
+        OneSidedEdgeFilter::default()
+    };
+    let left = if edges.left {
+        assemble_unit_edge_filter(workspace, PlaneId::Y, &left_spec, x, y, w, h)?
+    } else {
+        OneSidedEdgeFilter::default()
+    };
+    Ok(TwoSidedMiddleEdgeFilters { above, left })
 }
 
 #[cfg(test)]

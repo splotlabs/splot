@@ -1081,11 +1081,16 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::LumaRectMiddle { p_angle, use_tcq } => {
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
+                let edges = super::intra_edge::UnitEdges {
+                    above: block_ctx.neighbours(PlaneId::Y).has_above(),
+                    left: block_ctx.neighbours(PlaneId::Y).has_left(),
+                };
                 let edge_filters = super::intra_edge::unit_middle_edge_filters(
                     intra_edge,
                     workspace,
                     i32::from(p_angle),
                     apply_ibp,
+                    edges,
                     self.x,
                     self.y,
                     w,
@@ -1184,22 +1189,28 @@ impl ResidualPlanePlan {
                 let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
+                let edges = super::intra_edge::UnitEdges {
+                    above: block_ctx.neighbours(PlaneId::Y).has_above(),
+                    left: block_ctx.neighbours(PlaneId::Y).has_left(),
+                };
                 let edge_filter = super::intra_edge::unit_edge_filter(
                     intra_edge,
                     workspace,
                     i32::from(p_angle),
                     super::intra_edge::UnitEdgeRole::Primary { apply_ibp },
+                    edges,
                     self.x,
                     self.y,
                     w,
                     h,
                 )?;
-                if apply_ibp && luma_context.angle_delta_y() % 2 == 0 {
+                if apply_ibp && luma_context.angle_delta_y() % 2 == 0 && edges.above && edges.left {
                     let secondary_filter = super::intra_edge::unit_edge_filter(
                         intra_edge,
                         workspace,
                         i32::from(p_angle),
                         super::intra_edge::UnitEdgeRole::IbpSecondary,
+                        edges,
                         self.x,
                         self.y,
                         w,
@@ -1315,22 +1326,28 @@ impl ResidualPlanePlan {
                 let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
+                let edges = super::intra_edge::UnitEdges {
+                    above: block_ctx.neighbours(PlaneId::Y).has_above(),
+                    left: block_ctx.neighbours(PlaneId::Y).has_left(),
+                };
                 let edge_filter = super::intra_edge::unit_edge_filter(
                     intra_edge,
                     workspace,
                     i32::from(p_angle),
                     super::intra_edge::UnitEdgeRole::Primary { apply_ibp },
+                    edges,
                     self.x,
                     self.y,
                     w,
                     h,
                 )?;
-                if apply_ibp && luma_context.angle_delta_y() % 2 == 0 {
+                if apply_ibp && luma_context.angle_delta_y() % 2 == 0 && edges.above && edges.left {
                     let secondary_filter = super::intra_edge::unit_edge_filter(
                         intra_edge,
                         workspace,
                         i32::from(p_angle),
                         super::intra_edge::UnitEdgeRole::IbpSecondary,
+                        edges,
                         self.x,
                         self.y,
                         w,
