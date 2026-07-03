@@ -875,21 +875,48 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         }
-        let deblocked_luma = self.plane_snapshot(
-            PlaneId::Y,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_deblocked_luma_snapshot",
-        )?;
-        let deblocked_u = self.plane_snapshot(
-            PlaneId::U,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
-        )?;
-        let deblocked_v = self.plane_snapshot(
-            PlaneId::V,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
-        )?;
+        let lr_plane_active = |plane_index: usize| {
+            core.lr_params.as_ref().is_some_and(|lr| {
+                lr.planes.get(plane_index).is_some_and(|plane| {
+                    plane.restoration_type
+                        == splot_core::headers::frame::FrameRestorationType::WienerNonsep
+                })
+            }) && self
+                .lr_source_blocks
+                .iter()
+                .any(|block| block.plane == plane_index)
+        };
+        let luma_lr_active = lr_plane_active(PlaneId::Y.index());
+        let u_lr_active = lr_plane_active(PlaneId::U.index());
+        let v_lr_active = lr_plane_active(PlaneId::V.index());
+        let any_lr_active = luma_lr_active || u_lr_active || v_lr_active;
+        let deblocked_luma = if any_lr_active || self.ccso_grid.is_some() {
+            self.plane_snapshot(
+                PlaneId::Y,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_deblocked_luma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
+        let deblocked_u = if u_lr_active {
+            self.plane_snapshot(
+                PlaneId::U,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
+        let deblocked_v = if v_lr_active {
+            self.plane_snapshot(
+                PlaneId::V,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
         let cdef_skip_grid = self.cdef_skip_grid(core, mi_rows, mi_cols, offset)?;
         if let (Some(grid), Some(strengths)) = (
             self.cdef_grid.as_ref(),
@@ -928,21 +955,33 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         }
-        let cdef_luma = self.plane_snapshot(
-            PlaneId::Y,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_cdef_luma_snapshot",
-        )?;
-        let cdef_u = self.plane_snapshot(
-            PlaneId::U,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
-        )?;
-        let cdef_v = self.plane_snapshot(
-            PlaneId::V,
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
-        )?;
+        let cdef_luma = if any_lr_active {
+            self.plane_snapshot(
+                PlaneId::Y,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_cdef_luma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
+        let cdef_u = if u_lr_active {
+            self.plane_snapshot(
+                PlaneId::U,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
+        let cdef_v = if v_lr_active {
+            self.plane_snapshot(
+                PlaneId::V,
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
+            )?
+        } else {
+            Vec::new()
+        };
         let lr_source_blocks = core::mem::take(&mut self.lr_source_blocks);
         let lr_unit_filters = core::mem::take(&mut self.lr_unit_filters);
         self.apply_luma_lr(
@@ -2296,7 +2335,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     )
             });
         if !residual_is_reconstructable(block, fsc_mode) && !allow_full_recon_luma_ist {
-            if std::env::var_os("SPLOT_TRACE_FULL_RECON_DEFER").is_some() {
+            if crate::trace_flags::trace_flag!("SPLOT_TRACE_FULL_RECON_DEFER") {
                 eprintln!(
                     "full_recon_residual_defer mi=({}, {}) tx_size={} log2={}x{} mode={} directional={:?} angle_delta_y={} mrl_index={} mrl_sec_index={:?} all_zero={} fsc_mode={} intra_ist={:?} offset={}",
                     mi_col,
@@ -3289,7 +3328,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let max_y = self.luma_height.saturating_sub(1) as isize;
         let sx = x.clamp(0, max_x) as usize;
         let sy = y.clamp(0, max_y) as usize;
-        self.workspace.reconstructed_sample(PlaneId::Y, sx, sy)
+        self.direct_plane_sample(PlaneId::Y, sx, sy)
     }
 
     fn clamped_chroma_sample(
@@ -3300,7 +3339,25 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ) -> splot_recon::Result<T> {
         let sx = x.min(self.chroma_width_for_sample_reads().saturating_sub(1));
         let sy = y.min(self.chroma_height_for_sample_reads().saturating_sub(1));
-        self.workspace.reconstructed_sample(plane_id, sx, sy)
+        self.direct_plane_sample(plane_id, sx, sy)
+    }
+
+    /// Clamped-coordinate plane read on the CfL/MHCCP reference paths. The
+    /// callers clamp `(sx, sy)` to plane dimensions, which never exceed the
+    /// workspace storage, so the flat read always lands in-row; the checked
+    /// accessor remains as the fallback that reports the identical error for
+    /// an out-of-storage coordinate.
+    fn direct_plane_sample(
+        &self,
+        plane_id: PlaneId,
+        sx: usize,
+        sy: usize,
+    ) -> splot_recon::Result<T> {
+        let plane = self.workspace.plane(plane_id)?;
+        match plane.samples().get(sy * plane.stride_samples() + sx) {
+            Some(&sample) => Ok(sample),
+            None => self.workspace.reconstructed_sample(plane_id, sx, sy),
+        }
     }
 
     const fn chroma_width_for_sample_reads(&self) -> usize {

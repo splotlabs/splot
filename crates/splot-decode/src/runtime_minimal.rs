@@ -1839,22 +1839,33 @@ mod test_support {
         CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
     };
 
+    use splot_recon::ReconSample;
+
     use super::BitDepth;
+
+    pub(super) fn yuv420_workspace_with<T: ReconSample>(
+        bit_depth: BitDepth,
+        width: usize,
+        height: usize,
+        fill: T,
+    ) -> CurrentFrameWorkspace<T> {
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            bit_depth,
+            PixelFormat::Yuv420,
+            PlaneSize::new(width, height).unwrap(),
+            PlaneRect::new(0, 0, width, height).unwrap(),
+        )
+        .unwrap();
+        CurrentFrameWorkspace::<T>::new(info, fill).unwrap()
+    }
 
     pub(super) fn yuv420_workspace(
         width: usize,
         height: usize,
         fill: u8,
     ) -> CurrentFrameWorkspace<u8> {
-        let info = DecodedFrameInfo::new(
-            OutputIndex::new(0),
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            PlaneSize::new(width, height).unwrap(),
-            PlaneRect::new(0, 0, width, height).unwrap(),
-        )
-        .unwrap();
-        CurrentFrameWorkspace::<u8>::new(info, fill).unwrap()
+        yuv420_workspace_with(BitDepth::Eight, width, height, fill)
     }
 }
 

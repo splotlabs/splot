@@ -873,3 +873,53 @@ fn dctonly_residual_long_set_maps_dct_symbol_only_for_long_side_dct() {
     assert_ne!(TX_TYPE_INV_LONG[0][0][0], DCT_DCT);
     assert_ne!(TX_TYPE_INV_LONG[0][1][0], DCT_DCT);
 }
+
+#[test]
+fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
+    let reconstruct_a = || {
+        let mut quant = vec![0i32; 16];
+        quant[0] = 37;
+        quant[1] = -21;
+        quant[5] = 9;
+        let prediction = vec![301u16; 16];
+        reconstruct_general_intra_block_with_prediction(
+            &quant,
+            &prediction,
+            80,
+            PlaneId::Y,
+            2,
+            0,
+            false,
+            BitDepth::Ten,
+        )
+        .unwrap()
+    };
+    let reconstruct_b = || {
+        let mut quant = vec![0i32; 64];
+        quant[0] = -5;
+        quant[9] = 61;
+        let prediction = vec![144u16; 64];
+        reconstruct_general_intra_block_with_prediction(
+            &quant,
+            &prediction,
+            96,
+            PlaneId::U,
+            3,
+            0,
+            false,
+            BitDepth::Ten,
+        )
+        .unwrap()
+    };
+
+    let first_a = reconstruct_a();
+    let b_after_a = reconstruct_b();
+    let a_after_b = reconstruct_a();
+    let (fresh_a, fresh_b) = std::thread::spawn(move || (reconstruct_a(), reconstruct_b()))
+        .join()
+        .unwrap();
+
+    assert_eq!(first_a, fresh_a, "4x4 result depends on scratch history");
+    assert_eq!(b_after_a, fresh_b, "8x8 result depends on scratch history");
+    assert_eq!(a_after_b, fresh_a, "4x4 rerun depends on scratch history");
+}

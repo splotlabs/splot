@@ -148,7 +148,7 @@ fn read_inter_residual_luma_chunk(
         let mut x4 = luma_chunk_x4;
         while x4 < chunk_end_x4 {
             let tx_fills_block = tx_w4 == block_n4w && tx_h4 == block_n4h;
-            if std::env::var_os("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS").is_some() {
+            if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS") {
                 let start_x = x4 * MI_SIZE;
                 let start_y = y4 * MI_SIZE;
                 if start_x >= 1760 && (160..=224).contains(&start_y) {
@@ -229,7 +229,7 @@ fn read_inter_residual_luma_records_for_chunk(
     }) {
         decoded_any = true;
         let tx_fills_block = record.cols == block_n4w && record.rows == block_n4h;
-        let trace_residual = std::env::var_os("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS").is_some();
+        let trace_residual = crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS");
         let start_x = record.col * MI_SIZE;
         let start_y = record.row * MI_SIZE;
         let trace_this = trace_residual
@@ -361,7 +361,7 @@ fn read_inter_residual_chroma_group(
         while x4 < x_offset4 + num4x4_w {
             let start_x = (base_x4 + x4) * MI_SIZE;
             let start_y = (base_y4 + y4) * MI_SIZE;
-            let trace_this = std::env::var_os("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS").is_some()
+            let trace_this = crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS")
                 && ((256..=320).contains(&start_x) && start_y <= 64
                     || (start_x >= 880 && (80..=112).contains(&start_y)));
             if trace_this {
@@ -518,7 +518,7 @@ fn read_inter_residual_plane(
         residual_tool_policy,
     )
     .map_err(|error| {
-        if std::env::var_os("SPLOT_TRACE_INTER_RESIDUAL_ERROR").is_some() {
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_RESIDUAL_ERROR") {
             eprintln!(
                 "inter residual error offset={} plane={plane} tx_size={tx_size} start=({start_x},{start_y}) fills={tx_fills_block}: {error:?}",
                 tile_offset.get(),

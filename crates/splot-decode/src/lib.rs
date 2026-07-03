@@ -43,6 +43,7 @@ mod runtime_y4m;
 pub mod stream_plan;
 pub(crate) mod tile_payload;
 mod timing;
+mod trace_flags;
 
 pub use context::DecodeContext;
 pub use diagnostic::{

@@ -113,6 +113,63 @@ fn lr_unit_filter_for_block<'a>(
         .ok_or_else(|| luma_lr_filter_error(offset))
 }
 
+/// Merges one plane's source blocks into maximal horizontally contiguous runs
+/// whose every filter-visible input matches, so the § 7.20 filters and their
+/// materialized windows run once per run instead of once per 4x4/2x2 block.
+///
+/// Filter output depends only on a sample's absolute coordinate, the § 7.20.1/
+/// 7.20.2 bounds, the tile bounds, and the LR unit selection — all held equal
+/// by [`lr_blocks_mergeable`] — so a merged run is bit-identical to its parts.
+fn coalesced_lr_source_rows(
+    lr_source_blocks: &[WienerNsLrSourceBlock],
+    plane_index: usize,
+) -> Vec<WienerNsLrSourceBlock> {
+    let mut rows: Vec<Vec<&WienerNsLrSourceBlock>> = Vec::new();
+    for block in lr_source_blocks
+        .iter()
+        .filter(|block| block.plane == plane_index)
+    {
+        if rows.len() <= block.y {
+            rows.resize_with(block.y + 1, Vec::new);
+        }
+        rows[block.y].push(block);
+    }
+    let mut runs: Vec<WienerNsLrSourceBlock> = Vec::new();
+    for row in &mut rows {
+        row.sort_unstable_by_key(|block| block.x);
+        for block in row.iter().copied() {
+            if let Some(run) = runs.last_mut()
+                && lr_blocks_mergeable(run, block)
+                && let Some(width) = run.width.checked_add(block.width)
+            {
+                run.width = width;
+                continue;
+            }
+            runs.push(*block);
+        }
+    }
+    runs
+}
+
+fn lr_blocks_mergeable(run: &WienerNsLrSourceBlock, next: &WienerNsLrSourceBlock) -> bool {
+    run.y == next.y
+        && run.height == next.height
+        && run.x.checked_add(run.width) == Some(next.x)
+        && run.unit_row == next.unit_row
+        && run.unit_col == next.unit_col
+        && run.tile_mi_row_start == next.tile_mi_row_start
+        && run.tile_mi_row_end == next.tile_mi_row_end
+        && run.tile_mi_col_start == next.tile_mi_col_start
+        && run.tile_mi_col_end == next.tile_mi_col_end
+        && run.luma_start_x == next.luma_start_x
+        && run.luma_end_x == next.luma_end_x
+        && run.luma_start_y == next.luma_start_y
+        && run.luma_end_y == next.luma_end_y
+        && run.frame_luma_end_y == next.frame_luma_end_y
+        && run.luma_stripe_start_y == next.luma_stripe_start_y
+        && run.luma_stripe_end_y == next.luma_stripe_end_y
+}
+
 fn clipped_lr_source_block(
     block: &WienerNsLrSourceBlock,
     plane_width: usize,
@@ -247,9 +304,7 @@ impl<T: ReconSample> LrSourceWindow<T> {
                     actual: source_row.len(),
                 },
             )?)?;
-            for _ in 0..pre {
-                samples.push(left_value);
-            }
+            samples.resize(samples.len().saturating_add(pre), left_value);
             if mid > 0 {
                 let mid_start = (x0 + pre as isize) as usize;
                 let mid_slice = source_row.get(mid_start..mid_start + mid).ok_or(
@@ -258,9 +313,17 @@ impl<T: ReconSample> LrSourceWindow<T> {
                         actual: source_row.len(),
                     },
                 )?;
-                for &value in mid_slice {
-                    samples.push(T::try_from_u16(value)?);
+                if let Some(&unstorable) = mid_slice.iter().find(|&&value| value > T::MAX_VALUE) {
+                    return Err(match T::try_from_u16(unstorable) {
+                        Err(error) => error,
+                        Ok(_) => OVERFLOW_WINDOW,
+                    });
                 }
+                samples.extend(
+                    mid_slice
+                        .iter()
+                        .map(|&value| T::try_from_u16(value).unwrap_or_default()),
+                );
             }
             let right_value = T::try_from_u16(*source_row.get(right.x).ok_or(
                 ReconError::BufferLengthMismatch {
@@ -268,9 +331,7 @@ impl<T: ReconSample> LrSourceWindow<T> {
                     actual: source_row.len(),
                 },
             )?)?;
-            for _ in 0..post {
-                samples.push(right_value);
-            }
+            samples.resize(samples.len().saturating_add(post), right_value);
         }
         Ok(Self {
             samples,
@@ -466,21 +527,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             }
         };
-        let y_blocks: Vec<&WienerNsLrSourceBlock> = lr_source_blocks
-            .iter()
-            .filter(|block| block.plane == PlaneId::Y.index())
-            .collect();
+        let y_blocks = coalesced_lr_source_rows(lr_source_blocks, PlaneId::Y.index());
         let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
             if splot_parallel::on_multiworker_pool() {
-                y_blocks
-                    .par_iter()
-                    .map(|block| compute(block))
-                    .collect::<Result<_>>()?
+                y_blocks.par_iter().map(&compute).collect::<Result<_>>()?
             } else {
-                y_blocks
-                    .iter()
-                    .map(|block| compute(block))
-                    .collect::<Result<_>>()?
+                y_blocks.iter().map(&compute).collect::<Result<_>>()?
             };
         for (block, output) in &filtered {
             let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
@@ -555,21 +607,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 cdef_luma,
             )
         };
-        let plane_blocks: Vec<&WienerNsLrSourceBlock> = lr_source_blocks
-            .iter()
-            .filter(|block| block.plane == plane_index)
-            .collect();
+        let plane_blocks = coalesced_lr_source_rows(lr_source_blocks, plane_index);
         let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
             if splot_parallel::on_multiworker_pool() {
                 plane_blocks
                     .par_iter()
-                    .map(|block| compute(block))
+                    .map(&compute)
                     .collect::<Result<_>>()?
             } else {
-                plane_blocks
-                    .iter()
-                    .map(|block| compute(block))
-                    .collect::<Result<_>>()?
+                plane_blocks.iter().map(&compute).collect::<Result<_>>()?
             };
         for (block, output) in &filtered {
             let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
@@ -776,9 +822,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let mut cell_subclasses = vec![None; cell_cols * cell_rows];
         let mut subclasses = Vec::with_capacity(sample_count);
         for row in 0..block.height {
-            for col in 0..block.width {
-                let cell_row = row / MI_SIZE;
-                let cell_col = col / MI_SIZE;
+            let cell_row = row / MI_SIZE;
+            for cell_col in 0..cell_cols {
                 let cell_index = cell_row
                     .checked_mul(cell_cols)
                     .and_then(|start| start.checked_add(cell_col))
@@ -811,12 +856,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         *slot = Some(subclass);
                         subclass
                     };
-                subclasses.push(subclass);
+                let cell_start = cell_col.saturating_mul(MI_SIZE);
+                let cell_width = MI_SIZE.min(block.width.saturating_sub(cell_start));
+                subclasses.extend(core::iter::repeat_n(subclass, cell_width));
             }
         }
         Ok(subclasses)
     }
 
+    /// § 7.20.4 `BlockStartX` is the 64-sample window containing the
+    /// classified cell (derived from `class_x`, not the merged run's x), so a
+    /// coalesced run classifies identically to per-block dispatch.
     #[allow(clippy::too_many_arguments)]
     fn luma_lr_subclass_at(
         &self,
@@ -832,7 +882,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Some(tx_skip_grid) = self.tx_skip_grid.as_ref() else {
             return Err(luma_lr_filter_error(offset));
         };
-        let block_start_x = (block.x >> 6) << 6;
+        let block_start_x = (class_x >> 6) << 6;
         let block_end_x = super::super::pc_wiener_block_end_x(block, block_start_x)
             .map_err(|_| luma_lr_filter_error(offset))?;
         let params = PcWienerClassifyParams {
@@ -859,5 +909,80 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         .map_err(|_| luma_lr_filter_error(offset))?;
         pc_wiener_subclass(num_classes, filter_set_index, classification.class)
             .map_err(|_| luma_lr_filter_error(offset))
+    }
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::*;
+
+    fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
+        WienerNsLrSourceBlock {
+            plane,
+            row: y / 4,
+            col: x / 4,
+            unit_row: 0,
+            unit_col: 0,
+            tile_mi_row_start: 0,
+            tile_mi_row_end: 4,
+            tile_mi_col_start: 0,
+            tile_mi_col_end: 4,
+            x,
+            y,
+            width: 4,
+            height: 4,
+            luma_start_x: 0,
+            luma_end_x: 15,
+            luma_start_y: 0,
+            luma_end_y: 15,
+            frame_luma_end_y: 15,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 15,
+        }
+    }
+
+    #[test]
+    fn merges_contiguous_row_blocks_and_splits_on_filter_visible_fields() {
+        let mut stripe_split = block(0, 8, 0);
+        stripe_split.luma_stripe_end_y = 7;
+        let mut unit_split = block(0, 12, 4);
+        unit_split.unit_col = 1;
+        let blocks = [
+            block(0, 4, 0),
+            block(1, 0, 0),
+            block(0, 0, 0),
+            stripe_split,
+            block(0, 12, 0),
+            block(0, 0, 4),
+            block(0, 4, 4),
+            block(0, 8, 4),
+            unit_split,
+        ];
+
+        let runs = coalesced_lr_source_rows(&blocks, 0);
+        let shapes: Vec<_> = runs
+            .iter()
+            .map(|run| (run.x, run.y, run.width, run.height))
+            .collect();
+        assert_eq!(
+            shapes,
+            vec![
+                (0, 0, 8, 4),
+                (8, 0, 4, 4),
+                (12, 0, 4, 4),
+                (0, 4, 12, 4),
+                (12, 4, 4, 4)
+            ],
+            "runs must merge contiguous same-row blocks and split when any \
+             filter-visible field differs"
+        );
+        assert!(runs.iter().all(|run| run.plane == 0));
+    }
+
+    #[test]
+    fn does_not_merge_across_row_gaps() {
+        let blocks = [block(0, 0, 0), block(0, 8, 0)];
+        let runs = coalesced_lr_source_rows(&blocks, 0);
+        assert_eq!(runs.len(), 2);
     }
 }

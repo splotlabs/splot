@@ -68,6 +68,13 @@ impl TransformCoeffBlockState {
         &self.quant
     }
 
+    /// Consumes the block state, handing the decoded `Quant[]` buffer to the
+    /// caller without copying it.
+    #[must_use]
+    pub(crate) fn into_quant(self) -> Vec<i32> {
+        self.quant
+    }
+
     pub(crate) fn set_level(
         &mut self,
         row: usize,

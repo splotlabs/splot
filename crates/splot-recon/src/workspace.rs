@@ -113,6 +113,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// Returns [`ReconError::MissingWorkspacePlane`] for absent chroma planes in
     /// monochrome workspaces.
+    #[inline]
     pub fn plane(&self, plane: PlaneId) -> Result<&CurrentFramePlane<T>> {
         match plane {
             PlaneId::Y => Ok(&self.y),
@@ -171,6 +172,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// Returns [`ReconError`] when the plane is absent or `(x, y)` falls outside
     /// the plane storage.
+    #[inline]
     pub fn reconstructed_sample(&self, plane: PlaneId, x: usize, y: usize) -> Result<T> {
         self.plane(plane)?.reconstructed_sample(x, y)
     }
@@ -511,14 +513,15 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     }
 
     /// Returns the already-reconstructed sample at `(x, y)` in this plane.
+    /// The column is validated against the storage width (not just the flat
+    /// index) so a column at or past the row stride is rejected instead of
+    /// aliasing into the next row.
     ///
     /// # Errors
     /// Returns [`ReconError::WorkspaceRectOutOfBounds`] when `(x, y)` falls
     /// outside the plane storage.
+    #[inline]
     pub fn reconstructed_sample(&self, x: usize, y: usize) -> Result<T> {
-        // Validate the column against the storage width (not just the flat
-        // index) so a column at or past the row stride is rejected instead of
-        // aliasing into the next row.
         if x >= self.storage_size.width() || y >= self.storage_size.height() {
             return Err(ReconError::WorkspaceRectOutOfBounds {
                 plane: self.plane,
@@ -560,6 +563,9 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         Ok(())
     }
 
+    /// One bounds proof covers every row: the clamped rect's first and last
+    /// target rows both index in-storage and rows advance by the plane
+    /// stride, so per-row range math cannot fail after the up-front checks.
     fn write_rect(
         &mut self,
         rect: PlaneRect,
@@ -587,36 +593,32 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             });
         }
 
+        if rect.width() == 0 || rect.height() == 0 {
+            return Ok(());
+        }
+        let target_base = self.row_range(rect.y(), rect.x(), rect.width())?.start;
+        let last_row = rect.y() + rect.height() - 1;
+        self.row_range(last_row, rect.x(), rect.width())?;
+
         for row_index in 0..rect.height() {
             let source_row_start = row_index.checked_mul(row_stride_samples).ok_or(
                 ReconError::ArithmeticOverflow {
                     context: "current-frame workspace source row offset",
                 },
             )?;
-            let target_row = rect.y() + row_index;
-            let target_start = self
-                .sample_index(rect.x(), target_row)?
-                .checked_add(rect.width())
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "current-frame workspace target row validation",
-                })?
-                - rect.width();
-
-            for column in 0..rect.width() {
-                let source_index = source_row_start + column;
-                let target_index = target_start + column;
-                validate_sample_value(self.plane, target_index, samples[source_index], max_sample)?;
+            let target_start = target_base + row_index * self.stride_samples;
+            let source_row = &samples[source_row_start..source_row_start + rect.width()];
+            if source_row.iter().any(|sample| sample.to_u16() > max_sample) {
+                for (column, &sample) in source_row.iter().enumerate() {
+                    validate_sample_value(self.plane, target_start + column, sample, max_sample)?;
+                }
             }
         }
 
         for row_index in 0..rect.height() {
-            let source_row_start = row_index.checked_mul(row_stride_samples).ok_or(
-                ReconError::ArithmeticOverflow {
-                    context: "current-frame workspace source row offset",
-                },
-            )?;
-            let target_row = rect.y() + row_index;
-            let target_range = self.row_range(target_row, rect.x(), rect.width())?;
+            let source_row_start = row_index * row_stride_samples;
+            let target_start = target_base + row_index * self.stride_samples;
+            let target_range = target_start..target_start + rect.width();
             let source_range = source_row_start..source_row_start + rect.width();
             // splot-copy-ok: write caller samples into owned current-frame workspace plane storage
             self.samples[target_range].copy_from_slice(&samples[source_range]);
@@ -820,6 +822,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         }
     }
 
+    #[inline]
     fn sample_index(&self, x: usize, y: usize) -> Result<usize> {
         let row_start =
             y.checked_mul(self.stride_samples)

@@ -531,7 +531,7 @@ impl ResidualPlanePlan {
                 enable_ibp,
             );
         }
-        let trace_bits = std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_BITS").is_some();
+        let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
         let start_bits = symbols.consumed_bits().get();
         let coeffs = crate::tile_payload::decode_general_intra_plane_coeffs(
             work_unit,
@@ -595,7 +595,7 @@ impl ResidualPlanePlan {
         palette_color_map: Option<&[u8]>,
         enable_ibp: bool,
     ) -> core::result::Result<crate::tile_payload::LumaCoeffBlock, GeneralIntraResidualError> {
-        let trace_bits = std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_BITS").is_some();
+        let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
         let start_bits = symbols.consumed_bits().get();
         let mut blocks = decode_general_intra_luma_partition_coeffs(
             work_unit,
@@ -801,7 +801,7 @@ impl ResidualPlanePlan {
                 use_tcq,
             } => ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq },
             _ => {
-                if std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_BITS").is_some() {
+                if crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS") {
                     eprintln!(
                         "general intra partition defer recon={:?} xy=({}, {}) unit=({}, {}, tx={})",
                         self.reconstruction, self.x, self.y, block.x, block.y, block.tx_size

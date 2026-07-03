@@ -4,7 +4,6 @@
 //! Coefficient-loop foundation helpers.
 
 use std::collections::TryReserveError;
-use std::env;
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
@@ -352,7 +351,7 @@ pub(crate) fn read_nonzero_coeff_eob(
     symbols: &mut SymbolDecoder<'_>,
     input: NonZeroCoeffEobSymbolInput,
 ) -> Result<NonZeroCoeffEobSymbolRead, CoeffLoopContextError> {
-    let trace = std::env::var_os("SPLOT_TRACE_COEFF_EOB").is_some();
+    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_COEFF_EOB");
     let before = trace.then(|| symbols.checkpoint());
     let eob_pt_symbol = cdfs
         .read_block_symbol_trace(
@@ -505,7 +504,7 @@ fn read_eob_literal(
     if width == 0 {
         return Ok(0);
     }
-    let trace = env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
     let before = trace.then(|| symbols.checkpoint());
     let value = symbols
         .read_literal(width)

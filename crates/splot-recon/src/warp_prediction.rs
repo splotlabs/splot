@@ -15,7 +15,7 @@
 use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 
 use crate::error::{ReconError, Result};
-use crate::format::BitDepth;
+use crate::format::{BitDepth, ReconSample};
 use crate::intra_dc_math::resolve_divisor;
 use crate::math::{clip3, round2, round2_signed};
 use crate::subpel_mc::ReferencePlaneView;
@@ -97,8 +97,8 @@ pub fn warp_shear_is_valid(warp_params: [i64; 6]) -> bool {
 /// Returns [`ReconError`] for invalid reference bounds, a filter phase outside
 /// the generated table, or arithmetic overflow.
 #[allow(clippy::too_many_arguments)]
-pub fn ext_warp_predict_unit(
-    reference: &ReferencePlaneView<'_>,
+pub fn ext_warp_predict_unit<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     i4: usize,
     j4: usize,
@@ -174,8 +174,8 @@ pub fn ext_warp_predict_unit(
 /// the model, [`ReconError::WarpFilterOffsetOutOfRange`] for a derived filter row
 /// outside the generated table, and [`ReconError::ArithmeticOverflow`] if public
 /// caller inputs exceed the checked arithmetic envelope.
-pub fn warp_predict_block(
-    reference: &ReferencePlaneView<'_>,
+pub fn warp_predict_block<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
 ) -> Result<Vec<u16>> {
     validate_params(params)?;
@@ -355,8 +355,8 @@ fn checked_shift_left(value: i64, shift: u8, context: &'static str) -> Result<i6
         .ok_or(ReconError::ArithmeticOverflow { context })
 }
 
-fn build_intermediate(
-    reference: &ReferencePlaneView<'_>,
+fn build_intermediate<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     shear: &Shear,
     projected: &ProjectedCenter,

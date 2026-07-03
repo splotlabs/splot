@@ -929,7 +929,7 @@ fn trace_intrabc_ref_stack(
     ref_mv_idx: usize,
     tile_offset: ByteOffset,
 ) {
-    if std::env::var_os("SPLOT_TRACE_INTRABC_REF_STACK").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRABC_REF_STACK") {
         return;
     }
     let mut nearest: Vec<_> = spatial.candidates.clone();
@@ -1055,7 +1055,7 @@ pub(in crate::runtime_minimal) fn derive_intrabc_luma_prediction_geometry(
     if !fractional
         && (!source.is_within(domain.storage) || !rect_is_within_rect(source, domain.tile_bounds))
     {
-        if std::env::var_os("SPLOT_TRACE_INTRABC_GEOMETRY").is_some() {
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRABC_GEOMETRY") {
             eprintln!(
                 "intrabc geometry source_bounds offset={} mi=({}, {}) n4={}x{} block_px=({}, {}) {}x{} mv=({}, {}) target=({}, {}) {}x{} source=({}, {}) {}x{} storage={}x{} tile=({}, {}) {}x{}",
                 tile_offset.get(),
@@ -1629,7 +1629,7 @@ fn intrabc_luma_source_envelope(
             )
         })?;
     if source_x < 0 || source_y < 0 {
-        if std::env::var_os("SPLOT_TRACE_INTRABC_GEOMETRY").is_some() {
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRABC_GEOMETRY") {
             eprintln!(
                 "intrabc geometry source_negative offset={} target=({}, {}) {}x{} mv=({}, {}) source=({}, {})",
                 tile_offset.get(),

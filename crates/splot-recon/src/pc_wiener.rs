@@ -407,14 +407,15 @@ fn pc_wiener_lut_input(
     qindex: u32,
     bit_depth: BitDepth,
 ) -> Result<u16> {
+    let terms = QvalTxSkipTerms::new(qindex, tx_skip, bit_depth)?;
     let mut lut_input = 0i64;
     for (i, feature) in features.iter().enumerate() {
         let qval = round2_signed(
-            feature
-                .checked_add(qval_given_tx_skip(qindex, tx_skip, i, bit_depth)?)
-                .ok_or(ReconError::ArithmeticOverflow {
+            feature.checked_add(qval_given_tx_skip(&terms, i)?).ok_or(
+                ReconError::ArithmeticOverflow {
                     context: "PC-Wiener feature qval",
-                })?,
+                },
+            )?,
             PC_WIENER_PREC_FEATURE,
         )
         .clamp(0, 255)
@@ -431,34 +432,48 @@ fn pc_wiener_lut_input(
     })
 }
 
-fn qval_given_tx_skip(
-    qindex: u32,
-    tx_skip: i64,
-    feature_index: usize,
-    bit_depth: BitDepth,
-) -> Result<i64> {
-    let mut qstep = i64::from(quantizer_value(qindex, 0, bit_depth));
-    let qstep_shift = QUANT_TABLE_BITS + 10;
-    qstep = round2(qstep, u32::from(bit_depth.bits() - 8));
-    let diff_shift = qstep_shift - 8;
-    let prod = round2(
-        tx_skip
-            .checked_mul(qstep)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "PC-Wiener tx-skip quantizer product",
-            })?,
-        8,
-    );
-    let qval = MODE_WEIGHTS[feature_index][0]
-        .checked_mul(
+/// Feature-independent § 7.20.4 `get_qval_given_tskip` terms, derived once per
+/// classification instead of once per feature.
+struct QvalTxSkipTerms {
+    shifted_tx_skip: i64,
+    qstep: i64,
+    prod: i64,
+}
+
+impl QvalTxSkipTerms {
+    fn new(qindex: u32, tx_skip: i64, bit_depth: BitDepth) -> Result<Self> {
+        let mut qstep = i64::from(quantizer_value(qindex, 0, bit_depth));
+        let qstep_shift = QUANT_TABLE_BITS + 10;
+        qstep = round2(qstep, u32::from(bit_depth.bits() - 8));
+        let diff_shift = qstep_shift - 8;
+        let prod = round2(
+            tx_skip
+                .checked_mul(qstep)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener tx-skip quantizer product",
+                })?,
+            8,
+        );
+        let shifted_tx_skip =
             tx_skip
                 .checked_shl(diff_shift)
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "PC-Wiener tx-skip shift",
-                })?,
-        )
-        .and_then(|v| v.checked_add(MODE_WEIGHTS[feature_index][1].checked_mul(qstep)?))
-        .and_then(|v| v.checked_add(MODE_WEIGHTS[feature_index][2].checked_mul(prod)?))
+                })?;
+        Ok(Self {
+            shifted_tx_skip,
+            qstep,
+            prod,
+        })
+    }
+}
+
+fn qval_given_tx_skip(terms: &QvalTxSkipTerms, feature_index: usize) -> Result<i64> {
+    let qstep_shift = QUANT_TABLE_BITS + 10;
+    let qval = MODE_WEIGHTS[feature_index][0]
+        .checked_mul(terms.shifted_tx_skip)
+        .and_then(|v| v.checked_add(MODE_WEIGHTS[feature_index][1].checked_mul(terms.qstep)?))
+        .and_then(|v| v.checked_add(MODE_WEIGHTS[feature_index][2].checked_mul(terms.prod)?))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "PC-Wiener tx-skip qval",
         })?;

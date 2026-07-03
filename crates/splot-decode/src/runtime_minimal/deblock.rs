@@ -5,6 +5,7 @@ use splot_core::headers::frame::{DeblockingFilterParams, QuantizationParams};
 use splot_core::tables::conversion::{
     Q_FIRST, Q_THRESH_MULTS, SIDE_THRESHOLDS, TX_HEIGHT, TX_WIDTH, W_MULT,
 };
+use splot_parallel::prelude::*;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, PlaneId,
     ReconSample, deblock_adaptive_filter_strength, deblock_filter_choice, deblock_filter_max_width,
@@ -133,16 +134,206 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
             else {
                 continue;
             };
-
-            for r in (0..mi_rows).step_by(plane_pass.row_step) {
-                for c in (0..mi_cols).step_by(plane_pass.col_step) {
-                    deblock_filter_edge(workspace, plane_grid, plane_pass.edge_context(r, c))?;
-                }
-            }
+            deblock_plane_pass(workspace, plane_grid, plane_pass, mi_rows, mi_cols)?;
         }
     }
 
     Ok(())
+}
+
+fn deblock_plane_pass<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    grid: &MiGrid,
+    plane_pass: PlanePass,
+    mi_rows: usize,
+    mi_cols: usize,
+) -> Result<(), DeblockError> {
+    let plane_id = plane_pass.plane_id;
+    if workspace.plane(plane_id).is_err() {
+        return Ok(());
+    }
+    let (width, height) = coded_plane_dimensions(workspace, plane_id)?;
+    let mut frame = workspace.as_frame_mut();
+    let Some(view) = frame.plane_mut(plane_id) else {
+        return Ok(());
+    };
+    let stride = view.stride_samples();
+    let samples = view.samples_mut();
+
+    let covered_rows = (mi_rows * MI_SIZE) >> plane_pass.plane_sub_y;
+    let covered_cols = (mi_cols * MI_SIZE) >> plane_pass.plane_sub_x;
+    if splot_parallel::on_multiworker_pool()
+        && (plane_pass.pass == 0 && covered_rows <= height
+            || plane_pass.pass == 1 && covered_cols <= width)
+    {
+        let full = PlaneCtx::new(samples, stride, width, height)?;
+        let bands: Vec<(usize, PlaneCtx<'_, T>)> = if plane_pass.pass == 0 {
+            let mut bands = Vec::new();
+            let mut rows = full.rows.into_iter();
+            let mut y_origin = 0;
+            loop {
+                let band: Vec<&mut [T]> = rows.by_ref().take(MI_SIZE).collect();
+                if band.is_empty() {
+                    break;
+                }
+                let mi_row = (y_origin / MI_SIZE) * plane_pass.row_step;
+                bands.push((mi_row, PlaneCtx::band(band, width, height, 0, y_origin)));
+                y_origin += MI_SIZE;
+            }
+            bands
+        } else {
+            let mut columns: Vec<Vec<&mut [T]>> = Vec::new();
+            for row in full.rows {
+                for (band, chunk) in column_chunks(row, MI_SIZE).enumerate() {
+                    if columns.len() <= band {
+                        columns.resize_with(band + 1, Vec::new);
+                    }
+                    columns[band].push(chunk);
+                }
+            }
+            columns
+                .into_iter()
+                .enumerate()
+                .map(|(band, rows)| {
+                    let x_origin = band * MI_SIZE;
+                    let mi_col = band * plane_pass.col_step;
+                    (mi_col, PlaneCtx::band(rows, width, height, x_origin, 0))
+                })
+                .collect()
+        };
+        return bands.into_par_iter().try_for_each(|(mi_index, mut ctx)| {
+            let mut strengths = StrengthCache::default();
+            if plane_pass.pass == 0 {
+                if mi_index >= mi_rows {
+                    return Ok(());
+                }
+                for c in (0..mi_cols).step_by(plane_pass.col_step) {
+                    deblock_filter_edge(
+                        &mut ctx,
+                        grid,
+                        plane_pass.edge_context(mi_index, c),
+                        &mut strengths,
+                    )?;
+                }
+            } else {
+                if mi_index >= mi_cols {
+                    return Ok(());
+                }
+                for r in (0..mi_rows).step_by(plane_pass.row_step) {
+                    deblock_filter_edge(
+                        &mut ctx,
+                        grid,
+                        plane_pass.edge_context(r, mi_index),
+                        &mut strengths,
+                    )?;
+                }
+            }
+            Ok(())
+        });
+    }
+
+    let mut ctx = PlaneCtx::new(samples, stride, width, height)?;
+    let mut strengths = StrengthCache::default();
+    for r in (0..mi_rows).step_by(plane_pass.row_step) {
+        for c in (0..mi_cols).step_by(plane_pass.col_step) {
+            deblock_filter_edge(
+                &mut ctx,
+                grid,
+                plane_pass.edge_context(r, c),
+                &mut strengths,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Direct sample access for one plane pass over row slices, with the bounds
+/// proof hoisted out of the per-sample loops. `rows` holds the plane rows
+/// starting at `y_origin`, each starting at column `x_origin`; `width` and
+/// `height` stay the full plane dimensions so read clamping and write bounds
+/// are unchanged. § 7.17 pass 0 filters purely horizontal perpendicular
+/// lines and pass 1 purely vertical ones, so a 4-row band (pass 0) or a
+/// 4-column band (pass 1) covers every read and write its edges can make
+/// once the MI coverage fits the plane.
+struct PlaneCtx<'a, T: ReconSample> {
+    rows: Vec<&'a mut [T]>,
+    width: usize,
+    height: usize,
+    x_origin: usize,
+    y_origin: usize,
+}
+
+impl<'a, T: ReconSample> PlaneCtx<'a, T> {
+    fn new(
+        samples: &'a mut [T],
+        stride: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<Self, DeblockError> {
+        let required = stride.checked_mul(height).ok_or(DeblockError::Workspace)?;
+        if width > stride || stride == 0 || required > samples.len() {
+            return Err(DeblockError::Workspace);
+        }
+        Ok(Self {
+            rows: samples.chunks_mut(stride).take(height).collect(),
+            width,
+            height,
+            x_origin: 0,
+            y_origin: 0,
+        })
+    }
+
+    fn band(
+        rows: Vec<&'a mut [T]>,
+        width: usize,
+        height: usize,
+        x_origin: usize,
+        y_origin: usize,
+    ) -> Self {
+        Self {
+            rows,
+            width,
+            height,
+            x_origin,
+            y_origin,
+        }
+    }
+
+    fn sample(&self, x: usize, y: usize) -> T {
+        self.rows[y - self.y_origin][x - self.x_origin]
+    }
+
+    fn set_sample(&mut self, x: usize, y: usize, value: T) {
+        self.rows[y - self.y_origin][x - self.x_origin] = value;
+    }
+}
+
+/// Per-pass memo for [`adaptive_strength`]; `quant_delta` / `df_delta_q` /
+/// `bit_depth` are pass constants, so the key is the block `qindex` (a handful
+/// of distinct values per frame, hence the linear scan).
+#[derive(Default)]
+struct StrengthCache {
+    entries: Vec<(u32, (i32, i32))>,
+}
+
+impl StrengthCache {
+    fn get(
+        &mut self,
+        qindex: u32,
+        quant_delta: i32,
+        df_delta_q: i32,
+        bit_depth: BitDepth,
+    ) -> (i32, i32) {
+        if let Some(&(_, value)) = self.entries.iter().find(|(key, _)| *key == qindex) {
+            return value;
+        }
+        let value = adaptive_strength(
+            deblock_level(qindex, quant_delta, df_delta_q, bit_depth),
+            bit_depth,
+        );
+        self.entries.push((qindex, value));
+        value
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -190,7 +381,6 @@ impl PlanePass {
     fn edge_context(self, row: usize, col: usize) -> EdgeContext {
         EdgeContext {
             plane: self.plane,
-            plane_id: self.plane_id,
             pass: self.pass,
             row,
             col,
@@ -206,7 +396,6 @@ impl PlanePass {
 #[derive(Clone, Copy)]
 struct EdgeContext {
     plane: usize,
-    plane_id: PlaneId,
     pass: usize,
     row: usize,
     col: usize,
@@ -217,14 +406,20 @@ struct EdgeContext {
     bit_depth: BitDepth,
 }
 
+/// Splits a by-value row borrow into column chunks that keep the row's
+/// lifetime, so the chunks can be regrouped into per-band contexts.
+fn column_chunks<T>(row: &mut [T], size: usize) -> core::slice::ChunksMut<'_, T> {
+    row.chunks_mut(size)
+}
+
 fn deblock_filter_edge<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
+    plane_ctx: &mut PlaneCtx<'_, T>,
     grid: &MiGrid,
     ctx: EdgeContext,
+    strengths: &mut StrengthCache,
 ) -> Result<(), DeblockError> {
     let EdgeContext {
         plane,
-        plane_id,
         pass,
         row,
         col,
@@ -288,14 +483,8 @@ fn deblock_filter_edge<T: ReconSample>(
     let is_block_edge = (pass == 0 && x_r == 0) || (pass == 1 && y_r == 0);
     let is_tx_edge = tx_col_base != prev_tx_col_base || tx_row_base != prev_tx_row_base;
 
-    let (curr_q, curr_side) = adaptive_strength(
-        deblock_level(curr.qindex, quant_delta, df_delta_q, bit_depth),
-        bit_depth,
-    );
-    let (prev_q, prev_side) = adaptive_strength(
-        deblock_level(prev.qindex, quant_delta, df_delta_q, bit_depth),
-        bit_depth,
-    );
+    let (curr_q, curr_side) = strengths.get(curr.qindex, quant_delta, df_delta_q, bit_depth);
+    let (prev_q, prev_side) = strengths.get(prev.qindex, quant_delta, df_delta_q, bit_depth);
 
     let curr_strong = curr_q != 0 && curr_side != 0;
     let prev_strong = prev_q != 0 && prev_side != 0;
@@ -313,7 +502,7 @@ fn deblock_filter_edge<T: ReconSample>(
     };
     let mut filter_size = usize::try_from(filter_size).unwrap_or(0);
 
-    let (plane_width, plane_height) = coded_plane_dimensions(workspace, plane_id)?;
+    let (plane_width, plane_height) = (plane_ctx.width, plane_ctx.height);
     if plane == 0 {
         if x_p + dx * 16 > plane_width || y_p + dy * 16 > plane_height {
             filter_size = filter_size.min(16);
@@ -334,8 +523,7 @@ fn deblock_filter_edge<T: ReconSample>(
     }
 
     let width = choose_filter_width(
-        workspace,
-        plane_id,
+        plane_ctx,
         x_p,
         y_p,
         dx,
@@ -370,12 +558,7 @@ fn deblock_filter_edge<T: ReconSample>(
     for i in 0..MI_SIZE {
         let px = x_p + dy * i;
         let py = y_p + dx * i;
-        apply_sample_filter(
-            workspace,
-            plane_id,
-            PerpLine::new(px, py, dx, dy),
-            sample_params,
-        )?;
+        apply_sample_filter(plane_ctx, PerpLine::new(px, py, dx, dy), sample_params)?;
     }
 
     Ok(())
@@ -383,8 +566,7 @@ fn deblock_filter_edge<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn choose_filter_width<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    plane_id: PlaneId,
+    plane_ctx: &PlaneCtx<'_, T>,
     x_p: usize,
     y_p: usize,
     dx: usize,
@@ -399,11 +581,11 @@ fn choose_filter_width<T: ReconSample>(
     }
     let boundary = GATHER_HALF;
 
-    let s = gather_line(workspace, plane_id, PerpLine::new(x_p, y_p, dx, dy))?;
+    let s = gather_line(plane_ctx, PerpLine::new(x_p, y_p, dx, dy));
     let end = MI_SIZE - 1;
     let t_x = x_p + dy * end;
     let t_y = y_p + dx * end;
-    let t = gather_line(workspace, plane_id, PerpLine::new(t_x, t_y, dx, dy))?;
+    let t = gather_line(plane_ctx, PerpLine::new(t_x, t_y, dx, dy));
 
     let width = deblock_filter_choice(
         &s,
@@ -459,13 +641,12 @@ impl PerpLine {
 const GATHER_HALF: usize = 8;
 
 fn apply_sample_filter<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    plane_id: PlaneId,
+    plane_ctx: &mut PlaneCtx<'_, T>,
     perp: PerpLine,
     params: DeblockSampleFilter,
 ) -> Result<(), DeblockError> {
-    let mut line = gather_line(workspace, plane_id, perp)?;
-    let before = line.clone();
+    let before = gather_line(plane_ctx, perp);
+    let mut line = before;
 
     deblock_sample_filter(&mut line, &params).map_err(|_| DeblockError::SampleFilter)?;
 
@@ -475,37 +656,28 @@ fn apply_sample_filter<T: ReconSample>(
             continue;
         }
         let (fx, fy) = perp.offset(idx as isize - params.boundary as isize)?;
-        workspace
-            .set_reconstructed_sample(plane_id, fx, fy, new)
-            .map_err(|_| DeblockError::Workspace)?;
+        if fx >= plane_ctx.width || fy >= plane_ctx.height {
+            return Err(DeblockError::Workspace);
+        }
+        plane_ctx.set_sample(fx, fy, new);
     }
     Ok(())
 }
 
 fn gather_line<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    plane_id: PlaneId,
+    plane_ctx: &PlaneCtx<'_, T>,
     perp: PerpLine,
-) -> Result<Vec<T>, DeblockError> {
-    let total = 2 * GATHER_HALF;
-    let plane = workspace
-        .plane(plane_id)
-        .map_err(|_| DeblockError::Workspace)?;
-    let max_x = plane.storage_size().width().saturating_sub(1) as isize;
-    let max_y = plane.storage_size().height().saturating_sub(1) as isize;
-    let mut line = Vec::new();
-    line.try_reserve_exact(total)
-        .map_err(|_| DeblockError::Workspace)?;
-    for idx in 0..total {
+) -> [T; 2 * GATHER_HALF] {
+    let max_x = plane_ctx.width.saturating_sub(1) as isize;
+    let max_y = plane_ctx.height.saturating_sub(1) as isize;
+    let mut line = [T::default(); 2 * GATHER_HALF];
+    for (idx, lane) in line.iter_mut().enumerate() {
         let offset = idx as isize - GATHER_HALF as isize;
         let sx = (perp.x as isize + offset * perp.dx as isize).clamp(0, max_x) as usize;
         let sy = (perp.y as isize + offset * perp.dy as isize).clamp(0, max_y) as usize;
-        let sample = workspace
-            .reconstructed_sample(plane_id, sx, sy)
-            .map_err(|_| DeblockError::Workspace)?;
-        line.push(sample);
+        *lane = plane_ctx.sample(sx, sy);
     }
-    Ok(line)
+    line
 }
 
 const DF_DELTA_SCALE: i32 = 8;
@@ -637,8 +809,21 @@ pub(crate) enum DeblockError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::super::test_support::yuv420_workspace;
+    use super::super::test_support::{yuv420_workspace, yuv420_workspace_with};
     use super::*;
+
+    fn with_plane_ctx<T: ReconSample, R>(
+        ws: &mut CurrentFrameWorkspace<T>,
+        plane: PlaneId,
+        f: impl FnOnce(&mut PlaneCtx<'_, T>) -> R,
+    ) -> R {
+        let (width, height) = coded_plane_dimensions(ws, plane).unwrap();
+        let mut frame = ws.as_frame_mut();
+        let view = frame.plane_mut(plane).unwrap();
+        let stride = view.stride_samples();
+        let mut ctx = PlaneCtx::new(view.samples_mut(), stride, width, height).unwrap();
+        f(&mut ctx)
+    }
 
     fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock> {
         let mut blocks = Vec::new();
@@ -726,6 +911,189 @@ mod tests {
         assert!(p0 > 100 || q0 < 108, "{reason}: p0={p0} q0={q0}");
     }
 
+    fn yuv420_workspace_10bit(
+        width: usize,
+        height: usize,
+        fill: u16,
+    ) -> CurrentFrameWorkspace<u16> {
+        yuv420_workspace_with(BitDepth::Ten, width, height, fill)
+    }
+
+    fn splat_asymmetric<T: ReconSample>(
+        ws: &mut CurrentFrameWorkspace<T>,
+        plane: PlaneId,
+        max_sample: u16,
+    ) {
+        let (width, height) = coded_plane_dimensions(ws, plane).unwrap();
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let coords = (0..height).flat_map(|y| (0..width).map(move |x| (x, y)));
+        for (x, y) in coords {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let value = ((state >> 33) as u16) % (max_sample + 1);
+            ws.set_reconstructed_sample(plane, x, y, T::try_from_u16(value).unwrap())
+                .unwrap();
+        }
+    }
+
+    fn reference_gather<T: ReconSample>(
+        ws: &CurrentFrameWorkspace<T>,
+        plane: PlaneId,
+        perp: PerpLine,
+    ) -> Vec<T> {
+        let (width, height) = coded_plane_dimensions(ws, plane).unwrap();
+        let max_x = width.saturating_sub(1) as isize;
+        let max_y = height.saturating_sub(1) as isize;
+        (0..2 * GATHER_HALF)
+            .map(|idx| {
+                let offset = idx as isize - GATHER_HALF as isize;
+                let sx = (perp.x as isize + offset * perp.dx as isize).clamp(0, max_x) as usize;
+                let sy = (perp.y as isize + offset * perp.dy as isize).clamp(0, max_y) as usize;
+                ws.reconstructed_sample(plane, sx, sy).unwrap()
+            })
+            .collect()
+    }
+
+    fn reference_apply<T: ReconSample>(
+        ws: &mut CurrentFrameWorkspace<T>,
+        plane: PlaneId,
+        perp: PerpLine,
+        params: DeblockSampleFilter,
+    ) {
+        let before = reference_gather(ws, plane, perp);
+        let mut line = before.clone();
+        deblock_sample_filter(&mut line, &params).unwrap();
+        let changed: Vec<(usize, T)> = line
+            .iter()
+            .zip(before.iter())
+            .enumerate()
+            .filter(|(_, (new, old))| new.to_u16() != old.to_u16())
+            .map(|(idx, (&new, _))| (idx, new))
+            .collect();
+        for (idx, new) in changed {
+            let (fx, fy) = perp
+                .offset(idx as isize - params.boundary as isize)
+                .unwrap();
+            ws.set_reconstructed_sample(plane, fx, fy, new).unwrap();
+        }
+    }
+
+    fn edge_and_corner_perps(width: usize, height: usize) -> Vec<PerpLine> {
+        let mut perps = Vec::new();
+        for &(x, y) in &[
+            (GATHER_HALF, GATHER_HALF),
+            (4, 0),
+            (width - 4, height - 1),
+            (width / 2, height / 2),
+            (0, height - 4),
+            (width - 1, 4),
+        ] {
+            perps.push(PerpLine::new(x, y, 1, 0));
+            perps.push(PerpLine::new(x, y, 0, 1));
+        }
+        perps
+    }
+
+    fn assert_gather_and_apply_match_accessor_reference<T: ReconSample + core::fmt::Debug + Eq>(
+        mut direct: CurrentFrameWorkspace<T>,
+        mut reference: CurrentFrameWorkspace<T>,
+        bit_depth: BitDepth,
+    ) {
+        let plane = PlaneId::Y;
+        let max_sample = bit_depth.max_sample();
+        splat_asymmetric(&mut direct, plane, max_sample);
+        splat_asymmetric(&mut reference, plane, max_sample);
+        let (width, height) = coded_plane_dimensions(&direct, plane).unwrap();
+
+        for perp in edge_and_corner_perps(width, height) {
+            let got = with_plane_ctx(&mut direct, plane, |ctx| gather_line(ctx, perp));
+            assert_eq!(
+                got.to_vec(),
+                reference_gather(&reference, plane, perp),
+                "gather at ({}, {}) d=({}, {})",
+                perp.x,
+                perp.y,
+                perp.dx,
+                perp.dy
+            );
+        }
+
+        let params = DeblockSampleFilter {
+            boundary: GATHER_HALF,
+            q_thr: 60,
+            max_width_neg: 4,
+            max_width_pos: 4,
+            q_thresh_mult: 25,
+            w_mult_neg: 28,
+            w_mult_pos: 28,
+            prev_lossless: false,
+            curr_lossless: false,
+            bit_depth,
+        };
+        for &(x, y, dx, dy) in &[
+            (GATHER_HALF, 2usize, 1usize, 0usize),
+            (width / 2, height / 2, 1, 0),
+            (width / 2, height / 2, 0, 1),
+            (width - GATHER_HALF, height - 3, 1, 0),
+            (4, GATHER_HALF, 0, 1),
+        ] {
+            let perp = PerpLine::new(x, y, dx, dy);
+            with_plane_ctx(&mut direct, plane, |ctx| {
+                apply_sample_filter(ctx, perp, params).unwrap();
+            });
+            reference_apply(&mut reference, plane, perp, params);
+        }
+        assert_eq!(
+            direct.samples(plane).unwrap(),
+            reference.samples(plane).unwrap(),
+            "direct-slice apply must match the accessor-based reference"
+        );
+    }
+
+    #[test]
+    fn gather_and_apply_match_accessor_reference_8bit() {
+        assert_gather_and_apply_match_accessor_reference(
+            yuv420_workspace(34, 22, 0),
+            yuv420_workspace(34, 22, 0),
+            BitDepth::Eight,
+        );
+    }
+
+    #[test]
+    fn gather_and_apply_match_accessor_reference_10bit() {
+        assert_gather_and_apply_match_accessor_reference(
+            yuv420_workspace_10bit(34, 22, 0),
+            yuv420_workspace_10bit(34, 22, 0),
+            BitDepth::Ten,
+        );
+    }
+
+    #[test]
+    fn strength_cache_matches_direct_computation() {
+        for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
+            for &(quant_delta, df_delta_q) in &[(0i32, 0i32), (-6, 3), (12, -2)] {
+                let mut cache = StrengthCache::default();
+                for qindex in (0u32..=300).chain([1000, u32::MAX]) {
+                    let direct = adaptive_strength(
+                        deblock_level(qindex, quant_delta, df_delta_q, bit_depth),
+                        bit_depth,
+                    );
+                    assert_eq!(
+                        cache.get(qindex, quant_delta, df_delta_q, bit_depth),
+                        direct,
+                        "first lookup qindex={qindex}"
+                    );
+                    assert_eq!(
+                        cache.get(qindex, quant_delta, df_delta_q, bit_depth),
+                        direct,
+                        "cached lookup qindex={qindex}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn q_clamped_zero_delta_matches_spec() {
         for q in [0u32, 1, 100, 255] {
@@ -777,24 +1145,25 @@ mod tests {
     #[test]
     fn unchanged_border_taps_do_not_require_in_frame_write_coordinates() {
         let mut workspace = yuv420_workspace(16, 16, 100);
-        apply_sample_filter(
-            &mut workspace,
-            PlaneId::Y,
-            PerpLine::new(4, 0, 1, 0),
-            DeblockSampleFilter {
-                boundary: GATHER_HALF,
-                q_thr: 1,
-                max_width_neg: GATHER_HALF,
-                max_width_pos: GATHER_HALF,
-                q_thresh_mult: 1,
-                w_mult_neg: 1,
-                w_mult_pos: 1,
-                prev_lossless: true,
-                curr_lossless: true,
-                bit_depth: BitDepth::Eight,
-            },
-        )
-        .unwrap();
+        with_plane_ctx(&mut workspace, PlaneId::Y, |ctx| {
+            apply_sample_filter(
+                ctx,
+                PerpLine::new(4, 0, 1, 0),
+                DeblockSampleFilter {
+                    boundary: GATHER_HALF,
+                    q_thr: 1,
+                    max_width_neg: GATHER_HALF,
+                    max_width_pos: GATHER_HALF,
+                    q_thresh_mult: 1,
+                    w_mult_neg: 1,
+                    w_mult_pos: 1,
+                    prev_lossless: true,
+                    curr_lossless: true,
+                    bit_depth: BitDepth::Eight,
+                },
+            )
+            .unwrap();
+        });
     }
 
     #[test]
@@ -846,23 +1215,25 @@ mod tests {
     fn skip_suppresses_internal_tx_edge_filtering() {
         let mut skipped = yuv420_workspace(64, 16, 100);
         fill_rect(&mut skipped, PlaneId::Y, 20..64, 0..16, 108);
-        deblock_filter_edge(
-            &mut skipped,
-            &edge_test_grid(true),
-            EdgeContext {
-                plane: 0,
-                plane_id: PlaneId::Y,
-                pass: 0,
-                row: 0,
-                col: 5,
-                plane_sub_x: 0,
-                plane_sub_y: 0,
-                df_delta_q: 0,
-                quant_delta: 0,
-                bit_depth: BitDepth::Eight,
-            },
-        )
-        .unwrap();
+        with_plane_ctx(&mut skipped, PlaneId::Y, |ctx| {
+            deblock_filter_edge(
+                ctx,
+                &edge_test_grid(true),
+                EdgeContext {
+                    plane: 0,
+                    pass: 0,
+                    row: 0,
+                    col: 5,
+                    plane_sub_x: 0,
+                    plane_sub_y: 0,
+                    df_delta_q: 0,
+                    quant_delta: 0,
+                    bit_depth: BitDepth::Eight,
+                },
+                &mut StrengthCache::default(),
+            )
+            .unwrap();
+        });
         assert_eq!(
             skipped.reconstructed_sample(PlaneId::Y, 19, 0).unwrap(),
             100,
@@ -876,23 +1247,25 @@ mod tests {
 
         let mut coded = yuv420_workspace(64, 16, 100);
         fill_rect(&mut coded, PlaneId::Y, 20..64, 0..16, 108);
-        deblock_filter_edge(
-            &mut coded,
-            &edge_test_grid(false),
-            EdgeContext {
-                plane: 0,
-                plane_id: PlaneId::Y,
-                pass: 0,
-                row: 0,
-                col: 5,
-                plane_sub_x: 0,
-                plane_sub_y: 0,
-                df_delta_q: 0,
-                quant_delta: 0,
-                bit_depth: BitDepth::Eight,
-            },
-        )
-        .unwrap();
+        with_plane_ctx(&mut coded, PlaneId::Y, |ctx| {
+            deblock_filter_edge(
+                ctx,
+                &edge_test_grid(false),
+                EdgeContext {
+                    plane: 0,
+                    pass: 0,
+                    row: 0,
+                    col: 5,
+                    plane_sub_x: 0,
+                    plane_sub_y: 0,
+                    df_delta_q: 0,
+                    quant_delta: 0,
+                    bit_depth: BitDepth::Eight,
+                },
+                &mut StrengthCache::default(),
+            )
+            .unwrap();
+        });
         assert_smoothed_step(
             coded.reconstructed_sample(PlaneId::Y, 19, 0).unwrap(),
             coded.reconstructed_sample(PlaneId::Y, 20, 0).unwrap(),
@@ -962,5 +1335,50 @@ mod tests {
             100,
             "V plane untouched (apply[3] == false)"
         );
+    }
+
+    #[test]
+    fn banded_parallel_pass_matches_serial_output() {
+        use splot_parallel::{ThreadCount, WorkerPool};
+
+        let (mi_rows, mi_cols) = (16usize, 32usize);
+        let blocks = deblock_blocks(mi_rows, mi_cols);
+        let mut serial = yuv420_workspace_10bit(128, 64, 512);
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            splat_asymmetric(&mut serial, plane, 1023);
+        }
+        let mut parallel = yuv420_workspace_10bit(128, 64, 512);
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            splat_asymmetric(&mut parallel, plane, 1023);
+        }
+
+        let run = |ws: &mut CurrentFrameWorkspace<u16>| {
+            deblock_general_intra_frame(
+                ws,
+                &blocks,
+                [&[], &[]],
+                mi_rows,
+                mi_cols,
+                filter([true, true, true, true]),
+                DeblockQuantDeltas::ZERO,
+                BitDepth::Ten,
+            )
+            .unwrap();
+        };
+        run(&mut serial);
+        let pool = WorkerPool::new(ThreadCount::Fixed(4.try_into().unwrap())).unwrap();
+        assert!(pool.install(|| {
+            let active = splot_parallel::on_multiworker_pool();
+            run(&mut parallel);
+            active
+        }));
+
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            assert_eq!(
+                serial.samples(plane).unwrap(),
+                parallel.samples(plane).unwrap(),
+                "banded parallel pass 0 must match the serial pass for {plane:?}"
+            );
+        }
     }
 }

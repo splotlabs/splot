@@ -616,10 +616,16 @@ mod trace {
     use std::fs::{File, OpenOptions};
     use std::io::{BufWriter, Write};
     use std::panic::Location;
+    use std::sync::OnceLock;
 
     thread_local! {
         static SINK: RefCell<Option<TraceSink>> = const { RefCell::new(None) };
         static INIT: RefCell<bool> = const { RefCell::new(false) };
+    }
+
+    fn enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var_os("SPLOT_SYMBOL_TRACE").is_some())
     }
 
     struct TraceSink {
@@ -641,9 +647,29 @@ mod trace {
     }
 
     /// Records one decoded symbol or bool to the trace sink if it is enabled.
+    #[inline]
     #[track_caller]
     pub(super) fn emit(kind: &str, value: u32, consumed_bits: u64, symbol_max_bits: i64) {
-        let location = Location::caller();
+        if !enabled() {
+            return;
+        }
+        emit_at(
+            Location::caller(),
+            kind,
+            value,
+            consumed_bits,
+            symbol_max_bits,
+        );
+    }
+
+    #[cold]
+    fn emit_at(
+        location: &'static Location<'static>,
+        kind: &str,
+        value: u32,
+        consumed_bits: u64,
+        symbol_max_bits: i64,
+    ) {
         SINK.with(|cell| {
             let mut borrow = cell.borrow_mut();
             let initialized = INIT.with(|flag| {

@@ -512,7 +512,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
         );
     }
 
-    let trace_bits = std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_BITS").is_some();
+    let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
     let mode_start_bits = symbols.consumed_bits().get();
     let luma_only = frontier.is_luma_part() || !frontier.has_chroma;
     let use_neighbor_fsc_context = core.frame_is_intra == Some(true) || !frontier.is_mixed_region();
@@ -532,7 +532,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
             n4h,
         )
         .map_err(|error| {
-            if trace_bits || std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE").is_some() {
+            if trace_bits || crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE") {
                 eprintln!(
                     "general intra block mode error block=({},{} {}x{}) bits={}..{} error={error:?}",
                     frontier.r,
@@ -559,7 +559,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
             u32::from(bit_depth.bits()),
         )
         .map_err(|error| {
-            if trace_bits || std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE").is_some() {
+            if trace_bits || crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE") {
                 eprintln!(
                     "general intra palette mode error block=({},{} {}x{}) bits={}..{} error={error:?}",
                     frontier.r,
@@ -597,7 +597,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
             u32::from(bit_depth.bits()),
         )
         .map_err(|error| {
-            if trace_bits || std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE").is_some() {
+            if trace_bits || crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE") {
                 eprintln!(
                     "general intra block mode error block=({},{} {}x{}) bits={}..{} error={error:?}",
                     frontier.r,
@@ -747,7 +747,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
             GENERAL_INTRA_MODE_SPEC_SECTION,
         )
     })?;
-    let trace_bits = std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_BITS").is_some();
+    let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
     let mode_start_bits = symbols.consumed_bits().get();
     let chroma = crate::tile_payload::decode_general_intra_chroma_block_mode(
         work_unit,
@@ -763,7 +763,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         block_ctx.block().height4(),
     )
     .map_err(|error| {
-        if trace_bits || std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE").is_some() {
+        if trace_bits || crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE") {
             eprintln!(
                 "general intra chroma part mode error block=({},{} {}x{}) bits={}..{} error={error:?}",
                 frontier.r,
@@ -1217,7 +1217,7 @@ fn rect_chroma_plan(
         missing_capability_message!("intra.rect.chroma_mode", mode = "unsupported_non_dc"),
     ))?;
     if let Err(error) = ensure_supported_rect_chroma_capability(mode, block_ctx) {
-        if std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_MODE").is_some() {
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_MODE") {
             let neighbours = block_ctx.neighbours(PlaneId::U);
             eprintln!(
                 "rect chroma rejected block={:?} mode={mode:?} modes={modes:?} uv_neigh=(above:{} left:{} ar:{} bl:{})",
@@ -1420,7 +1420,7 @@ fn ensure_10bit_general_intra_capability(
         || plan_luma_prediction(modes, block_ctx).is_ok()
         || rect_luma_plan(modes, block_ctx, false, sb_mib).is_ok();
     if !luma_admitted || !chroma_admitted {
-        if std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_MODE").is_some() {
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_MODE") {
             let luma_plan = plan_luma_prediction(modes, block_ctx);
             let chroma_mode = modes.supported_chroma_mode();
             let y_neighbours = block_ctx.neighbours(PlaneId::Y);

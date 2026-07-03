@@ -234,6 +234,102 @@ pub fn cdef_filter_sample(
     rounded.clamp(min, max)
 }
 
+/// Side length of the padded per-block scratch consumed by
+/// [`cdef_filter_block_interior`]: an 8x8 block plus the § 7.18.3
+/// `Cdef_Directions` tap reach of 2 on every side.
+pub const CDEF_PADDED_SIDE: usize = 12;
+
+/// Sample count of the padded per-block scratch: `CDEF_PADDED_SIDE` squared.
+pub const CDEF_PADDED_AREA: usize = CDEF_PADDED_SIDE * CDEF_PADDED_SIDE;
+
+/// Per-block § 7.18.3 filter constants for [`cdef_filter_block_interior`].
+#[derive(Clone, Copy, Debug)]
+pub struct CdefBlockFilter {
+    /// Bit-depth-scaled (and, for luma, variance-adjusted) primary strength.
+    pub pri_str: i32,
+    /// Bit-depth-scaled secondary strength.
+    pub sec_str: i32,
+    /// § 7.18.1 damping shift, already plane-adjusted.
+    pub damping: i32,
+    /// Direction index in `0..8`.
+    pub dir: usize,
+    /// `BitDepth - 8`.
+    pub coeff_shift: u32,
+}
+
+/// AV2 § 7.18.3 CDEF filter for one fully-interior block over a padded scratch.
+///
+/// `pad` holds the `CDEF_PADDED_SIDE x CDEF_PADDED_SIDE` row-major
+/// neighbourhood whose `(w x h)` output block starts at row 2, column 2; the
+/// caller guarantees every tap position is inside the § 5.20.9.3 filter region
+/// (`CdefAvailable` everywhere), which is what makes the per-tap availability
+/// guard of [`cdef_filter_sample`] statically true. Bit-exact with calling
+/// [`cdef_filter_sample`] per sample on all-available taps.
+///
+/// Filtered samples are written to `out[i * w + j]` for `i in 0..h`,
+/// `j in 0..w`; `w` and `h` are clamped to 8. Every tap index provably stays
+/// inside the scratch: the center index is at least `2 * CDEF_PADDED_SIDE + 2`
+/// and the largest tap displacement is `2 * CDEF_PADDED_SIDE + 2` in either
+/// direction.
+pub fn cdef_filter_block_interior(
+    pad: &[i32; CDEF_PADDED_AREA],
+    w: usize,
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [i32; 64],
+) {
+    let w = w.min(8);
+    let h = h.min(8);
+    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
+    let pri_taps = CDEF_PRI_TAPS[tap_row];
+    let sec_taps = CDEF_SEC_TAPS[tap_row];
+    let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
+    let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
+
+    let rel = |dir: usize, k: usize, sign: i32| -> isize {
+        (sign * CDEF_DIRECTIONS[dir & 7][k][0]) as isize * CDEF_PADDED_SIDE as isize
+            + (sign * CDEF_DIRECTIONS[dir & 7][k][1]) as isize
+    };
+    let mut pri_rel = [[0isize; 2]; 2];
+    let mut sec_rel = [[[0isize; 2]; 2]; 2];
+    for k in 0..2 {
+        for (sign_index, sign) in [-1i32, 1].into_iter().enumerate() {
+            pri_rel[k][sign_index] = rel(filter.dir, k, sign);
+            for (dir_off_index, dir_off) in [6usize, 2].into_iter().enumerate() {
+                sec_rel[k][sign_index][dir_off_index] = rel(filter.dir + dir_off, k, sign);
+            }
+        }
+    }
+
+    for i in 0..h {
+        for j in 0..w {
+            let center_index = (i + 2) * CDEF_PADDED_SIDE + (j + 2);
+            let center = pad[center_index];
+            let mut sum = 0i32;
+            let mut max = center;
+            let mut min = center;
+            for k in 0..2 {
+                for sign_index in 0..2 {
+                    let p = pad[center_index.wrapping_add_signed(pri_rel[k][sign_index])];
+                    sum += pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
+                    max = max.max(p);
+                    min = min.min(p);
+                    for dir_off_index in 0..2 {
+                        let s = pad[center_index
+                            .wrapping_add_signed(sec_rel[k][sign_index][dir_off_index])];
+                        sum +=
+                            sec_taps[k] * constrain_with_adj(s - center, filter.sec_str, sec_adj);
+                        max = max.max(s);
+                        min = min.min(s);
+                    }
+                }
+            }
+            let rounded = center + ((8 + sum - i32::from(sum < 0)) >> 4);
+            out[i * w + j] = rounded.clamp(min, max);
+        }
+    }
+}
+
 /// The `constrain` dampingAdj, which depends only on the per-call strengths
 /// and is therefore derived once per sample instead of once per tap.
 const fn constrain_damping_adj(threshold: i32, damping: i32) -> i32 {
@@ -356,6 +452,94 @@ mod tests {
             101,
             "pulled +1 toward neighbour"
         );
+    }
+
+    fn per_sample_reference(
+        pad: &[i32; CDEF_PADDED_AREA],
+        i: usize,
+        j: usize,
+        filter: &CdefBlockFilter,
+    ) -> i32 {
+        let at = |dy: isize, dx: isize| -> CdefTap {
+            let row = (i + 2).wrapping_add_signed(dy);
+            let col = (j + 2).wrapping_add_signed(dx);
+            CdefTap {
+                value: pad[row * CDEF_PADDED_SIDE + col],
+                available: true,
+            }
+        };
+        let fetch = |dir: usize, k: usize, sign: isize| -> CdefTap {
+            at(
+                sign * CDEF_DIRECTIONS[dir & 7][k][0] as isize,
+                sign * CDEF_DIRECTIONS[dir & 7][k][1] as isize,
+            )
+        };
+        let mut taps = CdefSampleTaps {
+            center: pad[(i + 2) * CDEF_PADDED_SIDE + (j + 2)],
+            primary: [[CdefTap {
+                value: 0,
+                available: false,
+            }; 2]; 2],
+            secondary: [[[CdefTap {
+                value: 0,
+                available: false,
+            }; 2]; 2]; 2],
+        };
+        for k in 0..2 {
+            for (sign_index, sign) in [-1isize, 1].into_iter().enumerate() {
+                taps.primary[k][sign_index] = fetch(filter.dir, k, sign);
+                for (dir_off_index, dir_off) in [6usize, 2].into_iter().enumerate() {
+                    taps.secondary[k][sign_index][dir_off_index] =
+                        fetch(filter.dir + dir_off, k, sign);
+                }
+            }
+        }
+        cdef_filter_sample(
+            &taps,
+            filter.pri_str,
+            filter.sec_str,
+            filter.damping,
+            filter.coeff_shift,
+        )
+    }
+
+    #[test]
+    fn block_interior_kernel_matches_per_sample_filter() {
+        for (coeff_shift, max_sample) in [(0u32, 255u32), (2, 1023)] {
+            let mut state = 0x1234_5678u32 ^ (coeff_shift * 77);
+            let mut pad = [0i32; CDEF_PADDED_AREA];
+            for cell in &mut pad {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *cell = ((state >> 16) % (max_sample + 1)) as i32;
+            }
+            for dir in 0..8usize {
+                for (pri, sec) in [(0, 0), (1, 0), (0, 2), (4, 2), (7, 3), (63, 63)] {
+                    for damping_base in [3i32, 4, 6] {
+                        let filter = CdefBlockFilter {
+                            pri_str: pri << coeff_shift,
+                            sec_str: sec << coeff_shift,
+                            damping: damping_base + coeff_shift as i32,
+                            dir,
+                            coeff_shift,
+                        };
+                        for (w, h) in [(8usize, 8usize), (4, 4), (5, 3)] {
+                            let mut out = [0i32; 64];
+                            cdef_filter_block_interior(&pad, w, h, &filter, &mut out);
+                            for i in 0..h {
+                                for j in 0..w {
+                                    assert_eq!(
+                                        out[i * w + j],
+                                        per_sample_reference(&pad, i, j, &filter),
+                                        "shift={coeff_shift} dir={dir} pri={pri} sec={sec} \
+                                         damping={damping_base} w={w} h={h} i={i} j={j}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

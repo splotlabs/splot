@@ -1780,7 +1780,7 @@ fn read_wiener_ns_lr_units_for_plane(
 }
 
 fn trace_lr_call(frame: TilePartitionFrameFacts, call: TilePartitionCall) {
-    if std::env::var_os("SPLOT_TRACE_LR_SYNTAX").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX") {
         return;
     }
     eprintln!(
@@ -1805,7 +1805,7 @@ fn trace_lr_unit_range(
     col_start: usize,
     col_end: usize,
 ) {
-    if std::env::var_os("SPLOT_TRACE_LR_SYNTAX").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX") {
         return;
     }
     eprintln!(
@@ -1825,8 +1825,7 @@ fn read_wiener_ns_lr_unit(
     lr_activity: &mut WienerNsLrUnitActivity,
     limits: DecodeLimits,
 ) -> Result<bool, TilePartitionTraversalError> {
-    let trace_row = std::env::var_os("SPLOT_TRACE_LR_SYNTAX")
-        .is_some()
+    let trace_row = crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX")
         .then(|| {
             cdfs.row(super::cdf::TileCdfSelector::UseWienerNs)
                 .ok()
@@ -1873,7 +1872,7 @@ fn trace_wiener_ns_lr_unit(
     symbols: &SymbolDecoder<'_>,
     row_before: Option<&[i32]>,
 ) {
-    if std::env::var_os("SPLOT_TRACE_LR_SYNTAX").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX") {
         return;
     }
     eprintln!(
@@ -2120,7 +2119,7 @@ fn read_wiener_ns_raw_literal(
     bits: u32,
     reason: &'static str,
 ) -> Result<u32, TilePartitionTraversalError> {
-    let trace_raw = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let trace_raw = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
     let raw_before = trace_raw.then(|| symbols.checkpoint());
     let value = symbols.read_literal(bits)?;
     if let Some(raw_before) = raw_before {
@@ -2188,23 +2187,43 @@ fn record_active_wiener_ns_source_blocks_for_unit(
     if !lr_activity.retain_source_blocks {
         return Ok(());
     }
+    let geometry = lr_unit_geometry(input)?;
+    let mut rows = Vec::new();
     for row in input.tile_bounds.mi_row_start..input.tile_bounds.mi_row_end {
-        for col in input.tile_bounds.mi_col_start..input.tile_bounds.mi_col_end {
-            let (unit_row, unit_col) = lr_unit_for_block(input, row, col)?;
-            if unit_row == input.unit_row && unit_col == input.unit_col {
-                let block = lr_source_block_for(input, row, col)?;
-                lr_activity.record_source_block(block, limits)?;
-            }
+        if lr_unit_row_for_mi(input, geometry, row)? == input.unit_row {
+            rows.push(row);
+        }
+    }
+    let mut cols = Vec::new();
+    for col in input.tile_bounds.mi_col_start..input.tile_bounds.mi_col_end {
+        if lr_unit_col_for_mi(input, geometry, col)? == input.unit_col {
+            cols.push(col);
+        }
+    }
+    for &row in &rows {
+        for &col in &cols {
+            let block = lr_source_block_for(input, row, col)?;
+            lr_activity.record_source_block(block, limits)?;
         }
     }
     Ok(())
 }
 
-fn lr_unit_for_block(
+/// Tile-constant inputs of the § 7.20.1 MI-to-unit mapping. The mapping
+/// factors per axis — a block's unit row depends only on its MI row and its
+/// unit column only on its MI column — so a unit's members are the product
+/// of the per-axis matching sets.
+#[derive(Clone, Copy)]
+struct LrUnitGeometry {
+    unit_rows: usize,
+    unit_cols: usize,
+    lr_row_offset: usize,
+    lr_col_offset: usize,
+}
+
+fn lr_unit_geometry(
     input: LrSourceBlockDerivation,
-    row: usize,
-    col: usize,
-) -> Result<(usize, usize), TilePartitionTraversalError> {
+) -> Result<LrUnitGeometry, TilePartitionTraversalError> {
     let mi_cols = checked_sub(
         "lr_source_mi_cols",
         input.tile_bounds.mi_col_end,
@@ -2231,24 +2250,43 @@ fn lr_unit_for_block(
         MI_SIZE,
         input.sub_x,
     )? / input.unit_size;
+    Ok(LrUnitGeometry {
+        unit_rows,
+        unit_cols,
+        lr_row_offset,
+        lr_col_offset,
+    })
+}
+
+fn lr_unit_row_for_mi(
+    input: LrSourceBlockDerivation,
+    geometry: LrUnitGeometry,
+    row: usize,
+) -> Result<usize, TilePartitionTraversalError> {
     let local_row = checked_sub("lr_source_row", row, input.tile_bounds.mi_row_start)?;
-    let local_col = checked_sub("lr_source_col", col, input.tile_bounds.mi_col_start)?;
     let row_sample = checked_mul("lr_source_unit_row_sample", local_row, MI_SIZE)?;
     let row_sample = checked_add("lr_source_unit_row_sample", row_sample, 8)?;
     let row_sample = row_sample >> input.sub_y;
+    checked_add(
+        "lr_source_unit_row",
+        geometry.lr_row_offset,
+        (row_sample / input.unit_size).min(geometry.unit_rows.saturating_sub(1)),
+    )
+}
+
+fn lr_unit_col_for_mi(
+    input: LrSourceBlockDerivation,
+    geometry: LrUnitGeometry,
+    col: usize,
+) -> Result<usize, TilePartitionTraversalError> {
+    let local_col = checked_sub("lr_source_col", col, input.tile_bounds.mi_col_start)?;
     let col_sample =
         checked_mul_shifted("lr_source_unit_col_sample", local_col, MI_SIZE, input.sub_x)?;
-    let unit_row = checked_add(
-        "lr_source_unit_row",
-        lr_row_offset,
-        (row_sample / input.unit_size).min(unit_rows.saturating_sub(1)),
-    )?;
-    let unit_col = checked_add(
+    checked_add(
         "lr_source_unit_col",
-        lr_col_offset,
-        (col_sample / input.unit_size).min(unit_cols.saturating_sub(1)),
-    )?;
-    Ok((unit_row, unit_col))
+        geometry.lr_col_offset,
+        (col_sample / input.unit_size).min(geometry.unit_cols.saturating_sub(1)),
+    )
 }
 
 fn lr_source_block_for(
@@ -2403,7 +2441,7 @@ fn read_frontier_partition_decision(
     let decision_input =
         facts.read_partition_decision_input(true, partition_context, square_context);
     let decision = super::partition::read_partition_decision(decision_input, cdfs, symbols)?;
-    if std::env::var_os("SPLOT_TRACE_PARTITION_DECISIONS").is_some() {
+    if crate::trace_flags::trace_flag!("SPLOT_TRACE_PARTITION_DECISIONS") {
         eprintln!(
             "partition call=({}, {}) b_size={} tree={:?} intra_region={} decision={:?} trace={:?} symbols={}",
             call.r,
@@ -2499,7 +2537,7 @@ fn read_extended_sdp_region_type(
     }
     let ctx = intra_region_context(call.b_size)?;
     let selector = super::cdf::TileCdfSelector::RegionType { ctx };
-    let trace_cdf = std::env::var_os("SPLOT_TRACE_CDF_SELECTORS").is_some();
+    let trace_cdf = crate::trace_flags::trace_flag!("SPLOT_TRACE_CDF_SELECTORS");
     let row_before = if trace_cdf {
         cdfs.row(selector).ok().map(<[i32]>::to_vec)
     } else {
@@ -2563,7 +2601,7 @@ fn trace_extended_sdp_region_type(
     region_type: Option<u32>,
     symbols: &SymbolDecoder<'_>,
 ) {
-    if std::env::var_os("SPLOT_TRACE_PARTITION_DECISIONS").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_PARTITION_DECISIONS") {
         return;
     }
     eprintln!(

@@ -9,7 +9,7 @@ use super::*;
 use crate::error::DecodeError;
 use crate::tile_payload::{WienerNsLrSourceBlock, WienerNsLrUnitFilter};
 use splot_core::headers::frame::{
-    FrameRestorationType, LrPlaneParams, build_minimal_intra_clk_core,
+    FrameHeaderCore, FrameRestorationType, LrPlaneParams, build_minimal_intra_clk_core,
 };
 use splot_core::span::ByteOffset;
 use splot_recon::{WIENER_NS_CHROMA_COEFFS, WIENER_NS_LUMA_COEFFS};
@@ -421,6 +421,194 @@ fn luma_lr_partial_edge_block_clips_to_coded_plane() {
     .unwrap();
 
     assert_eq!(sink.reconstructed_sample(PlaneId::Y, 5, 3).unwrap(), 123);
+}
+
+/// Builds a 16x16-luma sink plus a Wiener-NS-active LR core for LR apply tests.
+fn lr_apply_sink_and_core() -> (WienerNsLrReconSink<u16>, FrameHeaderCore) {
+    let sink =
+        WienerNsLrReconSink::<u16>::new(16, 16, BitDepth::Ten, true, false, false, 0, 16).unwrap();
+    let (mut core, _) = build_minimal_intra_clk_core().unwrap();
+    let lr = core.lr_params.as_mut().unwrap();
+    lr.uses_lr = true;
+    lr.planes = vec![
+        LrPlaneParams {
+            restoration_type: FrameRestorationType::WienerNonsep,
+            frame_filters_on: false,
+            num_filter_classes: None,
+            frame_filter_bank: None,
+        };
+        3
+    ];
+    (sink, core)
+}
+
+fn lr_apply_source_block(plane: usize, x: usize, y: usize, size: usize) -> WienerNsLrSourceBlock {
+    WienerNsLrSourceBlock {
+        plane,
+        row: y / 4,
+        col: x / 4,
+        unit_row: 0,
+        unit_col: 0,
+        tile_mi_row_start: 0,
+        tile_mi_row_end: 4,
+        tile_mi_col_start: 0,
+        tile_mi_col_end: 4,
+        x,
+        y,
+        width: size,
+        height: size,
+        luma_start_x: 0,
+        luma_end_x: 15,
+        luma_start_y: 0,
+        luma_end_y: 15,
+        frame_luma_end_y: 15,
+        luma_stripe_start_y: 4,
+        luma_stripe_end_y: 11,
+    }
+}
+
+fn plane_16x16(seed: u16, step: u16) -> Vec<u16> {
+    (0..256u16)
+        .map(|i| (i.wrapping_mul(step).wrapping_add(seed)) % 1024)
+        .collect()
+}
+
+fn plane_8x8(seed: u16, step: u16) -> Vec<u16> {
+    (0..64u16)
+        .map(|i| (i.wrapping_mul(step).wrapping_add(seed)) % 1024)
+        .collect()
+}
+
+/// Coalesced-run LR filtering must be bit-identical to per-4x4-block dispatch:
+/// applying all blocks at once (which merges each row into one run) must match
+/// one `apply_luma_lr` call per block over the same snapshots.
+#[test]
+fn luma_lr_coalesced_runs_match_per_block_dispatch_bit_exactly() {
+    let curr_luma = plane_16x16(11, 37);
+    let cdef_luma = plane_16x16(400, 53);
+    let mut coeffs = [0i16; WIENER_NS_CHROMA_COEFFS];
+    coeffs[0] = 13;
+    coeffs[1] = -7;
+    coeffs[10] = 3;
+    coeffs[15] = 21;
+    let filter = WienerNsLrUnitFilter {
+        plane: PlaneId::Y.index(),
+        unit_row: 0,
+        unit_col: 0,
+        coeff_count: WIENER_NS_LUMA_COEFFS,
+        coeffs,
+    };
+    let blocks: Vec<WienerNsLrSourceBlock> = (0..4)
+        .flat_map(|by| (0..4).map(move |bx| lr_apply_source_block(0, bx * 4, by * 4, 4)))
+        .collect();
+
+    let (mut merged_sink, core) = lr_apply_sink_and_core();
+    merged_sink
+        .apply_luma_lr(
+            &core,
+            ByteOffset::new(0),
+            &blocks,
+            &[filter],
+            &curr_luma,
+            &cdef_luma,
+        )
+        .unwrap();
+
+    let (mut per_block_sink, _) = lr_apply_sink_and_core();
+    for block in &blocks {
+        per_block_sink
+            .apply_luma_lr(
+                &core,
+                ByteOffset::new(0),
+                core::slice::from_ref(block),
+                &[filter],
+                &curr_luma,
+                &cdef_luma,
+            )
+            .unwrap();
+    }
+
+    for y in 0..16 {
+        for x in 0..16 {
+            assert_eq!(
+                merged_sink.reconstructed_sample(PlaneId::Y, x, y).unwrap(),
+                per_block_sink
+                    .reconstructed_sample(PlaneId::Y, x, y)
+                    .unwrap(),
+                "luma LR mismatch at ({x}, {y})"
+            );
+        }
+    }
+}
+
+/// Same run-vs-per-block bit-exactness contract for the chroma LR path,
+/// including the § 7.20.3 `get_luma_sample` downsampled taps.
+#[test]
+fn chroma_lr_coalesced_runs_match_per_block_dispatch_bit_exactly() {
+    let curr_luma = plane_16x16(23, 41);
+    let cdef_luma = plane_16x16(700, 59);
+    let curr_chroma = plane_8x8(5, 29);
+    let cdef_chroma = plane_8x8(300, 71);
+    let mut coeffs = [0i16; WIENER_NS_CHROMA_COEFFS];
+    coeffs[0] = 9;
+    coeffs[3] = -12;
+    coeffs[6] = 5;
+    coeffs[9] = -4;
+    coeffs[17] = 15;
+    let filter = WienerNsLrUnitFilter {
+        plane: PlaneId::U.index(),
+        unit_row: 0,
+        unit_col: 0,
+        coeff_count: WIENER_NS_CHROMA_COEFFS,
+        coeffs,
+    };
+    let blocks: Vec<WienerNsLrSourceBlock> = (0..4)
+        .flat_map(|by| (0..4).map(move |bx| lr_apply_source_block(1, bx * 2, by * 2, 2)))
+        .collect();
+
+    let (mut merged_sink, core) = lr_apply_sink_and_core();
+    merged_sink
+        .apply_chroma_lr(
+            &core,
+            ByteOffset::new(0),
+            PlaneId::U,
+            &blocks,
+            &[filter],
+            &curr_chroma,
+            &cdef_chroma,
+            &curr_luma,
+            &cdef_luma,
+        )
+        .unwrap();
+
+    let (mut per_block_sink, _) = lr_apply_sink_and_core();
+    for block in &blocks {
+        per_block_sink
+            .apply_chroma_lr(
+                &core,
+                ByteOffset::new(0),
+                PlaneId::U,
+                core::slice::from_ref(block),
+                &[filter],
+                &curr_chroma,
+                &cdef_chroma,
+                &curr_luma,
+                &cdef_luma,
+            )
+            .unwrap();
+    }
+
+    for y in 0..8 {
+        for x in 0..8 {
+            assert_eq!(
+                merged_sink.reconstructed_sample(PlaneId::U, x, y).unwrap(),
+                per_block_sink
+                    .reconstructed_sample(PlaneId::U, x, y)
+                    .unwrap(),
+                "chroma LR mismatch at ({x}, {y})"
+            );
+        }
+    }
 }
 
 #[test]

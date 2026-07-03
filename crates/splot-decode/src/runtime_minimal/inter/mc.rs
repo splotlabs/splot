@@ -231,9 +231,7 @@ fn predict_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let source = reference_plane_source(reference, plane, offset)?;
-    let (ref_mi_cols, ref_mi_rows) = (source.mi_cols, source.mi_rows);
-    let view = source.view()?;
+    let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
 
     let plane_x = rect.luma_x >> sub_x;
     let plane_y = rect.luma_y >> sub_y;
@@ -290,10 +288,8 @@ fn predict_warp_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let source = reference_plane_source(reference, plane, offset)?;
-    let (ref_mi_cols, ref_mi_rows) = (source.mi_cols, source.mi_rows);
-    let (ref_width, ref_height) = (source.width, source.height);
-    let view = source.view()?;
+    let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
+    let (ref_width, ref_height) = (view.width(), view.height());
 
     let plane_x = rect.luma_x >> sub_x;
     let plane_y = rect.luma_y >> sub_y;
@@ -391,12 +387,8 @@ fn predict_compound_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let source0 = reference_plane_source(reference0, plane, offset)?;
-    let source1 = reference_plane_source(reference1, plane, offset)?;
-    let (ref_mi_cols0, ref_mi_rows0) = (source0.mi_cols, source0.mi_rows);
-    let (ref_mi_cols1, ref_mi_rows1) = (source1.mi_cols, source1.mi_rows);
-    let view0 = source0.view()?;
-    let view1 = source1.view()?;
+    let (view0, ref_mi_cols0, ref_mi_rows0) = reference_plane_view(reference0, plane, offset)?;
+    let (view1, ref_mi_cols1, ref_mi_rows1) = reference_plane_view(reference1, plane, offset)?;
 
     let plane_x = rect.luma_x >> sub_x;
     let plane_y = rect.luma_y >> sub_y;
@@ -548,48 +540,11 @@ fn ext_warp_unit_bounds(
     (first_x, first_y, last_x, last_y)
 }
 
-/// A reference plane exposed to the § 7.13.3.18 readers: `u16` frames borrow
-/// their strided storage directly; narrower storage widens into an owned
-/// buffer once per call.
-pub(super) struct ReferencePlaneSource<'a> {
-    borrowed: Option<(&'a [u16], usize)>,
-    owned: Vec<u16>,
-    width: usize,
-    height: usize,
-    pub(super) mi_cols: i64,
-    pub(super) mi_rows: i64,
-}
-
-impl ReferencePlaneSource<'_> {
-    pub(super) fn view(&self) -> splot_recon::Result<ReferencePlaneView<'_>> {
-        match self.borrowed {
-            Some((samples, stride)) => {
-                ReferencePlaneView::with_stride(samples, stride, self.width, self.height)
-            }
-            None => ReferencePlaneView::new(&self.owned, self.width, self.height),
-        }
-    }
-
-    pub(super) fn linearized(self) -> (Vec<u16>, usize, usize) {
-        match self.borrowed {
-            Some((samples, stride)) => {
-                let mut owned = Vec::with_capacity(self.width * self.height);
-                for row in 0..self.height {
-                    let start = row * stride;
-                    owned.extend_from_slice(&samples[start..start + self.width]);
-                }
-                (owned, self.width, self.height)
-            }
-            None => (self.owned, self.width, self.height),
-        }
-    }
-}
-
-pub(super) fn reference_plane_source<T: ReconSample>(
+pub(super) fn reference_plane_view<T: ReconSample>(
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     offset: ByteOffset,
-) -> Result<ReferencePlaneSource<'_>> {
+) -> Result<(ReferencePlaneView<'_, T>, i64, i64)> {
     let Some(ref_plane) = reference.plane(plane) else {
         return Err(unsupported_at(
             "inter_reference_missing_plane",
@@ -598,46 +553,33 @@ pub(super) fn reference_plane_source<T: ReconSample>(
             SPEC_MC,
         ));
     };
-    let visible = ref_plane.visible_size();
-    let luma_visible = reference.y().visible_size();
-    let mi_cols = (luma_visible.width() as i64) / 4;
-    let mi_rows = (luma_visible.height() as i64) / 4;
-    let visible_rect = ref_plane.visible_rect();
+    let visible = ref_plane.visible_rect();
     let stride = ref_plane.stride_samples();
-    if let Some(samples) = T::u16_slice(ref_plane.samples()) {
-        let start = visible_rect.y() * stride + visible_rect.x();
-        return Ok(ReferencePlaneSource {
-            borrowed: Some((&samples[start..], stride)),
-            owned: Vec::new(),
-            width: visible.width(),
-            height: visible.height(),
-            mi_cols,
-            mi_rows,
-        });
-    }
-    let mut owned: Vec<u16> = Vec::with_capacity(visible.width().saturating_mul(visible.height()));
-    for row in ref_plane.visible_rows() {
-        owned.extend(row.iter().map(|&s| s.to_u16()));
-    }
-    Ok(ReferencePlaneSource {
-        borrowed: None,
-        owned,
-        width: visible.width(),
-        height: visible.height(),
-        mi_cols,
-        mi_rows,
-    })
-}
+    let origin = visible
+        .y()
+        .checked_mul(stride)
+        .and_then(|row| row.checked_add(visible.x()));
+    let view = origin
+        .and_then(|start| ref_plane.samples().get(start..))
+        .ok_or(())
+        .and_then(|samples| {
+            ReferencePlaneView::from_strided(samples, stride, visible.width(), visible.height())
+                .map_err(|_| ())
+        })
+        .map_err(|()| {
+            unsupported_at(
+                "inter_reference_plane_geometry",
+                offset,
+                "minimal inter motion compensation requires a reference plane whose storage covers its visible rectangle",
+                SPEC_MC,
+            )
+        })?;
 
-pub(super) fn reference_plane_samples<T: ReconSample>(
-    reference: &DecodedFrame<T>,
-    plane: PlaneId,
-    offset: ByteOffset,
-) -> Result<(Vec<u16>, usize, usize, i64, i64)> {
-    let source = reference_plane_source(reference, plane, offset)?;
-    let (mi_cols, mi_rows) = (source.mi_cols, source.mi_rows);
-    let (samples, width, height) = source.linearized();
-    Ok((samples, width, height, mi_cols, mi_rows))
+    let luma_visible = reference.y().visible_size();
+    let ref_mi_cols = (luma_visible.width() as i64) / 4;
+    let ref_mi_rows = (luma_visible.height() as i64) / 4;
+
+    Ok((view, ref_mi_cols, ref_mi_rows))
 }
 
 #[cfg(test)]

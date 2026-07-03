@@ -828,7 +828,7 @@ fn spatial_scan_unmodelled_has_new_bv(
     let row = geometry.mi_row;
     let col = geometry.mi_col;
     let bw4 = geometry.n4w;
-    let trace = std::env::var_os("SPLOT_TRACE_INTRABC_REF_STACK").is_some();
+    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRABC_REF_STACK");
     let is_new = |mv: Option<Mv>| mv.is_some_and(|mv| !modelled.iter().any(|entry| entry.mv == mv));
     if let Some(above_row) = row.checked_sub(1) {
         let modelled_cols = [above.step8, above.step10, above.step12, above.step14];

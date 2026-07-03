@@ -4,7 +4,10 @@
 //! AV2 § 7.13.3.25 block adaptive weighted prediction.
 
 use splot_core::span::ByteOffset;
-use splot_recon::{CurrentFrameWorkspace, DecodedFrame, IntraRectBlockSize, PlaneId, ReconSample};
+use splot_recon::{
+    CurrentFrameWorkspace, DecodedFrame, IntraRectBlockSize, PlaneId, ReconSample,
+    ReferencePlaneView,
+};
 
 use super::super::Result;
 use super::{BawpSyntax, Mv, PlacedInterBlock, unsupported_at};
@@ -122,11 +125,9 @@ fn apply_bawp_plane<T: ReconSample>(
         .intra_dc_edges_for_rect(plane, plane_x, plane_y, size)
         .map_err(|_| bounds_error())?;
     let ref_at = |row: i64, col: i64| -> Result<i64> {
-        let index = usize::try_from(row * plane_width + col).map_err(|_| bounds_error())?;
-        ref_samples
-            .get(index)
-            .map(|&sample| i64::from(sample))
-            .ok_or_else(bounds_error)
+        let row = usize::try_from(row).map_err(|_| bounds_error())?;
+        let col = usize::try_from(col).map_err(|_| bounds_error())?;
+        Ok(ref_samples.sample(row, col))
     };
 
     let mut sum_x = 0i64;
@@ -211,10 +212,10 @@ fn reference_plane<T: ReconSample>(
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     tile_offset: ByteOffset,
-) -> Result<(Vec<u16>, usize, usize)> {
-    let (samples, width, height, _, _) =
-        super::mc::reference_plane_samples(reference, plane, tile_offset)?;
-    Ok((samples, width, height))
+) -> Result<(ReferencePlaneView<'_, T>, usize, usize)> {
+    let (view, _, _) = super::mc::reference_plane_view(reference, plane, tile_offset)?;
+    let (width, height) = (view.width(), view.height());
+    Ok((view, width, height))
 }
 
 /// § 7.13.3.25 template geometry: the in-plane clamped block size (`bw`,
