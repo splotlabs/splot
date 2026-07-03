@@ -292,6 +292,7 @@ fn decode_general_intra_frame_into<T: ReconSample>(
                 symbols,
                 frontier,
                 sequence,
+                None,
                 core,
                 joint_modes,
                 uses_mrls,
@@ -417,6 +418,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::tile_payload::DecodeBlockFrontier,
     sequence: &SequenceHeader,
+    y_smooth: Option<&super::intra_edge::TileYSmoothGrid>,
     core: &FrameHeaderCore,
     joint_modes: &crate::tile_payload::TileIntraJointModeState,
     uses_mrls: &crate::tile_payload::TileUsesMrlsState,
@@ -483,17 +485,24 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
     } else {
         None
     };
-    let enable_ibp = sequence
-        .intra
-        .as_ref()
-        .is_some_and(|intra| intra.enable_ibp);
+    let intra_edge = super::intra_edge::IntraEdgeCtx {
+        enable_ibp: sequence
+            .intra
+            .as_ref()
+            .is_some_and(|intra| intra.enable_ibp),
+        enable_intra_edge_filter: sequence
+            .intra
+            .as_ref()
+            .is_some_and(|intra| intra.enable_intra_edge_filter),
+        y_smooth,
+    };
     let chroma_tools = general_intra_chroma_tools(sequence, core);
     let cfl_ds_filter_index = sequence_cfl_ds_filter_index(sequence);
     let sb_mib = sequence_sb_mib(sequence);
 
     if frontier.is_chroma_part() {
         return decode_one_general_intra_chroma_part_block::<T>(
-            enable_ibp,
+            intra_edge,
             work_unit,
             symbols,
             frontier,
@@ -648,7 +657,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
         || square_luma_needs_rect_residual_path(&modes, block_ctx, luma_use_tcq, sb_mib)
     {
         return decode_one_general_intra_rect_block::<T>(
-            enable_ibp,
+            intra_edge,
             work_unit,
             symbols,
             frontier.has_chroma,
@@ -705,7 +714,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
         luma_tx_partition_context(core, frontier),
         transform_tool_residual_policy,
         qindex,
-        enable_ibp,
+        intra_edge,
         tile_offset,
     )?;
 
@@ -714,7 +723,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
-    enable_ibp: bool,
+    intra_edge: super::intra_edge::IntraEdgeCtx<'_>,
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::tile_payload::DecodeBlockFrontier,
@@ -812,7 +821,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         None,
         transform_tool_residual_policy,
         qindex,
-        enable_ibp,
+        intra_edge,
         tile_offset,
     )?;
     Ok(GeneralIntraLeafMode::chroma(chroma.is_cfl()))
@@ -820,7 +829,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn decode_one_general_intra_rect_block<T: ReconSample>(
-    enable_ibp: bool,
+    intra_edge: super::intra_edge::IntraEdgeCtx<'_>,
     work_unit: &mut crate::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     has_chroma: bool,
@@ -866,7 +875,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
         luma_tx_partition_context,
         transform_tool_residual_policy,
         qindex,
-        enable_ibp,
+        intra_edge,
         tile_offset,
     )?;
     Ok(leaf_mode_for_block(modes, has_chroma))
@@ -1353,7 +1362,7 @@ fn cfl_chroma_plan(
     })
 }
 
-fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i32) -> i32 {
+pub(super) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i32) -> i32 {
     if WAIP_WH_RATIO_THRESHOLDS
         .iter()
         .any(|&(scale, threshold)| height == width.saturating_mul(scale) && p_angle < threshold)
@@ -1526,7 +1535,7 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
     luma_tx_partition_context: Option<LumaTransformPartitionContext>,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     qindex: u32,
-    enable_ibp: bool,
+    intra_edge: super::intra_edge::IntraEdgeCtx<'_>,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     residual_plan
@@ -1541,7 +1550,7 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
             luma_tx_partition_context,
             transform_tool_residual_policy,
             qindex,
-            enable_ibp,
+            intra_edge,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     let block = block_ctx.block();

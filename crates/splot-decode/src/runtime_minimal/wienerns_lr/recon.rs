@@ -564,7 +564,12 @@ fn record_plane_mode<T: Copy>(
 /// prediction over the UNFILTERED edge is bit-exact. Transcribed VERBATIM from the
 /// committed spec mirror `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-17`.
 #[allow(clippy::if_same_then_else)]
-pub(super) fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta: i32) -> u8 {
+pub(in crate::runtime_minimal) fn intra_edge_filter_strength(
+    w: u32,
+    h: u32,
+    filter_type: u8,
+    delta: i32,
+) -> u8 {
     let d = delta.unsigned_abs();
     let blk_wh = w + h;
     let mut strength = 0u8;
@@ -850,6 +855,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         deblock_quant_deltas: super::super::deblock::DeblockQuantDeltas,
         offset: ByteOffset,
     ) -> Result<DecodedFrame<T>> {
+        dump_prefilter_frame_for_diagnostics(&self.workspace, self.luma_width, self.luma_height);
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
         if let Some(filter) = core.deblocking_filter_params
@@ -4653,6 +4659,43 @@ fn tx_size_log2(tx_size: usize) -> Option<(u32, u32)> {
     let w = u32::try_from(*TX_WIDTH_LOG2.get(tx_size)?).ok()?;
     let h = u32::try_from(*TX_HEIGHT_LOG2.get(tx_size)?).ok()?;
     Some((w, h))
+}
+
+/// `SPLOT_DUMP_PREFILTER` env var naming an append-target path: every
+/// reconstructed frame's workspace appends as raw u16-LE I420 before the
+/// § 7.2 filter chain runs. Diagnostics only; inert without the env var.
+fn dump_prefilter_frame_for_diagnostics<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    luma_width: usize,
+    luma_height: usize,
+) {
+    let Some(path) = std::env::var_os("SPLOT_DUMP_PREFILTER") else {
+        return;
+    };
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let mut bytes: Vec<u8> = Vec::new();
+    for (plane, w, h) in [
+        (PlaneId::Y, luma_width, luma_height),
+        (PlaneId::U, luma_width.div_ceil(2), luma_height.div_ceil(2)),
+        (PlaneId::V, luma_width.div_ceil(2), luma_height.div_ceil(2)),
+    ] {
+        let Ok(rect) = PlaneRect::new(0, 0, w, h) else {
+            continue;
+        };
+        let Ok(rows) = workspace.rect_rows(plane, rect) else {
+            continue;
+        };
+        for row in rows {
+            bytes.extend(row.iter().flat_map(|&s| s.to_u16().to_le_bytes()));
+        }
+    }
+    let _ = std::io::Write::write_all(&mut file, &bytes);
 }
 
 /// The §3 sample-space `(x, y)` origin of a luma MI position, overflow-checked.

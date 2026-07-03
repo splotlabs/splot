@@ -1876,6 +1876,7 @@ mod cdef;
 mod deblock;
 mod general_intra;
 mod inter;
+mod intra_edge;
 mod intra_prediction;
 mod limits;
 mod reference_buffer;

@@ -323,6 +323,8 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
 
     let mut mv_grid = NeighbourMvGrid::new(mi_rows, mi_cols)
         .ok_or_else(|| inter_cap!("inter_mv_grid", offset, "inter.mv_grid", SPEC_MODE_INFO))?;
+    let mut y_smooth = super::super::intra_edge::TileYSmoothGrid::new(mi_rows, mi_cols)
+        .ok_or_else(|| inter_cap!("inter_mv_grid", offset, "inter.mv_grid", SPEC_MODE_INFO))?;
     let sb_h4 = superblock_h4(sequence, core).ok_or_else(|| {
         inter_missing!(
             "inter_sb_size",
@@ -386,6 +388,7 @@ pub(super) fn decode_inter_blocks<T: ReconSample>(
                 &mut delta_q_state,
                 &mut intrabc_state,
                 &mut mv_grid,
+                &mut y_smooth,
                 &mut ref_mv_bank,
                 &mut warp_param_bank,
                 sb_h4,
@@ -503,6 +506,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
     delta_q_state: &mut DeltaQState,
     intrabc_state: &mut TileIntrabcPreludeState,
     mv_grid: &mut NeighbourMvGrid,
+    y_smooth: &mut super::super::intra_edge::TileYSmoothGrid,
     ref_mv_bank: &mut Option<super::find_mv_stack::RefMvBank>,
     warp_param_bank: &mut super::find_mv_stack::WarpParamBank,
     sb_h4: usize,
@@ -791,6 +795,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             symbols,
             frontier,
             sequence,
+            Some(&*y_smooth),
             core,
             joint_modes,
             uses_mrls,
@@ -810,6 +815,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             tile_offset,
         )?;
         if !frontier.is_chroma_part() {
+            y_smooth.record(mi_row, mi_col, n4w, n4h, leaf.y_mode_is_smooth());
             mv_grid.record_block(
                 mi_row,
                 mi_col,

@@ -46,7 +46,7 @@ mod diagnostics;
 pub(in crate::runtime_minimal) mod intrabc_records;
 mod intrabc_ref_mv_stack;
 mod live_storage;
-mod recon;
+pub(in crate::runtime_minimal) mod recon;
 mod source_read_math;
 pub(in crate::runtime_minimal) mod tx_records;
 
