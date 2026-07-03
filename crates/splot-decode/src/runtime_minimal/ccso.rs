@@ -127,6 +127,10 @@ pub(crate) fn ccso_frame<T: ReconSample>(
     Ok(())
 }
 
+/// Applies § 7.19 CCSO to one plane. Every sample combines its own pre-CCSO
+/// value with luma-snapshot reads, so unit blocks are independent: they
+/// compute on the installed pool from a pre-CCSO plane snapshot and publish
+/// serially in unit order.
 #[allow(clippy::too_many_arguments)]
 fn ccso_plane<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -199,9 +203,6 @@ fn ccso_plane<T: ReconSample>(
         }
     }
 
-    // Every sample combines its own pre-CCSO value with luma-snapshot reads,
-    // so unit blocks are independent: compute on the installed pool from a
-    // pre-CCSO plane snapshot, then publish serially in unit order.
     let source = workspace
         .plane(plane_id)
         .map_err(|_| CcsoError::Workspace)?;

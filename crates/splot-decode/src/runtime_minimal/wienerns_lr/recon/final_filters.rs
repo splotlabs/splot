@@ -397,6 +397,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             })
     }
 
+    /// Applies § 7.20 Wiener NS loop restoration to the luma plane.
+    ///
+    /// Restoration blocks are independent (immutable sources, disjoint
+    /// outputs), so they compute on the installed pool and publish serially
+    /// in block order. The workspace still holds the post-CDEF/CCSO samples
+    /// the § 7.20.2 sources were snapshotted from, so only filtered block
+    /// rectangles need publishing.
     pub(super) fn apply_luma_lr(
         &mut self,
         core: &FrameHeaderCore,
@@ -463,8 +470,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .iter()
             .filter(|block| block.plane == PlaneId::Y.index())
             .collect();
-        // Blocks are independent (immutable sources, disjoint outputs), so they
-        // compute on the installed pool and publish serially in block order.
         let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
             if splot_parallel::on_multiworker_pool() {
                 y_blocks
@@ -477,9 +482,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     .map(|block| compute(block))
                     .collect::<Result<_>>()?
             };
-        // The workspace still holds the post-CDEF/CCSO samples the § 7.20.2
-        // sources were snapshotted from, so only filtered block rectangles
-        // need publishing.
         for (block, output) in &filtered {
             let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
                 .map_err(|_| luma_lr_filter_error(offset))?;
@@ -497,6 +499,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
     }
 
+    /// Applies § 7.20 Wiener NS loop restoration to one chroma plane, with
+    /// the same block independence and publication contract as
+    /// [`Self::apply_luma_lr`].
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_chroma_lr(
         &mut self,
@@ -554,8 +559,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .iter()
             .filter(|block| block.plane == plane_index)
             .collect();
-        // Blocks are independent (immutable sources, disjoint outputs), so they
-        // compute on the installed pool and publish serially in block order.
         let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
             if splot_parallel::on_multiworker_pool() {
                 plane_blocks
@@ -568,9 +571,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     .map(|block| compute(block))
                     .collect::<Result<_>>()?
             };
-        // The workspace still holds the post-CDEF/CCSO samples the § 7.20.2
-        // sources were snapshotted from, so only filtered block rectangles
-        // need publishing.
         for (block, output) in &filtered {
             let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
                 .map_err(|_| luma_lr_filter_error(offset))?;

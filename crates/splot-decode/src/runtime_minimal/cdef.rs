@@ -215,6 +215,11 @@ pub(crate) fn cdef_general_intra_frame<T: ReconSample>(
 }
 
 /// Applies AV2 § 7.18 CDEF using the parsed per-unit strength index grid.
+///
+/// Filter blocks read only the pre-CDEF snapshots and write disjoint
+/// rectangles, so chunks of blocks compute on the installed pool and publish
+/// serially in block order; chunking bounds the buffered outputs and the
+/// per-block scheduling cost.
 pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     strengths: &[CdefFrameParams],
@@ -280,9 +285,6 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
         r += STEP4;
     }
 
-    // Blocks read only the pre-CDEF snapshots and write disjoint rectangles, so
-    // they compute on the installed pool and publish serially in block order.
-    // Chunking bounds the buffered outputs and the per-block scheduling cost.
     let compute = |ctx: &CdefBlockCtx| compute_cdef_block::<T>(ctx, &luma_snap, &u_snap, &v_snap);
     let parallel = splot_parallel::on_multiworker_pool();
     for chunk in contexts.chunks(CDEF_BLOCK_CHUNK) {
@@ -426,6 +428,11 @@ struct CdefFilterCtx {
     frame_sub_y: usize,
 }
 
+/// Filters one plane of one 8x8 CDEF block from its snapshot.
+///
+/// § 7.18 `CdefInside` reduces to one plane-coordinate rectangle: the mi grid
+/// covers `x < (MiCols * MI_SIZE) >> sub_x` and
+/// `y < (MiRows * MI_SIZE) >> sub_y`.
 fn compute_cdef_filter_plane<T: ReconSample>(
     plane: PlaneId,
     snap: &PlaneSnapshot,
@@ -441,8 +448,6 @@ fn compute_cdef_filter_plane<T: ReconSample>(
         return Ok(None);
     }
 
-    // § 7.18 CdefInside reduces to one plane-coordinate rectangle: the mi grid
-    // covers x < (MiCols * MI_SIZE) >> sub_x and y < (MiRows * MI_SIZE) >> sub_y.
     let inside_x = ((ctx.mi_cols * MI_SIZE) >> sub_x).min(snap.width);
     let inside_y = ((ctx.mi_rows * MI_SIZE) >> sub_y).min(snap.height);
     let offsets = CdefTapOffsets::for_direction(ctx.dir);

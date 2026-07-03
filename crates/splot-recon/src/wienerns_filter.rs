@@ -200,7 +200,10 @@ impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
 ///
 /// Identical filter math and output as [`wiener_ns_filter_luma_block`]; the
 /// § 7.20.2 source-sample process is resolved by the caller into `source`
-/// instead of a per-tap callback.
+/// instead of a per-tap callback. Tap positions are precomputed relative to
+/// the padded block origin — `(dy + radius) * stride + dx + radius` is
+/// non-negative for every config tap — so the tap loop is pure index addition
+/// off each output sample's padded-row base.
 ///
 /// # Errors
 /// Returns the same typed [`ReconError`] values as
@@ -217,9 +220,6 @@ pub fn wiener_ns_filter_luma_block_padded<T: ReconSample>(
     WienerNsLumaPaddedSource::new(source.samples, source.stride, params.width, params.height)?;
 
     let stride = source.stride;
-    // Tap positions relative to the padded block origin: `(dy + radius) * stride
-    // + dx + radius` is non-negative for every config tap, so the tap loop is
-    // pure index addition off each output sample's padded-row base.
     let mut tap_offsets = [0usize; WIENER_NS_LUMA_TAPS];
     let center_offset = WIENER_NS_LUMA_TAP_RADIUS
         .checked_mul(stride)

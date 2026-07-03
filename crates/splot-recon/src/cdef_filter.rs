@@ -204,8 +204,6 @@ pub fn cdef_filter_sample(
     let tap_row = ((pri_str >> coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row];
     let sec_taps = CDEF_SEC_TAPS[tap_row];
-    // `constrain`'s dampingAdj depends only on the per-call strengths, so it is
-    // derived once per sample instead of once per tap.
     let pri_adj = constrain_damping_adj(pri_str, damping);
     let sec_adj = constrain_damping_adj(sec_str, damping);
 
@@ -236,6 +234,8 @@ pub fn cdef_filter_sample(
     rounded.clamp(min, max)
 }
 
+/// The `constrain` dampingAdj, which depends only on the per-call strengths
+/// and is therefore derived once per sample instead of once per tap.
 const fn constrain_damping_adj(threshold: i32, damping: i32) -> i32 {
     if threshold == 0 {
         return 0;
