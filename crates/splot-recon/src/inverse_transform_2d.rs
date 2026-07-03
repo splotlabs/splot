@@ -571,6 +571,7 @@ mod tests {
                     &mut row_out,
                 )
                 .unwrap();
+                // splot-copy-ok: test reference stages 1-D rows into its own 2-D scratch
                 intermediate[i * w..(i + 1) * w].copy_from_slice(&row_out);
             }
             let mut expected = vec![0i32; w * h];

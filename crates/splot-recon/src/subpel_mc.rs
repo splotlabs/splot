@@ -493,6 +493,13 @@ const fn compound_inter_post_round() -> u32 {
     2 * FILTER_BITS - (INTER_ROUND0 + INTER_ROUND1_COMPOUND)
 }
 
+/// Two-pass § 7.13.3.18 convolution core. With an unscaled horizontal step
+/// the sub-pel phase is column-invariant, and when every clipped column read
+/// is the identity a row's whole tap window is one contiguous `w + 7` slice
+/// read directly; the vertical pass accumulates its eight consecutive
+/// `w`-sample tap rows one row at a time. Both shapes perform the same
+/// per-sample additions in the same ascending-tap order as the general
+/// per-column fallback, which remains for scaled or clipped blocks.
 fn subpel_predict_block_internal<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -553,10 +560,6 @@ fn subpel_predict_block_internal<T: ReconSample>(
     let h_filter = interp.pass_index(w as u32);
     let h_filter_rows = &SUBPEL_FILTERS[h_filter as usize];
 
-    // Unscaled horizontal step: the sub-pel phase is column-invariant, and when
-    // every clipped column read is the identity the whole tap window for a row
-    // is one contiguous `w + 7` slice. Reads and accumulation order match the
-    // general path exactly.
     let x0 = start_x >> SCALE_SUBPEL_BITS;
     let x_window_direct = step_x == 1 << SCALE_SUBPEL_BITS
         && x0 - 3 >= first_x.max(0)
@@ -618,9 +621,6 @@ fn subpel_predict_block_internal<T: ReconSample>(
                 intermediate_height,
             });
         }
-        // Tap rows are eight consecutive `w`-sample slices; accumulating one
-        // tap row at a time performs the same per-sample additions in the same
-        // ascending-tap order as the per-column loop it replaces.
         let rows = &intermediate[base * w..(base + NUM_TAPS) * w];
         let acc = &mut acc[..w];
         acc.fill(0);

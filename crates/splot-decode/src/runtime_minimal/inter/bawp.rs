@@ -208,11 +208,11 @@ fn apply_bawp_plane<T: ReconSample>(
     })
 }
 
-fn reference_plane<'a, T: ReconSample>(
-    reference: &'a DecodedFrame<T>,
+fn reference_plane<T: ReconSample>(
+    reference: &DecodedFrame<T>,
     plane: PlaneId,
     tile_offset: ByteOffset,
-) -> Result<(ReferencePlaneView<'a, T>, usize, usize)> {
+) -> Result<(ReferencePlaneView<'_, T>, usize, usize)> {
     let (view, _, _) = super::mc::reference_plane_view(reference, plane, tile_offset)?;
     let (width, height) = (view.width(), view.height());
     Ok((view, width, height))

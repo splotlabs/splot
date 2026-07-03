@@ -236,6 +236,7 @@ fn fill_sample_bytes<T: ReconSample>(bit_depth: BitDepth, row: &[T], row_bytes: 
         }
         BitDepth::Ten => {
             for (pair, sample) in row_bytes.chunks_exact_mut(2).zip(row) {
+                // splot-copy-ok: serialize a decoded sample into the frame-hash input byte stream
                 pair.copy_from_slice(&sample.to_u16().to_le_bytes());
             }
         }

@@ -390,8 +390,6 @@ fn edge_positions_match_independent_reference() {
         let h = dims[(next() % dims.len() as u32) as usize];
         let interp = filters[(next() % filters.len() as u32) as usize];
 
-        // Positions from off the left/top edge to past the right/bottom edge
-        // so the clipped reads engage on some rows/columns and not others.
         let base_x = (next() as i64 % (ref_w as i64 + 12)) - 6;
         let base_y = (next() as i64 % (ref_h as i64 + 12)) - 6;
         let phase_x = (next() % 16) as i64;
@@ -435,9 +433,9 @@ fn strided_view_matches_contiguous_view() {
     let contiguous: Vec<u16> = (0..(ref_w * ref_h))
         .map(|_| (next() % 1024) as u16)
         .collect();
-    // Gutter samples carry sentinel values a correct strided read never touches.
     let mut strided = vec![0x3fffu16 & 1023; stride * (ref_h - 1) + ref_w];
     for row in 0..ref_h {
+        // splot-copy-ok: test fixture construction only (builds the strided plane)
         strided[row * stride..row * stride + ref_w]
             .copy_from_slice(&contiguous[row * ref_w..(row + 1) * ref_w]);
     }

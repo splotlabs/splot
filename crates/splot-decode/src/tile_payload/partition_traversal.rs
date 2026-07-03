@@ -2188,9 +2188,6 @@ fn record_active_wiener_ns_source_blocks_for_unit(
         return Ok(());
     }
     let geometry = lr_unit_geometry(input)?;
-    // The § 7.20.1 MI-to-unit mapping factors per axis: a block's unit row
-    // depends only on its MI row and its unit column only on its MI column,
-    // so the unit's members are the product of the per-axis matching sets.
     let mut rows = Vec::new();
     for row in input.tile_bounds.mi_row_start..input.tile_bounds.mi_row_end {
         if lr_unit_row_for_mi(input, geometry, row)? == input.unit_row {
@@ -2212,7 +2209,10 @@ fn record_active_wiener_ns_source_blocks_for_unit(
     Ok(())
 }
 
-/// Tile-constant inputs of the § 7.20.1 MI-to-unit mapping.
+/// Tile-constant inputs of the § 7.20.1 MI-to-unit mapping. The mapping
+/// factors per axis — a block's unit row depends only on its MI row and its
+/// unit column only on its MI column — so a unit's members are the product
+/// of the per-axis matching sets.
 #[derive(Clone, Copy)]
 struct LrUnitGeometry {
     unit_rows: usize,

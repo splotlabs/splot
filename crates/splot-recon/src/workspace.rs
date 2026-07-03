@@ -513,15 +513,15 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     }
 
     /// Returns the already-reconstructed sample at `(x, y)` in this plane.
+    /// The column is validated against the storage width (not just the flat
+    /// index) so a column at or past the row stride is rejected instead of
+    /// aliasing into the next row.
     ///
     /// # Errors
     /// Returns [`ReconError::WorkspaceRectOutOfBounds`] when `(x, y)` falls
     /// outside the plane storage.
     #[inline]
     pub fn reconstructed_sample(&self, x: usize, y: usize) -> Result<T> {
-        // Validate the column against the storage width (not just the flat
-        // index) so a column at or past the row stride is rejected instead of
-        // aliasing into the next row.
         if x >= self.storage_size.width() || y >= self.storage_size.height() {
             return Err(ReconError::WorkspaceRectOutOfBounds {
                 plane: self.plane,
