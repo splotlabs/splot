@@ -613,7 +613,7 @@ fn read_active_inter_transform_type_rejects_unmodeled_set() {
 }
 
 #[test]
-fn luma_transform_type_row_uses_the_raw_coded_mode() {
+fn luma_transform_context_applies_mrl_delta_before_wide_angle_mapping() {
     let luma =
         crate::tile_payload::cdf::block_context::reconstruct_y_mode_second_set_top_left(1, 6)
             .unwrap();
@@ -629,13 +629,9 @@ fn luma_transform_type_row_uses_the_raw_coded_mode() {
     )
     .unwrap();
 
-    assert_eq!(
-        no_mrl, active_mrl,
-        "the Md_Idx_To_Type row indexes by the raw coded mode: MRL and angle \
-         deltas do not remap it (AVM av2_md_class identity; the spec text's \
-         wide-angle arm is the recorded divergence)"
-    );
+    assert_ne!(no_mrl, active_mrl);
     assert_eq!(no_mrl, DCT_FLIPADST);
+    assert_eq!(active_mrl, FLIPADST_DCT);
 }
 
 #[test]

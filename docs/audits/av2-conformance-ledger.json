@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "4cf6a284ee3c0ba72fb5579e87e3204554746d8f",
+  "audited_commit": "472b430063211c9a862a2304f51f4b83b312d41c",
   "outcome": "success",
   "files": [
     {
@@ -3023,7 +3023,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
-      "sha256": "35cec1bcdd29945a9d4333a24fb306153f9c59e05e0f27c488b5cced5d7d3d91",
+      "sha256": "137bc6aa3d2782730f32cb5ca314dde8bfadbcaee3c097ae0157bd7e15d8fcd8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
@@ -3039,7 +3039,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/general_intra_residual/tests.rs",
-      "sha256": "f8636b544ef1205efadb4c525c909b3fcb29e0828e2ae45aea784c59936752d7",
+      "sha256": "56ecf06583a2598f0b5147a0548b0cbd1c03f6764359f2f932ecbcf92483c23e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
