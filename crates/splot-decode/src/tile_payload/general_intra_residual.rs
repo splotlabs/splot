@@ -1722,7 +1722,7 @@ fn md_idx_luma_tx_type(
     intra_tx_type: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
     let size_info = tx_size_table_usize(&SIZE_CLASS, "Size_Class", tx_size)?;
-    let intra_dir = luma_transform_intra_dir(tx_size, luma_context)?;
+    let intra_dir = luma_transform_intra_dir(luma_context)?;
     let mode_row = MD_IDX_TO_TYPE
         .get(size_info)
         .and_then(|size| size.get(intra_dir))
@@ -1743,37 +1743,21 @@ fn md_idx_luma_tx_type(
     })
 }
 
+/// The `Md_Idx_To_Type` row index: the RAW coded luma mode. The spec text
+/// (05:16545-16575) additionally applies the pAngle/MRL wide-angle mapping
+/// to `intraDir`, but AVM indexes `av2_md_idx2type` with the unadjusted
+/// coded mode (`av2_md_class` is the identity, `decodemv.c:1197-1201`) and
+/// the oracle evidence is decisive: coded frame 2's rectangular
+/// directional units are byte-exact only with the raw mode, and no
+/// verified stream exercises the spec arm differently. The spec-vs-AVM
+/// divergence is recorded in the change notes for maintainer review.
 fn luma_transform_intra_dir(
-    tx_size: usize,
     luma_context: LumaTransformTypeContext,
 ) -> Result<usize, GeneralIntraResidualError> {
-    let intra_dir = luma_context.y_mode.value();
-    if !luma_context.y_mode.is_directional() {
-        return Ok(intra_dir);
-    }
-    let mode_to_angle =
-        MODE_TO_ANGLE
-            .get(intra_dir)
-            .copied()
-            .ok_or(unsupported_transform_tool_residual_error(
-                "unsupported_dctonly_residual_invalid_intra_mode",
-            ))?;
-    let mrl_delta = MRL_INDEX_TO_DELTA
-        .get(usize::from(luma_context.mrl_index))
-        .copied()
-        .ok_or(unsupported_transform_tool_residual_error(
-            "unsupported_dctonly_residual_invalid_mrl_index",
-        ))?;
-    let p_angle = mode_to_angle
-        .checked_add(i32::from(luma_context.angle_delta_y) * ANGLE_STEP)
-        .and_then(|angle| angle.checked_add(mrl_delta))
-        .ok_or(unsupported_transform_tool_residual_error(
-            "unsupported_dctonly_residual_luma_angle_overflow",
-        ))?;
-    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
-    Ok(wide_angle_mapping(intra_dir, tx_width, tx_height, p_angle))
+    Ok(luma_context.y_mode.value())
 }
 
+/// § 7.13.2.6-family wide-angle remap shared by the IST mode derivation.
 fn wide_angle_mapping(mode: usize, width: usize, height: usize, p_angle: i32) -> usize {
     if WAIP_WH_RATIO_THRESHOLDS
         .iter()

@@ -3,6 +3,7 @@
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{FrameHeaderCore, FrameType, MvPrecision, TxMode};
+use splot_core::headers::sequence::DrlReorder;
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
@@ -568,6 +569,10 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         bank.reset_for_leaf(mv_grid, mi_row, mi_col, sb_h4);
     }
     warp_param_bank.reset_for_leaf(mv_grid, mi_row, mi_col, sb_h4);
+    let drl_reorder = sequence
+        .inter
+        .as_ref()
+        .map_or(DrlReorder::Disabled, |inter| inter.drl_reorder);
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
 
     let is_inter = if frontier.is_luma_part() || frontier.is_chroma_part() {
@@ -1092,6 +1097,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
                 .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2)),
             warp_param_bank,
             derive_wrl,
+            drl_reorder,
         );
         if std::env::var_os("SPLOT_TRACE_INTER_BLOCK_MODE").is_some() {
             eprintln!(
@@ -1420,6 +1426,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2)),
         warp_param_bank,
         false,
+        drl_reorder,
     );
 
     let ref_mv_idx = if single_mode == SINGLE_MODE_NEARMV || single_mode == SINGLE_MODE_NEWMV {

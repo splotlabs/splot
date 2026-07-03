@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_core::headers::sequence::DrlReorder;
 use splot_recon::math::round2_signed;
 
 use super::Mv;
@@ -1650,6 +1651,7 @@ pub(super) fn find_mv_stack(
     bank: Option<(&RefMvBank, usize)>,
     warp_bank: &WarpParamBank,
     derive_wrl: bool,
+    drl_reorder: DrlReorder,
 ) -> MvStack {
     let mut entries: Vec<MvStackEntry> = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
     let mut prune_count = 0usize;
@@ -1673,7 +1675,24 @@ pub(super) fn find_mv_stack(
         );
     }
 
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): 7.12.2.5 Scan col, 7.12.2.19 Sorting, 7.12.2.20 large-block MVP, 7.12.2.22 derived-SMVP fill
+    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): 7.12.2.5 Scan col, 7.12.2.22 derived-SMVP fill
+    let num_nearest = entries.len();
+    let use_sort = match drl_reorder {
+        DrlReorder::Always => true,
+        DrlReorder::Constraint => num_nearest >= 4,
+        DrlReorder::Disabled => false,
+    };
+    if use_sort && num_nearest > 1 {
+        let mut max_idx = 0usize;
+        for (idx, entry) in entries.iter().enumerate().skip(1) {
+            if entry.weight > entries[max_idx].weight {
+                max_idx = idx;
+            }
+        }
+        if max_idx != 0 {
+            entries.swap(0, max_idx);
+        }
+    }
     if let Some((bank, max_ref_mv_count)) = bank {
         bank.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
     }

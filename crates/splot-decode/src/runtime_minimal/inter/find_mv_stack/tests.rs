@@ -5,6 +5,7 @@
 
 use super::MotionMode;
 use super::*;
+use splot_core::headers::sequence::DrlReorder;
 
 const BLOCK0_MV: Mv = Mv { row: 0, col: 48 };
 
@@ -116,7 +117,15 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
         "top-left block has no decoded neighbour"
     );
 
-    let stack = find_mv_stack(&grid, &block0, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &block0,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(stack.num_mv_found(), 1, "only the zero global-MV fallback");
     assert_eq!(stack.candidate(0), Mv::ZERO, "fallback candidate is zero");
 }
@@ -302,7 +311,15 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
     assert_eq!(nctx.skip_ctx, 2, "two skip=1 neighbours -> skip ctx 2");
     assert!(nctx.has_neighbour, "block 1 has a decoded left neighbour");
 
-    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &block1,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert!(stack.num_mv_found() >= 1, "at least one candidate");
     assert_eq!(
         stack.candidate(0),
@@ -333,7 +350,15 @@ fn block2_predicts_block0_mv_via_above_neighbour() {
     assert_eq!(ctx.new_mv_count, 2, "both above probes hit the NEWMV block");
     assert_eq!(ctx.new_mv_context, 3, "above-NEWMV NewMvContext");
 
-    let stack = find_mv_stack(&grid, &block2, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &block2,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         stack.candidate(0),
         BLOCK0_MV,
@@ -355,7 +380,15 @@ fn block3_predicts_block0_mv_via_above_and_left() {
     let nctx = block_neighbour_ctx(&grid, &block3);
     assert_eq!(nctx.skip_ctx, 2, "two skip=1 neighbours -> skip ctx 2");
 
-    let stack = find_mv_stack(&grid, &block3, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &block3,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         stack.candidate(0),
         BLOCK0_MV,
@@ -392,7 +425,15 @@ fn intra_neighbour_does_not_contribute() {
         "two intra neighbours -> is_inter ctx 3"
     );
 
-    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &block1,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(stack.num_mv_found(), 1, "intra neighbour not a candidate");
     assert_eq!(
         stack.candidate(0),
@@ -410,7 +451,15 @@ fn mismatched_reference_neighbour_does_not_contribute() {
     let ctx = find_mode_ctx(&grid, &block1);
     assert_eq!(ctx.new_mv_context, 0, "ref-mismatch gives mode ctx 0");
 
-    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &block1,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         stack.num_mv_found(),
         1,
@@ -482,7 +531,15 @@ fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
     record_inter(&mut grid, N4_32, 0, NeighbourYMode::Other, BLOCK0_MV, true);
     let block3 = block_at(N4_32, N4_32);
 
-    let stack = find_mv_stack(&grid, &block3, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &block3,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         stack.num_mv_found(),
         2,
@@ -521,7 +578,15 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
     );
     let block3 = block_at(N4_32, N4_32);
 
-    let stack = find_mv_stack(&grid, &block3, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &block3,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         stack.candidate(0),
         Mv { row: 0, col: 32 },
@@ -553,7 +618,15 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
 fn clamp_keeps_small_mvs_unchanged() {
     let grid = grid_with_block0();
     let block1 = block_at(0, N4_32);
-    let stack = find_mv_stack(&grid, &block1, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &block1,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         stack.candidate(0),
         BLOCK0_MV,
@@ -638,7 +711,15 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
         "skip context counts both above-SB NPosBuf neighbours"
     );
 
-    let stack = find_mv_stack(&grid, &sb2, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &sb2,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         stack.candidate(0),
         BLOCK0_MV,
@@ -657,7 +738,15 @@ fn undecoded_later_sb_column_yields_no_candidate() {
         "an SB whose neighbours are all undecoded has no neighbour"
     );
 
-    let stack = find_mv_stack(&grid, &sb1, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &sb1,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         stack.num_mv_found(),
         1,
@@ -684,7 +773,15 @@ fn bottom_right_sb_predicts_from_decoded_above_and_left() {
         "SB3 has decoded above + left neighbours"
     );
 
-    let stack = find_mv_stack(&grid, &sb3, Mv::ZERO, None, &WarpParamBank::new(), false);
+    let stack = find_mv_stack(
+        &grid,
+        &sb3,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         stack.candidate(0),
         BLOCK0_MV,
@@ -746,7 +843,15 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
     bank.update(0, older);
     bank.update(0, newer);
 
-    let stack = find_mv_stack(&grid, &block_at(8, 8), Mv::ZERO, None, &bank, true);
+    let stack = find_mv_stack(
+        &grid,
+        &block_at(8, 8),
+        Mv::ZERO,
+        None,
+        &bank,
+        true,
+        DrlReorder::Disabled,
+    );
     assert_eq!(stack.warp_candidate(0), spatial, "first spatial insert");
     assert_eq!(
         stack.warp_candidate(1),
@@ -761,7 +866,15 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
         "out-of-range indices resolve to the identity default"
     );
 
-    let no_wrl = find_mv_stack(&grid, &block_at(8, 8), Mv::ZERO, None, &bank, false);
+    let no_wrl = find_mv_stack(
+        &grid,
+        &block_at(8, 8),
+        Mv::ZERO,
+        None,
+        &bank,
+        false,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         no_wrl.warp_candidate(0),
         DEFAULT_WARP_PARAMS,
@@ -878,7 +991,15 @@ fn corner_derivation_matches_the_hand_computed_model() {
         mi_rows: MI_DIM,
         mi_cols: MI_DIM,
     };
-    let stack = find_mv_stack(&grid, &block, Mv::ZERO, None, &WarpParamBank::new(), true);
+    let stack = find_mv_stack(
+        &grid,
+        &block,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        true,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         stack.warp_candidate(0),
         [-131072, 0, 73728, 0, 0, 65536],
@@ -896,7 +1017,15 @@ fn warp_predicted_mv_projects_the_block_center() {
     let mut bank = WarpParamBank::new();
     let translation = [3 << 16, -2 << 16, 1 << 16, 0, 0, 1 << 16];
     bank.update(0, translation);
-    let stack = find_mv_stack(&empty_grid(), &block_at(4, 8), Mv::ZERO, None, &bank, true);
+    let stack = find_mv_stack(
+        &empty_grid(),
+        &block_at(4, 8),
+        Mv::ZERO,
+        None,
+        &bank,
+        true,
+        DrlReorder::Disabled,
+    );
     assert_eq!(stack.warp_candidate(0), translation);
     assert_eq!(
         stack.warp_predicted_mv(0, super::super::read_mv::MV_PRECISION_EIGHTH_PEL),
@@ -912,7 +1041,15 @@ fn warp_predicted_mv_projects_the_block_center() {
     let scale = [0, 0, (1 << 16) + 1024, 0, 0, 1 << 16];
     let mut bank = WarpParamBank::new();
     bank.update(0, scale);
-    let stack = find_mv_stack(&empty_grid(), &block_at(4, 8), Mv::ZERO, None, &bank, true);
+    let stack = find_mv_stack(
+        &empty_grid(),
+        &block_at(4, 8),
+        Mv::ZERO,
+        None,
+        &bank,
+        true,
+        DrlReorder::Disabled,
+    );
     assert_eq!(
         stack.warp_predicted_mv(0, super::super::read_mv::MV_PRECISION_EIGHTH_PEL),
         Mv { row: 0, col: 6 },
