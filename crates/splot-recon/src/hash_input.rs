@@ -216,35 +216,42 @@ fn write_visible_plane<T: ReconSample, W: Write + ?Sized>(
     })?;
 
     for row in plane.visible_rows() {
-        row_bytes.clear();
-        for sample in row {
-            push_sample(bit_depth, sample.to_u16(), &mut row_bytes);
-        }
+        row_bytes.resize(row_byte_len, 0);
+        fill_sample_bytes(bit_depth, row, &mut row_bytes);
         writer.write_all(&row_bytes)?;
     }
     Ok(())
 }
 
-fn push_sample(bit_depth: BitDepth, sample: u16, row_bytes: &mut Vec<u8>) {
+/// Serializes one visible row into `row_bytes` per § 6.16.13: one byte per
+/// 8-bit sample, two little-endian bytes per 10-bit sample. `row_bytes` must
+/// already hold the row's exact byte length; any tail beyond the zipped
+/// samples is left untouched, so callers size it exactly.
+fn fill_sample_bytes<T: ReconSample>(bit_depth: BitDepth, row: &[T], row_bytes: &mut [u8]) {
     match bit_depth {
-        BitDepth::Eight => row_bytes.push(sample as u8),
-        // splot-copy-ok: serialize a decoded sample into the frame-hash input byte stream
-        BitDepth::Ten => row_bytes.extend_from_slice(&sample.to_le_bytes()),
-    }
-}
-
-fn hash_visible_plane<T: ReconSample>(bit_depth: BitDepth, plane: &Plane<T>, hasher: &mut Sha256) {
-    for row in plane.visible_rows() {
-        for sample in row {
-            hash_sample(bit_depth, sample.to_u16(), hasher);
+        BitDepth::Eight => {
+            for (byte, sample) in row_bytes.iter_mut().zip(row) {
+                *byte = sample.to_u16() as u8;
+            }
+        }
+        BitDepth::Ten => {
+            for (pair, sample) in row_bytes.chunks_exact_mut(2).zip(row) {
+                pair.copy_from_slice(&sample.to_u16().to_le_bytes());
+            }
         }
     }
 }
 
-fn hash_sample(bit_depth: BitDepth, sample: u16, hasher: &mut Sha256) {
-    match bit_depth {
-        BitDepth::Eight => hasher.update([sample as u8]),
-        BitDepth::Ten => hasher.update(sample.to_le_bytes()),
+fn hash_visible_plane<T: ReconSample>(bit_depth: BitDepth, plane: &Plane<T>, hasher: &mut Sha256) {
+    let bytes_per_sample = bytes_per_sample(bit_depth);
+    let mut chunk = [0u8; 4096];
+    let samples_per_chunk = chunk.len() / bytes_per_sample;
+    for row in plane.visible_rows() {
+        for samples in row.chunks(samples_per_chunk) {
+            let filled = &mut chunk[..samples.len() * bytes_per_sample];
+            fill_sample_bytes(bit_depth, samples, filled);
+            hasher.update(&*filled);
+        }
     }
 }
 
