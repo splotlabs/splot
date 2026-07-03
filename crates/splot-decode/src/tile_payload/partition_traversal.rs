@@ -2187,23 +2187,43 @@ fn record_active_wiener_ns_source_blocks_for_unit(
     if !lr_activity.retain_source_blocks {
         return Ok(());
     }
+    let geometry = lr_unit_geometry(input)?;
+    // The § 7.20.1 MI-to-unit mapping factors per axis: a block's unit row
+    // depends only on its MI row and its unit column only on its MI column,
+    // so the unit's members are the product of the per-axis matching sets.
+    let mut rows = Vec::new();
     for row in input.tile_bounds.mi_row_start..input.tile_bounds.mi_row_end {
-        for col in input.tile_bounds.mi_col_start..input.tile_bounds.mi_col_end {
-            let (unit_row, unit_col) = lr_unit_for_block(input, row, col)?;
-            if unit_row == input.unit_row && unit_col == input.unit_col {
-                let block = lr_source_block_for(input, row, col)?;
-                lr_activity.record_source_block(block, limits)?;
-            }
+        if lr_unit_row_for_mi(input, geometry, row)? == input.unit_row {
+            rows.push(row);
+        }
+    }
+    let mut cols = Vec::new();
+    for col in input.tile_bounds.mi_col_start..input.tile_bounds.mi_col_end {
+        if lr_unit_col_for_mi(input, geometry, col)? == input.unit_col {
+            cols.push(col);
+        }
+    }
+    for &row in &rows {
+        for &col in &cols {
+            let block = lr_source_block_for(input, row, col)?;
+            lr_activity.record_source_block(block, limits)?;
         }
     }
     Ok(())
 }
 
-fn lr_unit_for_block(
+/// Tile-constant inputs of the § 7.20.1 MI-to-unit mapping.
+#[derive(Clone, Copy)]
+struct LrUnitGeometry {
+    unit_rows: usize,
+    unit_cols: usize,
+    lr_row_offset: usize,
+    lr_col_offset: usize,
+}
+
+fn lr_unit_geometry(
     input: LrSourceBlockDerivation,
-    row: usize,
-    col: usize,
-) -> Result<(usize, usize), TilePartitionTraversalError> {
+) -> Result<LrUnitGeometry, TilePartitionTraversalError> {
     let mi_cols = checked_sub(
         "lr_source_mi_cols",
         input.tile_bounds.mi_col_end,
@@ -2230,24 +2250,43 @@ fn lr_unit_for_block(
         MI_SIZE,
         input.sub_x,
     )? / input.unit_size;
+    Ok(LrUnitGeometry {
+        unit_rows,
+        unit_cols,
+        lr_row_offset,
+        lr_col_offset,
+    })
+}
+
+fn lr_unit_row_for_mi(
+    input: LrSourceBlockDerivation,
+    geometry: LrUnitGeometry,
+    row: usize,
+) -> Result<usize, TilePartitionTraversalError> {
     let local_row = checked_sub("lr_source_row", row, input.tile_bounds.mi_row_start)?;
-    let local_col = checked_sub("lr_source_col", col, input.tile_bounds.mi_col_start)?;
     let row_sample = checked_mul("lr_source_unit_row_sample", local_row, MI_SIZE)?;
     let row_sample = checked_add("lr_source_unit_row_sample", row_sample, 8)?;
     let row_sample = row_sample >> input.sub_y;
+    checked_add(
+        "lr_source_unit_row",
+        geometry.lr_row_offset,
+        (row_sample / input.unit_size).min(geometry.unit_rows.saturating_sub(1)),
+    )
+}
+
+fn lr_unit_col_for_mi(
+    input: LrSourceBlockDerivation,
+    geometry: LrUnitGeometry,
+    col: usize,
+) -> Result<usize, TilePartitionTraversalError> {
+    let local_col = checked_sub("lr_source_col", col, input.tile_bounds.mi_col_start)?;
     let col_sample =
         checked_mul_shifted("lr_source_unit_col_sample", local_col, MI_SIZE, input.sub_x)?;
-    let unit_row = checked_add(
-        "lr_source_unit_row",
-        lr_row_offset,
-        (row_sample / input.unit_size).min(unit_rows.saturating_sub(1)),
-    )?;
-    let unit_col = checked_add(
+    checked_add(
         "lr_source_unit_col",
-        lr_col_offset,
-        (col_sample / input.unit_size).min(unit_cols.saturating_sub(1)),
-    )?;
-    Ok((unit_row, unit_col))
+        geometry.lr_col_offset,
+        (col_sample / input.unit_size).min(geometry.unit_cols.saturating_sub(1)),
+    )
 }
 
 fn lr_source_block_for(
