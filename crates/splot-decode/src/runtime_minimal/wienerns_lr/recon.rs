@@ -2317,6 +2317,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         is_intrabc: bool,
         tile_offset: ByteOffset,
     ) -> Result<()> {
+        let _sink = crate::timing::enter_sink(crate::timing::SinkKind::Luma);
         if !self.quant_reconstructable {
             if self.full_recon {
                 return Err(full_recon_deferred_leaf_error(tile_offset));
@@ -3424,6 +3425,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         qindex: u32,
         tile_offset: ByteOffset,
     ) -> Result<()> {
+        let _sink = crate::timing::enter_sink(crate::timing::SinkKind::Chroma);
         if !self.quant_reconstructable {
             return Ok(());
         }

@@ -9,6 +9,7 @@
 //! thread-scaling behavior of each stage is visible. Disabled by default;
 //! normal CLI output is unchanged.
 
+use std::cell::Cell;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -40,6 +41,68 @@ pub(crate) fn report_detail(phase: &str, started: Option<Instant>, detail: &str)
         eprintln!(
             "splot.decode_timing {phase}_ms={:.3} {detail}",
             started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+}
+
+thread_local! {
+    /// Nanoseconds spent in the reconstruction sink (dequant, inverse
+    /// transform, intra prediction, residual add, workspace write) since the
+    /// last reset, split `[luma, chroma]`. Only maintained when the trace is
+    /// enabled; the intra tile decodes on one thread, so a thread-local read
+    /// at the tile boundary sees the whole tile.
+    static SINK_NANOS: Cell<[u128; 2]> = const { Cell::new([0, 0]) };
+}
+
+/// Which reconstruction sink a [`SinkScope`] attributes its lifetime to.
+#[derive(Clone, Copy)]
+pub(crate) enum SinkKind {
+    Luma,
+    Chroma,
+}
+
+/// RAII timer that adds its lifetime to the per-thread reconstruction-sink
+/// accumulator on drop; a no-op (holding `None`) when the trace is disabled.
+pub(crate) struct SinkScope(Option<(SinkKind, Instant)>);
+
+impl Drop for SinkScope {
+    fn drop(&mut self) {
+        if let Some((kind, started)) = self.0 {
+            let elapsed = started.elapsed().as_nanos();
+            let slot = match kind {
+                SinkKind::Luma => 0,
+                SinkKind::Chroma => 1,
+            };
+            SINK_NANOS.with(|cell| {
+                let mut nanos = cell.get();
+                nanos[slot] = nanos[slot].saturating_add(elapsed);
+                cell.set(nanos);
+            });
+        }
+    }
+}
+
+/// Starts a reconstruction-sink timer for `kind`, or a no-op when disabled.
+pub(crate) fn enter_sink(kind: SinkKind) -> SinkScope {
+    SinkScope(enabled().then(|| (kind, Instant::now())))
+}
+
+/// Clears the per-thread reconstruction-sink accumulator before a tile decode.
+pub(crate) fn reset_sink() {
+    if enabled() {
+        SINK_NANOS.with(|cell| cell.set([0, 0]));
+    }
+}
+
+/// Emits the accumulated reconstruction-sink split (luma/chroma ms) for the
+/// tile just decoded.
+pub(crate) fn report_sink(phase: &str) {
+    if enabled() {
+        let [luma, chroma] = SINK_NANOS.with(Cell::get);
+        eprintln!(
+            "splot.decode_timing {phase}_luma_ms={:.3} {phase}_chroma_ms={:.3}",
+            luma as f64 / 1.0e6,
+            chroma as f64 / 1.0e6
         );
     }
 }

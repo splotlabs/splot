@@ -397,6 +397,7 @@ fn decode_wienerns_lr_selectable_full_recon_key_frame(
     core: &FrameHeaderCore,
     header: IvfHeader,
 ) -> Result<MinimalRuntimeFrame> {
+    crate::timing::reset_sink();
     let intra_tile_timer = crate::timing::start();
     let region = reconstruct_ac0ej3_selectable_intra_region(
         bytes,
@@ -409,6 +410,7 @@ fn decode_wienerns_lr_selectable_full_recon_key_frame(
         true,
     )?;
     crate::timing::report("key_intra_tile", intra_tile_timer);
+    crate::timing::report_sink("key_intra_sink");
     let finish_timer = crate::timing::start();
     let mut sink = region.sink;
     sink.finish_intra_reconstruction(frame_envelope.offset)?;
