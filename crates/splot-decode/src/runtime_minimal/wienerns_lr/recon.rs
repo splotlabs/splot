@@ -875,8 +875,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         }
-        // Mirror of the `apply_luma_lr` / `apply_chroma_lr` early-outs: a
-        // plane snapshot is materialized only when some later stage reads it.
         let lr_plane_active = |plane_index: usize| {
             core.lr_params.as_ref().is_some_and(|lr| {
                 lr.planes.get(plane_index).is_some_and(|plane| {

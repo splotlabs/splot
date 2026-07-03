@@ -256,9 +256,6 @@ pub fn wiener_ns_filter_luma_block_padded<T: ReconSample>(
     let mut filtered = Vec::with_capacity(sample_count);
     let mut acc = vec![0i64; params.width];
     for r in 0..params.height {
-        // A padded row can hold out-of-range samples the § 7.20.3 taps never
-        // read (window corners); the validated row path re-checks exactly the
-        // read set so such rows filter instead of erroring.
         let window_in_range = clean_rows
             .get(r..r + 2 * WIENER_NS_LUMA_TAP_RADIUS + 1)
             .is_some_and(|rows| rows.iter().all(|&clean| clean));
@@ -604,6 +601,25 @@ mod tests {
 
     const ZERO: [i16; WIENER_NS_LUMA_COEFFS] = [0; WIENER_NS_LUMA_COEFFS];
 
+    fn padded_from<T: ReconSample>(
+        height: usize,
+        stride: usize,
+        source_at: impl Fn(isize, isize) -> T,
+    ) -> Vec<T> {
+        let radius = WIENER_NS_LUMA_TAP_RADIUS;
+        let source_at = &source_at;
+        (0..height + 2 * radius)
+            .flat_map(move |row| {
+                (0..stride).map(move |col| {
+                    source_at(
+                        col as isize - radius as isize,
+                        row as isize - radius as isize,
+                    )
+                })
+            })
+            .collect()
+    }
+
     #[test]
     fn padded_and_callback_filters_match_bit_exactly() {
         let width = 7;
@@ -621,16 +637,7 @@ mod tests {
         let subclasses: Vec<usize> = (0..width * height).map(|i| i % 2).collect();
         let source_at =
             |x: isize, y: isize| -> u16 { ((x * 31 + y * 17 + 512).rem_euclid(1024)) as u16 };
-        let padded: Vec<u16> = (0..height + 2 * radius)
-            .flat_map(|row| {
-                (0..stride).map(move |col| {
-                    source_at(
-                        col as isize - radius as isize,
-                        row as isize - radius as isize,
-                    )
-                })
-            })
-            .collect();
+        let padded: Vec<u16> = padded_from(height, stride, source_at);
         let params = params(
             width,
             height,
@@ -668,16 +675,7 @@ mod tests {
             .collect();
         let source_at =
             |x: isize, y: isize| -> u8 { ((x * 7 + y * 13 + 90).rem_euclid(256)) as u8 };
-        let padded: Vec<u8> = (0..height + 2 * radius)
-            .flat_map(|row| {
-                (0..stride).map(move |col| {
-                    source_at(
-                        col as isize - radius as isize,
-                        row as isize - radius as isize,
-                    )
-                })
-            })
-            .collect();
+        let padded: Vec<u8> = padded_from(height, stride, source_at);
         let params = params(
             width,
             height,
@@ -705,17 +703,7 @@ mod tests {
         let stride = width + 2 * radius;
         let source_at =
             |x: isize, y: isize| -> u16 { ((x * 19 + y * 5 + 300).rem_euclid(1024)) as u16 };
-        let mut padded: Vec<u16> = (0..height + 2 * radius)
-            .flat_map(|row| {
-                (0..stride).map(move |col| {
-                    source_at(
-                        col as isize - radius as isize,
-                        row as isize - radius as isize,
-                    )
-                })
-            })
-            .collect();
-        // Block-relative (-4, -4): no § 7.20.3 tap combination reaches it.
+        let mut padded: Vec<u16> = padded_from(height, stride, source_at);
         padded[0] = u16::MAX;
         let mut class = ZERO;
         class[0] = 6;

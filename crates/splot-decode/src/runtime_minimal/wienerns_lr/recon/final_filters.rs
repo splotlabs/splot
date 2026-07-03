@@ -857,6 +857,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Ok(subclasses)
     }
 
+    /// § 7.20.4 `BlockStartX` is the 64-sample window containing the
+    /// classified cell (derived from `class_x`, not the merged run's x), so a
+    /// coalesced run classifies identically to per-block dispatch.
     #[allow(clippy::too_many_arguments)]
     fn luma_lr_subclass_at(
         &self,
@@ -872,9 +875,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Some(tx_skip_grid) = self.tx_skip_grid.as_ref() else {
             return Err(luma_lr_filter_error(offset));
         };
-        // § 7.20.4 BlockStartX is the 64-sample window containing the
-        // classified cell, so it derives from the cell's x, keeping merged
-        // runs identical to per-block dispatch across 64-sample boundaries.
         let block_start_x = (class_x >> 6) << 6;
         let block_end_x = super::super::pc_wiener_block_end_x(block, block_start_x)
             .map_err(|_| luma_lr_filter_error(offset))?;

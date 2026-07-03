@@ -586,8 +586,12 @@ mod tests {
         assert_eq!(output, [101]);
     }
 
-    #[test]
-    fn luma_420_filter_index_zero_averages_two_by_two() {
+    /// Runs the 4:2:0 `get_luma_sample` single-output case for one
+    /// `cfl_ds_filter_index`, asserting the filtered sample lands on 101.
+    fn assert_luma_420_filters_to_101(
+        cfl_ds_filter_index: u8,
+        luma_at: impl Fn(isize, isize) -> u8,
+    ) {
         let mut coeffs = ZERO_CHROMA;
         coeffs[6] = 4;
         let mut output = [0u8; 1];
@@ -596,89 +600,46 @@ mod tests {
         params.subsampling_y = 1;
         params.luma_end_x = 7;
         params.mi_rows = 2;
-        params.cfl_ds_filter_index = 0;
+        params.cfl_ds_filter_index = cfl_ds_filter_index;
 
-        wiener_ns_filter_chroma_block(
-            &mut output,
-            &params,
-            |_x, _y| 100,
-            |x, y| match (x, y) {
-                (0, 0) => 10,
-                (1, 0) => 14,
-                (0, 1) => 18,
-                (1, 1) => 22,
-                (0, 2) => 30,
-                (1, 2) => 34,
-                (0, 3) => 38,
-                (1, 3) => 42,
-                _ => 0,
-            },
-        )
-        .unwrap();
+        wiener_ns_filter_chroma_block(&mut output, &params, |_x, _y| 100, luma_at).unwrap();
 
         assert_eq!(output, [101]);
+    }
+
+    fn two_by_two_luma_at(x: isize, y: isize) -> u8 {
+        match (x, y) {
+            (0, 0) => 10,
+            (1, 0) => 14,
+            (0, 1) => 18,
+            (1, 1) => 22,
+            (0, 2) => 30,
+            (1, 2) => 34,
+            (0, 3) => 38,
+            (1, 3) => 42,
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn luma_420_filter_index_zero_averages_two_by_two() {
+        assert_luma_420_filters_to_101(0, two_by_two_luma_at);
     }
 
     #[test]
     fn luma_420_filter_index_one_uses_vertical_left_column() {
-        let mut coeffs = ZERO_CHROMA;
-        coeffs[6] = 4;
-        let mut output = [0u8; 1];
-        let mut params = chroma_params(1, 1, 1, BitDepth::Eight, &coeffs);
-        params.subsampling_x = 1;
-        params.subsampling_y = 1;
-        params.luma_end_x = 7;
-        params.mi_rows = 2;
-        params.cfl_ds_filter_index = 1;
-
-        wiener_ns_filter_chroma_block(
-            &mut output,
-            &params,
-            |_x, _y| 100,
-            |x, y| match (x, y) {
-                (0, 0) => 10,
-                (0, 1) => 30,
-                (0, 2) => 50,
-                (0, 3) => 70,
-                _ => 0,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(output, [101]);
+        assert_luma_420_filters_to_101(1, |x, y| match (x, y) {
+            (0, 0) => 10,
+            (0, 1) => 30,
+            (0, 2) => 50,
+            (0, 3) => 70,
+            _ => 0,
+        });
     }
 
     #[test]
     fn luma_420_filter_index_three_maps_to_zero() {
-        let mut coeffs = ZERO_CHROMA;
-        coeffs[6] = 4;
-        let mut output = [0u8; 1];
-        let mut params = chroma_params(1, 1, 1, BitDepth::Eight, &coeffs);
-        params.subsampling_x = 1;
-        params.subsampling_y = 1;
-        params.luma_end_x = 7;
-        params.mi_rows = 2;
-        params.cfl_ds_filter_index = 3;
-
-        wiener_ns_filter_chroma_block(
-            &mut output,
-            &params,
-            |_x, _y| 100,
-            |x, y| match (x, y) {
-                (0, 0) => 10,
-                (1, 0) => 14,
-                (0, 1) => 18,
-                (1, 1) => 22,
-                (0, 2) => 30,
-                (1, 2) => 34,
-                (0, 3) => 38,
-                (1, 3) => 42,
-                _ => 0,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(output, [101]);
+        assert_luma_420_filters_to_101(3, two_by_two_luma_at);
     }
 
     #[test]
