@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "5eb89a8a9409e4b84644ef0b098c7b22b8c944da",
+  "audited_commit": "de9f943e6a78595b778e3ccfc00dbaf404df0f46",
   "outcome": "success",
   "files": [
     {
@@ -2082,7 +2082,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/general_intra.rs",
-      "sha256": "c3a9477ad87c7270668e9955eba085007c9ac1fd7216815e96e3c469a472d214",
+      "sha256": "91c3d713150e1dcb0dd743d13d33aeca390483c2b6773cd5b3e9afb97a259421",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-10BIT",
