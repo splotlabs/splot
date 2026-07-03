@@ -23,6 +23,15 @@ pub(crate) struct DeblockBlock {
     pub(crate) r: usize,
     /// Luma MI column.
     pub(crate) c: usize,
+    /// § 7.17 `MiRowBase`: the CODING block's MI row (`r` is the transform's).
+    pub(crate) block_r: usize,
+    /// § 7.17 `MiColBase`: the coding block's MI column.
+    pub(crate) block_c: usize,
+    /// The CHROMA transform's MI row (chroma keeps its own § 5.20.6 tiling
+    /// when the luma records are per transform unit).
+    pub(crate) chroma_base_r: usize,
+    /// The chroma transform's MI column.
+    pub(crate) chroma_base_c: usize,
     /// Width in luma 4x4 units.
     pub(crate) n4w: usize,
     /// Height in luma 4x4 units.
@@ -70,6 +79,10 @@ impl DeblockQuantDeltas {
 struct MiBlockInfo {
     base_row: usize,
     base_col: usize,
+    block_row: usize,
+    block_col: usize,
+    chroma_base_row: usize,
+    chroma_base_col: usize,
     luma_tx: usize,
     chroma_tx: Option<usize>,
     qindex: u32,
@@ -81,6 +94,10 @@ impl MiBlockInfo {
         let DeblockBlock {
             r,
             c,
+            block_r,
+            block_c,
+            chroma_base_r,
+            chroma_base_c,
             n4w: _,
             n4h: _,
             luma_tx,
@@ -91,6 +108,10 @@ impl MiBlockInfo {
         Self {
             base_row: r,
             base_col: c,
+            block_row: block_r,
+            block_col: block_c,
+            chroma_base_row: chroma_base_r,
+            chroma_base_col: chroma_base_c,
             luma_tx,
             chroma_tx,
             qindex,
@@ -458,11 +479,6 @@ fn deblock_filter_edge<T: ReconSample>(
             col: prev_col,
         })?;
 
-    let base_row = curr.base_row;
-    let base_col = curr.base_col;
-    let base_y = (base_row * MI_SIZE) >> plane_sub_y;
-    let base_x = (base_col * MI_SIZE) >> plane_sub_x;
-
     let Some(tx_sz) = plane_tx(plane, curr) else {
         return Ok(());
     };
@@ -470,17 +486,23 @@ fn deblock_filter_edge<T: ReconSample>(
         return Ok(());
     };
 
-    let tx_col_base = curr.base_col;
-    let tx_row_base = curr.base_row;
-    let prev_tx_col_base = prev.base_col;
-    let prev_tx_row_base = prev.base_row;
+    let (tx_col_base, tx_row_base, prev_tx_col_base, prev_tx_row_base) = if plane == 0 {
+        (curr.base_col, curr.base_row, prev.base_col, prev.base_row)
+    } else {
+        (
+            curr.chroma_base_col,
+            curr.chroma_base_row,
+            prev.chroma_base_col,
+            prev.chroma_base_row,
+        )
+    };
 
     let skip = curr.skip;
     let is_sub_pu_edge = false;
 
-    let x_r = x_p - base_x;
-    let y_r = y_p - base_y;
-    let is_block_edge = (pass == 0 && x_r == 0) || (pass == 1 && y_r == 0);
+    let block_y = (curr.block_row * MI_SIZE) >> plane_sub_y;
+    let block_x = (curr.block_col * MI_SIZE) >> plane_sub_x;
+    let is_block_edge = (pass == 0 && x_p == block_x) || (pass == 1 && y_p == block_y);
     let is_tx_edge = tx_col_base != prev_tx_col_base || tx_row_base != prev_tx_row_base;
 
     let (curr_q, curr_side) = strengths.get(curr.qindex, quant_delta, df_delta_q, bit_depth);
@@ -832,6 +854,10 @@ mod tests {
                 blocks.push(DeblockBlock {
                     r,
                     c,
+                    block_r: r,
+                    block_c: c,
+                    chroma_base_r: r,
+                    chroma_base_c: c,
                     n4w: 8,
                     n4h: 8,
                     luma_tx: 3,
@@ -887,6 +913,10 @@ mod tests {
         cells[4] = Some(MiBlockInfo {
             base_row: 0,
             base_col: 2,
+            block_row: 0,
+            block_col: 2,
+            chroma_base_row: 0,
+            chroma_base_col: 2,
             luma_tx: 3,
             chroma_tx: None,
             qindex: 100,
@@ -895,6 +925,10 @@ mod tests {
         cells[5] = Some(MiBlockInfo {
             base_row: 0,
             base_col: 0,
+            block_row: 0,
+            block_col: 0,
+            chroma_base_row: 0,
+            chroma_base_col: 0,
             luma_tx: 3,
             chroma_tx: None,
             qindex: 100,
@@ -1188,6 +1222,10 @@ mod tests {
         let blocks = [DeblockBlock {
             r: 0,
             c: 0,
+            block_r: 0,
+            block_c: 0,
+            chroma_base_r: 0,
+            chroma_base_c: 0,
             n4w: 8,
             n4h: 8,
             luma_tx: 3,

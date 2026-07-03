@@ -1542,6 +1542,14 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
     intra_edge: super::intra_edge::IntraEdgeCtx,
     tile_offset: ByteOffset,
 ) -> Result<()> {
+    let block = block_ctx.block();
+    let transforms = residual_plan.transforms();
+    let mut deblock = super::residual_pipeline::DeblockRecorder {
+        blocks: deblock_blocks,
+        block_r: block.row4(),
+        block_c: block.col4(),
+        chroma_tx: transforms.chroma_tx(),
+    };
     residual_plan
         .execute(
             work_unit,
@@ -1555,20 +1563,9 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
             transform_tool_residual_policy,
             qindex,
             intra_edge,
+            &mut deblock,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    let block = block_ctx.block();
-    let transforms = residual_plan.transforms();
-    deblock_blocks.push(super::deblock::DeblockBlock {
-        r: block.row4(),
-        c: block.col4(),
-        n4w: block.width4(),
-        n4h: block.height4(),
-        luma_tx: transforms.luma_tx(),
-        chroma_tx: transforms.chroma_tx(),
-        qindex,
-        skip: false,
-    });
     Ok(())
 }
 

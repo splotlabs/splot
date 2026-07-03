@@ -739,10 +739,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
     /// Retains decoded transform geometry used by the post-tile deblocking pass.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::runtime_minimal) fn record_deblock_block(
         &mut self,
         mi_col: usize,
         mi_row: usize,
+        block_col: usize,
+        block_row: usize,
         n4w: usize,
         n4h: usize,
         luma_tx: usize,
@@ -754,6 +757,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .push(super::super::deblock::DeblockBlock {
                 r: mi_row,
                 c: mi_col,
+                block_r: block_row,
+                block_c: block_col,
+                chroma_base_r: mi_row,
+                chroma_base_c: mi_col,
                 n4w,
                 n4h,
                 luma_tx,
@@ -4644,6 +4651,10 @@ pub(in crate::runtime_minimal) fn chroma_transform_deblock_block(
         super::super::deblock::DeblockBlock {
             r: (y / MI_SIZE).saturating_mul(2),
             c: (x / MI_SIZE).saturating_mul(2),
+            block_r: (y / MI_SIZE).saturating_mul(2),
+            block_c: (x / MI_SIZE).saturating_mul(2),
+            chroma_base_r: (y / MI_SIZE).saturating_mul(2),
+            chroma_base_c: (x / MI_SIZE).saturating_mul(2),
             n4w: mi_w.saturating_mul(2),
             n4h: mi_h.saturating_mul(2),
             luma_tx: chroma_tx,

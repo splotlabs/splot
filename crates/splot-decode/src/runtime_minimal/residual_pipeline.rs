@@ -113,10 +113,6 @@ pub(super) enum RectChromaPlan {
 }
 
 impl ResidualBlockTransforms {
-    pub(super) const fn luma_tx(self) -> usize {
-        self.luma_tx
-    }
-
     pub(super) const fn chroma_tx(self) -> Option<usize> {
         self.chroma_tx
     }
@@ -403,31 +399,34 @@ impl GeneralIntraResidualPlan {
         transform_tool_residual_policy: TransformToolResidualPolicy,
         qindex: u32,
         intra_edge: super::intra_edge::IntraEdgeCtx,
+        deblock: &mut DeblockRecorder<'_>,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
-        let mut execute = |plane: ResidualPlanePlan, eob_u_nonzero| {
-            let tx_partition_context = (plane.plane_id == PlaneId::Y)
-                .then_some(luma_tx_partition_context)
-                .flatten();
-            plane.execute(
-                work_unit,
-                symbols,
-                coeff_ctx,
-                workspace,
-                block_decoded,
-                uv_mode,
-                luma_transform_type_context,
-                tx_partition_context,
-                transform_tool_residual_policy,
-                qindex,
-                eob_u_nonzero,
-                intra_edge,
-            )
-        };
+        let mut execute =
+            |plane: ResidualPlanePlan, eob_u_nonzero, deblock: &mut DeblockRecorder<'_>| {
+                let tx_partition_context = (plane.plane_id == PlaneId::Y)
+                    .then_some(luma_tx_partition_context)
+                    .flatten();
+                plane.execute(
+                    work_unit,
+                    symbols,
+                    coeff_ctx,
+                    workspace,
+                    block_decoded,
+                    uv_mode,
+                    luma_transform_type_context,
+                    tx_partition_context,
+                    transform_tool_residual_policy,
+                    qindex,
+                    eob_u_nonzero,
+                    intra_edge,
+                    deblock,
+                )
+            };
 
         let mut u_nonzero = false;
         for &plane in &self.planes {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
-            let coeffs = execute(plane, eob_u_nonzero)?;
+            let coeffs = execute(plane, eob_u_nonzero, deblock)?;
             if plane.plane_id == PlaneId::U {
                 u_nonzero = !coeffs.all_zero;
             }
@@ -441,6 +440,45 @@ impl GeneralIntraResidualPlan {
             .iter()
             .find(|plane| plane.plane_id == plane_id)
             .copied()
+    }
+}
+
+/// Collects one § 7.17 deblock record per executed LUMA transform unit —
+/// the spec's `DeblockingTxSizes` are per 4x4 unit, so interior transform
+/// edges of a multi-unit block must be visible to the § 7.17.2 edge walk.
+/// Chroma keeps the block's single transform (`chroma_tx` at the block
+/// origin) on every record.
+pub(super) struct DeblockRecorder<'a> {
+    pub(super) blocks: &'a mut Vec<super::deblock::DeblockBlock>,
+    pub(super) block_r: usize,
+    pub(super) block_c: usize,
+    pub(super) chroma_tx: Option<usize>,
+}
+
+impl DeblockRecorder<'_> {
+    fn record_luma_unit(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        luma_tx: usize,
+        qindex: u32,
+    ) {
+        self.blocks.push(super::deblock::DeblockBlock {
+            r,
+            c,
+            block_r: self.block_r,
+            block_c: self.block_c,
+            chroma_base_r: self.block_r,
+            chroma_base_c: self.block_c,
+            n4w,
+            n4h,
+            luma_tx,
+            chroma_tx: self.chroma_tx,
+            qindex,
+            skip: false,
+        });
     }
 }
 
@@ -504,6 +542,7 @@ impl ResidualPlanePlan {
         qindex: u32,
         eob_u_nonzero: bool,
         intra_edge: super::intra_edge::IntraEdgeCtx,
+        deblock: &mut DeblockRecorder<'_>,
     ) -> core::result::Result<crate::tile_payload::LumaCoeffBlock, GeneralIntraResidualError> {
         let policy = transform_tool_policy_for_plane(
             transform_tool_residual_policy,
@@ -530,6 +569,7 @@ impl ResidualPlanePlan {
                 palette_color_map.as_deref(),
                 intra_edge,
                 luma_transform_type_context,
+                deblock,
             );
         }
         let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
@@ -569,6 +609,16 @@ impl ResidualPlanePlan {
                 self.reconstruction
             );
         }
+        if self.plane_id == PlaneId::Y {
+            deblock.record_luma_unit(
+                self.y / 4,
+                self.x / 4,
+                self.residual_width4,
+                self.residual_height4,
+                self.tx_size,
+                qindex,
+            );
+        }
         self.reconstruct(
             workspace,
             &coeffs,
@@ -597,6 +647,7 @@ impl ResidualPlanePlan {
         palette_color_map: Option<&[u8]>,
         intra_edge: super::intra_edge::IntraEdgeCtx,
         luma_context: LumaTransformTypeContext,
+        deblock: &mut DeblockRecorder<'_>,
     ) -> core::result::Result<crate::tile_payload::LumaCoeffBlock, GeneralIntraResidualError> {
         let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
         let start_bits = symbols.consumed_bits().get();
@@ -633,6 +684,15 @@ impl ResidualPlanePlan {
                     self.reconstruction
                 );
             }
+            let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
+            deblock.record_luma_unit(
+                block.y / 4,
+                block.x / 4,
+                ((1usize << log2_width) / 4).max(1),
+                ((1usize << log2_height) / 4).max(1),
+                block.tx_size,
+                qindex,
+            );
             self.reconstruct(
                 workspace,
                 &block.coeffs,
@@ -658,6 +718,14 @@ impl ResidualPlanePlan {
                 luma_context,
             )?;
             let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
+            deblock.record_luma_unit(
+                block.y / 4,
+                block.x / 4,
+                ((1usize << log2_width) / 4).max(1),
+                ((1usize << log2_height) / 4).max(1),
+                block.tx_size,
+                qindex,
+            );
             block_decoded.set_block(
                 0,
                 (block.y >> 2) & sb_mask,

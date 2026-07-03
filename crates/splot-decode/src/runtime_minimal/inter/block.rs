@@ -192,6 +192,10 @@ fn record_inter_deblock_geometry(
                 deblock_blocks.push(super::super::deblock::DeblockBlock {
                     r: frontier.r + row4,
                     c: frontier.c + col4,
+                    block_r: frontier.r,
+                    block_c: frontier.c,
+                    chroma_base_r: frontier.r + row4,
+                    chroma_base_c: frontier.c + col4,
                     n4w: tx_w4,
                     n4h: tx_h4,
                     luma_tx: tx_size,
@@ -214,6 +218,10 @@ fn record_inter_deblock_geometry(
                 deblock_blocks.push(super::super::deblock::DeblockBlock {
                     r: block.y / MI_SIZE,
                     c: block.x / MI_SIZE,
+                    block_r: frontier.r,
+                    block_c: frontier.c,
+                    chroma_base_r: block.y / MI_SIZE,
+                    chroma_base_c: block.x / MI_SIZE,
                     n4w: tx_w4,
                     n4h: tx_h4,
                     luma_tx: block.tx_size,
