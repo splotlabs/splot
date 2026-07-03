@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::frame::{CcsoPlaneParams, FrameHeaderCore, ccso_quant_step};
-use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, ReconSample};
+use splot_parallel::prelude::*;
+use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
 
 const CCSO_PLANES: usize = 3;
 const CCSO_OFFSET: [i32; 8] = [0, 1, -1, 3, -3, 7, -7, -10];
@@ -185,6 +186,8 @@ fn ccso_plane<T: ReconSample>(
         .bits()
         .checked_sub(max_band_log2)
         .ok_or(CcsoError::Params)?;
+
+    let mut units = Vec::new();
     for y in (0..plane_height).step_by(blk_h) {
         for x in (0..plane_width).step_by(blk_w) {
             let unit_row = (y << sub_y) >> ccso_luma_log2;
@@ -192,59 +195,78 @@ fn ccso_plane<T: ReconSample>(
             if grid.block_value(plane, unit_row, unit_col) == 0 {
                 continue;
             }
-            let y_end = plane_height.min(y.saturating_add(blk_h));
-            let x_end = plane_width.min(x.saturating_add(blk_w));
-            for y3 in y..y_end {
-                for x3 in x..x_end {
-                    let y_luma = y3 << sub_y;
-                    let x_luma = x3 << sub_x;
-                    let center = ccso_luma(curr_luma, luma_width, luma_height, x_luma, y_luma);
-                    let band = usize::from(center >> band_shift);
-                    let (cls0, cls1) = if bo_only {
-                        (0usize, 0usize)
-                    } else {
-                        let sample0 = ccso_luma_offset(
-                            curr_luma,
-                            luma_width,
-                            luma_height,
-                            x_luma,
-                            y_luma,
-                            sample_offsets[0],
-                        );
-                        let sample1 = ccso_luma_offset(
-                            curr_luma,
-                            luma_width,
-                            luma_height,
-                            x_luma,
-                            y_luma,
-                            sample_offsets[1],
-                        );
-                        (
-                            ccso_score(
-                                i32::from(sample0) - i32::from(center),
-                                quant_step,
-                                edge_clf,
-                            ),
-                            ccso_score(
-                                i32::from(sample1) - i32::from(center),
-                                quant_step,
-                                edge_clf,
-                            ),
-                        )
-                    };
-                    let offset =
-                        ccso_offset(params, max_edge_interval, max_band, band, cls0, cls1)?;
-                    let sample = workspace
-                        .reconstructed_sample(plane_id, x3, y3)
-                        .map_err(|_| CcsoError::Workspace)?;
-                    let value = (i32::from(sample.to_u16()) + offset).clamp(0, max_sample);
-                    let value = T::try_from_u16(value as u16).map_err(|_| CcsoError::Sample)?;
-                    workspace
-                        .set_reconstructed_sample(plane_id, x3, y3, value)
-                        .map_err(|_| CcsoError::Workspace)?;
-                }
+            units.push((x, y));
+        }
+    }
+
+    // Every sample combines its own pre-CCSO value with luma-snapshot reads,
+    // so unit blocks are independent: compute on the installed pool from a
+    // pre-CCSO plane snapshot, then publish serially in unit order.
+    let source = workspace
+        .plane(plane_id)
+        .map_err(|_| CcsoError::Workspace)?;
+    let plane_stride = source.stride_samples();
+    let plane_samples = source.samples().to_vec();
+    let compute = |&(x, y): &(usize, usize)| -> Result<(PlaneRect, Vec<T>), CcsoError> {
+        let y_end = plane_height.min(y.saturating_add(blk_h));
+        let x_end = plane_width.min(x.saturating_add(blk_w));
+        let width = x_end - x;
+        let mut filtered = Vec::new();
+        filtered
+            .try_reserve_exact(width.checked_mul(y_end - y).ok_or(CcsoError::Geometry)?)
+            .map_err(|_| CcsoError::Geometry)?;
+        for y3 in y..y_end {
+            for x3 in x..x_end {
+                let y_luma = y3 << sub_y;
+                let x_luma = x3 << sub_x;
+                let center = ccso_luma(curr_luma, luma_width, luma_height, x_luma, y_luma);
+                let band = usize::from(center >> band_shift);
+                let (cls0, cls1) = if bo_only {
+                    (0usize, 0usize)
+                } else {
+                    let sample0 = ccso_luma_offset(
+                        curr_luma,
+                        luma_width,
+                        luma_height,
+                        x_luma,
+                        y_luma,
+                        sample_offsets[0],
+                    );
+                    let sample1 = ccso_luma_offset(
+                        curr_luma,
+                        luma_width,
+                        luma_height,
+                        x_luma,
+                        y_luma,
+                        sample_offsets[1],
+                    );
+                    (
+                        ccso_score(i32::from(sample0) - i32::from(center), quant_step, edge_clf),
+                        ccso_score(i32::from(sample1) - i32::from(center), quant_step, edge_clf),
+                    )
+                };
+                let offset = ccso_offset(params, max_edge_interval, max_band, band, cls0, cls1)?;
+                let sample = y3
+                    .checked_mul(plane_stride)
+                    .and_then(|row| row.checked_add(x3))
+                    .and_then(|index| plane_samples.get(index))
+                    .ok_or(CcsoError::Workspace)?;
+                let value = (i32::from(sample.to_u16()) + offset).clamp(0, max_sample);
+                filtered.push(T::try_from_u16(value as u16).map_err(|_| CcsoError::Sample)?);
             }
         }
+        let rect = PlaneRect::new(x, y, width, y_end - y).map_err(|_| CcsoError::Geometry)?;
+        Ok((rect, filtered))
+    };
+    let outputs: Vec<(PlaneRect, Vec<T>)> = if splot_parallel::on_multiworker_pool() {
+        units.par_iter().map(compute).collect::<Result<_, _>>()?
+    } else {
+        units.iter().map(compute).collect::<Result<_, _>>()?
+    };
+    for (rect, filtered) in outputs {
+        workspace
+            .write_rect(plane_id, rect, &filtered, rect.width())
+            .map_err(|_| CcsoError::Workspace)?;
     }
     Ok(())
 }

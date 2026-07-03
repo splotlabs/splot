@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::frame::FrameHeaderCore;
+use splot_parallel::prelude::*;
 use splot_recon::{
     BitDepth, CDEF_DIRECTIONS, CDEF_UV_DIR, CdefSampleTaps, CdefTap, CurrentFrameWorkspace,
     PlaneId, PlaneRect, ReconSample, cdef_direction, cdef_filter_sample,
@@ -247,6 +248,7 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
     let u_snap = PlaneSnapshot::capture(workspace, PlaneId::U, u_size.width(), u_size.height())?;
     let v_snap = PlaneSnapshot::capture(workspace, PlaneId::V, v_size.width(), v_size.height())?;
 
+    let mut contexts = Vec::new();
     let mut r = 0usize;
     while r < mi_rows {
         let mut c = 0usize;
@@ -262,30 +264,51 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
                 continue;
             }
             let params = *strengths.get(strength_index).ok_or(CdefError::Geometry)?;
-            cdef_block(
-                workspace,
-                &CdefBlockCtx {
-                    r,
-                    c,
-                    params,
-                    coeff_shift,
-                    max_sample,
-                    mi_rows,
-                    mi_cols,
-                    sub_x,
-                    sub_y,
-                },
-                &luma_snap,
-                &u_snap,
-                &v_snap,
-            )?;
+            contexts.push(CdefBlockCtx {
+                r,
+                c,
+                params,
+                coeff_shift,
+                max_sample,
+                mi_rows,
+                mi_cols,
+                sub_x,
+                sub_y,
+            });
             c += STEP4;
         }
         r += STEP4;
     }
 
+    // Blocks read only the pre-CDEF snapshots and write disjoint rectangles, so
+    // they compute on the installed pool and publish serially in block order.
+    // Chunking bounds the buffered outputs and the per-block scheduling cost.
+    let compute = |ctx: &CdefBlockCtx| compute_cdef_block::<T>(ctx, &luma_snap, &u_snap, &v_snap);
+    let parallel = splot_parallel::on_multiworker_pool();
+    for chunk in contexts.chunks(CDEF_BLOCK_CHUNK) {
+        let outputs: Vec<CdefBlockOutput<T>> = if parallel {
+            chunk.par_iter().map(compute).collect::<Result<_, _>>()?
+        } else {
+            chunk.iter().map(compute).collect::<Result<_, _>>()?
+        };
+        for output in outputs {
+            for (plane, rect, samples, width) in output.into_iter().flatten() {
+                workspace
+                    .write_rect(plane, rect, &samples, width)
+                    .map_err(|_| CdefError::Workspace)?;
+            }
+        }
+    }
+
     Ok(())
 }
+
+/// Filter-block batch size: large enough to spread across workers, small
+/// enough to keep buffered block outputs cache-resident.
+const CDEF_BLOCK_CHUNK: usize = 1024;
+
+/// One block's filtered planes: `(plane, target rect, samples, row stride)`.
+type CdefBlockOutput<T> = [Option<(PlaneId, PlaneRect, Vec<T>, usize)>; 3];
 
 struct CdefBlockCtx {
     r: usize,
@@ -326,19 +349,18 @@ impl CdefBlockCtx {
     }
 }
 
-fn cdef_block<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
+fn compute_cdef_block<T: ReconSample>(
     ctx: &CdefBlockCtx,
     luma_snap: &PlaneSnapshot,
     u_snap: &PlaneSnapshot,
     v_snap: &PlaneSnapshot,
-) -> Result<(), CdefError> {
+) -> Result<CdefBlockOutput<T>, CdefError> {
     let x0 = ctx.c << MI_SIZE_LOG2;
     let y0 = ctx.r << MI_SIZE_LOG2;
     let block_w = 8.min(luma_snap.width.saturating_sub(x0));
     let block_h = 8.min(luma_snap.height.saturating_sub(y0));
     if block_w == 0 || block_h == 0 {
-        return Ok(());
+        return Ok([None, None, None]);
     }
     let mut block = [[0i32; 8]; 8];
     for (i, row) in block.iter_mut().enumerate() {
@@ -368,7 +390,6 @@ fn cdef_block<T: ReconSample>(
     };
     let damping = ctx.params.damping + ctx.coeff_shift as i32;
     let y_filter = ctx.filter_ctx(pri_str, sec_str, damping, dir, 0);
-    cdef_filter_plane(workspace, PlaneId::Y, luma_snap, &y_filter)?;
 
     let uv_pri = ctx.params.uv_pri << ctx.coeff_shift;
     let uv_sec = ctx.params.uv_sec << ctx.coeff_shift;
@@ -379,10 +400,11 @@ fn cdef_block<T: ReconSample>(
     };
     let uv_damping = ctx.params.damping + ctx.coeff_shift as i32 - 1;
     let uv_filter = ctx.filter_ctx(uv_pri, uv_sec, uv_damping, uv_dir, 1);
-    for (plane, snap) in [(PlaneId::U, u_snap), (PlaneId::V, v_snap)] {
-        cdef_filter_plane(workspace, plane, snap, &uv_filter)?;
-    }
-    Ok(())
+    Ok([
+        compute_cdef_filter_plane::<T>(PlaneId::Y, luma_snap, &y_filter)?,
+        compute_cdef_filter_plane::<T>(PlaneId::U, u_snap, &uv_filter)?,
+        compute_cdef_filter_plane::<T>(PlaneId::V, v_snap, &uv_filter)?,
+    ])
 }
 
 struct CdefFilterCtx {
@@ -401,12 +423,11 @@ struct CdefFilterCtx {
     frame_sub_y: usize,
 }
 
-fn cdef_filter_plane<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
+fn compute_cdef_filter_plane<T: ReconSample>(
     plane: PlaneId,
     snap: &PlaneSnapshot,
     ctx: &CdefFilterCtx,
-) -> Result<(), CdefError> {
+) -> Result<Option<(PlaneId, PlaneRect, Vec<T>, usize)>, CdefError> {
     let sub_x = if ctx.sub > 0 { ctx.frame_sub_x } else { 0 };
     let sub_y = if ctx.sub > 0 { ctx.frame_sub_y } else { 0 };
     let x0 = (ctx.c * MI_SIZE) >> sub_x;
@@ -414,13 +435,18 @@ fn cdef_filter_plane<T: ReconSample>(
     let w = (8 >> sub_x).min(snap.width.saturating_sub(x0));
     let h = (8 >> sub_y).min(snap.height.saturating_sub(y0));
     if w == 0 || h == 0 {
-        return Ok(());
+        return Ok(None);
     }
 
     // § 7.18 CdefInside reduces to one plane-coordinate rectangle: the mi grid
     // covers x < (MiCols * MI_SIZE) >> sub_x and y < (MiRows * MI_SIZE) >> sub_y.
     let inside_x = ((ctx.mi_cols * MI_SIZE) >> sub_x).min(snap.width);
     let inside_y = ((ctx.mi_rows * MI_SIZE) >> sub_y).min(snap.height);
+    let offsets = CdefTapOffsets::for_direction(ctx.dir);
+    let interior = x0 >= CDEF_TAP_REACH
+        && y0 >= CDEF_TAP_REACH
+        && x0 + w - 1 + CDEF_TAP_REACH < inside_x
+        && y0 + h - 1 + CDEF_TAP_REACH < inside_y;
 
     let mut filtered_block = Vec::new();
     filtered_block
@@ -431,7 +457,16 @@ fn cdef_filter_plane<T: ReconSample>(
             let center = snap
                 .get((x0 + j) as isize, (y0 + i) as isize)
                 .ok_or(CdefError::Geometry)?;
-            let taps = gather_taps(snap, ctx, x0 + j, y0 + i, inside_x, inside_y, center);
+            let taps = gather_taps(
+                snap,
+                &offsets,
+                x0 + j,
+                y0 + i,
+                inside_x,
+                inside_y,
+                interior,
+                center,
+            );
             let filtered = cdef_filter_sample(
                 &taps,
                 ctx.pri_str,
@@ -446,24 +481,56 @@ fn cdef_filter_plane<T: ReconSample>(
         }
     }
     let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
-    workspace
-        .write_rect(plane, rect, &filtered_block, w)
-        .map_err(|_| CdefError::Workspace)
+    Ok(Some((plane, rect, filtered_block, w)))
 }
 
+/// Maximum absolute § 7.18.3 `Cdef_Directions` offset in either axis.
+const CDEF_TAP_REACH: usize = 2;
+
+/// The per-block `(dy, dx)` tap positions for one § 7.18.3 direction, with the
+/// sign already applied.
+struct CdefTapOffsets {
+    primary: [[(isize, isize); 2]; 2],
+    secondary: [[[(isize, isize); 2]; 2]; 2],
+}
+
+impl CdefTapOffsets {
+    fn for_direction(dir: usize) -> Self {
+        let offset = |dir: usize, k: usize, sign: isize| -> (isize, isize) {
+            (
+                sign * CDEF_DIRECTIONS[dir & 7][k][0] as isize,
+                sign * CDEF_DIRECTIONS[dir & 7][k][1] as isize,
+            )
+        };
+        let mut primary = [[(0isize, 0isize); 2]; 2];
+        let mut secondary = [[[(0isize, 0isize); 2]; 2]; 2];
+        for k in 0..2 {
+            for (sign_index, sign) in [-1isize, 1].into_iter().enumerate() {
+                primary[k][sign_index] = offset(dir, k, sign);
+                for (dir_off_index, dir_off) in [6usize, 2].into_iter().enumerate() {
+                    secondary[k][sign_index][dir_off_index] = offset(dir + dir_off, k, sign);
+                }
+            }
+        }
+        Self { primary, secondary }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn gather_taps(
     snap: &PlaneSnapshot,
-    ctx: &CdefFilterCtx,
+    offsets: &CdefTapOffsets,
     x: usize,
     y: usize,
     inside_x: usize,
     inside_y: usize,
+    interior: bool,
     center: i32,
 ) -> CdefSampleTaps {
-    let fetch = |dir: usize, k: usize, sign: i32| -> CdefTap {
-        let y = y as isize + sign as isize * CDEF_DIRECTIONS[dir][k][0] as isize;
-        let x = x as isize + sign as isize * CDEF_DIRECTIONS[dir][k][1] as isize;
-        if x >= 0 && y >= 0 && (x as usize) < inside_x && (y as usize) < inside_y {
+    let fetch = |(dy, dx): (isize, isize)| -> CdefTap {
+        let y = y as isize + dy;
+        let x = x as isize + dx;
+        if interior || (x >= 0 && y >= 0 && (x as usize) < inside_x && (y as usize) < inside_y) {
             match snap.samples.get(y as usize * snap.width + x as usize) {
                 Some(&value) => CdefTap {
                     value,
@@ -476,16 +543,14 @@ fn gather_taps(
         }
     };
 
-    let sign_for = |index: usize| if index == 0 { -1 } else { 1 };
     let mut primary = [[UNAVAILABLE_TAP; 2]; 2];
     let mut secondary = [[[UNAVAILABLE_TAP; 2]; 2]; 2];
     for k in 0..2 {
         for sign_index in 0..2 {
-            let sign = sign_for(sign_index);
-            primary[k][sign_index] = fetch(ctx.dir, k, sign);
-            for (dir_off_index, dir_off) in [-2i32, 2].into_iter().enumerate() {
-                let sdir = ((ctx.dir as i32 + dir_off) & 7) as usize;
-                secondary[k][sign_index][dir_off_index] = fetch(sdir, k, sign);
+            primary[k][sign_index] = fetch(offsets.primary[k][sign_index]);
+            for dir_off_index in 0..2 {
+                secondary[k][sign_index][dir_off_index] =
+                    fetch(offsets.secondary[k][sign_index][dir_off_index]);
             }
         }
     }
@@ -521,6 +586,18 @@ pub(crate) enum CdefError {
 mod tests {
     use super::super::test_support::yuv420_workspace as workspace_8bit;
     use super::*;
+
+    #[test]
+    fn tap_reach_covers_direction_table() {
+        let max_offset = CDEF_DIRECTIONS
+            .iter()
+            .flatten()
+            .flatten()
+            .map(|&offset| offset.unsigned_abs() as usize)
+            .max()
+            .unwrap();
+        assert_eq!(CDEF_TAP_REACH, max_offset);
+    }
 
     #[test]
     fn flat_frame_is_unchanged() {

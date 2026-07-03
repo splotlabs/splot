@@ -181,7 +181,7 @@ mod private {
 }
 
 /// Sealed decoded sample storage type supported by `splot-recon`.
-pub trait ReconSample: private::Sealed + Copy + Default + 'static {
+pub trait ReconSample: private::Sealed + Copy + Default + Send + Sync + 'static {
     /// Human-readable Rust type name used in diagnostics.
     const TYPE_NAME: &'static str;
 

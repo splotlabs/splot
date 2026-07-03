@@ -5,6 +5,7 @@
 
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
 use splot_core::span::ByteOffset;
+use splot_parallel::prelude::*;
 use splot_recon::{
     LoopRestorationSource, LoopRestorationSourceBounds, PC_WIENER_CLASSIFY_READ_RADIUS,
     PcWienerClassifyParams, PlaneId, PlaneRect, ReconError, ReconSample, Result as ReconResult,
@@ -314,59 +315,6 @@ const OVERFLOW_WINDOW: ReconError = ReconError::ArithmeticOverflow {
     context: "LR source window geometry",
 };
 
-#[allow(clippy::too_many_arguments)]
-fn copy_lr_block<T: ReconSample>(
-    lr_plane: &mut [T],
-    plane_width: usize,
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    output: &[T],
-    offset: ByteOffset,
-) -> Result<()> {
-    if width == 0 || height == 0 {
-        return Err(luma_lr_filter_error(offset));
-    }
-    let expected = width
-        .checked_mul(height)
-        .ok_or_else(|| luma_lr_filter_error(offset))?;
-    if output.len() != expected {
-        return Err(luma_lr_filter_error(offset));
-    }
-    let end_x = x
-        .checked_add(width)
-        .ok_or_else(|| luma_lr_filter_error(offset))?;
-    if end_x > plane_width {
-        return Err(luma_lr_filter_error(offset));
-    }
-    for row in 0..height {
-        let dst_start = y
-            .checked_add(row)
-            .and_then(|target_y| target_y.checked_mul(plane_width))
-            .and_then(|row_start| row_start.checked_add(x))
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let dst_end = dst_start
-            .checked_add(width)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let src_start = row
-            .checked_mul(width)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let src_end = src_start
-            .checked_add(width)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let Some(dst) = lr_plane.get_mut(dst_start..dst_end) else {
-            return Err(luma_lr_filter_error(offset));
-        };
-        let Some(src) = output.get(src_start..src_end) else {
-            return Err(luma_lr_filter_error(offset));
-        };
-        // splot-copy-ok: commit a validated fail-atomic LR block into luma scratch.
-        dst.copy_from_slice(src);
-    }
-    Ok(())
-}
-
 fn usize_to_isize_recon(value: usize, context: &'static str) -> ReconResult<isize> {
     isize::try_from(value).map_err(|_| ReconError::ArithmeticOverflow { context })
 }
@@ -492,17 +440,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         } else {
             None
         };
-        let mut lr_luma = Vec::with_capacity(cdef_luma.len());
-        for &sample in cdef_luma {
-            lr_luma.push(T::try_from_u16(sample).map_err(|_| luma_lr_filter_error(offset))?);
-        }
-
-        for block in lr_source_blocks
-            .iter()
-            .filter(|block| block.plane == PlaneId::Y.index())
-        {
+        let compute = |block: &WienerNsLrSourceBlock| {
             if let Some((coeffs, num_classes, filter_set_index)) = frame_coeffs.as_ref() {
-                self.apply_luma_lr_block(
+                self.compute_luma_lr_block(
                     offset,
                     block,
                     curr_luma,
@@ -511,29 +451,43 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     *num_classes,
                     *filter_set_index,
                     coeffs,
-                    &mut lr_luma,
-                )?;
+                )
             } else {
                 let coeffs = [luma_lr_unit_coeffs(lr_unit_filters, block, offset)?];
-                self.apply_luma_lr_block(
-                    offset,
-                    block,
-                    curr_luma,
-                    cdef_luma,
-                    qindex,
-                    1,
-                    0,
-                    &coeffs,
-                    &mut lr_luma,
-                )?;
+                self.compute_luma_lr_block(
+                    offset, block, curr_luma, cdef_luma, qindex, 1, 0, &coeffs,
+                )
             }
+        };
+        let y_blocks: Vec<&WienerNsLrSourceBlock> = lr_source_blocks
+            .iter()
+            .filter(|block| block.plane == PlaneId::Y.index())
+            .collect();
+        // Blocks are independent (immutable sources, disjoint outputs), so they
+        // compute on the installed pool and publish serially in block order.
+        let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
+            if splot_parallel::on_multiworker_pool() {
+                y_blocks
+                    .par_iter()
+                    .map(|block| compute(block))
+                    .collect::<Result<_>>()?
+            } else {
+                y_blocks
+                    .iter()
+                    .map(|block| compute(block))
+                    .collect::<Result<_>>()?
+            };
+        // The workspace still holds the post-CDEF/CCSO samples the § 7.20.2
+        // sources were snapshotted from, so only filtered block rectangles
+        // need publishing.
+        for (block, output) in &filtered {
+            let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
+                .map_err(|_| luma_lr_filter_error(offset))?;
+            self.workspace
+                .write_rect(PlaneId::Y, rect, output, block.width)
+                .map_err(|_| luma_lr_filter_error(offset))?;
         }
-
-        let rect = PlaneRect::new(0, 0, self.luma_width, self.luma_height)
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        self.workspace
-            .write_rect(PlaneId::Y, rect, &lr_luma, self.luma_width)
-            .map_err(|_| luma_lr_filter_error(offset))
+        Ok(())
     }
 
     fn plane_dimensions(&self, plane_id: PlaneId) -> (usize, usize) {
@@ -583,16 +537,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if curr_chroma.len() != expected_samples || cdef_chroma.len() != expected_samples {
             return Err(luma_lr_filter_error(offset));
         }
-        let mut lr_chroma = Vec::with_capacity(cdef_chroma.len());
-        for &sample in cdef_chroma {
-            lr_chroma.push(T::try_from_u16(sample).map_err(|_| luma_lr_filter_error(offset))?);
-        }
-
-        for block in lr_source_blocks
-            .iter()
-            .filter(|block| block.plane == plane_index)
-        {
-            self.apply_chroma_lr_block(
+        let compute = |block: &WienerNsLrSourceBlock| {
+            self.compute_chroma_lr_block(
                 offset,
                 plane_id,
                 block,
@@ -602,19 +548,41 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 cdef_chroma,
                 curr_luma,
                 cdef_luma,
-                &mut lr_chroma,
-            )?;
+            )
+        };
+        let plane_blocks: Vec<&WienerNsLrSourceBlock> = lr_source_blocks
+            .iter()
+            .filter(|block| block.plane == plane_index)
+            .collect();
+        // Blocks are independent (immutable sources, disjoint outputs), so they
+        // compute on the installed pool and publish serially in block order.
+        let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
+            if splot_parallel::on_multiworker_pool() {
+                plane_blocks
+                    .par_iter()
+                    .map(|block| compute(block))
+                    .collect::<Result<_>>()?
+            } else {
+                plane_blocks
+                    .iter()
+                    .map(|block| compute(block))
+                    .collect::<Result<_>>()?
+            };
+        // The workspace still holds the post-CDEF/CCSO samples the § 7.20.2
+        // sources were snapshotted from, so only filtered block rectangles
+        // need publishing.
+        for (block, output) in &filtered {
+            let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
+                .map_err(|_| luma_lr_filter_error(offset))?;
+            self.workspace
+                .write_rect(plane_id, rect, output, block.width)
+                .map_err(|_| luma_lr_filter_error(offset))?;
         }
-
-        let rect = PlaneRect::new(0, 0, plane_width, plane_height)
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        self.workspace
-            .write_rect(plane_id, rect, &lr_chroma, plane_width)
-            .map_err(|_| luma_lr_filter_error(offset))
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn apply_chroma_lr_block(
+    fn compute_chroma_lr_block(
         &self,
         offset: ByteOffset,
         plane_id: PlaneId,
@@ -625,8 +593,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         cdef_chroma: &[u16],
         curr_luma: &[u16],
         cdef_luma: &[u16],
-        lr_chroma: &mut [T],
-    ) -> Result<()> {
+    ) -> Result<(WienerNsLrSourceBlock, Vec<T>)> {
         let (plane_width, plane_height) = self.plane_dimensions(plane_id);
         let block = clipped_lr_source_block(
             block,
@@ -701,20 +668,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             |x, y| luma_window.get_abs(x, y),
         )
         .map_err(|_| luma_lr_filter_error(offset))?;
-        copy_lr_block(
-            lr_chroma,
-            plane_width,
-            block.x,
-            block.y,
-            block.width,
-            block.height,
-            &output,
-            offset,
-        )
+        Ok((block, output))
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn apply_luma_lr_block(
+    fn compute_luma_lr_block(
         &self,
         offset: ByteOffset,
         block: &WienerNsLrSourceBlock,
@@ -724,8 +682,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         num_classes: usize,
         filter_set_index: usize,
         coeffs: &[[i16; WIENER_NS_LUMA_COEFFS]],
-        lr_luma: &mut [T],
-    ) -> Result<()> {
+    ) -> Result<(WienerNsLrSourceBlock, Vec<T>)> {
         let block = clipped_lr_source_block(
             block,
             self.luma_width,
@@ -792,16 +749,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 .map_err(|_| luma_lr_filter_error(offset))?;
         wiener_ns_filter_luma_block_padded(&mut output, &params, &padded_source)
             .map_err(|_| luma_lr_filter_error(offset))?;
-        copy_lr_block(
-            lr_luma,
-            self.luma_width,
-            block.x,
-            block.y,
-            block.width,
-            block.height,
-            &output,
-            offset,
-        )
+        Ok((block, output))
     }
 
     #[allow(clippy::too_many_arguments)]
