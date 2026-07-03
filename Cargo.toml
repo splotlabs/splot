@@ -109,13 +109,15 @@ wildcard_imports = "allow"
 # which is churn with real transcription-bug risk and no behavioral benefit.
 if_not_else = "allow"
 
-# Build profiles. `overflow-checks` is declared explicitly on every profile so codec
-# arithmetic traps integer overflow even in optimized builds: the `release` profile
-# would otherwise silently wrap on overflow, a correctness hazard for a codec. `dev`
-# and `test` already default to `true`; declaring them documents the intent and keeps
-# the guarantee robust to future profile edits.
+# Build profiles. `overflow-checks` is declared explicitly on every profile: `dev`
+# and `test` trap integer overflow so the test suite, fuzzers, and CI catch codec
+# arithmetic bugs, while `release` disables the checks for decode throughput
+# (measured ~5% first-frame latency on the 1080p10 reference stream; decoded
+# output is byte-identical either way). Thin LTO, `codegen-units = 1`, and
+# `panic = "abort"` were measured neutral or slower on the same workload and
+# stay at their defaults.
 [profile.release]
-overflow-checks = true
+overflow-checks = false
 
 [profile.dev]
 overflow-checks = true
