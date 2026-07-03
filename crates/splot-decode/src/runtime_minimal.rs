@@ -18,7 +18,7 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
 use splot_core::types::ObuType;
-use splot_recon::{BitDepth, DecodedFrame, DecodedFrameHashInput};
+use splot_recon::{BitDepth, DecodedFrame, DecodedFrameHashInput, PlaneId};
 
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::tile_payload::{
@@ -523,6 +523,9 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     retained_frame_bytes =
         ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
     frames.push(key_frame);
+    if let Some(frame) = frames.last() {
+        dump_coded_frame_for_diagnostics(frame);
+    }
     let key_hint = disp_hints.extend(&key_core)?;
     let key_update = frame_ref_update_from_core(
         &key_core,
@@ -695,6 +698,9 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                 )?;
                 let frame_index = frames.len();
                 frames.push(inter_frame);
+                if let Some(frame) = frames.last() {
+                    dump_coded_frame_for_diagnostics(frame);
+                }
                 retained_frame_bytes = next_retained_frame_bytes;
                 let inter_hint = disp_hints.extend(&inter_core)?;
                 let inter_update = frame_ref_update_from_core(
@@ -1020,6 +1026,47 @@ impl DispOrderHints {
             first = false;
         }
     }
+}
+
+/// Diagnostics-only decode-order frame dump, gated on the
+/// `SPLOT_DUMP_CODED_FRAMES` env var naming an append-target path: every
+/// decoded frame's visible planes are appended as little-endian samples for
+/// oracle diffing (non-output frames included). Write failures are ignored.
+fn dump_coded_frame_for_diagnostics(frame: &MinimalRuntimeFrame) {
+    let Some(path) = std::env::var_os("SPLOT_DUMP_CODED_FRAMES") else {
+        return;
+    };
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let mut bytes: Vec<u8> = Vec::new();
+    match &frame.frame {
+        MinimalRuntimeDecodedFrame::Eight(frame) => {
+            for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+                let Some(plane) = frame.plane(plane) else {
+                    continue;
+                };
+                for row in plane.visible_rows() {
+                    bytes.extend(row.iter().flat_map(|&s| u16::from(s).to_le_bytes()));
+                }
+            }
+        }
+        MinimalRuntimeDecodedFrame::Ten(frame) => {
+            for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+                let Some(plane) = frame.plane(plane) else {
+                    continue;
+                };
+                for row in plane.visible_rows() {
+                    bytes.extend(row.iter().flat_map(|&s| s.to_le_bytes()));
+                }
+            }
+        }
+    }
+    let _ = std::io::Write::write_all(&mut file, &bytes);
 }
 
 fn select_output_frames(

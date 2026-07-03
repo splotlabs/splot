@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "907f9da2dd4329085c89cdc2f2b4a0de22301bb8",
+  "audited_commit": "94678584b67823723fb0ecd740afc005b331e14d",
   "outcome": "success",
   "files": [
     {
@@ -2011,7 +2011,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal.rs",
-      "sha256": "cc198b3a006c9f0ea71f3b30e05b58db3d66da808e194c69dcc57b3f301a076f",
+      "sha256": "45b1780ad742a057d57e38c3768ae5ead525be732b8989186641119e7a2a644f",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
@@ -2131,7 +2131,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-      "sha256": "2051882f7a65331e8dbb6ec66f7a7c9630bfebd99a71f3e123a679a4b727e30a",
+      "sha256": "09cd420cd1557b34e277094ba237bc92d77cda194ca85cb893c608a5bc7be288",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-AVERAGE",
@@ -2148,7 +2148,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/block/warp.rs",
-      "sha256": "06b671472fc881c99bc45c6ea2854b8a9b6fe2a1c212e5077f9b2a97821eef92",
+      "sha256": "32dd6975553931ad8512b922dfc4de46cc5feea55e42a6a022eb3645f0f44823",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2169,7 +2169,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
-      "sha256": "092cece0369daff6cf9325fc5ec34622c14a48bb004a27b43236b267a2b2b510",
+      "sha256": "d0740010c1dc5c27ee69882c0385472a26c0652194034673c06136b9a0fdaa3d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MVORDER-SPATIAL",
@@ -2179,7 +2179,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs",
-      "sha256": "be606ef67cfb6d1c1560a4c22965917b2d3a71085161b094f968687202af31a9",
+      "sha256": "537c8eabe7aed2f969a59497602d26d64beac6d22e8e7a330b0bc8eb9e3fdbe8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3023,7 +3023,7 @@
     },
     {
       "path": "crates/splot-decode/src/tile_payload/general_intra_residual.rs",
-      "sha256": "1c14393235fc219784f1492790c6e20b8a26d94b7b13486bbd05076129066d32",
+      "sha256": "137bc6aa3d2782730f32cb5ca314dde8bfadbcaee3c097ae0157bd7e15d8fcd8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
@@ -26041,6 +26041,29 @@
     {
       "path": "openspec/changes/decode-inter-warp-bawp-output-order/tasks.md",
       "sha256": "15cd425ddab2d3f27ed33fd26625e3f10221db7247dec630ff2f31f7305ad64c",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-warp-reference-list/proposal.md",
+      "sha256": "2c7e25091f2836ebb715a166f57085d8124cf07a26ede6c0b3b1b84599a90c93",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-FIRST-INTER-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-warp-reference-list/specs/decoder-support/spec.md",
+      "sha256": "c0f2505a59a24aeffcb7179e956f74c02787f00b22218058d4c6de8fab13cb7a",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-inter-warp-reference-list/tasks.md",
+      "sha256": "bb8ffc43437ec02e5d05e1d57f79ce89031e83700be67f07327525333e19f981",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
