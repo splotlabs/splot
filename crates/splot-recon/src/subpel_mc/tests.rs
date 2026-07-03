@@ -419,6 +419,49 @@ fn edge_positions_match_independent_reference() {
 }
 
 #[test]
+fn zero_phase_copy_matches_independent_reference() {
+    let ref_w = 24usize;
+    let ref_h = 24usize;
+    let mut state: u64 = 0x1357_9bdf_2468_ace0;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as u32
+    };
+    let samples: Vec<u16> = (0..(ref_w * ref_h))
+        .map(|_| (next() % 1024) as u16)
+        .collect();
+    let samples = build_ref(samples, ref_w, ref_h);
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+
+    for (base_x, base_y, w, h) in [
+        (-5i64, -5i64, 8usize, 8usize),
+        (0, 0, 4, 16),
+        (9, 7, 16, 8),
+        (20, 21, 8, 8),
+    ] {
+        let params = SubpelPredictParams {
+            interp: InterpolationFilter::EightTap,
+            w,
+            h,
+            start_x: base_x << SCALE_SUBPEL_BITS,
+            start_y: base_y << SCALE_SUBPEL_BITS,
+            step_x: 1 << SCALE_SUBPEL_BITS,
+            step_y: 1 << SCALE_SUBPEL_BITS,
+            first_x: 0,
+            first_y: 0,
+            last_x: ref_w as i64 - 1,
+            last_y: ref_h as i64 - 1,
+            bit_depth: BitDepth::Ten,
+        };
+        let out = subpel_predict_block(&view, &params).unwrap();
+        let want = reference_subpel(&samples, ref_w, ref_h, &params);
+        assert_eq!(out, want, "bx={base_x} by={base_y} w={w} h={h}");
+    }
+}
+
+#[test]
 fn strided_view_matches_contiguous_view() {
     let ref_w = 16usize;
     let ref_h = 12usize;

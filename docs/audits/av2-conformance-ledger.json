@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "1636e93bb5971bddbea1412daf9c30e322f9c7bd",
+  "audited_commit": "2ac8022fca89d2108d67edc4887eb40631c0315a",
   "outcome": "success",
   "files": [
     {
@@ -2213,6 +2213,20 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-decode/src/runtime_minimal/inter/mc.rs",
+      "sha256": "ad2e99cfaede4d25a70382f98b1082543d875057d23cbea78a09775544cd81b3",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/runtime_minimal/inter/mc.rs",
+      "sha256": "ad2e99cfaede4d25a70382f98b1082543d875057d23cbea78a09775544cd81b3",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-decode/src/runtime_minimal/inter/mv_scaling.rs",
       "sha256": "6db418f2a3f2c105ff03b203fd1420acbd4e8c1cdd10b32869c3cae6a7304338",
       "scope_kind": "workspace:splot-decode",
@@ -4047,7 +4061,7 @@
     },
     {
       "path": "crates/splot-recon/src/format.rs",
-      "sha256": "130d545241338c6d9ce58ddd2e42d0118f46ed8e04d929720e500cc89e15946b",
+      "sha256": "feb4cef9170eb5bba0b8569d1c583f1f2ff50248d1f84e8585d5ce14f7c08ab3",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -4281,7 +4295,25 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc.rs",
-      "sha256": "c60d8f201f002f32b988bab71424c4d75b9a542c414cc0398931b611120b5aa2",
+      "sha256": "d2b6c201d8780ad47f0cc381e115c84463d016a809e5a6711ff2f56740a097e4",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [
+        "RECON-SUBPEL-MC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/subpel_mc.rs",
+      "sha256": "d2b6c201d8780ad47f0cc381e115c84463d016a809e5a6711ff2f56740a097e4",
+      "scope_kind": "workspace:splot-recon",
+      "feature_ids": [
+        "RECON-SUBPEL-MC"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-recon/src/subpel_mc.rs",
+      "sha256": "d2b6c201d8780ad47f0cc381e115c84463d016a809e5a6711ff2f56740a097e4",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-SUBPEL-MC"
@@ -4290,7 +4322,7 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/tests.rs",
-      "sha256": "dfec70818a33a3af4c9416f5ed964d24a376624a81511acb843aa591d4bf377d",
+      "sha256": "cbf0f6b6f8bd463fe2544fe098c48c452f68f8657427408843637d81495984dc",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -26731,6 +26763,20 @@
     {
       "path": "openspec/changes/optimize-decode-filter-hot-paths/tasks.md",
       "sha256": "a1bcf98887d79b9ee56afe8e6737d49ab3e2d78f6fbbb9c0f802058cf377782e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/optimize-decode-mc-hot-paths/proposal.md",
+      "sha256": "7e3ba8091f1510afa499d018585f7db4f5f07434334a412806fda7e32a7b61af",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/optimize-decode-mc-hot-paths/tasks.md",
+      "sha256": "8ed6af49ce5ca74f5f456cd829e46316ab6af7d902cb3b5c720a0a1547f87cf5",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
