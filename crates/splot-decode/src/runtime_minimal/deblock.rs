@@ -160,11 +160,6 @@ fn deblock_plane_pass<T: ReconSample>(
     let stride = view.stride_samples();
     let samples = view.samples_mut();
 
-    // Pass 0 filters purely horizontal perpendicular lines and pass 1 purely
-    // vertical ones, so once the MI coverage fits the plane every read and
-    // write of one MI row's (pass 0) or MI column's (pass 1) edges stays
-    // inside its own four plane rows/columns: the bands below are disjoint
-    // and their processing order cannot change the output.
     let covered_rows = (mi_rows * MI_SIZE) >> plane_pass.plane_sub_y;
     let covered_cols = (mi_cols * MI_SIZE) >> plane_pass.plane_sub_x;
     if splot_parallel::on_multiworker_pool()
@@ -182,10 +177,7 @@ fn deblock_plane_pass<T: ReconSample>(
                     break;
                 }
                 let mi_row = (y_origin / MI_SIZE) * plane_pass.row_step;
-                bands.push((
-                    mi_row,
-                    PlaneCtx::band(band, width, height, 0, y_origin),
-                ));
+                bands.push((mi_row, PlaneCtx::band(band, width, height, 0, y_origin)));
                 y_origin += MI_SIZE;
             }
             bands

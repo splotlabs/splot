@@ -563,6 +563,9 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         Ok(())
     }
 
+    /// One bounds proof covers every row: the clamped rect's first and last
+    /// target rows both index in-storage and rows advance by the plane
+    /// stride, so per-row range math cannot fail after the up-front checks.
     fn write_rect(
         &mut self,
         rect: PlaneRect,
@@ -593,9 +596,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         if rect.width() == 0 || rect.height() == 0 {
             return Ok(());
         }
-        // One bounds proof covers every row: the clamped rect's first and last
-        // target rows both index in-storage, and rows advance by the plane
-        // stride, so per-row range math cannot fail after these checks.
         let target_base = self.row_range(rect.y(), rect.x(), rect.width())?.start;
         let last_row = rect.y() + rect.height() - 1;
         self.row_range(last_row, rect.x(), rect.width())?;
