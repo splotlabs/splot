@@ -28,7 +28,7 @@ impl TileCdfSubset {
         selector: TileCdfSelector,
         symbol_decoder: &mut SymbolDecoder<'_>,
     ) -> Result<Symbol, BlockSymbolTraceReadError> {
-        let trace = std::env::var_os("SPLOT_TRACE_CDF_SELECTORS").is_some();
+        let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_CDF_SELECTORS");
         let trace_row = trace
             .then(|| self.row(selector).ok().map(<[i32]>::to_vec))
             .flatten();

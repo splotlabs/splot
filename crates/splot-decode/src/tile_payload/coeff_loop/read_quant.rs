@@ -377,7 +377,7 @@ fn read_literal(
     width: u32,
     syntax: &'static str,
 ) -> Result<u32, CoeffReadQuantError> {
-    let trace_raw = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let trace_raw = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
     let raw_before = trace_raw.then(|| symbols.checkpoint());
     let value = symbols
         .read_literal(width)

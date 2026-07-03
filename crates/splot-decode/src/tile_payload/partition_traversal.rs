@@ -1780,7 +1780,7 @@ fn read_wiener_ns_lr_units_for_plane(
 }
 
 fn trace_lr_call(frame: TilePartitionFrameFacts, call: TilePartitionCall) {
-    if std::env::var_os("SPLOT_TRACE_LR_SYNTAX").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX") {
         return;
     }
     eprintln!(
@@ -1805,7 +1805,7 @@ fn trace_lr_unit_range(
     col_start: usize,
     col_end: usize,
 ) {
-    if std::env::var_os("SPLOT_TRACE_LR_SYNTAX").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX") {
         return;
     }
     eprintln!(
@@ -1825,8 +1825,7 @@ fn read_wiener_ns_lr_unit(
     lr_activity: &mut WienerNsLrUnitActivity,
     limits: DecodeLimits,
 ) -> Result<bool, TilePartitionTraversalError> {
-    let trace_row = std::env::var_os("SPLOT_TRACE_LR_SYNTAX")
-        .is_some()
+    let trace_row = crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX")
         .then(|| {
             cdfs.row(super::cdf::TileCdfSelector::UseWienerNs)
                 .ok()
@@ -1873,7 +1872,7 @@ fn trace_wiener_ns_lr_unit(
     symbols: &SymbolDecoder<'_>,
     row_before: Option<&[i32]>,
 ) {
-    if std::env::var_os("SPLOT_TRACE_LR_SYNTAX").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX") {
         return;
     }
     eprintln!(
@@ -2120,7 +2119,7 @@ fn read_wiener_ns_raw_literal(
     bits: u32,
     reason: &'static str,
 ) -> Result<u32, TilePartitionTraversalError> {
-    let trace_raw = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let trace_raw = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
     let raw_before = trace_raw.then(|| symbols.checkpoint());
     let value = symbols.read_literal(bits)?;
     if let Some(raw_before) = raw_before {
@@ -2403,7 +2402,7 @@ fn read_frontier_partition_decision(
     let decision_input =
         facts.read_partition_decision_input(true, partition_context, square_context);
     let decision = super::partition::read_partition_decision(decision_input, cdfs, symbols)?;
-    if std::env::var_os("SPLOT_TRACE_PARTITION_DECISIONS").is_some() {
+    if crate::trace_flags::trace_flag!("SPLOT_TRACE_PARTITION_DECISIONS") {
         eprintln!(
             "partition call=({}, {}) b_size={} tree={:?} intra_region={} decision={:?} trace={:?} symbols={}",
             call.r,
@@ -2499,7 +2498,7 @@ fn read_extended_sdp_region_type(
     }
     let ctx = intra_region_context(call.b_size)?;
     let selector = super::cdf::TileCdfSelector::RegionType { ctx };
-    let trace_cdf = std::env::var_os("SPLOT_TRACE_CDF_SELECTORS").is_some();
+    let trace_cdf = crate::trace_flags::trace_flag!("SPLOT_TRACE_CDF_SELECTORS");
     let row_before = if trace_cdf {
         cdfs.row(selector).ok().map(<[i32]>::to_vec)
     } else {
@@ -2563,7 +2562,7 @@ fn trace_extended_sdp_region_type(
     region_type: Option<u32>,
     symbols: &SymbolDecoder<'_>,
 ) {
-    if std::env::var_os("SPLOT_TRACE_PARTITION_DECISIONS").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_PARTITION_DECISIONS") {
         return;
     }
     eprintln!(

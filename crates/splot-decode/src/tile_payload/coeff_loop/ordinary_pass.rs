@@ -912,10 +912,10 @@ fn trace_ordinary_coeff_enabled(
     config: CoeffBaseDerivedLevelPassConfig,
     sign_config: CoeffOrdinaryDerivedSignPassConfig<'_>,
 ) -> bool {
-    if std::env::var_os("SPLOT_TRACE_ORDINARY_COEFF_PASS").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_ORDINARY_COEFF_PASS") {
         return false;
     }
-    let Some(target) = std::env::var("SPLOT_TRACE_ORDINARY_COEFF_TARGET").ok() else {
+    let Some(target) = crate::trace_flags::trace_value!("SPLOT_TRACE_ORDINARY_COEFF_TARGET") else {
         return true;
     };
     let mut parts = target.split(',');

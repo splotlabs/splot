@@ -39,6 +39,7 @@ const fn round2_i128(value: i128, n: u32) -> i128 {
 /// every `(value, n)`: the rounding add is widened to `i128` so it cannot
 /// overflow near `i64::MAX`, and an out-of-range `n` saturates instead of
 /// shifting past the type width.
+#[inline]
 pub const fn round2(value: i64, n: u32) -> i64 {
     round2_i128(value as i128, n) as i64
 }
@@ -50,6 +51,7 @@ pub const fn round2(value: i64, n: u32) -> i64 {
 /// Total and panic-free for every `(value, n)`, including `i64::MIN` (whose
 /// `i64` negation would overflow): the magnitude and the final negation are
 /// taken in `i128`.
+#[inline]
 pub const fn round2_signed(value: i64, n: u32) -> i64 {
     let widened = value as i128;
     let magnitude = if widened < 0 { -widened } else { widened };
@@ -60,6 +62,7 @@ pub const fn round2_signed(value: i64, n: u32) -> i64 {
 /// AV2 § 4.8 `Clip3(low, high, value)` (spec `Clip3(x, y, z)`): `low` when
 /// `value < low`, `high` when `value > high`, else `value`
 /// (`docs/spec/av2/1.0.0/04-conventions.md#s-4-8`, eq. 3).
+#[inline]
 pub const fn clip3(low: i64, high: i64, value: i64) -> i64 {
     if value < low {
         low

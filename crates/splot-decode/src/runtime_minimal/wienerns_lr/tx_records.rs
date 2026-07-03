@@ -302,7 +302,7 @@ fn selectable_residual_error_at(
     tile_offset: ByteOffset,
 ) -> impl FnOnce(GeneralIntraResidualError) -> crate::error::DecodeError {
     move |error| {
-        if std::env::var_os("SPLOT_TRACE_SELECTABLE_RESIDUAL_ERROR").is_some() {
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_SELECTABLE_RESIDUAL_ERROR") {
             eprintln!(
                 "selectable residual error offset={}: {error:?}",
                 tile_offset.get()
@@ -1554,7 +1554,7 @@ fn decode_luma_records_for_chunk(
             && record.col < chunk_col_end
     }) {
         decoded_any = true;
-        if std::env::var_os("SPLOT_TRACE_SELECTABLE_RESIDUAL_ERROR").is_some() {
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_SELECTABLE_RESIDUAL_ERROR") {
             eprintln!(
                 "selectable luma residual record row={} col={} rows={} cols={} tx_size={} chunk=({}, {}) {}x{} block={}x{} leaf_mode={:?} is_inter={} is_intrabc={} fsc={} checkpoint={:?}",
                 record.row,
@@ -2313,7 +2313,7 @@ fn read_tx_symbol(
         .read_block_symbol_trace(selector, symbols)
         .map(|symbol| usize::from(symbol.get()))
         .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("symbol_read")))?;
-    if std::env::var_os("SPLOT_TRACE_TX_PARTITION").is_some() {
+    if crate::trace_flags::trace_flag!("SPLOT_TRACE_TX_PARTITION") {
         eprintln!(
             "tx symbol selector={selector:?} value={value} checkpoint={:?}",
             symbols.checkpoint(),
@@ -2323,7 +2323,7 @@ fn read_tx_symbol(
 }
 
 fn trace_tx_partition_for(row: usize, col: usize) -> bool {
-    std::env::var_os("SPLOT_TRACE_TX_PARTITION").is_some()
+    crate::trace_flags::trace_flag!("SPLOT_TRACE_TX_PARTITION")
         && ((row == 0 && (128..=144).contains(&col)) || (row == 16 && col == 336))
 }
 

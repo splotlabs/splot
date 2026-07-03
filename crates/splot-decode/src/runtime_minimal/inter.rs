@@ -439,7 +439,7 @@ fn trace_initial_frame_cdfs<T: ReconSample>(
     reference: &InterReferenceState<'_, T>,
     cdf_load: ResolvedCdfLoad,
 ) {
-    if std::env::var_os("SPLOT_TRACE_CDF_LIFECYCLE").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_CDF_LIFECYCLE") {
         return;
     }
     let ref_size: Vec<_> = reference
@@ -936,7 +936,7 @@ fn validate_inter_frame_core(
             .inter_tail
             .as_ref()
             .is_none_or(|tail| tail.apply_grain || tail.skip_mode_present);
-    if std::env::var_os("SPLOT_TRACE_INTER_FRAME_TOOLS").is_some() {
+    if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_FRAME_TOOLS") {
         eprintln!(
             "inter tools offset={} flex_mvres={:?} allow_tcq={:?} inter_ddt={:?} base_q={:?} segmentation={:?} qmatrix={:?} delta_q={:?} lossless={:?} deblock={:?} gdf={:?} cdef={:?} lr={:?} ccso={:?} tail={:?}",
             offset.get(),

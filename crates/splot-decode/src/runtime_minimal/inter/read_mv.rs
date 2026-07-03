@@ -473,7 +473,7 @@ fn read_symbol(
 }
 
 fn read_bypass_bit(symbols: &mut SymbolDecoder<'_>, tile_offset: ByteOffset) -> Result<u8> {
-    let trace = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
     let before = trace.then(|| symbols.checkpoint());
     let value = symbols
         .read_bool()
@@ -492,7 +492,7 @@ fn read_literal(symbols: &mut SymbolDecoder<'_>, n: u32, tile_offset: ByteOffset
     if n == 0 {
         return Ok(0);
     }
-    let trace = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
     let before = trace.then(|| symbols.checkpoint());
     let value = symbols
         .read_literal(n)

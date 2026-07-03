@@ -117,10 +117,10 @@ fn block_ref_within_temporal_distance<T: splot_recon::ReconSample>(
 }
 
 fn trace_inter_block_mode(mi_row: usize, mi_col: usize) -> bool {
-    if std::env::var_os("SPLOT_TRACE_INTER_BLOCK_MODE").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_BLOCK_MODE") {
         return false;
     }
-    let Some(window) = std::env::var("SPLOT_TRACE_INTER_BLOCK_WINDOW").ok() else {
+    let Some(window) = crate::trace_flags::trace_value!("SPLOT_TRACE_INTER_BLOCK_WINDOW") else {
         return (mi_row == 0 && mi_col <= 256)
             || ((8..=12).contains(&mi_row) && (144..=156).contains(&mi_col))
             || (mi_row == 16 && mi_col == 128);
@@ -1159,7 +1159,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             drl_reorder,
             use_temporal_first,
         );
-        if std::env::var_os("SPLOT_TRACE_INTER_BLOCK_MODE").is_some() {
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_BLOCK_MODE") {
             eprintln!(
                 "inter block warp-selected r={mi_row} c={mi_col} b={} n4={}x{} mode={warp_mode:?} stack0={:?} checkpoint={:?}",
                 frontier.b_size.index(),
@@ -1303,7 +1303,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             delta_q_state.qindex_u32(),
             tile_offset,
         )?;
-        if std::env::var_os("SPLOT_TRACE_INTER_BLOCK_MODE").is_some() {
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_BLOCK_MODE") {
             eprintln!(
                 "inter block warp r={mi_row} c={mi_col} mode={warp_mode:?} ref={ref_frame0} ref_mv_idx={} ref_warp_idx={} precision={} warpmv_with_mvd={} mv=({}, {}) params={:?} warp_inter_intra={:?} residual_blocks={} checkpoint={:?}",
                 warp.ref_mv_idx,
@@ -1604,7 +1604,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             ));
         }
         if !inter_residual_geometry_supported(frontier) {
-            if std::env::var_os("SPLOT_TRACE_INTER_RESIDUAL_GUARD").is_some() {
+            if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_RESIDUAL_GUARD") {
                 let chroma_ref = frontier.chroma_ref_geometry();
                 eprintln!(
                     "inter residual geometry rejected r={} c={} b={} n4={}x{} has_chroma={} chroma_offset={} luma_part={} chroma_part={} chroma_ref=({}, {}, {})",
@@ -1825,7 +1825,7 @@ fn trace_leaf_exit(
     before: splot_core::symbol::SymbolDecoderCheckpoint,
     after: splot_core::symbol::SymbolDecoderCheckpoint,
 ) {
-    if std::env::var_os("SPLOT_TRACE_INTER_LEAF_EXIT").is_some()
+    if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_LEAF_EXIT")
         && before.symbol_max_bits >= -14
         && after.symbol_max_bits < -14
     {
@@ -2102,7 +2102,7 @@ fn trace_interp_filter_context(
     neighbour_ctx: &super::find_mv_stack::BlockNeighbourContext,
     symbols: &SymbolDecoder<'_>,
 ) {
-    if std::env::var_os("SPLOT_TRACE_INTERP_FILTER_CTX").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_INTERP_FILTER_CTX") {
         return;
     }
     eprintln!(

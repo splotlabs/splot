@@ -883,7 +883,7 @@ fn trace_neighbour_context(
     is_inter_ctx: usize,
     skip_ctx: usize,
 ) {
-    let Some(target) = std::env::var("SPLOT_TRACE_NEIGHBOUR_CTX").ok() else {
+    let Some(target) = crate::trace_flags::trace_value!("SPLOT_TRACE_NEIGHBOUR_CTX") else {
         return;
     };
     let Some((row, col)) = target.split_once(':') else {

@@ -354,7 +354,7 @@ fn read_rect_partition(
     };
 
     let uneven_4way_partition_type = if do_uneven_4way_partition {
-        let trace_raw = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+        let trace_raw = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
         let raw_before = trace_raw.then(|| symbols.checkpoint());
         let value = symbols
             .read_literal(1)
@@ -420,7 +420,7 @@ fn read_partition_bool(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<bool, PartitionDecisionError> {
-    let trace = std::env::var_os("SPLOT_TRACE_PARTITION_SYMBOLS").is_some();
+    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_PARTITION_SYMBOLS");
     let before = trace.then(|| symbols.checkpoint());
     let row_before = if trace {
         cdfs.row(selector).ok().map(<[i32]>::to_vec)

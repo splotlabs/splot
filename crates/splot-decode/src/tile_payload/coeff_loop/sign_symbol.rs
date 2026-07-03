@@ -7,7 +7,6 @@
 //! `DECODE-COEFF-SIGN-SOURCE-DERIVE`.
 
 use std::collections::TryReserveError;
-use std::env;
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
@@ -314,7 +313,7 @@ fn trace_dc_sign_context(
     config: CoeffSignSourceDeriveConfig<'_>,
     ctx: usize,
 ) {
-    if env::var_os("SPLOT_TRACE_DC_SIGN_CTX").is_none() {
+    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_DC_SIGN_CTX") {
         return;
     }
     eprintln!(
@@ -427,7 +426,7 @@ pub(crate) fn read_preflighted_nonzero_coeff_sign(
             (CoeffSignReadSymbol::Cdf { syntax, symbol }, symbol != 0)
         }
         CoeffSignReadSource::SignBit => {
-            let trace = env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+            let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
             let before = trace.then(|| symbols.checkpoint());
             let bit = symbols
                 .read_literal(1)

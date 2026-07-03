@@ -32,7 +32,7 @@ impl TileCdfSubset {
             .with_row_mut(selector, |row| symbol_decoder.read_symbol(row))
             .map_err(PartitionEntrySymbolReadError::Cdf)?
             .map_err(PartitionEntrySymbolReadError::Symbol)?;
-        if std::env::var_os("SPLOT_TRACE_CDF_SELECTORS").is_some() {
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_CDF_SELECTORS") {
             eprintln!(
                 "cdf selector={selector:?} value={} symbols={}",
                 symbol.get(),

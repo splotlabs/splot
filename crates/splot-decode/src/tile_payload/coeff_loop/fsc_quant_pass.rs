@@ -739,10 +739,9 @@ pub(crate) fn apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
 }
 
 fn trace_fsc_block_enabled(context: CoeffFscContextCommitConfig) -> bool {
-    let Some(value) = std::env::var_os("SPLOT_TRACE_FSC_BLOCK") else {
+    let Some(value) = crate::trace_flags::trace_value!("SPLOT_TRACE_FSC_BLOCK") else {
         return false;
     };
-    let value = value.to_string_lossy();
     if value.is_empty() || value == "1" {
         return true;
     }

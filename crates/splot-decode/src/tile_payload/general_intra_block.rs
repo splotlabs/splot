@@ -413,7 +413,7 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
     let mode_ctx = joint_modes.y_mode_index_ctx(block_r, block_c, block_n4w, block_n4h);
     let neighbour_joint_modes =
         joint_modes.neighbour_joint_modes(block_r, block_c, block_n4w, block_n4h);
-    if std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some() {
+    if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRA_MODE_SYMBOLS") {
         eprintln!(
             "intra luma block start=({block_r},{block_c}) n4=({block_n4w}x{block_n4h}) bsize={block_size_index} mode_ctx={mode_ctx} neighbours={neighbour_joint_modes:?} checkpoint={:?}",
             symbols.checkpoint(),
@@ -723,7 +723,7 @@ fn read_palette_colors_y(
         }
     }
     colors[..palette_size].sort_unstable();
-    if std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some() {
+    if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRA_MODE_SYMBOLS") {
         eprintln!(
             "intra palette y block=({block_r},{block_c}) size={palette_size} colors={:?}",
             &colors[..palette_size]
@@ -749,7 +749,7 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
         && cfl_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h);
     let mhccp_allowed = mode_context.cfl_allowed_in_sdp
         && mhccp_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h);
-    if std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some() {
+    if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRA_MODE_SYMBOLS") {
         eprintln!(
             "intra chroma block y_mode={y_mode:?} n4=({block_n4w}x{block_n4h}) bsize={block_size_index} is_cfl_ctx={} cfl_allowed={cfl_allowed} mhccp_allowed={mhccp_allowed} checkpoint={:?}",
             mode_context.is_cfl_ctx,
@@ -798,7 +798,7 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
     } else {
         uv_mode_base
     };
-    if std::env::var_os("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE").is_some() {
+    if crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE") {
         eprintln!(
             "general intra chroma mode y_mode={y_mode:?} block_n4=({block_n4w}x{block_n4h}) uv_mode_base={uv_mode_base} uv_mode_idx={uv_mode_idx:?} uv_mode={uv_mode}"
         );
@@ -1088,7 +1088,7 @@ fn read_symbol(
     selector: TileCdfSelector,
     reason: &'static str,
 ) -> Result<u8, GeneralIntraBlockModeError> {
-    let trace = std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some();
+    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRA_MODE_SYMBOLS");
     let before = trace.then(|| symbols.checkpoint());
     let row_before = if trace {
         cdfs.row(selector).ok().map(<[i32]>::to_vec)
@@ -1114,8 +1114,8 @@ fn read_literal_u8(
     bits: u32,
     reason: &'static str,
 ) -> Result<u8, GeneralIntraBlockModeError> {
-    let trace = std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some();
-    let trace_raw = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRA_MODE_SYMBOLS");
+    let trace_raw = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
     let before = trace.then(|| symbols.checkpoint());
     let raw_before = trace_raw.then(|| symbols.checkpoint());
     let value = symbols
@@ -1142,8 +1142,8 @@ fn read_literal_u16(
     bits: u32,
     reason: &'static str,
 ) -> Result<u16, GeneralIntraBlockModeError> {
-    let trace = std::env::var_os("SPLOT_TRACE_INTRA_MODE_SYMBOLS").is_some();
-    let trace_raw = std::env::var_os("SPLOT_TRACE_RAW_LITERALS").is_some();
+    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRA_MODE_SYMBOLS");
+    let trace_raw = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
     let before = trace.then(|| symbols.checkpoint());
     let raw_before = trace_raw.then(|| symbols.checkpoint());
     let value = symbols

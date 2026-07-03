@@ -2296,7 +2296,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     )
             });
         if !residual_is_reconstructable(block, fsc_mode) && !allow_full_recon_luma_ist {
-            if std::env::var_os("SPLOT_TRACE_FULL_RECON_DEFER").is_some() {
+            if crate::trace_flags::trace_flag!("SPLOT_TRACE_FULL_RECON_DEFER") {
                 eprintln!(
                     "full_recon_residual_defer mi=({}, {}) tx_size={} log2={}x{} mode={} directional={:?} angle_delta_y={} mrl_index={} mrl_sec_index={:?} all_zero={} fsc_mode={} intra_ist={:?} offset={}",
                     mi_col,
