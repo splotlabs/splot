@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "907f9da2dd4329085c89cdc2f2b4a0de22301bb8",
+  "audited_commit": "c72e17c486ce53755efb5cb13be09e72cb93fa97",
   "outcome": "success",
   "files": [
     {
@@ -270,7 +270,7 @@
     },
     {
       "path": "crates/splot-cli/src/commands/decode.rs",
-      "sha256": "0b7103dc3662b6ff97e717525729ca27114dcbdd6bb7925ddf5c23261e4ca84c",
+      "sha256": "ba94337eef25ec97d857fe7ca6bdacf37cd0dde9d005d778c9cec902b5cb4e8f",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "CLI-DECODE",
@@ -1901,7 +1901,7 @@
     },
     {
       "path": "crates/splot-decode/src/context.rs",
-      "sha256": "fb73490061a3f8adf221ba0615034e08ec36b888276aacb4fba6e8c67e328b87",
+      "sha256": "586e48a746dc852c1f6ddc463ca6317801e7ea8d1e6586f547347278f1863da2",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-CONTEXT-TILE-PAYLOAD-HANDOFF"
@@ -1961,7 +1961,7 @@
     },
     {
       "path": "crates/splot-decode/src/lib.rs",
-      "sha256": "e6faac9d1db8cc5b94ea335fee0b00a3c412cab537252cb4761a9d77e18b1a3f",
+      "sha256": "951d928d46e9d93e37999b09f78645550d5cbe886b251614ea8a71bdf050832a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "CLI-DECODE",
@@ -2057,14 +2057,14 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/ccso.rs",
-      "sha256": "4f898c761554526cd92aaf8571ef63ab7c10ba1ae3d16254ebb96778c980f70c",
+      "sha256": "fceb3126ba53c1de15e1b66b5d56bd1c415f23cf2e85a504d69589e5bc15bd18",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/cdef.rs",
-      "sha256": "9066b78003f2bdea4c933fae26fd1c52ff807e7a5e61e1b6e1fab102943aa74a",
+      "sha256": "b9e7cd684ad0540dd80a50f13bcd9b9a38f724d846fe91389657e1d392fd6604",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-CDEF"
@@ -2366,9 +2366,11 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon/final_filters.rs",
-      "sha256": "ac92ba0afdc1ee04290f7411a7de2e13131f3165cf7ec06cc5bdda3bfe5d5bdf",
+      "sha256": "e26d5f55e4ba5c31181807f4cc3c30adae15705ca86ea2b72bc22fd2262c282a",
       "scope_kind": "workspace:splot-decode",
-      "feature_ids": [],
+      "feature_ids": [
+        "INFRA-DECODE-FILTER-HOT-PATHS"
+      ],
       "outcome": "success"
     },
     {
@@ -2524,7 +2526,7 @@
     },
     {
       "path": "crates/splot-decode/src/runtime_raw.rs",
-      "sha256": "c6ab69e82b6e6baec24db42aaa9b9b2713a32c4d7dc1237a93f9ccebf482395b",
+      "sha256": "d2c013595f00967640625b3bd6517e7ec1e509cdb07188e9fa0ae08b94c123f6",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT"
@@ -3157,6 +3159,13 @@
       "feature_ids": [
         "DECODE-TILE-PAYLOAD-BOUNDARY"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/timing.rs",
+      "sha256": "aa44de8a1811fb0430e72d165ca59d59ff1ee7492b17adad80a82e7750043094",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -3920,7 +3929,7 @@
     },
     {
       "path": "crates/splot-parallel/src/lib.rs",
-      "sha256": "bc5aeaa1a21ab60e00f986fad90ca66f7e67b7c4b55f188c65351b52aaa4005f",
+      "sha256": "9e3f2edba175df21df784df3caf7152709a09d27eeff11c108970ad2dd1db189",
       "scope_kind": "workspace:splot-parallel",
       "feature_ids": [
         "INFRA-PARALLEL-RUNTIME-POLICY"
@@ -3929,7 +3938,7 @@
     },
     {
       "path": "crates/splot-parallel/src/pool.rs",
-      "sha256": "ee334411db53575894254ccac0f0c15539a936f27ccee98d69f2085ffa6f7e7d",
+      "sha256": "9208d97341743f1624c186fd174c0e441a1637d27817c54665ffdaf4cb25174e",
       "scope_kind": "workspace:splot-parallel",
       "feature_ids": [],
       "outcome": "success"
@@ -3964,7 +3973,7 @@
     },
     {
       "path": "crates/splot-recon/src/cdef_filter.rs",
-      "sha256": "58a8540c7e682df8f9a285da0226d44ee75336d467035a5470526fbe3ff7969c",
+      "sha256": "80ea41b16465c03bf8bed52da6780b66c19ebc4ea3d342b15a80b5eabbc738bf",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-CDEF-FILTER"
@@ -4029,7 +4038,7 @@
     },
     {
       "path": "crates/splot-recon/src/format.rs",
-      "sha256": "be8084d752d0bd2428df3412a7c404e81999f38f6e1433f7062e795120ca9934",
+      "sha256": "130d545241338c6d9ce58ddd2e42d0118f46ed8e04d929720e500cc89e15946b",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -4184,7 +4193,7 @@
     },
     {
       "path": "crates/splot-recon/src/lib.rs",
-      "sha256": "65ab16043a9af7bf4afe7e6997c703a7b7b91a2923ee4e4e6ab666d92a01c79c",
+      "sha256": "2c86a7e5bd3405c5f20d8542f76f7dc199031235c73645694ae0d19aab1857d1",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "INFRA-RECON-FRAME-PLANE-TYPES",
@@ -4211,7 +4220,7 @@
     },
     {
       "path": "crates/splot-recon/src/pc_wiener.rs",
-      "sha256": "ad5805191607b2cbb74bb13a6bf32b59905a663fe69ebdb3402c85951f7492f2",
+      "sha256": "068b747a697cd3385b8605bc9aa02e000bf6717e1796e4564fca403251307ca9",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-PC-WIENER-CLASSIFICATION"
@@ -4308,7 +4317,7 @@
     },
     {
       "path": "crates/splot-recon/src/wienerns_chroma_filter.rs",
-      "sha256": "87106e195581b02e3f08eb8653d818e55931dd717aff7817689c0a8a0026a22f",
+      "sha256": "0ac203e0c83273a8ac9db94ff8594f0dbcea26396b21138d84208a2b1308c4b1",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE"
@@ -4317,7 +4326,7 @@
     },
     {
       "path": "crates/splot-recon/src/wienerns_filter.rs",
-      "sha256": "0a25912feb50ae7d2f51217d7196d1b9e2427b5fbd2fd6c5b6087c6ef6f48fd8",
+      "sha256": "b0a22645410679606163df66856c3303dfc7371e1f7eb532b8ae9ccc0fa0fef3",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-WIENERNS-FILTER-PRIMITIVE"
@@ -5587,7 +5596,7 @@
     },
     {
       "path": "docs/CONCURRENCY.md",
-      "sha256": "076bff951289a2b2b4e25f48cc2c7eaa00f72c477ddf223f8e4364154b634831",
+      "sha256": "2e0e0079c6a81bc7bdef56a99d13a79aed9532b227e7dae799ae55413d73544d",
       "scope_kind": "docs",
       "feature_ids": [
         "INFRA-PARALLEL-RUNTIME-POLICY"
@@ -6577,7 +6586,7 @@
     },
     {
       "path": "docs/FEATURE-STATUS.md",
-      "sha256": "0d82a560dc32cfc30bc6aa852443bbf8791eec2176b62f6fdcdc015ec2a78d6e",
+      "sha256": "dc91655dac67dbab68e43a8d475fab2b3f087edfe9ce530b466449db71142240",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -6964,6 +6973,7 @@
         "INFRA-AI-SLOP-GATE",
         "INFRA-CI-PIPELINE-SPEEDUPS",
         "INFRA-COMMENT-DENSITY-RATCHET",
+        "INFRA-DECODE-FILTER-HOT-PATHS",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-DUPEHOUND-DUPLICATION-GATE",
         "INFRA-FUZZ-CORPUS-SEEDING",
@@ -7076,7 +7086,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "a0e1fec82b78ae73df95932e7910de2698228b7bd985a037cc7450d858dccb17",
+      "sha256": "0b3cad9448001d869698627a09e6e287a9e3823866262aed0eac9257122232d7",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -7463,6 +7473,7 @@
         "INFRA-AI-SLOP-GATE",
         "INFRA-CI-PIPELINE-SPEEDUPS",
         "INFRA-COMMENT-DENSITY-RATCHET",
+        "INFRA-DECODE-FILTER-HOT-PATHS",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-DUPEHOUND-DUPLICATION-GATE",
         "INFRA-FUZZ-CORPUS-SEEDING",
@@ -7584,7 +7595,7 @@
     },
     {
       "path": "docs/SPEC-COVERAGE.md",
-      "sha256": "c3d3ffa37df1acc645fc83a0d4dfa9e88d25ac5397125d06efbbc58123ed457e",
+      "sha256": "943190e1c451e0eee10c9affc542c0fba0396c2624bd192909ebaa2a2a89efe0",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -7971,6 +7982,7 @@
         "INFRA-AI-SLOP-GATE",
         "INFRA-CI-PIPELINE-SPEEDUPS",
         "INFRA-COMMENT-DENSITY-RATCHET",
+        "INFRA-DECODE-FILTER-HOT-PATHS",
         "INFRA-DECODER-CRATE-SCAFFOLDING",
         "INFRA-DUPEHOUND-DUPLICATION-GATE",
         "INFRA-FUZZ-CORPUS-SEEDING",
@@ -26664,6 +26676,31 @@
       "outcome": "success"
     },
     {
+      "path": "openspec/changes/optimize-decode-filter-hot-paths/proposal.md",
+      "sha256": "38ebe415e645ab49c268a2337f7b5580c996fb2b8fd9c6c08d4ec1806a4a9fd0",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "INFRA-DECODE-FILTER-HOT-PATHS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/optimize-decode-filter-hot-paths/specs/runtime/spec.md",
+      "sha256": "d56c967ed72dc309aa274fa5f4add03143a85ba8fccf4c0fd3a44f9f87bae005",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "INFRA-DECODE-FILTER-HOT-PATHS"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/optimize-decode-filter-hot-paths/tasks.md",
+      "sha256": "a1bcf98887d79b9ee56afe8e6737d49ab3e2d78f6fbbb9c0f802058cf377782e",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "openspec/changes/recon-deblock-adaptive-strength/.openspec.yaml",
       "sha256": "d36d5ade13d63079e8fac69f1e3c45e2ee23d6b22c94f88c6a340556a023f11c",
       "scope_kind": "openspec",
@@ -29855,7 +29892,7 @@
     },
     {
       "path": "xtask/src/concurrency_policy.rs",
-      "sha256": "1102e561a917c053c770e54aeb00f39adbb7001508844cf926bd4da024976b9d",
+      "sha256": "bc3f2322618163b92c26282ef16bdbfa3c51707aba647bae632f73255e68b112",
       "scope_kind": "workspace:xtask",
       "feature_ids": [],
       "outcome": "success"
