@@ -29,8 +29,13 @@ pub(crate) fn plan_byte_stream(bytes: &[u8], options: &DecodeOptions) -> Result<
     let limits = options.limits();
     limits.ensure(DecodeLimitName::MaxInputBytes, input_len_bytes)?;
 
+    let parse_started = crate::timing::start();
     let parsed = parse_bounded_bitstream(bytes, limits)?;
-    plan_stream(DecodeStreamInput::new(&parsed, input_len_bytes), options)
+    crate::timing::report("bounded_source_parse", parse_started);
+    let plan_started = crate::timing::start();
+    let plan = plan_stream(DecodeStreamInput::new(&parsed, input_len_bytes), options)?;
+    crate::timing::report("stream_planning", plan_started);
+    Ok(plan)
 }
 
 fn parse_bounded_bitstream(bytes: &[u8], limits: DecodeLimits) -> Result<ParsedBitstream<'_>> {

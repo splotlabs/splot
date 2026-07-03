@@ -144,6 +144,10 @@ pub(crate) fn reconstruct_general_intra_block_into<T: ReconSample>(
     let block_size = IntraRectBlockSize::new(log2, log2)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
     let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?;
+    if block.all_zero && !ibp_dc {
+        workspace.fill_rect(plane_id, PlaneRect::new(x, y, side, side)?, dc)?;
+        return Ok(());
+    }
     let mut prediction = vec![dc; side * side];
     if ibp_dc {
         apply_intra_ibp_dc_rect(
@@ -218,6 +222,10 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
     let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?;
+    if block.all_zero && !ibp_dc {
+        workspace.fill_rect(plane_id, PlaneRect::new(x, y, width, height)?, dc)?;
+        return Ok(());
+    }
     let prediction = if ibp_dc {
         let mut pred = vec![dc; width * height];
         apply_intra_ibp_dc_rect(bit_depth, block_size, edges.as_dc_edges(), &mut pred, width)?;
@@ -265,6 +273,10 @@ pub(crate) fn reconstruct_general_intra_luma_dc_rect_block_with_ist_into<T: Reco
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let edges = workspace.intra_dc_edges_for_rect(PlaneId::Y, x, y, block_size)?;
     let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?;
+    if block.all_zero && !ibp_dc {
+        workspace.fill_rect(PlaneId::Y, PlaneRect::new(x, y, width, height)?, dc)?;
+        return Ok(());
+    }
     let prediction = if ibp_dc {
         let mut pred = vec![dc; width * height];
         apply_intra_ibp_dc_rect(bit_depth, block_size, edges.as_dc_edges(), &mut pred, width)?;

@@ -94,6 +94,26 @@ pub fn on_multiworker_pool() -> bool {
     rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1
 }
 
+/// Returns the index of the current Rayon worker when called inside an
+/// installed worker-pool scope.
+///
+/// This is for diagnostics and attribution only. It does not spawn work and
+/// must not be used to select codec semantics.
+#[must_use]
+pub fn current_worker_index() -> Option<usize> {
+    rayon::current_thread_index()
+}
+
+/// Returns the number of workers in the current installed pool scope.
+///
+/// This is for diagnostics and attribution only. Outside a Rayon worker scope
+/// it returns `None`.
+#[must_use]
+pub fn current_worker_count() -> Option<NonZeroUsize> {
+    rayon::current_thread_index()?;
+    NonZeroUsize::new(rayon::current_num_threads())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -138,6 +158,16 @@ mod tests {
         assert!(pool.install(on_multiworker_pool));
         let single = WorkerPool::new(ThreadCount::Fixed(nz(1))).unwrap();
         assert!(!single.install(on_multiworker_pool));
+    }
+
+    #[test]
+    fn current_worker_metadata_tracks_install_scope() {
+        assert_eq!(current_worker_index(), None);
+        assert_eq!(current_worker_count(), None);
+        let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
+        let (index, count) = pool.install(|| (current_worker_index(), current_worker_count()));
+        assert!(index.is_some_and(|index| index < 2));
+        assert_eq!(count, Some(nz(2)));
     }
 
     #[test]

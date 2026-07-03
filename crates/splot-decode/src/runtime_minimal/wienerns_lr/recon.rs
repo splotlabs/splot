@@ -291,6 +291,27 @@ struct PendingChromaTransform {
     tile_offset: ByteOffset,
 }
 
+enum ChromaCoeffBlock<'a> {
+    Borrowed(&'a LumaCoeffBlock),
+    Owned(LumaCoeffBlock),
+}
+
+impl ChromaCoeffBlock<'_> {
+    fn as_ref(&self) -> &LumaCoeffBlock {
+        match self {
+            Self::Borrowed(block) => block,
+            Self::Owned(block) => block,
+        }
+    }
+
+    fn into_owned(self) -> LumaCoeffBlock {
+        match self {
+            Self::Borrowed(block) => block.clone(),
+            Self::Owned(block) => block,
+        }
+    }
+}
+
 /// Row-major per-luma-MI AV2 §7.13.2.1 far-edge availability grid, populated from
 /// the live §5.20.2.3 `BlockDecoded` state threaded through the tree-walk callback.
 struct FarEdgeAvailGrid {
@@ -1053,7 +1074,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         chroma_tx: usize,
         x: usize,
         y: usize,
-        block: &LumaCoeffBlock,
+        block: ChromaCoeffBlock<'_>,
         chroma_mode: Option<SupportedChromaMode>,
         angle_delta_y: i8,
         cfl_params: Option<CflParams>,
@@ -1067,7 +1088,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             chroma_tx,
             x,
             y,
-            block: block.clone(),
+            block: block.into_owned(),
             chroma_mode,
             angle_delta_y,
             cfl_params,
@@ -1086,12 +1107,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             }
             let before = self.reconstructed_chroma_4x4;
             for transform in pending {
-                self.reconstruct_chroma_transform(
+                self.reconstruct_chroma_transform_owned(
                     transform.plane_id,
                     transform.chroma_tx,
                     transform.x,
                     transform.y,
-                    &transform.block,
+                    transform.block,
                     transform.chroma_mode,
                     transform.angle_delta_y,
                     transform.cfl_params,
@@ -3407,13 +3428,77 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         qindex: u32,
         tile_offset: ByteOffset,
     ) -> Result<()> {
+        self.reconstruct_chroma_transform_inner(
+            plane_id,
+            chroma_tx,
+            x,
+            y,
+            ChromaCoeffBlock::Borrowed(block),
+            chroma_mode,
+            angle_delta_y,
+            cfl_params,
+            num4_above_right,
+            num4_below_left,
+            qindex,
+            tile_offset,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::runtime_minimal) fn reconstruct_chroma_transform_owned(
+        &mut self,
+        plane_id: PlaneId,
+        chroma_tx: usize,
+        x: usize,
+        y: usize,
+        block: LumaCoeffBlock,
+        chroma_mode: Option<SupportedChromaMode>,
+        angle_delta_y: i8,
+        cfl_params: Option<CflParams>,
+        num4_above_right: usize,
+        num4_below_left: usize,
+        qindex: u32,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
+        self.reconstruct_chroma_transform_inner(
+            plane_id,
+            chroma_tx,
+            x,
+            y,
+            ChromaCoeffBlock::Owned(block),
+            chroma_mode,
+            angle_delta_y,
+            cfl_params,
+            num4_above_right,
+            num4_below_left,
+            qindex,
+            tile_offset,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reconstruct_chroma_transform_inner(
+        &mut self,
+        plane_id: PlaneId,
+        chroma_tx: usize,
+        x: usize,
+        y: usize,
+        block: ChromaCoeffBlock<'_>,
+        chroma_mode: Option<SupportedChromaMode>,
+        angle_delta_y: i8,
+        cfl_params: Option<CflParams>,
+        num4_above_right: usize,
+        num4_below_left: usize,
+        qindex: u32,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
         if !self.quant_reconstructable {
             return Ok(());
         }
         let Some((log2_width, log2_height)) = tx_size_log2(chroma_tx) else {
             return Ok(());
         };
-        if !residual_is_reconstructable(block, false) {
+        if !residual_is_reconstructable(block.as_ref(), false) {
             return Ok(());
         }
         let (mi_col, mi_row) = (x / MI_SIZE, y / MI_SIZE);
@@ -3456,7 +3541,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     y,
                     log2_width,
                     log2_height,
-                    block,
+                    block.as_ref(),
                     cfl_params,
                     num4_above_right,
                     num4_below_left,
@@ -3511,7 +3596,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 y,
                 log2_width,
                 log2_height,
-                block,
+                block.as_ref(),
                 num4_above_right,
                 num4_below_left,
                 qindex,
@@ -3558,7 +3643,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 let ibp_dc = self.ibp_dc_applies(log2_width, log2_height);
                 reconstruct_general_intra_block_rect_into(
                     &mut self.workspace,
-                    block,
+                    block.as_ref(),
                     plane_id,
                     x,
                     y,
@@ -3590,7 +3675,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
                 reconstruct_general_intra_luma_paeth_neighbour_block_into(
                     &mut self.workspace,
-                    block,
+                    block.as_ref(),
                     plane_id,
                     x,
                     y,
@@ -3629,7 +3714,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
                 reconstruct_general_intra_chroma_block_into(
                     &mut self.workspace,
-                    block,
+                    block.as_ref(),
                     plane_id,
                     x,
                     y,
@@ -3672,7 +3757,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
                 reconstruct_general_intra_chroma_block_into(
                     &mut self.workspace,
-                    block,
+                    block.as_ref(),
                     plane_id,
                     x,
                     y,
@@ -3745,7 +3830,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
                 reconstruct_general_intra_chroma_smooth_available_edges_into(
                     &mut self.workspace,
-                    block,
+                    block.as_ref(),
                     plane_id,
                     x,
                     y,
@@ -3781,7 +3866,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
                 reconstruct_general_intra_chroma_block_into(
                     &mut self.workspace,
-                    block,
+                    block.as_ref(),
                     plane_id,
                     x,
                     y,
@@ -4529,6 +4614,7 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         splot_core::headers::sequence::SequencePartitionConfig::seq_sb_size,
     );
     let sb_mib = splot_core::tile::num_4x4_blocks_wide(sb_size) as usize;
+    let sink_started = crate::timing::start();
     let base_sink = WienerNsLrReconSink::<u16>::new(
         frame_size.width as usize,
         frame_size.height as usize,
@@ -4539,12 +4625,14 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         cfl_ds_filter_index,
         sb_mib,
     )?;
+    crate::timing::report("ac0ej3_sink_setup", sink_started);
     let mut sink = if full_recon {
         base_sink.into_full_recon()
     } else {
         base_sink
     };
-    match super::tx_records::derive_wienerns_lr_selectable_transform_record_handoff(
+    let handoff_started = crate::timing::start();
+    let handoff_result = super::tx_records::derive_wienerns_lr_selectable_transform_record_handoff(
         bytes,
         options,
         plan,
@@ -4553,19 +4641,25 @@ pub(in crate::runtime_minimal) fn reconstruct_ac0ej3_selectable_intra_region(
         sequence,
         core,
         Some(&mut sink),
-    ) {
+    );
+    crate::timing::report("ac0ej3_tx_record_handoff", handoff_started);
+    match handoff_result {
         Ok(handoff) => {
+            let tx_skip_started = crate::timing::start();
             let tx_skip_grid = super::derive_wienerns_lr_tx_skip_grid_retention(
                 handoff.tx_skip_rows,
                 handoff.tx_skip_cols,
                 &handoff.records,
             )?;
+            crate::timing::report("ac0ej3_tx_skip_grid", tx_skip_started);
+            let state_started = crate::timing::start();
             let frame_cdfs = handoff.frame_cdfs;
             sink.set_cdef_grid(handoff.cdef_grid);
             sink.set_ccso_grid(handoff.ccso_grid);
             sink.set_tx_skip_grid(Some(tx_skip_grid));
             sink.set_lr_source_blocks(handoff.active_source_blocks);
             sink.set_lr_unit_filters(handoff.unit_filters);
+            crate::timing::report("ac0ej3_state_handoff", state_started);
             Ok(Ac0ej3SelectableIntraRegion { sink, frame_cdfs })
         }
         Err(crate::error::DecodeError::UnsupportedFeature { unsupported })

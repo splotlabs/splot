@@ -288,11 +288,23 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
         r += STEP4;
     }
 
+    let stage_started = crate::timing::start();
     let compute = |ctx: &CdefBlockCtx| compute_cdef_block::<T>(ctx, &luma_snap, &u_snap, &v_snap);
     let parallel = splot_parallel::on_multiworker_pool();
+    let worker_set = crate::timing::WorkerSet::maybe_new();
+    let worker_ref = worker_set.as_ref();
+    if !parallel && !contexts.is_empty() {
+        crate::timing::mark_worker(worker_ref);
+    }
     for chunk in contexts.chunks(CDEF_BLOCK_CHUNK) {
         let outputs: Vec<CdefBlockOutput<T>> = if parallel {
-            chunk.par_iter().map(compute).collect::<Result<_, _>>()?
+            chunk
+                .par_iter()
+                .map(|ctx| {
+                    crate::timing::mark_worker(worker_ref);
+                    compute(ctx)
+                })
+                .collect::<Result<_, _>>()?
         } else {
             chunk.iter().map(compute).collect::<Result<_, _>>()?
         };
@@ -304,13 +316,29 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
             }
         }
     }
+    let fallback_reason = if contexts.is_empty() {
+        Some("no_work_units")
+    } else if parallel {
+        None
+    } else {
+        Some("single_worker_or_outside_pool")
+    };
+    crate::timing::report_parallel(
+        "cdef_filter",
+        stage_started,
+        splot_parallel::current_worker_count(),
+        contexts.len(),
+        CDEF_BLOCK_CHUNK,
+        worker_ref,
+        fallback_reason,
+    );
 
     Ok(())
 }
 
 /// Filter-block batch size: large enough to spread across workers, small
 /// enough to keep buffered block outputs cache-resident.
-const CDEF_BLOCK_CHUNK: usize = 1024;
+const CDEF_BLOCK_CHUNK: usize = 8192;
 
 /// One filtered plane rectangle: `(plane, target rect, samples, row stride)`.
 /// The fixed array holds the leading `height * stride` samples of an at most

@@ -106,18 +106,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ) -> Result<bool> {
         let storage = self.workspace.plane(PlaneId::Y)?.storage_size();
         let (width, height) = (storage.width(), storage.height());
-        let reference: Vec<u16> = self
-            .workspace
-            .samples(PlaneId::Y)?
-            .iter()
-            .map(|sample| sample.to_u16())
-            .collect();
-        let view = ReferencePlaneView::new(&reference, width, height).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_copy",
-            )
-        })?;
+        let reference = self.workspace.samples(PlaneId::Y)?;
+        let view =
+            ReferencePlaneView::from_strided(reference, width, width, height).map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_intrabc_copy",
+                )
+            })?;
         let params =
             intrabc_bilinear_params(scaling, target.width(), target.height(), self.bit_depth);
         let predicted = subpel_predict_block(&view, &params).map_err(|_| {

@@ -528,12 +528,24 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             }
         };
         let y_blocks = coalesced_lr_source_rows(lr_source_blocks, PlaneId::Y.index());
-        let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
-            if splot_parallel::on_multiworker_pool() {
-                y_blocks.par_iter().map(&compute).collect::<Result<_>>()?
-            } else {
-                y_blocks.iter().map(&compute).collect::<Result<_>>()?
-            };
+        let stage_started = crate::timing::start();
+        let parallel = splot_parallel::on_multiworker_pool();
+        let worker_set = crate::timing::WorkerSet::maybe_new();
+        let worker_ref = worker_set.as_ref();
+        if !parallel && !y_blocks.is_empty() {
+            crate::timing::mark_worker(worker_ref);
+        }
+        let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> = if parallel {
+            y_blocks
+                .par_iter()
+                .map(|block| {
+                    crate::timing::mark_worker(worker_ref);
+                    compute(block)
+                })
+                .collect::<Result<_>>()?
+        } else {
+            y_blocks.iter().map(&compute).collect::<Result<_>>()?
+        };
         for (block, output) in &filtered {
             let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
                 .map_err(|_| luma_lr_filter_error(offset))?;
@@ -541,6 +553,22 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 .write_rect(PlaneId::Y, rect, output, block.width)
                 .map_err(|_| luma_lr_filter_error(offset))?;
         }
+        let fallback_reason = if y_blocks.is_empty() {
+            Some("no_work_units")
+        } else if parallel {
+            None
+        } else {
+            Some("single_worker_or_outside_pool")
+        };
+        crate::timing::report_parallel(
+            "wienerns_luma_lr",
+            stage_started,
+            splot_parallel::current_worker_count(),
+            y_blocks.len(),
+            1,
+            worker_ref,
+            fallback_reason,
+        );
         Ok(())
     }
 
@@ -608,15 +636,24 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             )
         };
         let plane_blocks = coalesced_lr_source_rows(lr_source_blocks, plane_index);
-        let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
-            if splot_parallel::on_multiworker_pool() {
-                plane_blocks
-                    .par_iter()
-                    .map(&compute)
-                    .collect::<Result<_>>()?
-            } else {
-                plane_blocks.iter().map(&compute).collect::<Result<_>>()?
-            };
+        let stage_started = crate::timing::start();
+        let parallel = splot_parallel::on_multiworker_pool();
+        let worker_set = crate::timing::WorkerSet::maybe_new();
+        let worker_ref = worker_set.as_ref();
+        if !parallel && !plane_blocks.is_empty() {
+            crate::timing::mark_worker(worker_ref);
+        }
+        let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> = if parallel {
+            plane_blocks
+                .par_iter()
+                .map(|block| {
+                    crate::timing::mark_worker(worker_ref);
+                    compute(block)
+                })
+                .collect::<Result<_>>()?
+        } else {
+            plane_blocks.iter().map(&compute).collect::<Result<_>>()?
+        };
         for (block, output) in &filtered {
             let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
                 .map_err(|_| luma_lr_filter_error(offset))?;
@@ -624,6 +661,22 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 .write_rect(plane_id, rect, output, block.width)
                 .map_err(|_| luma_lr_filter_error(offset))?;
         }
+        let fallback_reason = if plane_blocks.is_empty() {
+            Some("no_work_units")
+        } else if parallel {
+            None
+        } else {
+            Some("single_worker_or_outside_pool")
+        };
+        crate::timing::report_parallel(
+            "wienerns_chroma_lr",
+            stage_started,
+            splot_parallel::current_worker_count(),
+            plane_blocks.len(),
+            1,
+            worker_ref,
+            fallback_reason,
+        );
         Ok(())
     }
 

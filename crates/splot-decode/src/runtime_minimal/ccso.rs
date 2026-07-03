@@ -290,8 +290,21 @@ fn ccso_plane<T: ReconSample>(
         let rect = PlaneRect::new(x, y, width, y_end - y).map_err(|_| CcsoError::Geometry)?;
         Ok((rect, filtered))
     };
-    let outputs: Vec<(PlaneRect, Vec<T>)> = if splot_parallel::on_multiworker_pool() {
-        units.par_iter().map(compute).collect::<Result<_, _>>()?
+    let stage_started = crate::timing::start();
+    let parallel = splot_parallel::on_multiworker_pool();
+    let worker_set = crate::timing::WorkerSet::maybe_new();
+    let worker_ref = worker_set.as_ref();
+    if !parallel && !units.is_empty() {
+        crate::timing::mark_worker(worker_ref);
+    }
+    let outputs: Vec<(PlaneRect, Vec<T>)> = if parallel {
+        units
+            .par_iter()
+            .map(|unit| {
+                crate::timing::mark_worker(worker_ref);
+                compute(unit)
+            })
+            .collect::<Result<_, _>>()?
     } else {
         units.iter().map(compute).collect::<Result<_, _>>()?
     };
@@ -300,6 +313,22 @@ fn ccso_plane<T: ReconSample>(
             .write_rect(plane_id, rect, &filtered, rect.width())
             .map_err(|_| CcsoError::Workspace)?;
     }
+    let fallback_reason = if units.is_empty() {
+        Some("no_work_units")
+    } else if parallel {
+        None
+    } else {
+        Some("single_worker_or_outside_pool")
+    };
+    crate::timing::report_parallel(
+        "ccso_filter",
+        stage_started,
+        splot_parallel::current_worker_count(),
+        units.len(),
+        1,
+        worker_ref,
+        fallback_reason,
+    );
     Ok(())
 }
 

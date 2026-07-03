@@ -20672,7 +20672,7 @@ openspec_change = "optimize-decode-first-frame-latency"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Measured follow-up to INFRA-DECODE-SERIAL-HOT-PATHS for the 1080p10 first-frame decode frontier. Warmed baseline on the motivating IVF was 147.319 ms raw/default, 300.236 ms raw --threads 1, 135.324 ms hash/default, and 289.633 ms hash --threads 1; SPLOT_DECODE_TIMING attributed about 132 ms to runtime decode while input read, context construction, planning, and raw serialization were sub-2 ms each. This slice removes the luma Wiener NS in-range row segment Vec collection and adds hot PC-Wiener/Luma Wiener inline hints while preserving bit-exact output, fail-atomic helper behavior, owned-pool determinism, and no AV2 semantics changes. Final warmed medians were 144.664 ms raw/default, 284.383 ms raw --threads 1, 134.578 ms hash/default, and 276.009 ms hash --threads 1, so perf remains partial and the remaining hotspot is runtime reconstruction/final filtering rather than input/planning."
+notes = "Measured follow-up to INFRA-DECODE-SERIAL-HOT-PATHS for the 1080p10 first-frame decode frontier. Warmed baseline on the motivating IVF was 147.319 ms raw/default, 300.236 ms raw --threads 1, 135.324 ms hash/default, and 289.633 ms hash --threads 1; SPLOT_DECODE_TIMING attributed about 132 ms to runtime decode while input read, context construction, planning, and raw serialization were sub-2 ms each. This slice removes the luma Wiener NS in-range row segment Vec collection and adds hot PC-Wiener/Luma Wiener inline hints while preserving bit-exact output, fail-atomic helper behavior, owned-pool determinism, and no AV2 semantics changes. Final warmed medians were 144.664 ms raw/default, 284.383 ms raw --threads 1, 134.578 ms hash/default, and 276.009 ms hash --threads 1, so perf remains partial and the remaining hotspot is runtime reconstruction/final filtering rather than input/planning. The timing trace now also separates bounded-source parse, stream planning, duplicate runtime parse, key-frame setup, full-reconstruction, selectable transform handoff, and final-filter buckets, and reports `threads`, `work_units`, `grain_size`, `active_workers`, and `fallback_reason` for the existing pool-scoped deblock, CDEF, CCSO, and Wiener NS LR parallel maps. On the same ac0ej3 command, one-thread filter stages report serial fallback with one active worker, while `--threads 10` reports 9-10 active workers in every parallel filter stage. Current timing-disabled medians: raw --threads 1 293.973 ms, 2 212.678 ms, 4 165.522 ms, 8 146.067 ms, 10 145.348 ms; hash --threads 1 289.626 ms, 10 149.012 ms; raw SHA-256 stays 5871ac36621189b9740ead4e80c360b044023ad0df2239a65eb89c7241fade01 across --threads 1/2/4/8/10. The timing-enabled trace explains the non-linear ceiling: ac0ej3 selectable transform handoff remains about 51-55 ms on both 1 and 10 threads because it walks 1849 decode-order blocks, 2160 luma records, and 544 chroma groups through serial entropy/context/current-frame sink dependencies; atomic output publication is also outside the worker pool. The parallel final-filter portion scales from about 206.7 ms at one thread to about 53.2 ms at ten threads after CDEF batches were increased to 8192 work units, with CDEF itself around 11.9 ms at 10 threads."
 
 [feature.status]
 mapped = "done"
@@ -20688,16 +20688,21 @@ perf = "partial"
 
 [feature.proof]
 tests = [
+    "crates/splot-parallel/src/pool.rs::tests::current_worker_metadata_tracks_install_scope",
     "crates/splot-recon/src/wienerns_filter.rs::tests::padded_and_callback_filters_match_bit_exactly",
     "crates/splot-recon/src/wienerns_filter.rs::tests::padded_and_callback_filters_match_bit_exactly_eight_bit_wide_block",
     "crates/splot-recon/src/wienerns_filter.rs::tests::padded_filter_rejects_source_sample_out_of_range",
     "crates/splot-recon/src/pc_wiener.rs::tests",
 ]
 commands = [
+    "cargo test -p splot-parallel --locked",
+    "cargo test -p splot-decode --locked",
+    "cargo test -p splot-recon --locked",
     "cargo test -p splot-recon wiener --locked",
     "cargo build --release --locked",
     "SPLOT_DECODE_TIMING=1 ./target/release/splot decode --quiet --output-format raw --limit=1 -o /tmp/ac0ej3-splot-timing-1.raw $SPLOT_AC0EJ3_IVF",
     "SPLOT_DECODE_TIMING=1 ./target/release/splot decode --quiet --output-format hash --limit=1 $SPLOT_AC0EJ3_IVF",
+    "for t in 1 2 4 8 10 auto; do ./target/release/splot decode --quiet --threads \"$t\" --output-format raw --limit=1 -o \"/tmp/ac0ej3-splot-$t.raw\" $SPLOT_AC0EJ3_IVF; shasum -a 256 \"/tmp/ac0ej3-splot-$t.raw\"; done",
 ]
 fixtures = []
 diagnostics = []

@@ -288,7 +288,9 @@ fn decode_minimal_key_frame(
     sequence: &SequenceHeader,
     header: IvfHeader,
 ) -> Result<MinimalRuntimeFrame> {
+    let frame_header_started = crate::timing::start();
     let core = parse_frame_core(frame_envelope, sequence)?;
+    crate::timing::report("frame_header_parse", frame_header_started);
     if route_wienerns_lr_selectable_full_recon(sequence, &core) {
         return decode_wienerns_lr_selectable_full_recon_key_frame(
             bytes,
@@ -322,6 +324,7 @@ fn decode_minimal_key_frame(
     }
     validate_frame_core(&core, frame_envelope.offset)?;
 
+    let tile_plan_started = crate::timing::start();
     let mut tile_plan = derive_tile_plan(
         plan,
         candidate,
@@ -331,6 +334,7 @@ fn decode_minimal_key_frame(
         &core,
         options,
     )?;
+    crate::timing::report("tile_plan_derivation", tile_plan_started);
     let tile = match tile_plan.work_units_mut() {
         [tile] => tile,
         [] => {
@@ -348,8 +352,10 @@ fn decode_minimal_key_frame(
             ));
         }
     };
+    let tile_trace_started = crate::timing::start();
     let reconstruction_trace =
         verify_flat_minimal_tile_trace(tile, sequence, &core, options.limits())?;
+    crate::timing::report("tile_payload_trace", tile_trace_started);
     tile.apply_frame_end_cdf_update();
     let frame_cdfs = tile.frame_cdfs();
     let tile_size = tile.tile_size();
@@ -362,8 +368,10 @@ fn decode_minimal_key_frame(
         tile_size,
         BitDepth::Eight,
     )?;
+    let reconstruction_started = crate::timing::start();
     let frame =
         crate::runtime_minimal_recon::reconstruct_minimal_traced_frame(reconstruction_trace)?;
+    crate::timing::report("minimal_trace_reconstruct", reconstruction_started);
 
     Ok(MinimalRuntimeFrame {
         frame: MinimalRuntimeDecodedFrame::Eight(frame),
@@ -397,6 +405,7 @@ fn decode_wienerns_lr_selectable_full_recon_key_frame(
     core: &FrameHeaderCore,
     header: IvfHeader,
 ) -> Result<MinimalRuntimeFrame> {
+    let region_started = crate::timing::start();
     let region = reconstruct_ac0ej3_selectable_intra_region(
         bytes,
         options,
@@ -407,14 +416,20 @@ fn decode_wienerns_lr_selectable_full_recon_key_frame(
         core,
         true,
     )?;
+    crate::timing::report("ac0ej3_region_reconstruct", region_started);
     let mut sink = region.sink;
+    let finish_started = crate::timing::start();
     sink.finish_intra_reconstruction(frame_envelope.offset)?;
+    crate::timing::report("intra_reconstruction_finish", finish_started);
+    let final_filters_started = crate::timing::start();
+    let frame = sink.into_filtered_frame(
+        core,
+        deblock_quant_deltas(sequence, core),
+        frame_envelope.offset,
+    )?;
+    crate::timing::report("final_filters", final_filters_started);
     Ok(MinimalRuntimeFrame {
-        frame: MinimalRuntimeDecodedFrame::Ten(sink.into_filtered_frame(
-            core,
-            deblock_quant_deltas(sequence, core),
-            frame_envelope.offset,
-        )?),
+        frame: MinimalRuntimeDecodedFrame::Ten(frame),
         frame_cdfs: region.frame_cdfs,
         frame_rate_numerator: header.timebase_denominator,
         frame_rate_denominator: header.timebase_numerator,
@@ -428,7 +443,10 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     preflight: impl FnOnce(IvfHeader) -> Result<()>,
 ) -> Result<Vec<MinimalRuntimeFrame>> {
     ensure_multiframe_plan_shape(plan)?;
+    let runtime_parse_started = crate::timing::start();
     let parsed = parse_bitstream_partial(bytes);
+    crate::timing::report("runtime_parse_bitstream", runtime_parse_started);
+    let key_header_started = crate::timing::start();
     let (ivf, header) = require_multiframe_ivf(&parsed)?;
     preflight(header)?;
 
@@ -488,6 +506,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
         ensure_sequence_chroma_tools_before_tile_decode(&sequence, sequence_envelope.offset)?;
     }
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
+    crate::timing::report("runtime_key_headers", key_header_started);
 
     let sequence_inter = sequence.inter.as_ref().ok_or_else(|| {
         unsupported(
@@ -511,6 +530,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
         &key_core,
         key_envelope.offset,
     )?;
+    let key_frame_started = crate::timing::start();
     let key_frame = decode_minimal_key_frame(
         bytes,
         options,
@@ -520,6 +540,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
         &sequence,
         header,
     )?;
+    crate::timing::report("runtime_key_frame_decode", key_frame_started);
     retained_frame_bytes =
         ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
     frames.push(key_frame);

@@ -162,10 +162,11 @@ fn deblock_plane_pass<T: ReconSample>(
 
     let covered_rows = (mi_rows * MI_SIZE) >> plane_pass.plane_sub_y;
     let covered_cols = (mi_cols * MI_SIZE) >> plane_pass.plane_sub_x;
-    if splot_parallel::on_multiworker_pool()
-        && (plane_pass.pass == 0 && covered_rows <= height
-            || plane_pass.pass == 1 && covered_cols <= width)
-    {
+    let stage_started = crate::timing::start();
+    let on_pool = splot_parallel::on_multiworker_pool();
+    let coverage_ok = (plane_pass.pass == 0 && covered_rows <= height)
+        || (plane_pass.pass == 1 && covered_cols <= width);
+    if on_pool && coverage_ok {
         let full = PlaneCtx::new(samples, stride, width, height)?;
         let bands: Vec<(usize, PlaneCtx<'_, T>)> = if plane_pass.pass == 0 {
             let mut bands = Vec::new();
@@ -201,7 +202,11 @@ fn deblock_plane_pass<T: ReconSample>(
                 })
                 .collect()
         };
-        return bands.into_par_iter().try_for_each(|(mi_index, mut ctx)| {
+        let work_units = bands.len();
+        let worker_set = crate::timing::WorkerSet::maybe_new();
+        let worker_ref = worker_set.as_ref();
+        let result = bands.into_par_iter().try_for_each(|(mi_index, mut ctx)| {
+            crate::timing::mark_worker(worker_ref);
             let mut strengths = StrengthCache::default();
             if plane_pass.pass == 0 {
                 if mi_index >= mi_rows {
@@ -230,8 +235,21 @@ fn deblock_plane_pass<T: ReconSample>(
             }
             Ok(())
         });
+        crate::timing::report_parallel(
+            "deblock_plane_pass",
+            stage_started,
+            splot_parallel::current_worker_count(),
+            work_units,
+            MI_SIZE,
+            worker_ref,
+            None,
+        );
+        return result;
     }
 
+    let worker_set = crate::timing::WorkerSet::maybe_new();
+    let worker_ref = worker_set.as_ref();
+    crate::timing::mark_worker(worker_ref);
     let mut ctx = PlaneCtx::new(samples, stride, width, height)?;
     let mut strengths = StrengthCache::default();
     for r in (0..mi_rows).step_by(plane_pass.row_step) {
@@ -244,6 +262,25 @@ fn deblock_plane_pass<T: ReconSample>(
             )?;
         }
     }
+    let work_units = if plane_pass.pass == 0 {
+        height.div_ceil(MI_SIZE)
+    } else {
+        width.div_ceil(MI_SIZE)
+    };
+    let fallback_reason = if on_pool {
+        "mi_coverage_exceeds_storage"
+    } else {
+        "single_worker_or_outside_pool"
+    };
+    crate::timing::report_parallel(
+        "deblock_plane_pass",
+        stage_started,
+        splot_parallel::current_worker_count(),
+        work_units,
+        MI_SIZE,
+        worker_ref,
+        Some(fallback_reason),
+    );
     Ok(())
 }
 
