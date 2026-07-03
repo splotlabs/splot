@@ -263,6 +263,7 @@ impl InterpolationFilter {
 #[derive(Clone, Copy, Debug)]
 pub struct ReferencePlaneView<'a> {
     samples: &'a [u16],
+    stride: usize,
     width: usize,
     height: usize,
 }
@@ -299,7 +300,59 @@ impl<'a> ReferencePlaneView<'a> {
             });
         }
         Ok(Self {
+            stride: width,
             samples,
+            width,
+            height,
+        })
+    }
+
+    /// Builds a reference-plane view over a strided row-major sample buffer
+    /// without copying: row `r` starts at `r * stride`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconError::StrideTooSmall`] when `stride < width`,
+    /// [`ReconError::ZeroDimension`] when a dimension is zero, or
+    /// [`ReconError::SubpelReferencePlaneMismatch`] when the buffer cannot hold
+    /// `height` strided rows of `width` samples.
+    pub fn with_stride(
+        samples: &'a [u16],
+        stride: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<Self> {
+        if stride < width {
+            return Err(ReconError::StrideTooSmall {
+                stride_samples: stride,
+                storage_width: width,
+            });
+        }
+        if width == 0 {
+            return Err(ReconError::ZeroDimension {
+                field: "subpel reference plane width",
+            });
+        }
+        if height == 0 {
+            return Err(ReconError::ZeroDimension {
+                field: "subpel reference plane height",
+            });
+        }
+        let expected = (height - 1)
+            .checked_mul(stride)
+            .and_then(|v| v.checked_add(width))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "subpel reference plane size",
+            })?;
+        if samples.len() < expected {
+            return Err(ReconError::SubpelReferencePlaneMismatch {
+                expected,
+                actual: samples.len(),
+            });
+        }
+        Ok(Self {
+            samples,
+            stride,
             width,
             height,
         })
@@ -313,7 +366,7 @@ impl<'a> ReferencePlaneView<'a> {
     pub(crate) fn sample(&self, row: usize, col: usize) -> i64 {
         let row = row.min(self.height - 1);
         let col = col.min(self.width - 1);
-        i64::from(self.samples[row * self.width + col])
+        i64::from(self.samples[row * self.stride + col])
     }
 }
 
@@ -449,6 +502,31 @@ const fn compound_inter_post_round() -> u32 {
     2 * FILTER_BITS - (INTER_ROUND0 + INTER_ROUND1_COMPOUND)
 }
 
+/// The zero-phase unscaled § 7.13.3.18 special case: with `stepX == stepY ==
+/// (1 << SCALE_SUBPEL_BITS)` and both sub-pel phases zero, every filter row is
+/// the pure `{ .., 128, .. }` tap, so the two-pass convolution is exactly the
+/// clipped reference sample scaled by `1 << (2 * FILTER_BITS - (InterRound0 +
+/// InterRound1))` — `Round2(128 * v, 3) == 16 * v` and `Round2(2048 * v, 11)
+/// == v` / `Round2(2048 * v, 7) == 16 * v` hold exactly for every `v >= 0`
+/// because each partial product is a multiple of the rounding divisor.
+fn subpel_copy_block(
+    reference: &ReferencePlaneView<'_>,
+    params: &SubpelPredictParams,
+    shift_up: u32,
+) -> Vec<i32> {
+    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
+    let y0 = params.start_y >> SCALE_SUBPEL_BITS;
+    let mut output = Vec::with_capacity(params.w * params.h);
+    for r in 0..params.h {
+        let row = clip3(params.first_y, params.last_y, y0 + r as i64) as usize;
+        for c in 0..params.w {
+            let col = clip3(params.first_x, params.last_x, x0 + c as i64) as usize;
+            output.push((reference.sample(row, col) as i32) << shift_up);
+        }
+    }
+    output
+}
+
 fn subpel_predict_block_internal(
     reference: &ReferencePlaneView<'_>,
     params: &SubpelPredictParams,
@@ -505,6 +583,18 @@ fn subpel_predict_block_internal(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "subpel horizontal coordinate",
         })?;
+
+    if step_x == 1 << SCALE_SUBPEL_BITS
+        && step_y == 1 << SCALE_SUBPEL_BITS
+        && (start_x >> 6) & SUBPEL_MASK == 0
+        && (start_y >> 6) & SUBPEL_MASK == 0
+    {
+        return Ok(subpel_copy_block(
+            reference,
+            params,
+            2 * FILTER_BITS - (INTER_ROUND0 + inter_round1),
+        ));
+    }
 
     let h_filter = interp.pass_index(w as u32);
     let h_filter_rows = &SUBPEL_FILTERS[h_filter as usize];
