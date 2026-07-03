@@ -316,6 +316,9 @@ pub(crate) struct InterSeqView {
     pub enable_bru: bool,
     /// `enable_tip` (§ 5.4.6).
     pub enable_tip: bool,
+    /// `enable_tip_output` (§ 5.4.6): `EnableTipOutput` for the § 5.18.2
+    /// `tip_frame_mode` derived-versus-coded arm.
+    pub enable_tip_output: bool,
     /// `seq_max_drl_bits_minus_1` (§ 5.4.6).
     pub seq_max_drl_bits_minus_1: u32,
     /// `allow_frame_max_drl_bits` (§ 5.4.6).
@@ -661,8 +664,12 @@ fn parse_inter_reference_region(
 
     let tip_gate = seq.enable_tip && use_ref_frame_mvs && num_total_refs >= 2 && !bru_inactive;
     if tip_gate {
-        control.stop = Some(InterStop::PoisonedReferenceState);
-        return Ok(());
+        // 5.18.2: EnableTipOutput TIP OBUs derive TIP_FRAME_AS_OUTPUT uncoded; every TIP arm defers
+        let tip_mode_derived = seq.enable_tip_output && is_tip;
+        if (!tip_mode_derived && reader.read_flag()?) || is_tip {
+            control.stop = Some(InterStop::PoisonedReferenceState);
+            return Ok(());
+        }
     }
     control.tip_frame_mode = Some(TipFrameMode::Disabled);
     if !bru_inactive && !ctx.is_bridge {
@@ -898,6 +905,7 @@ mod tests {
             enable_ref_frame_mvs: true,
             enable_bru: false,
             enable_tip: false,
+            enable_tip_output: false,
             seq_max_drl_bits_minus_1: 0,
             allow_frame_max_drl_bits: false,
             enable_flex_mvres: false,
@@ -1531,28 +1539,55 @@ mod tests {
     }
 
     #[test]
-    fn tip_gate_stops_poisoned_on_past_future_refs() {
-        let mut bits = Bits::default();
-        bits.bit(0); // signal_primary_ref_frame
-        bits.bit(0); // disable_cross_frame_cdf_init
-        bits.f(0, 8); // refresh_frame_flags
-        bits.bit(1); // frame_explicit_ref_frame_map
-        bits.f(2, 3); // num_total_refs = 2
-        bits.f(0, 3); // ref_frame_idx[0]
-        bits.f(1, 3); // ref_frame_idx[1]
-        bits.bit(1); // use_ref_frame_mvs = 1
-        bits.bit(0); // tmvp_sample_step_minus_1 (num_total_refs>1, sb 128 != 64x64)
-        let data = bits.into_bytes();
-        let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let mut seq = inter_seq();
-        seq.enable_tip = true;
-        let ctx = inter_ctx();
-        let rs = FrameReferenceStateView::unknown();
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
-        assert_eq!(control.use_ref_frame_mvs, Some(true));
-        assert_eq!(control.tmvp_sample_step_minus_1, Some(false));
-        assert_eq!(control.tip_frame_mode, None);
-        assert_eq!(control.stop, Some(InterStop::PoisonedReferenceState));
+    fn tip_gate_stops_poisoned_on_tip_frame_mode() {
+        for tip_output_obu in [false, true] {
+            let mut bits = Bits::default();
+            let mut fields = vec![(0, 1)]; // signal_primary_ref_frame
+            if !tip_output_obu {
+                fields.push((0, 1)); // disable_cross_frame_cdf_init (uncoded for TIP OBUs)
+            }
+            fields.extend([
+                (0, 8), // refresh_frame_flags
+                (1, 1), // frame_explicit_ref_frame_map
+                (2, 3), // num_total_refs = 2
+                (0, 3), // ref_frame_idx[0]
+                (1, 3), // ref_frame_idx[1]
+                (1, 1), // use_ref_frame_mvs = 1
+                (0, 1), // tmvp_sample_step_minus_1 (num_total_refs>1, sb 128 != 64x64)
+            ]);
+            if !tip_output_obu {
+                fields.push((1, 1)); // tip_frame_mode = 1 (uncoded for TIP OBUs: AS_OUTPUT)
+            }
+            for (value, width) in fields {
+                bits.f(value, width);
+            }
+            let data = bits.into_bytes();
+            let mut reader = BitReader::new(&data, ByteOffset::new(0));
+            let mut seq = inter_seq();
+            seq.enable_tip = true;
+            seq.enable_tip_output = tip_output_obu;
+            let mut ctx = inter_ctx();
+            if tip_output_obu {
+                ctx.obu_type = ObuType::RegularTip;
+            }
+            let rs = FrameReferenceStateView::unknown();
+            let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+            assert_eq!(
+                (
+                    control.use_ref_frame_mvs,
+                    control.tmvp_sample_step_minus_1,
+                    control.tip_frame_mode,
+                    control.stop,
+                ),
+                (
+                    Some(true),
+                    Some(false),
+                    None,
+                    Some(InterStop::PoisonedReferenceState),
+                ),
+                "tip_output_obu={tip_output_obu}"
+            );
+        }
     }
 
     #[test]

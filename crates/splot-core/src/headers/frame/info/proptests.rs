@@ -212,6 +212,7 @@ fn arbitrary_seq_view() -> impl Strategy<Value = CoreSeqView> {
                         explicit_ref_frame_map: flags[1],
                         enable_bru: flags[2],
                         enable_tip: flags[0],
+                        enable_tip_output: false,
                         seq_max_drl_bits_minus_1: u32::from(scc.0),
                         allow_frame_max_drl_bits: scc.2,
                         enable_flex_mvres: flags[1],

@@ -861,6 +861,7 @@ fn build_inter_seq_view(seq: &CoreSeqView) -> crate::headers::frame::inter::Inte
         enable_ref_frame_mvs: seq.inter.enable_ref_frame_mvs,
         enable_bru: seq.inter.enable_bru,
         enable_tip: seq.inter.enable_tip,
+        enable_tip_output: seq.inter.enable_tip_output,
         seq_max_drl_bits_minus_1: seq.inter.seq_max_drl_bits_minus_1,
         allow_frame_max_drl_bits: seq.inter.allow_frame_max_drl_bits,
         enable_flex_mvres: seq.inter.enable_flex_mvres,

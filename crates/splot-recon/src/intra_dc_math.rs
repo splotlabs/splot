@@ -222,9 +222,13 @@ pub(crate) fn resolve_division(num: i64, den: i64, shift: u8) -> i16 {
 /// `DIV_LUT_PREC_BITS` precision. Matches AVM `resolve_divisor_32`
 /// (`warped_motion.h`): `shift = get_msb(D)`, the lookup index `f` is the top
 /// `DIV_LUT_BITS` bits of `D` after resetting its MSB, and the returned shift is
-/// `get_msb(D) + DIV_LUT_PREC_BITS`. Shared by the IBP DC modifier and the
-/// §7.13.2.9 IBP angular weights process.
-pub(crate) fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
+/// `get_msb(D) + DIV_LUT_PREC_BITS`. Shared by the IBP DC modifier, the
+/// §7.13.2.9 IBP angular weights process, and the §7.13.3.22 warp division.
+///
+/// # Errors
+/// Returns [`ReconError::ArithmeticOverflow`] for a zero divisor or an
+/// out-of-table lookup index.
+pub fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
     if den == 0 {
         return Err(ReconError::ArithmeticOverflow {
             context: "intra DC divisor resolution",

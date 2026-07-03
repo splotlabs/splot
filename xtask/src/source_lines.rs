@@ -28,11 +28,6 @@ const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
         reason: "temporary ac0ej3 general-intra runtime frontier before module split",
     },
     SourceLineAllowance {
-        path: "crates/splot-decode/src/runtime_minimal/inter/block.rs",
-        max_lines: 3_000,
-        reason: "temporary ac0ej3 inter-block runtime frontier before module split",
-    },
-    SourceLineAllowance {
         path: "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon.rs",
         max_lines: 5_200,
         reason: "temporary ac0ej3 selectable-reconstruction frontier before module split",

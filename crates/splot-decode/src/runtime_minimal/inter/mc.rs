@@ -14,6 +14,7 @@ use super::mv_scaling::derive_plane_scaling;
 use super::{Mv, SPEC_MC, unsupported_at};
 use crate::Result;
 use splot_core::span::ByteOffset;
+use splot_recon::math::clip3;
 
 pub(super) const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =
     [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)];
@@ -289,7 +290,8 @@ fn predict_warp_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let (samples, ref_width, ref_height, _, _) = reference_plane_samples(reference, plane, offset)?;
+    let (samples, ref_width, ref_height, ref_mi_cols, ref_mi_rows) =
+        reference_plane_samples(reference, plane, offset)?;
     let view = ReferencePlaneView::new(&samples, ref_width, ref_height)?;
 
     let plane_x = rect.luma_x >> sub_x;
@@ -297,13 +299,51 @@ fn predict_warp_plane<T: ReconSample>(
     let block_w = rect.luma_w >> sub_x;
     let block_h = rect.luma_h >> sub_y;
     let bit_depth = workspace.info().bit_depth();
-    if block_w < WARPED_BLOCK_SIZE || block_h < WARPED_BLOCK_SIZE {
-        return Err(unsupported_at(
-            "inter_warp_small_block_fallback_unimplemented",
-            offset,
-            "minimal inter motion compensation does not yet implement ext_block_warp for warped blocks smaller than 8x8",
-            "7.13.3.7",
-        ));
+    let skip_pred = !splot_recon::warp_shear_is_valid(warp_params)
+        || block_w < WARPED_BLOCK_SIZE
+        || block_h < WARPED_BLOCK_SIZE;
+    if skip_pred {
+        for i4 in 0..block_h.div_euclid(4) {
+            for j4 in 0..block_w.div_euclid(4) {
+                if plane_x + j4 * 4 >= ref_width || plane_y + i4 * 4 >= ref_height {
+                    continue;
+                }
+                let unit_x = (plane_x + (j4 & !1) * 4) as i64;
+                let unit_y = (plane_y + (i4 & !1) * 4) as i64;
+                let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
+                    rect,
+                    warp_params,
+                    unit_x,
+                    unit_y,
+                    block_w.min(8) as i64,
+                    block_h.min(8) as i64,
+                    sub_x,
+                    sub_y,
+                    ref_mi_cols,
+                    ref_mi_rows,
+                );
+                let params = WarpPredictBlockParams {
+                    warp_params,
+                    block_x: plane_x as i64,
+                    block_y: plane_y as i64,
+                    subsampling_x: sub_x as u8,
+                    subsampling_y: sub_y as u8,
+                    first_x,
+                    first_y,
+                    last_x,
+                    last_y,
+                    bit_depth,
+                };
+                let predicted = splot_recon::ext_warp_predict_unit(&view, &params, i4, j4)?;
+                let packed: Vec<T> = predicted
+                    .iter()
+                    .map(|&v| T::try_from_u16(v))
+                    .collect::<splot_recon::Result<Vec<T>>>()?;
+                let rect = PlaneRect::new(plane_x + j4 * 4, plane_y + i4 * 4, 4, 4)?;
+                workspace.write_rect(plane, rect, &packed, 4)?;
+            }
+        }
+        return Ok(());
     }
 
     for local_y in (0..block_h).step_by(WARPED_BLOCK_SIZE) {
@@ -428,7 +468,86 @@ fn predict_compound_plane<T: ReconSample>(
     Ok(())
 }
 
-fn reference_plane_samples<T: ReconSample>(
+/// § 7.13.3.20 per-8x8 bounding box for the fixed-phase ext-warp kernel:
+/// derives the unit's translational MV (`get_sub_block_warp_mv` with
+/// `rnd == 0`), applies the § 5.20.9.4 / § 5.20.9.5 MV clamps and the
+/// § 7.13.3.17 unscaled scaling, and narrows the reference read window to
+/// the projected span with -3/+4 tap margins. Bounds derive from the
+/// visible reference geometry on the admitted equal-size unscaled-reference
+/// surface; the § 7.13.3.15 `is_scaled` arm and non-8-aligned mi padding
+/// are beyond the frontier (upstream gates defer both).
+#[allow(clippy::too_many_arguments)]
+fn ext_warp_unit_bounds(
+    rect: McBlockRect,
+    warp_params: [i64; 6],
+    unit_x: i64,
+    unit_y: i64,
+    bbox_w: i64,
+    bbox_h: i64,
+    sub_x: u32,
+    sub_y: u32,
+    ref_mi_cols: i64,
+    ref_mi_rows: i64,
+) -> (i64, i64, i64, i64) {
+    const WARPEDMODEL_PREC_BITS: u32 = 16;
+    const MV_BOUND: i64 = 1 << 16;
+    const MV_BORDER: i64 = 128;
+    let src_x = (unit_x + (bbox_w >> 1)) << sub_x;
+    let src_y = (unit_y + (bbox_h >> 1)) << sub_y;
+    let dst_x = warp_params[2] * src_x + warp_params[3] * src_y + warp_params[0];
+    let dst_y = warp_params[4] * src_x + warp_params[5] * src_y + warp_params[1];
+    let mv_row = clip3(
+        -MV_BOUND + 1,
+        MV_BOUND - 1,
+        (dst_y - (src_y << WARPEDMODEL_PREC_BITS)) >> (WARPEDMODEL_PREC_BITS - 3),
+    );
+    let mv_col = clip3(
+        -MV_BOUND + 1,
+        MV_BOUND - 1,
+        (dst_x - (src_x << WARPEDMODEL_PREC_BITS)) >> (WARPEDMODEL_PREC_BITS - 3),
+    );
+    let mi_row = (rect.luma_y / 4) as i64;
+    let mi_col = (rect.luma_x / 4) as i64;
+    let bh4 = (rect.luma_h / 4) as i64;
+    let bw4 = (rect.luma_w / 4) as i64;
+    let mv_row = clip3(
+        -(mi_row + bh4) * 32 - MV_BORDER,
+        (ref_mi_rows - mi_row) * 32 + MV_BORDER,
+        mv_row,
+    );
+    let mv_col = clip3(
+        -(mi_col + bw4) * 32 - MV_BORDER,
+        (ref_mi_cols - mi_col) * 32 + MV_BORDER,
+        mv_col,
+    );
+    let scaling = derive_plane_scaling(
+        unit_x,
+        unit_y,
+        mv_row,
+        mv_col,
+        sub_x,
+        sub_y,
+        ref_mi_cols,
+        ref_mi_rows,
+        bbox_w,
+        bbox_h,
+    );
+    let first_x = clip3(0, scaling.last_x, (scaling.start_x >> 10) - 3);
+    let first_y = clip3(0, scaling.last_y, (scaling.start_y >> 10) - 3);
+    let last_x = clip3(
+        0,
+        scaling.last_x,
+        ((scaling.start_x + scaling.step_x * (bbox_w - 1)) >> 10) + 4,
+    );
+    let last_y = clip3(
+        0,
+        scaling.last_y,
+        ((scaling.start_y + scaling.step_y * (bbox_h - 1)) >> 10) + 4,
+    );
+    (first_x, first_y, last_x, last_y)
+}
+
+pub(super) fn reference_plane_samples<T: ReconSample>(
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     offset: ByteOffset,

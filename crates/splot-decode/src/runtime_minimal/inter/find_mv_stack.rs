@@ -11,6 +11,29 @@ const MV_BORDER: i32 = 128;
 
 const MI_SIZE: i32 = 4;
 
+/// AV2 § 6.18 `MotionModes[ r ][ c ]` values in spec order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub(super) enum MotionMode {
+    /// `SIMPLE` (0).
+    Simple,
+    /// `INTERINTRA` (1). Not yet produced: SIMPLE-path interintra defers.
+    #[allow(dead_code)]
+    InterIntra,
+    /// `LOCALWARP` (2).
+    LocalWarp,
+    /// `DELTAWARP` (3).
+    DeltaWarp,
+    /// `EXTENDWARP` (4).
+    ExtendWarp,
+}
+
+impl MotionMode {
+    /// § 8.3.2 warp-context predicate: `MotionModes[ .. ] >= LOCALWARP`.
+    const fn is_warp(self) -> bool {
+        matches!(self, Self::LocalWarp | Self::DeltaWarp | Self::ExtendWarp)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NeighbourCell {
     is_inter: bool,
@@ -20,11 +43,23 @@ struct NeighbourCell {
     newmv_for_list0: bool,
     newmv_for_list1: bool,
     mv: Mv,
+    mv1: Option<Mv>,
     skip: bool,
     interp_filter: u8,
     use_amvd: bool,
-    is_warp: bool,
+    motion_mode: MotionMode,
+    warp_params: Option<[i64; 6]>,
+    base_r: usize,
+    base_c: usize,
+    bw4: usize,
+    bh4: usize,
     precision: BlockPrecisionRecord,
+}
+
+impl NeighbourCell {
+    const fn is_warp(self) -> bool {
+        self.motion_mode.is_warp()
+    }
 }
 
 const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
@@ -35,10 +70,16 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     newmv_for_list0: false,
     newmv_for_list1: false,
     mv: Mv::ZERO,
+    mv1: None,
     skip: false,
     interp_filter: SWITCHABLE_FILTERS,
     use_amvd: false,
-    is_warp: false,
+    motion_mode: MotionMode::Simple,
+    warp_params: None,
+    base_r: 0,
+    base_c: 0,
+    bw4: 0,
+    bh4: 0,
     precision: BlockPrecisionRecord {
         use_most_probable_precision: false,
         mv_precision: 0,
@@ -143,7 +184,8 @@ impl NeighbourMvGrid {
             skip,
             interp_filter,
             use_amvd,
-            false,
+            MotionMode::Simple,
+            None,
             precision,
         );
     }
@@ -162,6 +204,8 @@ impl NeighbourMvGrid {
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
+        motion_mode: MotionMode,
+        warp_params: [i64; 6],
         precision: BlockPrecisionRecord,
     ) {
         self.record_block_with_warp(
@@ -177,7 +221,8 @@ impl NeighbourMvGrid {
             skip,
             interp_filter,
             use_amvd,
-            true,
+            motion_mode,
+            Some(warp_params),
             precision,
         );
     }
@@ -197,7 +242,8 @@ impl NeighbourMvGrid {
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
-        is_warp: bool,
+        motion_mode: MotionMode,
+        warp_params: Option<[i64; 6]>,
         precision: BlockPrecisionRecord,
     ) {
         let cell = NeighbourCell {
@@ -208,10 +254,16 @@ impl NeighbourMvGrid {
             newmv_for_list0: matches!(y_mode, NeighbourYMode::NewMv),
             newmv_for_list1: false,
             mv,
+            mv1: None,
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
-            is_warp,
+            motion_mode,
+            warp_params,
+            base_r: r,
+            base_c: c,
+            bw4: n4w,
+            bh4: n4h,
             precision,
         };
         for rr in r..r.saturating_add(n4h) {
@@ -257,10 +309,16 @@ impl NeighbourMvGrid {
             newmv_for_list0: list0_is_newmv,
             newmv_for_list1: list1_is_newmv,
             mv,
+            mv1: None,
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
-            is_warp: false,
+            motion_mode: MotionMode::Simple,
+            warp_params: None,
+            base_r: r,
+            base_c: c,
+            bw4: n4w,
+            bh4: n4h,
             precision: BlockPrecisionRecord::default(),
         };
         for rr in r..r.saturating_add(n4h) {
@@ -367,13 +425,20 @@ impl RelativeProbe {
         grid: &NeighbourMvGrid,
         block: &MvBlockContext,
     ) -> Option<NeighbourCell> {
-        let row = block.mi_row as i32 + self.delta_row;
+        let (delta_row, delta_col) = self.warp_context_delta(block);
+        grid.get(
+            block.mi_row as i32 + delta_row,
+            block.mi_col as i32 + delta_col,
+        )
+    }
+
+    /// § 7.11.4 probe delta after the superblock-border column adjustment.
+    fn warp_context_delta(self, block: &MvBlockContext) -> (i32, i32) {
         let mut delta_col = self.delta_col;
         if self.delta_row < 0 && block.is_sb_border() {
             delta_col -= (block.mi_col & 1) as i32;
         }
-        let col = block.mi_col as i32 + delta_col;
-        grid.get(row, col)
+        (self.delta_row, delta_col)
     }
 }
 
@@ -475,6 +540,13 @@ pub(super) struct ModeContext {
     /// § 7.11.4 `WarpSampleFound[ 0 ]`: a warp-scan probe hit an inter cell
     /// whose reference matches the block's first reference.
     pub(super) warp_sample_found: bool,
+    /// § 7.11.4 `WarpSampleFound[ 1 ]`: the same scan matched against the
+    /// block's second reference (compound only).
+    pub(super) warp_sample_found1: bool,
+    /// § 7.11.4 `ExtendDeltaRow` / `ExtendDeltaCol`: the first warp-scan
+    /// probe (post superblock-border adjustment) whose cell matched the
+    /// block's first reference.
+    pub(super) extend_delta: Option<(i32, i32)>,
 }
 
 /// AV2 § 7.11.2 `find_mode_ctx` for single prediction.
@@ -496,15 +568,25 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
         *slot = true;
     }
     let mut warp_sample_found = false;
+    let mut warp_sample_found1 = false;
+    let mut extend_delta = None;
     for probe in warp_context_spatial_probes(block).into_iter().flatten() {
         let Some(cell) = probe.warp_context_cell(grid, block) else {
             continue;
         };
         if matches_block_ref(cell, block) {
+            if !warp_sample_found {
+                extend_delta = Some(probe.warp_context_delta(block));
+            }
             warp_sample_found = true;
-            if cell.is_warp {
+            if cell.is_warp() {
                 warp_mv_count = (warp_mv_count + 1).min(4);
             }
+        }
+        if let Some(ref1) = block.ref_frame1
+            && neighbour_matches_ref(cell, ref1)
+        {
+            warp_sample_found1 = true;
         }
     }
 
@@ -516,6 +598,8 @@ pub(super) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
         new_mv_count,
         warp_mv_count,
         warp_sample_found,
+        warp_sample_found1,
+        extend_delta,
     }
 }
 
@@ -667,21 +751,18 @@ impl BlockNeighbourContext {
         self.npos_cells
             .iter()
             .take(self.npos_count)
-            .filter(|cell| cell.is_warp)
+            .filter(|cell| cell.is_warp())
             .count()
     }
 
     /// AV2 § 8.3.2 `use_local_warp` context: `hasWarp` plus the `NPos`
-    /// neighbour count with `MotionModes == LOCALWARP`. LOCALWARP blocks are
-    /// beyond the frontier, so no recorded neighbour can hold that mode yet;
-    /// widen the cell record with the motion mode when LOCALWARP decode lands.
+    /// neighbour count with `MotionModes == LOCALWARP`.
     pub(super) fn use_local_warp_ctx(&self) -> usize {
-        usize::from(
-            self.npos_cells
-                .iter()
-                .take(self.npos_count)
-                .any(|cell| cell.is_warp),
-        )
+        let cells = self.npos_cells.iter().take(self.npos_count);
+        usize::from(cells.clone().any(|cell| cell.is_warp()))
+            + cells
+                .filter(|cell| cell.motion_mode == MotionMode::LocalWarp)
+                .count()
     }
 
     /// AV2 § 8.3.2 `use_most_probable_precision` context: neighbour count with
@@ -860,7 +941,7 @@ fn collect_neighbour_context_cells(
 /// § 7.12.2 `RefStackMv` candidates for single prediction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct MvStack {
-    stack: Vec<Mv>,
+    stack: Vec<(Mv, (i32, i32))>,
 }
 
 impl MvStack {
@@ -874,31 +955,501 @@ impl MvStack {
     pub(super) fn candidate(&self, idx: usize) -> Mv {
         self.stack
             .get(idx)
-            .copied()
-            .or_else(|| self.stack.last().copied())
-            .unwrap_or(Mv::ZERO)
+            .or_else(|| self.stack.last())
+            .map_or(Mv::ZERO, |entry| entry.0)
+    }
+
+    /// Returns § 7.12.2 `RefStackRowOffset[idx]` / `RefStackColOffset[idx]`
+    /// (`(0, 0)` for candidates that did not come from an adjacent scan).
+    pub(super) fn candidate_offsets(&self, idx: usize) -> (i32, i32) {
+        self.stack
+            .get(idx)
+            .or_else(|| self.stack.last())
+            .map_or((0, 0), |entry| entry.1)
     }
 }
 
-/// AV2 § 7.12.2 `find_mv_stack` for the spatial-only single-prediction subset.
+/// The § 7.13.3.24 neighbour-parameter lookup at the extend-warp base
+/// position: a warp neighbour supplies its stored model, otherwise the
+/// neighbour's translational MV lifts to a warp model. The global-motion arm
+/// is statically unreachable (frames signalling `use_global_motion` defer at
+/// the frame gate, so `GmType` is always `IDENTITY` here).
+pub(super) enum ExtendWarpNeighbour {
+    /// The § 7 `params` array for the extension math.
+    Params([i64; 6]),
+    /// The base cell needs the second reference list's MV, which the grid
+    /// does not retain yet.
+    List1MvUnretained,
+    /// No decoded cell at the base position.
+    Missing,
+}
+
+/// Resolves the § 7.13.3.24 `params` for the neighbour at
+/// `(MiRow + deltaRow, MiCol + deltaCol)`.
+pub(super) fn extend_warp_neighbour_params(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    delta_row: i32,
+    delta_col: i32,
+) -> ExtendWarpNeighbour {
+    let Some(cell) = grid.get(
+        block.mi_row as i32 + delta_row,
+        block.mi_col as i32 + delta_col,
+    ) else {
+        return ExtendWarpNeighbour::Missing;
+    };
+    if cell.is_warp()
+        && let Some(params) = cell.warp_params
+    {
+        return ExtendWarpNeighbour::Params(params);
+    }
+    let neighbour_mv = if cell.ref_frame0 == block.ref_frame0 {
+        Some(cell.mv)
+    } else {
+        cell.mv1
+    };
+    let Some(mv) = neighbour_mv else {
+        return ExtendWarpNeighbour::List1MvUnretained;
+    };
+    let mut params = splot_recon::IDENTITY_WARP_PARAMS;
+    params[0] = i64::from(mv.col) << (WARPEDMODEL_PREC_BITS - 3);
+    params[1] = i64::from(mv.row) << (WARPEDMODEL_PREC_BITS - 3);
+    ExtendWarpNeighbour::Params(params)
+}
+
+const WARPEDMODEL_PREC_BITS: u32 = 16;
+
+/// AV2 § 3 `LEAST_SQUARES_SAMPLES_MAX`.
+const LEAST_SQUARES_SAMPLES_MAX: usize = 8;
+
+/// The § 7.12.3 warp-sample collection outcome.
+pub(super) enum WarpSampleCollection {
+    /// `CandList[ 0 ][ .. ]` rows: `[ srcY, srcX, dstY, dstX ]` in eighth-pel.
+    Samples(Vec<[i64; 4]>),
+    /// A candidate matched on the second reference list, whose MV the grid
+    /// does not retain yet.
+    List1MvUnretained,
+}
+
+/// AV2 § 7.12.3 find warp samples for `ref = 0`.
+pub(super) fn find_warp_samples(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+) -> WarpSampleCollection {
+    let mut samples: Vec<[i64; 4]> = Vec::with_capacity(LEAST_SQUARES_SAMPLES_MAX);
+    let mi_row = block.mi_row as i32;
+    let mi_col = block.mi_col as i32;
+    let w4 = block.bw4 as i32;
+    let h4 = block.bh4 as i32;
+    let mi_rows = block.mi_rows as i32;
+    let mi_cols = block.mi_cols as i32;
+    let mut missing_list1 = false;
+    let mut add_sample = |samples: &mut Vec<[i64; 4]>, delta_row: i32, delta_col: i32| {
+        if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
+            return;
+        }
+        let Some(cell) = grid.get(mi_row + delta_row, mi_col + delta_col) else {
+            return;
+        };
+        let lists = [
+            (cell.ref_frame0 == block.ref_frame0 && cell.is_inter).then_some(Some(cell.mv)),
+            (cell.ref_frame1 == Some(block.ref_frame0)).then_some(cell.mv1),
+        ];
+        for list_mv in lists.into_iter().flatten() {
+            if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
+                return;
+            }
+            let Some(mv) = list_mv else {
+                missing_list1 = true;
+                continue;
+            };
+            let mid_y = (cell.base_r * 4 + cell.bh4 * 2) as i64 - 1;
+            let mid_x = (cell.base_c * 4 + cell.bw4 * 2) as i64 - 1;
+            samples.push([
+                mid_y * 8,
+                mid_x * 8,
+                mid_y * 8 + i64::from(mv.row),
+                mid_x * 8 + i64::from(mv.col),
+            ]);
+        }
+    };
+    let above_sample_stored = |delta_col: i32| -> bool {
+        let col = mi_col + delta_col;
+        if mi_row < 1 || col < 0 || col >= mi_cols {
+            return false;
+        }
+        let sb_mask = block.sb_h4 as i32 - 1;
+        if (mi_row & sb_mask) != 0 {
+            return true;
+        }
+        if col % 2 == 0 {
+            return true;
+        }
+        let src_w4 = grid.get(mi_row - 1, col).map_or(0, |cell| cell.bw4 as i32);
+        if src_w4 == 1 {
+            return false;
+        }
+        col + 1 < mi_cols
+    };
+    let mut do_top_left = true;
+    let mut do_top_right = true;
+    if mi_row > 0 {
+        let col_offset = grid
+            .get(mi_row - 1, mi_col)
+            .map_or(0, |cell| cell.base_c as i32 - mi_col);
+        if col_offset < 0 {
+            do_top_left = false;
+        }
+        let mut i = col_offset;
+        let limit = w4.min(mi_cols - mi_col);
+        while i < limit {
+            let src_w = grid
+                .get(mi_row - 1, mi_col + i)
+                .map_or(1, |cell| (cell.bw4 as i32).max(1));
+            if above_sample_stored(i) {
+                add_sample(&mut samples, -1, i);
+            }
+            i += src_w;
+        }
+        do_top_right = i == w4 && i < (mi_cols - mi_col);
+    }
+    if mi_col > 0 {
+        let row_offset = grid
+            .get(mi_row, mi_col - 1)
+            .map_or(0, |cell| cell.base_r as i32 - mi_row);
+        if row_offset < 0 {
+            do_top_left = false;
+        }
+        let mut i = row_offset;
+        let limit = h4.min(mi_rows - mi_row);
+        while i < limit {
+            let src_h = grid
+                .get(mi_row + i, mi_col - 1)
+                .map_or(1, |cell| (cell.bh4 as i32).max(1));
+            add_sample(&mut samples, i, -1);
+            i += src_h;
+        }
+    }
+    if do_top_left && above_sample_stored(-1) {
+        add_sample(&mut samples, -1, -1);
+    }
+    if do_top_right && w4 <= 16 && above_sample_stored(w4) {
+        add_sample(&mut samples, -1, w4);
+    }
+    if missing_list1 {
+        return WarpSampleCollection::List1MvUnretained;
+    }
+    WarpSampleCollection::Samples(samples)
+}
+
+/// AV2 § 3 `REF_MV_BANK_SIZE` (entries per bank list).
+const REF_MV_BANK_SIZE: usize = 4;
+/// AV2 § 3 `BANK_REFS_PER_FRAME`.
+const BANK_REFS_PER_FRAME: i32 = 9;
+/// AV2 § 3 `MAX_RMB_SB_HITS`.
+const MAX_RMB_SB_HITS: u32 = 64;
+/// AV2 § 3 `MAX_PR_NUM`.
+const MAX_PR_NUM: usize = 16;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct RefMvBankEntry {
+    key: i32,
+    mv0: Mv,
+    mv1: Mv,
+}
+
+/// AV2 § 7.12.2.21 / § 5.20.2.2 reference motion-vector bank: nine ring
+/// buffers of recent block MVs, filled into the MV stack after the spatial
+/// scan. Contents persist across superblocks and are cleared once per
+/// superblock row (§ 5.20.2 `clear_left_context`); the per-superblock
+/// reset zeroes only the hit counters and re-seeds by appending from the
+/// row above. Compound weights (`cwp`) are not retained: every admitted
+/// producer uses `CWP_EQUAL`.
+pub(super) struct RefMvBank {
+    entries: [[RefMvBankEntry; REF_MV_BANK_SIZE]; BANK_REFS_PER_FRAME as usize],
+    sizes: [usize; BANK_REFS_PER_FRAME as usize],
+    starts: [usize; BANK_REFS_PER_FRAME as usize],
+    sb_hits: u32,
+    remain_hits: i32,
+    unit_hits: i32,
+    current_sb: Option<(usize, usize)>,
+}
+
+impl RefMvBank {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: [[RefMvBankEntry::default(); REF_MV_BANK_SIZE]; BANK_REFS_PER_FRAME as usize],
+            sizes: [0; BANK_REFS_PER_FRAME as usize],
+            starts: [0; BANK_REFS_PER_FRAME as usize],
+            sb_hits: 0,
+            remain_hits: 0,
+            unit_hits: 0,
+            current_sb: None,
+        }
+    }
+
+    /// § 7.12.2.21 `get_rmb_list_index` for the single-prediction subset.
+    fn list_index(ref_frame0: i8, ref_frame1: Option<i8>) -> usize {
+        match (ref_frame0, ref_frame1) {
+            (r0, None) if (0..=5).contains(&r0) => r0 as usize,
+            (0, Some(0)) => 6,
+            (0, Some(1)) => 7,
+            _ => 8,
+        }
+    }
+
+    fn bank_key(ref_frame0: i8, ref_frame1: Option<i8>) -> i32 {
+        match ref_frame1 {
+            Some(r1) => i32::from(ref_frame0) + (i32::from(r1) + 1) * BANK_REFS_PER_FRAME,
+            None => i32::from(ref_frame0),
+        }
+    }
+
+    /// § 5.20.2.2 `reset_refmv_bank`, invoked at the first leaf of each
+    /// superblock (detected from the leaf coordinates): zeroes the hit
+    /// counters, clears the bank contents only on a superblock-row
+    /// transition (§ 5.20.2 `clear_left_context`), and re-seeds from the
+    /// decoded row above unless this is the top superblock row.
+    pub(super) fn reset_for_leaf(
+        &mut self,
+        grid: &NeighbourMvGrid,
+        mi_row: usize,
+        mi_col: usize,
+        sb_size4: usize,
+    ) {
+        let sb = (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1));
+        if self.current_sb == Some(sb) {
+            return;
+        }
+        let new_sb_row = self.current_sb.is_none_or(|(row, _)| row != sb.0);
+        self.current_sb = Some(sb);
+        self.sb_hits = 0;
+        self.remain_hits = 0;
+        self.unit_hits = 0;
+        if new_sb_row {
+            for size in &mut self.sizes {
+                *size = 0;
+            }
+            for start in &mut self.starts {
+                *start = 0;
+            }
+        }
+        let sb_row = sb.0 * sb_size4;
+        let sb_col = sb.1 * sb_size4;
+        if sb_row == 0 {
+            return;
+        }
+        let cand_row = sb_row as i32 - 1;
+        let mut cand_col = sb_col as i32;
+        let mut row_hits = 0;
+        while (cand_col as usize) < grid.mi_cols
+            && (cand_col as usize) < sb_col + sb_size4
+            && row_hits < 4
+        {
+            let cand_col2 = (cand_col >> 1) << 1;
+            let mut step = 1i32;
+            if let Some(cell) = grid.get(cand_row, cand_col2) {
+                if cell.is_inter {
+                    row_hits += 1;
+                    self.update(cell.ref_frame0, cell.ref_frame1, cell.mv, cell.mv1, false);
+                }
+                step = (cell.bw4 as i32).max(1);
+            }
+            cand_col += step;
+        }
+    }
+
+    /// § 5.20.7 `update_ref_mv_count` unit-budget bookkeeping.
+    fn update_unit_budget(
+        &mut self,
+        mi_row: usize,
+        mi_col: usize,
+        n4w: usize,
+        n4h: usize,
+        sb_size4: usize,
+    ) {
+        let unit_size4 = (sb_size4 >> 3).max(1);
+        let unit_count = ((n4w / unit_size4).max(1) * (n4h / unit_size4).max(1)) as i32;
+        if mi_row.is_multiple_of(sb_size4) && mi_col.is_multiple_of(sb_size4) {
+            self.remain_hits = unit_count.max(4);
+            self.unit_hits = 0;
+        } else if mi_row.is_multiple_of(unit_size4) && mi_col.is_multiple_of(unit_size4) {
+            self.remain_hits += unit_count;
+            self.unit_hits = 0;
+        }
+    }
+
+    /// § 5.20.7 `update_ref_mv_count` for non-inter blocks: accrues the
+    /// unit budget without a bank write, under the same
+    /// `RefMvBankHits < MAX_RMB_SB_HITS` gate as the inter arm.
+    pub(super) fn update_count_for_non_inter(
+        &mut self,
+        mi_row: usize,
+        mi_col: usize,
+        n4w: usize,
+        n4h: usize,
+        sb_size4: usize,
+    ) {
+        if self.sb_hits >= MAX_RMB_SB_HITS {
+            return;
+        }
+        self.update_unit_budget(mi_row, mi_col, n4w, n4h, sb_size4);
+    }
+
+    /// § 5.20.7 per-block bank update (`fromWithinSb == 1`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn update_for_block(
+        &mut self,
+        ref_frame0: i8,
+        ref_frame1: Option<i8>,
+        mv: Mv,
+        mv1: Option<Mv>,
+        mi_row: usize,
+        mi_col: usize,
+        n4w: usize,
+        n4h: usize,
+        sb_size4: usize,
+    ) {
+        if self.sb_hits >= MAX_RMB_SB_HITS {
+            return;
+        }
+        self.update_unit_budget(mi_row, mi_col, n4w, n4h, sb_size4);
+        if self.remain_hits == 0 || self.unit_hits >= 16 {
+            return;
+        }
+        self.remain_hits -= 1;
+        self.unit_hits += 1;
+        self.update(ref_frame0, ref_frame1, mv, mv1, true);
+    }
+
+    /// § 5.20.7 `update_ref_mv_bank` tail: move-to-tail on match, else append.
+    fn update(
+        &mut self,
+        ref_frame0: i8,
+        ref_frame1: Option<i8>,
+        mv: Mv,
+        mv1: Option<Mv>,
+        from_within_sb: bool,
+    ) {
+        if from_within_sb {
+            self.sb_hits += 1;
+        } else {
+            self.sb_hits = self.sb_hits.saturating_add(1);
+        }
+        let list = Self::list_index(ref_frame0, ref_frame1);
+        let entry = RefMvBankEntry {
+            key: Self::bank_key(ref_frame0, ref_frame1),
+            mv0: mv,
+            mv1: mv1.unwrap_or(Mv::ZERO),
+        };
+        let count = self.sizes[list];
+        let start = self.starts[list];
+        let mut found = None;
+        for i in 0..count {
+            let idx = (start + i) % REF_MV_BANK_SIZE;
+            if self.entries[list][idx] == entry {
+                found = Some(i);
+                break;
+            }
+        }
+        if let Some(found) = found {
+            for i in found..count.saturating_sub(1) {
+                let idx0 = (start + i) % REF_MV_BANK_SIZE;
+                let idx1 = (start + i + 1) % REF_MV_BANK_SIZE;
+                self.entries[list][idx0] = self.entries[list][idx1];
+            }
+            let tail = (start + count - 1) % REF_MV_BANK_SIZE;
+            self.entries[list][tail] = entry;
+        } else if count < REF_MV_BANK_SIZE {
+            let tail = (start + count) % REF_MV_BANK_SIZE;
+            self.entries[list][tail] = entry;
+            self.sizes[list] = count + 1;
+        } else {
+            self.entries[list][start] = entry;
+            self.starts[list] = (start + 1) % REF_MV_BANK_SIZE;
+        }
+    }
+
+    /// § 7.12.2.21 fill: newest-first bank candidates appended to the stack
+    /// with the § check_rmb_cand prune and in-frame bounds checks.
+    fn fill(
+        &self,
+        block: &MvBlockContext,
+        entries: &mut Vec<MvStackEntry>,
+        max_ref_mv_count: usize,
+        prune_count: &mut usize,
+    ) {
+        let list = Self::list_index(block.ref_frame0, block.ref_frame1);
+        let key = Self::bank_key(block.ref_frame0, block.ref_frame1);
+        let count = self.sizes[list];
+        let start = self.starts[list];
+        for i in (0..count).rev() {
+            if entries.len() >= max_ref_mv_count {
+                return;
+            }
+            let idx = (start + i) % REF_MV_BANK_SIZE;
+            let candidate = self.entries[list][idx];
+            if candidate.key != key {
+                continue;
+            }
+            let mut duplicate = false;
+            if *prune_count < MAX_PR_NUM {
+                for entry in entries.iter() {
+                    *prune_count += 1;
+                    if entry.mv == candidate.mv0 {
+                        duplicate = true;
+                        break;
+                    }
+                }
+            }
+            if duplicate {
+                continue;
+            }
+            let bw = block.bw4 as i32 * MI_SIZE;
+            let bh = block.bh4 as i32 * MI_SIZE;
+            let ref_y = block.mi_row as i32 * MI_SIZE + candidate.mv0.row / 8;
+            let ref_x = block.mi_col as i32 * MI_SIZE + candidate.mv0.col / 8;
+            if ref_x <= -bw
+                || ref_y <= -bh
+                || ref_x >= block.mi_cols as i32 * MI_SIZE
+                || ref_y >= block.mi_rows as i32 * MI_SIZE
+            {
+                continue;
+            }
+            entries.push(MvStackEntry {
+                mv: candidate.mv0,
+                weight: 0,
+                offsets: (0, 0),
+            });
+        }
+    }
+}
+
+/// AV2 § 7.12.2 `find_mv_stack` for the spatial-only single-prediction
+/// subset. `PruneCount` starts at zero and is shared across the spatial
+/// scan, the § 7.12.2.21 bank fill, and the § 7.12.2.20 global-MV dedup.
 pub(super) fn find_mv_stack(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     global_mv: Mv,
+    bank: Option<(&RefMvBank, usize)>,
 ) -> MvStack {
     let mut entries: Vec<MvStackEntry> = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
+    let mut prune_count = 0usize;
 
     for probe in mv_stack_spatial_probes(block).into_iter().flatten() {
-        scan_mv_stack_probe(grid, block, probe, &mut entries);
+        scan_mv_stack_probe(grid, block, probe, &mut entries, &mut prune_count);
     }
 
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): model §7.12.2.5 Scan col,
-    // §7.12.2.19 Sorting, and §7.12.2.20 large-block (>32x32) MVP processes
-    extra_search(block, global_mv, &mut entries);
+    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): 7.12.2.5 Scan col, 7.12.2.19 Sorting, 7.12.2.20 large-block MVP
+    if let Some((bank, max_ref_mv_count)) = bank {
+        bank.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
+    }
+    extra_search(block, global_mv, &mut entries, &mut prune_count);
 
-    let stack: Vec<Mv> = entries
+    let stack: Vec<(Mv, (i32, i32))> = entries
         .into_iter()
-        .map(|entry| clamp_mv(block, entry.mv))
+        .map(|entry| (clamp_mv(block, entry.mv), entry.offsets))
         .collect();
 
     MvStack { stack }
@@ -908,6 +1459,7 @@ pub(super) fn find_mv_stack(
 struct MvStackEntry {
     mv: Mv,
     weight: u32,
+    offsets: (i32, i32),
 }
 
 fn scan_mv_stack_probe(
@@ -915,43 +1467,63 @@ fn scan_mv_stack_probe(
     block: &MvBlockContext,
     probe: RelativeProbe,
     entries: &mut Vec<MvStackEntry>,
+    prune_count: &mut usize,
 ) {
     let Some((cell, weight)) = probe.stack_cell(grid, block) else {
         return;
     };
 
-    if entries.len() >= MAX_REF_MV_STACK_SIZE {
-        return;
-    }
-
     if !matches_block_ref(cell, block) {
         return;
     }
 
-    for entry in entries.iter_mut() {
-        if entry.mv == cell.mv {
-            entry.weight = entry.weight.saturating_add(weight);
-            return;
+    if *prune_count < MAX_PR_NUM {
+        for entry in entries.iter_mut() {
+            *prune_count += 1;
+            if entry.mv == cell.mv {
+                entry.weight = entry.weight.saturating_add(weight);
+                return;
+            }
         }
     }
 
+    if entries.len() >= MAX_REF_MV_STACK_SIZE {
+        return;
+    }
+    let (_, _, adjusted_delta_col) = probe.stack_target(block);
     entries.push(MvStackEntry {
         mv: cell.mv,
         weight,
+        offsets: (probe.delta_row, adjusted_delta_col),
     });
 }
 
-fn extra_search(block: &MvBlockContext, global_mv: Mv, entries: &mut Vec<MvStackEntry>) {
+fn extra_search(
+    block: &MvBlockContext,
+    global_mv: Mv,
+    entries: &mut Vec<MvStackEntry>,
+    prune_count: &mut usize,
+) {
     for entry in entries.iter_mut() {
         entry.mv = clamp_mv(block, entry.mv);
     }
 
     if entries.len() < MAX_REF_MV_STACK_SIZE {
-        let already_present = entries.iter().any(|entry| entry.mv == global_mv);
+        let mut already_present = false;
+        if *prune_count < MAX_PR_NUM {
+            for entry in entries.iter() {
+                *prune_count += 1;
+                if entry.mv == global_mv {
+                    already_present = true;
+                    break;
+                }
+            }
+        }
         if !already_present {
             entries.push(MvStackEntry {
                 mv: global_mv,
                 weight: 0,
+                offsets: (0, 0),
             });
         }
     }

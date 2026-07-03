@@ -706,15 +706,24 @@ pub(super) struct InterBlock {
     pub(super) mv1: Mv,
     pub(super) interp: ReconInterpolationFilter,
     pub(super) warp_params: Option<[i64; 6]>,
-    #[allow(dead_code)]
     pub(super) bawp: BawpSyntax,
     pub(super) interintra: Option<splot_recon::InterIntraMode>,
     pub(super) residual: Option<InterResidual>,
 }
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct BawpSyntax {
-    pub(super) luma_flag: u8,
-    pub(super) chroma_flag: bool,
+    /// § 5.20.7.6 `use_bawp`.
+    pub(super) enabled: bool,
+    /// § 5.20.7.6 `explicit_bawp`.
+    pub(super) explicit: bool,
+    /// § 5.20.7.6 `explicit_bawp_scale` (`1` = positive scale).
+    pub(super) explicit_scale_positive: bool,
+    /// § 7.13.3.25 `listIndex` (the `explicit_bawp` context value).
+    pub(super) list_index: u8,
+    /// § 7.13.3.25 `firstRefDist > 4` for the explicit-scale arm.
+    pub(super) ref_dist_gt4: bool,
+    /// § 5.20.7.6 `use_bawp_chroma`.
+    pub(super) chroma: bool,
 }
 #[derive(Clone, Debug)]
 pub(super) struct PlacedInterBlock {
@@ -1086,6 +1095,7 @@ fn effective_quantizer_deltas_are_zero(
                 && quantization.delta_q_v_ac + seq_quant.base_uv_ac_delta_q == 0))
 }
 
+mod bawp;
 mod block;
 mod compound;
 mod cross_frame;

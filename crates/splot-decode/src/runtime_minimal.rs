@@ -7,7 +7,8 @@ use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameSize, TxMode, parse_frame_header_core,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameSize, FrameType, TxMode,
+    parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, SequenceHeader, parse_sequence_header,
@@ -488,23 +489,19 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     }
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
 
-    let num_ref_frames = usize::from(
-        sequence
-            .inter
-            .as_ref()
-            .ok_or_else(|| {
-                unsupported(
-                    "missing_sequence_inter_config",
-                    None,
-                    "minimal multi-frame decode requires the sequence inter config (NumRefFrames)",
-                )
-            })?
-            .num_ref_frames,
-    );
+    let sequence_inter = sequence.inter.as_ref().ok_or_else(|| {
+        unsupported(
+            "missing_sequence_inter_config",
+            None,
+            "minimal multi-frame decode requires the sequence inter config (NumRefFrames)",
+        )
+    })?;
+    let num_ref_frames = usize::from(sequence_inter.num_ref_frames);
     let mut reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
+    let mut disp_hints = DispOrderHints::new(sequence_inter.order_hint_bits, num_ref_frames);
 
     let mut frames = Vec::new();
-    let mut output_frame_indices = Vec::new();
+    let mut scheduler = OutputScheduler::new(num_ref_frames);
     let mut retained_frame_bytes = 0;
     let mut output_frame_bytes = 0;
     let mut next_unvalidated_following_ivf_record = 1;
@@ -526,18 +523,38 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     retained_frame_bytes =
         ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
     frames.push(key_frame);
-    if frame_is_output(&key_core) {
-        ensure_output_frame_count_limit(options.limits(), output_frame_indices.len() as u64 + 1)?;
-        output_frame_bytes =
-            ensure_output_frame_byte_limits(options.limits(), output_frame_bytes, &frames[0])?;
-        output_frame_indices.push(0);
-    }
-    reference.update(
+    let key_hint = disp_hints.extend(&key_core)?;
+    let key_update = frame_ref_update_from_core(
+        &key_core,
+        key_envelope.offset,
+        frames[0].frame_cdfs.clone(),
+        key_hint,
+    )?;
+    let key_implicit = key_core.implicit_output_frame == Some(true);
+    let key_immediate = key_core.immediate_output_frame == Some(true);
+    let evicted = scheduler.refresh(
+        key_update.refresh_frame_flags,
         0,
-        &frame_ref_update_from_core(&key_core, key_envelope.offset, frames[0].frame_cdfs.clone())?,
+        key_hint,
+        key_implicit,
+        true,
     );
-    if output_frame_limit_reached(options, output_frame_indices.len()) {
-        return select_output_frames(frames, output_frame_indices);
+    output_frame_bytes =
+        charge_emitted_outputs(options, &frames, &scheduler, &evicted, output_frame_bytes)?;
+    reference.update(0, &key_update);
+    disp_hints.refresh(
+        key_update.refresh_frame_flags,
+        key_hint,
+        key_implicit || key_immediate,
+        true,
+    );
+    if key_immediate && !scheduler.already_emitted(0) {
+        let emitted = scheduler.on_immediate(0, key_hint);
+        output_frame_bytes =
+            charge_emitted_outputs(options, &frames, &scheduler, &emitted, output_frame_bytes)?;
+    }
+    if output_frame_limit_reached(options, scheduler.emitted.len()) {
+        return select_output_frames(frames, scheduler.emitted);
     }
 
     for next_candidate in candidates {
@@ -578,7 +595,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                         if frame_is_output(&inter_core) {
                             let next_output_frame_count = checked_add(
                                 DecodeLimitName::MaxOutputFrames,
-                                output_frame_indices.len() as u64,
+                                scheduler.emitted.len() as u64,
                                 1,
                             )?;
                             ensure_output_frame_count_limit(
@@ -632,7 +649,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                         if frame_is_output(&inter_core) {
                             let next_output_frame_count = checked_add(
                                 DecodeLimitName::MaxOutputFrames,
-                                output_frame_indices.len() as u64,
+                                scheduler.emitted.len() as u64,
                                 1,
                             )?;
                             ensure_output_frame_count_limit(
@@ -671,34 +688,57 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                     frame_rate_numerator: header.timebase_denominator,
                     frame_rate_denominator: header.timebase_numerator,
                 };
-                let should_output = frame_is_output(&inter_core);
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
                     retained_frame_bytes,
                     &inter_frame,
                 )?;
                 let frame_index = frames.len();
-                if should_output {
-                    output_frame_bytes = ensure_output_frame_byte_limits(
-                        options.limits(),
-                        output_frame_bytes,
-                        &inter_frame,
-                    )?;
-                }
                 frames.push(inter_frame);
                 retained_frame_bytes = next_retained_frame_bytes;
-                reference.update(
+                let inter_hint = disp_hints.extend(&inter_core)?;
+                let inter_update = frame_ref_update_from_core(
+                    &inter_core,
+                    inter_envelope.offset,
+                    frames[frame_index].frame_cdfs.clone(),
+                    inter_hint,
+                )?;
+                let inter_implicit = inter_core.implicit_output_frame == Some(true);
+                let inter_immediate = inter_core.immediate_output_frame == Some(true);
+                let inter_key_or_switch =
+                    inter_core.is_key_frame || inter_core.frame_type == Some(FrameType::Switch);
+                let evicted = scheduler.refresh(
+                    inter_update.refresh_frame_flags,
                     frame_index,
-                    &frame_ref_update_from_core(
-                        &inter_core,
-                        inter_envelope.offset,
-                        frames[frame_index].frame_cdfs.clone(),
-                    )?,
+                    inter_hint,
+                    inter_implicit,
+                    inter_key_or_switch,
                 );
-                if should_output {
-                    output_frame_indices.push(frame_index);
+                output_frame_bytes = charge_emitted_outputs(
+                    options,
+                    &frames,
+                    &scheduler,
+                    &evicted,
+                    output_frame_bytes,
+                )?;
+                reference.update(frame_index, &inter_update);
+                disp_hints.refresh(
+                    inter_update.refresh_frame_flags,
+                    inter_hint,
+                    inter_implicit || inter_immediate,
+                    inter_key_or_switch,
+                );
+                if inter_immediate && !scheduler.already_emitted(frame_index) {
+                    let emitted = scheduler.on_immediate(frame_index, inter_hint);
+                    output_frame_bytes = charge_emitted_outputs(
+                        options,
+                        &frames,
+                        &scheduler,
+                        &emitted,
+                        output_frame_bytes,
+                    )?;
                 }
-                if output_frame_limit_reached(options, output_frame_indices.len()) {
+                if output_frame_limit_reached(options, scheduler.emitted.len()) {
                     break;
                 }
             }
@@ -712,7 +752,57 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
         }
     }
 
-    select_output_frames(frames, output_frame_indices)
+    if !output_frame_limit_reached(options, scheduler.emitted.len()) {
+        let flushed = scheduler.flush_all();
+        output_frame_bytes =
+            charge_emitted_outputs(options, &frames, &scheduler, &flushed, output_frame_bytes)?;
+        let _ = output_frame_bytes;
+    }
+    let emitted = std::mem::take(&mut scheduler.emitted);
+    let limited = match options.output_frame_limit() {
+        Some(limit) => {
+            let limit = usize::try_from(limit.get()).unwrap_or(usize::MAX);
+            emitted.into_iter().take(limit).collect()
+        }
+        None => emitted,
+    };
+    select_output_frames(frames, limited)
+}
+
+/// Charges the output count/byte limits for newly emitted display frames.
+/// Frames past the caller's `output_frame_limit` are discarded before
+/// output, so they are not charged.
+fn charge_emitted_outputs(
+    options: &DecodeOptions,
+    frames: &[MinimalRuntimeFrame],
+    scheduler: &OutputScheduler,
+    newly: &[usize],
+    mut output_frame_bytes: u64,
+) -> Result<u64> {
+    if newly.is_empty() {
+        return Ok(output_frame_bytes);
+    }
+    let requested = options
+        .output_frame_limit()
+        .map_or(u64::MAX, std::num::NonZeroU64::get);
+    let emitted_total = (scheduler.emitted.len() as u64).min(requested);
+    ensure_output_frame_count_limit(options.limits(), emitted_total)?;
+    let first_new = scheduler.emitted.len() - newly.len();
+    for (offset, &frame_index) in newly.iter().enumerate() {
+        if (first_new + offset) as u64 >= requested {
+            break;
+        }
+        let frame = frames.get(frame_index).ok_or_else(|| {
+            unsupported(
+                "displayed_frame_index_unavailable",
+                None,
+                "minimal runtime output ordering references a decoded frame that is unavailable",
+            )
+        })?;
+        output_frame_bytes =
+            ensure_output_frame_byte_limits(options.limits(), output_frame_bytes, frame)?;
+    }
+    Ok(output_frame_bytes)
 }
 
 fn output_frame_limit_reached(options: &DecodeOptions, output_frame_count: usize) -> bool {
@@ -723,6 +813,213 @@ fn output_frame_limit_reached(options: &DecodeOptions, output_frame_count: usize
 
 fn frame_is_output(core: &FrameHeaderCore) -> bool {
     core.immediate_output_frame == Some(true) || core.implicit_output_frame == Some(true)
+}
+
+/// § 7.21 output scheduling: implicit-output frames are held in their
+/// reference slots and released in `output_ordering` (order-hint) order —
+/// flushed by an immediate-output frame (§ 7.21.6 with -1), by their slot
+/// being refreshed (§ 7.23 → § 7.21.6 with the slot), by a successive-hint
+/// chain (§ 7.21.3/§ 7.21.4), or by the end-of-stream flush (§ 7.21.5).
+/// Single-layer streams only: `output_ordering(i)` reduces to the order hint.
+struct OutputScheduler {
+    pending: Vec<Option<(usize, u32)>>,
+    emitted: Vec<usize>,
+}
+
+impl OutputScheduler {
+    fn new(num_slots: usize) -> Self {
+        Self {
+            pending: vec![None; num_slots],
+            emitted: Vec::new(),
+        }
+    }
+
+    /// § 7.21.1 output process, deduplicated per decoded frame.
+    fn emit(&mut self, frame_index: usize, newly: &mut Vec<usize>) {
+        if !self.emitted.contains(&frame_index) {
+            self.emitted.push(frame_index);
+            newly.push(frame_index);
+        }
+        for slot in &mut self.pending {
+            if slot.is_some_and(|(held, _)| held == frame_index) {
+                *slot = None;
+            }
+        }
+    }
+
+    /// The § 7.21.6 leading loop: outputs held frames with a lower ordering,
+    /// lowest first.
+    fn flush_lower_than(&mut self, ordering: u32, newly: &mut Vec<usize>) {
+        loop {
+            let next = self
+                .pending
+                .iter()
+                .flatten()
+                .filter(|(_, held)| *held < ordering)
+                .min_by_key(|(_, held)| *held)
+                .copied();
+            let Some((frame_index, _)) = next else {
+                return;
+            };
+            self.emit(frame_index, newly);
+        }
+    }
+
+    /// § 7.21.3 / § 7.21.4 successive-hint outputs.
+    fn output_successive(&mut self, ordering: u32, newly: &mut Vec<usize>) {
+        let mut target = ordering.saturating_add(1);
+        loop {
+            let matches: Vec<usize> = self
+                .pending
+                .iter()
+                .flatten()
+                .filter(|(_, held)| *held == target)
+                .map(|(frame_index, _)| *frame_index)
+                .collect();
+            if matches.is_empty() {
+                return;
+            }
+            for frame_index in matches {
+                self.emit(frame_index, newly);
+            }
+            target = target.saturating_add(1);
+        }
+    }
+
+    /// § 7.21.6 with `refIdx == -1` (an immediate-output frame).
+    fn on_immediate(&mut self, frame_index: usize, ordering: u32) -> Vec<usize> {
+        let mut newly = Vec::new();
+        self.flush_lower_than(ordering, &mut newly);
+        self.emit(frame_index, &mut newly);
+        self.output_successive(ordering, &mut newly);
+        newly
+    }
+
+    /// § 7.23 slot update: for each refreshed slot in index order, first
+    /// releases a held eligible frame (§ 7.21.6 with the slot), then stores
+    /// the current frame, so a later slot's flush chain can output the
+    /// current frame. Already-output frames are never re-held (§ 7.21.4
+    /// eligibility excludes them), and a key/switch frame is eligible only
+    /// through its first refreshed slot (§ 7.23 `RefValid = first`).
+    fn refresh(
+        &mut self,
+        refresh_frame_flags: u32,
+        frame_index: usize,
+        ordering: u32,
+        implicit: bool,
+        is_key_or_switch: bool,
+    ) -> Vec<usize> {
+        let mut newly = Vec::new();
+        let mut first = true;
+        for slot in 0..self.pending.len() {
+            if (refresh_frame_flags >> slot) & 1 == 0 {
+                continue;
+            }
+            if let Some((held_index, held_ordering)) = self.pending[slot] {
+                self.flush_lower_than(held_ordering, &mut newly);
+                self.emit(held_index, &mut newly);
+                self.output_successive(held_ordering, &mut newly);
+            }
+            let valid = !is_key_or_switch || first;
+            self.pending[slot] = (implicit && valid && !self.emitted.contains(&frame_index))
+                .then_some((frame_index, ordering));
+            first = false;
+        }
+        newly
+    }
+
+    /// Whether the § 7.21.1 output process already emitted this frame.
+    fn already_emitted(&self, frame_index: usize) -> bool {
+        self.emitted.contains(&frame_index)
+    }
+
+    /// § 7.21.5 end-of-stream flush, lowest ordering first.
+    fn flush_all(&mut self) -> Vec<usize> {
+        let mut newly = Vec::new();
+        self.flush_lower_than(u32::MAX, &mut newly);
+        newly
+    }
+}
+
+/// § 5.18.2 `get_disp_order_hint` state: the extended display order hint and
+/// § 7.23 showable flags (`RefImplicitOutputFrame | RefImmediateOutputFrame`)
+/// per reference slot. Single-layer surface: the layer dependency maps are
+/// identity. The extension feeds the § 7.21 output-scheduling comparisons
+/// and the stored `RefOrderHint`; parse-side order-hint consumers still
+/// window on the coded LSBs, so the first frame whose extended hint diverges
+/// from its LSB defers fail-closed.
+struct DispOrderHints {
+    order_hint_bits: u32,
+    slots: Vec<Option<(u32, bool)>>,
+}
+
+impl DispOrderHints {
+    fn new(order_hint_bits: u8, num_slots: usize) -> Self {
+        Self {
+            order_hint_bits: u32::from(order_hint_bits),
+            slots: vec![None; num_slots],
+        }
+    }
+
+    /// § 5.18.2 `get_disp_order_hint` over the previous reference state.
+    fn extend(&self, core: &FrameHeaderCore) -> Result<u32> {
+        let Some(lsb) = core.order_hint_lsb else {
+            if core.implicit_output_frame == Some(true) {
+                return Err(unsupported(
+                    "implicit_output_requires_order_hints",
+                    None,
+                    "§ 7.21 implicit-output scheduling requires coded order hints",
+                ));
+            }
+            return Ok(0);
+        };
+        let restricted_switch = core.frame_type == Some(FrameType::Switch)
+            && core.restricted_prediction_switch == Some(true);
+        if core.is_key_frame || restricted_switch {
+            return Ok(lsb);
+        }
+        let max_disp = self
+            .slots
+            .iter()
+            .flatten()
+            .filter(|(_, showable)| *showable)
+            .map(|(hint, _)| *hint)
+            .max()
+            .unwrap_or(0);
+        let mut disp = lsb;
+        let offset = i64::from(max_disp) - ((1i64 << self.order_hint_bits) >> 1) - i64::from(lsb);
+        if offset >= 0 {
+            let wraps = u32::try_from(offset).unwrap_or(u32::MAX) >> self.order_hint_bits;
+            disp = disp.saturating_add((wraps + 1) << self.order_hint_bits);
+        }
+        if disp != lsb {
+            return Err(unsupported(
+                "order_hint_extension_beyond_parse_frontier",
+                None,
+                "the § 5.18.2 order-hint extension diverged from the coded LSB; parse-side hint consumers are still LSB-windowed",
+            ));
+        }
+        Ok(disp)
+    }
+
+    /// § 7.23 per-slot store of `RefOrderHint` and the showable flags, with
+    /// the key/switch `RefValid = first` rule.
+    fn refresh(
+        &mut self,
+        refresh_frame_flags: u32,
+        hint: u32,
+        showable: bool,
+        is_key_or_switch: bool,
+    ) {
+        let mut first = true;
+        for slot in 0..self.slots.len() {
+            if (refresh_frame_flags >> slot) & 1 == 0 {
+                continue;
+            }
+            self.slots[slot] = (!is_key_or_switch || first).then_some((hint, showable));
+            first = false;
+        }
+    }
 }
 
 fn select_output_frames(
@@ -1314,6 +1611,7 @@ fn frame_ref_update_from_core(
     core: &FrameHeaderCore,
     offset: ByteOffset,
     frame_cdfs: FrameCdfSubset,
+    order_hint: u32,
 ) -> Result<reference_buffer::FrameRefUpdate> {
     let refresh_frame_flags = core.refresh_frame_flags.ok_or_else(|| {
         unsupported_at(
@@ -1322,7 +1620,6 @@ fn frame_ref_update_from_core(
             "minimal multi-frame decode requires a parsed refresh_frame_flags for the §7.23 update",
         )
     })?;
-    let order_hint = core.order_hint_lsb.unwrap_or(0);
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_at(
             "missing_frame_size_for_ref_update",
@@ -1340,7 +1637,7 @@ fn frame_ref_update_from_core(
                 "minimal multi-frame decode requires a parsed base_q_idx for the §7.23 update",
             )
         })?;
-    let is_inter = !core.is_key_frame;
+    let is_inter = core.frame_type == Some(FrameType::Inter);
     let adapted = core.disable_cdf_update != Some(true);
     Ok(reference_buffer::FrameRefUpdate {
         refresh_frame_flags,
@@ -1348,7 +1645,7 @@ fn frame_ref_update_from_core(
         width: frame_size.width,
         height: frame_size.height,
         base_q_idx,
-        is_key_or_switch: core.is_key_frame,
+        is_key_or_switch: core.is_key_frame || core.frame_type == Some(FrameType::Switch),
         is_inter,
         adapted,
         frame_cdfs,
