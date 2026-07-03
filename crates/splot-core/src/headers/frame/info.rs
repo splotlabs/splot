@@ -162,6 +162,12 @@ pub struct FrameReferenceStateView<'a> {
     /// `lr_params()` frame-filter dictionary uses these counts when reading the next
     /// frame's frame-level Wiener-NS match indices.
     pub lr_frame_filter_class_counts: Option<&'a [[u8; 3]]>,
+    /// Per-slot retained frame-level Wiener-NS filter TAPS (plane, then class,
+    /// then coefficients), parallel to the class counts. The § 5.18 filter-match
+    /// dictionary resolves `RefFrameLrWienerNs` values from these; `None` keeps
+    /// the bit-exact index parse with unresolved reference tap values (a caller
+    /// that never consumes the resolved bank, like the validator, may omit them).
+    pub lr_frame_filter_taps: Option<&'a [[Vec<Vec<i16>>; 3]]>,
 }
 
 impl<'a> FrameReferenceStateView<'a> {
@@ -176,6 +182,7 @@ impl<'a> FrameReferenceStateView<'a> {
             ref_frame_height: None,
             ref_base_q_idx: None,
             lr_frame_filter_class_counts: None,
+            lr_frame_filter_taps: None,
         }
     }
 
@@ -232,6 +239,13 @@ impl<'a> FrameReferenceStateView<'a> {
             Self::from_slots(ref_valid, ref_order_hint, ref_frame_width, ref_frame_height);
         view.ref_base_q_idx = Some(ref_base_q_idx);
         view
+    }
+
+    /// Attaches the per-slot retained frame-level Wiener-NS filter TAPS.
+    #[must_use]
+    pub const fn with_lr_frame_filter_taps(mut self, taps: &'a [[Vec<Vec<i16>>; 3]]) -> Self {
+        self.lr_frame_filter_taps = Some(taps);
+        self
     }
 
     /// Adds retained per-slot LR frame-filter class counts to an existing reference-state view.

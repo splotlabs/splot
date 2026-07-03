@@ -758,6 +758,7 @@ pub(super) struct InterReferenceState<'a, T: ReconSample> {
     #[allow(dead_code)]
     pub(super) ref_adapted: Vec<bool>,
     pub(super) lr_frame_filter_class_counts: Vec<[u8; 3]>,
+    pub(super) lr_frame_filter_taps: Vec<[Vec<Vec<i16>>; 3]>,
     pub(super) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
 }
 
@@ -790,6 +791,7 @@ impl<T: ReconSample> InterReferenceState<'_, T> {
             &self.ref_base_q_idx,
         )
         .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
+        .with_lr_frame_filter_taps(&self.lr_frame_filter_taps)
     }
 }
 pub(super) fn parse_validated_inter_frame_core(

@@ -100,6 +100,7 @@ pub(super) fn parse_frame_wiener_ns_filter(
     plane: usize,
     num_filter_classes: u8,
     num_ref_filters: usize,
+    ref_taps: &[&[i16]],
     view: CoreSeqRestorationView,
 ) -> Result<WienerNsFrameFilterBank> {
     let plane_is_chroma = plane > 0;
@@ -117,6 +118,10 @@ pub(super) fn parse_frame_wiener_ns_filter(
     let nopcw = view.lr_pc_wiener_disabled;
 
     let match_indices = read_match_indices(reader, plane, num_classes, num_ref_filters, nopcw)?;
+    let capped_ref = capped_reference_filter_count(plane, num_classes, num_ref_filters, nopcw);
+    let ref_taps = ref_taps
+        .get(..capped_ref.min(ref_taps.len()))
+        .unwrap_or(&[]);
     let merged = read_merged_flags(reader, num_classes)?;
     let mut ref_bank = vec![[[0i16; WIENER_NS_CHROMA_COEFFS]; LR_BANK_SIZE]; num_classes];
     let mut bank_size = vec![0usize; num_classes];
@@ -137,6 +142,8 @@ pub(super) fn parse_frame_wiener_ns_filter(
             plane_is_chroma,
             match_indices[c],
             num_classes,
+            capped_ref,
+            ref_taps,
             &mut bank_ptr,
             &mut bank_size,
             &mut ref_bank,
@@ -396,6 +403,8 @@ fn fill_first_slot_of_bank_with_filter_match(
     plane_is_chroma: bool,
     match_index: usize,
     num_classes: usize,
+    capped_ref: usize,
+    ref_taps: &[&[i16]],
     bank_ptr: &mut [usize],
     bank_size: &mut [usize],
     ref_bank: &mut [[[i16; WIENER_NS_CHROMA_COEFFS]; LR_BANK_SIZE]],
@@ -405,14 +414,29 @@ fn fill_first_slot_of_bank_with_filter_match(
     bank_ptr[c] = 0;
     bank_size[c] = 1;
     for (j, coeff) in ref_bank[c][0].iter_mut().enumerate().take(n_coeffs) {
-        *coeff = filter_match_coeff(plane_is_chroma, match_index, num_classes, frame_coeffs, j);
+        *coeff = filter_match_coeff(
+            plane_is_chroma,
+            match_index,
+            num_classes,
+            capped_ref,
+            ref_taps,
+            frame_coeffs,
+            j,
+        );
     }
 }
 
+/// § 5.18 `fill_first_slot_of_bank_with_filter_match` value resolution: match
+/// `m == 0` seeds zero, `m < numClasses` copies an earlier class of the frame
+/// bank, `m < numClasses + numRefFilters` copies the matched REFERENCE frame's
+/// retained taps (`RefFrameLrWienerNs`, 05:17763-17780), and the remainder
+/// translates a sampled PC-Wiener filter offset by BOTH group sizes.
 fn filter_match_coeff(
     plane_is_chroma: bool,
     match_index: usize,
     num_classes: usize,
+    capped_ref: usize,
+    ref_taps: &[&[i16]],
     frame_coeffs: &[Vec<i16>],
     j: usize,
 ) -> i16 {
@@ -425,10 +449,16 @@ fn filter_match_coeff(
             .and_then(|coeffs| coeffs.get(j))
             .copied()
             .unwrap_or(0)
+    } else if match_index < num_classes + capped_ref {
+        ref_taps
+            .get(match_index - num_classes)
+            .and_then(|taps| taps.get(j))
+            .copied()
+            .unwrap_or(0)
     } else if plane_is_chroma {
         0
     } else {
-        translated_pc_wiener(match_index.saturating_sub(num_classes), j)
+        translated_pc_wiener(match_index.saturating_sub(num_classes + capped_ref), j)
     }
 }
 
@@ -488,7 +518,8 @@ mod tests {
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let bank =
-            parse_frame_wiener_ns_filter(&mut r, 0, 2, 0, restoration_without_pc_wiener()).unwrap();
+            parse_frame_wiener_ns_filter(&mut r, 0, 2, 0, &[], restoration_without_pc_wiener())
+                .unwrap();
 
         assert_eq!(r.consumed_bits(), 3);
         assert_eq!(bank.classes.len(), 2);
@@ -508,7 +539,8 @@ mod tests {
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let bank =
-            parse_frame_wiener_ns_filter(&mut r, 0, 1, 1, restoration_without_pc_wiener()).unwrap();
+            parse_frame_wiener_ns_filter(&mut r, 0, 1, 1, &[], restoration_without_pc_wiener())
+                .unwrap();
 
         assert_eq!(r.consumed_bits(), 2);
         assert_eq!(bank.classes.len(), 1);
@@ -530,7 +562,8 @@ mod tests {
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let bank =
-            parse_frame_wiener_ns_filter(&mut r, 0, 1, 0, restoration_without_pc_wiener()).unwrap();
+            parse_frame_wiener_ns_filter(&mut r, 0, 1, 0, &[], restoration_without_pc_wiener())
+                .unwrap();
 
         assert_eq!(bank.classes.len(), 1);
         let class = &bank.classes[0];
@@ -544,7 +577,8 @@ mod tests {
     fn eof_inside_frame_bank_is_structured_error() {
         let mut r = reader(&[]);
         assert!(
-            parse_frame_wiener_ns_filter(&mut r, 0, 1, 0, restoration_without_pc_wiener()).is_err()
+            parse_frame_wiener_ns_filter(&mut r, 0, 1, 0, &[], restoration_without_pc_wiener())
+                .is_err()
         );
     }
 }

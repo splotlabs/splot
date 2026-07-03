@@ -263,6 +263,7 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
         ref_is_inter: meta.ref_is_inter,
         ref_adapted: meta.ref_adapted,
         lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
+        lr_frame_filter_taps: Vec::new(),
         ref_frame_cdfs: meta.ref_frame_cdfs,
     };
     let mut core = super::parse_inter_frame_core(inter_envelope, &sequence, &inter_state)?;

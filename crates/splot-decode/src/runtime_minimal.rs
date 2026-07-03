@@ -588,6 +588,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                             ref_is_inter: meta.ref_is_inter,
                             ref_adapted: meta.ref_adapted,
                             lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
+                            lr_frame_filter_taps: meta.lr_frame_filter_taps,
                             ref_frame_cdfs: meta.ref_frame_cdfs,
                         };
                         let inter_core = inter::parse_validated_inter_frame_core(
@@ -642,6 +643,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                             ref_is_inter: meta.ref_is_inter,
                             ref_adapted: meta.ref_adapted,
                             lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
+                            lr_frame_filter_taps: meta.lr_frame_filter_taps,
                             ref_frame_cdfs: meta.ref_frame_cdfs,
                         };
                         let inter_core = inter::parse_validated_inter_frame_core(
@@ -1697,7 +1699,34 @@ fn frame_ref_update_from_core(
         adapted,
         frame_cdfs,
         lr_frame_filter_class_counts: lr_frame_filter_class_counts(core),
+        lr_frame_filter_taps: lr_frame_filter_taps(core),
     })
+}
+
+/// Clones the parsed frame-level Wiener-NS bank taps for § 7.23 retention:
+/// the § 5.18 filter-match dictionary of LATER frames resolves
+/// `RefFrameLrWienerNs` from these. Temporal-copy banks (`frame_filters_on`
+/// with no local bank) retain empty taps — their resolution stays with the
+/// temporal-prediction defer.
+fn lr_frame_filter_taps(core: &FrameHeaderCore) -> [Vec<Vec<i16>>; 3] {
+    let mut taps: [Vec<Vec<i16>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let Some(lr) = core.lr_params.as_ref() else {
+        return taps;
+    };
+    for (plane, params) in lr.planes.iter().enumerate().take(3) {
+        if !params.frame_filters_on {
+            continue;
+        }
+        let Some(bank) = params.frame_filter_bank.as_ref() else {
+            continue;
+        };
+        taps[plane] = bank
+            .classes
+            .iter()
+            .map(|class| class.coeffs.clone())
+            .collect();
+    }
+    taps
 }
 
 fn lr_frame_filter_class_counts(core: &FrameHeaderCore) -> [u8; 3] {

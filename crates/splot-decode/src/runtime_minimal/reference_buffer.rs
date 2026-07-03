@@ -26,6 +26,7 @@ struct Slot {
     is_inter: bool,
     adapted: bool,
     lr_frame_filter_class_counts: [u8; 3],
+    lr_frame_filter_taps: [Vec<Vec<i16>>; 3],
     frame_index: Option<usize>,
     frame_cdfs: Option<FrameCdfSubset>,
 }
@@ -40,6 +41,7 @@ impl Slot {
         is_inter: false,
         adapted: false,
         lr_frame_filter_class_counts: [0; 3],
+        lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
         frame_index: None,
         frame_cdfs: None,
     };
@@ -54,6 +56,7 @@ impl Slot {
             is_inter: update.is_inter,
             adapted: update.adapted,
             lr_frame_filter_class_counts: update.lr_frame_filter_class_counts,
+            lr_frame_filter_taps: update.lr_frame_filter_taps.clone(),
             frame_index: Some(frame_index),
             frame_cdfs: Some(update.frame_cdfs.clone()),
         };
@@ -81,6 +84,8 @@ pub(super) struct FrameRefUpdate {
     pub(super) adapted: bool,
     /// Per-plane retained frame-level Wiener-NS filter class counts.
     pub(super) lr_frame_filter_class_counts: [u8; 3],
+    /// Per-plane retained frame-level Wiener-NS filter taps (class-major).
+    pub(super) lr_frame_filter_taps: [Vec<Vec<i16>>; 3],
     /// Saved frame CDF context for later cross-frame CDF initialization.
     pub(super) frame_cdfs: FrameCdfSubset,
 }
@@ -207,6 +212,8 @@ pub(super) struct ReferenceMetadata {
     pub(super) ref_adapted: Vec<bool>,
     /// Retained frame-level Wiener-NS filter class counts per slot and plane.
     pub(super) lr_frame_filter_class_counts: Vec<[u8; 3]>,
+    /// Retained frame-level Wiener-NS filter taps per slot (plane, class-major).
+    pub(super) lr_frame_filter_taps: Vec<[Vec<Vec<i16>>; 3]>,
     /// Saved frame CDF context per slot.
     pub(super) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
 }
@@ -222,6 +229,7 @@ impl ReferenceMetadata {
             ref_is_inter: Vec::with_capacity(num),
             ref_adapted: Vec::with_capacity(num),
             lr_frame_filter_class_counts: Vec::with_capacity(num),
+            lr_frame_filter_taps: Vec::with_capacity(num),
             ref_frame_cdfs: Vec::with_capacity(num),
         }
     }
@@ -236,6 +244,8 @@ impl ReferenceMetadata {
         self.ref_adapted.push(slot.adapted);
         self.lr_frame_filter_class_counts
             .push(slot.lr_frame_filter_class_counts);
+        self.lr_frame_filter_taps
+            .push(slot.lr_frame_filter_taps.clone());
         self.ref_frame_cdfs.push(slot.frame_cdfs.clone());
     }
 }
@@ -256,6 +266,7 @@ mod tests {
             is_inter: false,
             adapted: false,
             lr_frame_filter_class_counts: [1, 0, 0],
+            lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
             frame_cdfs: FrameCdfSubset::from_defaults(),
         }
     }
@@ -271,6 +282,7 @@ mod tests {
             is_inter: true,
             adapted,
             lr_frame_filter_class_counts: [0, 0, 0],
+            lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
             frame_cdfs: FrameCdfSubset::from_defaults(),
         }
     }
