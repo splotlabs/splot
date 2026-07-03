@@ -197,6 +197,85 @@ impl PlaneSnapshot {
     }
 }
 
+/// One plane's disjoint mutable row band with its plane stride and top row.
+struct CdefBandView<'a, T: ReconSample> {
+    samples: &'a mut [T],
+    stride: usize,
+    top_row: usize,
+}
+
+/// The frame's planes split into disjoint row bands of whole CDEF block rows,
+/// so band tasks filter and write their own blocks without buffering.
+struct CdefRowBands<'a, T: ReconSample> {
+    band_mi_rows: usize,
+    bands: Vec<(
+        CdefBandView<'a, T>,
+        CdefBandView<'a, T>,
+        CdefBandView<'a, T>,
+    )>,
+}
+
+impl<'a, T: ReconSample> CdefRowBands<'a, T> {
+    /// Splits the workspace planes into row bands sized to a few CDEF block
+    /// rows per pool worker. Returns `None` when the planes cannot cover the
+    /// MI grid in aligned bands; callers then keep the serial path.
+    fn split(workspace: &'a mut CurrentFrameWorkspace<T>, mi_rows: usize) -> Option<Self> {
+        let workers = splot_parallel::current_pool_width();
+        let cdef_rows = mi_rows.div_ceil(STEP4);
+        let rows_per_band = cdef_rows.div_ceil(workers.checked_mul(4)?).max(1);
+        let band_mi_rows = rows_per_band.checked_mul(STEP4)?;
+        let luma_band_rows = band_mi_rows.checked_mul(MI_SIZE)?;
+        let chroma_band_rows = luma_band_rows >> 1;
+        let needed = cdef_rows.div_ceil(rows_per_band);
+
+        let (y, u, v) = workspace.as_frame_mut().into_planes();
+        let (u, v) = (u?, v?);
+        let y_stride = y.stride_samples();
+        let u_stride = u.stride_samples();
+        let v_stride = v.stride_samples();
+        let y_chunk = luma_band_rows.checked_mul(y_stride)?;
+        let u_chunk = chroma_band_rows.checked_mul(u_stride)?;
+        let v_chunk = chroma_band_rows.checked_mul(v_stride)?;
+        if y_chunk == 0 || u_chunk == 0 || v_chunk == 0 {
+            return None;
+        }
+
+        let bands: Vec<_> = y
+            .into_samples()
+            .chunks_mut(y_chunk)
+            .zip(u.into_samples().chunks_mut(u_chunk))
+            .zip(v.into_samples().chunks_mut(v_chunk))
+            .enumerate()
+            .map(|(band, ((y_band, u_band), v_band))| {
+                (
+                    CdefBandView {
+                        samples: y_band,
+                        stride: y_stride,
+                        top_row: band * luma_band_rows,
+                    },
+                    CdefBandView {
+                        samples: u_band,
+                        stride: u_stride,
+                        top_row: band * chroma_band_rows,
+                    },
+                    CdefBandView {
+                        samples: v_band,
+                        stride: v_stride,
+                        top_row: band * chroma_band_rows,
+                    },
+                )
+            })
+            .collect();
+        if bands.len() < needed {
+            return None;
+        }
+        Some(Self {
+            band_mi_rows,
+            bands,
+        })
+    }
+}
+
 /// Applies AV2 § 7.18 CDEF in place.
 pub(crate) fn cdef_general_intra_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -256,61 +335,102 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
     let u_snap = PlaneSnapshot::capture(workspace, PlaneId::U, u_size.width(), u_size.height())?;
     let v_snap = PlaneSnapshot::capture(workspace, PlaneId::V, v_size.width(), v_size.height())?;
 
-    let mut contexts = Vec::new();
+    let block_ctx_at = |r: usize, c: usize| -> Result<Option<CdefBlockCtx>, CdefError> {
+        let Some(strength_index) = grid.strength_for_mi(r, c)? else {
+            return Ok(None);
+        };
+        if let Some(skip_grid) = skip_grid
+            && skip_grid.all_skipped_8x8(r, c, mi_rows, mi_cols)?
+        {
+            return Ok(None);
+        }
+        let params = *strengths.get(strength_index).ok_or(CdefError::Geometry)?;
+        Ok(Some(CdefBlockCtx {
+            r,
+            c,
+            params,
+            coeff_shift,
+            max_sample,
+            mi_rows,
+            mi_cols,
+            sub_x,
+            sub_y,
+        }))
+    };
+
+    if splot_parallel::on_multiworker_pool()
+        && let Some(bands) = CdefRowBands::split(workspace, mi_rows)
+    {
+        let timer = crate::timing::start();
+        let tally = crate::timing::WorkerTally::new();
+        let workers = splot_parallel::current_pool_width();
+        let band_mi_rows = bands.band_mi_rows;
+        let band_count = bands.bands.len();
+        let result = bands.bands.into_par_iter().enumerate().try_for_each(
+            |(band, (mut y_band, mut u_band, mut v_band))| {
+                tally.note_worker();
+                let mut r = band * band_mi_rows;
+                let r_end = r.saturating_add(band_mi_rows).min(mi_rows);
+                while r < r_end {
+                    let mut c = 0usize;
+                    while c < mi_cols {
+                        if let Some(ctx) = block_ctx_at(r, c)? {
+                            let output =
+                                compute_cdef_block::<T>(&ctx, &luma_snap, &u_snap, &v_snap)?;
+                            for (plane, rect, samples, width) in output.into_iter().flatten() {
+                                let band_view = match plane {
+                                    PlaneId::Y => &mut y_band,
+                                    PlaneId::U => &mut u_band,
+                                    PlaneId::V => &mut v_band,
+                                };
+                                super::plane_bands::write_rect_into_band(
+                                    band_view.samples,
+                                    band_view.stride,
+                                    band_view.top_row,
+                                    rect,
+                                    &samples,
+                                    width,
+                                )
+                                .ok_or(CdefError::Workspace)?;
+                            }
+                        }
+                        c += STEP4;
+                    }
+                    r += STEP4;
+                }
+                Ok(())
+            },
+        );
+        crate::timing::report_detail(
+            "cdef_bands",
+            timer,
+            &format!(
+                "units={band_count} threads={workers} workers_used={}",
+                tally.workers_used()
+            ),
+        );
+        return result;
+    }
+
     let mut r = 0usize;
     while r < mi_rows {
         let mut c = 0usize;
         while c < mi_cols {
-            let Some(strength_index) = grid.strength_for_mi(r, c)? else {
-                c += STEP4;
-                continue;
-            };
-            if let Some(skip_grid) = skip_grid
-                && skip_grid.all_skipped_8x8(r, c, mi_rows, mi_cols)?
-            {
-                c += STEP4;
-                continue;
+            if let Some(ctx) = block_ctx_at(r, c)? {
+                let output = compute_cdef_block::<T>(&ctx, &luma_snap, &u_snap, &v_snap)?;
+                for (plane, rect, samples, width) in output.into_iter().flatten() {
+                    workspace
+                        .write_rect(plane, rect, &samples, width)
+                        .map_err(|_| CdefError::Workspace)?;
+                }
             }
-            let params = *strengths.get(strength_index).ok_or(CdefError::Geometry)?;
-            contexts.push(CdefBlockCtx {
-                r,
-                c,
-                params,
-                coeff_shift,
-                max_sample,
-                mi_rows,
-                mi_cols,
-                sub_x,
-                sub_y,
-            });
             c += STEP4;
         }
         r += STEP4;
     }
 
-    let compute = |ctx: &CdefBlockCtx| compute_cdef_block::<T>(ctx, &luma_snap, &u_snap, &v_snap);
-    let parallel = splot_parallel::on_multiworker_pool();
-    for chunk in contexts.chunks(CDEF_BLOCK_CHUNK) {
-        let outputs: Vec<CdefBlockOutput<T>> = if parallel {
-            chunk.par_iter().map(compute).collect::<Result<_, _>>()?
-        } else {
-            chunk.iter().map(compute).collect::<Result<_, _>>()?
-        };
-        for output in outputs {
-            for (plane, rect, samples, width) in output.into_iter().flatten() {
-                workspace
-                    .write_rect(plane, rect, &samples, width)
-                    .map_err(|_| CdefError::Workspace)?;
-            }
-        }
-    }
-
     Ok(())
 }
-
-/// Filter-block batch size: large enough to spread across workers, small
-/// enough to keep buffered block outputs cache-resident.
-const CDEF_BLOCK_CHUNK: usize = 1024;
 
 /// One filtered plane rectangle: `(plane, target rect, samples, row stride)`.
 /// The fixed array holds the leading `height * stride` samples of an at most

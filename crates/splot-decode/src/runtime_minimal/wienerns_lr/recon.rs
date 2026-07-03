@@ -858,6 +858,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         dump_prefilter_frame_for_diagnostics(&self.workspace, self.luma_width, self.luma_height);
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
+        let deblock_timer = crate::timing::start();
         if let Some(filter) = core.deblocking_filter_params
             && filter.apply_deblocking_filter != [false; 4]
         {
@@ -881,6 +882,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         }
+        crate::timing::report("filter_deblock", deblock_timer);
+        let snapshot_timer = crate::timing::start();
         let lr_plane_active = |plane_index: usize| {
             core.lr_params.as_ref().is_some_and(|lr| {
                 lr.planes.get(plane_index).is_some_and(|plane| {
@@ -923,6 +926,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         } else {
             Vec::new()
         };
+        crate::timing::report("filter_deblock_snapshots", snapshot_timer);
+        let cdef_timer = crate::timing::start();
         let cdef_skip_grid = self.cdef_skip_grid(core, mi_rows, mi_cols, offset)?;
         if let (Some(grid), Some(strengths)) = (
             self.cdef_grid.as_ref(),
@@ -944,6 +949,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         }
+        crate::timing::report("filter_cdef", cdef_timer);
+        let ccso_timer = crate::timing::start();
         if let Some(grid) = self.ccso_grid.as_ref() {
             super::super::ccso::ccso_frame(
                 &mut self.workspace,
@@ -961,6 +968,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         }
+        crate::timing::report("filter_ccso", ccso_timer);
+        let lr_snapshot_timer = crate::timing::start();
         let cdef_luma = if any_lr_active {
             self.plane_snapshot(
                 PlaneId::Y,
@@ -988,38 +997,46 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         } else {
             Vec::new()
         };
+        crate::timing::report("filter_cdef_snapshots", lr_snapshot_timer);
+        let lr_timer = crate::timing::start();
         let lr_source_blocks = core::mem::take(&mut self.lr_source_blocks);
         let lr_unit_filters = core::mem::take(&mut self.lr_unit_filters);
-        self.apply_luma_lr(
+        let [y_runs, u_runs, v_runs] = if any_lr_active {
+            final_filters::coalesced_lr_source_rows_all(&lr_source_blocks)
+        } else {
+            [Vec::new(), Vec::new(), Vec::new()]
+        };
+        self.apply_luma_lr_runs(
             core,
             offset,
-            &lr_source_blocks,
+            &y_runs,
             &lr_unit_filters,
             &deblocked_luma,
             &cdef_luma,
         )?;
-        self.apply_chroma_lr(
+        self.apply_chroma_lr_runs(
             core,
             offset,
             PlaneId::U,
-            &lr_source_blocks,
+            &u_runs,
             &lr_unit_filters,
             &deblocked_u,
             &cdef_u,
             &deblocked_luma,
             &cdef_luma,
         )?;
-        self.apply_chroma_lr(
+        self.apply_chroma_lr_runs(
             core,
             offset,
             PlaneId::V,
-            &lr_source_blocks,
+            &v_runs,
             &lr_unit_filters,
             &deblocked_v,
             &cdef_v,
             &deblocked_luma,
             &cdef_luma,
         )?;
+        crate::timing::report("filter_lr", lr_timer);
         Ok(self.workspace.freeze()?)
     }
 

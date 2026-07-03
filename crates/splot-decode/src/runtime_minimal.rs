@@ -397,6 +397,7 @@ fn decode_wienerns_lr_selectable_full_recon_key_frame(
     core: &FrameHeaderCore,
     header: IvfHeader,
 ) -> Result<MinimalRuntimeFrame> {
+    let intra_tile_timer = crate::timing::start();
     let region = reconstruct_ac0ej3_selectable_intra_region(
         bytes,
         options,
@@ -407,14 +408,20 @@ fn decode_wienerns_lr_selectable_full_recon_key_frame(
         core,
         true,
     )?;
+    crate::timing::report("key_intra_tile", intra_tile_timer);
+    let finish_timer = crate::timing::start();
     let mut sink = region.sink;
     sink.finish_intra_reconstruction(frame_envelope.offset)?;
+    crate::timing::report("key_intra_finish", finish_timer);
+    let filters_timer = crate::timing::start();
+    let filtered = sink.into_filtered_frame(
+        core,
+        deblock_quant_deltas(sequence, core),
+        frame_envelope.offset,
+    )?;
+    crate::timing::report("key_filters", filters_timer);
     Ok(MinimalRuntimeFrame {
-        frame: MinimalRuntimeDecodedFrame::Ten(sink.into_filtered_frame(
-            core,
-            deblock_quant_deltas(sequence, core),
-            frame_envelope.offset,
-        )?),
+        frame: MinimalRuntimeDecodedFrame::Ten(filtered),
         frame_cdfs: region.frame_cdfs,
         frame_rate_numerator: header.timebase_denominator,
         frame_rate_denominator: header.timebase_numerator,
@@ -428,7 +435,9 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
     preflight: impl FnOnce(IvfHeader) -> Result<()>,
 ) -> Result<Vec<MinimalRuntimeFrame>> {
     ensure_multiframe_plan_shape(plan)?;
+    let runtime_parse_timer = crate::timing::start();
     let parsed = parse_bitstream_partial(bytes);
+    crate::timing::report("runtime_reparse", runtime_parse_timer);
     let (ivf, header) = require_multiframe_ivf(&parsed)?;
     preflight(header)?;
 
@@ -575,6 +584,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                         missing_capability_message!("inter.reference_count valid_refs>2"),
                     ));
                 }
+                let inter_frame_timer = crate::timing::start();
                 let (inter_frame, inter_core, frame_cdfs) = match sequence.general.bit_depth_idc {
                     BitDepthIdc::Eight => {
                         let (store, meta) = reference.build_store_eight(&frames)?;
@@ -685,6 +695,7 @@ pub(crate) fn decode_minimal_frames_from_plan_with_ivf_preflight(
                         )
                     }
                 };
+                crate::timing::report("inter_frame_decode", inter_frame_timer);
                 let inter_frame = MinimalRuntimeFrame {
                     frame: inter_frame,
                     frame_cdfs,
@@ -1879,6 +1890,7 @@ mod inter;
 mod intra_edge;
 mod intra_prediction;
 mod limits;
+mod plane_bands;
 mod reference_buffer;
 mod residual_pipeline;
 mod wienerns_lr;
