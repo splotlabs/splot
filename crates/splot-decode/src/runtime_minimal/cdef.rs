@@ -359,6 +359,13 @@ impl CdefBlockCtx {
     }
 }
 
+/// Derives one 8x8 block's § 7.18.1 strengths/direction and filters its planes.
+///
+/// The § 7.18.2 direction search runs only when a primary strength is nonzero
+/// (dir is forced to 0 otherwise, and var only rescales the luma primary
+/// strength, so a zero base stays zero). A plane whose effective strengths are
+/// both 0 yields `None`: the § 7.18.3 filter is then the identity (`constrain`
+/// returns 0, the clamp brackets the center), leaving the pre-CDEF samples.
 fn compute_cdef_block<T: ReconSample>(
     ctx: &CdefBlockCtx,
     luma_snap: &PlaneSnapshot,
@@ -377,9 +384,6 @@ fn compute_cdef_block<T: ReconSample>(
     let uv_pri = ctx.params.uv_pri << ctx.coeff_shift;
     let uv_sec = ctx.params.uv_sec << ctx.coeff_shift;
 
-    // The § 7.18.2 direction search only feeds the primary filters: dir is
-    // forced to 0 for a plane whose primary strength is 0, and var only
-    // rescales the luma primary strength (a zero base stays zero).
     let (y_dir, var) = if pri_base == 0 && uv_pri == 0 {
         (0, 0)
     } else {
@@ -419,9 +423,6 @@ fn compute_cdef_block<T: ReconSample>(
     let uv_damping = ctx.params.damping + ctx.coeff_shift as i32 - 1;
     let uv_filter = ctx.filter_ctx(uv_pri, uv_sec, uv_damping, uv_dir, 1);
 
-    // With both strengths 0 the § 7.18.3 filter is the identity (constrain
-    // returns 0 and the min/max clamp brackets the center), so the block's
-    // pre-CDEF samples are already in place and the write is elided.
     let plane_out = |identity: bool, plane, snap, filter: &CdefFilterCtx| {
         if identity {
             Ok(None)

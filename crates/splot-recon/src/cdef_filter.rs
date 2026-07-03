@@ -267,7 +267,10 @@ pub struct CdefBlockFilter {
 /// [`cdef_filter_sample`] per sample on all-available taps.
 ///
 /// Filtered samples are written to `out[i * w + j]` for `i in 0..h`,
-/// `j in 0..w`; `w` and `h` are clamped to 8.
+/// `j in 0..w`; `w` and `h` are clamped to 8. Every tap index provably stays
+/// inside the scratch: the center index is at least `2 * CDEF_PADDED_SIDE + 2`
+/// and the largest tap displacement is `2 * CDEF_PADDED_SIDE + 2` in either
+/// direction.
 pub fn cdef_filter_block_interior(
     pad: &[i32; CDEF_PADDED_AREA],
     w: usize,
@@ -300,8 +303,6 @@ pub fn cdef_filter_block_interior(
 
     for i in 0..h {
         for j in 0..w {
-            // Center index >= 2*12+2 and |rel| <= 26, so every tap index stays
-            // inside the CDEF_PADDED_AREA scratch.
             let center_index = (i + 2) * CDEF_PADDED_SIDE + (j + 2);
             let center = pad[center_index];
             let mut sum = 0i32;
