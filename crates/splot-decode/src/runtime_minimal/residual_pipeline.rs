@@ -649,8 +649,8 @@ impl ResidualPlanePlan {
             deblock.record_luma_unit(
                 self.y / 4,
                 self.x / 4,
-                self.residual_width4,
-                self.residual_height4,
+                self.tx.width4(),
+                self.tx.height4(),
                 self.tx_size,
                 qindex,
             );
