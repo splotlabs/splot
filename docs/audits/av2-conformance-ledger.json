@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "a246fb5bdb703fbc530853a01b6ac69c5164e414",
+  "audited_commit": "d71758f86a8ec9fb611b9caa48a6616a04ea3dec",
   "outcome": "success",
   "files": [
     {
@@ -860,7 +860,7 @@
     },
     {
       "path": "crates/splot-core/src/headers/frame/info.rs",
-      "sha256": "eb42d19813a94bf33c0166ef12e4c851fb50bd94aa062ce864db572f205d0a9c",
+      "sha256": "85fd194582ec65781e8bbc9741b1ddd4ff21fefe1eee0662102d31a6851f336e",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.18.2-FRAME-HEADER-INFO"
@@ -25421,6 +25421,29 @@
       "feature_ids": [
         "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-deblock-geometry-lr-ref-filters/proposal.md",
+      "sha256": "cf2a1d227f49d04ff06599a0a02211afb7fdb2f6470d7cf83407d85cce037226",
+      "scope_kind": "openspec",
+      "feature_ids": [
+        "DECODE-FIRST-INTER-FRAME-FRONTIER"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-deblock-geometry-lr-ref-filters/specs/decoder-support/spec.md",
+      "sha256": "7519b9b896abf3337351105f81cff801129c33b77200ba4f2eec59027afb7c21",
+      "scope_kind": "openspec",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "openspec/changes/decode-deblock-geometry-lr-ref-filters/tasks.md",
+      "sha256": "3502fa46393954e445095cc676715cd8b57b66e9c14676dbfe406d7b2e29dfb4",
+      "scope_kind": "openspec",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
