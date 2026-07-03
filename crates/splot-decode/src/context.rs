@@ -94,15 +94,20 @@ impl DecodeContext {
         bytes: &[u8],
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
+        let plan_started = crate::timing::start();
         let plan = self.plan_bytes(bytes, options)?;
-        self.pool.install(|| {
+        crate::timing::report("plan", plan_started);
+        let runtime_started = crate::timing::start();
+        let report = self.pool.install(|| {
             crate::runtime_hash::decode_hash_report_from_plan(
                 bytes,
                 &options,
                 &plan,
                 self.threads(),
             )
-        })
+        });
+        crate::timing::report("runtime_decode", runtime_started);
+        report
     }
 
     /// Decodes the documented minimal tier and writes complete raw sample bytes.
@@ -123,7 +128,9 @@ impl DecodeContext {
         options: DecodeOptions,
         mut writer: W,
     ) -> Result<()> {
+        let plan_started = crate::timing::start();
         let plan = self.plan_bytes(bytes, options)?;
+        crate::timing::report("plan", plan_started);
         let raw = self
             .pool
             .install(|| crate::runtime_raw::encode_raw_stream_from_plan(bytes, &options, &plan))?;

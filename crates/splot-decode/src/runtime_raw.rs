@@ -16,8 +16,11 @@ pub(crate) fn encode_raw_stream_from_plan(
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<u8>> {
+    let decode_started = crate::timing::start();
     let outputs =
         crate::runtime_minimal::decode_minimal_frames_from_plan(bitstream, options, plan)?;
+    crate::timing::report("runtime_decode", decode_started);
+    let serialize_started = crate::timing::start();
     let mut bytes = Vec::new();
     for output in &outputs {
         match &output.frame {
@@ -25,6 +28,7 @@ pub(crate) fn encode_raw_stream_from_plan(
             MinimalRuntimeDecodedFrame::Ten(frame) => write_raw_frame(frame, &mut bytes)?,
         }
     }
+    crate::timing::report("raw_serialize", serialize_started);
     options
         .limits()
         .ensure(crate::DecodeLimitName::MaxOutputBytes, bytes.len() as u64)?;
