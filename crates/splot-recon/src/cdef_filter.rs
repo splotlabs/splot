@@ -507,7 +507,7 @@ mod tests {
         for (coeff_shift, max_sample) in [(0u32, 255u32), (2, 1023)] {
             let mut state = 0x1234_5678u32 ^ (coeff_shift * 77);
             let mut pad = [0i32; CDEF_PADDED_AREA];
-            for cell in pad.iter_mut() {
+            for cell in &mut pad {
                 state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 *cell = ((state >> 16) % (max_sample + 1)) as i32;
             }

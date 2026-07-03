@@ -422,24 +422,19 @@ fn compute_cdef_block<T: ReconSample>(
     // With both strengths 0 the § 7.18.3 filter is the identity (constrain
     // returns 0 and the min/max clamp brackets the center), so the block's
     // pre-CDEF samples are already in place and the write is elided.
+    let plane_out = |identity: bool, plane, snap, filter: &CdefFilterCtx| {
+        if identity {
+            Ok(None)
+        } else {
+            compute_cdef_filter_plane::<T>(plane, snap, filter)
+        }
+    };
     let y_zero = pri_str == 0 && sec_str == 0;
     let uv_zero = uv_pri == 0 && uv_sec == 0;
     Ok([
-        if y_zero {
-            None
-        } else {
-            compute_cdef_filter_plane::<T>(PlaneId::Y, luma_snap, &y_filter)?
-        },
-        if uv_zero {
-            None
-        } else {
-            compute_cdef_filter_plane::<T>(PlaneId::U, u_snap, &uv_filter)?
-        },
-        if uv_zero {
-            None
-        } else {
-            compute_cdef_filter_plane::<T>(PlaneId::V, v_snap, &uv_filter)?
-        },
+        plane_out(y_zero, PlaneId::Y, luma_snap, &y_filter)?,
+        plane_out(uv_zero, PlaneId::U, u_snap, &uv_filter)?,
+        plane_out(uv_zero, PlaneId::V, v_snap, &uv_filter)?,
     ])
 }
 
