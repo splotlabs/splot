@@ -16,5 +16,9 @@
 - [x] 6. Motion compensation: strided borrowed `ReferencePlaneView` and the
       unscaled-step contiguous-row subpel fast path.
 - [x] 7. Batch raw serialization and hash digest updates per row.
-- [x] 8. Re-measure the phase table; confirm bit-exact raw sha256; run
+- [x] 8. Band both deblock passes on the owned pool (row bands for vertical
+      edges, column bands for horizontal edges) behind the callee-side
+      guard; flatten CfL plane reads; bucket LR coalescing per row; prove
+      `write_rect` row bounds once per rectangle.
+- [x] 9. Re-measure the phase table; confirm bit-exact raw sha256; run
       `cargo xtask ci`.

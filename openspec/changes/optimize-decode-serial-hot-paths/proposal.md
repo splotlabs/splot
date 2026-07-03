@@ -53,6 +53,11 @@ tables, rounding, or clamping:
   § 7.13.3.18 convolution gains an unscaled-step contiguous-row fast path
   with the general path kept as the fallback for scaled or clipped blocks.
 - Batch § 6.16.13 raw serialization and frame-hash digest updates per row.
+- Deblock both § 7.17 passes as disjoint 4-row / 4-column bands on the
+  context's owned pool behind the documented `on_multiworker_pool()`
+  callee-side guard (pass 0 filters purely horizontal perpendicular lines,
+  pass 1 purely vertical ones); flatten the CfL/MHCCP clamped plane reads;
+  bucket LR run coalescing per row; prove `write_rect` row bounds once.
 
 ## Non-goals
 
@@ -62,7 +67,7 @@ tables, rounding, or clamping:
 - No stream-specific logic; all changes are generic decoder paths.
 - No new dependency, no decoder architecture rewrite, no second decode path.
 - No new pools and no change to the concurrency model or `--threads`
-  semantics.
+  semantics; the deblock bands use the existing callee-side pool guard.
 
 ## Acceptance criteria
 
