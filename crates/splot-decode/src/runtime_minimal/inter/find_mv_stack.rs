@@ -1640,10 +1640,10 @@ impl WarpParamBank {
 /// scan, the § 7.12.2.21 bank fill, and the § 7.12.2.20 global-MV dedup.
 /// With `derive_wrl` (§ 5.18.2 `DeriveWrl`), the § 7.12.2 `WarpParamStack`
 /// is built alongside: corner-derived model (steps 4-5), the § 7.12.2.9
-/// spatial inserts fired from every scan point, then the step-22 tail (warp
-/// bank newest-first, `gm_params` — identity while global-motion frames
-/// defer at the frame gate — and two identity defaults). The § 7.12.2.5
-/// col-scan gap therefore also applies to the warp stack.
+/// spatial inserts fired from every scan point (the 7 discrete probes and
+/// the § 7.12.2.5 col scan), then the step-22 tail (warp bank newest-first,
+/// `gm_params` — identity while global-motion frames defer at the frame
+/// gate — and two identity defaults).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn find_mv_stack(
     grid: &NeighbourMvGrid,
@@ -1677,8 +1677,16 @@ pub(super) fn find_mv_stack(
         );
     }
 
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): 7.12.2.5 Scan col, 7.12.2.22 derived-SMVP fill
+    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): 7.12.2.22 derived-SMVP fill
     let num_nearest = entries.len();
+    scan_mv_stack_col(
+        grid,
+        block,
+        -3,
+        &mut entries,
+        &mut prune_count,
+        warp.as_mut(),
+    );
     let use_sort = match drl_reorder {
         DrlReorder::Always => true,
         DrlReorder::Constraint => !use_temporal_first && num_nearest >= 4,
@@ -1686,7 +1694,7 @@ pub(super) fn find_mv_stack(
     };
     if use_sort && num_nearest > 1 {
         let mut max_idx = 0usize;
-        for (idx, entry) in entries.iter().enumerate().skip(1) {
+        for (idx, entry) in entries.iter().enumerate().take(num_nearest).skip(1) {
             if entry.weight > entries[max_idx].weight {
                 max_idx = idx;
             }
@@ -1723,6 +1731,44 @@ struct MvStackEntry {
     mv: Mv,
     weight: u32,
     offsets: (i32, i32),
+}
+
+/// § 7.12.2.5: scan the far-left column, skipping points whose column starts
+/// the same block as the immediate left neighbour (`MiColBase` gate).
+fn scan_mv_stack_col(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    delta_col: i32,
+    entries: &mut Vec<MvStackEntry>,
+    prune_count: &mut usize,
+    mut warp: Option<&mut WarpParamStack>,
+) {
+    let delta_col = delta_col + i32::from(block.bw4 == 1 && block.mi_col & 1 == 1);
+    let bh4 = block.bh4 as i32;
+    for delta_row in [Some(bh4 - 1), (bh4 > 1).then_some(0)]
+        .into_iter()
+        .flatten()
+    {
+        let mv_row = block.mi_row as i32 + delta_row;
+        let mv_col = block.mi_col as i32 + delta_col;
+        let Some(cell) = grid.get(mv_row, mv_col) else {
+            continue;
+        };
+        let Some(left) = grid.get(mv_row, block.mi_col as i32 - 1) else {
+            continue;
+        };
+        if cell.base_c == left.base_c {
+            continue;
+        }
+        scan_mv_stack_probe(
+            grid,
+            block,
+            RelativeProbe::new(delta_row, delta_col),
+            entries,
+            prune_count,
+            warp.as_deref_mut(),
+        );
+    }
 }
 
 fn scan_mv_stack_probe(

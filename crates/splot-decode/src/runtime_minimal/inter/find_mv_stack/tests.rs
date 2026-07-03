@@ -1167,3 +1167,123 @@ fn constraint_reorder_promotes_max_weight_nearest_unless_temporal_first() {
         "scan order is preserved when the reorder is suppressed"
     );
 }
+
+fn record_two_wide_column(grid: &mut NeighbourMvGrid, c: usize, mv: Mv) {
+    grid.record_block(
+        8,
+        c,
+        2,
+        8,
+        true,
+        0,
+        None,
+        NeighbourYMode::NewMv,
+        mv,
+        true,
+        SWITCHABLE_FILTERS,
+        false,
+        BlockPrecisionRecord::default(),
+    );
+}
+
+#[test]
+fn scan_col_adds_far_left_candidate_when_column_starts_new_block() {
+    let mut grid = empty_grid();
+    let left_mv = Mv { row: 0, col: 16 };
+    let far_mv = Mv { row: 0, col: 48 };
+    record_two_wide_column(&mut grid, 6, left_mv);
+    record_two_wide_column(&mut grid, 4, far_mv);
+
+    let stack = find_mv_stack(
+        &grid,
+        &block_at(8, 8),
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+        false,
+    );
+    assert_eq!(
+        stack.candidate(0),
+        left_mv,
+        "nearest scan finds the left block"
+    );
+    assert_eq!(
+        stack.candidate(1),
+        far_mv,
+        "7.12.2.5 scan col reaches the block starting at deltaCol -3"
+    );
+    assert_eq!(stack.num_mv_found(), 3, "left + scan-col + zero fallback");
+}
+
+#[test]
+fn scan_col_skips_undecoded_far_column() {
+    let mut grid = empty_grid();
+    let left_mv = Mv { row: 0, col: 16 };
+    record_two_wide_column(&mut grid, 6, left_mv);
+
+    let stack = find_mv_stack(
+        &grid,
+        &block_at(8, 8),
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+        false,
+    );
+    assert_eq!(
+        stack.num_mv_found(),
+        2,
+        "an unwritten deltaCol -3 column contributes nothing"
+    );
+}
+
+#[test]
+fn scan_col_feeds_warp_stack() {
+    let mut grid = empty_grid();
+    let warp_params = [-3_i64 << 16, 5 << 16, 65536 + 1024, -192, 448, 65536 - 2048];
+    record_two_wide_column(&mut grid, 6, Mv { row: 0, col: 16 });
+    grid.record_warp_block(
+        8,
+        4,
+        2,
+        8,
+        0,
+        NeighbourYMode::Other,
+        Mv { row: -8, col: 24 },
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        MotionMode::LocalWarp,
+        warp_params,
+        BlockPrecisionRecord::default(),
+    );
+
+    let stack = find_mv_stack(
+        &grid,
+        &block_at(8, 8),
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        true,
+        DrlReorder::Disabled,
+        false,
+    );
+    assert_eq!(
+        stack.warp_candidate(0),
+        warp_params,
+        "7.12.2.5 scan points insert warp neighbours into the stack"
+    );
+    assert_eq!(
+        stack.warp_candidate(1),
+        warp_params,
+        "both scan-col rows insert without dedup"
+    );
+    assert_eq!(
+        stack.warp_candidate(2),
+        DEFAULT_WARP_PARAMS,
+        "the tail fills identity defaults after the scan-col inserts"
+    );
+}
