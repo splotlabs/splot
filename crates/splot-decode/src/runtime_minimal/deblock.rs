@@ -161,7 +161,12 @@ fn deblock_plane_pass<T: ReconSample>(
     let mut strengths = StrengthCache::default();
     for r in (0..mi_rows).step_by(plane_pass.row_step) {
         for c in (0..mi_cols).step_by(plane_pass.col_step) {
-            deblock_filter_edge(&mut ctx, grid, plane_pass.edge_context(r, c), &mut strengths)?;
+            deblock_filter_edge(
+                &mut ctx,
+                grid,
+                plane_pass.edge_context(r, c),
+                &mut strengths,
+            )?;
         }
     }
     Ok(())
@@ -185,9 +190,7 @@ impl<'a, T: ReconSample> PlaneCtx<'a, T> {
         width: usize,
         height: usize,
     ) -> Result<Self, DeblockError> {
-        let required = stride
-            .checked_mul(height)
-            .ok_or(DeblockError::Workspace)?;
+        let required = stride.checked_mul(height).ok_or(DeblockError::Workspace)?;
         if width > stride || required > samples.len() {
             return Err(DeblockError::Workspace);
         }
@@ -695,9 +698,7 @@ pub(crate) enum DeblockError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
-
-    use super::super::test_support::yuv420_workspace;
+    use super::super::test_support::{yuv420_workspace, yuv420_workspace_with};
     use super::*;
 
     fn with_plane_ctx<T: ReconSample, R>(
@@ -799,16 +800,12 @@ mod tests {
         assert!(p0 > 100 || q0 < 108, "{reason}: p0={p0} q0={q0}");
     }
 
-    fn yuv420_workspace_10bit(width: usize, height: usize, fill: u16) -> CurrentFrameWorkspace<u16> {
-        let info = DecodedFrameInfo::new(
-            OutputIndex::new(0),
-            BitDepth::Ten,
-            PixelFormat::Yuv420,
-            PlaneSize::new(width, height).unwrap(),
-            PlaneRect::new(0, 0, width, height).unwrap(),
-        )
-        .unwrap();
-        CurrentFrameWorkspace::<u16>::new(info, fill).unwrap()
+    fn yuv420_workspace_10bit(
+        width: usize,
+        height: usize,
+        fill: u16,
+    ) -> CurrentFrameWorkspace<u16> {
+        yuv420_workspace_with(BitDepth::Ten, width, height, fill)
     }
 
     fn splat_asymmetric<T: ReconSample>(
@@ -818,15 +815,14 @@ mod tests {
     ) {
         let (width, height) = coded_plane_dimensions(ws, plane).unwrap();
         let mut state = 0x9e37_79b9_7f4a_7c15u64;
-        for y in 0..height {
-            for x in 0..width {
-                state = state
-                    .wrapping_mul(6_364_136_223_846_793_005)
-                    .wrapping_add(1_442_695_040_888_963_407);
-                let value = ((state >> 33) as u16) % (max_sample + 1);
-                ws.set_reconstructed_sample(plane, x, y, T::try_from_u16(value).unwrap())
-                    .unwrap();
-            }
+        let coords = (0..height).flat_map(|y| (0..width).map(move |x| (x, y)));
+        for (x, y) in coords {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let value = ((state >> 33) as u16) % (max_sample + 1);
+            ws.set_reconstructed_sample(plane, x, y, T::try_from_u16(value).unwrap())
+                .unwrap();
         }
     }
 
@@ -854,14 +850,20 @@ mod tests {
         perp: PerpLine,
         params: DeblockSampleFilter,
     ) {
-        let mut line = reference_gather(ws, plane, perp);
-        let before = line.clone();
+        let before = reference_gather(ws, plane, perp);
+        let mut line = before.clone();
         deblock_sample_filter(&mut line, &params).unwrap();
-        for (idx, (&new, &old)) in line.iter().zip(before.iter()).enumerate() {
-            if new.to_u16() == old.to_u16() {
-                continue;
-            }
-            let (fx, fy) = perp.offset(idx as isize - params.boundary as isize).unwrap();
+        let changed: Vec<(usize, T)> = line
+            .iter()
+            .zip(before.iter())
+            .enumerate()
+            .filter(|(_, (new, old))| new.to_u16() != old.to_u16())
+            .map(|(idx, (&new, _))| (idx, new))
+            .collect();
+        for (idx, new) in changed {
+            let (fx, fy) = perp
+                .offset(idx as isize - params.boundary as isize)
+                .unwrap();
             ws.set_reconstructed_sample(plane, fx, fy, new).unwrap();
         }
     }

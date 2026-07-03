@@ -558,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn plane_ref_rejects_stride_smaller_than_visible_row() {
+    fn plane_ref_rejects_bad_stride_and_visible_rectangle_past_buffer() {
         let samples = [0_u8; 6];
         assert!(matches!(
             PlaneRef::new(&samples, 2, rect(0, 0, 3, 2)),
@@ -567,11 +567,6 @@ mod tests {
                 storage_width: 3
             })
         ));
-    }
-
-    #[test]
-    fn plane_ref_rejects_visible_rectangle_past_buffer() {
-        let samples = [0_u8; 6];
         assert!(matches!(
             PlaneRef::new(&samples, 3, rect(0, 0, 3, 3)),
             Err(ReconError::BufferLengthMismatch {

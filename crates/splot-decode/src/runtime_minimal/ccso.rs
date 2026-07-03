@@ -245,9 +245,7 @@ fn ccso_plane<T: ReconSample>(
                     )?,
                 ))
             };
-            let row_start = y3
-                .checked_mul(plane_stride)
-                .ok_or(CcsoError::Workspace)?;
+            let row_start = y3.checked_mul(plane_stride).ok_or(CcsoError::Workspace)?;
             let plane_row = plane_samples
                 .get(row_start..row_start.checked_add(x_end).ok_or(CcsoError::Workspace)?)
                 .ok_or(CcsoError::Workspace)?;
