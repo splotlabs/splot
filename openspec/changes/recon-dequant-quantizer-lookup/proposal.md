@@ -2,7 +2,7 @@
 
 The decoder reconstruction frontier needs the residual path after intra
 prediction: dequantization, inverse transforms, and residual addition
-(`docs/DECODER-ROADMAP.md`). AV2 § 7.14.2 defines the quantizer-value lookup
+(`docs/DECODER-SUPPORT-MATRIX.toml`). AV2 § 7.14.2 defines the quantizer-value lookup
 that every dequantized coefficient depends on, and it is small, pure,
 table-driven, and scheduler-free — the natural first residual-path primitive in
 one PR, directly reusable by future decode and encoder reconstruction.
@@ -55,5 +55,5 @@ None.
 - `docs/IMPLEMENTATION-MATRIX.toml`
 - `docs/DECODER-SUPPORT-MATRIX.toml`
 - generated status/coverage docs
-- `docs/DECODER-ROADMAP.md`
+- `docs/DECODER-SUPPORT-MATRIX.toml`
 - `openspec/specs/decoder-support/spec.md`

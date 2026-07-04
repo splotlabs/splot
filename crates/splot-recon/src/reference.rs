@@ -142,7 +142,7 @@ impl Iterator for ReferenceRefreshSlots {
 ///
 /// The store moves or shares payload handles and never duplicates them: it does
 /// not implement `Clone` and never requires `F: Clone` (see
-/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+/// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
 #[derive(Debug, Eq, PartialEq)]
 pub struct ReferenceFrameStore<F> {
     slots: Vec<Option<F>>,

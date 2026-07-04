@@ -17,8 +17,9 @@
 
 ## 4. Status Docs And Gates
 
-- [x] 4.1 Update `docs/IMPLEMENTATION-MATRIX.toml`, `docs/DECODER-SUPPORT-MATRIX.toml`, `docs/DECODER-ROADMAP.md`, and `docs/TESTING.md` with the scoped helper and exclusions.
-- [x] 4.2 Regenerate `docs/FEATURE-STATUS.md`, `docs/SPEC-COVERAGE.md`, `docs/DECODER-SUPPORT-STATUS.md`, and `docs/DECODER-SPEC-COVERAGE.md`.
+- [x] 4.1 Update `docs/IMPLEMENTATION-MATRIX.toml`, `docs/DECODER-SUPPORT-MATRIX.toml`, `docs/DECODER-SUPPORT-MATRIX.toml`, and `docs/TESTING.md` with the scoped helper and exclusions.
+- [x] 4.2 Run feature-status, decoder-support, and decoder-conformance coverage
+      checks; generated status/coverage renders remain on demand.
 - [x] 4.3 Run `openspec validate --all --no-interactive`, `cargo xtask check-feature-status`, `cargo xtask check-decoder-support`, `cargo xtask check-decoder-conformance-coverage`, `cargo xtask ci`, and `git diff --check`.
 
 ## 5. Review And PR

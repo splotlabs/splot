@@ -31,7 +31,7 @@ rules:
     - Keep CLI logic thin; library behavior belongs in crates.
     - Use typed errors and structured diagnostics instead of runtime panics.
     - Cite AV2 spec sections for syntax, reconstruction, reference, or layer behavior.
-    - Update docs/SPEC-MAPPING.md before implementing bitstream-affecting behavior.
+    - Update docs/IMPLEMENTATION-MATRIX.toml before implementing bitstream-affecting behavior.
   specs:
     - Requirements must use MUST/SHALL style and include concrete scenarios.
     - Validator requirements should mention stable rule IDs and severity.

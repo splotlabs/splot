@@ -2,7 +2,7 @@
 #
 # Copy this block into the matrix and edit it. The canonical schema, the allowed
 # values for every field, and the proof rules live in
-# docs/IMPLEMENTATION-MATRIX.schema.md. Run `cargo xtask check-feature-status`
+# docs/IMPLEMENTATION-MATRIX.toml. Run `cargo xtask check-feature-status`
 # after editing.
 
 [[feature]]

@@ -3,8 +3,8 @@
 ## Matrix and docs
 
 - [ ] Add or update `docs/IMPLEMENTATION-MATRIX.toml`.
-- [ ] Regenerate `docs/FEATURE-STATUS.md` with `cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md`.
-- [ ] Update `docs/SPEC-MAPPING.md` if a new AV2 section is modeled.
+- [ ] Run `cargo xtask check-feature-status`.
+- [ ] Update matrix sources/proof when a new AV2 section is modeled.
 
 ## Implementation
 
@@ -26,4 +26,5 @@
 - [ ] `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
 - [ ] `cargo test --workspace --all-targets --locked`
 - [ ] `cargo xtask check-feature-status`
+- [ ] `cargo xtask check-doc-budget`
 - [ ] `cargo xtask ci`

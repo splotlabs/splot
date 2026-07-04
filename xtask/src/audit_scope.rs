@@ -541,11 +541,7 @@ fn force_wide_review_reason(path: &str) -> Option<String> {
         }
         "Cargo.toml" => Some("workspace-membership".to_owned()),
         "docs/IMPLEMENTATION-MATRIX.toml" => Some("implementation-matrix".to_owned()),
-        "docs/SPEC-MAPPING.md" => Some("spec-mapping".to_owned()),
-        "docs/FEATURE-TRACKING.md" => Some("feature-tracking".to_owned()),
         _ if path.starts_with(".codex/skills/splot-") => Some("audit-skill".to_owned()),
-        _ if path.starts_with(".claude/skills/splot-") => Some("audit-skill".to_owned()),
-        _ if path.starts_with(".github/skills/splot-") => Some("audit-skill".to_owned()),
         _ if matches!(
             path,
             "xtask/src/audit_scope.rs" | "xtask/src/git_util.rs" | "xtask/src/main.rs"
@@ -622,16 +618,19 @@ fn scope_kind(path: &str, workspace_members: &[WorkspaceMember]) -> Option<Strin
         ".github/copilot-instructions.md" | ".github/PULL_REQUEST_TEMPLATE.md" => {
             Some("agent-guidance".to_owned())
         }
+        _ if path.starts_with(".claude/skills/")
+            || path.starts_with(".codex/skills/")
+            || path.starts_with(".github/skills/")
+            || path.starts_with(".github/prompts/") =>
+        {
+            Some("agent-guidance".to_owned())
+        }
         _ if path.starts_with("docs/") => Some("docs".to_owned()),
         _ if path.starts_with("openspec/") => Some("openspec".to_owned()),
         _ if path.starts_with("tests/conformance/") => Some("conformance-corpus".to_owned()),
         _ if path.starts_with("fuzz/") => Some("fuzz".to_owned()),
         _ if path.starts_with("scripts/") => Some("automation".to_owned()),
         _ if path.starts_with(".github/workflows/") => Some("automation".to_owned()),
-        _ if path.starts_with(".github/prompts/") => Some("agent-guidance".to_owned()),
-        _ if path.starts_with(".github/skills/") => Some("agent-guidance".to_owned()),
-        _ if path.starts_with(".codex/skills/") => Some("agent-guidance".to_owned()),
-        _ if path.starts_with(".claude/skills/") => Some("agent-guidance".to_owned()),
         _ => None,
     }
 }
@@ -672,10 +671,7 @@ fn reviewer_lanes(path: &str, scope_kind: &str) -> BTreeSet<String> {
     if contains_any(path, &["test", "tests", "fuzz", "conformance", "fixtures"]) {
         lanes.insert("tests-fuzz-conformance".to_owned());
     }
-    if contains_any(
-        path,
-        &["IMPLEMENTATION-MATRIX", "FEATURE-TRACKING", "openspec/"],
-    ) {
+    if contains_any(path, &["IMPLEMENTATION-MATRIX", "openspec/"]) {
         lanes.insert("feature-matrix-openspec".to_owned());
     }
     if scope_kind == "agent-guidance" || path == "AGENTS.md" || path == "CLAUDE.md" {
@@ -2266,6 +2262,18 @@ edition = "2024"
     }
 
     #[test]
+    fn scope_kind_tracks_agent_guidance_directories() {
+        for path in [
+            ".claude/skills/splot-doc-audit/SKILL.md",
+            ".codex/skills/splot-doc-audit/SKILL.md",
+            ".github/skills/splot-doc-audit.md",
+            ".github/prompts/review.md",
+        ] {
+            assert_eq!(scope_kind(path, &[]).as_deref(), Some("agent-guidance"));
+        }
+    }
+
+    #[test]
     fn build_report_normalizes_custom_ledger_paths_before_exclusion() -> Result<()> {
         let root = temp_git_repo("audit-scope-custom-ledger-normalized")?;
         std::fs::create_dir_all(root.join("docs/audits"))?;
@@ -2360,11 +2368,7 @@ edition = "2024"
             ),
             ("Cargo.toml", "workspace-membership"),
             ("docs/IMPLEMENTATION-MATRIX.toml", "implementation-matrix"),
-            ("docs/SPEC-MAPPING.md", "spec-mapping"),
-            ("docs/FEATURE-TRACKING.md", "feature-tracking"),
             (".codex/skills/splot-doc-audit/SKILL.md", "audit-skill"),
-            (".claude/skills/splot-doc-audit/SKILL.md", "audit-skill"),
-            (".github/skills/splot-doc-audit/SKILL.md", "audit-skill"),
             ("xtask/src/audit_scope.rs", "audit-scope-tooling"),
             ("xtask/src/git_util.rs", "audit-scope-tooling"),
             ("xtask/src/main.rs", "audit-scope-tooling"),

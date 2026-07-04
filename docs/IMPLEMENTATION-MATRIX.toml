@@ -3,8 +3,8 @@
 # This file is the SINGLE SOURCE OF TRUTH for what is implemented and how far.
 # GitHub Issues/Projects and README checklists are NOT canonical.
 #
-# Schema, status model, and proof rules: docs/IMPLEMENTATION-MATRIX.schema.md
-# Workflow and conventions:               docs/FEATURE-TRACKING.md
+# Schema, status model, and proof rules are enforced by:
+#                                       cargo xtask check-feature-status
 # Render it:                              cargo xtask feature-status
 # Check it for drift:                     cargo xtask check-feature-status
 # Summarize coverage:                     cargo xtask spec-coverage
@@ -709,7 +709,7 @@ openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "core"
 risk = "high"
-notes = "Umbrella for sequence_header_obu(). All §5.4.1-§5.4.13 child configs parse (see the child rows); the umbrella stays partial because its own types/parse/tests stages are partial (deeper §5.4 cluster) per the do-not-close-before-children rule (docs/IMPLEMENTATION-MATRIX.schema.md § 7, not an AV2 section). The §6.4 cross-element semantic-validation residuals (repeated-header identity, §6.4.1 distinct-mlayer count, §6.4.12 cross-embedded-layer timing consistency) live on AV2-6.4-SEQUENCE-HEADER-SEMANTICS; the per-config tool-flag-vs-usage gating residuals are blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing (see the child rows). WRITER (seq-header-writer-general / seq-header-writer-configs / seq-header-writer-tile): the full sequence_header_obu() body is now inverted. The §5.4.1 general fields (write_sequence_header_general + dependency maps + cropping) and §5.4.13 decoder-model info are in crates/splot-core/src/write/seq_header.rs; the §5.4.3-5.4.8 config cascade + §5.4.9 seg_info in crates/splot-core/src/write/seq_config.rs; the §5.4.10 filter config and §5.4.2 tile config (incl. §5.18.7.3 tile_params) plus the composing pub fn write_sequence_header in crates/splot-core/src/write/seq_tile.rs. write_sequence_header recomputes the parser's derivations (monochrome / single_picture / seq_sb_size / TileParamsInput), validates the whole header up front (reject-before-write, including every gated-off non-default field), and emits general -> partition -> segment -> intra -> inter -> scc -> tq -> filter -> tile -> film_grain_params_present_flag in §5.4.1 order with no OBU header / trailing bits. All §5.4.1-§5.4.13 child write rows are write=done and round-trip + byte-exact tested, so this umbrella write is done; its types/parse/tests stages stay partial on the deeper §5.4 cluster (do-not-close-before-children rule)."
+notes = "Umbrella for sequence_header_obu(). All §5.4.1-§5.4.13 child configs parse (see the child rows); the umbrella stays partial because its own types/parse/tests stages are partial (deeper §5.4 cluster) per the do-not-close-before-children rule (docs/IMPLEMENTATION-MATRIX.toml § 7, not an AV2 section). The §6.4 cross-element semantic-validation residuals (repeated-header identity, §6.4.1 distinct-mlayer count, §6.4.12 cross-embedded-layer timing consistency) live on AV2-6.4-SEQUENCE-HEADER-SEMANTICS; the per-config tool-flag-vs-usage gating residuals are blocked on AV2-5.18.2-FRAME-HEADER-INFO inter-path parsing (see the child rows). WRITER (seq-header-writer-general / seq-header-writer-configs / seq-header-writer-tile): the full sequence_header_obu() body is now inverted. The §5.4.1 general fields (write_sequence_header_general + dependency maps + cropping) and §5.4.13 decoder-model info are in crates/splot-core/src/write/seq_header.rs; the §5.4.3-5.4.8 config cascade + §5.4.9 seg_info in crates/splot-core/src/write/seq_config.rs; the §5.4.10 filter config and §5.4.2 tile config (incl. §5.18.7.3 tile_params) plus the composing pub fn write_sequence_header in crates/splot-core/src/write/seq_tile.rs. write_sequence_header recomputes the parser's derivations (monochrome / single_picture / seq_sb_size / TileParamsInput), validates the whole header up front (reject-before-write, including every gated-off non-default field), and emits general -> partition -> segment -> intra -> inter -> scc -> tq -> filter -> tile -> film_grain_params_present_flag in §5.4.1 order with no OBU header / trailing bits. All §5.4.1-§5.4.13 child write rows are write=done and round-trip + byte-exact tested, so this umbrella write is done; its types/parse/tests stages stay partial on the deeper §5.4 cluster (do-not-close-before-children rule)."
 
 [feature.status]
 mapped = "done"
@@ -3818,7 +3818,7 @@ openspec_change = "annex-a-profile-level-skeleton"
 tracking_issue = ""
 owner = "validator"
 risk = "high"
-notes = "Landed (static subset): the Annex A.4 level/tier value-space checks (annex-a/level-reserved on the activated seq_level_idx and on observed ops_level_idx for reserved 22-30; annex-a/high-tier-below-4-0 warning, sourced from the Table A.9 NOTE and unreachable in conformant syntax since seq_tier is only signaled for level_idx > 3) plus the Annex A.4 static level-limit checks on the parsed intra frame path (annex-a/frame-size-exceeds-level for MaxPicSize/MaxHSize/MaxVSize, annex-a/frame-size-below-minimum for the >= 16 rule, annex-a/tile-count-exceeds-level for MaxTiles/MaxTileCols), all skipped at seq_level_idx 31 and for reserved levels. The Table A.7/A.8/A.9 columns (LevelIdx 0-21 -> MaxPicSize, MaxHSize/MaxVSize, MaxTiles, MaxTileCols) are transcribed verbatim from the mirror in crates/splot-validate/src/annex_a.rs with per-row citations; rate columns are NOT transcribed. Remains (partial): the rate-based level constraints (MaxDisplayRate/MaxDecodeRate/MaxHeaderRate, CompressedSize, FrameSymbolCount, MaxLevelRefFrames, buffer model — owned by the Annex E change), the per-tile TileWidth/TileHeight scaling-factor constraints (TODO(spec: AV2-A-LEVELS-TIERS) in check_active_sequence_limits), the MultiStreamDecoderMode == 1 substream level scaling and the Table A.4 layer-budget bound (the IOP 0/1 combination flag must be 0; a TODO(spec: AV2-A-LEVELS-TIERS) in evaluate_annex_a_iop_window — the Table A.4 IOP-presence checks themselves landed on AV2-A-PROFILES under msdo-global-lcr-agreement), the § 6.10.4 per-frame conformance against each OPS-advertised ops_level_idx (the static level limits run only against the activated seq_level_idx; running them against operating-point levels needs operating-point-to-frame mapping the validator does not model yet, so the planned annex-a/frame-exceeds-ops-level diagnostic is backlogged — see the Planned diagnostics backlog in docs/VALIDATOR-ROADMAP.md and the TODO(spec: AV2-A-LEVELS-TIERS) in check_ops_level_tier_value_space), still-picture-gated constraints, and no AVM differential oracle has been run (avm_diff pending)."
+notes = "Landed (static subset): the Annex A.4 level/tier value-space checks (annex-a/level-reserved on the activated seq_level_idx and on observed ops_level_idx for reserved 22-30; annex-a/high-tier-below-4-0 warning, sourced from the Table A.9 NOTE and unreachable in conformant syntax since seq_tier is only signaled for level_idx > 3) plus the Annex A.4 static level-limit checks on the parsed intra frame path (annex-a/frame-size-exceeds-level for MaxPicSize/MaxHSize/MaxVSize, annex-a/frame-size-below-minimum for the >= 16 rule, annex-a/tile-count-exceeds-level for MaxTiles/MaxTileCols), all skipped at seq_level_idx 31 and for reserved levels. The Table A.7/A.8/A.9 columns (LevelIdx 0-21 -> MaxPicSize, MaxHSize/MaxVSize, MaxTiles, MaxTileCols) are transcribed verbatim from the mirror in crates/splot-validate/src/annex_a.rs with per-row citations; rate columns are NOT transcribed. Remains (partial): the rate-based level constraints (MaxDisplayRate/MaxDecodeRate/MaxHeaderRate, CompressedSize, FrameSymbolCount, MaxLevelRefFrames, buffer model — owned by the Annex E change), the per-tile TileWidth/TileHeight scaling-factor constraints (TODO(spec: AV2-A-LEVELS-TIERS) in check_active_sequence_limits), the MultiStreamDecoderMode == 1 substream level scaling and the Table A.4 layer-budget bound (the IOP 0/1 combination flag must be 0; a TODO(spec: AV2-A-LEVELS-TIERS) in evaluate_annex_a_iop_window — the Table A.4 IOP-presence checks themselves landed on AV2-A-PROFILES under msdo-global-lcr-agreement), the § 6.10.4 per-frame conformance against each OPS-advertised ops_level_idx (the static level limits run only against the activated seq_level_idx; running them against operating-point levels needs operating-point-to-frame mapping the validator does not model yet, so the planned annex-a/frame-exceeds-ops-level diagnostic is backlogged — see the Planned diagnostics backlog in docs/CONFORMANCE.md and the TODO(spec: AV2-A-LEVELS-TIERS) in check_ops_level_tier_value_space), still-picture-gated constraints, and no AVM differential oracle has been run (avm_diff pending)."
 
 [feature.status]
 mapped = "done"
@@ -6533,7 +6533,7 @@ openspec_change = "decoder-avm-oracle-corpus"
 tracking_issue = ""
 owner = "conformance"
 risk = "high"
-notes = "Committed decode-output differential over the reused CONF-AVM-VALID-STREAMS corpus (tests/conformance/vectors/): tests/conformance/decoder-oracle.toml records, per stream, the AVM decoder raw-output oracle sha256 (avmdec --i420 --rawvideo, visible I420 samples, §6.18) and an expected splot outcome. The committed CI runner (crates/splot-cli/tests/decoder_oracle.rs) decodes each fixture in-process through splot_decode and asserts must_pass (splot decode --output-format raw sha256 equals the recorded oracle) or xfail_splot (fails closed with a recorded decode/unsupported-feature rule id + unsupported reason). AVM is the LOCAL oracle-hash generator only and is never invoked/vendored by the runner, build, or CI; the oracle hashes are committed offline. As of the initial corpus: 47 must_pass, 21 xfail_splot, 0 mismatches (splot matches AVM byte-for-byte or fails closed). tests/conformance/decoder-oracle-coverage.toml is the capability taxonomy; docs/decoder/DECODER-ORACLE-COVERAGE.md is the generated coverage report (cargo xtask decoder-fixtures coverage), and cargo xtask decoder-fixtures verify + the coverage drift check run in cargo xtask ci. xfail_splot fixtures never block CI; an unexpected pass (XPASS) is reported and fails only in strict local mode (SPLOT_DECODER_ORACLE_STRICT_XPASS). Local regeneration tooling lives under tools/decoder-fixtures/. The live avm encode -> splot validate harness stays separate (avm-differential-harness)."
+notes = "Committed decode-output differential over the reused CONF-AVM-VALID-STREAMS corpus (tests/conformance/vectors/): tests/conformance/decoder-oracle.toml records, per stream, the AVM decoder raw-output oracle sha256 (avmdec --i420 --rawvideo, visible I420 samples, §6.18) and an expected splot outcome. The committed CI runner (crates/splot-cli/tests/decoder_oracle.rs) decodes each fixture in-process through splot_decode and asserts must_pass (splot decode --output-format raw sha256 equals the recorded oracle) or xfail_splot (fails closed with a recorded decode/unsupported-feature rule id + unsupported reason). AVM is the LOCAL oracle-hash generator only and is never invoked/vendored by the runner, build, or CI; the oracle hashes are committed offline. As of the initial corpus: 47 must_pass, 21 xfail_splot, 0 mismatches (splot matches AVM byte-for-byte or fails closed). tests/conformance/decoder-oracle-coverage.toml is the capability taxonomy; `cargo xtask decoder-fixtures coverage` renders the optional generated coverage report on demand, and `cargo xtask decoder-fixtures verify` plus the optional coverage drift check run in `cargo xtask ci`. xfail_splot fixtures never block CI; an unexpected pass (XPASS) is reported and fails only in strict local mode (SPLOT_DECODER_ORACLE_STRICT_XPASS). Local regeneration tooling lives under tools/decoder-fixtures/. The live avm encode -> splot validate harness stays separate (avm-differential-harness)."
 
 [feature.status]
 mapped = "done"
@@ -7399,7 +7399,7 @@ openspec_change = "validate-explain-rule"
 tracking_issue = ""
 owner = "cli"
 risk = "low"
-notes = "Adds `splot explain <rule-id>` (--json / --list) backed by a doc-generated diagnostic registry in splot-validate (crates/splot-validate/src/explain/, DiagnosticInfo + explain/all/did_you_mean). The registry (generated.rs) is generated from docs/VALIDATOR-DIAGNOSTICS.md by `cargo xtask gen-explain` (xtask/src/explain_registry.rs): it parses the 4-col emitted-diagnostics tables into id/severity/section/summary; `--check` (folded into cargo xtask ci) fails on drift, so the registry can never diverge from the CI-enforced doc or invent data. The generated table is rustfmt-stable (#[rustfmt::skip] + fully-qualified paths) and its id literals (all documented) keep check-diagnostic-registry green. The CLI is read-only: it changes no validator behavior and emits no diagnostics; an unknown id / missing arg is a clean exit-2 error with a same-namespace hint, never a panic. The 13 */syntax registry identifiers are excluded (not user-visible). The summary is the doc's one-line condition (no invented prose); richer per-id text would be added to the doc and flow through."
+notes = "Adds `splot explain <rule-id>` (--json / --list) backed by a doc-generated diagnostic registry in splot-validate (crates/splot-validate/src/explain/, DiagnosticInfo + explain/all/did_you_mean). The registry (generated.rs) is generated from docs/DIAGNOSTICS.md by `cargo xtask gen-explain` (xtask/src/explain_registry.rs): it parses the 4-col emitted-diagnostics tables into id/severity/section/summary; `--check` (folded into cargo xtask ci) fails on drift, so the registry can never diverge from the CI-enforced doc or invent data. The generated table is rustfmt-stable (#[rustfmt::skip] + fully-qualified paths) and its id literals (all documented) keep check-diagnostic-registry green. The CLI is read-only: it changes no validator behavior and emits no diagnostics; an unknown id / missing arg is a clean exit-2 error with a same-namespace hint, never a panic. The 13 */syntax registry identifiers are excluded (not user-visible). The summary is the doc's one-line condition (no invented prose); richer per-id text would be added to the doc and flow through."
 
 [feature.status]
 mapped = "done"
@@ -7425,7 +7425,7 @@ commands = [
     "cargo test -p splot-validate explain",
     "cargo test -p splot-cli --test explain_cli",
 ]
-fixtures = ["docs/VALIDATOR-DIAGNOSTICS.md"]
+fixtures = ["docs/DIAGNOSTICS.md"]
 diagnostics = []
 
 [[feature]]
@@ -7515,7 +7515,7 @@ openspec_change = "spec-coverage-doc"
 tracking_issue = ""
 owner = "automation"
 risk = "medium"
-notes = "Implements feature-status (table/json/markdown), check-feature-status (drift guard for the matrix plus the generated docs/FEATURE-STATUS.md, docs/SPEC-COVERAGE.md, and docs/spec-coverage-writer.md), spec-coverage (text summary; markdown renders the per-spec-section coverage document with spec-mirror links), and writer-coverage (writer-coverage-doc; text summary + markdown renders docs/spec-coverage-writer.md — one row per writable feature [every bitstream-syntax feature plus every feature with a landed writer] with its write maturity + module + the write-status counts, drift-guarded by check_writer_coverage_doc). Wired into `cargo xtask ci`."
+notes = "Implements feature-status (table/json/markdown), check-feature-status (drift guard for the matrix plus any committed generated renders), spec-coverage (text summary; markdown renders the per-spec-section coverage document with spec-mirror links on demand), and writer-coverage (text summary plus on-demand markdown render with one row per writable feature [every bitstream-syntax feature plus every feature with a landed writer], write maturity, module, and write-status counts). Wired into `cargo xtask ci`."
 
 [feature.status]
 mapped = "done"
@@ -7539,7 +7539,7 @@ commands = [
     "cargo xtask writer-coverage --format markdown --output docs/spec-coverage-writer.md",
     "cargo test -p xtask",
 ]
-fixtures = ["docs/spec-coverage-writer.md"]
+fixtures = []
 diagnostics = []
 
 [[feature]]
@@ -7591,7 +7591,7 @@ openspec_change = "diagnostic-registry-enforcement"
 tracking_issue = ""
 owner = "automation"
 risk = "low"
-notes = "Enforces that docs/VALIDATOR-DIAGNOSTICS.md lists exactly the diagnostic rule ids present in crates/splot-validate/src (between the diagnostics-registry markers). Extracts rule-id string literals from non-test, non-comment validator source and diffs against the documented set, failing on drift in either direction. Strict full-id superset of the prefix-level scan in XTASK-FEATURE-STATUS."
+notes = "Enforces that docs/DIAGNOSTICS.md lists exactly the diagnostic rule ids present in crates/splot-validate/src (between the diagnostics-registry markers). Extracts rule-id string literals from non-test, non-comment validator source and diffs against the documented set, failing on drift in either direction. Strict full-id superset of the prefix-level scan in XTASK-FEATURE-STATUS."
 
 [feature.status]
 mapped = "done"
@@ -7699,7 +7699,7 @@ openspec_change = "fixtures-manifest-and-check"
 tracking_issue = ""
 owner = "automation"
 risk = "low"
-notes = "Adds tests/fixtures/MANIFEST.toml (name/path/sha256/description/category/expect, reusing the conformance expect grammar) and `cargo xtask check-fixtures`: hermetic (no validator, no decoder, no network) verification that every committed tests/fixtures/*.av2 is listed once, exists, hashes to its recorded sha256, has a unique name/path, and a category consistent with expect, with no orphan committed fixtures. Wired into cargo xtask ci and a GitHub Actions step. The expect outcomes are separately verified against the real validator in-process by crates/splot-cli/tests/fixture_manifest.rs. Documented in docs/FIXTURES.md. Complements CONF-INSPECT-SNAPSHOTS and the conformance corpus."
+notes = "Adds tests/fixtures/MANIFEST.toml (name/path/sha256/description/category/expect, reusing the conformance expect grammar) and `cargo xtask check-fixtures`: hermetic (no validator, no decoder, no network) verification that every committed tests/fixtures/*.av2 is listed once, exists, hashes to its recorded sha256, has a unique name/path, and a category consistent with expect, with no orphan committed fixtures. Wired into cargo xtask ci and a GitHub Actions step. The expect outcomes are separately verified against the real validator in-process by crates/splot-cli/tests/fixture_manifest.rs. Documented in docs/TESTING.md. Complements CONF-INSPECT-SNAPSHOTS and the conformance corpus."
 
 [feature.status]
 mapped = "done"
@@ -7877,7 +7877,7 @@ commands = [
     "cargo xtask check-feature-status",
     "cargo xtask ci",
 ]
-fixtures = [".github/workflows/ci.yml", "README.md", "docs/agents/commands.md"]
+fixtures = [".github/workflows/ci.yml", "README.md", "AGENTS.md"]
 diagnostics = []
 
 [[feature]]
@@ -8098,7 +8098,7 @@ fixtures = [
     "crates/splot-decode/src/filters/mod.rs",
     "crates/splot-decode/src/support/mod.rs",
     "crates/splot-decode/src/tile/mod.rs",
-    "docs/DECODER-ARCHITECTURE.md",
+    "docs/ARCHITECTURE.md",
     "docs/DECISIONS/decoder-runtime-structure.md",
     "openspec/changes/decoder-runtime-structure/proposal.md",
     "openspec/changes/decoder-runtime-structure/tasks.md",
@@ -8114,7 +8114,7 @@ kind = "docs"
 spec_sections = []
 sources = []
 crate = "docs"
-module = "docs/FEATURE-TRACKING.md"
+module = "docs/IMPLEMENTATION-MATRIX.toml"
 openspec_change = "feature-tracking-framework"
 tracking_issue = ""
 owner = "docs"
@@ -8147,7 +8147,7 @@ kind = "docs"
 spec_sections = []
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "docs"
-module = "docs/VALIDATOR-ROADMAP.md"
+module = "docs/CONFORMANCE.md"
 openspec_change = "validator-coverage-roadmap"
 tracking_issue = ""
 owner = "docs"
@@ -8213,7 +8213,7 @@ kind = "docs"
 spec_sections = []
 sources = []
 crate = "docs"
-module = "docs/references/ENCODER-RESEARCH-NOTES.md"
+module = "docs/references/THIRD-PARTY-NOTICES.md"
 openspec_change = "encoder-reference-gate"
 tracking_issue = ""
 owner = "docs"
@@ -8246,7 +8246,7 @@ kind = "docs"
 spec_sections = []
 sources = []
 crate = "docs"
-module = "docs/ENCODER-GOAL.md"
+module = "docs/README.md"
 openspec_change = "encoder-program-contract"
 tracking_issue = ""
 owner = "docs"
@@ -8348,7 +8348,7 @@ kind = "docs"
 spec_sections = []
 sources = []
 crate = "docs"
-module = "docs/DECODER-ROADMAP.md"
+module = "docs/DECODER-SUPPORT-MATRIX.toml"
 openspec_change = "decoder-roadmap-matrix-boundary"
 tracking_issue = ""
 owner = "docs"
@@ -8381,12 +8381,12 @@ kind = "docs"
 spec_sections = []
 sources = []
 crate = "docs"
-module = "docs/DECODER-DIAGNOSTICS.md"
+module = "docs/DIAGNOSTICS.md"
 openspec_change = "decoder-diagnostic-registry"
 tracking_issue = ""
 owner = "docs"
 risk = "low"
-notes = "Adds docs/DECODER-DIAGNOSTICS.md as the canonical registry for emitted `splot decode` diagnostic rule IDs. The registry documents stable field names (`rule_id`, `severity`, `spec_section`, `matrix_row`, `feature_id`, `message`, `remediation`), current decoder emission roots, and the `decode/*` namespace rule. It now registers emitted `decode/unsupported-feature`, `decode/malformed-source`, `decode/resource-limit`, and `decode/output-error` diagnostics from the CLI byte-planner/runtime output handoff."
+notes = "Adds docs/DIAGNOSTICS.md as the canonical registry for emitted `splot decode` diagnostic rule IDs. The registry documents stable field names (`rule_id`, `severity`, `spec_section`, `matrix_row`, `feature_id`, `message`, `remediation`), current decoder emission roots, and the `decode/*` namespace rule. It now registers emitted `decode/unsupported-feature`, `decode/malformed-source`, `decode/resource-limit`, and `decode/output-error` diagnostics from the CLI byte-planner/runtime output handoff."
 
 [feature.status]
 mapped = "done"
@@ -8403,7 +8403,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["xtask/src/diagnostic_registry.rs::tests::decoder_registry_accepts_matching_source_and_doc"]
 commands = ["cargo xtask check-diagnostic-registry", "cargo test -p splot-cli --test decode_cli --locked", "cargo test -p splot-decode --locked"]
-fixtures = ["docs/DECODER-DIAGNOSTICS.md"]
+fixtures = ["docs/DIAGNOSTICS.md"]
 diagnostics = ["decode/unsupported-feature", "decode/malformed-source", "decode/resource-limit", "decode/output-error"]
 
 [[feature]]
@@ -8414,7 +8414,7 @@ kind = "docs"
 spec_sections = []
 sources = []
 crate = "docs"
-module = "docs/DECODER-ROADMAP.md"
+module = "docs/DECODER-SUPPORT-MATRIX.toml"
 openspec_change = "decoder-limits-contract"
 tracking_issue = ""
 owner = "docs"
@@ -8436,7 +8436,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-cli/tests/decode_cli.rs::decode_oversized_input_reports_resource_limit_without_touching_output"]
 commands = ["openspec validate --all --no-interactive", "cargo test -p splot-cli --test decode_cli --locked", "cargo xtask check-decoder-support"]
-fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml", "docs/DECODER-DIAGNOSTICS.md"]
+fixtures = ["docs/DECODER-SUPPORT-MATRIX.toml", "docs/DECODER-SUPPORT-MATRIX.toml", "docs/DIAGNOSTICS.md"]
 diagnostics = []
 
 [[feature]]
@@ -8447,7 +8447,7 @@ kind = "docs"
 spec_sections = []
 sources = []
 crate = "docs"
-module = "docs/DECODER-ROADMAP.md"
+module = "docs/DECODER-SUPPORT-MATRIX.toml"
 openspec_change = "deterministic-frame-hash-contract"
 tracking_issue = ""
 owner = "docs"
@@ -8469,7 +8469,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = []
 commands = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
-fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml"]
+fixtures = ["docs/DECODER-SUPPORT-MATRIX.toml", "docs/DECODER-SUPPORT-MATRIX.toml"]
 diagnostics = []
 
 [[feature]]
@@ -10903,7 +10903,7 @@ kind = "docs"
 spec_sections = []
 sources = []
 crate = "docs"
-module = "docs/DECODER-ROADMAP.md"
+module = "docs/DECODER-SUPPORT-MATRIX.toml"
 openspec_change = "decoded-frame-plane-model-contract"
 tracking_issue = ""
 owner = "docs"
@@ -10925,7 +10925,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = []
 commands = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
-fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml"]
+fixtures = ["docs/DECODER-SUPPORT-MATRIX.toml", "docs/DECODER-SUPPORT-MATRIX.toml"]
 diagnostics = []
 
 [[feature]]
@@ -10936,7 +10936,7 @@ kind = "docs"
 spec_sections = []
 sources = []
 crate = "docs"
-module = "docs/DECODER-ROADMAP.md"
+module = "docs/DECODER-SUPPORT-MATRIX.toml"
 openspec_change = "minimal-decode-tier-contract"
 tracking_issue = ""
 owner = "docs"
@@ -10958,7 +10958,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = []
 commands = ["openspec validate --all --no-interactive", "cargo xtask check-decoder-support"]
-fixtures = ["docs/DECODER-ROADMAP.md", "docs/DECODER-SUPPORT-MATRIX.toml"]
+fixtures = ["docs/DECODER-SUPPORT-MATRIX.toml", "docs/DECODER-SUPPORT-MATRIX.toml"]
 diagnostics = []
 
 [[feature]]
@@ -13069,7 +13069,7 @@ openspec_change = "zero-copy-media-policy"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Makes the media-buffer ownership model explicit, documented, and CI-enforced before decoder/reconstruction/encoder code exists: `docs/ZERO_COPY.md` defines borrow / mutable view / share / materialize / copy-ok marker and the default view-first model; `splot-recon` adds borrowed `PlaneRef`/`PlaneMut`/`FrameRef`/`FrameMut` views and an explicit `SharedFrame` (Arc-backed, `.share()` only, no `Clone`) and drops dangerous `Clone` from `Plane`/`FramePlanes`/`DecodedFrame`/`ReferenceFrameStore`/`CurrentFrameWorkspace`/`CurrentFramePlane`; every intentional copy carries a specific `splot-copy-ok:` marker; and `cargo xtask check-zero-copy-policy` (run in `cargo xtask ci`) flags large-media `Clone`, unmarked media copies, `make_mut`, `unsafe`/`transmute`/`from_raw_parts`, `include!` bypasses, and banned/wrong-crate `zerocopy`. `zerocopy` is approved only for private fixed-layout byte/wire view structs (e.g. IVF headers), never public APIs or AV2 bit-level/entropy/variable-length parsing. Infrastructure / codec-runtime API policy only: no AV2 conformance behavior change and no decoder/reconstruction/encoder algorithmic stage is implemented."
+notes = "Makes the media-buffer ownership model explicit, documented, and CI-enforced before decoder/reconstruction/encoder code exists: `docs/ARCHITECTURE.md` defines borrow / mutable view / share / materialize / copy-ok marker and the default view-first model; `splot-recon` adds borrowed `PlaneRef`/`PlaneMut`/`FrameRef`/`FrameMut` views and an explicit `SharedFrame` (Arc-backed, `.share()` only, no `Clone`) and drops dangerous `Clone` from `Plane`/`FramePlanes`/`DecodedFrame`/`ReferenceFrameStore`/`CurrentFrameWorkspace`/`CurrentFramePlane`; every intentional copy carries a specific `splot-copy-ok:` marker; and `cargo xtask check-zero-copy-policy` (run in `cargo xtask ci`) flags large-media `Clone`, unmarked media copies, `make_mut`, `unsafe`/`transmute`/`from_raw_parts`, `include!` bypasses, and banned/wrong-crate `zerocopy`. `zerocopy` is approved only for private fixed-layout byte/wire view structs (e.g. IVF headers), never public APIs or AV2 bit-level/entropy/variable-length parsing. Infrastructure / codec-runtime API policy only: no AV2 conformance behavior change and no decoder/reconstruction/encoder algorithmic stage is implemented."
 
 [feature.status]
 mapped = "done"
@@ -13097,7 +13097,7 @@ commands = [
     "cargo xtask check-dependency-direction",
 ]
 fixtures = [
-    "docs/ZERO_COPY.md",
+    "docs/ARCHITECTURE.md",
     "crates/splot-recon/src/views.rs",
     "crates/splot-recon/src/frame.rs",
     "crates/splot-recon/src/plane.rs",
@@ -13148,8 +13148,8 @@ fixtures = [
     "tools/comments/budget.toml",
     "xtask/src/comment_density.rs",
     ".github/workflows/ci.yml",
-    "docs/agents/coding-standards.md",
-    "docs/CODE_REVIEW.md",
+    "AGENTS.md",
+    "AGENTS.md",
 ]
 diagnostics = []
 
@@ -13166,7 +13166,7 @@ openspec_change = ""
 tracking_issue = ""
 owner = "automation"
 risk = "low"
-notes = "Adds `cargo xtask check-ai-slop`, a hard-zero gate that fails when a tracked, non-generated Rust source comment carries a banned process-history or fixture-diary phrase (`formerly`, `round-<n>`, `PR #<n>`, `this refactor`, `this used to`, `used to be`, `old behavior`/`old behaviour`, `oracle fixture`, `verified fixture`, `pinned by fixture`, `not yet fixtured`). It reuses the `comment_density` string-aware comment scanner (including nested and trailing block comments), skips generated files and SPDX lines, matches case-insensitively at word boundaries, and intentionally excludes established domain vocabulary (`frontier`, `previously`, `only supports`, `deferred until`). Wired into `cargo xtask ci` and `.github/workflows/ci.yml`. Codifies the recurring AI-slop policy in AGENTS.md §11, docs/agents/coding-standards.md, and docs/CODE_REVIEW.md. Pure repository hygiene: no AV2 conformance behavior, no diagnostic semantics, no crate dependency graph, and no CLI contract changes."
+notes = "Adds `cargo xtask check-ai-slop`, a hard-zero gate that fails when a tracked, non-generated Rust source comment carries a banned process-history or fixture-diary phrase (`formerly`, `round-<n>`, `PR #<n>`, `this refactor`, `this used to`, `used to be`, `old behavior`/`old behaviour`, `oracle fixture`, `verified fixture`, `pinned by fixture`, `not yet fixtured`). It reuses the `comment_density` string-aware comment scanner (including nested and trailing block comments), skips generated files and SPDX lines, matches case-insensitively at word boundaries, and intentionally excludes established domain vocabulary (`frontier`, `previously`, `only supports`, `deferred until`). Wired into `cargo xtask ci` and `.github/workflows/ci.yml`. Codifies the recurring AI-slop policy in AGENTS.md §11, AGENTS.md, and AGENTS.md. Pure repository hygiene: no AV2 conformance behavior, no diagnostic semantics, no crate dependency graph, and no CLI contract changes."
 
 [feature.status]
 mapped = "done"
@@ -13195,8 +13195,8 @@ fixtures = [
     "xtask/src/comment_density.rs",
     ".github/workflows/ci.yml",
     "AGENTS.md",
-    "docs/agents/coding-standards.md",
-    "docs/CODE_REVIEW.md",
+    "AGENTS.md",
+    "AGENTS.md",
 ]
 diagnostics = []
 
@@ -13213,7 +13213,7 @@ openspec_change = "dupehound-duplication-gate"
 tracking_issue = ""
 owner = "automation"
 risk = "low"
-notes = "Integrates dupehound (https://github.com/Rafaelpta/dupehound), a structural duplicate-function detector, as a CI gate with the two modes the maintainer chose. The absolute-budget gate `cargo xtask check-duplication` runs `dupehound scan --json` (dupehound's DEFAULT scope, which excludes `#[test]` bodies), parses `score.deletable_lines`, and fails when it exceeds the committed ceiling in `tools/dupehound/budget.toml`; the ceiling is a ratchet (lowered when a cluster is removed, never raised). The default scope gates PRODUCTION duplication (the kind that costs maintainability); deliberately-explicit per-scenario tests are intentional in this repo and are not gated — this is a ratchet, not a zero mandate. The pure `enforce_budget` threshold helper is unit-tested for over/at/under-budget. The gate follows the run-if-present policy (mandatory in CI, skipped locally with an install hint) and runs inside `cargo xtask ci` next to the other repository gates. `.github/workflows/ci.yml` installs dupehound (pinned 0.1.2 for a reproducible count), runs the budget gate, and runs the PR-only `dupehound check --diff <base>` ratchet that blocks newly introduced duplication (base bound through env for workflow-injection hygiene). `AGENTS.md` + `docs/agents/commands.md` record the reuse-before-reimplement discipline. Non-normative repository tooling: no AV2 conformance behavior, no Cargo dependency (dupehound is an external CLI like typos/cargo-machete/cargo-deny; JSON parsed with the `serde_json` xtask already uses), and no decoder/encoder algorithmic stage. Subsequent dedup commits lower the production budget under this same change."
+notes = "Integrates dupehound (https://github.com/Rafaelpta/dupehound), a structural duplicate-function detector, as a CI gate with the two modes the maintainer chose. The absolute-budget gate `cargo xtask check-duplication` runs `dupehound scan --json` (dupehound's DEFAULT scope, which excludes `#[test]` bodies), parses `score.deletable_lines`, and fails when it exceeds the committed ceiling in `tools/dupehound/budget.toml`; the ceiling is a ratchet (lowered when a cluster is removed, never raised). The default scope gates PRODUCTION duplication (the kind that costs maintainability); deliberately-explicit per-scenario tests are intentional in this repo and are not gated — this is a ratchet, not a zero mandate. The pure `enforce_budget` threshold helper is unit-tested for over/at/under-budget. The gate follows the run-if-present policy (mandatory in CI, skipped locally with an install hint) and runs inside `cargo xtask ci` next to the other repository gates. `.github/workflows/ci.yml` installs dupehound (pinned 0.1.2 for a reproducible count), runs the budget gate, and runs the PR-only `dupehound check --diff <base>` ratchet that blocks newly introduced duplication (base bound through env for workflow-injection hygiene). `AGENTS.md` + `AGENTS.md` record the reuse-before-reimplement discipline. Non-normative repository tooling: no AV2 conformance behavior, no Cargo dependency (dupehound is an external CLI like typos/cargo-machete/cargo-deny; JSON parsed with the `serde_json` xtask already uses), and no decoder/encoder algorithmic stage. Subsequent dedup commits lower the production budget under this same change."
 
 [feature.status]
 mapped = "done"
@@ -13240,7 +13240,51 @@ fixtures = [
     "tools/dupehound/budget.toml",
     "xtask/src/dupehound.rs",
     ".github/workflows/ci.yml",
-    "docs/agents/commands.md",
+    "AGENTS.md",
+]
+diagnostics = []
+
+[[feature]]
+id = "XTASK-DOC-BUDGET"
+name = "Manual documentation budget gate"
+category = "automation"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/doc_budget.rs"
+openspec_change = "doc-budget-gate"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "Adds `cargo xtask check-doc-budget` and `tools/docs/budget.toml` as a CI-enforced budget for committed manual markdown. The gate excludes the AV2 spec mirror, legal notices, active OpenSpec process state, assistant integration material, test fixture docs, and third-party notices; it rejects generated status/coverage markdown, roadmap/gap/status novels, and docs/archive/old/notes hiding places. Generated status renders remain available on demand through their xtask commands and are drift-checked when present, but `check-doc-budget` prevents committing them."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "xtask/src/doc_budget.rs::tests",
+]
+commands = [
+    "cargo test -p xtask doc_budget --locked",
+    "cargo xtask check-doc-budget",
+    "cargo xtask ci",
+]
+fixtures = [
+    "tools/docs/budget.toml",
+    "xtask/src/doc_budget.rs",
+    ".github/workflows/ci.yml",
+    "docs/README.md",
 ]
 diagnostics = []
 
@@ -13587,7 +13631,7 @@ sources = [
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-1",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-2",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3",
-    "docs/CONCURRENCY.md",
+    "docs/ARCHITECTURE.md",
 ]
 crate = "splot-decode"
 module = "crates/splot-decode/src/context.rs"
@@ -20167,7 +20211,7 @@ openspec_change = "decoder-roadmap-matrix-boundary"
 tracking_issue = ""
 owner = "docs"
 risk = "medium"
-notes = "Adds docs/DECODER-SUPPORT-MATRIX.toml as the canonical decoder/reconstruction support matrix and docs/DECODER-SUPPORT-STATUS.md as its generated render. The matrix records supported tier, status, tests, diagnostics, local reference evidence, and notes without executing AVM/dav2d."
+notes = "Adds docs/DECODER-SUPPORT-MATRIX.toml as the canonical decoder/reconstruction support matrix. docs/DECODER-SUPPORT-STATUS.md can be rendered on demand. The matrix records supported tier, status, tests, diagnostics, local reference evidence, and notes without executing AVM/dav2d."
 
 [feature.status]
 mapped = "done"
@@ -20184,7 +20228,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["xtask/src/decoder_support.rs::tests::valid_matrix_renders_rows_deterministically"]
 commands = ["cargo xtask check-decoder-support"]
-fixtures = ["docs/DECODER-SUPPORT-STATUS.md"]
+fixtures = ["docs/DECODER-SUPPORT-MATRIX.toml"]
 diagnostics = []
 
 [[feature]]
@@ -20200,7 +20244,7 @@ openspec_change = "decoder-roadmap-matrix-boundary"
 tracking_issue = ""
 owner = "automation"
 risk = "medium"
-notes = "Adds `cargo xtask decoder-support` and `cargo xtask check-decoder-support`, then wires the drift check into `cargo xtask ci`. The commands render and validate committed decoder support docs without locating, building, invoking, or requiring AVM/dav2d."
+notes = "Adds `cargo xtask decoder-support` and `cargo xtask check-decoder-support`, then wires the drift check into `cargo xtask ci`. The commands render decoder support docs on demand and validate any committed render without locating, building, invoking, or requiring AVM/dav2d."
 
 [feature.status]
 mapped = "done"
@@ -20229,7 +20273,7 @@ commands = [
     "cargo test -p xtask decoder_support --locked",
     "cargo xtask check-decoder-support",
 ]
-fixtures = ["docs/DECODER-SUPPORT-MATRIX.toml", "docs/DECODER-SUPPORT-STATUS.md"]
+fixtures = ["docs/DECODER-SUPPORT-MATRIX.toml"]
 diagnostics = []
 
 [[feature]]
@@ -20296,7 +20340,7 @@ openspec_change = "decoder-diagnostic-registry"
 tracking_issue = ""
 owner = "automation"
 risk = "low"
-notes = "Extends `cargo xtask check-diagnostic-registry` so it enforces docs/DECODER-DIAGNOSTICS.md against current decoder emission roots in addition to the existing validator registry. The decoder descriptor scans crates/splot-cli/src/commands/decode.rs and crates/splot-decode/src, only accepts `decode/*` rule IDs, and never locates or invokes external decoder, AVM, or dav2d tools."
+notes = "Extends `cargo xtask check-diagnostic-registry` so it enforces docs/DIAGNOSTICS.md against current decoder emission roots in addition to the existing validator registry. The decoder descriptor scans crates/splot-cli/src/commands/decode.rs and crates/splot-decode/src, only accepts `decode/*` rule IDs, and never locates or invokes external decoder, AVM, or dav2d tools."
 
 [feature.status]
 mapped = "done"
@@ -20322,7 +20366,7 @@ commands = [
     "cargo test -p xtask diagnostic_registry --locked",
     "cargo xtask check-diagnostic-registry",
 ]
-fixtures = ["docs/DECODER-DIAGNOSTICS.md"]
+fixtures = ["docs/DIAGNOSTICS.md"]
 diagnostics = []
 
 [[feature]]
@@ -20427,7 +20471,7 @@ sources = [
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
 ]
 crate = "docs"
-module = "docs/DECODER-FULL-CONFORMANCE.md"
+module = "docs/CONFORMANCE.md"
 openspec_change = "decoder-output-equivalence-contract"
 tracking_issue = ""
 owner = "decoder"
@@ -20454,8 +20498,8 @@ commands = [
     "cargo xtask check-decoder-conformance-coverage",
 ]
 fixtures = [
-    "docs/DECODER-FULL-CONFORMANCE.md",
-    "docs/DECODER-ROADMAP.md",
+    "docs/CONFORMANCE.md",
+    "docs/DECODER-SUPPORT-MATRIX.toml",
     "docs/DECODER-SUPPORT-MATRIX.toml",
 ]
 diagnostics = []
@@ -20468,7 +20512,7 @@ kind = "docs"
 spec_sections = []
 sources = []
 crate = "docs"
-module = "docs/DECODER-FULL-CONFORMANCE.md"
+module = "docs/CONFORMANCE.md"
 openspec_change = "decoder-full-conformance-contract"
 tracking_issue = ""
 owner = "decoder"
@@ -20494,7 +20538,7 @@ commands = [
     "cargo xtask check-decoder-support",
     "cargo xtask check-decoder-conformance-coverage",
 ]
-fixtures = ["docs/DECODER-FULL-CONFORMANCE.md"]
+fixtures = ["docs/CONFORMANCE.md"]
 diagnostics = []
 
 [[feature]]
@@ -20510,7 +20554,7 @@ openspec_change = "decoder-full-conformance-contract"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds a generated decoder-specific AV2 section-family coverage document and a self-contained drift/honesty gate. The gate validates committed coverage rows, support-row links, Feature IDs, diagnostic IDs, and local-reference evidence pointers without invoking AVM, dav2d, ffmpeg, network access, or `splot decode`. It intentionally exposes unsupported and partial runtime decoder rows instead of treating this tooling as codec implementation proof."
+notes = "Adds an on-demand generated decoder-specific AV2 section-family coverage document and a self-contained drift/honesty gate. The gate validates committed coverage rows, support-row links, Feature IDs, diagnostic IDs, local-reference evidence pointers, and any committed render without invoking AVM, dav2d, ffmpeg, network access, or `splot decode`. It intentionally exposes unsupported and partial runtime decoder rows instead of treating this tooling as codec implementation proof."
 
 [feature.status]
 mapped = "done"
@@ -20534,7 +20578,7 @@ commands = [
     "cargo xtask check-decoder-conformance-coverage",
     "cargo xtask ci",
 ]
-fixtures = ["docs/DECODER-SPEC-COVERAGE.md"]
+fixtures = []
 diagnostics = []
 
 [[feature]]

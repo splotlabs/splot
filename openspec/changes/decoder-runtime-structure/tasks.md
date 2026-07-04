@@ -25,8 +25,8 @@
 
 - [x] 4.1 Add `docs/DECISIONS/decoder-runtime-structure.md`.
 - [x] 4.2 Update `README.md`, `AGENTS.md`, `docs/ARCHITECTURE.md`,
-  `docs/DECODER-ARCHITECTURE.md`, and `docs/DECODER-ROADMAP.md`.
-- [x] 4.3 Regenerate generated status docs with repo xtask commands.
+  `docs/ARCHITECTURE.md`, and `docs/DECODER-SUPPORT-MATRIX.toml`.
+- [x] 4.3 Run generated status checks with repo xtask commands.
 
 ## 5. Verification
 

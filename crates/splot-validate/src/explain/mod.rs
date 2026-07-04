@@ -6,7 +6,7 @@
 //! A read-only catalog of every diagnostic the validator emits — `rule_id`,
 //! `severity`, the AV2 spec section, and a one-line summary — keyed by rule id.
 //! The backing table (`generated::REGISTRY`) is **generated** from the CI-enforced
-//! `docs/VALIDATOR-DIAGNOSTICS.md` by `cargo xtask gen-explain`; nothing here is
+//! `docs/DIAGNOSTICS.md` by `cargo xtask gen-explain`; nothing here is
 //! hand-authored or invented, and `cargo xtask ci` fails if the generated file
 //! drifts from the doc. This module only *reads* that catalog — it changes no
 //! validator behavior and emits no diagnostics.
@@ -16,7 +16,7 @@ use serde::Serialize;
 mod generated;
 
 /// Catalog entry describing one validator diagnostic rule id. All fields are taken
-/// verbatim from `docs/VALIDATOR-DIAGNOSTICS.md`.
+/// verbatim from `docs/DIAGNOSTICS.md`.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct DiagnosticInfo {
     /// The stable rule id (e.g. `"obu-header/global-xlayer-required"`).

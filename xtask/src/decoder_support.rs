@@ -3,8 +3,8 @@
 
 //! Decoder/reconstruction support matrix automation.
 //!
-//! - `cargo xtask decoder-support` renders `docs/DECODER-SUPPORT-STATUS.md`.
-//! - `cargo xtask check-decoder-support` fails when the generated status doc drifts.
+//! - `cargo xtask decoder-support` renders decoder support status on demand.
+//! - `cargo xtask check-decoder-support` validates the matrix and any committed render.
 //!
 //! The matrix records local reference evidence as portable metadata only. This
 //! module never probes for, locates, or invokes AVM, dav2d, or any other decoder.
@@ -22,7 +22,7 @@ use crate::util::{is_valid_feature_id, is_windows_absolute_path, tokenized};
 
 /// Repo-relative path of the canonical decoder support matrix.
 const MATRIX_PATH: &str = "docs/DECODER-SUPPORT-MATRIX.toml";
-/// Repo-relative path of the generated decoder support status document.
+/// Repo-relative path of the optional generated decoder support status document.
 const STATUS_DOC_PATH: &str = "docs/DECODER-SUPPORT-STATUS.md";
 /// Regeneration command printed by the drift check.
 const REGEN_COMMAND: &str =
@@ -90,18 +90,18 @@ pub(crate) fn run_decoder_support(
 
 /// Implements `cargo xtask check-decoder-support`.
 pub(crate) fn run_check_decoder_support(root: &Path) -> Result<()> {
-    let matrix_path = root.join(MATRIX_PATH);
     let status_path = root.join(STATUS_DOC_PATH);
-    if !matrix_path.exists() && !status_path.exists() {
+    let matrix = load_matrix(root)?;
+    let checked = validate_matrix(matrix)?;
+    validate_local_reference_evidence_links(root, &checked)?;
+    if !status_path.exists() {
         eprintln!(
-            "check-decoder-support: skipped ({MATRIX_PATH} and {STATUS_DOC_PATH} are absent)"
+            "check-decoder-support: ok ({} row(s); {STATUS_DOC_PATH} is generated on demand)",
+            checked.rows.len()
         );
         return Ok(());
     }
 
-    let matrix = load_matrix(root)?;
-    let checked = validate_matrix(matrix)?;
-    validate_local_reference_evidence_links(root, &checked)?;
     let expected = render_markdown(&checked);
     let actual = std::fs::read_to_string(&status_path)
         .with_context(|| format!("failed to read {}", status_path.display()))?;
@@ -878,8 +878,15 @@ notes = "done"
     }
 
     #[test]
-    fn check_decoder_support_skips_when_docs_are_absent() -> Result<()> {
+    fn check_decoder_support_skips_when_generated_status_is_absent() -> Result<()> {
         let root = temp_root("decoder-support-absent")?;
+        let docs = root.join("docs");
+        std::fs::create_dir_all(&docs)?;
+        std::fs::write(docs.join("DECODER-SUPPORT-MATRIX.toml"), SAMPLE)?;
+        std::fs::write(
+            docs.join("LOCAL-REFERENCE-EVIDENCE.toml"),
+            "manifest_version = 1\nlast_reviewed = \"2026-06-13\"\n",
+        )?;
         run_check_decoder_support(&root)?;
         let _ = std::fs::remove_dir_all(&root);
         Ok(())

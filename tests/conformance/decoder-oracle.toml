@@ -3,7 +3,7 @@
 #
 # Decoder-output oracle manifest (CONF-AVM-DECODE-ORACLE). Committed, self-contained
 # decode-output differential over the reused CONF-AVM-VALID-STREAMS corpus; the
-# runner never invokes AVM. See docs/decoder/AVM-FIXTURE-CORPUS.md.
+# runner never invokes AVM. See docs/CONFORMANCE.md.
 #
 # Per fixture: id (basename under vectors_dir), status, features (ids in
 # decoder-oracle-coverage.toml), ivf_sha256, avm_raw_sha256 (sha256 of

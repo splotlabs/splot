@@ -53,7 +53,7 @@ Non-goals:
 
 - Affected code: `crates/splot-recon/src/reconstruct_block.rs`,
   `crates/splot-recon/src/lib.rs`, `docs/IMPLEMENTATION-MATRIX.toml`,
-  `docs/DECODER-SUPPORT-MATRIX.toml`, `docs/DECODER-ROADMAP.md`, generated
+  `docs/DECODER-SUPPORT-MATRIX.toml`, `docs/DECODER-SUPPORT-MATRIX.toml`, generated
   status/coverage docs, and `xtask/src/decoder_conformance_coverage.rs`.
 - Public API impact: one additive `pub fn` in `splot-recon`; no breaking changes.
 - Diagnostics impact: none; existing minimal runtime diagnostics and output bytes

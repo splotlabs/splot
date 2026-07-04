@@ -19,8 +19,9 @@ done.
 
 - **WHEN** the encoder program contract change is complete
 - **THEN** the Baseline Encoder Profile v1 scope and non-goals are documented in
-  `docs/ENCODER-GOAL.md`
-- **AND** the current gaps are documented in `docs/ENCODER-GAP-AUDIT.md`.
+  `docs/README.md`
+- **AND** the current gaps are tracked in `docs/IMPLEMENTATION-MATRIX.toml` and
+  the active encoder OpenSpec specs.
 
 ### Requirement: First encoder flight is docs only
 

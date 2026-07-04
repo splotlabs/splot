@@ -11,7 +11,7 @@ use crate::{PlaneRect, PlaneRef, PlaneSize, ReconError, ReconSample, Result};
 ///
 /// Does not implement `Clone`: cloning would duplicate the backing sample
 /// buffer. Borrow it as a [`PlaneRef`] with [`Plane::as_plane_ref`] instead (see
-/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+/// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
 #[derive(Debug, Eq, PartialEq)]
 pub struct Plane<T: ReconSample> {
     storage_size: PlaneSize,

@@ -22,6 +22,7 @@ mod decoder_conformance_coverage;
 mod decoder_fixtures;
 mod decoder_support;
 mod diagnostic_registry;
+mod doc_budget;
 mod dupehound;
 mod explain_registry;
 mod feature_status;
@@ -134,6 +135,8 @@ enum Task {
     CheckFixtures,
     /// Verify duplicate-code stays within tools/dupehound/budget.toml (needs `dupehound`).
     CheckDuplication,
+    /// Verify committed manual markdown stays within the documentation budget.
+    CheckDocBudget,
     /// Render the implementation matrix (docs/IMPLEMENTATION-MATRIX.toml).
     FeatureStatus {
         /// Output format.
@@ -160,7 +163,7 @@ enum Task {
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    /// Render the writer coverage matrix (docs/spec-coverage-writer.md).
+    /// Render the writer coverage matrix.
     WriterCoverage {
         /// Output format.
         #[arg(long, value_enum, default_value_t = CoverageFormat::Text)]
@@ -178,7 +181,7 @@ enum Task {
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    /// Verify docs/DECODER-SUPPORT-STATUS.md is up to date.
+    /// Verify the optional generated decoder support status render is up to date.
     CheckDecoderSupport,
     /// Render the full decoder conformance coverage matrix.
     DecoderConformanceCoverage {
@@ -189,7 +192,7 @@ enum Task {
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    /// Verify docs/DECODER-SPEC-COVERAGE.md is up to date.
+    /// Verify the optional generated decoder conformance coverage render is up to date.
     CheckDecoderConformanceCoverage,
     /// Decoder-output oracle harness over the committed corpus (CONF-AVM-DECODE-ORACLE; no AVM).
     DecoderFixtures {
@@ -204,7 +207,7 @@ enum Task {
         #[arg(long)]
         check: bool,
     },
-    /// Generate the `splot explain` diagnostic registry from docs/VALIDATOR-DIAGNOSTICS.md.
+    /// Generate the `splot explain` diagnostic registry from docs/DIAGNOSTICS.md.
     GenExplain {
         /// Verify the committed generated registry is up to date instead of writing.
         #[arg(long)]
@@ -256,7 +259,7 @@ enum DecoderFixturesCmd {
     /// Metadata-integrity gate: manifest/taxonomy shape, hashes, feature ids,
     /// orphan `.ivf` (no decode, no AVM). Wired into `cargo xtask ci`.
     Verify,
-    /// Generate docs/decoder/DECODER-ORACLE-COVERAGE.md (`--check` verifies drift).
+    /// Generate optional docs/decoder/DECODER-ORACLE-COVERAGE.md.
     Coverage {
         /// Verify the committed coverage doc is up to date instead of writing.
         #[arg(long)]
@@ -289,6 +292,7 @@ fn main() -> Result<()> {
         Task::SeedFuzzCorpus => seed_fuzz_corpus::run_seed_fuzz_corpus(&workspace_root()?),
         Task::CheckFixtures => fixtures::check_fixtures(&workspace_root()?),
         Task::CheckDuplication => dupehound::check_duplication(&workspace_root()?),
+        Task::CheckDocBudget => doc_budget::check_doc_budget(&workspace_root()?),
         Task::FeatureStatus {
             format,
             category,
@@ -409,6 +413,7 @@ fn run_ci() -> Result<()> {
     diagnostic_registry::check_diagnostic_registry(&root)?;
     fixtures::check_fixtures(&root)?;
     dupehound::check_duplication(&root)?;
+    doc_budget::check_doc_budget(&root)?;
 
     eprintln!("ci: all checks passed");
     Ok(())

@@ -65,5 +65,5 @@ None.
 - `docs/IMPLEMENTATION-MATRIX.toml`
 - `docs/DECODER-SUPPORT-MATRIX.toml`
 - generated status/coverage docs
-- `docs/DECODER-ROADMAP.md`
+- `docs/DECODER-SUPPORT-MATRIX.toml`
 - `openspec/specs/decoder-support/spec.md`

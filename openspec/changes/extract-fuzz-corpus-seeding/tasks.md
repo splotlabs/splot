@@ -3,9 +3,9 @@
 ## Matrix and docs
 
 - [x] Add `INFRA-FUZZ-CORPUS-SEEDING` to `docs/IMPLEMENTATION-MATRIX.toml`.
-- [x] Regenerate `docs/FEATURE-STATUS.md` with `cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md`.
+- [x] Run `cargo xtask check-feature-status`.
 - [x] Record the change in `openspec/changes/README.md` active table.
-- [x] Document `cargo xtask seed-fuzz-corpus` in `docs/agents/commands.md`.
+- [x] Document `cargo xtask seed-fuzz-corpus` in `AGENTS.md`.
 
 ## Implementation
 

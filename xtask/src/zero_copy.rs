@@ -15,7 +15,7 @@
 //! dependency outside its approved crates. A flagged copy passes only with a
 //! nearby specific `splot-copy-ok: <reason>` marker. The policy and the
 //! deliberate scope of this gate are documented in
-//! [`docs/ZERO_COPY.md`](../../docs/ZERO_COPY.md).
+//! [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
 //!
 //! This module is a thin IO wrapper around the pure
 //! [`evaluate_zero_copy_policy`] evaluator so the rules can be unit-tested
@@ -30,7 +30,7 @@ use anyhow::{Context as _, Result, bail};
 
 /// Crates allowed to declare a direct `zerocopy` dependency: `splot-core` for
 /// fixed-layout container/wire headers and `splot-recon` only with a documented
-/// raw-sample view (see `docs/ZERO_COPY.md`). Never the decoder/encoder/validator/
+/// raw-sample view (see `docs/ARCHITECTURE.md`). Never the decoder/encoder/validator/
 /// CLI/parallel crates.
 const ZEROCOPY_APPROVED_CRATES: &[&str] = &["splot-core", "splot-recon"];
 
@@ -370,7 +370,7 @@ fn uses_unsafe_keyword(text: &str) -> bool {
 ///
 /// This is the pure core of the check: it performs no IO, so it can be exercised
 /// directly with synthetic fixtures. See the module docs for the rule set and
-/// `docs/ZERO_COPY.md` for the policy.
+/// `docs/ARCHITECTURE.md` for the policy.
 pub(crate) fn evaluate_zero_copy_policy(
     crates: &[ZcCrate],
     sources: &[ZcSourceLine],

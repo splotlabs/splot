@@ -36,7 +36,7 @@ features without relying on historical runtime names.
 
 #### Scenario: contributor finds decoder ownership
 
-- **WHEN** a contributor reads `docs/DECODER-ARCHITECTURE.md`
+- **WHEN** a contributor reads `docs/ARCHITECTURE.md`
 - **THEN** the document describes bitstream planning, tile/entropy decode,
   prediction, residual reconstruction, filters/restoration, reference state,
   output handling, and support gates

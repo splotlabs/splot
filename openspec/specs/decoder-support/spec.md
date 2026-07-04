@@ -2,12 +2,12 @@
 
 ## Purpose
 Define the repository-owned decoder/reconstruction support status model,
-including roadmap scope, generated status docs, self-contained proof
+including roadmap scope, on-demand generated status output, self-contained proof
 requirements, structured unsupported diagnostics, and the local-only reference
 evidence boundary.
 ## Requirements
 ### Requirement: Decoder roadmap
-The repository SHALL document the decoder scope in `docs/DECODER-ROADMAP.md`.
+The repository SHALL document the decoder scope in `docs/DECODER-SUPPORT-MATRIX.toml`.
 The roadmap SHALL state that decoder work exists to support future encoder
 roundtrips and reconstruction correctness, not production playback. The roadmap
 SHALL define the staged `splot decode` path, the first supported tier before it
@@ -15,7 +15,7 @@ is implemented, deterministic frame-hash expectations, unsupported-feature
 handling, and the local-only AVM/dav2d evidence boundary.
 
 #### Scenario: Reader checks decoder scope
-- **WHEN** a reader opens `docs/DECODER-ROADMAP.md`
+- **WHEN** a reader opens `docs/DECODER-SUPPORT-MATRIX.toml`
 - **THEN** the document says whether `splot decode` currently reconstructs pixels,
   what the first supported tier is, and which broad AV2 tools remain unsupported
 
@@ -276,7 +276,7 @@ unsupported or unclaimed.
   proven
 
 ### Requirement: Generated decoder support status
-The repository SHALL generate a committed decoder support status document from
+The repository SHALL generate an on-demand decoder support status document from
 `docs/DECODER-SUPPORT-MATRIX.toml`. The generated document SHALL summarize row
 counts by status and tier, list each row with its spec sections and tests, and
 name any local reference evidence as portable metadata only.
@@ -288,7 +288,7 @@ name any local reference evidence as portable metadata only.
 
 #### Scenario: Generated document drifts
 - **WHEN** `docs/DECODER-SUPPORT-MATRIX.toml` changes without regenerating
-  `docs/DECODER-SUPPORT-STATUS.md`
+  a committed `docs/DECODER-SUPPORT-STATUS.md`
 - **THEN** `cargo xtask check-decoder-support` fails and names the regeneration
   command
 
@@ -376,7 +376,7 @@ locate, build, invoke, or require AVM or dav2d.
 ### Requirement: canonical decoder diagnostic registry
 
 Decoder diagnostics emitted by `splot decode` SHALL be documented in
-`docs/DECODER-DIAGNOSTICS.md` with stable field names `rule_id`, `severity`,
+`docs/DIAGNOSTICS.md` with stable field names `rule_id`, `severity`,
 `spec_section`, `matrix_row`, `feature_id`, `message`, and `remediation` when
 applicable. The `spec_section` field SHALL cite an AV2 section when the
 diagnostic is tied to AV2 decoding behavior, and the decoder support matrix
@@ -386,7 +386,7 @@ SHALL link emitted decoder diagnostics to support rows. Tracked by
 #### Scenario: decode diagnostic is emitted
 
 - **WHEN** `splot decode` emits a `decode/*` diagnostic
-- **THEN** the rule ID is present in `docs/DECODER-DIAGNOSTICS.md`
+- **THEN** the rule ID is present in `docs/DIAGNOSTICS.md`
 - **AND** the diagnostic is linked to a row in
   `docs/DECODER-SUPPORT-MATRIX.toml`
 
@@ -1148,9 +1148,9 @@ decoder output SHALL remain deterministic across `--threads 1`,
 
 #### Scenario: Decoder roadmap documents the runtime policy
 
-- **WHEN** a reader opens `docs/DECODER-ROADMAP.md`
+- **WHEN** a reader opens `docs/DECODER-SUPPORT-MATRIX.toml`
 - **THEN** the roadmap links future decoder/reconstruction work to
-  `INFRA-PARALLEL-RUNTIME-POLICY` and `docs/CONCURRENCY.md`
+  `INFRA-PARALLEL-RUNTIME-POLICY` and `docs/ARCHITECTURE.md`
 - **AND** it states that `splot-decode` owns runtime orchestration through a
   single context-owned `WorkerPool`
 - **AND** it states that `splot-recon` remains pool-agnostic and reusable by the
@@ -2266,7 +2266,7 @@ output, or reference-refresh semantics.
 
 ### Requirement: Full decoder conformance contract
 
-The repository SHALL provide `docs/DECODER-FULL-CONFORMANCE.md` as the public
+The repository SHALL provide `docs/CONFORMANCE.md` as the public
 contract for the future AV2 v1.0.0 full decoder conformance claim. The document
 SHALL state the current decoder status without overclaiming, define the final
 conditions for claiming full conformance, distinguish raw intermediate output
@@ -2276,10 +2276,10 @@ Tracked by `DOC-DECODER-FULL-CONFORMANCE-CONTRACT`.
 
 #### Scenario: Reader checks current decoder status
 
-- **WHEN** a reader opens `docs/DECODER-FULL-CONFORMANCE.md`
+- **WHEN** a reader opens `docs/CONFORMANCE.md`
 - **THEN** the document says that `splot decode` is not yet a full AV2 decoder
-- **AND** it points readers to the generated decoder support and decoder spec
-  coverage documents for current status
+- **AND** it points readers to the decoder support matrix and on-demand decoder
+  support and spec coverage commands for current status
 
 #### Scenario: Reader checks the future conformance claim
 
@@ -2299,7 +2299,7 @@ Tracked by `DOC-DECODER-FULL-CONFORMANCE-CONTRACT`.
 
 ### Requirement: Generated decoder spec coverage document
 
-The repository SHALL provide a generated `docs/DECODER-SPEC-COVERAGE.md`
+The repository SHALL provide an on-demand generated decoder spec coverage
 document that maps AV2 v1.0.0 decoder-relevant section families to current
 implementation ownership and evidence. Each row SHALL include `spec_sections`,
 `spec_title`, `normative_status`, `implementation_owner`,
@@ -2349,15 +2349,16 @@ normative for decoder conformance. The allowed row statuses SHALL be
 ### Requirement: Decoder conformance coverage drift gate
 
 The repository SHALL provide `cargo xtask check-decoder-conformance-coverage` as
-a self-contained drift and honesty gate for `docs/DECODER-SPEC-COVERAGE.md`. The
-gate SHALL be part of `cargo xtask ci`, SHALL run without AVM or dav2d, and SHALL
-fail when generated coverage output or cross-links are inconsistent with
-committed repository files. Tracked by `XTASK-DECODER-CONFORMANCE-COVERAGE`.
+a self-contained drift and honesty gate for the decoder conformance coverage
+model and any committed `docs/DECODER-SPEC-COVERAGE.md` render. The gate SHALL
+be part of `cargo xtask ci`, SHALL run without AVM or dav2d, and SHALL fail when
+generated coverage output or cross-links are inconsistent with committed
+repository files. Tracked by `XTASK-DECODER-CONFORMANCE-COVERAGE`.
 
 #### Scenario: Coverage document drifts
 
 - **WHEN** the coverage rows change without regenerating
-  `docs/DECODER-SPEC-COVERAGE.md`
+  a committed `docs/DECODER-SPEC-COVERAGE.md`
 - **THEN** `cargo xtask check-decoder-conformance-coverage` fails
 - **AND** the failure names the regeneration command
 
@@ -2629,9 +2630,8 @@ reference-refresh completeness, or AVM/dav2d integration.
 
 - **WHEN** the runtime hash path is implemented
 - **THEN** `docs/DECODER-SUPPORT-MATRIX.toml`,
-  `docs/DECODER-SUPPORT-STATUS.md`, `docs/IMPLEMENTATION-MATRIX.toml`, and
-  generated feature/spec coverage docs mark only the proven minimal hash runtime
-  scope as supported
+  `docs/IMPLEMENTATION-MATRIX.toml`, and on-demand generated status/coverage
+  output mark only the proven minimal hash runtime scope as supported
 - **AND** broad rows for full decode, tile payload decode, CDF lifecycle,
   intra/inter reconstruction, Y4M/raw output, film grain, reference update,
   layers, and decoder-model constraints remain partial or unsupported until

@@ -3,9 +3,9 @@
 #
 # Decoder-oracle capability taxonomy (CONF-AVM-DECODE-ORACLE). The decoder-relevant
 # AV2 v1.0.0 capabilities the corpus is measured against; every fixture 
-# id must exist here.  => not producible by the local AVM
-# synthetic corpus (reported as not_fixtureable_with_avm_encoder). Generated report:
-# docs/decoder/DECODER-ORACLE-COVERAGE.md.
+# id must exist here. `fixtureable = false` means not producible by the local AVM
+# synthetic corpus (reported as not_fixtureable_with_avm_encoder). The generated
+# markdown report is optional and produced by `cargo xtask decoder-fixtures coverage`.
 
 schema_version = 1
 

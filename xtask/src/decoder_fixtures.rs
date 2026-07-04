@@ -4,9 +4,10 @@
 //! `cargo xtask decoder-fixtures {verify,coverage}` — the decoder-output oracle
 //! harness (CONF-AVM-DECODE-ORACLE), CI-safe, no AVM. `verify` checks the
 //! manifest/taxonomy shape, fixture hashes, feature ids, and that every committed
-//! valid `.ivf` has an entry. `coverage` (re)generates
-//! `docs/decoder/DECODER-ORACLE-COVERAGE.md`. Both run in `cargo xtask ci`. The
-//! bit-exact compare/xfail assertions live in `crates/splot-cli/tests/decoder_oracle.rs`.
+//! valid `.ivf` has an entry. `coverage` (re)generates the optional
+//! `docs/decoder/DECODER-ORACLE-COVERAGE.md` report. `cargo xtask ci` verifies
+//! the report only when it is committed. The bit-exact compare/xfail assertions
+//! live in `crates/splot-cli/tests/decoder_oracle.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -155,6 +156,10 @@ pub(crate) fn run_coverage(root: &Path, check: bool) -> Result<()> {
     let rendered = render_coverage(&manifest, &taxonomy);
     let path = root.join(COVERAGE_DOC);
     if check {
+        if !path.exists() {
+            eprintln!("{COVERAGE_DOC}: not committed; generate on demand with `{REGEN}`");
+            return Ok(());
+        }
         let actual =
             std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         if actual.trim_end() != rendered.trim_end() {
@@ -162,6 +167,10 @@ pub(crate) fn run_coverage(root: &Path, check: bool) -> Result<()> {
         }
         eprintln!("decoder-fixtures coverage: ok");
     } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
         std::fs::write(&path, &rendered).with_context(|| format!("write {}", path.display()))?;
         eprintln!("decoder-fixtures coverage: wrote {COVERAGE_DOC}");
     }

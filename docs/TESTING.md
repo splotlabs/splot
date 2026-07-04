@@ -1,124 +1,48 @@
 # Testing
 
-## Strategy (in priority order)
+## Layers
 
-1. **Parser unit tests** — LEB128, AV2 OBU header, Annex B envelopes, and IVF
-   container records, with positive, negative, and EOF cases. Implemented in each
-   `splot-core` module.
-2. **Property / fuzz tests** — the parsers and the validator must never panic on
-   arbitrary input. Implemented as `*_never_panic(s)` tests across the
-   `splot-core` parser modules and `crates/splot-validate/tests/validator_never_panics.rs`
-   (mostly proptests, plus a few exhaustive-truncation unit tests). The
-   `cargo fuzz` targets cover the parser, validator, symbol decoder,
-   tile-payload frontier, byte-planner, minimal tier hash/raw/Y4M byte
-   surfaces, writer roundtrips, encoder input views, frame-hash serialization,
-   reference-frame-store operations, decoded-frame/plane runtime type validation,
-   Y4M output serialization from structured decoded frames, and intra
-   prediction/workspace primitives from structured inputs, and need a
-   nightly toolchain; they run as a blocking per-target smoke (~45s each) in PR
-   CI:
-   - `parse_obu` — `read_leb128`, `read_obu_header`, `parse_annex_b_obus`.
-   - `parse_ivf` — `is_ivf`, `parse_ivf_header`, `parse_ivf_partial`.
-   - `parse_bitstream` — `parse_bitstream_partial` (container auto-detect +
-     Annex-B/IVF envelope parsing; OBU payload parsers are reached via
-     `validate_bytes`, not this target).
-   - `symbol_decoder_bytes` — public `splot-core` `SymbolDecoder` operations
-     over bounded arbitrary tile-payload bytes plus bounded valid/invalid CDF
-     rows.
-   - `symbol_encoder_bytes` — public `splot-core` `SymbolEncoder` operation
-     streams that must decode back through `SymbolDecoder`.
-   - `tile_payload_decode_bytes` — feature-gated `splot-decode` fuzzing
-     harness over the current minimal tile-payload boundary and block-symbol
-     frontier, using bounded arbitrary tile-payload bytes and bounded known-good
-     payload mutations.
-   - `validate_bytes` — `Validator::validate_bytes_with_options` (the
-     highest-coverage target: transitively reaches every OBU payload parser, both
-     container formats, and every validator check).
-   - `decode_plan_bytes` — `DecodeContext::plan_bytes` with finite limits
-     (bounded plan-only traversal over arbitrary raw Annex B or IVF/DKIF bytes).
-   - `decode_runtime_hash_bytes` —
-     `DecodeContext::decode_hash_report_bytes` with finite limits over arbitrary
-     bytes and bounded mutations of the committed minimal tier IVF fixture.
-   - `decode_runtime_y4m_bytes` —
-     `DecodeContext::decode_y4m_bytes` with finite limits over arbitrary bytes,
-     bounded mutations of the committed minimal tier IVF fixture, and bounded
-     in-memory writer success/error paths.
-   - `decode_runtime_raw_bytes` —
-     `DecodeContext::decode_raw_bytes` with finite limits over arbitrary bytes,
-     bounded mutations of the committed minimal tier IVF fixture, and bounded
-     in-memory writer success/error paths.
-   - `recon_frame_hash_bytes` — `splot-recon` `DecodedFrameHashInput`
-     serialization and digest computation from bounded structured
-     `DecodedFrame` inputs.
-   - `recon_frame_plane_types_bytes` — `splot-recon` decoded-frame and plane
-     runtime type validators, visible-row accessors, borrowed views, and
-     `SharedFrame` sharing from bounded structured inputs and targeted invalid
-     mutations.
-   - `recon_reference_frame_store_bytes` — `splot-recon` `ReferenceSlot`,
-     `ReferenceRefreshMask`, and `ReferenceFrameStore` storage operations from
-     bounded state-machine inputs.
-   - `recon_y4m_output_bytes` — `splot-recon` `Y4mWriter` serialization from
-     bounded structured `DecodedFrame` inputs across supported Y4M formats.
-   - `recon_intra_prediction_bytes` — `splot-recon` intra prediction and
-     current-frame workspace primitives from bounded structured inputs.
-   - `encoder_frame_input_views_bytes` — `splot-encode` borrowed frame input
-     view construction over bounded dimensions, strides, format choices, plane
-     presence, and truncated buffers.
-   - `encoder_context_state_machine_bytes` — `splot-encode` lifecycle command
-     sequences over valid borrowed frames.
-   - `roundtrip_obu_bytes` — parsed OBU writer round trips for currently
-     writable typed payload models.
-3. **Decode planner unit tests** — `splot-decode` plan-only APIs over already
-   parsed `splot-core` stream output must preserve OBU order/source metadata,
-   reject malformed sources transactionally, enforce the limits they can derive
-   from parsed or raw byte input, and prove deterministic plan metadata across
-   decode thread-count policies. The raw byte planner is covered by the
-   `decode_plan_bytes` fuzz target; the current minimal tier hash byte API is
-   covered by `decode_runtime_hash_bytes`, and the current minimal tier Y4M
-   byte API is covered by `decode_runtime_y4m_bytes`.
-4. **CLI integration tests** — `crates/splot-cli/tests/cli.rs` runs the `splot`
-   binary against the fixtures in `tests/fixtures/` and generated temporary IVF
-   inputs (exit codes, `--json`, `inspect`). Implemented; snapshot tests for
-   `inspect` output are planned (`insta`).
-5. **Conformance vectors** — from AOMedia. Planned, once vectors are available
-   (see [CONFORMANCE.md](./CONFORMANCE.md)).
-6. **Differential testing against AVM** — the reference software is the oracle.
-   A committed decode-output oracle differential (`CONF-AVM-DECODE-ORACLE`)
-   already runs in CI via `crates/splot-cli/tests/decoder_oracle.rs`, with no
-   AVM invocation — see [`docs/decoder/AVM-FIXTURE-CORPUS.md`](./decoder/AVM-FIXTURE-CORPUS.md).
-   The *live* `avm encode -> splot validate` harness is still planned
-   (directions in [CONFORMANCE.md](./CONFORMANCE.md)).
+1. Parser unit tests: positive, negative, and EOF cases for syntax parsers.
+2. Property tests and fuzz targets: malformed input returns errors/reports and
+   never panics.
+3. CLI integration tests: exit codes, JSON/text rendering, `inspect`, `validate`,
+   `explain`, and narrow `decode` output behavior.
+4. Conformance corpus: committed validator vectors under `tests/conformance/`,
+   with no AVM dependency in CI.
+5. Decoder-output oracle: `tests/conformance/decoder-oracle.toml` stores AVM raw
+   output hashes, but CI runs only `splot` against the committed hashes.
+6. Local differential testing: AVM is the oracle, but live AVM runs are local and
+   opt-in.
 
 ## Commands
 
 ```bash
-cargo test --workspace --all-targets --locked   # unit, property, and CLI integration tests (no doctests)
-cargo test --doc --workspace --locked           # doctests (not covered by --all-targets)
+cargo test --workspace --all-targets --locked
+cargo test --doc --workspace --locked
+cargo xtask conformance
+cargo xtask fuzz --time 30
 cargo xtask ci
-cargo xtask coverage            # local HTML coverage report (cargo-llvm-cov, run-if-present)
-cargo xtask check-decoder-support # generated decoder support docs drift gate
-
-# Fuzzing needs a NIGHTLY toolchain (cargo-fuzz uses AddressSanitizer + coverage,
-# which are nightly-only). On stable, the per-module `*_never_panic(s)` tests and
-# the splot-validate `validator_never_panics` proptest exercise the same
-# never-panic invariant with bounded random inputs.
-cargo xtask fuzz [--time <secs>]    # local fuzz smoke over every target (nightly + cargo-fuzz, run-if-present), default 30s each
-cargo install cargo-fuzz --locked
-cargo +nightly fuzz list            # parse_obu, validate_bytes, parse_ivf, parse_bitstream, symbol_decoder_bytes, symbol_encoder_bytes, tile_payload_decode_bytes, decode_plan_bytes, decode_runtime_hash_bytes, decode_runtime_y4m_bytes, decode_runtime_raw_bytes, recon_frame_hash_bytes, recon_frame_plane_types_bytes, recon_reference_frame_store_bytes, recon_y4m_output_bytes, recon_intra_prediction_bytes, encoder_frame_input_views_bytes, encoder_context_state_machine_bytes, roundtrip_obu_bytes
-cargo +nightly fuzz run parse_obu   # run a single target (swap the name for any target above)
-
-cargo xtask conformance         # run the committed conformance corpus (no AVM)
 ```
 
-## Conventions
+`cargo xtask fuzz` requires nightly and `cargo-fuzz`; it is run-if-present
+locally. CI runs registered fuzz-target smoke jobs separately.
 
-- Every parser change adds the relevant positive/negative/EOF cases.
-- Tests may use `unwrap`/`expect` only inside `#[cfg(test)]` modules annotated with
-  `#[allow(clippy::unwrap_used, clippy::expect_used)]`; production library code must
-  not.
-- **Record proof in the matrix.** When a feature's stage becomes `done`, record the
-  test module/path, the reproducible command, the fixture/vector, and/or the
-  diagnostic id in that row's `[feature.proof]` in
-  [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml). `cargo xtask
-  check-feature-status` rejects a `done` code stage with no proof; `cargo xtask
-  spec-coverage` lists rows still missing proof.
+## Proof
+
+When a feature stage becomes `done`, record proof in
+`docs/IMPLEMENTATION-MATRIX.toml`:
+
+- test modules or integration tests;
+- reproducible commands;
+- fixtures or vector paths;
+- diagnostic rule ids, when relevant.
+
+`cargo xtask check-feature-status` rejects code stages marked `done` without
+proof.
+
+## Parser Rule
+
+Parser changes need at least one runnable check that would fail if the parser
+accepts malformed input, rejects valid input, or panics/truncates incorrectly.
+Tiny mechanical one-line changes can rely on existing coverage only when the
+existing test would fail on the changed behavior.

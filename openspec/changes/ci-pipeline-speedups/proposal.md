@@ -25,8 +25,7 @@ CI, and skip rebuilding `dupehound` on cache-warm runs.
 - Spec sections: none (infrastructure only).
 - Crates/modules: `xtask/src/main.rs` (`run_ci` command list).
 - CI/docs/tests: `.github/workflows/ci.yml`, `README.md`,
-  `docs/agents/commands.md`, `docs/IMPLEMENTATION-MATRIX.toml`, and generated
-  `docs/FEATURE-STATUS.md`.
+  `AGENTS.md`, `docs/IMPLEMENTATION-MATRIX.toml`, and feature-status checks.
 
 ## Non-goals
 

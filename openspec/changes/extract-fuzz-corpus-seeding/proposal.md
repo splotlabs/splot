@@ -27,8 +27,8 @@ and the workflow stays declarative.
   `pub(crate)` and reused for target enumeration (no nightly `cargo fuzz list`).
 - CI/docs/tests: `.github/workflows/ci.yml` (replace the inline seeding block with
   `cargo xtask seed-fuzz-corpus`; install the pinned stable toolchain in the fuzz
-  job so the xtask builds), the implementation matrix, `docs/FEATURE-STATUS.md`,
-  the `tooling` capability spec, and `docs/agents/commands.md`. Byte-layout unit
+  job so the xtask builds), the implementation matrix, feature-status checks,
+  the `tooling` capability spec, and `AGENTS.md`. Byte-layout unit
   tests for the IVF synthesis, IVF de-wrap, config prefixes, and an end-to-end
   temp-dir seed.
 
@@ -54,7 +54,6 @@ and the workflow stays declarative.
 - [ ] `.github/workflows/ci.yml` replaces the inline shell/Python seeding block
       with `cargo xtask seed-fuzz-corpus` and installs the pinned toolchain in the
       fuzz job.
-- [ ] `docs/agents/commands.md` documents the new command.
-- [ ] `docs/FEATURE-STATUS.md` is regenerated and `cargo xtask check-feature-status`
-      passes.
+- [ ] `AGENTS.md` documents the new command.
+- [ ] `cargo xtask check-feature-status` passes.
 - [ ] `cargo xtask ci` passes.

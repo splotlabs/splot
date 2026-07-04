@@ -33,8 +33,8 @@ names.
 For each candidate, read only the needed context:
 
 - `AGENTS.md`
-- `docs/SPEC-MAPPING.md`
 - `docs/IMPLEMENTATION-MATRIX.toml`
+- `docs/CONFORMANCE.md` and `docs/DIAGNOSTICS.md` when relevant
 - relevant `openspec/changes/` artifacts
 - relevant AV2 mirror sections via `docs/spec/av2/1.0.0/index.md`
 - the candidate file and directly related code/tests

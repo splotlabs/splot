@@ -11,8 +11,9 @@
 - [x] Add `cargo xtask decoder-fixtures {verify,report,coverage}` and wire
       `verify` + `coverage --check` into `cargo xtask ci`.
 - [x] Add local-only regeneration tooling under `tools/decoder-fixtures/`.
-- [x] Document the system in `docs/decoder/AVM-FIXTURE-CORPUS.md` and generate
-      `docs/decoder/DECODER-ORACLE-COVERAGE.md`.
+- [x] Document the system in `docs/CONFORMANCE.md` and keep the decoder-oracle
+      coverage report available on demand through
+      `cargo xtask decoder-fixtures coverage`.
 
 ## Tests and proof
 

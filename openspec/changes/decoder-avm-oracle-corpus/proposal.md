@@ -25,8 +25,8 @@ against AVM in CI **without invoking AVM**.
   `xfail_splot` = fails closed with a recorded `decode/unsupported-feature`
   diagnostic).
 - A committed capability taxonomy
-  (`tests/conformance/decoder-oracle-coverage.toml`) and a generated coverage
-  report (`docs/decoder/DECODER-ORACLE-COVERAGE.md`) that expose which
+  (`tests/conformance/decoder-oracle-coverage.toml`) and on-demand generated
+  coverage output from `cargo xtask decoder-fixtures coverage` that expose which
   decoder-relevant capabilities are fixture-backed and which remain unimplemented.
 - A CI gate: `crates/splot-cli/tests/decoder_oracle.rs` decodes each fixture
   in-process and asserts the recorded outcome. `xfail_splot` fixtures never block

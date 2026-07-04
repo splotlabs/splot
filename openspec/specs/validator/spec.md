@@ -964,7 +964,7 @@ The validator SHALL emit structured error diagnostics, with stable `rule_id`,
 § 6.17.7.2 tile-info constraints on parsed frame headers: `TileCols` greater
 than `MAX_TILE_COLS`, `TileRows` greater than `MAX_TILE_ROWS`, and
 `context_update_tile_id` not less than `TileCols * TileRows`. Each new rule id
-SHALL be registered in `docs/VALIDATOR-DIAGNOSTICS.md`.
+SHALL be registered in `docs/DIAGNOSTICS.md`.
 
 #### Scenario: Out-of-range context update tile id
 - **WHEN** a frame header parses a `context_update_tile_id` greater than or
@@ -985,7 +985,7 @@ The validator SHALL emit structured error diagnostics, with stable `rule_id`,
 `1 << ccso_max_band_log2` greater than `CCSO_BAND_NUM`. The reference-state
 CCSO requirements (`ccso_ref_idx < NumTotalRefs` and the reuse equalities)
 are dead on the intra path and SHALL NOT be guessed. Each new rule id SHALL be
-registered in `docs/VALIDATOR-DIAGNOSTICS.md`.
+registered in `docs/DIAGNOSTICS.md`.
 
 #### Scenario: Reserved CCSO ext filter
 - **WHEN** a frame header parses a `ccso_params()` plane with
@@ -2578,7 +2578,7 @@ global `--quiet` flag (which controls logging only).
 ### Requirement: explain diagnostic registry
 
 The toolkit SHALL provide a diagnostic registry, generated from
-`docs/VALIDATOR-DIAGNOSTICS.md` by `cargo xtask gen-explain`, mapping each emitted
+`docs/DIAGNOSTICS.md` by `cargo xtask gen-explain`, mapping each emitted
 validator rule id to its severity, AV2 spec section, and one-line summary. The
 registry SHALL be drift-checked: `cargo xtask gen-explain --check`, run by
 `cargo xtask ci`, SHALL fail if the generated table diverges from the doc. The
