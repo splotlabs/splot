@@ -35,24 +35,20 @@ pub(crate) fn route_general_minimal_intra(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
 ) -> bool {
-    core.quantization_params
-        .is_some_and(|quant| quant.base_q_idx != FROZEN_MINIMAL_BASE_Q_IDX)
-        && core.quantization_params.is_some_and(|quant| {
-            quant.delta_q_y_dc == 0
-                && quant.delta_q_u_dc == 0
-                && quant.delta_q_u_ac == 0
-                && quant.delta_q_v_dc == 0
-                && quant.delta_q_v_ac == 0
-        })
-        && sequence.intra.as_ref().is_some_and(|intra| {
-            !intra.enable_dip
-                && !intra.enable_ibp
-                && !intra.enable_mrls
-                && !intra.enable_intra_edge_filter
-        })
-        && sequence
-            .partition
-            .is_some_and(|partition| !partition.enable_sdp)
+    core.quantization_params.is_some_and(|quant| {
+        quant.delta_q_y_dc == 0
+            && quant.delta_q_u_dc == 0
+            && quant.delta_q_u_ac == 0
+            && quant.delta_q_v_dc == 0
+            && quant.delta_q_v_ac == 0
+    }) && sequence.intra.as_ref().is_some_and(|intra| {
+        !intra.enable_dip
+            && !intra.enable_ibp
+            && !intra.enable_mrls
+            && !intra.enable_intra_edge_filter
+    }) && sequence
+        .partition
+        .is_some_and(|partition| !partition.enable_sdp)
         && sequence.transform_quant_entropy.is_some_and(|tq| {
             tq.equal_ac_dc_q
                 && !tq.enable_fsc
