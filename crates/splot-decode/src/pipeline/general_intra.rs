@@ -89,14 +89,6 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
             .as_ref()
             .is_some_and(|tile_info| tile_info.tile_cols == 1 && tile_info.tile_rows == 1)
         && core
-            .segmentation_params
-            .as_ref()
-            .is_some_and(|seg| !seg.segmentation_enabled)
-        && core.setup_qm_params.is_some_and(|qm| !qm.using_qmatrix)
-        && core
-            .delta_q_params
-            .is_some_and(|delta| !delta.delta_q_present)
-        && core
             .deblocking_filter_params
             .is_some_and(|filter| filter.df_delta_q == [0; 4])
         && core.gdf_params.is_some_and(|gdf| !gdf.gdf_frame_enable)
@@ -194,6 +186,14 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<GeneralIntraLeafMode> {
+    if core.setup_qm_params.is_some_and(|qm| qm.using_qmatrix) {
+        return Err(general_intra_at!(
+            "general_intra_using_qmatrix",
+            tile_offset,
+            missing_capability_message!("intra.residual.quantizer_matrix", qm = "using_qmatrix"),
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ));
+    }
     let geometry_error = || {
         general_intra_at!(
             "general_intra_block_geometry",
@@ -1767,7 +1767,7 @@ fn general_intra_block_mode_error(
     }
 }
 
-fn general_intra_unsupported(
+pub(crate) fn general_intra_unsupported(
     reason: &'static str,
     byte_offset: Option<ByteOffset>,
     message: &'static str,

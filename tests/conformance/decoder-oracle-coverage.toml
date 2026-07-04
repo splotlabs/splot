@@ -160,6 +160,13 @@ fixtureable = true
 spec_sections = ["7.20", "7.23"]
 
 [[capability]]
+id = "frame.segmentation"
+name = "Frame segmentation (segment_id map / SEG_LVL features)"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.18.7.1", "5.20.5.7", "5.20.5.8"]
+
+[[capability]]
 id = "frame.show_existing"
 name = "Show-existing / hidden-ref output ordering"
 category = "frame"
@@ -427,7 +434,7 @@ spec_sections = ["5.18.6.1", "6.17.6.1", "7.14.2"]
 id = "quant.delta_q"
 name = "Per-block delta-Q"
 category = "quant"
-fixtureable = false
+fixtureable = true
 spec_sections = ["5.18.7.8", "5.20.5.11", "6.17.7.4"]
 notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
 

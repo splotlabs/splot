@@ -16,10 +16,11 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_recon::{BitDepth, DecodedFrame, ReconSample, ReferenceFrameStore};
 
 use crate::bitstream::tile_payload::{FrameCdfSubset, frame_mi_dimensions};
-use crate::pipeline::general_intra::cdef_frame_params;
+use crate::pipeline::general_intra::{cdef_frame_params, general_intra_unsupported};
 use crate::pipeline::reconstruct::new_general_intra_workspace;
 use crate::pipeline::{deblock_quant_deltas, unsupported_at};
 use crate::prediction::inter::{InterReferenceState, decode_inter_blocks};
+use crate::support::capability::missing_capability_message;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
 /// Decodes one intra frame through the unified block engine, returning the
@@ -36,6 +37,18 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> Result<(DecodedFrame<T>, FrameCdfSubset)> {
     let offset = frame_envelope.offset;
+    if core
+        .segmentation_params
+        .as_ref()
+        .is_some_and(|seg| seg.segmentation_enabled)
+    {
+        return Err(general_intra_unsupported(
+            "general_intra_segment_id_unimplemented",
+            Some(offset),
+            missing_capability_message!("intra.segmentation", segment_id = "enabled"),
+            "5.20.5.7",
+        ));
+    }
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_at(
             "frame_engine_intra_missing_frame_size",
