@@ -40,7 +40,7 @@ const DECODE_SRC: &str = "crates/splot-decode/src";
 /// source. Raised as markers are added; a count below this floor fails the check,
 /// so removing a guard (which would let a stream decode to wrong pixels instead of
 /// failing closed) cannot pass unnoticed. Lowering it is a reviewed edit.
-const GAP_MARKER_FLOOR: usize = 82;
+const GAP_MARKER_FLOOR: usize = 140;
 
 /// One `gap!("reason", …)` marker site: its reason id and the file it lives in.
 struct GapSite {
@@ -86,6 +86,15 @@ fn scan_gap_reasons(code: &str) -> Vec<String> {
             continue;
         }
         if c == '\'' {
+            // A lifetime (`'a`/`'_`) is an unclosed apostrophe; skip only the `'` so a later marker stays visible.
+            let is_lifetime = i + 1 < n
+                && (chars[i + 1].is_alphabetic() || chars[i + 1] == '_')
+                && !(i + 2 < n && chars[i + 2] == '\'');
+            if is_lifetime {
+                prev_ident = false;
+                i += 1;
+                continue;
+            }
             i += 1;
             if i < n && chars[i] == '\\' {
                 i += 2;
@@ -285,11 +294,17 @@ mod tests {
                 "msg",
                 SPEC,
             );
+            // A lifetime must not be mistaken for a char literal that swallows a marker.
+            fn f<'a>(e: Foo<'_>) { general_intra_at!("intra_after_lifetime", off, "m", "s"); }
         "#;
         let reasons = scan_gap_reasons(code);
         assert_eq!(
             reasons,
-            vec!["inter_use_global_motion", "intra_missing_edge"]
+            vec![
+                "inter_use_global_motion",
+                "intra_missing_edge",
+                "intra_after_lifetime"
+            ]
         );
     }
 

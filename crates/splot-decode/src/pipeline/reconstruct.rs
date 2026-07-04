@@ -3,7 +3,7 @@
 
 //! Prediction and residual reconstruction handoffs for decoded frames.
 //!
-//! Feature tracking: `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`.
+//! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraCardinalDirection,

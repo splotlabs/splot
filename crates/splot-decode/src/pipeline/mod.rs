@@ -327,9 +327,9 @@ pub(crate) fn decode_key_frame(
     }
     if sequence.general.bit_depth_idc != BitDepthIdc::Eight {
         return Err(unsupported_at(
-            "unsupported_10bit_frozen_minimal_tier",
+            "unsupported_10bit_outside_decode_subset",
             frame_envelope.offset,
-            missing_capability_message!("frozen_minimal_tier bit_depth=10"),
+            missing_capability_message!("frame.decode_subset bit_depth=10"),
         ));
     }
     validate_frame_core(&core, frame_envelope.offset)?;

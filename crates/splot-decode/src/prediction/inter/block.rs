@@ -299,7 +299,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     };
     let [tile] = tile_plan.work_units_mut() else {
         return Err(inter_cap!(
-            "inter_unexpected_tile_work_units",
+            "inter_walk_unexpected_tile_work_units",
             offset,
             "inter.tile_count != 1",
             SPEC_MODE_INFO
@@ -2042,7 +2042,7 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
             .and_then(|list_ref| ref_frame_idx.get(list_ref).copied())
             .ok_or_else(|| {
                 inter_missing!(
-                    "inter_missing_reference_frame",
+                    "inter_missing_bawp_reference_slot",
                     tile_offset,
                     "inter.bawp.reference_frame",
                     super::SPEC_REFERENCE
@@ -2050,7 +2050,7 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
             })?;
         let ref_frame = reference.frame_for_slot(slot).ok_or_else(|| {
             inter_missing!(
-                "inter_missing_reference_frame",
+                "inter_missing_bawp_reference_frame",
                 tile_offset,
                 "inter.bawp.reference_frame",
                 super::SPEC_REFERENCE
