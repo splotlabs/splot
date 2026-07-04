@@ -3,7 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use crate::byte_stream::plan_byte_stream;
+use crate::bitstream::byte_stream::plan_byte_stream;
 use crate::{
     DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError, DecodeLimitName,
     DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeOutputError, DecodeOutputOperation,

@@ -15,7 +15,7 @@ resolve §7.20.2 source selection, frame/restoration-unit traversal,
 `BlockStartX`/`BlockEndX` clipping, stripe/tile clipping, and `LrTxSkip` grid
 storage. The primitive SHALL NOT implement runtime decode wiring, `FilterClass`
 grid storage, `SubclassLookup` derivation, §7.20.3 filter invocation, frame
-storage, `LrTxSkip` derivation, or ac0ej3 output.
+storage, `LrTxSkip` derivation, or local decoder mission output.
 
 #### Scenario: Classification math is covered by focused tests
 

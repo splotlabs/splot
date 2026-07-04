@@ -1,6 +1,6 @@
 ## Why
 
-The live ac0ej3 decoder frontier now resolves AV2 §7.20.4 classified-Wiener
+The live local decoder mission decoder frontier now resolves AV2 §7.20.4 classified-Wiener
 dependency coordinates but still rejects before reading source sample values,
 reading `LrTxSkip` values, and deriving `FilterClass`. The next aligned brick is
 a scheduler-free `splot-recon` primitive for the §7.20.4 skip-filter
@@ -19,7 +19,7 @@ storage and `LrTxSkip` state are available.
   `LrTxSkip` values, returning the derived class and intermediate feature facts.
 - Keep full §7.20 traversal, frame storage reads, runtime decode wiring,
   `FilterClass` frame-grid storage, §7.20.3 filtering invocation, 10-bit output,
-  and successful ac0ej3 decode out of scope for this brick.
+  and successful local decoder mission decode out of scope for this brick.
 
 ## Capabilities
 
@@ -33,7 +33,7 @@ storage and `LrTxSkip` state are available.
 
 - `decoder-support`: Track `RECON-PC-WIENER-CLASSIFICATION` as narrow
   reconstruction progress without claiming runtime loop-restoration wiring or
-  successful ac0ej3 decode.
+  successful local decoder mission decode.
 
 ## Impact
 
@@ -44,6 +44,6 @@ storage and `LrTxSkip` state are available.
   types; additive generated `splot-tables::tables::loop_restoration` module.
 - Dependencies: no new external dependencies and no crate dependency-graph
   change.
-- Runtime behavior: no decode output change in this brick; ac0ej3 remains a
+- Runtime behavior: no decode output change in this brick; local decoder mission remains a
   structured fail-closed diagnostic until runtime storage, `LrTxSkip`, class-grid
   retention, and LR filtering are wired and verified.

@@ -67,7 +67,7 @@ behavior SHALL change.
 
 The campaign SHALL split cold, stable files before files under active
 development. A file that is part of an in-flight bit-exact decoder workstream
-(for example `wienerns_lr/tx_records.rs` during the ac0ej3 mission) SHALL be
+(for example `wienerns_lr/tx_records.rs` during the local decoder mission) SHALL be
 deferred until that frontier stabilizes, and the deferral SHALL remain recorded
 in the file's `xtask/src/source_lines.rs` allowance reason until the split lands
 (as `frame/info.rs` was, until its header-parsing frontier quieted and it was

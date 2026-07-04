@@ -1,6 +1,6 @@
 ## Why
 
-Coded frame 2 of the `ac0ej3` mission stream defers at its first WARPMV
+Coded frame 2 of the local decoder mission stream defers at its first WARPMV
 interintra block, and behind it every intra-in-inter block whose transform
 partition splits perpendicular to the prediction source edge either
 deferred or (before b02's closure) reconstructed confident-wrong: the

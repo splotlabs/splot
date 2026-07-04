@@ -4,7 +4,7 @@ The inter decoder decodes a MULTI-SUPERBLOCK inter frame, but only a single
 superblock ROW (height 64) of 64x64 superblocks (`DECODE-INTER-MULTI-SB-SPATIAL`
 admitted the ROW only; the single-SB column was analytically verified but REJECTED
 pending its own committed fixture). Real content needs a full 2-D superblock GRID:
-`ac0ej3` is 1920x1080, a 30x17 grid of 64x64 superblocks, so decoding a frame
+`local decoder mission` is 1920x1080, a 30x17 grid of 64x64 superblocks, so decoding a frame
 whose width AND height are both greater than 64 is the next prerequisite for
 real-content scale.
 

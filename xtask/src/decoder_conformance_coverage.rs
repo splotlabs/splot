@@ -187,7 +187,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Parser and validator coverage exists for many syntax structures, and the minimal runtime hash path consumes a supported 8-bit 4:2:0 sequence subset. Broad runtime decoder consumption, external-HLS handling, metadata effects, film-grain state, and operating-point behavior are incomplete.",
+        notes: "Parser and validator coverage exists for many syntax structures, and the minimal tier hash path consumes a supported 8-bit 4:2:0 sequence subset. Broad runtime decoder consumption, external-HLS handling, metadata effects, film-grain state, and operating-point behavior are incomplete.",
     },
     CoverageRow {
         id: "frame-header-state",
@@ -214,7 +214,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature", "decode/resource-limit"],
-        notes: "Frame-header parsing and tile input derivation are partial, with the minimal runtime hash path consuming its supported closed-loop-key subset. Full runtime frame state, inter paths, filters, global motion, segmentation, quantization, and film-grain config consumption are not yet runtime decoded.",
+        notes: "Frame-header parsing and tile input derivation are partial, with the minimal tier hash path consuming its supported closed-loop-key subset. Full runtime frame state, inter paths, filters, global motion, segmentation, quantization, and film-grain config consumption are not yet runtime decoded.",
     },
     CoverageRow {
         id: "tile-group-and-payload-syntax",
@@ -421,7 +421,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Broad public decode outside the minimal runtime tier still defers at the runtime tier boundary, so general decoding, wrapup, output units, and random-access runtime behavior are unsupported.",
+        notes: "Broad public decode outside the minimal tier tier still defers at the runtime tier boundary, so general decoding, wrapup, output units, and random-access runtime behavior are unsupported.",
     },
     CoverageRow {
         id: "cdf-layer-reference-and-motion-setup",
@@ -609,7 +609,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Frame/hash/raw/Y4M/reference primitives exist for caller-supplied frames, with decoded-frame/plane type validators, hash input, and Y4M serialization fuzzed from bounded structured frames, and the documented minimal runtime tier emits hash/raw/Y4M output for one supported fixture shape. The runtime hash/raw/Y4M byte APIs are fuzzed with bounded raw bytes, minimal fixture mutations, and in-memory writers. Broad runtime output ordering, post-film-grain output, show-existing/flush behavior, motion-field storage, and AV2 reference refresh semantics remain unsupported. Current raw AVM/dav2d MD5 metadata is background evidence, not runtime coverage proof.",
+        notes: "Frame/hash/raw/Y4M/reference primitives exist for caller-supplied frames, with decoded-frame/plane type validators, hash input, and Y4M serialization fuzzed from bounded structured frames, and the documented minimal tier tier emits hash/raw/Y4M output for one supported fixture shape. The runtime hash/raw/Y4M byte APIs are fuzzed with bounded raw bytes, minimal fixture mutations, and in-memory writers. Broad runtime output ordering, post-film-grain output, show-existing/flush behavior, motion-field storage, and AV2 reference refresh semantics remain unsupported. Current raw AVM/dav2d MD5 metadata is background evidence, not runtime coverage proof.",
     },
     CoverageRow {
         id: "symbol-and-cdf-process",

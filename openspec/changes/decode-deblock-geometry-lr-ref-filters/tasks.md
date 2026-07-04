@@ -11,6 +11,6 @@
       and PC-Wiener-offset resolution in the filter match.
 
 ## 3. Verification
-- [x] 3.1 ac0ej3 coded frames 0-2 POST-FILTER luma byte-exact vs the AVM
+- [x] 3.1 local decoder mission coded frames 0-2 POST-FILTER luma byte-exact vs the AVM
       oracle (per-stage: deblock, CDEF, CCSO, LR all exact); frame-0
       sentinel intact; 22-stream corpus byte-exact; full test suite.

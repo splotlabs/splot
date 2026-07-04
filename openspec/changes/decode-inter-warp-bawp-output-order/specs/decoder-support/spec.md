@@ -20,12 +20,12 @@ LSB-windowed). TIP frames (`tip_frame_mode == 1`) SHALL be rejected
 with a structured diagnostic after the bit-exact header read.
 
 #### Scenario: Warp dependency chain parses through frame 2
-- **GIVEN** the ac0ej3 mission stream
+- **GIVEN** the local decoder mission stream
 - **WHEN** decoding reaches coded frame 2
 - **THEN** every EXTENDWARP/LOCALWARP/BAWP block decodes and the next
   defer is a later frame's feature gate, before any output
 
 #### Scenario: Output frame 0 is unchanged
-- **GIVEN** the ac0ej3 mission stream decoded with a one-frame limit
+- **GIVEN** the local decoder mission stream decoded with a one-frame limit
 - **WHEN** the display-order scheduler releases frames
 - **THEN** output frame 0 is byte-identical to the avmdec raw output

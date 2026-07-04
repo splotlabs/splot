@@ -183,8 +183,8 @@ NOT conformant
 ```text
 crates/splot-core      AV2 bitstream model + parsers (LEB128, OBU header, Annex B, IVF, headers)
 crates/splot-parallel  approved concurrency primitives (local Rayon worker pool + bounded crossbeam queues)
-crates/splot-recon     future reconstruction primitives (decoded frame/plane types; no decode yet)
-crates/splot-decode    decoder diagnostic API + worker-pool scaffold (no byte-consuming decode yet)
+crates/splot-recon     scheduler-free decoded-frame storage + reconstruction primitives
+crates/splot-decode    decode planning, pipeline orchestration, diagnostics, reference/filter/output routing
 crates/splot-validate  parser-driven conformance diagnostics (the validator)
 crates/splot-encode    future encoder API (stub)
 crates/splot-cli       thin `splot` binary
@@ -194,7 +194,8 @@ fuzz                   cargo-fuzz target (outside the workspace)
 
 Dependencies flow one way (`splot-core` depends on no other `splot-*` crate;
 nothing depends on `splot-cli`), and that rule is itself a CI gate. See
-[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) and the decoder module map in
+[docs/DECODER-ARCHITECTURE.md](./docs/DECODER-ARCHITECTURE.md).
 
 ## Engineering discipline
 

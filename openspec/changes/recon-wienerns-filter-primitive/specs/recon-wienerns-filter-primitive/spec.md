@@ -17,7 +17,7 @@ caller output with the supplied stride. The caller SHALL resolve source-sample
 coordinates, §7.20.2 clipping/stripe behavior, PC-Wiener class/subclass mapping,
 and coefficient selection. The primitive SHALL NOT implement chroma Wiener NS,
 §7.20 traversal, restoration-unit syntax, temporal/reference Wiener state,
-runtime decode wiring, or ac0ej3 output.
+runtime decode wiring, or local decoder mission output.
 
 #### Scenario: Luma Wiener NS math is covered by focused tests
 

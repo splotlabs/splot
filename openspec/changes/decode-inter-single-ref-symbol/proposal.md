@@ -1,6 +1,6 @@
 ## Why
 
-Multi-reference inter decode (the gate to real content like ac0ej3) needs the AV2
+Multi-reference inter decode (the gate to real content like local decoder mission) needs the AV2
 § 5.20.7.12 `read_single_ref` element: it selects `RefFrame[0]` for a
 single-reference inter block when more than one reference is available. Two prior
 investigations found that `read_single_ref` CANNOT be runtime-tested in isolation:

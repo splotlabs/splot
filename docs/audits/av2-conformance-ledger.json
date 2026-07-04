@@ -962,7 +962,7 @@
       "sha256": "8aaf27070ca525939fee9a5e4ccaed2f2f9b3f67ed30fc2e87227dea28d97921",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER"
+        "DECODE-WIENERNS-BANK-FRONTIER"
       ],
       "outcome": "success"
     },
@@ -2010,27 +2010,27 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal.rs",
+      "path": "crates/splot-decode/src/pipeline/mod.rs",
       "sha256": "af0b83054a7e4bffdb612cf2ee4380b29cc821c69004d0f8820c28a648ccdb83",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
-        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER",
-        "DECODE-AC0EJ3-LEADING-OBU-GATE",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES",
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION",
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER",
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER",
-        "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS",
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER",
+        "DECODE-10BIT-SEQUENCE-FRONTIER",
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER",
+        "DECODE-INTRA-IST-ZERO-FRONTIER",
+        "DECODE-LEADING-OBU-GATE",
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER",
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
+        "DECODE-LR-CLASSIFIED-WIENER-VALUES",
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION",
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+        "DECODE-LR-LIVE-TX-SKIP-GRID",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION",
+        "DECODE-LR-SOURCE-READ-FRONTIER",
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER",
+        "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS",
+        "DECODE-SEQUENCE-CHROMA-FRONTIER",
+        "DECODE-WIENERNS-FRONTIER",
         "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
         "DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC",
@@ -2042,28 +2042,28 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/block_context.rs",
+      "path": "crates/splot-decode/src/tile/block_context.rs",
       "sha256": "38ec33dff93458624cc9f145892430583be26896d79c5a188f1717f914601335",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/capability.rs",
+      "path": "crates/splot-decode/src/support/capability.rs",
       "sha256": "d5814d655185d90d443e95d042149933f8a16caaa3418ff3222d98df12ff3270",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/ccso.rs",
+      "path": "crates/splot-decode/src/filters/ccso.rs",
       "sha256": "6b21d47e38b1c4c1f86f0ae820a96c79146922c347a81588d446dbd0311c8ebe",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/cdef.rs",
+      "path": "crates/splot-decode/src/filters/cdef.rs",
       "sha256": "ee4865872bca445d70d3d3adb0a986ef18dc70c5d43e1253bf00957d9e056cfd",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2072,7 +2072,7 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/deblock.rs",
+      "path": "crates/splot-decode/src/filters/deblock.rs",
       "sha256": "e302e3ce1abd8aba50ba521b8187ab830ffc781fbb46ed0215a9fe98e176a3ed",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2081,7 +2081,7 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/general_intra.rs",
+      "path": "crates/splot-decode/src/pipeline/general_intra.rs",
       "sha256": "91c3d713150e1dcb0dd743d13d33aeca390483c2b6773cd5b3e9afb97a259421",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2095,14 +2095,14 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/general_intra_tests.rs",
+      "path": "crates/splot-decode/src/pipeline/general_intra_tests.rs",
       "sha256": "028c97efc9475b4f7f57780928637fe8c41a6b837472365f966107cad0199f09",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/general_intra_tests/general_intra_cdef_tests.rs",
+      "path": "crates/splot-decode/src/pipeline/general_intra_tests/general_intra_cdef_tests.rs",
       "sha256": "cf2fe63ecc195503b525c5fd015825d7b4d30a7c1ede6c6d1f8a58bebc7b2039",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2111,7 +2111,7 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter.rs",
+      "path": "crates/splot-decode/src/prediction/inter.rs",
       "sha256": "2635295da5ebecd7cb883a5f7f129069dd874093239a9e74d9f77ea469901362",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2123,14 +2123,14 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/bawp.rs",
+      "path": "crates/splot-decode/src/prediction/inter/bawp.rs",
       "sha256": "3b88e1fd074cdb92d795b7d5ac411868dcdd60019c96f8c2401dcd407015e319",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/block.rs",
+      "path": "crates/splot-decode/src/prediction/inter/block.rs",
       "sha256": "9d8a1c985179b47c8c51d963fb5043b3c31ab477ba145ffb45bddab68750f305",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2140,35 +2140,35 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/block/residual.rs",
+      "path": "crates/splot-decode/src/prediction/inter/block/residual.rs",
       "sha256": "91ba162830ffddc6a36317b11f866ef3427aa217340798aa05b32a3e470a9651",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/block/warp.rs",
+      "path": "crates/splot-decode/src/prediction/inter/block/warp.rs",
       "sha256": "32dd6975553931ad8512b922dfc4de46cc5feea55e42a6a022eb3645f0f44823",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/compound.rs",
+      "path": "crates/splot-decode/src/prediction/inter/compound.rs",
       "sha256": "67e8cb0c21754130d8f0d1c956679d2d203b83a27019b4d16953f446763530cd",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/cross_frame.rs",
+      "path": "crates/splot-decode/src/prediction/inter/cross_frame.rs",
       "sha256": "e692725de0c2399126d73632299fa34113016ed43ce9dcd54e6f68187af26670",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack.rs",
+      "path": "crates/splot-decode/src/prediction/inter/find_mv_stack.rs",
       "sha256": "e95f2f89ab51441e605f54017a58a2968b290738928826381a7770153d2a5021",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2178,49 +2178,49 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/find_mv_stack/tests.rs",
+      "path": "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs",
       "sha256": "537c8eabe7aed2f969a59497602d26d64beac6d22e8e7a330b0bc8eb9e3fdbe8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/lr_live_storage_tests.rs",
+      "path": "crates/splot-decode/src/prediction/inter/lr_live_storage_tests.rs",
       "sha256": "f9fdc9769a84c4395488dc3b19ba082efe95732f7ee2824905ae7bc320185d0e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION",
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/lr_source_read_tests.rs",
+      "path": "crates/splot-decode/src/prediction/inter/lr_source_read_tests.rs",
       "sha256": "affc2ea48126bc40d4bcbf802a86fdfdb305f3a54b23ed865b40f33abb8d1081",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION",
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION",
+        "DECODE-LR-SOURCE-READ-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/mc.rs",
+      "path": "crates/splot-decode/src/prediction/inter/mc.rs",
       "sha256": "99541579821b48884136d4d37172e00fa6420e30356b336dfad0cfd7eb8ccb4e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/mv_scaling.rs",
+      "path": "crates/splot-decode/src/prediction/inter/mv_scaling.rs",
       "sha256": "6db418f2a3f2c105ff03b203fd1420acbd4e8c1cdd10b32869c3cae6a7304338",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/read_mv.rs",
+      "path": "crates/splot-decode/src/prediction/inter/read_mv.rs",
       "sha256": "160b7439c4e016a6867fe8662b3713d5295c739f883f8589617f39d4da788406",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2229,14 +2229,14 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/read_mv/tests.rs",
+      "path": "crates/splot-decode/src/prediction/inter/read_mv/tests.rs",
       "sha256": "aee1a341a61cf7cca9c1d12ca2cca5a8b69f68abf0ebe24b745faccb4c2b2753",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/single_ref.rs",
+      "path": "crates/splot-decode/src/prediction/inter/single_ref.rs",
       "sha256": "dc6d26d5e19c99d6bf4912e5f9a69cd290465b111e48aea89f89ce52a6347995",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2245,55 +2245,55 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/single_ref/tests.rs",
+      "path": "crates/splot-decode/src/prediction/inter/single_ref/tests.rs",
       "sha256": "7476f31276a19fbddbdb6a7b53e08d7396d45dedb38b73530085b5d43b2f1307",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/test_support.rs",
+      "path": "crates/splot-decode/src/prediction/inter/test_support.rs",
       "sha256": "63c42d4b6179731c4e4fd704f9a8d860d25b5a149c7dfed61af01145d64a7be8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/inter/tests.rs",
+      "path": "crates/splot-decode/src/prediction/inter/tests.rs",
       "sha256": "b022c546cd6d63150c8df4d2147ca8be1c2a256196945ec1a89bfc7afdf6e213",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "AV2-5.18.7-SEGMENTATION-TILING",
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER",
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER",
+        "DECODE-LR-SOURCE-READ-FRONTIER",
+        "DECODE-SEQUENCE-CHROMA-FRONTIER",
+        "DECODE-WIENERNS-FRONTIER",
         "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
       ],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/intra_edge.rs",
+      "path": "crates/splot-decode/src/prediction/intra_edge.rs",
       "sha256": "249e201df59ca3b8f428561efc07ab8bf79a1b0367bad486a4baa4eaa001054d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/intra_prediction.rs",
+      "path": "crates/splot-decode/src/prediction/intra.rs",
       "sha256": "ef3b4b7b8bcbd36f00c9fd806e41e2b504381bb29fee5d0e9679b12429cee7e2",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/limits.rs",
+      "path": "crates/splot-decode/src/support/pipeline_limits.rs",
       "sha256": "7aa1d8f15adc88176e8e3d23336a9fac02bad26b145d02b90478d0d9cb054250",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/reference_buffer.rs",
+      "path": "crates/splot-decode/src/reference/buffer.rs",
       "sha256": "7eb8096bcea8e5fe0eb9c4d5c387a32f125787e9a0d21f58fd6b38384c682287",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2302,77 +2302,77 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/residual_pipeline.rs",
+      "path": "crates/splot-decode/src/residual/pipeline.rs",
       "sha256": "b090528d01bc0395a767891c1c4b403f15374bcd554292263712ea1edd357fab",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr.rs",
       "sha256": "0bb99a7daf9aaa58d11f28a1044f1a6da2a4bce1174d044240c1a5536b5bf270",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION"
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+        "DECODE-LR-TX-SKIP-GRID-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/diagnostics.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/diagnostics.rs",
       "sha256": "8dbf8af2befa0e1c5e37e116b138413ff2650743588a332401411144732082f9",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/intrabc_records.rs",
       "sha256": "fd3b4c84740c114b1d78d7cf2a2b145dac6d71fef93730b21c5f99b16231ee43",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_records_tests.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/intrabc_records_tests.rs",
       "sha256": "b6ca673c2a767131271637b67e6c96c5a12f1b68aaba16c6ead240919f81fe7c",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/intrabc_ref_mv_stack.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/intrabc_ref_mv_stack.rs",
       "sha256": "d5610f3b5972b63980e8e45c9d6bbf430bd5d4a3ced46e8ac06686cbabe17ce9",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/live_storage.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/live_storage.rs",
       "sha256": "98cd16c27ebe029971a975260bdb05423252bbf09092bcfd9edf13260bc32fc0",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID"
+        "DECODE-LR-LIVE-TX-SKIP-GRID"
       ],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/recon.rs",
       "sha256": "253391c3464e490e86a6ee8c676969b6562d29312ccfa6c99da0529369164a22",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon/edge_filter.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/recon/edge_filter.rs",
       "sha256": "ecc947d31d66ecfc0bac28dd05b39f30a367d9de5d1e1a44a7285a940e139aca",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon/final_filters.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters.rs",
       "sha256": "3128646760ad40ad518cd98201427d68e10bb4fadcb12488cc24de4551e1cea3",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2381,109 +2381,109 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon/full_recon.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/recon/full_recon.rs",
       "sha256": "4931ce3f08ab00d4852df5025e51a0989c98b472c25e563f30e41d5e8ed79192",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon_tests.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/recon_tests.rs",
       "sha256": "5f84b81fc249ce1d2586b6d5d7082d72bd318f12e85d639ace9934648462727c",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/source_read_math.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/source_read_math.rs",
       "sha256": "db0b4e5d01d838aa8f1882442beb1c09815bec0da199d8b99c003ede4cfb42ab",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
       "sha256": "b9ee8c9059649fca92b32d5577b106ad419d3da920a81e24234b75958ebe2ea8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records/ccso.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records/ccso.rs",
       "sha256": "5d62a028cedbdbfb43a0820ed38a82acc61dd3f82c8e27f3b3ffaa8e706263b3",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records/max_rect.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records/max_rect.rs",
       "sha256": "611e37eb48508dcd8f13c43e50ee0630cf2ff2a72af1eb2586f03810d206f57e",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records/skip_records.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records/skip_records.rs",
       "sha256": "7e59e30410dd632485d41046752d7a4422d249f0453d19cbb4d2ff876899088d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records/tool_gate.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records/tool_gate.rs",
       "sha256": "de0a58f182250d90d8a7dc019140f00fd7590cb3067610f806d93dec678f9e05",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records_actual_extent_tests.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records_actual_extent_tests.rs",
       "sha256": "d037ee5cc124b645c17d56d6eacfbc500b4f8b659c7b2f26d19171852d2a2e89",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records_cdef_tests.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records_cdef_tests.rs",
       "sha256": "47922f253dbe79ed604100d69d57d1d727cc6f93d38dd1bf51d56536340606c8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records_grid_tests.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs",
       "sha256": "5b9a51f67cfc7eb31f1e8108a3918a332c486e1af47f2b5ccee8dff58c6ae4e0",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records_max_rect_tests.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records_max_rect_tests.rs",
       "sha256": "9526598db353674d0455abae6252eddc5f46e661384a69e03a9b6fc35805fe99",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records_tool_gate_tests.rs",
+      "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records_tool_gate_tests.rs",
       "sha256": "42490a6c7bb05d0c296f3b4cea87fab1f7eefa61b65482eba7e3abcc6514812a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal/wienerns_lr_recon_tests.rs",
+      "path": "crates/splot-decode/src/pipeline/wienerns_lr_recon_tests.rs",
       "sha256": "6c0263f9ded1f53b8a4a40322eb0c8d76d1a1719a2f8316ef13a67e499c801ef",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal_recon.rs",
+      "path": "crates/splot-decode/src/pipeline/reconstruct.rs",
       "sha256": "7202f46868a3ea3e7def1c49673b5ddb9a1731c7f2fd8a4d74f2a11d45102391",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2502,14 +2502,14 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal_recon/cfl.rs",
+      "path": "crates/splot-decode/src/pipeline::reconstruct/cfl.rs",
       "sha256": "6bfa19fc10f36e0a7df15d37faa6172ff2d60001ef1a0b0d931bf87f3ec6e3be",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal_recon/chroma_directional.rs",
+      "path": "crates/splot-decode/src/pipeline::reconstruct/chroma_directional.rs",
       "sha256": "2551770ffb36d57bb103543517e46535f6e365a4d3c2ba73bfbd95ed5b47e0aa",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
@@ -2518,14 +2518,14 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal_recon/mhccp.rs",
+      "path": "crates/splot-decode/src/pipeline::reconstruct/mhccp.rs",
       "sha256": "fdf7eb8bcf389cf9d7e70e7312770ebc7aa03880d14f4e02ef6de6eb9a6965b6",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/runtime_minimal_recon/tests.rs",
+      "path": "crates/splot-decode/src/pipeline::reconstruct/tests.rs",
       "sha256": "ad2aa9ab2735ec06daf58983ea6427b361d47fdbad9f574c184703c5a80d760b",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
@@ -3023,8 +3023,8 @@
       "sha256": "32cc9dfedd3c9ac71237479caf2270180567a0e824e8e3fd15cc327e7b235772",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER",
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER",
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
         "DECODE-GENERAL-INTRA-BLOCK-MODES",
         "DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX"
       ],
@@ -3035,11 +3035,11 @@
       "sha256": "123b11f78464f901912a44896683f325829f1311efba8314edb82a24b7efc284",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
-        "DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF",
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER",
-        "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF",
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF",
+        "DECODE-CHROMA-CCTX-HANDOFF",
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER",
+        "DECODE-INTRA-IST-ZERO-FRONTIER",
+        "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF",
         "DECODE-FIRST-INTER-FRAME-FRONTIER",
         "DECODE-GENERAL-INTRA-FRAME-RECON",
         "DECODE-GENERAL-INTRA-LUMA-COEFFS"
@@ -3117,11 +3117,11 @@
       "sha256": "871cf29511dc94093c6b75834cb3be82bcddbc70deb15ba954d1716d32dbc7db",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER",
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER",
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER",
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER",
+        "DECODE-INACTIVE-LR-UNITS-FRONTIER",
+        "DECODE-LR-SOURCE-BOUNDS-FRONTIER",
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER",
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER",
         "DECODE-GENERAL-INTRA-DEEP-SPLIT",
         "DECODE-GENERAL-INTRA-MULTIBLOCK",
         "DECODE-GENERAL-INTRA-NON64-MULTISB",
@@ -3146,7 +3146,7 @@
       "outcome": "success"
     },
     {
-      "path": "crates/splot-decode/src/tile_payload/runtime_frontier.rs",
+      "path": "crates/splot-decode/src/tile_payload/tile_frontier.rs",
       "sha256": "8af5002fa2ab273b7643cc7a6d70d03ea9a18bb5959688ceea70a77d4503a884",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
@@ -6092,34 +6092,34 @@
         "CONF-RECON-Y4M-OUTPUT-FUZZ",
         "CONF-SYMBOL-DECODER-FUZZ",
         "CONF-TILE-PAYLOAD-DECODE-FUZZ",
-        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER",
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
-        "DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF",
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER",
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES",
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION",
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER",
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER",
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION",
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER",
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER",
-        "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS",
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER",
+        "DECODE-10BIT-SEQUENCE-FRONTIER",
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF",
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER",
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-CHROMA-CCTX-HANDOFF",
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER",
+        "DECODE-INACTIVE-LR-UNITS-FRONTIER",
+        "DECODE-INTRA-IST-ZERO-FRONTIER",
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER",
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
+        "DECODE-LR-CLASSIFIED-WIENER-VALUES",
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION",
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+        "DECODE-LR-LIVE-TX-SKIP-GRID",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION",
+        "DECODE-LR-SOURCE-BOUNDS-FRONTIER",
+        "DECODE-LR-SOURCE-READ-FRONTIER",
+        "DECODE-LR-TX-SKIP-GRID-RETENTION",
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER",
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER",
+        "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER",
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS",
+        "DECODE-SEQUENCE-CHROMA-FRONTIER",
+        "DECODE-WIENERNS-BANK-FRONTIER",
+        "DECODE-WIENERNS-FRONTIER",
         "DECODE-BYTE-STREAM-PLANNER",
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
         "DECODE-COEFF-ALL-ZERO-CONTEXT-STATE",
@@ -6322,34 +6322,34 @@
         "CONF-RECON-Y4M-OUTPUT-FUZZ",
         "CONF-SYMBOL-DECODER-FUZZ",
         "CONF-TILE-PAYLOAD-DECODE-FUZZ",
-        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER",
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
-        "DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF",
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER",
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES",
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION",
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER",
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER",
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION",
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER",
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER",
-        "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS",
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER",
+        "DECODE-10BIT-SEQUENCE-FRONTIER",
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF",
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER",
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-CHROMA-CCTX-HANDOFF",
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER",
+        "DECODE-INACTIVE-LR-UNITS-FRONTIER",
+        "DECODE-INTRA-IST-ZERO-FRONTIER",
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER",
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
+        "DECODE-LR-CLASSIFIED-WIENER-VALUES",
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION",
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+        "DECODE-LR-LIVE-TX-SKIP-GRID",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION",
+        "DECODE-LR-SOURCE-BOUNDS-FRONTIER",
+        "DECODE-LR-SOURCE-READ-FRONTIER",
+        "DECODE-LR-TX-SKIP-GRID-RETENTION",
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER",
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER",
+        "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER",
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS",
+        "DECODE-SEQUENCE-CHROMA-FRONTIER",
+        "DECODE-WIENERNS-BANK-FRONTIER",
+        "DECODE-WIENERNS-FRONTIER",
         "DECODE-BYTE-STREAM-PLANNER",
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
         "DECODE-COEFF-ALL-ZERO-CONTEXT-STATE",
@@ -6739,35 +6739,35 @@
         "CONF-RECON-Y4M-OUTPUT-FUZZ",
         "CONF-SYMBOL-DECODER-FUZZ",
         "CONF-TILE-PAYLOAD-DECODE-FUZZ",
-        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER",
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
-        "DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF",
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER",
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-LEADING-OBU-GATE",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES",
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION",
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER",
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER",
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION",
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER",
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER",
-        "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS",
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER",
+        "DECODE-10BIT-SEQUENCE-FRONTIER",
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF",
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER",
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-CHROMA-CCTX-HANDOFF",
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER",
+        "DECODE-INACTIVE-LR-UNITS-FRONTIER",
+        "DECODE-INTRA-IST-ZERO-FRONTIER",
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-LEADING-OBU-GATE",
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER",
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
+        "DECODE-LR-CLASSIFIED-WIENER-VALUES",
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION",
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+        "DECODE-LR-LIVE-TX-SKIP-GRID",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION",
+        "DECODE-LR-SOURCE-BOUNDS-FRONTIER",
+        "DECODE-LR-SOURCE-READ-FRONTIER",
+        "DECODE-LR-TX-SKIP-GRID-RETENTION",
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER",
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER",
+        "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER",
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS",
+        "DECODE-SEQUENCE-CHROMA-FRONTIER",
+        "DECODE-WIENERNS-BANK-FRONTIER",
+        "DECODE-WIENERNS-FRONTIER",
         "DECODE-BYTE-STREAM-PLANNER",
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
         "DECODE-COEFF-ALL-ZERO-CONTEXT-STATE",
@@ -7240,35 +7240,35 @@
         "CONF-RECON-Y4M-OUTPUT-FUZZ",
         "CONF-SYMBOL-DECODER-FUZZ",
         "CONF-TILE-PAYLOAD-DECODE-FUZZ",
-        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER",
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
-        "DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF",
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER",
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-LEADING-OBU-GATE",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES",
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION",
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER",
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER",
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION",
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER",
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER",
-        "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS",
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER",
+        "DECODE-10BIT-SEQUENCE-FRONTIER",
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF",
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER",
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-CHROMA-CCTX-HANDOFF",
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER",
+        "DECODE-INACTIVE-LR-UNITS-FRONTIER",
+        "DECODE-INTRA-IST-ZERO-FRONTIER",
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-LEADING-OBU-GATE",
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER",
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
+        "DECODE-LR-CLASSIFIED-WIENER-VALUES",
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION",
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+        "DECODE-LR-LIVE-TX-SKIP-GRID",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION",
+        "DECODE-LR-SOURCE-BOUNDS-FRONTIER",
+        "DECODE-LR-SOURCE-READ-FRONTIER",
+        "DECODE-LR-TX-SKIP-GRID-RETENTION",
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER",
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER",
+        "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER",
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS",
+        "DECODE-SEQUENCE-CHROMA-FRONTIER",
+        "DECODE-WIENERNS-BANK-FRONTIER",
+        "DECODE-WIENERNS-FRONTIER",
         "DECODE-BYTE-STREAM-PLANNER",
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
         "DECODE-COEFF-ALL-ZERO-CONTEXT-STATE",
@@ -7750,35 +7750,35 @@
         "CONF-RECON-Y4M-OUTPUT-FUZZ",
         "CONF-SYMBOL-DECODER-FUZZ",
         "CONF-TILE-PAYLOAD-DECODE-FUZZ",
-        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER",
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
-        "DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF",
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER",
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-LEADING-OBU-GATE",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES",
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION",
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER",
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER",
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION",
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER",
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER",
-        "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS",
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER",
+        "DECODE-10BIT-SEQUENCE-FRONTIER",
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF",
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER",
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-CHROMA-CCTX-HANDOFF",
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER",
+        "DECODE-INACTIVE-LR-UNITS-FRONTIER",
+        "DECODE-INTRA-IST-ZERO-FRONTIER",
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-LEADING-OBU-GATE",
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER",
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
+        "DECODE-LR-CLASSIFIED-WIENER-VALUES",
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION",
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+        "DECODE-LR-LIVE-TX-SKIP-GRID",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION",
+        "DECODE-LR-SOURCE-BOUNDS-FRONTIER",
+        "DECODE-LR-SOURCE-READ-FRONTIER",
+        "DECODE-LR-TX-SKIP-GRID-RETENTION",
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER",
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER",
+        "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER",
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS",
+        "DECODE-SEQUENCE-CHROMA-FRONTIER",
+        "DECODE-WIENERNS-BANK-FRONTIER",
+        "DECODE-WIENERNS-FRONTIER",
         "DECODE-BYTE-STREAM-PLANNER",
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
         "DECODE-COEFF-ALL-ZERO-CONTEXT-STATE",
@@ -8613,9 +8613,9 @@
       "feature_ids": [
         "CONF-AVM-DIFF-HARNESS",
         "CONF-RECON-REFERENCE-FRAME-STORE-FUZZ",
-        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER",
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER",
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER",
+        "DECODE-10BIT-SEQUENCE-FRONTIER",
+        "DECODE-SEQUENCE-CHROMA-FRONTIER",
+        "DECODE-WIENERNS-BANK-FRONTIER",
         "DECODE-BYTE-STREAM-PLANNER",
         "DECODE-COEFF-ALL-ZERO-CONTEXT-STATE",
         "DECODE-FIRST-INTER-FRAME-FRONTIER",
@@ -21278,336 +21278,336 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-active-lr-selection-diagnostic/design.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-active-lr-selection-diagnostic/design.md",
       "sha256": "1af2c6cbf1e960716485402ace4bc61e9a8881d3af960919f241dee45b58dc85",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER"
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-active-lr-selection-diagnostic/proposal.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-active-lr-selection-diagnostic/proposal.md",
       "sha256": "696c2a8768751cc99f0b75880e262dd44d96dc2ac64fcd447e02385bdb2ba7bf",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER"
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-active-lr-selection-diagnostic/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-active-lr-selection-diagnostic/specs/decoder-support/spec.md",
       "sha256": "18faa4d824e90ff2d5ee556ef4d3206d09e32997f44fcff452777086f2670803",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER"
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-active-lr-selection-diagnostic/tasks.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-active-lr-selection-diagnostic/tasks.md",
       "sha256": "5578fd63ec143569d78b58ae3cf6f9a9284a04e28de4b4ed1b83e68b389d9a12",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-inactive-lr-units-frontier/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-23-decode-inactive-lr-units-frontier/.openspec.yaml",
       "sha256": "6bfe9dd1f2ca83f49ee380111d00e1a9ec8371dd7acd1cba0e1c45cf0a2de2f1",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-inactive-lr-units-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-inactive-lr-units-frontier/design.md",
       "sha256": "3e43f05a45c717fd6d3f0234a132043877d76b7400c156e0f732e04b4b525467",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER"
+        "DECODE-INACTIVE-LR-UNITS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-inactive-lr-units-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-inactive-lr-units-frontier/proposal.md",
       "sha256": "bd332326ca743a9cd914c9fb428cfa36e24b4e041ce1f17c4d290d14144e85fc",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER"
+        "DECODE-INACTIVE-LR-UNITS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-inactive-lr-units-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-inactive-lr-units-frontier/specs/decoder-support/spec.md",
       "sha256": "86cb134ec929187313593107a5abcb44b9fa5235bcdcf9a0def1ac99bd205a47",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER"
+        "DECODE-INACTIVE-LR-UNITS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-inactive-lr-units-frontier/specs/tile-partition-traversal-boundary/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-inactive-lr-units-frontier/specs/tile-partition-traversal-boundary/spec.md",
       "sha256": "d462d25c8f99d0c940c04469fc544cc4a90b6a9db93630804907fc749c3919ed",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-inactive-lr-units-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-inactive-lr-units-frontier/tasks.md",
       "sha256": "46aed8f3084d44689d1052b19fffee6f1e80032b966bfbe4c65b614c215bafc6",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER"
+        "DECODE-INACTIVE-LR-UNITS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-bounds-frontier/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-bounds-frontier/.openspec.yaml",
       "sha256": "6bfe9dd1f2ca83f49ee380111d00e1a9ec8371dd7acd1cba0e1c45cf0a2de2f1",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-bounds-frontier/README.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-bounds-frontier/README.md",
       "sha256": "78ef73faab89b645843814bb4858b5954e603e1a541935fa6c9ef4ff0f47d504",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-bounds-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-bounds-frontier/design.md",
       "sha256": "b32d5f28a61d5ee6a8214d62c0defd7a7860b2509054e58bd9e8229cb64808da",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER"
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-bounds-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-bounds-frontier/proposal.md",
       "sha256": "495e53b1eb06a89f7ffec155c7ef3f18c8c7cf3469bb393231f961f06ea086a4",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER"
+        "DECODE-LR-SOURCE-BOUNDS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-bounds-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-bounds-frontier/specs/decoder-support/spec.md",
       "sha256": "cc46b6ce129f00d3e6cd7677c61c82addc30363e09276803f6ab0e0ccb13a857",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER"
+        "DECODE-LR-SOURCE-BOUNDS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-bounds-frontier/specs/tile-partition-traversal-boundary/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-bounds-frontier/specs/tile-partition-traversal-boundary/spec.md",
       "sha256": "335ec1cad89791187d3e996dfa87e7c97bdb0f6bffb3246215efaf56560060a9",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-bounds-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-bounds-frontier/tasks.md",
       "sha256": "85358131bdbe5e919d4373be409337f28e3a54b4a4ac3b8cb543aa9f9c159428",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER"
+        "DECODE-LR-SOURCE-BOUNDS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-read-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-read-frontier/design.md",
       "sha256": "e71190cb66faa039ae3eecc38b4d62e3f5b26f54877ffb28006ad31f7bf569a7",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER",
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
+        "DECODE-LR-SOURCE-BOUNDS-FRONTIER",
+        "DECODE-LR-SOURCE-READ-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-read-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-read-frontier/proposal.md",
       "sha256": "6a1a4bdce59f76f11b585e0adabcb1f7f79bf299396ee04978f6464742fe1684",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
+        "DECODE-LR-SOURCE-READ-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-read-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-read-frontier/specs/decoder-support/spec.md",
       "sha256": "5f016f9bca115a52004a3605f2265ee2d5907a66f36dd3c7134022f65fd24ce6",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
+        "DECODE-LR-SOURCE-READ-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-read-frontier/specs/tile-partition-traversal-boundary/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-read-frontier/specs/tile-partition-traversal-boundary/spec.md",
       "sha256": "3b425240de2ca8506430e817b477d72cf4998481f4f1eb666bdb909ae6af3e1c",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
+        "DECODE-LR-SOURCE-READ-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-source-read-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-source-read-frontier/tasks.md",
       "sha256": "e83cbbf378041afd025e41ece31f7659dc9e98bbf5ccf782cd4c8280ad41d356",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
+        "DECODE-LR-SOURCE-READ-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-unit-selections-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-unit-selections-frontier/design.md",
       "sha256": "3375e9a91eb15a30f074a03d9b9116ccfc0223123cf3318660a5382e3ae62341",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-unit-selections-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-unit-selections-frontier/proposal.md",
       "sha256": "b1ee3ce92d1fd067145317df88af2d4102a32dca081c8ab2fba2f48fe8e606ad",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER"
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-unit-selections-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-unit-selections-frontier/specs/decoder-support/spec.md",
       "sha256": "96cdd7fb8f11b634d9df00751b02e5e142a580001ab93325d4ec96aad22126c4",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER"
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-unit-selections-frontier/specs/tile-partition-traversal-boundary/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-unit-selections-frontier/specs/tile-partition-traversal-boundary/spec.md",
       "sha256": "8aa367f1a9dbbba05095011422239d24c51d8f8dedd5065a4c0774bf35d76309",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-unit-selections-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-unit-selections-frontier/tasks.md",
       "sha256": "d5a945fa58f7d252d042d9547b835f941fbb0968560c79acd515a27e9eec995d",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER"
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-unit-syntax-frontier/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-unit-syntax-frontier/.openspec.yaml",
       "sha256": "6bfe9dd1f2ca83f49ee380111d00e1a9ec8371dd7acd1cba0e1c45cf0a2de2f1",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-unit-syntax-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-unit-syntax-frontier/design.md",
       "sha256": "20507d960fe51f5d3c16c2a1013d0b1473aa74d738e9082756a4d77a6d87920b",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER"
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-unit-syntax-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-unit-syntax-frontier/proposal.md",
       "sha256": "8894a782b0498b6f4c3d6ea3e010aef316fbc2fe06a5a98951e31592317847f2",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER"
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-unit-syntax-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-unit-syntax-frontier/specs/decoder-support/spec.md",
       "sha256": "5ab80c6366fc9a5476ad0d6a2d8da612329441a504fc52f270399ad877d00eb9",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER",
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER",
         "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-unit-syntax-frontier/specs/tile-partition-traversal-boundary/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-unit-syntax-frontier/specs/tile-partition-traversal-boundary/spec.md",
       "sha256": "e8826af313704d1053496df635c6f2bcf45292ff2bb1237f9d26de7c655f3ff1",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER",
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER",
         "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-lr-unit-syntax-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-lr-unit-syntax-frontier/tasks.md",
       "sha256": "a5c71f93a03c47d1d4f0aa1f989a443e0fef246232e42640ebc50c2d58d49f0e",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER"
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-wienerns-frontier/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-23-decode-wienerns-frontier/.openspec.yaml",
       "sha256": "6bfe9dd1f2ca83f49ee380111d00e1a9ec8371dd7acd1cba0e1c45cf0a2de2f1",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-wienerns-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-wienerns-frontier/design.md",
       "sha256": "73ee43266762e7ffb9df2f17945f2ee77765dfe2d1496fddaf5da8466e5100f0",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER"
+        "DECODE-WIENERNS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-wienerns-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-wienerns-frontier/proposal.md",
       "sha256": "c33c97423fc530c6f74f441e586803776688d64236d0cf3f1cb7d8f5bc854721",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER"
+        "DECODE-WIENERNS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-wienerns-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-wienerns-frontier/specs/decoder-support/spec.md",
       "sha256": "a0f8cc87fc68e86dec140f72173884fa7f8ceee657ddb186889f935842beea29",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER"
+        "DECODE-WIENERNS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-wienerns-frontier/specs/runtime/spec.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-wienerns-frontier/specs/runtime/spec.md",
       "sha256": "5acd2ab9de17d0ae5035513be5fb15a3e959c930fb75866578b35bec246a66f8",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER"
+        "DECODE-WIENERNS-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-23-decode-ac0ej3-wienerns-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-23-decode-wienerns-frontier/tasks.md",
       "sha256": "d7b97a5d493148e5757056e975ac1c5e1535f6fcf3a400a1bf72b8f8bc6fb710",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER"
+        "DECODE-WIENERNS-FRONTIER"
       ],
       "outcome": "success"
     },
@@ -23303,1079 +23303,1079 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-ist-handoff/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-ist-handoff/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-ist-handoff/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-ist-handoff/design.md",
       "sha256": "433e10c3f7913eb6b5ed3b31c66c1700fec2636240486348f5983d6a24289a95",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-ist-handoff/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-ist-handoff/proposal.md",
       "sha256": "5a533b6e4bf596b38cc81c07ab05266812f957f6d7d0cb33d5b2699ff02f743d",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF"
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-ist-handoff/specs/ac0ej3-active-intra-ist-handoff/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-ist-handoff/specs/active-intra-ist-handoff/spec.md",
       "sha256": "7478daadb5450ec1d6695a1ef8afb9117ec4911adcbfb37e79928b1a890b2f07",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF"
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-ist-handoff/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-ist-handoff/specs/decoder-support/spec.md",
       "sha256": "abab9429de7d46ee4aeb59de9075b88701c40947bb7b37b01f320eed17a317d5",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF"
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-ist-handoff/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-ist-handoff/tasks.md",
       "sha256": "492c787871339baaac0bcfa060dd46a4b1c7f95eefb70c5264e178d09b14cb91",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF"
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-tool-frontier/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-tool-frontier/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-tool-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-tool-frontier/design.md",
       "sha256": "e5a2bc880bb930b579155f1474b13f445a4e1d8e4848a5c02de670f40a6890b4",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-tool-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-tool-frontier/proposal.md",
       "sha256": "8b107a36e7c6240fc0aa42d818d6e854bb9804b59bda3e7d138fd8cc7a5710a5",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER"
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-tool-frontier/specs/ac0ej3-active-intra-tool-frontier/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-tool-frontier/specs/active-intra-tool-frontier/spec.md",
       "sha256": "3b6070770c6c81ecde5f5bdff60f048e271cc38298cb1661a04457899905cce1",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER"
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-tool-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-tool-frontier/specs/decoder-support/spec.md",
       "sha256": "c2a3a3813ade5548a0e2bbdeaddfab39aede531a983b0335ce850434594274af",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER"
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-active-intra-tool-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-active-intra-tool-frontier/tasks.md",
       "sha256": "4c82801a22a8e4e7e4bdba41cc70eab4f269fd853a90a061e059b16c61bcbf66",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER"
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-cfl-chroma-mode-frontier/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-cfl-chroma-mode-frontier/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-cfl-chroma-mode-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-cfl-chroma-mode-frontier/design.md",
       "sha256": "5ac5198901742f03e7f2139611cd63e653bf55999f19eb92a86c1eeb2b3d6685",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-cfl-chroma-mode-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-cfl-chroma-mode-frontier/proposal.md",
       "sha256": "8d4f8f8baef35c16ae655a7f7eaa6407fd43d60523bc4128578c74795d49af19",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER"
+        "DECODE-CFL-CHROMA-MODE-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-cfl-chroma-mode-frontier/specs/ac0ej3-cfl-chroma-mode-frontier/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-cfl-chroma-mode-frontier/specs/cfl-chroma-mode-frontier/spec.md",
       "sha256": "f71cd71a2947e0806c5e30c927e3c84736a79273b042c0937d8abbdc468edd51",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER"
+        "DECODE-CFL-CHROMA-MODE-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-cfl-chroma-mode-frontier/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-cfl-chroma-mode-frontier/specs/selectable-transform-records/spec.md",
       "sha256": "bafd80f2888d1852f5b8054a48805966b8d99be40cff05456b058ed2f24e0ea4",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-cfl-chroma-mode-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-cfl-chroma-mode-frontier/specs/decoder-support/spec.md",
       "sha256": "d8b325fce9a0ebec5c3e162da40738ea7a2214ee2f59ba4c5a5c786e03024d64",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER"
+        "DECODE-CFL-CHROMA-MODE-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-cfl-chroma-mode-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-cfl-chroma-mode-frontier/tasks.md",
       "sha256": "0876ab9f8b176626e77abaad732e87fb54e74d951d1b32a55f7d3ade54a7ff91",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER"
+        "DECODE-CFL-CHROMA-MODE-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-chroma-cctx-handoff/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-chroma-cctx-handoff/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-chroma-cctx-handoff/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-chroma-cctx-handoff/design.md",
       "sha256": "39bfcab79b88131d392de769384670b65165ae98f09a8e81239a56f891824cac",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-chroma-cctx-handoff/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-chroma-cctx-handoff/proposal.md",
       "sha256": "bd49227f1f2883c0a2eee0aecfd545cf9ce3f87524f8176d3fdcf643a65d9478",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF"
+        "DECODE-CHROMA-CCTX-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-chroma-cctx-handoff/specs/ac0ej3-chroma-cctx-handoff/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-chroma-cctx-handoff/specs/chroma-cctx-handoff/spec.md",
       "sha256": "dcc783afc6dba44c6b7cd4a78785174e70050bce3c9ce1b0c07f083c96e9f2aa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-chroma-cctx-handoff/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-chroma-cctx-handoff/specs/decoder-support/spec.md",
       "sha256": "4ee6d5000b57412cbd6b0976e8eb7d2bb54cca71a4861525b66132f36eda3fac",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-chroma-cctx-handoff/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-chroma-cctx-handoff/tasks.md",
       "sha256": "03e3bcb032b0a23d6efb50001c525110427d7754e25b93a5b7cc69f51b29df68",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-classified-wiener-values/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-classified-wiener-values/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-classified-wiener-values/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-classified-wiener-values/design.md",
       "sha256": "469847b6e0bb0ce5d57a6dd195641f74bb1e690b11e4d0b3ce7536289b27c833",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES"
+        "DECODE-LR-CLASSIFIED-WIENER-VALUES"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-classified-wiener-values/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-classified-wiener-values/proposal.md",
       "sha256": "263c6567d17ab20597df207551d032ba5f28e4a520a2ca6e3ddcca5bdc566563",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES"
+        "DECODE-LR-CLASSIFIED-WIENER-VALUES"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-classified-wiener-values/specs/ac0ej3-lr-classified-wiener-values/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-classified-wiener-values/specs/lr-classified-wiener-values/spec.md",
       "sha256": "9573df8a348dfa8277fe172a2eefae148abacb2826fd4e845ca1908cb9a3cdce",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES"
+        "DECODE-LR-CLASSIFIED-WIENER-VALUES"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-classified-wiener-values/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-classified-wiener-values/tasks.md",
       "sha256": "86c2a0193ea7b45f7a611b0a49189bb3f9152c9c678b7feca24768ed61b9f749",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES"
+        "DECODE-LR-CLASSIFIED-WIENER-VALUES"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-dctonly-residual-frontier/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-dctonly-residual-frontier/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-dctonly-residual-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-dctonly-residual-frontier/design.md",
       "sha256": "2e7abc76901f1fae64fcd81d01fc095b51931c6fb71de6941ceac81a76fa46a0",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-dctonly-residual-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-dctonly-residual-frontier/proposal.md",
       "sha256": "e665c1723e3cf14a36faf36fd59e2f19187411a0c6958fa50595a5f65f183ec9",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER"
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-dctonly-residual-frontier/specs/ac0ej3-dctonly-residual-frontier/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-dctonly-residual-frontier/specs/dctonly-residual-frontier/spec.md",
       "sha256": "e77984b3629000403ac25630504eba5fd3f30ddf05ef09f4d4d4be32e4ce3645",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER"
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-dctonly-residual-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-dctonly-residual-frontier/specs/decoder-support/spec.md",
       "sha256": "846366164dff5815da20385bcbb88327d2badde3783e92611666b71408edac5d",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER"
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-dctonly-residual-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-dctonly-residual-frontier/tasks.md",
       "sha256": "c1d11da2c6816792b1a17f0876066e27d434e00e8e8174872340ac79dd31c894",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER"
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-intra-ist-zero-frontier/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-intra-ist-zero-frontier/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-intra-ist-zero-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-intra-ist-zero-frontier/design.md",
       "sha256": "9364b7f4813f13e60bdc37a374ee16d019b84599606e82d6b7723be692143043",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-intra-ist-zero-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-intra-ist-zero-frontier/proposal.md",
       "sha256": "b450284b26540fb402d3568dc7e6c947d1b9297a8a7ee6956e14218dd17aeaed",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER"
+        "DECODE-INTRA-IST-ZERO-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-intra-ist-zero-frontier/specs/ac0ej3-intra-ist-zero-frontier/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-intra-ist-zero-frontier/specs/intra-ist-zero-frontier/spec.md",
       "sha256": "b885a4d129c0f5a120111fae95fa18977c49d6c186f740d2234a51a16e2d879c",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER"
+        "DECODE-INTRA-IST-ZERO-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-intra-ist-zero-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-intra-ist-zero-frontier/specs/decoder-support/spec.md",
       "sha256": "d268e072d086b68c04ea17f8c0994b459b21d2fd09e011d599c1246e4fc5562f",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER"
+        "DECODE-INTRA-IST-ZERO-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-intra-ist-zero-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-intra-ist-zero-frontier/tasks.md",
       "sha256": "924eddccdd5124cbc0f284566467369c05c3d0b734a23c3e993879935c1c6e72",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER"
+        "DECODE-INTRA-IST-ZERO-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-frontier/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-frontier/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-frontier/design.md",
       "sha256": "dab2446aeb060e3893a566b30403a34cd82fca7c20f73e0e31e87edfffe8661c",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER",
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER",
+        "DECODE-LR-SOURCE-READ-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-frontier/proposal.md",
       "sha256": "f5d306523e0d25e716375c20bc6741be09aff523fe9ed05e2ffcb79d3b3c7bdd",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER"
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-frontier/specs/ac0ej3-lr-classified-wiener-frontier/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-frontier/specs/lr-classified-wiener-frontier/spec.md",
       "sha256": "6b06552e50a08237a1203ac42c190fa4aa923359fedfa85170f1db5c0ef9c6a9",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER"
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-frontier/specs/decoder-support/spec.md",
       "sha256": "0a27d58c690f679c4232237f84e161d134d6edc1263ec2502955efc1658b71a4",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER"
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-frontier/specs/tile-partition-traversal-boundary/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-frontier/specs/tile-partition-traversal-boundary/spec.md",
       "sha256": "01946b640a69f6b476d03c802c27dcb2892ee3b1e316103ae6bb0b6ec5a47b61",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-frontier/tasks.md",
       "sha256": "61627c70d64d74515b3329b4c878b1d27f9a09315c434057d14ec4986f970114",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER"
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-storage/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-storage/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-storage/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-storage/design.md",
       "sha256": "46ad316ed7dcae654588ebd6c432f539b362dfa62000c0773b99bca24209f4d1",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE"
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-storage/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-storage/proposal.md",
       "sha256": "69be5767d70e5c994c7263d4969473ac4b2f8ac4eec54b1d21dc0805a9d472d5",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE"
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-storage/specs/ac0ej3-lr-classified-wiener-storage/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-storage/specs/lr-classified-wiener-storage/spec.md",
       "sha256": "64e35c112ba02be0d26d9668071c6f9da1056212a1b2dc760b6307323e6576ce",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE"
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-classified-wiener-storage/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-classified-wiener-storage/tasks.md",
       "sha256": "b94a818821b3147a40b56d9424b26575192b65b8e3107dd43bcd224c81729b2a",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE"
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-storage-allocation/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-storage-allocation/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-storage-allocation/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-storage-allocation/design.md",
       "sha256": "3e94b47c74edbb78231671d9800ba22dc63d161622721f2c91dec2a2530c3ea3",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-storage-allocation/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-storage-allocation/proposal.md",
       "sha256": "c329fc14baed867bb77bc07d35e78fa43b7c6f92fbb4b18a45dfd32c2ccfba37",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION"
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-storage-allocation/specs/ac0ej3-lr-live-storage-allocation/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-storage-allocation/specs/lr-live-storage-allocation/spec.md",
       "sha256": "480127d62b174bccabd50505642d7411d4b897a9d37dd1177311a44fc6575088",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION"
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-storage-allocation/specs/ac0ej3-lr-runtime-storage-retention/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-storage-allocation/specs/lr-runtime-storage-retention/spec.md",
       "sha256": "8fadf7497d61bd9aa045530cb3e211446e7b321415ab986e2c6024fc638a341b",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-storage-allocation/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-storage-allocation/specs/decoder-support/spec.md",
       "sha256": "8d94cf78c288c67c8048c9b1b84875edce16b2176efad4de6dedca15759cc4c9",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION"
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-storage-allocation/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-storage-allocation/tasks.md",
       "sha256": "dd96ceb2ad458fcfd3a4b6c348e45d21559e2ecff2625d7e9ce4dd01790f0c69",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION"
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-transform-record-handoff/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-transform-record-handoff/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-transform-record-handoff/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-transform-record-handoff/design.md",
       "sha256": "c209f5c140a2f7f118d82132f7f732670d7b7f727ae4b44d34f12211af340e98",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-transform-record-handoff/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-transform-record-handoff/proposal.md",
       "sha256": "53437e78423cb8f8f2fc29358c80dba1d6623ed27d13fbaf3b2ee207b6ec9a2a",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-transform-record-handoff/specs/ac0ej3-lr-live-transform-record-handoff/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-transform-record-handoff/specs/lr-live-transform-record-handoff/spec.md",
       "sha256": "5f74490940b052f9ed73eb896d3869e11dbfe994f659c695fc47d20d61d81895",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-transform-record-handoff/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-transform-record-handoff/specs/decoder-support/spec.md",
       "sha256": "54c1e21a6206a9dd0e942e7e80b8dcca8f721dd8003e78eb42fe62db9c401087",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-transform-record-handoff/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-transform-record-handoff/tasks.md",
       "sha256": "236c6fbee4811e097768172833fb38e434ced198bfb45d7936be54302af8629b",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-tx-skip-grid/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-tx-skip-grid/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-tx-skip-grid/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-tx-skip-grid/design.md",
       "sha256": "28ec0904a8ec92b06594c0afa52df24b4a195b148134185e2b502fcceee57001",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID",
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION"
+        "DECODE-LR-LIVE-TX-SKIP-GRID",
+        "DECODE-LR-TX-SKIP-GRID-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-tx-skip-grid/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-tx-skip-grid/proposal.md",
       "sha256": "cb06d11311b35209ea0fe7a97f77d5e088f9d513d91964862bcc192a1175217f",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID"
+        "DECODE-LR-LIVE-TX-SKIP-GRID"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-tx-skip-grid/specs/ac0ej3-lr-live-tx-skip-grid/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-tx-skip-grid/specs/lr-live-tx-skip-grid/spec.md",
       "sha256": "c297bab5b374203cf2e3e4034428da7395e2d8e0600c0775741b2ff64a323f69",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID"
+        "DECODE-LR-LIVE-TX-SKIP-GRID"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-tx-skip-grid/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-tx-skip-grid/specs/decoder-support/spec.md",
       "sha256": "bbb30e25d28c9ff4dfd7b8baf466271091643191dcd049503b0c2891c873949f",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID"
+        "DECODE-LR-LIVE-TX-SKIP-GRID"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-live-tx-skip-grid/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-live-tx-skip-grid/tasks.md",
       "sha256": "387b82c904bfd5d440ede0035e3f66a0271d77e1631beebb4cbfbfd4e159c3d8",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID"
+        "DECODE-LR-LIVE-TX-SKIP-GRID"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-runtime-storage-retention/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-runtime-storage-retention/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-runtime-storage-retention/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-runtime-storage-retention/design.md",
       "sha256": "7a154eb03c0210b84858076ddfa0f7102a4004241a0d4e636d1c03240479d6cc",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-runtime-storage-retention/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-runtime-storage-retention/proposal.md",
       "sha256": "00361ed54729c1f70a96d944d129dc90faa93715856f5d2e2008b4e7e3f07076",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-runtime-storage-retention/specs/ac0ej3-lr-classified-wiener-storage/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-runtime-storage-retention/specs/lr-classified-wiener-storage/spec.md",
       "sha256": "850b6d9a9499520c267ad747945489113cc5d5174263c98c18690b767a589e7e",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-runtime-storage-retention/specs/ac0ej3-lr-runtime-storage-retention/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-runtime-storage-retention/specs/lr-runtime-storage-retention/spec.md",
       "sha256": "edb335d8f927df9342ded6bac2d0630038f5abd3fb489190880645a7e9465d49",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-runtime-storage-retention/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-runtime-storage-retention/specs/decoder-support/spec.md",
       "sha256": "e2286c6bedf094b287196361c30c5ce9a83827d2ef22577025859067f65c10b4",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-runtime-storage-retention/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-runtime-storage-retention/tasks.md",
       "sha256": "df4860812157323fd9ae43f96b6c4bd2c220d62a084ca2fd713a57673cac66f4",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-tx-skip-grid-retention/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-tx-skip-grid-retention/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-tx-skip-grid-retention/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-tx-skip-grid-retention/design.md",
       "sha256": "2c4171372419c9fcb2d882ce61caa7eeef2220e098a267c2fde199bf7698d63f",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION"
+        "DECODE-LR-TX-SKIP-GRID-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-tx-skip-grid-retention/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-tx-skip-grid-retention/proposal.md",
       "sha256": "623aeb977f078c0e4b16439510019a5bba8783eafe96e62e427d66d45054533b",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION"
+        "DECODE-LR-TX-SKIP-GRID-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-tx-skip-grid-retention/specs/ac0ej3-lr-tx-skip-grid-retention/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-tx-skip-grid-retention/specs/lr-tx-skip-grid-retention/spec.md",
       "sha256": "38dbf03580539a8eacfef6ab91db22da00850a2cbd4c47590c5cbd3255c95ef7",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION"
+        "DECODE-LR-TX-SKIP-GRID-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-tx-skip-grid-retention/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-tx-skip-grid-retention/specs/decoder-support/spec.md",
       "sha256": "1aa2180ad7919f7f2f61a77bb5f71c548b79017ae28e23d56b7f6879606abb71",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION"
+        "DECODE-LR-TX-SKIP-GRID-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-lr-tx-skip-grid-retention/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-lr-tx-skip-grid-retention/tasks.md",
       "sha256": "3db4ecb6d0ffa3dce60b019646fa1258f42c1a94f49003ddc9ccfc8b8733b892",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION"
+        "DECODE-LR-TX-SKIP-GRID-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-luma-txtype-residual-handoff/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-luma-txtype-residual-handoff/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-luma-txtype-residual-handoff/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-luma-txtype-residual-handoff/design.md",
       "sha256": "6cc07e6b410324a18e93a49c360827f35ef9e2c9d5ca2bc6070a5bd15909af69",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-luma-txtype-residual-handoff/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-luma-txtype-residual-handoff/proposal.md",
       "sha256": "b075f7e6bc42178e7cab32e6989732531b654752e5838dcf82dc7fbdf5ce42bf",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF"
+        "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-luma-txtype-residual-handoff/specs/ac0ej3-luma-txtype-residual-handoff/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-luma-txtype-residual-handoff/specs/luma-txtype-residual-handoff/spec.md",
       "sha256": "19315f038c0f83a9ace103cce95489fa3f54876677ef5c55cb2c823bcbc0f6cc",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF"
+        "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-luma-txtype-residual-handoff/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-luma-txtype-residual-handoff/specs/decoder-support/spec.md",
       "sha256": "dd7adb8054e99ca8baacaceb1e3adcb14f90f053304b87c6876f8e69a40194c9",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-luma-txtype-residual-handoff/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-luma-txtype-residual-handoff/tasks.md",
       "sha256": "4dc39886e1b39e3a86e544ded5d012da332955c4efc52cf9bf2f7dd98fc761a7",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-sdp-cfl-allowed-frontier/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-sdp-cfl-allowed-frontier/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-sdp-cfl-allowed-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-sdp-cfl-allowed-frontier/design.md",
       "sha256": "3a63657f7a9a1d6ff48a1fea35798ec14ce96d50bec4bcedb00c19b39ab2db92",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-sdp-cfl-allowed-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-sdp-cfl-allowed-frontier/proposal.md",
       "sha256": "0b6c42e564b5ce2528f6f0ea15e71cb33b9492b0e658dde7f55c8147d09e088f",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER"
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-sdp-cfl-allowed-frontier/specs/ac0ej3-sdp-cfl-allowed-frontier/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-sdp-cfl-allowed-frontier/specs/sdp-cfl-allowed-frontier/spec.md",
       "sha256": "eb7655abac448cb33828771e53ed88e07db025015cb26d3ce6ae4c071092430f",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER"
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-sdp-cfl-allowed-frontier/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-sdp-cfl-allowed-frontier/specs/selectable-transform-records/spec.md",
       "sha256": "90913397db9b922240837ef6db1143a1560daa74c3598f44eb66e618350a717b",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER",
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-sdp-cfl-allowed-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-sdp-cfl-allowed-frontier/specs/decoder-support/spec.md",
       "sha256": "e7d23222b951cd60d4fca1ee589176329a8cd915d1a3b4aa7d636163ff8924e2",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER"
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-sdp-cfl-allowed-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-sdp-cfl-allowed-frontier/tasks.md",
       "sha256": "873965627afcebf829277b347a673d260d0bac87c9336eeb9ff43b1a8306fcff",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER"
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-luma-records/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-luma-records/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-luma-records/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-luma-records/design.md",
       "sha256": "a4465df0fa603338f9beed92d862fb7e8bcfd7e3ec888cda1f4a33b76fb2d4c7",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-luma-records/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-luma-records/proposal.md",
       "sha256": "4c72656006d5332cea69a628daddde38a83956ab52be3793b66e63f37233b3ff",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS"
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-luma-records/specs/ac0ej3-selectable-narrow-luma-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-luma-records/specs/selectable-narrow-luma-records/spec.md",
       "sha256": "45f8e2a2c67aadbceb774bb647ab3b8fae81180a56be5c382f1aa64add61970d",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS"
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-luma-records/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-luma-records/specs/selectable-transform-records/spec.md",
       "sha256": "b3dfc7c53425be3be0fd405856ced896ca109156a03b9d67ad60c94d6319c2e4",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-luma-records/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-luma-records/specs/decoder-support/spec.md",
       "sha256": "166e1ecd4b931f33722908a2b6a513843042cc66014e14f7b5c0727ea276bbd9",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS"
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-luma-records/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-luma-records/tasks.md",
       "sha256": "3ef6f13e31d3678bb959ef68adf3816d881f06408b98ec4bb799303fb5c33f6f",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS"
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-record-handoff/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-record-handoff/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-record-handoff/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-record-handoff/design.md",
       "sha256": "9f79d0d0bc6ef866a787d9099009f90b8b7b72c883103c4f5b2d9f1c15204be4",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-record-handoff/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-record-handoff/proposal.md",
       "sha256": "0b370e0cc3d1e9f8ff29cae296e4c929c6cc2bc7a7beb99b9753e5a38d2325f8",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-record-handoff/specs/ac0ej3-selectable-narrow-luma-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-record-handoff/specs/selectable-narrow-luma-records/spec.md",
       "sha256": "47ada46e56c9eec0ae358ffbc954705bbf12d78d2085d2b4cbfd43e076cb0583",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS"
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-record-handoff/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-record-handoff/specs/selectable-transform-records/spec.md",
       "sha256": "296c863392a5642f820460c909c5b286f7aeb79ee7910ca0780f9f331e4aea71",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-record-handoff/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-record-handoff/specs/decoder-support/spec.md",
       "sha256": "1acd694568e546ebf4f7e1ef5c09ba79f28a363e8ffe3f2974d6b9529c531272",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-narrow-record-handoff/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-narrow-record-handoff/tasks.md",
       "sha256": "6be240e838278a33ce9f878eb33b2297ac7308c7d580dab0a673ed7f88876096",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-transform-records/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-transform-records/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-transform-records/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-transform-records/design.md",
       "sha256": "fa6c50f8249c3741e312d5e5ac8cc61eede827c1f69958b644d270037add961a",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-transform-records/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-transform-records/proposal.md",
       "sha256": "aebb10e9a1ca580adf56f258a056db08f865104f6f0c18de73dc2b68cf700f26",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-transform-records/specs/ac0ej3-lr-live-transform-record-handoff/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-transform-records/specs/lr-live-transform-record-handoff/spec.md",
       "sha256": "45b63db576f30ccd66a325f752a4c2409cd6c1b4f125bf4802f83a6ecf31d53d",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-transform-records/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-transform-records/specs/selectable-transform-records/spec.md",
       "sha256": "0c198b30428150dbfe3d74ef660aed1fa34f4beb94884078a2d6fc6cc84d416a",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-transform-records/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-transform-records/specs/decoder-support/spec.md",
       "sha256": "7a0da6740f556f3a67e593e49e79cc2a3e7656820a2edf13f3a164d85b321411",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-selectable-transform-records/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-selectable-transform-records/tasks.md",
       "sha256": "adf86d6e6a709acb999b959e99122de2cd8e92fa52be3f6b0c70ba9da6f2bb4a",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-transform-record-residual/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-24-decode-transform-record-residual/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-transform-record-residual/design.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-transform-record-residual/design.md",
       "sha256": "2204e3fbc878315e706b3a638929fa53b04ea987f77d513bf153aca410411e73",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-transform-record-residual/proposal.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-transform-record-residual/proposal.md",
       "sha256": "cd428f33d50c6b3db8fdeeb6760ca9e1c692f804b0e052e6b211ef7fbae2cce9",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-transform-record-residual/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-transform-record-residual/specs/selectable-transform-records/spec.md",
       "sha256": "34dc2fcf7d25837420a1f384e61cd6f31df09af5c68ffaa7ccc7b3cf0a3c6af3",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER",
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-transform-record-residual/specs/ac0ej3-transform-record-residual/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-transform-record-residual/specs/transform-record-residual/spec.md",
       "sha256": "12f66e771571ffd51f07e1c43ad981255ed84a42d369678236fa5722572052b1",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-transform-record-residual/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-transform-record-residual/specs/decoder-support/spec.md",
       "sha256": "034946a802047f79f1c7b23c41e64d2a885b528a5ee67b968193e7bfc1bf18da",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-24-decode-ac0ej3-transform-record-residual/tasks.md",
+      "path": "openspec/changes/archive/2026-06-24-decode-transform-record-residual/tasks.md",
       "sha256": "2da4e2fc4f5cd4d03b0c7c7935323e4450b8f8417a026d81fc3eb35869a961ae",
       "scope_kind": "openspec",
       "feature_ids": [],
@@ -24432,147 +24432,147 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-active-mrl-records/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-25-decode-active-mrl-records/.openspec.yaml",
       "sha256": "350d8989b278d97097f1c39296aeeb20980d0e1545ceb24a68c51976991273fa",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-active-mrl-records/design.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-active-mrl-records/design.md",
       "sha256": "ac636fc971a74d2ec3f917f05f7dec17086a2e9d95eedae043dd58693a211122",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-active-mrl-records/proposal.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-active-mrl-records/proposal.md",
       "sha256": "73130cc6ec740f588a25fa8fb10d671ffc1683a9dee808de0713f7514dd9dd59",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER"
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-active-mrl-records/specs/ac0ej3-active-intra-tool-frontier/spec.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-active-mrl-records/specs/active-intra-tool-frontier/spec.md",
       "sha256": "e599bb54bd5d3992237a67cb67c306f9f52118b02b52a4b3998c60d6537de0ed",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER"
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-active-mrl-records/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-active-mrl-records/specs/decoder-support/spec.md",
       "sha256": "0d9030d74ba53ddf88713829a9a7442eeecadc4210ef0a9fc820b2cfb2fd73d3",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER"
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-active-mrl-records/tasks.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-active-mrl-records/tasks.md",
       "sha256": "abd24d75363e015e185364e2398e9948e69a9ffa8678e2c9aa6ce815ebac2e78",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-fsc-transform-records/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-25-decode-fsc-transform-records/.openspec.yaml",
       "sha256": "8fdb9eadcbfe0354c35fa03734e655d10a20180b7718097dc90492d84f5e3e39",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-fsc-transform-records/design.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-fsc-transform-records/design.md",
       "sha256": "59b5dbbf27e1df51819ed24c1c25c75cff58fcd23e939191e11cccb91932d4a3",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-fsc-transform-records/proposal.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-fsc-transform-records/proposal.md",
       "sha256": "db0d58c9ef7216fd2dbb16713da77cdb4a19dd1897438a9454a3158b31078ffd",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-fsc-transform-records/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-fsc-transform-records/specs/selectable-transform-records/spec.md",
       "sha256": "3663b976ba4d0ec942428beec19332d3990e7b1f8d9df0b23b2b0e1151fdce83",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-fsc-transform-records/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-fsc-transform-records/specs/decoder-support/spec.md",
       "sha256": "3f21d2a76c0bdf247fc14f54f5c322945f4ae3ebf06710a10a7ff076cfc461cf",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-fsc-transform-records/tasks.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-fsc-transform-records/tasks.md",
       "sha256": "c413ca77385df81a82c1f9d5014f7c2204c73318c0cdec230f16efd0abd5bd0b",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-newmv-records/design.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-newmv-records/design.md",
       "sha256": "0b0e9e73cf29bdf7d4262e27401dbe469228b83123312e038323a8db541d4a0d",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-newmv-records/proposal.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-newmv-records/proposal.md",
       "sha256": "9b43623dc2760470de346e7a1fefff517392988e1831eec133230931c20773dd",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-newmv-records/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-newmv-records/specs/selectable-transform-records/spec.md",
       "sha256": "3ce38a1c9d51a3c7a1d3f826dfe2dfdd878eb50d469607f1efec9b86e4f3ab5b",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-newmv-records/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-newmv-records/specs/decoder-support/spec.md",
       "sha256": "2ab0637956c78813c5f9b00cf5464998dc3982ac91f10f160d08a855ded6f390",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-newmv-records/tasks.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-newmv-records/tasks.md",
       "sha256": "f740ee7e5aae0cbd30ebfa1c764165163c91a4377ddb10e53cdfa1d6400854b6",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-prediction-frontier/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-prediction-frontier/.openspec.yaml",
       "sha256": "8fdb9eadcbfe0354c35fa03734e655d10a20180b7718097dc90492d84f5e3e39",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-prediction-frontier/design.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-prediction-frontier/design.md",
       "sha256": "b1f96a2c843b1d3294b530b670ab48320e14e325234da553523bec0f3296db0c",
       "scope_kind": "openspec",
       "feature_ids": [
@@ -24581,36 +24581,36 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-prediction-frontier/proposal.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-prediction-frontier/proposal.md",
       "sha256": "1ce8cabf60eb6344f4727489096653bd51727f3bd94a89a8ccf9d3f36e5277fe",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS",
         "RECON-INTRABC-CURRENT-FRAME-COPY"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-prediction-frontier/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-prediction-frontier/specs/selectable-transform-records/spec.md",
       "sha256": "f09f8d4f74cf00592d3feb244e03b585dd5e8bf57f2df3abf85808d760fedb70",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-prediction-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-prediction-frontier/specs/decoder-support/spec.md",
       "sha256": "6aa91d830dedfe037d67ee87cc79f0fb0ee5f9e483a85dc38c67f509cf9ddacc",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS",
         "RECON-INTRABC-CURRENT-FRAME-COPY"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-prediction-frontier/specs/recon-intrabc-current-frame-copy/spec.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-prediction-frontier/specs/recon-intrabc-current-frame-copy/spec.md",
       "sha256": "075cb7f52a0ab11751738300d0a5587fc9c7ba814004fd78132cbda6ba640dd8",
       "scope_kind": "openspec",
       "feature_ids": [
@@ -24619,62 +24619,62 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-prediction-frontier/tasks.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-prediction-frontier/tasks.md",
       "sha256": "10bd4137a2de7cd768eec433b3c9ecceb0daa0a2460296f4cd605445ca919443",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS",
         "RECON-INTRABC-CURRENT-FRAME-COPY"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-record-handoff/.openspec.yaml",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-record-handoff/.openspec.yaml",
       "sha256": "8fdb9eadcbfe0354c35fa03734e655d10a20180b7718097dc90492d84f5e3e39",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-record-handoff/design.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-record-handoff/design.md",
       "sha256": "6a22257bd9722d2555fb2e328b5a07c004cb9e711de1c65c013b4946475fcc3e",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-record-handoff/proposal.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-record-handoff/proposal.md",
       "sha256": "66984c2904388853193505930a41cd6ebc8d964375c2ea6de896ede7cfe3330f",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-record-handoff/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-record-handoff/specs/selectable-transform-records/spec.md",
       "sha256": "f2afb1b9733546582a3ad9da75983b1365e7e59529c7127e39efbd54b0d8344c",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-record-handoff/specs/decoder-support/spec.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-record-handoff/specs/decoder-support/spec.md",
       "sha256": "29b2527975830f80081f1f6a1bda1c5a496bdfdd617d2e438a3f75c4f08fce71",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/archive/2026-06-25-decode-ac0ej3-intrabc-record-handoff/tasks.md",
+      "path": "openspec/changes/archive/2026-06-25-decode-intrabc-record-handoff/tasks.md",
       "sha256": "c20a9d77f763169662a74b499d0fa23807da6628eef65f42c3261b4efea03bbf",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
@@ -25182,34 +25182,34 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-10bit-sequence-frontier/proposal.md",
+      "path": "openspec/changes/decode-10bit-sequence-frontier/proposal.md",
       "sha256": "2859d899e69d1c83d941ce6e9fbaa820aa9955ff4e614b602db47d2b28732be4",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER"
+        "DECODE-10BIT-SEQUENCE-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-10bit-sequence-frontier/specs/decode-inter-multiref-runtime/spec.md",
+      "path": "openspec/changes/decode-10bit-sequence-frontier/specs/decode-inter-multiref-runtime/spec.md",
       "sha256": "ec181ba4a7f61f4b9a3ec65e7b9b95c6034d12cba0144bc799e233fcc344f1ff",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER"
+        "DECODE-10BIT-SEQUENCE-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-10bit-sequence-frontier/tasks.md",
+      "path": "openspec/changes/decode-10bit-sequence-frontier/tasks.md",
       "sha256": "8b51214c225eeb2a62f68439a01c9a10f057aa39725097c512144912b6903ba5",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER"
+        "DECODE-10BIT-SEQUENCE-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-intra-recon-bridge/design.md",
+      "path": "openspec/changes/decode-intra-recon-bridge/design.md",
       "sha256": "e16c0b7e6ebe4f65b278b03fb0aeb09a4175d0735d7eaaf8b201742b3a4aef06",
       "scope_kind": "openspec",
       "feature_ids": [
@@ -25218,121 +25218,121 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-intra-recon-bridge/proposal.md",
+      "path": "openspec/changes/decode-intra-recon-bridge/proposal.md",
       "sha256": "b76d968c074b4cec669e504899a9d0c339aa8ae05002bfc89f02d73146e67f23",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-intra-recon-bridge/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/changes/decode-intra-recon-bridge/specs/selectable-transform-records/spec.md",
       "sha256": "fae5e4d5913270ccedf7e33bb4244b2777f158267903088dc6e5efeeabbf379d",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-intra-recon-bridge/specs/decoder-support/spec.md",
+      "path": "openspec/changes/decode-intra-recon-bridge/specs/decoder-support/spec.md",
       "sha256": "e5ac38cf1b66bd10619bbaafb56ac850c09b1d31983e4a90f18743a5a55b6f08",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-intra-recon-bridge/tasks.md",
+      "path": "openspec/changes/decode-intra-recon-bridge/tasks.md",
       "sha256": "582117f315b5e0a97b477a130654817fda4b70f0b200a6063744f5a6ea7d9cf9",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-leading-obu-gate/proposal.md",
+      "path": "openspec/changes/decode-leading-obu-gate/proposal.md",
       "sha256": "7dcb3f4d5ab877d6cb883d2c639918253f5de6d439f292a6c0a617e6eb979bd3",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-leading-obu-gate/specs/decode-inter-multiref-runtime/spec.md",
+      "path": "openspec/changes/decode-leading-obu-gate/specs/decode-inter-multiref-runtime/spec.md",
       "sha256": "af44f3d8b3ca2b280f7cb72edeac6b466f19f8cf0e8c82f99ae8a2cd4b198291",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-leading-obu-gate/tasks.md",
+      "path": "openspec/changes/decode-leading-obu-gate/tasks.md",
       "sha256": "3b36eb66212d915b27c2f6352f831c9258249faf4528f0122d63730bc31c8f9e",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-runtime-frame-gate/proposal.md",
+      "path": "openspec/changes/decode-runtime-frame-gate/proposal.md",
       "sha256": "af542b7d957d0eac16829a57500fc8fd22e5aec37cdcbec9b0a3c88486dc6c43",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-runtime-frame-gate/specs/decode-inter-multiref-runtime/spec.md",
+      "path": "openspec/changes/decode-runtime-frame-gate/specs/decode-inter-multiref-runtime/spec.md",
       "sha256": "5b70989ec0ac7a23638d7b8b70ae8c294c98ac86bac57b57b1aa8d81de7dc55c",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-runtime-frame-gate/tasks.md",
+      "path": "openspec/changes/decode-runtime-frame-gate/tasks.md",
       "sha256": "371c1e4cf5b7bddb21121276d01ade2779f4e5dd587589e0f75a2bb160a1198c",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-sequence-chroma-frontier/proposal.md",
+      "path": "openspec/changes/decode-sequence-chroma-frontier/proposal.md",
       "sha256": "b84c33e13320320a6c57a27cffc8d56339f9daa66feed1c2ea14690b267f4920",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER"
+        "DECODE-SEQUENCE-CHROMA-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-sequence-chroma-frontier/specs/decode-inter-multiref-runtime/spec.md",
+      "path": "openspec/changes/decode-sequence-chroma-frontier/specs/decode-inter-multiref-runtime/spec.md",
       "sha256": "64e605217f28e91969f9807bbccfe6c7437829440725cd6473ecf9fc3ac9d0da",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER"
+        "DECODE-SEQUENCE-CHROMA-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-sequence-chroma-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/decode-sequence-chroma-frontier/specs/decoder-support/spec.md",
       "sha256": "6e4c09ad0bf22169e6795508b18ebbea81e14a6d6d08ed6fe93ad887ab3dabd7",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER"
+        "DECODE-SEQUENCE-CHROMA-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-sequence-chroma-frontier/tasks.md",
+      "path": "openspec/changes/decode-sequence-chroma-frontier/tasks.md",
       "sha256": "c56edf82e8156e9fcbe6d5eec6df6542adc20a52ef426ec6bb327737a0e2785d",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER"
+        "DECODE-SEQUENCE-CHROMA-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-traversal-defaults/proposal.md",
+      "path": "openspec/changes/decode-traversal-defaults/proposal.md",
       "sha256": "9184489b426cbb119937b3b54afcd70e337c175a75b5e331caa23245351d2ef6",
       "scope_kind": "openspec",
       "feature_ids": [
@@ -25342,7 +25342,7 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-traversal-defaults/specs/decoder-support/spec.md",
+      "path": "openspec/changes/decode-traversal-defaults/specs/decoder-support/spec.md",
       "sha256": "63c3234bea81333fc4e83c71f41cb11c559db1b7c72aed9c374ae6c3992b0b7f",
       "scope_kind": "openspec",
       "feature_ids": [
@@ -25353,73 +25353,73 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-traversal-defaults/tasks.md",
+      "path": "openspec/changes/decode-traversal-defaults/tasks.md",
       "sha256": "ab0a4252b6c9d8cb766d4c1e9ae62be7e9be08a3605a11afe4182e5b158c98c7",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-wienerns-bank-frontier/.openspec.yaml",
+      "path": "openspec/changes/decode-wienerns-bank-frontier/.openspec.yaml",
       "sha256": "6bfe9dd1f2ca83f49ee380111d00e1a9ec8371dd7acd1cba0e1c45cf0a2de2f1",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-wienerns-bank-frontier/design.md",
+      "path": "openspec/changes/decode-wienerns-bank-frontier/design.md",
       "sha256": "772628a7d48449c306ff8982ce14114c02ed4968f0f3bf122d1ee4f166653977",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-wienerns-bank-frontier/proposal.md",
+      "path": "openspec/changes/decode-wienerns-bank-frontier/proposal.md",
       "sha256": "f700544d93b54bf2d0de455a2ec060c3af67e8d9791ea6a7bc3021477b4783ab",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER"
+        "DECODE-WIENERNS-BANK-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-wienerns-bank-frontier/specs/bitstream/spec.md",
+      "path": "openspec/changes/decode-wienerns-bank-frontier/specs/bitstream/spec.md",
       "sha256": "afedcc59c0c7d739dfff40f0a4b93229df9e52868f70ed0c71ba94b45d9f7303",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-wienerns-bank-frontier/specs/decoder-support/spec.md",
+      "path": "openspec/changes/decode-wienerns-bank-frontier/specs/decoder-support/spec.md",
       "sha256": "ddfd262fbe6eab0bfd4e5be328f51ad0c1bc62d2d3cd06c390a96c400218f12f",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER"
+        "DECODE-WIENERNS-BANK-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-wienerns-bank-frontier/specs/encoder-tools/spec.md",
+      "path": "openspec/changes/decode-wienerns-bank-frontier/specs/encoder-tools/spec.md",
       "sha256": "821aa13e22c44904f0ba813c9077fac0a823c9ce91419124483f48b2a6af6b5a",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-wienerns-bank-frontier/specs/runtime/spec.md",
+      "path": "openspec/changes/decode-wienerns-bank-frontier/specs/runtime/spec.md",
       "sha256": "2affbce9556d52dbbf17d5159b39e841b08ad9c0f20602665f14965b0fdbbfe9",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER"
+        "DECODE-WIENERNS-BANK-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/changes/decode-ac0ej3-wienerns-bank-frontier/tasks.md",
+      "path": "openspec/changes/decode-wienerns-bank-frontier/tasks.md",
       "sha256": "527c03df9a99aa10b6c339957a5aacd09a242688be9995aed3bf613d0ef3750a",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER"
+        "DECODE-WIENERNS-BANK-FRONTIER"
       ],
       "outcome": "success"
     },
@@ -28021,175 +28021,175 @@
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-active-intra-ist-handoff/spec.md",
+      "path": "openspec/specs/active-intra-ist-handoff/spec.md",
       "sha256": "7301edc3504971dd46df63c19713d8b51a362b0e8c43edb8d15401da39e9fa47",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF"
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-active-intra-tool-frontier/spec.md",
+      "path": "openspec/specs/active-intra-tool-frontier/spec.md",
       "sha256": "3449f55bc028aa3e131dc118cc86a8b403494acd03220e7b074ecd917da1e282",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER"
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-cfl-chroma-mode-frontier/spec.md",
+      "path": "openspec/specs/cfl-chroma-mode-frontier/spec.md",
       "sha256": "1c68a3ef962f8e369dabac427870d4a2291ca5e69b8ac63af4abbdb96c01925d",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER"
+        "DECODE-CFL-CHROMA-MODE-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-chroma-cctx-handoff/spec.md",
+      "path": "openspec/specs/chroma-cctx-handoff/spec.md",
       "sha256": "b992faf3f4f6d57ffd28af69c51cef979beeaf635f5ca52cdd05b829bb87682d",
       "scope_kind": "openspec",
       "feature_ids": [],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-dctonly-residual-frontier/spec.md",
+      "path": "openspec/specs/dctonly-residual-frontier/spec.md",
       "sha256": "cad4725a20bf4c776366321dee97bc667cda2d6aba8fafbcb6566663cab95753",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER"
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-intra-ist-zero-frontier/spec.md",
+      "path": "openspec/specs/intra-ist-zero-frontier/spec.md",
       "sha256": "56bc98f2445f10e1f0530014e23d8fdd33b4d9ff48b4960528384e9dc33ff861",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER"
+        "DECODE-INTRA-IST-ZERO-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-lr-classified-wiener-frontier/spec.md",
+      "path": "openspec/specs/lr-classified-wiener-frontier/spec.md",
       "sha256": "c3a44735682c4e6059f5c216d88250bfc67689e19a0f57f074a23255e6919fcc",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER"
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-lr-classified-wiener-storage/spec.md",
+      "path": "openspec/specs/lr-classified-wiener-storage/spec.md",
       "sha256": "0cf41c5d4668ce0653978882df6013a20cd74a32786fa6fec3b1b741fb6c4eb2",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+        "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-lr-classified-wiener-values/spec.md",
+      "path": "openspec/specs/lr-classified-wiener-values/spec.md",
       "sha256": "a695f7fcdd70d1f5d348454043dde2a4d9be3b517b185f7203de020b625043fb",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES"
+        "DECODE-LR-CLASSIFIED-WIENER-VALUES"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-lr-live-storage-allocation/spec.md",
+      "path": "openspec/specs/lr-live-storage-allocation/spec.md",
       "sha256": "6afba29b90f954668f0be85d582fda7c4a80686d865d4d85c962d4ccca88f37e",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION"
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-lr-live-transform-record-handoff/spec.md",
+      "path": "openspec/specs/lr-live-transform-record-handoff/spec.md",
       "sha256": "31a08ec8a8924860701dcd51102741f3236ae99fd475a39bbcba070d11152853",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-lr-live-tx-skip-grid/spec.md",
+      "path": "openspec/specs/lr-live-tx-skip-grid/spec.md",
       "sha256": "e3ded5cc66f297c51fd63265b9e3c1e672561911f904834dc57db5a3d0d5dd8e",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID"
+        "DECODE-LR-LIVE-TX-SKIP-GRID"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-lr-runtime-storage-retention/spec.md",
+      "path": "openspec/specs/lr-runtime-storage-retention/spec.md",
       "sha256": "74c3fd1ea7a6771c3b5e8ddd8e62524878ce5b043464c24d4082332bd435237b",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION"
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-lr-tx-skip-grid-retention/spec.md",
+      "path": "openspec/specs/lr-tx-skip-grid-retention/spec.md",
       "sha256": "3b909902047da9fcb6d81998f2b935675742a9cc49633a1660787f7e7bd11627",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION"
+        "DECODE-LR-TX-SKIP-GRID-RETENTION"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-luma-txtype-residual-handoff/spec.md",
+      "path": "openspec/specs/luma-txtype-residual-handoff/spec.md",
       "sha256": "18087752a0f5535cda0063679e97c70b9c567608f9d57b85360f052bd59cde6a",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF"
+        "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-sdp-cfl-allowed-frontier/spec.md",
+      "path": "openspec/specs/sdp-cfl-allowed-frontier/spec.md",
       "sha256": "261f90cedb9a3c56ba31990cc521e445ba656c16b0e058c1ad2948831df8541f",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER"
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-selectable-narrow-luma-records/spec.md",
+      "path": "openspec/specs/selectable-narrow-luma-records/spec.md",
       "sha256": "a2537804c932ad466f5d9deb6e07fc3d9f4b1de4e588949bbaef331c687846cf",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS"
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-selectable-transform-records/spec.md",
+      "path": "openspec/specs/selectable-transform-records/spec.md",
       "sha256": "9900691da7276da334758bb4b8e34a5c7d0022e19881c184d83dd20f678a109e",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS"
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER",
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS"
       ],
       "outcome": "success"
     },
     {
-      "path": "openspec/specs/ac0ej3-transform-record-residual/spec.md",
+      "path": "openspec/specs/transform-record-residual/spec.md",
       "sha256": "cfa15614ee8f29e01fe372059a54da54526e54e97d79268b5d358b6632445ad5",
       "scope_kind": "openspec",
       "feature_ids": [],
@@ -28927,27 +28927,27 @@
         "CONF-RECON-Y4M-OUTPUT-FUZZ",
         "CONF-SYMBOL-DECODER-FUZZ",
         "CONF-TILE-PAYLOAD-DECODE-FUZZ",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF",
-        "DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER",
-        "DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER",
-        "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER",
-        "DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER",
-        "DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER",
-        "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER",
-        "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
-        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
-        "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID",
-        "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION",
-        "DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER",
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER",
-        "DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION",
-        "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER",
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER",
-        "DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER",
-        "DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS",
-        "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS",
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER",
+        "DECODE-ACTIVE-INTRA-IST-HANDOFF",
+        "DECODE-ACTIVE-INTRA-TOOL-FRONTIER",
+        "DECODE-CFL-CHROMA-MODE-FRONTIER",
+        "DECODE-DCTONLY-RESIDUAL-FRONTIER",
+        "DECODE-INACTIVE-LR-UNITS-FRONTIER",
+        "DECODE-INTRA-IST-ZERO-FRONTIER",
+        "DECODE-INTRA-PRELUDE-TX-FRONTIER",
+        "DECODE-LR-CLASSIFIED-WIENER-FRONTIER",
+        "DECODE-LR-LIVE-STORAGE-ALLOCATION",
+        "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
+        "DECODE-LR-LIVE-TX-SKIP-GRID",
+        "DECODE-LR-RUNTIME-STORAGE-RETENTION",
+        "DECODE-LR-SOURCE-BOUNDS-FRONTIER",
+        "DECODE-LR-SOURCE-READ-FRONTIER",
+        "DECODE-LR-TX-SKIP-GRID-RETENTION",
+        "DECODE-LR-UNIT-SELECTIONS-FRONTIER",
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER",
+        "DECODE-SDP-CFL-ALLOWED-FRONTIER",
+        "DECODE-SELECTABLE-NARROW-LUMA-RECORDS",
+        "DECODE-SELECTABLE-TRANSFORM-RECORDS",
+        "DECODE-WIENERNS-FRONTIER",
         "DECODE-BYTE-STREAM-PLANNER",
         "DECODE-COEFF-ALL-ZERO-BLOCK-STATE",
         "DECODE-COEFF-BASE-CDF-ROWS",
@@ -29337,7 +29337,7 @@
       "sha256": "3385725c5f8a7bbd0d9e41437b387427e2fe6d1f0395a8c29d005d324ddd0bcf",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-WIENERNS-FRONTIER",
+        "DECODE-WIENERNS-FRONTIER",
         "INFRA-PARALLEL-RUNTIME-POLICY",
         "INFRA-ZERO-COPY-MEDIA-POLICY"
       ],
@@ -29400,8 +29400,8 @@
       "sha256": "b5983a6793c16fe8cac2881aa4f49a3500758982777cbb9d3677374ba3de07e4",
       "scope_kind": "openspec",
       "feature_ids": [
-        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER",
-        "DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER",
+        "DECODE-LR-SOURCE-READ-FRONTIER",
+        "DECODE-LR-UNIT-SYNTAX-FRONTIER",
         "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
       ],
       "outcome": "success"

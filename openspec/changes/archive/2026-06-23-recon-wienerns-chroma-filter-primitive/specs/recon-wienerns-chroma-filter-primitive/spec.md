@@ -17,7 +17,7 @@ coefficient indexes `0..6`, derive `mLuma` through the §7.20.3
 result into the caller output with the supplied stride. The caller SHALL resolve
 source-frame selection, restoration-unit traversal, coefficient source
 selection, and frame-coordinate offsets. The primitive SHALL NOT implement full
-§7.20 traversal, §7.20.2 frame reads, runtime decode wiring, GDF/BRU, or ac0ej3
+§7.20 traversal, §7.20.2 frame reads, runtime decode wiring, GDF/BRU, or local decoder mission
 output.
 
 #### Scenario: Chroma Wiener NS math is covered by focused tests

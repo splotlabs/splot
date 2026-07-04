@@ -20,7 +20,7 @@ encoder roundtrips and reconstruction correctness:
 It is not a production media player, not an optimized decoder, and not an
 AVM/dav2d wrapper.
 
-Current state: `splot decode` has a narrow byte-consuming runtime success path
+Current state: `splot decode` has a narrow byte-consuming pipeline success path
 for the committed `minimal-intra-8bit420-hash-v1` IVF tier. It reads input
 bytes, constructs `DecodeContext`, calls `DecodeContext::plan_bytes`, emits
 `splot.decode.hash_report` JSON for `--output-format hash`, and atomically
@@ -30,7 +30,7 @@ Diagnostics remain structured data owned by `splot-decode`:
 `decode/malformed-source` for malformed source/container bytes,
 `decode/resource-limit` for byte-planner or runtime limit failures,
 `decode/unsupported-feature` for planner unsupported structures or out-of-tier
-runtime requests, and `decode/output-error` for raw/Y4M serialization/publication
+decode requests, and `decode/output-error` for raw/Y4M serialization/publication
 failures. It does not perform broad tile decode, broad pixel reconstruction,
 broad raw/Y4M output, film grain, reference refresh, or external decoder
 invocation.
@@ -509,7 +509,7 @@ crate-private minimal flat intra block-symbol trace frontier for the committed
 runtime fixture: after the partition frontier, tile-payload code consumes the
 traced `y_mode_set`, `y_mode_index`, luma/U all-zero transform skip, `uv_mode`,
 and V all-zero transform skip rows from generated § 9.3 defaults, validates
-`exit_symbol()`, and hands only the summary back to the minimal runtime. The
+`exit_symbol()`, and hands only the summary back to the minimal tier. The
 `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` is limited to that
 currently supported CDF subset: the partition-entry rows plus those minimal
 flat-intra block-symbol rows. It makes Tile-to-Saved mutation occur only
@@ -651,13 +651,13 @@ other external decoder is forbidden.
 | 0 | Roadmap, support matrix, generated status, drift gate | supported |
 | 1 | Decode API contract, runtime context, limits, resource diagnostics, crate scaffolding, byte entry point | crate scaffolding, `DecodeContext` worker-pool runtime policy, limits runtime API, bounded byte-stream planning, and resource diagnostic emission supported |
 | 2 | Shared decoded frame, plane, pixel format, workspace, and deterministic hash types | frame/plane model types, current-frame workspace, hash-input serialization, and `splot-dfh-sha256-v1` digest computation supported |
-| 3 | CLI `splot decode` contract backed by library diagnostics | minimal hash JSON, minimal raw output, and minimal Y4M output supported; broad runtime output unsupported |
+| 3 | CLI `splot decode` contract backed by library diagnostics | minimal hash JSON, minimal raw output, and minimal Y4M output supported; broad decode output unsupported |
 | 4 | Container traversal, base-layer parsed/raw traversal, transactional decode planning | parsed and raw-byte stream planners supported; operating-point selection and broad CLI runtime unsupported |
-| 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; `decode_runtime_hash_bytes`, `decode_runtime_raw_bytes`, and `decode_runtime_y4m_bytes` supported for the minimal runtime byte APIs; minimal runtime fixture smoke supported |
+| 5 | Self-contained decode fuzz target and fixture smoke | `decode_plan_bytes` fuzz target supported for the raw byte planner; `decode_output::hash_bytes`, `decode_output::raw_bytes`, and `decode_output::y4m_bytes` supported for the minimal tier byte APIs; minimal tier fixture smoke supported |
 | 6 | AV2 § 8 symbol/CDF decoder foundation | § 8.2 generic primitive supported (spec-exact, all arities, fuzzed, runtime-reachable); crate-private partition CDF subset boundary partial; supported-subset Tile-to-Saved/Saved-to-Frame lifecycle supported; broad § 8.3 and tile decode planned |
 | 7 | Constrained intra tile syntax | tile payload and tile CDF boundaries partial; individual partition-entry symbol reads, one caller-fact partition decision, allowed partition derivation, first `decode_block()` frontier planning, and minimal block-symbol trace supported; supported-subset CDF lifecycle supported; full recursive `read_partition()` / `decode_tile()` syntax planned |
 | 8 | Scalar intra prediction, dequant/reconstruction, inverse transform, frame hashes | current-frame workspace plus square DC, rectangular DC, subsampled DC, IBP DC, basic/PAETH, smooth, H/V cardinal directional, one-sided directional-angle, middle directional-angle primitives, workspace directional-angle handoff, and the minimal luma-DC plus traced top-left chroma H_PRED runtime handoff supported; luma/MRL/IDIF/full-dispatch directional angles, DIP/general directional-angle IBP/full CfL modes, broad chroma prediction, dequant/reconstruction, inverse transforms, broad runtime hashes planned |
-| 9 | Raw/Y4M output and reconstructed reference-frame store | reference-slot runtime store, source-backed Y4M writer, minimal runtime raw output, and minimal runtime Y4M output supported; broad runtime raw/Y4M output and AV2 refresh semantics planned |
+| 9 | Raw/Y4M output and reconstructed reference-frame store | reference-slot runtime store, source-backed Y4M writer, minimal tier raw output, and minimal tier Y4M output supported; broad runtime raw/Y4M output and AV2 refresh semantics planned |
 | 10 | Portable local-reference evidence manifests | metadata contract and offline checker wired; two AVM/dav2d raw MD5 agreement entries recorded as non-executable metadata |
 | 11 | Encoder reconstruction API contract | planned |
 
@@ -788,7 +788,7 @@ byte-consuming decode boundary.
 for tests and callers; `DecodeLimits::default()` and `DecodeOptions::default()`
 use finite repository policy thresholds for CI, fuzzing, and early decoder work.
 The default OBU and frame-count thresholds are intentionally large enough for the
-current `ac0ej3.ivf` mission target's inspected 12964 OBU stream to advance past
+current `local-decoder-mission.ivf` mission target's inspected 12964 OBU stream to advance past
 the old 128-frame planner cap into the next honest runtime gate; this remains
 local `splot` resource policy, not an AV2 conformance limit.
 
@@ -987,7 +987,7 @@ variant after film-grain synthesis is implemented and tested.
 Local AVM/dav2d output can be useful evidence, but committed `splot` tests
 must not require those tools. The checked local-reference evidence manifest
 records AVM/dav2d raw MD5 agreement for two background fixtures and raw SHA-256
-agreement for the committed minimal runtime hash fixture; it is non-executable
+agreement for the committed minimal tier hash fixture; it is non-executable
 metadata only and does not add an external decoder dependency. Future decoder
 local-reference evidence also belongs in
 [`LOCAL-REFERENCE-EVIDENCE.toml`](./LOCAL-REFERENCE-EVIDENCE.toml), which is
@@ -999,7 +999,7 @@ command summaries, digest metadata, and assertions.
 ## Unsupported Feature Contract
 
 Decoder unsupported-feature output carries structured data. Hash/raw/Y4M
-requests for planable inputs outside the minimal runtime tier emit this
+requests for planable inputs outside the minimal tier tier emit this
 diagnostic after byte planning succeeds:
 
 ```json
@@ -1027,12 +1027,12 @@ Runtime hash tier rejections use `minimal-decode-tier-contract` /
 Mission-scale IVF streams are no longer rejected solely because they contain
 more than three frame candidates; terminal `ivf/trailing-partial-frame-header`
 warnings are permitted, while fatal IVF errors and non-terminal warning kinds
-remain outside the tier. The current local `ac0ej3.ivf` first runtime stop is
+remain outside the tier. The current local `local-decoder-mission.ivf` first runtime stop is
 `unsupported_wienerns_lr_live_transform_record_fsc_mode` at byte offset 110: the
 runtime now reaches the active Wiener NS LR selectable transform-record path,
 retains active MRL metadata as `UsesMrls` state for LR tx-skip record derivation,
 and then rejects active FSC coefficient mode before decoded samples,
-loop-restoration output, reference refresh, or successful ac0ej3 decode are
+loop-restoration output, reference refresh, or successful local decoder mission decode are
 claimed.
 
 The CLI renders diagnostics as text by default and as JSON with
@@ -1071,7 +1071,7 @@ Maintainer approval for the decoder/reconstruction dependency graph landed on
 crates/splot-core      bitstream model + parsers
 crates/splot-recon     decoded output model types; hash-input bytes, frame hashes, Y4M writer; future reconstruction primitives, references
 crates/splot-parallel  approved local worker-pool and bounded-queue runtime policy
-crates/splot-decode    diagnostic API; runtime context; stream planners; minimal hash runtime using splot-recon
+crates/splot-decode    diagnostic API; runtime context; stream planners; decoder pipeline using splot-recon
 crates/splot-encode    future encoder with private splot-recon dependency boundary
 crates/splot-cli       thin CLI rendering splot-decode diagnostics
 ```
@@ -1086,11 +1086,11 @@ output scheduling, or AV2 reference refresh process.
 the CLI/runtime `--threads` policy. It now depends on `splot-core` for parsed
 stream-planner input and the bounded raw-byte `plan_bytes` planner,
 `splot-parallel` for worker-pool execution, and `splot-recon` for the narrow
-minimal runtime decoded frame/hash/raw/Y4M handoff. Broad tile decode, pixel
+minimal tier decoded frame/hash/raw/Y4M handoff. Broad tile decode, pixel
 reconstruction, broad raw/Y4M output, and reference update semantics remain
 unsupported.
 `splot-cli` reads input bytes for `splot decode`, calls the plan-only
-or minimal runtime `splot-decode` handoff, renders structured diagnostics,
+or minimal tier `splot-decode` handoff, renders structured diagnostics,
 emits hash JSON for the supported minimal tier, and atomically publishes raw or
 Y4M output for the same minimal tier. `splot-encode` now has only a private
 `splot-recon` dependency boundary; public encoder/reconstruction API reuse

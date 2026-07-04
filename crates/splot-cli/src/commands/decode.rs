@@ -498,7 +498,7 @@ fn render_hash_report(report: &DecodeHashReport, json: bool) -> Result<()> {
 
 /// Runs `splot decode` through the byte-stream decode handoff.
 ///
-/// Hash, raw, and Y4M modes have narrow minimal-tier runtime success paths;
+/// Hash, raw, and Y4M modes have narrow minimal tier success paths;
 /// broader runtime outputs remain diagnostic-only until later decoder
 /// milestones.
 ///

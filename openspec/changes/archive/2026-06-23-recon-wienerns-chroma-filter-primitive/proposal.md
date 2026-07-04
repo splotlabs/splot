@@ -2,7 +2,7 @@
 
 The repository already has the AV2 §7.20.3 luma Wiener NS filter primitive and
 the §7.20.2 source-sample helpers, but chroma Wiener NS filtering remains
-explicitly unsupported. The ac0ej3 loop-restoration path reaches chroma
+explicitly unsupported. The local decoder mission loop-restoration path reaches chroma
 Wiener NS unit syntax, so the next safe reconstruction brick is the
 scheduler-free chroma sample math before any runtime wiring or output claim.
 
@@ -16,7 +16,7 @@ scheduler-free chroma sample math before any runtime wiring or output claim.
 - Transcribe the AV2 §7.20.3 `Wiener_Ns_Config_Uv` tap table and the
   `Wiener_Filters_420` luma downsampling table used by `get_luma_sample`.
 - Keep §7.20 traversal, §7.20.2 frame source reads, coefficient selection,
-  temporal/reference Wiener state, runtime wiring, and ac0ej3 output out of
+  temporal/reference Wiener state, runtime wiring, and local decoder mission output out of
   scope.
 
 ## Capabilities
@@ -31,7 +31,7 @@ scheduler-free chroma sample math before any runtime wiring or output claim.
 
 - `decoder-support`: Track `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE` as partial
   loop-restoration reconstruction progress without claiming runtime decode
-  wiring, full Wiener NS filtering, or successful ac0ej3 decode.
+  wiring, full Wiener NS filtering, or successful local decoder mission decode.
 
 ## Impact
 

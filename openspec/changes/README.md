@@ -38,12 +38,12 @@ same id in the matrix, the OpenSpec folder, and the GitHub issue/PR.
 | `coeff-general-walk-hf-eob11` | `ENC-COEFF-GENERAL-WALK-HF-EOB11` | blocked (artifact incomplete: design=ready) |
 | `coeff-general-walk-hf-multi` | `ENC-COEFF-GENERAL-WALK-HF-MULTI` | blocked (artifact incomplete: design=ready) |
 | `coeff-general-walk-lf-base` | `ENC-COEFF-GENERAL-WALK-LF-BASE` | blocked (artifact incomplete: design=ready) |
-| `decode-ac0ej3-10bit-sequence-frontier` | `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` | blocked (artifact incomplete: design=ready) |
-| `decode-ac0ej3-leading-obu-gate` | n/a | blocked (artifact incomplete: design=ready) |
-| `decode-ac0ej3-runtime-frame-gate` | n/a | blocked (artifact incomplete: design=ready) |
-| `decode-ac0ej3-sequence-chroma-frontier` | `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` | blocked (artifact incomplete: design=ready) |
-| `decode-ac0ej3-traversal-defaults` | `DECODE-BYTE-STREAM-PLANNER`, `DECODE-LIMITS-RUNTIME-API`, `DOC-DECODE-LIMITS-CONTRACT` | blocked (artifact incomplete: design=ready) |
-| `decode-ac0ej3-wienerns-bank-frontier` | `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` | blocked (delta sync ambiguity; modified requirement target missing) |
+| `decode-10bit-sequence-frontier` | `DECODE-10BIT-SEQUENCE-FRONTIER` | blocked (artifact incomplete: design=ready) |
+| `decode-leading-obu-gate` | n/a | blocked (artifact incomplete: design=ready) |
+| `decode-runtime-frame-gate` | n/a | blocked (artifact incomplete: design=ready) |
+| `decode-sequence-chroma-frontier` | `DECODE-SEQUENCE-CHROMA-FRONTIER` | blocked (artifact incomplete: design=ready) |
+| `decode-traversal-defaults` | `DECODE-BYTE-STREAM-PLANNER`, `DECODE-LIMITS-RUNTIME-API`, `DOC-DECODE-LIMITS-CONTRACT` | blocked (artifact incomplete: design=ready) |
+| `decode-wienerns-bank-frontier` | `DECODE-WIENERNS-BANK-FRONTIER` | blocked (delta sync ambiguity; modified requirement target missing) |
 | `decode-general-intra-rect-partition` | `DECODE-GENERAL-INTRA-RECT-PARTITION` | in-progress (unchecked tasks) |
 | `decode-inter-grid-spatial` | `DECODE-GENERAL-INTRA-GRID`, `DECODE-INTER-GRID-SPATIAL`, `DECODE-INTER-MULTI-SB-SPATIAL`, `DECODE-INTER-MVSTACK-SPATIAL` | in-progress (artifact incomplete: design=ready; unchecked tasks) |
 | `decode-inter-header-shared-tail` | n/a | blocked (delta sync ambiguity; modified requirement target missing) |

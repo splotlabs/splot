@@ -1,6 +1,6 @@
 ## Why
 
-Coded frame 2 of the `ac0ej3` mission stream — and every real AVM inter
+Coded frame 2 of the local decoder mission stream — and every real AVM inter
 frame — enables the in-loop filter chain (deblock/CDEF/CCSO/LR), which the
 inter frontier rejected at the frame level. The filter orchestration already
 exists and is AVM-verified on the intra key-frame path; the inter path
@@ -38,7 +38,7 @@ skipped for every inter chroma transform, and § 5.18.7.12
   `avmdec --i420 --rawvideo`: deblock-active, CDEF-active, and fresh-coded
   three-plane CCSO-active inter frames (the CCSO stream is AVM-only
   evidence — dav2d diverges on its AV2 CCSO application).
-- The ac0ej3 frontier moves from the frame-level filter gate (byte 8345)
+- The local decoder mission frontier moves from the frame-level filter gate (byte 8345)
   into coded frame 2's tile: the first WARPMV inter-intra block defers at
   byte 8371 (`inter_warp_interintra_unimplemented`) — interintra
   prediction is the next mission family.

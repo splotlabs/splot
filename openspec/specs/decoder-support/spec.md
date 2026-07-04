@@ -52,7 +52,7 @@ chroma non-separable Wiener per-block/per-sample arithmetic as supported over
 caller-resolved chroma source samples, luma source samples, luma downsampling
 facts, and coefficients. It SHALL keep full loop restoration, §7.20.2 frame
 reads, §7.20.4 PC-Wiener classification, restoration-unit syntax,
-temporal/reference Wiener state, GDF/BRU, runtime decode wiring, and ac0ej3
+temporal/reference Wiener state, GDF/BRU, runtime decode wiring, and local decoder mission
 decode partial or unsupported until separately proven.
 
 #### Scenario: Matrix records narrow chroma loop-restoration progress
@@ -63,7 +63,7 @@ decode partial or unsupported until separately proven.
   `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE`
 - **AND** it cites AV2 §7.20.3 and focused `splot-recon` tests
 - **AND** it does not claim full loop restoration, runtime decode wiring, GDF,
-  BRU, or successful ac0ej3 decode
+  BRU, or successful local decoder mission decode
 
 ### Requirement: PC-Wiener classification support row
 
@@ -74,7 +74,7 @@ supported over caller-resolved source samples, caller-resolved `LrTxSkip`
 values, active bit depth, and `base_q_idx`. It SHALL record that full §7.20
 traversal, §7.20.2 frame reads, runtime `FilterClass` grid storage,
 `SubclassLookup` derivation, §7.20.3 filter invocation, runtime decode wiring,
-10-bit output, reference refresh, and successful ac0ej3 decode remain
+10-bit output, reference refresh, and successful local decoder mission decode remain
 unsupported or partial until separately proven.
 
 #### Scenario: Matrix records narrow PC-Wiener progress
@@ -87,7 +87,7 @@ unsupported or partial until separately proven.
   focused `splot-recon` tests
 - **AND** it does not claim runtime loop-restoration wiring, `FilterClass` grid
   retention, §7.20.3 filtering invocation, 10-bit output, reference refresh, or
-  successful ac0ej3 decode
+  successful local decoder mission decode
 
 ### Requirement: DC Subsampled Prediction Support Row
 The decoder support model SHALL track
@@ -122,8 +122,8 @@ The decoder support model SHALL track `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`
 as a distinct crate-private row named `tile-partition-traversal-boundary`. The
 row SHALL mark only the partition traversal frontier to the first
 `decode_block()` boundary plus the narrow frame-level Wiener NS LR unit syntax
-and source-bounds frontiers tracked by `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`
-and `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` as supported, and SHALL keep
+and source-bounds frontiers tracked by `DECODE-LR-UNIT-SYNTAX-FRONTIER`
+and `DECODE-LR-SOURCE-BOUNDS-FRONTIER` as supported, and SHALL keep
 broader `tile-payload-decode`, `symbol-decoder`, CDF lifecycle, runtime decode
 output, block syntax, `MiSizes` mutation, loop-restoration filtering, and
 reconstruction rows honest when they remain partial.
@@ -137,7 +137,7 @@ reconstruction rows honest when they remain partial.
 - **AND** it identifies per-unit coefficient exposure/application,
   loop-restoration filtering, and reconstruction as outside this boundary while
   allowing the narrow §5.20.10.6 syntax consumption needed by
-  `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER`
+  `DECODE-LR-SOURCE-BOUNDS-FRONTIER`
 - **AND** it does not cite §5.20.4.1 as parsed or tested evidence while block
   syntax remains outside this boundary
 - **AND** `tile-payload-decode` remains partial for full `decode_tile()`, block
@@ -151,15 +151,15 @@ reconstruction rows honest when they remain partial.
   arithmetic/resource failures, unsupported SDP/BRU/inter gates, and supported
   frame-level Wiener NS LR unit/source-bounds syntax consumption
 
-### Requirement: ac0ej3 LR Source-Read Frontier Support Row
+### Requirement: local decoder mission LR Source-Read Frontier Support Row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` as a distinct ac0ej3 support row. The
+`DECODE-LR-SOURCE-READ-FRONTIER` as a distinct local decoder mission support row. The
 row SHALL describe that the minimal runtime derives active §7.20.1 source-bound
-facts, rejects the local ac0ej3 two-class luma bank at the §7.20.4
+facts, rejects the local decoder mission two-class luma bank at the §7.20.4
 pixel-classified Wiener boundary, and still fails closed before source sample
 value reads, loop-restoration filtering, reconstruction output, or successful
-ac0ej3 decode. The row SHALL also describe the non-classified source-read
+local decoder mission decode. The row SHALL also describe the non-classified source-read
 derivation that resolves §7.20.2 output/tap/chroma-luma coordinates.
 That derivation SHALL account for the parsed sequence `cfl_ds_filter_index`
 when recording 4:2:0 chroma luma-source reads and SHALL fail closed before
@@ -169,110 +169,110 @@ per-unit coefficient masks are not retained.
 #### Scenario: Matrix evidence records the source-read boundary
 
 - **WHEN** decoder support status is validated
-- **THEN** `ac0ej3-lr-source-read-frontier` remains partial
+- **THEN** `lr-source-read-frontier` remains partial
 - **AND** the row lists focused tests proving source-read frontier behavior,
   Wiener tap/luma-source coverage, `cfl_ds_filter_index` accounting,
   unit-coded chroma fail-closed behavior, source-read limit accounting,
-  classified Wiener ordering, and the live ac0ej3 runtime diagnostic
+  classified Wiener ordering, and the live local decoder mission runtime diagnostic
 - **AND** the previous `unsupported_wienerns_lr_source_bounds` reason is no
-  longer the live ac0ej3 frontier
+  longer the live local decoder mission frontier
 
-### Requirement: ac0ej3 SDP CflAllowedInSdp support row
+### Requirement: local decoder mission SDP CflAllowedInSdp support row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER` as a distinct partial ac0ej3 row. The
+`DECODE-SDP-CFL-ALLOWED-FRONTIER` as a distinct partial local decoder mission row. The
 row SHALL describe that the minimal runtime retains AV2 §5.20.3.1
 `CflAllowedInSdp` state for intra SDP chroma leaves and applies it to AV2
 §5.20.5.6 chroma mode-info so disabled CfL and MHCCP syntax are not read from
-the local ac0ej3 stream. The row SHALL remain fail-closed before decoded frame
+the local decoder mission stream. The row SHALL remain fail-closed before decoded frame
 samples, loop-restoration filtering/output, reference refresh, or successful
-ac0ej3 decode.
+local decoder mission decode.
 
 #### Scenario: Matrix evidence records the SDP CfL-allowed boundary
 
 - **WHEN** decoder support status is validated
-- **THEN** `ac0ej3-sdp-cfl-allowed-frontier` appears with Feature ID
-  `DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER`
+- **THEN** `sdp-cfl-allowed-frontier` appears with Feature ID
+  `DECODE-SDP-CFL-ALLOWED-FRONTIER`
 - **AND** the row cites AV2 §5.20.3.1 and §5.20.5.6
-- **AND** it lists focused traversal/mode-info tests plus the local ac0ej3
+- **AND** it lists focused traversal/mode-info tests plus the local decoder mission
   runtime probe
 - **AND** it does not claim decoded frame samples, loop-restoration filtering,
-  output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3
+  output, reference refresh, AVM/dav2d byte equality, or successful local decoder mission
   decode
 
-### Requirement: ac0ej3 intra prelude transform support row
+### Requirement: local decoder mission intra prelude transform support row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` as a distinct partial ac0ej3 row. The
+`DECODE-INTRA-PRELUDE-TX-FRONTIER` as a distinct partial local decoder mission row. The
 row SHALL describe that the minimal runtime consumes the observed AV2 §5.20.5.3
 `use_intrabc`, §5.20.10.1 CDEF, and §5.20.5.11 delta-Q prelude syntax before
 §5.20.5.5 luma mode and §5.20.6 transform partition parsing in the local
-ac0ej3 stream. The row SHALL also record the pre-tile unsupported-tool gate and
+local decoder mission stream. The row SHALL also record the pre-tile unsupported-tool gate and
 the luma-only chroma-offset leaf admission while preserving chroma-bearing
 offset rejection. The row SHALL remain fail-closed before decoded frame samples,
-loop-restoration filtering/output, reference refresh, or successful ac0ej3
+loop-restoration filtering/output, reference refresh, or successful local decoder mission
 decode.
 
 #### Scenario: Matrix evidence records the intra prelude transform boundary
 
 - **WHEN** decoder support status is validated
-- **THEN** `ac0ej3-intra-prelude-tx-frontier` appears with Feature ID
-  `DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER`
+- **THEN** `intra-prelude-tx-frontier` appears with Feature ID
+  `DECODE-INTRA-PRELUDE-TX-FRONTIER`
 - **AND** the row cites AV2 §5.20.5.3, §5.20.5.11, §5.20.6, and §5.20.10.1
 - **AND** it lists focused prelude/tool-gate/chroma-offset tests plus the local
-  ac0ej3 runtime probe
+  local decoder mission runtime probe
 - **AND** it does not claim decoded frame samples, loop-restoration filtering,
-  output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3
+  output, reference refresh, AVM/dav2d byte equality, or successful local decoder mission
   decode
 
-### Requirement: ac0ej3 selectable narrow-record live frontier evidence
+### Requirement: local decoder mission selectable narrow-record live frontier evidence
 
-Decoder support tracking SHALL record that the local ac0ej3 live probe advances
+Decoder support tracking SHALL record that the local decoder mission live probe advances
 past `unsupported_wienerns_lr_live_transform_record_mrl_mode` after the active
 MRL record handoff and reaches
 `unsupported_wienerns_lr_live_transform_record_fsc_mode`. The support rows SHALL
 record the new structured unsupported frontier, proof commands, and explicit
 non-goals for decoded samples, loop-restoration filtering/output, reference
-refresh, AVM/dav2d byte equality, and successful ac0ej3 decode.
+refresh, AVM/dav2d byte equality, and successful local decoder mission decode.
 
-#### Scenario: Local ac0ej3 probe reaches next post-MRL frontier
+#### Scenario: Local local decoder mission probe reaches next post-MRL frontier
 
-- **WHEN** the local `ac0ej3.ivf` probe runs after the active MRL record handoff
+- **WHEN** the local `local-decoder-mission.ivf` probe runs after the active MRL record handoff
 - **THEN** decoder support status records
   `unsupported_wienerns_lr_live_transform_record_fsc_mode`
-- **AND** the previous active-MRL diagnostic is no longer the live ac0ej3
+- **AND** the previous active-MRL diagnostic is no longer the live local decoder mission
   frontier
 
-### Requirement: ac0ej3 FSC transform-record support row
+### Requirement: local decoder mission FSC transform-record support row
 
-The decoder support model SHALL record the ac0ej3 FSC transform-record handoff
-under `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS`. The support row SHALL
-describe that the local ac0ej3 Wiener NS LR path consumes the observed active
+The decoder support model SHALL record the local decoder mission FSC transform-record handoff
+under `DECODE-SELECTABLE-TRANSFORM-RECORDS`. The support row SHALL
+describe that the local decoder mission Wiener NS LR path consumes the observed active
 `fsc_mode`/`useFsc` luma residual subcase into retained `LrTxSkip` metadata,
 and SHALL continue to mark decoded samples, loop-restoration filtering/output,
-reference refresh, AVM/dav2d byte equality, and successful ac0ej3 decode as
+reference refresh, AVM/dav2d byte equality, and successful local decoder mission decode as
 unsupported or unclaimed.
 
 #### Scenario: Matrix evidence records the FSC record handoff
 
 - **WHEN** decoder support status is validated after the FSC transform-record
   handoff
-- **THEN** `ac0ej3-selectable-transform-records` remains a partial row with
-  Feature ID `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS`
+- **THEN** `selectable-transform-records` remains a partial row with
+  Feature ID `DECODE-SELECTABLE-TRANSFORM-RECORDS`
 - **AND** the row cites AV2 §5.20.5.3, §5.20.7.27, §5.20.8.2, and §8.3.2 as
   applicable evidence sections
 - **AND** it lists focused tests for active `fsc_mode` syntax, selected
   `useFsc` coefficient handoff, non-selected branch preservation, and the local
-  ac0ej3 runtime probe
+  local decoder mission runtime probe
 - **AND** it records the next structured unsupported-feature reason reached by
-  the local ac0ej3 probe
+  the local decoder mission probe
 
 #### Scenario: Broad FSC and reconstruction claims remain absent
 
 - **WHEN** decoder support and feature status are regenerated
 - **THEN** broad FSC/IDTX reconstruction, decoded frame samples,
   loop-restoration filtering/output, reference refresh, AVM/dav2d byte
-  equality, and successful ac0ej3 decode remain unclaimed until separately
+  equality, and successful local decoder mission decode remain unclaimed until separately
   proven
 
 ### Requirement: Generated decoder support status
@@ -439,7 +439,7 @@ enforcement and diagnostics exist.
   fuzzing and current large-stream decoder-mission traversal rather than AV2
   normative conformance limits
 - **AND** the default OBU and frame-count thresholds are large enough for the
-  current `ac0ej3.ivf` target's inspected 12964 OBU stream to advance past the
+  current `local-decoder-mission.ivf` target's inspected 12964 OBU stream to advance past the
   prior `max_frames_to_decode = 128` planner gate
 - **AND** tests pin the default thresholds so policy changes are explicit
 
@@ -4339,204 +4339,204 @@ wiring, dequantization, reconstruction, output, reference refresh, and broad
 - **THEN** the new row is included in the generated status and coverage
   documents with status `partial`
 
-### Requirement: ac0ej3 DCT-only residual support row
+### Requirement: local decoder mission DCT-only residual support row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` as a distinct partial ac0ej3 row named
-`ac0ej3-dctonly-residual-frontier`. The row SHALL describe that selectable
+`DECODE-DCTONLY-RESIDUAL-FRONTIER` as a distinct partial local decoder mission row named
+`dctonly-residual-frontier`. The row SHALL describe that selectable
 Wiener NS LR transform-record derivation can admit nonzero residuals only when
 the actual per-plane transform path resolves to DCT_DCT, either by reading no
 active transform-type syntax or by reading supported active luma transform-type
 syntax that maps back to DCT_DCT. The row SHALL remain fail-closed for non-DCT
 transform types, CCTX, IST, decoded frame samples, loop-restoration
 filtering/output, reference refresh, AVM/dav2d byte equality, or successful
-ac0ej3 decode.
+local decoder mission decode.
 
 #### Scenario: Matrix evidence records DCT-only residual boundary
 
 - **WHEN** decoder support status is validated
-- **THEN** `ac0ej3-dctonly-residual-frontier` appears with Feature ID
-  `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER`
+- **THEN** `dctonly-residual-frontier` appears with Feature ID
+  `DECODE-DCTONLY-RESIDUAL-FRONTIER`
 - **AND** the row cites AV2 §5.20.7.27, §5.20.8.2, and §5.20.8.3
 - **AND** it lists focused DCT-only admission tests, active luma transform-type
-  mapping/CDF tests, and the local ac0ej3 runtime probe
+  mapping/CDF tests, and the local decoder mission runtime probe
 - **AND** it does not claim decoded frame samples, loop-restoration filtering,
-  output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3
+  output, reference refresh, AVM/dav2d byte equality, or successful local decoder mission
   decode
 
-### Requirement: ac0ej3 intra IST zero support row
+### Requirement: local decoder mission intra IST zero support row
 
 The decoder support matrix SHALL include
-`DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER` as a distinct partial ac0ej3 row named
-`ac0ej3-intra-ist-zero-frontier`. The row SHALL record that the decoder consumes
+`DECODE-INTRA-IST-ZERO-FRONTIER` as a distinct partial local decoder mission row named
+`intra-ist-zero-frontier`. The row SHALL record that the decoder consumes
 the covered `sec_tx_type == 0` intra IST syntax and remains fail-closed for
-active secondary transforms and successful ac0ej3 decode output.
+active secondary transforms and successful local decoder mission decode output.
 
 #### Scenario: Support matrix records intra IST zero frontier
 
 - **WHEN** decoder support status is generated
-- **THEN** `ac0ej3-intra-ist-zero-frontier` appears with Feature ID
-  `DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER`
+- **THEN** `intra-ist-zero-frontier` appears with Feature ID
+  `DECODE-INTRA-IST-ZERO-FRONTIER`
 - **AND** it lists focused CDF/residual tests for zero admission and
   reconstruction-safe active rejection
-- **AND** it does not claim successful ac0ej3 decode, raw/Y4M output, reference
+- **AND** it does not claim successful local decoder mission decode, raw/Y4M output, reference
   refresh, or AVM/dav2d byte equality
 
-### Requirement: ac0ej3 active intra IST handoff support row
+### Requirement: local decoder mission active intra IST handoff support row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF` as a distinct partial ac0ej3 row named
-`ac0ej3-active-intra-ist-handoff`. The row SHALL describe that the minimal
+`DECODE-ACTIVE-INTRA-IST-HANDOFF` as a distinct partial local decoder mission row named
+`active-intra-ist-handoff`. The row SHALL describe that the minimal
 runtime consumes active AV2 §5.20.7.29 intra IST secondary-transform syntax for
 the Wiener NS LR tx-skip record path, records the active-IST metadata, and
 remains fail-closed before secondary inverse transforms, decoded samples,
-loop-restoration output, reference refresh, or successful ac0ej3 decode.
+loop-restoration output, reference refresh, or successful local decoder mission decode.
 
 #### Scenario: Matrix evidence records the active IST handoff boundary
 
 - **WHEN** `cargo xtask check-decoder-support` validates decoder support status
-- **THEN** `ac0ej3-active-intra-ist-handoff` appears with Feature ID
-  `DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF`
+- **THEN** `active-intra-ist-handoff` appears with Feature ID
+  `DECODE-ACTIVE-INTRA-IST-HANDOFF`
 - **AND** the row cites AV2 §5.20.7.29, §7.20.4, §8.3.2, and the focused tests
-  plus the local ac0ej3 runtime probe
+  plus the local decoder mission runtime probe
 - **AND** it does not claim secondary inverse-transform runtime wiring,
   decoded frame samples, loop-restoration output, raw/Y4M output, reference
-  refresh, AVM/dav2d byte equality, or successful ac0ej3 decode
+  refresh, AVM/dav2d byte equality, or successful local decoder mission decode
 
-### Requirement: ac0ej3 chroma CCTX handoff tracking
+### Requirement: local decoder mission chroma CCTX handoff tracking
 
-Decoder support tracking SHALL record the ac0ej3 chroma CCTX metadata syntax
+Decoder support tracking SHALL record the local decoder mission chroma CCTX metadata syntax
 handoff as a partial row that advances the live stream frontier without
-claiming CCTX reconstruction, chroma output, or successful ac0ej3 decode.
+claiming CCTX reconstruction, chroma output, or successful local decoder mission decode.
 
 #### Scenario: Live frontier evidence is recorded
 
-- **WHEN** the local `ac0ej3.ivf` probe advances after the chroma CCTX metadata
+- **WHEN** the local `local-decoder-mission.ivf` probe advances after the chroma CCTX metadata
   handoff
 - **THEN** the decoder support matrix records the new unsupported frontier,
   feature ID, proof commands, and explicit non-goals
 
-### Requirement: ac0ej3 LR Classified Wiener Frontier Support Row
+### Requirement: local decoder mission LR Classified Wiener Frontier Support Row
 
 The implementation matrix SHALL include
-`DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` as a distinct ac0ej3 support row.
+`DECODE-LR-CLASSIFIED-WIENER-FRONTIER` as a distinct local decoder mission support row.
 The row SHALL describe the resolved §7.20.4 dependency frontier, the remaining
-value/filtering gap, and the live ac0ej3 runtime diagnostic.
+value/filtering gap, and the live local decoder mission runtime diagnostic.
 
-#### Scenario: Local ac0ej3 gate cites classified dependency frontier
+#### Scenario: Local local decoder mission gate cites classified dependency frontier
 
-- **WHEN** the local ac0ej3 mission fixture reaches active luma Wiener NS LR with
+- **WHEN** the local decoder mission fixture reaches active luma Wiener NS LR with
   more than one luma filter class
 - **THEN** the runtime diagnostic cites
-  `ac0ej3-lr-classified-wiener-frontier`
+  `lr-classified-wiener-frontier`
 - **AND** it uses feature id
-  `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER`
+  `DECODE-LR-CLASSIFIED-WIENER-FRONTIER`
 - **AND** it remains an unsupported-feature diagnostic before output.
 
-### Requirement: ac0ej3 LR Tx-Skip Grid Retention Support Row
+### Requirement: local decoder mission LR Tx-Skip Grid Retention Support Row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` as a distinct ac0ej3 row named
-`ac0ej3-lr-tx-skip-grid-retention`. The row SHALL record that the decoder has a
+`DECODE-LR-TX-SKIP-GRID-RETENTION` as a distinct local decoder mission row named
+`lr-tx-skip-grid-retention`. The row SHALL record that the decoder has a
 value-backed helper for deriving complete boolean `LrTxSkip` storage from
-parsed luma transform skip/eob records, while live ac0ej3 tile traversal still
+parsed luma transform skip/eob records, while live local decoder mission tile traversal still
 does not populate that grid before the current unsupported-feature diagnostic.
 
 #### Scenario: Support matrix lists tx-skip grid retention
 
 - **WHEN** decoder support status is generated
-- **THEN** `ac0ej3-lr-tx-skip-grid-retention` appears as a partial support row
+- **THEN** `lr-tx-skip-grid-retention` appears as a partial support row
 - **AND** its notes exclude live decoded samples, live tile-populated
   `LrTxSkip`, `FilterClass` grid retention, LR filtering, output, reference
-  refresh, AVM/dav2d byte equality, and successful ac0ej3 decode
+  refresh, AVM/dav2d byte equality, and successful local decoder mission decode
 
-### Requirement: ac0ej3 LR Runtime Storage Retention Support Row
+### Requirement: local decoder mission LR Runtime Storage Retention Support Row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` as a distinct ac0ej3 row named
-`ac0ej3-lr-runtime-storage-retention`. The row SHALL record that the live
-ac0ej3 path derives and limit-checks active-bit-depth loop-restoration
-frame-buffer shapes (10-bit for the ac0ej3 mission stream) plus the frame-wide
+`DECODE-LR-RUNTIME-STORAGE-RETENTION` as a distinct local decoder mission row named
+`lr-runtime-storage-retention`. The row SHALL record that the live
+local decoder mission path derives and limit-checks active-bit-depth loop-restoration
+frame-buffer shapes (10-bit for the local decoder mission stream) plus the frame-wide
 `LrTxSkip` grid under the per-frame decoded-frame and aggregate
 retained-storage limits before live storage allocation, and SHALL keep
 decoded sample population, `FilterClass` grid retention, `SubclassLookup`,
 loop-restoration filtering, 10-bit output, reference refresh, and successful
-ac0ej3 decode unsupported until separately proven.
+local decoder mission decode unsupported until separately proven.
 
 #### Scenario: Matrix records runtime-storage frontier
 
 - **WHEN** `cargo xtask check-decoder-support` validates the decoder support
   matrix
-- **THEN** `ac0ej3-lr-runtime-storage-retention` appears with Feature ID
-  `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION`
+- **THEN** `lr-runtime-storage-retention` appears with Feature ID
+  `DECODE-LR-RUNTIME-STORAGE-RETENTION`
 - **AND** it cites AV2 §6.4.1, §7.20.1, §7.20.2, §7.20.3, §7.20.4, and §8.3.2
   as applicable source sections
 - **AND** it names focused tests for storage-shape derivation, the historical
   helper diagnostic, and limit failure behavior
 - **AND** it does not claim live loop-restoration filtering, output, reference
-  refresh, AVM/dav2d equality, or successful ac0ej3 decode
+  refresh, AVM/dav2d equality, or successful local decoder mission decode
 
-### Requirement: ac0ej3 LR live storage allocation support row
+### Requirement: local decoder mission LR live storage allocation support row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` as a distinct ac0ej3 row named
-`ac0ej3-lr-live-storage-allocation`. The row SHALL record that the live ac0ej3
+`DECODE-LR-LIVE-STORAGE-ALLOCATION` as a distinct local decoder mission row named
+`lr-live-storage-allocation`. The row SHALL record that the live local decoder mission
 path allocates unpopulated active-bit-depth loop-restoration frame-buffer
 shells and an unpopulated `LrTxSkip` grid after storage-footprint planning, and
 SHALL keep decoded sample population, real `LrTxSkip` values, `FilterClass`
 grid retention, `SubclassLookup`, loop-restoration filtering, 10-bit output,
-reference refresh, and successful ac0ej3 decode unsupported until separately
+reference refresh, and successful local decoder mission decode unsupported until separately
 proven.
 
 #### Scenario: Matrix records live storage allocation frontier
 
 - **WHEN** `cargo xtask check-decoder-support` validates the decoder support
   matrix
-- **THEN** `ac0ej3-lr-live-storage-allocation` appears with Feature ID
-  `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION`
+- **THEN** `lr-live-storage-allocation` appears with Feature ID
+  `DECODE-LR-LIVE-STORAGE-ALLOCATION`
 - **AND** it cites AV2 §6.4.1, §6.17.4.1, §7.20.2, §7.20.3, and §7.20.4
 - **AND** it records `decode/unsupported-feature` with the live-storage
   allocation diagnostic
 - **AND** it does not claim loop-restoration filtering, output, reference
-  refresh, AVM/dav2d byte equality, or successful ac0ej3 decode
+  refresh, AVM/dav2d byte equality, or successful local decoder mission decode
 
-### Requirement: ac0ej3 LR live tx-skip grid support row
+### Requirement: local decoder mission LR live tx-skip grid support row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID` as a distinct ac0ej3 row named
-`ac0ej3-lr-live-tx-skip-grid`. The row SHALL record that the decoder can
+`DECODE-LR-LIVE-TX-SKIP-GRID` as a distinct local decoder mission row named
+`lr-live-tx-skip-grid`. The row SHALL record that the decoder can
 populate the live allocated `LrTxSkip` shell from a complete retained
 `WienerNsLrTxSkipGrid`, and SHALL keep live decoded samples, tile-derived
 transform-record handoff, `FilterClass` retention, `SubclassLookup`, loop-
 restoration filtering/output, reference refresh, AVM/dav2d byte equality, and
-successful ac0ej3 decode unsupported until separately proven.
+successful local decoder mission decode unsupported until separately proven.
 
 #### Scenario: Support matrix lists live tx-skip grid population
 
 - **WHEN** `cargo xtask check-decoder-support` validates decoder support rows
-- **THEN** `ac0ej3-lr-live-tx-skip-grid` appears with Feature ID
-  `DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID`
+- **THEN** `lr-live-tx-skip-grid` appears with Feature ID
+  `DECODE-LR-LIVE-TX-SKIP-GRID`
 - **AND** it cites focused live-storage tests
 - **AND** it remains `partial`
 
-### Requirement: ac0ej3 selectable transform-record support row
+### Requirement: local decoder mission selectable transform-record support row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` as a distinct partial row named
-`ac0ej3-selectable-transform-records`. The row SHALL record that the decoder can
+`DECODE-SELECTABLE-TRANSFORM-RECORDS` as a distinct partial row named
+`selectable-transform-records`. The row SHALL record that the decoder can
 parse supported `TX_MODE_SELECT` luma transform-size/partition records for the
-ac0ej3 LR path, feed the resulting transform facts into live `LrTxSkip` storage,
+local decoder mission LR path, feed the resulting transform facts into live `LrTxSkip` storage,
 and then stop before decoded sample population and LR filtering.
 
 #### Scenario: Support matrix lists selectable transform-record frontier
 
 - **WHEN** `cargo xtask check-decoder-support` validates decoder support rows
-- **THEN** `ac0ej3-selectable-transform-records` appears with Feature ID
-  `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS`
+- **THEN** `selectable-transform-records` appears with Feature ID
+  `DECODE-SELECTABLE-TRANSFORM-RECORDS`
 - **AND** it remains `partial`
 - **AND** it does not claim decoded frame samples, `FilterClass`,
   `SubclassLookup`, loop-restoration filtering/output, reference refresh,
-  AVM/dav2d byte equality, or successful ac0ej3 decode
+  AVM/dav2d byte equality, or successful local decoder mission decode
 
 ### Requirement: Current-frame IntrABC copy support row
 
@@ -4555,15 +4555,15 @@ equality unclaimed.
 - **THEN** `recon-intrabc-current-frame-copy` appears with Feature ID
   `RECON-INTRABC-CURRENT-FRAME-COPY`
 - **AND** it lists focused current-frame workspace copy tests
-- **AND** it remains scoped to checked rectangle copy rather than broad ac0ej3
+- **AND** it remains scoped to checked rectangle copy rather than broad local decoder mission
   decode support
 
-### Requirement: ac0ej3 IntrABC transform-record support row
+### Requirement: local decoder mission IntrABC transform-record support row
 
-The decoder support model SHALL record the ac0ej3 IntrABC mode-info and
+The decoder support model SHALL record the local decoder mission IntrABC mode-info and
 prediction-geometry handoff under
-`DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS`. The support row SHALL describe
-that the local ac0ej3 Wiener NS LR selectable-transform path consumes the
+`DECODE-SELECTABLE-TRANSFORM-RECORDS`. The support row SHALL describe
+that the local decoder mission Wiener NS LR selectable-transform path consumes the
 observed AV2 §5.20.5.3 `use_intrabc = 1` and bounded §5.20.5.4
 `read_intrabc_info()` syntax into retained transform-record metadata, derives
 checked tile-local luma current-frame prediction geometry, including the
@@ -4573,7 +4573,7 @@ and gates fallback block-vector use to cases where the tile-local prelude state
 proves the §7.12.2 stack has no prior IntrABC spatial/ref-MV-bank candidates.
 It SHALL continue to mark decoded sample population, loop-restoration
 filtering/output, reference refresh, AVM/dav2d byte equality, and successful
-ac0ej3 decode as unsupported or unclaimed.
+local decoder mission decode as unsupported or unclaimed.
 When the local probe advances through the observed NEARMV/NEWMV block-vector
 subcase, the row SHALL document the IntrABC prediction-geometry frontier while
 keeping fabricated current-frame samples and output unsupported.
@@ -4582,20 +4582,20 @@ keeping fabricated current-frame samples and output unsupported.
 
 - **WHEN** decoder support status is validated after the IntrABC
   prediction-geometry handoff
-- **THEN** `ac0ej3-selectable-transform-records` remains a partial row with
-  Feature ID `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS`
+- **THEN** `selectable-transform-records` remains a partial row with
+  Feature ID `DECODE-SELECTABLE-TRANSFORM-RECORDS`
 - **AND** the row cites AV2 §5.20.5.3, §5.20.5.4, §5.20.6.1, §5.20.6.3,
   §5.20.7.13, §5.20.7.20, §5.20.7.27, §6.19.7.12, §7.12.2,
   §7.13.3.18, and §8.3.2 as applicable evidence sections
 - **AND** it lists focused tests for active `use_intrabc` syntax, retained
   IntrABC defaults, block-vector prediction geometry, non-IntrABC regression
-  behavior, and the local ac0ej3 runtime probe
+  behavior, and the local decoder mission runtime probe
 - **AND** it records the next structured unsupported-feature reason reached by
-  the local ac0ej3 probe
+  the local decoder mission probe
 
 #### Scenario: IntrABC current-frame sample frontier is tracked
 
-- **WHEN** the local ac0ej3 probe advances past the previous
+- **WHEN** the local decoder mission probe advances past the previous
   `unsupported_wienerns_lr_selectable_transform_records_intrabc_prediction`
   stop
 - **THEN** `docs/DECODER-SUPPORT-MATRIX.toml` SHALL list the IntrABC
@@ -4603,129 +4603,129 @@ keeping fabricated current-frame samples and output unsupported.
   post-prediction-geometry unsupported reason.
 - **AND** it SHALL continue to state that decoded sample population, loop
   restoration, output, reference refresh, AVM/dav2d byte equality, and full
-  ac0ej3 decode are not claimed.
+  local decoder mission decode are not claimed.
 
 #### Scenario: Broad IntrABC and reconstruction claims remain absent
 
 - **WHEN** decoder support and feature status are regenerated
 - **THEN** broad IntrABC runtime decode, populated decoded frame samples,
   loop-restoration filtering/output, reference refresh, AVM/dav2d byte
-  equality, and successful ac0ej3 decode remain unclaimed until separately
+  equality, and successful local decoder mission decode remain unclaimed until separately
   proven
 
-### Requirement: ac0ej3 transform-record residual tracking
-Decoder support tracking SHALL record the ac0ej3 transform-record residual
+### Requirement: local decoder mission transform-record residual tracking
+Decoder support tracking SHALL record the local decoder mission transform-record residual
 handoff as a partial row update that advances the live stream frontier without
 claiming inverse transforms, residual addition, loop-restoration filtering,
 decoded output, reference refresh, AVM/dav2d byte equality, or successful
-ac0ej3 decode.
+local decoder mission decode.
 
 #### Scenario: Live frontier evidence is recorded
-- **WHEN** the local `ac0ej3.ivf` probe advances after the transform-record
+- **WHEN** the local `local-decoder-mission.ivf` probe advances after the transform-record
   residual handoff
 - **THEN** the decoder support matrix records the new unsupported frontier,
   feature ID, proof commands, and explicit non-goals
 
-### Requirement: ac0ej3 luma transform-type residual support row
+### Requirement: local decoder mission luma transform-type residual support row
 
-Decoder support tracking SHALL record the ac0ej3 luma transform-type residual
+Decoder support tracking SHALL record the local decoder mission luma transform-type residual
 handoff as a partial row that advances the live stream beyond
 `unsupported_dctonly_residual_luma_tx_type` by carrying resolved non-DCT luma
 `PlaneTxType` into syntax-only LR tx-skip record derivation. The row SHALL keep
 inverse transforms, residual addition, loop-restoration filtering, decoded
-output, reference refresh, AVM/dav2d byte equality, and successful ac0ej3 decode
+output, reference refresh, AVM/dav2d byte equality, and successful local decoder mission decode
 out of scope.
 
 #### Scenario: Live frontier evidence is recorded
 
-- **WHEN** the local `ac0ej3.ivf` probe advances after luma transform-type
+- **WHEN** the local `local-decoder-mission.ivf` probe advances after luma transform-type
   residual handoff
 - **THEN** the decoder support matrix records the new unsupported frontier,
   feature ID, proof commands, and explicit non-goals
 
-### Requirement: ac0ej3 selectable narrow luma-record support row
+### Requirement: local decoder mission selectable narrow luma-record support row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` as a distinct partial ac0ej3 row.
+`DECODE-SELECTABLE-NARROW-LUMA-RECORDS` as a distinct partial local decoder mission row.
 The row SHALL describe that the minimal runtime consumes the observed luma-only
-`BLOCK_4X32` SDP selectable transform-record subcase in the local ac0ej3 stream
+`BLOCK_4X32` SDP selectable transform-record subcase in the local decoder mission stream
 while remaining fail-closed before decoded frame samples, `FilterClass`
 retention, loop-restoration filtering/output, reference refresh, or successful
-ac0ej3 decode.
+local decoder mission decode.
 
 #### Scenario: Matrix evidence records the narrow luma boundary
 
 - **WHEN** decoder support status is validated
-- **THEN** `ac0ej3-selectable-narrow-luma-records` appears with Feature ID
-  `DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS`
+- **THEN** `selectable-narrow-luma-records` appears with Feature ID
+  `DECODE-SELECTABLE-NARROW-LUMA-RECORDS`
 - **AND** the row cites AV2 §5.20.6.1, §5.20.6.3, §5.20.7.24, and §5.20.7.27
-- **AND** it lists focused tests plus the local ac0ej3 runtime probe
+- **AND** it lists focused tests plus the local decoder mission runtime probe
 - **AND** it does not claim decoded frame samples, loop-restoration filtering,
-  output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3
+  output, reference refresh, AVM/dav2d byte equality, or successful local decoder mission
   decode
 
-### Requirement: ac0ej3 active intra tool support row
+### Requirement: local decoder mission active intra tool support row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` as a distinct partial ac0ej3 row
-named `ac0ej3-active-intra-tool-frontier`. The row SHALL describe that
+`DECODE-ACTIVE-INTRA-TOOL-FRONTIER` as a distinct partial local decoder mission row
+named `active-intra-tool-frontier`. The row SHALL describe that
 selectable Wiener NS LR transform-record derivation consumes active MRL syntax,
 retains `UsesMrls` metadata for LR tx-skip record derivation, uses retained
 neighbour state for MRL CDF contexts, and relaxes broad sequence-level
 intra/transform tool gates plus parsed CCSO filter state into active-use or
 later filter/output diagnostics, while remaining fail-closed before decoded
 frame samples, loop-restoration filtering/output, reference refresh, AVM/dav2d
-byte equality, or successful ac0ej3 decode.
+byte equality, or successful local decoder mission decode.
 
 #### Scenario: Matrix evidence records active MRL record handoff
 
 - **WHEN** decoder support status is validated
-- **THEN** `ac0ej3-active-intra-tool-frontier` appears with Feature ID
-  `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER`
+- **THEN** `active-intra-tool-frontier` appears with Feature ID
+  `DECODE-ACTIVE-INTRA-TOOL-FRONTIER`
 - **AND** the row cites AV2 §5.20.5.3, §5.20.5.5, §5.20.7.27, §8.3.2, and §9.3
-- **AND** it lists focused MRL CDF/context/mode-info tests plus the local ac0ej3
+- **AND** it lists focused MRL CDF/context/mode-info tests plus the local decoder mission
   runtime probe
 - **AND** it does not claim decoded frame samples, loop-restoration filtering,
-  output, reference refresh, AVM/dav2d byte equality, or successful ac0ej3
+  output, reference refresh, AVM/dav2d byte equality, or successful local decoder mission
   decode
 
-### Requirement: ac0ej3 CfL chroma-mode support row
+### Requirement: local decoder mission CfL chroma-mode support row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` as a distinct partial ac0ej3 row. The
+`DECODE-CFL-CHROMA-MODE-FRONTIER` as a distinct partial local decoder mission row. The
 row SHALL describe that the minimal runtime consumes supported AV2 §5.20.5.6
 active CfL chroma mode syntax and AV2 §5.20.7.32 CfL alpha syntax while
 remaining fail-closed before CfL prediction, chroma reconstruction, loop
-restoration, 10-bit output, reference refresh, or successful ac0ej3 decode.
+restoration, 10-bit output, reference refresh, or successful local decoder mission decode.
 
 #### Scenario: Matrix evidence records the CfL mode boundary
 
 - **WHEN** decoder support status is validated
-- **THEN** `ac0ej3-cfl-chroma-mode-frontier` appears with Feature ID
-  `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER`
+- **THEN** `cfl-chroma-mode-frontier` appears with Feature ID
+  `DECODE-CFL-CHROMA-MODE-FRONTIER`
 - **AND** the row cites AV2 §5.20.5.6, §5.20.7.32, §8.3.2, and §9.3
-- **AND** it lists focused tests plus the local ac0ej3 runtime probe
+- **AND** it lists focused tests plus the local decoder mission runtime probe
 - **AND** it does not claim CfL prediction, decoded chroma samples, loop
-  restoration filtering, output, reference refresh, or successful ac0ej3 decode
+  restoration filtering, output, reference refresh, or successful local decoder mission decode
 
-### Requirement: ac0ej3 LR live transform-record handoff support row
+### Requirement: local decoder mission LR live transform-record handoff support row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF` as a distinct partial row named
-`ac0ej3-lr-live-transform-record-handoff`. The row SHALL record that the decoder
+`DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF` as a distinct partial row named
+`lr-live-transform-record-handoff`. The row SHALL record that the decoder
 can hand fixed-largest parsed luma transform records into live LR `LrTxSkip`
-storage, and that the local ac0ej3 stream's selectable-transform record parsing
-is now tracked by `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS`.
+storage, and that the local decoder mission stream's selectable-transform record parsing
+is now tracked by `DECODE-SELECTABLE-TRANSFORM-RECORDS`.
 
 #### Scenario: Support matrix lists transform-record handoff frontier
 
 - **WHEN** `cargo xtask check-decoder-support` validates decoder support rows
-- **THEN** `ac0ej3-lr-live-transform-record-handoff` appears with Feature ID
-  `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF`
+- **THEN** `lr-live-transform-record-handoff` appears with Feature ID
+  `DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF`
 - **AND** it remains `partial`
 - **AND** it does not claim decoded frame samples, `FilterClass`,
   `SubclassLookup`, loop-restoration filtering/output, reference refresh,
-  AVM/dav2d byte equality, or successful ac0ej3 decode
+  AVM/dav2d byte equality, or successful local decoder mission decode
 
 ### Requirement: directional UV ordinary branch support row
 
@@ -5440,34 +5440,34 @@ branch and condition handoff rows.
 
 The decoder support model SHALL report the live
 `unsupported_active_wienerns_lr_units` runtime diagnostic under
-`DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` once the runtime has retained
+`DECODE-LR-UNIT-SELECTIONS-FRONTIER` once the runtime has retained
 per-unit Wiener NS LR selection state. The diagnostic SHALL keep active
 `RESTORE_WIENER_NONSEP` units fail-closed before decoded-frame allocation,
 reference retention, hash, raw, Y4M, or any successful output path.
 
-#### Scenario: Local ac0ej3 gate cites selection state
+#### Scenario: Local local decoder mission gate cites selection state
 
-- **WHEN** the local ac0ej3 mission fixture reaches the active Wiener NS LR-unit
+- **WHEN** the local decoder mission fixture reaches the active Wiener NS LR-unit
   runtime gate
 - **THEN** the JSON diagnostic keeps reason
   `unsupported_active_wienerns_lr_units`
-- **AND** it cites matrix row `ac0ej3-lr-unit-selections-frontier`
-- **AND** it cites Feature ID `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER`
+- **AND** it cites matrix row `lr-unit-selections-frontier`
+- **AND** it cites Feature ID `DECODE-LR-UNIT-SELECTIONS-FRONTIER`
 - **AND** it does not claim loop-restoration reconstruction, 10-bit output,
-  reference refresh, raw/Y4M output, or successful ac0ej3 decode
+  reference refresh, raw/Y4M output, or successful local decoder mission decode
 
-### Requirement: ac0ej3 Inactive LR Unit Frontier Support Row
+### Requirement: local decoder mission Inactive LR Unit Frontier Support Row
 The decoder support model SHALL track
-`DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` as a distinct ac0ej3 support row.
+`DECODE-INACTIVE-LR-UNITS-FRONTIER` as a distinct local decoder mission support row.
 The row SHALL describe that the minimal runtime consumes the supported
 frame-level Wiener NS LR-unit syntax, distinguishes `RESTORE_NONE` units from
 active `RESTORE_WIENER_NONSEP` units, and only advances beyond the LR frontier
 when every consumed unit is inactive. The row SHALL NOT claim active
 loop-restoration filtering, 10-bit reconstruction/output, reference refresh,
-raw/Y4M output, or successful ac0ej3 decode.
+raw/Y4M output, or successful local decoder mission decode.
 
 #### Scenario: Inactive LR units advance to the next true frontier
-- **WHEN** the local ac0ej3 key frame consumes supported frame-level Wiener NS
+- **WHEN** the local decoder mission key frame consumes supported frame-level Wiener NS
   LR units and all consumed units select `RESTORE_NONE`
 - **THEN** the runtime does not emit `unsupported_wienerns_lr_unit_syntax`
 - **AND** it either reaches the next structured unsupported diagnostic or a
@@ -5484,51 +5484,51 @@ raw/Y4M output, or successful ac0ej3 decode.
 
 #### Scenario: Matrix evidence records the narrow boundary
 - **WHEN** decoder support status is validated
-- **THEN** `ac0ej3-inactive-lr-units-frontier` remains partial
+- **THEN** `inactive-lr-units-frontier` remains partial
 - **AND** the row lists tests proving inactive LR-unit advancement, active
-  LR-unit rejection, resource-limit preservation, and local ac0ej3 diagnostic
+  LR-unit rejection, resource-limit preservation, and local decoder mission diagnostic
   identity
 
-### Requirement: ac0ej3 LR Source-Bounds Frontier Support Row
+### Requirement: local decoder mission LR Source-Bounds Frontier Support Row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` as a distinct ac0ej3 support row. The
+`DECODE-LR-SOURCE-BOUNDS-FRONTIER` as a distinct local decoder mission support row. The
 row SHALL describe that the minimal runtime consumes supported active
 Wiener NS LR-unit syntax, consumes required §5.20.10.6 per-unit filter syntax,
 retains per-unit selection state, derives active §7.20.1 source-bound facts, and
 still fails closed before
 source-frame reads, loop-restoration filtering, 10-bit output, or successful
-ac0ej3 decode.
+local decoder mission decode.
 
 #### Scenario: Matrix evidence records the source-bounds boundary
 
 - **WHEN** decoder support status is validated
-- **THEN** `ac0ej3-lr-source-bounds-frontier` remains partial
+- **THEN** `lr-source-bounds-frontier` remains partial
 - **AND** the row lists tests proving active source-bound retention and the live
-  ac0ej3 runtime diagnostic
+  local decoder mission runtime diagnostic
 - **AND** the live diagnostic reason is `unsupported_wienerns_lr_source_bounds`
 
-### Requirement: ac0ej3 LR Unit Selection Frontier Support Row
+### Requirement: local decoder mission LR Unit Selection Frontier Support Row
 
 The decoder support model SHALL track
-`DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` as a distinct ac0ej3 support row.
+`DECODE-LR-UNIT-SELECTIONS-FRONTIER` as a distinct local decoder mission support row.
 The row SHALL describe that the minimal runtime's traversal boundary retains
 supported frame-level Wiener NS LR-unit selections, including plane, unit row,
 unit column, and active/inactive state. The row SHALL NOT claim active
 loop-restoration filtering, 10-bit reconstruction/output, reference refresh,
-raw/Y4M output, or successful ac0ej3 decode.
+raw/Y4M output, or successful local decoder mission decode.
 
 #### Scenario: Matrix evidence records the narrow selection boundary
 
 - **WHEN** decoder support status is validated
-- **THEN** `ac0ej3-lr-unit-selections-frontier` remains partial
+- **THEN** `lr-unit-selections-frontier` remains partial
 - **AND** the row lists tests proving inactive, active, and multi-unit selection
   retention
-- **AND** the live ac0ej3 runtime diagnostic remains fail-closed before output
+- **AND** the live local decoder mission runtime diagnostic remains fail-closed before output
 
-### Requirement: ac0ej3 LR Unit Syntax Frontier Support Row
-The decoder support model SHALL track `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`
-as a distinct ac0ej3 support row. The row SHALL describe that the local mission
+### Requirement: local decoder mission LR Unit Syntax Frontier Support Row
+The decoder support model SHALL track `DECODE-LR-UNIT-SYNTAX-FRONTIER`
+as a distinct local decoder mission support row. The row SHALL describe that the local mission
 stream can parse the frame-level Wiener NS bank and consume the covered
 §5.20.10.4/§5.20.10.5 LR unit `use_wiener_ns` symbols, then fail closed with a
 structured `decode/unsupported-feature` diagnostic before loop-restoration
@@ -5536,43 +5536,43 @@ filtering, 10-bit reconstruction/output, reference retention, hash, raw, or Y4M
 output.
 
 #### Scenario: Diagnostic resolves to support row
-- **WHEN** the minimal runtime reaches the ac0ej3 LR unit syntax frontier
+- **WHEN** the minimal runtime reaches the local decoder mission LR unit syntax frontier
 - **THEN** it emits `decode/unsupported-feature` with reason
   `unsupported_wienerns_lr_unit_syntax`
-- **AND** the diagnostic has matrix row `ac0ej3-lr-unit-syntax-frontier`,
-  Feature ID `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`, and AV2 spec section
+- **AND** the diagnostic has matrix row `lr-unit-syntax-frontier`,
+  Feature ID `DECODE-LR-UNIT-SYNTAX-FRONTIER`, and AV2 spec section
   `5.20.10.4`
 
 #### Scenario: Support row does not claim decode success
 - **WHEN** decoder support status is regenerated
-- **THEN** `ac0ej3-lr-unit-syntax-frontier` remains partial
+- **THEN** `lr-unit-syntax-frontier` remains partial
 - **AND** the row states that it does not implement loop-restoration
   reconstruction/filtering, 10-bit output, reference refresh, or successful
-  ac0ej3 decode
+  local decoder mission decode
 
-### Requirement: Decoder support tracks ac0ej3 Wiener NS frontier
+### Requirement: Decoder support tracks local decoder mission Wiener NS frontier
 
 The decoder support model SHALL include a partial row for
-`DECODE-AC0EJ3-WIENERNS-FRONTIER` named `ac0ej3-wienerns-frontier`. The row
-SHALL describe that the runtime surfaces the current ac0ej3 key-frame header
+`DECODE-WIENERNS-FRONTIER` named `wienerns-frontier`. The row
+SHALL describe that the runtime surfaces the current local decoder mission key-frame header
 coverage stop at AV2 5.18.7.11, where `lr_params()` reaches
 `read_wienerns_filter()`, while keeping Wiener NS syntax parsing,
-loop-restoration filtering, 10-bit reconstruction/output, and full ac0ej3 decode
+loop-restoration filtering, 10-bit reconstruction/output, and full local decoder mission decode
 out of scope.
 
 #### Scenario: support row validates
 
 - **WHEN** `cargo xtask check-decoder-support` validates the decoder support
   metadata
-- **THEN** the `ac0ej3-wienerns-frontier` row exists with Feature ID
-  `DECODE-AC0EJ3-WIENERNS-FRONTIER`
-- **AND** the row records focused runtime and local ac0ej3 regression tests
+- **THEN** the `wienerns-frontier` row exists with Feature ID
+  `DECODE-WIENERNS-FRONTIER`
+- **AND** the row records focused runtime and local decoder mission regression tests
 
 #### Scenario: generated status remains honest
 
 - **WHEN** decoder support status is generated
 - **THEN** Wiener NS filter-bank decode, loop-restoration reconstruction, 10-bit
-  reconstruction/output, and successful ac0ej3 decode remain partial or
+  reconstruction/output, and successful local decoder mission decode remain partial or
   unsupported until separately implemented and proven
 
 ### Requirement: First inter frame decode frontier support row

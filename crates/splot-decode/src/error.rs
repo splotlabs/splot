@@ -8,8 +8,8 @@ use std::io;
 
 use splot_core::span::ByteOffset;
 
+use crate::bitstream::stream_plan::{DecodeSourceIssue, DecodeUnsupportedStructure};
 use crate::limits::DecodeLimitError;
-use crate::stream_plan::{DecodeSourceIssue, DecodeUnsupportedStructure};
 
 /// An error from the splot decode driver.
 #[derive(Debug, thiserror::Error)]

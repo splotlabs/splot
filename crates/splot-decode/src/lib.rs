@@ -24,27 +24,29 @@
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
-mod byte_stream;
+mod bitstream;
 pub mod context;
 pub mod diagnostic;
 pub mod error;
+mod filters;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing;
 pub mod hash_report;
+mod output;
+mod pipeline;
+mod prediction;
+mod reference;
+mod residual;
 pub mod runtime;
-mod runtime_hash;
-mod runtime_minimal;
-mod runtime_minimal_recon;
-mod runtime_raw;
+mod support;
 #[cfg(test)]
-mod runtime_test_support;
-mod runtime_y4m;
-pub mod stream_plan;
-pub(crate) mod tile_payload;
+mod test_support;
+mod tile;
 mod timing;
 mod trace_flags;
 
+pub use bitstream::stream_plan;
 pub use context::DecodeContext;
 pub use diagnostic::{
     DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeMalformedSourceDetails,

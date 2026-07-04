@@ -41,7 +41,7 @@ same Feature ID and the `module-size-discipline` capability.
     sequence/MFH input views). Not the proposal's `activation`/`inter_control`/
     `shared_tail`, which already live in sibling modules.
   - **`crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs`
-    (DEFER — active ac0ej3 frontier):** when stable, extract `per_block_syntax`
+    (DEFER — active local decoder mission frontier):** when stable, extract `per_block_syntax`
     (`DeltaQState`/`CdefState`, mirroring the existing `ccso.rs`), `tx_partition`
     (the `apply_tx_partition` geometry), and `error` (the error taxonomy) —
     **not** chroma-first (chroma is interleaved inline with the luma walk).

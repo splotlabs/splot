@@ -2,7 +2,7 @@
 
 The inter decoder decodes a multi-block frame but still inside a single 64x64
 superblock (`DECODE-INTER-MVSTACK-SPATIAL`). Real content needs MULTI-SUPERBLOCK
-inter frames: `ac0ej3` is 1920x1080, so decoding more than one 64x64 superblock
+inter frames: `local decoder mission` is 1920x1080, so decoding more than one 64x64 superblock
 is a prerequisite for real-content scale. The AV2 entry point is the § 5.20.2.1
 `decode_tile()` superblock raster loop (already in the shared partition walker)
 plus the frame-wide § 7.11/§ 7.12 `find_mv_stack` grid, so a block in a later

@@ -14,7 +14,7 @@ plane extents; derive `stripeStartY` and `stripeEndY`; select `CurrFrame` for
 samples above or below the current stripe with two-line clamping; and select
 `CdefFrame` for samples inside the current stripe. The selector SHALL NOT read
 frame storage, traverse loop-restoration units, apply Wiener NS or PC-Wiener
-filters, implement GDF/BRU, wire runtime decode, or produce ac0ej3 output.
+filters, implement GDF/BRU, wire runtime decode, or produce local decoder mission output.
 
 #### Scenario: Source selection and clipping match section 7.20.2
 

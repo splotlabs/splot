@@ -39,4 +39,4 @@ entropy decode without importing `splot-recon` into CDF/symbol code.
   of `splot-recon`.
 - Non-goals: no AV2 scan-table derivation, no transform-type computation, no
   coefficient base/BR/sign reads, no `read_quant`, no dequant/inverse transform,
-  no residual add, no `ac0ej3.ivf` stream-planner widening, and no encoder work.
+  no residual add, no `local-decoder-mission.ivf` stream-planner widening, and no encoder work.

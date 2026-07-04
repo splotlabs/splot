@@ -30,7 +30,7 @@ remain intact.
 
 - No AV2 behavior, syntax, CDF, tap-table, rounding, or clamping changes.
 - No assembly, intrinsics, `unsafe`, platform-specific code, or new dependency.
-- No second decoder path and no stream-specific `ac0ej3` special case.
+- No second decoder path and no stream-specific `local decoder mission` special case.
 - No input/prefix planner work unless a later measurement shows it is material;
   current input and planning costs are below 2 ms warmed.
 - No `--threads` semantic change or global Rayon pool.

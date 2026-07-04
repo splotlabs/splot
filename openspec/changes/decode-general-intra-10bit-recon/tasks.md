@@ -37,7 +37,7 @@
       hash, and the multi-superblock frame hash plus its per-superblock luma
       anchors (left 400, right 460).
 - [x] 3.2 Confirm the 8-bit corpus stays byte-identical, the 10-bit CFL fixture
-      still rejects, and `ac0ej3.ivf` still fails closed.
+      still rejects, and `local-decoder-mission.ivf` still fails closed.
 - [x] 3.2a Pin each of the four 10-bit fail-closed reject guards with a
       committed, validator-clean negative fixture and a negative decode test:
       `syn-smooth-intra-64x64-10bit-q80.ivf` → `unsupported_10bit_non_dc_intra`,

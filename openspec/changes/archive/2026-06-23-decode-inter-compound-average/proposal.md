@@ -3,7 +3,7 @@
 The minimal decoder currently rejects inter blocks that choose compound
 references, even when the stream uses the simplest AV2 compound form: two
 available references, equal-weight `COMPOUND_AVERAGE`, no masks, no CWP, no
-optical-flow refinement, and no residual. The ac0ej3 decoder mission needs this
+optical-flow refinement, and no residual. The local decoder mission decoder mission needs this
 brick because real multi-frame streams can require the decoder to average two
 previously retained references rather than selecting only one.
 
@@ -55,5 +55,5 @@ previously retained references rather than selecting only one.
   neighbour-derived compound contexts, non-zero compound MVs, residual compound
   blocks, masked/difference-weighted/inter-intra compound, CWP, implicit masked
   blend, optical-flow refinement, TIP, temporal MV, warped motion, cross-frame
-  CDF save/load, and any ac0ej3-wide decode claim beyond the committed
+  CDF save/load, and any wide decode claim beyond the committed
   fixture-proven subset.

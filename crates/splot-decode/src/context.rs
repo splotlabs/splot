@@ -10,15 +10,15 @@ use splot_parallel::{ThreadCount, WorkerPool};
 
 use crate::DecodeHashReport;
 use crate::DecodeOptions;
-use crate::byte_stream::plan_byte_stream;
-use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
-use crate::runtime::DecodeRuntimeConfig;
-use crate::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
-use crate::tile_payload::{
+use crate::bitstream::byte_stream::plan_byte_stream;
+use crate::bitstream::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
+use crate::bitstream::tile_payload::{
     DecodeTilePayloadPlan, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
     TilePayloadBoundaryError, TilePayloadBoundaryInput, plan_derived_tile_payload_boundary,
     plan_tile_payload_boundary,
 };
+use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
+use crate::runtime::DecodeRuntimeConfig;
 
 /// A decode context.
 ///
@@ -99,7 +99,7 @@ impl DecodeContext {
         crate::timing::report("plan", plan_started);
         let runtime_started = crate::timing::start();
         let report = self.pool.install(|| {
-            crate::runtime_hash::decode_hash_report_from_plan(
+            crate::output::hash::decode_hash_report_from_plan(
                 bytes,
                 &options,
                 &plan,
@@ -133,7 +133,7 @@ impl DecodeContext {
         crate::timing::report("plan", plan_started);
         let raw = self
             .pool
-            .install(|| crate::runtime_raw::encode_raw_stream_from_plan(bytes, &options, &plan))?;
+            .install(|| crate::output::raw::encode_raw_stream_from_plan(bytes, &options, &plan))?;
         std::io::Write::write_all(&mut writer, &raw).map_err(|source| {
             DecodeOutputError::io(DecodeOutputOperation::WriteRawStream, source)
         })?;
@@ -161,7 +161,7 @@ impl DecodeContext {
         let plan = self.plan_bytes(bytes, options)?;
         let y4m = self
             .pool
-            .install(|| crate::runtime_y4m::encode_y4m_stream_from_plan(bytes, &options, &plan))?;
+            .install(|| crate::output::y4m::encode_y4m_stream_from_plan(bytes, &options, &plan))?;
         std::io::Write::write_all(&mut writer, &y4m).map_err(|source| {
             DecodeOutputError::io(DecodeOutputOperation::WriteY4mStream, source)
         })?;

@@ -2,7 +2,7 @@
 
 ## Why
 
-Coded frame 2 of the `ac0ej3` mission stream parsed end-to-end after the
+Coded frame 2 of the local decoder mission stream parsed end-to-end after the
 b04 batch but reconstructed 41% dirty: both WARPMV consumers used an
 identity warp base because the § 7.12.2 Warp Reference List
 (`WarpParamStack`) and the § 5.20.2.2 warp parameter bank did not exist,

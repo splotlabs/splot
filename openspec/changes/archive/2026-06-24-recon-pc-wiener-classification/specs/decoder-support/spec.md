@@ -9,7 +9,7 @@ supported over caller-resolved source samples, caller-resolved `LrTxSkip` values
 active bit depth, and `base_q_idx`. It SHALL record that full §7.20 traversal,
 §7.20.2 frame reads, runtime `FilterClass` grid storage, `SubclassLookup`
 derivation, §7.20.3 filter invocation, runtime decode wiring, 10-bit output,
-reference refresh, and successful ac0ej3 decode remain unsupported or partial
+reference refresh, and successful local decoder mission decode remain unsupported or partial
 until separately proven.
 
 #### Scenario: Matrix records narrow PC-Wiener progress
@@ -22,4 +22,4 @@ until separately proven.
   focused `splot-recon` tests
 - **AND** it does not claim runtime loop-restoration wiring, `FilterClass` grid
   retention, §7.20.3 filtering invocation, 10-bit output, reference refresh, or
-  successful ac0ej3 decode
+  successful local decoder mission decode

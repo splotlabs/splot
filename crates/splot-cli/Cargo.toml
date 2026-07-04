@@ -38,5 +38,5 @@ tracing-subscriber.workspace = true
 toml.workspace = true
 # Golden snapshot tests of the `splot inspect --json` output (CONF-INSPECT-SNAPSHOTS).
 insta.workspace = true
-# Streaming per-frame digests for the ignored ac0ej3 AVM full-stream compare harness.
+# Streaming per-frame digests for the ignored local decoder mission AVM full-stream compare harness.
 sha2.workspace = true

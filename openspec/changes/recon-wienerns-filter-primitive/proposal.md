@@ -1,6 +1,6 @@
 ## Why
 
-The current ac0ej3 decoder frontier is the parsed frame-level Wiener NS bank: the
+The current local decoder mission decoder frontier is the parsed frame-level Wiener NS bank: the
 runtime correctly rejects because loop-restoration reconstruction is not applied.
 Before that gate can move safely, `splot-recon` needs a small, source-backed
 primitive for the AV2 section 7.20.3 non-separable Wiener sample math.
@@ -28,7 +28,7 @@ primitive for the AV2 section 7.20.3 non-separable Wiener sample math.
 
 - `decoder-support`: Track `RECON-WIENERNS-FILTER-PRIMITIVE` as partial
   loop-restoration reconstruction progress without claiming full loop
-  restoration, ac0ej3 decode, or runtime wiring.
+  restoration, local decoder mission decode, or runtime wiring.
 
 ## Impact
 
@@ -37,4 +37,4 @@ primitive for the AV2 section 7.20.3 non-separable Wiener sample math.
 - Public API: one additive `splot-recon` primitive and parameter type.
 - Dependencies: no new dependencies and no dependency graph changes.
 - Runtime behavior: no decode output change in this brick; the minimal runtime
-  still rejects ac0ej3 with `unsupported_wienerns_filter_bank`.
+  still rejects local decoder mission with `unsupported_wienerns_filter_bank`.

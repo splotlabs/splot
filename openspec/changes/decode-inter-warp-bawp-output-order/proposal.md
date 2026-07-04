@@ -1,6 +1,6 @@
 ## Why
 
-Coded frame 2 of the `ac0ej3` mission stream deferred at its first
+Coded frame 2 of the local decoder mission stream deferred at its first
 EXTENDWARP block, and behind it sat the LOCALWARP half of the same warp
 dependency chain, a BAWP block, small-block/invalid-shear warp geometry,
 and the remaining per-unit intra arms. Independently, the decoder

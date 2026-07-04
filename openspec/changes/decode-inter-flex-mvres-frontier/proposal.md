@@ -1,15 +1,15 @@
 ## Why
 
-The `ac0ej3` full-stream mission requires decoding real AVM-encoded inter
+The `local decoder mission` full-stream mission requires decoding real AVM-encoded inter
 frames. Every such stream sets `enable_flex_mvres = 1` (AVM's default), and the
 inter frontier rejected the whole stream on that single sequence flag — `splot
-decode ac0ej3.ivf` emitted ZERO output frames even for `--limit=1`, because
+decode local-decoder-mission.ivf` emitted ZERO output frames even for `--limit=1`, because
 output frame 0 is triggered by an immediate-output inter frame in the first
 temporal unit. Two further entropy desyncs sat behind the gate: the § 8.3.2
 neighbour contexts for `is_inter`/`skip_flag`/`use_amvd`/`comp_mode`/
 `single_ref` were derived from the superblock-row-restricted `NPos` list where
 the spec uses the unrestricted `NPosBuf` (first divergent symbol: `skip_txfm`
-at MI(32,0) of ac0ej3 frame 1), and the § 5.20.7.14 `read_motion_mode`
+at MI(32,0) of local decoder mission frame 1), and the § 5.20.7.14 `read_motion_mode`
 SIMPLE-path `inter_intra` flag was never read (desyncing every interintra-
 enabled frame with 8x8..=64x64 single-reference blocks).
 
@@ -33,16 +33,16 @@ enabled frame with 8x8..=64x64 single-reference blocks).
 - Drop `enable_flex_mvres` from the inter frame-tools gate.
 - Split the § 5.20.7.23 inter residual reads into
   `runtime_minimal/inter/block/residual.rs` (source-line allowance headroom).
-- Add the ignored `ac0ej3_full_stream_avm_compare` harness (env-driven avmdec
+- Add the ignored `local_decoder_mission_full_stream_avm_compare` harness (env-driven avmdec
   byte-compare with per-frame digests and first-mismatch coordinates).
 
 ## Impact
 
 - `syn-2frame-inter-64x64-10bit.ivf` and `syn-grid-inter-128x128-q80.ivf` now
   decode byte-identical to `avmdec --i420 --rawvideo` (hash-pinned tests);
-  `ac0ej3.ivf --limit=1` reproduces the AVM frame-0 sentinel
+  `local-decoder-mission.ivf --limit=1` reproduces the AVM frame-0 sentinel
   `974f3db7f82ae57168fb38b83922ed7d` through the production CLI.
-- The ac0ej3 frontier moves from byte 8307 (zero output) to byte 8345: the
+- The local decoder mission frontier moves from byte 8307 (zero output) to byte 8345: the
   first inter frame with the in-loop filter chain enabled (deblock/CDEF/LR/
   CCSO + tx_mode Select), the next mission family.
 - Touches `splot-decode` (inter runtime, CDF wiring), `splot-core` (public
