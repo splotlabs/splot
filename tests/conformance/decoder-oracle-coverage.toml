@@ -1,0 +1,519 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+#
+# Decoder-oracle capability taxonomy (CONF-AVM-DECODE-ORACLE). The decoder-relevant
+# AV2 v1.0.0 capabilities the corpus is measured against; every fixture 
+# id must exist here.  => not producible by the local AVM
+# synthetic corpus (reported as not_fixtureable_with_avm_encoder). Generated report:
+# docs/decoder/DECODER-ORACLE-COVERAGE.md.
+
+schema_version = 1
+
+[[capability]]
+id = "container.annexb_obu"
+name = "Annex B length-delimited OBU stream"
+category = "container"
+fixtureable = false
+spec_sections = ["Annex B.2", "Annex B.3", "5.2.1"]
+notes = "AVM emits IVF, not standalone Annex-B; raw-OBU path is covered by tests/fixtures/*.av2 + parse_obu fuzz."
+
+[[capability]]
+id = "container.ivf"
+name = "IVF container demux"
+category = "container"
+fixtureable = true
+spec_sections = ["Annex B.2", "Annex B.3"]
+
+[[capability]]
+id = "obu.frame_header"
+name = "Frame header OBU / general frame header"
+category = "obu"
+fixtureable = true
+spec_sections = ["5.18", "5.18.1", "5.18.2", "6.17"]
+
+[[capability]]
+id = "obu.operating_point_set"
+name = "Operating point set OBU"
+category = "obu"
+fixtureable = true
+spec_sections = ["5.10", "6.10", "7.3.8.5"]
+
+[[capability]]
+id = "obu.quantizer_matrix"
+name = "Quantizer matrix OBU (in-band QM)"
+category = "obu"
+fixtureable = false
+spec_sections = ["5.13", "6.12", "7.3.8.9"]
+notes = "AVM --enable-qm references an external-HLS QM level with no in-band QM OBU."
+
+[[capability]]
+id = "obu.sequence_header"
+name = "Sequence header OBU"
+category = "obu"
+fixtureable = true
+spec_sections = ["5.4", "5.4.1", "6.4.1"]
+
+[[capability]]
+id = "obu.temporal_delimiter"
+name = "Temporal delimiter OBU"
+category = "obu"
+fixtureable = true
+spec_sections = ["5.5", "6.5"]
+
+[[capability]]
+id = "obu.tile_group"
+name = "Tile group OBU / payload"
+category = "obu"
+fixtureable = true
+spec_sections = ["5.19", "5.20", "6.18", "6.19"]
+
+[[capability]]
+id = "seq.bit_depth.10"
+name = "10-bit sequence"
+category = "sequence"
+fixtureable = true
+spec_sections = ["6.4.1"]
+
+[[capability]]
+id = "seq.bit_depth.12"
+name = "12-bit sequence"
+category = "sequence"
+fixtureable = false
+spec_sections = ["6.4.1"]
+notes = "AV2 v1.0.0 Annex A profiles are 10-bit; AVM emits 12-bit only via a non-spec TEST_ONLY_12BIT_PROFILE, which splot rejects (bit-depth-out-of-range). No conforman"
+
+[[capability]]
+id = "seq.bit_depth.8"
+name = "8-bit sequence"
+category = "sequence"
+fixtureable = true
+spec_sections = ["6.4.1"]
+
+[[capability]]
+id = "seq.chroma.420"
+name = "4:2:0 chroma subsampling"
+category = "sequence"
+fixtureable = true
+spec_sections = ["5.4.5", "6.4.5"]
+
+[[capability]]
+id = "seq.chroma.422"
+name = "4:2:2 chroma subsampling"
+category = "sequence"
+fixtureable = true
+spec_sections = ["5.4.5", "6.4.5"]
+
+[[capability]]
+id = "seq.chroma.444"
+name = "4:4:4 chroma subsampling"
+category = "sequence"
+fixtureable = true
+spec_sections = ["5.4.5", "6.4.5"]
+
+[[capability]]
+id = "seq.chroma.monochrome"
+name = "Monochrome (4:0:0)"
+category = "sequence"
+fixtureable = true
+spec_sections = ["6.4.1", "6.4.5"]
+
+[[capability]]
+id = "seq.layers.multi_or_operating_point"
+name = "Multi-layer / operating-point selection"
+category = "sequence"
+fixtureable = true
+spec_sections = ["5.10", "5.8", "6.10", "7.3.8.5"]
+
+[[capability]]
+id = "seq.layers.single"
+name = "Single-layer / single operating point"
+category = "sequence"
+fixtureable = true
+spec_sections = ["6.2.2", "7.3.8.6"]
+
+[[capability]]
+id = "frame.inter"
+name = "Inter (P/B) frame"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.20.7.1", "7.13.3", "6.19.7.1"]
+
+[[capability]]
+id = "frame.key_closed_loop"
+name = "Closed-loop key (intra) frame"
+category = "frame"
+fixtureable = true
+spec_sections = ["7.4.3", "5.18.2"]
+
+[[capability]]
+id = "frame.multi_frame"
+name = "Multi-frame temporal sequence"
+category = "frame"
+fixtureable = true
+spec_sections = ["7.3.7", "5.18.2"]
+
+[[capability]]
+id = "frame.reference_refresh"
+name = "Reference frame refresh / retention"
+category = "frame"
+fixtureable = true
+spec_sections = ["7.20", "7.23"]
+
+[[capability]]
+id = "frame.show_existing"
+name = "Show-existing / hidden-ref output ordering"
+category = "frame"
+fixtureable = true
+spec_sections = ["7.21.3", "7.21.4", "7.21.6"]
+
+[[capability]]
+id = "tile.multiple"
+name = "Multiple tiles per frame"
+category = "tile"
+fixtureable = true
+spec_sections = ["5.18.7.2", "5.18.7.3", "6.17.7.2"]
+
+[[capability]]
+id = "tile.single"
+name = "Single-tile frame"
+category = "tile"
+fixtureable = true
+spec_sections = ["5.18.7.2", "6.17.7.2"]
+
+[[capability]]
+id = "partition.rectangular"
+name = "Rectangular PARTITION_HORZ / PARTITION_VERT"
+category = "partition"
+fixtureable = true
+spec_sections = ["5.20.3.1", "5.20.3.2", "9.2"]
+
+[[capability]]
+id = "partition.recursive"
+name = "Recursive multi-level partition tree"
+category = "partition"
+fixtureable = true
+spec_sections = ["5.20.3.1", "5.20.4.1"]
+
+[[capability]]
+id = "partition.square"
+name = "Square PARTITION_NONE / PARTITION_SPLIT"
+category = "partition"
+fixtureable = true
+spec_sections = ["5.20.3.1", "5.20.3.2", "6.19.3"]
+
+[[capability]]
+id = "intra.cfl"
+name = "Chroma-from-luma (CfL) intra prediction"
+category = "intra"
+fixtureable = true
+spec_sections = ["5.20.5.6", "5.20.7.32", "7.13.5"]
+
+[[capability]]
+id = "intra.dc"
+name = "DC intra prediction"
+category = "intra"
+fixtureable = true
+spec_sections = ["5.20.5.3", "7.13.2.10", "7.13.2.11"]
+
+[[capability]]
+id = "intra.dip"
+name = "Data-driven intra prediction (DIP)"
+category = "intra"
+fixtureable = false
+spec_sections = ["5.20.7.9", "7.13.2.3", "7.13.2.4"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+
+[[capability]]
+id = "intra.directional"
+name = "Directional angle intra prediction (D45..D203, IDIF)"
+category = "intra"
+fixtureable = true
+spec_sections = ["7.13.2.7", "7.13.2.8", "9.2"]
+
+[[capability]]
+id = "intra.mhccp"
+name = "MHCCP multi-hypothesis cross-component prediction"
+category = "intra"
+fixtureable = true
+spec_sections = ["7.13.6", "7.13.7"]
+
+[[capability]]
+id = "intra.mrl"
+name = "Multi-reference-line intra prediction"
+category = "intra"
+fixtureable = true
+spec_sections = ["5.20.5.5", "7.13.2.1"]
+
+[[capability]]
+id = "intra.paeth"
+name = "PAETH intra prediction"
+category = "intra"
+fixtureable = false
+spec_sections = ["7.13.2.2"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+
+[[capability]]
+id = "intra.per_unit_prediction"
+name = "Per-transform-unit intra prediction (tx split)"
+category = "intra"
+fixtureable = true
+spec_sections = ["5.20.7.24"]
+
+[[capability]]
+id = "intra.smooth"
+name = "SMOOTH / SMOOTH_V / SMOOTH_H intra prediction"
+category = "intra"
+fixtureable = true
+spec_sections = ["7.13.2.13"]
+
+[[capability]]
+id = "intra.10bit.dc_subset"
+name = "10-bit DC-subset intra reconstruction"
+category = "residual"
+fixtureable = true
+spec_sections = ["6.4.1", "7.13.2.10", "7.14.4"]
+
+[[capability]]
+id = "intra.10bit.non_dc"
+name = "10-bit non-DC intra (SMOOTH/split/frozen-tier)"
+category = "residual"
+fixtureable = true
+spec_sections = ["6.4.1", "7.13.2.13", "7.14.4"]
+
+[[capability]]
+id = "intra.residual.dc_only"
+name = "Intra DC/all-zero residual (skip or single DC coeff)"
+category = "residual"
+fixtureable = true
+spec_sections = ["5.20.7.27", "7.14.4"]
+
+[[capability]]
+id = "intra.residual.nonzero_multiblock"
+name = "Nonzero intra residual over split/multi-block transform tools"
+category = "residual"
+fixtureable = true
+spec_sections = ["5.20.7.27", "5.20.8.2", "5.20.8.3"]
+
+[[capability]]
+id = "inter.compound"
+name = "Compound / dual-reference inter prediction"
+category = "inter"
+fixtureable = true
+spec_sections = ["5.20.7.11", "5.20.7.16", "7.13.3.16"]
+
+[[capability]]
+id = "inter.inter_intra"
+name = "Inter-intra combined prediction"
+category = "inter"
+fixtureable = true
+spec_sections = ["5.20.7.14", "5.20.7.15", "7.13.3.29"]
+
+[[capability]]
+id = "inter.intrabc"
+name = "Intra block copy (IntraBC)"
+category = "inter"
+fixtureable = false
+spec_sections = ["5.18.3.4", "5.20.5.4", "7.13.3.18"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+
+[[capability]]
+id = "inter.mv_prediction_spatial"
+name = "Spatial MV-stack prediction (find_mv_stack / DRL)"
+category = "inter"
+fixtureable = true
+spec_sections = ["7.11.2", "7.12.2", "5.20.7.8"]
+
+[[capability]]
+id = "inter.residual_dct"
+name = "Inter residual (DCT_DCT coded residual)"
+category = "inter"
+fixtureable = true
+spec_sections = ["5.20.7.27", "5.20.8.3", "7.14.4", "7.15.4"]
+
+[[capability]]
+id = "inter.single_ref"
+name = "Single-reference inter block"
+category = "inter"
+fixtureable = true
+spec_sections = ["5.20.7.6", "5.20.7.12", "7.13.3.18"]
+
+[[capability]]
+id = "inter.subpel_mc"
+name = "Sub-pel motion compensation (interp filter)"
+category = "inter"
+fixtureable = true
+spec_sections = ["5.20.7.20", "7.13.3.16", "7.13.3.18"]
+
+[[capability]]
+id = "inter.tip"
+name = "Temporal interpolated prediction (TIP)"
+category = "inter"
+fixtureable = false
+spec_sections = ["7.10", "7.13.3.2"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+
+[[capability]]
+id = "inter.warp"
+name = "Warped / global motion prediction"
+category = "inter"
+fixtureable = true
+spec_sections = ["5.20.7.7", "7.13.3.19", "7.13.3.23"]
+
+[[capability]]
+id = "transform.dct_adst"
+name = "DCT/ADST/FDST separable transforms"
+category = "transform"
+fixtureable = true
+spec_sections = ["7.15.2.1", "7.15.4", "9.6"]
+
+[[capability]]
+id = "transform.idtx_fsc"
+name = "Identity transform / forward-skip coding (FSC)"
+category = "transform"
+fixtureable = true
+spec_sections = ["7.15.2.3", "5.20.7.30"]
+
+[[capability]]
+id = "transform.secondary_ist"
+name = "Secondary (intra) transform IST"
+category = "transform"
+fixtureable = true
+spec_sections = ["7.15.3", "5.20.7.29"]
+
+[[capability]]
+id = "transform.tx_split"
+name = "Transform-unit split within a block"
+category = "transform"
+fixtureable = true
+spec_sections = ["5.20.6.3", "5.20.7.24"]
+
+[[capability]]
+id = "coeff.all_zero"
+name = "All-zero (skipped) transform block"
+category = "coeff"
+fixtureable = true
+spec_sections = ["5.20.7.27"]
+
+[[capability]]
+id = "coeff.nonzero_ordinary"
+name = "Nonzero ordinary (non-TCQ) coefficient decode"
+category = "coeff"
+fixtureable = true
+spec_sections = ["5.20.7.27", "5.20.7.28", "8.3.2"]
+
+[[capability]]
+id = "coeff.parity_hiding"
+name = "Coefficient parity hiding"
+category = "coeff"
+fixtureable = true
+spec_sections = ["5.20.7.27", "5.20.7.28"]
+
+[[capability]]
+id = "coeff.tcq"
+name = "Trellis-coded quantization (TCQ) coefficient decode"
+category = "coeff"
+fixtureable = false
+spec_sections = ["5.20.7.27", "5.20.7.28"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+
+[[capability]]
+id = "quant.base_q"
+name = "Base quantizer index (frame-level)"
+category = "quant"
+fixtureable = true
+spec_sections = ["5.18.6.1", "6.17.6.1", "7.14.2"]
+
+[[capability]]
+id = "quant.delta_q"
+name = "Per-block delta-Q"
+category = "quant"
+fixtureable = false
+spec_sections = ["5.18.7.8", "5.20.5.11", "6.17.7.4"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+
+[[capability]]
+id = "quant.qm"
+name = "Quantizer matrix weighting (using_qmatrix)"
+category = "quant"
+fixtureable = true
+spec_sections = ["5.18.6.2", "6.17.6.2", "7.14.4", "9.4"]
+
+[[capability]]
+id = "loop.ccso"
+name = "CCSO (cross-component sample offset)"
+category = "loop_filter"
+fixtureable = true
+spec_sections = ["7.19", "5.18.7.12", "5.20.10.2"]
+
+[[capability]]
+id = "loop.cdef"
+name = "CDEF (constrained directional enhancement)"
+category = "loop_filter"
+fixtureable = true
+spec_sections = ["7.18", "7.18.1", "7.18.2", "7.18.3", "5.20.10.1"]
+
+[[capability]]
+id = "loop.deblock"
+name = "Deblocking filter"
+category = "loop_filter"
+fixtureable = true
+spec_sections = ["7.17", "7.17.2", "7.17.7"]
+
+[[capability]]
+id = "loop.gdf"
+name = "Guided detail filter (GDF)"
+category = "loop_filter"
+fixtureable = true
+spec_sections = ["7.20.5", "5.18.7.9", "5.20.10.3"]
+
+[[capability]]
+id = "loop.loop_restoration"
+name = "Loop restoration (Wiener / SGR-proj)"
+category = "loop_filter"
+fixtureable = false
+spec_sections = ["7.20", "5.20.10.4", "5.20.10.5"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+
+[[capability]]
+id = "loop.pc_wiener"
+name = "Pixel-classified Wiener loop restoration"
+category = "loop_filter"
+fixtureable = true
+spec_sections = ["7.20.4", "9.8"]
+
+[[capability]]
+id = "loop.wienerns"
+name = "Non-separable Wiener loop restoration"
+category = "loop_filter"
+fixtureable = true
+spec_sections = ["7.20.3", "5.20.10.6"]
+
+[[capability]]
+id = "film_grain.present"
+name = "Film grain synthesis"
+category = "film_grain"
+fixtureable = true
+spec_sections = ["5.14", "7.21.7"]
+
+[[capability]]
+id = "metadata.decoded_frame_hash"
+name = "Decoded frame hash metadata"
+category = "metadata"
+fixtureable = false
+spec_sections = ["5.17.12", "6.16.13"]
+notes = "No avmenc flag emits an in-band decoded-frame-hash metadata OBU."
+
+[[capability]]
+id = "metadata.other"
+name = "Other metadata OBUs (HDR/ITU-T T.35/timecode/etc.)"
+category = "metadata"
+fixtureable = false
+spec_sections = ["5.17", "6.16"]
+notes = "avmenc CICP/HDR flags set sequence fields, not standalone metadata OBUs."
+
+[[capability]]
+id = "output.raw_i420"
+name = "Raw I420 planar output"
+category = "output"
+fixtureable = true
+spec_sections = ["7.21.1", "7.21.2", "7.21.6"]

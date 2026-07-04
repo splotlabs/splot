@@ -83,7 +83,11 @@
 5. **Conformance vectors** — from AOMedia. Planned, once vectors are available
    (see [CONFORMANCE.md](./CONFORMANCE.md)).
 6. **Differential testing against AVM** — the reference software is the oracle.
-   Planned (directions and harness plan in [CONFORMANCE.md](./CONFORMANCE.md)).
+   A committed decode-output oracle differential (`CONF-AVM-DECODE-ORACLE`)
+   already runs in CI via `crates/splot-cli/tests/decoder_oracle.rs`, with no
+   AVM invocation — see [`docs/decoder/AVM-FIXTURE-CORPUS.md`](./decoder/AVM-FIXTURE-CORPUS.md).
+   The *live* `avm encode -> splot validate` harness is still planned
+   (directions in [CONFORMANCE.md](./CONFORMANCE.md)).
 
 ## Commands
 

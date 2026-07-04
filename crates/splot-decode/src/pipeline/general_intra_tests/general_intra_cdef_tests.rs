@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use super::{assert_decode_rejects, decode_general_intra_luma};
+use super::decode_general_intra_luma;
 use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize};
 
 struct CdefCase {
@@ -15,7 +15,6 @@ struct CdefCase {
 
 enum CdefExpectation {
     Hash(&'static str),
-    Unsupported(&'static str),
 }
 
 const CDEF_Q130_FIXTURE: &[u8] = include_bytes!(
@@ -48,7 +47,9 @@ fn cdef_active_intra_frame_decodes_to_oracle() {
         },
         CdefCase {
             fixture: CDEF_DEBLOCK_Q100_FIXTURE,
-            expected: CdefExpectation::Unsupported("general_intra_transform_tool_residual"),
+            expected: CdefExpectation::Hash(
+                "2915c2a65660fa1ff35c965f16e1c59d629ffc279539bfe9f502f7a03de2d23d",
+            ),
         },
         CdefCase {
             fixture: CDEF_UV_Q170_FIXTURE,
@@ -66,7 +67,6 @@ fn cdef_active_intra_frame_decodes_to_oracle() {
 fn assert_cdef_case(case: &CdefCase) {
     match case.expected {
         CdefExpectation::Hash(hash) => assert_cdef_hash(case.fixture, hash),
-        CdefExpectation::Unsupported(reason) => assert_decode_rejects(case.fixture, reason),
     }
 }
 

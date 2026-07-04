@@ -3,6 +3,18 @@
 
 //! Small helpers shared across `xtask` modules.
 
+use std::path::Path;
+
+use anyhow::{Context as _, Result};
+use serde::de::DeserializeOwned;
+
+/// Reads and parses a TOML file at `path` into `T`, with read/parse context.
+pub(crate) fn load_toml<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))
+}
+
 /// Returns `true` if `s` matches `^[A-Z0-9]+(-[A-Z0-9.]+)+$`.
 pub(crate) fn is_valid_feature_id(s: &str) -> bool {
     let mut parts = s.split('-');

@@ -6521,6 +6521,51 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "CONF-AVM-DECODE-ORACLE"
+name = "AVM decode-output oracle differential"
+category = "conformance"
+kind = "conformance"
+spec_sections = ["6.18", "7.21"]
+sources = ["https://github.com/AOMediaCodec/avm"]
+crate = "xtask"
+module = "xtask/src/decoder_fixtures.rs"
+openspec_change = "decoder-avm-oracle-corpus"
+tracking_issue = ""
+owner = "conformance"
+risk = "high"
+notes = "Committed decode-output differential over the reused CONF-AVM-VALID-STREAMS corpus (tests/conformance/vectors/): tests/conformance/decoder-oracle.toml records, per stream, the AVM decoder raw-output oracle sha256 (avmdec --i420 --rawvideo, visible I420 samples, §6.18) and an expected splot outcome. The committed CI runner (crates/splot-cli/tests/decoder_oracle.rs) decodes each fixture in-process through splot_decode and asserts must_pass (splot decode --output-format raw sha256 equals the recorded oracle) or xfail_splot (fails closed with a recorded decode/unsupported-feature rule id + unsupported reason). AVM is the LOCAL oracle-hash generator only and is never invoked/vendored by the runner, build, or CI; the oracle hashes are committed offline. As of the initial corpus: 47 must_pass, 21 xfail_splot, 0 mismatches (splot matches AVM byte-for-byte or fails closed). tests/conformance/decoder-oracle-coverage.toml is the capability taxonomy; docs/decoder/DECODER-ORACLE-COVERAGE.md is the generated coverage report (cargo xtask decoder-fixtures coverage), and cargo xtask decoder-fixtures verify + the coverage drift check run in cargo xtask ci. xfail_splot fixtures never block CI; an unexpected pass (XPASS) is reported and fails only in strict local mode (SPLOT_DECODER_ORACLE_STRICT_XPASS). Local regeneration tooling lives under tools/decoder-fixtures/. The live avm encode -> splot validate harness stays separate (avm-differential-harness)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
+    "xtask/src/decoder_fixtures.rs::tests",
+]
+commands = [
+    "cargo test -p splot-cli --test decoder_oracle",
+    "cargo xtask decoder-fixtures verify",
+    "cargo xtask decoder-fixtures coverage --check",
+]
+fixtures = [
+    "tests/conformance/decoder-oracle.toml",
+    "tests/conformance/decoder-oracle-coverage.toml",
+    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
+    "tests/conformance/vectors/valid/syn-key-intra-64x64.ivf",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "CONF-PUBLIC-VECTORS"
 name = "Public AV2 vector corpus integration"
 category = "conformance"
@@ -14671,7 +14716,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::smooth_h_split_subblock_reads_decoded_above_right_sibling",
-    "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::smooth_chroma_split_subblock_still_rejects",
+    "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::smooth_chroma_split_subblock_decodes_to_oracle",
     "crates/splot-decode/src/bitstream/tile_payload.rs::block_decoded_state::tests::split_bottom_left_reads_decoded_top_right_sibling",
 ]
 commands = [
@@ -15152,7 +15197,7 @@ tests = [
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::shgrid_multirow_smooth_h_above_right_intra_frame_decodes_to_oracle",
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::vgrid_multirow_smooth_v_above_row_intra_frame_decodes_to_oracle",
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::grid_2d_intra_frame_decodes_to_oracle",
-    "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::smooth_chroma_split_subblock_still_rejects",
+    "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::smooth_chroma_split_subblock_decodes_to_oracle",
 ]
 commands = [
     "cargo test -p splot-decode general_intra --locked",

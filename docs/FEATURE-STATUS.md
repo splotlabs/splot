@@ -2,7 +2,7 @@
 
 Generated from `docs/IMPLEMENTATION-MATRIX.toml` by `cargo xtask feature-status --format markdown`. Do not edit by hand.
 
-Matrix version 1. Last reviewed 2026-06-15. 457 feature(s).
+Matrix version 1. Last reviewed 2026-06-15. 458 feature(s).
 
 Status legend: `done` complete and proven, `partial` in progress, `todo` not started, `pending` waiting on external proof, `blocked` blocked, `exp` experimental, `n/a` not-applicable.
 
@@ -198,6 +198,7 @@ Status legend: `done` complete and proven, `partial` in progress, `todo` not sta
 | `ENC-RATE-CONTROL-V0` | Initial rate control strategy | encoder | encoder-tool | partial | todo | n/a | n/a | n/a | todo | n/a | todo | n/a | `crates/splot-encode/src/context.rs` |
 | `ENC-SPEED-PRESETS` | Encoder speed preset framework | encoder | encoder-api | done | done | n/a | n/a | n/a | n/a | n/a | done | n/a | `crates/splot-encode/src/runtime.rs` |
 | `CONF-AVM-DIFF-HARNESS` | AVM differential testing harness | conformance | conformance | partial | n/a | n/a | n/a | n/a | n/a | n/a | n/a | pending | `xtask/src/conformance.rs` |
+| `CONF-AVM-DECODE-ORACLE` | AVM decode-output oracle differential | conformance | conformance | done | n/a | n/a | n/a | n/a | n/a | done | done | done | `xtask/src/decoder_fixtures.rs` |
 | `CONF-PUBLIC-VECTORS` | Public AV2 vector corpus integration | conformance | conformance | partial | todo | n/a | n/a | n/a | n/a | todo | todo | pending | `xtask/src/main.rs` |
 | `CONF-AVM-PARSER-TRACES` | AVM parser trace comparison | conformance | conformance | todo | todo | n/a | n/a | n/a | n/a | todo | todo | todo | `xtask/src/main.rs` |
 | `CONF-AVM-VALID-STREAMS` | AVM valid stream conformance | conformance | conformance | done | n/a | n/a | done | n/a | n/a | n/a | done | pending | `xtask/src/conformance.rs` |

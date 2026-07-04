@@ -19,6 +19,7 @@ mod comment_density;
 mod concurrency_policy;
 mod conformance;
 mod decoder_conformance_coverage;
+mod decoder_fixtures;
 mod decoder_support;
 mod diagnostic_registry;
 mod dupehound;
@@ -190,6 +191,11 @@ enum Task {
     },
     /// Verify docs/DECODER-SPEC-COVERAGE.md is up to date.
     CheckDecoderConformanceCoverage,
+    /// Decoder-output oracle harness over the committed corpus (CONF-AVM-DECODE-ORACLE; no AVM).
+    DecoderFixtures {
+        #[command(subcommand)]
+        cmd: DecoderFixturesCmd,
+    },
     /// Verify docs/LOCAL-REFERENCE-EVIDENCE.toml is portable metadata.
     CheckReferenceEvidence,
     /// Generate the AV2 § 9 additional tables into `crates/splot-core/src/tables/`.
@@ -241,6 +247,20 @@ enum Task {
         /// Outcome recorded when writing the generated ledger.
         #[arg(long, default_value = "success")]
         outcome: String,
+    },
+}
+
+/// Subcommands of `cargo xtask decoder-fixtures`.
+#[derive(Subcommand, Debug)]
+enum DecoderFixturesCmd {
+    /// Metadata-integrity gate: manifest/taxonomy shape, hashes, feature ids,
+    /// orphan `.ivf` (no decode, no AVM). Wired into `cargo xtask ci`.
+    Verify,
+    /// Generate docs/decoder/DECODER-ORACLE-COVERAGE.md (`--check` verifies drift).
+    Coverage {
+        /// Verify the committed coverage doc is up to date instead of writing.
+        #[arg(long)]
+        check: bool,
     },
 }
 
@@ -301,6 +321,15 @@ fn main() -> Result<()> {
         }
         Task::CheckDecoderConformanceCoverage => {
             decoder_conformance_coverage::run_check_decoder_conformance_coverage(&workspace_root()?)
+        }
+        Task::DecoderFixtures { cmd } => {
+            let root = workspace_root()?;
+            match cmd {
+                DecoderFixturesCmd::Verify => decoder_fixtures::run_verify(&root),
+                DecoderFixturesCmd::Coverage { check } => {
+                    decoder_fixtures::run_coverage(&root, check)
+                }
+            }
         }
         Task::CheckReferenceEvidence => {
             reference_evidence::run_check_reference_evidence(&workspace_root()?)
@@ -375,6 +404,8 @@ fn run_ci() -> Result<()> {
     feature_status::run_check_feature_status(&root)?;
     decoder_support::run_check_decoder_support(&root)?;
     decoder_conformance_coverage::run_check_decoder_conformance_coverage(&root)?;
+    decoder_fixtures::run_verify(&root)?;
+    decoder_fixtures::run_coverage(&root, true)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
     fixtures::check_fixtures(&root)?;
     dupehound::check_duplication(&root)?;
