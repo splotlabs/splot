@@ -47,31 +47,43 @@ def run(cmd):
     return subprocess.run(cmd, capture_output=True, timeout=180)
 
 
-# capability -> avmenc flags over a disable-broad intra base (so a lone enabled tool
-# is what splot rejects, not an earlier gate). Chroma/format jobs set the format.
+def run_checked(cmd):
+    r = run(cmd)
+    if r.returncode != 0:
+        raise SystemExit(f"error: {cmd[0]} failed ({r.returncode}): "
+                         f"{r.stderr.decode(errors='replace')[:200]}")
+    return r
+
+
+# Disable-broad intra base: with these off, a lone enabled tool is what appears in
+# (and is rejected from) the stream. `cpu-used=2` (full-enough RD) is required — a
+# fast encode collapses most tools back to a byte-identical baseline.
 BASE = ["--enable-cfl-intra=0", "--enable-intra-dip=0", "--enable-ibp=0", "--enable-mrls=0",
         "--enable-intra-edge-filter=0", "--enable-sdp=0", "--enable-fsc=0", "--enable-cctx=0",
         "--enable-idtx-intra=0", "--enable-ist=0", "--enable-inter-ist=0", "--enable-mhccp=0",
         "--enable-parity-hiding=0", "--enable-tcq=0", "--enable-restoration=0",
         "--enable-wiener-nonsep=0", "--enable-pc-wiener=0", "--enable-gdf=0"]
-FMT = {  # id: (pix_fmt, size, input_flag, extra_flags, strict)
-    "syn-444-intra-64x64": ("yuv444p", "64x64", "--i444", ["--i444"], False),
-    "syn-422-intra-64x64": ("yuv422p", "64x64", "--i422", ["--i422"], False),
-    "syn-mono-intra-64x64": ("yuv420p", "64x64", "--i420", ["--monochrome"], False),
-    "syn-2tile-intra-128x64": ("yuv420p", "128x64", "--i420", ["--tile-columns=1"], False),
-    "syn-filmgrain-intra-64x64": ("yuv420p", "64x64", "--i420", ["--film-grain-test=1"], False),
-}
-TOOLS = {  # id: enable-flags over BASE (on a shared testsrc2 64x64 source)
-    "syn-fsc-intra-64x64": ["--enable-fsc=1"], "syn-ist-intra-64x64": ["--enable-ist=1"],
-    "syn-mrl-intra-64x64": ["--enable-mrls=1"], "syn-mhccp-intra-64x64": ["--enable-mhccp=1"],
-    "syn-dip-intra-64x64": ["--enable-intra-dip=1"], "syn-tcq-intra-64x64": ["--enable-tcq=1"],
-    "syn-parity-intra-64x64": ["--enable-parity-hiding=1"],
-    "syn-deltaq-intra-64x64": ["--deltaq-mode=1", "--enable-tpl-model=1"],
-    "syn-lr-intra-64x64": ["--enable-restoration=1"],
-    "syn-wienerns-intra-64x64": ["--enable-restoration=1", "--enable-wiener-nonsep=1"],
-    "syn-pcwiener-intra-64x64": ["--enable-restoration=1", "--enable-pc-wiener=1"],
-    "syn-gdf-intra-64x64": ["--enable-gdf=1"],
-}
+
+# The COMPLETE recipe for every committed coverage fixture, deterministic via `-D`.
+# Each row: (id, lavfi_src, pix_fmt, input_flag, avmenc_flags, cpu, qp). Only tool
+# fixtures byte-distinct from a same-content baseline are committed (see the
+# byte-distinctness guard in `cargo xtask decoder-fixtures verify`).
+COVERAGE = [
+    ("syn-444-intra-64x64", "testsrc2=size=64x64:rate=1:duration=1", "yuv444p", "--i444", ["--i444"], "8", "120"),
+    ("syn-422-intra-64x64", "testsrc2=size=64x64:rate=1:duration=1", "yuv422p", "--i422", ["--i422"], "8", "120"),
+    ("syn-mono-intra-64x64", "testsrc2=size=64x64:rate=1:duration=1", "yuv420p", "--i420", ["--monochrome"], "8", "120"),
+    ("syn-2tile-intra-128x64", "testsrc2=size=128x64:rate=1:duration=1", "yuv420p", "--i420", ["--tile-columns=1"], "8", "120"),
+    ("syn-filmgrain-intra-64x64", "color=c=gray:size=64x64:rate=1:duration=1", "yuv420p", "--i420", ["--film-grain-test=1"], "8", "120"),
+    ("syn-fsc-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-fsc=1"], "2", "90"),
+    ("syn-ist-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-ist=1"], "2", "90"),
+    ("syn-mrl-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-mrls=1"], "2", "90"),
+    ("syn-mhccp-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-mhccp=1"], "2", "90"),
+    ("syn-parity-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-parity-hiding=1"], "2", "90"),
+    ("syn-wienerns-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-restoration=1", "--enable-wiener-nonsep=1"], "2", "90"),
+    ("syn-pcwiener-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-restoration=1", "--enable-pc-wiener=1"], "2", "90"),
+    ("syn-gdf-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-gdf=1"], "2", "90"),
+    ("syn-warp-inter-128x128", "testsrc2=size=128x128:rate=1:duration=4", "yuv420p", "--i420", BASE + ["--enable-warped-motion=1", "--enable-global-motion=1"], "2", "90"),
+]
 
 
 def cmd_find(_):
@@ -101,19 +113,14 @@ def cmd_coverage_fixtures(args):
     avmenc = find("avmenc")
     stage = args.stage
     os.makedirs(stage, exist_ok=True)
-    testsrc = os.path.join(stage, "testsrc2-64.y4m")
-    run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=1:duration=1",
-         "-pix_fmt", "yuv420p", testsrc])
-    common = [avmenc, "--codec=av2", "--ivf", "-D", "--cpu-used=8", "--end-usage=q",
-              "--qp=120", "--kf-max-dist=0", "-t", "1"]
-    for fid, (pix, size, inflag, extra, _s) in FMT.items():
-        s = os.path.join(stage, fid + ".y4m")
-        run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"testsrc2=size={size}:rate=1:duration=1",
-             "-pix_fmt", pix, s])
-        run(common + [inflag, *extra, "-o", os.path.join(stage, fid + ".ivf"), s])
-    for fid, flags in TOOLS.items():
-        run(common + ["--i420", *BASE, *flags, "-o", os.path.join(stage, fid + ".ivf"), testsrc])
-    print(f"staged {len(FMT) + len(TOOLS)} coverage fixtures in {stage}")
+    for fid, src, pix, inflag, flags, cpu, qp in COVERAGE:
+        y4m = os.path.join(stage, fid + ".y4m")
+        run_checked(["ffmpeg", "-y", "-f", "lavfi", "-i", src, "-pix_fmt", pix, y4m])
+        run_checked([avmenc, "--codec=av2", "--ivf", "-D", "--cpu-used=" + cpu,
+                     "--end-usage=q", "--qp=" + qp, "--kf-max-dist=0", "-t", "1",
+                     inflag, *flags, "-o", os.path.join(stage, fid + ".ivf"), y4m])
+    print(f"staged {len(COVERAGE)} coverage fixtures in {stage} "
+          f"(move vetted `.ivf` into {os.path.relpath(VALID, REPO)}/ and refresh hashes)")
 
 
 def main():

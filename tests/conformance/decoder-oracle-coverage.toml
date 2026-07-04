@@ -80,7 +80,7 @@ name = "12-bit sequence"
 category = "sequence"
 fixtureable = false
 spec_sections = ["6.4.1"]
-notes = "AV2 v1.0.0 profiles are 10-bit; AVM emits 12-bit only via a non-spec TEST_ONLY_12BIT_PROFILE that splot rejects (bit-depth-out-of-range)."
+notes = "AV2 v1.0.0 Annex A profiles are 10-bit; AVM emits 12-bit only via a non-spec TEST_ONLY_12BIT_PROFILE, which splot rejects (bit-depth-out-of-range). No conforman"
 
 [[capability]]
 id = "seq.bit_depth.8"
@@ -219,8 +219,9 @@ spec_sections = ["5.20.5.3", "7.13.2.10", "7.13.2.11"]
 id = "intra.dip"
 name = "Data-driven intra prediction (DIP)"
 category = "intra"
-fixtureable = true
+fixtureable = false
 spec_sections = ["5.20.7.9", "7.13.2.3", "7.13.2.4"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
 
 [[capability]]
 id = "intra.directional"
@@ -247,8 +248,9 @@ spec_sections = ["5.20.5.5", "7.13.2.1"]
 id = "intra.paeth"
 name = "PAETH intra prediction"
 category = "intra"
-fixtureable = true
+fixtureable = false
 spec_sections = ["7.13.2.2"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
 
 [[capability]]
 id = "intra.per_unit_prediction"
@@ -310,8 +312,9 @@ spec_sections = ["5.20.7.14", "5.20.7.15", "7.13.3.29"]
 id = "inter.intrabc"
 name = "Intra block copy (IntraBC)"
 category = "inter"
-fixtureable = true
+fixtureable = false
 spec_sections = ["5.18.3.4", "5.20.5.4", "7.13.3.18"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
 
 [[capability]]
 id = "inter.mv_prediction_spatial"
@@ -345,8 +348,9 @@ spec_sections = ["5.20.7.20", "7.13.3.16", "7.13.3.18"]
 id = "inter.tip"
 name = "Temporal interpolated prediction (TIP)"
 category = "inter"
-fixtureable = true
+fixtureable = false
 spec_sections = ["7.10", "7.13.3.2"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
 
 [[capability]]
 id = "inter.warp"
@@ -408,8 +412,9 @@ spec_sections = ["5.20.7.27", "5.20.7.28"]
 id = "coeff.tcq"
 name = "Trellis-coded quantization (TCQ) coefficient decode"
 category = "coeff"
-fixtureable = true
+fixtureable = false
 spec_sections = ["5.20.7.27", "5.20.7.28"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
 
 [[capability]]
 id = "quant.base_q"
@@ -422,8 +427,9 @@ spec_sections = ["5.18.6.1", "6.17.6.1", "7.14.2"]
 id = "quant.delta_q"
 name = "Per-block delta-Q"
 category = "quant"
-fixtureable = true
+fixtureable = false
 spec_sections = ["5.18.7.8", "5.20.5.11", "6.17.7.4"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
 
 [[capability]]
 id = "quant.qm"
@@ -464,8 +470,9 @@ spec_sections = ["7.20.5", "5.18.7.9", "5.20.10.3"]
 id = "loop.loop_restoration"
 name = "Loop restoration (Wiener / SGR-proj)"
 category = "loop_filter"
-fixtureable = true
+fixtureable = false
 spec_sections = ["7.20", "5.20.10.4", "5.20.10.5"]
+notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
 
 [[capability]]
 id = "loop.pc_wiener"

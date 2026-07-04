@@ -101,7 +101,16 @@ fn decoder_oracle_corpus_matches_manifest() {
             "xfail_splot" => {
                 saw_xfail = true;
                 match decode_raw(&bytes) {
-                    Ok(_) => xpasses.push(fx.id.clone()),
+                    Ok(raw) => {
+                        assert_eq!(
+                            sha256_hex(&raw),
+                            fx.avm_raw_sha256,
+                            "xfail {} decoded to output that DIFFERS from the AVM oracle: the \
+                             decoder neither failed closed nor matched AVM (non-conforming output)",
+                            fx.id
+                        );
+                        xpasses.push(fx.id.clone());
+                    }
                     Err(error) => {
                         let report = DecodeDiagnosticReport::from_decode_error(&error)
                             .unwrap_or_else(|| panic!("xfail {} non-reportable: {error}", fx.id));

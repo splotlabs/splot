@@ -74,11 +74,26 @@ pub(crate) fn run_verify(root: &Path) -> Result<()> {
 
     let vectors = root.join(&manifest.vectors_dir);
     let mut ids: BTreeSet<&str> = BTreeSet::new();
+    let mut by_bytes: BTreeMap<&str, (&str, BTreeSet<&str>)> = BTreeMap::new();
     let (mut n_pass, mut n_xfail) = (0u32, 0u32);
     for fx in &manifest.fixture {
         if !ids.insert(&fx.id) {
             bail!("duplicate fixture id {}", fx.id);
         }
+        let features: BTreeSet<&str> = fx.features.iter().map(String::as_str).collect();
+        if let Some((other, other_features)) = by_bytes.get(fx.ivf_sha256.as_str())
+            && *other_features != features
+        {
+            bail!(
+                "fixtures {other} and {} are byte-identical but claim different features: a clone \
+                 cannot exercise a distinct tool — regenerate so the tool is in the bytes, or drop \
+                 the unearned feature",
+                fx.id
+            );
+        }
+        by_bytes
+            .entry(fx.ivf_sha256.as_str())
+            .or_insert((&fx.id, features));
         for h in [&fx.ivf_sha256, &fx.avm_raw_sha256] {
             if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
                 bail!("fixture {}: bad sha256 {h:?}", fx.id);
