@@ -98,11 +98,7 @@ pub(crate) fn duplication_budget_report(root: &Path) -> Result<Option<Duplicatio
 }
 
 fn read_budget(root: &Path) -> Result<Budget> {
-    let budget_path = root.join(BUDGET_PATH);
-    let budget_text = std::fs::read_to_string(&budget_path)
-        .with_context(|| format!("failed to read {}", budget_path.display()))?;
-    toml::from_str(&budget_text)
-        .with_context(|| format!("failed to parse {}", budget_path.display()))
+    crate::util::load_toml(&root.join(BUDGET_PATH))
 }
 
 fn scan(root: &Path) -> Result<ScanReport> {

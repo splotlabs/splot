@@ -157,6 +157,15 @@ no committed runner/test/CI path invokes it or requires an AVM checkout.
   reverse direction once an encoder exists. Neither runs in CI; both require the
   maintainer to opt in with a local AVM checkout.
 
+### Decode-output oracle (CONF-AVM-DECODE-ORACLE)
+
+Distinct from `CONF-AVM-DIFF-HARNESS` above: a **committed** decode-output
+differential now exists, reusing the same `tests/conformance/vectors/`
+corpus. It compares `splot decode --output-format raw` output against AVM
+oracle hashes recorded in `tests/conformance/decoder-oracle.toml`, with **no
+AVM in CI** — only the *live* `avm encode -> splot validate` harness remains
+future work. Runner and status model: [`docs/decoder/AVM-FIXTURE-CORPUS.md`](./decoder/AVM-FIXTURE-CORPUS.md).
+
 The decoder local-reference evidence manifest
 ([`docs/LOCAL-REFERENCE-EVIDENCE.toml`](./LOCAL-REFERENCE-EVIDENCE.toml)) is
 separate from `tests/conformance/manifest.toml`. It records portable metadata

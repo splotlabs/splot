@@ -195,7 +195,7 @@ struct CargoArtifactTarget {
 /// rather than reconstructed from a guessed `target/debug/` location, so it is
 /// correct regardless of `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET_DIR` /
 /// `[build] target-dir` configuration and the platform executable suffix.
-fn build_splot_binary(root: &Path) -> Result<PathBuf> {
+pub(crate) fn build_splot_binary(root: &Path) -> Result<PathBuf> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let output = Command::new(&cargo)
         .current_dir(root)
