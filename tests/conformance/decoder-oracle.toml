@@ -427,12 +427,10 @@ matrix_row = "inter-compound-average"
 
 [[fixture]]
 id = "syn-2sb-smchroma-intra-128x64-10bit-q160"
-status = "xfail_splot"
+status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.10bit.non_dc", "intra.dc", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "15b1a73772e7bd554406004b11a0419a73fdaf8d66a17028b3c0ce360eb1ea70"
 avm_raw_sha256 = "dd96ae02ba422d0da6c38f9f748ee06c74d89a5d70170db29550c6916cb5fbaa"
-unsupported_reason = "unsupported_10bit_non_dc_intra"
-matrix_row = "general-intra-frame-frontier"
 
 [[fixture]]
 id = "syn-2tile-intra-128x64"
