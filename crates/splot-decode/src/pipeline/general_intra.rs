@@ -97,10 +97,6 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
             .delta_q_params
             .is_some_and(|delta| !delta.delta_q_present)
         && core
-            .lossless_info
-            .as_ref()
-            .is_some_and(|lossless| !lossless.coded_lossless)
-        && core
             .deblocking_filter_params
             .is_some_and(|filter| filter.df_delta_q == [0; 4])
         && core.gdf_params.is_some_and(|gdf| !gdf.gdf_frame_enable)
