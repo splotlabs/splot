@@ -9,7 +9,6 @@
 - [ ] I ran `git status --short` before editing and preserved user work.
 - [ ] Feature IDs are present in code/docs/tests where relevant.
 - [ ] `docs/IMPLEMENTATION-MATRIX.toml` is updated.
-- [ ] OpenSpec change exists for non-trivial design/behavior changes.
 - [ ] No AV1 OBU assumptions were introduced.
 - [ ] No fabricated AV2 syntax/semantics were introduced.
 - [ ] Diagnostics have stable rule IDs, spec sections, offsets, and messages where applicable.

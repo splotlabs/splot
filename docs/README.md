@@ -31,19 +31,3 @@ cargo xtask decoder-support
 cargo xtask decoder-conformance-coverage
 cargo xtask decoder-fixtures coverage
 ```
-
-## Why This Is Still Above Budget
-
-The literal repository-wide markdown count remains above the target because
-active OpenSpec artifacts are retained as process state required by `AGENTS.md`.
-The retained active paths are:
-
-- `openspec/README.md` and `openspec/changes/README.md` - OpenSpec navigation.
-- `openspec/templates/change/**` - change templates.
-- `openspec/specs/**` - current capability specs.
-- `openspec/changes/<active-change>/**` - active task state until archived or
-  implemented.
-- `.codex/skills/**`, `.claude/**`, and `.github/{prompts,skills}/**` -
-  generated assistant integration entry points.
-
-Completed OpenSpec archive markdown is deleted; git history is the archive.

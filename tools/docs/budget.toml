@@ -1,20 +1,16 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-# Ratchet down when durable docs shrink. Active OpenSpec artifacts are process
-# state; the completed archive is intentionally not an allowed hiding place.
+# Ratchet down when durable docs shrink. Deleted process/assistant markdown must
+# stay deleted; git history is the archive.
 max_manual_markdown_files = 12
 max_manual_markdown_lines = 1800
 
 exclude = [
   "docs/spec/av2/1.0.0/**",
-  "openspec/**",
   "license*",
   "copying*",
   "patents*",
-  ".github/**",
-  ".claude/**",
-  ".codex/**",
   "tests/**",
   "docs/references/THIRD-PARTY-NOTICES.md",
 ]
@@ -23,6 +19,8 @@ allowed_manual_docs = [
   "readme.md",
   "agents.md",
   "claude.md",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+  ".github/copilot-instructions.md",
   "docs/README.md",
   "docs/ARCHITECTURE.md",
   "docs/TESTING.md",
@@ -33,6 +31,11 @@ allowed_manual_docs = [
 
 banned_paths = [
   "docs/archive/**",
+  ".claude/**",
+  ".codex/skills/**",
+  ".github/prompts/**",
+  ".github/skills/**",
+  "openspec/**",
   "openspec/changes/archive/**",
   "docs/old/**",
   "docs/notes/**",

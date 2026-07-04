@@ -391,7 +391,6 @@ fn run_ci() -> Result<()> {
     run_typos()?;
     run_cargo_machete()?;
     run_cargo_deny_offline()?;
-    run_openspec_validate()?;
 
     let root = workspace_root()?;
     check_license_headers(&root)?;
@@ -660,18 +659,6 @@ pub(crate) fn fuzz_targets(root: &Path) -> Result<Vec<String>> {
         );
     }
     Ok(targets)
-}
-
-/// OpenSpec validation over every main spec and active change. Mirrors the CI
-/// workflow's conditional step (CI does not install `openspec`; both gates use
-/// the same run-if-present policy).
-fn run_openspec_validate() -> Result<()> {
-    run_if_present(
-        "openspec",
-        "openspec",
-        &["validate", "--all", "--no-interactive"],
-        "`npm install -g @fission-ai/openspec` (https://github.com/Fission-AI/OpenSpec)",
-    )
 }
 
 /// Checks fuzz-target registration drift, on stable: the CI fuzz-smoke matrix

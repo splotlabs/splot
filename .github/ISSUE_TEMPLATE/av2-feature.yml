@@ -46,7 +46,7 @@ body:
     attributes:
       label: Acceptance criteria
       value: |
-        - [ ] OpenSpec change exists or is not needed.
+        - [ ] Design decision is recorded in the matrix or PR notes when needed.
         - [ ] Matrix row is updated.
         - [ ] Tests/proof are recorded.
         - [ ] cargo xtask check-feature-status passes.

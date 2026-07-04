@@ -248,7 +248,7 @@ pub(crate) struct Feature {
     #[serde(rename = "crate")]
     krate: String,
     module: String,
-    openspec_change: String,
+    change_id: String,
     tracking_issue: String,
     owner: String,
     risk: String,
@@ -1521,7 +1521,7 @@ spec_sections = ["5.2.2"]
 sources = []
 crate = "splot-core"
 module = "crates/splot-core/src/obu.rs"
-openspec_change = ""
+change_id = ""
 tracking_issue = ""
 owner = "core"
 risk = "high"

@@ -143,12 +143,11 @@ jobs:
                are documented, and the docs are accurate, not merely present;
                doc comments cite the spec section for syntax elements.
             9. **Licensing & dependencies** — project source/docs/tests are
-               PolyForm Noncommercial 1.0.0. The only mixed-license exception is
-               MIT OpenSpec-generated assistant integration material in the
-               paths documented by AGENTS.md §9. Any other third-party material,
-               dependency, or crate dependency-graph change needs explicit human
-               sign-off (AGENTS.md §10) — call these out prominently even when
-               otherwise harmless.
+               PolyForm Noncommercial 1.0.0 except for quarantined third-party
+               material listed in `docs/references/THIRD-PARTY-NOTICES.md`.
+               Any other third-party material, dependency, or crate dependency
+               graph change needs explicit human sign-off — call these out
+               prominently even when otherwise harmless.
 
             Be thorough in analysis but high-signal in output. Report each
             issue you are genuinely confident is real as an inline comment,
