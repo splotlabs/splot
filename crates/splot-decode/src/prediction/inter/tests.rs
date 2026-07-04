@@ -1095,14 +1095,8 @@ fn wienerns_header_status_reports_precise_tile_frontier() {
     };
 
     assert_eq!(unsupported.reason(), "unsupported_wienerns_filter");
-    assert_eq!(
-        unsupported.matrix_row(),
-        concat!("ac0", "ej3-", "wienerns-frontier")
-    );
-    assert_eq!(
-        unsupported.feature_id(),
-        concat!("DECODE-", "AC0", "EJ3-", "WIENERNS-FRONTIER")
-    );
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-wienerns-frontier");
+    assert_eq!(unsupported.feature_id(), "DECODE-AC0EJ3-WIENERNS-FRONTIER");
     assert_eq!(unsupported.spec_section(), "5.18.7.11");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
     assert!(
@@ -1120,8 +1114,8 @@ fn parsed_wienerns_bank_reports_next_tile_frontier() {
         "parsed Wiener NS bank frontier",
         UnsupportedFeatureExpectation::at_byte_offset(
             "unsupported_wienerns_lr_source_read",
-            concat!("ac0", "ej3-", "lr-source-read-frontier"),
-            concat!("DECODE-", "AC0", "EJ3-", "LR-SOURCE-READ-FRONTIER"),
+            "ac0ej3-lr-source-read-frontier",
+            "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER",
             "7.20.2",
             ByteOffset::new(74),
             &[
@@ -1291,13 +1285,10 @@ fn wienerns_lr_source_read_frontier_rejects_monochrome_chroma_plane() {
         unsupported.reason(),
         "unsupported_wienerns_lr_source_chroma_plane"
     );
-    assert_eq!(
-        unsupported.matrix_row(),
-        concat!("ac0", "ej3-", "lr-source-read-frontier")
-    );
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-source-read-frontier");
     assert_eq!(
         unsupported.feature_id(),
-        concat!("DECODE-", "AC0", "EJ3-", "LR-SOURCE-READ-FRONTIER")
+        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
     );
     assert_eq!(unsupported.spec_section(), "7.20.2");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
@@ -1323,13 +1314,10 @@ fn wienerns_lr_source_read_frontier_rejects_unsupported_plane_index() {
         panic!("unsupported plane index must be unsupported-feature");
     };
     assert_eq!(unsupported.reason(), "unsupported_wienerns_lr_source_plane");
-    assert_eq!(
-        unsupported.matrix_row(),
-        concat!("ac0", "ej3-", "lr-source-read-frontier")
-    );
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-lr-source-read-frontier");
     assert_eq!(
         unsupported.feature_id(),
-        concat!("DECODE-", "AC0", "EJ3-", "LR-SOURCE-READ-FRONTIER")
+        "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER"
     );
     assert_eq!(unsupported.spec_section(), "7.20.2");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
@@ -1449,13 +1437,10 @@ fn cfl_sequence_tool_rejects_before_tile_decode() {
         panic!("CFL tool gate must be an unsupported-feature error");
     };
     assert_eq!(unsupported.reason(), "unsupported_cfl_intra");
-    assert_eq!(
-        unsupported.matrix_row(),
-        concat!("ac0", "ej3-", "sequence-chroma-frontier")
-    );
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-sequence-chroma-frontier");
     assert_eq!(
         unsupported.feature_id(),
-        concat!("DECODE-", "AC0", "EJ3-", "SEQUENCE-CHROMA-FRONTIER")
+        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER"
     );
     assert_eq!(unsupported.spec_section(), "5.20.5.6");
 }
@@ -1479,13 +1464,10 @@ fn mhccp_sequence_tool_rejects_before_tile_decode() {
         panic!("MHCCP tool gate must be an unsupported-feature error");
     };
     assert_eq!(unsupported.reason(), "unsupported_mhccp");
-    assert_eq!(
-        unsupported.matrix_row(),
-        concat!("ac0", "ej3-", "sequence-chroma-frontier")
-    );
+    assert_eq!(unsupported.matrix_row(), "ac0ej3-sequence-chroma-frontier");
     assert_eq!(
         unsupported.feature_id(),
-        concat!("DECODE-", "AC0", "EJ3-", "SEQUENCE-CHROMA-FRONTIER")
+        "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER"
     );
     assert_eq!(unsupported.spec_section(), "5.20.5.6");
 }

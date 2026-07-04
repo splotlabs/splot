@@ -436,12 +436,12 @@ const CHROMA_ORIGIN_SAMPLE_SUM: u64 = 524_288;
 const CHROMA_ORIGIN_FNV1A64: u64 = 0xa53e_893c_24f1_e325;
 
 fn local_frontier_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var(concat!("SPLOT_", "AC0", "EJ3_", "IVF")) {
+    if let Ok(path) = std::env::var("SPLOT_AC0EJ3_IVF") {
         return Some(PathBuf::from(path));
     }
     std::env::var("HOME")
         .ok()
-        .map(|home| PathBuf::from(home).join(concat!("Documents/SplotLabs/", "ac0", "ej3.ivf")))
+        .map(|home| PathBuf::from(home).join("Documents/SplotLabs/ac0ej3.ivf"))
 }
 
 fn context() -> DecodeContext {
@@ -1387,8 +1387,8 @@ const FULL_FRAME_HEIGHT: usize = 1080;
 /// samples. Panics with a clear message when the file is missing or too short, so a
 /// stale / unregenerated oracle is loud rather than silently mis-comparing.
 fn load_prefilter_oracle_luma() -> Vec<u16> {
-    let path = std::env::var(concat!("SPLOT_", "AC0", "EJ3_", "PREFILTER_YUV"))
-        .unwrap_or_else(|_| "/tmp/pref.yuv".to_string());
+    let path =
+        std::env::var("SPLOT_AC0EJ3_PREFILTER_YUV").unwrap_or_else(|_| "/tmp/pref.yuv".to_string());
     let bytes = std::fs::read(&path).unwrap_or_else(|err| {
         panic!(
             "read AVM pre-filter oracle at {path} (set the legacy AVM pre-filter env var; \
@@ -1423,13 +1423,8 @@ fn load_prefilter_oracle_luma() -> Vec<u16> {
 #[test]
 #[ignore = "diagnostic; provide the AVM pre-filter oracle (/tmp/pref.yuv)"]
 fn frontier_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
-    if std::env::var(concat!("SPLOT_", "AC0", "EJ3_", "FULL_RECON")).is_err() {
-        eprintln!(concat!(
-            "SPLOT_",
-            "AC0",
-            "EJ3_",
-            "FULL_RECON unset; skipping the full-recon differential"
-        ));
+    if std::env::var("SPLOT_AC0EJ3_FULL_RECON").is_err() {
+        eprintln!("SPLOT_AC0EJ3_FULL_RECON unset; skipping the full-recon differential");
         return;
     }
     let sink = reconstruct_frontier_full_recon_sink();

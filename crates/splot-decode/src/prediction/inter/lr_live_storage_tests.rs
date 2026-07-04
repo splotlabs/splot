@@ -266,8 +266,8 @@ fn wienerns_lr_live_storage_allocation_error_reports_unpopulated_boundary() {
         "live storage-allocation frontier",
         UnsupportedFeatureExpectation::at_byte_offset(
             "unsupported_wienerns_lr_live_storage_unpopulated",
-            concat!("ac0", "ej3-", "lr-live-storage-allocation"),
-            concat!("DECODE-", "AC0", "EJ3-", "LR-LIVE-STORAGE-ALLOCATION"),
+            "ac0ej3-lr-live-storage-allocation",
+            "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION",
             "7.20.4",
             ByteOffset::new(74),
             &[
@@ -288,8 +288,8 @@ fn wienerns_lr_tx_mode_select_transform_record_error_reports_handoff_frontier() 
         "tx-mode-select transform frontier",
         UnsupportedFeatureExpectation::at_byte_offset(
             "unsupported_wienerns_lr_tx_mode_select_transform_records",
-            concat!("ac0", "ej3-", "lr-live-transform-record-handoff"),
-            concat!("DECODE-", "AC0", "EJ3-", "LR-LIVE-TRANSFORM-RECORD-HANDOFF"),
+            "ac0ej3-lr-live-transform-record-handoff",
+            "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
             "5.20.6.1",
             ByteOffset::new(74),
             &["TX_MODE_SELECT", "read_tx_size/read_tx_partition"],
@@ -310,11 +310,11 @@ fn wienerns_lr_live_frame_samples_unpopulated_error_reports_handoff_frontier() {
     );
     assert_eq!(
         unsupported.matrix_row(),
-        concat!("ac0", "ej3-", "lr-live-transform-record-handoff")
+        "ac0ej3-lr-live-transform-record-handoff"
     );
     assert_eq!(
         unsupported.feature_id(),
-        concat!("DECODE-", "AC0", "EJ3-", "LR-LIVE-TRANSFORM-RECORD-HANDOFF")
+        "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
     );
     assert_eq!(unsupported.spec_section(), "7.20.4");
     assert!(
