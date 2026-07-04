@@ -206,15 +206,13 @@ mod tests {
         Budget {
             max_manual_markdown_files: 2,
             max_manual_markdown_lines: 8,
-            exclude: vec![
-                "docs/spec/av2/1.0.0/**".to_owned(),
-                "openspec/**".to_owned(),
-                "LICENSE*".to_owned(),
-            ],
+            exclude: vec!["docs/spec/av2/1.0.0/**".to_owned(), "LICENSE*".to_owned()],
             allowed_manual_docs: vec!["README.md".to_owned(), "docs/README.md".to_owned()],
             banned_paths: vec![
+                ".codex/skills/**".to_owned(),
                 "docs/archive/**".to_owned(),
                 "openspec/changes/archive/**".to_owned(),
+                "openspec/**".to_owned(),
                 "docs/**/*roadmap*.md".to_owned(),
             ],
             generated_status_docs: vec!["docs/feature-status.md".to_owned()],
@@ -230,18 +228,18 @@ mod tests {
 
     #[test]
     fn excludes_spec_legal_and_openspec_paths() {
-        let report = evaluate_doc_budget(
-            &budget(),
-            &[
-                entry("README.md", 3),
-                entry("docs/spec/av2/1.0.0/index.md", 1000),
-                entry("openspec/specs/process/spec.md", 1000),
-                entry("LICENSE.md", 1000),
-            ],
-        );
-        assert!(report.problems.is_empty(), "{:?}", report.problems);
-        assert_eq!(report.manual_files, 1);
-        assert_eq!(report.manual_lines, 3);
+        let budget = budget();
+        for path in ["docs/spec/av2/1.0.0/index.md", "LICENSE.md"] {
+            assert!(matches_any(&budget.exclude, path));
+        }
+        assert!(!matches_any(
+            &budget.exclude,
+            "openspec/specs/process/spec.md"
+        ));
+        assert!(matches_any(
+            &budget.banned_paths,
+            "openspec/specs/process/spec.md"
+        ));
     }
 
     #[test]
@@ -282,10 +280,11 @@ mod tests {
                 entry("docs/FEATURE-STATUS.md", 4),
                 entry("docs/ROADMAP.md", 4),
                 entry("docs/archive/old.md", 4),
+                entry(".codex/skills/splot-doc-audit/SKILL.md", 4),
                 entry("openspec/changes/archive/old/proposal.md", 4),
             ],
         );
-        assert!(report.problems.len() >= 4, "{:?}", report.problems);
+        assert!(report.problems.len() >= 5, "{:?}", report.problems);
         assert!(
             report
                 .problems
@@ -298,7 +297,7 @@ mod tests {
                 .iter()
                 .filter(|problem| problem.contains("banned documentation path"))
                 .count()
-                >= 3
+                >= 4
         );
     }
 
@@ -314,6 +313,10 @@ mod tests {
         assert!(matches_pattern(
             "openspec/changes/archive/**",
             "openspec/changes/archive/old/proposal.md"
+        ));
+        assert!(matches_pattern(
+            ".codex/skills/**",
+            ".codex/skills/splot-doc-audit/SKILL.md"
         ));
         assert!(!matches_pattern("docs/archive/**", "docs/ARCHITECTURE.md"));
     }

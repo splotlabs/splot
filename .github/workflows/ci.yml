@@ -129,14 +129,6 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: dupehound check --diff "$BASE_SHA" .
 
-      - name: OpenSpec validation if available
-        run: |
-          if command -v openspec >/dev/null 2>&1; then
-            openspec validate --all --no-interactive
-          else
-            echo "openspec not installed; skipping OpenSpec CLI validation"
-          fi
-
   # Supply-chain policy. The deterministic checks (bans, licenses, sources) gate the
   # merge; the advisory DB is informational because it changes without a repo diff,
   # so a newly published advisory must not retroactively fail an unrelated PR.

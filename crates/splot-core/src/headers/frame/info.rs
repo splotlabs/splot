@@ -995,7 +995,7 @@ fn parse_bridge_inter_path(
 /// the reference decoder. (2) AVM's `setup_frame_size` also reads two `bridge_frame_max_width`/
 /// `_height` fields the § 5.18.2 `FrameIsIntra` `frame_size()` does not — splot follows § 5.18.2
 /// (no frame-size bits) here, a remaining documented divergence. dav2d does not model the
-/// single-picture bridge at all. See `openspec/changes/frame-header-single-picture-bridge-fix`.
+/// single-picture bridge at all; keep it isolated to the frame-header bridge logic.
 fn parse_single_picture_bridge_tail(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
