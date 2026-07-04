@@ -95,6 +95,26 @@ description = "Two-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) with del
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-mrl-largest-intra-128x128.ivf"
+description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with multi-reference-line (MRL) intra enabled and an active MRL directional block; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_unsupported_mrl_mode."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-sdp-intra-128x128.ivf"
+description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with semi-decoupled partitioning (SDP) enabled; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_rect_non_dc_luma (SDP rectangular non-DC luma leaves are unsupported)."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-idtx-intra-128x128.ivf"
+description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with intra identity transform (enable_idtx_intra); validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_transform_tool_residual (non-DCT luma transform tools are unsupported)."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-ist-largest-intra-128x128.ivf"
+description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with intra secondary transform (enable_ist); validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_transform_tool_residual (nonzero secondary transform type is unsupported)."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-2frame-inter-64x64-10bit.ivf"
 description = "Valid two-frame 10-bit 4:2:0 stream (IVF, 64x64; key + inter); validates clean, and the general-intra decoder fails closed with decode/unsupported-feature unsupported_10bit_reference_retention (10-bit reference-frame retention is unsupported)."
 expect = "clean"

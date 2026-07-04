@@ -195,6 +195,13 @@ fixtureable = true
 spec_sections = ["5.20.3.1", "5.20.3.2", "9.2"]
 
 [[capability]]
+id = "partition.sdp"
+name = "Semi-decoupled partitioning (SDP)"
+category = "partition"
+fixtureable = true
+spec_sections = ["5.20.3.1", "5.20.5.3"]
+
+[[capability]]
 id = "partition.recursive"
 name = "Recursive multi-level partition tree"
 category = "partition"
@@ -379,6 +386,13 @@ name = "Identity transform / forward-skip coding (FSC)"
 category = "transform"
 fixtureable = true
 spec_sections = ["7.15.2.3", "5.20.7.30"]
+
+[[capability]]
+id = "transform.idtx_intra"
+name = "Identity transform for intra luma (enable_idtx_intra)"
+category = "transform"
+fixtureable = true
+spec_sections = ["7.15.2.3", "5.20.7.29"]
 
 [[capability]]
 id = "transform.secondary_ist"

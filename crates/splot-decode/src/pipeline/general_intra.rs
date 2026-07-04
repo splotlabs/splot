@@ -42,19 +42,12 @@ pub(crate) fn route_general_minimal_intra(
             && quant.delta_q_v_dc == 0
             && quant.delta_q_v_ac == 0
     }) && sequence.intra.as_ref().is_some_and(|intra| {
-        !intra.enable_dip
-            && !intra.enable_ibp
-            && !intra.enable_mrls
-            && !intra.enable_intra_edge_filter
-    }) && sequence
-        .partition
-        .is_some_and(|partition| !partition.enable_sdp)
+        !intra.enable_dip && !intra.enable_ibp && !intra.enable_intra_edge_filter
+    }) && sequence.partition.is_some()
         && sequence.transform_quant_entropy.is_some_and(|tq| {
             tq.equal_ac_dc_q
                 && !tq.enable_fsc
                 && !tq.enable_cctx
-                && !tq.enable_idtx_intra
-                && !tq.enable_intra_ist
                 && i32::from(tq.base_uv_dc_delta_q) + GENERAL_INTRA_DELTA_DCQUANT_MIN == 0
                 && i32::from(tq.base_uv_ac_delta_q) + GENERAL_INTRA_DELTA_DCQUANT_MIN == 0
         })
