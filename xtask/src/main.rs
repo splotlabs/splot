@@ -253,15 +253,9 @@ enum Task {
 /// Subcommands of `cargo xtask decoder-fixtures`.
 #[derive(Subcommand, Debug)]
 enum DecoderFixturesCmd {
-    /// Metadata-integrity gate: manifest/taxonomy shape, hashes, size limits,
+    /// Metadata-integrity gate: manifest/taxonomy shape, hashes, feature ids,
     /// orphan `.ivf` (no decode, no AVM). Wired into `cargo xtask ci`.
     Verify,
-    /// Decode each fixture with the built `splot` binary and print PASS/XFAIL/XPASS.
-    Report {
-        /// Fail if any `xfail_splot` fixture now decodes (XPASS).
-        #[arg(long)]
-        strict_xpass: bool,
-    },
     /// Generate docs/decoder/DECODER-ORACLE-COVERAGE.md (`--check` verifies drift).
     Coverage {
         /// Verify the committed coverage doc is up to date instead of writing.
@@ -332,9 +326,6 @@ fn main() -> Result<()> {
             let root = workspace_root()?;
             match cmd {
                 DecoderFixturesCmd::Verify => decoder_fixtures::run_verify(&root),
-                DecoderFixturesCmd::Report { strict_xpass } => {
-                    decoder_fixtures::run_report(&root, strict_xpass)
-                }
                 DecoderFixturesCmd::Coverage { check } => {
                     decoder_fixtures::run_coverage(&root, check)
                 }
