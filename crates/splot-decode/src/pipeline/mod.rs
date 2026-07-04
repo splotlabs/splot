@@ -16,16 +16,14 @@ use splot_core::headers::sequence::{
 use splot_core::ivf::{IvfHeader, IvfWarning};
 use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
-use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
+use splot_core::symbol::SymbolDecoder;
 use splot_core::types::ObuType;
 use splot_recon::{BitDepth, DecodedFrame, DecodedFrameHashInput, PlaneId};
 
 use crate::bitstream::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCdfSubset,
-    GeneralIntraBlockModeError, GeneralIntraResidualError, MinimalBlockSymbolTraceError,
-    TileBlockSymbolFrontierError, TileGroupPositionFacts, TilePartitionFrontierError,
-    TilePartitionTraversalError, TileReconstructionTrace,
+    GeneralIntraBlockModeError, GeneralIntraResidualError, TileGroupPositionFacts,
 };
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::filters::deblock;
@@ -104,9 +102,6 @@ pub(crate) const FRONTIER_INTRA_IST_ZERO_FRONTIER_FEATURE_ID: &str =
 pub(crate) const FRONTIER_INTRA_IST_ZERO_FRONTIER_MATRIX_ROW: &str = "intra-ist-zero-frontier";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
-const MINIMAL_TRACE_SYMBOLS: u64 = 6;
-const MINIMAL_TRACE_TRAILING_BIT_POSITION: u64 = 14;
-const MINIMAL_TRACE_PADDING_END_POSITION: u64 = 16;
 
 pub(crate) const GENERAL_INTRA_FEATURE_ID: &str = "DECODE-GENERAL-INTRA-FRAME-FRONTIER";
 pub(crate) const GENERAL_INTRA_MATRIX_ROW: &str = "general-intra-frame-frontier";
@@ -338,56 +333,11 @@ pub(crate) fn decode_key_frame(
         ));
     }
     validate_frame_core(&core, frame_envelope.offset)?;
-
-    let mut tile_plan = derive_tile_plan(
-        plan,
-        candidate,
-        bytes,
-        frame_envelope,
-        sequence,
-        &core,
-        options,
-    )?;
-    let tile = match tile_plan.work_units_mut() {
-        [tile] => tile,
-        [] => {
-            return Err(unsupported(
-                "missing_tile_work_unit",
-                None,
-                "minimal tier requires one tile work unit",
-            ));
-        }
-        work_units => {
-            return Err(unsupported(
-                "unexpected_tile_work_units",
-                work_units.first().map(|tile| tile.tile_byte_span().start),
-                missing_capability_message!("tile.work_unit_count !=1"),
-            ));
-        }
-    };
-    let reconstruction_trace =
-        verify_flat_minimal_tile_trace(tile, sequence, &core, options.limits())?;
-    tile.apply_frame_end_cdf_update();
-    let frame_cdfs = tile.frame_cdfs();
-    let tile_size = tile.tile_size();
-
-    let limits = options.limits();
-    ensure_runtime_limits(
-        limits,
-        MINIMAL_WIDTH,
-        MINIMAL_HEIGHT,
-        tile_size,
-        BitDepth::Eight,
-    )?;
-    let frame =
-        crate::pipeline::reconstruct::reconstruct_minimal_traced_frame(reconstruction_trace)?;
-
-    Ok(PipelineFrame {
-        frame: PipelineDecodedFrame::Eight(frame),
-        frame_cdfs,
-        frame_rate_numerator: header.timebase_denominator,
-        frame_rate_denominator: header.timebase_numerator,
-    })
+    Err(unsupported_at(
+        "unsupported_frame_outside_decode_subset",
+        frame_envelope.offset,
+        missing_capability_message!("frame.decode_subset unmatched"),
+    ))
 }
 
 fn route_wienerns_lr_selectable_full_recon(
@@ -1381,127 +1331,6 @@ fn ensure_output_frame_byte_limits(
     )?;
     limits.ensure(DecodeLimitName::MaxOutputBytes, next_output_frame_bytes)?;
     Ok(next_output_frame_bytes)
-}
-
-fn verify_flat_minimal_tile_trace(
-    tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    limits: crate::DecodeLimits,
-) -> Result<TileReconstructionTrace> {
-    let tile_offset = tile.tile_byte_span().start;
-    let frontier = match crate::bitstream::tile_payload::plan_tile_block_symbol_frontier(
-        tile, sequence, core, limits,
-    ) {
-        Ok(frontier) => frontier,
-        Err(error) => {
-            return Err(decode_minimal_block_symbol_frontier_error(
-                error,
-                tile_offset,
-            ));
-        }
-    };
-    validate_minimal_trace_summary(frontier.summary(), tile)?;
-    Ok(frontier.reconstruction_trace())
-}
-
-fn decode_minimal_block_symbol_frontier_error(
-    error: TileBlockSymbolFrontierError,
-    offset: ByteOffset,
-) -> DecodeError {
-    match error {
-        TileBlockSymbolFrontierError::Partition(error) => {
-            decode_minimal_partition_frontier_error(error, offset)
-        }
-        TileBlockSymbolFrontierError::Block(error) => {
-            decode_minimal_block_symbol_error(error, offset)
-        }
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn decode_minimal_block_symbol_error(
-    error: MinimalBlockSymbolTraceError,
-    offset: ByteOffset,
-) -> DecodeError {
-    let (reason, message) = match error {
-        MinimalBlockSymbolTraceError::SymbolRead { .. } => (
-            "minimal_tile_symbol_parse",
-            missing_capability_message!("tile.symbol_stream flat_minimal"),
-        ),
-        MinimalBlockSymbolTraceError::UnexpectedSymbol { reason, .. } => (
-            reason,
-            missing_capability_message!("tile.symbol_values flat_minimal"),
-        ),
-        MinimalBlockSymbolTraceError::UnsupportedYMode { .. } => (
-            "minimal_tile_y_mode_reconstruction",
-            missing_capability_message!("intra.y_mode non_directional_flat"),
-        ),
-        MinimalBlockSymbolTraceError::InvalidCoeffContextRange { .. }
-        | MinimalBlockSymbolTraceError::CoeffContextDimensionOverflow { .. }
-        | MinimalBlockSymbolTraceError::CoeffContextState { .. }
-        | MinimalBlockSymbolTraceError::CoeffLoopContext { .. }
-        | MinimalBlockSymbolTraceError::CoeffFrameEntry { .. } => (
-            "minimal_tile_coeff_context_state",
-            missing_capability_message!("residual.coeff_context flat_minimal"),
-        ),
-        MinimalBlockSymbolTraceError::CoeffTxGeometryDimensionOverflow { .. }
-        | MinimalBlockSymbolTraceError::UnsupportedCoeffTxGeometry { .. }
-        | MinimalBlockSymbolTraceError::InvalidCoeffTxTableValue { .. } => (
-            "minimal_tile_coeff_tx_size_geometry",
-            missing_capability_message!("residual.tx_geometry"),
-        ),
-        MinimalBlockSymbolTraceError::ExitSymbol { .. } => (
-            "minimal_tile_exit_symbol",
-            missing_capability_message!("tile.exit_symbol §8.2.4"),
-        ),
-    };
-    unsupported_at(reason, offset, message)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn decode_minimal_partition_frontier_error(
-    error: TilePartitionFrontierError,
-    offset: ByteOffset,
-) -> DecodeError {
-    match error {
-        TilePartitionFrontierError::Limit(source)
-        | TilePartitionFrontierError::Traversal(TilePartitionTraversalError::Limit(source)) => {
-            DecodeError::Limit { source }
-        }
-        TilePartitionFrontierError::MissingFact { .. }
-        | TilePartitionFrontierError::MiSizeState(_)
-        | TilePartitionFrontierError::IntraJointModeState(_)
-        | TilePartitionFrontierError::UsesMrlsState(_)
-        | TilePartitionFrontierError::FscModeState(_)
-        | TilePartitionFrontierError::UvCflState(_)
-        | TilePartitionFrontierError::LumaPaletteState(_)
-        | TilePartitionFrontierError::Traversal(_)
-        | TilePartitionFrontierError::UnexpectedFrontier { .. } => unsupported_at(
-            "minimal_tile_partition_frontier",
-            offset,
-            missing_capability_message!("tile.partition §5.20.3.1"),
-        ),
-    }
-}
-
-fn validate_minimal_trace_summary(
-    summary: SymbolDecoderSummary,
-    tile: &crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
-) -> Result<()> {
-    if summary.symbol_count == MINIMAL_TRACE_SYMBOLS
-        && summary.trailing_bit_position.get() == MINIMAL_TRACE_TRAILING_BIT_POSITION
-        && summary.padding_end_position.get() == MINIMAL_TRACE_PADDING_END_POSITION
-        && summary.consumed_bits.get() == MINIMAL_TRACE_PADDING_END_POSITION
-    {
-        Ok(())
-    } else {
-        Err(unsupported_at(
-            "minimal_tile_trace_summary",
-            tile.tile_byte_span().start,
-            missing_capability_message!("tile.trace_summary flat_minimal"),
-        ))
-    }
 }
 
 pub(crate) fn require_minimal_obu_order<'a>(

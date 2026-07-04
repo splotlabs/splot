@@ -7984,7 +7984,6 @@ fixtures = [
     "crates/splot-decode/src/pipeline/reconstruct_tests.rs",
     "crates/splot-decode/src/filters/wienerns_lr/recon.rs",
     "crates/splot-decode/src/bitstream/tile_payload.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_state.rs",
     "crates/splot-decode/src/bitstream/tile_payload/derived_tests.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs",
@@ -13859,7 +13858,6 @@ fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/cdf/block_context.rs",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/block_rows.rs",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/coeff_context.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs",
     "crates/splot-decode/src/pipeline/mod.rs",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs",
     "crates/splot-decode/src/bitstream/tile_payload/tests.rs",
@@ -13959,12 +13957,10 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs::tests::luma_all_zero_context_fsc_overrides_state",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs::tests::v_all_zero_context_combines_level_dc_state_and_geometry",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs::tests::all_zero_context_reductions_bound_out_of_range_and_pathological_counts",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs::tests::traced_symbol_mismatch_fails_closed_and_rolls_back_cdfs",
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::luma_skip_fixture_decodes_skip_branch_through_general_path",
 ]
 commands = [
     "cargo test -p splot-decode coeff_loop --locked",
-    "cargo test -p splot-decode tile_payload::block_symbol --locked",
     "cargo test -p splot-decode tile_payload --locked",
     "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
     "cargo xtask check-decoder-support",
@@ -13973,7 +13969,6 @@ commands = [
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
 
@@ -14015,13 +14010,11 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs::tests::all_zero_coeff_block_rejects_bad_ranges_without_mutation",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs::tests::all_zero_coeff_block_rejects_zero_transform_extent_before_mutation",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs::tests::all_zero_coeff_block_saturates_adjusted_extent_to_spec_cap",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs::tests::traced_symbol_mismatch_fails_closed_and_rolls_back_cdfs",
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::luma_skip_fixture_decodes_skip_branch_through_general_path",
 ]
 commands = [
     "cargo test -p splot-decode coeff_state --locked",
     "cargo test -p splot-decode coeff_loop --locked",
-    "cargo test -p splot-decode tile_payload::block_symbol --locked",
     "cargo test -p splot-decode tile_payload --locked",
     "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
     "cargo xtask check-decoder-support",
@@ -14031,7 +14024,6 @@ fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_state.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
 
@@ -14299,7 +14291,6 @@ commands = [
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/eob_symbol_tests.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
 
@@ -17550,123 +17541,6 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
-id = "DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF"
-name = "Runtime coefficient frame-entry handoff"
-category = "infrastructure"
-kind = "infrastructure"
-spec_sections = ["5.20.7.27", "8.3.2", "9.2"]
-sources = [
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
-    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
-    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
-]
-crate = "splot-decode"
-module = "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs"
-change_id = "coeff-runtime-frame-entry-handoff"
-tracking_issue = ""
-owner = "decoder"
-risk = "medium"
-notes = "Routes the minimal flat-intra runtime's traced all-zero coefficient applications through the crate-private frame-facts coefficient wrapper instead of calling the older ordinary branch entry directly. The luma trace passes `TX_64X64` all-zero geometry and the V-plane trace passes `TX_16X16` all-zero geometry into `apply_coeff_use_fsc_branch_from_frame_facts`, preserving AV2 §5.20.7.27 all-zero ordering and bypassing nonzero frame/segment/parity/TCQ derivation. Tests prove the new frame-entry all-zero path is equivalent to the direct ordinary all-zero branch for both traced shapes, preserves CDF rows and symbol cursor state, and keeps the minimal block-symbol/runtime frontier behavior unchanged. This feature remains partial: runtime nonzero `coeffs()` is still not wired, runtime `PlaneTxType`, `fsc_mode`, `is_inter`, segment id, transform geometry, ordinary mode/TX facts, full `compute_tx_type`, dequantization, inverse transform, residual add, reconstruction changes, output expansion, reference refresh, public APIs, AVM/dav2d invocation, and broad `decode_block()` / `decode_tile()` support remain unimplemented."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "partial"
-validate = "not-applicable"
-write = "not-applicable"
-encode = "not-applicable"
-decode_check = "partial"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = [
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs::tests::all_zero_coefficient_frame_entry_matches_direct_ordinary_branch",
-    "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::luma_skip_fixture_decodes_skip_branch_through_general_path",
-    "crates/splot-decode/src/bitstream/tile_payload/tile_frontier.rs::tests::block_symbol_trace_rejects_legacy_inverted_skip",
-    "crates/splot-decode/src/output/hash.rs::tests::minimal_fixture_decodes_to_hash_report",
-    "crates/splot-decode/src/output/raw.rs::tests::minimal_fixture_decodes_to_exact_raw_bytes",
-    "crates/splot-decode/src/output/y4m.rs::tests::minimal_fixture_decodes_to_exact_y4m_bytes",
-]
-commands = [
-    "cargo test -p splot-decode block_symbol --locked",
-    "cargo test -p splot-decode output::hash --locked",
-    "cargo test -p splot-decode output::raw --locked",
-    "cargo test -p splot-decode output::y4m --locked",
-    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
-    "cargo xtask check-decoder-support",
-    "cargo xtask check-decoder-conformance-coverage",
-    "cargo xtask check-feature-status",
-]
-fixtures = [
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs",
-    "crates/splot-decode/src/pipeline/mod.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/use_fsc_branch.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
-]
-diagnostics = ["decode/unsupported-feature"]
-
-[[feature]]
-id = "DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF"
-name = "Runtime coefficient tx-size geometry handoff"
-category = "infrastructure"
-kind = "infrastructure"
-spec_sections = ["5.20.7.27", "8.3.2", "9.2"]
-sources = [
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
-    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
-    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
-]
-crate = "splot-decode"
-module = "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs"
-change_id = "coeff-runtime-tx-size-geometry-handoff"
-tracking_issue = ""
-owner = "decoder"
-risk = "medium"
-notes = "Derives the minimal flat-intra runtime's traced luma and V all-zero coefficient frame-entry `txSz` values from traced 4x4 transform geometry and the generated AV2 §9.2 `Tx_Width` and `Tx_Height` tables instead of local `TX_64X64` and `TX_16X16` ordinals. Unsupported or overflowing traced geometry returns a typed block-symbol trace error before entering the coefficient wrapper, preserving CDF rows, coefficient context state, and symbol cursor state. This feature remains partial: only the minimal tier all-zero transform-size geometry handoff is implemented; runtime nonzero `coeffs()`, full `compute_tx_type`, segment-map derivation, broad transform-block syntax traversal, dequantization, inverse transform, residual add, reconstruction changes, output expansion, reference refresh, public APIs, AVM/dav2d invocation, and broad `decode_block()` and `decode_tile()` support remain unimplemented."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "partial"
-validate = "not-applicable"
-write = "not-applicable"
-encode = "not-applicable"
-decode_check = "partial"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = [
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs::tests::all_zero_tx_size_geometry_resolves_generated_tables",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs::tests::unsupported_all_zero_tx_size_geometry_consumes_no_state",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs::tests::all_zero_coefficient_frame_entry_matches_direct_ordinary_branch",
-    "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::luma_skip_fixture_decodes_skip_branch_through_general_path",
-    "crates/splot-decode/src/bitstream/tile_payload/tile_frontier.rs::tests::block_symbol_trace_rejects_legacy_inverted_skip",
-    "crates/splot-decode/src/output/hash.rs::tests::minimal_fixture_decodes_to_hash_report",
-    "crates/splot-decode/src/output/raw.rs::tests::minimal_fixture_decodes_to_exact_raw_bytes",
-    "crates/splot-decode/src/output/y4m.rs::tests::minimal_fixture_decodes_to_exact_y4m_bytes",
-]
-commands = [
-    "cargo test -p splot-decode block_symbol --locked",
-    "cargo test -p splot-decode output::hash --locked",
-    "cargo test -p splot-decode output::raw --locked",
-    "cargo test -p splot-decode output::y4m --locked",
-    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
-    "cargo xtask check-decoder-support",
-    "cargo xtask check-decoder-conformance-coverage",
-    "cargo xtask check-feature-status",
-]
-fixtures = [
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs",
-    "crates/splot-decode/src/pipeline/mod.rs",
-    "crates/splot-core/src/tables/conversion.rs",
-]
-diagnostics = ["decode/unsupported-feature"]
-
-[[feature]]
 id = "DECODE-COEFF-BASE-SYMBOL-READ"
 name = "Coefficient base symbol read"
 category = "infrastructure"
@@ -18686,7 +18560,6 @@ commands = [
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_state_context_tests.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/branch.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_state.rs",
 ]
@@ -19641,14 +19514,11 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::disabled_cdf_update_keeps_saved_subset_at_initial_rows",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::frame_end_update_copies_saved_rows_and_scales_counts",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::work_unit_boundary_applies_saved_and_frame_updates_transactionally",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs::tests::traced_symbol_mismatch_fails_closed_and_rolls_back_cdfs",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs::tests::invalid_cdf_row_reports_parse_failure_and_preserves_rows",
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::luma_skip_fixture_decodes_skip_branch_through_general_path",
     "crates/splot-decode/src/bitstream/tile_payload/tile_frontier.rs::tests::block_symbol_trace_rejects_legacy_inverted_skip",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::cdf --locked",
-    "cargo test -p splot-decode tile_payload::block_symbol --locked",
     "cargo test -p splot-decode tile_payload::tile_frontier --locked",
     "cargo test -p splot-decode output::hash --locked",
     "cargo test -p splot-decode output::y4m --locked",
@@ -19660,7 +19530,6 @@ fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/cdf/lifecycle.rs",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/block_rows.rs",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs",
     "crates/splot-decode/src/bitstream/tile_payload/tile_frontier.rs",
 ]
 diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
@@ -20007,150 +19876,6 @@ fixtures = [
     "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
 ]
 diagnostics = []
-
-[[feature]]
-id = "DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER"
-name = "Minimal block syntax frontier"
-category = "infrastructure"
-kind = "infrastructure"
-spec_sections = ["5.20.4.1", "5.20.5.1", "5.20.5.3", "5.20.5.5", "5.20.5.6", "5.20.6.1", "5.20.6.2", "5.20.7.23", "5.20.7.24", "5.20.7.27", "8.2.4", "8.2.6", "8.3.1", "8.3.2", "9.3"]
-sources = [
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-1",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-2",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-23",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
-    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-4",
-    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-6",
-    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-1",
-    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
-    "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
-]
-crate = "splot-decode"
-module = "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs"
-change_id = "minimal-block-syntax-frontier"
-tracking_issue = ""
-owner = "decoder"
-risk = "medium"
-notes = "Adds a crate-private minimal-tier block-symbol trace frontier after `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY`: `tile_payload/cdf/block_rows.rs` carries generated §9.3 default rows for `TileYModeSetCdf`, `TileYModeIndexCdf`, `TileTxbSkipCdf`, `TileUvModeCflNotAllowedCdf`, and `TileVTxbSkipCdf`; `cdf/block_read.rs` provides the narrow `read_block_symbol_trace` row handoff; `block_symbol.rs` consumes the committed flat intra trace (`y_mode_set`, `y_mode_index`, luma/U all-zero transform skip, `uv_mode`, and V all-zero transform skip), validates §8.2.4 `exit_symbol()`, and rolls back tile CDF mutation on mismatch or parse failure; `tile_frontier.rs` composes the block-symbol frontier after the partition frontier and applies the `DECODE-TILE-MI-SIZE-STATE-BOUNDARY` root luma MI-size update only after the trace succeeds; and `pipeline/mod.rs` maps partition, MI-size state, symbol mismatch, symbol parse, and exit failures through the existing minimal tier diagnostics. The two all-zero transform `txb_skip` reads now assert the AVM `all_zero == 1` skip polarity (§5.20.7.27 / AVM `decodetxb.c`), correcting a prior inverted (`== 0`) assertion; the committed conformant fixture decodes through the general intra path (`DECODE-GENERAL-INTRA-FRAME-RECON`) rather than this frozen trace, so this frozen trace is now exercised only by `block_symbol_trace_rejects_legacy_inverted_skip` (which proves the retired inverted-polarity payload is rejected) and the synthetic block-symbol unit tests. This row is only the traced minimal flat intra block-symbol frontier and does not claim broad `decode_block()`, recursive `decode_tile()`, full mode-info/transform/coefficient syntax, full §8.3 CDF selection or lifecycle, reconstruction, reference refresh, public APIs, AVM/dav2d invocation, or external-decoder integration."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "partial"
-validate = "not-applicable"
-write = "not-applicable"
-encode = "not-applicable"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = [
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/block_read.rs::tests::reads_supported_block_symbol_rows",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/block_read.rs::tests::invalid_block_symbol_selector_fails_before_symbol_read",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/block_read.rs::tests::update_mode_controls_only_selected_block_symbol_rows",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs::tests::traced_symbol_mismatch_fails_closed_and_rolls_back_cdfs",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs::tests::invalid_cdf_row_reports_parse_failure_and_preserves_rows",
-    "crates/splot-decode/src/bitstream/tile_payload/tile_frontier.rs::tests::block_symbol_trace_rejects_legacy_inverted_skip",
-    "crates/splot-decode/src/output/hash.rs::tests::minimal_fixture_decodes_to_hash_report",
-    "crates/splot-decode/src/output/hash.rs::tests::decoded_hash_is_deterministic_across_thread_policies",
-    "crates/splot-decode/src/output/y4m.rs::tests::minimal_fixture_decodes_to_exact_y4m_bytes",
-    "crates/splot-decode/src/output/y4m.rs::tests::y4m_output_is_deterministic_across_thread_policies",
-]
-commands = [
-    "cargo test -p splot-decode tile_payload --locked",
-    "cargo test -p splot-decode output::hash --locked",
-    "cargo test -p splot-decode output::y4m --locked",
-    "cargo xtask check-decoder-support",
-    "cargo xtask check-feature-status",
-]
-fixtures = [
-    "crates/splot-decode/src/pipeline/mod.rs",
-    "crates/splot-decode/src/bitstream/tile_payload.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/tile_frontier.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/block_symbol.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/block_rows.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/block_read.rs",
-    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
-]
-diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source", "decode/output-error"]
-
-[[feature]]
-id = "DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER"
-name = "Minimal intra reconstruction frontier"
-category = "infrastructure"
-kind = "infrastructure"
-spec_sections = ["5.20.5.3", "5.20.5.5", "5.20.5.6", "5.20.7.24", "5.20.7.27", "7.13.2.1", "7.13.2.8", "7.13.2.10", "7.21.1", "7.21.2", "9.2"]
-sources = [
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24",
-    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-10",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-1",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-21-2",
-    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
-]
-crate = "splot-decode"
-module = "crates/splot-decode/src/pipeline/reconstruct.rs"
-change_id = "recon-intra-cardinal-directional-prediction"
-tracking_issue = ""
-owner = "decoder"
-risk = "medium"
-notes = "Adds a crate-private reconstruction handoff after `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` for the frozen minimal-tier trace (the committed conformant fixture now routes through the general intra path, `DECODE-GENERAL-INTRA-FRAME-RECON`; this frozen recon handoff stays exercised by its `pipeline::reconstruct.rs` unit tests): the block-symbol frontier returns `LumaDcNoResidual8Bit420_64x64` for the traced 64x64 8-bit luma DC/no-residual facts and a traced top-left chroma `H_PRED` path. `pipeline::reconstruct.rs` allocates a checked `splot-recon::CurrentFrameWorkspace<u8>`, writes the luma DC prediction through `predict_intra_dc_square()`, explicitly materializes the AV2 §7.13.2.1 no-neighbor left-edge fallback value `(1 << (BitDepth - 1)) + 1` for the top-left chroma H_PRED path, calls the cardinal horizontal primitive from `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION` for both 32x32 U/V planes, writes the predicted chroma rectangles, freezes the workspace, and updates the deterministic `splot-dfh-sha256-v1`, raw, and Y4M bytes to the spec-correct chroma samples. This row does not claim full §7.13.2.1 edge preparation, chroma H/V beyond the top-left fallback trace, pAngle values other than 90/180, broad directional prediction, or neutral chroma as an untraced fallback. The all-zero transform path is represented only by the traced no-residual block-symbol frontier; broad transform coefficient parsing, `reconstruct()`, residual addition, recursive `decode_block()`, loop filtering, film grain, reference refresh, broad raw output, AVM/dav2d invocation, and full decoder conformance remain unsupported."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "partial"
-validate = "done"
-write = "not-applicable"
-encode = "not-applicable"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = [
-    "crates/splot-decode/src/pipeline/reconstruct.rs::tests::traced_luma_dc_chroma_h_pred_reconstruction_predicts_visible_samples",
-    "crates/splot-decode/src/pipeline/reconstruct.rs::tests::traced_luma_dc_chroma_h_pred_reconstruction_hash_matches_minimal_contract",
-    "crates/splot-decode/src/output/hash.rs::tests::minimal_fixture_decodes_to_hash_report",
-    "crates/splot-decode/src/output/hash.rs::tests::decoded_hash_is_deterministic_across_thread_policies",
-    "crates/splot-decode/src/output/hash.rs::tests::output_byte_limit_fails_before_hash_report",
-    "crates/splot-decode/src/output/y4m.rs::tests::minimal_fixture_decodes_to_exact_y4m_bytes",
-    "crates/splot-decode/src/output/y4m.rs::tests::y4m_output_is_deterministic_across_thread_policies",
-    "crates/splot-decode/src/output/y4m.rs::tests::output_byte_limit_fails_before_writer_success",
-]
-commands = [
-    "cargo test -p splot-decode pipeline::reconstruct --locked",
-    "cargo test -p splot-decode tile_payload::tile_frontier --locked",
-    "cargo test -p splot-decode output::hash --locked",
-    "cargo test -p splot-decode output::y4m --locked",
-    "cargo test -p splot-recon workspace --locked",
-    "cargo xtask check-decoder-support",
-    "cargo xtask check-feature-status",
-]
-fixtures = [
-    "crates/splot-decode/src/pipeline/mod.rs",
-    "crates/splot-decode/src/pipeline/reconstruct.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/tile_frontier.rs",
-    "crates/splot-recon/src/intra_directional.rs",
-    "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
-    "change_id:recon-intra-cardinal-directional-prediction",
-]
-diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source", "decode/output-error"]
 
 [[feature]]
 id = "DECODE-UNSUPPORTED-DIAGNOSTIC-API"

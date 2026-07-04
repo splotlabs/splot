@@ -14,7 +14,6 @@
 )]
 
 mod block_decoded_state;
-mod block_symbol;
 mod cdf;
 mod coeff_loop;
 mod coeff_state;
@@ -46,7 +45,6 @@ use crate::{
 };
 
 pub(crate) use block_decoded_state::TileBlockDecodedState;
-pub(crate) use block_symbol::MinimalBlockSymbolTraceError;
 pub(crate) use cdf::block_context::supported_chroma_mode;
 pub(crate) use cdf::block_context::{
     IntraYMode, SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
@@ -94,11 +92,9 @@ pub(crate) use partition_traversal::{
 #[cfg(test)]
 pub(crate) use test_support::encode_symbol_sequence;
 pub(crate) use tile_frontier::{
-    GeneralIntraMultiblockError, GeneralIntraMultiblockOutput, TileBlockSymbolFrontierError,
-    TilePartitionFrontierError, TileReconstructionTrace, chroma_subsampling,
-    consume_tile_lr_unit_frontier, decode_general_intra_multiblock_tree,
+    GeneralIntraMultiblockError, GeneralIntraMultiblockOutput, TilePartitionFrontierError,
+    chroma_subsampling, consume_tile_lr_unit_frontier, decode_general_intra_multiblock_tree,
     decode_general_intra_multiblock_tree_with_lr_source_blocks, frame_mi_dimensions,
-    plan_tile_block_symbol_frontier,
 };
 
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";

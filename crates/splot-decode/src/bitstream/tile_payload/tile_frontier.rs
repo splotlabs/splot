@@ -5,11 +5,10 @@ use core::mem::size_of;
 
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrParams};
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockSize};
-use splot_core::symbol::{SymbolDecoder, SymbolDecoderSummary};
+use splot_core::symbol::SymbolDecoder;
 
 use super::DecodeTileWorkUnit;
 use super::block_decoded_state::TileBlockDecodedState;
-use super::block_symbol::{MinimalBlockSymbolTraceError, consume_minimal_block_symbol_trace};
 use super::intra_joint_modes::{
     IsCflContext, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
     TileIntraJointModeStateError, TileLumaPaletteState, TileLumaPaletteStateError,
@@ -34,29 +33,6 @@ const BLOCK_64X64_INDEX: usize = 12;
 const BLOCK_128X128_INDEX: usize = 15;
 const BLOCK_256X256_INDEX: usize = 18;
 
-#[derive(Debug)]
-pub(crate) struct TileBlockSymbolFrontier {
-    summary: SymbolDecoderSummary,
-    reconstruction_trace: TileReconstructionTrace,
-}
-
-impl TileBlockSymbolFrontier {
-    #[must_use]
-    pub(crate) const fn summary(&self) -> SymbolDecoderSummary {
-        self.summary
-    }
-
-    #[must_use]
-    pub(crate) const fn reconstruction_trace(&self) -> TileReconstructionTrace {
-        self.reconstruction_trace
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TileReconstructionTrace {
-    LumaDcNoResidual8Bit420_64x64,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TilePartitionFrontierError {
     #[error("minimal-tier partition frontier missing fact: {fact}")]
@@ -79,35 +55,6 @@ pub(crate) enum TilePartitionFrontierError {
     UvCflState(#[from] TileUvCflStateError),
     #[error("minimal-tier partition frontier mismatch: {reason}")]
     UnexpectedFrontier { reason: &'static str },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum TileBlockSymbolFrontierError {
-    #[error("minimal-tier partition frontier failed: {0}")]
-    Partition(#[from] TilePartitionFrontierError),
-    #[error("minimal-tier block-symbol frontier failed: {0}")]
-    Block(#[from] MinimalBlockSymbolTraceError),
-}
-
-pub(crate) fn plan_tile_block_symbol_frontier(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    limits: DecodeLimits,
-) -> Result<TileBlockSymbolFrontier, TileBlockSymbolFrontierError> {
-    let (symbols, mut mi_size_state, block_frontier) =
-        plan_tile_partition_frontier(work_unit, sequence, core, limits)?;
-    let tile_num = work_unit.tile_num();
-    let trace = consume_minimal_block_symbol_trace(work_unit, symbols)?;
-    mi_size_state
-        .update_luma_block(block_frontier.r, block_frontier.c, block_frontier.b_size)
-        .map_err(TilePartitionFrontierError::from)?;
-    work_unit.cdf_mut().apply_completed_tile_to_saved(tile_num);
-    work_unit.cdf_mut().frame_end_update_cdf_subset();
-    Ok(TileBlockSymbolFrontier {
-        summary: trace.summary(),
-        reconstruction_trace: TileReconstructionTrace::LumaDcNoResidual8Bit420_64x64,
-    })
 }
 
 pub(crate) fn consume_tile_lr_unit_frontier(

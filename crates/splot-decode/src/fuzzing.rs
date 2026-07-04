@@ -9,41 +9,28 @@
 //!
 //! Feature tracking: `CONF-TILE-PAYLOAD-DECODE-FUZZ`.
 
-use splot_core::bitio::BitReader;
-use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView,
-    parse_frame_header_core,
-};
-use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::headers::tile_group::parse_tile_group_framing;
 use splot_core::span::ByteOffset;
-use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::symbol::CdfUpdateMode;
 use splot_core::types::ObuType;
 
 use crate::bitstream::tile_payload::{
     TileBruPath, TileFrameFacts, TileGridFacts, TilePayloadBoundaryInput, TilePayloadSource,
-    plan_tile_block_symbol_frontier, plan_tile_payload_boundary,
+    plan_tile_payload_boundary,
 };
 use crate::{DecodeLayerSelection, DecodeLimitThreshold, DecodeLimits, DecodeObuSourceKind};
 
 const MI_COL_STARTS: [u32; 2] = [0, 16];
 const MI_ROW_STARTS: [u32; 2] = [0, 16];
-const RUN_FRONTIER_FLAG: u8 = 0b0000_0010;
 const GOOD_PAYLOAD_FLAG: u8 = 0b0000_0100;
 const MAX_TILE_PAYLOAD_BYTES: usize = 128;
 const MAX_GOOD_TILE_MUTATIONS: usize = 8;
 const GOOD_TILE_PAYLOAD: [u8; 2] = [0x12, 0xFB];
-const MINIMAL_FIXTURE: &[u8] =
-    include_bytes!("../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf");
-
 /// Outcome from one tile-payload fuzzing harness call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TilePayloadFuzzOutcome {
     /// Boundary outcome when the tile-payload boundary accepted the input.
     pub boundary: Option<TilePayloadBoundaryFuzzOutcome>,
-    /// Minimal frontier outcome when requested and accepted.
-    pub frontier: Option<TilePayloadFrontierFuzzOutcome>,
     /// Stage that returned a typed error, if any.
     pub typed_error_stage: Option<TilePayloadFuzzStage>,
 }
@@ -83,21 +70,6 @@ pub struct TilePayloadBoundaryFuzzOutcome {
     pub unsupported_reason: &'static str,
 }
 
-/// Compact outcome from a successful minimal block-symbol frontier.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TilePayloadFrontierFuzzOutcome {
-    /// Number of symbols consumed by the traced minimal frontier.
-    pub symbol_count: u64,
-    /// Final consumed bit position.
-    pub consumed_bits: u64,
-    /// Validated trailing-bit position.
-    pub trailing_bit_position: u64,
-    /// Validated padding-end position.
-    pub padding_end_position: u64,
-    /// Stable reconstruction trace label.
-    pub reconstruction_trace: &'static str,
-}
-
 /// Typed-error stage reached by the fuzzing harness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TilePayloadFuzzStage {
@@ -105,10 +77,6 @@ pub enum TilePayloadFuzzStage {
     InputHeader,
     /// Tile-payload boundary planning returned a typed error.
     Boundary,
-    /// The committed minimal fixture facts could not be parsed for frontier mode.
-    MinimalFixtureFacts,
-    /// Minimal tier frontier planning returned a typed error.
-    Frontier,
 }
 
 /// Runs one bounded tile-payload fuzzing case.
@@ -167,7 +135,7 @@ pub fn run_tile_payload_decode_fuzz_case(data: &[u8]) -> TilePayloadFuzzOutcome 
         limits,
     );
 
-    let mut plan = match plan_tile_payload_boundary(&input) {
+    let plan = match plan_tile_payload_boundary(&input) {
         Ok(plan) => plan,
         Err(error) => {
             let _ = error.to_string();
@@ -175,53 +143,15 @@ pub fn run_tile_payload_decode_fuzz_case(data: &[u8]) -> TilePayloadFuzzOutcome 
         }
     };
     let boundary = boundary_outcome(&plan);
-    let mut outcome = TilePayloadFuzzOutcome {
+    TilePayloadFuzzOutcome {
         boundary,
-        frontier: None,
         typed_error_stage: None,
-    };
-
-    if flags & RUN_FRONTIER_FLAG == 0 {
-        return outcome;
     }
-
-    let Some((sequence, core)) = minimal_fixture_facts() else {
-        outcome.typed_error_stage = Some(TilePayloadFuzzStage::MinimalFixtureFacts);
-        return outcome;
-    };
-    let work_units = plan.work_units_mut();
-    let [work_unit] = work_units else {
-        outcome.typed_error_stage = Some(TilePayloadFuzzStage::Frontier);
-        return outcome;
-    };
-    match plan_tile_block_symbol_frontier(work_unit, &sequence, &core, limits) {
-        Ok(frontier) => {
-            let summary = frontier.summary();
-            outcome.frontier = Some(TilePayloadFrontierFuzzOutcome {
-                symbol_count: summary.symbol_count,
-                consumed_bits: summary.consumed_bits.get(),
-                trailing_bit_position: summary.trailing_bit_position.get(),
-                padding_end_position: summary.padding_end_position.get(),
-                reconstruction_trace: match frontier.reconstruction_trace() {
-                    crate::bitstream::tile_payload::TileReconstructionTrace::LumaDcNoResidual8Bit420_64x64 => {
-                        "luma_dc_no_residual_8bit420_64x64"
-                    }
-                },
-            });
-        }
-        Err(error) => {
-            let _ = error.to_string();
-            outcome.typed_error_stage = Some(TilePayloadFuzzStage::Frontier);
-        }
-    }
-
-    outcome
 }
 
 fn typed_error(stage: TilePayloadFuzzStage) -> TilePayloadFuzzOutcome {
     TilePayloadFuzzOutcome {
         boundary: None,
-        frontier: None,
         typed_error_stage: Some(stage),
     }
 }
@@ -297,35 +227,4 @@ fn boundary_outcome(
         unsupported_spec_section: unsupported.spec_section(),
         unsupported_reason: unsupported.reason().as_str(),
     })
-}
-
-fn minimal_fixture_facts() -> Option<(SequenceHeader, FrameHeaderCore)> {
-    let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(MINIMAL_FIXTURE) else {
-        return None;
-    };
-    let frame = ivf.frames.first()?;
-    let sequence_envelope = frame.obus.get(1)?;
-    let frame_envelope = frame.obus.get(2)?;
-
-    let mut sequence_reader = BitReader::new(
-        sequence_envelope.payload,
-        sequence_envelope.payload_offset(),
-    );
-    let sequence = parse_sequence_header(&mut sequence_reader).ok()?;
-
-    let mut frame_reader = BitReader::new(frame_envelope.payload, frame_envelope.payload_offset());
-    if frame_reader.read_bit().ok()? == 0 {
-        return None;
-    }
-    let frame_input = FrameHeaderParseInput {
-        obu_type: frame_envelope.header.obu_type,
-        first_picture_in_tu: true,
-        active_sequence: Some(&sequence),
-        mfh_record: None,
-        reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
-    };
-    let core = parse_frame_header_core(&mut frame_reader, &frame_input).ok()?;
-
-    Some((sequence, core))
 }
