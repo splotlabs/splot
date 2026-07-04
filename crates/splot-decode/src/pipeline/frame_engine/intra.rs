@@ -19,7 +19,9 @@ use splot_recon::{BitDepth, DecodedFrame, ReconSample, ReferenceFrameStore};
 use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::pipeline::general_intra::general_intra_unsupported;
 use crate::pipeline::reconstruct::new_general_intra_workspace;
-use crate::pipeline::{deblock_quant_deltas, unsupported_at};
+use crate::pipeline::{
+    deblock_quant_deltas, derive_tile_plan, ensure_runtime_limits, unsupported_at,
+};
 use crate::prediction::inter::{InterReferenceState, decode_inter_blocks};
 use crate::support::capability::missing_capability_message;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
@@ -80,6 +82,34 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
             "intra frame decode requires default CDFs",
         )
     })?;
+
+    // Enforce DecodeLimits before allocating the workspace, as the inter path does.
+    let tile_size = {
+        let mut tile_plan = derive_tile_plan(
+            plan,
+            candidate,
+            bytes,
+            frame_envelope,
+            sequence,
+            core,
+            options,
+        )?;
+        let [tile] = tile_plan.work_units_mut() else {
+            return Err(unsupported_at(
+                "frame_engine_intra_tile_work_units",
+                offset,
+                "intra frame decode requires exactly one tile work unit",
+            ));
+        };
+        tile.tile_size()
+    };
+    ensure_runtime_limits(
+        options.limits(),
+        frame_size.width,
+        frame_size.height,
+        tile_size,
+        bit_depth,
+    )?;
 
     let mut workspace = new_general_intra_workspace::<T>(frame_width, frame_height, bit_depth)?;
 
