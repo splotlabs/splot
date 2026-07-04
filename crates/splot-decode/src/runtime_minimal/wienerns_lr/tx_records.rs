@@ -1640,6 +1640,8 @@ fn decode_luma_records_for_chunk(
             sink.record_deblock_block(
                 record.col,
                 record.row,
+                record.col,
+                record.row,
                 record.cols,
                 record.rows,
                 record.tx_size,

@@ -253,6 +253,8 @@ pub(crate) fn parse_inter_shared_tail(
     };
     let lr_reference_filter_counts =
         lr_reference_filter_counts(reference_state, &control.ref_frame_idx, lr_num_total_refs);
+    let lr_reference_filter_taps =
+        lr_reference_filter_entries(reference_state, &control.ref_frame_idx, lr_num_total_refs);
     match parse_lr_params_for_inter(
         reader,
         coded_lossless,
@@ -262,6 +264,7 @@ pub(crate) fn parse_inter_shared_tail(
         quantization.base_q_idx,
         lr_num_total_refs,
         lr_reference_filter_counts,
+        &lr_reference_filter_taps,
     )? {
         LrParseOutcome::Parsed(lr) => {
             core.lr_params = Some(lr);
@@ -294,6 +297,50 @@ pub(crate) fn parse_inter_shared_tail(
     store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);
 
     parse_inter_tail_arms(reader, core, seq, control, frame_type, coded_lossless)
+}
+
+/// Builds the § 5.18 `search_frame_filters` ordered reference-filter entries
+/// per plane: for every valid reference in `ref_frame_idx` order, luma takes
+/// one entry per retained reference class, and each chroma plane takes the
+/// same-plane entry then the opposite-plane entry (05:17790-17817). The list
+/// order MUST match [`lr_reference_filter_counts`] — the match index selects
+/// by position.
+fn lr_reference_filter_entries<'a>(
+    reference_state: &FrameReferenceStateView<'a>,
+    ref_frame_idx: &[u32],
+    num_total_refs: u32,
+) -> [Vec<Option<&'a [i16]>>; 3] {
+    let mut entries: [Vec<Option<&'a [i16]>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let (Some(slot_taps), Some(slot_counts)) = (
+        reference_state.lr_frame_filter_taps,
+        reference_state.lr_frame_filter_class_counts,
+    ) else {
+        return entries;
+    };
+    for slot in ref_frame_idx.iter().take(num_total_refs as usize) {
+        let slot = *slot as usize;
+        if reference_state
+            .ref_valid
+            .and_then(|valid| valid.get(slot).copied())
+            == Some(false)
+        {
+            continue;
+        }
+        let (Some(planes), Some(counts)) = (slot_taps.get(slot), slot_counts.get(slot)) else {
+            continue;
+        };
+        for class in 0..usize::from(counts[0]) {
+            entries[0].push(planes[0].get(class).map(Vec::as_slice));
+        }
+        for (plane, checks) in [(1usize, [1usize, 2usize]), (2, [2, 1])] {
+            for check in checks {
+                if counts[check] > 0 {
+                    entries[plane].push(planes[check].first().map(Vec::as_slice));
+                }
+            }
+        }
+    }
+    entries
 }
 
 fn lr_reference_filter_counts(

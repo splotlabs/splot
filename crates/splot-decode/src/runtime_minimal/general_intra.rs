@@ -272,6 +272,8 @@ fn decode_general_intra_frame_into<T: ReconSample>(
         })?;
 
     let mut deblock_blocks: Vec<super::deblock::DeblockBlock> = Vec::new();
+    let mut chroma_deblock_scratch: [Vec<super::deblock::DeblockBlock>; 2] =
+        [Vec::new(), Vec::new()];
 
     let symbols = crate::tile_payload::decode_general_intra_multiblock_tree(
         tile,
@@ -303,6 +305,7 @@ fn decode_general_intra_frame_into<T: ReconSample>(
                 &mut workspace,
                 &mut coeff_ctx,
                 &mut deblock_blocks,
+                &mut chroma_deblock_scratch,
                 qindex,
                 luma_use_tcq,
                 general_intra_transform_tool_residual_policy(sequence),
@@ -329,7 +332,7 @@ fn decode_general_intra_frame_into<T: ReconSample>(
         super::deblock::deblock_general_intra_frame(
             &mut workspace,
             &deblock_blocks,
-            [&[], &[]],
+            [&chroma_deblock_scratch[0], &chroma_deblock_scratch[1]],
             mi_rows,
             mi_cols,
             filter,
@@ -429,6 +432,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     deblock_blocks: &mut Vec<super::deblock::DeblockBlock>,
+    chroma_deblock_blocks: &mut [Vec<super::deblock::DeblockBlock>; 2],
     qindex: u32,
     luma_use_tcq: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
@@ -518,6 +522,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
             workspace,
             coeff_ctx,
             deblock_blocks,
+            chroma_deblock_blocks,
             qindex,
             transform_tool_residual_policy,
             block_ctx,
@@ -669,6 +674,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
             workspace,
             coeff_ctx,
             deblock_blocks,
+            chroma_deblock_blocks,
             qindex,
             luma_use_tcq,
             transform_tool_residual_policy,
@@ -713,6 +719,7 @@ pub(super) fn decode_one_general_intra_block<T: ReconSample>(
         block_ctx,
         block_decoded,
         deblock_blocks,
+        chroma_deblock_blocks,
         modes.coeff_uv_mode(),
         luma_transform_type_context(&modes),
         luma_tx_partition_context(core, frontier),
@@ -739,6 +746,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     deblock_blocks: &mut Vec<super::deblock::DeblockBlock>,
+    chroma_deblock_blocks: &mut [Vec<super::deblock::DeblockBlock>; 2],
     qindex: u32,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     block_ctx: BlockCtx,
@@ -820,6 +828,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         block_ctx,
         block_decoded,
         deblock_blocks,
+        chroma_deblock_blocks,
         chroma.coeff_uv_mode(),
         LumaTransformTypeContext::new(y_mode, angle_delta_y),
         None,
@@ -841,6 +850,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::tile_payload::TileCoeffContextState,
     deblock_blocks: &mut Vec<super::deblock::DeblockBlock>,
+    chroma_deblock_blocks: &mut [Vec<super::deblock::DeblockBlock>; 2],
     qindex: u32,
     luma_use_tcq: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
@@ -874,6 +884,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
         block_ctx,
         block_decoded,
         deblock_blocks,
+        chroma_deblock_blocks,
         modes.coeff_uv_mode(),
         luma_transform_type_context(modes),
         luma_tx_partition_context,
@@ -1534,6 +1545,7 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
     block_ctx: BlockCtx,
     block_decoded: &mut crate::tile_payload::TileBlockDecodedState,
     deblock_blocks: &mut Vec<super::deblock::DeblockBlock>,
+    chroma_deblock_blocks: &mut [Vec<super::deblock::DeblockBlock>; 2],
     uv_mode: usize,
     luma_transform_type_context: LumaTransformTypeContext,
     luma_tx_partition_context: Option<LumaTransformPartitionContext>,
@@ -1542,6 +1554,19 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
     intra_edge: super::intra_edge::IntraEdgeCtx,
     tile_offset: ByteOffset,
 ) -> Result<()> {
+    let block = block_ctx.block();
+    let transforms = residual_plan.transforms();
+    let mut deblock = super::residual_pipeline::DeblockRecorder {
+        blocks: deblock_blocks,
+        chroma_blocks: chroma_deblock_blocks,
+        block_r: block.row4(),
+        block_c: block.col4(),
+        block_w4: block.width4(),
+        block_h4: block.height4(),
+        luma_tx: transforms.luma_tx(),
+        chroma_tx: transforms.chroma_tx(),
+        qindex,
+    };
     residual_plan
         .execute(
             work_unit,
@@ -1555,20 +1580,9 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
             transform_tool_residual_policy,
             qindex,
             intra_edge,
+            &mut deblock,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    let block = block_ctx.block();
-    let transforms = residual_plan.transforms();
-    deblock_blocks.push(super::deblock::DeblockBlock {
-        r: block.row4(),
-        c: block.col4(),
-        n4w: block.width4(),
-        n4h: block.height4(),
-        luma_tx: transforms.luma_tx(),
-        chroma_tx: transforms.chroma_tx(),
-        qindex,
-        skip: false,
-    });
     Ok(())
 }
 

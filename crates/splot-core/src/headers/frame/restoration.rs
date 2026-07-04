@@ -325,6 +325,7 @@ pub fn parse_lr_params(
         base_q_idx,
         0,
         [0; 3],
+        &[Vec::new(), Vec::new(), Vec::new()],
     )
 }
 
@@ -346,6 +347,7 @@ pub fn parse_lr_params_for_inter(
     base_q_idx: u32,
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
+    reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
 ) -> Result<LrParseOutcome> {
     parse_lr_params_with_references(
         reader,
@@ -356,6 +358,7 @@ pub fn parse_lr_params_for_inter(
         base_q_idx,
         num_ref_frames,
         reference_filter_counts,
+        reference_filter_taps,
     )
 }
 
@@ -369,6 +372,7 @@ fn parse_lr_params_with_references(
     base_q_idx: u32,
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
+    reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
 ) -> Result<LrParseOutcome> {
     let _ = base_q_idx; // `get_filter_set_index(base_q_idx)` signals no bits (SubclassLookup only).
     if coded_lossless || !view.enable_restoration {
@@ -469,11 +473,15 @@ fn parse_lr_params_with_references(
         {
             let classes = plane_params.num_filter_classes.unwrap_or(1);
             let num_ref_filters = reference_filter_counts.get(plane).copied().unwrap_or(0);
+            let ref_taps = reference_filter_taps
+                .get(plane)
+                .map_or(&[][..], Vec::as_slice);
             plane_params.frame_filter_bank = Some(parse_frame_wiener_ns_filter(
                 reader,
                 plane,
                 classes,
                 num_ref_filters,
+                ref_taps,
                 view,
             )?);
         }
@@ -964,6 +972,7 @@ mod tests {
             100,
             1,
             [0; 3],
+            &[Vec::new(), Vec::new(), Vec::new()],
         )
         .unwrap();
         match outcome {
@@ -998,6 +1007,7 @@ mod tests {
             100,
             1,
             [0; 3],
+            &[Vec::new(), Vec::new(), Vec::new()],
         )
         .unwrap();
         match outcome {

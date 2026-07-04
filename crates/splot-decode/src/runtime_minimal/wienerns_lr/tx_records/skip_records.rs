@@ -55,6 +55,8 @@ pub(super) fn record_skipped_selectable_residuals(
             sink.record_deblock_block(
                 record.col,
                 record.row,
+                frontier.c,
+                frontier.r,
                 record.cols,
                 record.rows,
                 record.tx_size,
