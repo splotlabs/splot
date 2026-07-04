@@ -648,7 +648,10 @@ fn decode_block<T: ReconSample>(
         && refs_one_sided;
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
 
-    let is_inter = if frontier.is_luma_part() || frontier.is_chroma_part() {
+    let is_inter = if core.frame_is_intra == Some(true)
+        || frontier.is_luma_part()
+        || frontier.is_chroma_part()
+    {
         0
     } else if frontier.shared_mixed_chroma_ref_forces_inter() {
         1
