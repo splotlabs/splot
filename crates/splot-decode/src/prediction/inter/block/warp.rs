@@ -230,7 +230,7 @@ fn extend_warp_estimation(
         }
         super::super::find_mv_stack::ExtendWarpNeighbour::Missing => {
             return Err(inter_cap!(
-                "inter_warp_extend_base_missing",
+                "inter_warp_extend_neighbour_missing",
                 tile_offset,
                 "inter.warp_extend.base_position",
                 "7.13.3.24"

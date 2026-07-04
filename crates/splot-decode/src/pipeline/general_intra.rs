@@ -1203,7 +1203,7 @@ fn ensure_10bit_general_intra_capability(
             );
         }
         return Err(general_intra_at!(
-            "unsupported_10bit_non_dc_intra",
+            "unsupported_10bit_non_dc_intra_chroma",
             tile_offset,
             missing_capability_message!("intra.10bit.non_dc", luma = "non_dc_or_chroma_neighbour",),
             GENERAL_INTRA_MODE_SPEC_SECTION,

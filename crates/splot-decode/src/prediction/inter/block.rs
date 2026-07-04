@@ -588,7 +588,7 @@ fn decode_block<T: ReconSample>(
     })?;
     let n4h = frontier.b_size.num_4x4_high().map_err(|_| {
         inter_diag!(
-            "inter_block_geometry",
+            "inter_block_geometry_height",
             tile_offset,
             "minimal inter block geometry lookup failed",
             SPEC_MODE_INFO
@@ -1308,7 +1308,7 @@ fn decode_block<T: ReconSample>(
         let residual = if skip == 0 {
             if !residual_quantizer_deltas_are_zero {
                 return Err(inter_cap!(
-                    "inter_block_residual_quantizer_delta",
+                    "inter_block_residual_quantizer_delta_warp",
                     tile_offset,
                     "inter.residual.nonzero_quantizer_delta",
                     SPEC_MODE_INFO
@@ -1316,7 +1316,7 @@ fn decode_block<T: ReconSample>(
             }
             if !inter_residual_geometry_supported(frontier) {
                 return Err(inter_cap!(
-                    "inter_block_chroma_partitioned_residual",
+                    "inter_block_chroma_partitioned_residual_warp",
                     tile_offset,
                     "inter.residual.chroma_partition_geometry",
                     SPEC_MODE_INFO

@@ -1,26 +1,28 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Gap-marker check for the unified decode engine.
+//! Marker check for the unified decode engine.
 //!
-//! The generic AV2 §7 decode engine flags every unimplemented feature at the op
-//! that consumes it with a `gap!("reason", …)` marker (a typed
-//! `decode/unsupported-feature`). `rg 'gap!\("'` is the live inventory of what the
-//! engine still misses, and the decoder-output oracle asserts a fixture's recorded
-//! `reason` for each such gap. This check protects that inventory two ways:
+//! The decode engine flags every unimplemented feature at the op that consumes it
+//! with a typed `decode/unsupported-feature` marker. `gap!` is the unified marker;
+//! the tier-specific families ([`MARKER_MACROS`] — `inter_cap!`, `general_intra_at!`,
+//! …) are ergonomic wrappers that funnel to the same carrier. Their first `"reason"`
+//! literals form one global inventory of what the engine still misses, and the
+//! decoder-output oracle asserts a fixture's recorded `reason` against it. This
+//! check protects that inventory two ways:
 //!
-//! 1. **Uniqueness** — no two `gap!` sites share a `reason` id. A collision would
-//!    let the oracle satisfy one feature's `xfail` assertion with a different
-//!    feature's marker, silently accepting a regression under a wrong-but-expected
-//!    reason.
-//! 2. **Count floor** — the number of `gap!` markers may not drop below
-//!    [`GAP_MARKER_FLOOR`], so removing a guard (which would let a stream decode to
-//!    wrong pixels instead of failing closed) cannot pass unnoticed. Raise the
-//!    floor in the same commit that adds markers; lowering it is a reviewed edit.
+//! 1. **Uniqueness** — no two marker sites share a `reason` id, across every family.
+//!    A collision would let the oracle satisfy one feature's `xfail` assertion with a
+//!    different feature's marker, silently accepting a regression under a
+//!    wrong-but-expected reason.
+//! 2. **Count floor** — the marker count may not drop below [`GAP_MARKER_FLOOR`], so
+//!    removing a guard (which would let a stream decode to wrong pixels instead of
+//!    failing closed) cannot pass unnoticed. Raise the floor in the same commit that
+//!    adds markers; lowering it is a reviewed edit.
 //!
 //! The scan is a line/char lexer over production decode source (inline
-//! `#[cfg(test)]` modules and `*_tests.rs` files excluded), so a `gap!` mentioned
-//! in a comment or string does not count.
+//! `#[cfg(test)]` modules and `*_tests.rs` files excluded), so a marker mentioned in
+//! a comment or string does not count.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -34,9 +36,11 @@ use crate::feature_status::collect_files;
 /// Decode-crate source root scanned for `gap!` markers.
 const DECODE_SRC: &str = "crates/splot-decode/src";
 
-/// Lowest permitted count of `gap!` markers in production decode source. Raised as
-/// op-local markers are added; a count below this floor fails the check.
-const GAP_MARKER_FLOOR: usize = 0;
+/// Lowest permitted count of unimplemented-feature markers in production decode
+/// source. Raised as markers are added; a count below this floor fails the check,
+/// so removing a guard (which would let a stream decode to wrong pixels instead of
+/// failing closed) cannot pass unnoticed. Lowering it is a reviewed edit.
+const GAP_MARKER_FLOOR: usize = 82;
 
 /// One `gap!("reason", …)` marker site: its reason id and the file it lives in.
 struct GapSite {
@@ -102,12 +106,12 @@ fn scan_gap_reasons(code: &str) -> Vec<String> {
             prev_ident = false;
             continue;
         }
-        if !prev_ident && matches_gap_bang(&chars, i) {
-            if let Some((reason, next)) = gap_reason_after(&chars, i + 4) {
+        if !prev_ident && let Some(bang_len) = matches_marker_bang(&chars, i) {
+            if let Some((reason, next)) = gap_reason_after(&chars, i + bang_len) {
                 out.push(reason);
                 i = next;
             } else {
-                i += 4;
+                i += bang_len;
             }
             prev_ident = false;
             continue;
@@ -118,9 +122,31 @@ fn scan_gap_reasons(code: &str) -> Vec<String> {
     out
 }
 
-/// True when `chars[i..]` begins the token `gap!`.
-fn matches_gap_bang(chars: &[char], i: usize) -> bool {
-    i + 4 <= chars.len() && chars[i..i + 4] == ['g', 'a', 'p', '!']
+/// Every unimplemented-feature marker macro. Their first `"reason"` literals share
+/// one global namespace regardless of decode tier, so a fixture's recorded reason
+/// maps to exactly one marker site. `gap!` is the unified target; the tier-specific
+/// families are ergonomic wrappers that all funnel to the same diagnostic carrier.
+const MARKER_MACROS: &[&str] = &[
+    "gap",
+    "inter_cap",
+    "inter_missing",
+    "inter_diag",
+    "compound_cap",
+    "compound_missing",
+    "general_intra_at",
+];
+
+/// When `chars[i..]` begins one of [`MARKER_MACROS`] immediately followed by `!`,
+/// returns the length of that `name!` token; otherwise `None`.
+fn matches_marker_bang(chars: &[char], i: usize) -> Option<usize> {
+    for name in MARKER_MACROS {
+        let name: Vec<char> = name.chars().collect();
+        let end = i + name.len();
+        if end < chars.len() && chars[i..end] == name[..] && chars[end] == '!' {
+            return Some(name.len() + 1);
+        }
+    }
+    None
 }
 
 /// Given `chars` positioned just past `gap!`, returns the reason literal and the
@@ -236,7 +262,8 @@ pub(crate) fn check_gap_markers(root: &Path) -> Result<()> {
     }
     let count = evaluate(&files, GAP_MARKER_FLOOR)?;
     eprintln!(
-        "check-gap-markers: {count} gap! markers, reason ids unique (floor {GAP_MARKER_FLOOR})"
+        "check-gap-markers: {count} unimplemented-feature markers, reason ids unique \
+         (floor {GAP_MARKER_FLOOR})"
     );
     Ok(())
 }
@@ -305,5 +332,18 @@ mod tests {
     #[test]
     fn empty_corpus_passes_zero_floor() {
         assert_eq!(evaluate(&[], 0).unwrap(), 0);
+    }
+
+    #[test]
+    fn scans_every_marker_family_reason() {
+        let code = r#"
+            let a = inter_cap!("inter_x", o, "cap", "s");
+            let b = general_intra_at!("intra_y", o, "m", "s");
+            let c = compound_missing!("compound_z", o, "in", "s");
+            let d = inter_diag!("diag_w", o, "m", "s");
+        "#;
+        let mut reasons = scan_gap_reasons(code);
+        reasons.sort();
+        assert_eq!(reasons, vec!["compound_z", "diag_w", "inter_x", "intra_y"]);
     }
 }

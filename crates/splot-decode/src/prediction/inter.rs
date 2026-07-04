@@ -519,7 +519,7 @@ fn resolve_block_reference_frame<'a, T: ReconSample>(
         })?;
     reference.frame_for_slot(ref_slot).ok_or_else(|| {
         inter_missing!(
-            "inter_missing_reference_frame",
+            "inter_missing_block_reference_frame",
             offset,
             "inter.block.reference_frame",
             SPEC_REFERENCE
@@ -883,7 +883,7 @@ fn validate_inter_frame_core(
     let height = frame_size.height;
     if width == 0 || height == 0 {
         return Err(inter_cap!(
-            "inter_unsupported_frame_size",
+            "inter_zero_dimension_frame_size",
             offset,
             "inter.frame_size empty",
             SPEC_HEADER
