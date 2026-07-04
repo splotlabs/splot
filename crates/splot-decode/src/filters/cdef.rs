@@ -72,6 +72,7 @@ impl CdefUnitGrid {
         Ok(Self { rows, cols, values })
     }
 
+    #[cfg(test)]
     fn constant(mi_rows: usize, mi_cols: usize, value: usize) -> Result<Self, CdefError> {
         let rows = mi_rows.div_ceil(CDEF_UNIT_MI);
         let cols = mi_cols.div_ceil(CDEF_UNIT_MI);
@@ -276,7 +277,11 @@ impl<'a, T: ReconSample> CdefRowBands<'a, T> {
     }
 }
 
-/// Applies AV2 § 7.18 CDEF in place.
+/// Applies AV2 § 7.18 CDEF in place. Test-only convenience wrapper over
+/// [`cdef_general_intra_frame_indexed`] with a constant zero-strength grid;
+/// production intra decode now filters through the unified `into_filtered_frame`
+/// sink with the walk-parsed strength grid.
+#[cfg(test)]
 pub(crate) fn cdef_general_intra_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     params: CdefFrameParams,

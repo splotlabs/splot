@@ -3,16 +3,16 @@
 
 //! Prediction and residual reconstruction handoffs for decoded frames.
 //!
-//! Feature tracking: `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`.
+//! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, IntraCardinalDirection,
+    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraCardinalDirection,
     IntraDirectionalAngle, IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges,
     IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraMiddleDirectionalAngleIdifMrlEdges, IntraPaethEdges,
-    IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode, IntraSquareBlockSize, OutputIndex,
-    PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconSample, apply_ibp_dr_blend_rect,
-    apply_intra_edge_filter, apply_intra_ibp_dc_rect, filter_intra_edge_corner,
+    IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode, OutputIndex, PixelFormat, PlaneId,
+    PlaneRect, PlaneSize, ReconSample, apply_ibp_dr_blend_rect, apply_intra_edge_filter,
+    apply_intra_ibp_dc_rect, filter_intra_edge_corner,
     predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
     predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_into,
@@ -26,8 +26,8 @@ use splot_recon::{
 use crate::Result;
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaPalette, LumaTransformTypeContext,
-    SupportedDirectionalLumaMode, SupportedNonDcLumaMode, TileReconstructionTrace,
-    reconstruct_general_intra_block, reconstruct_general_intra_block_rect_with_prediction,
+    SupportedDirectionalLumaMode, SupportedNonDcLumaMode, reconstruct_general_intra_block,
+    reconstruct_general_intra_block_rect_with_prediction,
     reconstruct_general_intra_block_rect_with_prediction_and_ddt,
     reconstruct_general_intra_block_with_prediction,
     reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
@@ -40,57 +40,6 @@ pub(crate) use crate::prediction::chroma::directional::{
 pub(crate) use crate::prediction::chroma::mhccp::{
     MHCCP_BITS, MHCCP_PARAM_COUNT, MhccpRefs, derive_mhccp_params, mul_fixed32_adapt,
 };
-
-const MINIMAL_LUMA_WIDTH: usize = 64;
-const MINIMAL_LUMA_HEIGHT: usize = 64;
-const MINIMAL_CHROMA_WIDTH: usize = 32;
-const MINIMAL_CHROMA_HEIGHT: usize = 32;
-const MINIMAL_LUMA_LOG2_SIZE: u8 = 6;
-const MINIMAL_CHROMA_LOG2_SIZE: u8 = 5;
-const TOP_LEFT_CHROMA_H_PRED_LEFT_FALLBACK_SAMPLE: u8 = 129;
-
-/// Reconstructs the current traced minimal-tier frame.
-pub(crate) fn reconstruct_minimal_traced_frame(
-    trace: TileReconstructionTrace,
-) -> Result<DecodedFrame<u8>> {
-    match trace {
-        TileReconstructionTrace::LumaDcNoResidual8Bit420_64x64 => {
-            reconstruct_luma_dc_chroma_h_pred_8bit420_64x64()
-        }
-    }
-}
-
-fn reconstruct_luma_dc_chroma_h_pred_8bit420_64x64() -> Result<DecodedFrame<u8>> {
-    let luma_size = PlaneSize::new(MINIMAL_LUMA_WIDTH, MINIMAL_LUMA_HEIGHT)?;
-    let luma_rect = PlaneRect::new(0, 0, MINIMAL_LUMA_WIDTH, MINIMAL_LUMA_HEIGHT)?;
-    let info = DecodedFrameInfo::new(
-        OutputIndex::new(0),
-        BitDepth::Eight,
-        PixelFormat::Yuv420,
-        luma_size,
-        luma_rect,
-    )?;
-
-    let mut workspace = CurrentFrameWorkspace::<u8>::new(info, 0)?;
-    let luma_block = IntraSquareBlockSize::new(MINIMAL_LUMA_LOG2_SIZE)?;
-    workspace.predict_intra_dc_square(PlaneId::Y, 0, 0, luma_block)?;
-
-    let chroma_block = IntraRectBlockSize::new(MINIMAL_CHROMA_LOG2_SIZE, MINIMAL_CHROMA_LOG2_SIZE)?;
-    let chroma_left = [TOP_LEFT_CHROMA_H_PRED_LEFT_FALLBACK_SAMPLE; MINIMAL_CHROMA_HEIGHT];
-    let mut chroma_prediction = [0u8; MINIMAL_CHROMA_WIDTH * MINIMAL_CHROMA_HEIGHT];
-    predict_intra_cardinal_directional_rect_into(
-        BitDepth::Eight,
-        chroma_block,
-        IntraCardinalDirection::Horizontal,
-        IntraDirectionalAngleEdges::left(&chroma_left),
-        &mut chroma_prediction,
-        MINIMAL_CHROMA_WIDTH,
-    )?;
-    workspace.write_rect_block(PlaneId::U, 0, 0, chroma_block, &chroma_prediction)?;
-    workspace.write_rect_block(PlaneId::V, 0, 0, chroma_block, &chroma_prediction)?;
-
-    Ok(workspace.freeze()?)
-}
 
 /// Creates an empty decoded 4:2:0 frame workspace sized to the actual
 /// `luma_width` x `luma_height` (a positive multiple of 64) for incremental

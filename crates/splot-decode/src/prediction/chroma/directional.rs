@@ -11,7 +11,7 @@
 //! helpers stay in the parent [`super`] module and are reached through
 //! `use super::*`.
 //!
-//! Feature tracking: `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER`.
+//! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, IntraDirectionalAngleEdges,

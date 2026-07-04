@@ -1,65 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Unit tests for the minimal traced reconstruction handoff ([`super`]).
+//! Unit tests for general intra block reconstruction ([`super`]).
 
 #![allow(clippy::unwrap_used)]
 
-use splot_recon::DecodedFrameHashInput;
-
 use super::*;
-
-const EXPECTED_DIGEST: &str = "dd244844938e78b226240de27e9c0acd39fc7ec2c1631319d13250fbe5f08496";
-
-fn reconstruct() -> DecodedFrame<u8> {
-    reconstruct_minimal_traced_frame(TileReconstructionTrace::LumaDcNoResidual8Bit420_64x64)
-        .unwrap()
-}
-
-#[test]
-fn traced_luma_dc_chroma_h_pred_reconstruction_predicts_visible_samples() {
-    let frame = reconstruct();
-
-    assert_eq!(frame.bit_depth(), BitDepth::Eight);
-    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
-    assert_eq!(frame.y().visible_size(), PlaneSize::new(64, 64).unwrap());
-    assert_eq!(
-        frame.u().unwrap().visible_size(),
-        PlaneSize::new(32, 32).unwrap()
-    );
-    assert_eq!(
-        frame.v().unwrap().visible_size(),
-        PlaneSize::new(32, 32).unwrap()
-    );
-    assert!(frame.y().samples().iter().all(|sample| *sample == 128));
-    assert!(
-        frame
-            .u()
-            .unwrap()
-            .samples()
-            .iter()
-            .all(|sample| *sample == TOP_LEFT_CHROMA_H_PRED_LEFT_FALLBACK_SAMPLE)
-    );
-    assert!(
-        frame
-            .v()
-            .unwrap()
-            .samples()
-            .iter()
-            .all(|sample| *sample == TOP_LEFT_CHROMA_H_PRED_LEFT_FALLBACK_SAMPLE)
-    );
-    assert!(!frame.y().samples().contains(&0));
-    assert!(!frame.u().unwrap().samples().contains(&0));
-    assert!(!frame.v().unwrap().samples().contains(&0));
-}
-
-#[test]
-fn traced_luma_dc_chroma_h_pred_reconstruction_hash_matches_minimal_contract() {
-    let frame = reconstruct();
-    let hash = DecodedFrameHashInput::new(&frame).compute_hash();
-
-    assert_eq!(hash.to_hex(), EXPECTED_DIGEST);
-}
 
 /// An `all_zero` (`txb_skip`) luma block: reconstruction writes the bare
 /// §7.13.2 prediction (zero residual), the only kind these cardinal

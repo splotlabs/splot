@@ -230,7 +230,7 @@ fn extend_warp_estimation(
         }
         super::super::find_mv_stack::ExtendWarpNeighbour::Missing => {
             return Err(inter_cap!(
-                "inter_warp_extend_base_missing",
+                "inter_warp_extend_neighbour_missing",
                 tile_offset,
                 "inter.warp_extend.base_position",
                 "7.13.3.24"
@@ -639,7 +639,7 @@ pub(crate) fn interintra_prediction_mode(
         Some(1) => Ok(Some(InterIntraMode::Vertical)),
         Some(2) => Ok(Some(InterIntraMode::Horizontal)),
         Some(3) => Err(inter_cap!(
-            "inter_interintra_smooth_unimplemented",
+            "inter_warp_interintra_smooth_unimplemented",
             tile_offset,
             "inter.interintra.ii_smooth",
             "7.13.3.29"

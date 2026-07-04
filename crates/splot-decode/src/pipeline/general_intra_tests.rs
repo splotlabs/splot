@@ -280,11 +280,9 @@ fn ten_bit_split_leaf_intra_frame_decodes_to_oracle() {
 }
 
 #[test]
-fn ten_bit_base_q255_fails_closed_frozen_tier() {
-    assert_decode_rejects(
-        FLAT_Q255_10BIT_FIXTURE,
-        "unsupported_10bit_frozen_minimal_tier",
-    );
+fn ten_bit_base_q255_delta_q_decodes() {
+    let frame = decode_ten(FLAT_Q255_10BIT_FIXTURE);
+    assert_yuv420_frame(&frame, BitDepth::Ten, 64, 64);
 }
 
 #[test]

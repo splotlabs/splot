@@ -3,15 +3,13 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use splot_decode::fuzzing::{TilePayloadFuzzStage, run_tile_payload_decode_fuzz_case};
+use splot_decode::fuzzing::run_tile_payload_decode_fuzz_case;
 
 const EXPECTED_UNSUPPORTED_RULE_ID: &str = "decode/unsupported-feature";
 const EXPECTED_UNSUPPORTED_MATRIX_ROW: &str = "tile-payload-decode";
 const EXPECTED_UNSUPPORTED_FEATURE_ID: &str = "DECODE-TILE-PAYLOAD-BOUNDARY";
 const EXPECTED_UNSUPPORTED_SPEC_SECTION: &str = "5.20.2.1";
 const EXPECTED_UNSUPPORTED_REASON: &str = "decode_tile_syntax";
-const EXPECTED_FRONTIER_SYMBOL_COUNT: u64 = 6;
-const EXPECTED_RECONSTRUCTION_TRACE: &str = "luma_dc_no_residual_8bit420_64x64";
 
 fuzz_target!(|data: &[u8]| {
     let outcome = run_tile_payload_decode_fuzz_case(data);
@@ -47,22 +45,5 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(boundary.unsupported_reason, EXPECTED_UNSUPPORTED_REASON);
     } else {
         assert!(outcome.typed_error_stage.is_some());
-    }
-
-    if let Some(frontier) = outcome.frontier {
-        let boundary = outcome
-            .boundary
-            .expect("successful frontier requires a successful boundary");
-        assert_eq!(frontier.symbol_count, EXPECTED_FRONTIER_SYMBOL_COUNT);
-        assert_eq!(frontier.consumed_bits, frontier.padding_end_position);
-        assert!(frontier.padding_end_position <= boundary.tile_size.saturating_mul(8));
-        assert!(frontier.trailing_bit_position <= frontier.padding_end_position);
-        assert_eq!(frontier.reconstruction_trace, EXPECTED_RECONSTRUCTION_TRACE);
-        assert_eq!(outcome.typed_error_stage, None);
-    } else if outcome.boundary.is_some() {
-        assert!(matches!(
-            outcome.typed_error_stage,
-            None | Some(TilePayloadFuzzStage::Frontier)
-        ));
     }
 });

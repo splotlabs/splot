@@ -35,30 +35,19 @@ pub(crate) fn route_general_minimal_intra(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
 ) -> bool {
-    core.quantization_params
-        .is_some_and(|quant| quant.base_q_idx != FROZEN_MINIMAL_BASE_Q_IDX)
-        && core.quantization_params.is_some_and(|quant| {
-            quant.delta_q_y_dc == 0
-                && quant.delta_q_u_dc == 0
-                && quant.delta_q_u_ac == 0
-                && quant.delta_q_v_dc == 0
-                && quant.delta_q_v_ac == 0
-        })
-        && sequence.intra.as_ref().is_some_and(|intra| {
-            !intra.enable_dip
-                && !intra.enable_ibp
-                && !intra.enable_mrls
-                && !intra.enable_intra_edge_filter
-        })
-        && sequence
-            .partition
-            .is_some_and(|partition| !partition.enable_sdp)
+    core.quantization_params.is_some_and(|quant| {
+        quant.delta_q_y_dc == 0
+            && quant.delta_q_u_dc == 0
+            && quant.delta_q_u_ac == 0
+            && quant.delta_q_v_dc == 0
+            && quant.delta_q_v_ac == 0
+    }) && sequence.intra.as_ref().is_some_and(|intra| {
+        !intra.enable_dip && !intra.enable_ibp && !intra.enable_intra_edge_filter
+    }) && sequence.partition.is_some()
         && sequence.transform_quant_entropy.is_some_and(|tq| {
             tq.equal_ac_dc_q
                 && !tq.enable_fsc
                 && !tq.enable_cctx
-                && !tq.enable_idtx_intra
-                && !tq.enable_intra_ist
                 && i32::from(tq.base_uv_dc_delta_q) + GENERAL_INTRA_DELTA_DCQUANT_MIN == 0
                 && i32::from(tq.base_uv_ac_delta_q) + GENERAL_INTRA_DELTA_DCQUANT_MIN == 0
         })
@@ -92,19 +81,6 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
             .tile_info
             .as_ref()
             .is_some_and(|tile_info| tile_info.tile_cols == 1 && tile_info.tile_rows == 1)
-        && core.quantization_params.is_some()
-        && core
-            .segmentation_params
-            .as_ref()
-            .is_some_and(|seg| !seg.segmentation_enabled)
-        && core.setup_qm_params.is_some_and(|qm| !qm.using_qmatrix)
-        && core
-            .delta_q_params
-            .is_some_and(|delta| !delta.delta_q_present)
-        && core
-            .lossless_info
-            .as_ref()
-            .is_some_and(|lossless| !lossless.coded_lossless)
         && core
             .deblocking_filter_params
             .is_some_and(|filter| filter.df_delta_q == [0; 4])
@@ -126,240 +102,6 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
             .is_some_and(|tail| !tail.film_grain.apply_grain)
         && core.allow_screen_content_tools != Some(true)
 }
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_general_minimal_intra_frame(
-    plan: &DecodeStreamPlan,
-    candidate: &DecodePlannedObu,
-    bytes: &[u8],
-    frame_envelope: ObuEnvelope<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    options: &DecodeOptions,
-    header: IvfHeader,
-) -> Result<PipelineFrame> {
-    let mut tile_plan = derive_tile_plan(
-        plan,
-        candidate,
-        bytes,
-        frame_envelope,
-        sequence,
-        core,
-        options,
-    )?;
-    let tile = match tile_plan.work_units_mut() {
-        [tile] => tile,
-        [] => {
-            return Err(general_intra_unsupported(
-                "general_intra_missing_tile_work_unit",
-                None,
-                "general intra decode requires one tile work unit",
-                GENERAL_INTRA_TILE_SPEC_SECTION,
-            ));
-        }
-        work_units => {
-            return Err(general_intra_unsupported(
-                "general_intra_unexpected_tile_work_units",
-                work_units.first().map(|tile| tile.tile_byte_span().start),
-                missing_capability_message!("intra.tile.count", count = "not_one"),
-                GENERAL_INTRA_TILE_SPEC_SECTION,
-            ));
-        }
-    };
-    let tile_offset = tile.tile_byte_span().start;
-
-    let qindex = core
-        .quantization_params
-        .map(|quant| quant.base_q_idx)
-        .ok_or_else(|| {
-            general_intra_at!(
-                "general_intra_missing_base_q",
-                tile_offset,
-                "general intra decode requires a parsed base_q_idx",
-                GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-            )
-        })?;
-    let luma_use_tcq = tile.coeff_frame_facts().allow_tcq();
-    let (mi_rows, mi_cols) = crate::bitstream::tile_payload::frame_mi_dimensions(core)
-        .map_err(|error| general_intra_partition_frontier_error(error, tile_offset))?;
-
-    let frame_size = core.frame_size.ok_or_else(|| {
-        general_intra_at!(
-            "general_intra_missing_frame_size",
-            tile_offset,
-            "general intra decode requires a parsed frame size",
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        )
-    })?;
-    let frame_width = frame_size.width;
-    let frame_height = frame_size.height;
-
-    let tile_size = tile.tile_size();
-    let limits = options.limits();
-
-    let bit_depth = match sequence.general.bit_depth_idc {
-        BitDepthIdc::Eight => BitDepth::Eight,
-        BitDepthIdc::Ten => BitDepth::Ten,
-    };
-
-    ensure_runtime_limits(limits, frame_width, frame_height, tile_size, bit_depth)?;
-
-    let frame = match bit_depth {
-        BitDepth::Eight => PipelineDecodedFrame::Eight(decode_general_intra_frame_into::<u8>(
-            tile,
-            sequence,
-            core,
-            limits,
-            frame_width as usize,
-            frame_height as usize,
-            mi_rows,
-            mi_cols,
-            qindex,
-            luma_use_tcq,
-            bit_depth,
-            tile_offset,
-        )?),
-        BitDepth::Ten => PipelineDecodedFrame::Ten(decode_general_intra_frame_into::<u16>(
-            tile,
-            sequence,
-            core,
-            limits,
-            frame_width as usize,
-            frame_height as usize,
-            mi_rows,
-            mi_cols,
-            qindex,
-            luma_use_tcq,
-            bit_depth,
-            tile_offset,
-        )?),
-    };
-    let frame_cdfs = tile.frame_cdfs();
-    Ok(PipelineFrame {
-        frame,
-        frame_cdfs,
-        frame_rate_numerator: header.timebase_denominator,
-        frame_rate_denominator: header.timebase_numerator,
-    })
-}
-#[allow(clippy::too_many_arguments)]
-fn decode_general_intra_frame_into<T: ReconSample>(
-    tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    limits: crate::DecodeLimits,
-    frame_width: usize,
-    frame_height: usize,
-    mi_rows: usize,
-    mi_cols: usize,
-    qindex: u32,
-    luma_use_tcq: bool,
-    bit_depth: BitDepth,
-    tile_offset: ByteOffset,
-) -> Result<DecodedFrame<T>> {
-    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<T>(
-        frame_width,
-        frame_height,
-        bit_depth,
-    )?;
-    let mut coeff_ctx = crate::bitstream::tile_payload::TileCoeffContextState::new(
-        mi_rows, mi_cols,
-    )
-    .map_err(|source| {
-        general_intra_residual_error(
-            GeneralIntraResidualError::CoeffContextState { source },
-            tile_offset,
-        )
-    })?;
-
-    let mut deblock_blocks: Vec<crate::filters::deblock::DeblockBlock> = Vec::new();
-    let mut chroma_deblock_scratch: [Vec<crate::filters::deblock::DeblockBlock>; 2] =
-        [Vec::new(), Vec::new()];
-
-    let symbols = crate::bitstream::tile_payload::decode_general_intra_multiblock_tree(
-        tile,
-        sequence,
-        core,
-        limits,
-        |work_unit,
-         symbols,
-         frontier,
-         joint_modes,
-         uses_mrls,
-         fsc_modes,
-         palette_state,
-         is_cfl_ctx,
-         block_decoded| {
-            decode_one_general_intra_block::<T>(
-                work_unit,
-                symbols,
-                frontier,
-                sequence,
-                None, // is_general_minimal_intra holds enable_intra_edge_filter off
-                core,
-                joint_modes,
-                uses_mrls,
-                fsc_modes,
-                palette_state,
-                is_cfl_ctx,
-                block_decoded,
-                &mut workspace,
-                &mut coeff_ctx,
-                &mut deblock_blocks,
-                &mut chroma_deblock_scratch,
-                qindex,
-                luma_use_tcq,
-                general_intra_transform_tool_residual_policy(sequence),
-                mi_cols,
-                mi_rows,
-                bit_depth,
-                tile_offset,
-            )
-        },
-    )
-    .map_err(|error| map_general_intra_multiblock_error(error, tile_offset))?;
-
-    symbols.exit_symbol().map_err(|_| {
-        general_intra_at!(
-            "general_intra_exit_symbol",
-            tile_offset,
-            "general intra tile payload did not satisfy §8.2.4 exit_symbol() after the decoded blocks",
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        )
-    })?;
-    tile.apply_frame_end_cdf_update();
-
-    if let Some(filter) = core.deblocking_filter_params {
-        crate::filters::deblock::deblock_general_intra_frame(
-            &mut workspace,
-            &deblock_blocks,
-            [&chroma_deblock_scratch[0], &chroma_deblock_scratch[1]],
-            mi_rows,
-            mi_cols,
-            filter,
-            crate::pipeline::deblock_quant_deltas(sequence, core),
-            bit_depth,
-        )
-        .map_err(|error| general_intra_deblock_error(error, tile_offset))?;
-    }
-
-    if let Some(params) = cdef_frame_params(core) {
-        crate::filters::cdef::cdef_general_intra_frame(
-            &mut workspace,
-            params,
-            mi_rows,
-            mi_cols,
-            bit_depth,
-        )
-        .map_err(|error| general_intra_cdef_error(error, tile_offset))?;
-    }
-
-    Ok(workspace.freeze()?)
-}
-fn cdef_frame_params(core: &FrameHeaderCore) -> Option<crate::filters::cdef::CdefFrameParams> {
-    crate::filters::cdef::cdef_frame_strengths(core)?
-        .into_iter()
-        .next()
-}
 
 fn general_intra_chroma_tools(
     sequence: &SequenceHeader,
@@ -380,7 +122,7 @@ fn general_intra_chroma_tools(
         .with_allow_screen_content_tools(effective_allow_screen_content_tools(core))
 }
 
-fn general_intra_transform_tool_residual_policy(
+pub(crate) fn general_intra_transform_tool_residual_policy(
     sequence: &SequenceHeader,
 ) -> TransformToolResidualPolicy {
     TransformToolResidualPolicy::from_sequence_tools(
@@ -403,28 +145,6 @@ fn sequence_sb_mib(sequence: &SequenceHeader) -> usize {
         splot_core::headers::sequence::SequencePartitionConfig::seq_sb_size,
     );
     splot_core::tile::num_4x4_blocks_wide(sb_size) as usize
-}
-fn general_intra_cdef_error(
-    _error: crate::filters::cdef::CdefError,
-    offset: ByteOffset,
-) -> DecodeError {
-    general_intra_at!(
-        "general_intra_cdef",
-        offset,
-        missing_capability_message!("intra.cdef.block_config"),
-        "7.18",
-    )
-}
-fn general_intra_deblock_error(
-    _error: crate::filters::deblock::DeblockError,
-    offset: ByteOffset,
-) -> DecodeError {
-    general_intra_at!(
-        "general_intra_deblock",
-        offset,
-        missing_capability_message!("intra.deblock.edge_config"),
-        "7.17",
-    )
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
@@ -452,6 +172,14 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<GeneralIntraLeafMode> {
+    if core.setup_qm_params.is_some_and(|qm| qm.using_qmatrix) {
+        return Err(general_intra_at!(
+            "general_intra_using_qmatrix",
+            tile_offset,
+            missing_capability_message!("intra.residual.quantizer_matrix", qm = "using_qmatrix"),
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ));
+    }
     let geometry_error = || {
         general_intra_at!(
             "general_intra_block_geometry",
@@ -1475,7 +1203,7 @@ fn ensure_10bit_general_intra_capability(
             );
         }
         return Err(general_intra_at!(
-            "unsupported_10bit_non_dc_intra",
+            "unsupported_10bit_non_dc_intra_chroma",
             tile_offset,
             missing_capability_message!("intra.10bit.non_dc", luma = "non_dc_or_chroma_neighbour",),
             GENERAL_INTRA_MODE_SPEC_SECTION,
@@ -1592,28 +1320,6 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     Ok(())
-}
-
-fn map_general_intra_multiblock_error(
-    error: crate::bitstream::tile_payload::GeneralIntraMultiblockError<DecodeError>,
-    tile_offset: ByteOffset,
-) -> DecodeError {
-    use crate::bitstream::tile_payload::{GeneralIntraMultiblockError, GeneralIntraTreeWalkError};
-    match error {
-        GeneralIntraMultiblockError::Setup(error) => {
-            general_intra_partition_frontier_error(error, tile_offset)
-        }
-        GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Leaf(error)) => error,
-        GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
-            TilePartitionTraversalError::Limit(source),
-        )) => DecodeError::Limit { source },
-        GeneralIntraMultiblockError::Walk(_) => general_intra_at!(
-            "general_intra_partition_walk",
-            tile_offset,
-            missing_capability_message!("intra.partition.walk", path = "unsupported"),
-            GENERAL_INTRA_PARTITION_SPEC_SECTION,
-        ),
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -2047,39 +1753,7 @@ fn general_intra_block_mode_error(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
-fn general_intra_partition_frontier_error(
-    error: TilePartitionFrontierError,
-    offset: ByteOffset,
-) -> DecodeError {
-    match error {
-        TilePartitionFrontierError::Limit(source)
-        | TilePartitionFrontierError::Traversal(TilePartitionTraversalError::Limit(source)) => {
-            DecodeError::Limit { source }
-        }
-        TilePartitionFrontierError::MissingFact { .. }
-        | TilePartitionFrontierError::MiSizeState(_)
-        | TilePartitionFrontierError::IntraJointModeState(_)
-        | TilePartitionFrontierError::UsesMrlsState(_)
-        | TilePartitionFrontierError::FscModeState(_)
-        | TilePartitionFrontierError::UvCflState(_)
-        | TilePartitionFrontierError::LumaPaletteState(_)
-        | TilePartitionFrontierError::Traversal(_)
-        | TilePartitionFrontierError::UnexpectedFrontier { .. } => {
-            general_intra_at!(
-                "general_intra_partition_frontier",
-                offset,
-                missing_capability_message!(
-                    "intra.partition.frontier",
-                    shape = "non_single_block_root",
-                ),
-                GENERAL_INTRA_PARTITION_SPEC_SECTION,
-            )
-        }
-    }
-}
-
-fn general_intra_unsupported(
+pub(crate) fn general_intra_unsupported(
     reason: &'static str,
     byte_offset: Option<ByteOffset>,
     message: &'static str,

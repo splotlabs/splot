@@ -160,6 +160,13 @@ fixtureable = true
 spec_sections = ["7.20", "7.23"]
 
 [[capability]]
+id = "frame.segmentation"
+name = "Frame segmentation (segment_id map / SEG_LVL features)"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.18.7.1", "5.20.5.7", "5.20.5.8"]
+
+[[capability]]
 id = "frame.show_existing"
 name = "Show-existing / hidden-ref output ordering"
 category = "frame"
@@ -186,6 +193,13 @@ name = "Rectangular PARTITION_HORZ / PARTITION_VERT"
 category = "partition"
 fixtureable = true
 spec_sections = ["5.20.3.1", "5.20.3.2", "9.2"]
+
+[[capability]]
+id = "partition.sdp"
+name = "Semi-decoupled partitioning (SDP)"
+category = "partition"
+fixtureable = true
+spec_sections = ["5.20.3.1", "5.20.5.3"]
 
 [[capability]]
 id = "partition.recursive"
@@ -374,6 +388,13 @@ fixtureable = true
 spec_sections = ["7.15.2.3", "5.20.7.30"]
 
 [[capability]]
+id = "transform.idtx_intra"
+name = "Identity transform for intra luma (enable_idtx_intra)"
+category = "transform"
+fixtureable = true
+spec_sections = ["7.15.2.3", "5.20.7.29"]
+
+[[capability]]
 id = "transform.secondary_ist"
 name = "Secondary (intra) transform IST"
 category = "transform"
@@ -427,7 +448,7 @@ spec_sections = ["5.18.6.1", "6.17.6.1", "7.14.2"]
 id = "quant.delta_q"
 name = "Per-block delta-Q"
 category = "quant"
-fixtureable = false
+fixtureable = true
 spec_sections = ["5.18.7.8", "5.20.5.11", "6.17.7.4"]
 notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
 

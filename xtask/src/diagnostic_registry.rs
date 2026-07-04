@@ -249,7 +249,7 @@ fn accepts_registry_id(registry: &RegistryConfig, s: &str, origin: &str) -> Resu
 /// removes all test-only literals (assertions, `starts_with` prefixes, fake examples). The
 /// cut triggers only when the attribute is followed by a `mod` declaration — a
 /// `#[cfg(test)]` on a single `fn` does not truncate the real code after it.
-fn strip_test_modules(text: &str) -> &str {
+pub(crate) fn strip_test_modules(text: &str) -> &str {
     let lines = line_starts(text);
     for (i, (start, line)) in lines.iter().enumerate() {
         if line.trim() != "#[cfg(test)]" {

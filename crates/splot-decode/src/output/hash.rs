@@ -224,7 +224,7 @@ mod tests {
             error,
             DecodeError::UnsupportedFeature {
                 unsupported
-            } if unsupported.reason().starts_with("general_intra_")
+            } if unsupported.reason() == "inter_exit_symbol"
         ));
     }
 

@@ -274,19 +274,32 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     initial_cdfs: FrameCdfSubset,
 ) -> Result<(FrameCdfSubset, InterFilterInputs)> {
     let offset = frame_envelope.offset;
-    let mut tile_plan = crate::pipeline::derive_inter_tile_plan(
-        plan,
-        candidate,
-        bytes,
-        frame_envelope,
-        sequence,
-        core,
-        options,
-        initial_cdfs,
-    )?;
+    let frame_is_intra = core.frame_is_intra == Some(true);
+    let mut tile_plan = if frame_is_intra {
+        crate::pipeline::derive_tile_plan(
+            plan,
+            candidate,
+            bytes,
+            frame_envelope,
+            sequence,
+            core,
+            options,
+        )?
+    } else {
+        crate::pipeline::derive_inter_tile_plan(
+            plan,
+            candidate,
+            bytes,
+            frame_envelope,
+            sequence,
+            core,
+            options,
+            initial_cdfs,
+        )?
+    };
     let [tile] = tile_plan.work_units_mut() else {
         return Err(inter_cap!(
-            "inter_unexpected_tile_work_units",
+            "inter_walk_unexpected_tile_work_units",
             offset,
             "inter.tile_count != 1",
             SPEC_MODE_INFO
@@ -294,18 +307,21 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     };
     let tile_offset = tile.tile_byte_span().start;
 
-    let max_drl_bits_minus_1 = core
-        .inter
-        .as_ref()
-        .and_then(|inter| inter.max_drl_bits_minus_1)
-        .ok_or_else(|| {
-            inter_missing!(
-                "inter_missing_max_drl_bits",
-                offset,
-                "inter.max_drl_bits_minus_1",
-                SPEC_MODE_INFO
-            )
-        })?;
+    let max_drl_bits_minus_1 = if frame_is_intra {
+        0
+    } else {
+        core.inter
+            .as_ref()
+            .and_then(|inter| inter.max_drl_bits_minus_1)
+            .ok_or_else(|| {
+                inter_missing!(
+                    "inter_missing_max_drl_bits",
+                    offset,
+                    "inter.max_drl_bits_minus_1",
+                    SPEC_MODE_INFO
+                )
+            })?
+    };
 
     let (mi_rows, mi_cols) = frame_mi_dimensions(core).map_err(|_| {
         inter_missing!(
@@ -348,7 +364,11 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         )
     })?;
 
-    let residual_tool_policy = transform_tool_residual_policy(sequence);
+    let residual_tool_policy = if frame_is_intra {
+        crate::pipeline::general_intra::general_intra_transform_tool_residual_policy(sequence)
+    } else {
+        transform_tool_residual_policy(sequence)
+    };
     let residual_quantizer_deltas_are_zero = core
         .quantization_params
         .as_ref()
@@ -390,7 +410,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
          palette_state,
          is_cfl_ctx,
          block_decoded| {
-            let leaf = decode_one_inter_or_intra_block(
+            let leaf = decode_block(
                 work_unit,
                 symbols,
                 frontier,
@@ -507,8 +527,11 @@ fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<us
     }
 }
 
+/// The unified per-block decode engine: reads `is_inter` and forks to the intra
+/// predictors or motion compensation, then decodes residual, inverse-transforms,
+/// and reconstructs. One block engine for key and inter frames.
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-fn decode_one_inter_or_intra_block<T: ReconSample>(
+fn decode_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
@@ -565,7 +588,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
     })?;
     let n4h = frontier.b_size.num_4x4_high().map_err(|_| {
         inter_diag!(
-            "inter_block_geometry",
+            "inter_block_geometry_height",
             tile_offset,
             "minimal inter block geometry lookup failed",
             SPEC_MODE_INFO
@@ -645,7 +668,10 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         && refs_one_sided;
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
 
-    let is_inter = if frontier.is_luma_part() || frontier.is_chroma_part() {
+    let is_inter = if core.frame_is_intra == Some(true)
+        || frontier.is_luma_part()
+        || frontier.is_chroma_part()
+    {
         0
     } else if frontier.shared_mixed_chroma_ref_forces_inter() {
         1
@@ -1282,7 +1308,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
         let residual = if skip == 0 {
             if !residual_quantizer_deltas_are_zero {
                 return Err(inter_cap!(
-                    "inter_block_residual_quantizer_delta",
+                    "inter_block_residual_quantizer_delta_warp",
                     tile_offset,
                     "inter.residual.nonzero_quantizer_delta",
                     SPEC_MODE_INFO
@@ -1290,7 +1316,7 @@ fn decode_one_inter_or_intra_block<T: ReconSample>(
             }
             if !inter_residual_geometry_supported(frontier) {
                 return Err(inter_cap!(
-                    "inter_block_chroma_partitioned_residual",
+                    "inter_block_chroma_partitioned_residual_warp",
                     tile_offset,
                     "inter.residual.chroma_partition_geometry",
                     SPEC_MODE_INFO
@@ -2016,7 +2042,7 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
             .and_then(|list_ref| ref_frame_idx.get(list_ref).copied())
             .ok_or_else(|| {
                 inter_missing!(
-                    "inter_missing_reference_frame",
+                    "inter_missing_bawp_reference_slot",
                     tile_offset,
                     "inter.bawp.reference_frame",
                     super::SPEC_REFERENCE
@@ -2024,7 +2050,7 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
             })?;
         let ref_frame = reference.frame_for_slot(slot).ok_or_else(|| {
             inter_missing!(
-                "inter_missing_reference_frame",
+                "inter_missing_bawp_reference_frame",
                 tile_offset,
                 "inter.bawp.reference_frame",
                 super::SPEC_REFERENCE
@@ -2222,6 +2248,9 @@ fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
 
 /// § 5.18.2 `FrameMvPrecision` as a Table 6.19 code.
 fn frame_mv_precision(core: &FrameHeaderCore, tile_offset: ByteOffset) -> Result<u8> {
+    if core.frame_is_intra == Some(true) {
+        return Ok(0);
+    }
     Ok(inter_mv_read_config(core, tile_offset)?.precision())
 }
 
