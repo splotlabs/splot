@@ -21,9 +21,10 @@ use splot_core::ivf::IvfHeader;
 use splot_recon::{BitDepth, DecodedFrame, ReconSample};
 
 use crate::bitstream::tile_payload::FrameCdfSubset;
-use crate::pipeline::unsupported_at;
 use crate::prediction::inter::{self, InterReferenceState};
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
+
+pub(crate) mod intra;
 
 /// The frame-level branch of the unified decode engine.
 ///
@@ -32,7 +33,6 @@ use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 /// self-contained. Intra frames join `decode_frame` in a later step; the variant
 /// is defined now so the branch shape is stable.
 pub(crate) enum FrameSetup<'a, T: ReconSample> {
-    #[allow(dead_code)]
     Intra,
     Inter(&'a InterReferenceState<'a, T>),
 }
@@ -67,10 +67,18 @@ pub(crate) fn decode_frame<T: ReconSample>(
             reference,
             bit_depth,
         ),
-        FrameSetup::Intra => Err(unsupported_at(
-            "frame_engine_intra_unrouted",
-            frame_envelope.offset,
-            "intra frame decode is not yet routed through the unified engine",
-        )),
+        FrameSetup::Intra => {
+            let (frame, frame_cdfs) = intra::decode_intra_frame::<T>(
+                plan,
+                candidate,
+                bytes,
+                frame_envelope,
+                &core,
+                sequence,
+                options,
+                bit_depth,
+            )?;
+            Ok((frame, core, frame_cdfs))
+        }
     }
 }

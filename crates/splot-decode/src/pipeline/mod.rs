@@ -112,7 +112,6 @@ const FROZEN_MINIMAL_BASE_Q_IDX: u32 = 255;
 pub(crate) const GENERAL_INTRA_FEATURE_ID: &str = "DECODE-GENERAL-INTRA-FRAME-FRONTIER";
 pub(crate) const GENERAL_INTRA_MATRIX_ROW: &str = "general-intra-frame-frontier";
 pub(crate) const GENERAL_INTRA_TIER_ID: &str = "general-intra-8bit420-frontier-v1";
-pub(crate) const GENERAL_INTRA_TILE_SPEC_SECTION: &str = "5.20.1";
 pub(crate) const GENERAL_INTRA_PARTITION_SPEC_SECTION: &str = "5.20.3.1";
 pub(crate) const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
 pub(crate) const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
@@ -289,16 +288,48 @@ pub(crate) fn decode_key_frame(
         );
     }
     if general_intra::route_general_minimal_intra(sequence, &core) {
-        return general_intra::decode_general_minimal_intra_frame(
-            plan,
-            candidate,
-            bytes,
-            frame_envelope,
-            sequence,
-            &core,
-            options,
-            header,
-        );
+        let bit_depth = match sequence.general.bit_depth_idc {
+            BitDepthIdc::Eight => BitDepth::Eight,
+            BitDepthIdc::Ten => BitDepth::Ten,
+        };
+        let (frame, frame_cdfs) = match bit_depth {
+            BitDepth::Eight => {
+                let (frame, _core, frame_cdfs) = frame_engine::decode_frame::<u8>(
+                    plan,
+                    candidate,
+                    bytes,
+                    frame_envelope,
+                    core,
+                    sequence,
+                    options,
+                    header,
+                    &frame_engine::FrameSetup::Intra,
+                    BitDepth::Eight,
+                )?;
+                (PipelineDecodedFrame::Eight(frame), frame_cdfs)
+            }
+            BitDepth::Ten => {
+                let (frame, _core, frame_cdfs) = frame_engine::decode_frame::<u16>(
+                    plan,
+                    candidate,
+                    bytes,
+                    frame_envelope,
+                    core,
+                    sequence,
+                    options,
+                    header,
+                    &frame_engine::FrameSetup::Intra,
+                    BitDepth::Ten,
+                )?;
+                (PipelineDecodedFrame::Ten(frame), frame_cdfs)
+            }
+        };
+        return Ok(PipelineFrame {
+            frame,
+            frame_cdfs,
+            frame_rate_numerator: header.timebase_denominator,
+            frame_rate_denominator: header.timebase_numerator,
+        });
     }
     if sequence.general.bit_depth_idc != BitDepthIdc::Eight {
         return Err(unsupported_at(

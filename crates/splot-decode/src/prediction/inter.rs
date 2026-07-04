@@ -1107,7 +1107,7 @@ pub(crate) mod mv_scaling;
 pub(crate) mod read_mv;
 mod single_ref;
 
-use block::decode_inter_blocks;
+pub(crate) use block::decode_inter_blocks;
 use cross_frame::{ResolvedCdfLoad, order_hint_history_unwrapped, resolve_cdf_load};
 
 #[cfg(test)]

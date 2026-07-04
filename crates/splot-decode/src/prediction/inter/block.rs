@@ -2248,6 +2248,9 @@ fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
 
 /// § 5.18.2 `FrameMvPrecision` as a Table 6.19 code.
 fn frame_mv_precision(core: &FrameHeaderCore, tile_offset: ByteOffset) -> Result<u8> {
+    if core.frame_is_intra == Some(true) {
+        return Ok(0);
+    }
     Ok(inter_mv_read_config(core, tile_offset)?.precision())
 }
 
