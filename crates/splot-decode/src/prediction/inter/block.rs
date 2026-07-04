@@ -274,16 +274,29 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     initial_cdfs: FrameCdfSubset,
 ) -> Result<(FrameCdfSubset, InterFilterInputs)> {
     let offset = frame_envelope.offset;
-    let mut tile_plan = crate::pipeline::derive_inter_tile_plan(
-        plan,
-        candidate,
-        bytes,
-        frame_envelope,
-        sequence,
-        core,
-        options,
-        initial_cdfs,
-    )?;
+    let frame_is_intra = core.frame_is_intra == Some(true);
+    let mut tile_plan = if frame_is_intra {
+        crate::pipeline::derive_tile_plan(
+            plan,
+            candidate,
+            bytes,
+            frame_envelope,
+            sequence,
+            core,
+            options,
+        )?
+    } else {
+        crate::pipeline::derive_inter_tile_plan(
+            plan,
+            candidate,
+            bytes,
+            frame_envelope,
+            sequence,
+            core,
+            options,
+            initial_cdfs,
+        )?
+    };
     let [tile] = tile_plan.work_units_mut() else {
         return Err(inter_cap!(
             "inter_unexpected_tile_work_units",
@@ -294,18 +307,21 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     };
     let tile_offset = tile.tile_byte_span().start;
 
-    let max_drl_bits_minus_1 = core
-        .inter
-        .as_ref()
-        .and_then(|inter| inter.max_drl_bits_minus_1)
-        .ok_or_else(|| {
-            inter_missing!(
-                "inter_missing_max_drl_bits",
-                offset,
-                "inter.max_drl_bits_minus_1",
-                SPEC_MODE_INFO
-            )
-        })?;
+    let max_drl_bits_minus_1 = if frame_is_intra {
+        0
+    } else {
+        core.inter
+            .as_ref()
+            .and_then(|inter| inter.max_drl_bits_minus_1)
+            .ok_or_else(|| {
+                inter_missing!(
+                    "inter_missing_max_drl_bits",
+                    offset,
+                    "inter.max_drl_bits_minus_1",
+                    SPEC_MODE_INFO
+                )
+            })?
+    };
 
     let (mi_rows, mi_cols) = frame_mi_dimensions(core).map_err(|_| {
         inter_missing!(
@@ -348,7 +364,11 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         )
     })?;
 
-    let residual_tool_policy = transform_tool_residual_policy(sequence);
+    let residual_tool_policy = if frame_is_intra {
+        crate::pipeline::general_intra::general_intra_transform_tool_residual_policy(sequence)
+    } else {
+        transform_tool_residual_policy(sequence)
+    };
     let residual_quantizer_deltas_are_zero = core
         .quantization_params
         .as_ref()

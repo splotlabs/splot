@@ -380,7 +380,7 @@ fn general_intra_chroma_tools(
         .with_allow_screen_content_tools(effective_allow_screen_content_tools(core))
 }
 
-fn general_intra_transform_tool_residual_policy(
+pub(crate) fn general_intra_transform_tool_residual_policy(
     sequence: &SequenceHeader,
 ) -> TransformToolResidualPolicy {
     TransformToolResidualPolicy::from_sequence_tools(
