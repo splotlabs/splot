@@ -27,6 +27,7 @@ mod dupehound;
 mod explain_registry;
 mod feature_status;
 mod fixtures;
+mod gap_markers;
 mod gen_tables;
 mod git_util;
 mod reference_evidence;
@@ -127,6 +128,8 @@ enum Task {
     CheckSpecMirror,
     /// Verify diagnostic registry docs list exactly the emitted diagnostic rule ids.
     CheckDiagnosticRegistry,
+    /// Verify unified-engine `gap!` reason ids are unique and the marker count holds.
+    CheckGapMarkers,
     /// Verify every fuzz_targets/*.rs file has a matching `[[bin]]` entry in fuzz/Cargo.toml.
     CheckFuzzTargets,
     /// Seed `fuzz/corpus/<target>/` from the committed fixtures and conformance vectors.
@@ -288,6 +291,7 @@ fn main() -> Result<()> {
         Task::CheckDiagnosticRegistry => {
             diagnostic_registry::check_diagnostic_registry(&workspace_root()?)
         }
+        Task::CheckGapMarkers => gap_markers::check_gap_markers(&workspace_root()?),
         Task::CheckFuzzTargets => check_fuzz_targets(&workspace_root()?),
         Task::SeedFuzzCorpus => seed_fuzz_corpus::run_seed_fuzz_corpus(&workspace_root()?),
         Task::CheckFixtures => fixtures::check_fixtures(&workspace_root()?),
@@ -410,6 +414,7 @@ fn run_ci() -> Result<()> {
     decoder_fixtures::run_verify(&root)?;
     decoder_fixtures::run_coverage(&root, true)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
+    gap_markers::check_gap_markers(&root)?;
     fixtures::check_fixtures(&root)?;
     dupehound::check_duplication(&root)?;
     doc_budget::check_doc_budget(&root)?;

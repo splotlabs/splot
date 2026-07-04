@@ -390,7 +390,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
          palette_state,
          is_cfl_ctx,
          block_decoded| {
-            let leaf = decode_one_inter_or_intra_block(
+            let leaf = decode_block(
                 work_unit,
                 symbols,
                 frontier,
@@ -507,8 +507,11 @@ fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<us
     }
 }
 
+/// The unified per-block decode engine: reads `is_inter` and forks to the intra
+/// predictors or motion compensation, then decodes residual, inverse-transforms,
+/// and reconstructs. One block engine for key and inter frames.
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-fn decode_one_inter_or_intra_block<T: ReconSample>(
+fn decode_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
