@@ -552,6 +552,15 @@ unsupported_reason = "unsupported_cfl_intra"
 matrix_row = "sequence-chroma-frontier"
 
 [[fixture]]
+id = "syn-intrabc-intra-64x64"
+status = "xfail_splot"
+features = ["container.ivf", "frame.key_closed_loop", "inter.intrabc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "009d416df51cdcf66bbecbc0c763228679e92d59c806a890e9c7da010e6efc2f"
+avm_raw_sha256 = "b7e71052fcb7431323d8e9feea5dd4a993fe533f0cfd49a2e496ea2beb5f625c"
+unsupported_reason = "unsupported_frame_tools"
+matrix_row = "minimal-decode-tier-contract"
+
+[[fixture]]
 id = "syn-ist-intra-64x64"
 status = "xfail_splot"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.secondary_ist"]
@@ -624,6 +633,15 @@ unsupported_reason = "multistream_selection"
 matrix_row = "decode-stream-state"
 
 [[fixture]]
+id = "syn-paeth-intra-64x64"
+status = "xfail_splot"
+features = ["container.ivf", "frame.key_closed_loop", "intra.paeth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "009d416df51cdcf66bbecbc0c763228679e92d59c806a890e9c7da010e6efc2f"
+avm_raw_sha256 = "b7e71052fcb7431323d8e9feea5dd4a993fe533f0cfd49a2e496ea2beb5f625c"
+unsupported_reason = "unsupported_frame_tools"
+matrix_row = "minimal-decode-tier-contract"
+
+[[fixture]]
 id = "syn-parity-intra-64x64"
 status = "xfail_splot"
 features = ["coeff.parity_hiding", "container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
@@ -656,6 +674,24 @@ status = "xfail_splot"
 features = ["coeff.tcq", "container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "c698a1d98d57d7828c72a3946655e7db334dbc586640a91ffede887738830465"
 avm_raw_sha256 = "b7e71052fcb7431323d8e9feea5dd4a993fe533f0cfd49a2e496ea2beb5f625c"
+unsupported_reason = "unsupported_frame_tools"
+matrix_row = "minimal-decode-tier-contract"
+
+[[fixture]]
+id = "syn-tip-inter-64x64"
+status = "xfail_splot"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "inter.tip", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "5094d3c0766f1bf07199f399cc0378e15dcf71053671264b53085ad603e56b72"
+avm_raw_sha256 = "4a1d51fcfea17fda204af74ed6f2c77d69017342221f6d6fb839a0faedcc05e0"
+unsupported_reason = "unsupported_frame_tools"
+matrix_row = "minimal-decode-tier-contract"
+
+[[fixture]]
+id = "syn-warp-inter-64x64"
+status = "xfail_splot"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "inter.warp", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "32114be8dee5e870e0ba5a5b2d69ee3bb9a030b03a4cf89277f10346786ac30a"
+avm_raw_sha256 = "4a1d51fcfea17fda204af74ed6f2c77d69017342221f6d6fb839a0faedcc05e0"
 unsupported_reason = "unsupported_frame_tools"
 matrix_row = "minimal-decode-tier-contract"
 

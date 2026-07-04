@@ -731,3 +731,23 @@ path = "vectors/valid/syn-gdf-intra-64x64.ivf"
 description = "Tiny AVM loop.gdf fixture (decode-oracle coverage; splot fails closed unsupported_frame_tools); validates clean."
 expect = "clean"
 
+[[vector]]
+path = "vectors/valid/syn-warp-inter-64x64.ivf"
+description = "Tiny AVM inter.warp fixture (decode-oracle coverage; splot fails closed unsupported_frame_tools); validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-inter-64x64.ivf"
+description = "Tiny AVM inter.tip fixture (decode-oracle coverage; splot fails closed unsupported_frame_tools); validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-intrabc-intra-64x64.ivf"
+description = "Tiny AVM inter.intrabc fixture (decode-oracle coverage; splot fails closed unsupported_frame_tools); validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-paeth-intra-64x64.ivf"
+description = "Tiny AVM intra.paeth fixture (decode-oracle coverage; splot fails closed unsupported_frame_tools); validates clean."
+expect = "clean"
+

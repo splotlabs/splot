@@ -15,7 +15,7 @@ name = "Annex B length-delimited OBU stream"
 category = "container"
 fixtureable = false
 spec_sections = ["Annex B.2", "Annex B.3", "5.2.1"]
-notes = "Corpus is IVF-only; AVM/avmenc emits low-overhead OBU inside IVF, not standalone Annex-B length-delimited streams, so no"
+notes = "AVM emits IVF, not standalone Annex-B; raw-OBU path is covered by tests/fixtures/*.av2 + parse_obu fuzz."
 
 [[capability]]
 id = "container.ivf"
@@ -44,7 +44,7 @@ name = "Quantizer matrix OBU (in-band QM)"
 category = "obu"
 fixtureable = false
 spec_sections = ["5.13", "6.12", "7.3.8.9"]
-notes = "AVM --enable-qm streams reference a QM level with NO in-band QM OBU (external-HLS provision); the corpus has no fixture "
+notes = "AVM --enable-qm references an external-HLS QM level with no in-band QM OBU."
 
 [[capability]]
 id = "obu.sequence_header"
@@ -80,7 +80,7 @@ name = "12-bit sequence"
 category = "sequence"
 fixtureable = false
 spec_sections = ["6.4.1"]
-notes = "No 12-bit fixture in the corpus; AVM synthetic corpus targets 8/10-bit only. Not exercised."
+notes = "This local AVM build supports 8/10-bit only (g_bit_depth range 8..10); 12-bit not encodable."
 
 [[capability]]
 id = "seq.bit_depth.8"
@@ -247,9 +247,8 @@ spec_sections = ["5.20.5.5", "7.13.2.1"]
 id = "intra.paeth"
 name = "PAETH intra prediction"
 category = "intra"
-fixtureable = false
+fixtureable = true
 spec_sections = ["7.13.2.2"]
-notes = "recon primitive is supported but no corpus fixture is described as PAETH_PRED (paeth-intra is disabled in the inter fixt"
 
 [[capability]]
 id = "intra.per_unit_prediction"
@@ -311,9 +310,8 @@ spec_sections = ["5.20.7.14", "5.20.7.15", "7.13.3.29"]
 id = "inter.intrabc"
 name = "Intra block copy (IntraBC)"
 category = "inter"
-fixtureable = false
+fixtureable = true
 spec_sections = ["5.18.3.4", "5.20.5.4", "7.13.3.18"]
-notes = "recon primitive exists but no corpus fixture is described as coding an IntraBC block; screen-content/IBC tools are disab"
 
 [[capability]]
 id = "inter.mv_prediction_spatial"
@@ -347,17 +345,15 @@ spec_sections = ["5.20.7.20", "7.13.3.16", "7.13.3.18"]
 id = "inter.tip"
 name = "Temporal interpolated prediction (TIP)"
 category = "inter"
-fixtureable = false
+fixtureable = true
 spec_sections = ["7.10", "7.13.3.2"]
-notes = "TIP disabled across the corpus tool lists. Not exercised."
 
 [[capability]]
 id = "inter.warp"
 name = "Warped / global motion prediction"
 category = "inter"
-fixtureable = false
+fixtureable = true
 spec_sections = ["5.20.7.7", "7.13.3.19", "7.13.3.23"]
-notes = "Warp/global-motion is disabled (or zero-parameter GLOBALMV only) across the corpus tool lists; no fixture exercises an a"
 
 [[capability]]
 id = "transform.dct_adst"
@@ -498,7 +494,7 @@ name = "Decoded frame hash metadata"
 category = "metadata"
 fixtureable = false
 spec_sections = ["5.17.12", "6.16.13"]
-notes = "No corpus fixture is described as carrying a decoded-frame-hash metadata OBU; splot computes its own hash. Not exercised"
+notes = "No avmenc flag emits an in-band decoded-frame-hash metadata OBU."
 
 [[capability]]
 id = "metadata.other"
@@ -506,7 +502,7 @@ name = "Other metadata OBUs (HDR/ITU-T T.35/timecode/etc.)"
 category = "metadata"
 fixtureable = false
 spec_sections = ["5.17", "6.16"]
-notes = "No corpus fixture carries HDR/ITU-T/timecode/scan-type metadata OBUs. Not exercised."
+notes = "avmenc CICP/HDR flags set sequence fields, not standalone metadata OBUs."
 
 [[capability]]
 id = "output.raw_i420"
