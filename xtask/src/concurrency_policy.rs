@@ -200,11 +200,11 @@ const PARALLEL_CRATE_PREFIX: &str = "crates/splot-parallel/";
 /// parallel path on `splot_parallel::on_multiworker_pool()`, so direct callers such
 /// as tests take the serial path instead of Rayon's global pool.
 const PAR_ITER_RULE_ALLOWLIST: &[&str] = &[
-    "crates/splot-decode/src/runtime_minimal/ccso.rs",
-    "crates/splot-decode/src/runtime_minimal/cdef.rs",
-    "crates/splot-decode/src/runtime_minimal/deblock.rs",
-    "crates/splot-decode/src/runtime_minimal/plane_bands.rs",
-    "crates/splot-decode/src/runtime_minimal/wienerns_lr/recon/final_filters.rs",
+    "crates/splot-decode/src/filters/ccso.rs",
+    "crates/splot-decode/src/filters/cdef.rs",
+    "crates/splot-decode/src/filters/deblock.rs",
+    "crates/splot-decode/src/tile/plane_bands.rs",
+    "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters.rs",
 ];
 
 /// Returns the unbounded-channel source needle matched in `text`, including braced

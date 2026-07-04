@@ -21,9 +21,9 @@ use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::symbol::CdfUpdateMode;
 use splot_core::types::ObuType;
 
-use crate::tile_payload::{
+use crate::bitstream::tile_payload::{
     TileBruPath, TileFrameFacts, TileGridFacts, TilePayloadBoundaryInput, TilePayloadSource,
-    plan_minimal_runtime_block_symbol_frontier, plan_tile_payload_boundary,
+    plan_tile_block_symbol_frontier, plan_tile_payload_boundary,
 };
 use crate::{DecodeLayerSelection, DecodeLimitThreshold, DecodeLimits, DecodeObuSourceKind};
 
@@ -107,7 +107,7 @@ pub enum TilePayloadFuzzStage {
     Boundary,
     /// The committed minimal fixture facts could not be parsed for frontier mode.
     MinimalFixtureFacts,
-    /// Minimal runtime frontier planning returned a typed error.
+    /// Minimal tier frontier planning returned a typed error.
     Frontier,
 }
 
@@ -194,7 +194,7 @@ pub fn run_tile_payload_decode_fuzz_case(data: &[u8]) -> TilePayloadFuzzOutcome 
         outcome.typed_error_stage = Some(TilePayloadFuzzStage::Frontier);
         return outcome;
     };
-    match plan_minimal_runtime_block_symbol_frontier(work_unit, &sequence, &core, limits) {
+    match plan_tile_block_symbol_frontier(work_unit, &sequence, &core, limits) {
         Ok(frontier) => {
             let summary = frontier.summary();
             outcome.frontier = Some(TilePayloadFrontierFuzzOutcome {
@@ -203,7 +203,7 @@ pub fn run_tile_payload_decode_fuzz_case(data: &[u8]) -> TilePayloadFuzzOutcome 
                 trailing_bit_position: summary.trailing_bit_position.get(),
                 padding_end_position: summary.padding_end_position.get(),
                 reconstruction_trace: match frontier.reconstruction_trace() {
-                    crate::tile_payload::MinimalRuntimeReconstructionTrace::LumaDcNoResidual8Bit420_64x64 => {
+                    crate::bitstream::tile_payload::TileReconstructionTrace::LumaDcNoResidual8Bit420_64x64 => {
                         "luma_dc_no_residual_8bit420_64x64"
                     }
                 },
@@ -274,7 +274,7 @@ fn frame_facts(flags: u8, detail_seed: u8, framing_is_bridge: bool) -> TileFrame
 }
 
 fn boundary_outcome(
-    plan: &crate::tile_payload::DecodeTilePayloadPlan<'_>,
+    plan: &crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
 ) -> Option<TilePayloadBoundaryFuzzOutcome> {
     let [unit] = plan.work_units() else {
         return None;

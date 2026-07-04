@@ -14,10 +14,11 @@ splot-cli ───────┬──> splot-validate ───> splot-core
                  ├──> splot-parallel
                  └──> splot-core
 
-splot-decode owns the current unsupported diagnostic API, the decode runtime
-context, byte/parsed stream planning over splot-core output, and the narrow
-minimal hash/Y4M runtime. Its splot-recon dependency is limited to runtime
-decode/reconstruction/hash/Y4M output handoff code.
+splot-decode owns the current unsupported diagnostic API, decode runtime
+context, byte/parsed stream planning over splot-core output, pipeline
+orchestration, reference/filter/output routing, and narrow supported-tier
+hash/raw/Y4M output. Its splot-recon dependency is limited to decoded-frame,
+reconstruction, reference-store, hash, raw, and Y4M handoff code.
 
 splot-parallel owns the approved concurrency primitives (local Rayon worker
 pool + bounded crossbeam queues) and depends on no splot-* crate.
@@ -106,15 +107,14 @@ Boundaries; enforced by `cargo xtask check-dependency-direction`):
   below and [ZERO_COPY.md](./ZERO_COPY.md)). It intentionally exposes no runtime
   reconstruction API yet and depends only on `splot-tables` (the shared § 9
   transform kernels used by the § 7.15.2.1 inverse transform).
-- **`splot-decode`** — scaffold for the future AV2 decode driver. It owns the
-  current structured `decode/unsupported-feature` diagnostic API,
-  `DecodeRuntimeConfig` / `DecodeContext`, a plan-only stream planner over
-  already parsed `splot-core` `ParsedBitstream` values, and a bounded
-  `DecodeContext::plan_bytes` planner for raw Annex B / IVF byte slices. Its
-  current runtime output is limited to the minimal-tier decoded-frame hash and
-  Y4M handoff through `splot-recon`; it intentionally exposes no broad runtime
-  tile decode, pixel reconstruction, raw output, film-grain output, or
-  reference update semantics yet.
+- **`splot-decode`** — the decode driver boundary. It owns structured
+  `decode/*` diagnostics, `DecodeRuntimeConfig` / `DecodeContext`, byte and
+  parsed stream planners, frame-level pipeline orchestration, decode-local
+  prediction/residual/reference/filter ordering, and hash/raw/Y4M output routing
+  over decoded frames. The current support tier remains narrow; broad AV2
+  playback, film-grain output, and complete random-access behavior remain
+  unsupported. Decoder module ownership is documented in
+  [DECODER-ARCHITECTURE.md](./DECODER-ARCHITECTURE.md).
 - **`xtask`** — project automation: the `ci` pipeline; the repository checks
   (`check-license-headers`, `check-dependency-direction`, `check-spec-mirror`,
   `check-feature-status`, `check-diagnostic-registry`,

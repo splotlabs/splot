@@ -10,7 +10,7 @@
    `splot-core` parser modules and `crates/splot-validate/tests/validator_never_panics.rs`
    (mostly proptests, plus a few exhaustive-truncation unit tests). The
    `cargo fuzz` targets cover the parser, validator, symbol decoder,
-   tile-payload frontier, byte-planner, minimal runtime hash/raw/Y4M byte
+   tile-payload frontier, byte-planner, minimal tier hash/raw/Y4M byte
    surfaces, writer roundtrips, encoder input views, frame-hash serialization,
    reference-frame-store operations, decoded-frame/plane runtime type validation,
    Y4M output serialization from structured decoded frames, and intra
@@ -38,14 +38,14 @@
      (bounded plan-only traversal over arbitrary raw Annex B or IVF/DKIF bytes).
    - `decode_runtime_hash_bytes` —
      `DecodeContext::decode_hash_report_bytes` with finite limits over arbitrary
-     bytes and bounded mutations of the committed minimal runtime IVF fixture.
+     bytes and bounded mutations of the committed minimal tier IVF fixture.
    - `decode_runtime_y4m_bytes` —
      `DecodeContext::decode_y4m_bytes` with finite limits over arbitrary bytes,
-     bounded mutations of the committed minimal runtime IVF fixture, and bounded
+     bounded mutations of the committed minimal tier IVF fixture, and bounded
      in-memory writer success/error paths.
    - `decode_runtime_raw_bytes` —
      `DecodeContext::decode_raw_bytes` with finite limits over arbitrary bytes,
-     bounded mutations of the committed minimal runtime IVF fixture, and bounded
+     bounded mutations of the committed minimal tier IVF fixture, and bounded
      in-memory writer success/error paths.
    - `recon_frame_hash_bytes` — `splot-recon` `DecodedFrameHashInput`
      serialization and digest computation from bounded structured
@@ -73,8 +73,8 @@
    reject malformed sources transactionally, enforce the limits they can derive
    from parsed or raw byte input, and prove deterministic plan metadata across
    decode thread-count policies. The raw byte planner is covered by the
-   `decode_plan_bytes` fuzz target; the current minimal runtime hash byte API is
-   covered by `decode_runtime_hash_bytes`, and the current minimal runtime Y4M
+   `decode_plan_bytes` fuzz target; the current minimal tier hash byte API is
+   covered by `decode_runtime_hash_bytes`, and the current minimal tier Y4M
    byte API is covered by `decode_runtime_y4m_bytes`.
 4. **CLI integration tests** — `crates/splot-cli/tests/cli.rs` runs the `splot`
    binary against the fixtures in `tests/fixtures/` and generated temporary IVF

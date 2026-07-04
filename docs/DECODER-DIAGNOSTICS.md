@@ -17,7 +17,7 @@
 The current scanner roots are `crates/splot-cli/src/commands/decode.rs` and
 `crates/splot-decode/src`. Emitted decoder diagnostics are owned by
 `splot-decode` and rendered by the CLI decode command after input bytes reach
-the byte stream planner and, for hash mode, the minimal runtime tier gate.
+the byte stream planner and, for hash mode, the minimal tier tier gate.
 `splot-recon` is shared reconstruction infrastructure for future decoder and
 encoder roundtrip work, so it is not scanned as a decoder diagnostic root unless
 a future change adds a narrower decoder-owned reconstruction emission path.

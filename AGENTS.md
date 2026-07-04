@@ -86,7 +86,7 @@ crates/splot-core      AV2 bitstream model + parsers (no other splot-* dependenc
 crates/splot-parallel  approved concurrency primitives (Rayon pool + bounded crossbeam queues); no other splot-* dependency
 crates/splot-tables    dependency-free generated AV2 § 9 spec tables shared across crates (no other splot-* dependency)
 crates/splot-recon     reconstruction primitives -> splot-core, splot-tables
-crates/splot-decode    decoder diagnostics + planning + minimal hash/Y4M runtime -> splot-core, splot-parallel, splot-recon
+crates/splot-decode    decode planning, pipeline orchestration, diagnostics, reference/filter/output routing -> splot-core, splot-parallel, splot-recon
 crates/splot-validate  parser-driven conformance diagnostics -> splot-core
 crates/splot-encode    future encoder API + borrowed input views -> splot-core, splot-parallel, splot-recon, splot-tables
 crates/splot-cli       thin `splot` binary -> splot-core, splot-parallel, splot-decode, splot-validate, splot-encode
@@ -113,6 +113,12 @@ Hard dependency rules:
 
 These rules are enforced by `cargo xtask check-dependency-direction`; concurrency
 and zero-copy details live in [docs/agents/architecture.md](./docs/agents/architecture.md).
+
+Decoder structure guardrail:
+Do not create new `runtime_minimal`, `runtime2`, `new_runtime`, `misc`, or
+fixture-named runtime modules. Production decode modules must be named by
+AV2/decoder domain: bitstream, entropy, tile, prediction, residual, reference,
+filters, output, pipeline, support, diagnostic.
 
 ## 3. Operating Rules
 
