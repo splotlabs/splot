@@ -88,7 +88,6 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
             .tile_info
             .as_ref()
             .is_some_and(|tile_info| tile_info.tile_cols == 1 && tile_info.tile_rows == 1)
-        && core.quantization_params.is_some()
         && core
             .segmentation_params
             .as_ref()
