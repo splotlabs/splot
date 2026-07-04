@@ -65,8 +65,8 @@ pub use dequant::{
     quantizer_value,
 };
 pub use dequant_process::{
-    DequantBlockParams, QmWeightIndex, dequant_coefficient, dequantize_block,
-    qm_weighted_quantizer, quantization_matrix_weight,
+    DequantBlockParams, QmDequant, QmFrameLevels, QmWeightIndex, dequant_coefficient,
+    dequantize_block, qm_weighted_quantizer, quantization_matrix_weight,
 };
 pub use error::{ReconError, Result};
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
@@ -135,11 +135,17 @@ pub use reference::{
     ReferenceRefreshMask, ReferenceRefreshOutcome, ReferenceRefreshSlots, ReferenceSlot,
 };
 pub use secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform};
+/// Re-export of the § 9.4 `Qm_Offset[txSz]` table so decode crates can resolve a
+/// transform block's built-in quantizer-matrix region without depending on
+/// `splot-tables` directly.
+pub use splot_tables::tables::quantizer::QM_OFFSET;
 pub use subpel_mc::{
     InterpolationFilter, ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams,
     blend_compound_average_equal, subpel_predict_block, subpel_predict_block_compound_intermediate,
 };
-pub use transform_params::{TransformPass, dpcm_direction, get_transform_1d_type, transform_shift};
+pub use transform_params::{
+    TransformPass, dpcm_direction, get_transform_1d_type, transform_shift, tx_size_index,
+};
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
 pub use warp_prediction::{
     IDENTITY_WARP_PARAMS, WARPED_BLOCK_SIZE, WarpPredictBlockParams, ext_warp_predict_unit,

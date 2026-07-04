@@ -172,14 +172,6 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<GeneralIntraLeafMode> {
-    if core.setup_qm_params.is_some_and(|qm| qm.using_qmatrix) {
-        return Err(general_intra_at!(
-            "general_intra_using_qmatrix",
-            tile_offset,
-            missing_capability_message!("intra.residual.quantizer_matrix", qm = "using_qmatrix"),
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ));
-    }
     let geometry_error = || {
         general_intra_at!(
             "general_intra_block_geometry",

@@ -311,6 +311,7 @@ fn dequantize_block_4x4(
         tx_height: DCT_DCT_4X4_HEIGHT,
         dq_denom: params.dq_denom(),
         bit_depth: params.bit_depth(),
+        qm: None,
     };
     let mut dequantized = [0i32; DCT_DCT_4X4_COEFF_COUNT];
     dequantize_block(&dequant_params, quantized, &mut dequantized).map_err(|source| {

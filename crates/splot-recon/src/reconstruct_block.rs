@@ -128,6 +128,7 @@ mod tests {
             tx_height,
             dq_denom: 1,
             bit_depth: BitDepth::Eight,
+            qm: None,
         }
     }
 

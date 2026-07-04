@@ -131,6 +131,29 @@ pub const fn transform_shift(log2_width: u32, log2_height: u32) -> Result<(u8, u
     })
 }
 
+/// The `TX_SIZES_ALL` ordinal `txSz` whose `(Tx_Width_Log2, Tx_Height_Log2)` equals
+/// `(log2_width, log2_height)`, for indexing per-`txSz` § 9 tables such as
+/// `Qm_Offset[txSz]`. The lookup is exact because `(log2W, log2H)` uniquely
+/// identifies every ordinal.
+///
+/// # Errors
+/// Returns [`ReconError::InvalidTransformShiftShape`] if `(log2_width,
+/// log2_height)` is not one of the 25 AV2 `TX_SIZES_ALL` transform shapes.
+pub const fn tx_size_index(log2_width: u32, log2_height: u32) -> Result<usize> {
+    let mut i = 0;
+    while i < TX_SIZE_LOG2_DIMS.len() {
+        let (w, h) = TX_SIZE_LOG2_DIMS[i];
+        if w == log2_width && h == log2_height {
+            return Ok(i);
+        }
+        i += 1;
+    }
+    Err(ReconError::InvalidTransformShiftShape {
+        log2_width,
+        log2_height,
+    })
+}
+
 /// Which § 7.15.4.1 transform pass a [`get_transform_1d_type`] query is for: the
 /// row pass (`get_transform_1d_type(0, w)`) or the column pass
 /// (`get_transform_1d_type(1, h)`).

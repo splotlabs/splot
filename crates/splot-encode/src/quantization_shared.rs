@@ -103,6 +103,7 @@ pub(crate) fn dequantize_coefficients<const N: usize>(
         tx_height,
         dq_denom,
         bit_depth,
+        qm: None,
     };
     dequantize_block(&dequant_params, quantized, &mut dequantized).map_err(|source| {
         Error::QuantizationDequant {

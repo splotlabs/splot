@@ -60,9 +60,9 @@ pub(crate) use general_intra_block::{
     decode_general_intra_luma_block_mode_with_fsc_context, read_general_intra_palette_y_mode,
 };
 pub(crate) use general_intra_residual::{
-    ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, GeneralIntraResidualError,
-    IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext, LumaTransformTypeContext,
-    PositionedLumaCoeffBlock, TransformToolResidualPolicy,
+    ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, FrameQmScope,
+    GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext,
+    LumaTransformTypeContext, PositionedLumaCoeffBlock, TransformToolResidualPolicy,
     decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
     reconstruct_general_intra_block, reconstruct_general_intra_block_rect_with_prediction,
     reconstruct_general_intra_block_rect_with_prediction_and_ddt,

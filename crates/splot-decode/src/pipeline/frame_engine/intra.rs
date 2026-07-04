@@ -14,9 +14,9 @@
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, InterpolationFilter};
 use splot_core::headers::sequence::SequenceHeader;
-use splot_recon::{BitDepth, DecodedFrame, ReconSample, ReferenceFrameStore};
+use splot_recon::{BitDepth, DecodedFrame, QmFrameLevels, ReconSample, ReferenceFrameStore};
 
-use crate::bitstream::tile_payload::FrameCdfSubset;
+use crate::bitstream::tile_payload::{FrameCdfSubset, FrameQmScope};
 use crate::pipeline::general_intra::general_intra_unsupported;
 use crate::pipeline::reconstruct::new_general_intra_workspace;
 use crate::pipeline::{
@@ -134,6 +134,8 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         ref_frame_cdfs: Vec::new(),
     };
 
+    let _qm_scope = FrameQmScope::install(build_frame_qm_levels(core));
+
     let (frame_cdfs, filter_inputs) = decode_inter_blocks::<T>(
         plan,
         candidate,
@@ -174,4 +176,20 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     let frame =
         filter_sink.into_filtered_frame(core, deblock_quant_deltas(sequence, core), offset)?;
     Ok((frame, frame_cdfs))
+}
+
+/// The frame's § 7.14.4 built-in quantization-matrix levels for the general-intra
+/// dequant, or `None` when `using_qmatrix == 0`. `levels_gt8` is `qm_y/u/v[0]` (used
+/// when `tw > 8 || th > 8`); `levels_le8` is `SegQMLevel[Y/U/V][segment_id]` — the
+/// general-intra tier decodes segment 0, so segment 0's levels are used.
+fn build_frame_qm_levels(core: &FrameHeaderCore) -> Option<QmFrameLevels> {
+    let qm = core.setup_qm_params.filter(|qm| qm.using_qmatrix)?;
+    let levels_le8 = core
+        .lossless_info
+        .as_ref()
+        .map_or([0u8; 3], |lossless| lossless.seg_qm_levels[0]);
+    Some(QmFrameLevels {
+        levels_gt8: [qm.levels[0].qm_y, qm.levels[0].qm_u, qm.levels[0].qm_v],
+        levels_le8,
+    })
 }
