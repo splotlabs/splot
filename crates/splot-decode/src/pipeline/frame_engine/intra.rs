@@ -7,16 +7,17 @@
 //! ([`decode_inter_blocks`]) with a null reference set (`num_total_refs == 0`), so
 //! every block takes the `is_inter == 0` arm and reconstructs through the shared
 //! [`crate::pipeline::general_intra::decode_one_general_intra_block`] callback. The
-//! frame-level loop filters stay on the intra sink (deblock + CDEF then freeze);
-//! unifying the sink with the inter `into_filtered_frame` path is a later step.
+//! frame-level loop filters run through the same shared `into_filtered_frame` sink
+//! as the inter path (deblock, then CDEF over the walk-parsed strength grid, then
+//! CCSO and loop-restoration), so intra and inter share one final-filter stage.
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, InterpolationFilter};
 use splot_core::headers::sequence::SequenceHeader;
 use splot_recon::{BitDepth, DecodedFrame, ReconSample, ReferenceFrameStore};
 
-use crate::bitstream::tile_payload::{FrameCdfSubset, frame_mi_dimensions};
-use crate::pipeline::general_intra::{cdef_frame_params, general_intra_unsupported};
+use crate::bitstream::tile_payload::FrameCdfSubset;
+use crate::pipeline::general_intra::general_intra_unsupported;
 use crate::pipeline::reconstruct::new_general_intra_workspace;
 use crate::pipeline::{deblock_quant_deltas, unsupported_at};
 use crate::prediction::inter::{InterReferenceState, decode_inter_blocks};
@@ -58,13 +59,6 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     })?;
     let frame_width = frame_size.width as usize;
     let frame_height = frame_size.height as usize;
-    let (mi_rows, mi_cols) = frame_mi_dimensions(core).map_err(|_| {
-        unsupported_at(
-            "frame_engine_intra_mi_dimensions",
-            offset,
-            "intra frame decode requires frame mi dimensions",
-        )
-    })?;
     let qindex = core
         .quantization_params
         .map(|quant| quant.base_q_idx)
@@ -133,32 +127,21 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         initial_cdfs,
     )?;
 
-    if let Some(filter) = core.deblocking_filter_params {
-        crate::filters::deblock::deblock_general_intra_frame(
-            &mut workspace,
-            &filter_inputs.deblock_blocks,
-            [
-                &filter_inputs.chroma_deblock_blocks[0],
-                &filter_inputs.chroma_deblock_blocks[1],
-            ],
-            mi_rows,
-            mi_cols,
-            filter,
-            deblock_quant_deltas(sequence, core),
-            bit_depth,
-        )
-        .map_err(|_| unsupported_at("frame_engine_intra_deblock", offset, "intra frame deblock"))?;
-    }
-    if let Some(params) = cdef_frame_params(core) {
-        crate::filters::cdef::cdef_general_intra_frame(
-            &mut workspace,
-            params,
-            mi_rows,
-            mi_cols,
-            bit_depth,
-        )
-        .map_err(|_| unsupported_at("frame_engine_intra_cdef", offset, "intra frame cdef"))?;
-    }
-    let frame = workspace.freeze()?;
+    let mut filter_sink = crate::filters::wienerns_lr::recon_final_filter_sink(
+        workspace,
+        frame_width,
+        frame_height,
+        bit_depth,
+    );
+    filter_sink.set_deblock_blocks(
+        filter_inputs.deblock_blocks,
+        filter_inputs.chroma_deblock_blocks,
+    );
+    filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
+    filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
+    filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
+    filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
+    let frame =
+        filter_sink.into_filtered_frame(core, deblock_quant_deltas(sequence, core), offset)?;
     Ok((frame, frame_cdfs))
 }

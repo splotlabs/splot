@@ -102,13 +102,6 @@ fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
             .is_some_and(|tail| !tail.film_grain.apply_grain)
         && core.allow_screen_content_tools != Some(true)
 }
-pub(crate) fn cdef_frame_params(
-    core: &FrameHeaderCore,
-) -> Option<crate::filters::cdef::CdefFrameParams> {
-    crate::filters::cdef::cdef_frame_strengths(core)?
-        .into_iter()
-        .next()
-}
 
 fn general_intra_chroma_tools(
     sequence: &SequenceHeader,
