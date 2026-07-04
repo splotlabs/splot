@@ -44,7 +44,7 @@ None.
   `fuzz/fuzz_targets/recon_reference_frame_store_bytes.rs`.
 - Affected docs/status: `docs/IMPLEMENTATION-MATRIX.toml`,
   `docs/DECODER-SUPPORT-MATRIX.toml`, generated status docs,
-  `docs/DECODER-ROADMAP.md`, and `docs/TESTING.md`.
+  `docs/DECODER-SUPPORT-MATRIX.toml`, and `docs/TESTING.md`.
 - Dependencies: no new third-party dependency and no new `splot-*` dependency
   edge.
 - Runtime behavior: no `splot decode` behavior change.

@@ -14,7 +14,8 @@ documentation and agent-guidance audit, not an implementation audit.
 Audit project-authored guidance and documentation:
 
 - `AGENTS.md`, `CLAUDE.md`, and `.github/copilot-instructions.md`
-- `.codex/skills/`, `.claude/skills/`, `.github/skills/`, and `.github/prompts/`
+- `.codex/skills/`, `.claude/commands/`, `.claude/skills/`, `.github/skills/`,
+  and `.github/prompts/`
 - project docs under `docs/`, excluding the AV2 spec mirror body
 - OpenSpec process docs and active change artifacts when they make repository
   process claims

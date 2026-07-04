@@ -60,6 +60,6 @@ None.
 - `crates/splot-recon/src/lib.rs`
 - `docs/IMPLEMENTATION-MATRIX.toml`, `docs/DECODER-SUPPORT-MATRIX.toml`
 - `xtask/src/decoder_conformance_coverage.rs`
-- `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/DECODER-ROADMAP.md`
+- `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/DECODER-SUPPORT-MATRIX.toml`
 - generated status/coverage docs
 - `openspec/specs/decoder-support/spec.md`

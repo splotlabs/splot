@@ -3,7 +3,7 @@
 ## Matrix and docs
 
 - [x] Add `INFRA-DUPEHOUND-DUPLICATION-GATE` to `docs/IMPLEMENTATION-MATRIX.toml`.
-- [x] Regenerate `docs/FEATURE-STATUS.md` with `cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md`.
+- [x] Run `cargo xtask check-feature-status`.
 - [x] Record the change in `openspec/changes/README.md` active table.
 
 ## Gate (Phase 0)
@@ -14,7 +14,7 @@
 - [x] Wire `check-duplication` into `run_ci()`.
 - [x] Install dupehound + run the budget gate and the PR-only `check --diff`
       ratchet in `.github/workflows/ci.yml`.
-- [x] Document reuse-before-reimplement in `AGENTS.md` + `docs/agents/commands.md`.
+- [x] Document reuse-before-reimplement in `AGENTS.md` + `AGENTS.md`.
 
 ## Dedup campaign — lower the production budget (ratchet, not zero)
 

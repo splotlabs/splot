@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+# Ratchet down when durable docs shrink. Active OpenSpec artifacts are process
+# state; the completed archive is intentionally not an allowed hiding place.
+max_manual_markdown_files = 12
+max_manual_markdown_lines = 1800
+
+exclude = [
+  "docs/spec/av2/1.0.0/**",
+  "openspec/**",
+  "license*",
+  "copying*",
+  "patents*",
+  ".github/**",
+  ".claude/**",
+  ".codex/**",
+  "tests/**",
+  "docs/references/THIRD-PARTY-NOTICES.md",
+]
+
+allowed_manual_docs = [
+  "readme.md",
+  "agents.md",
+  "claude.md",
+  "docs/README.md",
+  "docs/ARCHITECTURE.md",
+  "docs/TESTING.md",
+  "docs/CONFORMANCE.md",
+  "docs/DIAGNOSTICS.md",
+  "docs/DECISIONS/**",
+]
+
+banned_paths = [
+  "docs/archive/**",
+  "openspec/changes/archive/**",
+  "docs/old/**",
+  "docs/notes/**",
+  "docs/**/*roadmap*.md",
+  "docs/**/*gap-audit*.md",
+  "docs/**/*full-conformance*.md",
+  "docs/**/*coverage*.md",
+  "docs/**/*status*.md",
+  "docs/spec-coverage-writer.md",
+]
+
+generated_status_docs = [
+  "docs/feature-status.md",
+  "docs/spec-coverage.md",
+  "docs/spec-coverage-writer.md",
+  "docs/decoder-support-status.md",
+  "docs/decoder-spec-coverage.md",
+  "docs/decoder-conformance-coverage.md",
+]

@@ -116,6 +116,8 @@ jobs:
       - run: cargo xtask check-fixtures
       # Absolute duplicate-code budget (tools/dupehound/budget.toml ceiling).
       - run: cargo xtask check-duplication
+      # Manual documentation budget and generated-status markdown ban.
+      - run: cargo xtask check-doc-budget
 
       # PR ratchet: fail when this PR's diff duplicates existing code. The base
       # SHA is bound through env (workflow-injection hygiene) and compared via

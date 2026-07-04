@@ -11,8 +11,7 @@
 //! by a registry descriptor. Inline `#[cfg(test)] mod ...` blocks and, for the validator,
 //! standalone files under `tests/` directories are skipped so assertion literals and
 //! prefixes do not look like emitted diagnostics. Each emitted-id set must equal the ids
-//! documented between the `<!-- diagnostics-registry:begin -->` / `:end` markers in the
-//! matching registry doc.
+//! documented between the matching marker pair in the diagnostics registry doc.
 //!
 //! This is the full-id superset of the prefix-level `scan_diagnostics` guard in
 //! [`crate::feature_status`]; both are kept. Tracked as `XTASK-DIAGNOSTIC-REGISTRY`.
@@ -26,8 +25,8 @@ use crate::feature_status::{collect_files, display_path, is_diagnostic_id};
 
 /// Validator source root scanned for emitted rule-id literals.
 const VALIDATE_SRC: &str = "crates/splot-validate/src";
-/// Documentation file that must mirror the emitted rule ids.
-const VALIDATOR_REGISTRY_DOC: &str = "docs/VALIDATOR-DIAGNOSTICS.md";
+/// Documentation file that must mirror emitted diagnostic rule ids.
+const DIAGNOSTICS_DOC: &str = "docs/DIAGNOSTICS.md";
 /// Current decoder diagnostic emission source roots.
 ///
 /// The CLI renders the current unsupported diagnostic owned by `splot-decode`.
@@ -38,12 +37,14 @@ const DECODER_SOURCE_ROOTS: &[&str] = &[
     "crates/splot-cli/src/commands/decode.rs",
     "crates/splot-decode/src",
 ];
-/// Documentation file that must mirror emitted decoder rule ids.
-const DECODER_REGISTRY_DOC: &str = "docs/DECODER-DIAGNOSTICS.md";
-/// Start of the CI-enforced registry region.
-const BEGIN_MARKER: &str = "<!-- diagnostics-registry:begin -->";
-/// End of the CI-enforced registry region.
-const END_MARKER: &str = "<!-- diagnostics-registry:end -->";
+/// Start of the validator CI-enforced registry region.
+const VALIDATOR_BEGIN_MARKER: &str = "<!-- validator-diagnostics-registry:begin -->";
+/// End of the validator CI-enforced registry region.
+const VALIDATOR_END_MARKER: &str = "<!-- validator-diagnostics-registry:end -->";
+/// Start of the decoder CI-enforced registry region.
+const DECODER_BEGIN_MARKER: &str = "<!-- decoder-diagnostics-registry:begin -->";
+/// End of the decoder CI-enforced registry region.
+const DECODER_END_MARKER: &str = "<!-- decoder-diagnostics-registry:end -->";
 /// Diagnostic ids emitted by the decoder must live under this namespace.
 const DECODER_ID_PREFIX: &str = "decode/";
 
@@ -52,6 +53,8 @@ struct RegistryConfig {
     owner: &'static str,
     source_roots: &'static [&'static str],
     doc: &'static str,
+    begin_marker: &'static str,
+    end_marker: &'static str,
     required_prefix: Option<&'static str>,
     skip_standalone_tests: bool,
 }
@@ -59,7 +62,9 @@ struct RegistryConfig {
 const VALIDATOR_REGISTRY: RegistryConfig = RegistryConfig {
     owner: "validator",
     source_roots: &[VALIDATE_SRC],
-    doc: VALIDATOR_REGISTRY_DOC,
+    doc: DIAGNOSTICS_DOC,
+    begin_marker: VALIDATOR_BEGIN_MARKER,
+    end_marker: VALIDATOR_END_MARKER,
     required_prefix: None,
     skip_standalone_tests: true,
 };
@@ -67,7 +72,9 @@ const VALIDATOR_REGISTRY: RegistryConfig = RegistryConfig {
 const DECODER_REGISTRY: RegistryConfig = RegistryConfig {
     owner: "decoder",
     source_roots: DECODER_SOURCE_ROOTS,
-    doc: DECODER_REGISTRY_DOC,
+    doc: DIAGNOSTICS_DOC,
+    begin_marker: DECODER_BEGIN_MARKER,
+    end_marker: DECODER_END_MARKER,
     required_prefix: Some(DECODER_ID_PREFIX),
     skip_standalone_tests: false,
 };
@@ -209,7 +216,8 @@ fn documented_ids_for(root: &Path, registry: &RegistryConfig) -> Result<BTreeSet
     let path = root.join(registry.doc);
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", display_path(root, &path)))?;
-    let region = registry_region(&text).with_context(|| format!("in {}", registry.doc))?;
+    let region = registry_region(&text, registry.begin_marker, registry.end_marker)
+        .with_context(|| format!("in {}", registry.doc))?;
     backtick_ids_for(registry, region)
 }
 
@@ -350,22 +358,22 @@ fn string_literals_skipping_comments(code: &str) -> Vec<String> {
 
 /// Returns the slice between the begin/end registry markers. Requires *exactly one* of each
 /// marker, so a stray mention of a marker (e.g. in prose) cannot silently shrink the region.
-fn registry_region(text: &str) -> Result<&str> {
-    let begin_count = text.matches(BEGIN_MARKER).count();
+fn registry_region<'a>(text: &'a str, begin_marker: &str, end_marker: &str) -> Result<&'a str> {
+    let begin_count = text.matches(begin_marker).count();
     if begin_count != 1 {
-        bail!("expected exactly one `{BEGIN_MARKER}` marker, found {begin_count}");
+        bail!("expected exactly one `{begin_marker}` marker, found {begin_count}");
     }
-    let end_count = text.matches(END_MARKER).count();
+    let end_count = text.matches(end_marker).count();
     if end_count != 1 {
-        bail!("expected exactly one `{END_MARKER}` marker, found {end_count}");
+        bail!("expected exactly one `{end_marker}` marker, found {end_count}");
     }
     let begin = text
-        .find(BEGIN_MARKER)
-        .ok_or_else(|| anyhow!("missing `{BEGIN_MARKER}` marker"))?;
-    let after_begin = begin + BEGIN_MARKER.len();
+        .find(begin_marker)
+        .ok_or_else(|| anyhow!("missing `{begin_marker}` marker"))?;
+    let after_begin = begin + begin_marker.len();
     let end_rel = text[after_begin..]
-        .find(END_MARKER)
-        .ok_or_else(|| anyhow!("`{END_MARKER}` precedes the begin marker"))?;
+        .find(end_marker)
+        .ok_or_else(|| anyhow!("`{end_marker}` precedes the begin marker"))?;
     Ok(&text[after_begin..after_begin + end_rel])
 }
 
@@ -467,8 +475,8 @@ mod tests {
 
     #[test]
     fn registry_region_extracts_between_markers() {
-        let doc = "x `ops/before`\n<!-- diagnostics-registry:begin -->\n`ops/foo` `brt/bar`\n<!-- diagnostics-registry:end -->\ny `ops/after`\n";
-        let region = registry_region(doc).unwrap();
+        let doc = "x `ops/before`\n<!-- validator-diagnostics-registry:begin -->\n`ops/foo` `brt/bar`\n<!-- validator-diagnostics-registry:end -->\ny `ops/after`\n";
+        let region = registry_region(doc, VALIDATOR_BEGIN_MARKER, VALIDATOR_END_MARKER).unwrap();
         let found = backtick_ids_for(&VALIDATOR_REGISTRY, region).unwrap();
         assert!(found.contains("ops/foo") && found.contains("brt/bar"));
         assert!(!found.contains("ops/before") && !found.contains("ops/after"));
@@ -476,22 +484,35 @@ mod tests {
 
     #[test]
     fn registry_region_ignores_non_ids() {
-        let doc = "<!-- diagnostics-registry:begin -->\n| `ops/foo` | error | 6.10.2 | syntax thing |\n<!-- diagnostics-registry:end -->\n";
-        let found = backtick_ids_for(&VALIDATOR_REGISTRY, registry_region(doc).unwrap()).unwrap();
+        let doc = "<!-- validator-diagnostics-registry:begin -->\n| `ops/foo` | error | 6.10.2 | syntax thing |\n<!-- validator-diagnostics-registry:end -->\n";
+        let found = backtick_ids_for(
+            &VALIDATOR_REGISTRY,
+            registry_region(doc, VALIDATOR_BEGIN_MARKER, VALIDATOR_END_MARKER).unwrap(),
+        )
+        .unwrap();
         assert_eq!(found.len(), 1);
         assert!(found.contains("ops/foo"));
     }
 
     #[test]
     fn registry_region_missing_marker_errors() {
-        assert!(registry_region("no markers").is_err());
-        assert!(registry_region("<!-- diagnostics-registry:begin -->\nonly begin").is_err());
+        assert!(
+            registry_region("no markers", VALIDATOR_BEGIN_MARKER, VALIDATOR_END_MARKER).is_err()
+        );
+        assert!(
+            registry_region(
+                "<!-- validator-diagnostics-registry:begin -->\nonly begin",
+                VALIDATOR_BEGIN_MARKER,
+                VALIDATOR_END_MARKER
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn registry_region_duplicate_marker_errors() {
-        let doc = "<!-- diagnostics-registry:begin -->\n`a/x`\n<!-- diagnostics-registry:end -->\nprose <!-- diagnostics-registry:begin -->\n";
-        assert!(registry_region(doc).is_err());
+        let doc = "<!-- validator-diagnostics-registry:begin -->\n`a/x`\n<!-- validator-diagnostics-registry:end -->\nprose <!-- validator-diagnostics-registry:begin -->\n";
+        assert!(registry_region(doc, VALIDATOR_BEGIN_MARKER, VALIDATOR_END_MARKER).is_err());
     }
 
     #[test]
@@ -668,11 +689,11 @@ mod tests {
         for source_root in &DECODER_SOURCE_ROOTS[1..] {
             std::fs::create_dir_all(root.join(source_root)).unwrap();
         }
-        let doc_path = root.join(DECODER_REGISTRY_DOC);
+        let doc_path = root.join(DIAGNOSTICS_DOC);
         std::fs::create_dir_all(doc_path.parent().unwrap()).unwrap();
         std::fs::write(
             doc_path,
-            format!("{BEGIN_MARKER}\n{registry_rows}\n{END_MARKER}\n"),
+            format!("{DECODER_BEGIN_MARKER}\n{registry_rows}\n{DECODER_END_MARKER}\n"),
         )
         .unwrap();
     }

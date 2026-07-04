@@ -12,7 +12,7 @@
 //! Downstream codec crates write data-parallel loops with the [`prelude`] (the
 //! curated Rayon parallel-iterator traits) **inside** [`WorkerPool::install`], so
 //! work runs on the configured pool rather than Rayon's global pool. See the
-//! [`prelude`] docs and `docs/CONCURRENCY.md` for the required pattern.
+//! [`prelude`] docs and `docs/ARCHITECTURE.md` for the required pattern.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.

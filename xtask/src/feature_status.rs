@@ -5,11 +5,11 @@
 //! `docs/IMPLEMENTATION-MATRIX.toml`, the canonical source of truth.
 //!
 //! - `cargo xtask feature-status`       renders the matrix (table/json/markdown).
-//! - `cargo xtask check-feature-status` fails the build on drift.
+//! - `cargo xtask check-feature-status` validates the matrix and any committed renders.
 //! - `cargo xtask spec-coverage`        summarizes coverage.
 //! - `cargo xtask writer-coverage`      renders the writer coverage matrix.
 //!
-//! The schema and rules are documented in `docs/IMPLEMENTATION-MATRIX.schema.md`.
+//! The schema and rules are documented in `docs/IMPLEMENTATION-MATRIX.toml`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -22,11 +22,11 @@ use crate::util::is_valid_feature_id;
 
 /// Repo-relative path of the canonical matrix.
 const MATRIX_PATH: &str = "docs/IMPLEMENTATION-MATRIX.toml";
-/// Repo-relative path of the generated status document.
+/// Optional repo-relative path for the generated status render.
 const STATUS_DOC_PATH: &str = "docs/FEATURE-STATUS.md";
-/// Repo-relative path of the generated per-spec-section coverage document.
+/// Optional repo-relative path for the generated per-spec-section coverage render.
 const COVERAGE_DOC_PATH: &str = "docs/SPEC-COVERAGE.md";
-/// Repo-relative path of the generated writer coverage document.
+/// Optional repo-relative path for the generated writer coverage render.
 const WRITER_COVERAGE_DOC_PATH: &str = "docs/spec-coverage-writer.md";
 /// Repo-relative path of the spec-mirror section index used to resolve links.
 const MIRROR_INDEX_PATH: &str = "docs/spec/av2/1.0.0/index.md";
@@ -159,7 +159,7 @@ const FEATURE_ID_PREFIXES: &[&str] = &["AV2", "ENC", "CONF", "CLI", "XTASK", "DO
 const ALLOWLISTED_TOKENS: &[&str] = &["AV2-SECTION-SLUG"];
 
 /// Documented validator diagnostic rule-id prefixes. Diagnostic rule ids use a
-/// kebab/slash namespace that is separate from Feature IDs (see FEATURE-TRACKING.md).
+/// kebab/slash namespace that is separate from Feature IDs.
 const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "obu-header/",
     "obu-reserved/",
@@ -209,7 +209,7 @@ pub(crate) enum StatusFormat {
 pub(crate) enum CoverageFormat {
     /// Plain-text summary (default).
     Text,
-    /// The per-spec-section coverage document (`docs/SPEC-COVERAGE.md`).
+    /// The generated per-spec-section coverage document.
     Markdown,
 }
 
@@ -217,7 +217,7 @@ pub(crate) enum CoverageFormat {
 ///
 /// A narrower projection than [`TABLE_COLUMNS`]: the coverage table answers
 /// "is this spec item parsed/validated/tested?" at a glance; the full ledger
-/// stays in `docs/FEATURE-STATUS.md`.
+/// is available from `cargo xtask feature-status`.
 const COVERAGE_COLUMNS: &[(&str, &str)] = &[
     ("Mapped", "mapped"),
     ("Parse", "parse"),
@@ -476,7 +476,7 @@ fn md_escape(cell: &str) -> String {
     cell.replace('|', "\\|")
 }
 
-/// Renders the deterministic markdown table used for `docs/FEATURE-STATUS.md`.
+/// Renders the deterministic feature-status markdown table.
 fn render_markdown(matrix: &Matrix, features: &[&Feature]) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# Feature status");
@@ -632,7 +632,7 @@ fn writer_coverage_text(matrix: &Matrix) -> String {
     out
 }
 
-/// Renders the deterministic markdown table used for `docs/spec-coverage-writer.md`.
+/// Renders the deterministic writer-coverage markdown table.
 fn writer_coverage_markdown(matrix: &Matrix) -> String {
     let rows = writer_rows(matrix);
     let reviewed = matrix.last_reviewed.as_deref().unwrap_or("unknown");
@@ -655,8 +655,8 @@ fn writer_coverage_markdown(matrix: &Matrix) -> String {
          subset and semantic (round-trip on the parsed model) for the canonicalizing writers (e.g. film \
          grain and quantizer matrix, whose model is lossy versus the wire). The canonical status source \
          is [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); each row's per-writer round-trip \
-         details live in its matrix notes, and the full per-feature ledger is \
-         [FEATURE-STATUS.md](./FEATURE-STATUS.md)."
+         details live in its matrix notes. The full per-feature ledger is generated on demand with \
+         `cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md`."
     );
     let _ = writeln!(out);
     let _ = writeln!(
@@ -951,8 +951,7 @@ fn section_cell(section: &str, index: &MirrorIndex) -> String {
     }
 }
 
-/// Renders the deterministic per-spec-section coverage document
-/// (`docs/SPEC-COVERAGE.md`).
+/// Renders the deterministic per-spec-section coverage document.
 fn coverage_markdown(matrix: &Matrix, index: &MirrorIndex) -> String {
     let mut rows: Vec<(&str, &Feature)> = Vec::new();
     let mut without_section: Vec<&Feature> = Vec::new();
@@ -996,8 +995,9 @@ fn coverage_markdown(matrix: &Matrix, index: &MirrorIndex) -> String {
         "One row per (spec section, feature) pair, in spec order; a feature \
          citing both a syntax and a semantics section appears under both. The \
          canonical status source is \
-         [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml); the full \
-         per-feature ledger is [FEATURE-STATUS.md](./FEATURE-STATUS.md)."
+         [IMPLEMENTATION-MATRIX.toml](./IMPLEMENTATION-MATRIX.toml). The full \
+         per-feature ledger is generated on demand with \
+         `cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md`."
     );
     let _ = writeln!(out);
     let _ = writeln!(
@@ -1005,10 +1005,8 @@ fn coverage_markdown(matrix: &Matrix, index: &MirrorIndex) -> String {
         "Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked \
          · 🧪 experimental · — not applicable · (blank) todo. Diagnostics \
          counts the rule IDs recorded in the feature's proof; emitted \
-         validator IDs are registered in \
-         [VALIDATOR-DIAGNOSTICS.md](./VALIDATOR-DIAGNOSTICS.md), and emitted \
-         decoder IDs are registered in \
-         [DECODER-DIAGNOSTICS.md](./DECODER-DIAGNOSTICS.md)."
+         validator and decoder IDs are registered in \
+         [DIAGNOSTICS.md](./DIAGNOSTICS.md)."
     );
 
     let mut current_chapter = String::new();
@@ -1061,8 +1059,8 @@ fn coverage_markdown(matrix: &Matrix, index: &MirrorIndex) -> String {
     let _ = writeln!(
         out,
         "{} feature(s) track conformance, encoder, CLI, automation, or \
-         documentation work with no single spec section; see \
-         [FEATURE-STATUS.md](./FEATURE-STATUS.md):",
+         documentation work with no single spec section; generate the full \
+         ledger with `cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md`:",
         without_section.len()
     );
     let _ = writeln!(out);
@@ -1096,7 +1094,7 @@ pub(crate) fn run_check_feature_status(root: &Path) -> Result<()> {
             eprintln!("error: {problem}");
         }
         bail!(
-            "{} feature-status problem(s); see docs/IMPLEMENTATION-MATRIX.schema.md",
+            "{} feature-status problem(s); see docs/IMPLEMENTATION-MATRIX.toml",
             checker.problems.len()
         )
     }
@@ -1309,13 +1307,12 @@ impl Checker {
         Ok(())
     }
 
-    /// Verifies `docs/FEATURE-STATUS.md`, if present, matches the matrix.
-    /// Fails when a committed generated doc no longer matches its render.
+    /// Verifies a committed generated document, when present, matches its render.
+    /// Generated markdown is optional; `check-doc-budget` rejects committing it.
     fn check_generated_doc(&mut self, rel_path: &str, expected: &str, regen: &str) -> Result<()> {
         let path = self.root.join(rel_path);
         if !path.exists() {
-            self.problems
-                .push(format!("{rel_path} is missing; regenerate with `{regen}`"));
+            eprintln!("{rel_path}: not committed; generate on demand with `{regen}`");
             return Ok(());
         }
         let actual = std::fs::read_to_string(&path)

@@ -47,7 +47,7 @@ pub use workspace_interintra::InterIntraMode;
 /// Does not implement `Clone`: it owns the current-frame plane buffers. Borrow it
 /// as a [`FrameRef`]/[`FrameMut`] with [`CurrentFrameWorkspace::as_frame_ref`]/
 /// [`CurrentFrameWorkspace::as_frame_mut`] instead (see
-/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+/// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
 #[derive(Debug, Eq, PartialEq)]
 pub struct CurrentFrameWorkspace<T: ReconSample> {
     info: DecodedFrameInfo,
@@ -418,7 +418,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 /// Mutable backing storage for one current-frame workspace plane.
 ///
 /// Does not implement `Clone`: it owns the plane sample buffer (see
-/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+/// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
 #[derive(Debug, Eq, PartialEq)]
 pub struct CurrentFramePlane<T: ReconSample> {
     plane: PlaneId,

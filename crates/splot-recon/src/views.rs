@@ -4,7 +4,7 @@
 //! Borrowed plane and frame views.
 //!
 //! These view types are the zero-copy default for reading and writing decoded
-//! media (see [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)). They borrow
+//! media (see [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)). They borrow
 //! existing sample storage, validate stride/visible-rect/length on construction,
 //! and never allocate or copy samples. Owned storage types (`Plane`,
 //! `DecodedFrame`, `CurrentFramePlane`, `CurrentFrameWorkspace`) hand out these

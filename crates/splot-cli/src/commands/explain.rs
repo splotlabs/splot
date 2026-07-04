@@ -91,5 +91,5 @@ fn print_info(info: &splot_validate::DiagnosticInfo) {
         None => println!("  section:  (none recorded)"),
     }
     println!("  summary:  {}", info.summary);
-    println!("\nFull registry: docs/VALIDATOR-DIAGNOSTICS.md");
+    println!("\nFull registry: docs/DIAGNOSTICS.md");
 }

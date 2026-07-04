@@ -5,9 +5,10 @@
 - [x] Add `INFRA-CI-PIPELINE-SPEEDUPS` to `docs/IMPLEMENTATION-MATRIX.toml`.
 - [x] Record the change in `openspec/changes/README.md`.
 - [x] Add the `tooling` capability delta for the CI speed-up.
-- [x] Update `README.md` and `docs/agents/commands.md` for the new gate shape.
-- [x] Regenerate `docs/FEATURE-STATUS.md` with `cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md`.
-- [x] Regenerate `docs/SPEC-COVERAGE.md` with `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`.
+- [x] Update `README.md` and `AGENTS.md` for the new gate shape.
+- [x] Run `cargo xtask check-feature-status`.
+- [x] Keep feature/spec coverage renders available on demand through the xtask
+      render commands.
 
 ## Implementation
 

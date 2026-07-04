@@ -1,13 +1,9 @@
 # AGENTS.md
 
-Canonical entry point for humans and coding agents working in this repository.
-`CLAUDE.md` and `.github/copilot-instructions.md` point here; keep this file as
-the high-level source of truth and put workflow detail in `docs/agents/`.
+Canonical rules for humans and coding agents in this repository. `CLAUDE.md`
+and `.github/copilot-instructions.md` point here.
 
-Start with [docs/agents/README.md](./docs/agents/README.md) when you need more
-than the rules below.
-
-## 0. Unconditional Agent Behavior
+## Behavior
 
 Read and execute these rules before any task-specific workflow.
 
@@ -48,9 +44,10 @@ Lazy rules:
 - Prefer deletion over addition, boring over clever, and the fewest files
   possible.
 - Reuse before reimplementing. Duplicate code is gated: `cargo xtask
-  check-duplication` enforces a ratcheting budget (`tools/dupehound/budget.toml`)
-  and CI blocks PRs that duplicate existing code. Before writing a new function,
-  run `dupehound check` / `dupehound scan . --explain <N>` and reuse the original.
+  check-duplication` enforces a ratcheting budget
+  (`tools/dupehound/budget.toml`) and CI blocks PRs that duplicate existing
+  code. Before writing a new function, run `dupehound check` or
+  `dupehound scan . --explain <N>` and reuse the original.
 - The shortest working diff wins only after the real problem is understood; the
   smallest change in the wrong place is a second bug.
 - Question complex requests: ask whether the smaller alternative covers the real
@@ -58,157 +55,130 @@ Lazy rules:
 - When two standard approaches are the same size, choose the edge-case-correct
   one.
 - Mark intentional simplifications with a comment when the shortcut has a known
-  ceiling, such as a global lock, O(n²) scan, or naive heuristic. Name the
+  ceiling, such as a global lock, O(n^2) scan, or naive heuristic. Name the
   ceiling and the upgrade path.
 
 Bug fixes target root cause, not symptoms. For a touched function, inspect its
 callers and fix the shared function once when that is the smaller, correct
-change. Do not patch only the reported path while leaving sibling callers broken.
+change. Do not patch only the reported path while leaving sibling callers
+broken.
 
 Do not be lazy about understanding the problem, trust-boundary input validation,
 error handling that prevents data loss, security, accessibility, real-hardware
 calibration, or anything explicitly requested. Non-trivial logic needs one
 runnable check that would fail if the logic breaks; trivial one-liners do not.
 
-## 1. Project Overview
+## Project
 
-`splot` is a Rust toolkit for the **AV2** video codec. It is **validator-first**:
-the first useful milestone is a safe AV2 bitstream validator and inspector. It is
-a solo-developer, source-available project optimized for maintainability, clear
-boundaries, and automation.
+`splot` is a Rust toolkit for AV2. It is validator-first: the first useful
+milestone is a safe AV2 bitstream validator and inspector.
 
-Toolchain: Rust **1.96.0**, edition **2024**, resolver **3**.
+Toolchain: Rust 1.96.0, edition 2024, resolver 3.
 
-## 2. Repository Boundaries
+## Crate Boundaries
 
 ```text
-crates/splot-core      AV2 bitstream model + parsers (no other splot-* dependency)
-crates/splot-parallel  approved concurrency primitives (Rayon pool + bounded crossbeam queues); no other splot-* dependency
-crates/splot-tables    dependency-free generated AV2 § 9 spec tables shared across crates (no other splot-* dependency)
+crates/splot-core      AV2 bitstream model + parsers; no splot-* dependency
+crates/splot-parallel  Rayon worker pool + bounded crossbeam queues; no splot-* dependency
+crates/splot-tables    dependency-free generated AV2 § 9 tables
 crates/splot-recon     reconstruction primitives -> splot-core, splot-tables
-crates/splot-decode    decode planning, pipeline orchestration, diagnostics, reference/filter/output routing -> splot-core, splot-parallel, splot-recon
-crates/splot-validate  parser-driven conformance diagnostics -> splot-core
-crates/splot-encode    future encoder API + borrowed input views -> splot-core, splot-parallel, splot-recon, splot-tables
-crates/splot-cli       thin `splot` binary -> splot-core, splot-parallel, splot-decode, splot-validate, splot-encode
+crates/splot-decode    decode planning/runtime -> splot-core, splot-parallel, splot-recon
+crates/splot-validate  parser-driven diagnostics -> splot-core
+crates/splot-encode    encoder API/tools -> splot-core, splot-parallel, splot-recon, splot-tables
+crates/splot-cli       thin binary -> core, parallel, decode, validate, encode
 xtask                  standalone automation
 fuzz                   cargo-fuzz target outside the workspace
 ```
 
-Hard dependency rules:
+Nothing depends on `splot-cli`. Nothing depends on `splot-encode` except
+`splot-cli`. Enforced by `cargo xtask check-dependency-direction`.
 
-- `splot-core`, `splot-parallel`, and `splot-tables` depend on no other
-  `splot-*` crate.
-- `splot-tables` has no external crate dependencies.
-- `splot-recon` depends only on `splot-core` and `splot-tables`.
-- `splot-decode` depends only on `splot-core`, `splot-parallel`, and
-  `splot-recon`.
-- `splot-validate` depends only on `splot-core`.
-- `splot-encode` depends only on `splot-core`, `splot-parallel`, `splot-recon`,
-  and `splot-tables`.
-- `splot-cli` depends only on `splot-core`, `splot-parallel`, `splot-decode`,
-  `splot-validate`, and `splot-encode`.
-- Nothing depends on `splot-cli`.
-- Nothing depends on `splot-encode` except `splot-cli`.
-- `xtask` is standalone.
+Decoder modules must be named by AV2/decoder domain: bitstream, entropy, tile,
+prediction, residual, reference, filters, output, pipeline, support, diagnostic.
+Do not add `runtime_minimal`, `runtime2`, `new_runtime`, `misc`, or
+fixture-named runtime modules.
 
-These rules are enforced by `cargo xtask check-dependency-direction`; concurrency
-and zero-copy details live in [docs/agents/architecture.md](./docs/agents/architecture.md).
+## Before Editing
 
-Decoder structure guardrail:
-Do not create new `runtime_minimal`, `runtime2`, `new_runtime`, `misc`, or
-fixture-named runtime modules. Production decode modules must be named by
-AV2/decoder domain: bitstream, entropy, tile, prediction, residual, reference,
-filters, output, pipeline, support, diagnostic.
-
-## 3. Operating Rules
-
-- Before editing, run `git status --short`, inspect the files you will change,
-  and preserve existing user work.
-- Every non-trivial change uses a stable Feature ID from
+- Run `git status --short`.
+- Inspect files you will change.
+- Preserve existing user work.
+- Non-trivial changes use a stable Feature ID from
   `docs/IMPLEMENTATION-MATRIX.toml`.
 - Create or update an OpenSpec change under `openspec/changes/` unless the work
   is trivial.
-- Commit subjects and pull request titles use Conventional Commits.
-- Human sign-off triggers are listed in §10.
+- Commit subjects and PR titles use Conventional Commits.
 
-Details: [docs/agents/workflow.md](./docs/agents/workflow.md).
+## Acceptance
 
-## 4. Acceptance Commands
+Use `cargo xtask ci` as the gate. Focused commands:
 
-Use `cargo xtask ci` as the acceptance gate. It runs formatting, clippy, build,
-tests, doctests, rustdoc, run-if-present external checks, and repository gates.
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+cargo test --doc --workspace --locked
+cargo xtask check-feature-status
+cargo xtask check-diagnostic-registry
+cargo xtask check-doc-budget
+```
 
-Common focused commands are listed in
-[docs/agents/commands.md](./docs/agents/commands.md).
+Generated status markdown is not committed. Use the xtask render commands in
+`README.md` when a status view is needed.
 
-## 5. Coding Standards
+## Coding Standards
 
-- Library-first, thin CLI: codec and validation logic live in libraries.
-- Libraries use typed errors with `thiserror`; `anyhow` is allowed only in
+- Library-first, thin CLI. Codec and validation logic live in libraries.
+- Library errors are typed with `thiserror`; `anyhow` is allowed only in
   `splot-cli` and `xtask`.
-- No runtime panics in libraries: no reachable `unwrap`, `expect`, `panic!`,
-  `todo!`, or `unimplemented!`.
-- Use strong types at public boundaries, not bare integers.
-- Every public item has a doc comment; every crate has `//!` docs.
-- Every `.rs` file starts with the required PolyForm SPDX header.
-- Rust source files should stay at or below 1000 physical lines; the hard cap is
-  2500 lines unless `xtask/src/source_lines.rs` documents an allowance.
-- `unsafe_code = "forbid"` across the workspace.
+- No reachable library `unwrap`, `expect`, `panic!`, `todo!`, or
+  `unimplemented!`.
+- Use strong types at public boundaries.
+- Public items and crates have docs.
+- Every `.rs` file starts with the PolyForm SPDX header.
+- Rust source files target <=1000 physical lines; hard cap is 2500 unless
+  `xtask/src/source_lines.rs` records an allowance.
+- `unsafe_code = "forbid"` workspace-wide.
 
-Details: [docs/agents/coding-standards.md](./docs/agents/coding-standards.md).
-
-## 6. AV2 Spec and Diagnostics
+## AV2 and Diagnostics
 
 - Never invent AV2 syntax, constants, tables, or semantics.
-- Ground AV2 claims in the committed spec mirror under `docs/spec/av2/1.0.0/`.
-- Cite AV2 sections as `§ N.M` plus the mirror path.
+- Ground AV2 claims in `docs/spec/av2/1.0.0/`.
+- Cite AV2 as `§ N.M` plus the mirror path when a claim needs support.
 - The AV2 OBU header is § 5.2.2. Do not use AV1 OBU fields or tables.
-- Treat AVM as the differential-testing oracle.
-- Validator findings are structured data with stable `rule_id`, `severity`,
-  optional `spec_section`, optional offset, and `message`.
+- AVM is the differential-testing oracle.
+- Findings are structured data with stable `rule_id`, `severity`, optional
+  `spec_section`, optional offset, and `message`.
 
-Details: [docs/agents/av2-spec-and-diagnostics.md](./docs/agents/av2-spec-and-diagnostics.md).
-
-## 7. Encoder Reference Gate
+## Encoder Reference Gate
 
 Before changing `crates/splot-encode`, encoder-facing `splot-core`
-syntax/parsing code, or encoder research documentation, read the encoder
-reference gate in [docs/agents/encoder-reference-gate.md](./docs/agents/encoder-reference-gate.md).
+syntax/parsing code, or encoder research docs, read
+`docs/references/THIRD-PARTY-NOTICES.md`. rav1e and SVT-AV1 are engineering
+inspiration only; AV2 behavior comes from the AV2 spec and AVM.
 
-rav1e and SVT-AV1 are engineering inspiration only. AV2 behavior must come from
-the AV2 specification and AVM.
-
-## 8. Testing and Audits
+## Testing
 
 Testing priority is parser unit tests, property/fuzz no-panic coverage,
 `inspect` snapshots, conformance vectors, then AVM differential testing. Parser
-changes need positive, negative, and EOF cases.
+changes need positive, negative, and EOF cases. See `docs/TESTING.md`.
 
-Audit procedures are intentionally not expanded here. Use the repo-local audit
-skills named in [docs/agents/audits.md](./docs/agents/audits.md).
-
-Details: [docs/agents/testing.md](./docs/agents/testing.md).
-
-## 9. Licensing
+## Licensing
 
 Project code, documentation, tests, fixtures, and automation are PolyForm
 Noncommercial 1.0.0, with narrow exceptions for generated assistant integrations
-and the quarantined AV2 spec mirror.
+and the quarantined AV2 spec mirror. See
+`docs/references/THIRD-PARTY-NOTICES.md`.
 
-Details: [docs/agents/licensing.md](./docs/agents/licensing.md).
+## Human Sign-Off
 
-## 10. Human Sign-Off Triggers
+Ask before algorithmic encoder choices, ambiguous AV2 spec interpretation,
+adding a third-party dependency, changing crate dependency graph, or changing
+legal/licensing terms.
 
-Ask before making algorithmic encoder choices, resolving ambiguous AV2 spec
-interpretation, adding a third-party dependency, changing the crate dependency
-graph, or changing legal/licensing terms.
+## Comment and Documentation Policy
 
-## 11. AI-Slop and Comment Policy
-
-Source comments are rare and high-signal; new codec support extends generic
-models, tables, dispatchers, or capability gates rather than adding one-off
-branches. Enforced by `cargo xtask check-ai-slop` (banned history/diary phrases,
-hard zero) and `cargo xtask check-comment-density` (implementation-comment
-budget).
-
-Details: [docs/agents/coding-standards.md](./docs/agents/coding-standards.md).
+Source comments are rare and high-signal. New codec support extends generic
+models, tables, dispatchers, or capability gates rather than one-off branches.
+`cargo xtask check-ai-slop`, `cargo xtask check-comment-density`, and
+`cargo xtask check-doc-budget` enforce the budget.

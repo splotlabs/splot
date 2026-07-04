@@ -7,9 +7,9 @@
 # every committed `.av2` fixture is listed here exactly once, exists, and matches
 # its recorded `sha256`, and that `category` is consistent with `expect`.
 # `crates/splot-cli/tests/fixture_manifest.rs` separately verifies each `expect`
-# against the actual validator (in-process). Byte-level details and the `printf`
-# regeneration recipes live in `tests/fixtures/README.md`; the workflow lives in
-# `docs/FIXTURES.md`. This file is the normative source for hashes and outcomes.
+# against the actual validator (in-process). Fixture workflow notes live in
+# `docs/TESTING.md` and conformance scope lives in `docs/CONFORMANCE.md`. This
+# file is the normative source for hashes and outcomes.
 #
 # Schema (one `[[fixture]]` per committed `.av2` file):
 #   name        stable short id (unique)

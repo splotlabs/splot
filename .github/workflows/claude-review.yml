@@ -73,8 +73,9 @@ jobs:
             automation and a cargo-fuzz target. It is a solo-developer,
             source-available project that optimizes for safety,
             maintainability, and clear boundaries. The canonical rules live
-            in AGENTS.md and the docs it links: docs/ARCHITECTURE.md,
-            docs/CODE_REVIEW.md, docs/SPEC-MAPPING.md, and docs/TESTING.md.
+            in AGENTS.md and the retained docs it links, especially
+            docs/ARCHITECTURE.md, docs/TESTING.md, docs/CONFORMANCE.md, and
+            docs/DIAGNOSTICS.md.
             Before flagging a violation, read the relevant doc. Review the
             change in context, not just the diff hunks: read the changed
             files in full and the code they call into or depend on, then
@@ -83,8 +84,8 @@ jobs:
             CI (.github/workflows/ci.yml) already runs — and gates on —
             `cargo fmt --check`,
             `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
-            build, the full test suite, `cargo xtask check-license-headers`,
-            and `cargo xtask check-dependency-direction`. Do not re-report
+            the full test suite, `cargo xtask check-license-headers`,
+            and repository policy gates. Do not re-report
             anything those gating jobs would already fail on. (The cargo-deny
             license/advisory job is advisory-only — it runs with
             `continue-on-error: true` and never blocks merge — so do NOT

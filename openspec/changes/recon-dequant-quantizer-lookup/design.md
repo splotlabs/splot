@@ -3,7 +3,7 @@
 `splot-recon` is the scheduler-free reconstruction-primitive crate. It already
 provides intra prediction primitives but no residual path. The documented next
 reconstruction frontier is dequantization, inverse transforms, and residual
-addition (`docs/DECODER-ROADMAP.md`). AV2 § 7.14.2 defines the quantizer-value
+addition (`docs/DECODER-SUPPORT-MATRIX.toml`). AV2 § 7.14.2 defines the quantizer-value
 lookup that every dequantized coefficient depends on. It is pure, table-driven,
 and independent of entropy decoding, so it is a clean first residual-path brick.
 

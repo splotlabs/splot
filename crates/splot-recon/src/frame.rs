@@ -77,7 +77,7 @@ impl DecodedFrameInfo {
 /// Candidate planes for a decoded output frame.
 ///
 /// Does not implement `Clone`: it owns the plane sample buffers (see
-/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+/// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
 #[derive(Debug, Eq, PartialEq)]
 pub struct FramePlanes<T: ReconSample> {
     y: Plane<T>,
@@ -121,7 +121,7 @@ impl<T: ReconSample> FramePlanes<T> {
 /// Does not implement `Clone`: it owns the frame's sample storage. Borrow it as a
 /// [`FrameRef`] with [`DecodedFrame::as_frame_ref`], or share it without copying
 /// pixels via [`SharedFrame`] (see
-/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+/// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
 #[derive(Debug, Eq, PartialEq)]
 pub struct DecodedFrame<T: ReconSample> {
     info: DecodedFrameInfo,
@@ -239,7 +239,7 @@ impl<T: ReconSample> DecodedFrame<T> {
 /// `Clone`: sharing is always the explicit, review-visible [`SharedFrame::share`]
 /// (an `Arc::clone`), never a hidden full-frame copy. It exposes no mutable
 /// access to its storage and never uses copy-on-write (see
-/// [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)).
+/// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
 #[derive(Debug)]
 pub struct SharedFrame<T: ReconSample> {
     inner: Arc<DecodedFrame<T>>,

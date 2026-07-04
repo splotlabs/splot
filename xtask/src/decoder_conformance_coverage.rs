@@ -13,7 +13,7 @@ const COVERAGE_DOC_PATH: &str = "docs/DECODER-SPEC-COVERAGE.md";
 const SPEC_INDEX_PATH: &str = "docs/spec/av2/1.0.0/index.md";
 const SUPPORT_MATRIX_PATH: &str = "docs/DECODER-SUPPORT-MATRIX.toml";
 const IMPLEMENTATION_MATRIX_PATH: &str = "docs/IMPLEMENTATION-MATRIX.toml";
-const DIAGNOSTICS_DOC_PATH: &str = "docs/DECODER-DIAGNOSTICS.md";
+const DIAGNOSTICS_DOC_PATH: &str = "docs/DIAGNOSTICS.md";
 const REGEN_COMMAND: &str = "cargo xtask decoder-conformance-coverage --format markdown --output docs/DECODER-SPEC-COVERAGE.md";
 
 const NORMATIVE_STATUSES: &[&str] = &["normative", "informative", "mixed"];
@@ -53,8 +53,16 @@ pub(crate) fn run_decoder_conformance_coverage(
 
 pub(crate) fn run_check_decoder_conformance_coverage(root: &Path) -> Result<()> {
     let checked = checked_rows(root)?;
-    let expected = render_markdown(&checked);
     let path = root.join(COVERAGE_DOC_PATH);
+    if !path.exists() {
+        eprintln!(
+            "check-decoder-conformance-coverage: ok ({} row(s); {COVERAGE_DOC_PATH} is generated on demand)",
+            checked.len()
+        );
+        return Ok(());
+    }
+
+    let expected = render_markdown(&checked);
     let actual = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {COVERAGE_DOC_PATH}"))?;
     if actual.trim_end() != expected.trim_end() {
@@ -1335,7 +1343,7 @@ mod tests {
             implementation_matrix(),
         )
         .unwrap();
-        std::fs::write(docs.join("DECODER-DIAGNOSTICS.md"), diagnostics_doc()).unwrap();
+        std::fs::write(docs.join("DIAGNOSTICS.md"), diagnostics_doc()).unwrap();
         std::fs::write(
             docs.join("LOCAL-REFERENCE-EVIDENCE.toml"),
             local_reference_evidence(),

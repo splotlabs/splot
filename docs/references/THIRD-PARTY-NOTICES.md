@@ -54,7 +54,7 @@ as a deliberate legal/licensing event.
 | rav1e | Rust AV1 encoder architecture reference | `https://github.com/xiph/rav1e/blob/master/LICENSE` and `PATENTS` | Read, link, summarize, learn Rust/RDO/API patterns. |
 | SVT-AV1 | Production AV1 encoder architecture reference | `https://gitlab.com/AOMediaCodec/SVT-AV1/-/raw/master/LICENSE.md` and `PATENTS.md` | Read, link, summarize, learn pipeline/ME/RC/filter/search architecture. |
 | OpenSpec generated assistant integrations | Agent commands, prompts, and skills for OpenSpec workflows | OpenSpec init output; skill frontmatter declares `license: MIT`, `author: openspec`, `generatedBy: "1.4.1"` | Commit only under the approved assistant integration paths; preserve generated metadata when present. |
-| zerocopy | Approved tool dependency for private fixed-layout byte/wire view structs (e.g. IVF container headers) | crates.io; `BSD-2-Clause OR Apache-2.0 OR MIT` (permissive; allowed by `deny.toml`) | Use only in `splot-core`/`splot-recon`, via the workspace dep, for fixed-layout wire views — never in public APIs or AV2 bit-level/entropy parsing. In use via the `splot-core` IVF container header (see §12 and [ZERO_COPY.md](../ZERO_COPY.md)). |
+| zerocopy | Approved tool dependency for private fixed-layout byte/wire view structs (e.g. IVF container headers) | crates.io; `BSD-2-Clause OR Apache-2.0 OR MIT` (permissive; allowed by `deny.toml`) | Use only in `splot-core`/`splot-recon`, via the workspace dep, for fixed-layout wire views — never in public APIs or AV2 bit-level/entropy parsing. In use via the `splot-core` IVF container header (see §12 and [ARCHITECTURE.md](../ARCHITECTURE.md)). |
 
 ---
 
@@ -300,7 +300,7 @@ authorised by the maintainer.
 fixed-layout byte/wire view structs** — for example the IVF container header. It
 is **not** the media-buffer ownership model (that is `splot-recon`'s view/share
 types plus `cargo xtask check-zero-copy-policy`; see
-[ZERO_COPY.md](../ZERO_COPY.md)) and it is a normal permissive Cargo dependency,
+[ARCHITECTURE.md](../ARCHITECTURE.md)) and it is a normal permissive Cargo dependency,
 not vendored or relicensed material.
 
 - **Material:** the `zerocopy` crate from crates.io, used via the workspace

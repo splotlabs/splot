@@ -25,7 +25,7 @@
 //! Anti-vacuity / causation: every seed is first asserted to validate **clean**
 //! (zero errors), so the diagnostic is provably caused by the mutation and not by
 //! a pre-broken seed. The expected ids are existing **registered** diagnostics
-//! (see `docs/VALIDATOR-DIAGNOSTICS.md`); this harness adds no new diagnostics.
+//! (see `docs/DIAGNOSTICS.md`); this harness adds no new diagnostics.
 //!
 //! No AVM, no network: the harness only reads already-committed seed bytes and
 //! runs the in-process validator, so it gates under `cargo test` (hence under

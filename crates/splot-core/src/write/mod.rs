@@ -81,9 +81,9 @@
 //! [`roundtrip::roundtrip_obu`] then closes the loop: it `parse → write → reparse`-checks the
 //! dispatch (recovering the opaque `passthrough` for padding and the metadata blobs) so the writer
 //! is verified as the parser's inverse, in-tree and under the `roundtrip_obu_bytes` fuzz target.
-//! See `docs/spec-coverage-writer.md` for the generated per-feature writer coverage matrix (the
-//! `write` maturity of every writable AV2 syntax feature), kept current by `cargo xtask
-//! writer-coverage` and drift-guarded by `cargo xtask check-feature-status`.
+//! Run `cargo xtask writer-coverage` for the generated per-feature writer coverage matrix (the
+//! `write` maturity of every writable AV2 syntax feature), drift-guarded by
+//! `cargo xtask check-feature-status` when a render is committed locally.
 
 pub mod atlas_segment;
 pub mod bit_writer;

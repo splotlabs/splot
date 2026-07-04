@@ -91,19 +91,16 @@ SHALL NOT edit production Rust code. Tracked by `DOC-AUDIT-PROTOCOLS`.
 
 ### Requirement: cross-agent audit skill exposure
 
-The repository SHALL expose audit protocols through the project skill directories
-recognized by the supported agent surfaces used by the repository. Claude Code
-project skills SHALL live under `.claude/skills/`, Codex project skills SHALL live
-under `.codex/skills/`, and any GitHub-hosted skill or prompt mirror SHALL live
-under the existing `.github/skills/` or `.github/prompts/` assistant-integration
-paths. The repository SHALL NOT rely on `.agents/skills/` as the only project
-skill location. Tracked by `DOC-AUDIT-PROTOCOLS`.
+The repository SHALL expose audit protocols through the committed project skill
+directory recognized by Codex. Project skills SHALL live under `.codex/skills/`.
+The repository SHALL NOT rely on `.agents/skills/` as the only project skill
+location. Tracked by `DOC-AUDIT-PROTOCOLS`.
 
-#### Scenario: Claude Code needs the documentation audit
+#### Scenario: Codex needs the documentation audit
 
-- **WHEN** Claude Code is started in the repository and a user asks for a `splot`
+- **WHEN** Codex is started in the repository and a user asks for a `splot`
   documentation audit
-- **THEN** the documentation audit skill is available from `.claude/skills/`
+- **THEN** the documentation audit skill is available from `.codex/skills/`
 
 #### Scenario: Codex needs the AV2 conformance audit
 
@@ -115,7 +112,7 @@ skill location. Tracked by `DOC-AUDIT-PROTOCOLS`.
 
 The repository SHALL provide a heavy AV2 conformance audit protocol that reviews
 changed implementation, validator, documentation, matrix, and assistant-integration
-files against the committed AV2 spec mirror, `docs/SPEC-MAPPING.md`,
+files against the committed AV2 spec mirror, `docs/IMPLEMENTATION-MATRIX.toml`,
 `docs/IMPLEMENTATION-MATRIX.toml`, and the repository rules. The protocol SHALL
 separate audit findings from implementation fixes and SHALL require human review
 for ambiguous AV2 spec interpretation. The protocol SHALL cover current and future
@@ -176,7 +173,7 @@ crates and docs present when the tool was first written. Tracked by
 
 #### Scenario: mapping file changes
 
-- **WHEN** `docs/SPEC-MAPPING.md`, `docs/IMPLEMENTATION-MATRIX.toml`, audit tooling,
+- **WHEN** `docs/IMPLEMENTATION-MATRIX.toml`, `docs/IMPLEMENTATION-MATRIX.toml`, audit tooling,
   or repository-wide agent instructions change
 - **THEN** the scope tooling expands the audit to the impacted Feature IDs or, when
   impact cannot be resolved deterministically, reports that a wider review is
@@ -209,7 +206,7 @@ state updates SHALL be deterministic and SHALL NOT be hand-edited. Tracked by
 
 ### Requirement: validator diagnostic registry enforcement
 
-The repository SHALL enforce that `docs/VALIDATOR-DIAGNOSTICS.md` lists exactly the
+The repository SHALL enforce that `docs/DIAGNOSTICS.md` lists exactly the
 diagnostic rule-ID literals present in `crates/splot-validate/src`. A
 `cargo xtask check-diagnostic-registry` gate, run as part of `cargo xtask ci`, SHALL extract
 the rule-ID literals from non-test, non-comment validator source and compare them against the
@@ -237,9 +234,9 @@ Tracked by `XTASK-DIAGNOSTIC-REGISTRY`.
 - **WHEN** the validator source contains `Check::id()` registry identifiers (the `<ns>/syntax` literals) that are routed through `syntax_error_diagnostic()` rather than emitted verbatim
 - **THEN** those identifiers are documented in a labeled registry sub-table so the documented set still equals the extracted set
 
-### Requirement: generated spec-coverage document
+### Requirement: on-demand spec-coverage document
 
-The repository SHALL provide a generated document `docs/SPEC-COVERAGE.md`,
+The repository SHALL provide an on-demand generated spec coverage document,
 rendered from `docs/IMPLEMENTATION-MATRIX.toml` by
 `cargo xtask spec-coverage --format markdown --output docs/SPEC-COVERAGE.md`,
 with one row per (spec section, feature) pair grouped by spec chapter and
@@ -247,8 +244,10 @@ ordered by a numeric-aware section key. Section cells SHALL hyperlink into the
 committed spec mirror when the section resolves through
 `docs/spec/av2/1.0.0/index.md` and SHALL fall back to plain text otherwise.
 Features with no spec section SHALL be listed in a dedicated tail section.
-`cargo xtask check-feature-status` SHALL fail when the committed document does
-not match its render. Tracked by `XTASK-FEATURE-STATUS`.
+`cargo xtask check-feature-status` SHALL fail when a committed
+`docs/SPEC-COVERAGE.md` does not match its render; absence of the generated
+markdown is allowed so the committed documentation set stays slim. Tracked by
+`XTASK-FEATURE-STATUS`.
 
 #### Scenario: looking up a spec section
 
@@ -260,7 +259,7 @@ not match its render. Tracked by `XTASK-FEATURE-STATUS`.
 #### Scenario: committed document drifts from the matrix
 
 - **WHEN** `docs/IMPLEMENTATION-MATRIX.toml` changes without regenerating
-  `docs/SPEC-COVERAGE.md`
+  a committed `docs/SPEC-COVERAGE.md`
 - **THEN** `cargo xtask check-feature-status` (and therefore `cargo xtask ci`)
   fails and names the regenerate command
 
@@ -378,14 +377,15 @@ only be raised with maintainer approval.
   implementation comments above the configured budget
 - **THEN** the command fails and reports the current count, budget, and overage
 
-### Requirement: generated decoder support document
-The repository SHALL provide a generated document
-`docs/DECODER-SUPPORT-STATUS.md`, rendered from
+### Requirement: on-demand decoder support document
+The repository SHALL provide an on-demand generated decoder support document,
+rendered from
 `docs/DECODER-SUPPORT-MATRIX.toml` by
 `cargo xtask decoder-support --format markdown --output docs/DECODER-SUPPORT-STATUS.md`.
-`cargo xtask check-decoder-support` SHALL fail when the committed document does
-not match its render. `cargo xtask ci` SHALL run this check without invoking
-AVM, dav2d, or any external decoder. Tracked by
+`cargo xtask check-decoder-support` SHALL fail when a committed
+`docs/DECODER-SUPPORT-STATUS.md` does not match its render; absence of the
+generated markdown is allowed. `cargo xtask ci` SHALL run this check without
+invoking AVM, dav2d, or any external decoder. Tracked by
 `XTASK-DECODER-SUPPORT-STATUS`.
 
 #### Scenario: looking up decoder support
@@ -395,7 +395,7 @@ AVM, dav2d, or any external decoder. Tracked by
 
 #### Scenario: committed decoder status drifts
 - **WHEN** `docs/DECODER-SUPPORT-MATRIX.toml` changes without regenerating
-  `docs/DECODER-SUPPORT-STATUS.md`
+  a committed `docs/DECODER-SUPPORT-STATUS.md`
 - **THEN** `cargo xtask check-decoder-support` fails and names the regenerate
   command
 
@@ -406,7 +406,7 @@ AVM, dav2d, or any external decoder. Tracked by
 
 ### Requirement: decoder diagnostic registry enforcement
 
-The repository SHALL enforce that `docs/DECODER-DIAGNOSTICS.md` lists exactly
+The repository SHALL enforce that `docs/DIAGNOSTICS.md` lists exactly
 the emitted `decode/*` diagnostic `rule_id` literals present in current decoder
 emission source roots. `cargo xtask check-diagnostic-registry`, run as part of
 `cargo xtask ci`, SHALL compare the emitted decoder `rule_id` set against the

@@ -7,4 +7,4 @@ obu-header/global-xlayer-required
   section:  § 6.2.2
   summary:  OBU type requiring GLOBAL_XLAYER_ID uses a non-global obu_xlayer_id
 
-Full registry: docs/VALIDATOR-DIAGNOSTICS.md
+Full registry: docs/DIAGNOSTICS.md

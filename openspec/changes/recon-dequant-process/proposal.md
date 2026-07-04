@@ -60,5 +60,5 @@ None.
 - `docs/DECODER-SUPPORT-MATRIX.toml`
 - `xtask/src/decoder_conformance_coverage.rs`
 - generated status/coverage docs
-- `docs/DECODER-ROADMAP.md`
+- `docs/DECODER-SUPPORT-MATRIX.toml`
 - `openspec/specs/decoder-support/spec.md`

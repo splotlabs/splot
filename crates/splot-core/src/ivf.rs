@@ -414,7 +414,7 @@ pub fn is_ivf(input: &[u8]) -> bool {
 
 /// The fixed-layout 32-byte IVF file header as it appears on the wire.
 ///
-/// Private fixed-layout wire view (see [`docs/ZERO_COPY.md`](../../../docs/ZERO_COPY.md)):
+/// Private fixed-layout wire view (see [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)):
 /// [`parse_ivf_header`] borrows this from the input, then validates it into the
 /// public [`IvfHeader`] domain type. The byteorder wrappers make every multi-byte
 /// field little-endian and alignment-1, so the struct can be borrowed from an

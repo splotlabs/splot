@@ -29,7 +29,7 @@ implements no decoder/encoder algorithmic stage.
   into `cargo xtask ci` under the run-if-present policy).
 - CLI/docs/tests: `tools/dupehound/budget.toml` (the committed ceiling),
   `.github/workflows/ci.yml` (install dupehound, run the budget gate, and the
-  PR-only `check --diff` ratchet), `docs/agents/commands.md` + `AGENTS.md`
+  PR-only `check --diff` ratchet), `AGENTS.md` + `AGENTS.md`
   (reuse-before-reimplement guidance), the implementation matrix, and the
   `tooling` capability spec. Gate accept/reject unit tests.
 - Subsequent dedup commits lower the production budget (the campaign tracked by
@@ -58,7 +58,7 @@ implements no decoder/encoder algorithmic stage.
 - [ ] `.github/workflows/ci.yml` installs dupehound, runs the budget gate, and
       runs the PR-only `dupehound check --diff <base>` ratchet (base bound through
       env for workflow-injection hygiene).
-- [ ] `AGENTS.md` + `docs/agents/commands.md` tell agents to reuse before
+- [ ] `AGENTS.md` + `AGENTS.md` tell agents to reuse before
       reimplementing and how to run the gate.
 - [ ] Positive (at/under budget pass) and negative (over budget rejected) tests exist.
 - [ ] `cargo xtask check-feature-status` passes.

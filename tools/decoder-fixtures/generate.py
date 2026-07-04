@@ -4,7 +4,7 @@
 """Local-only regeneration for the AVM decode-output oracle (CONF-AVM-DECODE-ORACLE).
 
 AVM is a LOCAL oracle only — never committed, never run in CI. Needs a local AVM
-build (avmenc/avmdec) + ffmpeg. See docs/decoder/AVM-FIXTURE-CORPUS.md.
+build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
 
   python3 tools/decoder-fixtures/generate.py find
   python3 tools/decoder-fixtures/generate.py hashes [--out oracle.json]

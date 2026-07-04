@@ -3,7 +3,7 @@
 ## Purpose
 
 The repository's canonical AV2 implementation-status model, drift checks, and
-rendered status outputs.
+on-demand rendered status outputs.
 
 Tracked by Feature ID: `XTASK-FEATURE-STATUS`.
 
@@ -24,12 +24,14 @@ and wired into `cargo xtask ci`.
 ### Requirement: rendered status
 
 The matrix SHALL be renderable as a table, JSON, and markdown, and summarizable by
-`cargo xtask spec-coverage`.
+`cargo xtask spec-coverage`. Generated markdown outputs SHALL be on-demand
+artifacts: they may be produced locally, and if committed they SHALL be
+drift-checked, but absence is allowed.
 
 #### Scenario: regenerate the status doc
 
 - **WHEN** `cargo xtask feature-status --format markdown --output docs/FEATURE-STATUS.md` runs
-- **THEN** `docs/FEATURE-STATUS.md` reflects the matrix and the drift check passes
+- **THEN** `docs/FEATURE-STATUS.md` reflects the matrix
 
 ### Requirement: partial stages name their residual or blocker
 
@@ -60,4 +62,3 @@ closing the stage.
   row or backlog change owns (for example frame-header inter-path parsing)
 - **THEN** the row's notes name that blocking feature id and the stage stays
   `partial` as documented-blocked until the parsing lands
-

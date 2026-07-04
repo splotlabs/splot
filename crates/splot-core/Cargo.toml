@@ -19,7 +19,7 @@ workspace = true
 thiserror.workspace = true
 serde.workspace = true
 # Fixed-layout IVF container wire header parsing only (AV2-IVF-CONTAINER); see
-# docs/ZERO_COPY.md for the allowed `zerocopy` surface.
+# docs/ARCHITECTURE.md for the allowed `zerocopy` surface.
 zerocopy.workspace = true
 
 [dev-dependencies]
