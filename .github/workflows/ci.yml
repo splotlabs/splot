@@ -248,7 +248,18 @@ jobs:
       # reads the committed fixtures and conformance vectors and writes
       # byte-identical seeds. See xtask/src/seed_fuzz_corpus.rs.
       - name: Seed every target's corpus from curated fixtures
-        run: cargo xtask seed-fuzz-corpus
+        run: |
+          for attempt in 1 2 3; do
+            if cargo xtask seed-fuzz-corpus; then
+              exit 0
+            fi
+
+            if [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+
+            sleep $((attempt * 10))
+          done
 
       # Force the gnu target. install-action has no cargo-fuzz, so it falls back to
       # a musl-built binary whose default target is musl — and AddressSanitizer
