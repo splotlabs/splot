@@ -612,7 +612,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                             &inter_core,
                             inter_envelope.offset,
                         )?;
-                        let (frame, inter_core, frame_cdfs) = inter::decode_inter_frame(
+                        let (frame, inter_core, frame_cdfs) = frame_engine::decode_frame(
                             plan,
                             next_candidate,
                             bytes,
@@ -621,7 +621,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                             &sequence,
                             options,
                             header,
-                            &inter_state,
+                            &frame_engine::FrameSetup::Inter(&inter_state),
                             BitDepth::Eight,
                         )?;
                         (PipelineDecodedFrame::Eight(frame), inter_core, frame_cdfs)
@@ -663,7 +663,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                             &inter_core,
                             inter_envelope.offset,
                         )?;
-                        let (frame, inter_core, frame_cdfs) = inter::decode_inter_frame(
+                        let (frame, inter_core, frame_cdfs) = frame_engine::decode_frame(
                             plan,
                             next_candidate,
                             bytes,
@@ -672,7 +672,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                             &sequence,
                             options,
                             header,
-                            &inter_state,
+                            &frame_engine::FrameSetup::Inter(&inter_state),
                             BitDepth::Ten,
                         )?;
                         (PipelineDecodedFrame::Ten(frame), inter_core, frame_cdfs)
@@ -1858,6 +1858,7 @@ pub(crate) fn incomplete_intra_header_error(
     }
 }
 
+pub(crate) mod frame_engine;
 pub(crate) mod general_intra;
 pub(crate) mod reconstruct;
 
