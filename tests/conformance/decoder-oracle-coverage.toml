@@ -80,7 +80,7 @@ name = "12-bit sequence"
 category = "sequence"
 fixtureable = false
 spec_sections = ["6.4.1"]
-notes = "This local AVM build supports 8/10-bit only (g_bit_depth range 8..10); 12-bit not encodable."
+notes = "AV2 v1.0.0 profiles are 10-bit; AVM emits 12-bit only via a non-spec TEST_ONLY_12BIT_PROFILE that splot rejects (bit-depth-out-of-range)."
 
 [[capability]]
 id = "seq.bit_depth.8"
