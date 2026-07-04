@@ -386,7 +386,7 @@ fn general_intra_transform_tool_residual_policy(
     TransformToolResidualPolicy::from_sequence_tools(
         sequence,
         ActiveIntraIstResidualPolicy::Reject,
-        ActiveChromaResidualPolicy::Reject,
+        ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
     )
 }
 

@@ -14716,7 +14716,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::smooth_h_split_subblock_reads_decoded_above_right_sibling",
-    "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::smooth_chroma_split_subblock_still_rejects",
+    "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::smooth_chroma_split_subblock_decodes_to_oracle",
     "crates/splot-decode/src/bitstream/tile_payload.rs::block_decoded_state::tests::split_bottom_left_reads_decoded_top_right_sibling",
 ]
 commands = [
@@ -15197,7 +15197,7 @@ tests = [
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::shgrid_multirow_smooth_h_above_right_intra_frame_decodes_to_oracle",
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::vgrid_multirow_smooth_v_above_row_intra_frame_decodes_to_oracle",
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::grid_2d_intra_frame_decodes_to_oracle",
-    "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::smooth_chroma_split_subblock_still_rejects",
+    "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::smooth_chroma_split_subblock_decodes_to_oracle",
 ]
 commands = [
     "cargo test -p splot-decode general_intra --locked",

@@ -294,6 +294,26 @@ avm_raw_i420_frame_sha256 = ["5746153715e5537ae86879a9330048331e3bdf62246fb3fdd5
 kind = "raw_i420_equals_avm"
 
 [[fixture]]
+id = "syn-2sb-cdefdeblock-intra-128x64-q100"
+path = "vectors/valid/syn-2sb-cdefdeblock-intra-128x64-q100.ivf"
+status = "must_pass"
+width = 128
+height = 64
+coded_frames = 1
+shown_frames = 1
+bytes_per_sample = 1
+features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.cdef", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "5.20.10.1", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.14.2", "7.15.2.1", "7.15.4", "7.17", "7.17.2", "7.17.7", "7.18", "7.18.1", "7.18.2", "7.18.3", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
+
+[fixture.hashes]
+ivf_sha256 = "942bb0b85f8247a2d834c87b45f73d9a8f56de605b90d84f96149353263753be"
+avm_raw_i420_sha256 = "2915c2a65660fa1ff35c965f16e1c59d629ffc279539bfe9f502f7a03de2d23d"
+avm_raw_i420_frame_sha256 = ["2915c2a65660fa1ff35c965f16e1c59d629ffc279539bfe9f502f7a03de2d23d"]
+
+[fixture.expected_splot]
+kind = "raw_i420_equals_avm"
+
+[[fixture]]
 id = "syn-2sb-cdefuv-intra-128x64-q170"
 path = "vectors/valid/syn-2sb-cdefuv-intra-128x64-q170.ivf"
 status = "must_pass"
@@ -309,6 +329,66 @@ spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.
 ivf_sha256 = "ead7a1c4225f56caafbfe9d533cdaa8938602e776e707f8dcbea88e704e7841d"
 avm_raw_i420_sha256 = "9b11d0effa3b93e84c63306e9ac865921e33f6e098cc35fbc472cbd6096ee3e6"
 avm_raw_i420_frame_sha256 = ["9b11d0effa3b93e84c63306e9ac865921e33f6e098cc35fbc472cbd6096ee3e6"]
+
+[fixture.expected_splot]
+kind = "raw_i420_equals_avm"
+
+[[fixture]]
+id = "syn-2sb-deblock-intra-128x64-q100"
+path = "vectors/valid/syn-2sb-deblock-intra-128x64-q100.ivf"
+status = "must_pass"
+width = 128
+height = 64
+coded_frames = 1
+shown_frames = 1
+bytes_per_sample = 1
+features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.14.2", "7.15.2.1", "7.15.4", "7.17", "7.17.2", "7.17.7", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
+
+[fixture.hashes]
+ivf_sha256 = "94dd761675007dae3649f58c2d5af8a36bfbe0d5789333c80e3304920b1c16d1"
+avm_raw_i420_sha256 = "a83cf84a6eab00d8c1e6aaf64e7aeba2049e7d1721a90147067ecc627f0aea0b"
+avm_raw_i420_frame_sha256 = ["a83cf84a6eab00d8c1e6aaf64e7aeba2049e7d1721a90147067ecc627f0aea0b"]
+
+[fixture.expected_splot]
+kind = "raw_i420_equals_avm"
+
+[[fixture]]
+id = "syn-2sb-deblock-intra-128x64-q98"
+path = "vectors/valid/syn-2sb-deblock-intra-128x64-q98.ivf"
+status = "must_pass"
+width = 128
+height = 64
+coded_frames = 1
+shown_frames = 1
+bytes_per_sample = 1
+features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.14.2", "7.15.2.1", "7.15.4", "7.17", "7.17.2", "7.17.7", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
+
+[fixture.hashes]
+ivf_sha256 = "f3c60ca581a63b15d419563b07fed18467bfd5c7a5bd55711f0fc3feab9ec7cf"
+avm_raw_i420_sha256 = "3306f7ab5f192cc4f30f6c564e9b52a9d868de77ffd9fb913651cb58a8d8a3f1"
+avm_raw_i420_frame_sha256 = ["3306f7ab5f192cc4f30f6c564e9b52a9d868de77ffd9fb913651cb58a8d8a3f1"]
+
+[fixture.expected_splot]
+kind = "raw_i420_equals_avm"
+
+[[fixture]]
+id = "syn-2sb-deblockwide-intra-128x64-q100"
+path = "vectors/valid/syn-2sb-deblockwide-intra-128x64-q100.ivf"
+status = "must_pass"
+width = 128
+height = 64
+coded_frames = 1
+shown_frames = 1
+bytes_per_sample = 1
+features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.14.2", "7.15.2.1", "7.15.4", "7.17", "7.17.2", "7.17.7", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
+
+[fixture.hashes]
+ivf_sha256 = "8e981e105715ae6d420fd217667480026053748e6d7a7b1ac9943cd12217c10c"
+avm_raw_i420_sha256 = "199c62093efa3b644fb4d519ae082516d9a4f9a77b13f116ddc62c49fa8648d7"
+avm_raw_i420_frame_sha256 = ["199c62093efa3b644fb4d519ae082516d9a4f9a77b13f116ddc62c49fa8648d7"]
 
 [fixture.expected_splot]
 kind = "raw_i420_equals_avm"
@@ -694,6 +774,26 @@ avm_raw_i420_frame_sha256 = ["ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f
 kind = "raw_i420_equals_avm"
 
 [[fixture]]
+id = "syn-grid-deblock-intra-128x128-q100"
+path = "vectors/valid/syn-grid-deblock-intra-128x128-q100.ivf"
+status = "must_pass"
+width = 128
+height = 128
+coded_frames = 1
+shown_frames = 1
+bytes_per_sample = 1
+features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.14.2", "7.15.2.1", "7.15.4", "7.17", "7.17.2", "7.17.7", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
+
+[fixture.hashes]
+ivf_sha256 = "d988a5939c491608a8c44b2ac686ce2ae402683420ce3ce20cae930529cfa121"
+avm_raw_i420_sha256 = "242cb4df75288e96ab231c41f3bcb956aa0159d35a304e82c89e04814bd77ef0"
+avm_raw_i420_frame_sha256 = ["242cb4df75288e96ab231c41f3bcb956aa0159d35a304e82c89e04814bd77ef0"]
+
+[fixture.expected_splot]
+kind = "raw_i420_equals_avm"
+
+[[fixture]]
 id = "syn-grid-inter-128x128-q80"
 path = "vectors/valid/syn-grid-inter-128x128-q80.ivf"
 status = "must_pass"
@@ -834,6 +934,26 @@ avm_raw_i420_frame_sha256 = ["269b4969800751c63f7f0605f1f7b8f178f7bf85590ec62fe6
 kind = "raw_i420_equals_avm"
 
 [[fixture]]
+id = "syn-quad-intra-64x64-q80"
+path = "vectors/valid/syn-quad-intra-64x64-q80.ivf"
+status = "must_pass"
+width = 64
+height = 64
+coded_frames = 1
+shown_frames = 1
+bytes_per_sample = 1
+features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.4.1", "5.20.5.3", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.13.2.10", "7.13.2.11", "7.14.2", "7.15.2.1", "7.15.4", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
+
+[fixture.hashes]
+ivf_sha256 = "b18c0c01f873000bb10deaad07af9e99870691dc9880f456da061cc0435df2e6"
+avm_raw_i420_sha256 = "c54ed4e996841e2178e74033d765dda1e1127d5d89c3012be3266c3e24a7fd28"
+avm_raw_i420_frame_sha256 = ["c54ed4e996841e2178e74033d765dda1e1127d5d89c3012be3266c3e24a7fd28"]
+
+[fixture.expected_splot]
+kind = "raw_i420_equals_avm"
+
+[[fixture]]
 id = "syn-rdir-intra-128x64-q80"
 path = "vectors/valid/syn-rdir-intra-128x64-q80.ivf"
 status = "must_pass"
@@ -869,6 +989,26 @@ spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.
 ivf_sha256 = "5cbdf29bbb94adb156abe4c4263620fabf988798fc5006d50abf3525a48964be"
 avm_raw_i420_sha256 = "d1ce39cc3d79f5c46fdea67ad57ec4edd5dfed088ee39fd7029fda1bbb11e0e8"
 avm_raw_i420_frame_sha256 = ["d1ce39cc3d79f5c46fdea67ad57ec4edd5dfed088ee39fd7029fda1bbb11e0e8"]
+
+[fixture.expected_splot]
+kind = "raw_i420_equals_avm"
+
+[[fixture]]
+id = "syn-shsplit-intra-64x64-q80"
+path = "vectors/valid/syn-shsplit-intra-64x64-q80.ivf"
+status = "must_pass"
+width = 64
+height = 64
+coded_frames = 1
+shown_frames = 1
+bytes_per_sample = 1
+features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.4.1", "5.20.5.3", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.13.2.10", "7.13.2.11", "7.13.2.13", "7.14.2", "7.15.2.1", "7.15.4", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
+
+[fixture.hashes]
+ivf_sha256 = "0e4487b499ed356684963686b8fea994d33c59f4019f4759d15d3b68075a2803"
+avm_raw_i420_sha256 = "296f15949d88b26b5797bffdb15c6c36dc46bf6976bad59f7995e2443e1b418a"
+avm_raw_i420_frame_sha256 = ["296f15949d88b26b5797bffdb15c6c36dc46bf6976bad59f7995e2443e1b418a"]
 
 [fixture.expected_splot]
 kind = "raw_i420_equals_avm"
@@ -929,6 +1069,46 @@ spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.
 ivf_sha256 = "5b1c76e8424aa02c402e501809c9f2410aafac029143fd4581bedb2eb624fb29"
 avm_raw_i420_sha256 = "f1621607dfcd2737e8a4c308fc26cd1596cb001444437f0440e34883a59b519b"
 avm_raw_i420_frame_sha256 = ["f1621607dfcd2737e8a4c308fc26cd1596cb001444437f0440e34883a59b519b"]
+
+[fixture.expected_splot]
+kind = "raw_i420_equals_avm"
+
+[[fixture]]
+id = "syn-split-intra-64x64-10bit-q110"
+path = "vectors/valid/syn-split-intra-64x64-10bit-q110.ivf"
+status = "must_pass"
+width = 64
+height = 64
+coded_frames = 1
+shown_frames = 1
+bytes_per_sample = 2
+features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.4.1", "5.20.5.3", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.13.2.10", "7.13.2.11", "7.14.2", "7.15.2.1", "7.15.4", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
+
+[fixture.hashes]
+ivf_sha256 = "025e03b1351bf2a4aa50bf3ec26f821bc9840139d8f67c20da58ad53ec2f6e58"
+avm_raw_i420_sha256 = "527cf3cdc7bca2ccfca21573f175c0ffcde73189f1f94fd02a65e09cc9dfdcbf"
+avm_raw_i420_frame_sha256 = ["527cf3cdc7bca2ccfca21573f175c0ffcde73189f1f94fd02a65e09cc9dfdcbf"]
+
+[fixture.expected_splot]
+kind = "raw_i420_equals_avm"
+
+[[fixture]]
+id = "syn-svsplit-intra-64x64-q140"
+path = "vectors/valid/syn-svsplit-intra-64x64-q140.ivf"
+status = "must_pass"
+width = 64
+height = 64
+coded_frames = 1
+shown_frames = 1
+bytes_per_sample = 1
+features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.4.1", "5.20.5.3", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.13.2.10", "7.13.2.11", "7.13.2.13", "7.14.2", "7.15.2.1", "7.15.4", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
+
+[fixture.hashes]
+ivf_sha256 = "853d7fbf7537953d4d5b17a2ffcf86cd956385dcfdf3003cff6cbee8819fcab1"
+avm_raw_i420_sha256 = "c2b46d534744db9fc146b460f438a6ae450c711e43e537f80a13886297ddbaa5"
+avm_raw_i420_frame_sha256 = ["c2b46d534744db9fc146b460f438a6ae450c711e43e537f80a13886297ddbaa5"]
 
 [fixture.expected_splot]
 kind = "raw_i420_equals_avm"
@@ -1046,110 +1226,6 @@ detail_kind = "unsupported_feature"
 strict_xpass_should_fail = true
 
 [[fixture]]
-id = "syn-2sb-cdefdeblock-intra-128x64-q100"
-path = "vectors/valid/syn-2sb-cdefdeblock-intra-128x64-q100.ivf"
-status = "xfail_splot"
-width = 128
-height = 64
-coded_frames = 1
-shown_frames = 1
-bytes_per_sample = 1
-features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.cdef", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
-spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "5.20.10.1", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.14.2", "7.15.2.1", "7.15.4", "7.17", "7.17.2", "7.17.7", "7.18", "7.18.1", "7.18.2", "7.18.3", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
-
-[fixture.hashes]
-ivf_sha256 = "942bb0b85f8247a2d834c87b45f73d9a8f56de605b90d84f96149353263753be"
-avm_raw_i420_sha256 = "2915c2a65660fa1ff35c965f16e1c59d629ffc279539bfe9f502f7a03de2d23d"
-avm_raw_i420_frame_sha256 = ["2915c2a65660fa1ff35c965f16e1c59d629ffc279539bfe9f502f7a03de2d23d"]
-
-[fixture.expected_splot]
-kind = "unsupported_feature"
-rule_id = "decode/unsupported-feature"
-unsupported_reason = "general_intra_transform_tool_residual"
-matrix_row = "general-intra-frame-frontier"
-feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
-detail_kind = "unsupported_feature"
-strict_xpass_should_fail = true
-
-[[fixture]]
-id = "syn-2sb-deblock-intra-128x64-q100"
-path = "vectors/valid/syn-2sb-deblock-intra-128x64-q100.ivf"
-status = "xfail_splot"
-width = 128
-height = 64
-coded_frames = 1
-shown_frames = 1
-bytes_per_sample = 1
-features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
-spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.14.2", "7.15.2.1", "7.15.4", "7.17", "7.17.2", "7.17.7", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
-
-[fixture.hashes]
-ivf_sha256 = "94dd761675007dae3649f58c2d5af8a36bfbe0d5789333c80e3304920b1c16d1"
-avm_raw_i420_sha256 = "a83cf84a6eab00d8c1e6aaf64e7aeba2049e7d1721a90147067ecc627f0aea0b"
-avm_raw_i420_frame_sha256 = ["a83cf84a6eab00d8c1e6aaf64e7aeba2049e7d1721a90147067ecc627f0aea0b"]
-
-[fixture.expected_splot]
-kind = "unsupported_feature"
-rule_id = "decode/unsupported-feature"
-unsupported_reason = "general_intra_transform_tool_residual"
-matrix_row = "general-intra-frame-frontier"
-feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
-detail_kind = "unsupported_feature"
-strict_xpass_should_fail = true
-
-[[fixture]]
-id = "syn-2sb-deblock-intra-128x64-q98"
-path = "vectors/valid/syn-2sb-deblock-intra-128x64-q98.ivf"
-status = "xfail_splot"
-width = 128
-height = 64
-coded_frames = 1
-shown_frames = 1
-bytes_per_sample = 1
-features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
-spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.14.2", "7.15.2.1", "7.15.4", "7.17", "7.17.2", "7.17.7", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
-
-[fixture.hashes]
-ivf_sha256 = "f3c60ca581a63b15d419563b07fed18467bfd5c7a5bd55711f0fc3feab9ec7cf"
-avm_raw_i420_sha256 = "3306f7ab5f192cc4f30f6c564e9b52a9d868de77ffd9fb913651cb58a8d8a3f1"
-avm_raw_i420_frame_sha256 = ["3306f7ab5f192cc4f30f6c564e9b52a9d868de77ffd9fb913651cb58a8d8a3f1"]
-
-[fixture.expected_splot]
-kind = "unsupported_feature"
-rule_id = "decode/unsupported-feature"
-unsupported_reason = "general_intra_transform_tool_residual"
-matrix_row = "general-intra-frame-frontier"
-feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
-detail_kind = "unsupported_feature"
-strict_xpass_should_fail = true
-
-[[fixture]]
-id = "syn-2sb-deblockwide-intra-128x64-q100"
-path = "vectors/valid/syn-2sb-deblockwide-intra-128x64-q100.ivf"
-status = "xfail_splot"
-width = 128
-height = 64
-coded_frames = 1
-shown_frames = 1
-bytes_per_sample = 1
-features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
-spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.14.2", "7.15.2.1", "7.15.4", "7.17", "7.17.2", "7.17.7", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
-
-[fixture.hashes]
-ivf_sha256 = "8e981e105715ae6d420fd217667480026053748e6d7a7b1ac9943cd12217c10c"
-avm_raw_i420_sha256 = "199c62093efa3b644fb4d519ae082516d9a4f9a77b13f116ddc62c49fa8648d7"
-avm_raw_i420_frame_sha256 = ["199c62093efa3b644fb4d519ae082516d9a4f9a77b13f116ddc62c49fa8648d7"]
-
-[fixture.expected_splot]
-kind = "unsupported_feature"
-rule_id = "decode/unsupported-feature"
-unsupported_reason = "general_intra_transform_tool_residual"
-matrix_row = "general-intra-frame-frontier"
-feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
-detail_kind = "unsupported_feature"
-strict_xpass_should_fail = true
-
-[[fixture]]
 id = "syn-2sb-smchroma-intra-128x64-10bit-q160"
 path = "vectors/valid/syn-2sb-smchroma-intra-128x64-10bit-q160.ivf"
 status = "xfail_splot"
@@ -1224,32 +1300,6 @@ rule_id = "decode/unsupported-feature"
 unsupported_reason = "unsupported_10bit_frozen_minimal_tier"
 matrix_row = "minimal-decode-tier-contract"
 feature_id = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
-detail_kind = "unsupported_feature"
-strict_xpass_should_fail = true
-
-[[fixture]]
-id = "syn-grid-deblock-intra-128x128-q100"
-path = "vectors/valid/syn-grid-deblock-intra-128x128-q100.ivf"
-status = "xfail_splot"
-width = 128
-height = 128
-coded_frames = 1
-shown_frames = 1
-bytes_per_sample = 1
-features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
-spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.14.2", "7.15.2.1", "7.15.4", "7.17", "7.17.2", "7.17.7", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
-
-[fixture.hashes]
-ivf_sha256 = "d988a5939c491608a8c44b2ac686ce2ae402683420ce3ce20cae930529cfa121"
-avm_raw_i420_sha256 = "242cb4df75288e96ab231c41f3bcb956aa0159d35a304e82c89e04814bd77ef0"
-avm_raw_i420_frame_sha256 = ["242cb4df75288e96ab231c41f3bcb956aa0159d35a304e82c89e04814bd77ef0"]
-
-[fixture.expected_splot]
-kind = "unsupported_feature"
-rule_id = "decode/unsupported-feature"
-unsupported_reason = "general_intra_transform_tool_residual"
-matrix_row = "general-intra-frame-frontier"
-feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
 detail_kind = "unsupported_feature"
 strict_xpass_should_fail = true
 
@@ -1410,58 +1460,6 @@ detail_kind = "unsupported_structure"
 strict_xpass_should_fail = true
 
 [[fixture]]
-id = "syn-quad-intra-64x64-q80"
-path = "vectors/valid/syn-quad-intra-64x64-q80.ivf"
-status = "xfail_splot"
-width = 64
-height = 64
-coded_frames = 1
-shown_frames = 1
-bytes_per_sample = 1
-features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
-spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.4.1", "5.20.5.3", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.13.2.10", "7.13.2.11", "7.14.2", "7.15.2.1", "7.15.4", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
-
-[fixture.hashes]
-ivf_sha256 = "b18c0c01f873000bb10deaad07af9e99870691dc9880f456da061cc0435df2e6"
-avm_raw_i420_sha256 = "c54ed4e996841e2178e74033d765dda1e1127d5d89c3012be3266c3e24a7fd28"
-avm_raw_i420_frame_sha256 = ["c54ed4e996841e2178e74033d765dda1e1127d5d89c3012be3266c3e24a7fd28"]
-
-[fixture.expected_splot]
-kind = "unsupported_feature"
-rule_id = "decode/unsupported-feature"
-unsupported_reason = "general_intra_transform_tool_residual"
-matrix_row = "general-intra-frame-frontier"
-feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
-detail_kind = "unsupported_feature"
-strict_xpass_should_fail = true
-
-[[fixture]]
-id = "syn-shsplit-intra-64x64-q80"
-path = "vectors/valid/syn-shsplit-intra-64x64-q80.ivf"
-status = "xfail_splot"
-width = 64
-height = 64
-coded_frames = 1
-shown_frames = 1
-bytes_per_sample = 1
-features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
-spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.4.1", "5.20.5.3", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.13.2.10", "7.13.2.11", "7.13.2.13", "7.14.2", "7.15.2.1", "7.15.4", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
-
-[fixture.hashes]
-ivf_sha256 = "0e4487b499ed356684963686b8fea994d33c59f4019f4759d15d3b68075a2803"
-avm_raw_i420_sha256 = "296f15949d88b26b5797bffdb15c6c36dc46bf6976bad59f7995e2443e1b418a"
-avm_raw_i420_frame_sha256 = ["296f15949d88b26b5797bffdb15c6c36dc46bf6976bad59f7995e2443e1b418a"]
-
-[fixture.expected_splot]
-kind = "unsupported_feature"
-rule_id = "decode/unsupported-feature"
-unsupported_reason = "general_intra_transform_tool_residual"
-matrix_row = "general-intra-frame-frontier"
-feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
-detail_kind = "unsupported_feature"
-strict_xpass_should_fail = true
-
-[[fixture]]
 id = "syn-smooth-intra-64x64-10bit-q80"
 path = "vectors/valid/syn-smooth-intra-64x64-10bit-q80.ivf"
 status = "xfail_splot"
@@ -1481,59 +1479,7 @@ avm_raw_i420_frame_sha256 = ["7412ac765a66580283a9b67120bb0124df4ac03687c9e449f3
 [fixture.expected_splot]
 kind = "unsupported_feature"
 rule_id = "decode/unsupported-feature"
-unsupported_reason = "general_intra_transform_tool_residual"
-matrix_row = "general-intra-frame-frontier"
-feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
-detail_kind = "unsupported_feature"
-strict_xpass_should_fail = true
-
-[[fixture]]
-id = "syn-split-intra-64x64-10bit-q110"
-path = "vectors/valid/syn-split-intra-64x64-10bit-q110.ivf"
-status = "xfail_splot"
-width = 64
-height = 64
-coded_frames = 1
-shown_frames = 1
-bytes_per_sample = 2
-features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
-spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.4.1", "5.20.5.3", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.13.2.10", "7.13.2.11", "7.14.2", "7.15.2.1", "7.15.4", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
-
-[fixture.hashes]
-ivf_sha256 = "025e03b1351bf2a4aa50bf3ec26f821bc9840139d8f67c20da58ad53ec2f6e58"
-avm_raw_i420_sha256 = "527cf3cdc7bca2ccfca21573f175c0ffcde73189f1f94fd02a65e09cc9dfdcbf"
-avm_raw_i420_frame_sha256 = ["527cf3cdc7bca2ccfca21573f175c0ffcde73189f1f94fd02a65e09cc9dfdcbf"]
-
-[fixture.expected_splot]
-kind = "unsupported_feature"
-rule_id = "decode/unsupported-feature"
-unsupported_reason = "general_intra_transform_tool_residual"
-matrix_row = "general-intra-frame-frontier"
-feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
-detail_kind = "unsupported_feature"
-strict_xpass_should_fail = true
-
-[[fixture]]
-id = "syn-svsplit-intra-64x64-q140"
-path = "vectors/valid/syn-svsplit-intra-64x64-q140.ivf"
-status = "xfail_splot"
-width = 64
-height = 64
-coded_frames = 1
-shown_frames = 1
-bytes_per_sample = 1
-features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
-spec_sections = ["5.4", "5.4.1", "5.4.5", "5.5", "5.18", "5.18.1", "5.18.2", "5.18.6.1", "5.18.7.2", "5.19", "5.20", "5.20.3.1", "5.20.3.2", "5.20.4.1", "5.20.5.3", "5.20.7.27", "5.20.7.28", "5.20.8.2", "5.20.8.3", "6.2.2", "6.4.1", "6.4.5", "6.5", "6.17", "6.17.6.1", "6.17.7.2", "6.18", "6.19", "6.19.3", "7.3.8.6", "7.4.3", "7.13.2.10", "7.13.2.11", "7.13.2.13", "7.14.2", "7.15.2.1", "7.15.4", "7.21.1", "7.21.2", "7.21.6", "8.3.2", "9.6", "Annex B.2", "Annex B.3"]
-
-[fixture.hashes]
-ivf_sha256 = "853d7fbf7537953d4d5b17a2ffcf86cd956385dcfdf3003cff6cbee8819fcab1"
-avm_raw_i420_sha256 = "c2b46d534744db9fc146b460f438a6ae450c711e43e537f80a13886297ddbaa5"
-avm_raw_i420_frame_sha256 = ["c2b46d534744db9fc146b460f438a6ae450c711e43e537f80a13886297ddbaa5"]
-
-[fixture.expected_splot]
-kind = "unsupported_feature"
-rule_id = "decode/unsupported-feature"
-unsupported_reason = "general_intra_transform_tool_residual"
+unsupported_reason = "general_intra_rect_non_dc_luma"
 matrix_row = "general-intra-frame-frontier"
 feature_id = "DECODE-GENERAL-INTRA-FRAME-FRONTIER"
 detail_kind = "unsupported_feature"

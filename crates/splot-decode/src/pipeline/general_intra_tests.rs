@@ -266,15 +266,17 @@ fn assert_decode_rejects(fixture: &[u8], reason: &str) {
 
 #[test]
 fn ten_bit_smooth_luma_fails_closed_non_dc() {
-    assert_decode_rejects(
-        SMOOTH_10BIT_FIXTURE,
-        "general_intra_transform_tool_residual",
-    );
+    assert_decode_rejects(SMOOTH_10BIT_FIXTURE, "general_intra_rect_non_dc_luma");
 }
 
 #[test]
-fn ten_bit_split_leaf_reaches_transform_tool_residual_frontier() {
-    assert_decode_rejects(SPLIT_10BIT_FIXTURE, "general_intra_transform_tool_residual");
+fn ten_bit_split_leaf_intra_frame_decodes_to_oracle() {
+    let frame = decode_ten(SPLIT_10BIT_FIXTURE);
+    assert_yuv420_frame(&frame, BitDepth::Ten, 64, 64);
+    assert_hash(
+        &frame,
+        "527cf3cdc7bca2ccfca21573f175c0ffcde73189f1f94fd02a65e09cc9dfdcbf",
+    );
 }
 
 #[test]
@@ -307,8 +309,13 @@ const QUAD_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-quad-intra-64x64-q80.ivf");
 
 #[test]
-fn quad_multiblock_intra_frame_reaches_transform_tool_residual_frontier() {
-    assert_decode_rejects(QUAD_FIXTURE, "general_intra_transform_tool_residual");
+fn quad_multiblock_intra_frame_decodes_to_oracle() {
+    let frame = decode_eight(QUAD_FIXTURE);
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_hash(
+        &frame,
+        "c54ed4e996841e2178e74033d765dda1e1127d5d89c3012be3266c3e24a7fd28",
+    );
 }
 
 const DEEP_SPLIT_FIXTURE: &[u8] =
@@ -567,16 +574,26 @@ const SHSPLIT_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-shsplit-intra-64x64-q80.ivf");
 
 #[test]
-fn smooth_h_split_subblock_reaches_transform_tool_residual_frontier() {
-    assert_decode_rejects(SHSPLIT_FIXTURE, "general_intra_transform_tool_residual");
+fn smooth_h_split_subblock_decodes_to_oracle() {
+    let frame = decode_eight(SHSPLIT_FIXTURE);
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_hash(
+        &frame,
+        "296f15949d88b26b5797bffdb15c6c36dc46bf6976bad59f7995e2443e1b418a",
+    );
 }
 
 const SVSPLIT_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-svsplit-intra-64x64-q140.ivf");
 
 #[test]
-fn smooth_chroma_split_subblock_still_rejects() {
-    assert_decode_rejects(SVSPLIT_FIXTURE, "general_intra_transform_tool_residual");
+fn smooth_chroma_split_subblock_decodes_to_oracle() {
+    let frame = decode_eight(SVSPLIT_FIXTURE);
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_hash(
+        &frame,
+        "c2b46d534744db9fc146b460f438a6ae450c711e43e537f80a13886297ddbaa5",
+    );
 }
 
 const HEDGE_DIR_FIXTURE: &[u8] =
@@ -1151,19 +1168,30 @@ const DEBLOCK_GRID_Q100_FIXTURE: &[u8] = include_bytes!(
 );
 
 #[test]
-fn deblock_active_intra_frame_reaches_transform_tool_residual_frontier() {
-    assert_decode_rejects(
-        DEBLOCK_Q100_FIXTURE,
-        "general_intra_transform_tool_residual",
+fn deblock_active_intra_frame_decodes_to_oracle() {
+    let q100 = decode_eight(DEBLOCK_Q100_FIXTURE);
+    assert_yuv420_frame(&q100, BitDepth::Eight, 128, 64);
+    assert_hash(
+        &q100,
+        "a83cf84a6eab00d8c1e6aaf64e7aeba2049e7d1721a90147067ecc627f0aea0b",
     );
-    assert_decode_rejects(DEBLOCK_Q98_FIXTURE, "general_intra_transform_tool_residual");
-    assert_decode_rejects(
-        DEBLOCK_WIDE_Q100_FIXTURE,
-        "general_intra_transform_tool_residual",
+    let q98 = decode_eight(DEBLOCK_Q98_FIXTURE);
+    assert_yuv420_frame(&q98, BitDepth::Eight, 128, 64);
+    assert_hash(
+        &q98,
+        "3306f7ab5f192cc4f30f6c564e9b52a9d868de77ffd9fb913651cb58a8d8a3f1",
     );
-    assert_decode_rejects(
-        DEBLOCK_GRID_Q100_FIXTURE,
-        "general_intra_transform_tool_residual",
+    let wide = decode_eight(DEBLOCK_WIDE_Q100_FIXTURE);
+    assert_yuv420_frame(&wide, BitDepth::Eight, 128, 64);
+    assert_hash(
+        &wide,
+        "199c62093efa3b644fb4d519ae082516d9a4f9a77b13f116ddc62c49fa8648d7",
+    );
+    let grid = decode_eight(DEBLOCK_GRID_Q100_FIXTURE);
+    assert_yuv420_frame(&grid, BitDepth::Eight, 128, 128);
+    assert_hash(
+        &grid,
+        "242cb4df75288e96ab231c41f3bcb956aa0159d35a304e82c89e04814bd77ef0",
     );
 }
 

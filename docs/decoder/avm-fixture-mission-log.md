@@ -93,30 +93,39 @@ decoder frontiers, tracked stage-by-stage under their own matrix rows.
   Lifting the gate cannot make them decode (they fall to the flat minimal tier).
   Unlock = the full AVM-default intra tool set, not a routing change.
 
-- **Transform-residual cluster (10: `general_intra_transform_tool_residual`).**
-  All have `route_general_minimal_intra = true` (they *do* reach the general-intra
-  path) and all trip the **same** inner gate: `unsupported_dctonly_residual_tx_set`
-  (`general_intra_residual.rs:1325`) — a chroma (`plane > 0`), non-DCT-forced
-  transform-type block with `ActiveChromaResidualPolicy = Reject`. The admit branch
-  (`allows_record_handoff`) is empty here: chroma non-DCT transform types hand off
-  to the multi-stage `selectable-transform-records` / record-handoff sub-system,
-  which is unimplemented for chroma. Non-DCT inverse-transform kernels exist in
-  `splot-recon`; the missing piece is the chroma transform-type read + record-handoff
-  reconstruction, bit-exact. This is the single highest-yield next unlock (one gate,
-  10 fixtures) but is genuine frontier work, not a policy flip.
+- **Transform-residual cluster — UNLOCKED (chroma non-DCT admit).** All had
+  `route_general_minimal_intra = true` and tripped the same inner gate
+  `unsupported_dctonly_residual_tx_set` (`general_intra_residual.rs:1325`): a
+  chroma (`plane > 0`), non-DCT-forced block with `ActiveChromaResidualPolicy =
+  Reject`. Investigation (spec §5.20.7.29 + AVM `av1_get_tx_type`) established
+  that the chroma intra transform type is **derived, never coded** — `Mode_To_Txfm`
+  of the wide-angle-remapped `UVMode`, with a `get_tx_set` membership check and a
+  DCT_DCT fallback. splot already implements that derivation exactly
+  (`coeff_loop/ordinary_pass/geometry.rs::mode_to_txfm_plane_tx_type`) and the
+  inverse-transform path is plane-generic. So the admit is a **one-line policy
+  flip** at `pipeline/general_intra.rs` (`ActiveChromaResidualPolicy::Reject` →
+  `LrTxSkipRecordHandoff`, the existing admit variant the inter path already uses),
+  not new codec logic. Oracle-verified: **+9 fixtures xfail→must_pass, byte-exact
+  to AVM, 0 mismatches, 0 regressions** across deblock/quad/split/grid/shsplit/
+  svsplit (8-bit) and one 10-bit split. Spec-generic, not fixture-tuned. The 10th
+  (`syn-smooth-intra-64x64-10bit-q80`) now fails closed one stage later at
+  `general_intra_rect_non_dc_luma` (a separate 10-bit luma frontier).
 
-- **Remainder (6).** `unsupported_10bit_non_dc_intra` (1, general-intra 10-bit
-  non-DC), and inter/misc: `compound_missing_is_joint_context`,
+- **CfL cluster (5) — NOT unlocked.** See above: full AVM-default tool set; needs
+  the whole general-intra tool frontier, not a routing change.
+
+- **Remainder.** `unsupported_10bit_non_dc_intra`, `general_intra_rect_non_dc_luma`
+  (10-bit luma), and inter/misc (`compound_missing_is_joint_context`,
   `inter_ccso_reuse_unimplemented`, `inter_interintra_unimplemented`,
-  `unsupported_10bit_frozen_minimal_tier`, `multistream_selection` (OPS) — each an
+  `unsupported_10bit_frozen_minimal_tier`, `multistream_selection`) — each an
   independent frontier.
 
-Conclusion: the oracle system's value is realized — it pins the exact next gate
-per cluster and proves splot never emits wrong output (0 mismatches). Feature
-unlocks proceed as the mission's Flight G intends: one generic, AVM-bit-exact,
-oracle-verified feature per PR. No stream-specific shortcut was taken
-(AGENTS.md §18): a change that only satisfied these fixtures without a
-spec-generic, AVM-verified implementation was explicitly declined.
+State after this flight: **56 `must_pass`, 12 `xfail_splot`, 0 mismatches.** The
+chroma non-DCT unlock is the payoff of the oracle system: it made the change
+measurable and proved it bit-exact and regression-free before landing. No
+stream-specific shortcut was taken (AGENTS.md §18) — the admit is the
+spec-generic derivation for all chroma intra blocks, verified across 9 diverse
+fixtures.
 
 ## Flight F (runtime_minimal) status
 

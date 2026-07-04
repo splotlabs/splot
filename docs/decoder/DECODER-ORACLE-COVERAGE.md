@@ -5,7 +5,7 @@
 
 Generated from `tests/conformance/decoder-oracle.toml` and `tests/conformance/decoder-oracle-coverage.toml` by `cargo xtask decoder-fixtures coverage`. Do not edit by hand.
 
-Corpus: 68 fixtures (47 `must_pass`, 21 `xfail_splot`). Taxonomy: 71 capabilities.
+Corpus: 68 fixtures (56 `must_pass`, 12 `xfail_splot`). Taxonomy: 71 capabilities.
 
 ## Capability coverage
 
@@ -48,7 +48,7 @@ Corpus: 68 fixtures (47 `must_pass`, 21 `xfail_splot`). Taxonomy: 71 capabilitie
 | `intra` | Data-driven intra prediction (DIP) | not_fixtureable_with_avm_encoder | 5.20.7.9, 7.13.2.3, 7.13.2.4 | — |
 | `intra` | Per-transform-unit intra prediction (tx split) | covered (must_pass) | 5.20.7.24 | syn-2frame-txsplit-intra-inter-64x64-10bit-q100 |
 | `residual` | Intra DC/all-zero residual (skip or single DC coeff) | covered (must_pass) | 5.20.7.27, 7.14.4 | syn-2sb-cdef-intra-128x64-q120<br>syn-2sb-cdef-intra-128x64-q130<br>syn-2sb-cdefuv-intra-128x64-q170<br>syn-2sb-intra-128x64-10bit-q80<br>syn-2sb-intra-128x64-q80<br>syn-2sbcol-intra-64x128-q80<br>syn-cos-intra-64x64-10bit-q180<br>syn-cos-intra-64x64-q180<br>syn-d113-intra-128x128-q80<br>syn-d135row-intra-128x128-q80<br>syn-d157-intra-128x64-q80<br>syn-d203-intra-128x64-q80<br>syn-d45-intra-192x128-q80<br>syn-deep-intra-64x64-q120<br>syn-dfchroma-intra-64x64-q80<br>syn-dirneigh-intra-128x64-q80<br>syn-flat-intra-64x64-10bit-q80<br>syn-flat-intra-64x64-minimal<br>syn-flat-intra-64x64-q80<br>syn-grid-intra-128x128-q80<br>syn-hedge-intra-64x64-q80<br>syn-hpred-intra-128x64-q180<br>syn-hrect-intra-64x64-q120<br>syn-hsmooth-intra-64x64-q120<br>syn-mbvg-intra-128x64-q80<br>syn-rdir-intra-128x64-q80<br>syn-shgrid-intra-128x128-q80<br>syn-smchroma-intra-64x64-10bit-q160<br>syn-smooth-intra-64x64-q124<br>syn-smoothnondc-intra-64x64-q132<br>syn-vgrid-intra-192x128-q120<br>syn-vpred-intra-64x128-q160<br>syn-vsmooth-intra-64x64-q120 |
-| `residual` | Nonzero intra residual over split/multi-block transform tools | xfail only | 5.20.7.27, 5.20.8.2, 5.20.8.3 | syn-2sb-cdefdeblock-intra-128x64-q100<br>syn-2sb-deblock-intra-128x64-q100<br>syn-2sb-deblock-intra-128x64-q98<br>syn-2sb-deblockwide-intra-128x64-q100<br>syn-grid-deblock-intra-128x128-q100<br>syn-quad-intra-64x64-q80<br>syn-shsplit-intra-64x64-q80<br>syn-smooth-intra-64x64-10bit-q80<br>syn-split-intra-64x64-10bit-q110<br>syn-svsplit-intra-64x64-q140 |
+| `residual` | Nonzero intra residual over split/multi-block transform tools | covered (must_pass) | 5.20.7.27, 5.20.8.2, 5.20.8.3 | syn-2sb-cdefdeblock-intra-128x64-q100<br>syn-2sb-deblock-intra-128x64-q100<br>syn-2sb-deblock-intra-128x64-q98<br>syn-2sb-deblockwide-intra-128x64-q100<br>syn-grid-deblock-intra-128x128-q100<br>syn-quad-intra-64x64-q80<br>syn-shsplit-intra-64x64-q80<br>syn-smooth-intra-64x64-10bit-q80<br>syn-split-intra-64x64-10bit-q110<br>syn-svsplit-intra-64x64-q140 |
 | `residual` | 10-bit DC-subset intra reconstruction | covered (must_pass) | 6.4.1, 7.13.2.10, 7.14.4 | syn-2sb-intra-128x64-10bit-q80<br>syn-cos-intra-64x64-10bit-q180<br>syn-flat-intra-64x64-10bit-q80<br>syn-smchroma-intra-64x64-10bit-q160 |
 | `residual` | 10-bit non-DC intra (SMOOTH/split/frozen-tier) | xfail only | 6.4.1, 7.13.2.13, 7.14.4 | syn-2sb-smchroma-intra-128x64-10bit-q160<br>syn-flat-intra-64x64-10bit-q255 |
 | `inter` | Single-reference inter block | covered (must_pass) | 5.20.7.6, 5.20.7.12, 7.13.3.18 | syn-2frame-ccso-inter-32x32-10bit-q100<br>syn-2frame-ccso-reuse-inter-64x64-10bit<br>syn-2frame-cdef-inter-64x32-10bit-q120<br>syn-2frame-deblock-inter-32x32-10bit-q100<br>syn-2frame-inter-64x64<br>syn-2frame-inter-64x64-10bit<br>syn-2frame-inter-mvorder-64x64<br>syn-2frame-inter-mvstack-64x64<br>syn-2frame-inter-residual-64x64<br>syn-2frame-sameref-compound-64x32-10bit-q150<br>syn-2frame-subpel-inter-64x64<br>syn-2frame-txsplit-intra-inter-64x64-10bit-q100<br>syn-2sb-inter-128x64-q80<br>syn-3frame-compound-average-64x64<br>syn-3frame-multiref-64x64<br>syn-3frame-simple-interintra-64x32-10bit<br>syn-grid-inter-128x128-q80<br>syn-inter-96x64<br>syn-key-inter-64x64<br>syn-ops-64x64 |
@@ -87,9 +87,9 @@ Corpus: 68 fixtures (47 `must_pass`, 21 `xfail_splot`). Taxonomy: 71 capabilitie
 
 | Status | Capabilities |
 |---|---:|
-| covered (must_pass) | 38 |
+| covered (must_pass) | 39 |
 | not_fixtureable_with_avm_encoder | 26 |
-| xfail only | 7 |
+| xfail only | 6 |
 
 ## Feature-unlock backlog (`xfail_splot` reasons)
 
@@ -97,9 +97,9 @@ Ordered by how many fixtures each unlock converts to `must_pass`.
 
 | unsupported_reason | matrix_row | fixtures | ids |
 |---|---|---:|---|
-| `general_intra_transform_tool_residual` | `general-intra-frame-frontier` | 10 | syn-2sb-cdefdeblock-intra-128x64-q100<br>syn-2sb-deblock-intra-128x64-q100<br>syn-2sb-deblock-intra-128x64-q98<br>syn-2sb-deblockwide-intra-128x64-q100<br>syn-grid-deblock-intra-128x128-q100<br>syn-quad-intra-64x64-q80<br>syn-shsplit-intra-64x64-q80<br>syn-smooth-intra-64x64-10bit-q80<br>syn-split-intra-64x64-10bit-q110<br>syn-svsplit-intra-64x64-q140 |
 | `unsupported_cfl_intra` | `sequence-chroma-frontier` | 5 | syn-inter-96x64<br>syn-intra-128x128<br>syn-intra-64x64-10bit<br>syn-key-inter-64x64<br>syn-key-intra-64x64 |
 | `compound_missing_is_joint_context` | `inter-compound-average` | 1 | syn-2frame-sameref-compound-64x32-10bit-q150 |
+| `general_intra_rect_non_dc_luma` | `general-intra-frame-frontier` | 1 | syn-smooth-intra-64x64-10bit-q80 |
 | `inter_ccso_reuse_unimplemented` | `first-inter-frame-frontier` | 1 | syn-2frame-ccso-reuse-inter-64x64-10bit |
 | `inter_interintra_unimplemented` | `first-inter-frame-frontier` | 1 | syn-3frame-simple-interintra-64x32-10bit |
 | `multistream_selection` | `decode-stream-state` | 1 | syn-ops-64x64 |
