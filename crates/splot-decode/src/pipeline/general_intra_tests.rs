@@ -288,8 +288,13 @@ fn ten_bit_base_q255_fails_closed_frozen_tier() {
 }
 
 #[test]
-fn ten_bit_multi_sb_smooth_chroma_fails_closed_non_dc() {
-    assert_decode_rejects(SMCHROMA_2SB_10BIT_FIXTURE, "unsupported_10bit_non_dc_intra");
+fn ten_bit_multi_sb_smooth_chroma_decodes_to_oracle() {
+    let frame = decode_ten(SMCHROMA_2SB_10BIT_FIXTURE);
+    assert_yuv420_frame(&frame, BitDepth::Ten, 128, 64);
+    assert_hash(
+        &frame,
+        "dd96ae02ba422d0da6c38f9f748ee06c74d89a5d70170db29550c6916cb5fbaa",
+    );
 }
 
 #[test]

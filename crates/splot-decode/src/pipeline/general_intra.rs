@@ -1449,7 +1449,7 @@ fn ensure_10bit_general_intra_capability(
             CflIndex::Multi => params.mh_dir.is_some_and(|dir| dir <= 2),
         })
     } else {
-        ten_bit_general_intra_chroma_admitted(modes.supported_chroma_mode(), block_ctx, frame_n4)
+        ten_bit_general_intra_chroma_admitted(modes.supported_chroma_mode(), block_ctx)
     };
     let luma_admitted = modes.luma_is_dc()
         || plan_luma_prediction(modes, block_ctx).is_ok()
@@ -1487,10 +1487,10 @@ fn ensure_10bit_general_intra_capability(
 fn ten_bit_general_intra_chroma_admitted(
     mode: Option<SupportedChromaMode>,
     block_ctx: BlockCtx,
-    frame_n4: (usize, usize),
 ) -> bool {
     let neighbours = block_ctx.neighbours(PlaneId::U);
     let has_edge = neighbours.has_above() || neighbours.has_left();
+    let full_sb = block_ctx.block().width4() == FULL_SB_N4_LUMA;
     let chroma_block = block_ctx.plane_block(PlaneId::U);
     let chroma_smooth_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
     let chroma_cardinal_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
@@ -1512,10 +1512,7 @@ fn ten_bit_general_intra_chroma_admitted(
             SupportedChromaMode::Smooth
             | SupportedChromaMode::SmoothVertical
             | SupportedChromaMode::SmoothHorizontal,
-        ) => {
-            (frame_n4 == (FULL_SB_N4_LUMA, FULL_SB_N4_LUMA) && block_ctx.is_top_left())
-                || (chroma_smooth_shape && has_edge)
-        }
+        ) => full_sb || (chroma_smooth_shape && has_edge),
         Some(SupportedChromaMode::Vertical | SupportedChromaMode::VerticalFollow) => {
             chroma_cardinal_shape && has_edge
         }
@@ -2128,8 +2125,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::Vertical),
-            first_row_second_sb,
-            (480, 270)
+            first_row_second_sb
         ));
     }
 
@@ -2146,8 +2142,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::HorizontalFollow),
-            first_col_second_row,
-            (480, 270)
+            first_col_second_row
         ));
     }
 
@@ -2164,8 +2159,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::Horizontal),
-            first_row_wide_block,
-            (480, 270)
+            first_row_wide_block
         ));
     }
 
@@ -2182,8 +2176,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::Smooth),
-            first_row_rect_block,
-            (480, 270)
+            first_row_rect_block
         ));
     }
 
@@ -2197,8 +2190,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::Smooth),
-            rect_block,
-            (480, 270)
+            rect_block
         ));
     }
 
@@ -2211,8 +2203,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::Smooth),
-            square_block,
-            (480, 270)
+            square_block
         ));
     }
 
@@ -2226,8 +2217,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::VerticalFollow),
-            small_block,
-            (480, 270)
+            small_block
         ));
     }
 
@@ -2251,8 +2241,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::VerticalFollow),
-            first_row_rect_block,
-            (480, 270)
+            first_row_rect_block
         ));
     }
 
@@ -2266,8 +2255,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D135Follow),
-            small_block,
-            (480, 270)
+            small_block
         ));
     }
 
@@ -2281,8 +2269,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D157Follow),
-            small_block,
-            (480, 270)
+            small_block
         ));
     }
 
@@ -2299,8 +2286,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D67Follow),
-            small_block,
-            (480, 270)
+            small_block
         ));
     }
 
@@ -2321,8 +2307,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D67Follow),
-            first_col_block,
-            (480, 270)
+            first_col_block
         ));
     }
 
@@ -2338,8 +2323,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D157Follow),
-            rect_block,
-            (480, 270)
+            rect_block
         ));
     }
 
@@ -2352,8 +2336,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::Paeth),
-            rect_block,
-            (480, 270)
+            rect_block
         ));
     }
 
@@ -2367,8 +2350,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::Paeth),
-            first_row_second_sb,
-            (480, 270)
+            first_row_second_sb
         ));
     }
 
@@ -2381,8 +2363,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::Paeth),
-            square_subblock,
-            (480, 270)
+            square_subblock
         ));
     }
 
@@ -2396,8 +2377,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D203Follow),
-            d203_subblock,
-            (480, 270)
+            d203_subblock
         ));
     }
 
@@ -2834,8 +2814,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D135Follow),
-            rect_block,
-            (480, 270)
+            rect_block
         ));
         assert_eq!(
             rect_chroma_middle_p_angle_for_parts(
@@ -2860,8 +2839,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D113Follow),
-            first_row_rect_block,
-            (480, 270)
+            first_row_rect_block
         ));
         assert_eq!(
             rect_chroma_middle_p_angle_for_parts(
@@ -2886,8 +2864,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D157Follow),
-            first_row_rect_block,
-            (480, 270)
+            first_row_rect_block
         ));
         assert_eq!(
             rect_chroma_middle_p_angle_for_parts(
@@ -2912,8 +2889,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D135),
-            first_row_rect_block,
-            (480, 270)
+            first_row_rect_block
         ));
         assert_eq!(
             rect_chroma_middle_p_angle_for_parts(
@@ -2938,8 +2914,7 @@ mod tests {
         );
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D45Follow),
-            first_row_rect_block,
-            (480, 270)
+            first_row_rect_block
         ));
     }
 
@@ -2956,8 +2931,7 @@ mod tests {
         );
         assert!(!ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::D135Follow),
-            first_row_rect_block,
-            (480, 270)
+            first_row_rect_block
         ));
     }
 
@@ -2967,8 +2941,7 @@ mod tests {
 
         assert!(!ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::Vertical),
-            top_left,
-            (480, 270)
+            top_left
         ));
     }
 }
