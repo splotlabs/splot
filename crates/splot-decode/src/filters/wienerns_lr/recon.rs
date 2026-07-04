@@ -80,7 +80,7 @@ const CFL_ALPHA_SCALE: i64 = 32;
 const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
 const NUM_REF_SAM_CFL: usize = 8;
 
-pub(crate) struct Ac0ej3SelectableIntraRegion {
+pub(crate) struct FrontierSelectableIntraRegion {
     pub(crate) sink: WienerNsLrReconSink<u16>,
     pub(crate) frame_cdfs: FrameCdfSubset,
 }
@@ -4499,7 +4499,7 @@ pub(crate) fn reconstruct_frontier_selectable_intra_region(
     sequence: &splot_core::headers::sequence::SequenceHeader,
     core: &splot_core::headers::frame::FrameHeaderCore,
     full_recon: bool,
-) -> Result<Ac0ej3SelectableIntraRegion> {
+) -> Result<FrontierSelectableIntraRegion> {
     let frame_size = core.frame_size.ok_or_else(|| {
         crate::pipeline::unsupported_at(
             "missing_frame_size_for_recon",
@@ -4569,12 +4569,12 @@ pub(crate) fn reconstruct_frontier_selectable_intra_region(
             sink.set_tx_skip_grid(Some(tx_skip_grid));
             sink.set_lr_source_blocks(handoff.active_source_blocks);
             sink.set_lr_unit_filters(handoff.unit_filters);
-            Ok(Ac0ej3SelectableIntraRegion { sink, frame_cdfs })
+            Ok(FrontierSelectableIntraRegion { sink, frame_cdfs })
         }
         Err(crate::error::DecodeError::UnsupportedFeature { unsupported })
             if unsupported.reason() == EXPECTED_RECON_FRONTIER_REASON =>
         {
-            Ok(Ac0ej3SelectableIntraRegion {
+            Ok(FrontierSelectableIntraRegion {
                 sink,
                 frame_cdfs: FrameCdfSubset::from_defaults(),
             })

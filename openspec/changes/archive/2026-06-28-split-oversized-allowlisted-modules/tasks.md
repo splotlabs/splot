@@ -29,5 +29,5 @@ deferred):
   every moved public item (~70 importers via `crate::headers::sequence::…`).
 - `frame/info.rs` (DEFERRED — active decoder frontier): split `status` + `show_existing`
   + `seq_view` once stable. Not the proposal's `activation`/`inter_control`/`shared_tail`.
-- `wienerns_lr/tx_records.rs` (DEFERRED — active ac0ej3 frontier): split `per_block_syntax`
+- `wienerns_lr/tx_records.rs` (DEFERRED — active local decoder mission frontier): split `per_block_syntax`
   (DeltaQ/CDEF) + `tx_partition` + `error` once stable. Not chroma-first.

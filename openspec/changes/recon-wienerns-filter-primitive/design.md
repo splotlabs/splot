@@ -1,6 +1,6 @@
 ## Context
 
-The ac0ej3 decoder frontier now reaches a parsed frame-level Wiener NS filter
+The local decoder mission decoder frontier now reaches a parsed frame-level Wiener NS filter
 bank and rejects before loop-restoration reconstruction. AV2 §7.20.3 splits the
 non-separable Wiener math from the surrounding §7.20 restoration-unit traversal,
 source-sample clipping, PC-Wiener classification, temporal filter-bank state, and
@@ -23,11 +23,11 @@ chroma luma-sample downsampling. That per-sample luma math is the next safe
 - Full §7.20 loop-restoration traversal, §7.20.2 source-sample clipping/stripe
   handling, §7.20.4 PC-Wiener classification, `SubclassLookup`, chroma luma
   downsampling, temporal/reference Wiener state, restoration-unit syntax,
-  runtime decode wiring, or ac0ej3 output.
+  runtime decode wiring, or local decoder mission output.
 
 ## Decisions
 
-- **Implement the luma table first.** The ac0ej3 frontier is a luma-relevant
+- **Implement the luma table first.** The local decoder mission frontier is a luma-relevant
   frame-level Wiener NS bank, while chroma adds the §7.20.3 luma-sample loop and
   subsampling rules. The primitive therefore exposes `WIENER_NS_LUMA_COEFFS = 16`
   and `WIENER_NS_LUMA_TAPS = 32`, using the §7.20.3 `Wiener_Ns_Config_Y` table.
@@ -45,7 +45,7 @@ chroma luma-sample downsampling. That per-sample luma math is the next safe
 
 ## Risks / Trade-offs
 
-- This brick does not unblock ac0ej3 by itself. The runtime must still wire
+- This brick does not unblock local decoder mission by itself. The runtime must still wire
   frame/restoration-unit traversal, the source-sample process, and frame-level
   filter-bank selection before the `unsupported_wienerns_filter_bank` gate can
   move.

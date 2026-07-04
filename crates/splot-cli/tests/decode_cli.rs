@@ -19,7 +19,7 @@ static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 const PLANABLE_CLOSED_LOOP_KEY: &[u8] = &[0x01, 0x10];
 const UNSUPPORTED_OPEN_LOOP_KEY: &[u8] = &[0x01, 0x14];
 const MALFORMED_ANNEX_B: &[u8] = &[0x05, 0x10];
-const LOCAL_AC0EJ3_ENV: &str = "SPLOT_AC0EJ3_IVF";
+const LOCAL_DECODER_MISSION_ENV: &str = "SPLOT_LOCAL_DECODER_MISSION_IVF";
 
 fn splot(args: &[&str]) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
@@ -60,14 +60,14 @@ fn conformance_vector(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn local_ac0ej3_path() -> PathBuf {
-    std::env::var_os(LOCAL_AC0EJ3_ENV)
+fn local_decoder_mission_path() -> PathBuf {
+    std::env::var_os(LOCAL_DECODER_MISSION_ENV)
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME")
-                .map(|home| PathBuf::from(home).join("Documents/SplotLabs/ac0ej3.ivf"))
+                .map(|home| PathBuf::from(home).join("Documents/SplotLabs/local-decoder-mission.ivf"))
         })
-        .expect("set SPLOT_AC0EJ3_IVF or HOME for the ignored local ac0ej3 regression")
+        .expect("set SPLOT_LOCAL_DECODER_MISSION_IVF or HOME for the ignored local decoder mission regression")
 }
 
 fn repeated_sequence_header_obus(count: usize) -> Vec<u8> {
@@ -250,12 +250,12 @@ fn decode_hash_output_format_json_emits_same_diagnostic() {
 }
 
 #[test]
-#[ignore = "requires local mission fixture; set SPLOT_AC0EJ3_IVF or place it at $HOME/Documents/SplotLabs/ac0ej3.ivf"]
-fn local_ac0ej3_reaches_current_runtime_gate_without_output() {
-    let input = local_ac0ej3_path();
+#[ignore = "requires local mission fixture; set SPLOT_LOCAL_DECODER_MISSION_IVF or place it at $HOME/Documents/SplotLabs/local-decoder-mission.ivf"]
+fn local_decoder_mission_reaches_current_runtime_gate_without_output() {
+    let input = local_decoder_mission_path();
     assert!(
         input.is_file(),
-        "local ac0ej3 fixture not found at {}; set {LOCAL_AC0EJ3_ENV}",
+        "local decoder mission fixture not found at {}; set {LOCAL_DECODER_MISSION_ENV}",
         input.display()
     );
 
@@ -1156,11 +1156,14 @@ fn per_frame_digest_line(index: usize, frame: &[u8]) -> String {
 /// pinned AVM oracle (`avmdec --i420 --rawvideo`) and reports the first
 /// mismatching frame/plane/sample plus per-frame digest lists.
 #[test]
-#[ignore = "local mission harness; needs SPLOT_AC0EJ3_IVF (or the default fixture path) and an avmdec build (SPLOT_AVM_DECODER)"]
-fn ac0ej3_full_stream_avm_compare() {
-    let input = local_ac0ej3_path();
+#[ignore = "local mission harness; needs SPLOT_LOCAL_DECODER_MISSION_IVF (or the default fixture path) and an avmdec build (SPLOT_AVM_DECODER)"]
+fn local_decoder_mission_full_stream_avm_compare() {
+    let input = local_decoder_mission_path();
     if !input.is_file() {
-        eprintln!("skip: ac0ej3 fixture missing at {}", input.display());
+        eprintln!(
+            "skip: local decoder mission fixture missing at {}",
+            input.display()
+        );
         return;
     }
     let avmdec = std::env::var_os("SPLOT_AVM_DECODER")
@@ -1175,11 +1178,11 @@ fn ac0ej3_full_stream_avm_compare() {
         return;
     }
     let geometry = RawFrameGeometry::from_ivf_header(&input).expect("readable IVF header");
-    let work = std::env::var_os("SPLOT_AC0EJ3_WORK")
+    let work = std::env::var_os("SPLOT_LOCAL_DECODER_MISSION_WORK")
         .map_or_else(std::env::temp_dir, PathBuf::from)
-        .join("splot-ac0ej3-fullstream");
+        .join("splot-local-decoder-mission-fullstream");
     std::fs::create_dir_all(&work).expect("create harness work dir");
-    let limit = std::env::var("SPLOT_AC0EJ3_LIMIT").ok();
+    let limit = std::env::var("SPLOT_LOCAL_DECODER_MISSION_LIMIT").ok();
     let tag = limit.as_deref().unwrap_or("full");
 
     let avm_out = work.join(format!("avm-{tag}.yuv"));

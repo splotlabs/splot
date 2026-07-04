@@ -6,7 +6,7 @@
 //! Drives the real frontier mission stream through the `TX_MODE_SELECT` selectable
 //! transform-record walk with a reconstruction sink attached, and verifies the
 //! reconstructed NON-IntrABC DC region BIT-EXACT against the AVM pre-filter
-//! reconstruction oracle (`ac0_prefiltered.yuv`,
+//! reconstruction oracle (`local_prefiltered_oracle.yuv`,
 //! md5 `f7959cb85a41dcf0e6ebf9179835da03`).
 //!
 //! With the per-block CCSO read the selectable walk parses frontier's
@@ -14,7 +14,7 @@
 //! subset to the spec-correct samples. The first 16x16 luma block (the §5.20.5.3
 //! `DC_PRED` leaf at the frame origin) reconstructs BIT-EXACT (all `68`); the
 //! committed constants below are the small oracle assertion derived offline from
-//! `ac0_prefiltered.yuv`.
+//! `local_prefiltered_oracle.yuv`.
 //!
 //! Reconstructed-and-verified region for frame-0 (gated to the proven DC subset):
 //!   * Luma: the full first-3-superblock DC region — the rectangle x[0,192) x
@@ -67,7 +67,7 @@ use crate::filters::wienerns_lr::WienerNsLrReconSink;
 const BLOCK0_SIDE: usize = 16;
 
 /// Committed oracle assertion for the frame-origin 16x16 `DC_PRED` luma block,
-/// derived offline from the AVM pre-filter reconstruction `ac0_prefiltered.yuv`
+/// derived offline from the AVM pre-filter reconstruction `local_prefiltered_oracle.yuv`
 /// (its first 16x16 luma samples; sample-major u16 little-endian). The block is a
 /// flat `DC_PRED` leaf, so every sample is `68`.
 const BLOCK0_FLAT_LUMA: u16 = 68;
@@ -82,7 +82,7 @@ const BLOCK0_FNV1A64: u64 = 0x68b9_9236_1d60_fb25;
 const LUMA_COLUMN_WIDTH: usize = 16;
 const LUMA_COLUMN_HEIGHT: usize = 64;
 /// Oracle value for the `DC_PRED` transforms below the origin leaf (rows 16..64),
-/// derived offline from `ac0_prefiltered.yuv`.
+/// derived offline from `local_prefiltered_oracle.yuv`.
 const LUMA_COLUMN_BELOW_ORIGIN: u16 = 64;
 const LUMA_COLUMN_SAMPLE_COUNT: usize = LUMA_COLUMN_WIDTH * LUMA_COLUMN_HEIGHT;
 /// Sum of the full 16x64 column (`256 * 68 + 768 * 64`).
@@ -99,7 +99,7 @@ const LUMA_COLUMN_FNV1A64: u64 = 0x893d_3114_b40a_7325;
 /// verified region widens 24x from the original 1024-sample column. Every sample is
 /// the down-predicted flat `DC_PRED` value `64` except the origin 16x16 leaf
 /// (`68`, 256 samples) and the MI(4,0) IBP DC step (`65`, the top-left 3 columns x
-/// 16 rows == 48 samples). Derived offline from `ac0_prefiltered.yuv`.
+/// 16 rows == 48 samples). Derived offline from `local_prefiltered_oracle.yuv`.
 const LUMA_REGION_WIDTH: usize = 192;
 const LUMA_REGION_HEIGHT: usize = 128;
 const LUMA_REGION_SAMPLE_COUNT: usize = LUMA_REGION_WIDTH * LUMA_REGION_HEIGHT;
@@ -333,7 +333,7 @@ const BOTTOM_EDGE_SAMPLE_SUM: u64 = 229_376;
 /// horizontal copy of the real reconstructed left column (the x=191 DC region edge,
 /// flat `64`), so the block is flat `64` except the top-right `TX_32X32` which
 /// carries a `+4` DC residual to flat `68` (verified against the oracle). Derived
-/// offline from `ac0_prefiltered.yuv`.
+/// offline from `local_prefiltered_oracle.yuv`.
 const HPRED_BLOCK_X: usize = 192;
 const HPRED_BLOCK_Y: usize = 0;
 const HPRED_BLOCK_SIDE: usize = 64;
@@ -355,7 +355,7 @@ const HPRED_TOP_RIGHT_STEP: u16 = 68;
 /// H_PRED block. Source (hence target) is the top-right `TX_32X32` `68` over its top
 /// 32 rows (y[64,96), copied from the H_PRED `68` at y[0,32)) and flat `64` below
 /// (y[96,128)). The oracle confirms `target == source` over the full 32x64 block.
-/// Derived offline from `ac0_prefiltered.yuv`.
+/// Derived offline from `local_prefiltered_oracle.yuv`.
 const INTRABC_TARGET_X: usize = 224;
 const INTRABC_TARGET_Y: usize = 64;
 const INTRABC_TARGET_WIDTH: usize = 32;
@@ -379,7 +379,7 @@ const INTRABC_TARGET_FNV1A64: u64 = 0xb70e_5832_e8aa_2325;
 /// admission keeps the entropy parse synced past MI(32,56), so this downstream
 /// proven-subset intra leaf reconstructs in decode order — a flat `64` rectangle
 /// (the same DC-region edge value propagated through SB row 1). Derived offline
-/// from the AVM pre-filter luma oracle (`ac0_prefiltered.yuv` / frame-0 prefilter
+/// from the AVM pre-filter luma oracle (`local_prefiltered_oracle.yuv` / frame-0 prefilter
 /// luma dump). These constants PIN the admitted samples per value (NOT merely the
 /// aggregate count), mirroring [`INTRABC_TARGET_FNV1A64`]: a wrong reconstruction
 /// of this region would change the sum / FNV even at the same sample count.
@@ -404,7 +404,7 @@ const STEP8_ADMITTED_FNV1A64: u64 = 0xa61d_8c75_326d_e325;
 /// residual transform leaf then ADDS its decoded residual onto that copied predictor (the
 /// first leaf has `eob == 11`). The result is the per-sample `Clip1(prediction +
 /// inverse-transform(residual))` — a genuine NON-flat block (oracle values 64..73, not a
-/// flat copy), proving the residual-add ran. Derived offline from `ac0_prefiltered.yuv`.
+/// flat copy), proving the residual-add ran. Derived offline from `local_prefiltered_oracle.yuv`.
 const INTRABC_RESIDUAL_TARGET_X: usize = 448;
 const INTRABC_RESIDUAL_TARGET_Y: usize = 0;
 const INTRABC_RESIDUAL_TARGET_WIDTH: usize = 32;
@@ -425,7 +425,7 @@ const INTRABC_RESIDUAL_TARGET_FNV1A64: u64 = 0x1b9c_a7cf_eaad_e9a5;
 /// is the flat 10-bit DC fallback `1 << (10 - 1)` == `512`.
 const CHROMA_ORIGIN_SIDE: usize = 32;
 /// Flat oracle value for the frame-origin chroma `DC_PRED` block (10-bit
-/// no-neighbour DC fallback), derived offline from `ac0_prefiltered.yuv` (its first
+/// no-neighbour DC fallback), derived offline from `local_prefiltered_oracle.yuv` (its first
 /// 32x32 U and V samples are both uniformly `512`).
 const CHROMA_ORIGIN_FLAT: u16 = 512;
 const CHROMA_ORIGIN_SAMPLE_COUNT: usize = CHROMA_ORIGIN_SIDE * CHROMA_ORIGIN_SIDE;
@@ -436,12 +436,12 @@ const CHROMA_ORIGIN_SAMPLE_SUM: u64 = 524_288;
 const CHROMA_ORIGIN_FNV1A64: u64 = 0xa53e_893c_24f1_e325;
 
 fn local_frontier_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("SPLOT_AC0EJ3_IVF") {
+    if let Ok(path) = std::env::var("SPLOT_LOCAL_DECODER_MISSION_IVF") {
         return Some(PathBuf::from(path));
     }
     std::env::var("HOME")
         .ok()
-        .map(|home| PathBuf::from(home).join("Documents/SplotLabs/ac0ej3.ivf"))
+        .map(|home| PathBuf::from(home).join("Documents/SplotLabs/local-decoder-mission.ivf"))
 }
 
 fn context() -> DecodeContext {
@@ -950,7 +950,7 @@ fn frontier_frame_top_vpred_no_above_fallback_reconstructs_bit_exact_against_pre
 /// the flat `68` of the above row — bit-exact vs the oracle. MI(80,16) is admitted
 /// once MI(64,16) cascades to give it a reconstructed left edge. Pinned per value
 /// (combined contiguous x[256,384) y[64,128)) so a left/above/corner mix-up changes
-/// the sum / FNV. Derived offline from `ac0_prefiltered.yuv`.
+/// the sum / FNV. Derived offline from `local_prefiltered_oracle.yuv`.
 const PAETH_BLOCK_X: usize = 256;
 const PAETH_BLOCK_W: usize = 128;
 const PAETH_BLOCK_Y: usize = 64;
@@ -1203,7 +1203,7 @@ fn frontier_bottom_edge_partial_left_edge_block_reconstructs_bit_exact_against_p
 /// The AVM pre-filter oracle samples (row-major, `[y][x]`) for the §7.13.2.8
 /// zone-1 one-sided IDIF leaf at MI(248,28), x[992,1000) y[112,120). A near-flat
 /// `68` with a `66`/`67` right column produced by the IDIF reading the ramping
-/// above-right. Derived offline from `ac0_prefiltered.yuv`. The right-column
+/// above-right. Derived offline from `local_prefiltered_oracle.yuv`. The right-column
 /// gradient is the ASYMMETRIC signal that distinguishes a correct one-sided
 /// projection (and `num4AboveRight` clamp) from a flat copy: a wrong filter phase
 /// or above-right clamp changes those samples.
@@ -1387,8 +1387,8 @@ const FULL_FRAME_HEIGHT: usize = 1080;
 /// samples. Panics with a clear message when the file is missing or too short, so a
 /// stale / unregenerated oracle is loud rather than silently mis-comparing.
 fn load_prefilter_oracle_luma() -> Vec<u16> {
-    let path =
-        std::env::var("SPLOT_AC0EJ3_PREFILTER_YUV").unwrap_or_else(|_| "/tmp/pref.yuv".to_string());
+    let path = std::env::var("SPLOT_LOCAL_DECODER_MISSION_PREFILTER_YUV")
+        .unwrap_or_else(|_| "/tmp/pref.yuv".to_string());
     let bytes = std::fs::read(&path).unwrap_or_else(|err| {
         panic!(
             "read AVM pre-filter oracle at {path} (set the legacy AVM pre-filter env var; \
@@ -1423,8 +1423,10 @@ fn load_prefilter_oracle_luma() -> Vec<u16> {
 #[test]
 #[ignore = "diagnostic; provide the AVM pre-filter oracle (/tmp/pref.yuv)"]
 fn frontier_full_decode_order_reconstruction_differs_against_prefilter_oracle() {
-    if std::env::var("SPLOT_AC0EJ3_FULL_RECON").is_err() {
-        eprintln!("SPLOT_AC0EJ3_FULL_RECON unset; skipping the full-recon differential");
+    if std::env::var("SPLOT_LOCAL_DECODER_MISSION_FULL_RECON").is_err() {
+        eprintln!(
+            "SPLOT_LOCAL_DECODER_MISSION_FULL_RECON unset; skipping the full-recon differential"
+        );
         return;
     }
     let sink = reconstruct_frontier_full_recon_sink();

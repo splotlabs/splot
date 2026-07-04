@@ -18,7 +18,7 @@ matching selected-plane view geometry, caller-resolved chroma subsampling
 against the source frame pixel format, coded-plane bounds, sample storage support
 for the active bit depth, and source sample range. It SHALL NOT derive
 restoration-unit bounds, traverse loop restoration, apply Wiener NS/chroma Wiener
-NS/PC-Wiener/GDF/BRU filters, wire runtime decode, or produce ac0ej3 output.
+NS/PC-Wiener/GDF/BRU filters, wire runtime decode, or produce local decoder mission output.
 
 #### Scenario: Source reads follow section 7.20.2 frame selection
 

@@ -15,7 +15,7 @@ partition-entry symbol read, and partition CDF context boundaries to advance
 from a supported minimal intra tile partition root to the first
 `decode_block()` frontier. When the caller supplies the narrow frame-level
 Wiener NS loop-restoration state tracked by
-`DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`, the boundary SHALL first consume the
+`DECODE-LR-UNIT-SYNTAX-FRONTIER`, the boundary SHALL first consume the
 covered AV2 §5.20.10.4/§5.20.10.5 `read_lr()` / `use_wiener_ns` symbols and
 then continue partition traversal from the resulting live symbol cursor.
 
@@ -206,7 +206,7 @@ reconstruction support by this boundary.
 
 The tile partition traversal boundary and minimal runtime SHALL advance active
 frame-level Wiener NS loop-restoration source-bound facts to a fail-closed
-source-read frontier for `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER`. The frontier
+source-read frontier for `DECODE-LR-SOURCE-READ-FRONTIER`. The frontier
 SHALL use caller-resolved AV2 §7.20.1 bounds to attempt AV2 §7.20.2 source
 sample selection/read state for supported active block output samples,
 §7.20.3 Wiener tap coordinates, and chroma luma-source coordinates, and MUST
@@ -221,7 +221,7 @@ unit rather than by a retained frame-level bank.
   facts
 - **THEN** the runtime attempts source sample selection state for active output,
   tap, and luma-source coordinates
-- **AND** the previous source-bounds diagnostic is no longer the live ac0ej3
+- **AND** the previous source-bounds diagnostic is no longer the live local decoder mission
   frontier
 
 #### Scenario: Classified luma gates before source reads
@@ -255,7 +255,7 @@ unit rather than by a retained frame-level bank.
 
 #### Scenario: Source reads remain fail-closed before filtering
 
-- **WHEN** the local ac0ej3 mission stream reaches active luma Wiener NS LR with
+- **WHEN** the local decoder mission stream reaches active luma Wiener NS LR with
   a two-class frame-level bank
 - **THEN** the runtime emits a structured unsupported diagnostic for the
   §7.20.4 classified-Wiener frontier
@@ -307,8 +307,8 @@ mutations.
 - **AND** each stored coordinate uses the tile-origin-adjusted LR unit index
 
 ### Requirement: Frame-level Wiener NS LR Unit Syntax Frontier
-The traversal frontier boundary SHALL model the ac0ej3 frame-level Wiener NS LR
-unit syntax tracked by `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER`. For each covered
+The traversal frontier boundary SHALL model the local decoder mission frame-level Wiener NS LR
+unit syntax tracked by `DECODE-LR-UNIT-SYNTAX-FRONTIER`. For each covered
 AV2 §5.20.10.4 restoration unit whose plane has
 `FrameRestorationType == RESTORE_WIENER_NONSEP` and `frame_filters_on == true`,
 the boundary SHALL consume one `use_wiener_ns S()` symbol from

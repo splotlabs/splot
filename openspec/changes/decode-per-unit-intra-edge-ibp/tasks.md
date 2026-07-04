@@ -14,7 +14,7 @@
       current frame (the geometry already derived scaling + clipping).
 
 ## 3. Verification
-- [x] 3.1 ac0ej3 coded frame 2 pre-filter LUMA byte-exact vs the AVM
+- [x] 3.1 local decoder mission coded frame 2 pre-filter LUMA byte-exact vs the AVM
       oracle (730,992 divergent samples at batch start, 0 after);
       frames 0/1 byte-exact; frame-0 sentinel intact.
 - [x] 3.2 22-stream AVM differential corpus byte-exact; full test suite;

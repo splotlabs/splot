@@ -24,7 +24,7 @@ without trying to wire runtime loop restoration.
 - Full §7.20 loop-restoration traversal, restoration-unit scheduling,
   coefficient selection from frame/unit banks, §7.20.2 frame reads, PC-Wiener
   classification, GDF/BRU, runtime decode wiring, output serialization, or
-  successful ac0ej3 decode.
+  successful local decoder mission decode.
 
 ## Decisions
 
@@ -54,7 +54,7 @@ without trying to wire runtime loop restoration.
   expose luma bounds/subsampling as explicit parameters and add tests for
   4:2:0 averaging, 4:2:0 vertical filter index 1, non-subsampled direct luma
   reads, and luma clipping.
-- **Risk:** This does not advance the live ac0ej3 diagnostic by itself.
+- **Risk:** This does not advance the live local decoder mission diagnostic by itself.
   **Mitigation:** track it as additive reconstruction infrastructure only; the
-  ac0ej3 runtime remains fail-closed until frame reconstruction and source reads
+  local decoder mission runtime remains fail-closed until frame reconstruction and source reads
   are honestly wired.

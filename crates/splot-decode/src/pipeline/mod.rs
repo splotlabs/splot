@@ -45,53 +45,50 @@ const FEATURE_ID: &str = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS";
 const MATRIX_ROW: &str = "minimal-decode-tier-contract";
 const SPEC_SECTION: &str = "7.1";
 const REMEDIATION: &str = "Use a stream inside minimal-intra-8bit420-hash-v1 or wait for the referenced decoder support row.";
-pub(crate) const FRONTIER_CHROMA_FEATURE_ID: &str = "DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER";
-pub(crate) const FRONTIER_CHROMA_MATRIX_ROW: &str = "ac0ej3-sequence-chroma-frontier";
-pub(crate) const FRONTIER_WIENERNS_FEATURE_ID: &str = "DECODE-AC0EJ3-WIENERNS-FRONTIER";
-pub(crate) const FRONTIER_WIENERNS_MATRIX_ROW: &str = "ac0ej3-wienerns-frontier";
+pub(crate) const FRONTIER_CHROMA_FEATURE_ID: &str = "DECODE-SEQUENCE-CHROMA-FRONTIER";
+pub(crate) const FRONTIER_CHROMA_MATRIX_ROW: &str = "sequence-chroma-frontier";
+pub(crate) const FRONTIER_WIENERNS_FEATURE_ID: &str = "DECODE-WIENERNS-FRONTIER";
+pub(crate) const FRONTIER_WIENERNS_MATRIX_ROW: &str = "wienerns-frontier";
 pub(crate) const FRONTIER_LR_UNIT_SELECTIONS_FEATURE_ID: &str =
-    "DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER";
-pub(crate) const FRONTIER_LR_UNIT_SELECTIONS_MATRIX_ROW: &str =
-    "ac0ej3-lr-unit-selections-frontier";
-pub(crate) const FRONTIER_LR_SOURCE_READ_FEATURE_ID: &str = "DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER";
-pub(crate) const FRONTIER_LR_SOURCE_READ_MATRIX_ROW: &str = "ac0ej3-lr-source-read-frontier";
+    "DECODE-LR-UNIT-SELECTIONS-FRONTIER";
+pub(crate) const FRONTIER_LR_UNIT_SELECTIONS_MATRIX_ROW: &str = "lr-unit-selections-frontier";
+pub(crate) const FRONTIER_LR_SOURCE_READ_FEATURE_ID: &str = "DECODE-LR-SOURCE-READ-FRONTIER";
+pub(crate) const FRONTIER_LR_SOURCE_READ_MATRIX_ROW: &str = "lr-source-read-frontier";
 #[allow(dead_code)]
 pub(crate) const FRONTIER_LR_CLASSIFIED_WIENER_STORAGE_FEATURE_ID: &str =
-    "DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE";
+    "DECODE-LR-CLASSIFIED-WIENER-STORAGE";
 #[allow(dead_code)]
 pub(crate) const FRONTIER_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW: &str =
-    "ac0ej3-lr-classified-wiener-storage";
+    "lr-classified-wiener-storage";
 pub(crate) const FRONTIER_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID: &str =
-    "DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION";
+    "DECODE-LR-RUNTIME-STORAGE-RETENTION";
 pub(crate) const FRONTIER_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW: &str =
-    "ac0ej3-lr-runtime-storage-retention";
+    "lr-runtime-storage-retention";
 #[allow(dead_code)]
 pub(crate) const FRONTIER_LR_LIVE_STORAGE_ALLOCATION_FEATURE_ID: &str =
-    "DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION";
+    "DECODE-LR-LIVE-STORAGE-ALLOCATION";
 #[allow(dead_code)]
 pub(crate) const FRONTIER_LR_LIVE_STORAGE_ALLOCATION_MATRIX_ROW: &str =
-    "ac0ej3-lr-live-storage-allocation";
+    "lr-live-storage-allocation";
 #[allow(dead_code)]
-pub(crate) const FRONTIER_LR_LIVE_TX_SKIP_GRID_FEATURE_ID: &str =
-    "DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID";
+pub(crate) const FRONTIER_LR_LIVE_TX_SKIP_GRID_FEATURE_ID: &str = "DECODE-LR-LIVE-TX-SKIP-GRID";
 #[allow(dead_code)]
-pub(crate) const FRONTIER_LR_LIVE_TX_SKIP_GRID_MATRIX_ROW: &str = "ac0ej3-lr-live-tx-skip-grid";
+pub(crate) const FRONTIER_LR_LIVE_TX_SKIP_GRID_MATRIX_ROW: &str = "lr-live-tx-skip-grid";
 pub(crate) const FRONTIER_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID: &str =
-    "DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF";
+    "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF";
 pub(crate) const FRONTIER_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW: &str =
-    "ac0ej3-lr-live-transform-record-handoff";
+    "lr-live-transform-record-handoff";
 pub(crate) const FRONTIER_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID: &str =
-    "DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS";
+    "DECODE-SELECTABLE-TRANSFORM-RECORDS";
 pub(crate) const FRONTIER_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW: &str =
-    "ac0ej3-selectable-transform-records";
+    "selectable-transform-records";
 pub(crate) const FRONTIER_LUMA_TXTYPE_RESIDUAL_HANDOFF_FEATURE_ID: &str =
-    "DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF";
+    "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF";
 pub(crate) const FRONTIER_LUMA_TXTYPE_RESIDUAL_HANDOFF_MATRIX_ROW: &str =
-    "ac0ej3-luma-txtype-residual-handoff";
+    "luma-txtype-residual-handoff";
 pub(crate) const FRONTIER_DCTONLY_RESIDUAL_FRONTIER_FEATURE_ID: &str =
-    "DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER";
-pub(crate) const FRONTIER_DCTONLY_RESIDUAL_FRONTIER_MATRIX_ROW: &str =
-    "ac0ej3-dctonly-residual-frontier";
+    "DECODE-DCTONLY-RESIDUAL-FRONTIER";
+pub(crate) const FRONTIER_DCTONLY_RESIDUAL_FRONTIER_MATRIX_ROW: &str = "dctonly-residual-frontier";
 
 pub(crate) fn effective_allow_screen_content_tools(core: &FrameHeaderCore) -> bool {
     core.allow_screen_content_tools
@@ -103,9 +100,8 @@ pub(crate) fn effective_allow_screen_content_tools(core: &FrameHeaderCore) -> bo
         .unwrap_or(false)
 }
 pub(crate) const FRONTIER_INTRA_IST_ZERO_FRONTIER_FEATURE_ID: &str =
-    "DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER";
-pub(crate) const FRONTIER_INTRA_IST_ZERO_FRONTIER_MATRIX_ROW: &str =
-    "ac0ej3-intra-ist-zero-frontier";
+    "DECODE-INTRA-IST-ZERO-FRONTIER";
+pub(crate) const FRONTIER_INTRA_IST_ZERO_FRONTIER_MATRIX_ROW: &str = "intra-ist-zero-frontier";
 const MINIMAL_WIDTH: u32 = 64;
 const MINIMAL_HEIGHT: u32 = 64;
 const MINIMAL_TRACE_SYMBOLS: u64 = 6;

@@ -66,7 +66,7 @@ structured `decode/unsupported-feature` diagnostic.
   a 10-bit `base_q_idx == 255` frozen-minimal-tier stream)
 - **THEN** the decoder rejects it before any caller-visible output with a
   structured `decode/unsupported-feature` diagnostic
-- **AND** the local `ac0ej3.ivf` 10-bit mission stream still fails closed at its
+- **AND** the local `local-decoder-mission.ivf` 10-bit mission stream still fails closed at its
   current frontier with no new wrong output
 
 #### Scenario: the four 10-bit reject guards are pinned by committed negative fixtures

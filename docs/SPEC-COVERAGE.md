@@ -86,7 +86,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2) | OBU syntax | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [§ 5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2) | OBU syntax | `CONF-DECODE-RUNTIME-RAW-FUZZ` | ✅ | — | — | ✅ | 4 |
 | [§ 5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2) | OBU syntax | `CONF-DECODE-RUNTIME-Y4M-FUZZ` | ✅ | — | — | ✅ | 4 |
-| [§ 5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2) | OBU syntax | `DECODE-AC0EJ3-LEADING-OBU-GATE` | ✅ | 🟡 | ✅ | ✅ | 1 |
+| [§ 5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2) | OBU syntax | `DECODE-LEADING-OBU-GATE` | ✅ | 🟡 | ✅ | ✅ | 1 |
 | [§ 5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2) | OBU syntax | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2) | OBU syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 5.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-2) | OBU syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
@@ -118,7 +118,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.4.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-3) | Sequence partition config syntax | `AV2-5.4.3-SEQUENCE-PARTITION-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-4) | Sequence segment config syntax | `AV2-5.4.4-SEQUENCE-SEGMENT-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
 | [§ 5.4.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-5) | Sequence intra config syntax | `AV2-5.4.5-SEQUENCE-INTRA-CONFIG` | ✅ | ✅ | 🟡 | ✅ | — |
-| [§ 5.4.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-5) | Sequence intra config syntax | `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
+| [§ 5.4.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-5) | Sequence intra config syntax | `DECODE-SEQUENCE-CHROMA-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `AV2-5.4.6-SEQUENCE-INTER-CONFIG` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `ENC-FRAME-HEADER-CORE-ASSEMBLER` | ✅ | — | — | ✅ | — |
 | [§ 5.4.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6) | Sequence inter config syntax | `ENC-WRITER-INPUT-INTER-VIEW` | ✅ | — | — | ✅ | — |
@@ -191,11 +191,11 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-1) | General frame header syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `AV2-5.18.2-FRAME-HEADER-INFO` | ✅ | 🟡 | 🟡 | ✅ | 9 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `AV2-7.7-GET-REF-FRAMES` | ✅ | 🟡 | — | ✅ | — |
-| [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-AC0EJ3-LEADING-OBU-GATE` | ✅ | 🟡 | ✅ | ✅ | 1 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-COEFF-FRAME-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-COEFF-PARITY-TCQ-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-GENERAL-INTRA-FRAME-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-LEADING-OBU-GATE` | ✅ | 🟡 | ✅ | ✅ | 1 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 5.18.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2) | Frame header info syntax | `DECODE-TILE-PAYLOAD-INPUT-DERIVATION` | ✅ | 🟡 | — | ✅ | 2 |
@@ -226,8 +226,8 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.18.7.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-5) | Uniform spacing function | `AV2-5.18.7.3-TILE-PARAMS` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.18.7.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-7) | Tile size calculation function | `AV2-5.18.7.3-TILE-PARAMS` | ✅ | ✅ | ✅ | ✅ | 4 |
 | [§ 5.18.7.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-8) | Quantizer index delta parameters syntax | `AV2-5.18.6-QUANTIZATION` | ✅ | 🟡 | 🟡 | 🟡 | 4 |
-| [§ 5.18.7.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-11) | Loop restoration params syntax | `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
-| [§ 5.18.7.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-11) | Loop restoration params syntax | `DECODE-AC0EJ3-WIENERNS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.18.7.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-11) | Loop restoration params syntax | `DECODE-WIENERNS-BANK-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.18.7.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-11) | Loop restoration params syntax | `DECODE-WIENERNS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.18.8](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-8) | Transform and coding mode structures | `AV2-5.18.8-TRANSFORM-CODING-MODES` | ✅ | 🟡 | — | ✅ | — |
 | [§ 5.18.9](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-9) | Global motion structures | `AV2-5.18.9-GLOBAL-MOTION` | ✅ | 🟡 | — | ✅ | — |
 | [§ 5.18.10](./spec/av2/1.0.0/05-syntax-structures.md#s-5-18-10) | Film grain structures | `AV2-5.18.10-FILM-GRAIN-STRUCTURES` | ✅ | ✅ | 🟡 | ✅ | 1 |
@@ -293,15 +293,15 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3) | Partition structures | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3) | Partition structures | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
-| [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-DEEP-SPLIT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-FRAME-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
+| [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-SDP-CFL-ALLOWED-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-TILE-PARTITION-SIZE-TABLE-BOUNDARY` | ✅ | — | — | ✅ | — |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 5.20.3.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1) | Decode partition syntax | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
@@ -327,9 +327,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-TILE-COEFF-STATE-BUFFERS` | ✅ | — | — | ✅ | — |
 | [§ 5.20.4.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1) | Decode block syntax | `DECODE-TILE-MI-SIZE-STATE-BOUNDARY` | ✅ | — | — | ✅ | — |
 | [§ 5.20.5.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-1) | Mode info syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
-| [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-ANGLE-D113` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-ANGLE-D203` | ✅ | 🟡 | — | ✅ | 1 |
@@ -348,36 +346,38 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-NON64-MULTISB` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
+| [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `ENC-INTRA-BLOCK-MODE-TRACE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `ENC-INTRA-BLOCK-TRACE-CHROMA-SKIP` | ✅ | — | — | ✅ | — |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `ENC-INTRA-BLOCK-TRACE-CODED-CHROMA-DC` | ✅ | — | — | ✅ | — |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `ENC-INTRA-BLOCK-TRACE-CODED-DC` | ✅ | — | — | ✅ | — |
 | [§ 5.20.5.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3) | Intra frame mode info syntax | `ENC-INTRA-BLOCK-TRACE-LUMA-SKIP` | ✅ | — | — | ✅ | — |
-| [§ 5.20.5.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-4) | Read intra block copy syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.5.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5) | Read intra Y mode syntax | `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.5.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-4) | Read intra block copy syntax | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.5.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5) | Read intra Y mode syntax | `DECODE-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5) | Read intra Y mode syntax | `DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5) | Read intra Y mode syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.5.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5) | Read intra Y mode syntax | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 5.20.5.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5) | Read intra Y mode syntax | `ENC-INTRA-MODE-SYMBOL-EMISSION` | ✅ | — | — | ✅ | — |
-| [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `DECODE-AC0EJ3-SEQUENCE-CHROMA-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
+| [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `DECODE-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
+| [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `DECODE-SDP-CFL-ALLOWED-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `DECODE-SEQUENCE-CHROMA-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 5.20.5.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6) | Read intra UV mode syntax | `ENC-UV-MODE-SYMBOL-EMISSION` | ✅ | — | — | ✅ | — |
-| [§ 5.20.5.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-11) | Quantizer index delta syntax | `DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1) | TX size syntax | `DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1) | TX size syntax | `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1) | TX size syntax | `DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1) | TX size syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.5.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-11) | Quantizer index delta syntax | `DECODE-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1) | TX size syntax | `DECODE-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1) | TX size syntax | `DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1) | TX size syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
+| [§ 5.20.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1) | TX size syntax | `DECODE-SELECTABLE-NARROW-LUMA-RECORDS` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.6.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1) | TX size syntax | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.6.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-2) | Block TX size syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
-| [§ 5.20.6.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3) | Read TX partition syntax | `DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.6.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3) | Read TX partition syntax | `DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.6.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3) | Read TX partition syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.6.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3) | Read TX partition syntax | `DECODE-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.6.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3) | Read TX partition syntax | `DECODE-SELECTABLE-NARROW-LUMA-RECORDS` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.6.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3) | Read TX partition syntax | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7) | Motion vector and prediction structures | `DECODE-INTER-RESIDUAL-DCT` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-2) | Inter segment ID syntax | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6) | Inter block mode info syntax | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
@@ -394,21 +394,20 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.11](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-11) | Read compound ref syntax | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-12) | Read single ref syntax | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.12](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-12) | Read single ref syntax | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | ✅ | — | ✅ | 1 |
-| [§ 5.20.7.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13) | Assign MV syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13) | Assign MV syntax | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13) | Assign MV syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.13](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13) | Assign MV syntax | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.16](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-16) | Read compound type syntax | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 5.20.7.17](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-17) | Read refine mv syntax | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
-| [§ 5.20.7.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-20) | MV syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-20) | MV syntax | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.20](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-20) | MV syntax | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.23](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-23) | Residual syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
-| [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-LR-LIVE-TX-SKIP-GRID` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
-| [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-SELECTABLE-NARROW-LUMA-RECORDS` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.24](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24) | Transform block syntax | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-ANGLE-D203` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-ANGLE-D45` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-BLOCK-DECODED` | ✅ | 🟡 | — | ✅ | 1 |
@@ -416,16 +415,11 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-GRID-NEIGHBOUR-NONDC` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERAL-INTRA-GRID-SMOOTH-H-ABOVE-RIGHT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-GENERIC-RUNTIME-DESLOP` | ✅ | — | — | ✅ | 1 |
+| [§ 5.20.7.25](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-25) | Get TX size function | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.26](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-26) | Get plane residual size function | `DECODE-TILE-PARTITION-ALLOWED-BOUNDARY` | ✅ | — | — | ✅ | — |
-| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ALL-ZERO-BLOCK-STATE` | ✅ | — | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE` | ✅ | — | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS` | ✅ | 🟡 | — | ✅ | 1 |
@@ -484,6 +478,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-USE-FSC-BRANCH-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-USE-FSC-CONDITION-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-ANGLE-D113` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-ANGLE-D203` | ✅ | 🟡 | — | ✅ | 1 |
@@ -505,8 +500,13 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-GENERIC-RUNTIME-DESLOP` | ✅ | — | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-INTER-RESIDUAL-DCT` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-SELECTABLE-NARROW-LUMA-RECORDS` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `DECODE-TILE-COEFF-STATE-BUFFERS` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-BASE-LF-CONTEXT` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.27](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27) | Coefficients syntax | `ENC-COEFF-BASE-LF-TOKEN` | ✅ | — | — | ✅ | — |
@@ -567,68 +567,68 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `ENC-INTRA-BLOCK-TRACE-GOLOMB-FINITE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.28](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28) | Read quantized coefficient syntax | `ENC-INTRA-BLOCK-TRACE-GOLOMB-PREFIX` | ✅ | — | — | ✅ | — |
-| [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-CHROMA-INTER-TXTYPES-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-DIRECTIONAL-UV-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-LUMA-TXTYPES-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-MODE-TO-TXFM-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `DECODE-INTRA-IST-ZERO-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.29](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29) | Compute transform type function | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` | ✅ | — | — | ✅ | — |
-| [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `DECODE-COEFF-FSC-BRANCH-SCAN-ORDER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `DECODE-COEFF-FSC-BRANCH-SEG-EOB-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `DECODE-COEFF-FSC-BRANCH-TX-SIZE-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `DECODE-COEFF-ORDINARY-BRANCH-SCAN-ORDER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF` | ✅ | — | — | ✅ | — |
 | [§ 5.20.7.30](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30) | Get scan function | `RECON-COEFFICIENT-SCAN-ORDER` | ✅ | — | ✅ | ✅ | — |
-| [§ 5.20.7.32](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-32) | Read CFL alphas syntax | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.7.32](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-32) | Read CFL alphas syntax | `DECODE-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-INTER-RESIDUAL-DCT` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-BLOCK-TRACE-IST` | ✅ | — | — | ✅ | — |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-BLOCK-TRACE-TWO-COEFF-TX-TYPE` | ✅ | — | — | ✅ | — |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-INTRA-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
 | [§ 5.20.8.2](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2) | Transform type syntax | `ENC-SEC-TX-TYPE-TOKEN` | ✅ | — | — | ✅ | — |
-| [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-COEFF-ORDINARY-BRANCH-TX-SET-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-INTER-RESIDUAL-DCT` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.8.3](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-3) | Get transform set function | `DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.9.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-9-1) | Is inside function | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
-| [§ 5.20.10.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-1) | Read CDEF syntax | `DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 5.20.10.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-1) | Read CDEF syntax | `DECODE-GENERAL-INTRA-CDEF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.1](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-1) | Read CDEF syntax | `DECODE-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.4](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4) | Read loop restoration syntax | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
-| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 5.20.10.5](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5) | Read loop restoration unit syntax | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
-| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-WIENERNS-BANK-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
-| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-AC0EJ3-WIENERNS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-WIENERNS-BANK-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 5.20.10.6](./spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6) | Read Wiener NS syntax | `DECODE-WIENERNS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 
 ## Chapter 6 — Syntax structures semantics
 
@@ -656,12 +656,12 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `CONF-RECON-Y4M-OUTPUT-FUZZ` | ✅ | — | — | ✅ | — |
-| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
-| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-10BIT-SEQUENCE-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-GENERAL-INTRA-10BIT` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-GENERAL-INTRA-10BIT-SMOOTH-CHROMA` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 6.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1) | General sequence header OBU semantics | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
@@ -764,9 +764,9 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `AV2-6.17.2-FRAME-HEADER-INFO-SEMANTICS` | ✅ | — | 🟡 | ✅ | 18 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
-| [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
 | [§ 6.17.4.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-4-1) | Frame size semantics | `DECODE-Y4M-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
@@ -825,9 +825,9 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 6.19.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3) | Partition structures | `DECODE-TILE-PARTITION-SIZE-TABLE-BOUNDARY` | ✅ | — | — | ✅ | — |
 | [§ 6.19.3](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-3) | Partition structures | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 6.19.6.1](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-6-1) | TX size semantics | `DECODE-TX-SIZE-SYMBOLIC-TABLES` | ✅ | — | — | ✅ | 1 |
-| [§ 6.19.7.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-4) | Intra block mode info semantics | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 6.19.7.12](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-12) | Assign MV semantics | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 6.19.7.25](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-25) | Read CFL alphas semantics | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 6.19.7.4](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-4) | Intra block mode info semantics | `DECODE-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 6.19.7.12](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-12) | Assign MV semantics | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 6.19.7.25](./spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-25) | Read CFL alphas semantics | `DECODE-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 
 ## Chapter 7 — Decoding process
 
@@ -878,11 +878,11 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.11.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-2) | Find mode context process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.11.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-11-3) | Scan point context process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
-| [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-MULTI-SB-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.12.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2) | Find MV stack process | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.12.2.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-6) | Scan point process | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.12.2.6](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-6) | Scan point process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.12.2.12](./spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-12) | Search stack process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
@@ -985,7 +985,6 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.16](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-16) | Rounding variables derivation process | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.16](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-16) | Rounding variables derivation process | `RECON-SUBPEL-MC` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.3.17](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-17) | Motion vector scaling process | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
-| [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-GRID-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
@@ -993,6 +992,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-MVORDER-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-MVSTACK-SPATIAL` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-INTER-SUBPEL-MV` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `INFRA-DECODE-SERIAL-HOT-PATHS` | ✅ | — | — | ✅ | — |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `RECON-INTRABC-CURRENT-FRAME-COPY` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.13.3.18](./spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18) | Block inter prediction process | `RECON-SUBPEL-MC` | ✅ | — | ✅ | ✅ | — |
@@ -1074,49 +1074,49 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.19](./spec/av2/1.0.0/07-decoding-process.md#s-7-19) | CCSO process | `INFRA-DECODE-PARALLEL-STAGES` | ✅ | — | — | ✅ | — |
 | [§ 7.19](./spec/av2/1.0.0/07-decoding-process.md#s-7-19) | CCSO process | `INFRA-DECODE-SERIAL-HOT-PATHS` | ✅ | — | — | ✅ | — |
 | [§ 7.20](./spec/av2/1.0.0/07-decoding-process.md#s-7-20) | Loop restoration process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
-| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `DECODE-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.1](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-1) | Loop restore block process | `INFRA-DECODE-SERIAL-HOT-PATHS` | ✅ | — | — | ✅ | — |
-| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
+| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `DECODE-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `INFRA-DECODE-FILTER-HOT-PATHS` | ✅ | — | — | ✅ | — |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `RECON-LOOP-RESTORATION-SOURCE-READ` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-2) | Get source sample process | `RECON-LOOP-RESTORATION-SOURCE-SAMPLE` | ✅ | — | ✅ | ✅ | — |
-| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `DECODE-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `INFRA-DECODE-FILTER-HOT-PATHS` | ✅ | — | — | ✅ | — |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `INFRA-DECODE-FIRST-FRAME-LATENCY` | ✅ | — | — | ✅ | — |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `INFRA-DECODE-PARALLEL-STAGES` | ✅ | — | — | ✅ | — |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `INFRA-DECODE-SERIAL-HOT-PATHS` | ✅ | — | — | ✅ | — |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE` | ✅ | — | ✅ | ✅ | — |
 | [§ 7.20.3](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) | Non-separable Wiener filter process | `RECON-WIENERNS-FILTER-PRIMITIVE` | ✅ | — | ✅ | ✅ | — |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-LIVE-TRANSFORM-RECORD-HANDOFF` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-LIVE-TX-SKIP-GRID` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-SELECTABLE-NARROW-LUMA-RECORDS` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-LR-LIVE-STORAGE-ALLOCATION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-LR-LIVE-TX-SKIP-GRID` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-LR-TX-SKIP-GRID-RETENTION` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-SELECTABLE-NARROW-LUMA-RECORDS` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `INFRA-DECODE-FILTER-HOT-PATHS` | ✅ | — | — | ✅ | — |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `INFRA-DECODE-FIRST-FRAME-LATENCY` | ✅ | — | — | ✅ | — |
 | [§ 7.20.4](./spec/av2/1.0.0/07-decoding-process.md#s-7-20-4) | Pixel classified Wiener filter process | `RECON-PC-WIENER-CLASSIFICATION` | ✅ | — | ✅ | ✅ | — |
@@ -1140,7 +1140,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `CONF-RECON-FRAME-HASH-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `CONF-RECON-Y4M-OUTPUT-FUZZ` | ✅ | — | — | ✅ | — |
-| [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
+| [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-10BIT-SEQUENCE-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 7.21.2](./spec/av2/1.0.0/07-decoding-process.md#s-7-21-2) | Intermediate output preparation process | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
@@ -1158,7 +1158,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 7.22](./spec/av2/1.0.0/07-decoding-process.md#s-7-22) | Motion field motion vector storage process | `DOC-DECODER-OUTPUT-EQUIVALENCE-CONTRACT` | ✅ | — | — | ✅ | — |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `AV2-7.23-REFERENCE-FRAME-UPDATE` | ✅ | — | 🟡 | ✅ | 1 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `CONF-RECON-FRAME-PLANE-TYPES-FUZZ` | ✅ | — | — | ✅ | — |
-| [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-AC0EJ3-10BIT-SEQUENCE-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
+| [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-10BIT-SEQUENCE-FRONTIER` | ✅ | ✅ | ✅ | ✅ | 1 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-FIRST-INTER-FRAME-FRONTIER` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 7.23](./spec/av2/1.0.0/07-decoding-process.md#s-7-23) | Reference frame update process | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
@@ -1325,25 +1325,10 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.3.1](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-1) | General | `DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY` | ✅ | ✅ | — | ✅ | — |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-SDP-CFL-ALLOWED-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-AC0EJ3-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-COEFF-ALL-ZERO-BLOCK-STATE` | ✅ | — | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-COEFF-ALL-ZERO-CONTEXT-STATE` | ✅ | — | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-COEFF-BASE-CDF-ROWS` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1373,18 +1358,33 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-COEFF-SIGN-SYMBOL-READ` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-COEFF-STATE-CONTEXT-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-COEFF-TX-CLASS-DERIVE` | ✅ | — | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-BLOCK-MODES` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-DIRECTIONAL-NEIGHBOUR-CTX` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-FRAME-RECON` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-LUMA-COEFFS` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-MB-NEIGHBOUR-SMOOTH` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-GENERAL-INTRA-MULTIBLOCK` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-INTER-MULTIREF-RUNTIME` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-INTRA-IST-ZERO-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-INTRA-PRELUDE-TX-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-LR-RUNTIME-STORAGE-RETENTION` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-SDP-CFL-ALLOWED-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-SELECTABLE-TRANSFORM-RECORDS` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 8.3.2](./spec/av2/1.0.0/08-parsing-process.md#s-8-3-2) | Cdf selection process | `DECODE-TILE-COEFF-STATE-BUFFERS` | ✅ | — | — | ✅ | — |
@@ -1439,8 +1439,6 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `CONF-RECON-INTRA-PREDICTION-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `CONF-SYMBOL-DECODER-FUZZ` | ✅ | — | — | ✅ | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
-| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-AC0EJ3-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-AC0EJ3-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-EOB-BRANCH-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-EOB-DERIVED-SYMBOL-READ` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-EOB-SIZE-CONTEXT` | ✅ | — | — | ✅ | 1 |
@@ -1458,6 +1456,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-RUNTIME-FRAME-ENTRY-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-RUNTIME-TX-SIZE-GEOMETRY-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-COEFF-USE-FSC-SHARED-FACTS-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-DCTONLY-RESIDUAL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-ANGLE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-ANGLE-D113` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-ANGLE-D203` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1471,6 +1470,7 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-NEIGHBOUR-DIRECTIONAL` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-NONDC-LUMA-SMOOTH-PLAIN` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-GENERAL-INTRA-RECT-PARTITION` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-MINIMAL-INTRA-RECONSTRUCTION-FRONTIER` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
@@ -1489,19 +1489,10 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `RECON-TRANSFORM-SHIFT-LOOKUP` | ✅ | — | ✅ | ✅ | — |
 | [§ 9.2](./spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2) | Conversion tables | `RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION` | ✅ | — | ✅ | ✅ | — |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `CONF-TILE-PAYLOAD-DECODE-FUZZ` | ✅ | — | — | ✅ | 2 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-INTRA-IST-ZERO-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
-| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-AC0EJ3-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-ACTIVE-INTRA-IST-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-ACTIVE-INTRA-TOOL-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-CFL-CHROMA-MODE-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-CHROMA-CCTX-HANDOFF` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-COEFF-BASE-CDF-ROWS` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-COEFF-BASE-PH-CDF-ROW` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1514,8 +1505,17 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-COEFF-IDTX-CDF-ROWS` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-COEFF-NONZERO-BLOCK-STATE` | ✅ | 🟡 | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-COEFF-SIGN-SYMBOL-READ` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-INACTIVE-LR-UNITS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-INTER-COMPOUND-AVERAGE` | ✅ | ✅ | — | ✅ | 1 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-INTER-SINGLE-REF-SYMBOL` | ✅ | ✅ | — | ✅ | 1 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-INTRA-IST-ZERO-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-LR-CLASSIFIED-WIENER-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-LR-CLASSIFIED-WIENER-STORAGE` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-LR-CLASSIFIED-WIENER-VALUES` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-LR-SOURCE-BOUNDS-FRONTIER` | ✅ | 🟡 | — | ✅ | 1 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-LR-SOURCE-READ-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-LR-UNIT-SELECTIONS-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
+| [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-LR-UNIT-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-MINIMAL-BLOCK-SYNTAX-FRONTIER` | ✅ | 🟡 | — | ✅ | 4 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY` | ✅ | ✅ | — | ✅ | 2 |
 | [§ 9.3](./spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3) | Default CDF tables | `DECODE-TILE-CDF-SELECTION-BOUNDARY` | ✅ | 🟡 | — | ✅ | 1 |
@@ -1535,8 +1535,8 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `CONF-DECODE-RUNTIME-RAW-FUZZ` | ✅ | — | — | ✅ | 4 |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `CONF-DECODE-RUNTIME-Y4M-FUZZ` | ✅ | — | — | ✅ | 4 |
-| [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-AC0EJ3-LEADING-OBU-GATE` | ✅ | 🟡 | ✅ | ✅ | 1 |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
+| [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-LEADING-OBU-GATE` | ✅ | 🟡 | ✅ | ✅ | 1 |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [Annex B.2](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-2) | Length delimited bitstream syntax | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |
@@ -1544,8 +1544,8 @@ Legend: ✅ done · 🟡 partial · ⏳ pending external proof · ⛔ blocked ·
 | [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `CONF-DECODE-RUNTIME-HASH-FUZZ` | ✅ | — | — | ✅ | 3 |
 | [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `CONF-DECODE-RUNTIME-RAW-FUZZ` | ✅ | — | — | ✅ | 4 |
 | [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `CONF-DECODE-RUNTIME-Y4M-FUZZ` | ✅ | — | — | ✅ | 4 |
-| [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-AC0EJ3-LEADING-OBU-GATE` | ✅ | 🟡 | ✅ | ✅ | 1 |
 | [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-BYTE-STREAM-PLANNER` | ✅ | ✅ | — | ✅ | 3 |
+| [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-LEADING-OBU-GATE` | ✅ | 🟡 | ✅ | ✅ | 1 |
 | [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-LIMITS-RUNTIME-API` | ✅ | — | — | ✅ | — |
 | [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` | ✅ | 🟡 | ✅ | ✅ | 4 |
 | [Annex B.3](./spec/av2/1.0.0/annex-b-length-delimited-bitstream-format.md#s-annex-b-3) | Length delimited bitstream semantics | `DECODE-MINIMAL-TIER-RUNTIME-SUCCESS` | ✅ | 🟡 | ✅ | ✅ | 3 |

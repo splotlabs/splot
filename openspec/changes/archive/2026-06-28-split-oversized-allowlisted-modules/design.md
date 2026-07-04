@@ -8,7 +8,7 @@ cap, with per-file allowances. Four files hold allowances today:
 | `crates/splot-core/src/headers/frame/info.rs` | 5213 | 5340 | ~55% tests | 25 commits (hot) |
 | `crates/splot-validate/src/celu.rs` | 3693 | 3693 | ~67% tests+doc | 1 commit (cold) |
 | `crates/splot-core/src/headers/sequence.rs` | 3282 | 3328 | ~36% tests | 11 (mostly sweeps) |
-| `crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs` | 2615 | 2615 | ~20% in-file + 4 ext | 18 (active ac0ej3) |
+| `crates/splot-decode/src/runtime_minimal/wienerns_lr/tx_records.rs` | 2615 | 2615 | ~20% in-file + 4 ext | 18 (active local decoder mission) |
 
 A maintainability review proposed splitting all four by responsibility:
 
@@ -129,7 +129,7 @@ maintainer's allowance reason already says "split separately."
 
 ### Decision 4: Defer `tx_records.rs`; pre-record its real seams, not chroma-first
 
-`tx_records.rs` is the active ac0ej3 decoder frontier — nearly every recent
+`tx_records.rs` is the active local decoder mission decoder frontier — nearly every recent
 commit touches it, and its allowance reason explicitly defers ("Split the chroma
 residual decoders into a submodule separately if this grows further"). It is one
 cohesive §5.20.5/§5.20.6/§5.20.7 intra tile-decode walk; its center of gravity
@@ -177,7 +177,7 @@ of private types by value, and the luma/chroma walks are deliberately interleave
 3. PR 2 — `sequence.rs` → `sequence/` dir: extract `profile.rs`,
    `layer_dependency.rs`, `child_configs.rs`; re-export; lower/remove the
    `sequence.rs` allowance; run `cargo xtask ci`.
-4. Hold `info.rs` and `tx_records.rs`. When the ac0ej3 decoder frontier
+4. Hold `info.rs` and `tx_records.rs`. When the local decoder mission decoder frontier
    stabilizes, open PR 3 / PR 4 using the seams in Decisions 3–4, each as its own
    dedicated PR with maintainer review.
 

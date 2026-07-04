@@ -28,7 +28,7 @@
       (pinned frame hashes).
 - [x] 4.2 `syn-grid-inter-128x128-q80.ivf` decodes byte-identical to avmdec
       (pinned frame hashes; gate-pin tests converted to positive decodes).
-- [x] 4.3 ac0ej3 `--limit=1` reproduces the AVM frame-0 sentinel through the
+- [x] 4.3 local decoder mission `--limit=1` reproduces the AVM frame-0 sentinel through the
       production CLI; the full-stream gate holds at the first fully-tooled
       inter frame (byte 8345).
-- [x] 4.4 Add the ignored `ac0ej3_full_stream_avm_compare` harness.
+- [x] 4.4 Add the ignored `local_decoder_mission_full_stream_avm_compare` harness.

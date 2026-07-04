@@ -11,7 +11,7 @@ reference frames' retained frame-level Wiener-NS taps in
 both the frame-class and reference-filter group sizes.
 
 #### Scenario: Mission-stream post-filter luma matches AVM
-- **GIVEN** the ac0ej3 mission stream's first three coded frames
+- **GIVEN** the local decoder mission stream's first three coded frames
 - **WHEN** each frame runs the full § 7.2 filter chain
 - **THEN** every post-filter luma sample is byte-identical to the AVM
   oracle, including the frame that selects reference-frame filter

@@ -1,6 +1,6 @@
 ## Context
 
-The current ac0ej3 LR path stops after resolving §7.20.4 classified-Wiener
+The current local decoder mission LR path stops after resolving §7.20.4 classified-Wiener
 source-read and `LrTxSkip` lookup coordinates. `splot-recon` already has
 §7.20.2 source-sample selection/value helpers and §7.20.3 Wiener NS luma/chroma
 filter primitives, but it has no pixel-classified Wiener classification helper.
@@ -28,7 +28,7 @@ loop-restoration table module there without introducing a new dependency edge.
 
 - Runtime decode wiring, `FilterClass` grid storage, `SubclassLookup` wiring,
   §7.20.3 filter invocation, frame/current-CDEF storage reads, `LrTxSkip` grid
-  derivation, 10-bit output, reference refresh, or successful ac0ej3 decode.
+  derivation, 10-bit output, reference refresh, or successful local decoder mission decode.
 - Moving `splot-core` consumers to `splot-tables` in this brick.
 - Introducing new dependencies or changing crate dependency direction.
 
@@ -59,7 +59,7 @@ loop-restoration table module there without introducing a new dependency edge.
 - Generated table duplication increases repository size. Mitigation: only
   generated §9.8 tables are duplicated, `gen-tables --check` owns both copies,
   and no hand-maintained constants are introduced.
-- The primitive cannot by itself move the ac0ej3 runtime diagnostic because live
+- The primitive cannot by itself move the local decoder mission runtime diagnostic because live
   source sample and `LrTxSkip` values are unavailable at the current runtime
   order. Mitigation: the support row and runtime diagnostic stay honest, and the
   primitive removes a real blocker for the later runtime wiring step.

@@ -25,27 +25,27 @@ const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
     SourceLineAllowance {
         path: "crates/splot-decode/src/pipeline/general_intra.rs",
         max_lines: 3_000,
-        reason: "temporary ac0ej3 general-intra runtime frontier before module split",
+        reason: "temporary local decoder mission general-intra runtime frontier before module split",
     },
     SourceLineAllowance {
         path: "crates/splot-decode/src/filters/wienerns_lr/recon.rs",
         max_lines: 5_200,
-        reason: "temporary ac0ej3 selectable-reconstruction frontier before module split",
+        reason: "temporary local decoder mission selectable-reconstruction frontier before module split",
     },
     SourceLineAllowance {
         path: "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
         max_lines: 2_600,
-        reason: "temporary ac0ej3 selectable-transform-record frontier before module split",
+        reason: "temporary local decoder mission selectable-transform-record frontier before module split",
     },
     SourceLineAllowance {
         path: "crates/splot-decode/src/pipeline/reconstruct.rs",
         max_lines: 3_500,
-        reason: "temporary ac0ej3 intra-reconstruction frontier before module split",
+        reason: "temporary local decoder mission intra-reconstruction frontier before module split",
     },
     SourceLineAllowance {
         path: "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs",
         max_lines: 3_000,
-        reason: "temporary ac0ej3 partition-traversal frontier before module split",
+        reason: "temporary local decoder mission partition-traversal frontier before module split",
     },
 ];
 

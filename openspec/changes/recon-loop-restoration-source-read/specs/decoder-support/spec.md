@@ -9,7 +9,7 @@ read as supported over caller-resolved luma bounds, sequence subsampling, and
 caller-supplied `CurrFrame` / `CdefFrame` views, including validation that
 caller-resolved chroma subsampling matches the source frame pixel format. It
 SHALL keep full loop restoration, Wiener NS invocation, PC-Wiener classification,
-GDF, BRU, runtime decode wiring, and ac0ej3 decode partial or unsupported until
+GDF, BRU, runtime decode wiring, and local decoder mission decode partial or unsupported until
 separately proven.
 
 #### Scenario: Matrix records narrow loop-restoration frame-read progress
@@ -20,4 +20,4 @@ separately proven.
   `RECON-LOOP-RESTORATION-SOURCE-READ`
 - **AND** it cites AV2 section 7.20.2 and focused `splot-recon` tests
 - **AND** it does not claim full loop restoration, runtime decode wiring, or
-  successful ac0ej3 decode
+  successful local decoder mission decode

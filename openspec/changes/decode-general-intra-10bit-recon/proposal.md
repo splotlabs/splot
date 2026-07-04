@@ -71,7 +71,7 @@ same math reconstructs and serializes 8-bit and 10-bit samples.
   V == 520), the AC-residual frame hash, and the multi-superblock frame hash plus
   its per-superblock luma anchors (left 400, right 460); confirm all existing
   8-bit fixtures still decode bit-exact, the 10-bit CFL fixture still rejects, and
-  `ac0ej3.ivf` still fails closed.
+  `local-decoder-mission.ivf` still fails closed.
 - Update decoder tracking, generated status docs, and OpenSpec tasks.
 
 ## Capabilities

@@ -9,7 +9,7 @@ chroma non-separable Wiener per-block/per-sample arithmetic as supported over
 caller-resolved chroma source samples, luma source samples, luma downsampling
 facts, and coefficients. It SHALL keep full loop restoration, §7.20.2 frame
 reads, §7.20.4 PC-Wiener classification, restoration-unit syntax,
-temporal/reference Wiener state, GDF/BRU, runtime decode wiring, and ac0ej3
+temporal/reference Wiener state, GDF/BRU, runtime decode wiring, and local decoder mission
 decode partial or unsupported until separately proven.
 
 #### Scenario: Matrix records narrow chroma loop-restoration progress
@@ -20,4 +20,4 @@ decode partial or unsupported until separately proven.
   `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE`
 - **AND** it cites AV2 §7.20.3 and focused `splot-recon` tests
 - **AND** it does not claim full loop restoration, runtime decode wiring, GDF,
-  BRU, or successful ac0ej3 decode
+  BRU, or successful local decoder mission decode

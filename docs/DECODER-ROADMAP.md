@@ -788,7 +788,7 @@ byte-consuming decode boundary.
 for tests and callers; `DecodeLimits::default()` and `DecodeOptions::default()`
 use finite repository policy thresholds for CI, fuzzing, and early decoder work.
 The default OBU and frame-count thresholds are intentionally large enough for the
-current `ac0ej3.ivf` mission target's inspected 12964 OBU stream to advance past
+current `local-decoder-mission.ivf` mission target's inspected 12964 OBU stream to advance past
 the old 128-frame planner cap into the next honest runtime gate; this remains
 local `splot` resource policy, not an AV2 conformance limit.
 
@@ -1027,12 +1027,12 @@ Runtime hash tier rejections use `minimal-decode-tier-contract` /
 Mission-scale IVF streams are no longer rejected solely because they contain
 more than three frame candidates; terminal `ivf/trailing-partial-frame-header`
 warnings are permitted, while fatal IVF errors and non-terminal warning kinds
-remain outside the tier. The current local `ac0ej3.ivf` first runtime stop is
+remain outside the tier. The current local `local-decoder-mission.ivf` first runtime stop is
 `unsupported_wienerns_lr_live_transform_record_fsc_mode` at byte offset 110: the
 runtime now reaches the active Wiener NS LR selectable transform-record path,
 retains active MRL metadata as `UsesMrls` state for LR tx-skip record derivation,
 and then rejects active FSC coefficient mode before decoded samples,
-loop-restoration output, reference refresh, or successful ac0ej3 decode are
+loop-restoration output, reference refresh, or successful local decoder mission decode are
 claimed.
 
 The CLI renders diagnostics as text by default and as JSON with

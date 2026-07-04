@@ -1,6 +1,6 @@
 ## Why
 
-The `ac0ej3.ivf` mission target stores more than one AV2 coded frame unit inside
+The `local-decoder-mission.ivf` mission target stores more than one AV2 coded frame unit inside
 some IVF frame records. The minimal multi-frame runtime currently assumes that
 IVF record index and decoded frame-candidate index are the same thing, so it can
 only handle the committed fixture shape where every following inter frame lives
@@ -26,4 +26,4 @@ planned OBU offsets, while keeping the same strict verified decode subset.
 
 - Touches the minimal decode runtime and its tests.
 - No new AV2 syntax support, no new prediction mode, no frame-count cap increase,
-  no dependency graph change, and no claim of broad `ac0ej3` decode support.
+  no dependency graph change, and no claim of broad `local decoder mission` decode support.

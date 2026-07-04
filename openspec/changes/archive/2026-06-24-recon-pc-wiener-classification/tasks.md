@@ -35,7 +35,7 @@
 - [x] 5.1 Run `openspec validate recon-pc-wiener-classification --strict`.
 - [x] 5.2 Run focused tests, `cargo xtask gen-tables --check`, feature-status,
   decoder-support, decoder conformance coverage, and dependency-direction gates.
-- [x] 5.3 Re-run ac0ej3 hash decode to verify the frontier remains structured and
+- [x] 5.3 Re-run local decoder mission hash decode to verify the frontier remains structured and
   honest until runtime value wiring exists.
 - [x] 5.4 If all tasks complete and a PR is ready, sync/archive this OpenSpec
   change before merge, request Claude and Codex reviews, wait for both latest-head

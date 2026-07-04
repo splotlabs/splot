@@ -15,12 +15,12 @@ SHALL add the § 7.12.2.20 mixture candidates for blocks wider and
 taller than 32 under the shared `PruneCount` budget.
 
 #### Scenario: Pinned warp discriminators match AVM
-- **GIVEN** the ac0ej3 mission stream's coded frame 2
+- **GIVEN** the local decoder mission stream's coded frame 2
 - **WHEN** the pinned WARPMV/DELTAWARP discriminator blocks parse
 - **THEN** their warp parameters and motion vectors are value-identical
   to the AVM oracle, including a `RefWarpIdx > 0` selection
 
 #### Scenario: Output frame 0 is unchanged
-- **GIVEN** the ac0ej3 mission stream decoded with a one-frame limit
+- **GIVEN** the local decoder mission stream decoded with a one-frame limit
 - **WHEN** the display-order scheduler releases frames
 - **THEN** output frame 0 is byte-identical to the avmdec raw output

@@ -1,6 +1,6 @@
 ## Why
 
-Decoding any real sequence (ac0ej3 is ~12961 frames, each referencing prior
+Decoding any real sequence (local decoder mission is ~12961 frames, each referencing prior
 decoded frames) needs the decoder to retain MORE than one decoded frame and let a
 later frame select among them. So far the multi-frame runtime caps at a key plus
 ONE inter frame, retains only the key in reference slot 0, and the AV2 § 7.7

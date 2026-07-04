@@ -36,7 +36,7 @@ The relevant AV2 mirror sections are:
 - More than two references, neighbour-derived compound contexts, non-zero
   compound MVs, residual compound blocks, masks, CWP, implicit masked blend,
   optical-flow/refine-MV, TIP, temporal MV, warped motion, cross-frame CDF
-  save/load, or broader ac0ej3 decode.
+  save/load, or broader local decoder mission decode.
 
 ## Decisions
 

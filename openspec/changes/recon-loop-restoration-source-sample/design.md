@@ -1,6 +1,6 @@
 ## Context
 
-The ac0ej3 decoder frontier now reaches supported frame-level Wiener NS unit
+The local decoder mission decoder frontier now reaches supported frame-level Wiener NS unit
 selection state and rejects because active loop-restoration reconstruction is not
 implemented. AV2 section 7.20.2 is a small source-sample process used by loop
 restoration filters: it clips requested coordinates to the allowed luma-derived
@@ -22,7 +22,7 @@ at most two lines above or below it.
 
 - Full section 7.20 loop-restoration traversal, frame storage reads, Wiener NS
   filter application, PC-Wiener classification, chroma Wiener NS filtering, GDF,
-  BRU, runtime decode wiring, or ac0ej3 output.
+  BRU, runtime decode wiring, or local decoder mission output.
 
 ## Decisions
 
@@ -45,7 +45,7 @@ at most two lines above or below it.
 
 ## Risks / Trade-offs
 
-- This brick does not unblock ac0ej3 by itself. Runtime code must still compose
+- This brick does not unblock local decoder mission by itself. Runtime code must still compose
   loop-restoration traversal, frame-level filter-bank selection, source reads,
   Wiener NS filtering, and output storage before the active LR diagnostic can
   move.

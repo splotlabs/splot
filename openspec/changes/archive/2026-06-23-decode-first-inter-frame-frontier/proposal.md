@@ -3,7 +3,7 @@
 The general intra decode path is comprehensive (all intra modes, square and
 rectangular partitions, multi-superblock grids), but the decoder cannot yet
 decode any INTER frame. Inter prediction is the gate to real content: the
-production target `ac0ej3` is ~1 key + ~12961 inter frames. The smallest
+production target `local decoder mission` is ~1 key + ~12961 inter frames. The smallest
 bit-exact-verifiable inter step is a two-frame stream (1 intra key + 1 inter
 frame) whose inter frame is a single 64x64 block, single reference,
 GLOBALMV/NEARESTMV with zero MV and skip=1, so AV2 § 7.13.3.18 zero-fraction

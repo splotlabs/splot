@@ -15,7 +15,7 @@ separable convolution with the BILINEAR filter row over the current
 frame instead of deferring or copying unfiltered samples.
 
 #### Scenario: Mission-stream pre-filter luma matches AVM
-- **GIVEN** the ac0ej3 mission stream's first three coded frames
+- **GIVEN** the local decoder mission stream's first three coded frames
 - **WHEN** each frame's pre-filter workspace is compared to the AVM
   oracle's pre-filter dump
 - **THEN** every luma sample is byte-identical, including the
