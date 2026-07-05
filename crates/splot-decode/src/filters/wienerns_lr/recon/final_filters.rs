@@ -483,7 +483,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             })
     }
 
-    /// [`Self::apply_luma_lr`] over already-coalesced luma runs.
+    /// Applies §7.17 luma loop restoration over already-coalesced luma runs.
     pub(crate) fn apply_luma_lr_runs(
         &mut self,
         core: &FrameHeaderCore,
@@ -627,7 +627,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
     }
 
-    /// [`Self::apply_chroma_lr`] over already-coalesced plane runs.
+    /// Applies §7.17 chroma loop restoration over already-coalesced plane runs.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn apply_chroma_lr_runs(
         &mut self,
