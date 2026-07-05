@@ -872,14 +872,6 @@ fn decode_block<T: ReconSample>(
         }
         segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
         if prelude.use_intrabc {
-            if frontier.has_chroma {
-                return Err(inter_cap!(
-                    "inter_intrabc_chroma",
-                    tile_offset,
-                    "inter.intrabc.chroma",
-                    SPEC_MODE_INFO
-                ));
-            }
             let info = prelude.intrabc.ok_or_else(|| {
                 inter_missing!(
                     "inter_intrabc_info",
@@ -888,13 +880,15 @@ fn decode_block<T: ReconSample>(
                     SPEC_MODE_INFO
                 )
             })?;
-            reconstruct_intrabc_luma_predictor(
+            let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
+            reconstruct_intrabc_predictor(
                 workspace,
                 core,
                 frontier,
                 n4w,
                 n4h,
                 info,
+                (u32::from(sub_x), u32::from(sub_y)),
                 tile_offset,
             )?;
             let block_qindex = segment_block_qindex(
@@ -1931,13 +1925,15 @@ fn non_intra_leaf_mode(frontier: &DecodeBlockFrontier) -> GeneralIntraLeafMode {
     leaf
 }
 
-fn reconstruct_intrabc_luma_predictor<T: ReconSample>(
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_intrabc_predictor<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
     n4w: usize,
     n4h: usize,
     info: IntrabcInfo,
+    (sub_x, sub_y): (u32, u32),
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let prediction = derive_intrabc_luma_prediction_geometry(
@@ -1947,30 +1943,63 @@ fn reconstruct_intrabc_luma_predictor<T: ReconSample>(
         tile_offset,
     )?;
     if prediction.fractional {
-        return super::mc::intrabc_predict_fractional_luma_into(
+        super::mc::intrabc_predict_fractional_luma_into(
             workspace,
             prediction.target,
             prediction.scaling,
-        );
-    }
-    if prediction.source.size() != prediction.target.size() {
+        )?;
+    } else if prediction.source.size() != prediction.target.size() {
         return Err(inter_cap!(
             "inter_intrabc_fractional_predictor",
             tile_offset,
             "inter.intrabc.fractional_predictor",
             SPEC_MODE_INFO
         ));
+    } else {
+        workspace
+            .copy_rect_within_plane(ReconPlaneId::Y, prediction.source, prediction.target)
+            .map_err(|_| {
+                inter_cap!(
+                    "inter_intrabc_copy",
+                    tile_offset,
+                    "inter.intrabc.copy",
+                    SPEC_MODE_INFO
+                )
+            })?;
     }
-    workspace
-        .copy_rect_within_plane(ReconPlaneId::Y, prediction.source, prediction.target)
-        .map_err(|_| {
+    if !frontier.has_chroma {
+        return Ok(());
+    }
+    let luma = prediction.target; // § 7.11.5 one block vector drives every plane; chroma reads a subsampled plane scaling of the luma target rect
+    for plane in [ReconPlaneId::U, ReconPlaneId::V] {
+        let (cx, cy) = (luma.x() >> sub_x, luma.y() >> sub_y);
+        let (cw, ch) = (luma.width() >> sub_x, luma.height() >> sub_y);
+        if cw == 0 || ch == 0 {
+            continue;
+        }
+        let scaling = super::mv_scaling::derive_plane_scaling(
+            cx as i64,
+            cy as i64,
+            i64::from(info.block_mv.row),
+            i64::from(info.block_mv.col),
+            sub_x,
+            sub_y,
+            prediction.ref_mi_cols,
+            prediction.ref_mi_rows,
+            cw as i64,
+            ch as i64,
+        );
+        let target = splot_recon::PlaneRect::new(cx, cy, cw, ch).map_err(|_| {
             inter_cap!(
-                "inter_intrabc_copy",
+                "inter_intrabc_chroma",
                 tile_offset,
-                "inter.intrabc.copy",
+                "inter.intrabc.chroma",
                 SPEC_MODE_INFO
             )
-        })
+        })?;
+        super::mc::intrabc_predict_subpel_plane_into(workspace, plane, target, scaling)?;
+    }
+    Ok(())
 }
 
 /// AV2 § 5.20.7.10 `is_comp_ref_allowed()`: `Min(w, h) >= 8 ||
