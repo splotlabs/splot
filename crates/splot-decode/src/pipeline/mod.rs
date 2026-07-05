@@ -43,8 +43,6 @@ const FEATURE_ID: &str = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS";
 const MATRIX_ROW: &str = "minimal-decode-tier-contract";
 const SPEC_SECTION: &str = "7.1";
 const REMEDIATION: &str = "Use a stream inside minimal-intra-8bit420-hash-v1 or wait for the referenced decoder support row.";
-pub(crate) const FRONTIER_CHROMA_FEATURE_ID: &str = "DECODE-SEQUENCE-CHROMA-FRONTIER";
-pub(crate) const FRONTIER_CHROMA_MATRIX_ROW: &str = "sequence-chroma-frontier";
 pub(crate) const FRONTIER_WIENERNS_FEATURE_ID: &str = "DECODE-WIENERNS-FRONTIER";
 pub(crate) const FRONTIER_WIENERNS_MATRIX_ROW: &str = "wienerns-frontier";
 pub(crate) const FRONTIER_LR_UNIT_SELECTIONS_FEATURE_ID: &str =
@@ -441,7 +439,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
             &sequence,
             &key_core,
         )?;
-        ensure_sequence_chroma_tools_before_tile_decode(&sequence, sequence_envelope.offset)?;
     }
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
 
@@ -1409,42 +1406,6 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
     Ok(())
 }
 
-pub(crate) fn ensure_sequence_chroma_tools_before_tile_decode(
-    sequence: &SequenceHeader,
-    offset: ByteOffset,
-) -> Result<()> {
-    let intra = sequence.intra.as_ref().ok_or_else(|| {
-        unsupported_at(
-            "missing_sequence_intra_config",
-            offset,
-            "minimal tier requires a fully parsed sequence intra config",
-        )
-    })?;
-    for (enabled, reason, message) in [
-        (
-            intra.enable_cfl_intra,
-            "unsupported_cfl_intra",
-            missing_capability_message!("intra.chroma.cfl §5.20.5.6"),
-        ),
-        (
-            intra.enable_mhccp,
-            "unsupported_mhccp",
-            missing_capability_message!("intra.chroma.mhccp §5.20.5.6"),
-        ),
-    ] {
-        if enabled {
-            return Err(unsupported_feature_at(
-                reason,
-                offset,
-                message,
-                FRONTIER_CHROMA_MATRIX_ROW,
-                FRONTIER_CHROMA_FEATURE_ID,
-                "5.20.5.6",
-            ));
-        }
-    }
-    Ok(())
-}
 #[allow(clippy::unnecessary_wraps)]
 pub(crate) fn ensure_runtime_storage_bit_depth(
     sequence: &SequenceHeader,

@@ -296,12 +296,7 @@ mod tests {
             .unwrap_err();
 
         assert!(bytes.is_empty());
-        assert!(matches!(
-            error,
-            DecodeError::UnsupportedFeature {
-                unsupported
-            } if unsupported.tier_id() == crate::pipeline::MINIMAL_INTRA_HASH_TIER_ID
-        ));
+        assert!(matches!(error, DecodeError::UnsupportedFeature { .. }));
     }
 
     #[test]

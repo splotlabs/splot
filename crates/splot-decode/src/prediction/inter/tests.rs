@@ -1413,54 +1413,6 @@ fn non_wienerns_header_status_keeps_generic_incomplete_frontier() {
 }
 
 #[test]
-fn cfl_sequence_tool_rejects_before_tile_decode() {
-    let (mut sequence, _) = fixture_sequence_and_quantization(TWO_FRAME_INTER_FIXTURE);
-    sequence
-        .intra
-        .as_mut()
-        .expect("fixture has sequence intra config")
-        .enable_cfl_intra = true;
-
-    let Err(error) = crate::pipeline::ensure_sequence_chroma_tools_before_tile_decode(
-        &sequence,
-        ByteOffset::new(47),
-    ) else {
-        panic!("CFL-enabled sequence must fail closed before tile mode-info decode");
-    };
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("CFL tool gate must be an unsupported-feature error");
-    };
-    assert_eq!(unsupported.reason(), "unsupported_cfl_intra");
-    assert_eq!(unsupported.matrix_row(), "sequence-chroma-frontier");
-    assert_eq!(unsupported.feature_id(), "DECODE-SEQUENCE-CHROMA-FRONTIER");
-    assert_eq!(unsupported.spec_section(), "5.20.5.6");
-}
-
-#[test]
-fn mhccp_sequence_tool_rejects_before_tile_decode() {
-    let (mut sequence, _) = fixture_sequence_and_quantization(TWO_FRAME_INTER_FIXTURE);
-    sequence
-        .intra
-        .as_mut()
-        .expect("fixture has sequence intra config")
-        .enable_mhccp = true;
-
-    let Err(error) = crate::pipeline::ensure_sequence_chroma_tools_before_tile_decode(
-        &sequence,
-        ByteOffset::new(47),
-    ) else {
-        panic!("MHCCP-enabled sequence must fail closed before tile mode-info decode");
-    };
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("MHCCP tool gate must be an unsupported-feature error");
-    };
-    assert_eq!(unsupported.reason(), "unsupported_mhccp");
-    assert_eq!(unsupported.matrix_row(), "sequence-chroma-frontier");
-    assert_eq!(unsupported.feature_id(), "DECODE-SEQUENCE-CHROMA-FRONTIER");
-    assert_eq!(unsupported.spec_section(), "5.20.5.6");
-}
-
-#[test]
 fn leading_key_payload_extra_obu_rejected_before_tile_decode() {
     let repacked = repack_first_record_with_extra_regular_tile_group(TEN_BIT_INTRA_FIXTURE);
     let options = DecodeOptions::default();

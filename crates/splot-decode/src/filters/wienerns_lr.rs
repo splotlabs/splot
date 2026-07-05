@@ -28,8 +28,7 @@ use crate::pipeline::{
     FRONTIER_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW, FRONTIER_LR_SOURCE_READ_FEATURE_ID,
     FRONTIER_LR_SOURCE_READ_MATRIX_ROW, FRONTIER_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
     FRONTIER_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW, derive_tile_plan,
-    effective_allow_screen_content_tools, ensure_sequence_chroma_tools_before_tile_decode,
-    unsupported_at, unsupported_feature_at,
+    effective_allow_screen_content_tools, unsupported_at, unsupported_feature_at,
 };
 use crate::support::pipeline_limits::{checked_add, checked_mul, decoded_frame_storage_budget};
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
@@ -500,7 +499,6 @@ pub(crate) fn ensure_wienerns_lr_unit_tile_frontier(
                     None,
                 )?
             } else if tx_mode == TxMode::Largest {
-                ensure_sequence_chroma_tools_before_tile_decode(sequence, sequence_offset)?;
                 ensure_fixed_largest_transform_record_tool_gates(sequence, core, sequence_offset)?;
                 derive_wienerns_lr_fixed_largest_transform_record_handoff(
                     bytes,
