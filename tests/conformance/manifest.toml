@@ -86,7 +86,7 @@ expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
 
 [[vector]]
 path = "vectors/valid/syn-seg-intra-64x64.ivf"
-description = "AVM --aq-mode intra key frame (IVF, 64x64) with frame segmentation enabled; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_segment_id_unimplemented (per-block segment_id is not decoded by the intra walk)."
+description = "AVM --aq-mode intra key frame (IVF, 64x64) with frame segmentation enabled; validates clean, and the general-intra decoder decodes it byte-exact (§ 5.20.5.7 segment_id decode plus the § 7.14.2 per-segment SEG_LVL_ALT_Q qindex)."
 expect = "clean"
 
 [[vector]]

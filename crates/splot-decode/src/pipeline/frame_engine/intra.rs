@@ -41,15 +41,15 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
 ) -> Result<(DecodedFrame<T>, FrameCdfSubset)> {
     let offset = frame_envelope.offset;
     if core
-        .segmentation_params
+        .lossless_info
         .as_ref()
-        .is_some_and(|seg| seg.segmentation_enabled)
+        .is_some_and(|lossless| lossless.has_lossless_segment)
     {
         return Err(general_intra_unsupported(
-            "general_intra_segment_id_unimplemented",
+            "general_intra_lossless_segment_unimplemented",
             Some(offset),
-            missing_capability_message!("intra.segmentation", segment_id = "enabled"),
-            "5.20.5.7",
+            missing_capability_message!("intra.segmentation", lossless = "segment"),
+            "5.18.2",
         ));
     }
     let frame_size = core.frame_size.ok_or_else(|| {

@@ -295,6 +295,22 @@ pub(crate) fn get_qindex_ignore_delta_q(
     }
 }
 
+/// `get_qindex( 0, segmentId )` (AV2 v1.0.0 § 7.14.2): the decode-time per-block
+/// qindex with `ignoreDeltaQ == 0`, i.e. the `SEG_LVL_ALT_Q` feature offset is added
+/// to `CurrentQIndex` (the delta-q-adjusted qindex) rather than `base_q_idx`, then
+/// `Clip3( 0, MaxQ, · )`. Reuses the base-parameterized `get_qindex_ignore_delta_q`
+/// with `CurrentQIndex` as the base.
+#[must_use]
+pub fn get_qindex(
+    quant: &CoreSeqQuantView,
+    current_qindex: u32,
+    segmentation: &SegmentationParams,
+    segment_id: usize,
+) -> u32 {
+    let qindex = get_qindex_ignore_delta_q(quant, current_qindex, segmentation, segment_id);
+    u32::try_from(qindex).unwrap_or(current_qindex)
+}
+
 /// Parses `read_delta_q()` (AV2 v1.0.0 § 5.18.6.3,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-3`): `delta_coded` `f(1)`,
 /// then `delta_q` `su(7)` when coded (else `0`).

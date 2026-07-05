@@ -646,12 +646,10 @@ avm_raw_sha256 = "a3a64b8df33017ea9c6c54b94bc54f6694e7ccb5e00edade7d00208de09a14
 
 [[fixture]]
 id = "syn-seg-intra-64x64"
-status = "xfail_splot"
+status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "frame.segmentation", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "6ff272bf9538efc8abb68085817e8735a9ae9a277ad2457192cbc669fb7c76ce"
 avm_raw_sha256 = "8af98b3535505196ef731f21b965ac16905b04d04e0a6eb6f475f3274fc148d0"
-unsupported_reason = "general_intra_segment_id_unimplemented"
-matrix_row = "general-intra-frame-frontier"
 
 [[fixture]]
 id = "syn-deltaq-intra-128x64"

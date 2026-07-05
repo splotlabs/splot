@@ -84,8 +84,8 @@ pub use inter::{
 pub(crate) use quant::get_qindex_ignore_delta_q;
 pub use quant::{
     CoreSeqQuantView, DeltaQParams, LosslessInfo, MAX_PIC_QM_NUM, QmSetLevels, QuantizationParams,
-    SetupQmParams, parse_delta_q_params, parse_lossless_info, parse_quantization_params,
-    parse_setup_qm_params, read_delta_q,
+    SetupQmParams, get_qindex, parse_delta_q_params, parse_lossless_info,
+    parse_quantization_params, parse_setup_qm_params, read_delta_q,
 };
 pub use restoration::{
     CCSO_BAND_NUM, CcsoParams, CcsoPlaneParams, CoreSeqCcsoView, CoreSeqRestorationView,
