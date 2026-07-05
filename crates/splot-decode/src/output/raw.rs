@@ -185,14 +185,6 @@ mod tests {
         let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
         assert_eq!(report.diagnostic.rule_id, OUTPUT_ERROR_RULE_ID);
         assert_eq!(report.diagnostic.spec_section, None);
-        assert_eq!(
-            report.diagnostic.matrix_row,
-            "decode-minimal-raw-runtime-output"
-        );
-        assert_eq!(
-            report.diagnostic.feature_id,
-            "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT"
-        );
         assert!(matches!(
             &report.details,
             DecodeDiagnosticDetails::OutputError(_)

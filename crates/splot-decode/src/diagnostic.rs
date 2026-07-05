@@ -23,15 +23,6 @@ pub const RESOURCE_LIMIT_RULE_ID: &str = "decode/resource-limit";
 /// Stable rule id for decode output serialization/publication diagnostics.
 pub const OUTPUT_ERROR_RULE_ID: &str = "decode/output-error";
 
-const DECODE_BYTE_STREAM_PLANNER_MATRIX_ROW: &str = "decode-byte-stream-planner";
-const DECODE_BYTE_STREAM_PLANNER_FEATURE_ID: &str = "DECODE-BYTE-STREAM-PLANNER";
-const DECODE_LIMITS_BUDGET_MATRIX_ROW: &str = "decode-limits-budget";
-const DOC_DECODE_LIMITS_CONTRACT_FEATURE_ID: &str = "DOC-DECODE-LIMITS-CONTRACT";
-const DECODE_Y4M_RUNTIME_OUTPUT_MATRIX_ROW: &str = "decode-y4m-runtime-output";
-const DECODE_Y4M_RUNTIME_OUTPUT_FEATURE_ID: &str = "DECODE-Y4M-RUNTIME-OUTPUT";
-const DECODE_MINIMAL_RAW_RUNTIME_OUTPUT_MATRIX_ROW: &str = "decode-minimal-raw-runtime-output";
-const DECODE_MINIMAL_RAW_RUNTIME_OUTPUT_FEATURE_ID: &str = "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT";
-
 /// Diagnostic plus typed details for one `splot decode` result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -74,15 +65,11 @@ impl DecodeDiagnosticReport {
 
     fn malformed_source(issue: &DecodeSourceIssue) -> Self {
         Self {
-            diagnostic: DecodeDiagnostic {
-                rule_id: MALFORMED_SOURCE_RULE_ID,
-                severity: DecodeSeverity::Error,
-                spec_section: malformed_source_spec_section(issue.kind()),
-                matrix_row: DECODE_BYTE_STREAM_PLANNER_MATRIX_ROW,
-                feature_id: DECODE_BYTE_STREAM_PLANNER_FEATURE_ID,
-                message: "decode source is malformed and could not be planned.",
-                remediation: "Check the AV2 Annex B or IVF source bytes before retrying `splot decode`.",
-            },
+            diagnostic: error_diagnostic(
+                MALFORMED_SOURCE_RULE_ID,
+                malformed_source_spec_section(issue.kind()),
+                "decode source is malformed and could not be planned.",
+            ),
             details: DecodeDiagnosticDetails::MalformedSource(DecodeMalformedSourceDetails {
                 source_issue_kind: issue.kind().as_str(),
                 parser_rule_id: issue.rule_id(),
@@ -97,15 +84,11 @@ impl DecodeDiagnosticReport {
         let limit_name = source.name();
         let check = source.check();
         Self {
-            diagnostic: DecodeDiagnostic {
-                rule_id: RESOURCE_LIMIT_RULE_ID,
-                severity: DecodeSeverity::Error,
-                spec_section: resource_limit_spec_section(limit_name),
-                matrix_row: DECODE_LIMITS_BUDGET_MATRIX_ROW,
-                feature_id: DOC_DECODE_LIMITS_CONTRACT_FEATURE_ID,
-                message: "decode planning stopped because a configured resource limit was exceeded.",
-                remediation: "Use a smaller input or raise the decode limit policy before retrying.",
-            },
+            diagnostic: error_diagnostic(
+                RESOURCE_LIMIT_RULE_ID,
+                resource_limit_spec_section(limit_name),
+                "decode planning stopped because a configured resource limit was exceeded.",
+            ),
             details: DecodeDiagnosticDetails::ResourceLimit(DecodeResourceLimitDetails {
                 limit_name: limit_name.as_str(),
                 limit: check.and_then(|check| check.threshold().max_value()),
@@ -120,15 +103,11 @@ impl DecodeDiagnosticReport {
 
     fn unsupported_structure(unsupported: &DecodeUnsupportedStructure) -> Self {
         Self {
-            diagnostic: DecodeDiagnostic {
-                rule_id: UNSUPPORTED_FEATURE_RULE_ID,
-                severity: DecodeSeverity::Error,
-                spec_section: Some(unsupported.spec_section()),
-                matrix_row: unsupported.matrix_row(),
-                feature_id: unsupported.feature_id(),
-                message: unsupported.message(),
-                remediation: "Use a stream within the initial planner tier or track the referenced decoder support row before decoding this structure.",
-            },
+            diagnostic: error_diagnostic(
+                UNSUPPORTED_FEATURE_RULE_ID,
+                Some(unsupported.spec_section()),
+                unsupported.message(),
+            ),
             details: DecodeDiagnosticDetails::UnsupportedStructure(
                 DecodeUnsupportedStructureDetails {
                     unsupported_reason: unsupported.reason().as_str(),
@@ -141,18 +120,13 @@ impl DecodeDiagnosticReport {
 
     fn unsupported_feature(unsupported: &DecodeUnsupportedFeature) -> Self {
         Self {
-            diagnostic: DecodeDiagnostic {
-                rule_id: UNSUPPORTED_FEATURE_RULE_ID,
-                severity: DecodeSeverity::Error,
-                spec_section: Some(unsupported.spec_section()),
-                matrix_row: unsupported.matrix_row(),
-                feature_id: unsupported.feature_id(),
-                message: unsupported.message(),
-                remediation: unsupported.remediation(),
-            },
+            diagnostic: error_diagnostic(
+                UNSUPPORTED_FEATURE_RULE_ID,
+                Some(unsupported.spec_section()),
+                unsupported.message(),
+            ),
             details: DecodeDiagnosticDetails::UnsupportedFeature(DecodeUnsupportedFeatureDetails {
                 unsupported_reason: unsupported.reason(),
-                tier_id: unsupported.tier_id(),
                 byte_offset: unsupported
                     .byte_offset()
                     .map(splot_core::span::ByteOffset::get),
@@ -161,33 +135,33 @@ impl DecodeDiagnosticReport {
     }
 
     fn output_error(source: &DecodeOutputError) -> Self {
-        let (matrix_row, feature_id) = if source.operation().is_raw() {
-            (
-                DECODE_MINIMAL_RAW_RUNTIME_OUTPUT_MATRIX_ROW,
-                DECODE_MINIMAL_RAW_RUNTIME_OUTPUT_FEATURE_ID,
-            )
-        } else {
-            (
-                DECODE_Y4M_RUNTIME_OUTPUT_MATRIX_ROW,
-                DECODE_Y4M_RUNTIME_OUTPUT_FEATURE_ID,
-            )
-        };
         Self {
-            diagnostic: DecodeDiagnostic {
-                rule_id: OUTPUT_ERROR_RULE_ID,
-                severity: DecodeSeverity::Error,
-                spec_section: None,
-                matrix_row,
-                feature_id,
-                message: "decode output could not be serialized or written.",
-                remediation: "Check the output destination and retry the decode operation.",
-            },
+            diagnostic: error_diagnostic(
+                OUTPUT_ERROR_RULE_ID,
+                None,
+                "decode output could not be serialized or written.",
+            ),
             details: DecodeDiagnosticDetails::OutputError(DecodeOutputErrorDetails {
                 operation: source.operation().as_str(),
                 source_kind: source.source_kind(),
                 source_message: source.source_message(),
             }),
         }
+    }
+}
+
+/// Builds an error-severity [`DecodeDiagnostic`] from its rule id, optional AV2
+/// spec section, and message — the shape shared by every diagnostic constructor.
+fn error_diagnostic(
+    rule_id: &'static str,
+    spec_section: Option<&'static str>,
+    message: &'static str,
+) -> DecodeDiagnostic {
+    DecodeDiagnostic {
+        rule_id,
+        severity: DecodeSeverity::Error,
+        spec_section,
+        message,
     }
 }
 
@@ -257,8 +231,6 @@ pub struct DecodeUnsupportedStructureDetails {
 pub struct DecodeUnsupportedFeatureDetails {
     /// Stable unsupported reason.
     pub unsupported_reason: &'static str,
-    /// Runtime tier id that rejected the input.
-    pub tier_id: &'static str,
     /// Byte offset associated with the unsupported feature, when known.
     pub byte_offset: Option<u64>,
 }

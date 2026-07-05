@@ -162,7 +162,6 @@ fn render_text_diagnostic(report: &DecodeDiagnosticReport, output_format: Decode
         DecodeDiagnosticDetails::UnsupportedFeature(details) => {
             eprintln!("detail_kind: unsupported_feature");
             eprintln!("unsupported_reason: {}", details.unsupported_reason);
-            eprintln!("tier_id: {}", details.tier_id);
             eprintln!("byte_offset: {}", option_u64_text(details.byte_offset));
         }
         DecodeDiagnosticDetails::OutputError(details) => {
@@ -201,10 +200,7 @@ fn render_text_base(diagnostic: &DecodeDiagnostic) {
     eprintln!("rule_id: {}", diagnostic.rule_id);
     eprintln!("severity: {}", diagnostic.severity);
     eprintln!("spec_section: {}", spec_section_text(diagnostic));
-    eprintln!("matrix_row: {}", diagnostic.matrix_row);
-    eprintln!("feature_id: {}", diagnostic.feature_id);
     eprintln!("message: {}", diagnostic.message);
-    eprintln!("remediation: {}", diagnostic.remediation);
 }
 
 fn spec_section_text(diagnostic: &DecodeDiagnostic) -> &'static str {
@@ -224,10 +220,7 @@ struct DecodeDiagnosticJson<'a> {
     rule_id: &'a str,
     severity: &'a str,
     spec_section: &'a str,
-    matrix_row: &'a str,
-    feature_id: &'a str,
     message: &'a str,
-    remediation: &'a str,
     output_format: &'a str,
     detail_kind: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -287,10 +280,7 @@ impl<'a> DecodeDiagnosticJson<'a> {
             rule_id: diagnostic.rule_id,
             severity: diagnostic.severity.as_str(),
             spec_section: spec_section_text(diagnostic),
-            matrix_row: diagnostic.matrix_row,
-            feature_id: diagnostic.feature_id,
             message: diagnostic.message,
-            remediation: diagnostic.remediation,
             output_format: output_format.as_str(),
             detail_kind: "",
             source_issue_kind: None,
@@ -346,7 +336,6 @@ impl<'a> DecodeDiagnosticJson<'a> {
             DecodeDiagnosticDetails::UnsupportedFeature(details) => {
                 json.detail_kind = "unsupported_feature";
                 json.unsupported_reason = Some(details.unsupported_reason);
-                json.tier_id = Some(details.tier_id);
                 json.byte_offset = details.byte_offset;
             }
             DecodeDiagnosticDetails::OutputError(details) => {

@@ -1678,18 +1678,7 @@ pub(crate) fn general_intra_unsupported(
     message: &'static str,
     spec_section: &'static str,
 ) -> DecodeError {
-    DecodeError::UnsupportedFeature {
-        unsupported: Box::new(DecodeUnsupportedFeature::new(
-            reason,
-            GENERAL_INTRA_TIER_ID,
-            GENERAL_INTRA_MATRIX_ROW,
-            GENERAL_INTRA_FEATURE_ID,
-            spec_section,
-            message,
-            GENERAL_INTRA_REMEDIATION,
-            byte_offset,
-        )),
-    }
+    crate::pipeline::unsupported_with_spec(reason, byte_offset, message, spec_section)
 }
 
 #[cfg(test)]

@@ -39,8 +39,6 @@ struct Fixture {
     avm_raw_sha256: String,
     #[serde(default)]
     unsupported_reason: Option<String>,
-    #[serde(default)]
-    matrix_row: Option<String>,
 }
 
 fn repo_root() -> PathBuf {
@@ -128,9 +126,6 @@ fn decoder_oracle_corpus_matches_manifest() {
                         };
                         if let Some(want) = fx.unsupported_reason.as_deref() {
                             assert_eq!(reason, want, "{} reason", fx.id);
-                        }
-                        if let Some(want) = fx.matrix_row.as_deref() {
-                            assert_eq!(report.diagnostic.matrix_row, want, "{} matrix_row", fx.id);
                         }
                     }
                 }

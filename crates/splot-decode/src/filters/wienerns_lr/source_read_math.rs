@@ -7,10 +7,7 @@ use splot_recon::PlaneId;
 
 use crate::error::DecodeError;
 
-use super::{
-    FRONTIER_LR_SOURCE_READ_FEATURE_ID, FRONTIER_LR_SOURCE_READ_MATRIX_ROW, LR_MI_SIZE,
-    unsupported_feature_at,
-};
+use super::{LR_MI_SIZE, unsupported_feature_at};
 
 pub(crate) fn source_read_coordinate_add(
     value: isize,
@@ -96,14 +93,7 @@ pub(crate) fn wienerns_lr_source_plane(
         ),
     };
 
-    Err(unsupported_feature_at(
-        rule_id,
-        offset,
-        message,
-        FRONTIER_LR_SOURCE_READ_MATRIX_ROW,
-        FRONTIER_LR_SOURCE_READ_FEATURE_ID,
-        "7.20.2",
-    ))
+    Err(unsupported_feature_at(rule_id, offset, message, "7.20.2"))
 }
 
 pub(crate) fn source_read_arithmetic_overflow(context: &'static str) -> DecodeError {

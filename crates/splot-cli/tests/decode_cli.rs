@@ -172,11 +172,8 @@ fn decode_hash_output_format_emits_unsupported_text_without_output_path() {
         "rule_id: decode/unsupported-feature".to_string(),
         "severity: Error".to_string(),
         "spec_section: 7.1".to_string(),
-        "matrix_row: minimal-decode-tier-contract".to_string(),
-        "feature_id: DECODE-MINIMAL-TIER-RUNTIME-SUCCESS".to_string(),
         "detail_kind: unsupported_feature".to_string(),
         "unsupported_reason: unexpected_planned_stream_shape".to_string(),
-        "tier_id: minimal-intra-8bit420-hash-v1".to_string(),
         "output_format: hash".to_string(),
     ] {
         assert!(
@@ -238,14 +235,11 @@ fn decode_hash_output_format_json_emits_same_diagnostic() {
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "7.1");
-    assert_eq!(json["matrix_row"], "minimal-decode-tier-contract");
-    assert_eq!(json["feature_id"], "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS");
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
         "unexpected_planned_stream_shape"
     );
-    assert_eq!(json["tier_id"], "minimal-intra-8bit420-hash-v1");
     assert_eq!(json["output_format"], "hash");
 }
 
@@ -271,8 +265,6 @@ fn local_decoder_mission_reaches_current_runtime_gate_without_output() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["matrix_row"], "first-inter-frame-frontier");
-    assert_eq!(json["feature_id"], "DECODE-FIRST-INTER-FRAME-FRONTIER");
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(json["unsupported_reason"], "inter_unsupported_frame_tools");
     assert_eq!(
@@ -778,8 +770,6 @@ fn decode_malformed_source_text_mode_emits_structured_diagnostic() {
     for expected in [
         "rule_id: decode/malformed-source",
         "severity: Error",
-        "matrix_row: decode-byte-stream-planner",
-        "feature_id: DECODE-BYTE-STREAM-PLANNER",
         "detail_kind: malformed_source",
         "source_issue_kind: annex_b_parse_error",
         "output_format: y4m",
@@ -821,8 +811,6 @@ fn decode_malformed_source_json_mode_emits_detail_fields() {
     assert_eq!(json["rule_id"], "decode/malformed-source");
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "");
-    assert_eq!(json["matrix_row"], "decode-byte-stream-planner");
-    assert_eq!(json["feature_id"], "DECODE-BYTE-STREAM-PLANNER");
     assert_eq!(json["detail_kind"], "malformed_source");
     assert_eq!(json["source_issue_kind"], "annex_b_parse_error");
     assert_eq!(json["output_format"], "hash");
@@ -856,8 +844,6 @@ fn decode_unsupported_structure_json_mode_uses_planner_metadata() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
     assert_eq!(json["spec_section"], "5.2.1");
-    assert_eq!(json["matrix_row"], "decode-stream-state");
-    assert_eq!(json["feature_id"], "DECODE-STREAM-STATE-PLANNER");
     assert_eq!(json["detail_kind"], "unsupported_structure");
     assert_eq!(json["unsupported_reason"], "unsupported_frame_obu");
     assert_eq!(json["obu_type"], "OBU_OPEN_LOOP_KEY");
@@ -893,8 +879,6 @@ fn decode_resource_limit_json_mode_reports_limit_values() {
     assert_eq!(json["rule_id"], "decode/resource-limit");
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "5.2.1");
-    assert_eq!(json["matrix_row"], "decode-limits-budget");
-    assert_eq!(json["feature_id"], "DOC-DECODE-LIMITS-CONTRACT");
     assert_eq!(json["detail_kind"], "resource_limit");
     assert_eq!(json["limit_name"], "max_obus");
     assert_eq!(json["limit"], serde_json::json!(max_obus));
@@ -938,8 +922,6 @@ fn decode_oversized_input_reports_resource_limit_without_touching_output() {
     assert_eq!(json["rule_id"], "decode/resource-limit");
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "");
-    assert_eq!(json["matrix_row"], "decode-limits-budget");
-    assert_eq!(json["feature_id"], "DOC-DECODE-LIMITS-CONTRACT");
     assert_eq!(json["detail_kind"], "resource_limit");
     assert_eq!(json["limit_name"], "max_input_bytes");
     assert_eq!(json["limit"], max_input_bytes);

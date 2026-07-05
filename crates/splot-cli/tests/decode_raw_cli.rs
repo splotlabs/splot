@@ -144,11 +144,8 @@ fn decode_out_of_tier_raw_text_mode_emits_unsupported_feature_without_touching_o
         "rule_id: decode/unsupported-feature",
         "severity: Error",
         "spec_section: 7.1",
-        "matrix_row: minimal-decode-tier-contract",
-        "feature_id: DECODE-MINIMAL-TIER-RUNTIME-SUCCESS",
         "detail_kind: unsupported_feature",
         "unsupported_reason: unexpected_planned_stream_shape",
-        "tier_id: minimal-intra-8bit420-hash-v1",
         "output_format: raw",
     ] {
         assert!(
@@ -190,8 +187,6 @@ fn decode_raw_source_error_wins_before_missing_output_parent() {
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "7.1");
-    assert_eq!(json["matrix_row"], "minimal-decode-tier-contract");
-    assert_eq!(json["feature_id"], "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS");
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
@@ -255,8 +250,6 @@ fn decode_raw_missing_output_parent_emits_output_error_json() {
     assert_eq!(json["rule_id"], "decode/output-error");
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "");
-    assert_eq!(json["matrix_row"], "decode-minimal-raw-runtime-output");
-    assert_eq!(json["feature_id"], "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT");
     assert_eq!(json["detail_kind"], "output_error");
     assert_eq!(json["output_format"], "raw");
     assert_eq!(json["output_operation"], "create_raw_temp_file");
@@ -294,8 +287,6 @@ fn decode_raw_directory_output_path_emits_output_error_text_and_cleans_temp_file
         "rule_id: decode/output-error",
         "severity: Error",
         "spec_section: ",
-        "matrix_row: decode-minimal-raw-runtime-output",
-        "feature_id: DECODE-MINIMAL-RAW-RUNTIME-OUTPUT",
         "detail_kind: output_error",
         "output_operation: rename_raw_output",
         "output_source_kind: io",

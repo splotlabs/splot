@@ -91,10 +91,6 @@ const WIENER_NS_TAPS_PRESENT: [[[bool; WIENER_NS_CHROMA_COEFFS]; WIENER_NS_LUMA_
     ],
 ];
 
-pub(crate) const TILE_PARTITION_TRAVERSAL_MATRIX_ROW: &str = "tile-partition-traversal-boundary";
-pub(crate) const TILE_PARTITION_TRAVERSAL_FEATURE_ID: &str =
-    "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY";
-
 /// Partition-context state for § 8.3.2 selectors.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

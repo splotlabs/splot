@@ -37,54 +37,8 @@ use crate::reference::buffer as reference_buffer;
 use crate::support::capability::missing_capability_message;
 use crate::support::pipeline_limits::{checked_add, decoded_frame_byte_budget};
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
-pub const MINIMAL_INTRA_HASH_TIER_ID: &str = "minimal-intra-8bit420-hash-v1";
 
-const FEATURE_ID: &str = "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS";
-const MATRIX_ROW: &str = "minimal-decode-tier-contract";
 const SPEC_SECTION: &str = "7.1";
-const REMEDIATION: &str = "Use a stream inside minimal-intra-8bit420-hash-v1 or wait for the referenced decoder support row.";
-pub(crate) const FRONTIER_WIENERNS_FEATURE_ID: &str = "DECODE-WIENERNS-FRONTIER";
-pub(crate) const FRONTIER_WIENERNS_MATRIX_ROW: &str = "wienerns-frontier";
-pub(crate) const FRONTIER_LR_UNIT_SELECTIONS_FEATURE_ID: &str =
-    "DECODE-LR-UNIT-SELECTIONS-FRONTIER";
-pub(crate) const FRONTIER_LR_UNIT_SELECTIONS_MATRIX_ROW: &str = "lr-unit-selections-frontier";
-pub(crate) const FRONTIER_LR_SOURCE_READ_FEATURE_ID: &str = "DECODE-LR-SOURCE-READ-FRONTIER";
-pub(crate) const FRONTIER_LR_SOURCE_READ_MATRIX_ROW: &str = "lr-source-read-frontier";
-#[allow(dead_code)]
-pub(crate) const FRONTIER_LR_CLASSIFIED_WIENER_STORAGE_FEATURE_ID: &str =
-    "DECODE-LR-CLASSIFIED-WIENER-STORAGE";
-#[allow(dead_code)]
-pub(crate) const FRONTIER_LR_CLASSIFIED_WIENER_STORAGE_MATRIX_ROW: &str =
-    "lr-classified-wiener-storage";
-pub(crate) const FRONTIER_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID: &str =
-    "DECODE-LR-RUNTIME-STORAGE-RETENTION";
-pub(crate) const FRONTIER_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW: &str =
-    "lr-runtime-storage-retention";
-#[allow(dead_code)]
-pub(crate) const FRONTIER_LR_LIVE_STORAGE_ALLOCATION_FEATURE_ID: &str =
-    "DECODE-LR-LIVE-STORAGE-ALLOCATION";
-#[allow(dead_code)]
-pub(crate) const FRONTIER_LR_LIVE_STORAGE_ALLOCATION_MATRIX_ROW: &str =
-    "lr-live-storage-allocation";
-#[allow(dead_code)]
-pub(crate) const FRONTIER_LR_LIVE_TX_SKIP_GRID_FEATURE_ID: &str = "DECODE-LR-LIVE-TX-SKIP-GRID";
-#[allow(dead_code)]
-pub(crate) const FRONTIER_LR_LIVE_TX_SKIP_GRID_MATRIX_ROW: &str = "lr-live-tx-skip-grid";
-pub(crate) const FRONTIER_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID: &str =
-    "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF";
-pub(crate) const FRONTIER_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW: &str =
-    "lr-live-transform-record-handoff";
-pub(crate) const FRONTIER_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID: &str =
-    "DECODE-SELECTABLE-TRANSFORM-RECORDS";
-pub(crate) const FRONTIER_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW: &str =
-    "selectable-transform-records";
-pub(crate) const FRONTIER_LUMA_TXTYPE_RESIDUAL_HANDOFF_FEATURE_ID: &str =
-    "DECODE-LUMA-TXTYPE-RESIDUAL-HANDOFF";
-pub(crate) const FRONTIER_LUMA_TXTYPE_RESIDUAL_HANDOFF_MATRIX_ROW: &str =
-    "luma-txtype-residual-handoff";
-pub(crate) const FRONTIER_DCTONLY_RESIDUAL_FRONTIER_FEATURE_ID: &str =
-    "DECODE-DCTONLY-RESIDUAL-FRONTIER";
-pub(crate) const FRONTIER_DCTONLY_RESIDUAL_FRONTIER_MATRIX_ROW: &str = "dctonly-residual-frontier";
 
 pub(crate) fn effective_allow_screen_content_tools(core: &FrameHeaderCore) -> bool {
     core.allow_screen_content_tools
@@ -95,18 +49,10 @@ pub(crate) fn effective_allow_screen_content_tools(core: &FrameHeaderCore) -> bo
         })
         .unwrap_or(false)
 }
-pub(crate) const FRONTIER_INTRA_IST_ZERO_FRONTIER_FEATURE_ID: &str =
-    "DECODE-INTRA-IST-ZERO-FRONTIER";
-pub(crate) const FRONTIER_INTRA_IST_ZERO_FRONTIER_MATRIX_ROW: &str = "intra-ist-zero-frontier";
 
-pub(crate) const GENERAL_INTRA_FEATURE_ID: &str = "DECODE-GENERAL-INTRA-FRAME-FRONTIER";
-pub(crate) const GENERAL_INTRA_MATRIX_ROW: &str = "general-intra-frame-frontier";
-pub(crate) const GENERAL_INTRA_TIER_ID: &str = "general-intra-8bit420-frontier-v1";
 pub(crate) const GENERAL_INTRA_PARTITION_SPEC_SECTION: &str = "5.20.3.1";
 pub(crate) const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
 pub(crate) const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
-pub(crate) const GENERAL_INTRA_REMEDIATION: &str =
-    "Use an admitted general-intra subset or track DECODE-GENERAL-INTRA-FRAME-FRONTIER.";
 pub(crate) enum PipelineDecodedFrame {
     Eight(DecodedFrame<u8>),
     Ten(DecodedFrame<u16>),
@@ -1560,8 +1506,6 @@ pub(crate) fn incomplete_intra_header_error(
             "unsupported_wienerns_filter",
             offset,
             missing_capability_message!("filters.wiener_ns read_wienerns_filter §5.18.7.11"),
-            FRONTIER_WIENERNS_MATRIX_ROW,
-            FRONTIER_WIENERNS_FEATURE_ID,
             "5.18.7.11",
         ),
         _ => unsupported_at(
@@ -1769,23 +1713,31 @@ pub(crate) fn ensure_runtime_limits(
     Ok(())
 }
 
+/// Builds the sole `decode/unsupported-feature` carrier: a stable `reason`, the
+/// AV2 `spec_section` it grounds in, a human-readable `message`, and the byte
+/// offset when known. Every unsupported-feature helper funnels here.
+pub(crate) fn unsupported_with_spec(
+    reason: &'static str,
+    byte_offset: Option<ByteOffset>,
+    message: &'static str,
+    spec_section: &'static str,
+) -> DecodeError {
+    DecodeError::UnsupportedFeature {
+        unsupported: Box::new(DecodeUnsupportedFeature::new(
+            reason,
+            spec_section,
+            message,
+            byte_offset,
+        )),
+    }
+}
+
 pub(crate) fn unsupported(
     reason: &'static str,
     byte_offset: Option<ByteOffset>,
     message: &'static str,
 ) -> DecodeError {
-    DecodeError::UnsupportedFeature {
-        unsupported: Box::new(DecodeUnsupportedFeature::new(
-            reason,
-            MINIMAL_INTRA_HASH_TIER_ID,
-            MATRIX_ROW,
-            FEATURE_ID,
-            SPEC_SECTION,
-            message,
-            REMEDIATION,
-            byte_offset,
-        )),
-    }
+    unsupported_with_spec(reason, byte_offset, message, SPEC_SECTION)
 }
 
 pub(crate) fn unsupported_at(
@@ -1800,20 +1752,7 @@ pub(crate) fn unsupported_feature_at(
     reason: &'static str,
     byte_offset: ByteOffset,
     message: &'static str,
-    matrix_row: &'static str,
-    feature_id: &'static str,
     spec_section: &'static str,
 ) -> DecodeError {
-    DecodeError::UnsupportedFeature {
-        unsupported: Box::new(DecodeUnsupportedFeature::new(
-            reason,
-            MINIMAL_INTRA_HASH_TIER_ID,
-            matrix_row,
-            feature_id,
-            spec_section,
-            message,
-            REMEDIATION,
-            Some(byte_offset),
-        )),
-    }
+    unsupported_with_spec(reason, Some(byte_offset), message, spec_section)
 }

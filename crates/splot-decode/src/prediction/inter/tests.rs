@@ -1095,8 +1095,6 @@ fn wienerns_header_status_reports_precise_tile_frontier() {
     };
 
     assert_eq!(unsupported.reason(), "unsupported_wienerns_filter");
-    assert_eq!(unsupported.matrix_row(), "wienerns-frontier");
-    assert_eq!(unsupported.feature_id(), "DECODE-WIENERNS-FRONTIER");
     assert_eq!(unsupported.spec_section(), "5.18.7.11");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
     assert!(
@@ -1114,8 +1112,6 @@ fn parsed_wienerns_bank_reports_next_tile_frontier() {
         "parsed Wiener NS bank frontier",
         UnsupportedFeatureExpectation::at_byte_offset(
             "unsupported_wienerns_lr_source_read",
-            "lr-source-read-frontier",
-            "DECODE-LR-SOURCE-READ-FRONTIER",
             "7.20.2",
             ByteOffset::new(74),
             &[
@@ -1285,8 +1281,6 @@ fn wienerns_lr_source_read_frontier_rejects_monochrome_chroma_plane() {
         unsupported.reason(),
         "unsupported_wienerns_lr_source_chroma_plane"
     );
-    assert_eq!(unsupported.matrix_row(), "lr-source-read-frontier");
-    assert_eq!(unsupported.feature_id(), "DECODE-LR-SOURCE-READ-FRONTIER");
     assert_eq!(unsupported.spec_section(), "7.20.2");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
 }
@@ -1311,8 +1305,6 @@ fn wienerns_lr_source_read_frontier_rejects_unsupported_plane_index() {
         panic!("unsupported plane index must be unsupported-feature");
     };
     assert_eq!(unsupported.reason(), "unsupported_wienerns_lr_source_plane");
-    assert_eq!(unsupported.matrix_row(), "lr-source-read-frontier");
-    assert_eq!(unsupported.feature_id(), "DECODE-LR-SOURCE-READ-FRONTIER");
     assert_eq!(unsupported.spec_section(), "7.20.2");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
 }
@@ -1403,11 +1395,6 @@ fn non_wienerns_header_status_keeps_generic_incomplete_frontier() {
     };
 
     assert_eq!(unsupported.reason(), "incomplete_frame_header");
-    assert_eq!(unsupported.matrix_row(), "minimal-decode-tier-contract");
-    assert_eq!(
-        unsupported.feature_id(),
-        "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
-    );
     assert_eq!(unsupported.spec_section(), "7.1");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
 }

@@ -71,37 +71,24 @@ pub type Result<T> = core::result::Result<T, DecodeError>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodeUnsupportedFeature {
     reason: &'static str,
-    tier_id: &'static str,
-    matrix_row: &'static str,
-    feature_id: &'static str,
     spec_section: &'static str,
     message: &'static str,
-    remediation: &'static str,
     byte_offset: Option<ByteOffset>,
 }
 
 impl DecodeUnsupportedFeature {
     /// Creates unsupported runtime feature metadata.
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub const fn new(
         reason: &'static str,
-        tier_id: &'static str,
-        matrix_row: &'static str,
-        feature_id: &'static str,
         spec_section: &'static str,
         message: &'static str,
-        remediation: &'static str,
         byte_offset: Option<ByteOffset>,
     ) -> Self {
         Self {
             reason,
-            tier_id,
-            matrix_row,
-            feature_id,
             spec_section,
             message,
-            remediation,
             byte_offset,
         }
     }
@@ -110,24 +97,6 @@ impl DecodeUnsupportedFeature {
     #[must_use]
     pub const fn reason(&self) -> &'static str {
         self.reason
-    }
-
-    /// Runtime tier identifier that rejected the source.
-    #[must_use]
-    pub const fn tier_id(&self) -> &'static str {
-        self.tier_id
-    }
-
-    /// Decoder support matrix row that owns the rejection.
-    #[must_use]
-    pub const fn matrix_row(&self) -> &'static str {
-        self.matrix_row
-    }
-
-    /// Feature ID that owns the rejection.
-    #[must_use]
-    pub const fn feature_id(&self) -> &'static str {
-        self.feature_id
     }
 
     /// AV2 spec section associated with the rejection.
@@ -142,12 +111,6 @@ impl DecodeUnsupportedFeature {
         self.message
     }
 
-    /// Suggested remediation for users.
-    #[must_use]
-    pub const fn remediation(&self) -> &'static str {
-        self.remediation
-    }
-
     /// Byte offset associated with the unsupported feature, when known.
     #[must_use]
     pub const fn byte_offset(&self) -> Option<ByteOffset> {
@@ -158,16 +121,8 @@ impl DecodeUnsupportedFeature {
 impl core::fmt::Display for DecodeUnsupportedFeature {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.byte_offset {
-            Some(offset) => write!(
-                f,
-                "{} in tier {} at byte {}: {}",
-                self.reason, self.tier_id, offset, self.message
-            ),
-            None => write!(
-                f,
-                "{} in tier {}: {}",
-                self.reason, self.tier_id, self.message
-            ),
+            Some(offset) => write!(f, "{} at byte {}: {}", self.reason, offset, self.message),
+            None => write!(f, "{}: {}", self.reason, self.message),
         }
     }
 }

@@ -41,12 +41,8 @@ mod tests {
         let error = DecodeError::UnsupportedFeature {
             unsupported: Box::new(DecodeUnsupportedFeature::new(
                 "general_intra_directional_d113_chroma_neighbour",
-                crate::pipeline::MINIMAL_INTRA_HASH_TIER_ID,
-                crate::pipeline::GENERAL_INTRA_MATRIX_ROW,
-                crate::pipeline::GENERAL_INTRA_FEATURE_ID,
                 crate::pipeline::GENERAL_INTRA_MODE_SPEC_SECTION,
                 message,
-                crate::pipeline::GENERAL_INTRA_REMEDIATION,
                 None,
             )),
         };
