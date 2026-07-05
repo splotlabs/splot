@@ -80,6 +80,7 @@ const CFL_ALPHA_SCALE: i64 = 32;
 const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
 const NUM_REF_SAM_CFL: usize = 8;
 
+#[allow(dead_code)]
 pub(crate) struct FrontierSelectableIntraRegion {
     pub(crate) sink: WienerNsLrReconSink<u16>,
     pub(crate) frame_cdfs: FrameCdfSubset,
@@ -436,6 +437,7 @@ impl PlaneCoverage {
         true
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn fully_covered(&self) -> bool {
         self.covered.iter().all(|covered| *covered)
     }
@@ -632,6 +634,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// derived internally. `T` matches the active sequence bit depth (§6.4.1):
     /// `u16` for the 10-bit frontier stream.
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(
         luma_width: usize,
         luma_height: usize,
@@ -807,6 +810,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
     /// Retains the frame's §7.20.4 `LrTxSkip` grid for PC-Wiener subclass
     /// derivation during final luma restoration.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_tx_skip_grid(&mut self, grid: Option<super::WienerNsLrTxSkipGrid>) {
         self.tx_skip_grid = grid;
     }
@@ -831,6 +835,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
     /// Completes the intra reconstruction (pending chroma replays + the
     /// full-recon coverage check) before the final filter chain runs.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn finish_intra_reconstruction(&mut self, offset: ByteOffset) -> Result<()> {
         self.replay_pending_chroma_transforms()?;
         self.ensure_full_recon_coverage_complete(offset)
@@ -1116,6 +1121,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn ensure_full_recon_coverage_complete(&self, offset: ByteOffset) -> Result<()> {
         if !self.full_recon {
             return Ok(());
@@ -4489,6 +4495,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 /// region-verification test. The walk reconstructs the verified NON-IntrABC DC
 /// region into the sink's workspace in decode order. This is a 10-bit (`u16`)
 /// driver for the active Wiener-NS LR selectable-transform path.
+#[cfg_attr(not(test), allow(dead_code))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_frontier_selectable_intra_region(
     bytes: &[u8],
@@ -4590,6 +4597,7 @@ pub(crate) fn reconstruct_frontier_selectable_intra_region(
 /// the test loudly. The §7.20.4 `live_frame_samples_unpopulated` gate is where the
 /// parse-only public-decode path stops (decoded CurrFrame / CdefFrame samples are
 /// still unpopulated for storage-backed FilterClass retention).
+#[cfg_attr(not(test), allow(dead_code))]
 const EXPECTED_RECON_FRONTIER_REASON: &str =
     "unsupported_wienerns_lr_selectable_live_frame_samples_unpopulated";
 
@@ -4610,6 +4618,7 @@ fn mhccp_luma_ref_available(
 /// quantizer matrix. When `false` the sink must reconstruct nothing (the primitive
 /// would dequantize with the wrong DC/AC quantizers), so the gate defers — the safe
 /// choice. frontier's verified frame has no such delta.
+#[cfg_attr(not(test), allow(dead_code))]
 fn frame_quant_reconstructable(core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
     let deltas_zero = core.quantization_params.as_ref().is_none_or(|q| {
         q.delta_q_y_dc == 0

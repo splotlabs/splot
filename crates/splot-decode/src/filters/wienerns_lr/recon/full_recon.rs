@@ -70,6 +70,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// Switches this sink into the full-reconstruction mode (see the `full_recon`
     /// field), reconstructing every luma leaf in decode order with recorded
     /// per-transform far-edge availability.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn into_full_recon(mut self) -> Self {
         self.full_recon = true;
         self
