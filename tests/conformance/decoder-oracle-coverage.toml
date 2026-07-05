@@ -474,6 +474,14 @@ fixtureable = true
 spec_sections = ["7.18", "7.18.1", "7.18.2", "7.18.3", "5.20.10.1"]
 
 [[capability]]
+id = "loop.cdef_on_skip_txfm"
+name = "CDEF cdef_on_skip_txfm_frame_enable == 0 (§ 5.20.6.1 Skips grid)"
+category = "loop_filter"
+fixtureable = false
+spec_sections = ["7.20.4", "5.20.6.1", "5.18.7.10"]
+notes = "Decode path implemented (unified walk builds the per-4x4 Skips grid; verified vs the AV2 spec and AVM cdef.c is_8x8_block_skip). Not fixtureable: activating CDEF needs per-block ringing, which the AVM encoder codes with directional intra that the decoder does not yet reconstruct byte-exact, and DC-only content that decodes byte-exact leaves CDEF RD-disabled. Cover once directional-intra decode lands, or with a project-owned input matching syn-2frame-cdef re-encoded with --enable-cdef-on-skip-txfm=0."
+
+[[capability]]
 id = "loop.deblock"
 name = "Deblocking filter"
 category = "loop_filter"

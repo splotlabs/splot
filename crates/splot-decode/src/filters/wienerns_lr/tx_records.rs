@@ -157,6 +157,29 @@ pub(crate) struct WienerNsLrTxSkipTransformRecord {
     pub(crate) intra_ist: Option<IntraIstSyntax>,
 }
 
+impl WienerNsLrTxSkipTransformRecord {
+    /// A luma § 5.20.6.1 `store_tx_info` record over `rows`×`cols` MI cells at
+    /// (`row`, `col`); `intra_ist` is unused by the skip-grid derivation.
+    pub(crate) fn luma(
+        row: usize,
+        col: usize,
+        rows: usize,
+        cols: usize,
+        skip_flag: bool,
+        eob: usize,
+    ) -> Self {
+        Self {
+            row,
+            col,
+            rows,
+            cols,
+            skip_flag,
+            eob,
+            intra_ist: None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SelectableLumaTxRecord {
     pub(crate) row: usize,

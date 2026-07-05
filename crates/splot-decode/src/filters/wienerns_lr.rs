@@ -188,16 +188,41 @@ fn wienerns_lr_tx_skip_grid_index(row: usize, col: usize, cols: usize) -> ReconR
         })
 }
 
+/// Derives the § 5.20.6.1 `LrTxSkip[row][col] = skip_flag || (eob == 0)` grid used
+/// by the § 7.20.4 PC-Wiener loop-restoration classifier.
 pub(crate) fn derive_wienerns_lr_tx_skip_grid_retention(
     rows: usize,
     cols: usize,
     records: &[WienerNsLrTxSkipTransformRecord],
 ) -> ReconResult<WienerNsLrTxSkipGrid> {
+    derive_wienerns_lr_skip_grid(rows, cols, records, |record| {
+        u8::from(record.skip_flag || record.eob == 0)
+    })
+}
+
+/// Derives the § 5.20.6.1 `Skips[row][col] = skip_flag` grid the § 7.20.4 CDEF
+/// `cdef_on_skip_txfm_frame_enable == 0` path ANDs over each 8x8. Unlike
+/// `LrTxSkip`, an all-zero transform in a non-skipped block stays `0`, matching
+/// AVM `is_8x8_block_skip` reading `mbmi->skip_txfm[PLANE_TYPE_Y]`.
+pub(crate) fn derive_wienerns_lr_block_skip_grid_retention(
+    rows: usize,
+    cols: usize,
+    records: &[WienerNsLrTxSkipTransformRecord],
+) -> ReconResult<WienerNsLrTxSkipGrid> {
+    derive_wienerns_lr_skip_grid(rows, cols, records, |record| u8::from(record.skip_flag))
+}
+
+fn derive_wienerns_lr_skip_grid(
+    rows: usize,
+    cols: usize,
+    records: &[WienerNsLrTxSkipTransformRecord],
+    value_of: impl Fn(&WienerNsLrTxSkipTransformRecord) -> u8,
+) -> ReconResult<WienerNsLrTxSkipGrid> {
     let expected = wienerns_lr_tx_skip_grid_len(rows, cols)?;
     let mut values = vec![None; expected];
     let mut populated = 0usize;
     for record in records {
-        let value = u8::from(record.skip_flag || record.eob == 0);
+        let value = value_of(record);
         write_wienerns_lr_tx_skip_record(rows, cols, record, value, &mut values, &mut populated)?;
     }
     if populated != expected {

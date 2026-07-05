@@ -216,6 +216,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     );
     filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
     filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
+    filter_sink.set_skips_grid(filter_inputs.skips_grid);
     filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
     filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
     let frame =
