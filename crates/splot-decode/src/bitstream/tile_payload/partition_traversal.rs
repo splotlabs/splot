@@ -549,11 +549,6 @@ pub(crate) struct GeneralIntraLeafMode {
     /// returns `DC_PRED` for both inter and intraBC neighbours (blockd.c), so the
     /// § 8.3.2 mode-context grids treat the two identically.
     intrabc: bool,
-    /// § 7.13.2.15/16 `is_smooth` over the leaf's reconstructed `UVMode` (SMOOTH /
-    /// SMOOTH_V / SMOOTH_H). Feeds the chroma `filterType` of a later block's
-    /// § 7.13.2.7 one-sided / middle edge filter; `false` for inter / intraBC /
-    /// luma-only leaves that never set a chroma cell.
-    uv_smooth: bool,
 }
 
 impl GeneralIntraLeafMode {
@@ -582,7 +577,6 @@ impl GeneralIntraLeafMode {
             palette_y: None,
             uv_cfl: None,
             intrabc: false,
-            uv_smooth: false,
         }
     }
 
@@ -598,7 +592,6 @@ impl GeneralIntraLeafMode {
             palette_y: None,
             uv_cfl: None,
             intrabc: false,
-            uv_smooth: false,
         }
     }
 
@@ -629,7 +622,6 @@ impl GeneralIntraLeafMode {
             palette_y: None,
             uv_cfl: Some(uv_cfl),
             intrabc: false,
-            uv_smooth: false,
         }
     }
 
@@ -650,25 +642,10 @@ impl GeneralIntraLeafMode {
     }
 
     /// Decoded §5.20.5.3 luma intra `y_mode`, if this leaf carried luma mode state.
+    #[allow(dead_code)]
     #[must_use]
     pub(crate) const fn luma_y_mode(self) -> Option<IntraYMode> {
         self.y_mode
-    }
-
-    /// Records the leaf's § 7.13.2.15/16 chroma `is_smooth` (its reconstructed
-    /// `UVMode` is SMOOTH / SMOOTH_V / SMOOTH_H) for a later block's chroma
-    /// one-sided / middle edge `filterType`.
-    #[must_use]
-    pub(crate) const fn with_uv_smooth(mut self, uv_smooth: bool) -> Self {
-        self.uv_smooth = uv_smooth;
-        self
-    }
-
-    /// `true` when the leaf's reconstructed `UVMode` is a § 7.13.2.15/16 SMOOTH
-    /// chroma mode ([`Self::with_uv_smooth`]).
-    #[must_use]
-    pub(crate) const fn uv_mode_is_smooth(&self) -> bool {
-        self.uv_smooth
     }
 }
 

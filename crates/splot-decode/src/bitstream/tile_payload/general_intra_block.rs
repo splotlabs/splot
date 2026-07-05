@@ -230,6 +230,7 @@ pub(crate) struct GeneralIntraLumaBlockMode {
 }
 
 impl GeneralIntraLumaBlockMode {
+    #[allow(dead_code)]
     pub(crate) fn supported_directional_luma(self) -> Option<SupportedDirectionalLumaMode> {
         supported_directional_luma(self.y_mode, self.angle_delta_y)
     }
@@ -303,6 +304,7 @@ impl GeneralIntraBlockModes {
         self.y_mode.supported_nondc()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn supported_directional_luma(&self) -> Option<SupportedDirectionalLumaMode> {
         supported_directional_luma(self.y_mode, self.angle_delta_y)
     }
@@ -1009,6 +1011,7 @@ fn reconstruct_y_mode_result(
     )
 }
 
+#[allow(dead_code)]
 fn supported_directional_luma(
     y_mode: IntraYMode,
     angle_delta_y: i8,

@@ -6,54 +6,8 @@
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::obu::{ParsedObu, PayloadStatus};
-use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::types::ObuType;
-
-use crate::error::DecodeError;
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct UnsupportedFeatureExpectation {
-    pub(crate) reason: &'static str,
-    pub(crate) spec_section: &'static str,
-    pub(crate) byte_offset: ByteOffset,
-    pub(crate) message_fragments: &'static [&'static str],
-}
-
-impl UnsupportedFeatureExpectation {
-    pub(crate) fn at_byte_offset(
-        reason: &'static str,
-        spec_section: &'static str,
-        byte_offset: ByteOffset,
-        message_fragments: &'static [&'static str],
-    ) -> Self {
-        Self {
-            reason,
-            spec_section,
-            byte_offset,
-            message_fragments,
-        }
-    }
-}
-
-pub(crate) fn assert_unsupported_feature(
-    error: DecodeError,
-    context: &'static str,
-    expected: UnsupportedFeatureExpectation,
-) {
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("{context} must be an unsupported-feature error");
-    };
-    assert_eq!(unsupported.reason(), expected.reason);
-    assert_eq!(unsupported.spec_section(), expected.spec_section);
-    assert_eq!(unsupported.byte_offset(), Some(expected.byte_offset));
-    for fragment in expected.message_fragments {
-        assert!(
-            unsupported.message().contains(fragment),
-            "{context} message must contain {fragment:?}"
-        );
-    }
-}
 
 pub(crate) fn fixture_sequence_and_key_core(bytes: &[u8]) -> (SequenceHeader, FrameHeaderCore) {
     let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(bytes) else {

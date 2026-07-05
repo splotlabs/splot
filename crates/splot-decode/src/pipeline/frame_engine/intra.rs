@@ -28,12 +28,6 @@ use crate::prediction::inter::{
 use crate::support::capability::missing_capability_message;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
-macro_rules! general_intra_at {
-    ($reason:literal, $offset:expr, $message:expr, $spec_section:expr $(,)?) => {
-        general_intra_unsupported($reason, Some($offset), $message, $spec_section)
-    };
-}
-
 /// Decodes one intra frame through the unified block engine, returning the
 /// reconstructed frame and the end-of-frame CDF subset.
 #[allow(clippy::too_many_arguments)]
@@ -53,9 +47,9 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         .as_ref()
         .is_some_and(|lossless| lossless.has_lossless_segment)
     {
-        return Err(general_intra_at!(
+        return Err(general_intra_unsupported(
             "general_intra_lossless_segment_unimplemented",
-            offset,
+            Some(offset),
             missing_capability_message!("intra.segmentation", lossless = "segment"),
             "5.18.2",
         ));
@@ -88,9 +82,9 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         .as_ref()
         .is_some_and(|gdf| gdf.gdf_frame_enable)
     {
-        return Err(general_intra_at!(
+        return Err(general_intra_unsupported(
             "general_intra_gdf_frame_unimplemented",
-            offset,
+            Some(offset),
             missing_capability_message!("filters.gdf", frame = "enabled"),
             "7.20.5",
         ));
@@ -101,9 +95,9 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
             .as_ref()
             .is_some_and(|seg| seg.segmentation_enabled && seg.last_active_seg_id > 0)
     {
-        return Err(general_intra_at!(
+        return Err(general_intra_unsupported(
             "general_intra_qmatrix_segmented_blocks_unimplemented",
-            offset,
+            Some(offset),
             missing_capability_message!("intra.qmatrix.segmentation", segment = "active"),
             "7.14.4",
         ));
@@ -113,9 +107,9 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         .as_ref()
         .is_some_and(|quantization| !effective_quantizer_deltas_are_zero(sequence, quantization))
     {
-        return Err(general_intra_at!(
+        return Err(general_intra_unsupported(
             "general_intra_nonzero_quantizer_delta_unimplemented",
-            offset,
+            Some(offset),
             missing_capability_message!("intra.residual.nonzero_quantizer_delta"),
             "7.14.2",
         ));
@@ -216,7 +210,13 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     );
     filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
     filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
-    filter_sink.set_skips_grid(filter_inputs.skips_grid);
+    filter_sink.set_cfl_ds_filter_index(
+        sequence
+            .intra
+            .as_ref()
+            .map_or(0, |intra| intra.cfl_ds_filter_index),
+    );
+    filter_sink.set_tx_skip_records(filter_inputs.tx_skip_records);
     filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
     filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
     let frame =
@@ -243,11 +243,10 @@ fn build_frame_qm_levels(core: &FrameHeaderCore) -> Option<QmFrameLevels> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use splot_parallel::ThreadCount;
-
     use splot_core::obu::{ParsedObu, PayloadStatus};
     use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
     use splot_core::types::ObuType;
+    use splot_parallel::ThreadCount;
 
     use super::*;
     use crate::error::DecodeError;

@@ -83,21 +83,17 @@ thread_local! {
 
 /// RAII scope installing the frame's built-in quantization-matrix levels, restored
 /// on drop so nothing leaks into a later frame. `None` is the flat dequant path.
-pub(crate) struct FrameQmScope {
-    previous: Option<QmFrameLevels>,
-}
+pub(crate) struct FrameQmScope(Option<QmFrameLevels>);
 
 impl FrameQmScope {
     pub(crate) fn install(levels: Option<QmFrameLevels>) -> Self {
-        Self {
-            previous: FRAME_QM.with(|cell| cell.replace(levels)),
-        }
+        Self(FRAME_QM.with(|cell| cell.replace(levels)))
     }
 }
 
 impl Drop for FrameQmScope {
     fn drop(&mut self) {
-        FRAME_QM.with(|cell| cell.set(self.previous));
+        FRAME_QM.with(|cell| cell.set(self.0));
     }
 }
 
@@ -474,14 +470,6 @@ pub(crate) enum GeneralIntraResidualError {
         "general intra directional prediction over a real above-neighbour edge is missing its §7.13.2.1 corner sample"
     )]
     UnsupportedDirectionalAboveEdge,
-    #[error(
-        "general intra one-sided chroma resolves a non-zero §7.13.2.17 edge-filter strength; the per-unit engine only admits the strength-0 no-op case byte-exact"
-    )]
-    UnsupportedChromaOneSidedEdgeFilter,
-    #[error(
-        "general intra middle-angle chroma resolves a non-zero §7.13.2.17 edge-filter strength or a §7.13.2.14 corner blend; the per-unit engine only admits the pure no-op case byte-exact"
-    )]
-    UnsupportedChromaMiddleEdgeFilter,
     #[error("general intra cardinal directional prediction is missing its required neighbour edge")]
     MissingCardinalEdge,
     #[error(

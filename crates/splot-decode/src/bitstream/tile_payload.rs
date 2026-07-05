@@ -84,16 +84,12 @@ pub(crate) use partition_traversal::{
     DecodeBlockFrontier, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
 };
 pub(crate) use partition_traversal::{
-    TileLoopRestorationRootFrontier, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
-};
-pub(crate) use partition_traversal::{
-    TilePartitionTraversalError, TilePartitionTraversalUnsupported,
+    TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
 };
 #[cfg(test)]
 pub(crate) use test_support::encode_symbol_sequence;
 pub(crate) use tile_frontier::{
-    GeneralIntraMultiblockError, GeneralIntraMultiblockOutput, TilePartitionFrontierError,
-    chroma_subsampling, consume_tile_lr_unit_frontier, decode_general_intra_multiblock_tree,
+    GeneralIntraMultiblockError, GeneralIntraMultiblockOutput, chroma_subsampling,
     decode_general_intra_multiblock_tree_with_lr_source_blocks, frame_mi_dimensions,
 };
 

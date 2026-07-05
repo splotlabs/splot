@@ -36,13 +36,8 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2],
     cdef_grid: Option<crate::filters::cdef::CdefUnitGrid>,
     ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
-    /// § 5.20.6.1 `Skips` grid (per-4x4 `skip_flag`) for the § 7.20.4 CDEF
-    /// `cdef_on_skip_txfm_frame_enable == 0` decision.
-    skips_grid: Option<super::WienerNsLrTxSkipGrid>,
-    /// § 5.20.6.1 `LrTxSkip` grid (`skip_flag || eob == 0`) for the § 7.20.4
-    /// PC-Wiener classifier. Deferred: no walk populates it yet (needs per-transform
-    /// eob), so multi-class luma PC-Wiener stays fail-closed.
     tx_skip_grid: Option<super::WienerNsLrTxSkipGrid>,
+    tx_skip_records: Vec<super::WienerNsLrTxSkipTransformRecord>,
     lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
 }
@@ -137,8 +132,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             chroma_deblock_blocks: [Vec::new(), Vec::new()],
             cdef_grid: None,
             ccso_grid: None,
-            skips_grid: None,
             tx_skip_grid: None,
+            tx_skip_records: Vec::new(),
             lr_source_blocks: Vec::new(),
             lr_unit_filters: Vec::new(),
         }
@@ -166,10 +161,19 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.ccso_grid = grid;
     }
 
-    /// Retains the § 5.20.6.1 `Skips` grid the § 7.20.4 CDEF
-    /// `cdef_on_skip_txfm_frame_enable == 0` path ANDs over each 8x8.
-    pub(crate) fn set_skips_grid(&mut self, grid: Option<super::WienerNsLrTxSkipGrid>) {
-        self.skips_grid = grid;
+    /// Retains the sequence-level §5.4.4 `cfl_ds_filter_index` used by
+    /// chroma Wiener NS LR luma companion reads.
+    pub(crate) const fn set_cfl_ds_filter_index(&mut self, index: u8) {
+        self.cfl_ds_filter_index = index;
+    }
+
+    /// Retains per-luma-transform skip/EOB facts for CDEF skip-grid and
+    /// multi-class luma Wiener NS LR classification.
+    pub(crate) fn set_tx_skip_records(
+        &mut self,
+        records: Vec<super::WienerNsLrTxSkipTransformRecord>,
+    ) {
+        self.tx_skip_records = records;
     }
 
     /// Retains active loop-restoration source blocks from the full selectable
@@ -201,6 +205,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         dump_prefilter_frame_for_diagnostics(&self.workspace, self.luma_width, self.luma_height);
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
+        if self.needs_tx_skip_grid(core) {
+            self.ensure_tx_skip_grid(mi_rows, mi_cols, offset)?;
+        }
         let deblock_timer = crate::timing::start();
         if let Some(filter) = core.deblocking_filter_params
             && filter.apply_deblocking_filter != [false; 4]
@@ -381,6 +388,49 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         )?;
         crate::timing::report("filter_lr", lr_timer);
         Ok(self.workspace.freeze()?)
+    }
+
+    fn needs_tx_skip_grid(&self, core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
+        let cdef_needs_skip_grid = core
+            .cdef_params
+            .as_ref()
+            .is_some_and(|cdef| cdef.cdef_on_skip_txfm_frame_enable == Some(false));
+        let luma_lr_needs_skip_grid = core.lr_params.as_ref().is_some_and(|lr| {
+            lr.planes.get(PlaneId::Y.index()).is_some_and(|plane| {
+                plane.restoration_type
+                    == splot_core::headers::frame::FrameRestorationType::WienerNonsep
+                    && plane.frame_filters_on
+                    && plane.num_filter_classes.unwrap_or(1) > 1
+            })
+        }) && self
+            .lr_source_blocks
+            .iter()
+            .any(|block| block.plane == PlaneId::Y.index());
+        cdef_needs_skip_grid || luma_lr_needs_skip_grid
+    }
+
+    fn ensure_tx_skip_grid(
+        &mut self,
+        mi_rows: usize,
+        mi_cols: usize,
+        offset: ByteOffset,
+    ) -> Result<()> {
+        if self.tx_skip_grid.is_some() {
+            return Ok(());
+        }
+        let grid = super::derive_wienerns_lr_tx_skip_grid_retention(
+            mi_rows,
+            mi_cols,
+            &self.tx_skip_records,
+        )
+        .map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_tx_skip_grid",
+            )
+        })?;
+        self.tx_skip_grid = Some(grid);
+        Ok(())
     }
 
     fn plane_snapshot(

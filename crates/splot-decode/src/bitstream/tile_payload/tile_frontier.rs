@@ -89,6 +89,7 @@ pub(crate) struct GeneralIntraMultiblockOutput<'payload> {
     pub(crate) unit_filters: Vec<WienerNsLrUnitFilter>,
 }
 
+#[allow(dead_code)]
 pub(crate) fn decode_general_intra_multiblock_tree<'payload, E, F>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
     sequence: &SequenceHeader,

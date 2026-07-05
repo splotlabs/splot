@@ -12,25 +12,16 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{
     ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame, parse_bitstream_partial,
 };
-use splot_recon::{
-    BitDepth, DecodedFrameHashInput, LoopRestorationSource, PixelFormat, PlaneId, PlaneSize,
-    ReconError,
-};
+use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize};
 
 use super::block::interp_filter_no_neighbour_ctx;
 use super::compound_is_joint_context_from_order_hints;
-use super::test_support::{
-    UnsupportedFeatureExpectation, assert_unsupported_feature, fixture_sequence_and_key_core,
-};
-use crate::bitstream::tile_payload::{
-    TilePartitionFrontierError, TilePartitionTraversalError, WienerNsLrSourceBlock,
-};
+use super::test_support::fixture_sequence_and_key_core;
 use crate::error::{DecodeError, Result};
-use crate::filters::wienerns_lr as lr;
 use crate::pipeline::{PipelineFrame, decode_frames_from_plan};
 use crate::{
-    DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
-    DecodeRuntimeConfig, DecodeStreamPlan,
+    DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeOptions, DecodeRuntimeConfig,
+    DecodeStreamPlan,
 };
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
@@ -789,29 +780,30 @@ fn mvorder_fixture_per_frame_hash_is_stable() {
 const MULTIREF_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf");
 
-const TEN_BIT_INTRA_FIXTURE: &[u8] =
-    include_bytes!("../../../../../tests/conformance/vectors/valid/syn-intra-64x64-10bit.ivf");
-
-fn repack_first_record_with_extra_regular_tile_group(source: &[u8]) -> Vec<u8> {
-    let parsed = parse_ivf_fixture(source, "source");
+fn repack_multiref_first_inter_into_leading_ivf_record() -> Vec<u8> {
+    let parsed = parse_multiref_fixture();
     assert!(!parsed.frames.is_empty());
+    assert_eq!(parsed.frames.len(), 3);
+    assert_eq!(parsed.frames[1].obus.len(), 2);
 
-    let inter_parsed = parse_multiref_fixture();
-    assert_eq!(inter_parsed.frames[1].obus.len(), 2);
-
-    let first_inter_td_end = obu_end_in_ivf_payload(&inter_parsed.frames[1], 0);
-    let first_inter_payload = inter_parsed.frames[1].frame.payload;
+    let first_inter_td_end = obu_end_in_ivf_payload(&parsed.frames[1], 0);
+    let first_inter_payload = parsed.frames[1].frame.payload;
 
     let mut leading_payload = Vec::new();
     leading_payload.extend_from_slice(parsed.frames[0].frame.payload);
     leading_payload.extend_from_slice(&first_inter_payload[first_inter_td_end..]);
 
     let mut header = parsed.header.expect("source fixture has an IVF header");
-    header.frame_count = 1;
+    header.frame_count = 2;
 
     let mut bytes = Vec::new();
     write_repacked_ivf_header(&mut bytes, &header);
     write_repacked_ivf_frame(&mut bytes, parsed.frames[0].frame.pts, &leading_payload);
+    write_repacked_ivf_frame(
+        &mut bytes,
+        parsed.frames[2].frame.pts,
+        parsed.frames[2].frame.payload,
+    );
 
     bytes
 }
@@ -1104,287 +1096,6 @@ fn wienerns_header_status_reports_precise_tile_frontier() {
 }
 
 #[test]
-fn parsed_wienerns_bank_reports_next_tile_frontier() {
-    let error =
-        crate::filters::wienerns_lr::wienerns_lr_source_read_runtime_error(ByteOffset::new(74));
-    assert_unsupported_feature(
-        error,
-        "parsed Wiener NS bank frontier",
-        UnsupportedFeatureExpectation::at_byte_offset(
-            "unsupported_wienerns_lr_source_read",
-            "7.20.2",
-            ByteOffset::new(74),
-            &[
-                "source-bound facts",
-                "per-unit selection state",
-                "source-read state",
-                "Wiener tap",
-                "source sample values",
-                "§7.20.3 filtering",
-            ],
-        ),
-    );
-}
-
-fn wienerns_lr_source_block() -> WienerNsLrSourceBlock {
-    WienerNsLrSourceBlock {
-        plane: 0,
-        row: 0,
-        col: 0,
-        unit_row: 0,
-        unit_col: 0,
-        tile_mi_row_start: 0,
-        tile_mi_row_end: 4,
-        tile_mi_col_start: 0,
-        tile_mi_col_end: 4,
-        x: 0,
-        y: 6,
-        width: 4,
-        height: 4,
-        luma_start_x: 0,
-        luma_end_x: 15,
-        luma_start_y: 0,
-        luma_end_y: 15,
-        frame_luma_end_y: 15,
-        luma_stripe_start_y: 8,
-        luma_stripe_end_y: 10,
-    }
-}
-
-fn wienerns_lr_source_read_config() -> lr::WienerNsLrSourceReadConfig {
-    lr::WienerNsLrSourceReadConfig::CONSERVATIVE
-}
-
-#[test]
-fn wienerns_lr_source_read_frontier_resolves_source_samples() {
-    let blocks = [wienerns_lr_source_block()];
-    let expected_output_samples = 16;
-    let expected_source_reads = expected_output_samples * (1 + 32);
-
-    let frontier = lr::derive_wienerns_lr_source_read_frontier(
-        &blocks,
-        ChromaFormatIdc::Yuv420,
-        wienerns_lr_source_read_config(),
-        ByteOffset::new(74),
-        DecodeLimits::unlimited(),
-    )
-    .expect("source-read frontier");
-
-    assert_eq!(frontier.blocks_resolved, 1);
-    assert_eq!(frontier.output_samples_resolved, expected_output_samples);
-    assert_eq!(frontier.source_reads_resolved, expected_source_reads);
-    assert_eq!(
-        frontier.curr_frame_source_reads + frontier.cdef_frame_source_reads,
-        expected_source_reads
-    );
-    assert_eq!(
-        frontier.first_sample,
-        Some(lr::WienerNsLrSourceReadSample {
-            plane: PlaneId::Y,
-            x: 0,
-            y: 6,
-            source: LoopRestorationSource::CurrFrame,
-        })
-    );
-}
-
-#[test]
-fn wienerns_lr_source_read_frontier_includes_chroma_luma_source_reads() {
-    let blocks = [WienerNsLrSourceBlock {
-        plane: 1,
-        ..wienerns_lr_source_block()
-    }];
-    let expected_output_samples = 16;
-    let expected_source_reads = expected_output_samples * (1 + 12 + (1 + 12) * 4);
-
-    let frontier = lr::derive_wienerns_lr_source_read_frontier(
-        &blocks,
-        ChromaFormatIdc::Yuv420,
-        wienerns_lr_source_read_config(),
-        ByteOffset::new(74),
-        DecodeLimits::unlimited(),
-    )
-    .expect("source-read frontier");
-
-    assert_eq!(frontier.blocks_resolved, 1);
-    assert_eq!(frontier.output_samples_resolved, expected_output_samples);
-    assert_eq!(frontier.source_reads_resolved, expected_source_reads);
-    assert_eq!(
-        frontier.curr_frame_source_reads + frontier.cdef_frame_source_reads,
-        expected_source_reads
-    );
-    assert_eq!(
-        frontier.first_sample,
-        Some(lr::WienerNsLrSourceReadSample {
-            plane: PlaneId::U,
-            x: 0,
-            y: 6,
-            source: LoopRestorationSource::CurrFrame,
-        })
-    );
-}
-
-#[test]
-fn wienerns_lr_source_read_frontier_failures_stay_structured() {
-    let blocks = [WienerNsLrSourceBlock {
-        luma_start_x: 32,
-        luma_end_x: 31,
-        ..wienerns_lr_source_block()
-    }];
-
-    let error = lr::derive_wienerns_lr_source_read_frontier(
-        &blocks,
-        ChromaFormatIdc::Yuv420,
-        wienerns_lr_source_read_config(),
-        ByteOffset::new(74),
-        DecodeLimits::unlimited(),
-    )
-    .unwrap_err();
-
-    match error {
-        DecodeError::Reconstruction { source } => {
-            assert_eq!(
-                source,
-                ReconError::LoopRestorationSourceInvalidBounds {
-                    field: "luma x range",
-                }
-            );
-        }
-        _ => panic!("source-read derivation failures must remain structured"),
-    }
-    assert_eq!(
-        blocks[0].luma_start_x, 32,
-        "source-read derivation must not mutate retained source-bound facts"
-    );
-}
-
-#[test]
-fn wienerns_lr_source_read_frontier_rejects_monochrome_chroma_plane() {
-    let blocks = [WienerNsLrSourceBlock {
-        plane: 1,
-        ..wienerns_lr_source_block()
-    }];
-
-    let error = lr::derive_wienerns_lr_source_read_frontier(
-        &blocks,
-        ChromaFormatIdc::Monochrome,
-        wienerns_lr_source_read_config(),
-        ByteOffset::new(74),
-        DecodeLimits::unlimited(),
-    )
-    .unwrap_err();
-
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("monochrome chroma-plane request must be unsupported-feature");
-    };
-    assert_eq!(
-        unsupported.reason(),
-        "unsupported_wienerns_lr_source_chroma_plane"
-    );
-    assert_eq!(unsupported.spec_section(), "7.20.2");
-    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
-}
-
-#[test]
-fn wienerns_lr_source_read_frontier_rejects_unsupported_plane_index() {
-    let blocks = [WienerNsLrSourceBlock {
-        plane: 3,
-        ..wienerns_lr_source_block()
-    }];
-
-    let error = lr::derive_wienerns_lr_source_read_frontier(
-        &blocks,
-        ChromaFormatIdc::Yuv420,
-        wienerns_lr_source_read_config(),
-        ByteOffset::new(74),
-        DecodeLimits::unlimited(),
-    )
-    .unwrap_err();
-
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("unsupported plane index must be unsupported-feature");
-    };
-    assert_eq!(unsupported.reason(), "unsupported_wienerns_lr_source_plane");
-    assert_eq!(unsupported.spec_section(), "7.20.2");
-    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
-}
-
-#[test]
-fn wienerns_lr_source_read_frontier_limit_errors_stay_limits() {
-    let blocks = [wienerns_lr_source_block()];
-    let limits = DecodeLimits::unlimited()
-        .with_max_loop_restoration_source_reads(DecodeLimitThreshold::Max(527));
-
-    let error = lr::derive_wienerns_lr_source_read_frontier(
-        &blocks,
-        ChromaFormatIdc::Yuv420,
-        wienerns_lr_source_read_config(),
-        ByteOffset::new(74),
-        limits,
-    )
-    .unwrap_err();
-
-    match error {
-        DecodeError::Limit { source } => {
-            assert_eq!(
-                source.name(),
-                DecodeLimitName::MaxLoopRestorationSourceReads
-            );
-            let check = source.check().expect("limit failure carries check");
-            assert_eq!(check.threshold(), DecodeLimitThreshold::Max(527));
-            assert_eq!(check.actual(), 528);
-        }
-        _ => panic!("source-read operation budget failures must remain resource-limit diagnostics"),
-    }
-}
-
-#[test]
-fn wienerns_lr_source_read_frontier_does_not_charge_luma_sample_limit() {
-    let blocks = [
-        wienerns_lr_source_block(),
-        WienerNsLrSourceBlock {
-            plane: 1,
-            ..wienerns_lr_source_block()
-        },
-    ];
-    let limits =
-        DecodeLimits::unlimited().with_max_luma_samples_per_frame(DecodeLimitThreshold::Max(0));
-
-    let frontier = lr::derive_wienerns_lr_source_read_frontier(
-        &blocks,
-        ChromaFormatIdc::Yuv420,
-        wienerns_lr_source_read_config(),
-        ByteOffset::new(74),
-        limits,
-    )
-    .expect("source-read frontier");
-
-    assert_eq!(frontier.blocks_resolved, 2);
-    assert_eq!(frontier.output_samples_resolved, 32);
-    assert_eq!(frontier.source_reads_resolved, 528 + 1040);
-}
-
-#[test]
-fn wienerns_lr_unit_frontier_limit_errors_stay_limits() {
-    let source = DecodeLimits::unlimited()
-        .with_max_tile_partition_steps(DecodeLimitThreshold::Max(0))
-        .ensure(DecodeLimitName::MaxTilePartitionSteps, 1)
-        .unwrap_err();
-
-    let error = lr::map_wienerns_lr_unit_frontier_error(
-        TilePartitionFrontierError::Traversal(TilePartitionTraversalError::Limit(source)),
-        ByteOffset::new(74),
-    );
-
-    match error {
-        DecodeError::Limit { source } => {
-            assert_eq!(source.name(), DecodeLimitName::MaxTilePartitionSteps);
-        }
-        _ => panic!("LR-unit limit failures must remain resource-limit diagnostics"),
-    }
-}
-
-#[test]
 fn non_wienerns_header_status_keeps_generic_incomplete_frontier() {
     let error = crate::pipeline::incomplete_intra_header_error(
         FrameHeaderParseStatus::ActivationFieldsOnly,
@@ -1400,39 +1111,29 @@ fn non_wienerns_header_status_keeps_generic_incomplete_frontier() {
 }
 
 #[test]
-fn leading_key_payload_extra_obu_rejected_before_tile_decode() {
-    let repacked = repack_first_record_with_extra_regular_tile_group(TEN_BIT_INTRA_FIXTURE);
-    let options = DecodeOptions::default();
-    let plan = plan_fixture(&repacked, &options);
-    assert!(
-        plan.obu_count() >= 4,
-        "test fixture must keep an extra OBU after the leading key frame"
-    );
-    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
-        panic!("10-bit leading payload with an extra OBU must fail closed");
-    };
-    assert_eq!(
-        unsupported_reason(error),
-        "unexpected_leading_obu_after_key"
-    );
-}
+fn multiref_runtime_decodes_first_inter_from_leading_ivf_record() {
+    let repacked = repack_multiref_first_inter_into_leading_ivf_record();
+    let original = decode_fixture(MULTIREF_FIXTURE);
+    let grouped = decode_fixture(&repacked);
 
-#[test]
-fn multiref_runtime_rejects_extra_obu_after_leading_key_payload() {
-    let repacked = repack_first_record_with_extra_regular_tile_group(MULTIREF_FIXTURE);
-    let options = DecodeOptions::default();
-    let plan = plan_fixture(&repacked, &options);
-    assert!(
-        plan.obu_count() >= 4,
-        "test fixture must keep an extra OBU after the leading key frame"
-    );
-    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
-        panic!("extra leading-payload OBU must fail closed before output");
-    };
-    assert_eq!(
-        unsupported_reason(error),
-        "unexpected_leading_obu_after_key"
-    );
+    assert_eq!(grouped.len(), original.len());
+    for (index, (actual, expected)) in grouped.iter().zip(original.iter()).enumerate() {
+        assert_eq!(
+            actual.frame().y().samples(),
+            expected.frame().y().samples(),
+            "repacked frame {index} luma"
+        );
+        assert_eq!(
+            actual.frame().u().unwrap().samples(),
+            expected.frame().u().unwrap().samples(),
+            "repacked frame {index} U"
+        );
+        assert_eq!(
+            actual.frame().v().unwrap().samples(),
+            expected.frame().v().unwrap().samples(),
+            "repacked frame {index} V"
+        );
+    }
 }
 
 #[test]

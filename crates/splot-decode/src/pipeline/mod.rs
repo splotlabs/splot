@@ -27,7 +27,6 @@ use crate::bitstream::tile_payload::{
 };
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::filters::deblock;
-use crate::filters::wienerns_lr::ensure_wienerns_lr_unit_tile_frontier;
 use crate::prediction::inter;
 use crate::reference::buffer as reference_buffer;
 use crate::support::capability::missing_capability_message;
@@ -257,17 +256,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
             "minimal tier requires one selected key frame candidate",
         )
     })?;
-    reject_extra_leading_key_payload_obus(leading_obus)?;
-    ensure_wienerns_lr_unit_tile_frontier(
-        bytes,
-        options,
-        plan,
-        key_candidate,
-        key_envelope,
-        sequence_envelope.offset,
-        &sequence,
-        &key_core,
-    )?;
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
 
     let sequence_inter = sequence.inter.as_ref().ok_or_else(|| {
@@ -1147,17 +1135,6 @@ pub(crate) fn require_minimal_obu_order<'a>(
             "minimal tier requires a leading temporal delimiter, sequence header, and closed-loop-key OBU",
         )),
     }
-}
-
-fn reject_extra_leading_key_payload_obus(obus: &[ObuEnvelope<'_>]) -> Result<()> {
-    let Some(extra) = obus.get(3) else {
-        return Ok(());
-    };
-    Err(unsupported_at(
-        "unexpected_leading_obu_after_key",
-        extra.offset,
-        "minimal tier does not decode extra OBUs after the leading closed-loop-key OBU",
-    ))
 }
 
 fn require_obu_type(

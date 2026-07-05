@@ -33,16 +33,8 @@ pub(crate) fn read_inter_residual(
     } else {
         frontier.b_size
     };
-    if intra_frame_needs_selectable_tx_partitions(core) && (n4w > 1 || n4h > 1) {
-        return Err(inter_cap!(
-            "inter_intrabc_selectable_tx",
-            tile_offset,
-            "inter.intrabc.selectable_tx",
-            SPEC_MODE_INFO
-        ));
-    }
     let luma_tx_size = max_tx_size(frontier.b_size.index(), tile_offset)?;
-    let luma_tx_records = if inter_uses_selectable_tx_partitions(core) {
+    let luma_tx_records = if residual_uses_selectable_tx_partitions(core) {
         Some(derive_inter_luma_tx_records_for_block(
             work_unit,
             symbols,
@@ -113,12 +105,13 @@ fn inter_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
             .is_some_and(|lossless| !lossless.lossless_array[0])
 }
 
+fn residual_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
+    inter_uses_selectable_tx_partitions(core) || intra_frame_needs_selectable_tx_partitions(core)
+}
+
 /// True for an **intra-frame** IntrABC block whose § 5.20.6.2 residual needs
 /// `read_tx_partition` bits — the parsed `TxMode` for an intra frame lives on
-/// `core.intra_tail`, not `core.inter_tail`, so [`inter_uses_selectable_tx_partitions`]
-/// (which only inspects `inter_tail`) would miss it and mis-parse the residual. The
-/// selectable-transform-records reconstruction is unverified for IntrABC, so the
-/// caller fails closed on this case rather than desynchronizing the stream.
+/// `core.intra_tail`, not `core.inter_tail`.
 fn intra_frame_needs_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
     core.inter_tail.is_none()
         && core
