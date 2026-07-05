@@ -61,7 +61,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-smooth-intra-64x64-10bit-q80.ivf"
-description = "Valid 10-bit 4:2:0 intra key frame (IVF, 64x64) with SMOOTH (non-DC) luma; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature unsupported_10bit_non_dc_intra (10-bit reconstruction is gated to the DC_PRED subset)."
+description = "Valid 10-bit 4:2:0 intra key frame (IVF, 64x64) with SMOOTH (non-DC) luma; validates clean, and the general-intra decoder reconstructs it byte-exact to avmdec (10-bit rectangular SMOOTH luma over § 7.13.2.1 edge fallbacks)."
 expect = "clean"
 
 [[vector]]
@@ -111,7 +111,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-ist-largest-intra-128x128.ivf"
-description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with intra secondary transform (enable_ist); validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_transform_tool_residual (nonzero secondary transform type is unsupported)."
+description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with intra secondary transform (enable_ist); validates clean, and the general-intra decoder reconstructs it byte-exact to the avmdec oracle (rectangular SMOOTH luma over § 7.13.2.1 edge fallbacks)."
 expect = "clean"
 
 [[vector]]

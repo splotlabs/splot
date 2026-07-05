@@ -759,6 +759,11 @@ fn rect_luma_plan_for_parts(
     )
 }
 
+/// Plans a rectangular (or square-as-part) non-DC luma leaf. Smooth modes are
+/// admitted for any neighbour configuration because § 7.13.2.1 always derives
+/// `LeftCol`/`AboveRow` (real reconstructed neighbours or the `haveLeft` /
+/// `haveAbove` fallbacks), so smooth prediction is defined even with no edge;
+/// directional and one-sided modes still require the edge they read.
 fn rect_luma_plan_for_parts_ext(
     luma_is_paeth: bool,
     nondc: Option<SupportedNonDcLumaMode>,
@@ -771,32 +776,17 @@ fn rect_luma_plan_for_parts_ext(
         return Ok(RectLumaPlan::Dc { use_tcq });
     }
     let block = block_ctx.block();
-    let large_rect = block.width4() > FULL_SB_N4_LUMA || block.height4() > FULL_SB_N4_LUMA;
     let supported_rect = block.width4() >= 8 && block.height4() >= 8;
-    let supported_smooth_axis_rect = block.width4() >= 1 && block.height4() >= 1;
     let supported_cardinal_rect = block.width4() >= 1 && block.height4() >= 1;
     let supported_middle_rect = block.width4() >= 1 && block.height4() >= 1;
     let supported_one_sided_above_rect = block.width4() >= 1 && block.height4() >= 1;
     let supported_one_sided_left_rect = block.width4() >= 1 && block.height4() >= 1;
-    let supported_smooth_rect = block.width4() >= 1 && block.height4() >= 1;
     let neighbours = block_ctx.neighbours(PlaneId::Y);
     if luma_is_paeth && (neighbours.has_above() || neighbours.has_left()) {
         return Ok(RectLumaPlan::Paeth { use_tcq });
     }
     if let Some(mode) = nondc {
-        let has_edge = neighbours.has_above() || neighbours.has_left();
-        let supported = match mode {
-            SupportedNonDcLumaMode::Smooth => (large_rect || supported_smooth_rect) && has_edge,
-            SupportedNonDcLumaMode::SmoothVertical => {
-                (large_rect && has_edge) || (supported_smooth_axis_rect && neighbours.has_above())
-            }
-            SupportedNonDcLumaMode::SmoothHorizontal => {
-                (large_rect && has_edge) || (supported_smooth_axis_rect && neighbours.has_left())
-            }
-        };
-        if supported {
-            return Ok(RectLumaPlan::Smooth { mode, use_tcq });
-        }
+        return Ok(RectLumaPlan::Smooth { mode, use_tcq });
     }
     let has_edge = neighbours.has_above() || neighbours.has_left();
     match directional_p_angle {

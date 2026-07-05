@@ -109,9 +109,10 @@ impl IntraLumaPlan {
                 )
             }
             Self::NonDcNeighbour { mode } => {
-                let num4_above_right = block_ctx
-                    .neighbours_from_block_decoded(PlaneId::Y, block_decoded)
-                    .num_above_right();
+                let decode_aware =
+                    block_ctx.neighbours_from_block_decoded(PlaneId::Y, block_decoded);
+                let num4_above_right = decode_aware.num_above_right();
+                let num4_below_left = decode_aware.num_below_left();
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_nondc_neighbour_block_into(
                     workspace,
                     luma,
@@ -122,6 +123,7 @@ impl IntraLumaPlan {
                     qindex,
                     use_tcq,
                     num4_above_right,
+                    num4_below_left,
                     bit_depth,
                 )
             }
