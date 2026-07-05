@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::headers::sequence::BitDepthIdc;
 use splot_recon::{BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, PlaneId, ReconSample};
 
 use super::*;
@@ -29,78 +28,6 @@ macro_rules! general_intra_at {
     ($reason:expr, $offset:expr, $message:expr, $spec_section:expr $(,)?) => {
         general_intra_unsupported($reason, Some($offset), $message, $spec_section)
     };
-}
-
-pub(crate) fn route_general_minimal_intra(
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-) -> bool {
-    core.quantization_params.is_some_and(|quant| {
-        quant.delta_q_y_dc == 0
-            && quant.delta_q_u_dc == 0
-            && quant.delta_q_u_ac == 0
-            && quant.delta_q_v_dc == 0
-            && quant.delta_q_v_ac == 0
-    }) && sequence.intra.as_ref().is_some_and(|intra| {
-        !intra.enable_dip && !intra.enable_ibp && !intra.enable_intra_edge_filter
-    }) && sequence.partition.is_some()
-        && sequence.transform_quant_entropy.is_some_and(|tq| {
-            tq.equal_ac_dc_q
-                && !tq.enable_fsc
-                && !tq.enable_cctx
-                && i32::from(tq.base_uv_dc_delta_q) + GENERAL_INTRA_DELTA_DCQUANT_MIN == 0
-                && i32::from(tq.base_uv_ac_delta_q) + GENERAL_INTRA_DELTA_DCQUANT_MIN == 0
-        })
-        && core
-            .intra_tail
-            .is_some_and(|tail| tail.tx_mode == TxMode::Largest)
-        && core.deblocking_filter_params.is_some_and(|filter| {
-            filter.apply_deblocking_filter == [false; 4]
-                || matches!(sequence.general.bit_depth_idc, BitDepthIdc::Eight)
-        })
-        && core.cdef_params.as_ref().is_some_and(|cdef| {
-            !cdef.cdef_frame_enable || matches!(sequence.general.bit_depth_idc, BitDepthIdc::Eight)
-        })
-        && is_general_minimal_intra(core)
-}
-fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
-    core.status == FrameHeaderParseStatus::IntraHeaderComplete
-        && core.cur_mfh_id.is_zero()
-        && core.show_existing_frame == Some(false)
-        && core.frame_is_intra == Some(true)
-        && core.is_key_frame
-        && core.immediate_output_frame == Some(true)
-        && core.implicit_output_frame == Some(false)
-        && core.frame_size.is_some_and(|size| {
-            size.width != 0
-                && size.height != 0
-                && size.width % MINIMAL_WIDTH == 0
-                && size.height % MINIMAL_HEIGHT == 0
-        })
-        && core
-            .tile_info
-            .as_ref()
-            .is_some_and(|tile_info| tile_info.tile_cols == 1 && tile_info.tile_rows == 1)
-        && core
-            .deblocking_filter_params
-            .is_some_and(|filter| filter.df_delta_q == [0; 4])
-        && core.gdf_params.is_some_and(|gdf| !gdf.gdf_frame_enable)
-        && core.cdef_params.as_ref().is_some_and(|cdef| {
-            !cdef.cdef_frame_enable
-                || (cdef.cdef_strengths == Some(1)
-                    && cdef.cdef_on_skip_txfm_frame_enable == Some(true)
-                    && cdef.cdef_damping.is_some()
-                    && !cdef.strengths.is_empty())
-        })
-        && core.lr_params.as_ref().is_some_and(|lr| !lr.uses_lr)
-        && core
-            .ccso_params
-            .as_ref()
-            .is_some_and(|ccso| ccso.ccso_frame_flag.is_none() && ccso.planes.is_empty())
-        && core
-            .intra_tail
-            .is_some_and(|tail| !tail.film_grain.apply_grain)
-        && core.allow_screen_content_tools != Some(true)
 }
 
 fn general_intra_chroma_tools(

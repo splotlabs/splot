@@ -100,8 +100,6 @@ pub(crate) fn effective_allow_screen_content_tools(core: &FrameHeaderCore) -> bo
 pub(crate) const FRONTIER_INTRA_IST_ZERO_FRONTIER_FEATURE_ID: &str =
     "DECODE-INTRA-IST-ZERO-FRONTIER";
 pub(crate) const FRONTIER_INTRA_IST_ZERO_FRONTIER_MATRIX_ROW: &str = "intra-ist-zero-frontier";
-const MINIMAL_WIDTH: u32 = 64;
-const MINIMAL_HEIGHT: u32 = 64;
 
 pub(crate) const GENERAL_INTRA_FEATURE_ID: &str = "DECODE-GENERAL-INTRA-FRAME-FRONTIER";
 pub(crate) const GENERAL_INTRA_MATRIX_ROW: &str = "general-intra-frame-frontier";
@@ -111,7 +109,6 @@ pub(crate) const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
 pub(crate) const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
 pub(crate) const GENERAL_INTRA_REMEDIATION: &str =
     "Use an admitted general-intra subset or track DECODE-GENERAL-INTRA-FRAME-FRONTIER.";
-pub(crate) const GENERAL_INTRA_DELTA_DCQUANT_MIN: i32 = (1 << 3) - (1 << 5) + 1;
 pub(crate) enum PipelineDecodedFrame {
     Eight(DecodedFrame<u8>),
     Ten(DecodedFrame<u16>),
@@ -281,63 +278,44 @@ pub(crate) fn decode_key_frame(
             header,
         );
     }
-    if general_intra::route_general_minimal_intra(sequence, &core) {
-        let bit_depth = match sequence.general.bit_depth_idc {
-            BitDepthIdc::Eight => BitDepth::Eight,
-            BitDepthIdc::Ten => BitDepth::Ten,
-        };
-        let (frame, frame_cdfs) = match bit_depth {
-            BitDepth::Eight => {
-                let (frame, _core, frame_cdfs) = frame_engine::decode_frame::<u8>(
-                    plan,
-                    candidate,
-                    bytes,
-                    frame_envelope,
-                    core,
-                    sequence,
-                    options,
-                    header,
-                    &frame_engine::FrameSetup::Intra,
-                    BitDepth::Eight,
-                )?;
-                (PipelineDecodedFrame::Eight(frame), frame_cdfs)
-            }
-            BitDepth::Ten => {
-                let (frame, _core, frame_cdfs) = frame_engine::decode_frame::<u16>(
-                    plan,
-                    candidate,
-                    bytes,
-                    frame_envelope,
-                    core,
-                    sequence,
-                    options,
-                    header,
-                    &frame_engine::FrameSetup::Intra,
-                    BitDepth::Ten,
-                )?;
-                (PipelineDecodedFrame::Ten(frame), frame_cdfs)
-            }
-        };
-        return Ok(PipelineFrame {
-            frame,
-            frame_cdfs,
-            frame_rate_numerator: header.timebase_denominator,
-            frame_rate_denominator: header.timebase_numerator,
-        });
-    }
-    if sequence.general.bit_depth_idc != BitDepthIdc::Eight {
-        return Err(unsupported_at(
-            "unsupported_10bit_outside_decode_subset",
-            frame_envelope.offset,
-            missing_capability_message!("frame.decode_subset bit_depth=10"),
-        ));
-    }
-    validate_frame_core(&core, frame_envelope.offset)?;
-    Err(unsupported_at(
-        "unsupported_frame_outside_decode_subset",
-        frame_envelope.offset,
-        missing_capability_message!("frame.decode_subset unmatched"),
-    ))
+    let (frame, frame_cdfs) = match sequence.general.bit_depth_idc {
+        BitDepthIdc::Eight => {
+            let (frame, _core, frame_cdfs) = frame_engine::decode_frame::<u8>(
+                plan,
+                candidate,
+                bytes,
+                frame_envelope,
+                core,
+                sequence,
+                options,
+                header,
+                &frame_engine::FrameSetup::Intra,
+                BitDepth::Eight,
+            )?;
+            (PipelineDecodedFrame::Eight(frame), frame_cdfs)
+        }
+        BitDepthIdc::Ten => {
+            let (frame, _core, frame_cdfs) = frame_engine::decode_frame::<u16>(
+                plan,
+                candidate,
+                bytes,
+                frame_envelope,
+                core,
+                sequence,
+                options,
+                header,
+                &frame_engine::FrameSetup::Intra,
+                BitDepth::Ten,
+            )?;
+            (PipelineDecodedFrame::Ten(frame), frame_cdfs)
+        }
+    };
+    Ok(PipelineFrame {
+        frame,
+        frame_cdfs,
+        frame_rate_numerator: header.timebase_denominator,
+        frame_rate_denominator: header.timebase_numerator,
+    })
 }
 
 fn route_wienerns_lr_selectable_full_recon(
@@ -1603,90 +1581,6 @@ fn lr_frame_filter_class_counts(core: &FrameHeaderCore) -> [u8; 3] {
         counts[plane] = u8::try_from(classes).unwrap_or(u8::MAX);
     }
     counts
-}
-
-fn validate_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
-    ensure_intra_header_complete(core, offset)?;
-    if !core.cur_mfh_id.is_zero()
-        || core.show_existing_frame != Some(false)
-        || core.frame_is_intra != Some(true)
-        || !core.is_key_frame
-        || core.immediate_output_frame != Some(true)
-        || core.implicit_output_frame != Some(false)
-    {
-        return Err(unsupported_at(
-            "unsupported_frame_control",
-            offset,
-            "minimal tier requires one immediate-output intra key frame without MFH indirection",
-        ));
-    }
-    match core.frame_size {
-        Some(FrameSize {
-            width: MINIMAL_WIDTH,
-            height: MINIMAL_HEIGHT,
-            ..
-        }) => {}
-        _ => {
-            return Err(unsupported_at(
-                "unsupported_frame_size",
-                offset,
-                missing_capability_message!("frame.size width!=64 || height!=64"),
-            ));
-        }
-    }
-    let Some(tile_info) = core.tile_info.as_ref() else {
-        return Err(unsupported_at(
-            "missing_tile_info",
-            offset,
-            "minimal tier requires parsed one-tile frame layout",
-        ));
-    };
-    if tile_info.tile_cols != 1 || tile_info.tile_rows != 1 {
-        return Err(unsupported_at(
-            "multi_tile_frame",
-            offset,
-            "minimal tier supports one tile",
-        ));
-    }
-    if core
-        .quantization_params
-        .is_none_or(|quant| quant.base_q_idx != 255)
-        || core
-            .segmentation_params
-            .as_ref()
-            .is_none_or(|seg| seg.segmentation_enabled)
-        || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
-        || core
-            .delta_q_params
-            .is_none_or(|delta| delta.delta_q_present)
-        || core
-            .lossless_info
-            .as_ref()
-            .is_none_or(|lossless| lossless.coded_lossless)
-        || core
-            .deblocking_filter_params
-            .is_none_or(|filter| filter.apply_deblocking_filter != [false; 4])
-        || core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable)
-        || core
-            .cdef_params
-            .as_ref()
-            .is_none_or(|cdef| cdef.cdef_frame_enable)
-        || core.lr_params.as_ref().is_none_or(|lr| lr.uses_lr)
-        || core
-            .ccso_params
-            .as_ref()
-            .is_none_or(|ccso| ccso.ccso_frame_flag.is_some() || !ccso.planes.is_empty())
-        || core
-            .intra_tail
-            .is_none_or(|tail| tail.film_grain.apply_grain)
-    {
-        return Err(unsupported_at(
-            "unsupported_frame_tools",
-            offset,
-            missing_capability_message!("frame.tools no_filters_no_grain"),
-        ));
-    }
-    Ok(())
 }
 
 fn ensure_intra_header_complete(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {

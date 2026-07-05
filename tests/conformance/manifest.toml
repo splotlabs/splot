@@ -713,17 +713,17 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-fsc-intra-128x128.ivf"
-description = "Tiny AVM transform.idtx_fsc fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM transform.idtx_fsc fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-ist-intra-128x128.ivf"
-description = "Tiny AVM transform.secondary_ist fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM transform.secondary_ist fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-mrl-intra-128x128.ivf"
-description = "Tiny AVM intra.mrl fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM intra.mrl fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
@@ -733,26 +733,26 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-parity-intra-128x128.ivf"
-description = "Tiny AVM coeff.parity_hiding fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM coeff.parity_hiding fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-wienerns-intra-128x128.ivf"
-description = "Tiny AVM loop.wienerns fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM loop.wienerns fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-pcwiener-intra-128x128.ivf"
-description = "Tiny AVM loop.pc_wiener fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM loop.pc_wiener fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-gdf-intra-128x128.ivf"
-description = "Tiny AVM loop.gdf fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM loop.gdf fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-warp-inter-128x128.ivf"
-description = "Tiny AVM inter.warp fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM inter.warp fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
