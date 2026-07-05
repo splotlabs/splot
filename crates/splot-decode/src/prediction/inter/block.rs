@@ -1925,6 +1925,15 @@ fn non_intra_leaf_mode(frontier: &DecodeBlockFrontier) -> GeneralIntraLeafMode {
     leaf
 }
 
+/// Reconstructs the § 7.11.5 IntrABC predictor for a leaf: always luma, and — for
+/// a leaf that carries its own co-located chroma — the U/V planes via the same
+/// block vector at a subsampled plane scaling.
+///
+/// The § 5.20.4.1 chroma-offset case (a small luma leaf whose chroma is inherited
+/// from a larger `chroma_ref_geometry` block) is deferred and fails closed: the
+/// chroma block is not the luma rectangle subsampled, so deriving U/V from the
+/// luma target would write the predictor into the wrong rectangle. Only
+/// co-located chroma (`!chroma_offset`) is reconstructed here.
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_intrabc_predictor<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -1970,7 +1979,15 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
     if !frontier.has_chroma {
         return Ok(());
     }
-    let luma = prediction.target; // § 7.11.5 one block vector drives every plane; chroma reads a subsampled plane scaling of the luma target rect
+    if frontier.chroma_offset {
+        return Err(inter_cap!(
+            "inter_intrabc_chroma",
+            tile_offset,
+            "inter.intrabc.chroma",
+            SPEC_MODE_INFO
+        ));
+    }
+    let luma = prediction.target; // § 7.11.5: co-located chroma (`!chroma_offset`) is exactly the luma target subsampled; one block vector drives every plane
     for plane in [ReconPlaneId::U, ReconPlaneId::V] {
         let (cx, cy) = (luma.x() >> sub_x, luma.y() >> sub_y);
         let (cw, ch) = (luma.width() >> sub_x, luma.height() >> sub_y);
@@ -1991,9 +2008,9 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
         );
         let target = splot_recon::PlaneRect::new(cx, cy, cw, ch).map_err(|_| {
             inter_cap!(
-                "inter_intrabc_chroma",
+                "inter_intrabc_chroma_geometry",
                 tile_offset,
-                "inter.intrabc.chroma",
+                "inter.intrabc.chroma.geometry",
                 SPEC_MODE_INFO
             )
         })?;
