@@ -60,10 +60,7 @@ pub(crate) fn plan_luma_prediction(
         return Ok(IntraLumaPlan::Dc);
     }
     if modes.y_mode.is_paeth() {
-        let neighbours = block_ctx.neighbours(PlaneId::Y);
-        return (neighbours.has_above() || neighbours.has_left())
-            .then_some(IntraLumaPlan::PaethNeighbour)
-            .ok_or(UNSUPPORTED_PAETH_POSITION);
+        return Ok(IntraLumaPlan::PaethNeighbour);
     }
     if let Some(mode) = modes.supported_nondc_luma() {
         return plan_nondc_luma(mode, block_ctx);
@@ -496,11 +493,6 @@ const UNSUPPORTED_D203_POSITION: IntraLumaUnsupported = unsupported(
         neighbour = "left_below_left",
         block = "non_full_sb_or_not_first_row",
     ),
-);
-
-const UNSUPPORTED_PAETH_POSITION: IntraLumaUnsupported = unsupported(
-    "general_intra_paeth_luma_unverified_position",
-    missing_capability_message!("intra.luma.paeth", neighbour = "none"),
 );
 
 const UNSUPPORTED_MULTIROW_DIRECTIONAL: IntraLumaUnsupported = unsupported(

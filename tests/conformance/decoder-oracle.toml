@@ -444,7 +444,7 @@ status = "xfail_splot"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.inter_intra", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "298c4e654d708e57daaad29878d22d75a44777e65b3bdd79839260fc154ff149"
 avm_raw_sha256 = "0aa084e156a9d1dad81c4380b03e671ad5f816d8b47181e47623e0b1ec8644b1"
-unsupported_reason = "inter_interintra_unimplemented"
+unsupported_reason = "unsupported_10bit_non_dc_intra"
 
 [[fixture]]
 id = "syn-422-intra-64x64"

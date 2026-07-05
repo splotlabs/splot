@@ -44,6 +44,7 @@ mod source_read_math;
 pub(crate) mod tx_records;
 
 pub(crate) use self::recon::chroma_transform_deblock_block;
+#[cfg(test)]
 pub(crate) use self::recon::reconstruct_frontier_selectable_intra_region;
 
 /// Wraps a reconstructed workspace in the shared § 7.2 final-filter sink.

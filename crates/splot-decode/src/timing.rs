@@ -87,26 +87,6 @@ pub(crate) fn enter_sink(kind: SinkKind) -> SinkScope {
     SinkScope(enabled().then(|| (kind, Instant::now())))
 }
 
-/// Clears the per-thread reconstruction-sink accumulator before a tile decode.
-pub(crate) fn reset_sink() {
-    if enabled() {
-        SINK_NANOS.with(|cell| cell.set([0, 0]));
-    }
-}
-
-/// Emits the accumulated reconstruction-sink split (luma/chroma ms) for the
-/// tile just decoded.
-pub(crate) fn report_sink(phase: &str) {
-    if enabled() {
-        let [luma, chroma] = SINK_NANOS.with(Cell::get);
-        eprintln!(
-            "splot.decode_timing {phase}_luma_ms={:.3} {phase}_chroma_ms={:.3}",
-            luma as f64 / 1.0e6,
-            chroma as f64 / 1.0e6
-        );
-    }
-}
-
 /// Tracks which pool workers actually executed work inside one parallel stage.
 ///
 /// The tally is a bitmask over worker indexes (workers past 63 saturate into

@@ -479,9 +479,9 @@ fn simple_path_interintra_fixture_defers_fail_closed() {
     let Err(error) =
         decode_fixture_with_options(SIMPLE_INTERINTRA_10BIT_FIXTURE, &DecodeOptions::default())
     else {
-        panic!("the fixture pins the SIMPLE-path interintra defer");
+        panic!("the fixture pins the 10-bit Select-tx key-frame fail-closed defer");
     };
-    assert_eq!(unsupported_reason(error), "inter_interintra_unimplemented");
+    assert_eq!(unsupported_reason(error), "unsupported_10bit_non_dc_intra");
 }
 
 #[test]

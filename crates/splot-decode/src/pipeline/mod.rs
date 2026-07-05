@@ -29,9 +29,7 @@ use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::filters::deblock;
 #[cfg(test)]
 use crate::filters::wienerns_lr;
-use crate::filters::wienerns_lr::{
-    ensure_wienerns_lr_unit_tile_frontier, reconstruct_frontier_selectable_intra_region,
-};
+use crate::filters::wienerns_lr::ensure_wienerns_lr_unit_tile_frontier;
 use crate::prediction::inter;
 use crate::reference::buffer as reference_buffer;
 use crate::support::capability::missing_capability_message;
@@ -210,18 +208,6 @@ pub(crate) fn decode_key_frame(
     header: IvfHeader,
 ) -> Result<PipelineFrame> {
     let core = parse_frame_core(frame_envelope, sequence)?;
-    if route_wienerns_lr_selectable_full_recon(sequence, &core) {
-        return decode_wienerns_lr_selectable_full_recon_key_frame(
-            bytes,
-            options,
-            plan,
-            candidate,
-            frame_envelope,
-            sequence,
-            &core,
-            header,
-        );
-    }
     let (frame, frame_cdfs) = match sequence.general.bit_depth_idc {
         BitDepthIdc::Eight => {
             let (frame, _core, frame_cdfs) = frame_engine::decode_frame::<u8>(
@@ -257,63 +243,6 @@ pub(crate) fn decode_key_frame(
     Ok(PipelineFrame {
         frame,
         frame_cdfs,
-        frame_rate_numerator: header.timebase_denominator,
-        frame_rate_denominator: header.timebase_numerator,
-    })
-}
-
-fn route_wienerns_lr_selectable_full_recon(
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-) -> bool {
-    sequence.general.bit_depth_idc == BitDepthIdc::Ten
-        && core.is_key_frame
-        && core.frame_is_intra == Some(true)
-        && core
-            .intra_tail
-            .as_ref()
-            .is_some_and(|tail| tail.tx_mode == TxMode::Select)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn decode_wienerns_lr_selectable_full_recon_key_frame(
-    bytes: &[u8],
-    options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
-    candidate: &DecodePlannedObu,
-    frame_envelope: ObuEnvelope<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    header: IvfHeader,
-) -> Result<PipelineFrame> {
-    crate::timing::reset_sink();
-    let intra_tile_timer = crate::timing::start();
-    let region = reconstruct_frontier_selectable_intra_region(
-        bytes,
-        options,
-        plan,
-        candidate,
-        frame_envelope,
-        sequence,
-        core,
-        true,
-    )?;
-    crate::timing::report("key_intra_tile", intra_tile_timer);
-    crate::timing::report_sink("key_intra_sink");
-    let finish_timer = crate::timing::start();
-    let mut sink = region.sink;
-    sink.finish_intra_reconstruction(frame_envelope.offset)?;
-    crate::timing::report("key_intra_finish", finish_timer);
-    let filters_timer = crate::timing::start();
-    let filtered = sink.into_filtered_frame(
-        core,
-        deblock_quant_deltas(sequence, core),
-        frame_envelope.offset,
-    )?;
-    crate::timing::report("key_filters", filters_timer);
-    Ok(PipelineFrame {
-        frame: PipelineDecodedFrame::Ten(filtered),
-        frame_cdfs: region.frame_cdfs,
         frame_rate_numerator: header.timebase_denominator,
         frame_rate_denominator: header.timebase_numerator,
     })
@@ -362,7 +291,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
 
     let key_core = parse_frame_core(key_envelope, &sequence)?;
     ensure_intra_header_complete(&key_core, key_envelope.offset)?;
-    let full_recon_key_frame = route_wienerns_lr_selectable_full_recon(&sequence, &key_core);
     let mut candidates = plan.frame_candidates_all();
     let key_candidate = candidates.next().ok_or_else(|| {
         unsupported(
@@ -371,21 +299,17 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
             "minimal tier requires one selected key frame candidate",
         )
     })?;
-    if !full_recon_key_frame {
-        reject_extra_leading_key_payload_obus(leading_obus)?;
-    }
-    if !full_recon_key_frame {
-        ensure_wienerns_lr_unit_tile_frontier(
-            bytes,
-            options,
-            plan,
-            key_candidate,
-            key_envelope,
-            sequence_envelope.offset,
-            &sequence,
-            &key_core,
-        )?;
-    }
+    reject_extra_leading_key_payload_obus(leading_obus)?;
+    ensure_wienerns_lr_unit_tile_frontier(
+        bytes,
+        options,
+        plan,
+        key_candidate,
+        key_envelope,
+        sequence_envelope.offset,
+        &sequence,
+        &key_core,
+    )?;
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
 
     let sequence_inter = sequence.inter.as_ref().ok_or_else(|| {
