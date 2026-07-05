@@ -75,10 +75,16 @@ pub(crate) struct IntraEdgeCtx {
     pub(crate) enable_ibp: bool,
     /// §5.3 `enable_intra_edge_filter`.
     pub(crate) enable_intra_edge_filter: bool,
-    /// §7.13.2.15 `is_smooth` of the block's above neighbour.
+    /// §7.13.2.15 `is_smooth` of the block's above LUMA neighbour.
     pub(crate) above_smooth: bool,
-    /// §7.13.2.16 `is_smooth` of the block's left neighbour.
+    /// §7.13.2.16 `is_smooth` of the block's left LUMA neighbour.
     pub(crate) left_smooth: bool,
+    /// §7.13.2.15 `is_smooth` of the block's above CHROMA neighbour (its
+    /// reconstructed `UVMode` is SMOOTH / SMOOTH_V / SMOOTH_H), for the chroma
+    /// §7.13.2.17 `filterType`. Off-grid neighbours contribute `false`.
+    pub(crate) above_chroma_smooth: bool,
+    /// §7.13.2.16 `is_smooth` of the block's left CHROMA neighbour.
+    pub(crate) left_chroma_smooth: bool,
 }
 
 /// The pure §7.13.2.7 step-1 shape of one read edge: which edge, its

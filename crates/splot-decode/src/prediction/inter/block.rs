@@ -387,6 +387,15 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                 SPEC_MODE_INFO
             )
         })?;
+    let mut uv_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new(mi_rows, mi_cols)
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_uv_smooth_grid",
+                offset,
+                "inter.uv_smooth_grid",
+                SPEC_MODE_INFO
+            )
+        })?;
     let sb_h4 = superblock_h4(sequence, core).ok_or_else(|| {
         inter_missing!(
             "inter_sb_size",
@@ -457,6 +466,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                 &mut segment_id_state,
                 &mut mv_grid,
                 &mut y_smooth,
+                &mut uv_smooth,
                 &mut ref_mv_bank,
                 &mut warp_param_bank,
                 sb_h4,
@@ -676,6 +686,7 @@ fn decode_block<T: ReconSample>(
     segment_id_state: &mut TileSegmentIdState,
     mv_grid: &mut NeighbourMvGrid,
     y_smooth: &mut crate::prediction::intra_edge::TileYSmoothGrid,
+    uv_smooth: &mut crate::prediction::intra_edge::TileYSmoothGrid,
     ref_mv_bank: &mut Option<super::find_mv_stack::RefMvBank>,
     warp_param_bank: &mut super::find_mv_stack::WarpParamBank,
     sb_h4: usize,
@@ -1022,6 +1033,7 @@ fn decode_block<T: ReconSample>(
             frontier,
             sequence,
             Some(&*y_smooth),
+            Some(&*uv_smooth),
             core,
             joint_modes,
             uses_mrls,
@@ -1041,6 +1053,27 @@ fn decode_block<T: ReconSample>(
             bit_depth,
             tile_offset,
         )?;
+        if frontier.has_chroma && !frontier.is_luma_part() {
+            let chroma_ref = frontier.chroma_ref_geometry(); // § 7.13.2.15/16 chroma smoothness records at the § 5.20.4.1 CHROMA-REFERENCE geometry (coords + size), not the luma-leaf coords, so a `chroma_offset` leaf writes the cells a later one-sided/middle chroma block reads; a luma-only (`is_luma_part`) leaf sets no chroma cell
+            let (Ok(chroma_n4w), Ok(chroma_n4h)) = (
+                chroma_ref.size().num_4x4_wide(),
+                chroma_ref.size().num_4x4_high(),
+            ) else {
+                return Err(inter_diag!(
+                    "inter_block_chroma_ref_geometry",
+                    tile_offset,
+                    "chroma reference geometry lookup failed",
+                    SPEC_MODE_INFO
+                ));
+            };
+            uv_smooth.record(
+                chroma_ref.row(),
+                chroma_ref.col(),
+                chroma_n4w,
+                chroma_n4h,
+                leaf.uv_mode_is_smooth(),
+            );
+        }
         if !frontier.is_chroma_part() {
             y_smooth.record(mi_row, mi_col, n4w, n4h, leaf.y_mode_is_smooth());
             mv_grid.record_block(

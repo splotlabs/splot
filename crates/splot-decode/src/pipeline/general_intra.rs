@@ -80,6 +80,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
     sequence: &SequenceHeader,
     y_smooth: Option<&crate::prediction::intra_edge::TileYSmoothGrid>,
+    uv_smooth: Option<&crate::prediction::intra_edge::TileYSmoothGrid>,
     core: &FrameHeaderCore,
     joint_modes: &crate::bitstream::tile_payload::TileIntraJointModeState,
     uses_mrls: &crate::bitstream::tile_payload::TileUsesMrlsState,
@@ -150,6 +151,10 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     let (above_smooth, left_smooth) = y_smooth.map_or((false, false), |grid| {
         grid.block_smoothness(frontier.c, frontier.r)
     });
+    let chroma_ref = frontier.chroma_ref_geometry();
+    let (above_chroma_smooth, left_chroma_smooth) = uv_smooth.map_or((false, false), |grid| {
+        grid.block_smoothness(chroma_ref.col(), chroma_ref.row()) // § 7.13.2.15/16 at the § 5.20.4.1 CHROMA-REFERENCE origin (the coords the chroma `block_ctx` uses), so a `chroma_offset` leaf reads the correct UV-neighbour cell, not the luma-leaf origin
+    });
     let intra_edge = crate::prediction::intra_edge::IntraEdgeCtx {
         enable_ibp: sequence
             .intra
@@ -161,6 +166,8 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             .is_some_and(|intra| intra.enable_intra_edge_filter),
         above_smooth,
         left_smooth,
+        above_chroma_smooth,
+        left_chroma_smooth,
     };
     let chroma_tools = general_intra_chroma_tools(sequence, core);
     let cfl_ds_filter_index = sequence_cfl_ds_filter_index(sequence);
@@ -490,7 +497,10 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         intra_edge,
         tile_offset,
     )?;
-    Ok(GeneralIntraLeafMode::chroma(chroma.is_cfl()))
+    let uv_smooth = chroma
+        .supported_chroma_mode(y_mode)
+        .is_some_and(SupportedChromaMode::is_smooth);
+    Ok(GeneralIntraLeafMode::chroma(chroma.is_cfl()).with_uv_smooth(uv_smooth))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -563,7 +573,11 @@ fn leaf_mode(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
 fn leaf_mode_for_block(modes: &GeneralIntraBlockModes, has_chroma: bool) -> GeneralIntraLeafMode {
     let leaf = leaf_mode(modes);
     if has_chroma {
-        leaf.with_uv_cfl(modes.is_cfl())
+        leaf.with_uv_cfl(modes.is_cfl()).with_uv_smooth(
+            modes
+                .supported_chroma_mode()
+                .is_some_and(SupportedChromaMode::is_smooth),
+        )
     } else {
         leaf
     }
@@ -807,8 +821,8 @@ fn rect_luma_plan_for_parts_ext(
     }
     if let Some(p_angle @ 1..=89) = directional_p_angle
         && ((neighbours.has_above()
-            && neighbours.num_above_right() > 0
-            && (supported_rect || (supported_one_sided_above_rect && neighbours.has_left())))
+            && (neighbours.num_above_right() > 0 || neighbours.has_left())
+            && (supported_rect || supported_one_sided_above_rect))
             || (!neighbours.has_above() && supported_one_sided_above_rect && neighbours.has_left()))
     {
         return Ok(RectLumaPlan::OneSidedAbove { p_angle, use_tcq });
@@ -898,17 +912,7 @@ fn rect_chroma_plan(
         }
         return Err(error);
     }
-    Ok(
-        if let Some(p_angle) = rect_chroma_middle_p_angle_for_parts(
-            mode,
-            rect_luma_directional_p_angle(modes, block_ctx),
-            block_ctx,
-        ) {
-            RectChromaPlan::Middle { p_angle }
-        } else {
-            RectChromaPlan::Mode(mode)
-        },
-    )
+    rect_chroma_plan_for_mode(mode, modes.angle_delta_y, block_ctx)
 }
 
 fn chroma_plan_for_modes(
@@ -930,28 +934,79 @@ fn chroma_plan_for_modes(
         missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
     ))?;
     ensure_supported_chroma_capability(mode, block_ctx)?;
-    Ok(RectChromaPlan::Mode(mode))
+    rect_chroma_plan_for_mode(mode, modes.angle_delta_y, block_ctx)
 }
 
-fn rect_chroma_middle_p_angle_for_parts(
+/// Resolves the chroma reconstruction plan for a rect residual-plan leaf. A
+/// directional `UVMode` becomes the § 7.13.2.8 delta-adjusted angle plan: the
+/// § 9.2 base angle plus the inherited § 5.20.5.3 `AngleDeltaUV` (the luma angle
+/// delta for a `*Follow` mode, `0` otherwise) times `ANGLE_STEP`, then the
+/// § 5.20.7.29 wide-angle remap. The remapped pAngle selects the middle
+/// (`91..=179`) or one-sided (zone-1 `1..=89` / zone-3 `181..=269`)
+/// reconstruction so the leaf dispatches the exact angle rather than the mode's
+/// bare base angle. A non-directional mode, or a pAngle that lands on a cardinal
+/// (`90` / `180`), falls back to [`RectChromaPlan::Mode`], which the mode dispatch
+/// reconstructs from the base mode.
+fn rect_chroma_plan_for_mode(
     mode: SupportedChromaMode,
-    follow_directional_p_angle: Option<u16>,
+    angle_delta_y: i8,
     block_ctx: BlockCtx,
-) -> Option<u16> {
-    let base = match mode {
-        SupportedChromaMode::D135Follow
-        | SupportedChromaMode::D113Follow
-        | SupportedChromaMode::D157Follow => i32::from(follow_directional_p_angle?),
-        SupportedChromaMode::D135 => 135,
-        SupportedChromaMode::D113 => 113,
-        SupportedChromaMode::D157 => 157,
-        _ => return None,
+) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
+    let Some((base, inherit_luma_delta)) = mode.directional_base_angle() else {
+        return Ok(RectChromaPlan::Mode(mode));
     };
+    let angle_delta = if inherit_luma_delta { angle_delta_y } else { 0 };
+    let nominal = base + i32::from(angle_delta) * ANGLE_STEP;
     let block = block_ctx.plane_block(PlaneId::U);
-    let width = block.width4().checked_mul(4)?;
-    let height = block.height4().checked_mul(4)?;
-    let p_angle = u16::try_from(wide_angle_mapped_p_angle(width, height, base)).ok()?;
-    (91..=179).contains(&p_angle).then_some(p_angle)
+    let (Some(width), Some(height)) = (
+        block.width4().checked_mul(4),
+        block.height4().checked_mul(4),
+    ) else {
+        return Ok(RectChromaPlan::Mode(mode));
+    };
+    match u16::try_from(wide_angle_mapped_p_angle(width, height, nominal)) {
+        Ok(p_angle) if (91..=179).contains(&p_angle) => Ok(RectChromaPlan::Middle { p_angle }),
+        Ok(p_angle) if (1..90).contains(&p_angle) || (181..270).contains(&p_angle) => {
+            ensure_remapped_one_sided_edge_available(p_angle, block_ctx)?;
+            Ok(RectChromaPlan::OneSided { p_angle })
+        }
+        _ => Ok(RectChromaPlan::Mode(mode)),
+    }
+}
+
+/// Fail-closed guard for the § 5.20.7.29 delta/wide-angle REMAPPED one-sided
+/// chroma pAngle: the § 7.13.2.8 read edge is selected by the remapped pAngle,
+/// not the original `UVMode` edge class the capability check validated, so a
+/// remap that flips the zone (e.g. a first-column `*Follow` with a positive
+/// `AngleDeltaY`, or a tall D45 mapped into zone 3) can land on an edge the
+/// stream never made available. Zone-1 (`pAngle < 90`) reads the above row; the
+/// § 7.13.2.1 one-sided above builder synthesizes the above row from the left
+/// sample on a top-row leaf, so `has_above` OR a top-row (no-above) leaf with
+/// `col > 0` both admit — do NOT reject a top-row-left-only zone-1 leaf. Zone-3
+/// (`pAngle >= 181`) reads the left column, and the zone-3 left builder requires
+/// `x > 0` — exactly `has_left` (`col4 != 0`). Reject at the plan stage rather
+/// than crash mid-reconstruction.
+fn ensure_remapped_one_sided_edge_available(
+    p_angle: u16,
+    block_ctx: BlockCtx,
+) -> core::result::Result<(), ChromaCapabilityUnsupported> {
+    let neighbours = block_ctx.neighbours(PlaneId::U);
+    let available = if p_angle < 90 {
+        neighbours.has_above() || (!neighbours.has_above() && neighbours.has_left())
+    } else {
+        neighbours.has_left()
+    };
+    if available {
+        Ok(())
+    } else {
+        Err(unsupported_chroma(
+            "general_intra_chroma_one_sided_remapped_edge",
+            missing_capability_message!(
+                "intra.chroma.directional.one_sided_remapped",
+                edge = "unavailable",
+            ),
+        ))
+    }
 }
 
 fn chroma_plan_for_parts(
@@ -978,20 +1033,10 @@ fn chroma_plan_for_parts(
         ))?;
     if block_ctx.block().width4() == block_ctx.block().height4() {
         ensure_supported_chroma_capability(mode, block_ctx)?;
-        return Ok(RectChromaPlan::Mode(mode));
+    } else {
+        ensure_supported_rect_chroma_capability(mode, block_ctx)?;
     }
-    ensure_supported_rect_chroma_capability(mode, block_ctx)?;
-    Ok(
-        if let Some(p_angle) = rect_chroma_middle_p_angle_for_parts(
-            mode,
-            directional_p_angle_for_luma(y_mode, angle_delta_y, block_ctx),
-            block_ctx,
-        ) {
-            RectChromaPlan::Middle { p_angle }
-        } else {
-            RectChromaPlan::Mode(mode)
-        },
-    )
+    rect_chroma_plan_for_mode(mode, angle_delta_y, block_ctx)
 }
 
 fn cfl_chroma_plan(
@@ -1131,7 +1176,7 @@ fn ten_bit_general_intra_chroma_admitted(
     let chroma_one_sided_above_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
     let d135_left_only =
         mode == Some(SupportedChromaMode::D135) && !neighbours.has_above() && neighbours.has_left();
-    let one_sided_above_available = (neighbours.has_above() && neighbours.num_above_right() > 0)
+    let one_sided_above_available = (neighbours.has_above() && neighbours.num_above_right() > 0) // 10-bit deliberately omits the 8-bit `has_above && has_left && num_above_right == 0` one-sided-above relax and the delta/wide-angle-remapped one-sided-above admission: both stay fail-closed pending a 10-bit oracle vector to confirm byte-exactness
         || (!neighbours.has_above() && neighbours.has_left());
     let no_neighbour_horizontal_first = mode == Some(SupportedChromaMode::Horizontal)
         && block_ctx.block().width4() == FULL_SB_N4_LUMA
@@ -1227,7 +1272,7 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ChromaCapabilityUnsupported {
     reason_id: &'static str,
     message: &'static str,
@@ -1428,7 +1473,8 @@ fn ensure_supported_rect_chroma_capability(
         }
         mode if rect_chroma_is_one_sided_above_directional(mode)
             && supported_smooth_shape
-            && ((neighbours.has_above() && neighbours.num_above_right() > 0)
+            && ((neighbours.has_above()
+                && (neighbours.num_above_right() > 0 || neighbours.has_left()))
                 || (!neighbours.has_above() && neighbours.has_left())) =>
         {
             Ok(())
@@ -1575,6 +1621,24 @@ fn general_intra_residual_error(
             "general_intra_directional_above_edge",
             offset,
             missing_capability_message!("intra.luma.directional.above_edge", neighbour = "corner",),
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ),
+        GeneralIntraResidualError::UnsupportedChromaOneSidedEdgeFilter => general_intra_at!(
+            "general_intra_chroma_one_sided_edge_filter",
+            offset,
+            missing_capability_message!(
+                "intra.chroma.directional.one_sided_edge_filter",
+                strength = "nonzero",
+            ),
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ),
+        GeneralIntraResidualError::UnsupportedChromaMiddleEdgeFilter => general_intra_at!(
+            "general_intra_chroma_middle_edge_filter",
+            offset,
+            missing_capability_message!(
+                "intra.chroma.directional.middle_edge_filter",
+                strength = "nonzero_or_corner",
+            ),
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
         GeneralIntraResidualError::MissingCardinalEdge => general_intra_at!(
@@ -2372,100 +2436,74 @@ mod tests {
         );
     }
 
+    #[track_caller]
+    fn assert_rect_middle_chroma_admitted(
+        mode: SupportedChromaMode,
+        angle_delta: i8,
+        block: BlockCtx,
+        p_angle: u16,
+    ) {
+        assert!(ensure_supported_rect_chroma_capability(mode, block).is_ok());
+        assert!(ten_bit_general_intra_chroma_admitted(Some(mode), block));
+        assert_eq!(
+            rect_chroma_plan_for_mode(mode, angle_delta, block),
+            Ok(RectChromaPlan::Middle { p_angle })
+        );
+    }
+
     #[test]
     fn admits_rect_middle_chroma_with_above_left_edges() {
         let rect_block = ctx(FULL_SB_N4_LUMA, 320, 8, FULL_SB_N4_LUMA);
-
-        assert!(
-            ensure_supported_rect_chroma_capability(SupportedChromaMode::D135Follow, rect_block)
-                .is_ok()
-        );
-        assert!(ten_bit_general_intra_chroma_admitted(
-            Some(SupportedChromaMode::D135Follow),
-            rect_block
-        ));
-        assert_eq!(
-            rect_chroma_middle_p_angle_for_parts(
-                SupportedChromaMode::D135Follow,
-                Some(126),
-                rect_block,
-            ),
-            Some(126)
-        );
+        assert_rect_middle_chroma_admitted(SupportedChromaMode::D135Follow, -3, rect_block, 126);
     }
 
     #[test]
     fn admits_top_row_rect_d113_follow_chroma_with_left_only_edge() {
         let first_row_rect_block = ctx(0, 316, 4, 8);
-
-        assert!(
-            ensure_supported_rect_chroma_capability(
-                SupportedChromaMode::D113Follow,
-                first_row_rect_block,
-            )
-            .is_ok()
-        );
-        assert!(ten_bit_general_intra_chroma_admitted(
-            Some(SupportedChromaMode::D113Follow),
-            first_row_rect_block
-        ));
-        assert_eq!(
-            rect_chroma_middle_p_angle_for_parts(
-                SupportedChromaMode::D113Follow,
-                Some(110),
-                first_row_rect_block,
-            ),
-            Some(110)
+        assert_rect_middle_chroma_admitted(
+            SupportedChromaMode::D113Follow,
+            -1,
+            first_row_rect_block,
+            110,
         );
     }
 
     #[test]
     fn admits_top_row_rect_d157_follow_chroma_with_left_only_edge() {
         let first_row_rect_block = ctx(0, 352, 16, 8);
-
-        assert!(
-            ensure_supported_rect_chroma_capability(
-                SupportedChromaMode::D157Follow,
-                first_row_rect_block,
-            )
-            .is_ok()
-        );
-        assert!(ten_bit_general_intra_chroma_admitted(
-            Some(SupportedChromaMode::D157Follow),
-            first_row_rect_block
-        ));
-        assert_eq!(
-            rect_chroma_middle_p_angle_for_parts(
-                SupportedChromaMode::D157Follow,
-                Some(154),
-                first_row_rect_block,
-            ),
-            Some(154)
+        assert_rect_middle_chroma_admitted(
+            SupportedChromaMode::D157Follow,
+            -1,
+            first_row_rect_block,
+            154,
         );
     }
 
     #[test]
     fn admits_top_row_rect_d135_chroma_with_left_only_edge() {
         let first_row_rect_block = ctx(0, 320, 32, 16);
+        assert_rect_middle_chroma_admitted(SupportedChromaMode::D135, 0, first_row_rect_block, 135);
+    }
 
-        assert!(
-            ensure_supported_rect_chroma_capability(
-                SupportedChromaMode::D135,
-                first_row_rect_block,
-            )
-            .is_ok()
-        );
-        assert!(ten_bit_general_intra_chroma_admitted(
-            Some(SupportedChromaMode::D135),
-            first_row_rect_block
-        ));
+    /// Tall first-column chroma 4x8 (luma 2x4): D45Follow base 45 wide-angle
+    /// remaps into zone-3 (225), which reads the LEFT column, but the block has no
+    /// left neighbour (col4 == 0). The original `UVMode` edge class only needed
+    /// above|left; the remapped zone flips the required edge, so the plan must fail
+    /// closed instead of taking the zone-3 left path (which needs `x > 0`).
+    #[test]
+    fn rejects_remapped_one_sided_chroma_when_flipped_edge_unavailable() {
+        let first_col_tall = ctx(4, 0, 2, 4);
+        assert!(first_col_tall.neighbours(PlaneId::U).has_above());
+        assert!(!first_col_tall.neighbours(PlaneId::U).has_left());
         assert_eq!(
-            rect_chroma_middle_p_angle_for_parts(
-                SupportedChromaMode::D135,
-                None,
-                first_row_rect_block,
-            ),
-            Some(135)
+            rect_chroma_plan_for_mode(SupportedChromaMode::D45Follow, 0, first_col_tall),
+            Err(unsupported_chroma(
+                "general_intra_chroma_one_sided_remapped_edge",
+                missing_capability_message!(
+                    "intra.chroma.directional.one_sided_remapped",
+                    edge = "unavailable",
+                ),
+            ))
         );
     }
 

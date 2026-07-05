@@ -105,6 +105,9 @@ pub(crate) enum RectChromaPlan {
     Middle {
         p_angle: u16,
     },
+    OneSided {
+        p_angle: u16,
+    },
     Cfl {
         params: CflParams,
         cfl_ds_filter_index: u8,
@@ -227,6 +230,9 @@ enum ResidualReconstructionPlan {
         mode: SupportedChromaMode,
     },
     ChromaMiddle {
+        p_angle: u16,
+    },
+    ChromaOneSided {
         p_angle: u16,
     },
     ChromaCfl {
@@ -522,6 +528,9 @@ fn chroma_reconstruction(plan: RectChromaPlan) -> ResidualReconstructionPlan {
     match plan {
         RectChromaPlan::Mode(mode) => ResidualReconstructionPlan::Chroma { mode },
         RectChromaPlan::Middle { p_angle } => ResidualReconstructionPlan::ChromaMiddle { p_angle },
+        RectChromaPlan::OneSided { p_angle } => {
+            ResidualReconstructionPlan::ChromaOneSided { p_angle }
+        }
         RectChromaPlan::Cfl {
             params,
             cfl_ds_filter_index,
@@ -1539,6 +1548,14 @@ impl ResidualPlanePlan {
                 )
             }
             ResidualReconstructionPlan::ChromaMiddle { p_angle } => {
+                if !chroma_middle_edge_filter_is_noop(
+                    intra_edge,
+                    p_angle,
+                    self.tx.width_log2(),
+                    self.tx.height_log2(),
+                ) {
+                    return Err(GeneralIntraResidualError::UnsupportedChromaMiddleEdgeFilter);
+                }
                 crate::pipeline::reconstruct::reconstruct_general_intra_middle_neighbour_rect_block_into(
                     workspace,
                     coeffs,
@@ -1554,6 +1571,56 @@ impl ResidualPlanePlan {
                     block_ctx.bit_depth(),
                     middle_edge_filters(),
                 )
+            }
+            ResidualReconstructionPlan::ChromaOneSided { p_angle } => {
+                if !chroma_one_sided_edge_filter_is_noop(
+                    intra_edge,
+                    p_angle,
+                    self.tx.width_log2(),
+                    self.tx.height_log2(),
+                ) {
+                    return Err(GeneralIntraResidualError::UnsupportedChromaOneSidedEdgeFilter);
+                }
+                let neighbours =
+                    block_ctx.neighbours_from_block_decoded(PlaneId::U, block_decoded);
+                if p_angle < 90 {
+                    crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_neighbour_block_into(
+                        workspace,
+                        coeffs,
+                        p_angle,
+                        self.plane_id,
+                        self.x,
+                        self.y,
+                        self.tx.width_log2(),
+                        self.tx.height_log2(),
+                        qindex,
+                        neighbours.num_above_right(),
+                        crate::pipeline::reconstruct::OneSidedAboveMrl::default(),
+                        false,
+                        None,
+                        block_ctx.bit_depth(),
+                        crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
+                    )
+                } else {
+                    crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_left_neighbour_block_into(
+                        workspace,
+                        coeffs,
+                        p_angle,
+                        self.plane_id,
+                        self.x,
+                        self.y,
+                        self.tx.width_log2(),
+                        self.tx.height_log2(),
+                        qindex,
+                        neighbours.num_below_left(),
+                        neighbours.has_above(),
+                        0,
+                        false,
+                        None,
+                        block_ctx.bit_depth(),
+                        crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
+                    )
+                }
             }
             ResidualReconstructionPlan::Chroma { mode } => {
                 let neighbours =
@@ -1670,6 +1737,86 @@ fn middle_edge_filters() -> crate::pipeline::reconstruct::TwoSidedMiddleEdgeFilt
         above: crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
         left: crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
     }
+}
+
+/// The § 7.13.2.17 chroma `filterType` (`0` / `1`) for a non-IBP directional leaf:
+/// the OR of the § 7.13.2.15/16 above/left CHROMA neighbour smoothness. `None`
+/// when `enable_intra_edge_filter == 0`, which skips § 7.13.2.7 entirely (always a
+/// no-op).
+fn chroma_edge_filter_type(intra_edge: crate::prediction::intra_edge::IntraEdgeCtx) -> Option<u8> {
+    intra_edge
+        .enable_intra_edge_filter
+        .then(|| u8::from(intra_edge.above_chroma_smooth || intra_edge.left_chroma_smooth))
+}
+
+/// `true` when the § 7.13.2.7 one-sided chroma edge filter resolves to a no-op
+/// for `p_angle` over a `w` x `h` transform, so the [`ChromaOneSided`] recon over
+/// the raw § 7.13.2.1 edge is byte-exact with the default filter; `false` when a
+/// non-zero § 7.13.2.17 strength is resolved (the caller then fails closed rather
+/// than emit wrong chroma).
+///
+/// The § 7.13.2.14 corner blend never fires on a one-sided (non-IBP) leaf
+/// (`needAbove && needLeft` is never both true), so a resolved strength of `0` is
+/// the whole no-op condition. Zone-1 (`pAngle < 90`) filters `angleAbove =
+/// pAngle - 90` over `(w, h)`; zone-3 (`pAngle >= 181`) filters `angleLeft =
+/// pAngle - 180` over `(h, w)`.
+///
+/// [`ChromaOneSided`]: ResidualReconstructionPlan::ChromaOneSided
+fn chroma_one_sided_edge_filter_is_noop(
+    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
+    p_angle: u16,
+    tx_width_log2: u32,
+    tx_height_log2: u32,
+) -> bool {
+    let Some(filter_type) = chroma_edge_filter_type(intra_edge) else {
+        return true;
+    };
+    let (w, h) = (1u32 << tx_width_log2, 1u32 << tx_height_log2);
+    let read_edge_strength = |a, b, delta| {
+        crate::filters::wienerns_lr::recon::intra_edge_filter_strength(a, b, filter_type, delta)
+    };
+    let strength = if p_angle < 90 {
+        read_edge_strength(w, h, i32::from(p_angle) - 90)
+    } else {
+        read_edge_strength(h, w, i32::from(p_angle) - 180)
+    };
+    strength == 0
+}
+
+/// `true` when the § 7.13.2.7 middle-angle chroma edge filter is a pure no-op for
+/// `p_angle` (`91..=179`) over a `w` x `h` transform, so the [`ChromaMiddle`]
+/// recon over the raw § 7.13.2.1 edges with the default filters is byte-exact;
+/// `false` when a non-zero § 7.13.2.17 strength on EITHER edge, or a § 7.13.2.14
+/// corner blend, would change the output (the caller then fails closed).
+///
+/// A middle-angle (`90 < pAngle < 180`) leaf reads BOTH edges: the above edge
+/// filters `angleAbove = pAngle - 90` over `(w, h)` and the left edge filters
+/// `angleLeft = pAngle - 180` over `(h, w)`. Unlike the one-sided leaf, the
+/// § 7.13.2.14 corner blend CAN fire here (`needAbove && needLeft` are both true
+/// when both edges exist) and rewrites `AboveRow[-1]` INDEPENDENTLY of the strength
+/// at `(w + h) >= 24`, so a strength-0 block with a firing corner is NOT a no-op.
+/// The default [`middle_edge_filters`] apply neither, so admit only when both
+/// strengths are `0` AND the corner cannot fire.
+///
+/// [`ChromaMiddle`]: ResidualReconstructionPlan::ChromaMiddle
+fn chroma_middle_edge_filter_is_noop(
+    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
+    p_angle: u16,
+    tx_width_log2: u32,
+    tx_height_log2: u32,
+) -> bool {
+    let Some(filter_type) = chroma_edge_filter_type(intra_edge) else {
+        return true;
+    };
+    let (w, h) = (1u32 << tx_width_log2, 1u32 << tx_height_log2);
+    if w + h >= 24 {
+        return false;
+    }
+    let read_edge_strength = |a, b, delta| {
+        crate::filters::wienerns_lr::recon::intra_edge_filter_strength(a, b, filter_type, delta)
+    };
+    read_edge_strength(w, h, i32::from(p_angle) - 90) == 0
+        && read_edge_strength(h, w, i32::from(p_angle) - 180) == 0
 }
 
 fn chroma_angle_delta_uv(
@@ -2051,6 +2198,7 @@ const fn unsupported(
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::prediction::intra_edge::IntraEdgeCtx;
     use crate::tile::block_context::{BlockRect, ChromaSampling, TxShape};
     use splot_recon::BitDepth;
 
@@ -2262,5 +2410,41 @@ mod tests {
     fn ctx(block: BlockRect, bit_depth: BitDepth) -> BlockCtx {
         let tx = TxShape::from_luma_4x4(block.width4(), block.height4()).expect("test tx shape");
         BlockCtx::new(block, tx, 32, 32, bit_depth, ChromaSampling::Yuv420)
+    }
+
+    fn edge_ctx(enable: bool, above_chroma_smooth: bool, left_chroma_smooth: bool) -> IntraEdgeCtx {
+        IntraEdgeCtx {
+            enable_ibp: false,
+            enable_intra_edge_filter: enable,
+            above_smooth: false,
+            left_smooth: false,
+            above_chroma_smooth,
+            left_chroma_smooth,
+        }
+    }
+
+    /// Both chroma edge-filter no-op gates track the resolved § 7.13.2.17 strength.
+    /// `enable_intra_edge_filter == 0` is always a no-op. One-sided D67 4x8 (blkWh
+    /// 12, |delta| 23) resolves strength 0 for a non-smooth chroma neighbour
+    /// (`filterType 0`, admit — the syn-intra / syn-sdp shape) and strength 1 for a
+    /// smooth one (`filterType 1`, fail closed); zone-3 (pAngle 203) mirrors zone-1.
+    /// Middle pAngle 135 over a 4x4 unit (`w + h == 8 < 24`, no § 7.13.2.14 corner;
+    /// both `|angleAbove| == |angleLeft| == 45`) admits for a non-smooth neighbour
+    /// and fails closed for a smooth one; any unit with `w + h >= 24` fails closed
+    /// because the corner blend can rewrite `AboveRow[-1]` regardless of strength.
+    #[test]
+    fn chroma_edge_filter_noop_gates_track_resolved_strength_and_corner() {
+        let one_sided = chroma_one_sided_edge_filter_is_noop;
+        assert!(one_sided(edge_ctx(false, true, true), 67, 2, 3));
+        assert!(one_sided(edge_ctx(true, false, false), 67, 2, 3));
+        assert!(!one_sided(edge_ctx(true, true, false), 67, 2, 3));
+        assert!(!one_sided(edge_ctx(true, false, true), 67, 2, 3));
+        assert!(one_sided(edge_ctx(true, false, false), 203, 2, 3));
+
+        let middle = chroma_middle_edge_filter_is_noop;
+        assert!(middle(edge_ctx(false, true, true), 135, 2, 2));
+        assert!(middle(edge_ctx(true, false, false), 135, 2, 2));
+        assert!(!middle(edge_ctx(true, true, false), 135, 2, 2));
+        assert!(!middle(edge_ctx(true, false, false), 135, 3, 4));
     }
 }

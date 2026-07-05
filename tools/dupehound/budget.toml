@@ -34,4 +34,4 @@
 # Retiring the walk-#2 selectable-reconstruction surface (recon.rs 5200 -> 478,
 # the IntrABC DV-range cluster, and their tests) lowered the metric 3341 -> 3247
 # (-94); ratcheted down with the cluster.
-max_deletable_lines = 3247
+max_deletable_lines = 3225
