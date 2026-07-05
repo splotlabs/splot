@@ -212,7 +212,7 @@ mod tests {
     };
 
     const BROAD_FIXTURE: &[u8] =
-        include_bytes!("../../../../tests/conformance/vectors/valid/syn-key-intra-64x64.ivf");
+        include_bytes!("../../../../tests/conformance/vectors/valid/syn-mono-intra-64x64.ivf");
 
     fn context(threads: ThreadCount) -> DecodeContext {
         DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()

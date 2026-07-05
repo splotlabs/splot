@@ -410,22 +410,17 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
     block_ctx: BlockCtx,
     tile_offset: ByteOffset,
 ) -> Result<GeneralIntraLeafMode> {
-    let y_mode = frontier.stored_luma_y_mode().ok_or_else(|| {
-        general_intra_at!(
-            "general_intra_missing_sdp_luma_mode",
-            tile_offset,
-            "SDP chroma decode requires stored collocated luma mode facts",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        )
-    })?;
-    let angle_delta_y = frontier.stored_luma_angle_delta_y().ok_or_else(|| {
-        general_intra_at!(
-            "general_intra_missing_sdp_luma_angle",
-            tile_offset,
-            "SDP chroma decode requires stored collocated luma angle facts",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        )
-    })?;
+    let (y_mode, angle_delta_y) = frontier
+        .stored_luma_y_mode()
+        .zip(frontier.stored_luma_angle_delta_y())
+        .ok_or_else(|| {
+            general_intra_at!(
+                "general_intra_missing_sdp_luma_mode",
+                tile_offset,
+                "SDP chroma decode requires the collocated luma-part mode facts (an intraBC luma part records DC_PRED)",
+                GENERAL_INTRA_MODE_SPEC_SECTION,
+            )
+        })?;
     let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
     let mode_start_bits = symbols.consumed_bits().get();
     let chroma = crate::bitstream::tile_payload::decode_general_intra_chroma_block_mode(
@@ -704,7 +699,8 @@ fn rect_luma_mrl_plan_for_parts(
             use_tcq,
         });
     }
-    if p_angle > 0 && p_angle < 90 && neighbours.has_above() && neighbours.has_left() {
+    let no_left_zone1_admitted = neighbours.has_left() || block_ctx.bit_depth() == BitDepth::Eight; // § 7.13.2.8 one-sided-above never reads left, so no-left is spec-admissible; `Eight` is a conservative scope limiter (10-bit fail-closed until oracle-verified), not a spec condition
+    if p_angle > 0 && p_angle < 90 && neighbours.has_above() && no_left_zone1_admitted {
         let p_angle = u16::try_from(p_angle).map_err(|_| unsupported_rect_luma())?;
         return Ok(RectLumaPlan::OneSidedAboveMrl {
             p_angle,
@@ -1258,8 +1254,7 @@ fn ensure_supported_chroma_capability(
         && neighbours.has_left();
     let one_sided_above_subblock = chroma_block.width4() >= 1
         && chroma_block.height4() >= 1
-        && ((neighbours.has_above() && neighbours.num_above_right() > 0)
-            || (!neighbours.has_above() && neighbours.has_left()));
+        && (neighbours.has_above() || neighbours.has_left()); // § 7.13.2.1 clamps the above-right read to the frame edge (`aboveLimit`), so a right-edge subblock with no above-right is admissible like the cardinal path
     match mode {
         SupportedChromaMode::Dc | SupportedChromaMode::D203Follow | SupportedChromaMode::D203 => {
             Ok(())

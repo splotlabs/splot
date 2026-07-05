@@ -189,6 +189,10 @@ pub(crate) struct IntrabcPredictionGeometry {
     /// predictor reads through `scaling` and §7.13.3.18 reference clipping instead.
     pub(crate) source: PlaneRect,
     pub(crate) target: PlaneRect,
+    /// Frame luma MI columns/rows, so the caller can re-derive a subsampled chroma
+    /// plane scaling for the same block vector.
+    pub(crate) ref_mi_cols: i64,
+    pub(crate) ref_mi_rows: i64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1109,6 +1113,8 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
         fractional,
         source,
         target,
+        ref_mi_cols: domain.ref_mi_cols,
+        ref_mi_rows: domain.ref_mi_rows,
     })
 }
 
