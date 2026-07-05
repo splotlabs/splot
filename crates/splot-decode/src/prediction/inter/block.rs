@@ -861,8 +861,6 @@ fn decode_block<T: ReconSample>(
                     sequence,
                     core,
                     IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
-                    use_skip.skip_flag,
-                    None,
                     tile_offset,
                 )?)
             } else {

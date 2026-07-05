@@ -483,34 +483,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             })
     }
 
-    /// Applies § 7.20 Wiener NS loop restoration to the luma plane.
-    ///
-    /// Restoration blocks are independent (immutable sources, disjoint
-    /// outputs), so they compute on the installed pool and publish serially
-    /// in block order. The workspace still holds the post-CDEF/CCSO samples
-    /// the § 7.20.2 sources were snapshotted from, so only filtered block
-    /// rectangles need publishing.
-    #[cfg(test)]
-    pub(crate) fn apply_luma_lr(
-        &mut self,
-        core: &FrameHeaderCore,
-        offset: ByteOffset,
-        lr_source_blocks: &[WienerNsLrSourceBlock],
-        lr_unit_filters: &[WienerNsLrUnitFilter],
-        curr_luma: &[u16],
-        cdef_luma: &[u16],
-    ) -> Result<()> {
-        self.apply_luma_lr_runs(
-            core,
-            offset,
-            &coalesced_lr_source_rows(lr_source_blocks, PlaneId::Y.index()),
-            lr_unit_filters,
-            curr_luma,
-            cdef_luma,
-        )
-    }
-
-    /// [`Self::apply_luma_lr`] over already-coalesced luma runs.
+    /// Applies §7.17 luma loop restoration over already-coalesced luma runs.
     pub(crate) fn apply_luma_lr_runs(
         &mut self,
         core: &FrameHeaderCore,
@@ -654,37 +627,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
     }
 
-    /// Applies § 7.20 Wiener NS loop restoration to one chroma plane, with
-    /// the same block independence and publication contract as
-    /// [`Self::apply_luma_lr`].
-    #[allow(clippy::too_many_arguments)]
-    #[cfg(test)]
-    pub(crate) fn apply_chroma_lr(
-        &mut self,
-        core: &FrameHeaderCore,
-        offset: ByteOffset,
-        plane_id: PlaneId,
-        lr_source_blocks: &[WienerNsLrSourceBlock],
-        lr_unit_filters: &[WienerNsLrUnitFilter],
-        curr_chroma: &[u16],
-        cdef_chroma: &[u16],
-        curr_luma: &[u16],
-        cdef_luma: &[u16],
-    ) -> Result<()> {
-        self.apply_chroma_lr_runs(
-            core,
-            offset,
-            plane_id,
-            &coalesced_lr_source_rows(lr_source_blocks, plane_id.index()),
-            lr_unit_filters,
-            curr_chroma,
-            cdef_chroma,
-            curr_luma,
-            cdef_luma,
-        )
-    }
-
-    /// [`Self::apply_chroma_lr`] over already-coalesced plane runs.
+    /// Applies §7.17 chroma loop restoration over already-coalesced plane runs.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn apply_chroma_lr_runs(
         &mut self,

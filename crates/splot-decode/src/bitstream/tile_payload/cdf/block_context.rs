@@ -80,10 +80,6 @@ impl IntraYMode {
         self.0 as usize
     }
 
-    /// AV2 § 9.2 `H_PRED` luma mode, for tests.
-    #[cfg(test)]
-    pub(crate) const H_PRED_FOR_TEST: Self = Self(Self::H_PRED);
-
     /// AV2 § 9.2 `V_PRED` luma mode, for tests.
     #[cfg(test)]
     pub(crate) const V_PRED_FOR_TEST: Self = Self(Self::V_PRED);
@@ -107,10 +103,6 @@ impl IntraYMode {
     /// AV2 § 9.2 `D157_PRED` luma mode, for tests.
     #[cfg(test)]
     pub(crate) const D157_PRED_FOR_TEST: Self = Self(Self::D157_PRED);
-
-    /// AV2 § 9.2 `PAETH_PRED` luma mode, for tests.
-    #[cfg(test)]
-    pub(crate) const PAETH_PRED_FOR_TEST: Self = Self(Self::PAETH_PRED);
 
     /// Maps this mode to a supported non-directional luma predictor.
     pub(crate) fn supported_nondc(self) -> Option<SupportedNonDcLumaMode> {

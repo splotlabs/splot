@@ -28,16 +28,6 @@ const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
         reason: "temporary local decoder mission general-intra runtime frontier before module split",
     },
     SourceLineAllowance {
-        path: "crates/splot-decode/src/filters/wienerns_lr/recon.rs",
-        max_lines: 5_200,
-        reason: "temporary local decoder mission selectable-reconstruction frontier before module split",
-    },
-    SourceLineAllowance {
-        path: "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
-        max_lines: 2_600,
-        reason: "temporary local decoder mission selectable-transform-record frontier before module split",
-    },
-    SourceLineAllowance {
         path: "crates/splot-decode/src/pipeline/reconstruct.rs",
         max_lines: 3_500,
         reason: "temporary local decoder mission intra-reconstruction frontier before module split",

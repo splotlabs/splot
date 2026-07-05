@@ -25,7 +25,6 @@ use super::intrabc_ref_mv_stack::{
     SpatialIntrabcScan, SpatialScanGeometry, build_intrabc_ref_mv_stack,
     intrabc_ref_stack_admission, spatial_intrabc_scan,
 };
-use super::recon::WienerNsLrReconSink;
 use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
 
 const BLOCK_64X64: usize = 12;
@@ -700,14 +699,8 @@ pub(crate) fn read_intrabc_use_and_skip(
     })
 }
 
-/// Reads one §5.20.5.3 `use_intrabc` block's mode info and, when a reconstruction
-/// `sink` is attached, reconstructs its §7.13.3.18 displaced predictor.
-///
-/// The gated sink admits ONLY the §6.19-proven same-superblock INTEGER-DV copy
-/// (`intrabc_dv_proven_valid`). The full-recon diagnostic reconstructs every block
-/// in decode order over a bounds-checked source (`source.is_within(domain.storage)`),
-/// so it trusts the decoded DV: an integer DV copies the (possibly cross-SB) source
-/// and a fractional DV runs the §7.13.3.18 bilinear predictor.
+/// Reads one §5.20.5.3 `use_intrabc` block's mode info: the block-vector syntax,
+/// the §7.11 ref-MV stack prediction, and the finished record.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn read_intrabc_info(
     cdfs: &mut TileCdfSubset,
@@ -716,8 +709,6 @@ pub(crate) fn read_intrabc_info(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     geometry: IntrabcBlockGeometry,
-    skip_flag: bool,
-    sink: Option<&mut WienerNsLrReconSink<u16>>,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
     let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
@@ -725,24 +716,6 @@ pub(crate) fn read_intrabc_info(
         ensure_intrabc_ref_stack_supported(state, sequence, geometry, syntax, tile_offset)?;
     let info =
         finish_intrabc_info_record(cdfs, symbols, sequence, core, syntax, pred_mv, tile_offset)?;
-    let prediction = derive_intrabc_luma_prediction_geometry(core, geometry, info, tile_offset)?;
-    if let Some(sink) = sink {
-        let admit = if sink.is_full_recon() {
-            true
-        } else {
-            intrabc_dv_proven_valid(sequence, core, geometry, info, tile_offset)?
-        };
-        if admit {
-            sink.reconstruct_intrabc_block(
-                prediction.source,
-                prediction.target,
-                prediction.scaling,
-                prediction.fractional,
-                skip_flag,
-                tile_offset,
-            )?;
-        }
-    }
     Ok(info)
 }
 
@@ -1240,240 +1213,6 @@ fn intrabc_luma_prediction_domain(
         tile_bounds,
         ref_mi_cols: i64::from(mi_cols),
         ref_mi_rows: i64::from(mi_rows),
-    })
-}
-
-fn resolve_allow_local_intrabc(core: &FrameHeaderCore) -> bool {
-    core.intrabc
-        .as_ref()
-        .is_some_and(|params| params.allow_intrabc && params.allow_local_intrabc != Some(false))
-}
-
-fn resolve_allow_global_intrabc(core: &FrameHeaderCore) -> bool {
-    core.intrabc
-        .as_ref()
-        .is_some_and(|params| params.allow_intrabc && params.allow_global_intrabc == Some(true))
-}
-
-fn intrabc_dv_proven_valid(
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    geometry: IntrabcBlockGeometry,
-    info: IntrabcInfo,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    if info.block_mv.row & 7 != 0 || info.block_mv.col & 7 != 0 {
-        return Ok(false);
-    }
-    if !resolve_allow_local_intrabc(core) {
-        return Ok(false);
-    }
-    let sb_samples = superblock_samples(sequence, tile_offset)?;
-    let block = IntrabcBlockPixels::from_geometry(geometry, tile_offset)?;
-    let sb_size = usize::try_from(sb_samples).map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })?;
-    let local_valid = local_intrabc_range_valid(IntrabcLocalRangeInputs {
-        mi_row: geometry.block.row,
-        mi_col: geometry.block.col,
-        block_w: block.width,
-        block_h: block.height,
-        dv_row: info.block_mv.row,
-        dv_col: info.block_mv.col,
-        sb_size,
-    });
-    if local_valid {
-        return Ok(true);
-    }
-    if core.frame_is_intra != Some(true) || !resolve_allow_global_intrabc(core) {
-        return Ok(false);
-    }
-    let global_sb_size = global_superblock_samples(sequence, tile_offset)?;
-    let total_sb64_per_row = intrabc_tile_total_sb64_per_row(core, geometry, tile_offset)?;
-    Ok(global_intrabc_range_valid(IntrabcGlobalRangeInputs {
-        mi_row: geometry.block.row,
-        mi_col: geometry.block.col,
-        block_w: block.width,
-        block_h: block.height,
-        dv_row: info.block_mv.row,
-        dv_col: info.block_mv.col,
-        sb_size: global_sb_size,
-        total_sb64_per_row,
-    }))
-}
-
-fn intrabc_tile_total_sb64_per_row(
-    core: &FrameHeaderCore,
-    geometry: IntrabcBlockGeometry,
-    tile_offset: ByteOffset,
-) -> Result<i64> {
-    let tile_info = core.tile_info.as_ref().ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })?;
-    let (tile_col_start, tile_col_end) = tile_interval_for_block(
-        &tile_info.mi_col_starts,
-        geometry.block.col,
-        geometry.n4w,
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds",
-        tile_offset,
-    )?;
-    let tile_mi_cols =
-        i64::try_from(tile_col_end.saturating_sub(tile_col_start)).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?;
-    if tile_mi_cols <= 0 {
-        return Err(wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        ));
-    }
-    Ok(((tile_mi_cols - 1) >> 4) + 1)
-}
-
-fn global_superblock_samples(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<usize> {
-    Ok(match intra_capped_seq_sb_size(sequence, tile_offset)? {
-        SuperblockSize::Block64x64 => 64,
-        SuperblockSize::Block128x128 => 128,
-        SuperblockSize::Block256x256 => 256,
-    })
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct IntrabcLocalRangeInputs {
-    mi_row: usize,
-    mi_col: usize,
-    block_w: usize,
-    block_h: usize,
-    dv_row: i32,
-    dv_col: i32,
-    sb_size: usize,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct IntrabcSourceBounds {
-    left: i64,
-    top: i64,
-    right: i64,
-    bottom: i64,
-}
-
-fn intrabc_source_bounds(
-    mi_row: usize,
-    mi_col: usize,
-    block_w: i64,
-    block_h: i64,
-    dv_row: i64,
-    dv_col: i64,
-) -> IntrabcSourceBounds {
-    let origin_y = mi_row as i64 * MI_SIZE as i64;
-    let origin_x = mi_col as i64 * MI_SIZE as i64;
-    let top_edge = origin_y * 8 + dv_row;
-    let left_edge = origin_x * 8 + dv_col;
-    let bottom_edge = (origin_y + block_h) * 8 + dv_row;
-    let right_edge = (origin_x + block_w) * 8 + dv_col;
-
-    IntrabcSourceBounds {
-        left: left_edge >> 3,
-        top: top_edge >> 3,
-        right: (right_edge >> 3) - 1,
-        bottom: (bottom_edge >> 3) - 1,
-    }
-}
-
-fn local_intrabc_range_valid(inputs: IntrabcLocalRangeInputs) -> bool {
-    let bw = inputs.block_w as i64;
-    let bh = inputs.block_h as i64;
-    let dv_row = i64::from(inputs.dv_row);
-    let dv_col = i64::from(inputs.dv_col);
-    let sb_size_log2 = match inputs.sb_size {
-        64 => 6,
-        128 => 7,
-        256 => 8,
-        _ => return false,
-    };
-
-    let source = intrabc_source_bounds(inputs.mi_row, inputs.mi_col, bw, bh, dv_row, dv_col);
-    let act_left_x = inputs.mi_col as i64 * MI_SIZE as i64;
-    let act_top_y = inputs.mi_row as i64 * MI_SIZE as i64;
-
-    if ((dv_col >> 3) + bw) > 0 && ((dv_row >> 3) + bh) > 0 {
-        return false;
-    }
-    let act_sb_col = act_left_x >> sb_size_log2;
-    let act_sb_row = act_top_y >> sb_size_log2;
-    (source.left >> sb_size_log2) == act_sb_col
-        && (source.right >> sb_size_log2) == act_sb_col
-        && (source.top >> sb_size_log2) == act_sb_row
-        && (source.bottom >> sb_size_log2) == act_sb_row
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct IntrabcGlobalRangeInputs {
-    mi_row: usize,
-    mi_col: usize,
-    block_w: usize,
-    block_h: usize,
-    dv_row: i32,
-    dv_col: i32,
-    sb_size: usize,
-    total_sb64_per_row: i64,
-}
-
-const INTRABC_DELAY_SB64: i64 = 4;
-const LOG2_MI_PER_64: i64 = 4;
-const MI_SIZE_LOG2: i64 = 2;
-
-fn global_intrabc_range_valid(inputs: IntrabcGlobalRangeInputs) -> bool {
-    let bw = inputs.block_w as i64;
-    let bh = inputs.block_h as i64;
-    let dv_row = i64::from(inputs.dv_row);
-    let dv_col = i64::from(inputs.dv_col);
-    let mi_row = inputs.mi_row as i64;
-    let mi_col = inputs.mi_col as i64;
-    let mi = i64::from(MI_SIZE as u32);
-    let mib_size_log2: i64 = match inputs.sb_size {
-        64 => 4,
-        128 => 5,
-        256 => 6,
-        _ => return false,
-    };
-    let sb_size = i64::from(inputs.sb_size as u32);
-
-    let source = intrabc_source_bounds(inputs.mi_row, inputs.mi_col, bw, bh, dv_row, dv_col);
-
-    let active_sb_row = mi_row >> mib_size_log2;
-    let active_sb64_col = mi_col >> LOG2_MI_PER_64;
-    let src_sb_row = source.bottom >> (mib_size_log2 + MI_SIZE_LOG2);
-    let src_sb64_col = source.right >> (LOG2_MI_PER_64 + MI_SIZE_LOG2);
-    let active_sb64_row = (mi_row * mi) >> (LOG2_MI_PER_64 + MI_SIZE_LOG2);
-
-    let active_sb64 = active_sb_row * inputs.total_sb64_per_row + active_sb64_col;
-    let src_sb64 = src_sb_row * inputs.total_sb64_per_row + src_sb64_col;
-
-    let gradient = 1 + INTRABC_DELAY_SB64 + i64::from(sb_size > 64) + 2 * i64::from(sb_size > 128);
-    let wf_offset = gradient * (active_sb_row - src_sb_row);
-
-    let is_bottom_left = sb_size == 128 && (active_sb64_col & 1) == 0 && (active_sb64_row & 1) == 1;
-    let residuals: &[i64] = if is_bottom_left { &[0, -1] } else { &[0] };
-    residuals.iter().all(|&sb_64_residual| {
-        if src_sb64 >= active_sb64 - INTRABC_DELAY_SB64 - sb_64_residual {
-            return false;
-        }
-        if src_sb_row > active_sb_row
-            || src_sb64_col >= active_sb64_col - INTRABC_DELAY_SB64 - sb_64_residual + wf_offset
-        {
-            return false;
-        }
-        true
     })
 }
 

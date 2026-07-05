@@ -3,8 +3,6 @@
 
 use splot_recon::ReconError;
 
-use crate::bitstream::tile_payload::TileBlockDecodedState;
-
 use super::super::derive_wienerns_lr_tx_skip_grid_retention;
 use super::*;
 
@@ -13,7 +11,6 @@ const TX_32X32: usize = 3;
 const TX_64X64: usize = 4;
 const TX_8X32: usize = 15;
 const TX_4X32: usize = 19;
-const SB_SIZE4: usize = 16;
 
 /// The AV2 §7.13.2.1 PER-TRANSFORM far-edge availability (`num4AboveRight`) for the
 /// LEFT `TX_16X8` of a `BLOCK_32X8` `V_PRED` coding block at MI(224,30) must be the
@@ -26,82 +23,6 @@ const SB_SIZE4: usize = 16;
 /// scan (`w4 == n4w == 8`) would instead scan past the block and return `0` (the
 /// #566 partition-granularity bug). Verifies both the per-transform count (4) and
 /// the partition-granularity scan (0) over the same live `BlockDecoded` state.
-#[test]
-fn per_transform_far_edge_counts_within_coding_block_above_right() {
-    let mut state = TileBlockDecodedState::new(3, 1, 1, SB_SIZE4, 64, 64).unwrap();
-    state.clear_superblock(0, 0);
-    let block = LumaCodingBlockExtent {
-        block_row: 30,
-        block_col: 224,
-        n4w: 8,
-        n4h: 2,
-    };
-    let (above_right, _below_left) =
-        transform_luma_far_edge_avail(&state, 30, 224, 4, 2, false, block);
-    assert_eq!(
-        above_right, 4,
-        "LEFT TX_16X8 of BLOCK_32X8 reads its above-right within the coding block (num4AboveRight == 4)"
-    );
-    let sb_mask = state.sb_size4() - 1;
-    let (block_col, block_row) = (block.block_col, block.block_row);
-    let partition_above_right =
-        state.count_top_right_avail(0, block_col & sb_mask, block_row & sb_mask, block.n4w);
-    assert_eq!(
-        partition_above_right, 0,
-        "the partition-granularity scan under-counts the within-block above-right to 0 (the #566 bug)"
-    );
-}
-
-/// A NON-top transform of a coding block (`row_off > 0`) whose above-right is inside
-/// the coding block's own span (AVM `has_top_right`, `reconintra.c:110`:
-/// `col_off + tx_size_wide_unit < plane_bw_unit`) must report `tx_size_wide_unit`
-/// WITHOUT consulting `BlockDecoded` — the in-block above transform is processed
-/// before it. The LEFT `TX_8X32` of a `BLOCK_16X64` `V_PRED` block (the
-/// MI(216,71) class) at `row_off == 1`, `col_off == 0`: `0 + 2 < 4` ⇒ `num4AboveRight
-/// == 2`. The raw §5.20.7.25 scan would return `0` (the in-block above row is not yet
-/// `BlockDecoded`-marked at the callback), so this exercises the within-block
-/// short-circuit the bare scan misses.
-#[test]
-fn per_transform_far_edge_within_block_non_top_transform_above_right() {
-    let mut state = TileBlockDecodedState::new(3, 1, 1, SB_SIZE4, 64, 64).unwrap();
-    state.clear_superblock(0, 0);
-    let block = LumaCodingBlockExtent {
-        block_row: 0,
-        block_col: 0,
-        n4w: 4,
-        n4h: 16,
-    };
-    let (above_right, _below_left) =
-        transform_luma_far_edge_avail(&state, 8, 0, 2, 8, false, block);
-    assert_eq!(
-        above_right, 2,
-        "in-block non-top TX_8X32 reads its above-right within the coding block (num4AboveRight == 2)"
-    );
-}
-
-#[test]
-fn late_uneven5_transform_records_suppress_far_edges() {
-    let mut state = TileBlockDecodedState::new(3, 1, 1, SB_SIZE4, 64, 64).unwrap();
-    state.clear_superblock(0, 0);
-    let block = LumaCodingBlockExtent {
-        block_row: 0,
-        block_col: 0,
-        n4w: 16,
-        n4h: 16,
-    };
-
-    assert_eq!(
-        transform_luma_far_edge_avail(&state, 4, 0, 8, 4, false, block),
-        (8, 4),
-        "ordinary in-block transform edges are available"
-    );
-    assert_eq!(
-        transform_luma_far_edge_avail(&state, 4, 0, 8, 4, true, block),
-        (0, 0),
-        "AVM disables far-edge extension for TX_PARTITION_HORZ5/VERT5 records after txb_idx 0"
-    );
-}
-
 #[test]
 fn selectable_tx_grid_records_middle_and_scan_order_flags() {
     let mut grid = SelectableLumaTxGrid::new(8, 8).unwrap();
