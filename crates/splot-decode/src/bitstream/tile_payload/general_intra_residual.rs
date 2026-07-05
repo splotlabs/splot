@@ -307,11 +307,6 @@ impl LumaTransformTypeContext {
     }
 
     #[must_use]
-    pub(crate) const fn mrl_sec_index(self) -> Option<u8> {
-        self.mrl_sec_index
-    }
-
-    #[must_use]
     pub(crate) const fn angle_delta_y(self) -> i8 {
         self.angle_delta_y
     }

@@ -44,8 +44,6 @@ mod source_read_math;
 pub(crate) mod tx_records;
 
 pub(crate) use self::recon::chroma_transform_deblock_block;
-#[cfg(test)]
-pub(crate) use self::recon::reconstruct_frontier_selectable_intra_region;
 
 /// Wraps a reconstructed workspace in the shared § 7.2 final-filter sink.
 pub(crate) fn recon_final_filter_sink<T: splot_recon::ReconSample>(
@@ -56,8 +54,6 @@ pub(crate) fn recon_final_filter_sink<T: splot_recon::ReconSample>(
 ) -> recon::WienerNsLrReconSink<T> {
     recon::WienerNsLrReconSink::for_final_filtering(workspace, luma_width, luma_height, bit_depth)
 }
-#[cfg(test)]
-pub(crate) use self::recon::{FullReconLumaLeaf, WienerNsLrReconSink};
 use self::tx_records::WienerNsLrLiveTransformRecordHandoff;
 pub(crate) use self::tx_records::WienerNsLrTxSkipTransformRecord;
 
@@ -491,7 +487,6 @@ pub(crate) fn ensure_wienerns_lr_unit_tile_frontier(
                     key_envelope,
                     sequence,
                     core,
-                    None,
                 )?
             } else if tx_mode == TxMode::Largest {
                 ensure_fixed_largest_transform_record_tool_gates(sequence, core, sequence_offset)?;

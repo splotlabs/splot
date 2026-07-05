@@ -10,7 +10,7 @@ use splot_core::tables::conversion::{
     MAX_TX_SIZE_RECT, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, SIZE_TO_TX_PART_GROUP_LOOKUP,
     SIZE_TO_TX_TYPE_GROUP_VERT_AND_HORZ, SIZE_TO_TX_TYPE_GROUP_VERT_OR_HORZ, TX_HEIGHT, TX_WIDTH,
 };
-use splot_recon::{BitDepth, PlaneId, max_quantizer_index};
+use splot_recon::{BitDepth, max_quantizer_index};
 
 use crate::bitstream::tile_payload::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, DecodeBlockFrontier,
@@ -22,15 +22,13 @@ use crate::bitstream::tile_payload::{
     decode_general_intra_block_modes_with_fsc_context, decode_general_intra_chroma_block_mode,
     decode_general_intra_luma_block_mode_with_fsc_context,
     decode_general_intra_multiblock_tree_with_lr_source_blocks, decode_general_intra_plane_coeffs,
-    frame_mi_dimensions, read_general_intra_palette_y_mode, supported_chroma_mode,
+    frame_mi_dimensions, read_general_intra_palette_y_mode,
 };
 use crate::error::Result;
 use crate::filters::ccso::CcsoUnitGrid;
 use crate::filters::cdef::CdefUnitGrid;
 use crate::pipeline::effective_allow_screen_content_tools;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
-
-use super::recon::{SelectableReconContext, WienerNsLrReconSink};
 
 use super::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, TileIntrabcPreludeState, read_intrabc_info,
@@ -796,7 +794,6 @@ pub(crate) fn derive_wienerns_lr_selectable_transform_record_handoff(
     key_envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    mut sink: Option<&mut WienerNsLrReconSink<u16>>,
 ) -> Result<WienerNsLrLiveTransformRecordHandoff> {
     ensure_selectable_transform_record_tool_gates(sequence, core, key_envelope.offset)?;
     let mut tile_plan = derive_tile_plan(
@@ -833,7 +830,7 @@ pub(crate) fn derive_wienerns_lr_selectable_transform_record_handoff(
             selectable_reason!("lossless"),
         ));
     }
-    let luma_use_tcq = frame_facts.allow_tcq();
+    let _luma_use_tcq = frame_facts.allow_tcq();
 
     let (tx_skip_rows, tx_skip_cols) = frame_mi_dimensions(core).map_err(|_| {
         selectable_decode_error(tile_offset, selectable_reason!("frame_dimensions"))
@@ -951,19 +948,6 @@ pub(crate) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     n4h,
                 )
                 .map_err(selectable_mode_error_at(tile_offset))?;
-                let sdp_recon = SelectableReconContext {
-                    leaf_y_mode: Some(y_mode),
-                    directional_luma: None,
-                    mrl_index: 0,
-                    mrl_sec_index: None,
-                    angle_delta_y,
-                    chroma_mode: supported_chroma_mode(y_mode, uv_mode.uv_mode()),
-                    cfl_params: uv_mode.cfl_params(),
-                    qindex: delta_q_state.qindex_u32(),
-                    luma_use_tcq,
-                    fsc_mode: false,
-                    is_intrabc: false,
-                };
                 decode_chroma_residual_chunks(
                     work_unit,
                     symbols,
@@ -982,8 +966,6 @@ pub(crate) fn derive_wienerns_lr_selectable_transform_record_handoff(
                         fsc_mode: 0,
                         tool_policy: transform_tool_residual_policy,
                     },
-                    sink.as_deref_mut(),
-                    sdp_recon,
                     tile_offset,
                 )?;
                 return Ok(GeneralIntraLeafMode::chroma(uv_mode.is_cfl()));
@@ -1000,7 +982,6 @@ pub(crate) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 &mut ccso_state,
                 &mut delta_q_state,
                 &mut intrabc_state,
-                sink.as_deref_mut(),
                 tile_offset,
             )?;
             let (
@@ -1008,9 +989,9 @@ pub(crate) fn derive_wienerns_lr_selectable_transform_record_handoff(
                 leaf_mode,
                 luma_transform_type_context,
                 fsc_mode,
-                chroma_mode,
-                cfl_params,
-                directional_luma,
+                _chroma_mode,
+                _cfl_params,
+                _directional_luma,
             ) = if prelude.use_intrabc {
                 (
                     0,
@@ -1138,28 +1119,6 @@ pub(crate) fn derive_wienerns_lr_selectable_transform_record_handoff(
             records.try_reserve(luma_records.len()).map_err(|_| {
                 selectable_decode_error(tile_offset, selectable_reason!("output_allocation"))
             })?;
-            if let Some(sink) = sink.as_deref_mut() {
-                record_per_transform_far_edge(
-                    sink,
-                    block_decoded,
-                    &luma_records,
-                    LumaCodingBlockExtent::new(frontier.r, frontier.c, block_extent),
-                    tile_offset,
-                )?;
-            }
-            let recon_context = SelectableReconContext {
-                leaf_y_mode: leaf_mode.luma_y_mode(),
-                directional_luma,
-                mrl_index: luma_transform_type_context.mrl_index(),
-                mrl_sec_index: luma_transform_type_context.mrl_sec_index(),
-                angle_delta_y: luma_transform_type_context.angle_delta_y(),
-                chroma_mode,
-                cfl_params,
-                qindex: delta_q_state.qindex_u32(),
-                luma_use_tcq,
-                fsc_mode: fsc_mode != 0,
-                is_intrabc: prelude.use_intrabc,
-            };
             decode_selectable_residual_chunks(
                 work_unit,
                 symbols,
@@ -1184,8 +1143,6 @@ pub(crate) fn derive_wienerns_lr_selectable_transform_record_handoff(
                     tool_policy: transform_tool_residual_policy,
                 },
                 block_decoded,
-                sink.as_deref_mut(),
-                recon_context,
                 tile_offset,
             )?;
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude, tile_offset)?;
@@ -1334,8 +1291,6 @@ fn decode_selectable_residual_chunks(
     skip_flag: bool,
     residual_context: ResidualDecodeContext,
     block_decoded: &TileBlockDecodedState,
-    mut sink: Option<&mut WienerNsLrReconSink<u16>>,
-    recon: SelectableReconContext,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     if skip_flag {
@@ -1346,9 +1301,6 @@ fn decode_selectable_residual_chunks(
             block_extent.rows,
             luma_records,
             records,
-            block_decoded,
-            sink,
-            recon,
             tile_offset,
         );
     }
@@ -1364,8 +1316,6 @@ fn decode_selectable_residual_chunks(
             block_extent,
             luma_transform_type_context,
             residual_context,
-            sink.as_deref_mut(),
-            recon,
             tile_offset,
         )?;
 
@@ -1380,8 +1330,6 @@ fn decode_selectable_residual_chunks(
                 chroma_group,
                 residual_context,
                 block_decoded,
-                sink.as_deref_mut(),
-                recon,
                 tile_offset,
             )?;
         }
@@ -1398,8 +1346,6 @@ fn decode_chroma_residual_chunks(
     block_extent: Block4x4Extent,
     block_decoded: &TileBlockDecodedState,
     residual_context: ResidualDecodeContext,
-    mut sink: Option<&mut WienerNsLrReconSink<u16>>,
-    recon: SelectableReconContext,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     visit_residual_chunks(block_extent, tile_offset, |chunk| {
@@ -1412,8 +1358,6 @@ fn decode_chroma_residual_chunks(
                 chroma_group,
                 residual_context,
                 block_decoded,
-                sink.as_deref_mut(),
-                recon,
                 tile_offset,
             )?;
         }
@@ -1559,8 +1503,6 @@ fn decode_luma_records_for_chunk(
     block: Block4x4Extent,
     luma_transform_type_context: LumaTransformTypeContext,
     residual_context: ResidualDecodeContext,
-    mut sink: Option<&mut WienerNsLrReconSink<u16>>,
-    recon: SelectableReconContext,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let mut decoded_any = false;
@@ -1573,27 +1515,6 @@ fn decode_luma_records_for_chunk(
             && record.col < chunk_col_end
     }) {
         decoded_any = true;
-        if crate::trace_flags::trace_flag!("SPLOT_TRACE_SELECTABLE_RESIDUAL_ERROR") {
-            eprintln!(
-                "selectable luma residual record row={} col={} rows={} cols={} tx_size={} chunk=({}, {}) {}x{} block={}x{} leaf_mode={:?} is_inter={} is_intrabc={} fsc={} checkpoint={:?}",
-                record.row,
-                record.col,
-                record.rows,
-                record.cols,
-                record.tx_size,
-                chunk.row,
-                chunk.col,
-                chunk.rows,
-                chunk.cols,
-                block.rows,
-                block.cols,
-                recon.leaf_y_mode,
-                residual_context.is_inter,
-                recon.is_intrabc,
-                recon.fsc_mode,
-                symbols.checkpoint(),
-            );
-        }
         let luma = decode_general_intra_plane_coeffs(
             work_unit,
             symbols,
@@ -1613,36 +1534,6 @@ fn decode_luma_records_for_chunk(
             residual_context.luma_policy(luma_transform_type_context),
         )
         .map_err(selectable_residual_error_at(tile_offset))?;
-        if let Some(sink) = sink.as_deref_mut() {
-            sink.record_deblock_block(
-                record.col,
-                record.row,
-                record.col,
-                record.row,
-                record.cols,
-                record.rows,
-                record.tx_size,
-                fixed_largest_420_chroma_tx_size_from_luma_4x4(record.cols, record.rows),
-                recon.qindex,
-                false,
-            );
-            sink.reconstruct_luma_transform(
-                record.col,
-                record.row,
-                record.tx_size,
-                &luma,
-                recon.leaf_y_mode,
-                recon.directional_luma,
-                recon.mrl_index,
-                recon.mrl_sec_index,
-                recon.angle_delta_y,
-                recon.qindex,
-                recon.luma_use_tcq,
-                recon.fsc_mode,
-                recon.is_intrabc,
-                tile_offset,
-            )?;
-        }
         records.push(WienerNsLrTxSkipTransformRecord {
             row: record.row,
             col: record.col,
@@ -1671,9 +1562,7 @@ fn decode_chroma_group(
     frontier: &DecodeBlockFrontier,
     group: ChromaGroup,
     residual_context: ResidualDecodeContext,
-    block_decoded: &TileBlockDecodedState,
-    sink: Option<&mut WienerNsLrReconSink<u16>>,
-    recon: SelectableReconContext,
+    _block_decoded: &TileBlockDecodedState,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let chroma_tx = fixed_largest_420_chroma_tx_size_from_luma_4x4(group.luma_n4w, group.luma_n4h)
@@ -1695,7 +1584,7 @@ fn decode_chroma_group(
         residual_context.fsc_mode != 0,
         tile_offset,
     )?;
-    let v = decode_chroma_plane_coeffs(
+    let _v = decode_chroma_plane_coeffs(
         work_unit,
         symbols,
         coeff_ctx,
@@ -1708,43 +1597,7 @@ fn decode_chroma_group(
         false,
         tile_offset,
     )?;
-    if let Some(sink) = sink {
-        let (num4_above_right, num4_below_left) =
-            chroma_group_far_edge_avail(frontier, group, block_decoded);
-        for (plane, block) in [(PlaneId::U, &u), (PlaneId::V, &v)] {
-            sink.reconstruct_chroma_transform(
-                plane,
-                chroma_tx,
-                chroma_x,
-                chroma_y,
-                block,
-                recon.chroma_mode,
-                recon.angle_delta_y,
-                recon.cfl_params,
-                num4_above_right,
-                num4_below_left,
-                recon.qindex,
-                tile_offset,
-            )?;
-        }
-    }
     Ok(())
-}
-
-fn chroma_group_far_edge_avail(
-    frontier: &DecodeBlockFrontier,
-    group: ChromaGroup,
-    block_decoded: &TileBlockDecodedState,
-) -> (usize, usize) {
-    let sb_mask = block_decoded.sb_size4().saturating_sub(1);
-    let x4 = ((frontier.c & sb_mask) >> 1).saturating_add(group.chunk_x.saturating_mul(8));
-    let y4 = ((frontier.r & sb_mask) >> 1).saturating_add(group.chunk_y.saturating_mul(8));
-    let w4 = group.luma_n4w >> 1;
-    let h4 = group.luma_n4h >> 1;
-    (
-        block_decoded.count_top_right_avail(PlaneId::U.index(), x4, y4, w4),
-        block_decoded.count_bottom_left_avail(PlaneId::U.index(), x4, y4, h4),
-    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1789,90 +1642,6 @@ fn chunk_origin(base: usize, chunk: usize, tile_offset: ByteOffset) -> Result<us
     base.checked_add(chunk_offset).ok_or_else(|| {
         selectable_decode_error(tile_offset, selectable_reason!("chunk_origin_add_overflow"))
     })
-}
-
-#[derive(Clone, Copy)]
-struct LumaCodingBlockExtent {
-    block_row: usize,
-    block_col: usize,
-    n4w: usize,
-    n4h: usize,
-}
-
-impl LumaCodingBlockExtent {
-    const fn new(block_row: usize, block_col: usize, extent: Block4x4Extent) -> Self {
-        Self {
-            block_row,
-            block_col,
-            n4w: extent.cols,
-            n4h: extent.rows,
-        }
-    }
-}
-
-fn transform_luma_far_edge_avail(
-    block_decoded: &crate::bitstream::tile_payload::TileBlockDecodedState,
-    tx_row: usize,
-    tx_col: usize,
-    tx_w4: usize,
-    tx_h4: usize,
-    suppress_uneven5_far_edges: bool,
-    block: LumaCodingBlockExtent,
-) -> (usize, usize) {
-    if suppress_uneven5_far_edges {
-        return (0, 0);
-    }
-
-    let sb_mask = block_decoded.sb_size4().saturating_sub(1);
-    let x4 = tx_col & sb_mask;
-    let y4 = tx_row & sb_mask;
-    let col_off = tx_col.saturating_sub(block.block_col);
-    let row_off = tx_row.saturating_sub(block.block_row);
-    let above_right = if col_off + tx_w4 < block.n4w {
-        tx_w4
-    } else if row_off == 0 {
-        block_decoded.count_top_right_avail(0, x4, y4, tx_w4)
-    } else {
-        0
-    };
-    let below_left = if col_off > 0 {
-        0
-    } else if row_off + tx_h4 < block.n4h {
-        tx_h4
-    } else {
-        block_decoded.count_bottom_left_avail(0, x4, y4, tx_h4)
-    };
-    (above_right, below_left)
-}
-
-fn record_per_transform_far_edge(
-    sink: &mut WienerNsLrReconSink<u16>,
-    block_decoded: &crate::bitstream::tile_payload::TileBlockDecodedState,
-    luma_records: &[SelectableLumaTxRecord],
-    block: LumaCodingBlockExtent,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    for record in luma_records {
-        let tx_w4 = tx_dimension("Tx_Width", &TX_WIDTH, record.tx_size, tile_offset)? / MI_SIZE;
-        let tx_h4 = tx_dimension("Tx_Height", &TX_HEIGHT, record.tx_size, tile_offset)? / MI_SIZE;
-        let (above_right, below_left) = transform_luma_far_edge_avail(
-            block_decoded,
-            record.row,
-            record.col,
-            tx_w4,
-            tx_h4,
-            record.middle,
-            block,
-        );
-        sink.record_block_decoded_far_edge(
-            record.col,
-            record.row,
-            record.tx_size,
-            above_right,
-            below_left,
-        );
-    }
-    Ok(())
 }
 
 fn mi_to_sample(mi: usize, tile_offset: ByteOffset) -> Result<usize> {
@@ -2150,7 +1919,6 @@ fn read_luma_shared_mode_info_prelude(
     ccso_state: &mut CcsoState,
     delta_q_state: &mut DeltaQState,
     intrabc_state: &mut TileIntrabcPreludeState,
-    sink: Option<&mut WienerNsLrReconSink<u16>>,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcBlockPrelude> {
     intrabc_state.prepare_for_block(frontier.r, frontier.c);
@@ -2182,8 +1950,6 @@ fn read_luma_shared_mode_info_prelude(
             sequence,
             core,
             IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
-            use_skip.skip_flag,
-            sink,
             tile_offset,
         )?)
     } else {

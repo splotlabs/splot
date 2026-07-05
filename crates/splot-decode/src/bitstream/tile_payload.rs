@@ -45,7 +45,6 @@ use crate::{
 };
 
 pub(crate) use block_decoded_state::TileBlockDecodedState;
-pub(crate) use cdf::block_context::supported_chroma_mode;
 pub(crate) use cdf::block_context::{
     IntraYMode, SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
 };

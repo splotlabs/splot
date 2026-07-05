@@ -138,7 +138,7 @@ fn inter_non_mixed_region_does_not_code_intrabc_use() {
 /// leaf's §5.20.5.3 `skip` carried into `read_intrabc_info`.
 fn run_intrabc_prelude(
     steps: &[(Option<TileCdfSelector>, u32)],
-    skip_flag: bool,
+    _skip_flag: bool,
 ) -> (IntrabcUseSkip, Result<IntrabcInfo>, u64) {
     let (sequence, core) = selectable_large_frame_fixture();
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
@@ -164,8 +164,6 @@ fn run_intrabc_prelude(
         &sequence,
         &core,
         geometry,
-        skip_flag,
-        None,
         ByteOffset::new(20),
     );
     (use_skip, info, symbols.symbol_count())
@@ -299,8 +297,6 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
         &sequence,
         &core,
         geometry,
-        false,
-        None,
         ByteOffset::new(20),
     )
     .unwrap();
@@ -932,229 +928,6 @@ fn intrabc_ref_stack_caps_256_sequence_superblocks_to_intra_sb_size() {
             Mv { row: 0, col: -128 },
         ]
     );
-}
-
-#[test]
-fn local_intrabc_range_admits_frontier_first_block() {
-    assert!(local_intrabc_range_valid(IntrabcLocalRangeInputs {
-        mi_row: 16,
-        mi_col: 56,
-        block_w: 32,
-        block_h: 64,
-        dv_row: -512,
-        dv_col: 0,
-        sb_size: 128,
-    }));
-}
-
-#[test]
-fn local_intrabc_range_rejects_uncoded_bottom_right_source() {
-    assert!(!local_intrabc_range_valid(IntrabcLocalRangeInputs {
-        mi_row: 16,
-        mi_col: 56,
-        block_w: 32,
-        block_h: 64,
-        dv_row: 8,
-        dv_col: 8,
-        sb_size: 128,
-    }));
-}
-
-#[test]
-fn local_intrabc_range_rejects_source_beyond_left_buffer_window() {
-    assert!(!local_intrabc_range_valid(IntrabcLocalRangeInputs {
-        mi_row: 64,
-        mi_col: 64,
-        block_w: 32,
-        block_h: 32,
-        dv_row: 0,
-        dv_col: -3072,
-        sb_size: 128,
-    }));
-}
-
-#[test]
-fn local_intrabc_range_rejects_previous_superblock_buffer_collision_source() {
-    assert!(!local_intrabc_range_valid(IntrabcLocalRangeInputs {
-        mi_row: 0,
-        mi_col: 68,
-        block_w: 32,
-        block_h: 32,
-        dv_row: 0,
-        dv_col: -128 * 8,
-        sb_size: 128,
-    }));
-}
-
-#[test]
-fn proven_valid_defers_when_local_intrabc_disabled() {
-    let (sequence, mut core) = selectable_large_frame_fixture();
-    core.intrabc = Some(IntrabcParams {
-        allow_intrabc: true,
-        allow_global_intrabc: Some(true),
-        allow_local_intrabc: Some(false),
-        change_bvp_drl: Some(false),
-        max_bvp_drl_bits_minus_1: None,
-    });
-    let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 0, 2, false), 4, 4);
-    let info = IntrabcInfo {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
-        block_mv: IntrabcBlockVector { row: -512, col: 0 },
-    };
-    assert!(
-        !intrabc_dv_proven_valid(&sequence, &core, geometry, info, ByteOffset::new(20)).unwrap()
-    );
-}
-
-#[test]
-fn proven_valid_admits_inferred_local_intrabc_frame() {
-    let (sequence, mut core) = selectable_large_frame_fixture();
-    core.intrabc = Some(IntrabcParams {
-        allow_intrabc: true,
-        allow_global_intrabc: Some(false),
-        allow_local_intrabc: None,
-        change_bvp_drl: Some(false),
-        max_bvp_drl_bits_minus_1: None,
-    });
-    let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(4, 4, 2, false), 4, 4);
-    let info = IntrabcInfo {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
-        block_mv: IntrabcBlockVector { row: -128, col: 0 },
-    };
-    assert!(
-        intrabc_dv_proven_valid(&sequence, &core, geometry, info, ByteOffset::new(20)).unwrap()
-    );
-}
-
-#[test]
-fn resolve_allow_global_intrabc_only_admits_explicit_true() {
-    fn check(allow_intrabc: bool, global: Option<bool>) -> bool {
-        let (_, mut core) = selectable_large_frame_fixture();
-        core.intrabc = Some(IntrabcParams {
-            allow_intrabc,
-            allow_global_intrabc: global,
-            allow_local_intrabc: None,
-            change_bvp_drl: Some(false),
-            max_bvp_drl_bits_minus_1: None,
-        });
-        resolve_allow_global_intrabc(&core)
-    }
-    assert!(check(true, Some(true)));
-    assert!(!check(true, Some(false)));
-    assert!(!check(true, None));
-    assert!(!check(false, Some(true)));
-}
-
-#[test]
-fn global_superblock_samples_returns_true_sb_size() {
-    let (sequence, _core) = selectable_fixture();
-    assert_eq!(global_superblock_samples(&sequence, no_off()).unwrap(), 64);
-}
-
-#[test]
-fn intrabc_tile_total_sb64_per_row_matches_avm() {
-    let (_, mut core) = selectable_large_frame_fixture();
-    let tile_info = core.tile_info.as_mut().unwrap();
-    tile_info.mi_col_starts = vec![0, 480];
-    tile_info.mi_row_starts = vec![0, 272];
-    let geometry =
-        IntrabcBlockGeometry::new(IntrabcBlockContext::new(256, 56, BLOCK_16X16, false), 4, 16);
-    assert_eq!(
-        intrabc_tile_total_sb64_per_row(&core, geometry, no_off()).unwrap(),
-        30
-    );
-}
-
-#[test]
-fn global_intrabc_range_matches_avm_wavefront_vectors() {
-    type Vector = (
-        &'static str,
-        (usize, usize),
-        (usize, usize),
-        (i32, i32),
-        usize,
-        bool,
-    );
-    let vectors: &[Vector] = &[
-        (
-            "prev-SB-row wavefront source",
-            (256, 56),
-            (16, 64),
-            (-1024, 0),
-            128,
-            true,
-        ),
-        (
-            "same-row far-enough source",
-            (0, 256),
-            (16, 16),
-            (0, -2560),
-            128,
-            true,
-        ),
-        (
-            "one SB64 too close",
-            (0, 256),
-            (16, 16),
-            (0, -2048),
-            128,
-            false,
-        ),
-        (
-            "source in a later SB row",
-            (0, 256),
-            (16, 16),
-            (1024, -2560),
-            128,
-            false,
-        ),
-        (
-            "bottom-left-128 residual-sensitive",
-            (16, 0),
-            (16, 16),
-            (0, -2168),
-            128,
-            false,
-        ),
-        (
-            "bottom-left-128 both horizons clear",
-            (16, 0),
-            (16, 16),
-            (0, -3584),
-            128,
-            true,
-        ),
-        // A non-{64,128,256} SB size is rejected fail-closed.
-        (
-            "unsupported SB size",
-            (0, 256),
-            (16, 16),
-            (0, -2560),
-            96,
-            false,
-        ),
-    ];
-    for &(label, (mi_row, mi_col), (block_w, block_h), (dv_row, dv_col), sb_size, expect) in vectors
-    {
-        let got = global_intrabc_range_valid(IntrabcGlobalRangeInputs {
-            mi_row,
-            mi_col,
-            block_w,
-            block_h,
-            dv_row,
-            dv_col,
-            sb_size,
-            total_sb64_per_row: 30,
-        });
-        assert_eq!(
-            got, expect,
-            "global wavefront vector {label}: want {expect}, got {got}"
-        );
-    }
 }
 
 #[test]

@@ -27,8 +27,6 @@ use crate::bitstream::tile_payload::{
 };
 use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
 use crate::filters::deblock;
-#[cfg(test)]
-use crate::filters::wienerns_lr;
 use crate::filters::wienerns_lr::ensure_wienerns_lr_unit_tile_frontier;
 use crate::prediction::inter;
 use crate::reference::buffer as reference_buffer;
@@ -150,46 +148,6 @@ pub(crate) fn decode_frame_from_plan(
         ));
     }
     Ok(frames.swap_remove(0))
-}
-#[cfg(test)]
-fn reconstruct_frontier_intra_region_from_plan(
-    bytes: &[u8],
-    options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
-    full_recon: bool,
-) -> Result<wienerns_lr::WienerNsLrReconSink<u16>> {
-    let parsed = parse_bitstream_partial(bytes);
-    let (ivf, _header) = require_multiframe_ivf(&parsed)?;
-    let first_ivf_frame = ivf.frames.first().ok_or_else(|| {
-        unsupported(
-            "missing_first_ivf_frame",
-            None,
-            "frontier reconstruction requires at least one IVF frame",
-        )
-    })?;
-    let leading_obus = first_ivf_frame.obus.as_slice();
-    let [_td, sequence_envelope, key_envelope] = require_minimal_obu_order(leading_obus)?;
-    let sequence = parse_sequence(sequence_envelope)?;
-    let key_core = parse_frame_core(key_envelope, &sequence)?;
-    let mut candidates = plan.frame_candidates_all();
-    let key_candidate = candidates.next().ok_or_else(|| {
-        unsupported(
-            "missing_frame_candidate",
-            None,
-            "frontier reconstruction requires one key frame candidate",
-        )
-    })?;
-    Ok(wienerns_lr::reconstruct_frontier_selectable_intra_region(
-        bytes,
-        options,
-        plan,
-        key_candidate,
-        key_envelope,
-        &sequence,
-        &key_core,
-        full_recon,
-    )?
-    .sink)
 }
 pub(crate) fn decode_frames_from_plan(
     bytes: &[u8],
@@ -1448,8 +1406,6 @@ pub(crate) mod reconstruct;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_tests;
 
-#[cfg(test)]
-mod wienerns_lr_recon_tests;
 #[derive(Clone, Copy)]
 enum TileFactsKind {
     Intra,

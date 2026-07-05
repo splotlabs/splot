@@ -54,39 +54,6 @@ thread_local! {
     static SINK_NANOS: Cell<[u128; 2]> = const { Cell::new([0, 0]) };
 }
 
-/// Which reconstruction sink a [`SinkScope`] attributes its lifetime to.
-#[derive(Clone, Copy)]
-pub(crate) enum SinkKind {
-    Luma,
-    Chroma,
-}
-
-/// RAII timer that adds its lifetime to the per-thread reconstruction-sink
-/// accumulator on drop; a no-op (holding `None`) when the trace is disabled.
-pub(crate) struct SinkScope(Option<(SinkKind, Instant)>);
-
-impl Drop for SinkScope {
-    fn drop(&mut self) {
-        if let Some((kind, started)) = self.0 {
-            let elapsed = started.elapsed().as_nanos();
-            let slot = match kind {
-                SinkKind::Luma => 0,
-                SinkKind::Chroma => 1,
-            };
-            SINK_NANOS.with(|cell| {
-                let mut nanos = cell.get();
-                nanos[slot] = nanos[slot].saturating_add(elapsed);
-                cell.set(nanos);
-            });
-        }
-    }
-}
-
-/// Starts a reconstruction-sink timer for `kind`, or a no-op when disabled.
-pub(crate) fn enter_sink(kind: SinkKind) -> SinkScope {
-    SinkScope(enabled().then(|| (kind, Instant::now())))
-}
-
 /// Tracks which pool workers actually executed work inside one parallel stage.
 ///
 /// The tally is a bitmask over worker indexes (workers past 63 saturate into

@@ -33,13 +33,7 @@ use crate::bitstream::tile_payload::{
     reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
 };
 pub(crate) use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_block_into;
-pub(crate) use crate::prediction::chroma::directional::{
-    reconstruct_general_intra_chroma_block_into,
-    reconstruct_general_intra_chroma_smooth_available_edges_into,
-};
-pub(crate) use crate::prediction::chroma::mhccp::{
-    MHCCP_BITS, MHCCP_PARAM_COUNT, MhccpRefs, derive_mhccp_params, mul_fixed32_adapt,
-};
+pub(crate) use crate::prediction::chroma::directional::reconstruct_general_intra_chroma_block_into;
 
 /// Creates an empty decoded 4:2:0 frame workspace sized to the actual
 /// `luma_width` x `luma_height` (a positive multiple of 64) for incremental
@@ -185,52 +179,6 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
         )?
     };
     workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_dc_rect_block_with_ist_into<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
-    x: usize,
-    y: usize,
-    log2_width: u32,
-    log2_height: u32,
-    qindex: u32,
-    use_tcq: bool,
-    ibp_dc: bool,
-    bit_depth: BitDepth,
-    luma_context: LumaTransformTypeContext,
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    let width = 1usize << log2_width;
-    let height = 1usize << log2_height;
-    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
-    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    let edges = workspace.intra_dc_edges_for_rect(PlaneId::Y, x, y, block_size)?;
-    let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?;
-    let prediction = if ibp_dc {
-        let mut pred = vec![dc; width * height];
-        apply_intra_ibp_dc_rect(bit_depth, block_size, edges.as_dc_edges(), &mut pred, width)?;
-        pred
-    } else {
-        vec![dc; width * height]
-    };
-    let out = if block.all_zero {
-        prediction
-    } else {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
-            block,
-            &prediction,
-            qindex,
-            log2_width,
-            log2_height,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )?
-    };
-    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
     Ok(())
 }
 
@@ -387,64 +335,6 @@ pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
         block.plane_tx_type,
         use_tcq,
         use_ddt,
-        bit_depth,
-    )?;
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
-}
-
-/// Adds a decoded §5.20.7.27 IntrABC residual onto the §7.13.3.18 displaced-copy
-/// prediction already written into the workspace plane, the **rectangular**
-/// generalisation of [`reconstruct_inter_block_residual_into`].
-///
-/// An IntrABC leaf's predictor is the displaced `CurrFrame` copy
-/// ([`crate::filters::wienerns_lr::WienerNsLrReconSink::reconstruct_intrabc_block`]
-/// wrote it into `workspace` over the whole block before this per-transform leaf
-/// runs), NOT a §7.13.2 intra prediction — IntrABC reads no intra Y mode. This
-/// reads the predicted samples of the `1<<log2_width` x `1<<log2_height` transform
-/// at `(x, y)`, composes the §7.14.4 dequantization, §7.15.4 inverse transform, and
-/// §7.14.3 residual addition over them (via
-/// [`reconstruct_general_intra_block_rect_with_prediction`] — the §7.14.3
-/// reconstruction over an arbitrary per-sample prediction, identical for the
-/// displaced IntrABC predictor), then writes the reconstructed block back. An
-/// `all_zero` transform leaves the copied predictor untouched (the residual is
-/// zero). `use_tcq` adds the §7.14.4 TCQ `dqDenom` term (luma `DCT_DCT` only);
-/// IntrABC is an inter (`is_inter == 1`) leaf, so it never carries it.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_intrabc_block_residual_rect_into<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
-    plane_id: PlaneId,
-    x: usize,
-    y: usize,
-    log2_width: u32,
-    log2_height: u32,
-    qindex: u32,
-    use_tcq: bool,
-    bit_depth: BitDepth,
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    let width = 1usize << log2_width;
-    let height = 1usize << log2_height;
-    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
-    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    if block.all_zero {
-        return Ok(());
-    }
-    let rect = PlaneRect::new(x, y, width, height)?;
-    let mut prediction = Vec::with_capacity(width * height);
-    for row in workspace.rect_rows(plane_id, rect)? {
-        prediction.extend_from_slice(row);
-    }
-    let out = reconstruct_general_intra_block_rect_with_prediction(
-        &block.quant,
-        &prediction,
-        qindex,
-        plane_id,
-        log2_width,
-        log2_height,
-        block.plane_tx_type,
-        use_tcq,
         bit_depth,
     )?;
     workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
