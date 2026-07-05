@@ -331,7 +331,13 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     );
     filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
     filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
-    filter_sink.set_skips_grid(filter_inputs.skips_grid);
+    filter_sink.set_cfl_ds_filter_index(
+        sequence
+            .intra
+            .as_ref()
+            .map_or(0, |intra| intra.cfl_ds_filter_index),
+    );
+    filter_sink.set_tx_skip_records(filter_inputs.tx_skip_records);
     filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
     filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
     let frame = filter_sink.into_filtered_frame(
@@ -1046,18 +1052,6 @@ fn validate_inter_frame_core(
             "5.18.7.12"
         ));
     }
-    if core.lr_params.as_ref().is_some_and(|lr| {
-        lr.planes.first().is_some_and(|plane| {
-            plane.frame_filters_on && plane.num_filter_classes.unwrap_or(1) > 1
-        })
-    }) {
-        return Err(inter_cap!(
-            "inter_lr_multiclass_tx_skip_unimplemented",
-            offset,
-            "inter.lr.multiclass_tx_skip_grid",
-            "5.18.7.11"
-        ));
-    }
     Ok(())
 }
 
@@ -1091,10 +1085,6 @@ mod single_ref;
 pub(crate) use block::decode_inter_blocks;
 use cross_frame::{ResolvedCdfLoad, order_hint_history_unwrapped, resolve_cdf_load};
 
-#[cfg(test)]
-mod lr_live_storage_tests;
-#[cfg(test)]
-mod lr_source_read_tests;
 #[cfg(test)]
 mod test_support;
 

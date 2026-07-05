@@ -53,11 +53,8 @@ use crate::filters::wienerns_lr::intrabc_records::{
     read_intrabc_use_and_skip,
 };
 use crate::filters::wienerns_lr::tx_records::{
-    CdefState, DeltaQState, SelectableLumaTxRecord, WienerNsLrTxSkipTransformRecord,
-    ccso::CcsoState, derive_inter_luma_tx_records_for_block,
-};
-use crate::filters::wienerns_lr::{
-    WienerNsLrTxSkipGrid, derive_wienerns_lr_block_skip_grid_retention,
+    CdefState, DeltaQState, SelectableLumaTxRecord, ccso::CcsoState,
+    derive_inter_luma_tx_records_for_block,
 };
 use crate::pipeline::effective_allow_screen_content_tools;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
@@ -166,112 +163,9 @@ pub(crate) struct InterFilterInputs {
     pub(crate) chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2],
     pub(crate) cdef_grid: crate::filters::cdef::CdefUnitGrid,
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
-    /// § 5.20.6.1 per-4x4 `Skips` grid (CDEF `cdef_on_skip_txfm == 0`); `None`
-    /// fail-closed when the walk left frame luma coverage incomplete.
-    pub(crate) skips_grid: Option<WienerNsLrTxSkipGrid>,
     pub(crate) lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     pub(crate) lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
-}
-
-/// Records § 7.17 deblock geometry for one inter block: per decoded transform
-/// when residual was read, or the § 5.20.6.2 `Max_Tx_Size_Rect` tiling for a
-/// skipped block (which reads no transform symbols).
-/// Records the § 5.20.6.1 `Skips[row][col] = skip_flag` block for one luma leaf.
-/// Spec `store_tx_info` writes `Skips` over the block's MI extent for plane 0, so
-/// one per-block record (in-frame origin, edge overhang clamped by the grid) covers
-/// intra, IntrABC, and inter leaves alike; the § 7.20.4 CDEF path ANDs it per 8x8.
-fn record_block_skip(
-    records: &mut Vec<WienerNsLrTxSkipTransformRecord>,
-    frontier: &DecodeBlockFrontier,
-    n4w: usize,
-    n4h: usize,
-    skip_flag: bool,
-) {
-    records.push(WienerNsLrTxSkipTransformRecord::luma(
-        frontier.r, frontier.c, n4h, n4w, skip_flag, 0,
-    ));
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_inter_deblock_geometry(
-    deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
-    chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
-    frontier: &DecodeBlockFrontier,
-    n4w: usize,
-    n4h: usize,
-    residual: Option<&InterResidual>,
-    qindex: u32,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let Some(residual) = residual else {
-        let tx_size = self::residual::max_tx_size(frontier.b_size.index(), tile_offset)?;
-        let tx_w4 = self::residual::tx_size_dimension("Tx_Width", &TX_WIDTH, tx_size, tile_offset)?
-            / MI_SIZE;
-        let tx_h4 =
-            self::residual::tx_size_dimension("Tx_Height", &TX_HEIGHT, tx_size, tile_offset)?
-                / MI_SIZE;
-        for row4 in (0..n4h).step_by(tx_h4.max(1)) {
-            for col4 in (0..n4w).step_by(tx_w4.max(1)) {
-                deblock_blocks.push(crate::filters::deblock::DeblockBlock {
-                    r: frontier.r + row4,
-                    c: frontier.c + col4,
-                    block_r: frontier.r,
-                    block_c: frontier.c,
-                    chroma_base_r: frontier.r + row4,
-                    chroma_base_c: frontier.c + col4,
-                    n4w: tx_w4,
-                    n4h: tx_h4,
-                    luma_tx: tx_size,
-                    chroma_tx:
-                        crate::filters::wienerns_lr::fixed_largest_420_chroma_tx_size_from_luma_4x4(
-                            tx_w4, tx_h4,
-                        ),
-                    qindex,
-                    skip: true,
-                });
-            }
-        }
-        return Ok(());
-    };
-    for block in &residual.blocks {
-        match block.plane {
-            ReconPlaneId::Y => {
-                let tx_w4 = (1usize << block.log2_width) / MI_SIZE;
-                let tx_h4 = (1usize << block.log2_height) / MI_SIZE;
-                deblock_blocks.push(crate::filters::deblock::DeblockBlock {
-                    r: block.y / MI_SIZE,
-                    c: block.x / MI_SIZE,
-                    block_r: frontier.r,
-                    block_c: frontier.c,
-                    chroma_base_r: block.y / MI_SIZE,
-                    chroma_base_c: block.x / MI_SIZE,
-                    n4w: tx_w4,
-                    n4h: tx_h4,
-                    luma_tx: block.tx_size,
-                    chroma_tx:
-                        crate::filters::wienerns_lr::fixed_largest_420_chroma_tx_size_from_luma_4x4(
-                            tx_w4, tx_h4,
-                        ),
-                    qindex,
-                    skip: false,
-                });
-            }
-            ReconPlaneId::U | ReconPlaneId::V => {
-                if let Some((plane_index, record)) =
-                    crate::filters::wienerns_lr::chroma_transform_deblock_block(
-                        block.plane,
-                        block.x,
-                        block.y,
-                        block.tx_size,
-                        qindex,
-                    )
-                {
-                    chroma_deblock_blocks[plane_index].push(record);
-                }
-            }
-        }
-    }
-    Ok(())
+    pub(crate) tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -387,15 +281,18 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                 SPEC_MODE_INFO
             )
         })?;
-    let mut uv_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new(mi_rows, mi_cols)
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_uv_smooth_grid",
-                offset,
-                "inter.uv_smooth_grid",
-                SPEC_MODE_INFO
-            )
-        })?;
+    let mut chroma_smooth = crate::prediction::intra_edge::TileChromaSmoothGrid::new(
+        mi_rows.div_ceil(2),
+        mi_cols.div_ceil(2),
+    )
+    .ok_or_else(|| {
+        inter_cap!(
+            "inter_chroma_smooth_grid",
+            offset,
+            "inter.chroma_smooth_grid",
+            SPEC_MODE_INFO
+        )
+    })?;
     let sb_h4 = superblock_h4(sequence, core).ok_or_else(|| {
         inter_missing!(
             "inter_sb_size",
@@ -428,7 +325,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     let mut deblock_blocks: Vec<crate::filters::deblock::DeblockBlock> = Vec::new();
     let mut chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2] =
         [Vec::new(), Vec::new()];
-    let mut block_skip_records: Vec<WienerNsLrTxSkipTransformRecord> = Vec::new();
+    let mut tx_skip_records = Vec::new();
     let mut decoded_any = false;
     let mut ref_mv_bank = sequence
         .inter
@@ -466,7 +363,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                 &mut segment_id_state,
                 &mut mv_grid,
                 &mut y_smooth,
-                &mut uv_smooth,
+                &mut chroma_smooth,
                 &mut ref_mv_bank,
                 &mut warp_param_bank,
                 sb_h4,
@@ -489,7 +386,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                 workspace,
                 &mut deblock_blocks,
                 &mut chroma_deblock_blocks,
-                &mut block_skip_records,
+                &mut tx_skip_records,
                 luma_use_tcq,
                 residual_use_ddt,
                 ref_frame_idx,
@@ -540,16 +437,14 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ));
     }
     tile.apply_frame_end_cdf_update();
-    let skips_grid =
-        derive_wienerns_lr_block_skip_grid_retention(mi_rows, mi_cols, &block_skip_records).ok();
     let filter_inputs = InterFilterInputs {
         deblock_blocks,
         chroma_deblock_blocks,
         cdef_grid: cdef_state.into_grid(tile_offset)?,
         ccso_grid: ccso_state.into_grid(tile_offset)?,
-        skips_grid,
         lr_source_blocks: active_source_blocks,
         lr_unit_filters: unit_filters,
+        tx_skip_records,
     };
     Ok((tile.frame_cdfs(), filter_inputs))
 }
@@ -627,23 +522,7 @@ fn read_intra_segment_id(
         i64::from(pred),
         i64::from(seg.last_active_seg_id) + 1,
     );
-    validate_intra_segment_id(segment_id, seg.last_active_seg_id, tile_offset)
-}
-
-fn validate_intra_segment_id(
-    segment_id: i64,
-    last_active_seg_id: u8,
-    tile_offset: ByteOffset,
-) -> Result<u8> {
-    if !(0..=i64::from(last_active_seg_id)).contains(&segment_id) {
-        return Err(inter_cap!(
-            "inter_intra_segment_id_out_of_range",
-            tile_offset,
-            "intra.segment_id <= LastActiveSegId",
-            "5.20.5.8"
-        ));
-    }
-    Ok(segment_id as u8)
+    Ok(u8::try_from(segment_id.clamp(0, i64::from(u8::MAX))).unwrap_or(0))
 }
 
 /// AV2 § 7.14.2 `get_qindex(0, segment_id)`: the delta-q-adjusted `current_qindex`
@@ -686,7 +565,7 @@ fn decode_block<T: ReconSample>(
     segment_id_state: &mut TileSegmentIdState,
     mv_grid: &mut NeighbourMvGrid,
     y_smooth: &mut crate::prediction::intra_edge::TileYSmoothGrid,
-    uv_smooth: &mut crate::prediction::intra_edge::TileYSmoothGrid,
+    chroma_smooth: &mut crate::prediction::intra_edge::TileChromaSmoothGrid,
     ref_mv_bank: &mut Option<super::find_mv_stack::RefMvBank>,
     warp_param_bank: &mut super::find_mv_stack::WarpParamBank,
     sb_h4: usize,
@@ -709,7 +588,7 @@ fn decode_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
-    block_skip_records: &mut Vec<WienerNsLrTxSkipTransformRecord>,
+    tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     ref_frame_idx: &[u32],
@@ -922,7 +801,6 @@ fn decode_block<T: ReconSample>(
                 None
             };
             prelude = IntrabcBlockPrelude::from_use_skip(use_skip, intrabc);
-            record_block_skip(block_skip_records, frontier, n4w, n4h, prelude.skip_flag);
         }
         segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
         if prelude.use_intrabc {
@@ -973,6 +851,7 @@ fn decode_block<T: ReconSample>(
             record_inter_deblock_geometry(
                 deblock_blocks,
                 chroma_deblock_blocks,
+                tx_skip_records,
                 frontier,
                 n4w,
                 n4h,
@@ -1019,21 +898,13 @@ fn decode_block<T: ReconSample>(
             usize::from(segment_id),
             delta_q_state.qindex_u32(),
         );
-        if !residual_quantizer_deltas_are_zero {
-            return Err(inter_cap!(
-                "inter_intra_block_quantizer_delta",
-                tile_offset,
-                "inter.intra.residual.nonzero_quantizer_delta",
-                "7.14.2"
-            ));
-        }
         let leaf = crate::pipeline::general_intra::decode_one_general_intra_block::<T>(
             work_unit,
             symbols,
             frontier,
             sequence,
             Some(&*y_smooth),
-            Some(&*uv_smooth),
+            Some(chroma_smooth),
             core,
             joint_modes,
             uses_mrls,
@@ -1045,6 +916,7 @@ fn decode_block<T: ReconSample>(
             coeff_ctx,
             deblock_blocks,
             chroma_deblock_blocks,
+            tx_skip_records,
             block_qindex,
             luma_use_tcq,
             residual_tool_policy,
@@ -1053,27 +925,6 @@ fn decode_block<T: ReconSample>(
             bit_depth,
             tile_offset,
         )?;
-        if frontier.has_chroma && !frontier.is_luma_part() {
-            let chroma_ref = frontier.chroma_ref_geometry(); // § 7.13.2.15/16 chroma smoothness records at the § 5.20.4.1 CHROMA-REFERENCE geometry (coords + size), not the luma-leaf coords, so a `chroma_offset` leaf writes the cells a later one-sided/middle chroma block reads; a luma-only (`is_luma_part`) leaf sets no chroma cell
-            let (Ok(chroma_n4w), Ok(chroma_n4h)) = (
-                chroma_ref.size().num_4x4_wide(),
-                chroma_ref.size().num_4x4_high(),
-            ) else {
-                return Err(inter_diag!(
-                    "inter_block_chroma_ref_geometry",
-                    tile_offset,
-                    "chroma reference geometry lookup failed",
-                    SPEC_MODE_INFO
-                ));
-            };
-            uv_smooth.record(
-                chroma_ref.row(),
-                chroma_ref.col(),
-                chroma_n4w,
-                chroma_n4h,
-                leaf.uv_mode_is_smooth(),
-            );
-        }
         if !frontier.is_chroma_part() {
             y_smooth.record(mi_row, mi_col, n4w, n4h, leaf.y_mode_is_smooth());
             mv_grid.record_block(
@@ -1119,7 +970,6 @@ fn decode_block<T: ReconSample>(
         .map_err(|_| symbol_read_error(tile_offset))?
     };
     let skip = skip.get();
-    record_block_skip(block_skip_records, frontier, n4w, n4h, skip == 1);
     if trace_first_row {
         eprintln!(
             "inter block skip r={mi_row} c={mi_col} value={skip} ctx={} checkpoint={:?}",
@@ -1288,6 +1138,7 @@ fn decode_block<T: ReconSample>(
         record_inter_deblock_geometry(
             deblock_blocks,
             chroma_deblock_blocks,
+            tx_skip_records,
             frontier,
             n4w,
             n4h,
@@ -1563,6 +1414,7 @@ fn decode_block<T: ReconSample>(
         record_inter_deblock_geometry(
             deblock_blocks,
             chroma_deblock_blocks,
+            tx_skip_records,
             frontier,
             n4w,
             n4h,
@@ -1917,6 +1769,7 @@ fn decode_block<T: ReconSample>(
     record_inter_deblock_geometry(
         deblock_blocks,
         chroma_deblock_blocks,
+        tx_skip_records,
         frontier,
         n4w,
         n4h,
@@ -2372,11 +2225,11 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
     Ok(())
 }
 
+mod filter_records;
 mod residual;
-#[cfg(test)]
-mod tests;
 mod warp;
 
+use self::filter_records::record_inter_deblock_geometry;
 use self::warp::{
     WarpInterIntraSyntax, inter_mv_read_config, inter_mvd_sign_derivation_allowed,
     interintra_prediction_mode, read_warp_extend_syntax, read_warp_inter_intra_syntax,
@@ -2749,5 +2602,21 @@ fn map_inter_multiblock_error(
             "inter.partition_walk",
             SPEC_MODE_INFO
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inter_residual_geometry_supported_flags;
+
+    #[test]
+    fn inter_residual_geometry_allows_shared_leaves() {
+        assert!(inter_residual_geometry_supported_flags(false, false));
+    }
+
+    #[test]
+    fn inter_residual_geometry_rejects_chroma_partitioned_leaves() {
+        assert!(!inter_residual_geometry_supported_flags(true, false));
+        assert!(!inter_residual_geometry_supported_flags(false, true));
     }
 }

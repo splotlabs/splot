@@ -102,10 +102,10 @@ pub(crate) enum RectLumaPlan {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RectChromaPlan {
     Mode(SupportedChromaMode),
-    Middle {
+    OneSided {
         p_angle: u16,
     },
-    OneSided {
+    Middle {
         p_angle: u16,
     },
     Cfl {
@@ -162,6 +162,7 @@ struct ResidualPlanePlan {
     /// § 5.20.7.24 `allowCorners == 0` (a § 5.20.6.3 middle transform unit):
     /// the top-right/bottom-left availability counts read as zero.
     zero_corners: bool,
+    defer_reconstruction: bool,
     reconstruction: ResidualReconstructionPlan,
 }
 
@@ -229,10 +230,10 @@ enum ResidualReconstructionPlan {
     Chroma {
         mode: SupportedChromaMode,
     },
-    ChromaMiddle {
+    ChromaOneSided {
         p_angle: u16,
     },
-    ChromaOneSided {
+    ChromaMiddle {
         p_angle: u16,
     },
     ChromaCfl {
@@ -376,7 +377,7 @@ impl GeneralIntraResidualPlan {
     ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
         let reconstruction = chroma_reconstruction(chroma_plan);
         let mut planes = Vec::new();
-        planes.extend(chroma_plans(block_ctx, reconstruction, false)?);
+        planes.extend(chroma_plans(block_ctx, reconstruction, false, false)?);
         Ok(Self { planes })
     }
 
@@ -437,12 +438,27 @@ impl GeneralIntraResidualPlan {
             deblock.record_chroma_part_block();
         }
         let mut u_nonzero = false;
+        let mut deferred = Vec::new();
         for &plane in &self.planes {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             let coeffs = execute(plane, eob_u_nonzero, deblock)?;
             if plane.plane_id == PlaneId::U {
                 u_nonzero = !coeffs.all_zero;
             }
+            if plane.defer_reconstruction {
+                deferred.push((plane, coeffs));
+            }
+        }
+        for (plane, coeffs) in deferred {
+            plane.reconstruct(
+                workspace,
+                &coeffs,
+                block_decoded,
+                None,
+                qindex,
+                intra_edge,
+                luma_transform_type_context,
+            )?;
         }
         Ok(())
     }
@@ -464,6 +480,8 @@ impl GeneralIntraResidualPlan {
 pub(crate) struct DeblockRecorder<'a> {
     pub(crate) blocks: &'a mut Vec<crate::filters::deblock::DeblockBlock>,
     pub(crate) chroma_blocks: &'a mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    pub(crate) tx_skip_records:
+        &'a mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     pub(crate) block_r: usize,
     pub(crate) block_c: usize,
     pub(crate) block_w4: usize,
@@ -505,7 +523,7 @@ impl DeblockRecorder<'_> {
         n4w: usize,
         n4h: usize,
         luma_tx: usize,
-        qindex: u32,
+        eob: usize,
     ) {
         self.blocks.push(crate::filters::deblock::DeblockBlock {
             r,
@@ -518,19 +536,33 @@ impl DeblockRecorder<'_> {
             n4h,
             luma_tx,
             chroma_tx: self.chroma_tx,
-            qindex,
+            qindex: self.qindex,
             skip: false,
         });
+        self.tx_skip_records.push(
+            crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
+                row: r,
+                col: c,
+                rows: n4h,
+                cols: n4w,
+                skip_flag: false,
+                eob,
+                intra_ist: None,
+            },
+        );
     }
 }
 
 fn chroma_reconstruction(plan: RectChromaPlan) -> ResidualReconstructionPlan {
     match plan {
+        RectChromaPlan::Mode(SupportedChromaMode::Dc) => {
+            ResidualReconstructionPlan::Rect { use_tcq: false }
+        }
         RectChromaPlan::Mode(mode) => ResidualReconstructionPlan::Chroma { mode },
-        RectChromaPlan::Middle { p_angle } => ResidualReconstructionPlan::ChromaMiddle { p_angle },
         RectChromaPlan::OneSided { p_angle } => {
             ResidualReconstructionPlan::ChromaOneSided { p_angle }
         }
+        RectChromaPlan::Middle { p_angle } => ResidualReconstructionPlan::ChromaMiddle { p_angle },
         RectChromaPlan::Cfl {
             params,
             cfl_ds_filter_index,
@@ -568,8 +600,16 @@ impl ResidualPlanePlan {
             fsc_mode,
             txb_skip_fsc_mode,
             zero_corners: false,
+            defer_reconstruction: false,
             reconstruction,
         })
+    }
+
+    const fn with_deferred_reconstruction(self) -> Self {
+        Self {
+            defer_reconstruction: true,
+            ..self
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -664,18 +704,20 @@ impl ResidualPlanePlan {
                 self.tx.width4(),
                 self.tx.height4(),
                 self.tx_size,
-                qindex,
+                coeffs.eob,
             );
         }
-        self.reconstruct(
-            workspace,
-            &coeffs,
-            block_decoded,
-            palette_color_map.as_deref(),
-            qindex,
-            intra_edge,
-            luma_transform_type_context,
-        )?;
+        if !self.defer_reconstruction {
+            self.reconstruct(
+                workspace,
+                &coeffs,
+                block_decoded,
+                palette_color_map.as_deref(),
+                qindex,
+                intra_edge,
+                luma_transform_type_context,
+            )?;
+        }
         Ok(coeffs)
     }
 
@@ -742,7 +784,7 @@ impl ResidualPlanePlan {
                 ((1usize << log2_width) / 4).max(1),
                 ((1usize << log2_height) / 4).max(1),
                 block.tx_size,
-                qindex,
+                block.coeffs.eob,
             );
             self.reconstruct(
                 workspace,
@@ -775,7 +817,7 @@ impl ResidualPlanePlan {
                 ((1usize << log2_width) / 4).max(1),
                 ((1usize << log2_height) / 4).max(1),
                 block.tx_size,
-                qindex,
+                block.coeffs.eob,
             );
             block_decoded.set_block(
                 0,
@@ -1208,6 +1250,7 @@ impl ResidualPlanePlan {
                 let edge_filters = crate::prediction::intra_edge::unit_middle_edge_filters(
                     intra_edge,
                     workspace,
+                    PlaneId::Y,
                     i32::from(p_angle),
                     apply_ibp,
                     edges,
@@ -1547,42 +1590,27 @@ impl ResidualPlanePlan {
                     block_ctx.bit_depth(),
                 )
             }
-            ResidualReconstructionPlan::ChromaMiddle { p_angle } => {
-                if !chroma_middle_edge_filter_is_noop(
-                    intra_edge,
-                    p_angle,
-                    self.tx.width_log2(),
-                    self.tx.height_log2(),
-                ) {
-                    return Err(GeneralIntraResidualError::UnsupportedChromaMiddleEdgeFilter);
-                }
-                crate::pipeline::reconstruct::reconstruct_general_intra_middle_neighbour_rect_block_into(
+            ResidualReconstructionPlan::ChromaOneSided { p_angle } => {
+                let neighbours =
+                    block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
+                let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
+                let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
+                let edges = crate::prediction::intra_edge::UnitEdges {
+                    above: neighbours.has_above(),
+                    left: neighbours.has_left(),
+                };
+                let edge_filter = crate::prediction::intra_edge::unit_edge_filter_for_plane(
+                    intra_edge.chroma(),
                     workspace,
-                    coeffs,
-                    p_angle,
                     self.plane_id,
+                    i32::from(p_angle),
+                    crate::prediction::intra_edge::UnitEdgeRole::Primary { apply_ibp },
+                    edges,
                     self.x,
                     self.y,
-                    self.tx.width_log2(),
-                    self.tx.height_log2(),
-                    qindex,
-                    false,
-                    None,
-                    block_ctx.bit_depth(),
-                    middle_edge_filters(),
-                )
-            }
-            ResidualReconstructionPlan::ChromaOneSided { p_angle } => {
-                if !chroma_one_sided_edge_filter_is_noop(
-                    intra_edge,
-                    p_angle,
-                    self.tx.width_log2(),
-                    self.tx.height_log2(),
-                ) {
-                    return Err(GeneralIntraResidualError::UnsupportedChromaOneSidedEdgeFilter);
-                }
-                let neighbours =
-                    block_ctx.neighbours_from_block_decoded(PlaneId::U, block_decoded);
+                    w,
+                    h,
+                )?;
                 if p_angle < 90 {
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_neighbour_block_into(
                         workspace,
@@ -1599,7 +1627,7 @@ impl ResidualPlanePlan {
                         false,
                         None,
                         block_ctx.bit_depth(),
-                        crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
+                        edge_filter,
                     )
                 } else {
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_left_neighbour_block_into(
@@ -1618,13 +1646,50 @@ impl ResidualPlanePlan {
                         false,
                         None,
                         block_ctx.bit_depth(),
-                        crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
+                        edge_filter,
                     )
                 }
             }
+            ResidualReconstructionPlan::ChromaMiddle { p_angle } => {
+                let neighbours =
+                    block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
+                let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
+                let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
+                let edge_filters =
+                    crate::prediction::intra_edge::unit_middle_edge_filters(
+                        intra_edge.chroma(),
+                        workspace,
+                        self.plane_id,
+                        i32::from(p_angle),
+                        apply_ibp,
+                        crate::prediction::intra_edge::UnitEdges {
+                            above: neighbours.has_above(),
+                            left: neighbours.has_left(),
+                        },
+                        self.x,
+                        self.y,
+                        w,
+                        h,
+                    )?;
+                crate::pipeline::reconstruct::reconstruct_general_intra_middle_neighbour_rect_block_into(
+                    workspace,
+                    coeffs,
+                    p_angle,
+                    self.plane_id,
+                    self.x,
+                    self.y,
+                    self.tx.width_log2(),
+                    self.tx.height_log2(),
+                    qindex,
+                    false,
+                    None,
+                    block_ctx.bit_depth(),
+                    edge_filters,
+                )
+            }
             ResidualReconstructionPlan::Chroma { mode } => {
                 let neighbours =
-                    block_ctx.neighbours_from_block_decoded(PlaneId::U, block_decoded);
+                    block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_chroma_block_into(
                     workspace,
                     coeffs,
@@ -1646,7 +1711,7 @@ impl ResidualPlanePlan {
                 sb_mib,
             } => {
                 let neighbours =
-                    block_ctx.neighbours_from_block_decoded(PlaneId::U, block_decoded);
+                    block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_chroma_cfl_block_into(
                     workspace,
                     coeffs,
@@ -1665,9 +1730,8 @@ impl ResidualPlanePlan {
                 )
             }
             ResidualReconstructionPlan::Rect { use_tcq } => {
-                let ibp_dc = intra_edge.enable_ibp
-                    && self.plane_id == PlaneId::Y
-                    && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2);
+                let ibp_dc =
+                    intra_edge.enable_ibp && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2);
                 crate::pipeline::reconstruct::reconstruct_general_intra_block_rect_into(
                     workspace,
                     coeffs,
@@ -1730,93 +1794,6 @@ fn tx_size_log2(tx_size: usize) -> core::result::Result<(u32, u32), GeneralIntra
         }
     })?;
     Ok((width, height))
-}
-
-fn middle_edge_filters() -> crate::pipeline::reconstruct::TwoSidedMiddleEdgeFilters {
-    crate::pipeline::reconstruct::TwoSidedMiddleEdgeFilters {
-        above: crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
-        left: crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
-    }
-}
-
-/// The § 7.13.2.17 chroma `filterType` (`0` / `1`) for a non-IBP directional leaf:
-/// the OR of the § 7.13.2.15/16 above/left CHROMA neighbour smoothness. `None`
-/// when `enable_intra_edge_filter == 0`, which skips § 7.13.2.7 entirely (always a
-/// no-op).
-fn chroma_edge_filter_type(intra_edge: crate::prediction::intra_edge::IntraEdgeCtx) -> Option<u8> {
-    intra_edge
-        .enable_intra_edge_filter
-        .then(|| u8::from(intra_edge.above_chroma_smooth || intra_edge.left_chroma_smooth))
-}
-
-/// `true` when the § 7.13.2.7 one-sided chroma edge filter resolves to a no-op
-/// for `p_angle` over a `w` x `h` transform, so the [`ChromaOneSided`] recon over
-/// the raw § 7.13.2.1 edge is byte-exact with the default filter; `false` when a
-/// non-zero § 7.13.2.17 strength is resolved (the caller then fails closed rather
-/// than emit wrong chroma).
-///
-/// The § 7.13.2.14 corner blend never fires on a one-sided (non-IBP) leaf
-/// (`needAbove && needLeft` is never both true), so a resolved strength of `0` is
-/// the whole no-op condition. Zone-1 (`pAngle < 90`) filters `angleAbove =
-/// pAngle - 90` over `(w, h)`; zone-3 (`pAngle >= 181`) filters `angleLeft =
-/// pAngle - 180` over `(h, w)`.
-///
-/// [`ChromaOneSided`]: ResidualReconstructionPlan::ChromaOneSided
-fn chroma_one_sided_edge_filter_is_noop(
-    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-    p_angle: u16,
-    tx_width_log2: u32,
-    tx_height_log2: u32,
-) -> bool {
-    let Some(filter_type) = chroma_edge_filter_type(intra_edge) else {
-        return true;
-    };
-    let (w, h) = (1u32 << tx_width_log2, 1u32 << tx_height_log2);
-    let read_edge_strength = |a, b, delta| {
-        crate::filters::wienerns_lr::recon::intra_edge_filter_strength(a, b, filter_type, delta)
-    };
-    let strength = if p_angle < 90 {
-        read_edge_strength(w, h, i32::from(p_angle) - 90)
-    } else {
-        read_edge_strength(h, w, i32::from(p_angle) - 180)
-    };
-    strength == 0
-}
-
-/// `true` when the § 7.13.2.7 middle-angle chroma edge filter is a pure no-op for
-/// `p_angle` (`91..=179`) over a `w` x `h` transform, so the [`ChromaMiddle`]
-/// recon over the raw § 7.13.2.1 edges with the default filters is byte-exact;
-/// `false` when a non-zero § 7.13.2.17 strength on EITHER edge, or a § 7.13.2.14
-/// corner blend, would change the output (the caller then fails closed).
-///
-/// A middle-angle (`90 < pAngle < 180`) leaf reads BOTH edges: the above edge
-/// filters `angleAbove = pAngle - 90` over `(w, h)` and the left edge filters
-/// `angleLeft = pAngle - 180` over `(h, w)`. Unlike the one-sided leaf, the
-/// § 7.13.2.14 corner blend CAN fire here (`needAbove && needLeft` are both true
-/// when both edges exist) and rewrites `AboveRow[-1]` INDEPENDENTLY of the strength
-/// at `(w + h) >= 24`, so a strength-0 block with a firing corner is NOT a no-op.
-/// The default [`middle_edge_filters`] apply neither, so admit only when both
-/// strengths are `0` AND the corner cannot fire.
-///
-/// [`ChromaMiddle`]: ResidualReconstructionPlan::ChromaMiddle
-fn chroma_middle_edge_filter_is_noop(
-    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-    p_angle: u16,
-    tx_width_log2: u32,
-    tx_height_log2: u32,
-) -> bool {
-    let Some(filter_type) = chroma_edge_filter_type(intra_edge) else {
-        return true;
-    };
-    let (w, h) = (1u32 << tx_width_log2, 1u32 << tx_height_log2);
-    if w + h >= 24 {
-        return false;
-    }
-    let read_edge_strength = |a, b, delta| {
-        crate::filters::wienerns_lr::recon::intra_edge_filter_strength(a, b, filter_type, delta)
-    };
-    read_edge_strength(w, h, i32::from(p_angle) - 90) == 0
-        && read_edge_strength(h, w, i32::from(p_angle) - 180) == 0
 }
 
 fn chroma_angle_delta_uv(
@@ -2024,6 +2001,9 @@ fn push_ordered_planes(
     let block = block_ctx.block();
     let width_chunks = (block.width4() >> 4).max(1);
     let height_chunks = (block.height4() >> 4).max(1);
+    let defer_chroma_reconstruction = chroma_reconstruction
+        .is_some_and(chroma_depends_on_complete_luma)
+        && (width_chunks > 1 || height_chunks > 1);
 
     for start_chunk_y in (0..height_chunks).step_by(2) {
         for start_chunk_x in (0..width_chunks).step_by(2) {
@@ -2042,13 +2022,22 @@ fn push_ordered_planes(
                         && chunk_x % 2 == 0
                         && chunk_y % 2 == 0
                     {
-                        planes.extend(chroma_plans(block_ctx, reconstruction, luma_fsc_mode)?);
+                        planes.extend(chroma_plans(
+                            block_ctx,
+                            reconstruction,
+                            luma_fsc_mode,
+                            defer_chroma_reconstruction,
+                        )?);
                     }
                 }
             }
         }
     }
     Ok(())
+}
+
+const fn chroma_depends_on_complete_luma(reconstruction: ResidualReconstructionPlan) -> bool {
+    matches!(reconstruction, ResidualReconstructionPlan::ChromaCfl { .. })
 }
 
 fn luma_chunk_ctx(
@@ -2097,10 +2086,11 @@ fn chroma_plans(
     block_ctx: BlockCtx,
     reconstruction: ResidualReconstructionPlan,
     txb_skip_fsc_mode: bool,
+    defer_reconstruction: bool,
 ) -> core::result::Result<[ResidualPlanePlan; 2], ResidualPipelineUnsupported> {
     let [u, v] = CHROMA_PLANES.map(|plane_id| {
         let block = block_ctx.plane_block(plane_id);
-        ResidualPlanePlan::new(
+        let plan = ResidualPlanePlan::new(
             block_ctx,
             plane_id,
             reconstruction,
@@ -2108,7 +2098,12 @@ fn chroma_plans(
             block.height4(),
             false,
             txb_skip_fsc_mode,
-        )
+        )?;
+        Ok(if defer_reconstruction {
+            plan.with_deferred_reconstruction()
+        } else {
+            plan
+        })
     });
     Ok([u?, v?])
 }
@@ -2198,7 +2193,6 @@ const fn unsupported(
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::prediction::intra_edge::IntraEdgeCtx;
     use crate::tile::block_context::{BlockRect, ChromaSampling, TxShape};
     use splot_recon::BitDepth;
 
@@ -2283,6 +2277,29 @@ mod tests {
     }
 
     #[test]
+    fn chroma_dc_uses_generic_rect_reconstruction() {
+        let block = BlockRect::new(0, 0, 16, 16);
+        let ctx = ctx(block, BitDepth::Ten);
+        let plan = GeneralIntraResidualPlan::square(
+            ctx,
+            IntraLumaPlan::Dc,
+            Some(RectChromaPlan::Mode(SupportedChromaMode::Dc)),
+            false,
+            false,
+        )
+        .expect("square plan");
+
+        for plane_id in [PlaneId::U, PlaneId::V] {
+            assert_eq!(
+                plan.plane_plan(plane_id)
+                    .expect("chroma plane")
+                    .reconstruction,
+                ResidualReconstructionPlan::Rect { use_tcq: false }
+            );
+        }
+    }
+
+    #[test]
     fn fsc_coefficients_are_luma_only() {
         let block = BlockRect::new(0, 0, 16, 16);
         let ctx = ctx(block, BitDepth::Ten);
@@ -2333,6 +2350,70 @@ mod tests {
         assert!(
             luma.iter()
                 .all(|plane| (plane.residual_width4, plane.residual_height4) == (32, 16))
+        );
+    }
+
+    #[test]
+    fn cfl_chroma_keeps_read_order_and_defers_reconstruction() {
+        let block = BlockRect::new(0, 0, 32, 16);
+        let ctx = ctx(block, BitDepth::Ten);
+        let plan = GeneralIntraResidualPlan::rect(
+            ctx,
+            RectLumaPlan::Dc { use_tcq: true },
+            Some(RectChromaPlan::Cfl {
+                params: CflParams {
+                    index: crate::bitstream::tile_payload::CflIndex::DerivedAlpha,
+                    alpha_u: 0,
+                    alpha_v: 0,
+                    mh_dir: None,
+                },
+                cfl_ds_filter_index: 0,
+                sb_mib: 16,
+            }),
+            false,
+        )
+        .expect("cfl rect plan");
+
+        assert_large_chroma_order(&plan, true);
+    }
+
+    #[test]
+    fn non_cfl_chroma_keeps_chunk_interleaving() {
+        let block = BlockRect::new(0, 0, 32, 16);
+        let ctx = ctx(block, BitDepth::Ten);
+        let plan = GeneralIntraResidualPlan::rect(
+            ctx,
+            RectLumaPlan::Dc { use_tcq: true },
+            Some(RectChromaPlan::Mode(SupportedChromaMode::Dc)),
+            false,
+        )
+        .expect("dc rect plan");
+
+        assert_large_chroma_order(&plan, false);
+    }
+
+    fn assert_large_chroma_order(plan: &GeneralIntraResidualPlan, defer: bool) {
+        let order: Vec<_> = plan
+            .planes
+            .iter()
+            .map(|plane| (plane.plane_id, plane.x, plane.y))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (PlaneId::Y, 0, 0),
+                (PlaneId::U, 0, 0),
+                (PlaneId::V, 0, 0),
+                (PlaneId::Y, 64, 0),
+            ]
+        );
+        assert_eq!(
+            plan.planes
+                .iter()
+                .filter(|plane| plane.plane_id != PlaneId::Y)
+                .map(|plane| plane.defer_reconstruction)
+                .collect::<Vec<_>>(),
+            [defer, defer]
         );
     }
 
@@ -2410,41 +2491,5 @@ mod tests {
     fn ctx(block: BlockRect, bit_depth: BitDepth) -> BlockCtx {
         let tx = TxShape::from_luma_4x4(block.width4(), block.height4()).expect("test tx shape");
         BlockCtx::new(block, tx, 32, 32, bit_depth, ChromaSampling::Yuv420)
-    }
-
-    fn edge_ctx(enable: bool, above_chroma_smooth: bool, left_chroma_smooth: bool) -> IntraEdgeCtx {
-        IntraEdgeCtx {
-            enable_ibp: false,
-            enable_intra_edge_filter: enable,
-            above_smooth: false,
-            left_smooth: false,
-            above_chroma_smooth,
-            left_chroma_smooth,
-        }
-    }
-
-    /// Both chroma edge-filter no-op gates track the resolved § 7.13.2.17 strength.
-    /// `enable_intra_edge_filter == 0` is always a no-op. One-sided D67 4x8 (blkWh
-    /// 12, |delta| 23) resolves strength 0 for a non-smooth chroma neighbour
-    /// (`filterType 0`, admit — the syn-intra / syn-sdp shape) and strength 1 for a
-    /// smooth one (`filterType 1`, fail closed); zone-3 (pAngle 203) mirrors zone-1.
-    /// Middle pAngle 135 over a 4x4 unit (`w + h == 8 < 24`, no § 7.13.2.14 corner;
-    /// both `|angleAbove| == |angleLeft| == 45`) admits for a non-smooth neighbour
-    /// and fails closed for a smooth one; any unit with `w + h >= 24` fails closed
-    /// because the corner blend can rewrite `AboveRow[-1]` regardless of strength.
-    #[test]
-    fn chroma_edge_filter_noop_gates_track_resolved_strength_and_corner() {
-        let one_sided = chroma_one_sided_edge_filter_is_noop;
-        assert!(one_sided(edge_ctx(false, true, true), 67, 2, 3));
-        assert!(one_sided(edge_ctx(true, false, false), 67, 2, 3));
-        assert!(!one_sided(edge_ctx(true, true, false), 67, 2, 3));
-        assert!(!one_sided(edge_ctx(true, false, true), 67, 2, 3));
-        assert!(one_sided(edge_ctx(true, false, false), 203, 2, 3));
-
-        let middle = chroma_middle_edge_filter_is_noop;
-        assert!(middle(edge_ctx(false, true, true), 135, 2, 2));
-        assert!(middle(edge_ctx(true, false, false), 135, 2, 2));
-        assert!(!middle(edge_ctx(true, true, false), 135, 2, 2));
-        assert!(!middle(edge_ctx(true, false, false), 135, 3, 4));
     }
 }

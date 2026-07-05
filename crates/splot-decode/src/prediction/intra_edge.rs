@@ -14,17 +14,22 @@ use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 use crate::bitstream::tile_payload::GeneralIntraResidualError;
 use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
 
-/// Tile-wide per-MI `YModes`-smoothness grid (§7.13.2.16 `is_smooth`): a cell
-/// is `true` when the block covering it coded a SMOOTH / SMOOTH_V / SMOOTH_H
-/// luma mode. Inter blocks record `false` (their `YModes` entry is an inter
-/// mode, 05:10655), matching AVM's raw-mode `is_smooth` check.
-pub(crate) struct TileYSmoothGrid {
+/// Tile-wide per-MI intra smoothness grid (§7.13.2.15/16 `is_smooth`).
+pub(crate) struct TileSmoothGrid {
     mi_rows: usize,
     mi_cols: usize,
     cells: Vec<bool>,
 }
 
-impl TileYSmoothGrid {
+/// `YModes` smoothness for luma edge filters. Inter blocks record `false`
+/// because their `YModes` entry is an inter mode, matching AVM's raw-mode
+/// `is_smooth` check.
+pub(crate) type TileYSmoothGrid = TileSmoothGrid;
+
+/// `UVModes` smoothness for chroma edge filters.
+pub(crate) type TileChromaSmoothGrid = TileSmoothGrid;
+
+impl TileSmoothGrid {
     /// Builds an all-`false` grid, or `None` when the dimensions overflow.
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let cells = mi_rows.checked_mul(mi_cols)?;
@@ -75,16 +80,25 @@ pub(crate) struct IntraEdgeCtx {
     pub(crate) enable_ibp: bool,
     /// §5.3 `enable_intra_edge_filter`.
     pub(crate) enable_intra_edge_filter: bool,
-    /// §7.13.2.15 `is_smooth` of the block's above LUMA neighbour.
+    /// §7.13.2.15 `is_smooth` of the block's above neighbour.
     pub(crate) above_smooth: bool,
-    /// §7.13.2.16 `is_smooth` of the block's left LUMA neighbour.
+    /// §7.13.2.16 `is_smooth` of the block's left neighbour.
     pub(crate) left_smooth: bool,
-    /// §7.13.2.15 `is_smooth` of the block's above CHROMA neighbour (its
-    /// reconstructed `UVMode` is SMOOTH / SMOOTH_V / SMOOTH_H), for the chroma
-    /// §7.13.2.17 `filterType`. Off-grid neighbours contribute `false`.
-    pub(crate) above_chroma_smooth: bool,
-    /// §7.13.2.16 `is_smooth` of the block's left CHROMA neighbour.
-    pub(crate) left_chroma_smooth: bool,
+    /// Chroma §7.13.2.15 `is_smooth` of the block's above neighbour.
+    pub(crate) chroma_above_smooth: bool,
+    /// Chroma §7.13.2.16 `is_smooth` of the block's left neighbour.
+    pub(crate) chroma_left_smooth: bool,
+}
+
+impl IntraEdgeCtx {
+    /// Returns an edge-filter context whose smoothness pair is the chroma pair.
+    pub(crate) const fn chroma(self) -> Self {
+        Self {
+            above_smooth: self.chroma_above_smooth,
+            left_smooth: self.chroma_left_smooth,
+            ..self
+        }
+    }
 }
 
 /// The pure §7.13.2.7 step-1 shape of one read edge: which edge, its
@@ -284,6 +298,25 @@ pub(crate) fn unit_edge_filter<T: ReconSample>(
     w: u32,
     h: u32,
 ) -> core::result::Result<OneSidedEdgeFilter, GeneralIntraResidualError> {
+    unit_edge_filter_for_plane(ctx, workspace, PlaneId::Y, p_angle, role, edges, x, y, w, h)
+}
+
+/// Plane-aware variant of [`unit_edge_filter`] for chroma one-sided
+/// directional units. The § 7.13.2.7 edge filter math is plane-independent; only
+/// the backing plane read for the edge samples/corner differs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn unit_edge_filter_for_plane<T: ReconSample>(
+    ctx: IntraEdgeCtx,
+    workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    p_angle: i32,
+    role: UnitEdgeRole,
+    edges: UnitEdges,
+    x: usize,
+    y: usize,
+    w: u32,
+    h: u32,
+) -> core::result::Result<OneSidedEdgeFilter, GeneralIntraResidualError> {
     if !ctx.enable_intra_edge_filter {
         return Ok(OneSidedEdgeFilter::default());
     }
@@ -298,11 +331,11 @@ pub(crate) fn unit_edge_filter<T: ReconSample>(
         return Ok(OneSidedEdgeFilter::default());
     }
     spec.corner_applies = spec.corner_applies && edges.above && edges.left;
-    assemble_unit_edge_filter(workspace, PlaneId::Y, &spec, x, y, w, h)
+    assemble_unit_edge_filter(workspace, plane_id, &spec, x, y, w, h)
 }
 
 /// Resolves the per-unit §7.13.2.7 filters for BOTH edges of a zone-2
-/// (`90 < pAngle < 180`) luma unit, or the no-op defaults when
+/// (`90 < pAngle < 180`) unit, or the no-op defaults when
 /// `enable_intra_edge_filter == 0`. `applyIbp` (`enable_ibp` and a
 /// non-4x4 unit — not zone-gated, 07:5611-5613) keeps the PER-EDGE
 /// §7.13.2.15/16 filter types; otherwise the OR'd `filterType` seeds both
@@ -313,6 +346,7 @@ pub(crate) fn unit_edge_filter<T: ReconSample>(
 pub(crate) fn unit_middle_edge_filters<T: ReconSample>(
     ctx: IntraEdgeCtx,
     workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
     p_angle: i32,
     apply_ibp: bool,
     edges: UnitEdges,
@@ -349,12 +383,12 @@ pub(crate) fn unit_middle_edge_filters<T: ReconSample>(
         corner_applies,
     };
     let above = if edges.above {
-        assemble_unit_edge_filter(workspace, PlaneId::Y, &above_spec, x, y, w, h)?
+        assemble_unit_edge_filter(workspace, plane_id, &above_spec, x, y, w, h)?
     } else {
         OneSidedEdgeFilter::default()
     };
     let left = if edges.left {
-        assemble_unit_edge_filter(workspace, PlaneId::Y, &left_spec, x, y, w, h)?
+        assemble_unit_edge_filter(workspace, plane_id, &left_spec, x, y, w, h)?
     } else {
         OneSidedEdgeFilter::default()
     };

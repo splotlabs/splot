@@ -7959,8 +7959,6 @@ fixtures = [
     "crates/splot-decode/src/prediction/inter/cross_frame.rs",
     "crates/splot-decode/src/prediction/inter/find_mv_stack.rs",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs",
-    "crates/splot-decode/src/prediction/inter/lr_live_storage_tests.rs",
-    "crates/splot-decode/src/prediction/inter/lr_source_read_tests.rs",
     "crates/splot-decode/src/prediction/inter/mc.rs",
     "crates/splot-decode/src/prediction/inter/mv_scaling.rs",
     "crates/splot-decode/src/prediction/inter/read_mv.rs",
@@ -7973,12 +7971,8 @@ fixtures = [
     "crates/splot-decode/src/filters/wienerns_lr/diagnostics.rs",
     "crates/splot-decode/src/filters/wienerns_lr/intrabc_records.rs",
     "crates/splot-decode/src/filters/wienerns_lr/intrabc_ref_mv_stack.rs",
-    "crates/splot-decode/src/filters/wienerns_lr/live_storage.rs",
-    "crates/splot-decode/src/filters/wienerns_lr/source_read_math.rs",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records/ccso.rs",
-    "crates/splot-decode/src/filters/wienerns_lr/tx_records/max_rect.rs",
-    "crates/splot-decode/src/filters/wienerns_lr/tx_records/skip_records.rs",
     "crates/splot-decode/src/pipeline/reconstruct.rs",
     "crates/splot-decode/src/prediction/chroma/directional.rs",
     "crates/splot-decode/src/pipeline/reconstruct_tests.rs",
@@ -11876,38 +11870,25 @@ change_id = "decode-lr-live-tx-skip-grid"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial prerequisite row for populating the live local decoder mission Wiener NS LR `LrTxSkip` shell after live storage allocation. The decoder-private live storage allocation can now accept a complete `WienerNsLrTxSkipGrid`, verify matching row and column dimensions plus unpopulated state before mutation, copy each retained value exactly into the allocated `Option<u8>` live grid slots, and reject dimension mismatches or re-population attempts as structured reconstruction errors without fabricating or overwriting values. `DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF` supersedes this helper-only row by feeding fixed-largest transform records into the live shell and by making the local `TX_MODE_SELECT` transform-record reader the current blocker. This row does not claim selectable transform partition parsing, decoded `CurrFrame`/`CdefFrame` sample population, `FilterClass` grid retention, `SubclassLookup`, loop-restoration filtering or reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM and dav2d byte equality, or successful local decoder mission decode."
+notes = "Retired helper-only row. The live-storage preflight helper tree was deleted in favor of the generic decode path retaining transform facts directly; this row no longer tracks active implementation. `DECODE-LR-TX-SKIP-GRID-RETENTION` remains the durable value-backed `LrTxSkip` grid model."
 
 [feature.status]
 mapped = "done"
-types = "done"
-parse = "partial"
+types = "not-applicable"
+parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "done"
-tests = "done"
+decode_check = "not-applicable"
+tests = "not-applicable"
 avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = [
-    "crates/splot-decode/src/prediction/inter/lr_live_storage_tests.rs::wienerns_lr_live_tx_skip_grid_populates_retained_values_without_frame_samples",
-    "crates/splot-decode/src/prediction/inter/lr_live_storage_tests.rs::wienerns_lr_live_tx_skip_grid_rejects_dimension_mismatch_without_mutation",
-    "crates/splot-decode/src/prediction/inter/lr_live_storage_tests.rs::wienerns_lr_live_tx_skip_grid_rejects_repopulation_without_mutation",
-]
-commands = [
-    "cargo test -p splot-decode wienerns_lr_live_tx_skip_grid --locked",
-    "cargo test -p splot-decode wienerns_lr_live_storage_allocation --locked",
-    "cargo xtask check-feature-status",
-    "cargo xtask check-decoder-support",
-]
-fixtures = [
-    "crates/splot-decode/src/prediction/inter/lr_live_storage_tests.rs",
-    "crates/splot-decode/src/filters/wienerns_lr.rs",
-    "crates/splot-decode/src/filters/wienerns_lr/live_storage.rs",
-]
-diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+tests = []
+commands = []
+fixtures = []
+diagnostics = []
 
 [[feature]]
 id = "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF"
