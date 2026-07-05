@@ -1556,7 +1556,8 @@ impl ResidualPlanePlan {
                 )
             }
             ResidualReconstructionPlan::Chroma { mode } => {
-                let neighbours = block_ctx.neighbours(PlaneId::U);
+                let neighbours =
+                    block_ctx.neighbours_from_block_decoded(PlaneId::U, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_chroma_block_into(
                     workspace,
                     coeffs,

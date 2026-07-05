@@ -54,7 +54,7 @@ pub(crate) fn general_intra_transform_tool_residual_policy(
 ) -> TransformToolResidualPolicy {
     TransformToolResidualPolicy::from_sequence_tools(
         sequence,
-        ActiveIntraIstResidualPolicy::Reject,
+        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
         ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
     )
 }

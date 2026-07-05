@@ -106,7 +106,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-idtx-intra-128x128.ivf"
-description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with intra identity transform (enable_idtx_intra); validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_transform_tool_residual (non-DCT luma transform tools are unsupported)."
+description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with intra identity transform (enable_idtx_intra); validates clean, and the general-intra decoder reconstructs it byte-exact to the avmdec oracle (IDTX luma residual handoff + decode-order-aware chroma above-right availability)."
 expect = "clean"
 
 [[vector]]
