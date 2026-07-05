@@ -558,6 +558,12 @@ pub(crate) fn intrabc_predict_fractional_luma_into<T: ReconSample>(
 /// already-reconstructed current frame through `scaling` (with § reference
 /// clipping) and writes the bilinear prediction into `target`. Luma passes
 /// `PlaneId::Y`; a chroma plane passes its (subsampled) target and scaling.
+///
+/// Chroma always routes here (bilinear at a full-pel phase is an exact copy), so
+/// unlike the luma path there is no integer-DV `copy_rect_within_plane` fast path;
+/// each call snapshots the whole plane storage into a view. Acceptable while
+/// IntrABC blocks are rare; an integer-DV fast path or a borrowed strided view is
+/// the follow-up if intraBC-heavy frames show up in profiling.
 pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
