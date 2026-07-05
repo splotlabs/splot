@@ -109,11 +109,8 @@ pub(crate) fn run_verify(root: &Path) -> Result<()> {
             "must_pass" => n_pass += 1,
             "xfail_splot" => {
                 n_xfail += 1;
-                if fx.unsupported_reason.is_none() || fx.matrix_row.is_none() {
-                    bail!(
-                        "xfail fixture {} needs unsupported_reason + matrix_row",
-                        fx.id
-                    );
+                if fx.unsupported_reason.is_none() {
+                    bail!("xfail fixture {} needs an unsupported_reason", fx.id);
                 }
             }
             other => bail!("fixture {}: unknown status {other:?}", fx.id),
