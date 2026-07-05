@@ -422,34 +422,6 @@ local_reference_evidence = []
 notes = "Fail-closed support row for advancing the local decoder mission two-class luma Wiener NS LR path past the former §7.20.4 classified-Wiener ordering gate. `WienerNsLrSourceBlock` retains tile MI bounds used by §7.20.4 `BlockEndX` and `get_tx_skip`; the minimal tier resolves each skip-filter classified-luma block's 6x6 feature window, seven luma §7.20.2 source selections per feature point, and one clipped `LrTxSkip` coordinate lookup per feature point. It preflights classified-luma and later §7.20.3 source-read counts together under `MaxLoopRestorationSourceReads`. `lr-classified-wiener-storage` supersedes this row for the live byte-offset-74 diagnostic. This row does not claim source sample values, `LrTxSkip` values, `FilterClass`, loop-restoration filtering/reconstruction, 10-bit output, reference refresh, or successful local decoder mission decode."
 
 [[row]]
-id = "lr-classified-wiener-values"
-name = "Wiener NS LR classified-Wiener values frontier"
-feature_id = "DECODE-LR-CLASSIFIED-WIENER-VALUES"
-spec_sections = ["5.20.10.4", "5.20.10.5", "5.20.10.6", "7.20.1", "7.20.2", "7.20.3", "7.20.4", "8.3.2", "9.3"]
-parser_source = "crates/splot-core/src/headers/frame/info.rs; crates/splot-core/src/headers/frame/restoration.rs; crates/splot-core/src/headers/frame/restoration/wienerns.rs; docs/spec/av2/1.0.0/07-decoding-process.md"
-decode_module = "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs; crates/splot-decode/src/bitstream/tile_payload/tile_frontier.rs; crates/splot-decode/src/pipeline/mod.rs; crates/splot-decode/src/filters/wienerns_lr.rs; crates/splot-recon/src/pc_wiener.rs"
-tier = "tier1-intra"
-status = "partial"
-self_contained_tests = ["crates/splot-decode/src/prediction/inter/lr_source_read_tests.rs::wienerns_lr_classified_wiener_values_frontier_derives_filter_class", "crates/splot-decode/src/prediction/inter/lr_source_read_tests.rs::wienerns_lr_classified_wiener_values_frontier_propagates_invalid_tx_skip", "cargo test -p splot-decode wienerns_lr_classified_wiener_values_frontier --locked", "cargo xtask check-decoder-support"]
-diagnostics = ["decode/unsupported-feature"]
-local_reference_evidence = []
-notes = "Fail-closed support row for advancing the local decoder mission two-class luma Wiener NS LR path from classified coordinate derivation to value-capable §7.20.4 classification plumbing. The minimal tier exposes a private helper that adapts retained `WienerNsLrSourceBlock` facts into `splot_recon::pc_wiener_classify`, derives `FilterClass[y >> 2][x >> 2]` when supplied source sample values and `LrTxSkip` values, and propagates invalid classifier inputs as structured decode reconstruction errors. `lr-classified-wiener-storage` supersedes this row for decoded frame reads, bounded `LrTxSkip` grid reads, and the live local decoder mission runtime-storage diagnostic. This row does not claim real local decoder mission source sample reads, real `LrTxSkip` grid reads, loop-restoration filtering/reconstruction, chroma Wiener NS filtering, 10-bit output, reference refresh, or successful local decoder mission decode."
-
-[[row]]
-id = "lr-classified-wiener-storage"
-name = "Wiener NS LR classified-Wiener storage frontier"
-feature_id = "DECODE-LR-CLASSIFIED-WIENER-STORAGE"
-spec_sections = ["5.20.10.4", "5.20.10.5", "5.20.10.6", "7.20.1", "7.20.2", "7.20.3", "7.20.4", "8.3.2", "9.3"]
-parser_source = "crates/splot-core/src/headers/frame/info.rs; crates/splot-core/src/headers/frame/restoration.rs; crates/splot-core/src/headers/frame/restoration/wienerns.rs; docs/spec/av2/1.0.0/07-decoding-process.md"
-decode_module = "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs; crates/splot-decode/src/bitstream/tile_payload/tile_frontier.rs; crates/splot-decode/src/pipeline/mod.rs; crates/splot-decode/src/filters/wienerns_lr.rs; crates/splot-recon/src/loop_restoration.rs; crates/splot-recon/src/pc_wiener.rs"
-tier = "tier1-intra"
-status = "partial"
-self_contained_tests = ["crates/splot-decode/src/prediction/inter/lr_source_read_tests.rs::wienerns_lr_classified_wiener_storage_frontier_reads_frame_and_tx_skip_storage", "crates/splot-decode/src/prediction/inter/lr_source_read_tests.rs::wienerns_lr_classified_wiener_storage_frontier_propagates_tx_skip_grid_bounds", "crates/splot-decode/src/prediction/inter/lr_source_read_tests.rs::wienerns_lr_classified_wiener_storage_frontier_propagates_non_boolean_tx_skip", "crates/splot-decode/src/prediction/inter/lr_source_read_tests.rs::classified_wiener_storage_runtime_error_reports_retention_frontier", "cargo test -p splot-decode wienerns_lr_classified_wiener_storage_frontier --locked", "cargo test -p splot-decode classified_wiener_storage_runtime_error_reports_retention_frontier --locked", "cargo xtask check-decoder-support"]
-diagnostics = ["decode/unsupported-feature"]
-local_reference_evidence = []
-notes = "Fail-closed support row for advancing the local decoder mission two-class luma Wiener NS LR path from caller-supplied value derivation to storage-backed §7.20.4 classification plumbing. The minimal tier exposes private helpers that read classified source samples from decoded CurrFrame/CdefFrame views through `splot_recon::loop_restoration_source_sample_value`, read boolean `LrTxSkip` values from a bounded decoder-owned grid, and propagate out-of-bounds or non-boolean `LrTxSkip` storage failures as structured reconstruction errors. `lr-runtime-storage-retention` supersedes this helper row for the live byte-offset-74 diagnostic by deriving and limit-checking unpopulated 10-bit frame-buffer and `LrTxSkip` grid shapes. This row does not claim live storage retention, loop-restoration filtering/reconstruction, `FilterClass` grid retention, `SubclassLookup`, chroma Wiener NS filtering, 10-bit output, reference refresh, AVM/dav2d byte equality, or successful local decoder mission decode."
-
-[[row]]
 id = "lr-tx-skip-grid-retention"
 name = "Wiener NS LR tx-skip grid-retention frontier"
 feature_id = "DECODE-LR-TX-SKIP-GRID-RETENTION"
