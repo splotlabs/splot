@@ -782,7 +782,7 @@ fn rect_luma_plan_for_parts_ext(
     let supported_one_sided_above_rect = block.width4() >= 1 && block.height4() >= 1;
     let supported_one_sided_left_rect = block.width4() >= 1 && block.height4() >= 1;
     let neighbours = block_ctx.neighbours(PlaneId::Y);
-    if luma_is_paeth && (neighbours.has_above() || neighbours.has_left()) {
+    if luma_is_paeth {
         return Ok(RectLumaPlan::Paeth { use_tcq });
     }
     if let Some(mode) = nondc {
@@ -2047,13 +2047,14 @@ mod tests {
     }
 
     #[test]
-    fn admits_small_rect_paeth_luma_with_above_left_edges() {
-        let rect_block = ctx(18, 220, 4, 2);
-
-        assert_eq!(
-            rect_luma_plan_for_parts_ext(true, None, None, false, rect_block, false),
-            Ok(RectLumaPlan::Paeth { use_tcq: false })
-        );
+    fn admits_small_rect_paeth_luma_regardless_of_neighbour_edges() {
+        let want = Ok(RectLumaPlan::Paeth { use_tcq: false });
+        for block in [ctx(18, 220, 4, 2), ctx(0, 0, 4, 2)] {
+            assert_eq!(
+                rect_luma_plan_for_parts_ext(true, None, None, false, block, false),
+                want
+            );
+        }
     }
 
     #[test]
