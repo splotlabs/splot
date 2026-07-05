@@ -229,6 +229,43 @@ pub(crate) enum SupportedChromaMode {
     SmoothHorizontal,
 }
 
+impl SupportedChromaMode {
+    /// The § 9.2 `Mode_To_Angle` base angle for a directional `UVMode` and whether
+    /// it inherits the luma § 5.20.5.3 angle delta (`*Follow` modes derive their
+    /// `AngleDeltaUV` from luma; explicit modes carry `0`). Returns `None` for a
+    /// non-directional mode (DC / SMOOTH* / PAETH). The § 7.13.2.8 pAngle is
+    /// `base + (inherit ? AngleDeltaY : 0) * ANGLE_STEP`, then wide-angle remapped.
+    pub(crate) const fn directional_base_angle(self) -> Option<(i32, bool)> {
+        match self {
+            Self::VerticalFollow => Some((90, true)),
+            Self::Vertical => Some((90, false)),
+            Self::HorizontalFollow => Some((180, true)),
+            Self::D45Follow => Some((45, true)),
+            Self::D135Follow => Some((135, true)),
+            Self::D113Follow => Some((113, true)),
+            Self::D157Follow => Some((157, true)),
+            Self::D203Follow => Some((203, true)),
+            Self::D67Follow => Some((67, true)),
+            Self::D45 => Some((45, false)),
+            Self::D67 => Some((67, false)),
+            Self::D135 => Some((135, false)),
+            Self::D113 => Some((113, false)),
+            Self::D203 => Some((203, false)),
+            Self::D157 => Some((157, false)),
+            _ => None,
+        }
+    }
+
+    /// § 7.13.2.15/16 `is_smooth`: `true` for the SMOOTH / SMOOTH_V / SMOOTH_H
+    /// chroma modes, which seed the § 7.13.2.17 edge-filter `filterType`.
+    pub(crate) const fn is_smooth(self) -> bool {
+        matches!(
+            self,
+            Self::Smooth | Self::SmoothVertical | Self::SmoothHorizontal
+        )
+    }
+}
+
 #[rustfmt::skip]
 const CHROMA_FOLLOW_BY_Y_MODE: [Option<SupportedChromaMode>; 13] = [
     None,
