@@ -331,6 +331,8 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     );
     filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
     filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
+    filter_sink.set_skips_grid(filter_inputs.skips_grid);
+    filter_sink.set_tx_skip_grid(filter_inputs.tx_skip_grid);
     filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
     filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
     let frame = filter_sink.into_filtered_frame(
@@ -1043,18 +1045,6 @@ fn validate_inter_frame_core(
             offset,
             "inter.ccso.reference_reuse",
             "5.18.7.12"
-        ));
-    }
-    if core
-        .cdef_params
-        .as_ref()
-        .is_some_and(|cdef| cdef.cdef_on_skip_txfm_frame_enable == Some(false))
-    {
-        return Err(inter_cap!(
-            "inter_cdef_skip_grid_unimplemented",
-            offset,
-            "inter.cdef.skip_txfm_grid",
-            "5.18.7.10"
         ));
     }
     if core.lr_params.as_ref().is_some_and(|lr| {

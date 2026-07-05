@@ -36,6 +36,11 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2],
     cdef_grid: Option<crate::filters::cdef::CdefUnitGrid>,
     ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    /// § 5.20.6.1 `Skips` grid (per-4x4 `skip_flag`) for the § 7.20.4 CDEF
+    /// `cdef_on_skip_txfm_frame_enable == 0` decision.
+    skips_grid: Option<super::WienerNsLrTxSkipGrid>,
+    /// § 5.20.6.1 `LrTxSkip` grid (per-4x4 `skip_flag || eob == 0`) for the § 7.20.4
+    /// PC-Wiener loop-restoration classifier.
     tx_skip_grid: Option<super::WienerNsLrTxSkipGrid>,
     lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
@@ -131,6 +136,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             chroma_deblock_blocks: [Vec::new(), Vec::new()],
             cdef_grid: None,
             ccso_grid: None,
+            skips_grid: None,
             tx_skip_grid: None,
             lr_source_blocks: Vec::new(),
             lr_unit_filters: Vec::new(),
@@ -157,6 +163,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// filter chain.
     pub(crate) fn set_ccso_grid(&mut self, grid: Option<crate::filters::ccso::CcsoUnitGrid>) {
         self.ccso_grid = grid;
+    }
+
+    /// Retains the § 5.20.6.1 `Skips` grid the § 7.20.4 CDEF
+    /// `cdef_on_skip_txfm_frame_enable == 0` path ANDs over each 8x8.
+    pub(crate) fn set_skips_grid(&mut self, grid: Option<super::WienerNsLrTxSkipGrid>) {
+        self.skips_grid = grid;
+    }
+
+    /// Retains the § 5.20.6.1 `LrTxSkip` grid the § 7.20.4 PC-Wiener
+    /// loop-restoration classifier reads.
+    pub(crate) fn set_tx_skip_grid(&mut self, grid: Option<super::WienerNsLrTxSkipGrid>) {
+        self.tx_skip_grid = grid;
     }
 
     /// Retains active loop-restoration source blocks from the full selectable

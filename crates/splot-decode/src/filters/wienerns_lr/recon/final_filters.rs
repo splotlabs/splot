@@ -430,13 +430,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if cdef.cdef_on_skip_txfm_frame_enable != Some(false) {
             return Ok(None);
         }
-        let Some(tx_skip_grid) = self.tx_skip_grid.as_ref() else {
+        let Some(skips_grid) = self.skips_grid.as_ref() else {
             return Err(wienerns_lr_selectable_transform_record_error_reason(
                 offset,
                 "unsupported_wienerns_lr_selectable_transform_records_cdef_skip_grid",
             ));
         };
-        if tx_skip_grid.rows() < mi_rows || tx_skip_grid.cols() < mi_cols {
+        if skips_grid.rows() < mi_rows || skips_grid.cols() < mi_cols {
             return Err(wienerns_lr_selectable_transform_record_error_reason(
                 offset,
                 "unsupported_wienerns_lr_selectable_transform_records_cdef_skip_grid",
@@ -451,7 +451,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let mut values = Vec::with_capacity(count);
         for row in 0..mi_rows {
             for col in 0..mi_cols {
-                let skip = tx_skip_grid
+                let skip = skips_grid
                     .lookup(WienerNsLrTxSkipLookup {
                         x: col.saturating_mul(MI_SIZE),
                         y: row.saturating_mul(MI_SIZE),
