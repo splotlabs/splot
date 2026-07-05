@@ -543,6 +543,12 @@ pub(crate) struct GeneralIntraLeafMode {
     /// that read `is_cfl`; `None` for luma-only / inter leaves, which never set
     /// a chroma `UVCfls` cell.
     uv_cfl: Option<bool>,
+    /// `true` for an intra-block-copy leaf (`use_intrabc`, § 5.20.5.3). It carries
+    /// no luma intra mode (like an inter leaf) but is legal inside a key frame, so
+    /// the walk records it as a non-intra neighbour: AV2 `av2_get_joint_mode`
+    /// returns `DC_PRED` for both inter and intraBC neighbours (blockd.c), so the
+    /// § 8.3.2 mode-context grids treat the two identically.
+    intrabc: bool,
 }
 
 impl GeneralIntraLeafMode {
@@ -570,6 +576,7 @@ impl GeneralIntraLeafMode {
             uses_mrls: Some(uses_mrls),
             palette_y: None,
             uv_cfl: None,
+            intrabc: false,
         }
     }
 
@@ -584,7 +591,22 @@ impl GeneralIntraLeafMode {
             uses_mrls: None,
             palette_y: None,
             uv_cfl: None,
+            intrabc: false,
         }
+    }
+
+    /// Marks a no-luma-mode leaf as an intra-block-copy block so the walk admits
+    /// it inside a key frame and records it as a non-intra (`DC_PRED`) neighbour.
+    #[must_use]
+    pub(crate) const fn mark_intrabc(mut self) -> Self {
+        self.intrabc = true;
+        self
+    }
+
+    /// `true` when this leaf is an intra-block-copy block ([`Self::mark_intrabc`]).
+    #[must_use]
+    pub(crate) const fn is_intrabc(&self) -> bool {
+        self.intrabc
     }
 
     /// SDP chroma-only leaf carrying its decoded `is_cfl` (`UVCfls`) value so the
@@ -599,6 +621,7 @@ impl GeneralIntraLeafMode {
             uses_mrls: None,
             palette_y: None,
             uv_cfl: Some(uv_cfl),
+            intrabc: false,
         }
     }
 
@@ -1570,7 +1593,7 @@ where
                                 angle_delta_y,
                             );
                         } else {
-                            if frame.frame_is_intra {
+                            if frame.frame_is_intra && !leaf_mode.is_intrabc() {
                                 return Err(GeneralIntraTreeWalkError::Traversal(
                                     TilePartitionTraversalError::MissingIntraLumaModeState {
                                         r: call.r,

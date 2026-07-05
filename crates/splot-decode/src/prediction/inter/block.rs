@@ -872,6 +872,14 @@ fn decode_block<T: ReconSample>(
         }
         segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
         if prelude.use_intrabc {
+            if frontier.has_chroma {
+                return Err(inter_cap!(
+                    "inter_intrabc_chroma",
+                    tile_offset,
+                    "inter.intrabc.chroma",
+                    SPEC_MODE_INFO
+                ));
+            }
             let info = prelude.intrabc.ok_or_else(|| {
                 inter_missing!(
                     "inter_intrabc_info",
@@ -955,7 +963,7 @@ fn decode_block<T: ReconSample>(
                 bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, sb_h4);
             }
             trace_leaf_exit("intrabc", frontier, entry_checkpoint, symbols.checkpoint());
-            return Ok(non_intra_leaf_mode(frontier));
+            return Ok(non_intra_leaf_mode(frontier).mark_intrabc());
         }
         let block_qindex = segment_block_qindex(
             sequence,

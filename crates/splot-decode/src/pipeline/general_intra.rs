@@ -704,7 +704,8 @@ fn rect_luma_mrl_plan_for_parts(
             use_tcq,
         });
     }
-    if p_angle > 0 && p_angle < 90 && neighbours.has_above() && neighbours.has_left() {
+    let no_left_zone1_admitted = neighbours.has_left() || block_ctx.bit_depth() == BitDepth::Eight;
+    if p_angle > 0 && p_angle < 90 && neighbours.has_above() && no_left_zone1_admitted {
         let p_angle = u16::try_from(p_angle).map_err(|_| unsupported_rect_luma())?;
         return Ok(RectLumaPlan::OneSidedAboveMrl {
             p_angle,

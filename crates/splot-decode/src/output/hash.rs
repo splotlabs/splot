@@ -83,7 +83,7 @@ mod tests {
     };
 
     const BROAD_FIXTURE: &[u8] =
-        include_bytes!("../../../../tests/conformance/vectors/valid/syn-key-intra-64x64.ivf");
+        include_bytes!("../../../../tests/conformance/vectors/valid/syn-mono-intra-64x64.ivf");
     const EXPECTED_DIGEST: &str =
         "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af";
 
