@@ -410,22 +410,10 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
     block_ctx: BlockCtx,
     tile_offset: ByteOffset,
 ) -> Result<GeneralIntraLeafMode> {
-    let y_mode = frontier.stored_luma_y_mode().ok_or_else(|| {
-        general_intra_at!(
-            "general_intra_missing_sdp_luma_mode",
-            tile_offset,
-            "SDP chroma decode requires stored collocated luma mode facts",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        )
-    })?;
-    let angle_delta_y = frontier.stored_luma_angle_delta_y().ok_or_else(|| {
-        general_intra_at!(
-            "general_intra_missing_sdp_luma_angle",
-            tile_offset,
-            "SDP chroma decode requires stored collocated luma angle facts",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        )
-    })?;
+    let (y_mode, angle_delta_y) = frontier
+        .stored_luma_y_mode()
+        .zip(frontier.stored_luma_angle_delta_y())
+        .unwrap_or((crate::bitstream::tile_payload::IntraYMode::DC_PRED, 0)); // AV2 intraBC luma ⇒ mbmi->mode=DC_PRED (decodemv.c); an SDP chroma-part co-located with an intraBC luma-part carries no stored luma mode, so its chroma mode/context derivation uses DC_PRED
     let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
     let mode_start_bits = symbols.consumed_bits().get();
     let chroma = crate::bitstream::tile_payload::decode_general_intra_chroma_block_mode(
@@ -1259,8 +1247,7 @@ fn ensure_supported_chroma_capability(
         && neighbours.has_left();
     let one_sided_above_subblock = chroma_block.width4() >= 1
         && chroma_block.height4() >= 1
-        && ((neighbours.has_above() && neighbours.num_above_right() > 0)
-            || (!neighbours.has_above() && neighbours.has_left()));
+        && (neighbours.has_above() || neighbours.has_left());
     match mode {
         SupportedChromaMode::Dc | SupportedChromaMode::D203Follow | SupportedChromaMode::D203 => {
             Ok(())
