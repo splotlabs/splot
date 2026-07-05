@@ -1062,7 +1062,7 @@ fn validate_inter_frame_core(
     Ok(())
 }
 
-fn effective_quantizer_deltas_are_zero(
+pub(crate) fn effective_quantizer_deltas_are_zero(
     sequence: &SequenceHeader,
     quantization: &QuantizationParams,
 ) -> bool {

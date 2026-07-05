@@ -83,17 +83,21 @@ thread_local! {
 
 /// RAII scope installing the frame's built-in quantization-matrix levels, restored
 /// on drop so nothing leaks into a later frame. `None` is the flat dequant path.
-pub(crate) struct FrameQmScope(Option<QmFrameLevels>);
+pub(crate) struct FrameQmScope {
+    previous: Option<QmFrameLevels>,
+}
 
 impl FrameQmScope {
     pub(crate) fn install(levels: Option<QmFrameLevels>) -> Self {
-        Self(FRAME_QM.with(|cell| cell.replace(levels)))
+        Self {
+            previous: FRAME_QM.with(|cell| cell.replace(levels)),
+        }
     }
 }
 
 impl Drop for FrameQmScope {
     fn drop(&mut self) {
-        FRAME_QM.with(|cell| cell.set(self.0));
+        FRAME_QM.with(|cell| cell.set(self.previous));
     }
 }
 

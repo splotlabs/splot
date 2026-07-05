@@ -187,7 +187,6 @@ fn record_inter_deblock_geometry(
     qindex: u32,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    // § 5.20.6.1 `store_tx_info` writes `Skips`/`LrTxSkip` for plane 0 (luma) only.
     let luma = !frontier.is_chroma_part();
     let Some(residual) = residual else {
         let tx_size = self::residual::max_tx_size(frontier.b_size.index(), tile_offset)?;
@@ -624,7 +623,23 @@ fn read_intra_segment_id(
         i64::from(pred),
         i64::from(seg.last_active_seg_id) + 1,
     );
-    Ok(u8::try_from(segment_id.clamp(0, i64::from(u8::MAX))).unwrap_or(0))
+    validate_intra_segment_id(segment_id, seg.last_active_seg_id, tile_offset)
+}
+
+fn validate_intra_segment_id(
+    segment_id: i64,
+    last_active_seg_id: u8,
+    tile_offset: ByteOffset,
+) -> Result<u8> {
+    if !(0..=i64::from(last_active_seg_id)).contains(&segment_id) {
+        return Err(inter_cap!(
+            "inter_intra_segment_id_out_of_range",
+            tile_offset,
+            "intra.segment_id <= LastActiveSegId",
+            "5.20.5.8"
+        ));
+    }
+    Ok(segment_id as u8)
 }
 
 /// AV2 § 7.14.2 `get_qindex(0, segment_id)`: the delta-q-adjusted `current_qindex`
@@ -999,6 +1014,14 @@ fn decode_block<T: ReconSample>(
             usize::from(segment_id),
             delta_q_state.qindex_u32(),
         );
+        if !residual_quantizer_deltas_are_zero {
+            return Err(inter_cap!(
+                "inter_intra_block_quantizer_delta",
+                tile_offset,
+                "inter.intra.residual.nonzero_quantizer_delta",
+                "7.14.2"
+            ));
+        }
         let leaf = crate::pipeline::general_intra::decode_one_general_intra_block::<T>(
             work_unit,
             symbols,
@@ -2325,6 +2348,8 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
 }
 
 mod residual;
+#[cfg(test)]
+mod tests;
 mod warp;
 
 use self::warp::{
@@ -2699,21 +2724,5 @@ fn map_inter_multiblock_error(
             "inter.partition_walk",
             SPEC_MODE_INFO
         ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::inter_residual_geometry_supported_flags;
-
-    #[test]
-    fn inter_residual_geometry_allows_shared_leaves() {
-        assert!(inter_residual_geometry_supported_flags(false, false));
-    }
-
-    #[test]
-    fn inter_residual_geometry_rejects_chroma_partitioned_leaves() {
-        assert!(!inter_residual_geometry_supported_flags(true, false));
-        assert!(!inter_residual_geometry_supported_flags(false, true));
     }
 }

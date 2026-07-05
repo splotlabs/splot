@@ -514,7 +514,7 @@ status = "xfail_splot"
 features = ["container.ivf", "frame.key_closed_loop", "intra.cfl", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "83f36347e4fab4d083acb6ba227d3e8296115fd0efe89fa3f8ff1db4b76208e2"
 avm_raw_sha256 = "6acbc1e8acef72183829023e9bb214650082c8b9c0598df9594e0bd50c6b0c66"
-unsupported_reason = "general_intra_unsupported_mrl_mode"
+unsupported_reason = "general_intra_gdf_frame_unimplemented"
 
 [[fixture]]
 id = "syn-ist-intra-128x128"

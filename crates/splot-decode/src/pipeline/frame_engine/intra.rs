@@ -22,9 +22,17 @@ use crate::pipeline::reconstruct::new_general_intra_workspace;
 use crate::pipeline::{
     deblock_quant_deltas, derive_tile_plan, ensure_runtime_limits, unsupported_at,
 };
-use crate::prediction::inter::{InterReferenceState, decode_inter_blocks};
+use crate::prediction::inter::{
+    InterReferenceState, decode_inter_blocks, effective_quantizer_deltas_are_zero,
+};
 use crate::support::capability::missing_capability_message;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
+
+macro_rules! general_intra_at {
+    ($reason:literal, $offset:expr, $message:expr, $spec_section:expr $(,)?) => {
+        general_intra_unsupported($reason, Some($offset), $message, $spec_section)
+    };
+}
 
 /// Decodes one intra frame through the unified block engine, returning the
 /// reconstructed frame and the end-of-frame CDF subset.
@@ -45,9 +53,9 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         .as_ref()
         .is_some_and(|lossless| lossless.has_lossless_segment)
     {
-        return Err(general_intra_unsupported(
+        return Err(general_intra_at!(
             "general_intra_lossless_segment_unimplemented",
-            Some(offset),
+            offset,
             missing_capability_message!("intra.segmentation", lossless = "segment"),
             "5.18.2",
         ));
@@ -75,6 +83,43 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         .lossless_info
         .as_ref()
         .is_some_and(|lossless| lossless.allow_tcq);
+    if core
+        .gdf_params
+        .as_ref()
+        .is_some_and(|gdf| gdf.gdf_frame_enable)
+    {
+        return Err(general_intra_at!(
+            "general_intra_gdf_frame_unimplemented",
+            offset,
+            missing_capability_message!("filters.gdf", frame = "enabled"),
+            "7.20.5",
+        ));
+    }
+    if core.setup_qm_params.is_some_and(|qm| qm.using_qmatrix)
+        && core
+            .segmentation_params
+            .as_ref()
+            .is_some_and(|seg| seg.segmentation_enabled && seg.last_active_seg_id > 0)
+    {
+        return Err(general_intra_at!(
+            "general_intra_qmatrix_segmented_blocks_unimplemented",
+            offset,
+            missing_capability_message!("intra.qmatrix.segmentation", segment = "active"),
+            "7.14.4",
+        ));
+    }
+    if core
+        .quantization_params
+        .as_ref()
+        .is_some_and(|quantization| !effective_quantizer_deltas_are_zero(sequence, quantization))
+    {
+        return Err(general_intra_at!(
+            "general_intra_nonzero_quantizer_delta_unimplemented",
+            offset,
+            missing_capability_message!("intra.residual.nonzero_quantizer_delta"),
+            "7.14.2",
+        ));
+    }
     let initial_cdfs = FrameCdfSubset::default_for_base_q(qindex).map_err(|_| {
         unsupported_at(
             "frame_engine_intra_cdf_default_init",
@@ -182,8 +227,8 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
 
 /// The frame's § 7.14.4 built-in quantization-matrix levels for the general-intra
 /// dequant, or `None` when `using_qmatrix == 0`. `levels_gt8` is `qm_y/u/v[0]` (used
-/// when `tw > 8 || th > 8`); `levels_le8` is `SegQMLevel[Y/U/V][segment_id]` — the
-/// general-intra tier decodes segment 0, so segment 0's levels are used.
+/// when `tw > 8 || th > 8`); `levels_le8` is `SegQMLevel[Y/U/V][0]`. Multi-segment
+/// QM frames fail closed before decode until per-block `segment_id` reaches dequant.
 fn build_frame_qm_levels(core: &FrameHeaderCore) -> Option<QmFrameLevels> {
     let qm = core.setup_qm_params.filter(|qm| qm.using_qmatrix)?;
     let levels_le8 = core
@@ -194,4 +239,121 @@ fn build_frame_qm_levels(core: &FrameHeaderCore) -> Option<QmFrameLevels> {
         levels_gt8: [qm.levels[0].qm_y, qm.levels[0].qm_u, qm.levels[0].qm_v],
         levels_le8,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use splot_parallel::ThreadCount;
+
+    use splot_core::obu::{ParsedObu, PayloadStatus};
+    use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
+    use splot_core::types::ObuType;
+
+    use super::*;
+    use crate::error::DecodeError;
+    use crate::pipeline::parse_frame_core;
+    use crate::{DecodeContext, DecodeRuntimeConfig};
+
+    const Q80_FIXTURE: &[u8] = include_bytes!(
+        "../../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf"
+    );
+
+    fn unsupported_reason(error: DecodeError) -> &'static str {
+        let DecodeError::UnsupportedFeature { unsupported } = error else {
+            panic!("expected unsupported-feature");
+        };
+        unsupported.reason()
+    }
+
+    fn decode_intra_fixture_with_core(mutate: impl FnOnce(&mut FrameHeaderCore)) -> DecodeError {
+        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
+            .expect("context");
+        let options = DecodeOptions::default();
+        let plan = context.plan_bytes(Q80_FIXTURE, options).expect("plan");
+        let candidate = plan.frame_candidates().next().expect("candidate").clone();
+        let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(Q80_FIXTURE) else {
+            panic!("fixture is IVF");
+        };
+        let obus = || parsed.frames.iter().flat_map(|frame| frame.obus.iter());
+        let sequence = obus()
+            .find_map(
+                |envelope| match envelope.payload_status().expect("payload status") {
+                    PayloadStatus::Parsed(ParsedObu::SequenceHeader(sequence)) => {
+                        Some((*sequence).clone())
+                    }
+                    _ => None,
+                },
+            )
+            .expect("sequence");
+        let key = obus()
+            .find(|envelope| envelope.header.obu_type == ObuType::ClosedLoopKey)
+            .copied()
+            .expect("key");
+        let mut core = parse_frame_core(key, &sequence).expect("core");
+        mutate(&mut core);
+        context
+            .pool()
+            .install(|| {
+                decode_intra_frame::<u8>(
+                    &plan,
+                    &candidate,
+                    Q80_FIXTURE,
+                    key,
+                    &core,
+                    &sequence,
+                    &options,
+                    BitDepth::Eight,
+                )
+            })
+            .expect_err("mutated fixture must fail closed")
+    }
+
+    #[test]
+    fn intra_gate_rejects_gdf_enabled_frame() {
+        let error = decode_intra_fixture_with_core(|core| {
+            core.gdf_params
+                .as_mut()
+                .expect("gdf params")
+                .gdf_frame_enable = true;
+        });
+        assert_eq!(
+            unsupported_reason(error),
+            "general_intra_gdf_frame_unimplemented"
+        );
+    }
+
+    #[test]
+    fn intra_gate_rejects_qmatrix_with_multiple_active_segments() {
+        let error = decode_intra_fixture_with_core(|core| {
+            core.setup_qm_params
+                .as_mut()
+                .expect("setup qm")
+                .using_qmatrix = true;
+            let seg = core
+                .segmentation_params
+                .as_mut()
+                .expect("segmentation params");
+            seg.segmentation_enabled = true;
+            seg.last_active_seg_id = 1;
+        });
+        assert_eq!(
+            unsupported_reason(error),
+            "general_intra_qmatrix_segmented_blocks_unimplemented"
+        );
+    }
+
+    #[test]
+    fn intra_gate_rejects_nonzero_effective_quantizer_deltas() {
+        let error = decode_intra_fixture_with_core(|core| {
+            core.quantization_params
+                .as_mut()
+                .expect("quantization params")
+                .delta_q_y_dc = 1;
+        });
+        assert_eq!(
+            unsupported_reason(error),
+            "general_intra_nonzero_quantizer_delta_unimplemented"
+        );
+    }
 }

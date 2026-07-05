@@ -57,24 +57,6 @@ pub(crate) fn wienerns_lr_source_read_runtime_error(offset: ByteOffset) -> Decod
     )
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "regression test keeps the historical storage-helper row"
-    )
-)]
-pub(crate) fn wienerns_lr_classified_wiener_storage_runtime_error(
-    offset: ByteOffset,
-) -> DecodeError {
-    unsupported_feature_at(
-        "unsupported_wienerns_lr_classified_wiener_runtime_storage",
-        offset,
-        "Active Wiener NS LR resolved source-read and LrTxSkip lookup coordinates with storage-backed FilterClass support, but decoded 10-bit frame buffers and LrTxSkip values are not retained for filtering; loop-restoration filtering is not applied",
-        "7.20.4",
-    )
-}
-
 pub(crate) fn wienerns_lr_runtime_storage_retention_error(offset: ByteOffset) -> DecodeError {
     unsupported_feature_at(
         "unsupported_wienerns_lr_runtime_storage_unpopulated",
