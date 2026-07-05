@@ -188,21 +188,6 @@ fn wienerns_lr_tx_skip_grid_index(row: usize, col: usize, cols: usize) -> ReconR
         })
 }
 
-/// Derives both § 5.20.6.1 luma skip grids from one record set: the `Skips`
-/// grid (CDEF) and the `LrTxSkip` grid (PC-Wiener). Either is `None` when the
-/// walk left a frame cell uncovered, so the § 7.20.4 consumers fail closed
-/// rather than filter against a partial grid.
-pub(crate) fn derive_wienerns_lr_skip_grids(
-    rows: usize,
-    cols: usize,
-    records: &[WienerNsLrTxSkipTransformRecord],
-) -> (Option<WienerNsLrTxSkipGrid>, Option<WienerNsLrTxSkipGrid>) {
-    (
-        derive_wienerns_lr_block_skip_grid_retention(rows, cols, records).ok(),
-        derive_wienerns_lr_tx_skip_grid_retention(rows, cols, records).ok(),
-    )
-}
-
 /// Derives the § 5.20.6.1 `LrTxSkip[row][col] = skip_flag || (eob == 0)` grid used
 /// by the § 7.20.4 PC-Wiener loop-restoration classifier.
 pub(crate) fn derive_wienerns_lr_tx_skip_grid_retention(

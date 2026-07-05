@@ -39,8 +39,9 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     /// § 5.20.6.1 `Skips` grid (per-4x4 `skip_flag`) for the § 7.20.4 CDEF
     /// `cdef_on_skip_txfm_frame_enable == 0` decision.
     skips_grid: Option<super::WienerNsLrTxSkipGrid>,
-    /// § 5.20.6.1 `LrTxSkip` grid (per-4x4 `skip_flag || eob == 0`) for the § 7.20.4
-    /// PC-Wiener loop-restoration classifier.
+    /// § 5.20.6.1 `LrTxSkip` grid (`skip_flag || eob == 0`) for the § 7.20.4
+    /// PC-Wiener classifier. Deferred: no walk populates it yet (needs per-transform
+    /// eob), so multi-class luma PC-Wiener stays fail-closed.
     tx_skip_grid: Option<super::WienerNsLrTxSkipGrid>,
     lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
@@ -169,12 +170,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// `cdef_on_skip_txfm_frame_enable == 0` path ANDs over each 8x8.
     pub(crate) fn set_skips_grid(&mut self, grid: Option<super::WienerNsLrTxSkipGrid>) {
         self.skips_grid = grid;
-    }
-
-    /// Retains the § 5.20.6.1 `LrTxSkip` grid the § 7.20.4 PC-Wiener
-    /// loop-restoration classifier reads.
-    pub(crate) fn set_tx_skip_grid(&mut self, grid: Option<super::WienerNsLrTxSkipGrid>) {
-        self.tx_skip_grid = grid;
     }
 
     /// Retains active loop-restoration source blocks from the full selectable
