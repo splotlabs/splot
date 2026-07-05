@@ -772,9 +772,8 @@ fn error_signature(error: DecodeError) -> String {
             unsupported.offset()
         ),
         DecodeError::UnsupportedFeature { unsupported } => format!(
-            "unsupported-feature:{}:{}:{:?}",
+            "unsupported-feature:{}:{:?}",
             unsupported.reason(),
-            unsupported.tier_id(),
             unsupported.byte_offset()
         ),
         DecodeError::Reconstruction { source } => format!("reconstruction:{source}"),

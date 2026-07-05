@@ -79,7 +79,7 @@ mod tests {
     use crate::test_support::{MINIMAL_FIXTURE, minimal_fixture_with_timebase};
     use crate::{
         DecodeContext, DecodeError, DecodeLimitName, DecodeLimitThreshold, DecodeLimits,
-        DecodeRuntimeConfig, DecodeUnsupportedFeature,
+        DecodeRuntimeConfig,
     };
 
     const BROAD_FIXTURE: &[u8] =
@@ -145,12 +145,7 @@ mod tests {
             .decode_hash_report_bytes(BROAD_FIXTURE, DecodeOptions::default())
             .unwrap_err();
 
-        assert!(matches!(
-            error,
-            DecodeError::UnsupportedFeature {
-                unsupported
-            } if unsupported.tier_id() == crate::pipeline::MINIMAL_INTRA_HASH_TIER_ID
-        ));
+        assert!(matches!(error, DecodeError::UnsupportedFeature { .. }));
     }
 
     #[test]
@@ -175,39 +170,6 @@ mod tests {
                 unsupported
             } if unsupported.reason() == "non_ivf_input"
         ));
-    }
-
-    #[test]
-    fn sequence_chroma_tools_fail_closed_before_hash() -> core::result::Result<(), String> {
-        for reason in ["unsupported_cfl_intra", "unsupported_mhccp"] {
-            let unsupported = one_bit_mutation_rejected_with_reason(reason)?;
-            assert_eq!(unsupported.reason(), reason);
-            assert_eq!(
-                unsupported.tier_id(),
-                crate::pipeline::MINIMAL_INTRA_HASH_TIER_ID
-            );
-        }
-        Ok(())
-    }
-
-    fn one_bit_mutation_rejected_with_reason(
-        reason: &'static str,
-    ) -> core::result::Result<DecodeUnsupportedFeature, String> {
-        let context = context(ThreadCount::from(1usize));
-        for byte_index in 0..MINIMAL_FIXTURE.len() {
-            for bit_index in 0..8 {
-                let mut bytes = MINIMAL_FIXTURE.to_vec();
-                bytes[byte_index] ^= 1 << bit_index;
-
-                if let Err(DecodeError::UnsupportedFeature { unsupported }) =
-                    context.decode_hash_report_bytes(&bytes, DecodeOptions::default())
-                    && unsupported.reason() == reason
-                {
-                    return Ok(unsupported.as_ref().clone());
-                }
-            }
-        }
-        Err(format!("no single-bit mutation reached {reason}"))
     }
 
     #[test]

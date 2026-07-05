@@ -315,8 +315,6 @@ fn wienerns_lr_source_read_frontier_rejects_unit_coded_chroma_before_source_read
         unsupported.reason(),
         "unsupported_wienerns_lr_unit_chroma_filter_values"
     );
-    assert_eq!(unsupported.matrix_row(), "lr-source-read-frontier");
-    assert_eq!(unsupported.feature_id(), "DECODE-LR-SOURCE-READ-FRONTIER");
     assert_eq!(unsupported.spec_section(), "5.20.10.6");
     assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
 }
@@ -738,8 +736,6 @@ fn classified_wiener_storage_runtime_error_reports_retention_frontier() {
         "classified Wiener storage frontier",
         UnsupportedFeatureExpectation::at_byte_offset(
             "unsupported_wienerns_lr_classified_wiener_runtime_storage",
-            "lr-classified-wiener-storage",
-            "DECODE-LR-CLASSIFIED-WIENER-STORAGE",
             "7.20.4",
             ByteOffset::new(74),
             &[
@@ -824,8 +820,6 @@ fn wienerns_lr_runtime_storage_retention_error_reports_unpopulated_boundary() {
         "runtime storage-retention frontier",
         UnsupportedFeatureExpectation::at_byte_offset(
             "unsupported_wienerns_lr_runtime_storage_unpopulated",
-            "lr-runtime-storage-retention",
-            "DECODE-LR-RUNTIME-STORAGE-RETENTION",
             "7.20.4",
             ByteOffset::new(74),
             &[

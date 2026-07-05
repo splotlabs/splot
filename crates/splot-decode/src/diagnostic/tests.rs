@@ -20,8 +20,6 @@ fn malformed_source_report_has_stable_fields() {
     assert_eq!(report.diagnostic.rule_id, MALFORMED_SOURCE_RULE_ID);
     assert_eq!(report.diagnostic.severity, DecodeSeverity::Error);
     assert_eq!(report.diagnostic.spec_section, None);
-    assert_eq!(report.diagnostic.matrix_row, "decode-byte-stream-planner");
-    assert_eq!(report.diagnostic.feature_id, "DECODE-BYTE-STREAM-PLANNER");
     let DecodeDiagnosticDetails::MalformedSource(details) = report.details else {
         panic!("expected malformed-source details");
     };
@@ -44,8 +42,6 @@ fn resource_limit_report_has_measured_values() {
     assert_eq!(report.diagnostic.rule_id, RESOURCE_LIMIT_RULE_ID);
     assert_eq!(report.diagnostic.severity, DecodeSeverity::Error);
     assert_eq!(report.diagnostic.spec_section, Some("5.2.1"));
-    assert_eq!(report.diagnostic.matrix_row, "decode-limits-budget");
-    assert_eq!(report.diagnostic.feature_id, "DOC-DECODE-LIMITS-CONTRACT");
     let DecodeDiagnosticDetails::ResourceLimit(details) = report.details else {
         panic!("expected resource-limit details");
     };
@@ -86,8 +82,6 @@ fn unsupported_structure_report_uses_planner_metadata() {
     assert_eq!(report.diagnostic.rule_id, UNSUPPORTED_FEATURE_RULE_ID);
     assert_eq!(report.diagnostic.severity, DecodeSeverity::Error);
     assert_eq!(report.diagnostic.spec_section, Some("5.2.1"));
-    assert_eq!(report.diagnostic.matrix_row, "decode-stream-state");
-    assert_eq!(report.diagnostic.feature_id, "DECODE-STREAM-STATE-PLANNER");
     let DecodeDiagnosticDetails::UnsupportedStructure(details) = report.details else {
         panic!("expected unsupported-structure details");
     };
@@ -107,8 +101,6 @@ fn runtime_unsupported_report_summarizes_successful_plan() {
 
     assert_eq!(report.diagnostic.rule_id, UNSUPPORTED_FEATURE_RULE_ID);
     assert_eq!(report.diagnostic.spec_section, Some("7.1"));
-    assert_eq!(report.diagnostic.matrix_row, "cli-decode-entrypoint");
-    assert_eq!(report.diagnostic.feature_id, "CLI-DECODE");
     let DecodeDiagnosticDetails::RuntimeUnsupported(summary) = report.details else {
         panic!("expected runtime-unsupported summary");
     };
@@ -136,8 +128,6 @@ fn output_error_report_has_stable_operation_details() {
     assert_eq!(report.diagnostic.rule_id, OUTPUT_ERROR_RULE_ID);
     assert_eq!(report.diagnostic.severity, DecodeSeverity::Error);
     assert_eq!(report.diagnostic.spec_section, None);
-    assert_eq!(report.diagnostic.matrix_row, "decode-y4m-runtime-output");
-    assert_eq!(report.diagnostic.feature_id, "DECODE-Y4M-RUNTIME-OUTPUT");
     let DecodeDiagnosticDetails::OutputError(details) = report.details else {
         panic!("expected output-error details");
     };
@@ -160,14 +150,6 @@ fn raw_output_error_report_uses_raw_support_row() {
     assert_eq!(report.diagnostic.rule_id, OUTPUT_ERROR_RULE_ID);
     assert_eq!(report.diagnostic.severity, DecodeSeverity::Error);
     assert_eq!(report.diagnostic.spec_section, None);
-    assert_eq!(
-        report.diagnostic.matrix_row,
-        "decode-minimal-raw-runtime-output"
-    );
-    assert_eq!(
-        report.diagnostic.feature_id,
-        "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT"
-    );
     let DecodeDiagnosticDetails::OutputError(details) = report.details else {
         panic!("expected output-error details");
     };

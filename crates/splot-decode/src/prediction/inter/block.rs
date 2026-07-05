@@ -2,7 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
-use splot_core::headers::frame::{FrameHeaderCore, FrameType, MvPrecision, TxMode};
+use splot_core::headers::frame::{
+    CoreSeqQuantView, FrameHeaderCore, FrameType, MvPrecision, TxMode, get_qindex,
+};
 use splot_core::headers::sequence::DrlReorder;
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
@@ -40,10 +42,10 @@ use crate::bitstream::tile_payload::{
     DecodeBlockFrontier, DecodeTileWorkUnit, FrameCdfSubset, GeneralIntraLeafMode,
     GeneralIntraMultiblockError, GeneralIntraTreeWalkError, IsCflContext, LumaCoeffBlock,
     TileBlockDecodedState, TileCdfSelector, TileCdfSubset, TileCoeffContextState, TileFscModeState,
-    TileIntraJointModeState, TilePartitionTraversalError, TileUsesMrlsState,
+    TileIntraJointModeState, TilePartitionTraversalError, TileSegmentIdState, TileUsesMrlsState,
     TransformToolResidualPolicy, chroma_subsampling,
     decode_general_intra_multiblock_tree_with_lr_source_blocks, decode_general_intra_plane_coeffs,
-    frame_mi_dimensions, get_plane_residual_size,
+    frame_mi_dimensions, get_plane_residual_size, neg_deinterleave,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcInfo, IntrabcUseSkip,
@@ -343,6 +345,14 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     let mut ccso_state = CcsoState::new(mi_rows, mi_cols, sequence, core, tile_offset)?;
     let mut delta_q_state = DeltaQState::new(sequence, core, tile_offset)?;
     let mut intrabc_state = TileIntrabcPreludeState::new(mi_rows, mi_cols, sequence, tile_offset)?;
+    let mut segment_id_state = TileSegmentIdState::new(mi_rows, mi_cols).map_err(|_| {
+        inter_missing!(
+            "inter_segment_id_grid",
+            offset,
+            "inter.segment_id_grid",
+            SPEC_MODE_INFO
+        )
+    })?;
 
     let mut mv_grid = NeighbourMvGrid::new(mi_rows, mi_cols)
         .ok_or_else(|| inter_cap!("inter_mv_grid", offset, "inter.mv_grid", SPEC_MODE_INFO))?;
@@ -421,6 +431,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                 &mut ccso_state,
                 &mut delta_q_state,
                 &mut intrabc_state,
+                &mut segment_id_state,
                 &mut mv_grid,
                 &mut y_smooth,
                 &mut ref_mv_bank,
@@ -527,6 +538,83 @@ fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<us
     }
 }
 
+/// AV2 § 5.20.5.7/§ 5.20.5.8 intra `segment_id` decode for a luma / non-`CHROMA_PART`
+/// leaf. Returns `0` with no symbols read when segmentation is disabled. Uses the
+/// § 5.20.5.8 spatial predictor + § 8.3.2 CDF context from the `SegmentIds` grid, the
+/// `skip_flag && !HasLosslessSegment` shortcut, `seg_id_ext_flag` (when
+/// `enable_ext_seg`), and `neg_deinterleave`.
+#[allow(clippy::too_many_arguments)]
+fn read_intra_segment_id(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    segment_id_state: &TileSegmentIdState,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    frontier: &DecodeBlockFrontier,
+    skip_flag: bool,
+    tile_offset: ByteOffset,
+) -> Result<u8> {
+    let Some(seg) = core
+        .segmentation_params
+        .as_ref()
+        .filter(|s| s.segmentation_enabled)
+    else {
+        return Ok(0);
+    };
+    let (r, c) = (frontier.r, frontier.c);
+    let (pred, ctx) = segment_id_state.predictor_and_ctx(r, c, r > 0, c > 0);
+    let has_lossless = core
+        .lossless_info
+        .as_ref()
+        .is_some_and(|l| l.has_lossless_segment);
+    if skip_flag && !has_lossless {
+        return Ok(pred);
+    }
+    let enable_ext_seg = sequence.segment.as_ref().is_some_and(|s| s.enable_ext_seg);
+    let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
+    let seg_id_ext_flag = if enable_ext_seg {
+        cdfs.read_block_symbol_trace(TileCdfSelector::SegIdExtFlag { ctx }, symbols)
+            .map_err(|_| symbol_read_error(tile_offset))?
+            .get()
+    } else {
+        0
+    };
+    let ext = seg_id_ext_flag != 0;
+    let raw = cdfs
+        .read_block_symbol_trace(TileCdfSelector::SegmentId { ctx, ext }, symbols)
+        .map_err(|_| symbol_read_error(tile_offset))?
+        .get();
+    let coded = i64::from(raw) + if ext { 8 } else { 0 };
+    let segment_id = neg_deinterleave(
+        coded,
+        i64::from(pred),
+        i64::from(seg.last_active_seg_id) + 1,
+    );
+    Ok(u8::try_from(segment_id.clamp(0, i64::from(u8::MAX))).unwrap_or(0))
+}
+
+/// AV2 § 7.14.2 `get_qindex(0, segment_id)`: the delta-q-adjusted `current_qindex`
+/// offset by the segment's `SEG_LVL_ALT_Q` feature when segmentation is active.
+fn segment_block_qindex(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    segment_id: usize,
+    current_qindex: u32,
+) -> u32 {
+    let Some(seg) = core
+        .segmentation_params
+        .as_ref()
+        .filter(|s| s.segmentation_enabled)
+    else {
+        return current_qindex;
+    };
+    let Some(tq) = sequence.transform_quant_entropy.as_ref() else {
+        return current_qindex;
+    };
+    let quant = CoreSeqQuantView::from_sequence_configs(&sequence.general, tq);
+    get_qindex(&quant, current_qindex, seg, segment_id)
+}
+
 /// The unified per-block decode engine: reads `is_inter` and forks to the intra
 /// predictors or motion compensation, then decodes residual, inverse-transforms,
 /// and reconstructs. One block engine for key and inter frames.
@@ -542,6 +630,7 @@ fn decode_block<T: ReconSample>(
     ccso_state: &mut CcsoState,
     delta_q_state: &mut DeltaQState,
     intrabc_state: &mut TileIntrabcPreludeState,
+    segment_id_state: &mut TileSegmentIdState,
     mv_grid: &mut NeighbourMvGrid,
     y_smooth: &mut crate::prediction::intra_edge::TileYSmoothGrid,
     ref_mv_bank: &mut Option<super::find_mv_stack::RefMvBank>,
@@ -694,6 +783,15 @@ fn decode_block<T: ReconSample>(
         );
     }
     if is_inter == 0 {
+        let seg_pre_skip = core
+            .segmentation_params
+            .as_ref()
+            .is_some_and(|seg| seg.segmentation_enabled && seg.seg_id_pre_skip);
+        let mut segment_id: u8 = if frontier.is_chroma_part() {
+            segment_id_state.cell(frontier.r, frontier.c).unwrap_or(0)
+        } else {
+            0
+        };
         let mut prelude = IntrabcBlockPrelude::from_use_skip(
             IntrabcUseSkip {
                 use_intrabc: false,
@@ -702,6 +800,18 @@ fn decode_block<T: ReconSample>(
             None,
         );
         if !frontier.is_chroma_part() {
+            if seg_pre_skip {
+                segment_id = read_intra_segment_id(
+                    work_unit,
+                    symbols,
+                    segment_id_state,
+                    sequence,
+                    core,
+                    frontier,
+                    false,
+                    tile_offset,
+                )?;
+            }
             intrabc_state.prepare_for_block(frontier.r, frontier.c);
             let use_skip = read_intrabc_use_and_skip(
                 work_unit.cdf_mut().tile_cdfs_mut(),
@@ -718,6 +828,18 @@ fn decode_block<T: ReconSample>(
                     use_skip.skip_flag,
                     symbols.checkpoint()
                 );
+            }
+            if !seg_pre_skip {
+                segment_id = read_intra_segment_id(
+                    work_unit,
+                    symbols,
+                    segment_id_state,
+                    sequence,
+                    core,
+                    frontier,
+                    use_skip.skip_flag,
+                    tile_offset,
+                )?;
             }
             cdef_state.read_for_block(
                 work_unit,
@@ -748,6 +870,7 @@ fn decode_block<T: ReconSample>(
             };
             prelude = IntrabcBlockPrelude::from_use_skip(use_skip, intrabc);
         }
+        segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
         if prelude.use_intrabc {
             let info = prelude.intrabc.ok_or_else(|| {
                 inter_missing!(
@@ -766,7 +889,12 @@ fn decode_block<T: ReconSample>(
                 info,
                 tile_offset,
             )?;
-            let block_qindex = delta_q_state.qindex_u32();
+            let block_qindex = segment_block_qindex(
+                sequence,
+                core,
+                usize::from(segment_id),
+                delta_q_state.qindex_u32(),
+            );
             let residual = if prelude.skip_flag {
                 reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
                 None
@@ -829,7 +957,12 @@ fn decode_block<T: ReconSample>(
             trace_leaf_exit("intrabc", frontier, entry_checkpoint, symbols.checkpoint());
             return Ok(non_intra_leaf_mode(frontier));
         }
-        let block_qindex = delta_q_state.qindex_u32();
+        let block_qindex = segment_block_qindex(
+            sequence,
+            core,
+            usize::from(segment_id),
+            delta_q_state.qindex_u32(),
+        );
         let leaf = crate::pipeline::general_intra::decode_one_general_intra_block::<T>(
             work_unit,
             symbols,

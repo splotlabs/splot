@@ -492,26 +492,21 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_neighbour_block_into<T: Recon
     qindex: u32,
     use_tcq: bool,
     num4_above_right: usize,
+    num4_below_left: usize,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let smooth_mode = match mode {
-        SupportedNonDcLumaMode::Smooth => IntraSmoothMode::Smooth,
-        SupportedNonDcLumaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
-        SupportedNonDcLumaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
-    };
-    reconstruct_general_intra_smooth_over_edges_into(
+    reconstruct_general_intra_luma_smooth_rect_block_into(
         workspace,
         block,
-        PlaneId::Y,
+        mode,
         x,
         y,
         log2_side,
         log2_side,
         qindex,
-        smooth_mode,
-        num4_above_right,
-        0,
         use_tcq,
+        num4_above_right,
+        num4_below_left,
         None,
         bit_depth,
     )

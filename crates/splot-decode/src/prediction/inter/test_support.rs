@@ -15,8 +15,6 @@ use crate::error::DecodeError;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UnsupportedFeatureExpectation {
     pub(crate) reason: &'static str,
-    pub(crate) matrix_row: &'static str,
-    pub(crate) feature_id: &'static str,
     pub(crate) spec_section: &'static str,
     pub(crate) byte_offset: ByteOffset,
     pub(crate) message_fragments: &'static [&'static str],
@@ -25,16 +23,12 @@ pub(crate) struct UnsupportedFeatureExpectation {
 impl UnsupportedFeatureExpectation {
     pub(crate) fn at_byte_offset(
         reason: &'static str,
-        matrix_row: &'static str,
-        feature_id: &'static str,
         spec_section: &'static str,
         byte_offset: ByteOffset,
         message_fragments: &'static [&'static str],
     ) -> Self {
         Self {
             reason,
-            matrix_row,
-            feature_id,
             spec_section,
             byte_offset,
             message_fragments,
@@ -51,8 +45,6 @@ pub(crate) fn assert_unsupported_feature(
         panic!("{context} must be an unsupported-feature error");
     };
     assert_eq!(unsupported.reason(), expected.reason);
-    assert_eq!(unsupported.matrix_row(), expected.matrix_row);
-    assert_eq!(unsupported.feature_id(), expected.feature_id);
     assert_eq!(unsupported.spec_section(), expected.spec_section);
     assert_eq!(unsupported.byte_offset(), Some(expected.byte_offset));
     for fragment in expected.message_fragments {

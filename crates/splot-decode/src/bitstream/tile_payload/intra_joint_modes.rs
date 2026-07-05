@@ -110,6 +110,27 @@ fn require_nonzero<E>(value: usize, error: E) -> Result<(), E> {
     if value == 0 { Err(error) } else { Ok(()) }
 }
 
+/// Builds a per-tile [`MiGrid`] filled with `$default`, mapping the shared
+/// `EmptyDimensions` / `ArithmeticOverflow` / `Allocation` build failures onto the
+/// state's `$err` variants, with `$precheck` for any extra precondition.
+macro_rules! mi_grid_new {
+    ($err:ident, $default:expr, $mi_rows:expr, $mi_cols:expr, $precheck:expr $(,)?) => {
+        MiGrid::new(
+            $mi_rows,
+            $mi_cols,
+            $default,
+            |mi_rows, mi_cols| $err::EmptyDimensions { mi_rows, mi_cols },
+            |operation, left, right| $err::ArithmeticOverflow {
+                operation,
+                left,
+                right,
+            },
+            |source| $err::Allocation { source },
+            $precheck,
+        )
+    };
+}
+
 /// Tile-local AV2 § 5.20.5.3 `IntraJointModes[r][c]` grid.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileIntraJointModeState {
@@ -157,17 +178,11 @@ impl TileLumaPaletteState {
         mi_cols: usize,
         sb_size4: usize,
     ) -> Result<Self, TileLumaPaletteStateError> {
-        let grid = MiGrid::new(
+        let grid = mi_grid_new!(
+            TileLumaPaletteStateError,
+            None::<LumaPalette>,
             mi_rows,
             mi_cols,
-            None::<LumaPalette>,
-            |mi_rows, mi_cols| TileLumaPaletteStateError::EmptyDimensions { mi_rows, mi_cols },
-            |operation, left, right| TileLumaPaletteStateError::ArithmeticOverflow {
-                operation,
-                left,
-                right,
-            },
-            |source| TileLumaPaletteStateError::Allocation { source },
             require_nonzero(sb_size4, TileLumaPaletteStateError::EmptySuperblockSize),
         )?;
         Ok(Self { grid })
@@ -243,17 +258,11 @@ impl TileIntraJointModeState {
         mi_rows: usize,
         mi_cols: usize,
     ) -> Result<Self, TileIntraJointModeStateError> {
-        let grid = MiGrid::new(
+        let grid = mi_grid_new!(
+            TileIntraJointModeStateError,
+            DC_PRED_JOINT_MODE,
             mi_rows,
             mi_cols,
-            DC_PRED_JOINT_MODE,
-            |mi_rows, mi_cols| TileIntraJointModeStateError::EmptyDimensions { mi_rows, mi_cols },
-            |operation, left, right| TileIntraJointModeStateError::ArithmeticOverflow {
-                operation,
-                left,
-                right,
-            },
-            |source| TileIntraJointModeStateError::Allocation { source },
             Ok(()),
         )?;
         Ok(Self { grid })
@@ -324,17 +333,11 @@ impl TileUsesMrlsState {
         mi_cols: usize,
         sb_size4: usize,
     ) -> Result<Self, TileUsesMrlsStateError> {
-        let grid = MiGrid::new(
+        let grid = mi_grid_new!(
+            TileUsesMrlsStateError,
+            NO_MRL,
             mi_rows,
             mi_cols,
-            NO_MRL,
-            |mi_rows, mi_cols| TileUsesMrlsStateError::EmptyDimensions { mi_rows, mi_cols },
-            |operation, left, right| TileUsesMrlsStateError::ArithmeticOverflow {
-                operation,
-                left,
-                right,
-            },
-            |source| TileUsesMrlsStateError::Allocation { source },
             require_nonzero(sb_size4, TileUsesMrlsStateError::EmptySuperblockSize),
         )?;
         Ok(Self { grid, sb_size4 })
@@ -381,6 +384,114 @@ impl TileUsesMrlsState {
     }
 }
 
+/// Tile-local AV2 § 5.20.5.7 `SegmentIds[r][c]` grid (default `0`, the pre-write
+/// segment-id); the intra mode-info decode fills it as each block resolves.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TileSegmentIdState {
+    grid: MiGrid<u8>,
+}
+
+impl TileSegmentIdState {
+    /// Creates a `SegmentIds` grid initialized to `0`.
+    pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileSegmentIdStateError> {
+        let grid = mi_grid_new!(TileSegmentIdStateError, 0u8, mi_rows, mi_cols, Ok(()))?;
+        Ok(Self { grid })
+    }
+
+    /// `SegmentIds[r][c]` (tile-relative MI), or `None` outside the grid.
+    pub(crate) fn cell(&self, r: usize, c: usize) -> Option<u8> {
+        self.grid.cell(r, c)
+    }
+
+    /// Writes `segment_id` into every MI cell the block covers.
+    pub(crate) fn record_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        segment_id: u8,
+    ) {
+        self.grid.record_block((r, c), (n4w, n4h), segment_id);
+    }
+
+    /// AV2 § 5.20.5.8 spatial predictor `pred` and the § 8.3.2 `segment_id` /
+    /// `seg_id_ext_flag` CDF context, from the up / up-left / left `SegmentIds`
+    /// neighbours (`-1` when unavailable).
+    pub(crate) fn predictor_and_ctx(
+        &self,
+        r: usize,
+        c: usize,
+        avail_u: bool,
+        avail_l: bool,
+    ) -> (u8, usize) {
+        let cell = |rr: usize, cc: usize| self.grid.cell(rr, cc).map_or(-1i16, i16::from);
+        let prev_ul = if avail_u && avail_l {
+            match (r.checked_sub(1), c.checked_sub(1)) {
+                (Some(ru), Some(cl)) => cell(ru, cl),
+                _ => -1,
+            }
+        } else {
+            -1
+        };
+        let prev_u = if avail_u {
+            r.checked_sub(1).map_or(-1, |ru| cell(ru, c))
+        } else {
+            -1
+        };
+        let prev_l = if avail_l {
+            c.checked_sub(1).map_or(-1, |cl| cell(r, cl))
+        } else {
+            -1
+        };
+        let pred = if prev_u == -1 {
+            if prev_l == -1 { 0 } else { prev_l }
+        } else if prev_l == -1 || prev_ul == prev_u {
+            prev_u
+        } else {
+            prev_l
+        };
+        let ctx = if prev_ul < 0 {
+            0
+        } else if prev_ul == prev_u && prev_ul == prev_l {
+            2
+        } else {
+            usize::from(prev_ul == prev_u || prev_ul == prev_l || prev_u == prev_l)
+        };
+        (u8::try_from(pred.max(0)).unwrap_or(0), ctx)
+    }
+}
+
+/// AV2 § 5.20.5.8 `neg_deinterleave(diff, ref, max)`, computed in `i64` so the
+/// intermediate subtractions cannot underflow; the result lies in `0..max`.
+pub(crate) fn neg_deinterleave(diff: i64, reference: i64, max: i64) -> i64 {
+    if reference == 0 {
+        return diff;
+    }
+    if reference >= max - 1 {
+        return max - diff - 1;
+    }
+    if 2 * reference < max {
+        if diff <= 2 * reference {
+            if diff & 1 != 0 {
+                reference + ((diff + 1) >> 1)
+            } else {
+                reference - (diff >> 1)
+            }
+        } else {
+            diff
+        }
+    } else if diff <= 2 * (max - reference - 1) {
+        if diff & 1 != 0 {
+            reference + ((diff + 1) >> 1)
+        } else {
+            reference - (diff >> 1)
+        }
+    } else {
+        max - (diff + 1)
+    }
+}
+
 /// Tile-local AV2 § 5.20.5.3 `FscModes[r][c]` grid.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileFscModeState {
@@ -395,17 +506,11 @@ impl TileFscModeState {
         mi_cols: usize,
         sb_size4: usize,
     ) -> Result<Self, TileFscModeStateError> {
-        let grid = MiGrid::new(
+        let grid = mi_grid_new!(
+            TileFscModeStateError,
+            NO_FSC,
             mi_rows,
             mi_cols,
-            NO_FSC,
-            |mi_rows, mi_cols| TileFscModeStateError::EmptyDimensions { mi_rows, mi_cols },
-            |operation, left, right| TileFscModeStateError::ArithmeticOverflow {
-                operation,
-                left,
-                right,
-            },
-            |source| TileFscModeStateError::Allocation { source },
             require_nonzero(sb_size4, TileFscModeStateError::EmptySuperblockSize),
         )?;
         Ok(Self { grid, sb_size4 })
@@ -644,6 +749,20 @@ pub(crate) enum TileUsesMrlsStateError {
         right: usize,
     },
     #[error("intra UsesMrls state allocation failed: {source}")]
+    Allocation { source: TryReserveError },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TileSegmentIdStateError {
+    #[error("intra SegmentIds state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
+    EmptyDimensions { mi_rows: usize, mi_cols: usize },
+    #[error("intra SegmentIds state arithmetic overflow in {operation}: {left} * {right}")]
+    ArithmeticOverflow {
+        operation: &'static str,
+        left: usize,
+        right: usize,
+    },
+    #[error("intra SegmentIds state allocation failed: {source}")]
     Allocation { source: TryReserveError },
 }
 
@@ -997,5 +1116,33 @@ mod tests {
         assert_eq!(state.is_cfl_ctx(2, 3, false, true), 1);
         assert!(TileUvCflState::new(0, 4).is_err());
         assert!(TileUvCflState::new(4, 0).is_err());
+    }
+
+    /// AV2 § 5.20.5.8 `neg_deinterleave` across its four branches, with asymmetric
+    /// `(diff, ref, max)` triples so a swapped branch cannot pass by coincidence.
+    #[test]
+    fn neg_deinterleave_matches_spec_branches() {
+        assert_eq!(neg_deinterleave(3, 0, 8), 3);
+        assert_eq!(neg_deinterleave(2, 7, 8), 5);
+        assert_eq!(neg_deinterleave(2, 1, 8), 0);
+        assert_eq!(neg_deinterleave(1, 1, 8), 2);
+        assert_eq!(neg_deinterleave(5, 1, 8), 5);
+        assert_eq!(neg_deinterleave(1, 6, 8), 7);
+        assert_eq!(neg_deinterleave(2, 6, 8), 5);
+        assert_eq!(neg_deinterleave(3, 6, 8), 4);
+    }
+
+    /// AV2 § 5.20.5.8 predictor + § 8.3.2 context: no neighbour => pred 0 / ctx 0;
+    /// equal up/up-left/left => ctx 2; a differing left is selected as the predictor.
+    #[test]
+    fn segment_id_predictor_and_context() {
+        let mut state = TileSegmentIdState::new(4, 4).unwrap();
+        assert_eq!(state.predictor_and_ctx(0, 0, false, false), (0, 0));
+        state.record_block(0, 0, 2, 1, 5);
+        state.record_block(0, 1, 1, 1, 5);
+        state.record_block(1, 0, 1, 1, 5);
+        assert_eq!(state.predictor_and_ctx(1, 1, true, true), (5, 2));
+        state.record_block(1, 0, 1, 1, 3);
+        assert_eq!(state.predictor_and_ctx(1, 1, true, true), (5, 1));
     }
 }

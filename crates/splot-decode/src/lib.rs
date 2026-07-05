@@ -116,14 +116,8 @@ pub struct DecodeDiagnostic {
     pub severity: DecodeSeverity,
     /// Optional AV2 spec section associated with the diagnostic.
     pub spec_section: Option<&'static str>,
-    /// Decoder support matrix row that owns the diagnostic.
-    pub matrix_row: &'static str,
-    /// Feature ID in `docs/IMPLEMENTATION-MATRIX.toml`.
-    pub feature_id: &'static str,
     /// Human-readable diagnostic message.
     pub message: &'static str,
-    /// Suggested remediation for users.
-    pub remediation: &'static str,
 }
 
 /// Current unsupported diagnostic descriptor for `splot decode`.
@@ -134,10 +128,7 @@ pub const UNSUPPORTED_FEATURE_DIAGNOSTIC: DecodeDiagnostic = DecodeDiagnostic {
     rule_id: UNSUPPORTED_FEATURE_RULE_ID,
     severity: DecodeSeverity::Error,
     spec_section: Some("7.1"),
-    matrix_row: "cli-decode-entrypoint",
-    feature_id: "CLI-DECODE",
     message: "Byte stream planning succeeded, but `splot decode` runtime output is not implemented yet.",
-    remediation: "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE implements output.",
 };
 
 /// Returns the current unsupported diagnostic for `splot decode`.
@@ -161,15 +152,9 @@ mod tests {
         assert_eq!(diagnostic.severity, DecodeSeverity::Error);
         assert_eq!(diagnostic.severity.as_str(), "Error");
         assert_eq!(diagnostic.spec_section, Some("7.1"));
-        assert_eq!(diagnostic.matrix_row, "cli-decode-entrypoint");
-        assert_eq!(diagnostic.feature_id, "CLI-DECODE");
         assert_eq!(
             diagnostic.message,
             "Byte stream planning succeeded, but `splot decode` runtime output is not implemented yet."
-        );
-        assert_eq!(
-            diagnostic.remediation,
-            "Use `splot validate` or `splot inspect` for bitstream analysis until CLI-DECODE implements output."
         );
     }
 

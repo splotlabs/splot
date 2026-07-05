@@ -37,8 +37,7 @@ use super::intrabc_records::{
     read_intrabc_use_and_skip,
 };
 use super::{
-    WienerNsLrTransformRecordDiagnosticScope, derive_tile_plan,
-    fixed_largest_420_chroma_tx_size_from_luma_4x4, intra_capped_seq_sb_size,
+    derive_tile_plan, fixed_largest_420_chroma_tx_size_from_luma_4x4, intra_capped_seq_sb_size,
     map_wienerns_lr_transform_record_multiblock_error,
     wienerns_lr_live_transform_record_mode_error, wienerns_lr_live_transform_record_residual_error,
     wienerns_lr_selectable_transform_record_error_reason,
@@ -81,9 +80,6 @@ mod tool_gate;
 use tool_gate::ensure_selectable_transform_record_tool_gates;
 
 type SelectableTransformGridSize = (usize, usize);
-
-const SELECTABLE_DIAGNOSTIC_SCOPE: WienerNsLrTransformRecordDiagnosticScope =
-    WienerNsLrTransformRecordDiagnosticScope::Selectable;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SelectableTxSizeContext {
@@ -289,13 +285,7 @@ fn selectable_transform_record_error(
 fn selectable_mode_error_at(
     tile_offset: ByteOffset,
 ) -> impl FnOnce(GeneralIntraBlockModeError) -> crate::error::DecodeError {
-    move |error| {
-        wienerns_lr_live_transform_record_mode_error(
-            error,
-            tile_offset,
-            SELECTABLE_DIAGNOSTIC_SCOPE,
-        )
-    }
+    move |error| wienerns_lr_live_transform_record_mode_error(error, tile_offset)
 }
 
 fn selectable_residual_error_at(
@@ -308,11 +298,7 @@ fn selectable_residual_error_at(
                 tile_offset.get()
             );
         }
-        wienerns_lr_live_transform_record_residual_error(
-            error,
-            tile_offset,
-            SELECTABLE_DIAGNOSTIC_SCOPE,
-        )
+        wienerns_lr_live_transform_record_residual_error(error, tile_offset)
     }
 }
 
@@ -320,13 +306,7 @@ fn selectable_multiblock_error_at(
     tile_offset: ByteOffset,
 ) -> impl FnOnce(GeneralIntraMultiblockError<crate::error::DecodeError>) -> crate::error::DecodeError
 {
-    move |error| {
-        map_wienerns_lr_transform_record_multiblock_error(
-            error,
-            tile_offset,
-            SELECTABLE_DIAGNOSTIC_SCOPE,
-        )
-    }
+    move |error| map_wienerns_lr_transform_record_multiblock_error(error, tile_offset)
 }
 
 impl DeltaQState {

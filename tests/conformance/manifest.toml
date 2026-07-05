@@ -61,7 +61,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-smooth-intra-64x64-10bit-q80.ivf"
-description = "Valid 10-bit 4:2:0 intra key frame (IVF, 64x64) with SMOOTH (non-DC) luma; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature unsupported_10bit_non_dc_intra (10-bit reconstruction is gated to the DC_PRED subset)."
+description = "Valid 10-bit 4:2:0 intra key frame (IVF, 64x64) with SMOOTH (non-DC) luma; validates clean, and the general-intra decoder reconstructs it byte-exact to avmdec (10-bit rectangular SMOOTH luma over § 7.13.2.1 edge fallbacks)."
 expect = "clean"
 
 [[vector]]
@@ -79,14 +79,14 @@ path = "vectors/valid/syn-qm-intra-64x64.ivf"
 description = """
 AVM --enable-qm intra key frame (IVF, 64x64) with using_qmatrix == 1 referencing \
 default quantizer matrix level 8 and no in-band quantizer matrix OBU. The \
-general-intra decoder fails closed with decode/unsupported-feature \
-general_intra_using_qmatrix (the walk applies flat, non-QM dequant); standalone, \
-the validator emits the §7.3.8.9 qm-level-unavailable diagnostic."""
+general-intra decoder decodes it byte-exact via the § 7.14.4 built-in quantizer \
+matrix; standalone, the validator emits the §7.3.8.9 qm-level-unavailable \
+diagnostic."""
 expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
 
 [[vector]]
 path = "vectors/valid/syn-seg-intra-64x64.ivf"
-description = "AVM --aq-mode intra key frame (IVF, 64x64) with frame segmentation enabled; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_segment_id_unimplemented (per-block segment_id is not decoded by the intra walk)."
+description = "AVM --aq-mode intra key frame (IVF, 64x64) with frame segmentation enabled; validates clean, and the general-intra decoder decodes it byte-exact (§ 5.20.5.7 segment_id decode plus the § 7.14.2 per-segment SEG_LVL_ALT_Q qindex)."
 expect = "clean"
 
 [[vector]]
@@ -106,12 +106,12 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-idtx-intra-128x128.ivf"
-description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with intra identity transform (enable_idtx_intra); validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_transform_tool_residual (non-DCT luma transform tools are unsupported)."
+description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with intra identity transform (enable_idtx_intra); validates clean, and the general-intra decoder reconstructs it byte-exact to the avmdec oracle (IDTX luma residual handoff + decode-order-aware chroma above-right availability)."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-ist-largest-intra-128x128.ivf"
-description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with intra secondary transform (enable_ist); validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_transform_tool_residual (nonzero secondary transform type is unsupported)."
+description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with intra secondary transform (enable_ist); validates clean, and the general-intra decoder reconstructs it byte-exact to the avmdec oracle (rectangular SMOOTH luma over § 7.13.2.1 edge fallbacks)."
 expect = "clean"
 
 [[vector]]
@@ -713,17 +713,17 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-fsc-intra-128x128.ivf"
-description = "Tiny AVM transform.idtx_fsc fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM transform.idtx_fsc fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-ist-intra-128x128.ivf"
-description = "Tiny AVM transform.secondary_ist fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM transform.secondary_ist fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-mrl-intra-128x128.ivf"
-description = "Tiny AVM intra.mrl fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM intra.mrl fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
@@ -733,26 +733,26 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-parity-intra-128x128.ivf"
-description = "Tiny AVM coeff.parity_hiding fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM coeff.parity_hiding fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-wienerns-intra-128x128.ivf"
-description = "Tiny AVM loop.wienerns fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM loop.wienerns fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-pcwiener-intra-128x128.ivf"
-description = "Tiny AVM loop.pc_wiener fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM loop.pc_wiener fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-gdf-intra-128x128.ivf"
-description = "Tiny AVM loop.gdf fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM loop.gdf fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-warp-inter-128x128.ivf"
-description = "Tiny AVM inter.warp fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed unsupported_frame_size); validates clean."
+description = "Tiny AVM inter.warp fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 

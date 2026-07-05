@@ -18,17 +18,9 @@ use splot_recon::{
 };
 
 use crate::bitstream::tile_payload::FrameCdfSubset;
-use crate::error::{DecodeError, DecodeUnsupportedFeature};
+use crate::error::DecodeError;
 use crate::pipeline::ensure_runtime_limits;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
-const FEATURE_ID: &str = "DECODE-FIRST-INTER-FRAME-FRONTIER";
-const MATRIX_ROW: &str = "first-inter-frame-frontier";
-const TIER_ID: &str = "general-inter-8bit420-frontier-v1";
-const REMEDIATION: &str = "Inter decode is limited to the current 8-bit 4:2:0 capability set.";
-const COMPOUND_FEATURE_ID: &str = "DECODE-INTER-COMPOUND-AVERAGE";
-const COMPOUND_MATRIX_ROW: &str = "inter-compound-average";
-const COMPOUND_REMEDIATION: &str =
-    "Compound inter decode is limited to two-reference COMPOUND_AVERAGE.";
 
 macro_rules! inter_cap {
     ($reason:literal, $offset:expr, $capability:literal, $spec_section:expr $(,)?) => {
@@ -1126,18 +1118,7 @@ fn unsupported_at(
     message: &'static str,
     spec_section: &'static str,
 ) -> DecodeError {
-    DecodeError::UnsupportedFeature {
-        unsupported: Box::new(DecodeUnsupportedFeature::new(
-            reason,
-            TIER_ID,
-            MATRIX_ROW,
-            FEATURE_ID,
-            spec_section,
-            message,
-            REMEDIATION,
-            Some(byte_offset),
-        )),
-    }
+    crate::pipeline::unsupported_with_spec(reason, Some(byte_offset), message, spec_section)
 }
 
 fn unsupported_compound_at(
@@ -1146,16 +1127,5 @@ fn unsupported_compound_at(
     message: &'static str,
     spec_section: &'static str,
 ) -> DecodeError {
-    DecodeError::UnsupportedFeature {
-        unsupported: Box::new(DecodeUnsupportedFeature::new(
-            reason,
-            TIER_ID,
-            COMPOUND_MATRIX_ROW,
-            COMPOUND_FEATURE_ID,
-            spec_section,
-            message,
-            COMPOUND_REMEDIATION,
-            Some(byte_offset),
-        )),
-    }
+    unsupported_at(reason, byte_offset, message, spec_section)
 }

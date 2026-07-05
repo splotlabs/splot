@@ -22,14 +22,7 @@ use crate::bitstream::tile_payload::{
 };
 use crate::error::{DecodeError, Result};
 use crate::pipeline::{
-    FRONTIER_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
-    FRONTIER_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
-    FRONTIER_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID,
-    FRONTIER_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW, FRONTIER_LR_SOURCE_READ_FEATURE_ID,
-    FRONTIER_LR_SOURCE_READ_MATRIX_ROW, FRONTIER_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
-    FRONTIER_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW, derive_tile_plan,
-    effective_allow_screen_content_tools, ensure_sequence_chroma_tools_before_tile_decode,
-    unsupported_at, unsupported_feature_at,
+    derive_tile_plan, effective_allow_screen_content_tools, unsupported_at, unsupported_feature_at,
 };
 use crate::support::pipeline_limits::{checked_add, checked_mul, decoded_frame_storage_budget};
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
@@ -500,7 +493,6 @@ pub(crate) fn ensure_wienerns_lr_unit_tile_frontier(
                     None,
                 )?
             } else if tx_mode == TxMode::Largest {
-                ensure_sequence_chroma_tools_before_tile_decode(sequence, sequence_offset)?;
                 ensure_fixed_largest_transform_record_tool_gates(sequence, core, sequence_offset)?;
                 derive_wienerns_lr_fixed_largest_transform_record_handoff(
                     bytes,
@@ -596,8 +588,6 @@ pub(crate) fn derive_wienerns_lr_runtime_storage_retention_frontier(
             "unsupported_wienerns_lr_runtime_storage_missing_frame_size",
             offset,
             "decode pipeline cannot retain loop-restoration storage before the parsed frame size is available",
-            FRONTIER_LR_RUNTIME_STORAGE_RETENTION_MATRIX_ROW,
-            FRONTIER_LR_RUNTIME_STORAGE_RETENTION_FEATURE_ID,
             "6.17.4.1",
         )
     })?;
@@ -749,7 +739,6 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
             }
             if frontier.chroma_offset {
                 return Err(wienerns_lr_transform_record_unsupported(
-                    WienerNsLrTransformRecordDiagnosticScope::FixedLargest,
                     "unsupported_wienerns_lr_live_transform_record_chroma_offset_leaf",
                     tile_offset,
                     "Fixed-largest Wiener NS LR records need ancestor chroma residual coordinates for chroma-offset leaves.",
@@ -783,7 +772,6 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 wienerns_lr_live_transform_record_mode_error(
                     error,
                     tile_offset,
-                    WienerNsLrTransformRecordDiagnosticScope::FixedLargest,
                 )
             })?;
 
@@ -813,7 +801,6 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 wienerns_lr_live_transform_record_residual_error(
                     error,
                     tile_offset,
-                    WienerNsLrTransformRecordDiagnosticScope::FixedLargest,
                 )
             })?;
             records
@@ -860,7 +847,6 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 wienerns_lr_live_transform_record_residual_error(
                     error,
                     tile_offset,
-                    WienerNsLrTransformRecordDiagnosticScope::FixedLargest,
                 )
             })?;
             let _v = decode_general_intra_plane_coeffs(
@@ -885,7 +871,6 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
                 wienerns_lr_live_transform_record_residual_error(
                     error,
                     tile_offset,
-                    WienerNsLrTransformRecordDiagnosticScope::FixedLargest,
                 )
             })?;
             Ok(crate::bitstream::tile_payload::GeneralIntraLeafMode::luma(
@@ -902,7 +887,6 @@ fn derive_wienerns_lr_fixed_largest_transform_record_handoff(
         map_wienerns_lr_transform_record_multiblock_error(
             error,
             tile_offset,
-            WienerNsLrTransformRecordDiagnosticScope::FixedLargest,
         )
     })?;
 
@@ -1042,19 +1026,17 @@ fn tx_size_from_log2(w_log2: u32, h_log2: u32) -> Option<usize> {
 fn map_wienerns_lr_transform_record_multiblock_error(
     error: GeneralIntraMultiblockError<DecodeError>,
     tile_offset: ByteOffset,
-    scope: WienerNsLrTransformRecordDiagnosticScope,
 ) -> DecodeError {
     match error {
         GeneralIntraMultiblockError::Setup(error) => {
-            wienerns_lr_transform_record_setup_error(error, tile_offset, scope)
+            wienerns_lr_transform_record_setup_error(error, tile_offset)
         }
         GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Leaf(error)) => error,
         GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(error)) => {
-            wienerns_lr_transform_record_traversal_error(error, tile_offset, scope)
+            wienerns_lr_transform_record_traversal_error(error, tile_offset)
         }
         GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::MiSize(_)) => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_walk_mi_size_state",
                 tile_offset,
                 "Wiener NS LR transform records need MI-size updates between partition leaves.",
@@ -1064,32 +1046,9 @@ fn map_wienerns_lr_transform_record_multiblock_error(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WienerNsLrTransformRecordDiagnosticScope {
-    FixedLargest,
-    Selectable,
-}
-
-impl WienerNsLrTransformRecordDiagnosticScope {
-    const fn matrix_row(self) -> &'static str {
-        match self {
-            Self::FixedLargest => FRONTIER_LR_LIVE_TRANSFORM_RECORD_HANDOFF_MATRIX_ROW,
-            Self::Selectable => FRONTIER_SELECTABLE_TRANSFORM_RECORDS_MATRIX_ROW,
-        }
-    }
-
-    const fn feature_id(self) -> &'static str {
-        match self {
-            Self::FixedLargest => FRONTIER_LR_LIVE_TRANSFORM_RECORD_HANDOFF_FEATURE_ID,
-            Self::Selectable => FRONTIER_SELECTABLE_TRANSFORM_RECORDS_FEATURE_ID,
-        }
-    }
-}
-
 fn wienerns_lr_transform_record_setup_error(
     error: TilePartitionFrontierError,
     offset: ByteOffset,
-    scope: WienerNsLrTransformRecordDiagnosticScope,
 ) -> DecodeError {
     match error {
         TilePartitionFrontierError::Limit(source)
@@ -1097,17 +1056,15 @@ fn wienerns_lr_transform_record_setup_error(
             DecodeError::Limit { source }
         }
         TilePartitionFrontierError::Traversal(error) => {
-            wienerns_lr_transform_record_traversal_error(error, offset, scope)
+            wienerns_lr_transform_record_traversal_error(error, offset)
         }
         TilePartitionFrontierError::MissingFact { .. } => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_missing_fact",
             offset,
             "Wiener NS LR transform records need parser facts that are absent.",
             "5.20.3.1",
         ),
         TilePartitionFrontierError::MiSizeState(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_setup_mi_size_state",
             offset,
             "Wiener NS LR transform records need MI-size traversal state.",
@@ -1115,7 +1072,6 @@ fn wienerns_lr_transform_record_setup_error(
         ),
         TilePartitionFrontierError::IntraJointModeState(_) => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_setup_intra_joint_mode_state",
                 offset,
                 "Wiener NS LR transform records need intra joint-mode neighbour state.",
@@ -1123,21 +1079,18 @@ fn wienerns_lr_transform_record_setup_error(
             )
         }
         TilePartitionFrontierError::UsesMrlsState(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_setup_uses_mrls_state",
             offset,
             "Wiener NS LR transform records need UsesMrls neighbour state.",
             "8.3.2",
         ),
         TilePartitionFrontierError::FscModeState(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_setup_fsc_mode_state",
             offset,
             "Wiener NS LR transform records need FscModes neighbour state.",
             "8.3.2",
         ),
         TilePartitionFrontierError::UvCflState(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_setup_uv_cfl_state",
             offset,
             "Wiener NS LR transform records need UVCfls neighbour state.",
@@ -1145,7 +1098,6 @@ fn wienerns_lr_transform_record_setup_error(
         ),
         TilePartitionFrontierError::LumaPaletteState(_) => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_setup_luma_palette_state",
                 offset,
                 "Wiener NS LR transform records need luma palette neighbour state.",
@@ -1154,7 +1106,6 @@ fn wienerns_lr_transform_record_setup_error(
         }
         TilePartitionFrontierError::UnexpectedFrontier { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_unexpected_frontier",
                 offset,
                 "Initial partition frontier shape is outside the Wiener NS LR record subset.",
@@ -1168,15 +1119,13 @@ fn wienerns_lr_transform_record_setup_error(
 fn wienerns_lr_transform_record_traversal_error(
     error: TilePartitionTraversalError,
     offset: ByteOffset,
-    scope: WienerNsLrTransformRecordDiagnosticScope,
 ) -> DecodeError {
     match error {
         TilePartitionTraversalError::Limit(source) => DecodeError::Limit { source },
         TilePartitionTraversalError::Unsupported(unsupported) => {
-            wienerns_lr_transform_record_unsupported_traversal(unsupported, offset, scope)
+            wienerns_lr_transform_record_unsupported_traversal(unsupported, offset)
         }
         TilePartitionTraversalError::BlockDecoded(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_block_decoded_state",
             offset,
             "Partition traversal cannot maintain BlockDecoded state for Wiener NS LR records.",
@@ -1184,7 +1133,6 @@ fn wienerns_lr_transform_record_traversal_error(
         ),
         TilePartitionTraversalError::IntraYModeState(_) => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_intra_ymode_state",
                 offset,
                 "Partition traversal cannot maintain SDP luma YMode state for Wiener NS LR records.",
@@ -1192,14 +1140,12 @@ fn wienerns_lr_transform_record_traversal_error(
             )
         }
         TilePartitionTraversalError::UsesMrlsState(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_uses_mrls_state",
             offset,
             "Partition traversal cannot maintain UsesMrls state for Wiener NS LR records.",
             "8.3.2",
         ),
         TilePartitionTraversalError::FscModeState(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_fsc_mode_state",
             offset,
             "Partition traversal cannot maintain FscModes state for Wiener NS LR records.",
@@ -1207,7 +1153,6 @@ fn wienerns_lr_transform_record_traversal_error(
         ),
         TilePartitionTraversalError::LumaPaletteState(_) => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_luma_palette_state",
                 offset,
                 "Partition traversal cannot maintain luma palette state for Wiener NS LR records.",
@@ -1215,35 +1160,30 @@ fn wienerns_lr_transform_record_traversal_error(
             )
         }
         TilePartitionTraversalError::Size(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_partition_size",
             offset,
             "Partition-size lookup failed during Wiener NS LR record traversal.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::Allowed(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_partition_allowed",
             offset,
             "Allowed partition derivation failed during Wiener NS LR record traversal.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::Decision(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_partition_decision",
             offset,
             "Partition decision syntax is outside the Wiener NS LR record subset.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::Symbol(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_partition_symbol",
             offset,
             "Partition symbol decoder setup failed during Wiener NS LR record traversal.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::Cdf(_) => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_partition_cdf",
             offset,
             "Partition CDF context lookup is outside the supported table shape.",
@@ -1253,7 +1193,6 @@ fn wienerns_lr_transform_record_traversal_error(
         | TilePartitionTraversalError::CoordinateOverflow { .. }
         | TilePartitionTraversalError::CoordinateOffsetOverflow { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_coordinate_math",
                 offset,
                 "Partition coordinate arithmetic exceeded the checked range.",
@@ -1262,7 +1201,6 @@ fn wienerns_lr_transform_record_traversal_error(
         }
         TilePartitionTraversalError::InvalidLoopRestorationUnitSize { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_invalid_lr_unit_size",
                 offset,
                 "Loop-restoration unit size does not map to traversal state.",
@@ -1271,7 +1209,6 @@ fn wienerns_lr_transform_record_traversal_error(
         }
         TilePartitionTraversalError::InvalidPartitionSubsize { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_invalid_partition_subsize",
                 offset,
                 "Partition choice produced no valid child block size.",
@@ -1280,7 +1217,6 @@ fn wienerns_lr_transform_record_traversal_error(
         }
         TilePartitionTraversalError::InvalidRegionType { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_invalid_region_type",
                 offset,
                 "Extended SDP region type syntax is outside the Wiener NS LR record subset.",
@@ -1288,14 +1224,12 @@ fn wienerns_lr_transform_record_traversal_error(
             )
         }
         TilePartitionTraversalError::TooManyChildCalls => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_too_many_child_calls",
             offset,
             "Partition traversal produced too many child calls.",
             "5.20.3.1",
         ),
         TilePartitionTraversalError::NoBlockFrontier => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_no_block_frontier",
             offset,
             "Partition traversal reached no in-frame decode_block frontier.",
@@ -1303,7 +1237,6 @@ fn wienerns_lr_transform_record_traversal_error(
         ),
         TilePartitionTraversalError::MissingIntraLumaModeState { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_missing_intra_luma_mode_state",
                 offset,
                 "Intra luma/shared leaf is missing YMode state for SDP chroma syntax.",
@@ -1312,7 +1245,6 @@ fn wienerns_lr_transform_record_traversal_error(
         }
         TilePartitionTraversalError::MissingIntraUsesMrlsState { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_missing_uses_mrls_state",
                 offset,
                 "Intra luma/shared leaf is missing UsesMrls state for MRL contexts.",
@@ -1321,7 +1253,6 @@ fn wienerns_lr_transform_record_traversal_error(
         }
         TilePartitionTraversalError::MissingIntraFscModeState { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_missing_fsc_mode_state",
                 offset,
                 "Intra luma/shared leaf is missing FscModes state for FSC contexts.",
@@ -1334,11 +1265,9 @@ fn wienerns_lr_transform_record_traversal_error(
 fn wienerns_lr_transform_record_unsupported_traversal(
     unsupported: TilePartitionTraversalUnsupported,
     offset: ByteOffset,
-    scope: WienerNsLrTransformRecordDiagnosticScope,
 ) -> DecodeError {
     match unsupported {
         TilePartitionTraversalUnsupported::ExtendedSdp => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_extended_sdp",
             offset,
             "Extended SDP region signaling is outside the Wiener NS LR record subset.",
@@ -1346,7 +1275,6 @@ fn wienerns_lr_transform_record_unsupported_traversal(
         ),
         TilePartitionTraversalUnsupported::ReadLoopRestoration => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_read_loop_restoration",
                 offset,
                 "Root read_lr syntax is outside transform-record traversal.",
@@ -1354,7 +1282,6 @@ fn wienerns_lr_transform_record_unsupported_traversal(
             )
         }
         TilePartitionTraversalUnsupported::BruOrBridge => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_bru_or_bridge",
             offset,
             "BRU, bridge, and inactive partition behavior are outside the Wiener NS LR record subset.",
@@ -1364,32 +1291,22 @@ fn wienerns_lr_transform_record_unsupported_traversal(
 }
 
 fn wienerns_lr_transform_record_unsupported(
-    scope: WienerNsLrTransformRecordDiagnosticScope,
     reason: &'static str,
     offset: ByteOffset,
     message: &'static str,
     spec_section: &'static str,
 ) -> DecodeError {
-    unsupported_feature_at(
-        reason,
-        offset,
-        message,
-        scope.matrix_row(),
-        scope.feature_id(),
-        spec_section,
-    )
+    unsupported_feature_at(reason, offset, message, spec_section)
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn wienerns_lr_live_transform_record_mode_error(
     error: GeneralIntraBlockModeError,
     offset: ByteOffset,
-    scope: WienerNsLrTransformRecordDiagnosticScope,
 ) -> DecodeError {
     match error {
         GeneralIntraBlockModeError::SymbolRead { reason, .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 wienerns_lr_mode_symbol_reason(reason),
                 offset,
                 "Mode-info CDF symbol read is outside the supported intra subset.",
@@ -1398,7 +1315,6 @@ fn wienerns_lr_live_transform_record_mode_error(
         }
         GeneralIntraBlockModeError::Literal { reason, .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 wienerns_lr_mode_literal_reason(reason),
                 offset,
                 "Mode-info escape literal read is outside the supported intra subset.",
@@ -1407,7 +1323,6 @@ fn wienerns_lr_live_transform_record_mode_error(
         }
         GeneralIntraBlockModeError::UnsupportedYMode { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_y_mode",
                 offset,
                 "Luma intra mode is outside the Wiener NS LR record subset.",
@@ -1416,7 +1331,6 @@ fn wienerns_lr_live_transform_record_mode_error(
         }
         GeneralIntraBlockModeError::InvalidUvMode { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_uv_mode",
                 offset,
                 "Chroma intra mode is outside the Wiener NS LR record subset.",
@@ -1425,7 +1339,6 @@ fn wienerns_lr_live_transform_record_mode_error(
         }
         GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_fsc_bsize_group",
                 offset,
                 "Block size does not map through Fsc_Bsize_Groups for fsc_mode.",
@@ -1434,7 +1347,6 @@ fn wienerns_lr_live_transform_record_mode_error(
         }
         GeneralIntraBlockModeError::InvalidCflMhDirBlockSizeIndex { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_cfl_mh_dir_size_group",
                 offset,
                 "Block size does not map through Size_Group for cfl_mh_dir.",
@@ -1443,7 +1355,6 @@ fn wienerns_lr_live_transform_record_mode_error(
         }
         GeneralIntraBlockModeError::UnsupportedMhccpMode => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_mhccp_mode",
                 offset,
                 "Active MHCCP chroma prediction is outside the Wiener NS LR record subset.",
@@ -1452,7 +1363,6 @@ fn wienerns_lr_live_transform_record_mode_error(
         }
         GeneralIntraBlockModeError::InvalidPaletteYSize { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "invalid_wienerns_lr_live_transform_record_palette_y_size",
                 offset,
                 "Decoded luma palette size is outside the valid range.",
@@ -1461,7 +1371,6 @@ fn wienerns_lr_live_transform_record_mode_error(
         }
         GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder { .. } => {
             wienerns_lr_transform_record_unsupported(
-                scope,
                 "unsupported_wienerns_lr_live_transform_record_directional_neighbour_reorder",
                 offset,
                 "Y-mode selection needs directional-neighbour reordering.",
@@ -1475,23 +1384,13 @@ fn wienerns_lr_live_transform_record_mode_error(
 fn wienerns_lr_live_transform_record_residual_error(
     error: GeneralIntraResidualError,
     offset: ByteOffset,
-    scope: WienerNsLrTransformRecordDiagnosticScope,
 ) -> DecodeError {
     match error {
         GeneralIntraResidualError::UnsupportedTransformToolResidual { reason } => {
-            let (message, matrix_row, feature_id, spec_section) =
-                transform_tool_residual_frontier(reason);
-            unsupported_feature_at(
-                reason,
-                offset,
-                message,
-                matrix_row,
-                feature_id,
-                spec_section,
-            )
+            let (message, spec_section) = transform_tool_residual_frontier(reason);
+            unsupported_feature_at(reason, offset, message, spec_section)
         }
         _ => wienerns_lr_transform_record_unsupported(
-            scope,
             "unsupported_wienerns_lr_live_transform_record_residual_parse",
             offset,
             "Coefficient syntax is outside the Wiener NS LR transform-record subset.",
@@ -1677,8 +1576,6 @@ fn ensure_wienerns_lr_source_read_preconditions(
                 "unsupported_wienerns_lr_unit_chroma_filter_values",
                 offset,
                 "Per-unit chroma Wiener NS coefficients are not retained for luma-source tap selection.",
-                FRONTIER_LR_SOURCE_READ_MATRIX_ROW,
-                FRONTIER_LR_SOURCE_READ_FEATURE_ID,
                 "5.20.10.6",
             ));
         }

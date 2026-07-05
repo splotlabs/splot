@@ -83,6 +83,37 @@ pub struct DequantBlockParams {
     pub dq_denom: u32,
     /// Active decoded bit depth.
     pub bit_depth: BitDepth,
+    /// § 7.14.4 built-in quantization-matrix weighting (`useQm`). When `Some`, each
+    /// coefficient's quantizer `q` is replaced by `q2 = Round2(q * m, 5)`, where `m`
+    /// is the `Quantizer_Matrix` weight at the coefficient's position. `None` is the
+    /// flat path (`useQm == 0`).
+    pub qm: Option<QmDequant>,
+}
+
+/// Frame-level § 7.14.4 built-in quantization-matrix levels, carried on the decode
+/// workspace when `using_qmatrix == 1`. `levels_gt8[plane]` is `qm_y/u/v[0]` (the
+/// `segLvl` used when `tw > 8 || th > 8`); `levels_le8[plane]` is
+/// `SegQMLevel[plane][segment_id]` (used otherwise). The per-block `segLvl` /
+/// `useQm` / `Qm_Offset` are resolved from these by the transform-block dequant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QmFrameLevels {
+    /// `qm_y[0]`, `qm_u[0]`, `qm_v[0]` (Y/U/V), used when `tw > 8 || th > 8`.
+    pub levels_gt8: [u8; 3],
+    /// `SegQMLevel[Y/U/V][segment_id]`, used when `tw <= 8 && th <= 8`.
+    pub levels_le8: [u8; 3],
+}
+
+/// § 7.14.4 built-in quantization-matrix selection for a transform block, resolved
+/// by the caller from `segLvl`, `plane`, and `txSz`. Applied per coefficient by
+/// [`dequantize_block`] via [`quantization_matrix_weight`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QmDequant {
+    /// `segLvl` quantization-matrix level (`< NUM_CUSTOM_QMS`).
+    pub seg_level: usize,
+    /// `plane > 0` (chroma selects the second `Quantizer_Matrix` plane row).
+    pub plane_is_chroma: bool,
+    /// Caller-resolved `Qm_Offset[txSz]` (from `splot_tables` `QM_OFFSET`).
+    pub qm_offset: usize,
 }
 
 /// AV2 § 7.14.4 dequantization over a `tx_width * tx_height` row-major transform
@@ -114,10 +145,25 @@ pub fn dequantize_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i
     for i in 0..tx_height {
         for j in 0..tx_width {
             let idx = i * tx_width + j;
-            let q2 = if i == 0 && j == 0 {
+            let base_q = if i == 0 && j == 0 {
                 params.dc_quant
             } else {
                 params.ac_quant
+            };
+            let q2 = match params.qm {
+                Some(qm) => {
+                    let m = quantization_matrix_weight(&QmWeightIndex {
+                        seg_level: qm.seg_level,
+                        plane_is_chroma: qm.plane_is_chroma,
+                        qm_offset: qm.qm_offset,
+                        row: i,
+                        col: j,
+                        tx_width,
+                        tx_height,
+                    })?;
+                    qm_weighted_quantizer(base_q, m)
+                }
+                None => base_q,
             };
             out[idx] = dequant_coefficient(quant[idx], q2, params.dq_denom, params.bit_depth);
         }
@@ -266,6 +312,7 @@ mod tests {
             tx_height: 4,
             dq_denom: 1,
             bit_depth: BitDepth::Eight,
+            qm: None,
         };
         dequantize_block(&params, &quant, &mut out).unwrap();
         assert_eq!(out[0], 2, "DC coefficient uses dc_quant");
@@ -282,7 +329,57 @@ mod tests {
             tx_height,
             dq_denom: 1,
             bit_depth: BitDepth::Eight,
+            qm: None,
         }
+    }
+
+    /// A 4x4 luma block (`TX_4X4`, `Qm_Offset == 0`) at qm level 0: each output must
+    /// equal the § 7.14.4 `Round2(q * m, 5)` weighted quantizer for that position's
+    /// weight, not the flat dc/ac quantizer.
+    #[test]
+    fn dequantize_block_applies_qm_weight_per_coefficient() {
+        let quant = [1i32; 16];
+        let mut out = [0i32; 16];
+        let params = DequantBlockParams {
+            dc_quant: 40,
+            ac_quant: 40,
+            tx_width: 4,
+            tx_height: 4,
+            dq_denom: 1,
+            bit_depth: BitDepth::Eight,
+            qm: Some(QmDequant {
+                seg_level: 0,
+                plane_is_chroma: false,
+                qm_offset: QM_OFFSET[0] as usize,
+            }),
+        };
+        dequantize_block(&params, &quant, &mut out).unwrap();
+        for i in 0..4 {
+            for j in 0..4 {
+                let m = quantization_matrix_weight(&QmWeightIndex {
+                    seg_level: 0,
+                    plane_is_chroma: false,
+                    qm_offset: QM_OFFSET[0] as usize,
+                    row: i,
+                    col: j,
+                    tx_width: 4,
+                    tx_height: 4,
+                })
+                .unwrap();
+                let q2 = qm_weighted_quantizer(40, m);
+                let expected = dequant_coefficient(1, q2, 1, BitDepth::Eight);
+                assert_eq!(out[i * 4 + j], expected, "qm weight at ({i},{j})");
+            }
+        }
+        assert_eq!(
+            out[0],
+            dequant_coefficient(1, 40, 1, BitDepth::Eight),
+            "top-left weight 32 is identity"
+        );
+        assert_ne!(
+            out[15], out[0],
+            "a non-identity qm weight changes the dequant"
+        );
     }
 
     #[test]

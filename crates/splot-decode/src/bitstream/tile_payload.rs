@@ -60,9 +60,9 @@ pub(crate) use general_intra_block::{
     decode_general_intra_luma_block_mode_with_fsc_context, read_general_intra_palette_y_mode,
 };
 pub(crate) use general_intra_residual::{
-    ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, GeneralIntraResidualError,
-    IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext, LumaTransformTypeContext,
-    PositionedLumaCoeffBlock, TransformToolResidualPolicy,
+    ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, FrameQmScope,
+    GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext,
+    LumaTransformTypeContext, PositionedLumaCoeffBlock, TransformToolResidualPolicy,
     decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
     reconstruct_general_intra_block, reconstruct_general_intra_block_rect_with_prediction,
     reconstruct_general_intra_block_rect_with_prediction_and_ddt,
@@ -76,7 +76,8 @@ pub(crate) use input::{
 };
 pub(crate) use intra_joint_modes::IsCflContext;
 pub(crate) use intra_joint_modes::{
-    LumaPalette, TileFscModeState, TileIntraJointModeState, TileLumaPaletteState, TileUsesMrlsState,
+    LumaPalette, TileFscModeState, TileIntraJointModeState, TileLumaPaletteState,
+    TileSegmentIdState, TileUsesMrlsState, neg_deinterleave,
 };
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;

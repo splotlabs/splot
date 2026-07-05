@@ -12,9 +12,9 @@ use splot_core::tables::conversion::{
     TX_WIDTH, TX_WIDTH_LOG2,
 };
 use splot_recon::{
-    BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, QuantizerDeltas, ReconError,
-    ReconSample, SecondaryInverseTransform, ac_quantizer, dc_quantizer,
-    reconstruct_transform_block_residual_with_secondary,
+    BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, QM_OFFSET, QmDequant,
+    QmFrameLevels, QuantizerDeltas, ReconError, ReconSample, SecondaryInverseTransform,
+    ac_quantizer, dc_quantizer, reconstruct_transform_block_residual_with_secondary, tx_size_index,
 };
 
 use super::cdf::TileCdfSelector;
@@ -71,6 +71,69 @@ const V_ADST: usize = 12;
 const H_ADST: usize = 13;
 const V_FLIPADST: usize = 14;
 const H_FLIPADST: usize = 15;
+/// AV2 § 3 `NUM_CUSTOM_QMS`: the number of built-in quantizer-matrix levels.
+const NUM_CUSTOM_QMS: usize = 15;
+
+thread_local! {
+    /// Active frame's § 7.14.4 built-in quantization-matrix levels (installed by
+    /// [`FrameQmScope`]). General-intra reconstruction is single-threaded per frame,
+    /// so a thread-local frame context is sound.
+    static FRAME_QM: core::cell::Cell<Option<QmFrameLevels>> = const { core::cell::Cell::new(None) };
+}
+
+/// RAII scope installing the frame's built-in quantization-matrix levels, restored
+/// on drop so nothing leaks into a later frame. `None` is the flat dequant path.
+pub(crate) struct FrameQmScope(Option<QmFrameLevels>);
+
+impl FrameQmScope {
+    pub(crate) fn install(levels: Option<QmFrameLevels>) -> Self {
+        Self(FRAME_QM.with(|cell| cell.replace(levels)))
+    }
+}
+
+impl Drop for FrameQmScope {
+    fn drop(&mut self) {
+        FRAME_QM.with(|cell| cell.set(self.0));
+    }
+}
+
+/// § 7.14.4 built-in quantization-matrix selection for one transform block from the
+/// active [`FrameQmScope`]: `Some` when `useQm` (`using_qmatrix`,
+/// `PlaneTxType < IDTX`, `segLvl < NUM_CUSTOM_QMS`), else `None` (flat). `tw`/`th`
+/// are the `Min(32, …)` dequant dims; `useUserQm` (§ 5.13) is not modelled.
+fn resolve_block_qm(
+    plane_id: PlaneId,
+    plane_tx_type: usize,
+    tw: usize,
+    th: usize,
+    log2_width: u32,
+    log2_height: u32,
+) -> Option<QmDequant> {
+    let levels = FRAME_QM.with(core::cell::Cell::get)?;
+    if plane_tx_type >= IDTX {
+        return None;
+    }
+    let plane_idx = match plane_id {
+        PlaneId::Y => 0,
+        PlaneId::U => 1,
+        PlaneId::V => 2,
+    };
+    let seg_level = usize::from(if tw > 8 || th > 8 {
+        levels.levels_gt8[plane_idx]
+    } else {
+        levels.levels_le8[plane_idx]
+    });
+    if seg_level >= NUM_CUSTOM_QMS {
+        return None;
+    }
+    let tx_sz = tx_size_index(log2_width, log2_height).ok()?;
+    let qm_offset = usize::try_from(*QM_OFFSET.get(tx_sz)?).ok()?;
+    Some(QmDequant {
+        seg_level,
+        plane_is_chroma: plane_idx != 0,
+        qm_offset,
+    })
+}
 const H_PRED: usize = 2;
 const D45_PRED: usize = 3;
 const D157_PRED: usize = 6;
@@ -2116,6 +2179,14 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
         tx_height: adj_h,
         dq_denom,
         bit_depth,
+        qm: resolve_block_qm(
+            plane_id,
+            plane_tx_type,
+            adj_w,
+            adj_h,
+            log2_width,
+            log2_height,
+        ),
     };
     let transform = InverseTransform2dOuter::resolve(
         plane_tx_type,

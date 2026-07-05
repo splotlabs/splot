@@ -925,3 +925,41 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
     assert_eq!(b_after_a, fresh_b, "8x8 result depends on scratch history");
     assert_eq!(a_after_b, fresh_a, "4x4 rerun depends on scratch history");
 }
+
+/// § 7.14.4 `segLvl` / `useQm` / `Qm_Offset` resolution: `tw > 8` selects the
+/// `levels_gt8` set, `tw <= 8 && th <= 8` selects `levels_le8`, and the chroma
+/// plane row is selected for U/V.
+#[test]
+fn resolve_block_qm_selects_level_plane_and_offset() {
+    let _scope = FrameQmScope::install(Some(QmFrameLevels {
+        levels_gt8: [8, 3, 4],
+        levels_le8: [5, 2, 6],
+    }));
+    let luma = resolve_block_qm(PlaneId::Y, DCT_DCT, 32, 32, 5, 5).unwrap();
+    assert_eq!(luma.seg_level, 8);
+    assert!(!luma.plane_is_chroma);
+    assert_eq!(
+        luma.qm_offset,
+        usize::try_from(QM_OFFSET[tx_size_index(5, 5).unwrap()]).unwrap()
+    );
+    let chroma_v = resolve_block_qm(PlaneId::V, DCT_DCT, 8, 8, 3, 3).unwrap();
+    assert_eq!(chroma_v.seg_level, 6);
+    assert!(chroma_v.plane_is_chroma);
+}
+
+/// `resolve_block_qm` is the flat path (`None`) with no installed scope, for
+/// `PlaneTxType >= IDTX`, and for `segLvl >= NUM_CUSTOM_QMS`.
+#[test]
+fn resolve_block_qm_none_for_flat_paths() {
+    assert!(resolve_block_qm(PlaneId::Y, DCT_DCT, 32, 32, 5, 5).is_none());
+    let _scope = FrameQmScope::install(Some(QmFrameLevels {
+        levels_gt8: [8, 8, 8],
+        levels_le8: [8, 8, 8],
+    }));
+    assert!(resolve_block_qm(PlaneId::Y, IDTX, 32, 32, 5, 5).is_none());
+    let _flat = FrameQmScope::install(Some(QmFrameLevels {
+        levels_gt8: [NUM_CUSTOM_QMS as u8, 0, 0],
+        levels_le8: [0, 0, 0],
+    }));
+    assert!(resolve_block_qm(PlaneId::Y, DCT_DCT, 32, 32, 5, 5).is_none());
+}

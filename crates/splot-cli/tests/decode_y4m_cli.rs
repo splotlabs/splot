@@ -86,13 +86,9 @@ fn decode_out_of_tier_y4m_text_mode_emits_unsupported_feature_without_touching_o
         "rule_id: decode/unsupported-feature",
         "severity: Error",
         "spec_section: 7.1",
-        "matrix_row: minimal-decode-tier-contract",
-        "feature_id: DECODE-MINIMAL-TIER-RUNTIME-SUCCESS",
         "detail_kind: unsupported_feature",
         "unsupported_reason: unexpected_planned_stream_shape",
-        "tier_id: minimal-intra-8bit420-hash-v1",
         "output_format: y4m",
-        "remediation:",
     ] {
         assert!(
             stderr.contains(expected),
@@ -126,14 +122,11 @@ fn decode_out_of_tier_y4m_json_mode_emits_unsupported_feature_object() {
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "7.1");
-    assert_eq!(json["matrix_row"], "minimal-decode-tier-contract");
-    assert_eq!(json["feature_id"], "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS");
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
         "unexpected_planned_stream_shape"
     );
-    assert_eq!(json["tier_id"], "minimal-intra-8bit420-hash-v1");
     assert_eq!(json["output_format"], "y4m");
     assert_eq!(
         std::fs::read(&output).expect("read temporary output sentinel"),
@@ -169,8 +162,6 @@ fn decode_y4m_source_error_wins_before_missing_output_parent() {
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "7.1");
-    assert_eq!(json["matrix_row"], "minimal-decode-tier-contract");
-    assert_eq!(json["feature_id"], "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS");
     assert_eq!(json["detail_kind"], "unsupported_feature");
     assert_eq!(
         json["unsupported_reason"],
@@ -404,8 +395,6 @@ fn decode_y4m_missing_output_parent_emits_output_error_json() {
     assert_eq!(json["rule_id"], "decode/output-error");
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "");
-    assert_eq!(json["matrix_row"], "decode-y4m-runtime-output");
-    assert_eq!(json["feature_id"], "DECODE-Y4M-RUNTIME-OUTPUT");
     assert_eq!(json["detail_kind"], "output_error");
     assert_eq!(json["output_format"], "y4m");
     assert_eq!(json["output_operation"], "create_y4m_temp_file");
@@ -443,8 +432,6 @@ fn decode_y4m_directory_output_path_emits_output_error_text_and_cleans_temp_file
         "rule_id: decode/output-error",
         "severity: Error",
         "spec_section: ",
-        "matrix_row: decode-y4m-runtime-output",
-        "feature_id: DECODE-Y4M-RUNTIME-OUTPUT",
         "detail_kind: output_error",
         "output_operation: rename_y4m_output",
         "output_source_kind: io",

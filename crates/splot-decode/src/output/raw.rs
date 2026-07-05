@@ -137,12 +137,7 @@ mod tests {
             .unwrap_err();
 
         assert!(bytes.is_empty());
-        assert!(matches!(
-            error,
-            DecodeError::UnsupportedFeature {
-                unsupported
-            } if unsupported.tier_id() == crate::pipeline::MINIMAL_INTRA_HASH_TIER_ID
-        ));
+        assert!(matches!(error, DecodeError::UnsupportedFeature { .. }));
     }
 
     #[test]
@@ -190,14 +185,6 @@ mod tests {
         let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
         assert_eq!(report.diagnostic.rule_id, OUTPUT_ERROR_RULE_ID);
         assert_eq!(report.diagnostic.spec_section, None);
-        assert_eq!(
-            report.diagnostic.matrix_row,
-            "decode-minimal-raw-runtime-output"
-        );
-        assert_eq!(
-            report.diagnostic.feature_id,
-            "DECODE-MINIMAL-RAW-RUNTIME-OUTPUT"
-        );
         assert!(matches!(
             &report.details,
             DecodeDiagnosticDetails::OutputError(_)

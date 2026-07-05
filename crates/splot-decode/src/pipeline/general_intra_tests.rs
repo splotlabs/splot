@@ -246,27 +246,14 @@ const FLAT_Q255_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-10bit-q255.ivf"
 );
 
-fn assert_decode_rejects(fixture: &[u8], reason: &str) {
-    use crate::error::DecodeError;
-
-    let options = DecodeOptions::default();
-    let context = decode_context();
-    let plan = context.plan_bytes(fixture, options).expect("plan");
-    match context
-        .pool()
-        .install(|| decode_frame_from_plan(fixture, &options, &plan))
-    {
-        Ok(_) => panic!("expected an unsupported-feature rejection for reason {reason}, decoded"),
-        Err(DecodeError::UnsupportedFeature { unsupported }) => {
-            assert_eq!(unsupported.reason(), reason);
-        }
-        Err(other) => panic!("expected an unsupported-feature rejection, got {other:?}"),
-    }
-}
-
 #[test]
-fn ten_bit_smooth_luma_fails_closed_non_dc() {
-    assert_decode_rejects(SMOOTH_10BIT_FIXTURE, "general_intra_rect_non_dc_luma");
+fn ten_bit_smooth_luma_intra_frame_decodes_to_oracle() {
+    let frame = decode_ten(SMOOTH_10BIT_FIXTURE);
+    assert_yuv420_frame(&frame, BitDepth::Ten, 64, 64);
+    assert_hash(
+        &frame,
+        "7412ac765a66580283a9b67120bb0124df4ac03687c9e449f3dbd1f60921ba4f",
+    );
 }
 
 #[test]

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::headers::sequence::BitDepthIdc;
 use splot_recon::{BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, PlaneId, ReconSample};
 
 use super::*;
@@ -31,78 +30,6 @@ macro_rules! general_intra_at {
     };
 }
 
-pub(crate) fn route_general_minimal_intra(
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-) -> bool {
-    core.quantization_params.is_some_and(|quant| {
-        quant.delta_q_y_dc == 0
-            && quant.delta_q_u_dc == 0
-            && quant.delta_q_u_ac == 0
-            && quant.delta_q_v_dc == 0
-            && quant.delta_q_v_ac == 0
-    }) && sequence.intra.as_ref().is_some_and(|intra| {
-        !intra.enable_dip && !intra.enable_ibp && !intra.enable_intra_edge_filter
-    }) && sequence.partition.is_some()
-        && sequence.transform_quant_entropy.is_some_and(|tq| {
-            tq.equal_ac_dc_q
-                && !tq.enable_fsc
-                && !tq.enable_cctx
-                && i32::from(tq.base_uv_dc_delta_q) + GENERAL_INTRA_DELTA_DCQUANT_MIN == 0
-                && i32::from(tq.base_uv_ac_delta_q) + GENERAL_INTRA_DELTA_DCQUANT_MIN == 0
-        })
-        && core
-            .intra_tail
-            .is_some_and(|tail| tail.tx_mode == TxMode::Largest)
-        && core.deblocking_filter_params.is_some_and(|filter| {
-            filter.apply_deblocking_filter == [false; 4]
-                || matches!(sequence.general.bit_depth_idc, BitDepthIdc::Eight)
-        })
-        && core.cdef_params.as_ref().is_some_and(|cdef| {
-            !cdef.cdef_frame_enable || matches!(sequence.general.bit_depth_idc, BitDepthIdc::Eight)
-        })
-        && is_general_minimal_intra(core)
-}
-fn is_general_minimal_intra(core: &FrameHeaderCore) -> bool {
-    core.status == FrameHeaderParseStatus::IntraHeaderComplete
-        && core.cur_mfh_id.is_zero()
-        && core.show_existing_frame == Some(false)
-        && core.frame_is_intra == Some(true)
-        && core.is_key_frame
-        && core.immediate_output_frame == Some(true)
-        && core.implicit_output_frame == Some(false)
-        && core.frame_size.is_some_and(|size| {
-            size.width != 0
-                && size.height != 0
-                && size.width % MINIMAL_WIDTH == 0
-                && size.height % MINIMAL_HEIGHT == 0
-        })
-        && core
-            .tile_info
-            .as_ref()
-            .is_some_and(|tile_info| tile_info.tile_cols == 1 && tile_info.tile_rows == 1)
-        && core
-            .deblocking_filter_params
-            .is_some_and(|filter| filter.df_delta_q == [0; 4])
-        && core.gdf_params.is_some_and(|gdf| !gdf.gdf_frame_enable)
-        && core.cdef_params.as_ref().is_some_and(|cdef| {
-            !cdef.cdef_frame_enable
-                || (cdef.cdef_strengths == Some(1)
-                    && cdef.cdef_on_skip_txfm_frame_enable == Some(true)
-                    && cdef.cdef_damping.is_some()
-                    && !cdef.strengths.is_empty())
-        })
-        && core.lr_params.as_ref().is_some_and(|lr| !lr.uses_lr)
-        && core
-            .ccso_params
-            .as_ref()
-            .is_some_and(|ccso| ccso.ccso_frame_flag.is_none() && ccso.planes.is_empty())
-        && core
-            .intra_tail
-            .is_some_and(|tail| !tail.film_grain.apply_grain)
-        && core.allow_screen_content_tools != Some(true)
-}
-
 fn general_intra_chroma_tools(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -127,7 +54,7 @@ pub(crate) fn general_intra_transform_tool_residual_policy(
 ) -> TransformToolResidualPolicy {
     TransformToolResidualPolicy::from_sequence_tools(
         sequence,
-        ActiveIntraIstResidualPolicy::Reject,
+        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
         ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
     )
 }
@@ -172,14 +99,6 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<GeneralIntraLeafMode> {
-    if core.setup_qm_params.is_some_and(|qm| qm.using_qmatrix) {
-        return Err(general_intra_at!(
-            "general_intra_using_qmatrix",
-            tile_offset,
-            missing_capability_message!("intra.residual.quantizer_matrix", qm = "using_qmatrix"),
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ));
-    }
     let geometry_error = || {
         general_intra_at!(
             "general_intra_block_geometry",
@@ -840,6 +759,11 @@ fn rect_luma_plan_for_parts(
     )
 }
 
+/// Plans a rectangular (or square-as-part) non-DC luma leaf. Smooth modes are
+/// admitted for any neighbour configuration because § 7.13.2.1 always derives
+/// `LeftCol`/`AboveRow` (real reconstructed neighbours or the `haveLeft` /
+/// `haveAbove` fallbacks), so smooth prediction is defined even with no edge;
+/// directional and one-sided modes still require the edge they read.
 fn rect_luma_plan_for_parts_ext(
     luma_is_paeth: bool,
     nondc: Option<SupportedNonDcLumaMode>,
@@ -852,32 +776,17 @@ fn rect_luma_plan_for_parts_ext(
         return Ok(RectLumaPlan::Dc { use_tcq });
     }
     let block = block_ctx.block();
-    let large_rect = block.width4() > FULL_SB_N4_LUMA || block.height4() > FULL_SB_N4_LUMA;
     let supported_rect = block.width4() >= 8 && block.height4() >= 8;
-    let supported_smooth_axis_rect = block.width4() >= 1 && block.height4() >= 1;
     let supported_cardinal_rect = block.width4() >= 1 && block.height4() >= 1;
     let supported_middle_rect = block.width4() >= 1 && block.height4() >= 1;
     let supported_one_sided_above_rect = block.width4() >= 1 && block.height4() >= 1;
     let supported_one_sided_left_rect = block.width4() >= 1 && block.height4() >= 1;
-    let supported_smooth_rect = block.width4() >= 1 && block.height4() >= 1;
     let neighbours = block_ctx.neighbours(PlaneId::Y);
     if luma_is_paeth && (neighbours.has_above() || neighbours.has_left()) {
         return Ok(RectLumaPlan::Paeth { use_tcq });
     }
     if let Some(mode) = nondc {
-        let has_edge = neighbours.has_above() || neighbours.has_left();
-        let supported = match mode {
-            SupportedNonDcLumaMode::Smooth => (large_rect || supported_smooth_rect) && has_edge,
-            SupportedNonDcLumaMode::SmoothVertical => {
-                (large_rect && has_edge) || (supported_smooth_axis_rect && neighbours.has_above())
-            }
-            SupportedNonDcLumaMode::SmoothHorizontal => {
-                (large_rect && has_edge) || (supported_smooth_axis_rect && neighbours.has_left())
-            }
-        };
-        if supported {
-            return Ok(RectLumaPlan::Smooth { mode, use_tcq });
-        }
+        return Ok(RectLumaPlan::Smooth { mode, use_tcq });
     }
     let has_edge = neighbours.has_above() || neighbours.has_left();
     match directional_p_angle {
@@ -1759,18 +1668,7 @@ pub(crate) fn general_intra_unsupported(
     message: &'static str,
     spec_section: &'static str,
 ) -> DecodeError {
-    DecodeError::UnsupportedFeature {
-        unsupported: Box::new(DecodeUnsupportedFeature::new(
-            reason,
-            GENERAL_INTRA_TIER_ID,
-            GENERAL_INTRA_MATRIX_ROW,
-            GENERAL_INTRA_FEATURE_ID,
-            spec_section,
-            message,
-            GENERAL_INTRA_REMEDIATION,
-            byte_offset,
-        )),
-    }
+    crate::pipeline::unsupported_with_spec(reason, byte_offset, message, spec_section)
 }
 
 #[cfg(test)]

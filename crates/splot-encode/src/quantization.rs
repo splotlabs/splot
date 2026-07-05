@@ -464,6 +464,7 @@ mod tests {
             tx_height: DCT_DCT_4X4_HEIGHT,
             dq_denom: block.params().dq_denom(),
             bit_depth: block.params().bit_depth(),
+            qm: None,
         };
         let mut independent = [0; DCT_DCT_4X4_COEFF_COUNT];
         dequantize_block(&dequant_params, block.quantized(), &mut independent).unwrap();

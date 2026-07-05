@@ -22,4 +22,12 @@
 # CALIBRATION: `score.deletable_lines` is version-sensitive. This ceiling is
 # calibrated against dupehound 0.1.2 (the version CI pins and installs); a
 # different local version may report a different number. CI is authoritative.
-max_deletable_lines = 3360
+#
+# EXCEPTION (2026-07-05): the frontier-taxonomy deletion (retiring the ~24
+# FRONTIER_* consts + the tier_id/matrix_row/feature_id/remediation carrier and
+# report fields; net removal of ~700 lines) shifted this metric 3329 -> 3341
+# (+12, structural, not a new duplicate cluster — verified by consolidating the
+# unsupported-feature carrier constructors and the report-diagnostic builder
+# with no change to the count). Raised to match; the change is transparent
+# deletion, not silent duplication growth.
+max_deletable_lines = 3341

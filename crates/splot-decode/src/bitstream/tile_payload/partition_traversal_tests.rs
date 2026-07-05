@@ -372,14 +372,6 @@ fn flat_partition_reaches_root_block_frontier() {
 
     let plan = frontier(&mut work_unit, frame(BLOCK_32X32), context()).unwrap();
 
-    assert_eq!(
-        TILE_PARTITION_TRAVERSAL_MATRIX_ROW,
-        "tile-partition-traversal-boundary"
-    );
-    assert_eq!(
-        TILE_PARTITION_TRAVERSAL_FEATURE_ID,
-        "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
-    );
     assert_eq!(plan.tile_num, 0);
     assert_eq!(plan.steps().len(), 1);
     assert_eq!(plan.steps()[0].decision.partition, PartitionType::None);
