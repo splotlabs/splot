@@ -73,7 +73,6 @@ const V_FLIPADST: usize = 14;
 const H_FLIPADST: usize = 15;
 /// AV2 § 3 `NUM_CUSTOM_QMS`: the number of built-in quantizer-matrix levels.
 const NUM_CUSTOM_QMS: usize = 15;
-
 thread_local! {
     /// Active frame's § 7.14.4 built-in quantization-matrix levels (installed by
     /// [`FrameQmScope`]). General-intra reconstruction is single-threaded per frame,
@@ -1991,31 +1990,6 @@ fn unsupported_transform_tool_residual<T>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_block<T: ReconSample>(
-    quant: &[i32],
-    dc_sample: T,
-    qindex: u32,
-    plane_id: PlaneId,
-    log2_side: u32,
-    plane_tx_type: usize,
-    use_tcq: bool,
-    bit_depth: BitDepth,
-) -> Result<Vec<T>, GeneralIntraResidualError> {
-    let orig_side = 1usize << log2_side;
-    let prediction = vec![dc_sample; orig_side * orig_side];
-    reconstruct_general_intra_block_with_prediction(
-        quant,
-        &prediction,
-        qindex,
-        plane_id,
-        log2_side,
-        plane_tx_type,
-        use_tcq,
-        bit_depth,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block_with_prediction<T: ReconSample>(
     quant: &[i32],
     prediction: &[T],
@@ -2037,6 +2011,21 @@ pub(crate) fn reconstruct_general_intra_block_with_prediction<T: ReconSample>(
         use_tcq,
         false,
         bit_depth,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_coeff_block_with_prediction<T: ReconSample>(
+    block: &LumaCoeffBlock,
+    prediction: &[T],
+    qindex: u32,
+    plane_id: PlaneId,
+    log2_side: u32,
+    use_tcq: bool,
+    bit_depth: BitDepth,
+) -> Result<Vec<T>, GeneralIntraResidualError> {
+    reconstruct_general_intra_coeff_block_rect_with_prediction(
+        block, prediction, qindex, plane_id, log2_side, log2_side, use_tcq, bit_depth,
     )
 }
 
@@ -2067,6 +2056,30 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSampl
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction<T: ReconSample>(
+    block: &LumaCoeffBlock,
+    prediction: &[T],
+    qindex: u32,
+    plane_id: PlaneId,
+    log2_width: u32,
+    log2_height: u32,
+    use_tcq: bool,
+    bit_depth: BitDepth,
+) -> Result<Vec<T>, GeneralIntraResidualError> {
+    reconstruct_general_intra_block_rect_with_prediction(
+        &block.quant,
+        prediction,
+        qindex,
+        plane_id,
+        log2_width,
+        log2_height,
+        block.plane_tx_type,
+        use_tcq,
+        bit_depth,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: ReconSample>(
     quant: &[i32],
     prediction: &[T],
@@ -2087,6 +2100,33 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: Re
         log2_width,
         log2_height,
         plane_tx_type,
+        use_tcq,
+        use_ddt,
+        None,
+        bit_depth,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt<T: ReconSample>(
+    block: &LumaCoeffBlock,
+    prediction: &[T],
+    qindex: u32,
+    plane_id: PlaneId,
+    log2_width: u32,
+    log2_height: u32,
+    use_tcq: bool,
+    use_ddt: bool,
+    bit_depth: BitDepth,
+) -> Result<Vec<T>, GeneralIntraResidualError> {
+    reconstruct_general_intra_block_rect_with_prediction_core(
+        &block.quant,
+        prediction,
+        qindex,
+        plane_id,
+        log2_width,
+        log2_height,
+        block.plane_tx_type,
         use_tcq,
         use_ddt,
         None,

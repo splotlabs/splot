@@ -281,6 +281,7 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
         frame_size.width as usize,
         frame_size.height as usize,
         BitDepth::Eight,
+        PixelFormat::Yuv420,
     )?;
     let ref_frame_idx = inter.ref_frame_idx.clone();
     let qindex = core

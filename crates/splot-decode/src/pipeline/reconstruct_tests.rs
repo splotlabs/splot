@@ -49,6 +49,120 @@ fn lay_left_col(ws: &mut CurrentFrameWorkspace<u8>, edge_x: usize, log2_h: u8, p
         .unwrap();
 }
 
+fn workspace_with_u_dc_edges() -> CurrentFrameWorkspace<u8> {
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv422).unwrap();
+    let above = [80, 84, 91, 99, 107, 110, 116, 122];
+    let mut above_block = vec![17u8; 16 * 4];
+    for row in 0..4 {
+        for (col, &sample) in above.iter().enumerate() {
+            above_block[row * 16 + 4 + col] = sample;
+        }
+    }
+    ws.write_rect_block(
+        PlaneId::U,
+        4,
+        4,
+        IntraRectBlockSize::new(4, 2).unwrap(),
+        &above_block,
+    )
+    .unwrap();
+
+    let left = [40, 48, 53, 61, 67, 76, 83, 91];
+    let mut left_block = vec![23u8; 4 * 8];
+    for (row, &sample) in left.iter().enumerate() {
+        left_block[row * 4 + 3] = sample;
+    }
+    ws.write_rect_block(
+        PlaneId::U,
+        4,
+        8,
+        IntraRectBlockSize::new(2, 3).unwrap(),
+        &left_block,
+    )
+    .unwrap();
+    ws
+}
+
+#[test]
+fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
+    let mut via_chroma = workspace_with_u_dc_edges();
+    let mut via_rect = workspace_with_u_dc_edges();
+    let mut without_ibp = workspace_with_u_dc_edges();
+    let block = all_zero_luma_block();
+
+    reconstruct_general_intra_chroma_block_into(
+        &mut via_chroma,
+        &block,
+        PlaneId::U,
+        8,
+        8,
+        3,
+        3,
+        0,
+        crate::bitstream::tile_payload::SupportedChromaMode::Dc,
+        0,
+        0,
+        true,
+        BitDepth::Eight,
+    )
+    .unwrap();
+    reconstruct_general_intra_block_rect_into(
+        &mut via_rect,
+        &block,
+        PlaneId::U,
+        8,
+        8,
+        3,
+        3,
+        0,
+        false,
+        true,
+        BitDepth::Eight,
+    )
+    .unwrap();
+    reconstruct_general_intra_chroma_block_into(
+        &mut without_ibp,
+        &block,
+        PlaneId::U,
+        8,
+        8,
+        3,
+        3,
+        0,
+        crate::bitstream::tile_payload::SupportedChromaMode::Dc,
+        0,
+        0,
+        false,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    let mut ibp_is_observable = false;
+    for row in 0..8 {
+        for col in 0..8 {
+            let got = via_chroma
+                .reconstructed_sample(PlaneId::U, 8 + col, 8 + row)
+                .unwrap();
+            assert_eq!(
+                got,
+                via_rect
+                    .reconstructed_sample(PlaneId::U, 8 + col, 8 + row)
+                    .unwrap(),
+                "chroma DC dispatch must forward the IBP DC predictor at ({col},{row})"
+            );
+            if got
+                != without_ibp
+                    .reconstructed_sample(PlaneId::U, 8 + col, 8 + row)
+                    .unwrap()
+            {
+                ibp_is_observable = true;
+            }
+        }
+    }
+    assert!(ibp_is_observable);
+}
+
 /// §7.13.2 ZONE-1 MULTI-REFERENCE-LINE GUARD — a D45 (`shift == 0`, the IDIF
 /// reduces to the copy `AboveRow[base]`) 4x4 zone-1 leaf at interior `(8, 8)` with
 /// `MrlIndex == 2`. The §7.13.2.1 above row is read from `CurrFrame[y - 1 -
@@ -61,7 +175,8 @@ fn lay_left_col(ws: &mut CurrentFrameWorkspace<u8>, edge_x: usize, log2_h: u8, p
 /// at the offset row.
 #[test]
 fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
-    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     let mut block = vec![200u8; 32 * 4];
     for c in 0..32 {
         block[32 + c] = 10 + 4 * c as u8; // row index 1 within the block == row 5
@@ -112,7 +227,8 @@ fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
 
 #[test]
 fn zone1_above_edge_uses_first_above_sample_as_corner_at_first_column() {
-    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     let pattern: Vec<u8> = (0..16).map(|i| 20 + i).collect();
     lay_above_row(&mut ws, 7, 4, &pattern);
 
@@ -138,7 +254,8 @@ fn zone1_above_edge_uses_first_above_sample_as_corner_at_first_column() {
 
 #[test]
 fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
-    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     let mut rows = vec![0u8; 64 * 4];
     for col in 0..64 {
         rows[2 * 64 + col] = 200;
@@ -194,7 +311,8 @@ fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
 /// `(dx, dy)`, or a corner mix-up observable — a flat block would MASK them.
 #[test]
 fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
-    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     ws.write_rect_block(
         PlaneId::Y,
         4,
@@ -275,7 +393,8 @@ fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
 /// y)`, correct only for the frame-top `have_above == false` leaf).
 #[test]
 fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
-    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     ws.write_rect_block(
         PlaneId::Y,
         4,
@@ -412,7 +531,8 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
         })
         .collect();
 
-    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     ws.write_rect_block(
         PlaneId::Y,
         12,
@@ -473,7 +593,8 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
 /// MASK a transpose.
 #[test]
 fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
-    let mut ws = new_general_intra_workspace::<u8>(64, 128, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 128, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     let above_row: Vec<u8> = (0..64).map(|x| 100 + x as u8).collect();
     lay_above_row(&mut ws, 63, 6, &above_row);
 
@@ -511,7 +632,8 @@ fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
 /// read past the 64-tall left column or mis-stride and fail.
 #[test]
 fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
-    let mut ws = new_general_intra_workspace::<u8>(128, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(128, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     let left_col: Vec<u8> = (0..64).map(|y| 50 + y as u8).collect();
     lay_left_col(&mut ws, 63, 6, &left_col);
 
@@ -553,7 +675,8 @@ fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
 /// would produce a vertical gradient and fail).
 #[test]
 fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
-    let mut ws = new_general_intra_workspace::<u8>(128, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(128, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     let left_col: Vec<u8> = (0..32).map(|y| 70 + y as u8).collect();
     lay_left_col(&mut ws, 63, 5, &left_col);
 
@@ -590,7 +713,8 @@ fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
 /// top-left left neighbour (`left[0]`) before the D45/D67 one-sided projection.
 #[test]
 fn zone1_d45_top_edge_synthesizes_above_from_left_corner() {
-    let mut ws = new_general_intra_workspace::<u8>(96, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(96, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     let left_col: Vec<u8> = (0..16).map(|y| 91 + y as u8).collect();
     lay_left_col(&mut ws, 63, 4, &left_col);
 
@@ -631,7 +755,8 @@ fn zone1_d45_top_edge_synthesizes_above_from_left_corner() {
 /// so the H_PRED copy is FLAT equal to `above[0]`, NOT `above[j]`.
 #[test]
 fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
-    let mut ws = new_general_intra_workspace::<u8>(64, 128, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 128, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     let above_row: Vec<u8> = (0..32).map(|x| 80 + x as u8).collect();
     lay_above_row(&mut ws, 63, 5, &above_row);
 
@@ -691,7 +816,8 @@ fn ref_paeth(left: i32, above: i32, top_left: i32) -> u8 {
 /// frontier oracle (all `68`) would MASK every one of those mix-ups.
 #[test]
 fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
-    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
     let above: Vec<u8> = (0..8).map(|j| 30 + 7 * j as u8).collect();
     let above_block: Vec<u8> = (0..4).flat_map(|_| above.iter().copied()).collect();
@@ -769,7 +895,8 @@ fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
 /// (`above_row[i] = above_row[-1] = left_ref[0]` when `n_top_px == 0`).
 #[test]
 fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
-    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
     let left: Vec<u8> = (0..16).map(|i| 40 + 5 * i as u8).collect();
     lay_left_col(&mut ws, 15, 4, &left);
@@ -815,7 +942,8 @@ fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
 /// observable (a flat prediction or DC-only residual would MASK it).
 #[test]
 fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
-    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
     let above: Vec<u8> = (0..8).map(|j| 30 + 7 * j as u8).collect();
     let above_block: Vec<u8> = (0..4).flat_map(|_| above.iter().copied()).collect();
@@ -867,14 +995,13 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
         plane_tx_type: 3, // ADST_ADST
     };
 
-    let want = reconstruct_general_intra_block_rect_with_prediction(
-        &block.quant,
+    let want = reconstruct_general_intra_coeff_block_rect_with_prediction(
+        &block,
         &paeth_pred,
         149,
         PlaneId::Y,
         3,
         4,
-        block.plane_tx_type,
         true,
         BitDepth::Eight,
     )
@@ -931,7 +1058,8 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
 /// `y[8,16)` (laid via a 4x16 block at `(4,0)`).
 #[test]
 fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
-    let mut ws = new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight).unwrap();
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     let above_in: Vec<u8> = (0..8).map(|i| 100 + i as u8).collect();
     let above_block: Vec<u8> = (0..4).flat_map(|_| above_in.iter().copied()).collect();
     ws.write_rect_block(

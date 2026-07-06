@@ -1,18 +1,32 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_recon::{BitDepth, PlaneId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ChromaSampling {
+    Monochrome,
     Yuv420,
+    Yuv422,
+    Yuv444,
 }
 
 impl ChromaSampling {
+    pub(crate) const fn from_chroma_format_idc(chroma: ChromaFormatIdc) -> Self {
+        match chroma {
+            ChromaFormatIdc::Monochrome => Self::Monochrome,
+            ChromaFormatIdc::Yuv420 => Self::Yuv420,
+            ChromaFormatIdc::Yuv422 => Self::Yuv422,
+            ChromaFormatIdc::Yuv444 => Self::Yuv444,
+        }
+    }
+
     const fn subsampling(self, plane: PlaneId) -> (u32, u32) {
         match (self, plane) {
-            (_, PlaneId::Y) => (0, 0),
-            (Self::Yuv420, PlaneId::U | PlaneId::V) => (1, 1),
+            (_, PlaneId::Y) | (Self::Yuv444, PlaneId::U | PlaneId::V) => (0, 0),
+            (Self::Monochrome | Self::Yuv420, PlaneId::U | PlaneId::V) => (1, 1),
+            (Self::Yuv422, PlaneId::U | PlaneId::V) => (1, 0),
         }
     }
 }

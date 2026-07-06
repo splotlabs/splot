@@ -1702,6 +1702,8 @@ impl ResidualPlanePlan {
                     mode,
                     neighbours.num_above_right(),
                     neighbours.num_below_left(),
+                    intra_edge.enable_ibp
+                        && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2),
                     block_ctx.bit_depth(),
                 )
             }

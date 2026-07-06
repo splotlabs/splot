@@ -14,7 +14,9 @@
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, InterpolationFilter};
 use splot_core::headers::sequence::SequenceHeader;
-use splot_recon::{BitDepth, DecodedFrame, QmFrameLevels, ReconSample, ReferenceFrameStore};
+use splot_recon::{
+    BitDepth, DecodedFrame, PixelFormat, QmFrameLevels, ReconSample, ReferenceFrameStore,
+};
 
 use crate::bitstream::tile_payload::{FrameCdfSubset, FrameQmScope};
 use crate::pipeline::general_intra::general_intra_unsupported;
@@ -148,9 +150,13 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         frame_size.height,
         tile_size,
         bit_depth,
+        sequence.general.chroma_format_idc,
     )?;
 
-    let mut workspace = new_general_intra_workspace::<T>(frame_width, frame_height, bit_depth)?;
+    let pixel_format =
+        PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?;
+    let mut workspace =
+        new_general_intra_workspace::<T>(frame_width, frame_height, bit_depth, pixel_format)?;
 
     let store = ReferenceFrameStore::<&DecodedFrame<T>>::with_capacity(1).map_err(|_| {
         unsupported_at(

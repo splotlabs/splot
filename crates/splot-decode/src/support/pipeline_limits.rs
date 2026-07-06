@@ -9,29 +9,10 @@ use splot_core::headers::sequence::ChromaFormatIdc;
 use crate::error::Result;
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp};
 
-pub(crate) struct DecodedFrameByteBudget {
-    pub(crate) luma_samples: u64,
-    pub(crate) chroma_samples: u64,
-    pub(crate) decoded_bytes: u64,
-}
-
 pub(crate) struct DecodedFrameStorageBudget {
     pub(crate) luma_samples: u64,
     pub(crate) chroma_samples_per_plane: u64,
     pub(crate) decoded_bytes: u64,
-}
-
-pub(crate) fn decoded_frame_byte_budget(
-    frame_size: FrameSize,
-    bytes_per_sample: u64,
-) -> Result<DecodedFrameByteBudget> {
-    let budget =
-        decoded_frame_storage_budget(frame_size, ChromaFormatIdc::Yuv420, bytes_per_sample)?;
-    Ok(DecodedFrameByteBudget {
-        luma_samples: budget.luma_samples,
-        chroma_samples: budget.chroma_samples_per_plane,
-        decoded_bytes: budget.decoded_bytes,
-    })
 }
 
 pub(crate) fn decoded_frame_storage_budget(

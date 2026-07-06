@@ -101,7 +101,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-sdp-intra-128x128.ivf"
-description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with semi-decoupled partitioning (SDP) enabled; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_rect_non_dc_luma (SDP rectangular non-DC luma leaves are unsupported)."
+description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with semi-decoupled partitioning (SDP) enabled; validates clean, and the general-intra decoder reproduces avmdec's raw output byte-for-byte."
 expect = "clean"
 
 [[vector]]
@@ -688,17 +688,22 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-444-intra-64x64.ivf"
-description = "Tiny AVM seq.chroma.444 fixture (decode-oracle coverage; splot fails closed unsupported_profile); validates clean."
+description = "Tiny AVM seq.chroma.444 fixture; validates clean, and the general-intra decoder reproduces avmdec's raw output byte-for-byte."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-422-intra-64x64.ivf"
-description = "Tiny AVM seq.chroma.422 fixture (decode-oracle coverage; splot fails closed unsupported_profile); validates clean."
+description = "Tiny AVM seq.chroma.422 fixture; validates clean, and the general-intra decoder reproduces avmdec's raw output byte-for-byte."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-mono-intra-64x64.ivf"
-description = "Tiny AVM seq.chroma.monochrome fixture (decode-oracle coverage; splot fails closed unsupported_chroma_format); validates clean."
+description = "Tiny AVM seq.chroma.monochrome fixture; validates clean, and the general-intra decoder reproduces avmdec's luma-only raw output byte-for-byte."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-mono-intrabc-morph-128x128-q100.ivf"
+description = "AVM monochrome 128x128 intra key frame with forced 32x32 leaves, active IntrABC, and one morph_pred == 1 syntax read; validates clean, and the decoder reproduces avmdec's luma-only raw output byte-for-byte."
 expect = "clean"
 
 [[vector]]
@@ -755,4 +760,3 @@ expect = "clean"
 path = "vectors/valid/syn-warp-inter-128x128.ivf"
 description = "Tiny AVM inter.warp fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
-

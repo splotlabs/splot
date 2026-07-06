@@ -142,9 +142,17 @@ fn ccso_plane<T: ReconSample>(
     grid: &CcsoUnitGrid,
     bit_depth: BitDepth,
 ) -> Result<(), CcsoError> {
-    let sub_x = usize::from(plane > 0);
-    let sub_y = usize::from(plane > 0);
     let plane_id = plane_id(plane);
+    let (sub_x, sub_y) = match plane_id {
+        PlaneId::Y => (0, 0),
+        PlaneId::U | PlaneId::V => {
+            let pixel_format = workspace.info().pixel_format();
+            (
+                usize::from(pixel_format.subsampling_x()),
+                usize::from(pixel_format.subsampling_y()),
+            )
+        }
+    };
     let plane_size = workspace
         .plane(plane_id)
         .map_err(|_| CcsoError::Workspace)?
@@ -407,6 +415,7 @@ pub(crate) enum CcsoError {
 mod tests {
     use super::*;
     use crate::test_support::yuv420_workspace;
+    use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
 
     fn bo_plane(offset_idx: u8) -> CcsoPlaneParams {
         CcsoPlaneParams {
@@ -483,6 +492,22 @@ mod tests {
                 ((state >> 33) % 256) as u16
             })
             .collect()
+    }
+
+    fn workspace(
+        pixel_format: PixelFormat,
+        width: usize,
+        height: usize,
+    ) -> CurrentFrameWorkspace<u8> {
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Eight,
+            pixel_format,
+            PlaneSize::new(width, height).unwrap(),
+            PlaneRect::new(0, 0, width, height).unwrap(),
+        )
+        .unwrap();
+        CurrentFrameWorkspace::new(info, 0).unwrap()
     }
 
     fn ref_luma(curr: &[u16], w: usize, h: usize, x: usize, y: usize) -> u16 {
@@ -592,6 +617,56 @@ mod tests {
                         "plane {plane} sample ({x}, {y}) ext_filter {ext_filter} edge_clf {edge_clf}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn chroma_ccso_uses_frame_subsampling_for_yuv422() {
+        let luma_width = 18;
+        let luma_height = 10;
+        let curr_luma = asymmetric_luma(luma_width, luma_height);
+        let grid = full_grid(luma_width, luma_height);
+        let params = edge_plane(0, false, 2, 36);
+        let mut workspace = workspace(PixelFormat::Yuv422, luma_width, luma_height);
+        let plane_id = PlaneId::U;
+        let (pw, ph) = {
+            let size = workspace.plane(plane_id).unwrap().storage_size();
+            (size.width(), size.height())
+        };
+        for y in 0..ph {
+            for x in 0..pw {
+                workspace
+                    .set_reconstructed_sample(plane_id, x, y, ((x * 13 + y * 17) % 256) as u8)
+                    .unwrap();
+            }
+        }
+        let pre = workspace.samples(plane_id).unwrap().to_vec();
+        ccso_plane(
+            &mut workspace,
+            &curr_luma,
+            luma_width,
+            luma_height,
+            1,
+            &params,
+            &grid,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        let post = workspace.samples(plane_id).unwrap();
+        for y in 0..ph {
+            for x in 0..pw {
+                let expected = reference_filtered_sample(
+                    pre[y * pw + x],
+                    &curr_luma,
+                    luma_width,
+                    luma_height,
+                    x << 1,
+                    y,
+                    &params,
+                    BitDepth::Eight,
+                );
+                assert_eq!(post[y * pw + x], expected, "sample ({x}, {y})");
             }
         }
     }

@@ -20,8 +20,6 @@ use crate::{
 const SPEC_SECTION: &str = "7.1";
 const MINIMAL_Y4M_LUMA_WIDTH: usize = 64;
 const MINIMAL_Y4M_LUMA_HEIGHT: usize = 64;
-const MINIMAL_Y4M_CHROMA_WIDTH: u64 = 32;
-const MINIMAL_Y4M_CHROMA_HEIGHT: u64 = 32;
 
 pub(crate) fn encode_y4m_stream_from_plan(
     bytes: &[u8],
@@ -130,7 +128,7 @@ fn ensure_y4m_timebase(numerator: u32, denominator: u32) -> Result<()> {
 
 fn ensure_minimal_y4m_output_limit(limits: DecodeLimits, frame_rate: Y4mFrameRate) -> Result<()> {
     let luma_size = PlaneSize::new(MINIMAL_Y4M_LUMA_WIDTH, MINIMAL_Y4M_LUMA_HEIGHT)?;
-    let frame_format = Y4mFrameFormat::new(luma_size, BitDepth::Eight, PixelFormat::Yuv420)
+    let frame_format = Y4mFrameFormat::new(luma_size, BitDepth::Eight, PixelFormat::Monochrome)
         .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
     let stream_header = Y4mStreamHeader::new(frame_format, frame_rate);
     let mut stream_header_bytes = Vec::new();
@@ -143,27 +141,12 @@ fn ensure_minimal_y4m_output_limit(limits: DecodeLimits, frame_rate: Y4mFrameRat
         MINIMAL_Y4M_LUMA_WIDTH as u64,
         MINIMAL_Y4M_LUMA_HEIGHT as u64,
     )?;
-    let chroma_bytes = checked_mul(
-        DecodeLimitName::MaxOutputBytes,
-        MINIMAL_Y4M_CHROMA_WIDTH,
-        MINIMAL_Y4M_CHROMA_HEIGHT,
-    )?;
-    let chroma_plane_bytes = checked_mul(DecodeLimitName::MaxOutputBytes, chroma_bytes, 2)?;
-    let payload_bytes = checked_add(
-        DecodeLimitName::MaxOutputBytes,
-        luma_bytes,
-        chroma_plane_bytes,
-    )?;
     let headers_bytes = checked_add(
         DecodeLimitName::MaxOutputBytes,
         stream_header_bytes.len() as u64,
         Y4mFrameHeader::new().as_bytes().len() as u64,
     )?;
-    let total_bytes = checked_add(
-        DecodeLimitName::MaxOutputBytes,
-        headers_bytes,
-        payload_bytes,
-    )?;
+    let total_bytes = checked_add(DecodeLimitName::MaxOutputBytes, headers_bytes, luma_bytes)?;
     limits.ensure(DecodeLimitName::MaxOutputBytes, total_bytes)?;
 
     Ok(())
@@ -211,7 +194,7 @@ mod tests {
         OUTPUT_ERROR_RULE_ID, UNSUPPORTED_FEATURE_RULE_ID,
     };
 
-    const BROAD_FIXTURE: &[u8] =
+    const MONO_FIXTURE: &[u8] =
         include_bytes!("../../../../tests/conformance/vectors/valid/syn-mono-intra-64x64.ivf");
 
     fn context(threads: ThreadCount) -> DecodeContext {
@@ -224,6 +207,10 @@ mod tests {
             "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw"
         ));
         bytes
+    }
+
+    fn expected_mono_y4m_header() -> &'static [u8] {
+        b"YUV4MPEG2 W64 H64 F1:1 Ip A0:0 Cmono\nFRAME\n"
     }
 
     #[test]
@@ -260,15 +247,36 @@ mod tests {
     }
 
     #[test]
-    fn broader_fixture_fails_closed_as_unsupported_for_y4m() {
+    fn monochrome_fixture_decodes_to_luma_only_y4m_bytes() {
+        let mut raw = Vec::new();
         let mut bytes = Vec::new();
 
-        let error = context(ThreadCount::from(1usize))
-            .decode_y4m_bytes(BROAD_FIXTURE, DecodeOptions::default(), &mut bytes)
-            .unwrap_err();
+        context(ThreadCount::from(1usize))
+            .decode_raw_bytes(MONO_FIXTURE, DecodeOptions::default(), &mut raw)
+            .unwrap();
+        context(ThreadCount::from(1usize))
+            .decode_y4m_bytes(MONO_FIXTURE, DecodeOptions::default(), &mut bytes)
+            .unwrap();
 
-        assert!(bytes.is_empty());
-        assert!(matches!(error, DecodeError::UnsupportedFeature { .. }));
+        let header = expected_mono_y4m_header();
+        assert_eq!(&bytes[..header.len()], header);
+        assert_eq!(&bytes[header.len()..], raw.as_slice());
+    }
+
+    #[test]
+    fn monochrome_y4m_output_limit_charges_luma_only_payload() {
+        let expected_len = expected_mono_y4m_header().len() as u64
+            + (super::MINIMAL_Y4M_LUMA_WIDTH as u64 * super::MINIMAL_Y4M_LUMA_HEIGHT as u64);
+        let options = DecodeOptions::new(
+            DecodeLimits::default().with_max_output_bytes(DecodeLimitThreshold::Max(expected_len)),
+        );
+        let mut bytes = Vec::new();
+
+        context(ThreadCount::from(1usize))
+            .decode_y4m_bytes(MONO_FIXTURE, options, &mut bytes)
+            .unwrap();
+
+        assert_eq!(bytes.len() as u64, expected_len);
     }
 
     #[test]

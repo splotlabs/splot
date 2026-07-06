@@ -65,8 +65,9 @@ mod tests {
         DecodeRuntimeConfig, OUTPUT_ERROR_RULE_ID,
     };
 
-    const BROAD_FIXTURE: &[u8] =
+    const MONO_FIXTURE: &[u8] =
         include_bytes!("../../../../tests/conformance/vectors/valid/syn-mono-intra-64x64.ivf");
+    const MONO_LUMA_BYTES: usize = 64 * 64;
 
     fn context(threads: ThreadCount) -> DecodeContext {
         DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
@@ -129,15 +130,17 @@ mod tests {
     }
 
     #[test]
-    fn broader_fixture_fails_closed_as_unsupported_for_raw() {
+    fn monochrome_fixture_decodes_to_luma_only_raw_bytes() {
         let mut bytes = Vec::new();
 
-        let error = context(ThreadCount::from(1usize))
-            .decode_raw_bytes(BROAD_FIXTURE, DecodeOptions::default(), &mut bytes)
-            .unwrap_err();
+        context(ThreadCount::from(1usize))
+            .decode_raw_bytes(MONO_FIXTURE, DecodeOptions::default(), &mut bytes)
+            .unwrap();
 
-        assert!(bytes.is_empty());
-        assert!(matches!(error, DecodeError::UnsupportedFeature { .. }));
+        assert_eq!(bytes.len(), MONO_LUMA_BYTES);
+        assert_eq!(&bytes[..12], &[0x4c; 12]);
+        assert_eq!(&bytes[12..22], &[0x92; 10]);
+        assert_eq!(&bytes[MONO_LUMA_BYTES - 10..], &[0xaa; 10]);
     }
 
     #[test]

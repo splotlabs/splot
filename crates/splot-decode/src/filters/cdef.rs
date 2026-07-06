@@ -220,13 +220,17 @@ impl<'a, T: ReconSample> CdefRowBands<'a, T> {
     /// Splits the workspace planes into row bands sized to a few CDEF block
     /// rows per pool worker. Returns `None` when the planes cannot cover the
     /// MI grid in aligned bands; callers then keep the serial path.
-    fn split(workspace: &'a mut CurrentFrameWorkspace<T>, mi_rows: usize) -> Option<Self> {
+    fn split(
+        workspace: &'a mut CurrentFrameWorkspace<T>,
+        mi_rows: usize,
+        chroma_sub_y: usize,
+    ) -> Option<Self> {
         let workers = splot_parallel::current_pool_width();
         let cdef_rows = mi_rows.div_ceil(STEP4);
         let rows_per_band = cdef_rows.div_ceil(workers.checked_mul(4)?).max(1);
         let band_mi_rows = rows_per_band.checked_mul(STEP4)?;
         let luma_band_rows = band_mi_rows.checked_mul(MI_SIZE)?;
-        let chroma_band_rows = luma_band_rows >> 1;
+        let chroma_band_rows = luma_band_rows >> chroma_sub_y;
         let needed = cdef_rows.div_ceil(rows_per_band);
 
         let (y, u, v) = workspace.as_frame_mut().into_planes();
@@ -319,26 +323,44 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
     let coeff_shift = u32::from(bit_depth.bits()) - 8;
     let max_sample = i32::from(bit_depth.max_sample());
 
-    let sub_x = 1usize;
-    let sub_y = 1usize;
+    let pixel_format = workspace.info().pixel_format();
+    let sub_x = usize::from(pixel_format.subsampling_x());
+    let sub_y = usize::from(pixel_format.subsampling_y());
+    let has_chroma = !pixel_format.is_monochrome();
 
     let luma_size = workspace
         .plane(PlaneId::Y)
         .map_err(|_| CdefError::Workspace)?
         .storage_size();
-    let u_size = workspace
-        .plane(PlaneId::U)
-        .map_err(|_| CdefError::Workspace)?
-        .storage_size();
-    let v_size = workspace
-        .plane(PlaneId::V)
-        .map_err(|_| CdefError::Workspace)?
-        .storage_size();
 
     let luma_snap =
         PlaneSnapshot::capture(workspace, PlaneId::Y, luma_size.width(), luma_size.height())?;
-    let u_snap = PlaneSnapshot::capture(workspace, PlaneId::U, u_size.width(), u_size.height())?;
-    let v_snap = PlaneSnapshot::capture(workspace, PlaneId::V, v_size.width(), v_size.height())?;
+    let (u_snap, v_snap) = if has_chroma {
+        let u_size = workspace
+            .plane(PlaneId::U)
+            .map_err(|_| CdefError::Workspace)?
+            .storage_size();
+        let v_size = workspace
+            .plane(PlaneId::V)
+            .map_err(|_| CdefError::Workspace)?
+            .storage_size();
+        (
+            Some(PlaneSnapshot::capture(
+                workspace,
+                PlaneId::U,
+                u_size.width(),
+                u_size.height(),
+            )?),
+            Some(PlaneSnapshot::capture(
+                workspace,
+                PlaneId::V,
+                v_size.width(),
+                v_size.height(),
+            )?),
+        )
+    } else {
+        (None, None)
+    };
 
     let block_ctx_at = |r: usize, c: usize| -> Result<Option<CdefBlockCtx>, CdefError> {
         let Some(strength_index) = grid.strength_for_mi(r, c)? else {
@@ -364,7 +386,7 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
     };
 
     if splot_parallel::on_multiworker_pool()
-        && let Some(bands) = CdefRowBands::split(workspace, mi_rows)
+        && let Some(bands) = CdefRowBands::split(workspace, mi_rows, sub_y)
     {
         let timer = crate::timing::start();
         let tally = crate::timing::WorkerTally::new();
@@ -380,8 +402,12 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
                     let mut c = 0usize;
                     while c < mi_cols {
                         if let Some(ctx) = block_ctx_at(r, c)? {
-                            let output =
-                                compute_cdef_block::<T>(&ctx, &luma_snap, &u_snap, &v_snap)?;
+                            let output = compute_cdef_block::<T>(
+                                &ctx,
+                                &luma_snap,
+                                u_snap.as_ref(),
+                                v_snap.as_ref(),
+                            )?;
                             for (plane, rect, samples, width) in output.into_iter().flatten() {
                                 let band_view = match plane {
                                     PlaneId::Y => &mut y_band,
@@ -422,7 +448,8 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
         let mut c = 0usize;
         while c < mi_cols {
             if let Some(ctx) = block_ctx_at(r, c)? {
-                let output = compute_cdef_block::<T>(&ctx, &luma_snap, &u_snap, &v_snap)?;
+                let output =
+                    compute_cdef_block::<T>(&ctx, &luma_snap, u_snap.as_ref(), v_snap.as_ref())?;
                 for (plane, rect, samples, width) in output.into_iter().flatten() {
                     workspace
                         .write_rect(plane, rect, &samples, width)
@@ -494,8 +521,8 @@ impl CdefBlockCtx {
 fn compute_cdef_block<T: ReconSample>(
     ctx: &CdefBlockCtx,
     luma_snap: &PlaneSnapshot,
-    u_snap: &PlaneSnapshot,
-    v_snap: &PlaneSnapshot,
+    u_snap: Option<&PlaneSnapshot>,
+    v_snap: Option<&PlaneSnapshot>,
 ) -> Result<CdefBlockOutput<T>, CdefError> {
     let x0 = ctx.c << MI_SIZE_LOG2;
     let y0 = ctx.r << MI_SIZE_LOG2;
@@ -557,11 +584,18 @@ fn compute_cdef_block<T: ReconSample>(
     };
     let y_zero = pri_str == 0 && sec_str == 0;
     let uv_zero = uv_pri == 0 && uv_sec == 0;
-    Ok([
+    let output = [
         plane_out(y_zero, PlaneId::Y, luma_snap, &y_filter)?,
-        plane_out(uv_zero, PlaneId::U, u_snap, &uv_filter)?,
-        plane_out(uv_zero, PlaneId::V, v_snap, &uv_filter)?,
-    ])
+        u_snap
+            .map(|snap| plane_out(uv_zero, PlaneId::U, snap, &uv_filter))
+            .transpose()?
+            .flatten(),
+        v_snap
+            .map(|snap| plane_out(uv_zero, PlaneId::V, snap, &uv_filter))
+            .transpose()?
+            .flatten(),
+    ];
+    Ok(output)
 }
 
 struct CdefFilterCtx {
@@ -760,6 +794,7 @@ pub(crate) enum CdefError {
 mod tests {
     use super::*;
     use crate::test_support::yuv420_workspace as workspace_8bit;
+    use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize};
 
     #[test]
     fn tap_reach_covers_direction_table() {
@@ -828,6 +863,39 @@ mod tests {
     }
 
     #[test]
+    fn yuv422_chroma_cdef_filters_full_vertical_block() {
+        let mut ws = workspace(PixelFormat::Yuv422, 16, 8, 100);
+        for y in 0..8 {
+            for x in 0..8 {
+                let value = if y % 2 == 0 { 130 } else { 126 };
+                ws.set_reconstructed_sample(PlaneId::U, x, y, value)
+                    .unwrap();
+            }
+        }
+        let before = ws.samples(PlaneId::U).unwrap().to_vec();
+        cdef_general_intra_frame(
+            &mut ws,
+            CdefFrameParams {
+                y_pri: 0,
+                y_sec: 0,
+                uv_pri: 2,
+                uv_sec: 4,
+                damping: 4,
+            },
+            2,
+            4,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        let after = ws.samples(PlaneId::U).unwrap();
+        assert_ne!(
+            &before[4 * 8..],
+            &after[4 * 8..],
+            "4:2:2 CDEF must cover the bottom half of the chroma block"
+        );
+    }
+
+    #[test]
     fn small_ringing_step_is_deringed_within_bounds() {
         let mut ws = workspace_8bit(64, 64, 100);
         seed_luma_ripple(&mut ws);
@@ -844,6 +912,17 @@ mod tests {
             100,
             "far flat region untouched"
         );
+    }
+
+    #[test]
+    fn monochrome_cdef_filters_luma_without_chroma_planes() {
+        let mut ws = workspace(PixelFormat::Monochrome, 64, 64, 100);
+        seed_luma_ripple(&mut ws);
+        let before = luma_8x8(&ws);
+        cdef_general_intra_frame(&mut ws, cdef_ripple_params(), 16, 16, BitDepth::Eight).unwrap();
+        let after = luma_8x8(&ws);
+        assert_ne!(before, after, "monochrome luma is still filtered");
+        assert!(ws.plane(PlaneId::U).is_err(), "monochrome has no U plane");
     }
 
     #[test]
@@ -877,6 +956,23 @@ mod tests {
         )
         .unwrap();
         (before, luma_8x8(&ws))
+    }
+
+    fn workspace(
+        pixel_format: PixelFormat,
+        width: usize,
+        height: usize,
+        fill: u8,
+    ) -> CurrentFrameWorkspace<u8> {
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Eight,
+            pixel_format,
+            PlaneSize::new(width, height).unwrap(),
+            PlaneRect::new(0, 0, width, height).unwrap(),
+        )
+        .unwrap();
+        CurrentFrameWorkspace::new(info, fill).unwrap()
     }
 
     fn seed_luma_ripple(ws: &mut CurrentFrameWorkspace<u8>) {

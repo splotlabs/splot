@@ -5,7 +5,7 @@
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrame, IntraRectBlockSize, PlaneId, ReconSample,
+    CurrentFrameWorkspace, DecodedFrame, IntraRectBlockSize, PlaneId, PlaneRect, ReconSample,
     ReferencePlaneView,
 };
 
@@ -54,6 +54,132 @@ pub(crate) fn apply_bawp<T: ReconSample>(
         )?;
     }
     Ok(())
+}
+
+/// Applies the intra-frame IntrABC `morph_pred` BAWP adjustment after the luma
+/// IntrABC predictor has been copied into `target`.
+pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    target: PlaneRect,
+    mv: Mv,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    let bounds_error = || {
+        inter_diag!(
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_morph_pred",
+            tile_offset,
+            "intrabc morph_pred reference template out of bounds",
+            "7.13.3.25"
+        )
+    };
+    if !target.width().is_power_of_two() || !target.height().is_power_of_two() {
+        return Err(bounds_error());
+    }
+    let size = IntraRectBlockSize::new(
+        u8::try_from(target.width().trailing_zeros()).map_err(|_| bounds_error())?,
+        u8::try_from(target.height().trailing_zeros()).map_err(|_| bounds_error())?,
+    )
+    .map_err(|_| bounds_error())?;
+
+    let dy = to_fullmv(mv.row);
+    let dx = to_fullmv(mv.col);
+    let ref_y = i64::try_from(target.y())
+        .map_err(|_| bounds_error())?
+        .checked_add(i64::from(dy))
+        .ok_or_else(bounds_error)?;
+    let ref_x = i64::try_from(target.x())
+        .map_err(|_| bounds_error())?
+        .checked_add(i64::from(dx))
+        .ok_or_else(bounds_error)?;
+    if ref_x < 1 || ref_y < 1 {
+        return Err(bounds_error());
+    }
+
+    let plane = workspace.plane(PlaneId::Y).map_err(|_| bounds_error())?;
+    let plane_width = i64::try_from(plane.storage_size().width()).map_err(|_| bounds_error())?;
+    let plane_height = i64::try_from(plane.storage_size().height()).map_err(|_| bounds_error())?;
+    let bw = i64::try_from(target.width()).map_err(|_| bounds_error())?;
+    let bh = i64::try_from(target.height()).map_err(|_| bounds_error())?;
+    if ref_x + bw > plane_width || ref_y + bh > plane_height {
+        return Err(bounds_error());
+    }
+
+    let avail_up = target.y() > 0;
+    let avail_left = target.x() > 0;
+    let (width, height, num_up, num_left) =
+        bawp_template_counts(target.width(), target.height(), true, avail_up, avail_left);
+    let edges = workspace
+        .intra_dc_edges_for_rect(PlaneId::Y, target.x(), target.y(), size)
+        .map_err(|_| bounds_error())?;
+    let sample_at = |row: i64, col: i64| -> Result<i64> {
+        let row = usize::try_from(row).map_err(|_| bounds_error())?;
+        let col = usize::try_from(col).map_err(|_| bounds_error())?;
+        workspace
+            .reconstructed_sample(PlaneId::Y, col, row)
+            .map(|sample| i64::from(sample.to_u16()))
+            .map_err(|_| bounds_error())
+    };
+
+    let mut sum_x = 0i64;
+    let mut sum_y = 0i64;
+    let mut sum_xx = 0i64;
+    let mut sum_xy = 0i64;
+    let mut count = 0i64;
+    if let Some(step) = width.checked_div(num_up).filter(|_| num_up > 0) {
+        let above = edges.above_samples().ok_or_else(bounds_error)?;
+        let mut i = step >> 1;
+        while i < width {
+            let recon = i64::from(above.get(i).ok_or_else(bounds_error)?.to_u16());
+            let reference_sample = sample_at(
+                ref_y - 1,
+                ref_x + i64::try_from(i).map_err(|_| bounds_error())?,
+            )?;
+            sum_x += reference_sample;
+            sum_y += recon;
+            sum_xy += reference_sample * recon;
+            sum_xx += reference_sample * reference_sample;
+            i += step;
+        }
+        count += i64::try_from(num_up).map_err(|_| bounds_error())?;
+    }
+    if let Some(step) = height.checked_div(num_left).filter(|_| num_left > 0) {
+        let left = edges.left_samples().ok_or_else(bounds_error)?;
+        let mut i = step >> 1;
+        while i < height {
+            let recon = i64::from(left.get(i).ok_or_else(bounds_error)?.to_u16());
+            let reference_sample = sample_at(
+                ref_y + i64::try_from(i).map_err(|_| bounds_error())?,
+                ref_x - 1,
+            )?;
+            sum_x += reference_sample;
+            sum_y += recon;
+            sum_xy += reference_sample * recon;
+            sum_xx += reference_sample * reference_sample;
+            i += step;
+        }
+        count += i64::try_from(num_left).map_err(|_| bounds_error())?;
+    }
+
+    let mut alpha = 1i64 << SHIFT;
+    if count > 0 {
+        let nor = sum_xy - sum_x * sum_y / count;
+        let der = sum_xx - sum_x * sum_x / count;
+        if der != 0 && nor != 0 {
+            alpha = i64::from(splot_recon::math::resolve_division(nor, der, SHIFT as u8));
+            if alpha == 0 {
+                alpha = 1 << SHIFT;
+            }
+        }
+    }
+    let beta = if count > 0 {
+        ((sum_y << SHIFT) - sum_x * alpha) / count
+    } else {
+        -(1 << (SHIFT - 1))
+    };
+
+    workspace
+        .apply_bawp_rect(PlaneId::Y, target.x(), target.y(), size, alpha, beta)
+        .map_err(|_| bounds_error())
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -31,6 +31,7 @@ const BLOCK_64X64: usize = 12;
 const MI_SIZE: usize = 4;
 const INTRABC_CONTEXT_MAX: usize = 2;
 const SKIP_CONTEXT_MAX: usize = 2;
+const MORPH_PRED_CONTEXT_MAX: usize = 2;
 
 /// Result of the §5.20.5.3 `use_intrabc` / `read_skip` prefix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +46,7 @@ pub(crate) struct IntrabcBlockPrelude {
     pub(crate) use_intrabc: bool,
     pub(crate) is_inter: bool,
     pub(crate) skip_flag: bool,
+    pub(crate) morph_pred: bool,
     #[cfg_attr(
         not(test),
         allow(
@@ -64,6 +66,10 @@ impl IntrabcBlockPrelude {
             use_intrabc: use_skip.use_intrabc,
             is_inter: use_skip.use_intrabc,
             skip_flag: use_skip.skip_flag,
+            morph_pred: match intrabc {
+                Some(info) => info.morph_pred,
+                None => false,
+            },
             intrabc,
         }
     }
@@ -155,6 +161,7 @@ pub(crate) struct IntrabcInfo {
     pub(crate) intrabc_mode: u8,
     pub(crate) ref_mv_idx: usize,
     pub(crate) mv_precision: u8,
+    pub(crate) morph_pred: bool,
     pub(crate) block_mv: IntrabcBlockVector,
 }
 
@@ -233,17 +240,19 @@ impl IntrabcBlockPixels {
 enum IntrabcNeighborContext {
     UseIntrabc,
     Skip,
+    MorphPred,
 }
 
 impl IntrabcNeighborContext {
     const fn same_sb_row(self) -> bool {
-        matches!(self, Self::UseIntrabc)
+        matches!(self, Self::UseIntrabc | Self::MorphPred)
     }
 
     const fn max(self) -> usize {
         match self {
             Self::UseIntrabc => INTRABC_CONTEXT_MAX,
             Self::Skip => SKIP_CONTEXT_MAX,
+            Self::MorphPred => MORPH_PRED_CONTEXT_MAX,
         }
     }
 
@@ -251,6 +260,7 @@ impl IntrabcNeighborContext {
         match self {
             Self::UseIntrabc => facts.use_intrabc,
             Self::Skip => facts.skip_flag,
+            Self::MorphPred => facts.morph_pred,
         }
     }
 }
@@ -374,6 +384,7 @@ pub(crate) struct TileIntrabcPreludeState {
 struct IntrabcBlockFacts {
     use_intrabc: bool,
     skip_flag: bool,
+    morph_pred: bool,
     block_mv: Option<IntrabcBlockVector>,
 }
 
@@ -424,6 +435,7 @@ impl TileIntrabcPreludeState {
         let facts = IntrabcBlockFacts {
             use_intrabc: prelude.use_intrabc,
             skip_flag: prelude.skip_flag,
+            morph_pred: prelude.morph_pred,
             block_mv,
         };
         let area = self.clipped_record_area(row, col, n4w, n4h, tile_offset)?;
@@ -485,6 +497,24 @@ impl TileIntrabcPreludeState {
             n4w,
             n4h,
             IntrabcNeighborContext::Skip,
+            tile_offset,
+        )
+    }
+
+    fn morph_pred_ctx(
+        &self,
+        row: usize,
+        col: usize,
+        n4w: usize,
+        n4h: usize,
+        tile_offset: ByteOffset,
+    ) -> Result<usize> {
+        self.neighbor_context(
+            row,
+            col,
+            n4w,
+            n4h,
+            IntrabcNeighborContext::MorphPred,
             tile_offset,
         )
     }
@@ -714,8 +744,24 @@ pub(crate) fn read_intrabc_info(
     let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
     let pred_mv =
         ensure_intrabc_ref_stack_supported(state, sequence, geometry, syntax, tile_offset)?;
-    let info =
-        finish_intrabc_info_record(cdfs, symbols, sequence, core, syntax, pred_mv, tile_offset)?;
+    let block = geometry.block;
+    let morph_pred_ctx = state.morph_pred_ctx(
+        block.row,
+        block.col,
+        geometry.n4w,
+        geometry.n4h,
+        tile_offset,
+    )?;
+    let info = finish_intrabc_info_record(
+        cdfs,
+        symbols,
+        sequence,
+        core,
+        syntax,
+        pred_mv,
+        morph_pred_ctx,
+        tile_offset,
+    )?;
     Ok(info)
 }
 
@@ -747,7 +793,16 @@ fn read_intrabc_info_record(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_mv_idx_out_of_range",
         )
     })?;
-    finish_intrabc_info_record(cdfs, symbols, sequence, core, syntax, pred_mv, tile_offset)
+    finish_intrabc_info_record(
+        cdfs,
+        symbols,
+        sequence,
+        core,
+        syntax,
+        pred_mv,
+        0,
+        tile_offset,
+    )
 }
 
 fn read_intrabc_info_syntax(
@@ -942,6 +997,7 @@ fn finish_intrabc_info_record(
     core: &FrameHeaderCore,
     syntax: IntrabcInfoSyntax,
     pred_mv: Mv,
+    morph_pred_ctx: usize,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
     let block_mv = assign_intrabc_mv(
@@ -952,24 +1008,42 @@ fn finish_intrabc_info_record(
         pred_mv,
         tile_offset,
     )?;
-    if core.frame_is_intra == Some(true)
-        && core.allow_screen_content_tools == Some(true)
-        && sequence
-            .inter
-            .as_ref()
-            .is_some_and(|inter| inter.enable_bawp)
-    {
-        return Err(wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_morph_pred",
-        ));
-    }
+    let morph_pred =
+        read_intrabc_morph_pred(cdfs, symbols, sequence, core, morph_pred_ctx, tile_offset)?;
     Ok(IntrabcInfo {
         intrabc_mode: u8::try_from(syntax.intrabc_mode).unwrap_or(1),
         ref_mv_idx: syntax.ref_mv_idx,
         mv_precision: syntax.mv_precision,
+        morph_pred,
         block_mv,
     })
+}
+
+fn read_intrabc_morph_pred(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    morph_pred_ctx: usize,
+    tile_offset: ByteOffset,
+) -> Result<bool> {
+    if core.frame_is_intra != Some(true)
+        || core.allow_screen_content_tools != Some(true)
+        || !sequence
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.enable_bawp)
+    {
+        return Ok(false);
+    }
+    Ok(read_symbol(
+        cdfs,
+        symbols,
+        TileCdfSelector::MorphPred {
+            ctx: morph_pred_ctx,
+        },
+        tile_offset,
+    )? != 0)
 }
 
 fn assign_intrabc_mv(

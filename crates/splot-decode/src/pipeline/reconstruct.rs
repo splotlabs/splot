@@ -26,33 +26,33 @@ use splot_recon::{
 use crate::Result;
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaPalette, LumaTransformTypeContext,
-    SupportedDirectionalLumaMode, SupportedNonDcLumaMode, reconstruct_general_intra_block,
-    reconstruct_general_intra_block_rect_with_prediction,
-    reconstruct_general_intra_block_rect_with_prediction_and_ddt,
-    reconstruct_general_intra_block_with_prediction,
+    SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
+    reconstruct_general_intra_coeff_block_rect_with_prediction,
+    reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt,
+    reconstruct_general_intra_coeff_block_with_prediction,
     reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
 };
 pub(crate) use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_block_into;
 pub(crate) use crate::prediction::chroma::directional::reconstruct_general_intra_chroma_block_into;
 
-/// Creates an empty decoded 4:2:0 frame workspace sized to the actual
+/// Creates an empty decoded frame workspace sized to the actual
 /// `luma_width` x `luma_height` (a positive multiple of 64) for incremental
-/// per-block reconstruction on the general intra multi-block path. Chroma is
-/// 4:2:0 (half-resolution), so the chroma plane is `luma_width / 2` x
-/// `luma_height / 2`, derived internally by [`PixelFormat::Yuv420`]. The sample
-/// storage type `T` matches the active sequence `bit_depth` (§ 6.4.1): `u8` for
+/// per-block reconstruction on the general intra multi-block path. Chroma plane
+/// sizes are derived internally from `pixel_format`'s § 6.4.1 subsampling. The
+/// sample storage type `T` matches the active sequence `bit_depth`: `u8` for
 /// 8-bit, `u16` for 10-bit.
 pub(crate) fn new_general_intra_workspace<T: ReconSample>(
     luma_width: usize,
     luma_height: usize,
     bit_depth: BitDepth,
+    pixel_format: PixelFormat,
 ) -> Result<CurrentFrameWorkspace<T>> {
     let luma_size = PlaneSize::new(luma_width, luma_height)?;
     let luma_rect = PlaneRect::new(0, 0, luma_width, luma_height)?;
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
         bit_depth,
-        PixelFormat::Yuv420,
+        pixel_format,
         luma_size,
         luma_rect,
     )?;
@@ -94,25 +94,13 @@ pub(crate) fn reconstruct_general_intra_block_into<T: ReconSample>(
     }
     let out = if block.all_zero {
         prediction
-    } else if ibp_dc {
-        reconstruct_general_intra_block_with_prediction(
-            &block.quant,
+    } else {
+        reconstruct_general_intra_coeff_block_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
             log2_side,
-            block.plane_tx_type,
-            use_tcq,
-            bit_depth,
-        )?
-    } else {
-        reconstruct_general_intra_block(
-            &block.quant,
-            dc,
-            qindex,
-            plane_id,
-            log2_side,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -166,14 +154,13 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -221,14 +208,13 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             PlaneId::Y,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -275,14 +261,13 @@ pub(crate) fn reconstruct_inter_block_residual_into<T: ReconSample>(
     for row in workspace.rect_rows(plane_id, rect)? {
         prediction.extend_from_slice(row);
     }
-    let out = reconstruct_general_intra_block_rect_with_prediction_and_ddt(
-        &block.quant,
+    let out = reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt(
+        block,
         &prediction,
         qindex,
         plane_id,
         log2_side,
         log2_side,
-        block.plane_tx_type,
         use_tcq,
         use_ddt,
         bit_depth,
@@ -325,14 +310,13 @@ pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
     for row in workspace.rect_rows(plane_id, rect)? {
         prediction.extend_from_slice(row);
     }
-    let out = reconstruct_general_intra_block_rect_with_prediction_and_ddt(
-        &block.quant,
+    let out = reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt(
+        block,
         &prediction,
         qindex,
         plane_id,
         log2_width,
         log2_height,
-        block.plane_tx_type,
         use_tcq,
         use_ddt,
         bit_depth,
@@ -583,14 +567,13 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
             luma_context,
         )?
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -870,13 +853,12 @@ fn reconstruct_general_intra_luma_first_block_into<T: ReconSample>(
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_with_prediction(
+            block,
             &prediction,
             qindex,
             PlaneId::Y,
             log2_side,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -1098,13 +1080,12 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
             log2_side,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -1220,14 +1201,13 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
             luma_context,
         )?
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -1365,14 +1345,13 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -1533,14 +1512,13 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
             luma_context,
         )?
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -1624,14 +1602,13 @@ fn write_luma_prediction_block<T: ReconSample>(
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             PlaneId::Y,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -1733,14 +1710,13 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             PlaneId::Y,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -2080,14 +2056,13 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             luma_context,
         )?
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -2473,14 +2448,13 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             luma_context,
         )?
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &primary,
             qindex,
             plane_id,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -2583,14 +2557,13 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_block_into<T: Reco
             luma_context,
         )?
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             PlaneId::Y,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -2661,14 +2634,13 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
             luma_context,
         )?
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             PlaneId::Y,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
@@ -3014,14 +2986,13 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
             luma_context,
         )?
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             use_tcq,
             bit_depth,
         )?
