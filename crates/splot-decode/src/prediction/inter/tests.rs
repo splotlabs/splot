@@ -14,7 +14,10 @@ use splot_core::stream::{
 };
 use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize};
 
-use super::block::interp_filter_no_neighbour_ctx;
+use super::block::{
+    BLOCK_8X8, interp_filter_no_neighbour_ctx, segment_neighbour_availability,
+    tip_allowed_for_block_indices,
+};
 use super::compound_is_joint_context_from_order_hints;
 use super::test_support::fixture_sequence_and_key_core;
 use crate::error::{DecodeError, Result};
@@ -1802,6 +1805,42 @@ fn compound_is_joint_context_uses_strict_same_side_signs() {
 fn interp_filter_no_neighbour_context_accounts_for_compound_second_ref() {
     assert_eq!(interp_filter_no_neighbour_ctx(false), 3);
     assert_eq!(interp_filter_no_neighbour_ctx(true), 7);
+}
+
+#[test]
+fn tip_mode_gate_follows_mi_size_not_has_chroma() {
+    assert!(tip_allowed_for_block_indices(
+        false, false, false, BLOCK_8X8, BLOCK_8X8, 2, 2
+    ));
+    assert!(!tip_allowed_for_block_indices(
+        true, false, false, BLOCK_8X8, BLOCK_8X8, 2, 2
+    ));
+    assert!(!tip_allowed_for_block_indices(
+        false, true, false, BLOCK_8X8, BLOCK_8X8, 2, 2
+    ));
+    assert!(!tip_allowed_for_block_indices(
+        false, false, true, BLOCK_8X8, BLOCK_8X8, 2, 2
+    ));
+    assert!(!tip_allowed_for_block_indices(
+        false,
+        false,
+        false,
+        BLOCK_8X8,
+        BLOCK_8X8 + 1,
+        2,
+        2
+    ));
+    assert!(!tip_allowed_for_block_indices(
+        false, false, false, BLOCK_8X8, BLOCK_8X8, 1, 2
+    ));
+}
+
+#[test]
+fn segment_neighbour_availability_is_tile_bounded() {
+    assert_eq!(segment_neighbour_availability(8, 16, 8, 16), (false, false));
+    assert_eq!(segment_neighbour_availability(9, 16, 8, 16), (true, false));
+    assert_eq!(segment_neighbour_availability(8, 17, 8, 16), (false, true));
+    assert_eq!(segment_neighbour_availability(9, 17, 8, 16), (true, true));
 }
 
 #[test]

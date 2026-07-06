@@ -212,6 +212,7 @@ fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
         },
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
@@ -245,6 +246,7 @@ fn zone1_above_edge_uses_first_above_sample_as_corner_at_first_column() {
         1,
         0,
         0,
+        IntraEdgeAvailability::all(),
         OneSidedEdgeFilter::default(),
     )
     .unwrap();
@@ -288,6 +290,7 @@ fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
             above_mrl_index: 1,
         },
         false,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -582,6 +585,7 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
         0,
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
@@ -719,6 +723,7 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
         1, // mrl_index
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
@@ -756,6 +761,7 @@ fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
         0,
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -795,6 +801,7 @@ fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
         0,
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -838,6 +845,7 @@ fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
         0,
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -878,6 +886,10 @@ fn zone1_d45_top_edge_synthesizes_above_from_left_corner() {
         OneSidedAboveMrl::default(),
         false,
         None,
+        IntraEdgeAvailability {
+            above: false,
+            left: true,
+        },
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
@@ -918,6 +930,7 @@ fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
         0,
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -1014,6 +1027,7 @@ fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
         4, // log2_height = 4 -> 16
         0,
         false,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -1058,6 +1072,7 @@ fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
         4, // log2_height = 4 -> 16
         0,
         false,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -1163,6 +1178,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
         4,
         149,
         true,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();

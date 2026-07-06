@@ -728,9 +728,6 @@ fn parse_inter_reference_region(
     if tip_gate {
         let tip_frame_mode = if is_tip && seq.enable_tip_output {
             TipFrameMode::AsOutput
-        } else if is_tip {
-            control.stop = Some(InterStop::PoisonedReferenceState);
-            return Ok(());
         } else if reader.read_flag()? {
             TipFrameMode::AsRef
         } else {
@@ -738,7 +735,11 @@ fn parse_inter_reference_region(
         };
         control.tip_frame_mode = Some(tip_frame_mode);
 
-        let opfl_refine_type = read_frame_opfl_refine_type(reader, seq.enable_opfl_refine)?;
+        let opfl_refine_type = if tip_frame_mode == TipFrameMode::AsOutput {
+            tip_output_opfl_refine_type(seq)
+        } else {
+            read_frame_opfl_refine_type(reader, seq.enable_opfl_refine)?
+        };
         if tip_frame_mode != TipFrameMode::Disabled && seq.enable_tip_hole_fill {
             reader.read_flag()?;
         }
@@ -859,6 +860,14 @@ fn read_frame_opfl_refine_type(reader: &mut BitReader<'_>, enable_opfl_refine: u
         return Ok(REFINE_SWITCHABLE);
     }
     Ok(u32::from(enable_opfl_refine))
+}
+
+fn tip_output_opfl_refine_type(seq: &InterSeqView) -> u32 {
+    if !seq.enable_tip_refinemv || u32::from(seq.enable_opfl_refine) == REFINE_NONE {
+        REFINE_NONE
+    } else {
+        REFINE_ALL
+    }
 }
 
 /// Parses `frame_size_with_refs()` (AV2 § 5.18.4.3): reads `found_ref` f(1) per ref until
@@ -1688,6 +1697,65 @@ mod tests {
                 "tip_output_obu={tip_output_obu}"
             );
         }
+    }
+
+    #[test]
+    fn tip_output_derives_opfl_refine_without_reads() {
+        let mut bits = Bits::default();
+        bits.bit(0); // signal_primary_ref_frame; TIP OBUs do not code disable_cross_frame_cdf_init
+        bits.f(0, 8); // refresh_frame_flags
+        bits.bit(1); // frame_explicit_ref_frame_map
+        bits.f(2, 3); // num_total_refs = 2
+        bits.f(0, 3); // ref_frame_idx[0]
+        bits.f(1, 3); // ref_frame_idx[1]
+        bits.bit(1); // use_ref_frame_mvs
+        bits.bit(0); // tmvp_sample_step_minus_1
+
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.enable_tip = true;
+        seq.enable_tip_output = true;
+        seq.enable_tip_refinemv = true;
+        seq.enable_opfl_refine = REFINE_AUTO;
+        let mut ctx = inter_ctx();
+        ctx.obu_type = ObuType::RegularTip;
+        let rs = FrameReferenceStateView::unknown();
+
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+
+        assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsOutput));
+        assert_eq!(control.stop, Some(InterStop::PoisonedReferenceState));
+        assert_eq!(reader.consumed_bits(), 21);
+    }
+
+    #[test]
+    fn non_output_tip_obu_consumes_coded_tip_mode() {
+        let mut bits = Bits::default();
+        bits.bit(0); // signal_primary_ref_frame; TIP OBUs do not code disable_cross_frame_cdf_init
+        bits.f(0, 8); // refresh_frame_flags
+        bits.bit(1); // frame_explicit_ref_frame_map
+        bits.f(2, 3); // num_total_refs = 2
+        bits.f(0, 3); // ref_frame_idx[0]
+        bits.f(1, 3); // ref_frame_idx[1]
+        bits.bit(1); // use_ref_frame_mvs
+        bits.bit(0); // tmvp_sample_step_minus_1
+        bits.bit(1); // tip_frame_mode = TIP_FRAME_AS_REF
+
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.enable_tip = true;
+        seq.enable_tip_output = false;
+        let mut ctx = inter_ctx();
+        ctx.obu_type = ObuType::RegularTip;
+        let rs = FrameReferenceStateView::unknown();
+
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+
+        assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsRef));
+        assert_eq!(control.stop, Some(InterStop::PoisonedReferenceState));
+        assert_eq!(reader.consumed_bits(), 22);
     }
 
     #[test]

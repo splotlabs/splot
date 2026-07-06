@@ -64,7 +64,7 @@ const INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET: usize = 4;
 const SINGLE_REF_FRAME0: i8 = 0;
 const MI_SIZE: usize = 4;
 const CHUNK_64_N4: usize = 16;
-const BLOCK_8X8: usize = 3;
+pub(super) const BLOCK_8X8: usize = 3;
 const BLOCK_64X64: usize = 12;
 const MAX_WARP_REF_CANDIDATES: usize = 4;
 const WARP_DELTA_NUM_SYMBOLS_LOW: u8 = 8;
@@ -527,7 +527,13 @@ fn read_intra_segment_id(
         return Ok(0);
     };
     let (r, c) = (frontier.r, frontier.c);
-    let (pred, ctx) = segment_id_state.predictor_and_ctx(r, c, r > 0, c > 0);
+    let (avail_u, avail_l) = segment_neighbour_availability(
+        r,
+        c,
+        work_unit.mi_row_range().start as usize,
+        work_unit.mi_col_range().start as usize,
+    );
+    let (pred, ctx) = segment_id_state.predictor_and_ctx(r, c, avail_u, avail_l);
     let has_lossless = core
         .lossless_info
         .as_ref()
@@ -556,6 +562,15 @@ fn read_intra_segment_id(
         i64::from(seg.last_active_seg_id) + 1,
     );
     Ok(u8::try_from(segment_id.clamp(0, i64::from(u8::MAX))).unwrap_or(0))
+}
+
+pub(super) const fn segment_neighbour_availability(
+    r: usize,
+    c: usize,
+    tile_mi_row_start: usize,
+    tile_mi_col_start: usize,
+) -> (bool, bool) {
+    (r > tile_mi_row_start, c > tile_mi_col_start)
 }
 
 /// AV2 § 7.14.2 `get_qindex(0, segment_id)`: the delta-q-adjusted `current_qindex`
@@ -2023,10 +2038,30 @@ pub(crate) fn is_comp_ref_allowed(n4w: usize, n4h: usize) -> bool {
 }
 
 fn tip_allowed_for_block(frontier: &DecodeBlockFrontier, n4w: usize, n4h: usize) -> bool {
-    frontier.has_chroma
-        && !frontier.chroma_offset
-        && !frontier.is_luma_part()
-        && frontier.chroma_ref_geometry().size() == frontier.b_size
+    tip_allowed_for_block_indices(
+        frontier.chroma_offset,
+        frontier.is_luma_part(),
+        frontier.is_chroma_part(),
+        frontier.b_size.index(),
+        frontier.chroma_ref_geometry().size().index(),
+        n4w,
+        n4h,
+    )
+}
+
+pub(super) fn tip_allowed_for_block_indices(
+    chroma_offset: bool,
+    is_luma_part: bool,
+    is_chroma_part: bool,
+    mi_size: usize,
+    chroma_mi_size: usize,
+    n4w: usize,
+    n4h: usize,
+) -> bool {
+    !chroma_offset
+        && !is_luma_part
+        && !is_chroma_part
+        && mi_size == chroma_mi_size
         && n4w >= 2
         && n4h >= 2
 }

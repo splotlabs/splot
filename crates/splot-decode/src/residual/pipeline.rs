@@ -13,9 +13,12 @@ use crate::bitstream::tile_payload::{
     SupportedChromaMode, SupportedNonDcLumaMode, TileBlockDecodedState, TileCdfSelector,
     TileCoeffContextState, TransformToolResidualPolicy, decode_general_intra_luma_partition_coeffs,
 };
+use crate::pipeline::reconstruct::IntraEdgeAvailability as EdgeAvail;
+use crate::pipeline::reconstruct::MiddleEdgeAvailability as MiddleAvail;
+use crate::pipeline::reconstruct::OneSidedAboveMrl as AboveMrl;
 use crate::prediction::intra::IntraLumaPlan;
 use crate::support::capability::missing_capability_message;
-use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
+use crate::tile::block_context::{BlockCtx, BlockRect, NeighbourAvailability, TxShape};
 
 const CHROMA_PLANES: [PlaneId; 2] = [PlaneId::U, PlaneId::V];
 const CHUNK_64_N4: usize = 16;
@@ -1147,13 +1150,21 @@ impl ResidualPlanePlan {
         self,
         block_ctx: BlockCtx,
         block_decoded: &TileBlockDecodedState,
-    ) -> crate::tile::block_context::NeighbourAvailability {
+    ) -> NeighbourAvailability {
         let neighbours = block_ctx.neighbours_from_block_decoded(PlaneId::Y, block_decoded);
         if self.zero_corners {
             neighbours.without_corners()
         } else {
             neighbours
         }
+    }
+
+    fn plane_neighbours(
+        self,
+        block_ctx: BlockCtx,
+        block_decoded: &TileBlockDecodedState,
+    ) -> NeighbourAvailability {
+        block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1210,10 +1221,7 @@ impl ResidualPlanePlan {
                     neighbours.num_above_right(),
                     neighbours.num_below_left(),
                     None,
-                    crate::pipeline::reconstruct::IntraEdgeAvailability {
-                        above: edges.has_above(),
-                        left: edges.has_left(),
-                    },
+                    EdgeAvail::new(edges.has_above(), edges.has_left()),
                     block_ctx.bit_depth(),
                 )
             }
@@ -1249,10 +1257,7 @@ impl ResidualPlanePlan {
                     use_tcq,
                     None,
                     block_ctx.bit_depth(),
-                    crate::pipeline::reconstruct::MiddleEdgeAvailability {
-                        above: edges.above,
-                        left: edges.left,
-                    },
+                    MiddleAvail { above: edges.above, left: edges.left },
                     edge_filters,
                 )
             }
@@ -1290,10 +1295,9 @@ impl ResidualPlanePlan {
                 use_tcq,
             } => {
                 let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
-                let mrl = crate::pipeline::reconstruct::OneSidedAboveMrl {
-                    mrl_index,
-                    above_mrl_index,
-                };
+                let edges = block_ctx.neighbours(PlaneId::Y);
+                let availability = EdgeAvail::new(edges.has_above(), edges.has_left());
+                let mrl = AboveMrl { mrl_index, above_mrl_index };
                 if secondary_mrl {
                     crate::pipeline::reconstruct::reconstruct_general_intra_mrl_secondary_above_block_into(
                         workspace,
@@ -1307,6 +1311,7 @@ impl ResidualPlanePlan {
                         neighbours.num_above_right(),
                         mrl,
                         use_tcq,
+                        availability,
                         block_ctx.bit_depth(),
                     )
                 } else {
@@ -1324,6 +1329,7 @@ impl ResidualPlanePlan {
                         mrl,
                         use_tcq,
                         None,
+                        availability,
                         block_ctx.bit_depth(),
                         crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
                     )
@@ -1383,6 +1389,7 @@ impl ResidualPlanePlan {
                         block_ctx.bit_depth(),
                     )
                 } else {
+                    let availability = EdgeAvail::new(edges.above, edges.left);
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_neighbour_block_into(
                         workspace,
                         coeffs,
@@ -1397,6 +1404,7 @@ impl ResidualPlanePlan {
                         crate::pipeline::reconstruct::OneSidedAboveMrl::default(),
                         use_tcq,
                         None,
+                        availability,
                         block_ctx.bit_depth(),
                         edge_filter,
                     )
@@ -1409,6 +1417,8 @@ impl ResidualPlanePlan {
                 use_tcq,
             } => {
                 let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
+                let edges = block_ctx.neighbours(PlaneId::Y);
+                let availability = EdgeAvail::new(edges.has_above(), edges.has_left());
                 if secondary_mrl {
                     crate::pipeline::reconstruct::reconstruct_general_intra_mrl_secondary_left_block_into(
                         workspace,
@@ -1423,6 +1433,7 @@ impl ResidualPlanePlan {
                         block_ctx.neighbours(PlaneId::Y).has_above(),
                         mrl_index,
                         use_tcq,
+                        availability.left,
                         block_ctx.bit_depth(),
                     )
                 } else {
@@ -1441,6 +1452,7 @@ impl ResidualPlanePlan {
                         mrl_index,
                         use_tcq,
                         None,
+                        availability,
                         block_ctx.bit_depth(),
                         crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
                     )
@@ -1521,6 +1533,7 @@ impl ResidualPlanePlan {
                         block_ctx.bit_depth(),
                     )
                 } else {
+                    let availability = EdgeAvail::new(edges.above, edges.left);
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_left_neighbour_block_into(
                         workspace,
                         coeffs,
@@ -1536,12 +1549,14 @@ impl ResidualPlanePlan {
                         0,
                         use_tcq,
                         None,
+                        availability,
                         block_ctx.bit_depth(),
                         edge_filter,
                     )
                 }
             }
             ResidualReconstructionPlan::LumaRectCardinal { direction, use_tcq } => {
+                let neighbours = block_ctx.neighbours(PlaneId::Y);
                 crate::pipeline::reconstruct::reconstruct_general_intra_cardinal_neighbour_block_into(
                     workspace,
                     coeffs,
@@ -1554,10 +1569,12 @@ impl ResidualPlanePlan {
                     qindex,
                     use_tcq,
                     None,
+                    EdgeAvail::new(neighbours.has_above(), neighbours.has_left()),
                     block_ctx.bit_depth(),
                 )
             }
             ResidualReconstructionPlan::LumaRectPaeth { use_tcq } => {
+                let neighbours = block_ctx.neighbours(PlaneId::Y);
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_paeth_neighbour_block_into(
                     workspace,
                     coeffs,
@@ -1568,12 +1585,12 @@ impl ResidualPlanePlan {
                     self.tx.height_log2(),
                     qindex,
                     use_tcq,
+                    EdgeAvail::new(neighbours.has_above(), neighbours.has_left()),
                     block_ctx.bit_depth(),
                 )
             }
             ResidualReconstructionPlan::ChromaOneSided { p_angle } => {
-                let neighbours =
-                    block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
+                let neighbours = self.plane_neighbours(block_ctx, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
                 let edges = crate::prediction::intra_edge::UnitEdges {
@@ -1592,6 +1609,7 @@ impl ResidualPlanePlan {
                     w,
                     h,
                 )?;
+                let availability = EdgeAvail::new(neighbours.has_above(), neighbours.has_left());
                 if p_angle < 90 {
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_neighbour_block_into(
                         workspace,
@@ -1607,6 +1625,7 @@ impl ResidualPlanePlan {
                         crate::pipeline::reconstruct::OneSidedAboveMrl::default(),
                         false,
                         None,
+                        availability,
                         block_ctx.bit_depth(),
                         edge_filter,
                     )
@@ -1626,14 +1645,14 @@ impl ResidualPlanePlan {
                         0,
                         false,
                         None,
+                        availability,
                         block_ctx.bit_depth(),
                         edge_filter,
                     )
                 }
             }
             ResidualReconstructionPlan::ChromaMiddle { p_angle } => {
-                let neighbours =
-                    block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
+                let neighbours = self.plane_neighbours(block_ctx, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
                 let edges = crate::prediction::intra_edge::UnitEdges {
@@ -1665,20 +1684,12 @@ impl ResidualPlanePlan {
                     false,
                     None,
                     block_ctx.bit_depth(),
-                    crate::pipeline::reconstruct::MiddleEdgeAvailability {
-                        above: edges.above,
-                        left: edges.left,
-                    },
+                    MiddleAvail { above: edges.above, left: edges.left },
                     edge_filters,
                 )
             }
             ResidualReconstructionPlan::Chroma { mode } => {
-                let neighbours =
-                    block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
-                let availability = crate::pipeline::reconstruct::IntraEdgeAvailability {
-                    above: neighbours.has_above(),
-                    left: neighbours.has_left(),
-                };
+                let neighbours = self.plane_neighbours(block_ctx, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_chroma_block_into(
                     workspace,
                     coeffs,
@@ -1693,7 +1704,7 @@ impl ResidualPlanePlan {
                     neighbours.num_below_left(),
                     intra_edge.enable_ibp
                         && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2),
-                    availability,
+                    EdgeAvail::new(neighbours.has_above(), neighbours.has_left()),
                     block_ctx.bit_depth(),
                 )
             }
@@ -1702,8 +1713,7 @@ impl ResidualPlanePlan {
                 cfl_ds_filter_index,
                 sb_mib,
             } => {
-                let neighbours =
-                    block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
+                let neighbours = self.plane_neighbours(block_ctx, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_chroma_cfl_block_into(
                     workspace,
                     coeffs,
@@ -1724,8 +1734,7 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::Rect { use_tcq } => {
                 let ibp_dc =
                     intra_edge.enable_ibp && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2);
-                let neighbours =
-                    block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
+                let neighbours = self.plane_neighbours(block_ctx, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_block_rect_with_availability_into(
                     workspace,
                     coeffs,
@@ -1737,10 +1746,7 @@ impl ResidualPlanePlan {
                     qindex,
                     use_tcq,
                     ibp_dc,
-                    crate::pipeline::reconstruct::IntraEdgeAvailability {
-                        above: neighbours.has_above(),
-                        left: neighbours.has_left(),
-                    },
+                    EdgeAvail::new(neighbours.has_above(), neighbours.has_left()),
                     block_ctx.bit_depth(),
                 )
             }

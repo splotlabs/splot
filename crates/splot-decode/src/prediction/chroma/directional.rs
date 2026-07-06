@@ -31,7 +31,7 @@ use crate::pipeline::reconstruct::*;
 /// dispatching on the resolved § 5.20.5.3 `UVMode`:
 ///
 /// - [`SupportedChromaMode::Dc`] delegates to the § 7.13.2.4 DC reconstruction
-///   ([`reconstruct_general_intra_block_into`]).
+///   ([`reconstruct_general_intra_block_rect_with_availability_into`]).
 /// - [`SupportedChromaMode::Smooth`] builds the § 7.13.2.1 `AboveRow` / `LeftCol`
 ///   edges from the partially-built frame's reconstructed neighbours (applying
 ///   the no-above / no-left / no-neighbour fallbacks), runs § 7.13.2.13 smooth
@@ -132,6 +132,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             log2_height,
             qindex,
             false,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::D135Follow | SupportedChromaMode::D135 if x == 0 && y == 0 => {
@@ -206,6 +207,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 None,
+                availability,
                 bit_depth,
             )
         }
@@ -222,6 +224,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 None,
+                availability,
                 bit_depth,
             )
         }
@@ -250,6 +253,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             qindex,
             false,
             None,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::D45Follow
@@ -273,6 +277,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             OneSidedAboveMrl::default(),
             false,
             None,
+            availability,
             bit_depth,
             OneSidedEdgeFilter::default(),
         ),
@@ -292,6 +297,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 0,     // mrl_index: chroma follow uses the immediate reference line
                 false,
                 None,
+                availability,
                 bit_depth,
                 OneSidedEdgeFilter::default(),
             )
