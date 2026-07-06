@@ -59,10 +59,11 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
     num4_above_right: usize,
     num4_below_left: usize,
     ibp_dc: bool,
+    availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     match mode {
-        SupportedChromaMode::Dc => reconstruct_general_intra_block_rect_into(
+        SupportedChromaMode::Dc => reconstruct_general_intra_block_rect_with_availability_into(
             workspace,
             block,
             plane_id,
@@ -73,6 +74,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             qindex,
             false,
             ibp_dc,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::Smooth => reconstruct_general_intra_chroma_smooth_into(
@@ -87,6 +89,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             IntraSmoothMode::Smooth,
             num4_above_right,
             num4_below_left,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::SmoothVertical => reconstruct_general_intra_chroma_smooth_into(
@@ -101,6 +104,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             IntraSmoothMode::SmoothVertical,
             num4_above_right,
             num4_below_left,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::SmoothHorizontal => reconstruct_general_intra_chroma_smooth_into(
@@ -115,6 +119,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             IntraSmoothMode::SmoothHorizontal,
             num4_above_right,
             num4_below_left,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::Paeth => reconstruct_general_intra_luma_paeth_neighbour_block_into(
@@ -409,9 +414,11 @@ fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
     smooth_mode: IntraSmoothMode,
     num4_above_right: usize,
     num4_below_left: usize,
+    availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    reconstruct_general_intra_smooth_over_edges_into(
+    let (available_left_samples, available_above_samples) = availability.available_sample_limits();
+    reconstruct_general_intra_smooth_over_available_edges_into(
         workspace,
         block,
         plane_id,
@@ -421,6 +428,8 @@ fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
         log2_height,
         qindex,
         smooth_mode,
+        available_left_samples,
+        available_above_samples,
         num4_above_right,
         num4_below_left,
         false,

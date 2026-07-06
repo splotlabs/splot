@@ -831,6 +831,25 @@ fn single_ref_ctx_counts_a_ref0_neighbour() {
 }
 
 #[test]
+fn single_ref_ctx_counts_refs_above_two() {
+    let mut grid = empty_grid();
+    record_inter_ref(&mut grid, 0, 0, 2, NeighbourYMode::NewMv, Mv::ZERO, true);
+    let block = block_at(0, N4_32);
+    let nctx = block_neighbour_ctx(&grid, &block);
+
+    assert_eq!(
+        nctx.single_ref_ctx(0, 3),
+        Some(0),
+        "ref-2 neighbour makes ref-0 count lower than later refs"
+    );
+    assert_eq!(
+        nctx.single_ref_ctx(1, 3),
+        Some(0),
+        "ref-2 neighbour makes ref-1 count lower than later refs"
+    );
+}
+
+#[test]
 fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
     let mut grid = empty_grid();
     let spatial = [-3_i64 << 16, 5 << 16, 65536 + 1024, -192, 448, 65536 - 2048];
@@ -1080,13 +1099,23 @@ fn warp_predicted_mv_projects_the_block_center() {
 }
 
 fn record_unit_inter(grid: &mut NeighbourMvGrid, r: usize, c: usize, mv: Mv) {
+    record_unit_inter_with_ref(grid, r, c, 0, mv);
+}
+
+fn record_unit_inter_with_ref(
+    grid: &mut NeighbourMvGrid,
+    r: usize,
+    c: usize,
+    ref_frame0: i8,
+    mv: Mv,
+) {
     grid.record_block(
         r,
         c,
         1,
         1,
         true,
-        0,
+        ref_frame0,
         None,
         NeighbourYMode::NewMv,
         mv,

@@ -471,9 +471,9 @@ fn simple_path_interintra_fixture_defers_fail_closed() {
     let Err(error) =
         decode_fixture_with_options(SIMPLE_INTERINTRA_10BIT_FIXTURE, &DecodeOptions::default())
     else {
-        panic!("the fixture pins the 10-bit Select-tx key-frame fail-closed defer");
+        panic!("the fixture pins the inter-intra fail-closed defer");
     };
-    assert_eq!(unsupported_reason(error), "unsupported_10bit_non_dc_intra");
+    assert_eq!(unsupported_reason(error), "inter_interintra_unimplemented");
 }
 
 #[test]
@@ -1170,7 +1170,7 @@ fn multiref_runtime_rejects_state_obu_after_inter_candidate_before_next_frame() 
 }
 
 #[test]
-fn four_frame_multiref_reaches_too_many_valid_references_gate() {
+fn four_frame_multiref_decodes_without_total_refs_gate() {
     let four_frame = append_multiref_third_frame_as_fourth_ivf_record();
     let options = DecodeOptions::default();
     let plan = plan_fixture(&four_frame, &options);
@@ -1179,14 +1179,12 @@ fn four_frame_multiref_reaches_too_many_valid_references_gate() {
         4,
         "test fixture must exercise the former total frame-count gate"
     );
-    let Err(error) = decode_frames_from_plan_on_pool(&four_frame, &options, &plan) else {
-        panic!("a fourth multiref frame must still fail closed before output");
-    };
-    assert_eq!(unsupported_reason(error), "inter_too_many_valid_references");
+    decode_frames_from_plan_on_pool(&four_frame, &options, &plan)
+        .expect("fourth multiref frame should decode after widening NumTotalRefs support");
 }
 
 #[test]
-fn multiref_runtime_does_not_preflight_future_ivf_records_before_reference_gate() {
+fn multiref_runtime_does_not_preflight_future_ivf_records_after_decodable_fourth_frame() {
     let future_state = append_future_state_record_after_fourth_multiref_candidate();
     let options = DecodeOptions::default();
     let plan = plan_fixture(&future_state, &options);
@@ -1195,10 +1193,9 @@ fn multiref_runtime_does_not_preflight_future_ivf_records_before_reference_gate(
         4,
         "test fixture keeps the malformed state-only IVF record after the fourth candidate"
     );
-    let Err(error) = decode_frames_from_plan_on_pool(&future_state, &options, &plan) else {
-        panic!("a fourth multiref frame must still fail closed before output");
-    };
-    assert_eq!(unsupported_reason(error), "inter_too_many_valid_references");
+    decode_frames_from_plan_on_pool(&future_state, &options, &plan).expect(
+        "malformed state-only IVF record after the fourth candidate should not be preflighted",
+    );
 }
 
 #[test]

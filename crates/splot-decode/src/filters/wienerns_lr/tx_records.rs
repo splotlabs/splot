@@ -342,7 +342,15 @@ impl CdefState {
         let strength = if strengths == 1 {
             0
         } else {
-            let ctx = self.cdef_index0_ctx_at(frontier.r, frontier.c, tile_offset)?;
+            let tile_row_start = work_unit.mi_row_range().start as usize;
+            let tile_col_start = work_unit.mi_col_range().start as usize;
+            let ctx = self.cdef_index0_ctx_at(
+                frontier.r,
+                frontier.c,
+                tile_row_start,
+                tile_col_start,
+                tile_offset,
+            )?;
             let cdef_index0 = read_tx_symbol(
                 work_unit,
                 symbols,
@@ -373,6 +381,8 @@ impl CdefState {
         &self,
         mi_row: usize,
         mi_col: usize,
+        tile_row_start: usize,
+        tile_col_start: usize,
         tile_offset: ByteOffset,
     ) -> Result<usize> {
         let unit_row = mi_row / CDEF_UNIT_MI;
@@ -380,14 +390,18 @@ impl CdefState {
         let mut ctx = 0usize;
         let mut cnt = 0usize;
 
-        if unit_col > 0 {
+        if mi_col
+            .checked_sub(CDEF_UNIT_MI)
+            .is_some_and(|left_col| left_col >= tile_col_start)
+        {
             if self.value(unit_row, unit_col - 1, tile_offset)? == Some(0) {
                 ctx += 1;
             }
             cnt += 1;
         }
-        if unit_row > 0
-            && unit_row / self.sb_size4_units() == (unit_row - 1) / self.sb_size4_units()
+        if let Some(above_row) = mi_row.checked_sub(CDEF_UNIT_MI)
+            && above_row >= tile_row_start
+            && mi_row / self.sb_size4 == above_row / self.sb_size4
         {
             if self.value(unit_row - 1, unit_col, tile_offset)? == Some(0) {
                 ctx += 1;
@@ -439,10 +453,6 @@ impl CdefState {
             .ok_or_else(|| {
                 selectable_decode_error(tile_offset, selectable_reason!("cdef_index_overflow"))
             })
-    }
-
-    const fn sb_size4_units(&self) -> usize {
-        self.sb_size4 / CDEF_UNIT_MI
     }
 
     pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<CdefUnitGrid> {

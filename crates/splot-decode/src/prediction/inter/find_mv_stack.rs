@@ -658,7 +658,7 @@ pub(crate) struct BlockNeighbourContext {
 }
 
 impl BlockNeighbourContext {
-    const MAX_NEIGHBOUR_REFS: usize = 2;
+    const MAX_NEIGHBOUR_REFS: usize = 7;
 
     /// AV2 § 8.3.2 `single_ref` context for `ref_idx`.
     pub(crate) fn single_ref_ctx(&self, ref_idx: usize, num_total_refs: usize) -> Option<usize> {

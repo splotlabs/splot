@@ -238,18 +238,43 @@ fn cdf_context_update_tile_id_is_validated_against_planned_grid() {
 }
 
 #[test]
-fn multiple_tiles_are_unsupported_before_work_units_are_retained() {
+fn multiple_tiles_are_retained_as_work_units() {
     let payload = [0x00, 0x80, 0x00];
     let framing = parse_tile_group_framing(&payload, 0, 1, 1, false);
-    let error = plan_tile_payload_boundary(&input(&payload, &framing, DecodeLimits::unlimited()))
-        .unwrap_err();
-    let unsupported = unsupported(&error);
+    let grid = TileGridFacts::new(2, 1, &[0, 16, 32], &[0, 8]);
+    let plan = plan_tile_payload_boundary(&input_with_grid(
+        &payload,
+        &framing,
+        grid,
+        DecodeLimits::unlimited(),
+    ))
+    .unwrap();
 
+    assert_eq!(plan.work_units().len(), 2);
+    let first = &plan.work_units()[0];
+    assert_eq!(first.tile_num(), 0);
+    assert_eq!(first.tile_row(), 0);
+    assert_eq!(first.tile_col(), 0);
+    assert_eq!(first.mi_row_range(), 0..8);
+    assert_eq!(first.mi_col_range(), 0..16);
+    assert_eq!(first.tile_bytes(), &[0x80]);
     assert_eq!(
-        unsupported.reason(),
-        TilePayloadUnsupportedReason::NonSingleTile
+        first.tile_byte_span(),
+        ByteSpan::new(ByteOffset::new(257), 1)
     );
-    assert_eq!(unsupported.tile_num(), None);
+    assert!(first.cdf().save_policy().copy_cdf());
+    let second = &plan.work_units()[1];
+    assert_eq!(second.tile_num(), 1);
+    assert_eq!(second.tile_row(), 0);
+    assert_eq!(second.tile_col(), 1);
+    assert_eq!(second.mi_row_range(), 0..8);
+    assert_eq!(second.mi_col_range(), 16..32);
+    assert_eq!(second.tile_bytes(), &[0x00]);
+    assert_eq!(
+        second.tile_byte_span(),
+        ByteSpan::new(ByteOffset::new(258), 1)
+    );
+    assert!(!second.cdf().save_policy().copy_cdf());
 }
 
 #[test]
@@ -270,7 +295,7 @@ fn inverted_tile_group_range_is_unsupported_without_work_units() {
 }
 
 #[test]
-fn single_nonzero_tile_num_is_unsupported_before_grid_lookup() {
+fn single_nonzero_tile_num_is_rejected_by_grid_lookup() {
     let payload = [0x80];
     let framing = parse_tile_group_framing(&payload, 1, 1, 1, false);
     assert_eq!(framing.tiles.len(), 1);
@@ -282,7 +307,7 @@ fn single_nonzero_tile_num_is_unsupported_before_grid_lookup() {
 
     assert_eq!(
         unsupported.reason(),
-        TilePayloadUnsupportedReason::MultipleTiles
+        TilePayloadUnsupportedReason::InvalidTileGrid
     );
     assert_eq!(unsupported.tile_num(), Some(1));
     assert_eq!(unsupported.byte_offset(), ByteOffset::new(256));
@@ -366,13 +391,11 @@ fn tile_payload_limit_is_per_framed_tile_not_group_payload() {
     assert!(framing.tiles.iter().all(|tile| tile.tile_size == 1));
 
     let limits = DecodeLimits::unlimited().with_max_tile_payload_bytes(MAX(1));
-    let error = plan_tile_payload_boundary(&input(&payload, &framing, limits)).unwrap_err();
-    let unsupported = unsupported(&error);
+    let grid = TileGridFacts::new(2, 1, &[0, 16, 32], &[0, 8]);
+    let plan =
+        plan_tile_payload_boundary(&input_with_grid(&payload, &framing, grid, limits)).unwrap();
 
-    assert_eq!(
-        unsupported.reason(),
-        TilePayloadUnsupportedReason::NonSingleTile
-    );
+    assert_eq!(plan.work_units().len(), 2);
 }
 
 #[test]

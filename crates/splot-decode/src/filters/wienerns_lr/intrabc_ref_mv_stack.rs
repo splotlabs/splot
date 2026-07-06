@@ -366,10 +366,13 @@ pub(crate) struct SpatialIntrabcScan {
     /// applied by [`intrabc_ref_stack_admission`] (threading the real
     /// `enable_drl_reorder` flag) before the stack is built.
     pub(crate) candidates: Vec<WeightedBv>,
+    /// Number of immediate-neighbour candidates present when § 7.12.2 step 15
+    /// captures `numNearest`. Later scan-col candidates stay outside the § 7.12.2.19
+    /// sort range.
+    pub(crate) nearest_len: usize,
     /// `true` when an unmodelled § 7.12.2 spatial position (an above-row probe
-    /// or the § 7.12.2.5 deltaCol = -3 non-adjacent scan) holds an IntrABC
-    /// neighbour: the scan cannot be reproduced faithfully there, so the caller
-    /// must over-reject (defer) rather than emit a desynced stack.
+    /// holds an IntrABC neighbour: the scan cannot be reproduced faithfully there,
+    /// so the caller must over-reject (defer) rather than emit a desynced stack.
     pub(crate) defer: bool,
 }
 
@@ -427,10 +430,20 @@ pub(crate) struct SpatialIntrabcScan {
 /// in scan ORDER (steps 7 → 8 → 9 → 10 → 11 → 12 → 14); the subsequent § 7.12.2.19
 /// max-weight-to-slot-0 reorder is applied by [`intrabc_ref_stack_admission`] (which
 /// threads the real `enable_drl_reorder` flag) before the stack is built.
+#[cfg(test)]
 pub(crate) fn spatial_intrabc_scan(
     geometry: SpatialScanGeometry,
     lookup: impl Fn(usize, usize) -> Option<Mv>,
     is_coded: impl Fn(usize, usize) -> bool,
+) -> SpatialIntrabcScan {
+    spatial_intrabc_scan_with_base_col(geometry, lookup, is_coded, |_, _| None)
+}
+
+pub(crate) fn spatial_intrabc_scan_with_base_col(
+    geometry: SpatialScanGeometry,
+    lookup: impl Fn(usize, usize) -> Option<Mv>,
+    is_coded: impl Fn(usize, usize) -> bool,
+    block_base_col: impl Fn(usize, usize) -> Option<usize>,
 ) -> SpatialIntrabcScan {
     let row = geometry.mi_row;
     let col = geometry.mi_col;
@@ -504,10 +517,16 @@ pub(crate) fn spatial_intrabc_scan(
         above.step14,
         OTHER_SMVP_WEIGHT,
     );
+    let nearest_len = candidates.len();
 
+    push_scan_col(&geometry, &lookup, &block_base_col, &mut candidates);
     let defer = spatial_scan_unmodelled_has_new_bv(&geometry, &lookup, &candidates, &above);
 
-    SpatialIntrabcScan { candidates, defer }
+    SpatialIntrabcScan {
+        candidates,
+        nearest_len,
+        defer,
+    }
 }
 
 /// The AV2 § 7.12.2.6 above-row SMVP probe columns this decoder places faithfully,
@@ -807,9 +826,83 @@ fn push_deduped(
     }
 }
 
+/// Places the AV2 § 7.12.2.5 scan-col candidates for `deltaCol = -3`.
+fn push_scan_col(
+    geometry: &SpatialScanGeometry,
+    lookup: &impl Fn(usize, usize) -> Option<Mv>,
+    block_base_col: &impl Fn(usize, usize) -> Option<usize>,
+    candidates: &mut Vec<WeightedBv>,
+) {
+    let mut delta_col = -3i64;
+    if geometry.n4w == 1 {
+        delta_col += i64::try_from(geometry.mi_col & 1).unwrap_or(0);
+    }
+    if let Some(bottom_row) = geometry.mi_row.checked_add(geometry.n4h.saturating_sub(1)) {
+        push_scan_col_point(
+            geometry,
+            lookup,
+            block_base_col,
+            candidates,
+            bottom_row,
+            delta_col,
+        );
+    }
+    if geometry.n4h > 1 {
+        push_scan_col_point(
+            geometry,
+            lookup,
+            block_base_col,
+            candidates,
+            geometry.mi_row,
+            delta_col,
+        );
+    }
+}
+
+fn push_scan_col_point(
+    geometry: &SpatialScanGeometry,
+    lookup: &impl Fn(usize, usize) -> Option<Mv>,
+    block_base_col: &impl Fn(usize, usize) -> Option<usize>,
+    candidates: &mut Vec<WeightedBv>,
+    mv_row: usize,
+    delta_col: i64,
+) {
+    let Some(mv_other_col) = geometry.mi_col.checked_sub(1) else {
+        return;
+    };
+    let Some(mv_col_i64) = i64::try_from(geometry.mi_col)
+        .ok()
+        .and_then(|col| col.checked_add(delta_col))
+    else {
+        return;
+    };
+    let Ok(mv_col) = usize::try_from(mv_col_i64) else {
+        return;
+    };
+    if mv_row >= geometry.mi_rows || mv_col >= geometry.mi_cols {
+        return;
+    }
+    let Some(candidate_base) = block_base_col(mv_row, mv_col) else {
+        return;
+    };
+    let Some(other_base) = block_base_col(mv_row, mv_other_col) else {
+        return;
+    };
+    if candidate_base == other_base {
+        return;
+    }
+    push_deduped(
+        geometry,
+        lookup,
+        candidates,
+        mv_row,
+        mv_col,
+        OTHER_SMVP_WEIGHT,
+    );
+}
+
 /// Whether any AV2 § 7.12.2 spatial position this decoder does NOT model exactly
-/// (the still-unmodelled above-row probes and the § 7.12.2.5 deltaCol = -3
-/// non-adjacent scan) holds an IntrABC neighbour
+/// (the still-unmodelled above-row probes) holds an IntrABC neighbour
 /// whose block vector is NOT already a modelled candidate. A duplicate block
 /// vector contributes nothing in AVM, so it does not force a defer; a new one
 /// would extend the stack unfaithfully, so it does.
@@ -857,22 +950,6 @@ fn spatial_scan_unmodelled_has_new_bv(
                         leftmost,
                         rightmost,
                         above.is_sb_border
-                    );
-                }
-                return true;
-            }
-        }
-    }
-    if let Some(deep_col) = col.checked_sub(3) {
-        let bottom = row.checked_add(geometry.n4h.saturating_sub(1));
-        let probes = [bottom, Some(row)];
-        for r in probes.into_iter().flatten() {
-            if let Some(mv) = lookup_in_grid(geometry, lookup, r, deep_col)
-                && is_new(Some(mv))
-            {
-                if trace {
-                    eprintln!(
-                        "intrabc ref_stack unmodelled_probe kind=deep_left mi=({row}, {col}) probe=({r}, {deep_col}) mv={mv:?} modelled={modelled:?}",
                     );
                 }
                 return true;
@@ -1075,11 +1152,12 @@ pub(crate) fn intrabc_ref_stack_admission(
     if spatial.defer {
         return IntrabcStackAdmission::Defer;
     }
-    let mut nearest: Vec<WeightedBv> = spatial.candidates.clone();
-    if drl_reorder.use_sort(nearest.len()) && nearest.len() > 1 {
-        sort_nearest_max_weight_to_slot0(&mut nearest);
+    let mut ordered: Vec<WeightedBv> = spatial.candidates.clone();
+    let nearest_len = spatial.nearest_len.min(ordered.len());
+    if drl_reorder.use_sort(nearest_len) && nearest_len > 1 {
+        sort_nearest_max_weight_to_slot0(&mut ordered[..nearest_len]);
     }
-    let sorted: Vec<Mv> = nearest.iter().map(|entry| entry.mv).collect();
+    let sorted: Vec<Mv> = ordered.iter().map(|entry| entry.mv).collect();
     let real_stack = build_intrabc_ref_mv_stack(bank, geometry, enable_refmvbank, &sorted);
     match real_stack.get(ref_mv_idx).copied() {
         Some(selected) => IntrabcStackAdmission::Admit { selected },
@@ -1241,6 +1319,7 @@ mod tests {
     fn no_spatial() -> SpatialIntrabcScan {
         SpatialIntrabcScan {
             candidates: Vec::new(),
+            nearest_len: 0,
             defer: false,
         }
     }
@@ -1301,6 +1380,7 @@ mod tests {
         bank.record_block(0, 232, 8, 16, true, Some(Mv { row: 0, col: -3072 }));
         let spatial = SpatialIntrabcScan {
             candidates: vec![adj(Mv { row: 0, col: -3072 })],
+            nearest_len: 1,
             defer: false,
         };
         let stack = build_intrabc_ref_mv_stack(
@@ -1338,6 +1418,7 @@ mod tests {
         let bank = IntrabcRefMvBank::new(32);
         let spatial = SpatialIntrabcScan {
             candidates: Vec::new(),
+            nearest_len: 0,
             defer: true,
         };
         assert_eq!(
@@ -1361,6 +1442,7 @@ mod tests {
                 wbv(Mv { row: 0, col: -64 }, 0),
                 wbv(Mv { row: -512, col: 0 }, 1),
             ],
+            nearest_len: 2,
             defer: false,
         };
         assert_eq!(
@@ -1400,6 +1482,7 @@ mod tests {
                 wbv(Mv { row: -1024, col: 0 }, 1),
                 wbv(Mv { row: -512, col: 0 }, 1),
             ],
+            nearest_len: 2,
             defer: false,
         };
         assert_eq!(
@@ -1421,6 +1504,7 @@ mod tests {
                 wbv(Mv { row: -1024, col: 0 }, 3),
                 wbv(Mv { row: -512, col: 0 }, 1),
             ],
+            nearest_len: 2,
             defer: false,
         };
         assert_eq!(
@@ -1448,6 +1532,7 @@ mod tests {
         ];
         let scan = SpatialIntrabcScan {
             candidates: candidates.clone(),
+            nearest_len: 2,
             defer: false,
         };
         assert_eq!(
@@ -1495,10 +1580,38 @@ mod tests {
     }
 
     #[test]
+    fn admission_sort_leaves_scan_col_tail_outside_nearest_prefix() {
+        let bank = IntrabcRefMvBank::new(32);
+        let scan = SpatialIntrabcScan {
+            candidates: vec![
+                wbv(Mv { row: 0, col: -64 }, 0),
+                wbv(Mv { row: -512, col: 0 }, 1),
+            ],
+            nearest_len: 1,
+            defer: false,
+        };
+        assert_eq!(
+            intrabc_ref_stack_admission(
+                &bank,
+                frontier_geometry(0, 240),
+                &scan,
+                false,
+                DrlReorderMode::Always,
+                0,
+            ),
+            IntrabcStackAdmission::Admit {
+                selected: Mv { row: 0, col: -64 },
+            },
+            "§7.12.2.19 sorts only the step-15 nearest prefix, not scan-col tail entries"
+        );
+    }
+
+    #[test]
     fn admission_admits_single_spatial_candidate() {
         let bank = IntrabcRefMvBank::new(32);
         let one = SpatialIntrabcScan {
             candidates: vec![adj(Mv { row: 0, col: -64 })],
+            nearest_len: 1,
             defer: false,
         };
         assert!(matches!(
@@ -1561,7 +1674,25 @@ mod tests {
             |row, col| (row == 4 && col == 5).then_some(Mv { row: 0, col: -512 }),
             |_, _| false,
         );
-        assert!(deep_left.defer);
+        assert!(deep_left.candidates.is_empty());
+        assert!(!deep_left.defer);
+        let scan_col = spatial_intrabc_scan_with_base_col(
+            geom,
+            |row, col| (row == 4 && col == 5).then_some(Mv { row: 0, col: -512 }),
+            |_, _| false,
+            |row, col| {
+                if row == 4 && col == 5 {
+                    Some(4)
+                } else if row == 4 && col == 7 {
+                    Some(6)
+                } else {
+                    None
+                }
+            },
+        );
+        assert_eq!(scan_col.candidates, vec![wbv(Mv { row: 0, col: -512 }, 0)]);
+        assert_eq!(scan_col.nearest_len, 0);
+        assert!(!scan_col.defer);
     }
 
     /// frontier frame-0 MI(32,56) geometry for the § 7.12.2.1 step-8 SB-border probe.

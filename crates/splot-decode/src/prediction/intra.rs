@@ -147,6 +147,7 @@ impl IntraLumaPlan {
                 )
             }
             Self::DirectionalMiddle { p_angle } => {
+                let neighbours = block_ctx.neighbours(PlaneId::Y);
                 crate::pipeline::reconstruct::reconstruct_general_intra_middle_neighbour_rect_block_into(
                     workspace,
                     luma,
@@ -160,6 +161,10 @@ impl IntraLumaPlan {
                     use_tcq,
                     None,
                     bit_depth,
+                    crate::pipeline::reconstruct::MiddleEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
                     crate::pipeline::reconstruct::TwoSidedMiddleEdgeFilters {
                         above: crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
                         left: crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
@@ -404,10 +409,7 @@ fn plan_directional_luma_angle(
         SupportedDirectionalLumaMode::D135 => {
             if is_top_left && is_full_sb {
                 Ok(IntraLumaPlan::DirectionalFirst { mode })
-            } else if full_sb_first_row
-                || full_sb_above_left
-                || (!is_top_left && has_above && has_left)
-            {
+            } else if full_sb_first_row || full_sb_above_left || (!is_top_left && has_left) {
                 Ok(IntraLumaPlan::DirectionalNeighbour { mode })
             } else if !is_top_left && has_above {
                 Err(UNSUPPORTED_MULTIROW_DIRECTIONAL)
@@ -827,6 +829,21 @@ mod tests {
                 width4: 8,
                 height4: 8,
                 frame_cols4: 480,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::D135),
+                expected: Expected::Plan(IntraLumaPlan::DirectionalNeighbour {
+                    mode: SupportedDirectionalLumaMode::D135,
+                }),
+            },
+            Case {
+                label: "d135 top row left-only subpartition",
+                bit_depth: BitDepth::Ten,
+                row4: 0,
+                col4: 9,
+                width4: 1,
+                height4: 1,
+                frame_cols4: 16,
                 dc: false,
                 nondc: None,
                 directional: Some(SupportedDirectionalLumaMode::D135),

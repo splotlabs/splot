@@ -34,7 +34,7 @@ use self::block_rows::{BlockCdfRows, BlockCdfSelector};
 pub(crate) use self::block_rows::{EobPtSize, MvCdfSelector};
 pub(crate) use self::coeff_rows::CoeffCdfSelector;
 pub(in crate::bitstream::tile_payload::cdf) use self::util::{
-    avg_cdf_row, avg_cdf_rows, scale_cdf_count, scale_cdf_rows,
+    avg_cdf_row, avg_cdf_rows, blend_cdf_row, blend_cdf_rows, scale_cdf_count, scale_cdf_rows,
 };
 use self::util::{
     checked_context, checked_plane, checked_square_split_plane, floor_log2, tx_partition_type_array,
@@ -188,6 +188,10 @@ impl FrameCdfSubset {
             .block
             .replicate_coeff_q_context(coeff_cdf_q_ctx_from_base_q_idx(base_q_idx))?;
         Ok(cdfs)
+    }
+
+    pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
+        self.rows.blend_from_saved(&saved.rows);
     }
 
     #[must_use]
@@ -532,6 +536,9 @@ pub(crate) enum TileCdfSelector {
         idx: usize,
         ctx: usize,
     },
+    TipMode {
+        ctx: usize,
+    },
     SingleRef {
         ctx: usize,
         ref_idx: usize,
@@ -680,6 +687,7 @@ pub(crate) enum TileCdfArray {
     WedgeDist1,
     WedgeDist2,
     DrlMode,
+    TipMode,
     SingleRef,
     CompMode,
     IsJoint,
@@ -791,6 +799,7 @@ crate::impl_reason_labels!(TileCdfArray {
     WedgeDist1 => "TileWedgeDist1Cdf",
     WedgeDist2 => "TileWedgeDist2Cdf",
     DrlMode => "TileDrlModeCdf",
+    TipMode => "TileTipModeCdf",
     SingleRef => "TileSingleRefCdf",
     CompMode => "TileCompModeCdf",
     IsJoint => "TileIsJointCdf",
@@ -1427,6 +1436,9 @@ macro_rules! tile_cdf_row {
             TileCdfSelector::DrlMode { idx, ctx } => $self
                 .block
                 .$block_row(BlockCdfSelector::DrlMode { idx, ctx }),
+            TileCdfSelector::TipMode { ctx } => {
+                $self.block.$block_row(BlockCdfSelector::TipMode { ctx })
+            }
             TileCdfSelector::SingleRef { ctx, ref_idx } => $self
                 .block
                 .$block_row(BlockCdfSelector::SingleRef { ctx, ref_idx }),
@@ -1626,6 +1638,53 @@ impl TileCdfRows {
         avg_rows!(segment_id_ext);
         avg_rows!(region_type);
         self.block.avg_from_tile(tile_num, &tile.block, num_log2);
+    }
+
+    fn blend_from_saved(&mut self, saved: &Self) {
+        macro_rules! blend_row {
+            ($field:ident) => {
+                blend_cdf_row(&mut self.$field, &saved.$field);
+            };
+        }
+        macro_rules! blend_rows {
+            ($field:ident $(. $flatten:ident())*) => {
+                blend_cdf_rows(
+                    self.$field.iter_mut()$(.$flatten())*,
+                    saved.$field.iter()$(.$flatten())*,
+                );
+            };
+        }
+
+        blend_rows!(do_split.flatten());
+        blend_rows!(do_ext_partition.flatten());
+        blend_rows!(do_square_split.flatten());
+        blend_rows!(rect_type.flatten());
+        blend_rows!(do_uneven_4way_partition.flatten());
+        blend_rows!(tx_do_partition.flatten().flatten());
+        blend_rows!(tx_2or3_partition_type.flatten().flatten());
+        blend_rows!(tx_partition_type.flatten().flatten());
+        blend_rows!(tx_partition_type_reduced.flatten().flatten());
+        blend_row!(delta_q);
+        blend_rows!(cdef_index0);
+        blend_rows!(ccso_blk.flatten());
+        blend_row!(cdef_index_minus1_with3);
+        blend_row!(cdef_index_minus1_with4);
+        blend_row!(cdef_index_minus1_with5);
+        blend_row!(cdef_index_minus1_with6);
+        blend_row!(cdef_index_minus1_with7);
+        blend_row!(cdef_index_minus1_with8);
+        blend_rows!(intrabc);
+        blend_row!(intrabc_mode);
+        blend_row!(intrabc_precision);
+        blend_rows!(morph_pred);
+        blend_rows!(fsc_mode.flatten());
+        blend_rows!(mrl_index);
+        blend_rows!(mrl_sec_index);
+        blend_rows!(seg_id_ext_flag);
+        blend_rows!(segment_id);
+        blend_rows!(segment_id_ext);
+        blend_rows!(region_type);
+        self.block.blend_from_saved(&saved.block);
     }
 
     #[cfg(test)]
@@ -1854,6 +1913,11 @@ impl TileCdfRows {
     #[cfg(test)]
     pub(crate) const fn comp_ref1(&self) -> &block_rows::CompRef1CdfRows {
         self.block.comp_ref1()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn tip_mode(&self) -> &block_rows::TipModeCdfRows {
+        self.block.tip_mode()
     }
 
     #[cfg(test)]

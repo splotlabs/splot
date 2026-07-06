@@ -48,7 +48,9 @@ pub(crate) use block_decoded_state::TileBlockDecodedState;
 pub(crate) use cdf::block_context::{
     IntraYMode, SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
 };
-pub(crate) use cdf::{FrameCdfSubset, MvCdfSelector, TileCdfSelector, TileCdfSubset};
+pub(crate) use cdf::{
+    FrameCdfSubset, MvCdfSelector, SavedCdfSubset, TileCdfSelector, TileCdfSubset,
+};
 pub(crate) use coeff_state::{CoeffContextReset, TileCoeffContextState};
 #[cfg(test)]
 pub(crate) use general_intra_block::GeneralIntraLumaBlockMode;
@@ -538,11 +540,6 @@ impl<'a> DecodeTileWorkUnit<'a> {
         &mut self.cdf
     }
 
-    pub(crate) fn apply_frame_end_cdf_update(&mut self) {
-        self.cdf.apply_completed_tile_to_saved(self.tile_num);
-        self.cdf.frame_end_update_cdf_subset();
-    }
-
     pub(crate) fn frame_cdfs(&self) -> FrameCdfSubset {
         self.cdf.frame_cdfs_clone()
     }
@@ -609,7 +606,6 @@ pub(crate) enum TilePayloadUnsupportedReason {
     DecodeTileSyntax,
     MissingCompleteIntraFirstTileGroup,
     NonSingleTile,
-    MultipleTiles,
     MultipleTileGroups,
     NonClosedLoopKey,
     NonIntraFrame,
@@ -622,7 +618,6 @@ crate::impl_reason_labels!(pub(crate) TilePayloadUnsupportedReason {
     DecodeTileSyntax => "decode_tile_syntax",
     MissingCompleteIntraFirstTileGroup => "missing_complete_intra_first_tile_group",
     NonSingleTile => "non_single_tile",
-    MultipleTiles => "multiple_tiles",
     MultipleTileGroups => "multiple_tile_groups",
     NonClosedLoopKey => "non_closed_loop_key",
     NonIntraFrame => "non_intra_frame",
@@ -638,7 +633,6 @@ impl TilePayloadUnsupportedReason {
             Self::DecodeTileSyntax => "5.20.2.1",
             Self::MissingCompleteIntraFirstTileGroup
             | Self::NonSingleTile
-            | Self::MultipleTiles
             | Self::MultipleTileGroups
             | Self::BridgeTile
             | Self::BruTileActivity => "5.20.1",
@@ -849,50 +843,18 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
             "BRU tile activity is outside the current tile payload boundary tier.",
         ));
     }
-    if input.framing.tiles.len() != 1 {
+    if input.framing.tiles.is_empty() {
         return Err(unsupported_boundary_without_tile(
             TilePayloadUnsupportedReason::NonSingleTile,
             input.payload_base,
-            "tile groups without exactly one tile are outside the current tile payload boundary tier.",
+            "tile groups without tile framing records are outside the current tile payload boundary tier.",
         ));
     }
 
-    let tile = input.framing.tiles[0];
-    if tile.tile_num != 0 || input.grid.tile_cols != 1 || input.grid.tile_rows != 1 {
-        return Err(unsupported_boundary_with_tile(
-            TilePayloadUnsupportedReason::MultipleTiles,
-            tile.tile_num,
-            input.payload_base,
-            tile.tile_data_offset,
-            "only TileNum 0 in a one-tile frame is inside the current tile payload boundary tier.",
-        )?);
-    }
-
-    let (tile_row, tile_col, mi_row_range, mi_col_range) = grid_ranges(
-        input.grid,
-        tile.tile_num,
-        input.payload_base,
-        tile.tile_data_offset,
-    )?;
-    let tile_bytes = tile_slice(
-        input.payload,
-        tile.tile_num,
-        tile.tile_data_offset,
-        tile.tile_size,
-    )?;
-    let absolute_tile_offset = checked_tile_byte_offset(input.payload_base, tile.tile_data_offset)?;
-    let tile_byte_span = checked_tile_byte_span(absolute_tile_offset, tile.tile_size)?;
     let cdf_update_mode = if input.frame.disable_cdf_update {
         CdfUpdateMode::Disabled
     } else {
         CdfUpdateMode::Enabled
-    };
-    let config = SymbolDecoderConfig::new().with_cdf_update_mode(cdf_update_mode);
-    let symbol = SymbolDecoder::with_base_and_config(tile_bytes, absolute_tile_offset, config)?;
-    let symbol = SymbolInitBoundary {
-        consumed_bits: symbol.consumed_bits().get(),
-        symbol_max_bits: symbol.symbol_max_bits(),
-        cdf_update_mode,
     };
     let frame_cdfs = match &input.frame.initial_cdfs {
         Some(cdfs) => cdfs.clone(),
@@ -902,36 +864,61 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         .frame
         .cdf_policy
         .with_tile_grid(input.grid.tile_cols, input.grid.tile_rows);
-    let save_policy = tile_cdf_save_policy(cdf_policy, tile.tile_num)?;
-    let cdf = TileCdfWorkUnitBoundary::new(cdf_update_mode, save_policy, frame_cdfs);
-    let work_unit = DecodeTileWorkUnit {
-        source: input.source,
-        selected_layer: input.selected_layer,
-        tile_num: tile.tile_num,
-        tile_row,
-        tile_col,
-        mi_row_range,
-        mi_col_range,
-        tile_bytes,
-        tile_byte_span,
-        tile_size: tile.tile_size,
-        current_q_index_at_entry: input.frame.base_q_idx,
-        coeff_frame_facts: input.frame.coeff_frame_facts,
-        bru_path: input.frame.bru_path,
-        symbol,
-        cdf,
-    };
+    let mut work_units = Vec::with_capacity(input.framing.tiles.len());
+    for tile in &input.framing.tiles {
+        let (tile_row, tile_col, mi_row_range, mi_col_range) = grid_ranges(
+            input.grid,
+            tile.tile_num,
+            input.payload_base,
+            tile.tile_data_offset,
+        )?;
+        let tile_bytes = tile_slice(
+            input.payload,
+            tile.tile_num,
+            tile.tile_data_offset,
+            tile.tile_size,
+        )?;
+        let absolute_tile_offset =
+            checked_tile_byte_offset(input.payload_base, tile.tile_data_offset)?;
+        let tile_byte_span = checked_tile_byte_span(absolute_tile_offset, tile.tile_size)?;
+        let config = SymbolDecoderConfig::new().with_cdf_update_mode(cdf_update_mode);
+        let symbol = SymbolDecoder::with_base_and_config(tile_bytes, absolute_tile_offset, config)?;
+        let symbol = SymbolInitBoundary {
+            consumed_bits: symbol.consumed_bits().get(),
+            symbol_max_bits: symbol.symbol_max_bits(),
+            cdf_update_mode,
+        };
+        let save_policy = tile_cdf_save_policy(cdf_policy, tile.tile_num)?;
+        let cdf = TileCdfWorkUnitBoundary::new(cdf_update_mode, save_policy, frame_cdfs.clone());
+        work_units.push(DecodeTileWorkUnit {
+            source: input.source,
+            selected_layer: input.selected_layer,
+            tile_num: tile.tile_num,
+            tile_row,
+            tile_col,
+            mi_row_range,
+            mi_col_range,
+            tile_bytes,
+            tile_byte_span,
+            tile_size: tile.tile_size,
+            current_q_index_at_entry: input.frame.base_q_idx,
+            coeff_frame_facts: input.frame.coeff_frame_facts,
+            bru_path: input.frame.bru_path,
+            symbol,
+            cdf,
+        });
+    }
     let unsupported = TilePayloadUnsupported::new(
         TilePayloadUnsupportedReason::DecodeTileSyntax,
-        Some(tile.tile_num),
-        absolute_tile_offset,
+        Some(work_units[0].tile_num),
+        work_units[0].tile_byte_span.start,
         "tile bytes are framed, symbol initialization is bounded, and the first partition CDF subset is selectable, but §5.20.2.1 decode_tile() block syntax is not implemented yet.",
     );
 
     Ok(DecodeTilePayloadPlan {
         source: input.source,
         selected_layer: input.selected_layer,
-        work_units: vec![work_unit],
+        work_units,
         unsupported,
         frame_end: FrameEndBoundary::deferred(input.frame.is_last_tile_group),
     })

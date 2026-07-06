@@ -223,6 +223,10 @@ pub(crate) struct BlockCtx {
     chroma_ref: Option<(BlockRect, TxShape)>,
     frame_mi_cols: usize,
     frame_mi_rows: usize,
+    tile_mi_col_start: usize,
+    tile_mi_col_end: usize,
+    tile_mi_row_start: usize,
+    tile_mi_row_end: usize,
     bit_depth: BitDepth,
     chroma: ChromaSampling,
 }
@@ -242,6 +246,10 @@ impl BlockCtx {
             chroma_ref: None,
             frame_mi_cols,
             frame_mi_rows,
+            tile_mi_col_start: 0,
+            tile_mi_col_end: frame_mi_cols,
+            tile_mi_row_start: 0,
+            tile_mi_row_end: frame_mi_rows,
             bit_depth,
             chroma,
         }
@@ -261,6 +269,28 @@ impl BlockCtx {
 
     pub(crate) const fn frame_mi_rows(self) -> usize {
         self.frame_mi_rows
+    }
+
+    pub(crate) fn with_tile_bounds(
+        mut self,
+        row_start: usize,
+        row_end: usize,
+        col_start: usize,
+        col_end: usize,
+    ) -> Self {
+        self.tile_mi_row_start = row_start.min(self.frame_mi_rows);
+        self.tile_mi_row_end = row_end.min(self.frame_mi_rows).max(self.tile_mi_row_start);
+        self.tile_mi_col_start = col_start.min(self.frame_mi_cols);
+        self.tile_mi_col_end = col_end.min(self.frame_mi_cols).max(self.tile_mi_col_start);
+        self
+    }
+
+    pub(crate) const fn with_tile_bounds_from(mut self, other: Self) -> Self {
+        self.tile_mi_col_start = other.tile_mi_col_start;
+        self.tile_mi_col_end = other.tile_mi_col_end;
+        self.tile_mi_row_start = other.tile_mi_row_start;
+        self.tile_mi_row_end = other.tile_mi_row_end;
+        self
     }
 
     pub(crate) const fn chroma(self) -> ChromaSampling {
@@ -292,11 +322,16 @@ impl BlockCtx {
         let (block, _) = self.plane_geometry(plane);
         let plane_block = self.plane_block(plane);
         let (sub_x, _) = self.chroma.subsampling(plane);
-        let above_decoded_cols = self.frame_mi_cols.saturating_sub(block.col4) >> sub_x;
+        let above_decoded_cols = self.tile_mi_col_end.saturating_sub(block.col4) >> sub_x;
         let num_above_right = above_decoded_cols
             .saturating_sub(plane_block.width4())
             .min(plane_block.width4());
-        NeighbourAvailability::new(block.has_above(), block.has_left(), num_above_right, 0)
+        NeighbourAvailability::new(
+            block.row4 > self.tile_mi_row_start,
+            block.col4 > self.tile_mi_col_start,
+            num_above_right,
+            0,
+        )
     }
 
     pub(crate) fn neighbours_from_block_decoded(
@@ -311,8 +346,8 @@ impl BlockCtx {
         let x4 = (block.col4 & sb_mask) >> sub_x;
         let y4 = (block.row4 & sb_mask) >> sub_y;
         NeighbourAvailability::new(
-            block.has_above(),
-            block.has_left(),
+            block.row4 > self.tile_mi_row_start,
+            block.col4 > self.tile_mi_col_start,
             block_decoded.count_top_right_avail(plane.index(), x4, y4, plane_block.width4()),
             block_decoded.count_bottom_left_avail(plane.index(), x4, y4, plane_block.height4()),
         )
@@ -409,5 +444,25 @@ mod tests {
         assert!(!neighbours.has_left());
         assert_eq!(neighbours.num_above_right(), 8);
         assert_eq!(neighbours.num_below_left(), 0);
+    }
+
+    #[test]
+    fn tile_bounds_make_tile_start_edges_unavailable() {
+        let tile_start = ctx(0, 16, 16, 16).with_tile_bounds(0, 16, 16, 32);
+        let neighbours = tile_start.neighbours(PlaneId::Y);
+
+        assert!(!neighbours.has_above());
+        assert!(!neighbours.has_left());
+        assert_eq!(neighbours.num_above_right(), 0);
+    }
+
+    #[test]
+    fn tile_bounds_clip_above_right_to_tile_end() {
+        let within_tile = ctx(8, 16, 8, 8).with_tile_bounds(0, 16, 16, 24);
+        let neighbours = within_tile.neighbours(PlaneId::Y);
+
+        assert!(neighbours.has_above());
+        assert!(!neighbours.has_left());
+        assert_eq!(neighbours.num_above_right(), 0);
     }
 }

@@ -16,7 +16,9 @@ use splot_core::tables::cdf::{
     DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF, DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF,
 };
 
-use super::super::{CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_rows, scale_cdf_rows};
+use super::super::{
+    CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_rows, blend_cdf_rows, scale_cdf_rows,
+};
 
 const MV_CONTEXTS: usize = 2;
 const SHELL_OFFSET_LOW_CLASS_BANKS: usize = 2;
@@ -352,6 +354,19 @@ impl MvCdfRows {
         }
 
         visit_mv_cdf_rows!(avg_rows);
+    }
+
+    pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
+        macro_rules! blend_rows {
+            ($field:ident $(. $flatten:ident())*) => {
+                blend_cdf_rows(
+                    self.$field.iter_mut()$(.$flatten())*,
+                    saved.$field.iter()$(.$flatten())*,
+                );
+            };
+        }
+
+        visit_mv_cdf_rows!(blend_rows);
     }
 
     pub(crate) fn scale_counts(&mut self) {

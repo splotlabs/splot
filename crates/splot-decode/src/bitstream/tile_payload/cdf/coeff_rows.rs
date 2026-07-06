@@ -16,7 +16,7 @@ use splot_core::tables::cdf::{
     DEFAULT_IDTX_SIGN_CDF,
 };
 
-use super::{TileCdfArray, TileCdfError, avg_cdf_rows, scale_cdf_rows};
+use super::{TileCdfArray, TileCdfError, avg_cdf_rows, blend_cdf_rows, scale_cdf_rows};
 
 fn replicate_q_context_rows<T: Copy, const N: usize>(rows: &mut [T; N], q: usize) {
     for idx in 0..N {
@@ -549,6 +549,27 @@ macro_rules! scale_row_family {
     };
 }
 
+macro_rules! blend_row_family {
+    (2, $self:ident, $saved:ident, $field:ident) => {
+        blend_cdf_rows(
+            $self.$field.iter_mut().flatten(),
+            $saved.$field.iter().flatten(),
+        );
+    };
+    (3, $self:ident, $saved:ident, $field:ident) => {
+        blend_cdf_rows(
+            $self.$field.iter_mut().flatten().flatten(),
+            $saved.$field.iter().flatten().flatten(),
+        );
+    };
+    (4, $self:ident, $saved:ident, $field:ident) => {
+        blend_cdf_rows(
+            $self.$field.iter_mut().flatten().flatten().flatten(),
+            $saved.$field.iter().flatten().flatten().flatten(),
+        );
+    };
+}
+
 impl CoeffCdfRows {
     pub(crate) fn row(&self, selector: CoeffCdfSelector) -> Result<&[i32], TileCdfError> {
         coeff_cdf_row!(self, selector, as_slice)
@@ -578,6 +599,25 @@ impl CoeffCdfRows {
         avg_row_family!(2, self, tile, tile_num, num_log2, coeff_br_lf);
         avg_row_family!(3, self, tile, tile_num, num_log2, coeff_br_idtx);
         avg_row_family!(3, self, tile, tile_num, num_log2, idtx_sign);
+    }
+
+    pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
+        blend_row_family!(4, self, saved, coeff_base);
+        blend_row_family!(2, self, saved, coeff_base_ph);
+        blend_row_family!(2, self, saved, coeff_base_uv);
+        blend_row_family!(4, self, saved, coeff_base_lf);
+        blend_row_family!(2, self, saved, coeff_base_lf_uv);
+        blend_row_family!(3, self, saved, coeff_base_eob);
+        blend_row_family!(2, self, saved, coeff_base_eob_uv);
+        blend_row_family!(3, self, saved, coeff_base_bob);
+        blend_row_family!(3, self, saved, coeff_base_idtx);
+        blend_row_family!(3, self, saved, coeff_base_lf_eob);
+        blend_row_family!(2, self, saved, coeff_base_lf_eob_uv);
+        blend_row_family!(2, self, saved, coeff_br);
+        blend_row_family!(2, self, saved, coeff_br_uv);
+        blend_row_family!(2, self, saved, coeff_br_lf);
+        blend_row_family!(3, self, saved, coeff_br_idtx);
+        blend_row_family!(3, self, saved, idtx_sign);
     }
 
     pub(crate) fn scale_counts_for_frame_end_update(&mut self) {

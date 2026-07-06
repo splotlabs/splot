@@ -126,7 +126,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
 
     // Enforce DecodeLimits before allocating the workspace, as the inter path does.
     let tile_size = {
-        let mut tile_plan = derive_tile_plan(
+        let tile_plan = derive_tile_plan(
             plan,
             candidate,
             bytes,
@@ -135,14 +135,18 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
             core,
             options,
         )?;
-        let [tile] = tile_plan.work_units_mut() else {
-            return Err(unsupported_at(
-                "frame_engine_intra_tile_work_units",
-                offset,
-                "intra frame decode requires exactly one tile work unit",
-            ));
-        };
-        tile.tile_size()
+        tile_plan
+            .work_units()
+            .iter()
+            .map(crate::bitstream::tile_payload::DecodeTileWorkUnit::tile_size)
+            .max()
+            .ok_or_else(|| {
+                unsupported_at(
+                    "frame_engine_intra_tile_work_units",
+                    offset,
+                    "intra frame decode requires at least one tile work unit",
+                )
+            })?
     };
     ensure_runtime_limits(
         options.limits(),

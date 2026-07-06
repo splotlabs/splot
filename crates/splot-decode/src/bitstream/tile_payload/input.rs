@@ -566,7 +566,9 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
     input
         .limits
         .ensure(DecodeLimitName::MaxTileCount, group_tile_count)?;
-    if structure.tg_start != 0 || structure.tg_end != 0 {
+    let total_tiles = u64::from(input.facts.tile_cols) * u64::from(input.facts.tile_rows);
+    if total_tiles == 0 || structure.tg_start != 0 || u64::from(structure.tg_end) + 1 != total_tiles
+    {
         return Err(FrameCandidateTileBoundaryError::Unsupported {
             reason: FrameCandidateTileUnsupportedReason::NonSingleTileGroup,
         });
@@ -783,11 +785,6 @@ fn validate_supported_position(
                 reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
             });
         }
-    }
-    if facts.tile_cols != 1 || facts.tile_rows != 1 {
-        return Err(FrameCandidateTileBoundaryError::Unsupported {
-            reason: FrameCandidateTileUnsupportedReason::NonSingleTileGroup,
-        });
     }
     Ok(())
 }

@@ -6,7 +6,7 @@
 //! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraCardinalDirection,
+    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraCardinalDirection, IntraDcEdges,
     IntraDirectionalAngle, IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges,
     IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraMiddleDirectionalAngleIdifMrlEdges, IntraPaethEdges,
@@ -34,6 +34,28 @@ use crate::bitstream::tile_payload::{
 };
 pub(crate) use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_block_into;
 pub(crate) use crate::prediction::chroma::directional::reconstruct_general_intra_chroma_block_into;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct IntraEdgeAvailability {
+    pub(crate) above: bool,
+    pub(crate) left: bool,
+}
+
+impl IntraEdgeAvailability {
+    pub(crate) const fn all() -> Self {
+        Self {
+            above: true,
+            left: true,
+        }
+    }
+
+    pub(crate) const fn available_sample_limits(self) -> (Option<usize>, Option<usize>) {
+        (
+            if self.left { None } else { Some(0) },
+            if self.above { None } else { Some(0) },
+        )
+    }
+}
 
 /// Creates an empty decoded frame workspace sized to the actual
 /// `luma_width` x `luma_height` (a positive multiple of 64) for incremental
@@ -124,7 +146,7 @@ pub(crate) fn reconstruct_general_intra_block_into<T: ReconSample>(
 /// so later blocks read it as a neighbour. Chroma never uses the §7.14.4 TCQ
 /// `dqDenom` term (luma DCT_DCT only).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
@@ -135,6 +157,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
     qindex: u32,
     use_tcq: bool,
     ibp_dc: bool,
+    availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
@@ -143,10 +166,14 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
-    let dc = predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?;
+    let dc_edges = IntraDcEdges::new(
+        availability.left.then(|| edges.left_samples()).flatten(),
+        availability.above.then(|| edges.above_samples()).flatten(),
+    );
+    let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
     let prediction = if ibp_dc {
         let mut pred = vec![dc; width * height];
-        apply_intra_ibp_dc_rect(bit_depth, block_size, edges.as_dc_edges(), &mut pred, width)?;
+        apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, &mut pred, width)?;
         pred
     } else {
         vec![dc; width * height]
@@ -403,12 +430,51 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSamp
     luma_context: Option<LumaTransformTypeContext>,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    reconstruct_general_intra_luma_smooth_rect_block_with_availability_into(
+        workspace,
+        block,
+        mode,
+        x,
+        y,
+        log2_width,
+        log2_height,
+        qindex,
+        use_tcq,
+        num4_above_right,
+        num4_below_left,
+        luma_context,
+        IntraEdgeAvailability::all(),
+        bit_depth,
+    )
+}
+
+/// Reconstructs one rectangular luma smooth block with caller-owned edge availability.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_with_availability_into<
+    T: ReconSample,
+>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    mode: SupportedNonDcLumaMode,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    use_tcq: bool,
+    num4_above_right: usize,
+    num4_below_left: usize,
+    luma_context: Option<LumaTransformTypeContext>,
+    availability: IntraEdgeAvailability,
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
     let smooth_mode = match mode {
         SupportedNonDcLumaMode::Smooth => IntraSmoothMode::Smooth,
         SupportedNonDcLumaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
         SupportedNonDcLumaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
     };
-    reconstruct_general_intra_smooth_over_edges_into(
+    let (available_left_samples, available_above_samples) = availability.available_sample_limits();
+    reconstruct_general_intra_smooth_over_available_edges_into(
         workspace,
         block,
         PlaneId::Y,
@@ -418,49 +484,8 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSamp
         log2_height,
         qindex,
         smooth_mode,
-        num4_above_right,
-        num4_below_left,
-        use_tcq,
-        luma_context,
-        bit_depth,
-    )
-}
-
-/// Reconstructs one § 7.13.2.13 smooth block (`SMOOTH_PRED` / `SMOOTH_V_PRED` /
-/// `SMOOTH_H_PRED`) over § 7.13.2.1 edges read from the partially-built frame's
-/// reconstructed neighbours, for any plane. The § 7.13.2.1 edge derivation is
-/// plane-independent (it reads the workspace neighbour samples and applies the
-/// no-above / no-left / no-neighbour fallbacks); the caller selects the smooth
-/// mode and whether luma TCQ dequant applies.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_smooth_over_edges_into<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
-    plane_id: PlaneId,
-    x: usize,
-    y: usize,
-    log2_width: u32,
-    log2_height: u32,
-    qindex: u32,
-    smooth_mode: IntraSmoothMode,
-    num4_above_right: usize,
-    num4_below_left: usize,
-    use_tcq: bool,
-    luma_context: Option<LumaTransformTypeContext>,
-    bit_depth: BitDepth,
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    reconstruct_general_intra_smooth_over_available_edges_into(
-        workspace,
-        block,
-        plane_id,
-        x,
-        y,
-        log2_width,
-        log2_height,
-        qindex,
-        smooth_mode,
-        None,
-        None,
+        available_left_samples,
+        available_above_samples,
         num4_above_right,
         num4_below_left,
         use_tcq,
@@ -1108,6 +1133,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
     bit_depth: BitDepth,
+    availability: MiddleEdgeAvailability,
     filters: TwoSidedMiddleEdgeFilters,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
@@ -1117,9 +1143,16 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let left_samples = availability.left.then(|| edges.left_samples()).flatten();
+    let above_samples = availability.above.then(|| edges.above_samples()).flatten();
+    if (availability.left && left_samples.is_none())
+        || (availability.above && above_samples.is_none())
+    {
+        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+    }
     let mut prediction = vec![T::default(); width * height];
 
-    if edges.left_samples().is_some() && edges.above_samples().is_some() {
+    if left_samples.is_some() && above_samples.is_some() {
         let above_row = y
             .checked_sub(1)
             .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
@@ -1156,18 +1189,30 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         }
     } else {
         let (left, above) = build_directional_middle_rect_edges(
-            edges.left_samples(),
-            edges.above_samples(),
+            left_samples,
+            above_samples,
             None,
-            edges.left_samples().is_some(),
-            edges.above_samples().is_some(),
+            availability.left,
+            availability.above,
             width,
             height,
             bit_depth,
         )?;
         if matches!(plane_id, PlaneId::Y) {
-            let (left_idif, above_idif) =
-                extend_directional_middle_idif_edges(&left, &above, bit_depth);
+            let left_idif = if availability.left {
+                build_two_sided_middle_idif_edge(height, filters.left, left[0], |i| {
+                    Ok::<T, splot_recon::ReconError>(left[i + 1])
+                })?
+            } else {
+                extend_one_middle_idif_edge(&left, bit_depth)
+            };
+            let above_idif = if availability.above {
+                build_two_sided_middle_idif_edge(width, filters.above, above[0], |i| {
+                    Ok::<T, splot_recon::ReconError>(above[i + 1])
+                })?
+            } else {
+                extend_one_middle_idif_edge(&above, bit_depth)
+            };
             predict_intra_middle_directional_angle_rect_idif_into(
                 bit_depth,
                 block_size,
@@ -2477,6 +2522,15 @@ pub(crate) struct TwoSidedMiddleEdgeFilters {
     pub above: OneSidedEdgeFilter,
     /// § 7.13.2.7 filter for the left edge (`angleLeft`, `filterTypeLeft`).
     pub left: OneSidedEdgeFilter,
+}
+
+/// Tile-aware § 7.13.2.1 availability for a middle directional transform unit.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MiddleEdgeAvailability {
+    /// The transform has valid above samples inside the active tile.
+    pub above: bool,
+    /// The transform has valid left samples inside the active tile.
+    pub left: bool,
 }
 
 /// Reconstructs one neighbour-having § 7.13.2.8 ZONE-2 (middle, `90 < pAngle < 180`)

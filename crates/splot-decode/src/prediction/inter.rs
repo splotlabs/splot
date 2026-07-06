@@ -146,21 +146,6 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         ));
     }
 
-    let uses_temporal_mvs = core
-        .inter
-        .as_ref()
-        .and_then(|inter| inter.use_ref_frame_mvs)
-        == Some(true);
-    let has_retained_inter_reference = reference.ref_is_inter.iter().any(|&is_inter| is_inter);
-    if uses_temporal_mvs && has_retained_inter_reference {
-        return Err(inter_cap!(
-            "inter_temporal_mvs_unmodeled",
-            offset,
-            "inter.temporal_mvs.with_retained_inter_reference",
-            SPEC_MV
-        ));
-    }
-
     let frame_size = core.frame_size.ok_or_else(|| {
         inter_missing!(
             "inter_missing_frame_size",
@@ -185,11 +170,11 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         .as_ref()
         .ok_or_else(|| inter_missing!("inter_missing_tail", offset, "inter.tail", SPEC_HEADER))?;
     let num_total_refs = inter.num_total_refs.unwrap_or(0);
-    if num_total_refs != 1 && num_total_refs != 2 {
+    if !(1..=7).contains(&num_total_refs) {
         return Err(inter_cap!(
             "inter_unsupported_num_total_refs",
             offset,
-            "inter.single_ref.num_total_refs not in 1..=2",
+            "inter.single_ref.num_total_refs not in 1..=7",
             SPEC_MODE_INFO
         ));
     }
@@ -433,14 +418,14 @@ fn resolve_initial_frame_cdfs(
             blend: None,
         } => reference.cdfs_for_slot(primary, offset),
         ResolvedCdfLoad::LoadSlot {
-            primary: _,
-            blend: Some(_),
-        } => Err(inter_cap!(
-            "inter_blend_cdf_unmodeled",
-            offset,
-            "inter.cdf.blend_saved",
-            SPEC_HEADER
-        )),
+            primary,
+            blend: Some(blend),
+        } => {
+            let mut cdfs = reference.cdfs_for_slot(primary, offset)?;
+            let blend_cdfs = reference.cdfs_for_slot(blend, offset)?;
+            cdfs.blend_from_saved(&blend_cdfs);
+            Ok(cdfs)
+        }
     }
 }
 
@@ -956,101 +941,6 @@ fn validate_inter_frame_core(
             .inter_tail
             .as_ref()
             .is_none_or(|tail| tail.apply_grain || tail.skip_mode_present);
-    if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_FRAME_TOOLS") {
-        eprintln!(
-            "inter tools offset={} flex_mvres={:?} allow_tcq={:?} inter_ddt={:?} base_q={:?} segmentation={:?} qmatrix={:?} delta_q={:?} lossless={:?} deblock={:?} gdf={:?} cdef={:?} lr={:?} ccso={:?} tail={:?}",
-            offset.get(),
-            sequence.inter.as_ref().map(|inter| inter.enable_flex_mvres),
-            core.lossless_info
-                .as_ref()
-                .map(|lossless| lossless.allow_tcq),
-            sequence
-                .transform_quant_entropy
-                .as_ref()
-                .map(|tq| tq.enable_inter_ddt),
-            core.quantization_params.map(|quant| quant.base_q_idx),
-            core.segmentation_params
-                .as_ref()
-                .map(|seg| seg.segmentation_enabled),
-            core.setup_qm_params.as_ref().map(|qm| qm.using_qmatrix),
-            core.delta_q_params
-                .as_ref()
-                .map(|delta| delta.delta_q_present),
-            core.lossless_info
-                .as_ref()
-                .map(|lossless| lossless.coded_lossless),
-            core.deblocking_filter_params
-                .as_ref()
-                .map(|filter| filter.apply_deblocking_filter),
-            core.gdf_params.as_ref().map(|gdf| gdf.gdf_frame_enable),
-            core.cdef_params.as_ref().map(|cdef| cdef.cdef_frame_enable),
-            core.lr_params.as_ref().map(|lr| lr.uses_lr),
-            core.ccso_params
-                .as_ref()
-                .map(|ccso| (ccso.ccso_frame_flag, ccso.planes.len())),
-            core.inter_tail.as_ref().map(|tail| {
-                (
-                    tail.apply_grain,
-                    tail.tx_mode,
-                    tail.reference_select,
-                    tail.skip_mode_present,
-                    tail.allow_bawp,
-                    tail.use_global_motion,
-                )
-            }),
-        );
-        if let Some(ccso) = core.ccso_params.as_ref() {
-            eprintln!(
-                "inter ccso detail offset={} frame_flag={:?} planes={:?}",
-                offset.get(),
-                ccso.ccso_frame_flag,
-                ccso.planes
-                    .iter()
-                    .map(|plane| (
-                        plane.ccso_planes,
-                        plane.ccso_bo_only,
-                        plane.ccso_scale_idx,
-                        plane.ccso_quant_idx,
-                        plane.ccso_ext_filter,
-                        plane.ccso_edge_clf,
-                        plane.ccso_max_band_log2,
-                        plane.ccso_offset_idx.len(),
-                    ))
-                    .collect::<Vec<_>>()
-            );
-        }
-        if let Some(lr) = core.lr_params.as_ref() {
-            eprintln!(
-                "inter lr detail offset={} sizes={:?} planes={:?}",
-                offset.get(),
-                lr.loop_restoration_size,
-                lr.planes
-                    .iter()
-                    .map(|plane| (
-                        plane.restoration_type,
-                        plane.frame_filters_on,
-                        plane.num_filter_classes,
-                        plane
-                            .frame_filter_bank
-                            .as_ref()
-                            .map(|bank| bank.classes.len()),
-                    ))
-                    .collect::<Vec<_>>()
-            );
-        }
-        if let Some(inter) = core.inter.as_ref() {
-            eprintln!(
-                "inter ref detail offset={} num_total_refs={:?} ref_frame_idx={:?} use_bru={:?} bru_ref={:?} bru_inactive={:?} use_ref_frame_mvs={:?}",
-                offset.get(),
-                inter.num_total_refs,
-                inter.ref_frame_idx,
-                inter.use_bru,
-                inter.bru_ref,
-                inter.bru_inactive,
-                inter.use_ref_frame_mvs,
-            );
-        }
-    }
     if unsupported_tools {
         return Err(inter_cap!(
             "inter_unsupported_frame_tools",

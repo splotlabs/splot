@@ -159,8 +159,6 @@ struct ResidualPlanePlan {
     residual_height4: usize,
     fsc_mode: bool,
     txb_skip_fsc_mode: bool,
-    /// § 5.20.7.24 `allowCorners == 0` (a § 5.20.6.3 middle transform unit):
-    /// the top-right/bottom-left availability counts read as zero.
     zero_corners: bool,
     defer_reconstruction: bool,
     reconstruction: ResidualReconstructionPlan,
@@ -472,11 +470,6 @@ impl GeneralIntraResidualPlan {
     }
 }
 
-/// Collects one § 7.17 deblock record per executed LUMA transform unit —
-/// the spec's `DeblockingTxSizes` are per 4x4 unit, so interior transform
-/// edges of a multi-unit block must be visible to the § 7.17.2 edge walk.
-/// Chroma keeps the block's single transform (`chroma_tx` at the block
-/// origin) on every record.
 pub(crate) struct DeblockRecorder<'a> {
     pub(crate) blocks: &'a mut Vec<crate::filters::deblock::DeblockBlock>,
     pub(crate) chroma_blocks: &'a mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
@@ -492,11 +485,6 @@ pub(crate) struct DeblockRecorder<'a> {
 }
 
 impl DeblockRecorder<'_> {
-    /// An SDP chroma-part leaf has no luma plane, so its § 7.17 chroma
-    /// transform geometry is recorded into the per-plane chroma overlays
-    /// (the luma cells of these MI positions belong to the separate
-    /// luma-part leaf's records and must not be overwritten). Only the
-    /// intra-in-inter route reaches this — the pure-intra gate rejects SDP.
     fn record_chroma_part_block(&mut self) {
         for chroma in self.chroma_blocks.iter_mut() {
             chroma.push(crate::filters::deblock::DeblockBlock {
@@ -849,16 +837,9 @@ impl ResidualPlanePlan {
         Ok(summary)
     }
 
-    /// Re-scopes this plan to one § 5.20.7.24 transform unit: each unit runs
-    /// the same prediction process as a standalone block of the unit's
-    /// geometry, reading edges from the just-reconstructed workspace (so
-    /// interior units see sibling-unit samples) and the per-unit-maintained
-    /// `BlockDecoded` counts. The above-row MRL read offset zeroes only at a
-    /// superblock boundary; interior units sit below sibling units, never at
-    /// one, so they read the full `MrlIndex` line (AVM `above_mrl_idx` rule).
-    /// § 5.20.6.3 `LumaTxMiddle` units pass `allowCorners = 0` (§ 5.20.7.24),
-    /// zeroing the top-right/bottom-left counts; modes consuming those counts
-    /// defer until the zeroed-count variant lands.
+    /// Re-scopes this plan to one § 5.20.7.24 transform unit, using sibling
+    /// samples from the workspace and per-unit `BlockDecoded` counts. Middle
+    /// units carry `allowCorners = 0`.
     fn transform_unit_plan(
         &self,
         block: &PositionedLumaCoeffBlock,
@@ -994,7 +975,8 @@ impl ResidualPlanePlan {
             self.block_ctx.frame_mi_rows(),
             self.block_ctx.bit_depth(),
             self.block_ctx.chroma(),
-        );
+        )
+        .with_tile_bounds_from(self.block_ctx);
         Ok(ResidualPlanePlan {
             block_ctx,
             tx_size: block.tx_size,
@@ -1112,17 +1094,9 @@ impl ResidualPlanePlan {
         self.tx.width4() == self.residual_width4 && self.tx.height4() == self.residual_height4
     }
 
-    /// § 5.20.7.24 availability counts for the luma prediction arms, zeroed
-    /// when `allowCorners == 0` for this transform unit.
-    /// AVM re-derives the § 5.20.7.29 WAIP wide-angle remap inside every
-    /// per-TU `av2_predict_intra_block` call with the UNIT's dimensions
-    /// (`wide_angle_mapping`, reconintra.h:220-257), so a unit of a
-    /// directional block can land in a different zone than the block-level
-    /// plan. Re-derive this unit's `pAngle` from the coded mode and
-    /// re-select the directional arm; square single-unit directional plans
-    /// re-plan onto the rect arms so the §7.13.2.7 / §7.13.2.9 machinery
-    /// serves them. MRL plans keep their block-level arm (their `pAngle`
-    /// carries the MRL delta and their arms carry per-unit MRL state).
+    /// Re-derives AVM's per-TU WAIP remap for directional units. Non-MRL
+    /// square directional plans may move onto rect arms when unit dimensions
+    /// place their `pAngle` in another prediction zone.
     fn unit_directional_replan(
         &self,
         luma_context: LumaTransformTypeContext,
@@ -1169,8 +1143,6 @@ impl ResidualPlanePlan {
         }
     }
 
-    /// § 5.20.7.24 availability counts for the luma prediction arms, zeroed
-    /// when `allowCorners == 0` for this transform unit.
     fn luma_corner_neighbours(
         self,
         block_ctx: BlockCtx,
@@ -1224,7 +1196,8 @@ impl ResidualPlanePlan {
             ),
             ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq } => {
                 let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
-                crate::pipeline::reconstruct::reconstruct_general_intra_luma_smooth_rect_block_into(
+                let edges = block_ctx.neighbours(PlaneId::Y);
+                crate::pipeline::reconstruct::reconstruct_general_intra_luma_smooth_rect_block_with_availability_into(
                     workspace,
                     coeffs,
                     mode,
@@ -1237,6 +1210,10 @@ impl ResidualPlanePlan {
                     neighbours.num_above_right(),
                     neighbours.num_below_left(),
                     None,
+                    crate::pipeline::reconstruct::IntraEdgeAvailability {
+                        above: edges.has_above(),
+                        left: edges.has_left(),
+                    },
                     block_ctx.bit_depth(),
                 )
             }
@@ -1272,6 +1249,10 @@ impl ResidualPlanePlan {
                     use_tcq,
                     None,
                     block_ctx.bit_depth(),
+                    crate::pipeline::reconstruct::MiddleEdgeAvailability {
+                        above: edges.above,
+                        left: edges.left,
+                    },
                     edge_filters,
                 )
             }
@@ -1655,22 +1636,22 @@ impl ResidualPlanePlan {
                     block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
-                let edge_filters =
-                    crate::prediction::intra_edge::unit_middle_edge_filters(
-                        intra_edge.chroma(),
-                        workspace,
-                        self.plane_id,
-                        i32::from(p_angle),
-                        apply_ibp,
-                        crate::prediction::intra_edge::UnitEdges {
-                            above: neighbours.has_above(),
-                            left: neighbours.has_left(),
-                        },
-                        self.x,
-                        self.y,
-                        w,
-                        h,
-                    )?;
+                let edges = crate::prediction::intra_edge::UnitEdges {
+                    above: neighbours.has_above(),
+                    left: neighbours.has_left(),
+                };
+                let edge_filters = crate::prediction::intra_edge::unit_middle_edge_filters(
+                    intra_edge.chroma(),
+                    workspace,
+                    self.plane_id,
+                    i32::from(p_angle),
+                    apply_ibp,
+                    edges,
+                    self.x,
+                    self.y,
+                    w,
+                    h,
+                )?;
                 crate::pipeline::reconstruct::reconstruct_general_intra_middle_neighbour_rect_block_into(
                     workspace,
                     coeffs,
@@ -1684,12 +1665,20 @@ impl ResidualPlanePlan {
                     false,
                     None,
                     block_ctx.bit_depth(),
+                    crate::pipeline::reconstruct::MiddleEdgeAvailability {
+                        above: edges.above,
+                        left: edges.left,
+                    },
                     edge_filters,
                 )
             }
             ResidualReconstructionPlan::Chroma { mode } => {
                 let neighbours =
                     block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
+                let availability = crate::pipeline::reconstruct::IntraEdgeAvailability {
+                    above: neighbours.has_above(),
+                    left: neighbours.has_left(),
+                };
                 crate::pipeline::reconstruct::reconstruct_general_intra_chroma_block_into(
                     workspace,
                     coeffs,
@@ -1704,6 +1693,7 @@ impl ResidualPlanePlan {
                     neighbours.num_below_left(),
                     intra_edge.enable_ibp
                         && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2),
+                    availability,
                     block_ctx.bit_depth(),
                 )
             }
@@ -1734,7 +1724,9 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::Rect { use_tcq } => {
                 let ibp_dc =
                     intra_edge.enable_ibp && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2);
-                crate::pipeline::reconstruct::reconstruct_general_intra_block_rect_into(
+                let neighbours =
+                    block_ctx.neighbours_from_block_decoded(self.plane_id, block_decoded);
+                crate::pipeline::reconstruct::reconstruct_general_intra_block_rect_with_availability_into(
                     workspace,
                     coeffs,
                     self.plane_id,
@@ -1745,6 +1737,10 @@ impl ResidualPlanePlan {
                     qindex,
                     use_tcq,
                     ibp_dc,
+                    crate::pipeline::reconstruct::IntraEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
                     block_ctx.bit_depth(),
                 )
             }
@@ -2081,7 +2077,8 @@ fn luma_chunk_ctx(
         block_ctx.frame_mi_rows(),
         block_ctx.bit_depth(),
         block_ctx.chroma(),
-    ))
+    )
+    .with_tile_bounds_from(block_ctx))
 }
 
 fn chroma_plans(

@@ -104,10 +104,11 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         0,
         0,
         true,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
-    reconstruct_general_intra_block_rect_into(
+    reconstruct_general_intra_block_rect_with_availability_into(
         &mut via_rect,
         &block,
         PlaneId::U,
@@ -118,6 +119,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         0,
         false,
         true,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -134,6 +136,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         0,
         0,
         false,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -379,6 +382,74 @@ fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
             79, 74, 70, 65, 53, 190, 100
         ]
     );
+}
+
+#[test]
+fn zone2_top_row_left_edge_filter_matches_avm_z2_idif() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+    let left = [
+        106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106,
+        106, 106, 106, 106, 106, 106, 102, 98, 94, 93, 93, 94, 95, 96,
+    ];
+    lay_left_col(&mut ws, 3, 5, &left);
+
+    reconstruct_general_intra_middle_neighbour_rect_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        119,
+        PlaneId::Y,
+        4,
+        0,
+        2,
+        5,
+        0,
+        false,
+        None,
+        BitDepth::Eight,
+        MiddleEdgeAvailability {
+            above: false,
+            left: true,
+        },
+        TwoSidedMiddleEdgeFilters {
+            above: OneSidedEdgeFilter::default(),
+            left: OneSidedEdgeFilter {
+                strength: 3,
+                num_px: 33,
+                corner_opposite: None,
+            },
+        },
+    )
+    .unwrap();
+
+    #[rustfmt::skip]
+    let expected: [[u8; 4]; 32] = [
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [104, 106, 106, 106],
+        [102, 106, 106, 106], [ 98, 104, 106, 106],
+        [ 96, 102, 106, 106], [ 94,  98, 104, 106],
+        [ 94,  96, 102, 106], [ 94,  94,  98, 104],
+    ];
+    for (row, expected_row) in expected.iter().enumerate() {
+        for (col, &want) in expected_row.iter().enumerate() {
+            assert_eq!(
+                ws.reconstructed_sample(PlaneId::Y, 4 + col, row).unwrap(),
+                want,
+                "top-row z2 IDIF sample (col {col}, row {row}) must match AVM"
+            );
+        }
+    }
 }
 
 /// §7.13.2.1 ZONE-3 CORNER GUARD — a D203 (`pAngle == 203`) zone-3 8x8 leaf at an
