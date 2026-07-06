@@ -409,11 +409,10 @@ avm_raw_sha256 = "3aebe2eb215d4878bbc40aa2f97e2178b6140ef51c03afaaae478e69dbbf6b
 
 [[fixture]]
 id = "syn-2frame-ccso-reuse-inter-64x64-10bit"
-status = "xfail_splot"
+status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "loop.ccso", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "c1383a1265d815f7ecbdbb16a3a13ae1c42b6f31afb9a95b29590b186a50e6b6"
 avm_raw_sha256 = "ca0bc39fad7b151c55766630c7dc05caea154838220916819cd46be7b33cced6"
-unsupported_reason = "inter_ccso_reuse_unimplemented"
 
 [[fixture]]
 id = "syn-2frame-sameref-compound-64x32-10bit-q150"

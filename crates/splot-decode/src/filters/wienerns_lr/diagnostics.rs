@@ -50,7 +50,8 @@ pub(crate) fn wienerns_lr_selectable_transform_record_error_reason(
         ),
         "unsupported_wienerns_lr_selectable_transform_records_ccso_grid_overflow"
         | "unsupported_wienerns_lr_selectable_transform_records_ccso_bounds"
-        | "unsupported_wienerns_lr_selectable_transform_records_ccso_symbol_range" => (
+        | "unsupported_wienerns_lr_selectable_transform_records_ccso_symbol_range"
+        | "unsupported_wienerns_lr_selectable_transform_records_ccso_reference_reuse" => (
             "Per-block §5.20.10.2 CCSO ccso_blk parsing hit an internal CCSO-grid inconsistency; decoded samples, loop-restoration filtering/output, and reference refresh are unsupported",
             "5.20.10.2",
         ),

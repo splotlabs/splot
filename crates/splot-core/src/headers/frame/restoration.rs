@@ -571,6 +571,9 @@ pub struct CcsoPlaneParams {
     /// `sb_reuse_ccso[plane]` (inter frames): the per-superblock `ccso_blk`
     /// enables are copied from a reference frame instead of coded (§ 5.20.10.2).
     pub sb_reuse_ccso: bool,
+    /// `ccso_ref_idx[plane]` (inter frames): index into `ref_frame_idx[]` for
+    /// `reuse_ccso` or `sb_reuse_ccso`; inferred as `0` when there is one total ref.
+    pub ccso_ref_idx: Option<u32>,
     /// `ccso_bo_only[plane]`: a smaller set of CCSO parameters is present.
     pub ccso_bo_only: Option<bool>,
     /// `ccso_scale_idx[plane]` (`f(2)`).
@@ -682,6 +685,7 @@ fn parse_ccso_params_with_references(
             ccso_planes,
             reuse_ccso: false,
             sb_reuse_ccso: false,
+            ccso_ref_idx: None,
             ccso_bo_only: None,
             ccso_scale_idx: None,
             ccso_quant_idx: None,
@@ -698,9 +702,13 @@ fn parse_ccso_params_with_references(
                 let sb_reuse_ccso = reader.read_flag()?;
                 plane_params.reuse_ccso = reuse_ccso;
                 plane_params.sb_reuse_ccso = sb_reuse_ccso;
-                if (reuse_ccso || sb_reuse_ccso) && num_ref_frames > 1 {
-                    let n = ceil_log2(num_ref_frames);
-                    let _ccso_ref_idx = reader.read_f(n)?;
+                if reuse_ccso || sb_reuse_ccso {
+                    plane_params.ccso_ref_idx = if num_ref_frames > 1 {
+                        let n = ceil_log2(num_ref_frames);
+                        Some(reader.read_f(n)?)
+                    } else {
+                        Some(0)
+                    };
                 }
             }
             if reuse_ccso {
@@ -1179,6 +1187,7 @@ mod tests {
         assert_eq!(params.planes.len(), 3);
         assert_eq!(params.planes[0].ccso_bo_only, Some(true));
         assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
+        assert_eq!(params.planes[0].ccso_ref_idx, None);
     }
 
     #[test]
@@ -1195,8 +1204,31 @@ mod tests {
         let params = parse_ccso_params_for_inter(&mut r, false, 3, ccso_enabled(), 1).unwrap();
         assert_eq!(params.planes.len(), 3);
         assert!(params.planes[0].ccso_planes);
+        assert_eq!(params.planes[0].ccso_ref_idx, Some(0));
         assert_eq!(params.planes[0].ccso_bo_only, None);
         assert!(params.planes[0].ccso_offset_idx.is_empty());
+    }
+
+    #[test]
+    fn ccso_inter_reuse_reads_ref_idx_when_multiple_refs() {
+        let mut bits = Bits::default();
+        bits.bit(1); // ccso_frame_flag
+        bits.bit(1); // ccso_planes[0]
+        bits.bit(0); // reuse_ccso[0]
+        bits.bit(1); // sb_reuse_ccso[0]
+        bits.f(2, 2); // ccso_ref_idx[0] for NumTotalRefs == 3
+        bits.bit(1); // ccso_bo_only[0]
+        bits.f(0, 2); // ccso_scale_idx[0]
+        bits.f(0, 3); // ccso_max_band_log2[0]
+        bits.tu(0, 7); // ccso_offset_idx
+        bits.bit(0); // ccso_planes[1]
+        bits.bit(0); // ccso_planes[2]
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let params = parse_ccso_params_for_inter(&mut r, false, 3, ccso_enabled(), 3).unwrap();
+        assert_eq!(params.planes.len(), 3);
+        assert_eq!(params.planes[0].ccso_ref_idx, Some(2));
+        assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
     }
 
     #[test]

@@ -672,6 +672,7 @@ mod tests {
         CcsoPlaneParams {
             reuse_ccso: false,
             sb_reuse_ccso: false,
+            ccso_ref_idx: None,
             ccso_planes: false,
             ccso_bo_only: None,
             ccso_scale_idx: None,
@@ -687,6 +688,7 @@ mod tests {
         CcsoPlaneParams {
             reuse_ccso: false,
             sb_reuse_ccso: false,
+            ccso_ref_idx: None,
             ccso_planes: true,
             ccso_bo_only: Some(true),
             ccso_scale_idx: Some(0),
@@ -876,6 +878,7 @@ mod tests {
         CcsoPlaneParams {
             reuse_ccso: false,
             sb_reuse_ccso: false,
+            ccso_ref_idx: None,
             ccso_planes: true,
             ccso_bo_only: Some(false),
             ccso_scale_idx: Some(0),

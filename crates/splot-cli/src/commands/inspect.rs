@@ -1483,6 +1483,8 @@ impl LrPartialParamsView {
 struct CcsoPlaneParamsView {
     ccso_planes: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    ccso_ref_idx: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     ccso_bo_only: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ccso_scale_idx: Option<u8>,
@@ -1504,6 +1506,7 @@ impl CcsoPlaneParamsView {
     fn new(plane: &CcsoPlaneParams) -> Self {
         Self {
             ccso_planes: plane.ccso_planes,
+            ccso_ref_idx: plane.ccso_ref_idx,
             ccso_bo_only: plane.ccso_bo_only,
             ccso_scale_idx: plane.ccso_scale_idx,
             ccso_quant_idx: plane.ccso_quant_idx,

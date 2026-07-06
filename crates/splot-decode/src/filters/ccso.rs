@@ -63,6 +63,22 @@ impl CcsoUnitGrid {
         self.shift + 2
     }
 
+    pub(crate) const fn shift(&self) -> u32 {
+        self.shift
+    }
+
+    pub(crate) const fn grid_rows(&self) -> usize {
+        self.grid_rows
+    }
+
+    pub(crate) const fn grid_cols(&self) -> usize {
+        self.grid_cols
+    }
+
+    pub(crate) fn plane_blocks(&self, plane: usize) -> Option<&[u8]> {
+        self.blocks.get(plane).map(Vec::as_slice)
+    }
+
     fn block_value(&self, plane: usize, unit_row: usize, unit_col: usize) -> u8 {
         if unit_row >= self.grid_rows || unit_col >= self.grid_cols {
             return 0;
@@ -421,6 +437,7 @@ mod tests {
         CcsoPlaneParams {
             reuse_ccso: false,
             sb_reuse_ccso: false,
+            ccso_ref_idx: None,
             ccso_planes: true,
             ccso_bo_only: Some(true),
             ccso_scale_idx: Some(0),
@@ -456,6 +473,7 @@ mod tests {
         CcsoPlaneParams {
             reuse_ccso: false,
             sb_reuse_ccso: false,
+            ccso_ref_idx: None,
             ccso_planes: true,
             ccso_bo_only: Some(false),
             ccso_scale_idx: Some(2),

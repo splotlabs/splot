@@ -250,8 +250,9 @@ mod proptests {
                         ccso_max_band_log2,
                         ccso_offset_idx,
                     )| CcsoPlaneParams {
-            reuse_ccso: false,
-            sb_reuse_ccso: false,
+                        reuse_ccso: false,
+                        sb_reuse_ccso: false,
+                        ccso_ref_idx: None,
                         ccso_planes,
                         ccso_bo_only,
                         ccso_scale_idx,

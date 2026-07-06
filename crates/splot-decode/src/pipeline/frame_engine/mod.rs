@@ -53,7 +53,12 @@ pub(crate) fn decode_frame<T: ReconSample>(
     header: IvfHeader,
     setup: &FrameSetup<'_, T>,
     bit_depth: BitDepth,
-) -> Result<(DecodedFrame<T>, FrameHeaderCore, FrameCdfSubset)> {
+) -> Result<(
+    DecodedFrame<T>,
+    FrameHeaderCore,
+    FrameCdfSubset,
+    Option<crate::filters::ccso::CcsoUnitGrid>,
+)> {
     match *setup {
         FrameSetup::Inter(reference) => inter::decode_inter_frame(
             plan,
@@ -68,7 +73,7 @@ pub(crate) fn decode_frame<T: ReconSample>(
             bit_depth,
         ),
         FrameSetup::Intra => {
-            let (frame, frame_cdfs) = intra::decode_intra_frame::<T>(
+            let (frame, frame_cdfs, ccso_grid) = intra::decode_intra_frame::<T>(
                 plan,
                 candidate,
                 bytes,
@@ -78,7 +83,7 @@ pub(crate) fn decode_frame<T: ReconSample>(
                 options,
                 bit_depth,
             )?;
-            Ok((frame, core, frame_cdfs))
+            Ok((frame, core, frame_cdfs, ccso_grid))
         }
     }
 }

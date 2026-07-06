@@ -235,6 +235,8 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
             &key_core,
             key_envelope.offset,
             frames[0].frame_cdfs.clone(),
+            frames[0].ccso_params.clone(),
+            frames[0].ccso_grid.clone(),
             key_core.order_hint_lsb.unwrap_or(0),
         )?,
     );
@@ -259,6 +261,8 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
         lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
         lr_frame_filter_taps: Vec::new(),
         ref_frame_cdfs: meta.ref_frame_cdfs,
+        ref_ccso_params: meta.ref_ccso_params,
+        ref_ccso_unit_grids: meta.ref_ccso_unit_grids,
     };
     let mut core = super::parse_inter_frame_core(inter_envelope, &sequence, &inter_state)?;
     mutate(
@@ -493,13 +497,17 @@ fn same_ref_compound_fixture_defers_at_the_block_comp_mode_read() {
 }
 
 #[test]
-fn ccso_reference_reuse_inter_fixture_defers_fail_closed() {
-    let Err(error) =
-        decode_fixture_with_options(CCSO_REUSE_INTER_10BIT_FIXTURE, &DecodeOptions::default())
-    else {
-        panic!("the fixture pins the CCSO reference-reuse defer");
-    };
-    assert_eq!(unsupported_reason(error), "inter_ccso_reuse_unimplemented");
+fn ccso_reference_reuse_inter_fixture_decodes_avm_bit_exact() {
+    let frames = decode_fixture(CCSO_REUSE_INTER_10BIT_FIXTURE);
+    assert_eq!(frames.len(), 2, "key frame + one CCSO reuse inter frame");
+    assert_eq!(
+        ten_bit_frame_hashes(&frames),
+        [
+            "835ba046166243042ec013a41600f81468511237a3122a0bddaa9536f9b697da",
+            "092e512e99679ab8238e4aad63635146d339bc63c9a59a17a26b2afb924a6dfc"
+        ],
+        "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
+    );
 }
 
 #[test]

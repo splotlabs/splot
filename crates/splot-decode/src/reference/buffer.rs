@@ -8,10 +8,12 @@
 //!
 //! Feature tracking: `DECODE-INTER-MULTIREF-RUNTIME`.
 
+use splot_core::headers::frame::CcsoParams;
 use splot_recon::{DecodedFrame, ReferenceFrameStore, ReferenceSlot};
 
 use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::error::Result;
+use crate::filters::ccso::CcsoUnitGrid;
 use crate::pipeline::{PipelineFrame, unsupported};
 
 /// One modeled § 7.23 reference slot.
@@ -28,6 +30,8 @@ struct Slot {
     lr_frame_filter_taps: [Vec<Vec<i16>>; 3],
     frame_index: Option<usize>,
     frame_cdfs: Option<FrameCdfSubset>,
+    ccso_params: Option<CcsoParams>,
+    ccso_grid: Option<CcsoUnitGrid>,
 }
 
 impl Slot {
@@ -43,6 +47,8 @@ impl Slot {
         lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
         frame_index: None,
         frame_cdfs: None,
+        ccso_params: None,
+        ccso_grid: None,
     };
 
     fn refresh(&mut self, frame_index: usize, update: &FrameRefUpdate, valid: bool) {
@@ -58,6 +64,8 @@ impl Slot {
             lr_frame_filter_taps: update.lr_frame_filter_taps.clone(),
             frame_index: Some(frame_index),
             frame_cdfs: Some(update.frame_cdfs.clone()),
+            ccso_params: update.ccso_params.clone(),
+            ccso_grid: update.ccso_grid.clone(),
         };
     }
 }
@@ -87,6 +95,10 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) lr_frame_filter_taps: [Vec<Vec<i16>>; 3],
     /// Saved frame CDF context for later cross-frame CDF initialization.
     pub(crate) frame_cdfs: FrameCdfSubset,
+    /// Saved frame CCSO parameters for later `reuse_ccso`.
+    pub(crate) ccso_params: Option<CcsoParams>,
+    /// Saved frame CCSO block-enable grid for later `sb_reuse_ccso`.
+    pub(crate) ccso_grid: Option<CcsoUnitGrid>,
 }
 
 /// The minimal-tier § 7.23 reference-frame buffer over `num_ref_frames` active slots.
@@ -210,6 +222,10 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) lr_frame_filter_taps: Vec<[Vec<Vec<i16>>; 3]>,
     /// Saved frame CDF context per slot.
     pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
+    /// Saved frame CCSO parameters per slot.
+    pub(crate) ref_ccso_params: Vec<Option<CcsoParams>>,
+    /// Saved frame CCSO block-enable grid per slot.
+    pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoUnitGrid>>,
 }
 
 impl ReferenceMetadata {
@@ -225,6 +241,8 @@ impl ReferenceMetadata {
             lr_frame_filter_class_counts: Vec::with_capacity(num),
             lr_frame_filter_taps: Vec::with_capacity(num),
             ref_frame_cdfs: Vec::with_capacity(num),
+            ref_ccso_params: Vec::with_capacity(num),
+            ref_ccso_unit_grids: Vec::with_capacity(num),
         }
     }
 
@@ -241,6 +259,8 @@ impl ReferenceMetadata {
         self.lr_frame_filter_taps
             .push(slot.lr_frame_filter_taps.clone());
         self.ref_frame_cdfs.push(slot.frame_cdfs.clone());
+        self.ref_ccso_params.push(slot.ccso_params.clone());
+        self.ref_ccso_unit_grids.push(slot.ccso_grid.clone());
     }
 }
 
@@ -262,6 +282,8 @@ mod tests {
             lr_frame_filter_class_counts: [1, 0, 0],
             lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
             frame_cdfs: FrameCdfSubset::from_defaults(),
+            ccso_params: None,
+            ccso_grid: None,
         }
     }
 
@@ -278,6 +300,8 @@ mod tests {
             lr_frame_filter_class_counts: [0, 0, 0],
             lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
             frame_cdfs: FrameCdfSubset::from_defaults(),
+            ccso_params: None,
+            ccso_grid: None,
         }
     }
 

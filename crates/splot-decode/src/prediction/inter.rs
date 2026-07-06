@@ -101,7 +101,12 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     _header: IvfHeader,
     reference: &InterReferenceState<'_, T>,
     bit_depth: BitDepth,
-) -> Result<(DecodedFrame<T>, FrameHeaderCore, FrameCdfSubset)> {
+) -> Result<(
+    DecodedFrame<T>,
+    FrameHeaderCore,
+    FrameCdfSubset,
+    Option<crate::filters::ccso::CcsoUnitGrid>,
+)> {
     let offset = frame_envelope.offset;
 
     if frame_envelope.header.obu_type != ObuType::RegularTileGroup {
@@ -334,6 +339,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         filter_inputs.chroma_deblock_blocks,
     );
     filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
+    let ccso_grid = filter_inputs.ccso_grid.clone();
     filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
     filter_sink.set_cfl_ds_filter_index(
         sequence
@@ -350,7 +356,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         offset,
     )?;
 
-    Ok((frame, core, frame_cdfs))
+    Ok((frame, core, frame_cdfs, ccso_grid))
 }
 
 fn resolve_initial_frame_cdfs(
@@ -763,6 +769,8 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Vec<[Vec<Vec<i16>>; 3]>,
     pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
+    pub(crate) ref_ccso_params: Vec<Option<splot_core::headers::frame::CcsoParams>>,
+    pub(crate) ref_ccso_unit_grids: Vec<Option<crate::filters::ccso::CcsoUnitGrid>>,
 }
 
 impl<T: ReconSample> InterReferenceState<'_, T> {
@@ -785,6 +793,24 @@ impl<T: ReconSample> InterReferenceState<'_, T> {
             })
     }
 
+    fn ccso_params_for_slot(
+        &self,
+        slot: u32,
+        offset: ByteOffset,
+    ) -> Result<splot_core::headers::frame::CcsoParams> {
+        self.ref_ccso_params
+            .get(slot as usize)
+            .and_then(Clone::clone)
+            .ok_or_else(|| {
+                inter_missing!(
+                    "inter_missing_reference_ccso_params",
+                    offset,
+                    "inter.ccso.saved_params",
+                    "7.23"
+                )
+            })
+    }
+
     fn header_view(&self) -> FrameReferenceStateView<'_> {
         FrameReferenceStateView::from_slots_with_base_q_idx(
             &self.ref_valid,
@@ -802,9 +828,59 @@ pub(crate) fn parse_validated_inter_frame_core(
     sequence: &SequenceHeader,
     reference: &InterReferenceState<'_, impl ReconSample>,
 ) -> Result<FrameHeaderCore> {
-    let core = parse_inter_frame_core(envelope, sequence, reference)?;
+    let mut core = parse_inter_frame_core(envelope, sequence, reference)?;
+    resolve_ccso_reference_reuse(&mut core, reference, envelope.offset)?;
     validate_inter_frame_core(&core, sequence, envelope.offset)?;
     Ok(core)
+}
+
+fn resolve_ccso_reference_reuse(
+    core: &mut FrameHeaderCore,
+    reference: &InterReferenceState<'_, impl ReconSample>,
+    offset: ByteOffset,
+) -> Result<()> {
+    let Some(inter) = core.inter.as_ref() else {
+        return Ok(());
+    };
+    let ref_frame_idx = &inter.ref_frame_idx;
+    let Some(ccso) = core.ccso_params.as_mut() else {
+        return Ok(());
+    };
+    for plane_index in 0..ccso.planes.len() {
+        if !ccso.planes[plane_index].reuse_ccso {
+            continue;
+        }
+        let ref_index = ccso.planes[plane_index].ccso_ref_idx.unwrap_or(0);
+        let slot = ref_frame_idx
+            .get(ref_index as usize)
+            .copied()
+            .ok_or_else(|| {
+                inter_cap!(
+                    "inter_ccso_reuse_unimplemented",
+                    offset,
+                    "inter.ccso.reference_reuse",
+                    "5.18.7.12"
+                )
+            })?;
+        let ref_ccso = reference.ccso_params_for_slot(slot, offset)?;
+        let Some(ref_plane) = ref_ccso.planes.get(plane_index) else {
+            return Err(inter_missing!(
+                "inter_missing_reference_ccso_plane",
+                offset,
+                "inter.ccso.saved_plane",
+                "7.23"
+            ));
+        };
+        let plane = &mut ccso.planes[plane_index];
+        plane.ccso_bo_only = ref_plane.ccso_bo_only;
+        plane.ccso_scale_idx = ref_plane.ccso_scale_idx;
+        plane.ccso_quant_idx = ref_plane.ccso_quant_idx;
+        plane.ccso_ext_filter = ref_plane.ccso_ext_filter;
+        plane.ccso_edge_clf = ref_plane.ccso_edge_clf;
+        plane.ccso_max_band_log2 = ref_plane.ccso_max_band_log2;
+        plane.ccso_offset_idx.clone_from(&ref_plane.ccso_offset_idx);
+    }
+    Ok(())
 }
 fn parse_inter_frame_core(
     envelope: ObuEnvelope<'_>,
@@ -947,18 +1023,6 @@ fn validate_inter_frame_core(
             offset,
             "inter.frame_tools",
             SPEC_HEADER
-        ));
-    }
-    if core.ccso_params.as_ref().is_some_and(|ccso| {
-        ccso.planes
-            .iter()
-            .any(|plane| plane.reuse_ccso || plane.sb_reuse_ccso)
-    }) {
-        return Err(inter_cap!(
-            "inter_ccso_reuse_unimplemented",
-            offset,
-            "inter.ccso.reference_reuse",
-            "5.18.7.12"
         ));
     }
     Ok(())

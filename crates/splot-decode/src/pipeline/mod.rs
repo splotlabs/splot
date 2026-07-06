@@ -70,6 +70,8 @@ pub(crate) fn deblock_quant_deltas(
 pub(crate) struct PipelineFrame {
     pub(crate) frame: PipelineDecodedFrame,
     pub(crate) frame_cdfs: FrameCdfSubset,
+    pub(crate) ccso_params: Option<splot_core::headers::frame::CcsoParams>,
+    pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     pub(crate) frame_rate_numerator: u32,
     pub(crate) frame_rate_denominator: u32,
 }
@@ -165,9 +167,9 @@ pub(crate) fn decode_key_frame(
     header: IvfHeader,
 ) -> Result<PipelineFrame> {
     let core = parse_frame_core(frame_envelope, sequence)?;
-    let (frame, frame_cdfs) = match sequence.general.bit_depth_idc {
+    let (frame, frame_cdfs, ccso_params, ccso_grid) = match sequence.general.bit_depth_idc {
         BitDepthIdc::Eight => {
-            let (frame, _core, frame_cdfs) = frame_engine::decode_frame::<u8>(
+            let (frame, core, frame_cdfs, ccso_grid) = frame_engine::decode_frame::<u8>(
                 plan,
                 candidate,
                 bytes,
@@ -179,10 +181,15 @@ pub(crate) fn decode_key_frame(
                 &frame_engine::FrameSetup::Intra,
                 BitDepth::Eight,
             )?;
-            (PipelineDecodedFrame::Eight(frame), frame_cdfs)
+            (
+                PipelineDecodedFrame::Eight(frame),
+                frame_cdfs,
+                core.ccso_params,
+                ccso_grid,
+            )
         }
         BitDepthIdc::Ten => {
-            let (frame, _core, frame_cdfs) = frame_engine::decode_frame::<u16>(
+            let (frame, core, frame_cdfs, ccso_grid) = frame_engine::decode_frame::<u16>(
                 plan,
                 candidate,
                 bytes,
@@ -194,12 +201,19 @@ pub(crate) fn decode_key_frame(
                 &frame_engine::FrameSetup::Intra,
                 BitDepth::Ten,
             )?;
-            (PipelineDecodedFrame::Ten(frame), frame_cdfs)
+            (
+                PipelineDecodedFrame::Ten(frame),
+                frame_cdfs,
+                core.ccso_params,
+                ccso_grid,
+            )
         }
     };
     Ok(PipelineFrame {
         frame,
         frame_cdfs,
+        ccso_params,
+        ccso_grid,
         frame_rate_numerator: header.timebase_denominator,
         frame_rate_denominator: header.timebase_numerator,
     })
@@ -287,6 +301,8 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
         &key_core,
         key_envelope.offset,
         frames[0].frame_cdfs.clone(),
+        frames[0].ccso_params.clone(),
+        frames[0].ccso_grid.clone(),
         key_hint,
     )?;
     let key_implicit = key_core.implicit_output_frame == Some(true);
@@ -325,116 +341,135 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     &mut next_unvalidated_following_ivf_record,
                 )?;
                 let inter_frame_timer = crate::timing::start();
-                let (inter_frame, inter_core, frame_cdfs) = match sequence.general.bit_depth_idc {
-                    BitDepthIdc::Eight => {
-                        let (store, meta) = reference.build_store_eight(&frames)?;
-                        let inter_state = inter::InterReferenceState {
-                            store: &store,
-                            ref_valid: meta.ref_valid,
-                            ref_order_hint: meta.ref_order_hint,
-                            ref_frame_width: meta.ref_frame_width,
-                            ref_frame_height: meta.ref_frame_height,
-                            ref_base_q_idx: meta.ref_base_q_idx,
-                            ref_is_inter: meta.ref_is_inter,
-                            ref_adapted: meta.ref_adapted,
-                            lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
-                            lr_frame_filter_taps: meta.lr_frame_filter_taps,
-                            ref_frame_cdfs: meta.ref_frame_cdfs,
-                        };
-                        let inter_core = inter::parse_validated_inter_frame_core(
-                            inter_envelope,
-                            &sequence,
-                            &inter_state,
-                        )?;
-                        if frame_is_output(&inter_core) {
-                            let next_output_frame_count = checked_add(
-                                DecodeLimitName::MaxOutputFrames,
-                                scheduler.emitted.len() as u64,
-                                1,
+                let (inter_frame, inter_core, frame_cdfs, ccso_grid) =
+                    match sequence.general.bit_depth_idc {
+                        BitDepthIdc::Eight => {
+                            let (store, meta) = reference.build_store_eight(&frames)?;
+                            let inter_state = inter::InterReferenceState {
+                                store: &store,
+                                ref_valid: meta.ref_valid,
+                                ref_order_hint: meta.ref_order_hint,
+                                ref_frame_width: meta.ref_frame_width,
+                                ref_frame_height: meta.ref_frame_height,
+                                ref_base_q_idx: meta.ref_base_q_idx,
+                                ref_is_inter: meta.ref_is_inter,
+                                ref_adapted: meta.ref_adapted,
+                                lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
+                                lr_frame_filter_taps: meta.lr_frame_filter_taps,
+                                ref_frame_cdfs: meta.ref_frame_cdfs,
+                                ref_ccso_params: meta.ref_ccso_params,
+                                ref_ccso_unit_grids: meta.ref_ccso_unit_grids,
+                            };
+                            let inter_core = inter::parse_validated_inter_frame_core(
+                                inter_envelope,
+                                &sequence,
+                                &inter_state,
                             )?;
-                            ensure_output_frame_count_limit(
+                            if frame_is_output(&inter_core) {
+                                let next_output_frame_count = checked_add(
+                                    DecodeLimitName::MaxOutputFrames,
+                                    scheduler.emitted.len() as u64,
+                                    1,
+                                )?;
+                                ensure_output_frame_count_limit(
+                                    options.limits(),
+                                    next_output_frame_count,
+                                )?;
+                            }
+                            ensure_retained_frame_byte_limits_for_core(
                                 options.limits(),
-                                next_output_frame_count,
+                                retained_frame_bytes,
+                                &inter_core,
+                                &sequence,
+                                inter_envelope.offset,
                             )?;
+                            let (frame, inter_core, frame_cdfs, ccso_grid) =
+                                frame_engine::decode_frame(
+                                    plan,
+                                    next_candidate,
+                                    bytes,
+                                    inter_envelope,
+                                    inter_core,
+                                    &sequence,
+                                    options,
+                                    header,
+                                    &frame_engine::FrameSetup::Inter(&inter_state),
+                                    BitDepth::Eight,
+                                )?;
+                            (
+                                PipelineDecodedFrame::Eight(frame),
+                                inter_core,
+                                frame_cdfs,
+                                ccso_grid,
+                            )
                         }
-                        ensure_retained_frame_byte_limits_for_core(
-                            options.limits(),
-                            retained_frame_bytes,
-                            &inter_core,
-                            &sequence,
-                            inter_envelope.offset,
-                        )?;
-                        let (frame, inter_core, frame_cdfs) = frame_engine::decode_frame(
-                            plan,
-                            next_candidate,
-                            bytes,
-                            inter_envelope,
-                            inter_core,
-                            &sequence,
-                            options,
-                            header,
-                            &frame_engine::FrameSetup::Inter(&inter_state),
-                            BitDepth::Eight,
-                        )?;
-                        (PipelineDecodedFrame::Eight(frame), inter_core, frame_cdfs)
-                    }
-                    BitDepthIdc::Ten => {
-                        let (store, meta) = reference.build_store_ten(&frames)?;
-                        let inter_state = inter::InterReferenceState {
-                            store: &store,
-                            ref_valid: meta.ref_valid,
-                            ref_order_hint: meta.ref_order_hint,
-                            ref_frame_width: meta.ref_frame_width,
-                            ref_frame_height: meta.ref_frame_height,
-                            ref_base_q_idx: meta.ref_base_q_idx,
-                            ref_is_inter: meta.ref_is_inter,
-                            ref_adapted: meta.ref_adapted,
-                            lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
-                            lr_frame_filter_taps: meta.lr_frame_filter_taps,
-                            ref_frame_cdfs: meta.ref_frame_cdfs,
-                        };
-                        let inter_core = inter::parse_validated_inter_frame_core(
-                            inter_envelope,
-                            &sequence,
-                            &inter_state,
-                        )?;
-                        if frame_is_output(&inter_core) {
-                            let next_output_frame_count = checked_add(
-                                DecodeLimitName::MaxOutputFrames,
-                                scheduler.emitted.len() as u64,
-                                1,
+                        BitDepthIdc::Ten => {
+                            let (store, meta) = reference.build_store_ten(&frames)?;
+                            let inter_state = inter::InterReferenceState {
+                                store: &store,
+                                ref_valid: meta.ref_valid,
+                                ref_order_hint: meta.ref_order_hint,
+                                ref_frame_width: meta.ref_frame_width,
+                                ref_frame_height: meta.ref_frame_height,
+                                ref_base_q_idx: meta.ref_base_q_idx,
+                                ref_is_inter: meta.ref_is_inter,
+                                ref_adapted: meta.ref_adapted,
+                                lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
+                                lr_frame_filter_taps: meta.lr_frame_filter_taps,
+                                ref_frame_cdfs: meta.ref_frame_cdfs,
+                                ref_ccso_params: meta.ref_ccso_params,
+                                ref_ccso_unit_grids: meta.ref_ccso_unit_grids,
+                            };
+                            let inter_core = inter::parse_validated_inter_frame_core(
+                                inter_envelope,
+                                &sequence,
+                                &inter_state,
                             )?;
-                            ensure_output_frame_count_limit(
+                            if frame_is_output(&inter_core) {
+                                let next_output_frame_count = checked_add(
+                                    DecodeLimitName::MaxOutputFrames,
+                                    scheduler.emitted.len() as u64,
+                                    1,
+                                )?;
+                                ensure_output_frame_count_limit(
+                                    options.limits(),
+                                    next_output_frame_count,
+                                )?;
+                            }
+                            ensure_retained_frame_byte_limits_for_core(
                                 options.limits(),
-                                next_output_frame_count,
+                                retained_frame_bytes,
+                                &inter_core,
+                                &sequence,
+                                inter_envelope.offset,
                             )?;
+                            let (frame, inter_core, frame_cdfs, ccso_grid) =
+                                frame_engine::decode_frame(
+                                    plan,
+                                    next_candidate,
+                                    bytes,
+                                    inter_envelope,
+                                    inter_core,
+                                    &sequence,
+                                    options,
+                                    header,
+                                    &frame_engine::FrameSetup::Inter(&inter_state),
+                                    BitDepth::Ten,
+                                )?;
+                            (
+                                PipelineDecodedFrame::Ten(frame),
+                                inter_core,
+                                frame_cdfs,
+                                ccso_grid,
+                            )
                         }
-                        ensure_retained_frame_byte_limits_for_core(
-                            options.limits(),
-                            retained_frame_bytes,
-                            &inter_core,
-                            &sequence,
-                            inter_envelope.offset,
-                        )?;
-                        let (frame, inter_core, frame_cdfs) = frame_engine::decode_frame(
-                            plan,
-                            next_candidate,
-                            bytes,
-                            inter_envelope,
-                            inter_core,
-                            &sequence,
-                            options,
-                            header,
-                            &frame_engine::FrameSetup::Inter(&inter_state),
-                            BitDepth::Ten,
-                        )?;
-                        (PipelineDecodedFrame::Ten(frame), inter_core, frame_cdfs)
-                    }
-                };
+                    };
                 crate::timing::report("inter_frame_decode", inter_frame_timer);
                 let inter_frame = PipelineFrame {
                     frame: inter_frame,
                     frame_cdfs,
+                    ccso_params: inter_core.ccso_params.clone(),
+                    ccso_grid,
                     frame_rate_numerator: header.timebase_denominator,
                     frame_rate_denominator: header.timebase_numerator,
                 };
@@ -454,6 +489,8 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     &inter_core,
                     inter_envelope.offset,
                     frames[frame_index].frame_cdfs.clone(),
+                    frames[frame_index].ccso_params.clone(),
+                    frames[frame_index].ccso_grid.clone(),
                     inter_hint,
                 )?;
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
@@ -1314,6 +1351,8 @@ pub(crate) fn frame_ref_update_from_core(
     core: &FrameHeaderCore,
     offset: ByteOffset,
     frame_cdfs: FrameCdfSubset,
+    ccso_params: Option<splot_core::headers::frame::CcsoParams>,
+    ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     order_hint: u32,
 ) -> Result<reference_buffer::FrameRefUpdate> {
     let refresh_frame_flags = core.refresh_frame_flags.ok_or_else(|| {
@@ -1352,6 +1391,8 @@ pub(crate) fn frame_ref_update_from_core(
         is_inter,
         adapted,
         frame_cdfs,
+        ccso_params,
+        ccso_grid,
         lr_frame_filter_class_counts: lr_frame_filter_class_counts(core),
         lr_frame_filter_taps: lr_frame_filter_taps(core),
     })
