@@ -477,7 +477,7 @@ fn check_ccso_encodable(
 /// before any bit is written: the inter-only `reuse_ccso` / `sb_reuse_ccso` arm
 /// is not emitted, so planes carrying either flag are rejected.
 fn check_ccso_plane_encodable(plane: &crate::headers::frame::CcsoPlaneParams) -> WriteResult<()> {
-    if plane.reuse_ccso || plane.sb_reuse_ccso {
+    if plane.reuse_ccso || plane.sb_reuse_ccso || plane.ccso_ref_idx.is_some() {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "ccso_inter_reuse",
         });

@@ -42,7 +42,11 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     sequence: &SequenceHeader,
     options: &DecodeOptions,
     bit_depth: BitDepth,
-) -> Result<(DecodedFrame<T>, FrameCdfSubset)> {
+) -> Result<(
+    DecodedFrame<T>,
+    FrameCdfSubset,
+    Option<crate::filters::ccso::CcsoUnitGrid>,
+)> {
     let offset = frame_envelope.offset;
     if core
         .lossless_info
@@ -181,6 +185,8 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         lr_frame_filter_class_counts: Vec::new(),
         lr_frame_filter_taps: Vec::new(),
         ref_frame_cdfs: Vec::new(),
+        ref_ccso_params: Vec::new(),
+        ref_ccso_unit_grids: Vec::new(),
     };
 
     let _qm_scope = FrameQmScope::install(build_frame_qm_levels(core));
@@ -219,6 +225,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         filter_inputs.chroma_deblock_blocks,
     );
     filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
+    let ccso_grid = filter_inputs.ccso_grid.clone();
     filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
     filter_sink.set_cfl_ds_filter_index(
         sequence
@@ -231,7 +238,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
     let frame =
         filter_sink.into_filtered_frame(core, deblock_quant_deltas(sequence, core), offset)?;
-    Ok((frame, frame_cdfs))
+    Ok((frame, frame_cdfs, ccso_grid))
 }
 
 /// The frame's § 7.14.4 built-in quantization-matrix levels for the general-intra

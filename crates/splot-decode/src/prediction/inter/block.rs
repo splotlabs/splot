@@ -253,7 +253,15 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         )
     })?;
     let mut cdef_state = CdefState::new(mi_rows, mi_cols, sequence, first_tile_offset)?;
-    let mut ccso_state = CcsoState::new(mi_rows, mi_cols, sequence, core, first_tile_offset)?;
+    let mut ccso_state = CcsoState::new(
+        mi_rows,
+        mi_cols,
+        sequence,
+        core,
+        ref_frame_idx,
+        &reference.ref_ccso_unit_grids,
+        first_tile_offset,
+    )?;
     let (chroma_smooth_rows, chroma_smooth_cols) =
         chroma_smooth_grid_dimensions(mi_rows, mi_cols, sequence.general.chroma_format_idc);
     let sb_h4 = superblock_h4(sequence, core).ok_or_else(|| {

@@ -19,12 +19,15 @@ const CCSO_GRID_OVERFLOW_REASON: &str =
 const CCSO_BOUNDS_REASON: &str = "unsupported_wienerns_lr_selectable_transform_records_ccso_bounds";
 const CCSO_SYMBOL_RANGE_REASON: &str =
     "unsupported_wienerns_lr_selectable_transform_records_ccso_symbol_range";
+const CCSO_REFERENCE_REUSE_REASON: &str =
+    "unsupported_wienerns_lr_selectable_transform_records_ccso_reference_reuse";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CcsoState {
     pub(crate) active: bool,
     pub(crate) shift: u32,
     pub(crate) plane_enabled: [bool; CCSO_PLANES],
+    pub(crate) sb_reuse: [bool; CCSO_PLANES],
     pub(crate) blocks: [Vec<u8>; CCSO_PLANES],
     pub(crate) grid_rows: usize,
     pub(crate) grid_cols: usize,
@@ -36,6 +39,8 @@ impl CcsoState {
         mi_cols: usize,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
+        ref_frame_idx: &[u32],
+        ref_ccso_unit_grids: &[Option<CcsoUnitGrid>],
         tile_offset: ByteOffset,
     ) -> Result<Self> {
         let filter = sequence.filter.as_ref();
@@ -50,15 +55,27 @@ impl CcsoState {
             ccso.and_then(|c| c.planes.get(plane))
                 .is_some_and(|params| params.ccso_planes)
         });
-        Ok(Self::active(shift, plane_enabled, grid))
+        let sb_reuse = std::array::from_fn(|plane| {
+            ccso.and_then(|c| c.planes.get(plane))
+                .is_some_and(|params| params.sb_reuse_ccso)
+        });
+        let mut state = Self::active(shift, plane_enabled, sb_reuse, grid);
+        state.load_reused_blocks(core, ref_frame_idx, ref_ccso_unit_grids, tile_offset)?;
+        Ok(state)
     }
 
-    fn active(shift: u32, plane_enabled: [bool; CCSO_PLANES], grid: (usize, usize, usize)) -> Self {
+    fn active(
+        shift: u32,
+        plane_enabled: [bool; CCSO_PLANES],
+        sb_reuse: [bool; CCSO_PLANES],
+        grid: (usize, usize, usize),
+    ) -> Self {
         let (grid_rows, grid_cols, cells) = grid;
         Self {
             active: true,
             shift,
             plane_enabled,
+            sb_reuse,
             blocks: std::array::from_fn(|_| vec![0u8; cells]),
             grid_rows,
             grid_cols,
@@ -70,6 +87,7 @@ impl CcsoState {
             active: false,
             shift: 0,
             plane_enabled: [false; CCSO_PLANES],
+            sb_reuse: [false; CCSO_PLANES],
             blocks: [Vec::new(), Vec::new(), Vec::new()],
             grid_rows: 0,
             grid_cols: 0,
@@ -97,6 +115,9 @@ impl CcsoState {
         }
         for plane in 0..CCSO_PLANES {
             if !self.plane_enabled[plane] {
+                continue;
+            }
+            if self.sb_reuse[plane] {
                 continue;
             }
             let tile_col_start = work_unit.mi_col_range().start as usize;
@@ -157,6 +178,48 @@ impl CcsoState {
             return None;
         }
         unit_row.checked_mul(self.grid_cols)?.checked_add(unit_col)
+    }
+
+    fn load_reused_blocks(
+        &mut self,
+        core: &FrameHeaderCore,
+        ref_frame_idx: &[u32],
+        ref_ccso_unit_grids: &[Option<CcsoUnitGrid>],
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
+        let Some(ccso) = core.ccso_params.as_ref() else {
+            return Ok(());
+        };
+        for plane in 0..CCSO_PLANES {
+            if !self.sb_reuse[plane] {
+                continue;
+            }
+            let ref_index = ccso
+                .planes
+                .get(plane)
+                .and_then(|params| params.ccso_ref_idx)
+                .unwrap_or(0);
+            let slot = ref_frame_idx
+                .get(ref_index as usize)
+                .copied()
+                .ok_or_else(|| ccso_error(tile_offset, CCSO_REFERENCE_REUSE_REASON))?;
+            let grid = ref_ccso_unit_grids
+                .get(slot as usize)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| ccso_error(tile_offset, CCSO_REFERENCE_REUSE_REASON))?;
+            let source = grid
+                .plane_blocks(plane)
+                .ok_or_else(|| ccso_error(tile_offset, CCSO_REFERENCE_REUSE_REASON))?;
+            if grid.shift() != self.shift
+                || grid.grid_rows() != self.grid_rows
+                || grid.grid_cols() != self.grid_cols
+                || source.len() != self.blocks[plane].len()
+            {
+                return Err(ccso_error(tile_offset, CCSO_REFERENCE_REUSE_REASON));
+            }
+            self.blocks[plane].copy_from_slice(source);
+        }
+        Ok(())
     }
 
     pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<Option<CcsoUnitGrid>> {
@@ -283,7 +346,7 @@ mod tests {
     fn active_luma_ccso_state(mi_rows: usize, mi_cols: usize) -> CcsoState {
         let shift = 8 - MI_SIZE_LOG2;
         let grid = ccso_grid(mi_rows, mi_cols, shift, ByteOffset::new(0)).unwrap();
-        CcsoState::active(shift, [true, false, false], grid)
+        CcsoState::active(shift, [true, false, false], [false; CCSO_PLANES], grid)
     }
 
     #[test]
