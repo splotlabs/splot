@@ -169,7 +169,7 @@ struct Ranked {
 /// `get_relative_dist( a, b )` (AV2 v1.0.0 § 5.18.3.1,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-3-1`): the signed distance between two
 /// order hints, with the `RESTRICTED_OH` sentinel arms.
-fn get_relative_dist(a: i32, b: i32) -> i32 {
+pub(crate) fn get_relative_dist(a: i32, b: i32) -> i32 {
     if a == RESTRICTED_OH && b == RESTRICTED_OH {
         0
     } else if a == RESTRICTED_OH {

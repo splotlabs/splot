@@ -797,7 +797,6 @@ fn classify_obu(
 
     match header.obu_type {
         ObuType::TemporalDelimiter | ObuType::Padding => Ok(DecodePlannedObuRole::Global),
-        ObuType::SequenceHeader => Ok(DecodePlannedObuRole::SelectedLayerState),
         ObuType::ClosedLoopKey => Ok(DecodePlannedObuRole::FrameCandidate),
         // AV2 § 5.2.1 / § 5.19: `OBU_REGULAR_TILE_GROUP` carries a tile group of a
         // non-key frame, and the first tile group holds that frame's header.
@@ -819,14 +818,17 @@ fn classify_obu(
         ObuType::RegularTileGroup | ObuType::RegularTip => {
             Ok(DecodePlannedObuRole::InterFrameCandidate)
         }
-        ObuType::Msdo
-        | ObuType::LayerConfigurationRecord
-        | ObuType::AtlasSegment
-        | ObuType::OperatingPointSet => unsupported(
+        ObuType::OperatingPointSet if header.extended_layer_id == GLOBAL_XLAYER_ID => {
+            Ok(DecodePlannedObuRole::Global)
+        }
+        ObuType::SequenceHeader | ObuType::OperatingPointSet => {
+            Ok(DecodePlannedObuRole::SelectedLayerState)
+        }
+        ObuType::Msdo | ObuType::LayerConfigurationRecord | ObuType::AtlasSegment => unsupported(
             DecodeUnsupportedReason::MultistreamSelection,
             envelope,
             "7.1",
-            "multistream, operating-point, atlas, and external-HLS selection are outside the initial decode stream planner tier",
+            "multistream, atlas, and external-HLS selection are outside the initial decode stream planner tier",
         ),
         obu_type
             if obu_type.is_tile_group()

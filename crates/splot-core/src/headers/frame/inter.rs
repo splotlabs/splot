@@ -65,7 +65,7 @@ use crate::error::Result;
 use crate::headers::frame::config::{parse_intrabc_params, parse_screen_content_params_full};
 use crate::headers::frame::filtering::{InterpolationFilter, read_interpolation_filter};
 use crate::headers::frame::get_ref_frames::{
-    GetRefFrames, GetRefFramesInput, RefSlot, get_ref_frames,
+    GetRefFrames, GetRefFramesInput, RESTRICTED_OH, RefSlot, get_ref_frames, get_relative_dist,
 };
 use crate::headers::frame::size::{FrameSize, ceil_log2};
 use crate::headers::sequence::SuperblockSize;
@@ -102,6 +102,9 @@ const PRIMARY_REF_NONE: u8 = 7;
 /// `signal_primary_ref_frame == 0` (§ 5.18.2 mirror :4397).
 const PRIMARY_REF_CHOOSE: u8 = 8;
 
+/// `REFINE_NONE` (AV2 v1.0.0 § 3).
+const REFINE_NONE: u32 = 0;
+
 /// `REFINE_SWITCHABLE` (AV2 v1.0.0 Table 6.5, § 6.17.2 mirror :947): the `opfl_refine_type`
 /// value at which `frame_opfl_refine_type()` does NOT read `opfl_refine_all` (§ 5.18.3.2
 /// mirror :5601, `if ( opfl_refine_type != REFINE_SWITCHABLE )`). `opfl_refine_type` is read
@@ -109,6 +112,9 @@ const PRIMARY_REF_CHOOSE: u8 = 8;
 /// always true and consume an extra `opfl_refine_all` bit, mis-positioning every following
 /// field.
 const REFINE_SWITCHABLE: u32 = 1;
+
+/// `REFINE_ALL` (AV2 v1.0.0 § 3).
+const REFINE_ALL: u32 = 2;
 
 /// `REFINE_AUTO` (AV2 v1.0.0 § 3): the `enable_opfl_refine` value that makes
 /// `frame_opfl_refine_type()` signal `opfl_refine_type` (§ 5.18.3.2 mirror :5597).
@@ -149,7 +155,9 @@ impl MvPrecision {
 pub enum TipFrameMode {
     /// `TIP_FRAME_DISABLED`.
     Disabled,
-    /// `TIP_FRAME_AS_OUTPUT` (`EnableTipOutput && is_tip_frame()`, or `tip_frame_mode == 1`).
+    /// `TIP_FRAME_AS_REF` (`tip_frame_mode == 1` on non-TIP OBUs).
+    AsRef,
+    /// `TIP_FRAME_AS_OUTPUT` (`EnableTipOutput && is_tip_frame()`).
     AsOutput,
     /// The signalled `tip_frame_mode` value that is neither disabled nor as-output.
     Other(u8),
@@ -161,6 +169,7 @@ impl TipFrameMode {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
+            Self::AsRef => "as_ref",
             Self::AsOutput => "as_output",
             Self::Other(_) => "other",
         }
@@ -319,6 +328,12 @@ pub(crate) struct InterSeqView {
     /// `enable_tip_output` (§ 5.4.6): `EnableTipOutput` for the § 5.18.2
     /// `tip_frame_mode` derived-versus-coded arm.
     pub enable_tip_output: bool,
+    /// `enable_tip_hole_fill` (§ 5.4.6).
+    pub enable_tip_hole_fill: bool,
+    /// `enable_refinemv` (§ 5.4.6).
+    pub enable_refinemv: bool,
+    /// `enable_tip_refinemv` (§ 5.4.6).
+    pub enable_tip_refinemv: bool,
     /// `seq_max_drl_bits_minus_1` (§ 5.4.6).
     pub seq_max_drl_bits_minus_1: u32,
     /// `allow_frame_max_drl_bits` (§ 5.4.6).
@@ -396,6 +411,53 @@ fn ref_dims(reference_state: &FrameReferenceStateView<'_>, idx: u32) -> Option<(
     let w = reference_state.ref_frame_width?.get(i).copied()?;
     let h = reference_state.ref_frame_height?.get(i).copied()?;
     Some((w, h))
+}
+
+fn ref_order_hint_to_spec(raw: u32) -> Option<i32> {
+    if raw == u32::MAX {
+        Some(RESTRICTED_OH)
+    } else {
+        i32::try_from(raw).ok()
+    }
+}
+
+fn tip_ref_counts(
+    reference_state: &FrameReferenceStateView<'_>,
+    ref_frame_idx: &[u32],
+    current_order_hint: u32,
+) -> Option<(usize, usize)> {
+    let hints = reference_state.ref_order_hint?;
+    let current = ref_order_hint_to_spec(current_order_hint)?;
+    let mut num_past_refs = 0usize;
+    let mut num_future_refs = 0usize;
+    for &idx in ref_frame_idx {
+        if !ref_valid(reference_state, idx) {
+            return None;
+        }
+        let hint = ref_order_hint_to_spec(*hints.get(usize::try_from(idx).ok()?)?)?;
+        if hint == RESTRICTED_OH {
+            continue;
+        }
+        let dist = get_relative_dist(current, hint);
+        if dist > 0 {
+            num_past_refs += 1;
+        } else if dist < 0 {
+            num_future_refs += 1;
+        }
+    }
+    Some((num_past_refs, num_future_refs))
+}
+
+fn tip_unequal_weighted_allowed(
+    seq: &InterSeqView,
+    num_past_refs: usize,
+    num_future_refs: usize,
+    opfl_refine_type: u32,
+) -> bool {
+    let has_both_sides_refs = num_past_refs > 0 && num_future_refs > 0;
+    !has_both_sides_refs
+        || !seq.enable_tip_refinemv
+        || (opfl_refine_type == REFINE_NONE && !seq.enable_refinemv)
 }
 
 /// Parses the non-intra `frame_header_info()` control region (AV2 v1.0.0 § 5.18.2) into a
@@ -664,16 +726,43 @@ fn parse_inter_reference_region(
 
     let tip_gate = seq.enable_tip && use_ref_frame_mvs && num_total_refs >= 2 && !bru_inactive;
     if tip_gate {
-        // 5.18.2: EnableTipOutput TIP OBUs derive TIP_FRAME_AS_OUTPUT uncoded; every TIP arm defers
-        let tip_mode_derived = seq.enable_tip_output && is_tip;
-        if (!tip_mode_derived && reader.read_flag()?) || is_tip {
+        let tip_frame_mode = if is_tip && seq.enable_tip_output {
+            TipFrameMode::AsOutput
+        } else if reader.read_flag()? {
+            TipFrameMode::AsRef
+        } else {
+            TipFrameMode::Disabled
+        };
+        control.tip_frame_mode = Some(tip_frame_mode);
+
+        let opfl_refine_type = if tip_frame_mode == TipFrameMode::AsOutput {
+            tip_output_opfl_refine_type(seq)
+        } else {
+            read_frame_opfl_refine_type(reader, seq.enable_opfl_refine)?
+        };
+        if tip_frame_mode != TipFrameMode::Disabled && seq.enable_tip_hole_fill {
+            reader.read_flag()?;
+        }
+        if tip_frame_mode != TipFrameMode::Disabled {
+            let Some((num_past_refs, num_future_refs)) =
+                tip_ref_counts(reference_state, &control.ref_frame_idx, ctx.order_hint)
+            else {
+                control.stop = Some(InterStop::PoisonedReferenceState);
+                return Ok(());
+            };
+            if tip_unequal_weighted_allowed(seq, num_past_refs, num_future_refs, opfl_refine_type) {
+                reader.read_bits(3)?;
+            }
+        }
+        if tip_frame_mode == TipFrameMode::AsOutput {
             control.stop = Some(InterStop::PoisonedReferenceState);
             return Ok(());
         }
-    }
-    control.tip_frame_mode = Some(TipFrameMode::Disabled);
-    if !bru_inactive && !ctx.is_bridge {
-        read_frame_opfl_refine_type(reader, seq.enable_opfl_refine)?;
+    } else {
+        control.tip_frame_mode = Some(TipFrameMode::Disabled);
+        if !bru_inactive && !ctx.is_bridge {
+            read_frame_opfl_refine_type(reader, seq.enable_opfl_refine)?;
+        }
     }
 
     if bru_inactive || ctx.is_bridge {
@@ -758,14 +847,27 @@ fn parse_inter_reference_region(
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if a signaled
 /// field is truncated.
-fn read_frame_opfl_refine_type(reader: &mut BitReader<'_>, enable_opfl_refine: u8) -> Result<()> {
+fn read_frame_opfl_refine_type(reader: &mut BitReader<'_>, enable_opfl_refine: u8) -> Result<u32> {
     if enable_opfl_refine == REFINE_AUTO {
         let opfl_refine_type = reader.read_bits(1)?;
         if opfl_refine_type != REFINE_SWITCHABLE {
-            reader.read_bit()?;
+            return Ok(if reader.read_bit()? != 0 {
+                REFINE_ALL
+            } else {
+                REFINE_NONE
+            });
         }
+        return Ok(REFINE_SWITCHABLE);
     }
-    Ok(())
+    Ok(u32::from(enable_opfl_refine))
+}
+
+fn tip_output_opfl_refine_type(seq: &InterSeqView) -> u32 {
+    if !seq.enable_tip_refinemv || u32::from(seq.enable_opfl_refine) == REFINE_NONE {
+        REFINE_NONE
+    } else {
+        REFINE_ALL
+    }
 }
 
 /// Parses `frame_size_with_refs()` (AV2 § 5.18.4.3): reads `found_ref` f(1) per ref until
@@ -906,6 +1008,9 @@ mod tests {
             enable_bru: false,
             enable_tip: false,
             enable_tip_output: false,
+            enable_tip_hole_fill: false,
+            enable_refinemv: false,
+            enable_tip_refinemv: false,
             seq_max_drl_bits_minus_1: 0,
             allow_frame_max_drl_bits: false,
             enable_flex_mvres: false,
@@ -1582,12 +1687,120 @@ mod tests {
                 (
                     Some(true),
                     Some(false),
-                    None,
+                    Some(if tip_output_obu {
+                        TipFrameMode::AsOutput
+                    } else {
+                        TipFrameMode::AsRef
+                    }),
                     Some(InterStop::PoisonedReferenceState),
                 ),
                 "tip_output_obu={tip_output_obu}"
             );
         }
+    }
+
+    #[test]
+    fn tip_output_derives_opfl_refine_without_reads() {
+        let mut bits = Bits::default();
+        bits.bit(0); // signal_primary_ref_frame; TIP OBUs do not code disable_cross_frame_cdf_init
+        bits.f(0, 8); // refresh_frame_flags
+        bits.bit(1); // frame_explicit_ref_frame_map
+        bits.f(2, 3); // num_total_refs = 2
+        bits.f(0, 3); // ref_frame_idx[0]
+        bits.f(1, 3); // ref_frame_idx[1]
+        bits.bit(1); // use_ref_frame_mvs
+        bits.bit(0); // tmvp_sample_step_minus_1
+
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.enable_tip = true;
+        seq.enable_tip_output = true;
+        seq.enable_tip_refinemv = true;
+        seq.enable_opfl_refine = REFINE_AUTO;
+        let mut ctx = inter_ctx();
+        ctx.obu_type = ObuType::RegularTip;
+        let rs = FrameReferenceStateView::unknown();
+
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+
+        assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsOutput));
+        assert_eq!(control.stop, Some(InterStop::PoisonedReferenceState));
+        assert_eq!(reader.consumed_bits(), 21);
+    }
+
+    #[test]
+    fn non_output_tip_obu_consumes_coded_tip_mode() {
+        let mut bits = Bits::default();
+        bits.bit(0); // signal_primary_ref_frame; TIP OBUs do not code disable_cross_frame_cdf_init
+        bits.f(0, 8); // refresh_frame_flags
+        bits.bit(1); // frame_explicit_ref_frame_map
+        bits.f(2, 3); // num_total_refs = 2
+        bits.f(0, 3); // ref_frame_idx[0]
+        bits.f(1, 3); // ref_frame_idx[1]
+        bits.bit(1); // use_ref_frame_mvs
+        bits.bit(0); // tmvp_sample_step_minus_1
+        bits.bit(1); // tip_frame_mode = TIP_FRAME_AS_REF
+
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.enable_tip = true;
+        seq.enable_tip_output = false;
+        let mut ctx = inter_ctx();
+        ctx.obu_type = ObuType::RegularTip;
+        let rs = FrameReferenceStateView::unknown();
+
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+
+        assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsRef));
+        assert_eq!(control.stop, Some(InterStop::PoisonedReferenceState));
+        assert_eq!(reader.consumed_bits(), 22);
+    }
+
+    #[test]
+    fn tip_as_ref_consumes_weight_and_reaches_shared_tail() {
+        let mut bits = Bits::default();
+        bits.bit(0); // signal_primary_ref_frame
+        bits.bit(0); // disable_cross_frame_cdf_init (not TIP)
+        bits.f(0, 8); // refresh_frame_flags
+        bits.bit(1); // frame_explicit_ref_frame_map
+        bits.f(2, 3); // num_total_refs = 2
+        bits.f(0, 3); // ref_frame_idx[0]
+        bits.f(1, 3); // ref_frame_idx[1]
+        bits.bit(1); // use_ref_frame_mvs
+        bits.bit(0); // tmvp_sample_step_minus_1
+        bits.bit(1); // tip_frame_mode = TIP_FRAME_AS_REF
+        bits.f(0, 3); // tip_global_wtd_index
+        opfl_refine_tail(&mut bits);
+
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.enable_tip = true;
+        let ctx = inter_ctx();
+        let ref_valid = [true, true, false, false, false, false, false, false];
+        let ref_oh = [1, 2, 0, 0, 0, 0, 0, 0];
+        let ref_w = [4096; 8];
+        let ref_h = [2304; 8];
+        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+
+        assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsRef));
+        assert_eq!(control.allow_intrabc, Some(false));
+        assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+    }
+
+    #[test]
+    fn tip_ref_counts_skip_restricted_order_hints() {
+        let ref_valid = [true, true, true, false, false, false, false, false];
+        let ref_oh = [u32::MAX, 1, 9, 0, 0, 0, 0, 0];
+        let ref_w = [4096; 8];
+        let ref_h = [2304; 8];
+        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+
+        assert_eq!(tip_ref_counts(&rs, &[0, 1, 2], 5), Some((1, 1)));
     }
 
     #[test]

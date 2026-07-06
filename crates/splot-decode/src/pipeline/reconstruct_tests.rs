@@ -104,10 +104,11 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         0,
         0,
         true,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
-    reconstruct_general_intra_block_rect_into(
+    reconstruct_general_intra_block_rect_with_availability_into(
         &mut via_rect,
         &block,
         PlaneId::U,
@@ -118,6 +119,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         0,
         false,
         true,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -134,6 +136,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         0,
         0,
         false,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -209,6 +212,7 @@ fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
         },
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
@@ -242,6 +246,7 @@ fn zone1_above_edge_uses_first_above_sample_as_corner_at_first_column() {
         1,
         0,
         0,
+        IntraEdgeAvailability::all(),
         OneSidedEdgeFilter::default(),
     )
     .unwrap();
@@ -285,6 +290,7 @@ fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
             above_mrl_index: 1,
         },
         false,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -381,6 +387,149 @@ fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
     );
 }
 
+#[test]
+fn zone2_top_row_left_edge_filter_matches_avm_z2_idif() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+    let left = [
+        106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106, 106,
+        106, 106, 106, 106, 106, 106, 102, 98, 94, 93, 93, 94, 95, 96,
+    ];
+    lay_left_col(&mut ws, 3, 5, &left);
+
+    reconstruct_general_intra_middle_neighbour_rect_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        119,
+        PlaneId::Y,
+        4,
+        0,
+        2,
+        5,
+        0,
+        false,
+        None,
+        BitDepth::Eight,
+        MiddleEdgeAvailability {
+            above: false,
+            left: true,
+        },
+        TwoSidedMiddleEdgeFilters {
+            above: OneSidedEdgeFilter::default(),
+            left: OneSidedEdgeFilter {
+                strength: 3,
+                num_px: 33,
+                corner_opposite: None,
+            },
+        },
+    )
+    .unwrap();
+
+    #[rustfmt::skip]
+    let expected: [[u8; 4]; 32] = [
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [106, 106, 106, 106],
+        [106, 106, 106, 106], [104, 106, 106, 106],
+        [102, 106, 106, 106], [ 98, 104, 106, 106],
+        [ 96, 102, 106, 106], [ 94,  98, 104, 106],
+        [ 94,  96, 102, 106], [ 94,  94,  98, 104],
+    ];
+    for (row, expected_row) in expected.iter().enumerate() {
+        for (col, &want) in expected_row.iter().enumerate() {
+            assert_eq!(
+                ws.reconstructed_sample(PlaneId::Y, 4 + col, row).unwrap(),
+                want,
+                "top-row z2 IDIF sample (col {col}, row {row}) must match AVM"
+            );
+        }
+    }
+}
+
+#[test]
+fn d135_neighbour_masks_unavailable_tile_above_edge() {
+    fn workspace_with_edges(above: u8) -> CurrentFrameWorkspace<u8> {
+        let mut ws =
+            new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420)
+                .unwrap();
+        ws.write_rect_block(
+            PlaneId::Y,
+            4,
+            4,
+            IntraRectBlockSize::new(2, 2).unwrap(),
+            &[77u8; 16],
+        )
+        .unwrap();
+        ws.write_rect_block(
+            PlaneId::Y,
+            8,
+            4,
+            IntraRectBlockSize::new(3, 2).unwrap(),
+            &[above; 32],
+        )
+        .unwrap();
+        let left: [u8; 8] = [88, 91, 94, 97, 100, 103, 106, 109];
+        let mut col = vec![0u8; 4 * 8];
+        for (row, &value) in left.iter().enumerate() {
+            for x in 0..4 {
+                col[row * 4 + x] = value;
+            }
+        }
+        ws.write_rect_block(
+            PlaneId::Y,
+            4,
+            8,
+            IntraRectBlockSize::new(2, 3).unwrap(),
+            &col,
+        )
+        .unwrap();
+        ws
+    }
+
+    fn reconstruct(mut ws: CurrentFrameWorkspace<u8>) -> Vec<u8> {
+        reconstruct_general_intra_directional_neighbour_block_into(
+            &mut ws,
+            &all_zero_luma_block(),
+            SupportedDirectionalLumaMode::D135,
+            PlaneId::Y,
+            8,
+            8,
+            3,
+            0,
+            false,
+            BitDepth::Eight,
+            MiddleEdgeAvailability {
+                above: false,
+                left: true,
+            },
+        )
+        .unwrap();
+        (0..8)
+            .flat_map(|row| (0..8).map(move |col| (row, col)))
+            .map(|(row, col)| {
+                ws.reconstructed_sample(PlaneId::Y, 8 + col, 8 + row)
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    let low_above = reconstruct(workspace_with_edges(12));
+    let high_above = reconstruct(workspace_with_edges(240));
+    assert_eq!(
+        low_above, high_above,
+        "tile-unavailable above samples must be ignored by D135 neighbour reconstruction"
+    );
+}
+
 /// §7.13.2.1 ZONE-3 CORNER GUARD — a D203 (`pAngle == 203`) zone-3 8x8 leaf at an
 /// INTERIOR position (8, 8) with `have_above == true`. The §7.13.2.1 corner
 /// `LeftCol[-1]` must be the DIAGONAL above-left `CurrFrame[y - 1][x - 1] =
@@ -436,6 +585,7 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
         0,
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
@@ -573,6 +723,7 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
         1, // mrl_index
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
@@ -610,6 +761,7 @@ fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
         0,
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -649,6 +801,7 @@ fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
         0,
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -692,6 +845,7 @@ fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
         0,
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -732,6 +886,10 @@ fn zone1_d45_top_edge_synthesizes_above_from_left_corner() {
         OneSidedAboveMrl::default(),
         false,
         None,
+        IntraEdgeAvailability {
+            above: false,
+            left: true,
+        },
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
@@ -772,6 +930,7 @@ fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
         0,
         false,
         None,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -868,6 +1027,7 @@ fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
         4, // log2_height = 4 -> 16
         0,
         false,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -912,6 +1072,7 @@ fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
         4, // log2_height = 4 -> 16
         0,
         false,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();
@@ -1017,6 +1178,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
         4,
         149,
         true,
+        IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
     .unwrap();

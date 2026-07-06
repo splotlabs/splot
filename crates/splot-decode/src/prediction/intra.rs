@@ -95,8 +95,21 @@ impl IntraLumaPlan {
             Self::Palette { .. } => Err(GeneralIntraResidualError::UnexpectedBranch),
             Self::Dc => {
                 let ibp_dc = enable_ibp && log2_side != 2;
-                crate::pipeline::reconstruct::reconstruct_general_intra_block_into(
-                    workspace, luma, PlaneId::Y, x, y, log2_side, qindex, use_tcq, ibp_dc,
+                crate::pipeline::reconstruct::reconstruct_general_intra_block_rect_with_availability_into(
+                    workspace,
+                    luma,
+                    PlaneId::Y,
+                    x,
+                    y,
+                    log2_side,
+                    log2_side,
+                    qindex,
+                    use_tcq,
+                    ibp_dc,
+                    crate::pipeline::reconstruct::IntraEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
                     bit_depth,
                 )
             }
@@ -121,18 +134,31 @@ impl IntraLumaPlan {
                     use_tcq,
                     num4_above_right,
                     num4_below_left,
+                    crate::pipeline::reconstruct::IntraEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
                     bit_depth,
                 )
             }
             Self::CardinalNeighbour { direction } => {
                 crate::pipeline::reconstruct::reconstruct_general_intra_cardinal_neighbour_block_into(
                     workspace, luma, direction, PlaneId::Y, x, y, log2_side, log2_side, qindex,
-                    use_tcq, None, bit_depth,
+                    use_tcq, None,
+                    crate::pipeline::reconstruct::IntraEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
+                    bit_depth,
                 )
             }
             Self::PaethNeighbour => {
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_paeth_neighbour_block_into(
                     workspace, luma, PlaneId::Y, x, y, log2_side, log2_side, qindex, use_tcq,
+                    crate::pipeline::reconstruct::IntraEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
                     bit_depth,
                 )
             }
@@ -143,10 +169,24 @@ impl IntraLumaPlan {
             }
             Self::DirectionalNeighbour { mode } => {
                 crate::pipeline::reconstruct::reconstruct_general_intra_directional_neighbour_block_into(
-                    workspace, luma, mode, PlaneId::Y, x, y, log2_side, qindex, use_tcq, bit_depth,
+                    workspace,
+                    luma,
+                    mode,
+                    PlaneId::Y,
+                    x,
+                    y,
+                    log2_side,
+                    qindex,
+                    use_tcq,
+                    bit_depth,
+                    crate::pipeline::reconstruct::MiddleEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
                 )
             }
             Self::DirectionalMiddle { p_angle } => {
+                let neighbours = block_ctx.neighbours(PlaneId::Y);
                 crate::pipeline::reconstruct::reconstruct_general_intra_middle_neighbour_rect_block_into(
                     workspace,
                     luma,
@@ -160,6 +200,10 @@ impl IntraLumaPlan {
                     use_tcq,
                     None,
                     bit_depth,
+                    crate::pipeline::reconstruct::MiddleEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
                     crate::pipeline::reconstruct::TwoSidedMiddleEdgeFilters {
                         above: crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
                         left: crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
@@ -184,6 +228,10 @@ impl IntraLumaPlan {
                     crate::pipeline::reconstruct::OneSidedAboveMrl::default(),
                     use_tcq,
                     None,
+                    crate::pipeline::reconstruct::IntraEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
                     bit_depth,
                     crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
                 )
@@ -204,6 +252,10 @@ impl IntraLumaPlan {
                     0,
                     use_tcq,
                     None,
+                    crate::pipeline::reconstruct::IntraEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
                     bit_depth,
                     crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
                 )
@@ -404,10 +456,7 @@ fn plan_directional_luma_angle(
         SupportedDirectionalLumaMode::D135 => {
             if is_top_left && is_full_sb {
                 Ok(IntraLumaPlan::DirectionalFirst { mode })
-            } else if full_sb_first_row
-                || full_sb_above_left
-                || (!is_top_left && has_above && has_left)
-            {
+            } else if full_sb_first_row || full_sb_above_left || (!is_top_left && has_left) {
                 Ok(IntraLumaPlan::DirectionalNeighbour { mode })
             } else if !is_top_left && has_above {
                 Err(UNSUPPORTED_MULTIROW_DIRECTIONAL)
@@ -522,11 +571,11 @@ const UNSUPPORTED_LUMA_MODE: IntraLumaUnsupported = unsupported(
 );
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::tile::block_context::{BlockRect, ChromaSampling, TxShape};
-    use splot_recon::BitDepth;
+    use splot_recon::{BitDepth, IntraRectBlockSize, PixelFormat};
 
     #[derive(Clone, Copy)]
     struct Case {
@@ -561,6 +610,102 @@ mod tests {
             case.bit_depth,
             ChromaSampling::Yuv420,
         )
+    }
+
+    fn all_zero_luma_block() -> LumaCoeffBlock {
+        LumaCoeffBlock {
+            all_zero: true,
+            eob: 0,
+            quant: Vec::new(),
+            intra_ist: None,
+            plane_tx_type: 0,
+        }
+    }
+
+    fn workspace_with_tile_boundary_edges(above: u8) -> CurrentFrameWorkspace<u8> {
+        let mut ws = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
+            64,
+            64,
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+        )
+        .unwrap();
+        ws.write_rect_block(
+            PlaneId::Y,
+            8,
+            4,
+            IntraRectBlockSize::new(3, 2).unwrap(),
+            &[above; 32],
+        )
+        .unwrap();
+        let left: [u8; 8] = [40, 45, 50, 55, 60, 65, 70, 75];
+        let mut left_block = vec![0u8; 4 * 8];
+        for (row, &sample) in left.iter().enumerate() {
+            for col in 0..4 {
+                left_block[row * 4 + col] = sample;
+            }
+        }
+        ws.write_rect_block(
+            PlaneId::Y,
+            4,
+            8,
+            IntraRectBlockSize::new(2, 3).unwrap(),
+            &left_block,
+        )
+        .unwrap();
+        ws
+    }
+
+    fn tile_top_block_ctx() -> BlockCtx {
+        BlockCtx::new(
+            BlockRect::new(2, 2, 2, 2),
+            TxShape::from_luma_4x4(2, 2).unwrap(),
+            16,
+            16,
+            BitDepth::Eight,
+            ChromaSampling::Yuv420,
+        )
+        .with_tile_bounds(2, 16, 0, 16)
+    }
+
+    fn reconstruct_plan_samples(plan: IntraLumaPlan, above: u8) -> Vec<u8> {
+        let mut ws = workspace_with_tile_boundary_edges(above);
+        let block_decoded = TileBlockDecodedState::new(3, 1, 1, 16, 16, 16).unwrap();
+        plan.reconstruct(
+            &mut ws,
+            &all_zero_luma_block(),
+            tile_top_block_ctx(),
+            &block_decoded,
+            0,
+            false,
+            false,
+        )
+        .unwrap();
+        (0..8)
+            .flat_map(|row| (0..8).map(move |col| (row, col)))
+            .map(|(row, col)| {
+                ws.reconstructed_sample(PlaneId::Y, 8 + col, 8 + row)
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn square_luma_reconstruct_masks_tile_unavailable_above_edge() {
+        let cases = [
+            IntraLumaPlan::Dc,
+            IntraLumaPlan::NonDcNeighbour {
+                mode: SupportedNonDcLumaMode::SmoothVertical,
+            },
+        ];
+        for plan in cases {
+            let low_above = reconstruct_plan_samples(plan, 7);
+            let high_above = reconstruct_plan_samples(plan, 240);
+            assert_eq!(
+                low_above, high_above,
+                "square luma {plan:?} must ignore the tile-unavailable above edge"
+            );
+        }
     }
 
     #[test]
@@ -827,6 +972,21 @@ mod tests {
                 width4: 8,
                 height4: 8,
                 frame_cols4: 480,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::D135),
+                expected: Expected::Plan(IntraLumaPlan::DirectionalNeighbour {
+                    mode: SupportedDirectionalLumaMode::D135,
+                }),
+            },
+            Case {
+                label: "d135 top row left-only subpartition",
+                bit_depth: BitDepth::Ten,
+                row4: 0,
+                col4: 9,
+                width4: 1,
+                height4: 1,
+                frame_cols4: 16,
                 dc: false,
                 nondc: None,
                 directional: Some(SupportedDirectionalLumaMode::D135),

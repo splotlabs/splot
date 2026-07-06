@@ -14,7 +14,10 @@ use splot_core::stream::{
 };
 use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize};
 
-use super::block::interp_filter_no_neighbour_ctx;
+use super::block::{
+    BLOCK_8X8, interp_filter_no_neighbour_ctx, segment_neighbour_availability,
+    tip_allowed_for_block_indices,
+};
 use super::compound_is_joint_context_from_order_hints;
 use super::test_support::fixture_sequence_and_key_core;
 use crate::error::{DecodeError, Result};
@@ -471,9 +474,9 @@ fn simple_path_interintra_fixture_defers_fail_closed() {
     let Err(error) =
         decode_fixture_with_options(SIMPLE_INTERINTRA_10BIT_FIXTURE, &DecodeOptions::default())
     else {
-        panic!("the fixture pins the 10-bit Select-tx key-frame fail-closed defer");
+        panic!("the fixture pins the inter-intra fail-closed defer");
     };
-    assert_eq!(unsupported_reason(error), "unsupported_10bit_non_dc_intra");
+    assert_eq!(unsupported_reason(error), "inter_interintra_unimplemented");
 }
 
 #[test]
@@ -1170,7 +1173,7 @@ fn multiref_runtime_rejects_state_obu_after_inter_candidate_before_next_frame() 
 }
 
 #[test]
-fn four_frame_multiref_reaches_too_many_valid_references_gate() {
+fn four_frame_multiref_decodes_without_total_refs_gate() {
     let four_frame = append_multiref_third_frame_as_fourth_ivf_record();
     let options = DecodeOptions::default();
     let plan = plan_fixture(&four_frame, &options);
@@ -1179,14 +1182,12 @@ fn four_frame_multiref_reaches_too_many_valid_references_gate() {
         4,
         "test fixture must exercise the former total frame-count gate"
     );
-    let Err(error) = decode_frames_from_plan_on_pool(&four_frame, &options, &plan) else {
-        panic!("a fourth multiref frame must still fail closed before output");
-    };
-    assert_eq!(unsupported_reason(error), "inter_too_many_valid_references");
+    decode_frames_from_plan_on_pool(&four_frame, &options, &plan)
+        .expect("fourth multiref frame should decode after widening NumTotalRefs support");
 }
 
 #[test]
-fn multiref_runtime_does_not_preflight_future_ivf_records_before_reference_gate() {
+fn multiref_runtime_does_not_preflight_future_ivf_records_after_decodable_fourth_frame() {
     let future_state = append_future_state_record_after_fourth_multiref_candidate();
     let options = DecodeOptions::default();
     let plan = plan_fixture(&future_state, &options);
@@ -1195,10 +1196,9 @@ fn multiref_runtime_does_not_preflight_future_ivf_records_before_reference_gate(
         4,
         "test fixture keeps the malformed state-only IVF record after the fourth candidate"
     );
-    let Err(error) = decode_frames_from_plan_on_pool(&future_state, &options, &plan) else {
-        panic!("a fourth multiref frame must still fail closed before output");
-    };
-    assert_eq!(unsupported_reason(error), "inter_too_many_valid_references");
+    decode_frames_from_plan_on_pool(&future_state, &options, &plan).expect(
+        "malformed state-only IVF record after the fourth candidate should not be preflighted",
+    );
 }
 
 #[test]
@@ -1805,6 +1805,42 @@ fn compound_is_joint_context_uses_strict_same_side_signs() {
 fn interp_filter_no_neighbour_context_accounts_for_compound_second_ref() {
     assert_eq!(interp_filter_no_neighbour_ctx(false), 3);
     assert_eq!(interp_filter_no_neighbour_ctx(true), 7);
+}
+
+#[test]
+fn tip_mode_gate_follows_mi_size_not_has_chroma() {
+    assert!(tip_allowed_for_block_indices(
+        false, false, false, BLOCK_8X8, BLOCK_8X8, 2, 2
+    ));
+    assert!(!tip_allowed_for_block_indices(
+        true, false, false, BLOCK_8X8, BLOCK_8X8, 2, 2
+    ));
+    assert!(!tip_allowed_for_block_indices(
+        false, true, false, BLOCK_8X8, BLOCK_8X8, 2, 2
+    ));
+    assert!(!tip_allowed_for_block_indices(
+        false, false, true, BLOCK_8X8, BLOCK_8X8, 2, 2
+    ));
+    assert!(!tip_allowed_for_block_indices(
+        false,
+        false,
+        false,
+        BLOCK_8X8,
+        BLOCK_8X8 + 1,
+        2,
+        2
+    ));
+    assert!(!tip_allowed_for_block_indices(
+        false, false, false, BLOCK_8X8, BLOCK_8X8, 1, 2
+    ));
+}
+
+#[test]
+fn segment_neighbour_availability_is_tile_bounded() {
+    assert_eq!(segment_neighbour_availability(8, 16, 8, 16), (false, false));
+    assert_eq!(segment_neighbour_availability(9, 16, 8, 16), (true, false));
+    assert_eq!(segment_neighbour_availability(8, 17, 8, 16), (false, true));
+    assert_eq!(segment_neighbour_availability(9, 17, 8, 16), (true, true));
 }
 
 #[test]

@@ -31,7 +31,7 @@ use crate::pipeline::reconstruct::*;
 /// dispatching on the resolved § 5.20.5.3 `UVMode`:
 ///
 /// - [`SupportedChromaMode::Dc`] delegates to the § 7.13.2.4 DC reconstruction
-///   ([`reconstruct_general_intra_block_into`]).
+///   ([`reconstruct_general_intra_block_rect_with_availability_into`]).
 /// - [`SupportedChromaMode::Smooth`] builds the § 7.13.2.1 `AboveRow` / `LeftCol`
 ///   edges from the partially-built frame's reconstructed neighbours (applying
 ///   the no-above / no-left / no-neighbour fallbacks), runs § 7.13.2.13 smooth
@@ -59,10 +59,11 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
     num4_above_right: usize,
     num4_below_left: usize,
     ibp_dc: bool,
+    availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     match mode {
-        SupportedChromaMode::Dc => reconstruct_general_intra_block_rect_into(
+        SupportedChromaMode::Dc => reconstruct_general_intra_block_rect_with_availability_into(
             workspace,
             block,
             plane_id,
@@ -73,6 +74,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             qindex,
             false,
             ibp_dc,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::Smooth => reconstruct_general_intra_chroma_smooth_into(
@@ -87,6 +89,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             IntraSmoothMode::Smooth,
             num4_above_right,
             num4_below_left,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::SmoothVertical => reconstruct_general_intra_chroma_smooth_into(
@@ -101,6 +104,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             IntraSmoothMode::SmoothVertical,
             num4_above_right,
             num4_below_left,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::SmoothHorizontal => reconstruct_general_intra_chroma_smooth_into(
@@ -115,6 +119,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             IntraSmoothMode::SmoothHorizontal,
             num4_above_right,
             num4_below_left,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::Paeth => reconstruct_general_intra_luma_paeth_neighbour_block_into(
@@ -127,6 +132,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             log2_height,
             qindex,
             false,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::D135Follow | SupportedChromaMode::D135 if x == 0 && y == 0 => {
@@ -146,6 +152,10 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 bit_depth,
+                MiddleEdgeAvailability {
+                    above: availability.above,
+                    left: availability.left,
+                },
             )
         }
         SupportedChromaMode::D113Follow | SupportedChromaMode::D113 => {
@@ -160,6 +170,10 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 bit_depth,
+                MiddleEdgeAvailability {
+                    above: availability.above,
+                    left: availability.left,
+                },
             )
         }
         SupportedChromaMode::D157Follow | SupportedChromaMode::D157 => {
@@ -174,6 +188,10 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 bit_depth,
+                MiddleEdgeAvailability {
+                    above: availability.above,
+                    left: availability.left,
+                },
             )
         }
         SupportedChromaMode::VerticalFollow | SupportedChromaMode::Vertical => {
@@ -189,6 +207,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 None,
+                availability,
                 bit_depth,
             )
         }
@@ -205,6 +224,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 None,
+                availability,
                 bit_depth,
             )
         }
@@ -233,6 +253,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             qindex,
             false,
             None,
+            availability,
             bit_depth,
         ),
         SupportedChromaMode::D45Follow
@@ -256,6 +277,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             OneSidedAboveMrl::default(),
             false,
             None,
+            availability,
             bit_depth,
             OneSidedEdgeFilter::default(),
         ),
@@ -275,6 +297,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 0,     // mrl_index: chroma follow uses the immediate reference line
                 false,
                 None,
+                availability,
                 bit_depth,
                 OneSidedEdgeFilter::default(),
             )
@@ -409,9 +432,11 @@ fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
     smooth_mode: IntraSmoothMode,
     num4_above_right: usize,
     num4_below_left: usize,
+    availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    reconstruct_general_intra_smooth_over_edges_into(
+    let (available_left_samples, available_above_samples) = availability.available_sample_limits();
+    reconstruct_general_intra_smooth_over_available_edges_into(
         workspace,
         block,
         plane_id,
@@ -421,6 +446,8 @@ fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
         log2_height,
         qindex,
         smooth_mode,
+        available_left_samples,
+        available_above_samples,
         num4_above_right,
         num4_below_left,
         false,

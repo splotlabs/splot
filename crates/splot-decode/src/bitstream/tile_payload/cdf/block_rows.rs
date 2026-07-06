@@ -24,9 +24,10 @@ use splot_core::tables::cdf::{
     DEFAULT_PALETTE_SIZE_6_Y_COLOR_CDF, DEFAULT_PALETTE_SIZE_7_Y_COLOR_CDF,
     DEFAULT_PALETTE_SIZE_8_Y_COLOR_CDF, DEFAULT_PALETTE_Y_MODE_CDF, DEFAULT_PALETTE_Y_SIZE_CDF,
     DEFAULT_PB_MV_PRECISION_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF,
-    DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_AMVD_CDF,
-    DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_EXTEND_WARP_CDF,
-    DEFAULT_USE_LOCAL_WARP_CDF, DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF, DEFAULT_USE_WIENER_NS_CDF,
+    DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF, DEFAULT_TIP_MODE_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_USE_AMVD_CDF, DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF,
+    DEFAULT_USE_EXTEND_WARP_CDF, DEFAULT_USE_LOCAL_WARP_CDF,
+    DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF, DEFAULT_USE_WIENER_NS_CDF,
     DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WARP_DELTA_PARAM_HIGH_CDF,
     DEFAULT_WARP_DELTA_PARAM_LOW_CDF, DEFAULT_WARP_DELTA_PARAM_SIGN_CDF, DEFAULT_WARP_IDX_CDF,
     DEFAULT_WARP_INTER_INTRA_CDF, DEFAULT_WARP_MV_CDF, DEFAULT_WARP_PRECISION_CDF,
@@ -42,8 +43,8 @@ use self::mv::MvCdfRows;
 pub(crate) use self::mv::MvCdfSelector;
 use super::coeff_rows::{CoeffCdfRows, CoeffCdfSelector};
 use super::{
-    CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row, avg_cdf_rows, checked_context,
-    scale_cdf_count, scale_cdf_rows,
+    CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_row, avg_cdf_rows, blend_cdf_row,
+    blend_cdf_rows, checked_context, scale_cdf_count, scale_cdf_rows,
 };
 
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
@@ -83,6 +84,7 @@ const WEDGE_DIST1_ROW_LEN: usize = 5;
 const WEDGE_DIST2_ROW_LEN: usize = 4;
 const DRL_MODE_IDX_BANKS: usize = 3;
 const DRL_MODE_CONTEXTS: usize = 5;
+const TIP_CONTEXTS: usize = 3;
 const REF_CONTEXTS: usize = 3;
 const REFS_PER_FRAME_MINUS_1: usize = 6;
 const COMP_MODE_CONTEXTS: usize = 5;
@@ -168,6 +170,7 @@ pub(crate) type WedgeAngleCdfRows = [[i32; WEDGE_ANGLE_ROW_LEN]; WEDGE_ANGLE_CON
 pub(crate) type WedgeDist1CdfRow = [i32; WEDGE_DIST1_ROW_LEN];
 pub(crate) type WedgeDist2CdfRow = [i32; WEDGE_DIST2_ROW_LEN];
 pub(crate) type DrlModeCdfRows = [[[i32; CDF_ROW_LEN]; DRL_MODE_CONTEXTS]; DRL_MODE_IDX_BANKS];
+pub(crate) type TipModeCdfRows = [[i32; CDF_ROW_LEN]; TIP_CONTEXTS];
 pub(crate) type SingleRefCdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
 pub(crate) type CompModeCdfRows = [[i32; CDF_ROW_LEN]; COMP_MODE_CONTEXTS];
 pub(crate) type IsJointCdfRows = [[i32; CDF_ROW_LEN]; IS_JOINT_CONTEXTS];
@@ -353,6 +356,9 @@ pub(crate) enum BlockCdfSelector {
         idx: usize,
         ctx: usize,
     },
+    TipMode {
+        ctx: usize,
+    },
     SingleRef {
         ctx: usize,
         ref_idx: usize,
@@ -519,6 +525,7 @@ pub(crate) struct BlockCdfRows {
     pub(crate) wedge_dist1: WedgeDist1CdfRow,
     pub(crate) wedge_dist2: WedgeDist2CdfRow,
     pub(crate) drl_mode: DrlModeCdfRows,
+    pub(crate) tip_mode: TipModeCdfRows,
     pub(crate) single_ref: SingleRefCdfRows,
     pub(crate) comp_mode: CompModeCdfRows,
     pub(crate) is_joint: IsJointCdfRows,
@@ -823,6 +830,14 @@ macro_rules! block_cdf_row {
                     checked_block_row!($self.drl_mode, idx, "idx", TileCdfArray::DrlMode, $get)?;
                 block_row_slice!(bank, ctx, "ctx", TileCdfArray::DrlMode, $get, $as_slice)
             }
+            BlockCdfSelector::TipMode { ctx } => block_row_slice!(
+                $self.tip_mode,
+                ctx,
+                "ctx",
+                TileCdfArray::TipMode,
+                $get,
+                $as_slice
+            ),
             BlockCdfSelector::SingleRef { ctx, ref_idx } => {
                 let bank = checked_block_row!(
                     $self.single_ref,
@@ -1231,6 +1246,7 @@ macro_rules! block_cdf_count_rows {
         $row!(wedge_dist1);
         $row!(wedge_dist2);
         $rows!(drl_mode.flatten());
+        $rows!(tip_mode);
         $rows!(single_ref.flatten());
         $rows!(comp_mode);
         $rows!(is_joint);
@@ -1329,6 +1345,7 @@ impl BlockCdfRows {
             wedge_dist1: DEFAULT_WEDGE_DIST1_CDF,
             wedge_dist2: DEFAULT_WEDGE_DIST2_CDF,
             drl_mode: DEFAULT_DRL_MODE_CDF,
+            tip_mode: DEFAULT_TIP_MODE_CDF,
             single_ref: DEFAULT_SINGLE_REF_CDF,
             comp_mode: DEFAULT_COMP_MODE_CDF,
             is_joint: DEFAULT_IS_JOINT_CDF,
@@ -1439,6 +1456,33 @@ impl BlockCdfRows {
             },
             {
                 self.coeff.avg_from_tile(tile_num, &tile.coeff, num_log2);
+            }
+        );
+    }
+
+    pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
+        macro_rules! blend_row {
+            ($field:ident) => {
+                blend_cdf_row(&mut self.$field, &saved.$field);
+            };
+        }
+        macro_rules! blend_rows {
+            ($field:ident $(. $flatten:ident())*) => {
+                blend_cdf_rows(
+                    self.$field.iter_mut()$(.$flatten())*,
+                    saved.$field.iter()$(.$flatten())*,
+                );
+            };
+        }
+
+        block_cdf_count_rows!(
+            blend_row,
+            blend_rows,
+            {
+                self.read_mv.blend_from_saved(&saved.read_mv);
+            },
+            {
+                self.coeff.blend_from_saved(&saved.coeff);
             }
         );
     }
@@ -1560,6 +1604,11 @@ impl BlockCdfRows {
     #[cfg(test)]
     pub(crate) const fn comp_ref1(&self) -> &CompRef1CdfRows {
         &self.comp_ref1
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn tip_mode(&self) -> &TipModeCdfRows {
+        &self.tip_mode
     }
 
     #[cfg(test)]

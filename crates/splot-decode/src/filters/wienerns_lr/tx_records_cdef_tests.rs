@@ -17,25 +17,40 @@ fn cdef_index0_context_uses_zero_strength_neighbours_in_same_superblock() {
     let offset = ByteOffset::new(0);
     let mut state = cdef_state(4, 4, 32);
 
-    assert_eq!(state.cdef_index0_ctx_at(0, 0, offset).unwrap(), 0);
+    assert_eq!(state.cdef_index0_ctx_at(0, 0, 0, 0, offset).unwrap(), 0);
 
     let left = state.index(0, 0, offset).unwrap();
     state.values[left] = Some(0);
-    assert_eq!(state.cdef_index0_ctx_at(0, 16, offset).unwrap(), 2);
+    assert_eq!(state.cdef_index0_ctx_at(0, 16, 0, 0, offset).unwrap(), 2);
 
     let above = state.index(0, 1, offset).unwrap();
     state.values[above] = Some(0);
     let left = state.index(1, 0, offset).unwrap();
     state.values[left] = Some(0);
-    assert_eq!(state.cdef_index0_ctx_at(16, 16, offset).unwrap(), 3);
+    assert_eq!(state.cdef_index0_ctx_at(16, 16, 0, 0, offset).unwrap(), 3);
 
     state.values[left] = Some(2);
-    assert_eq!(state.cdef_index0_ctx_at(16, 16, offset).unwrap(), 1);
+    assert_eq!(state.cdef_index0_ctx_at(16, 16, 0, 0, offset).unwrap(), 1);
 
     let mut state = cdef_state(4, 4, 32);
     let above = state.index(1, 1, offset).unwrap();
     state.values[above] = Some(0);
-    assert_eq!(state.cdef_index0_ctx_at(32, 16, offset).unwrap(), 0);
+    assert_eq!(state.cdef_index0_ctx_at(32, 16, 0, 0, offset).unwrap(), 0);
+}
+
+#[test]
+fn cdef_index0_context_stops_at_tile_start() {
+    let offset = ByteOffset::new(0);
+    let mut state = cdef_state(4, 4, 32);
+    let left = state.index(0, 0, offset).unwrap();
+    state.values[left] = Some(0);
+    let above = state.index(0, 1, offset).unwrap();
+    state.values[above] = Some(0);
+
+    assert_eq!(state.cdef_index0_ctx_at(0, 16, 0, 16, offset).unwrap(), 0);
+    let left = state.index(1, 0, offset).unwrap();
+    state.values[left] = Some(0);
+    assert_eq!(state.cdef_index0_ctx_at(16, 16, 16, 0, offset).unwrap(), 2);
 }
 
 #[test]

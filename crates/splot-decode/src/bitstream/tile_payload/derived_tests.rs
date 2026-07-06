@@ -289,6 +289,42 @@ fn derived_annex_b_tile_payload_preserves_source_offsets_and_boundary() {
 }
 
 #[test]
+fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
+    let bytes = annex_b_tile_group_obu_with_payload(&[0x00, 0x00, 0x00, 0x80, 0x00]);
+    let ctx = single_thread_context();
+    let plan = derive_annex_b_tile_payload_plan(
+        &ctx,
+        &bytes,
+        multi_tile_candidate_facts(),
+        DecodeLimits::unlimited(),
+    )
+    .unwrap();
+
+    assert_eq!(plan.work_units().len(), 2);
+    let first = &plan.work_units()[0];
+    assert_eq!(first.tile_num(), 0);
+    assert_eq!(first.tile_row(), 0);
+    assert_eq!(first.tile_col(), 0);
+    assert_eq!(first.mi_row_range(), 0..8);
+    assert_eq!(first.mi_col_range(), 0..16);
+    assert_eq!(first.tile_byte_span(), ByteSpan::new(ByteOffset::new(5), 1));
+    assert_eq!(first.tile_bytes(), &[0x80]);
+    assert!(first.cdf().save_policy().copy_cdf());
+    let second = &plan.work_units()[1];
+    assert_eq!(second.tile_num(), 1);
+    assert_eq!(second.tile_row(), 0);
+    assert_eq!(second.tile_col(), 1);
+    assert_eq!(second.mi_row_range(), 0..8);
+    assert_eq!(second.mi_col_range(), 16..32);
+    assert_eq!(
+        second.tile_byte_span(),
+        ByteSpan::new(ByteOffset::new(6), 1)
+    );
+    assert_eq!(second.tile_bytes(), &[0x00]);
+    assert!(!second.cdf().save_policy().copy_cdf());
+}
+
+#[test]
 fn derived_ivf_tile_payload_preserves_frame_context_and_offsets() {
     let frame_payload = annex_b_tile_group_obu();
     let bytes = ivf_with_payload(&frame_payload);
@@ -549,11 +585,6 @@ fn derived_boundary_rejects_unsupported_position_and_frame_paths() {
             base_position(),
             bridge_candidate_facts(),
             FrameCandidateTileUnsupportedReason::BridgeFrame,
-        ),
-        (
-            base_position(),
-            multi_tile_candidate_facts(),
-            FrameCandidateTileUnsupportedReason::NonSingleTileGroup,
         ),
     ];
 

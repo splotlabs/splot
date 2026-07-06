@@ -5,14 +5,13 @@ use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
+use splot_core::tile::mi_width_log2;
 
 use crate::bitstream::tile_payload::{DecodeBlockFrontier, DecodeTileWorkUnit, TileCdfSelector};
 use crate::error::Result;
 use crate::filters::ccso::CcsoUnitGrid;
 
-use super::super::{
-    intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason,
-};
+use super::super::wienerns_lr_selectable_transform_record_error_reason;
 use super::{CCSO_PLANES, CCSO_SYMBOL_VALUES, MI_SIZE_LOG2, read_tx_symbol};
 
 const CCSO_GRID_OVERFLOW_REASON: &str =
@@ -45,11 +44,7 @@ impl CcsoState {
         if !filter.is_some_and(|f| f.enable_ccso) || !frame_flag {
             return Ok(Self::inactive());
         }
-        let shift = if filter.is_some_and(|f| f.ccso_unit_matches_sb_size) {
-            ccso_mi_width_log2(sequence, tile_offset)?
-        } else {
-            8 - MI_SIZE_LOG2
-        };
+        let shift = ccso_mi_width_log2(sequence, core, tile_offset)?;
         let grid = ccso_grid(mi_rows, mi_cols, shift, tile_offset)?;
         let plane_enabled = std::array::from_fn(|plane| {
             ccso.and_then(|c| c.planes.get(plane))
@@ -104,7 +99,13 @@ impl CcsoState {
             if !self.plane_enabled[plane] {
                 continue;
             }
-            let ctx = if unit_col > 0 {
+            let tile_col_start = work_unit.mi_col_range().start as usize;
+            let unit_width = 1usize << self.shift;
+            let left_available = frontier
+                .c
+                .checked_sub(unit_width)
+                .is_some_and(|left_col| left_col >= tile_col_start);
+            let ctx = if left_available {
                 let left = self.block_value(plane, unit_row, unit_col - 1);
                 2 * usize::from(left)
             } else {
@@ -175,11 +176,81 @@ impl CcsoState {
     }
 }
 
-fn ccso_mi_width_log2(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<u32> {
-    Ok(match intra_capped_seq_sb_size(sequence, tile_offset)? {
-        SuperblockSize::Block64x64 => 4,
-        SuperblockSize::Block128x128 | SuperblockSize::Block256x256 => 5,
-    })
+fn ccso_mi_width_log2(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    tile_offset: ByteOffset,
+) -> Result<u32> {
+    let filter = sequence.filter.as_ref();
+    let sb_mi_width_log2 = frame_sb_mi_width_log2(sequence, core, tile_offset)?;
+    let Some(tile_info) = core.tile_info.as_ref() else {
+        return Err(ccso_error(tile_offset, CCSO_BOUNDS_REASON));
+    };
+    Ok(ccso_mi_width_log2_for_layout(
+        filter.is_some_and(|f| f.ccso_unit_matches_sb_size),
+        sb_mi_width_log2,
+        tile_info.tile_cols,
+        tile_info.tile_rows,
+        &tile_info.mi_col_starts,
+        &tile_info.mi_row_starts,
+    ))
+}
+
+fn frame_sb_mi_width_log2(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    tile_offset: ByteOffset,
+) -> Result<u32> {
+    let partition = sequence
+        .partition
+        .as_ref()
+        .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
+    let frame_is_intra = core
+        .frame_is_intra
+        .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
+    let sb_size = if partition.use_256x256_superblock {
+        if frame_is_intra {
+            SuperblockSize::Block128x128
+        } else {
+            SuperblockSize::Block256x256
+        }
+    } else if partition.use_128x128_superblock {
+        SuperblockSize::Block128x128
+    } else {
+        SuperblockSize::Block64x64
+    };
+    Ok(mi_width_log2(sb_size))
+}
+
+fn ccso_mi_width_log2_for_layout(
+    ccso_unit_matches_sb_size: bool,
+    sb_mi_width_log2: u32,
+    tile_cols: u32,
+    tile_rows: u32,
+    mi_col_starts: &[u32],
+    mi_row_starts: &[u32],
+) -> u32 {
+    if ccso_unit_matches_sb_size {
+        return sb_mi_width_log2;
+    }
+    if tile_cols <= 1 && tile_rows <= 1 {
+        return 8 - MI_SIZE_LOG2;
+    }
+    let mut alignment = 0;
+    for &start in mi_col_starts.iter().take(tile_cols as usize) {
+        alignment |= start;
+    }
+    for &start in mi_row_starts.iter().take(tile_rows as usize) {
+        alignment |= start;
+    }
+    let ccso_luma_size_log2 = if alignment.trailing_zeros() >= 6 {
+        8
+    } else if alignment.trailing_zeros() >= 5 {
+        7
+    } else {
+        6
+    };
+    ccso_luma_size_log2 - MI_SIZE_LOG2
 }
 
 fn ccso_grid(
@@ -225,6 +296,30 @@ mod tests {
         assert!(aligned(0));
         assert!(!aligned(32));
         assert!(aligned(64));
+    }
+
+    #[test]
+    fn ccso_unit_size_follows_tile_alignment() {
+        assert_eq!(
+            ccso_mi_width_log2_for_layout(false, 4, 1, 1, &[0, 16], &[0, 16]),
+            6
+        );
+        assert_eq!(
+            ccso_mi_width_log2_for_layout(false, 4, 2, 1, &[0, 16, 32], &[0, 16]),
+            4
+        );
+        assert_eq!(
+            ccso_mi_width_log2_for_layout(false, 5, 2, 1, &[0, 32, 64], &[0, 16]),
+            5
+        );
+        assert_eq!(
+            ccso_mi_width_log2_for_layout(false, 6, 2, 1, &[0, 64, 128], &[0, 16]),
+            6
+        );
+        assert_eq!(
+            ccso_mi_width_log2_for_layout(true, 4, 2, 1, &[0, 64, 128], &[0, 16]),
+            4
+        );
     }
 
     #[test]

@@ -23,11 +23,12 @@ use splot_core::tables::cdf::{
     DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_MORPH_PRED_CDF,
     DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
     DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_PALETTE_Y_MODE_CDF,
-    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF,
-    DEFAULT_TX_PARTITION_TYPE_CDF, DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF,
-    DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF,
-    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TIP_MODE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF,
+    DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
+    DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF,
+    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
+    DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
+    DEFAULT_Y_MODE_SET_CDF,
 };
 
 fn coeff(selector: CoeffCdfSelector) -> TileCdfSelector {
@@ -51,6 +52,62 @@ fn assert_selector_out_of_range(
             max_exclusive,
         },
         "{selector:?}"
+    );
+}
+
+fn expected_blend_prob(current: i32, saved: i32) -> i32 {
+    CDF_PROB_SCALE - (((CDF_PROB_SCALE - saved) + 7 * (CDF_PROB_SCALE - current) + 4) >> 3)
+}
+
+fn expected_blend_count(current: i32, saved: i32) -> i32 {
+    (saved + 7 * current + 4) >> 3
+}
+
+#[test]
+fn frame_cdf_subset_blends_saved_rows() {
+    let mut frame = FrameCdfSubset::from_defaults();
+    let mut saved = FrameCdfSubset::from_defaults();
+    frame.rows.delta_q = [
+        9000, 12_000, 15_000, 18_000, 21_000, 24_000, 27_000, 30_000, 40,
+    ];
+    saved.rows.delta_q = [
+        11_000, 13_000, 17_000, 19_000, 22_000, 26_000, 28_000, 31_000, 80,
+    ];
+    frame.rows.block.tip_mode[1] = [10_000, 28_000, 20];
+    saved.rows.block.tip_mode[1] = [14_000, 30_000, 100];
+
+    let original_delta_q = frame.rows.delta_q;
+    let saved_delta_q = saved.rows.delta_q;
+    let original_tip = frame.rows.block.tip_mode[1];
+    let saved_tip = saved.rows.block.tip_mode[1];
+    frame.blend_from_saved(&saved);
+
+    for i in 0..DELTA_Q_CDF_ROW_LEN - 2 {
+        assert_eq!(
+            frame.rows.delta_q[i],
+            expected_blend_prob(original_delta_q[i], saved_delta_q[i]),
+            "delta_q probability index {i}"
+        );
+    }
+    assert_eq!(
+        frame.rows.delta_q[DELTA_Q_CDF_ROW_LEN - 2],
+        original_delta_q[DELTA_Q_CDF_ROW_LEN - 2]
+    );
+    assert_eq!(
+        frame.rows.delta_q[DELTA_Q_CDF_ROW_LEN - 1],
+        expected_blend_count(
+            original_delta_q[DELTA_Q_CDF_ROW_LEN - 1],
+            saved_delta_q[DELTA_Q_CDF_ROW_LEN - 1]
+        )
+    );
+    assert_eq!(
+        frame.rows.block.tip_mode[1][0],
+        expected_blend_prob(original_tip[0], saved_tip[0])
+    );
+    assert_eq!(frame.rows.block.tip_mode[1][1], original_tip[1]);
+    assert_eq!(
+        frame.rows.block.tip_mode[1][2],
+        expected_blend_count(original_tip[2], saved_tip[2])
     );
 }
 
@@ -138,6 +195,7 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
     assert_eq!(frame.rows().cwp_idx(), &DEFAULT_CWP_IDX_CDF);
     assert_eq!(frame.rows().comp_ref0(), &DEFAULT_COMP_REF0_CDF);
     assert_eq!(frame.rows().comp_ref1(), &DEFAULT_COMP_REF1_CDF);
+    assert_eq!(frame.rows().tip_mode(), &DEFAULT_TIP_MODE_CDF);
     assert_eq!(frame.rows().use_wiener_ns(), &DEFAULT_USE_WIENER_NS_CDF);
     assert_eq!(
         frame.rows().wiener_ns_length(),
@@ -323,6 +381,13 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
             }
         }
     }
+    for (ctx, expected) in DEFAULT_TIP_MODE_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::TipMode { ctx }).unwrap(),
+            expected.as_slice(),
+            "tip_mode ctx {ctx}"
+        );
+    }
 
     tile.with_row_mut(TileCdfSelector::CompMode { ctx: 0 }, |row| row[0] = 12_345)
         .unwrap();
@@ -382,6 +447,13 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
                 ref_idx: 0,
             },
             TileCdfArray::CompRef1,
+            "ctx",
+            3,
+            3,
+        ),
+        (
+            TileCdfSelector::TipMode { ctx: 3 },
+            TileCdfArray::TipMode,
             "ctx",
             3,
             3,

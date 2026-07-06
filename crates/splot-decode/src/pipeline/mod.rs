@@ -226,22 +226,8 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
         )
     })?;
     let leading_obus = first_ivf_frame.obus.as_slice();
-    let [td_envelope, sequence_envelope, key_envelope] = require_minimal_obu_order(leading_obus)?;
-    require_obu_type(
-        td_envelope,
-        ObuType::TemporalDelimiter,
-        "missing_temporal_delimiter",
-    )?;
-    require_obu_type(
-        sequence_envelope,
-        ObuType::SequenceHeader,
-        "missing_sequence_header",
-    )?;
-    require_obu_type(
-        key_envelope,
-        ObuType::ClosedLoopKey,
-        "missing_closed_loop_key",
-    )?;
+    let ([_td_envelope, sequence_envelope, key_envelope], _) =
+        require_leading_frame_unit(leading_obus)?;
 
     let sequence = parse_sequence(sequence_envelope)?;
     validate_sequence(&sequence, sequence_envelope.offset)?;
@@ -338,13 +324,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     next_candidate,
                     &mut next_unvalidated_following_ivf_record,
                 )?;
-                if reference.valid_count() > 2 {
-                    return Err(unsupported_at(
-                        "inter_too_many_valid_references",
-                        next_candidate.offset(),
-                        missing_capability_message!("inter.reference_count valid_refs>2"),
-                    ));
-                }
                 let inter_frame_timer = crate::timing::start();
                 let (inter_frame, inter_core, frame_cdfs) = match sequence.general.bit_depth_idc {
                     BitDepthIdc::Eight => {
@@ -913,12 +892,16 @@ fn is_leading_record_regular_after_key(
     position: usize,
     obus: &[ObuEnvelope<'_>],
 ) -> bool {
-    ivf_frame_index == 0
-        && position >= 3
-        && require_minimal_obu_order(obus).is_ok()
+    if ivf_frame_index != 0 {
+        return false;
+    }
+    let Ok((_, frame_unit_len)) = require_leading_frame_unit(obus) else {
+        return false;
+    };
+    position >= frame_unit_len
         && obus
             .iter()
-            .skip(3)
+            .skip(frame_unit_len)
             .all(|envelope| envelope.header.obu_type == ObuType::RegularTileGroup)
 }
 
@@ -954,8 +937,8 @@ fn require_following_ivf_record_obu_order(
 }
 
 fn require_leading_ivf_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
-    require_minimal_obu_order(obus)?;
-    for envelope in obus.iter().skip(3) {
+    let (_, frame_unit_len) = require_leading_frame_unit(obus)?;
+    for envelope in obus.iter().skip(frame_unit_len) {
         require_obu_type(
             *envelope,
             ObuType::RegularTileGroup,
@@ -1139,14 +1122,62 @@ fn ensure_output_frame_byte_limits(
 pub(crate) fn require_minimal_obu_order<'a>(
     obus: &'a [ObuEnvelope<'a>],
 ) -> Result<[ObuEnvelope<'a>; 3]> {
-    match obus {
-        [td, sequence, frame, ..] => Ok([*td, *sequence, *frame]),
-        _ => Err(unsupported(
+    let frame_unit_len = minimal_frame_unit_len(obus)?;
+    Ok([obus[0], obus[frame_unit_len - 2], obus[frame_unit_len - 1]])
+}
+
+fn require_leading_frame_unit<'a>(
+    obus: &'a [ObuEnvelope<'a>],
+) -> Result<([ObuEnvelope<'a>; 3], usize)> {
+    let frame_unit = require_minimal_obu_order(obus)?;
+    require_obu_type(
+        frame_unit[0],
+        ObuType::TemporalDelimiter,
+        "missing_temporal_delimiter",
+    )?;
+    require_obu_type(
+        frame_unit[1],
+        ObuType::SequenceHeader,
+        "missing_sequence_header",
+    )?;
+    require_obu_type(
+        frame_unit[2],
+        ObuType::ClosedLoopKey,
+        "missing_closed_loop_key",
+    )?;
+    Ok((frame_unit, minimal_frame_unit_len(obus)?))
+}
+
+fn minimal_frame_unit_len(obus: &[ObuEnvelope<'_>]) -> Result<usize> {
+    if obus.is_empty() {
+        return Err(unsupported(
             "unexpected_obu_order",
             None,
-            "minimal tier requires a leading temporal delimiter, sequence header, and closed-loop-key OBU",
-        )),
+            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, and closed-loop-key OBU",
+        ));
     }
+    let mut sequence_index = 1usize;
+    while obus
+        .get(sequence_index)
+        .is_some_and(|envelope| envelope.header.obu_type == ObuType::OperatingPointSet)
+    {
+        sequence_index += 1;
+    }
+    let frame_index = sequence_index.checked_add(1).ok_or_else(|| {
+        unsupported(
+            "unexpected_obu_order",
+            None,
+            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, and closed-loop-key OBU",
+        )
+    })?;
+    if frame_index >= obus.len() {
+        return Err(unsupported(
+            "unexpected_obu_order",
+            None,
+            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, and closed-loop-key OBU",
+        ));
+    }
+    Ok(frame_index + 1)
 }
 
 fn require_obu_type(
@@ -1517,7 +1548,7 @@ fn decode_tile_boundary_error(error: FrameCandidateTileBoundaryError) -> DecodeE
         | FrameCandidateTileBoundaryError::Boundary(_) => unsupported(
             "unsupported_tile_boundary",
             None,
-            "minimal tier requires a single source-backed tile work unit",
+            "minimal tier requires source-backed tile work units",
         ),
     }
 }
@@ -1642,4 +1673,56 @@ pub(crate) fn unsupported_feature_at(
     spec_section: &'static str,
 ) -> DecodeError {
     unsupported_with_spec(reason, Some(byte_offset), message, spec_section)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use splot_core::stream::parse_bitstream_partial;
+
+    const OBU_SEQUENCE_HEADER: u8 = 0x04;
+    const OBU_TEMPORAL_DELIMITER: u8 = 0x08;
+    const OBU_CLOSED_LOOP_KEY: u8 = 0x10;
+    const OBU_REGULAR_TILE_GROUP: u8 = 0x1C;
+    const OBU_OPERATING_POINT_SET: u8 = 0x48;
+
+    fn obu(header: u8) -> [u8; 2] {
+        [0x01, header]
+    }
+
+    fn annexb_obus(bytes: &[u8]) -> Vec<ObuEnvelope<'_>> {
+        let parsed = parse_bitstream_partial(bytes);
+        assert!(matches!(parsed, ParsedBitstream::AnnexB(_)));
+        let ParsedBitstream::AnnexB(parsed) = parsed else {
+            return Vec::new();
+        };
+        assert!(parsed.error.is_none());
+        parsed.obus
+    }
+
+    #[test]
+    fn leading_frame_unit_allows_ops_before_sequence() {
+        let bytes = [
+            obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+            obu(OBU_OPERATING_POINT_SET).as_slice(),
+            obu(OBU_SEQUENCE_HEADER).as_slice(),
+            obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+            obu(OBU_REGULAR_TILE_GROUP).as_slice(),
+        ]
+        .concat();
+        let obus = annexb_obus(&bytes);
+
+        let leading = require_leading_frame_unit(&obus);
+        assert!(leading.is_ok());
+        let Ok(([td, sequence, key], frame_unit_len)) = leading else {
+            return;
+        };
+
+        assert_eq!(td.header.obu_type, ObuType::TemporalDelimiter);
+        assert_eq!(sequence.header.obu_type, ObuType::SequenceHeader);
+        assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
+        assert_eq!(frame_unit_len, 4);
+        assert!(is_leading_record_regular_after_key(0, 4, &obus));
+        assert!(require_leading_ivf_obu_order(&obus).is_ok());
+    }
 }

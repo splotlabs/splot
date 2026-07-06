@@ -3,7 +3,7 @@
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameType, MvPrecision, TxMode, get_qindex,
+    CoreSeqQuantView, FrameHeaderCore, FrameType, MvPrecision, TipFrameMode, TxMode, get_qindex,
 };
 use splot_core::headers::sequence::DrlReorder;
 use splot_core::headers::sequence::SequenceHeader;
@@ -41,9 +41,9 @@ use crate::bitstream::tile_payload::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, BlockSize, CoeffContextReset,
     DecodeBlockFrontier, DecodeTileWorkUnit, FrameCdfSubset, GeneralIntraLeafMode,
     GeneralIntraMultiblockError, GeneralIntraTreeWalkError, IsCflContext, LumaCoeffBlock,
-    TileBlockDecodedState, TileCdfSelector, TileCdfSubset, TileCoeffContextState, TileFscModeState,
-    TileIntraJointModeState, TilePartitionTraversalError, TileSegmentIdState, TileUsesMrlsState,
-    TransformToolResidualPolicy, chroma_subsampling,
+    SavedCdfSubset, TileBlockDecodedState, TileCdfSelector, TileCdfSubset, TileCoeffContextState,
+    TileFscModeState, TileIntraJointModeState, TilePartitionTraversalError, TileSegmentIdState,
+    TileUsesMrlsState, TransformToolResidualPolicy, chroma_subsampling,
     decode_general_intra_multiblock_tree_with_lr_source_blocks, decode_general_intra_plane_coeffs,
     frame_mi_dimensions, get_plane_residual_size, neg_deinterleave,
 };
@@ -64,7 +64,7 @@ const INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET: usize = 4;
 const SINGLE_REF_FRAME0: i8 = 0;
 const MI_SIZE: usize = 4;
 const CHUNK_64_N4: usize = 16;
-const BLOCK_8X8: usize = 3;
+pub(super) const BLOCK_8X8: usize = 3;
 const BLOCK_64X64: usize = 12;
 const MAX_WARP_REF_CANDIDATES: usize = 4;
 const WARP_DELTA_NUM_SYMBOLS_LOW: u8 = 8;
@@ -215,15 +215,18 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             initial_cdfs,
         )?
     };
-    let [tile] = tile_plan.work_units_mut() else {
+    let work_units = tile_plan.work_units_mut();
+    let Some(first_tile) = work_units.first() else {
         return Err(inter_cap!(
             "inter_walk_unexpected_tile_work_units",
             offset,
-            "inter.tile_count != 1",
+            "inter.tile_count == 0",
             SPEC_MODE_INFO
         ));
     };
-    let tile_offset = tile.tile_byte_span().start;
+    let first_tile_offset = first_tile.tile_byte_span().start;
+    let mut frame_cdfs = first_tile.frame_cdfs();
+    let mut saved_cdfs = SavedCdfSubset::from_frame(&frame_cdfs);
 
     let max_drl_bits_minus_1 = if frame_is_intra {
         0
@@ -249,52 +252,10 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             SPEC_MODE_INFO
         )
     })?;
-    let mut coeff_ctx = TileCoeffContextState::new(mi_rows, mi_cols).map_err(|_| {
-        inter_cap!(
-            "inter_coeff_context_state",
-            offset,
-            "inter.residual_context_state",
-            SPEC_MODE_INFO
-        )
-    })?;
-    let mut cdef_state = CdefState::new(mi_rows, mi_cols, sequence, tile_offset)?;
-    let mut ccso_state = CcsoState::new(mi_rows, mi_cols, sequence, core, tile_offset)?;
-    let mut delta_q_state = DeltaQState::new(sequence, core, tile_offset)?;
-    let mut intrabc_state = TileIntrabcPreludeState::new(mi_rows, mi_cols, sequence, tile_offset)?;
-    let mut segment_id_state = TileSegmentIdState::new(mi_rows, mi_cols).map_err(|_| {
-        inter_missing!(
-            "inter_segment_id_grid",
-            offset,
-            "inter.segment_id_grid",
-            SPEC_MODE_INFO
-        )
-    })?;
-
-    let mut mv_grid = NeighbourMvGrid::new(mi_rows, mi_cols)
-        .ok_or_else(|| inter_cap!("inter_mv_grid", offset, "inter.mv_grid", SPEC_MODE_INFO))?;
-    let mut y_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new(mi_rows, mi_cols)
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_y_smooth_grid",
-                offset,
-                "inter.y_smooth_grid",
-                SPEC_MODE_INFO
-            )
-        })?;
+    let mut cdef_state = CdefState::new(mi_rows, mi_cols, sequence, first_tile_offset)?;
+    let mut ccso_state = CcsoState::new(mi_rows, mi_cols, sequence, core, first_tile_offset)?;
     let (chroma_smooth_rows, chroma_smooth_cols) =
         chroma_smooth_grid_dimensions(mi_rows, mi_cols, sequence.general.chroma_format_idc);
-    let mut chroma_smooth = crate::prediction::intra_edge::TileChromaSmoothGrid::new(
-        chroma_smooth_rows,
-        chroma_smooth_cols,
-    )
-    .ok_or_else(|| {
-        inter_cap!(
-            "inter_chroma_smooth_grid",
-            offset,
-            "inter.chroma_smooth_grid",
-            SPEC_MODE_INFO
-        )
-    })?;
     let sb_h4 = superblock_h4(sequence, core).ok_or_else(|| {
         inter_missing!(
             "inter_sb_size",
@@ -329,126 +290,184 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         [Vec::new(), Vec::new()];
     let mut tx_skip_records = Vec::new();
     let mut decoded_any = false;
-    let mut ref_mv_bank = sequence
-        .inter
-        .as_ref()
-        .is_some_and(|inter| inter.enable_refmvbank)
-        .then(super::find_mv_stack::RefMvBank::new);
-    let mut warp_param_bank = super::find_mv_stack::WarpParamBank::new();
     let limits = options.limits();
     trace_symbol_frame_marker(offset);
-    let walk = decode_general_intra_multiblock_tree_with_lr_source_blocks(
-        tile,
-        sequence,
-        core,
-        limits,
-        |work_unit,
-         symbols,
-         frontier,
-         joint_modes,
-         uses_mrls,
-         fsc_modes,
-         palette_state,
-         is_cfl_ctx,
-         block_decoded| {
-            let leaf = decode_block(
-                work_unit,
-                symbols,
-                frontier,
-                sequence,
-                core,
-                &mut coeff_ctx,
-                &mut cdef_state,
-                &mut ccso_state,
-                &mut delta_q_state,
-                &mut intrabc_state,
-                &mut segment_id_state,
-                &mut mv_grid,
-                &mut y_smooth,
-                &mut chroma_smooth,
-                &mut ref_mv_bank,
-                &mut warp_param_bank,
-                sb_h4,
-                mi_rows,
-                mi_cols,
-                max_drl_bits_minus_1,
-                frame_interpolation_filter,
-                residual_tool_policy,
-                residual_quantizer_deltas_are_zero,
-                num_total_refs,
-                reference_select,
-                compound_is_joint_ctx,
-                num_same_ref_compound,
-                joint_modes,
-                uses_mrls,
-                fsc_modes,
-                palette_state,
-                is_cfl_ctx,
-                block_decoded,
-                workspace,
-                &mut deblock_blocks,
-                &mut chroma_deblock_blocks,
-                &mut tx_skip_records,
-                luma_use_tcq,
-                residual_use_ddt,
-                ref_frame_idx,
-                reference,
-                bit_depth,
-                enable_adaptive_mvd,
-                allow_bawp,
-                allow_warpmv_mode,
-                frame_is_switch,
-                core.order_hint_lsb.unwrap_or(0),
-                tile_offset,
-            )?;
-            decoded_any = true;
-            Ok(leaf)
-        },
-    )
-    .map_err(|error| map_inter_multiblock_error(error, tile_offset))?;
-
-    let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput {
-        symbols,
-        active_source_blocks,
-        unit_filters,
-    } = walk;
-    symbols.exit_symbol().map_err(|_| {
-        if reference_select {
-            compound_cap!(
-                "compound_exit_symbol",
-                tile_offset,
-                "inter.compound.exit_symbol",
-                SPEC_MODE_INFO
-            )
-        } else {
+    let mut active_source_blocks = Vec::new();
+    let mut unit_filters = Vec::new();
+    for tile in work_units {
+        let tile_offset = tile.tile_byte_span().start;
+        let tile_num = tile.tile_num();
+        let save_policy = tile.cdf().save_policy();
+        let mut coeff_ctx = TileCoeffContextState::new(mi_rows, mi_cols).map_err(|_| {
             inter_cap!(
-                "inter_exit_symbol",
+                "inter_coeff_context_state",
                 tile_offset,
-                "inter.exit_symbol",
+                "inter.residual_context_state",
                 SPEC_MODE_INFO
             )
-        }
-    })?;
+        })?;
+        let mut delta_q_state = DeltaQState::new(sequence, core, tile_offset)?;
+        let mut intrabc_state =
+            TileIntrabcPreludeState::new(mi_rows, mi_cols, sequence, tile_offset)?;
+        let mut segment_id_state = TileSegmentIdState::new(mi_rows, mi_cols).map_err(|_| {
+            inter_missing!(
+                "inter_segment_id_grid",
+                tile_offset,
+                "inter.segment_id_grid",
+                SPEC_MODE_INFO
+            )
+        })?;
+        let mut mv_grid = NeighbourMvGrid::new(mi_rows, mi_cols).ok_or_else(|| {
+            inter_cap!(
+                "inter_mv_grid",
+                tile_offset,
+                "inter.mv_grid",
+                SPEC_MODE_INFO
+            )
+        })?;
+        let mut y_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new(mi_rows, mi_cols)
+            .ok_or_else(|| {
+                inter_cap!(
+                    "inter_y_smooth_grid",
+                    tile_offset,
+                    "inter.y_smooth_grid",
+                    SPEC_MODE_INFO
+                )
+            })?;
+        let mut chroma_smooth = crate::prediction::intra_edge::TileChromaSmoothGrid::new(
+            chroma_smooth_rows,
+            chroma_smooth_cols,
+        )
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_chroma_smooth_grid",
+                tile_offset,
+                "inter.chroma_smooth_grid",
+                SPEC_MODE_INFO
+            )
+        })?;
+        let mut ref_mv_bank = sequence
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.enable_refmvbank)
+            .then(super::find_mv_stack::RefMvBank::new);
+        let mut warp_param_bank = super::find_mv_stack::WarpParamBank::new();
+        let walk = decode_general_intra_multiblock_tree_with_lr_source_blocks(
+            tile,
+            sequence,
+            core,
+            limits,
+            |work_unit,
+             symbols,
+             frontier,
+             joint_modes,
+             uses_mrls,
+             fsc_modes,
+             palette_state,
+             is_cfl_ctx,
+             block_decoded| {
+                let leaf = decode_block(
+                    work_unit,
+                    symbols,
+                    frontier,
+                    sequence,
+                    core,
+                    &mut coeff_ctx,
+                    &mut cdef_state,
+                    &mut ccso_state,
+                    &mut delta_q_state,
+                    &mut intrabc_state,
+                    &mut segment_id_state,
+                    &mut mv_grid,
+                    &mut y_smooth,
+                    &mut chroma_smooth,
+                    &mut ref_mv_bank,
+                    &mut warp_param_bank,
+                    sb_h4,
+                    mi_rows,
+                    mi_cols,
+                    max_drl_bits_minus_1,
+                    frame_interpolation_filter,
+                    residual_tool_policy,
+                    residual_quantizer_deltas_are_zero,
+                    num_total_refs,
+                    reference_select,
+                    compound_is_joint_ctx,
+                    num_same_ref_compound,
+                    joint_modes,
+                    uses_mrls,
+                    fsc_modes,
+                    palette_state,
+                    is_cfl_ctx,
+                    block_decoded,
+                    workspace,
+                    &mut deblock_blocks,
+                    &mut chroma_deblock_blocks,
+                    &mut tx_skip_records,
+                    luma_use_tcq,
+                    residual_use_ddt,
+                    ref_frame_idx,
+                    reference,
+                    bit_depth,
+                    enable_adaptive_mvd,
+                    allow_bawp,
+                    allow_warpmv_mode,
+                    frame_is_switch,
+                    core.order_hint_lsb.unwrap_or(0),
+                    tile_offset,
+                )?;
+                decoded_any = true;
+                Ok(leaf)
+            },
+        )
+        .map_err(|error| map_inter_multiblock_error(error, tile_offset))?;
+
+        let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput {
+            symbols,
+            active_source_blocks: tile_source_blocks,
+            unit_filters: tile_unit_filters,
+        } = walk;
+        symbols.exit_symbol().map_err(|_| {
+            if reference_select {
+                compound_cap!(
+                    "compound_exit_symbol",
+                    tile_offset,
+                    "inter.compound.exit_symbol",
+                    SPEC_MODE_INFO
+                )
+            } else {
+                inter_cap!(
+                    "inter_exit_symbol",
+                    tile_offset,
+                    "inter.exit_symbol",
+                    SPEC_MODE_INFO
+                )
+            }
+        })?;
+        active_source_blocks.extend(tile_source_blocks);
+        unit_filters.extend(tile_unit_filters);
+        saved_cdfs.apply_completed_tile(tile_num, tile.cdf().tile_cdfs(), save_policy);
+    }
 
     if !decoded_any {
         return Err(inter_missing!(
             "inter_no_decoded_block",
-            tile_offset,
+            first_tile_offset,
             "inter.block",
             SPEC_MODE_INFO
         ));
     }
-    tile.apply_frame_end_cdf_update();
+    frame_cdfs.frame_end_update_from_saved(&saved_cdfs);
     let filter_inputs = InterFilterInputs {
         deblock_blocks,
         chroma_deblock_blocks,
-        cdef_grid: cdef_state.into_grid(tile_offset)?,
-        ccso_grid: ccso_state.into_grid(tile_offset)?,
+        cdef_grid: cdef_state.into_grid(first_tile_offset)?,
+        ccso_grid: ccso_state.into_grid(first_tile_offset)?,
         lr_source_blocks: active_source_blocks,
         lr_unit_filters: unit_filters,
         tx_skip_records,
     };
-    Ok((tile.frame_cdfs(), filter_inputs))
+    Ok((frame_cdfs, filter_inputs))
 }
 
 fn trace_symbol_frame_marker(offset: ByteOffset) {
@@ -508,7 +527,13 @@ fn read_intra_segment_id(
         return Ok(0);
     };
     let (r, c) = (frontier.r, frontier.c);
-    let (pred, ctx) = segment_id_state.predictor_and_ctx(r, c, r > 0, c > 0);
+    let (avail_u, avail_l) = segment_neighbour_availability(
+        r,
+        c,
+        work_unit.mi_row_range().start as usize,
+        work_unit.mi_col_range().start as usize,
+    );
+    let (pred, ctx) = segment_id_state.predictor_and_ctx(r, c, avail_u, avail_l);
     let has_lossless = core
         .lossless_info
         .as_ref()
@@ -537,6 +562,15 @@ fn read_intra_segment_id(
         i64::from(seg.last_active_seg_id) + 1,
     );
     Ok(u8::try_from(segment_id.clamp(0, i64::from(u8::MAX))).unwrap_or(0))
+}
+
+pub(super) const fn segment_neighbour_availability(
+    r: usize,
+    c: usize,
+    tile_mi_row_start: usize,
+    tile_mi_col_start: usize,
+) -> (bool, bool) {
+    (r > tile_mi_row_start, c > tile_mi_col_start)
 }
 
 /// AV2 § 7.14.2 `get_qindex(0, segment_id)`: the delta-q-adjusted `current_qindex`
@@ -1021,6 +1055,26 @@ fn decode_block<T: ReconSample>(
     }
 
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
+    let tip_frame_mode = core
+        .inter
+        .as_ref()
+        .and_then(|inter| inter.tip_frame_mode)
+        .unwrap_or(TipFrameMode::Disabled);
+    if tip_frame_mode != TipFrameMode::Disabled && tip_allowed_for_block(frontier, n4w, n4h) {
+        // Nonzero TIP refs still fail closed below, so no neighbour can contribute to ctx yet.
+        let tip_ref = cdfs
+            .read_block_symbol_trace(TileCdfSelector::TipMode { ctx: 0 }, symbols)
+            .map_err(|_| symbol_read_error(tile_offset))?
+            .get();
+        if tip_ref != 0 {
+            return Err(inter_cap!(
+                "inter_tip_ref_frame",
+                tile_offset,
+                "inter.tip_ref_frame",
+                SPEC_MODE_INFO
+            ));
+        }
+    }
     let uses_compound = if reference_select && is_comp_ref_allowed(n4w, n4h) {
         read_block_reference_mode(
             cdfs,
@@ -1202,25 +1256,20 @@ fn decode_block<T: ReconSample>(
     }
 
     let ref_frame0: i8 = if num_total_refs >= 2 {
-        if neighbour_ctx.has_neighbour {
-            return Err(inter_cap!(
-                "inter_block_single_ref_with_neighbour",
-                tile_offset,
-                "inter.single_ref.neighbour_context",
-                SPEC_MODE_INFO
-            ));
+        let decisions = num_total_refs - 1;
+        let mut contexts = [0usize; 6];
+        for (ref_idx, ctx) in contexts.iter_mut().take(decisions).enumerate() {
+            *ctx = neighbour_ctx
+                .single_ref_ctx(ref_idx, num_total_refs)
+                .ok_or_else(|| {
+                    inter_missing!(
+                        "inter_block_single_ref_ctx",
+                        tile_offset,
+                        "inter.single_ref.context",
+                        SPEC_MODE_INFO
+                    )
+                })?;
         }
-        let ctx = neighbour_ctx
-            .single_ref_ctx(0, num_total_refs)
-            .ok_or_else(|| {
-                inter_missing!(
-                    "inter_block_single_ref_ctx",
-                    tile_offset,
-                    "inter.single_ref.context",
-                    SPEC_MODE_INFO
-                )
-            })?;
-        let contexts = [ctx];
         let selected = super::single_ref::read_single_ref(cdfs, symbols, num_total_refs, &contexts)
             .map_err(|_| {
                 inter_missing!(
@@ -1986,6 +2035,35 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
 /// is_thin_4xn_nx4_block()`, in units of 4-sample mode-info columns/rows.
 pub(crate) fn is_comp_ref_allowed(n4w: usize, n4h: usize) -> bool {
     n4w.min(n4h) >= 2 || (n4w == 1 && n4h >= 4) || (n4h == 1 && n4w >= 4)
+}
+
+fn tip_allowed_for_block(frontier: &DecodeBlockFrontier, n4w: usize, n4h: usize) -> bool {
+    tip_allowed_for_block_indices(
+        frontier.chroma_offset,
+        frontier.is_luma_part(),
+        frontier.is_chroma_part(),
+        frontier.b_size.index(),
+        frontier.chroma_ref_geometry().size().index(),
+        n4w,
+        n4h,
+    )
+}
+
+pub(super) fn tip_allowed_for_block_indices(
+    chroma_offset: bool,
+    is_luma_part: bool,
+    is_chroma_part: bool,
+    mi_size: usize,
+    chroma_mi_size: usize,
+    n4w: usize,
+    n4h: usize,
+) -> bool {
+    !chroma_offset
+        && !is_luma_part
+        && !is_chroma_part
+        && mi_size == chroma_mi_size
+        && n4w >= 2
+        && n4h >= 2
 }
 
 fn read_block_reference_mode(

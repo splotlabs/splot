@@ -133,11 +133,6 @@ impl RuntimeReferenceBuffer {
         let _ = self.frame_counter;
     }
 
-    /// The number of active slots that are currently `RefValid`.
-    pub(crate) fn valid_count(&self) -> usize {
-        self.slots.iter().filter(|s| s.valid).count()
-    }
-
     /// Builds the borrowed reference store and metadata for the next inter frame.
     pub(crate) fn build_store_eight<'a>(
         &self,
@@ -286,11 +281,15 @@ mod tests {
         }
     }
 
+    fn valid_count(buf: &RuntimeReferenceBuffer) -> usize {
+        buf.slots.iter().filter(|s| s.valid).count()
+    }
+
     #[test]
     fn key_refresh_marks_only_first_slot_valid() {
         let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
         buf.update(0, &key_update());
-        assert_eq!(buf.valid_count(), 1);
+        assert_eq!(valid_count(&buf), 1);
         assert!(buf.slots[0].valid);
         assert!(!buf.slots[1].valid);
         assert_eq!(buf.slots[0].base_q_idx, 70);
@@ -303,7 +302,7 @@ mod tests {
         let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
         buf.update(0, &key_update());
         buf.update(1, &inter_update(false));
-        assert_eq!(buf.valid_count(), 2);
+        assert_eq!(valid_count(&buf), 2);
         assert!(buf.slots[0].valid);
         assert!(buf.slots[1].valid);
         assert_eq!(buf.slots[1].order_hint, 1);

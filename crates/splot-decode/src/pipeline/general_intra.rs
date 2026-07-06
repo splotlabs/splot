@@ -151,6 +151,8 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     };
     let chroma_sampling =
         ChromaSampling::from_chroma_format_idc(sequence.general.chroma_format_idc);
+    let mi_row_range = work_unit.mi_row_range();
+    let mi_col_range = work_unit.mi_col_range();
     let mut block_ctx = BlockCtx::new(
         BlockRect::new(frontier.r, frontier.c, n4w, n4h),
         block_tx_shape,
@@ -158,6 +160,12 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         mi_rows,
         bit_depth,
         chroma_sampling,
+    )
+    .with_tile_bounds(
+        mi_row_range.start as usize,
+        mi_row_range.end as usize,
+        mi_col_range.start as usize,
+        mi_col_range.end as usize,
     );
     let chroma_mode_geometry = if frontier.has_chroma {
         let chroma_ref = frontier.chroma_ref_geometry();
@@ -1477,16 +1485,11 @@ fn ensure_supported_rect_chroma_capability(
         }
         mode if rect_chroma_is_middle_directional(mode)
             && supported_middle_shape
-            && (neighbours.has_above()
-                || matches!(
-                    mode,
-                    SupportedChromaMode::D113Follow
-                        | SupportedChromaMode::D113
-                        | SupportedChromaMode::D157Follow
-                        | SupportedChromaMode::D157
-                        | SupportedChromaMode::D135
-                ))
-            && neighbours.has_left() =>
+            && match mode {
+                SupportedChromaMode::D135Follow => neighbours.has_above() && neighbours.has_left(),
+                SupportedChromaMode::D135 => neighbours.has_left(),
+                _ => neighbours.has_above() || neighbours.has_left(),
+            } =>
         {
             Ok(())
         }
@@ -1943,6 +1946,19 @@ mod tests {
             Some(SupportedChromaMode::D67Follow),
             first_col_block
         ));
+    }
+
+    #[test]
+    fn admits_rect_d113_chroma_at_tile_start_with_above_edge() {
+        let tile_start_block = ctx(8, 16, 16, 8).with_tile_bounds(0, 16, 16, 32);
+        let neighbours = tile_start_block.neighbours(PlaneId::U);
+
+        assert!(neighbours.has_above());
+        assert!(!neighbours.has_left());
+        assert!(
+            ensure_supported_rect_chroma_capability(SupportedChromaMode::D113, tile_start_block)
+                .is_ok()
+        );
     }
 
     #[test]

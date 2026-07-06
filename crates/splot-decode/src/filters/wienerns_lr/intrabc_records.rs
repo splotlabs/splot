@@ -23,7 +23,7 @@ use crate::prediction::inter::{
 use super::intrabc_ref_mv_stack::{
     DrlReorderMode, IntrabcRefMvBank, IntrabcStackAdmission, IntrabcStackGeometry,
     SpatialIntrabcScan, SpatialScanGeometry, build_intrabc_ref_mv_stack,
-    intrabc_ref_stack_admission, spatial_intrabc_scan,
+    intrabc_ref_stack_admission, spatial_intrabc_scan_with_base_col,
 };
 use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
 
@@ -386,6 +386,7 @@ struct IntrabcBlockFacts {
     skip_flag: bool,
     morph_pred: bool,
     block_mv: Option<IntrabcBlockVector>,
+    base_col: usize,
 }
 
 impl TileIntrabcPreludeState {
@@ -437,6 +438,7 @@ impl TileIntrabcPreludeState {
             skip_flag: prelude.skip_flag,
             morph_pred: prelude.morph_pred,
             block_mv,
+            base_col: col,
         };
         let area = self.clipped_record_area(row, col, n4w, n4h, tile_offset)?;
         for r in area.rows {
@@ -652,10 +654,11 @@ impl TileIntrabcPreludeState {
             mi_cols: self.mi_cols,
             sb_size4: self.sb_size4,
         };
-        spatial_intrabc_scan(
+        spatial_intrabc_scan_with_base_col(
             scan_geometry,
             |row, col| self.block_vector_at(row, col),
             |row, col| self.is_mi_coded(row, col),
+            |row, col| self.block_base_col_at(row, col),
         )
     }
 
@@ -669,6 +672,10 @@ impl TileIntrabcPreludeState {
 
     fn is_mi_coded(&self, row: usize, col: usize) -> bool {
         self.facts_at(row, col).is_some()
+    }
+
+    fn block_base_col_at(&self, row: usize, col: usize) -> Option<usize> {
+        self.facts_at(row, col).map(|facts| facts.base_col)
     }
 
     fn facts_at(&self, row: usize, col: usize) -> Option<IntrabcBlockFacts> {
@@ -960,11 +967,12 @@ fn trace_intrabc_ref_stack(
     if !crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRABC_REF_STACK") {
         return;
     }
-    let mut nearest: Vec<_> = spatial.candidates.clone();
-    if state.drl_reorder.use_sort(nearest.len()) && nearest.len() > 1 {
-        super::intrabc_ref_mv_stack::sort_nearest_max_weight_to_slot0(&mut nearest);
+    let mut ordered: Vec<_> = spatial.candidates.clone();
+    let nearest_len = spatial.nearest_len.min(ordered.len());
+    if state.drl_reorder.use_sort(nearest_len) && nearest_len > 1 {
+        super::intrabc_ref_mv_stack::sort_nearest_max_weight_to_slot0(&mut ordered[..nearest_len]);
     }
-    let sorted: Vec<Mv> = nearest.iter().map(|entry| entry.mv).collect();
+    let sorted: Vec<Mv> = ordered.iter().map(|entry| entry.mv).collect();
     let stack = build_intrabc_ref_mv_stack(
         state.bank(),
         stack_geometry,
@@ -972,13 +980,14 @@ fn trace_intrabc_ref_stack(
         &sorted,
     );
     eprintln!(
-        "intrabc ref_stack offset={} mi=({}, {}) n4={}x{} ref_mv_idx={} spatial_defer={} spatial={:?} sorted={:?} bank={:?} stack={:?} enable_refmvbank={} drl_reorder={:?}",
+        "intrabc ref_stack offset={} mi=({}, {}) n4={}x{} ref_mv_idx={} nearest_len={} spatial_defer={} spatial={:?} sorted={:?} bank={:?} stack={:?} enable_refmvbank={} drl_reorder={:?}",
         tile_offset.get(),
         stack_geometry.mi_row,
         stack_geometry.mi_col,
         stack_geometry.n4w,
         stack_geometry.n4h,
         ref_mv_idx,
+        spatial.nearest_len,
         spatial.defer,
         spatial.candidates,
         sorted,
