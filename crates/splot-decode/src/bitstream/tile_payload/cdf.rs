@@ -23,10 +23,10 @@ use splot_core::tables::cdf::{
     DEFAULT_CDEF_INDEX0_CDF, DEFAULT_DELTA_Q_CDF, DEFAULT_DO_EXT_PARTITION_CDF,
     DEFAULT_DO_SPLIT_CDF, DEFAULT_DO_SQUARE_SPLIT_CDF, DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF,
     DEFAULT_FSC_MODE_CDF, DEFAULT_INTRABC_CDF, DEFAULT_INTRABC_MODE_CDF,
-    DEFAULT_INTRABC_PRECISION_CDF, DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF,
-    DEFAULT_RECT_TYPE_CDF, DEFAULT_REGION_TYPE_CDF, DEFAULT_SEG_ID_EXT_FLAG_CDF,
-    DEFAULT_SEGMENT_ID_CDF, DEFAULT_SEGMENT_ID_EXT_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF,
-    DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
+    DEFAULT_INTRABC_PRECISION_CDF, DEFAULT_MORPH_PRED_CDF, DEFAULT_MRL_INDEX_CDF,
+    DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_RECT_TYPE_CDF, DEFAULT_REGION_TYPE_CDF,
+    DEFAULT_SEG_ID_EXT_FLAG_CDF, DEFAULT_SEGMENT_ID_CDF, DEFAULT_SEGMENT_ID_EXT_CDF,
+    DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
     DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF,
 };
 
@@ -69,6 +69,7 @@ const CDEF_INDEX_MINUS1_WITH6_ROW_LEN: usize = 6;
 const CDEF_INDEX_MINUS1_WITH7_ROW_LEN: usize = 7;
 const CDEF_INDEX_MINUS1_WITH8_ROW_LEN: usize = 8;
 const INTRABC_CONTEXTS: usize = 3;
+const MORPH_PRED_CONTEXTS: usize = 3;
 const MRL_INDEX_CONTEXTS: usize = 3;
 const MRL_INDEX_ROW_LEN: usize = 5;
 const MRL_SEC_INDEX_ROW_LEN: usize = 3;
@@ -104,6 +105,7 @@ type CdefIndexMinus1With8CdfRow = [i32; CDEF_INDEX_MINUS1_WITH8_ROW_LEN];
 type IntrabcCdfRows = [[i32; CDF_ROW_LEN]; INTRABC_CONTEXTS];
 type IntrabcModeCdfRow = [i32; CDF_ROW_LEN];
 type IntrabcPrecisionCdfRow = [i32; CDF_ROW_LEN];
+type MorphPredCdfRows = [[i32; CDF_ROW_LEN]; MORPH_PRED_CONTEXTS];
 type MrlIndexCdfRows = [[i32; MRL_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
 type MrlSecIndexCdfRows = [[i32; MRL_SEC_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
 type SegmentIdCdfRows = [[i32; SEGMENT_ID_ROW_LEN]; SEGMENT_ID_CONTEXTS];
@@ -355,6 +357,9 @@ pub(crate) enum TileCdfSelector {
     },
     IntrabcMode,
     IntrabcPrecision,
+    MorphPred {
+        ctx: usize,
+    },
     FscMode {
         ctx: usize,
         bsize_group: usize,
@@ -606,6 +611,7 @@ pub(crate) enum TileCdfArray {
     CcsoBlk,
     CdefIndexMinus1,
     Intrabc,
+    MorphPred,
     FscMode,
     MrlIndex,
     MrlSecIndex,
@@ -716,6 +722,7 @@ crate::impl_reason_labels!(TileCdfArray {
     CcsoBlk => "TileCcsoBlkCdf",
     CdefIndexMinus1 => "TileCdefIndexMinus1Cdf",
     Intrabc => "TileIntrabcCdf",
+    MorphPred => "TileMorphPredCdf",
     FscMode => "TileFscModeCdf",
     MrlIndex => "TileMrlIndexCdf",
     MrlSecIndex => "TileMrlSecIndexCdf",
@@ -991,6 +998,7 @@ pub(crate) struct TileCdfRows {
     intrabc: IntrabcCdfRows,
     intrabc_mode: IntrabcModeCdfRow,
     intrabc_precision: IntrabcPrecisionCdfRow,
+    morph_pred: MorphPredCdfRows,
     fsc_mode: FscModeCdfRows,
     mrl_index: MrlIndexCdfRows,
     mrl_sec_index: MrlSecIndexCdfRows,
@@ -1193,6 +1201,16 @@ macro_rules! tile_cdf_row {
             }
             TileCdfSelector::IntrabcMode => Ok($self.intrabc_mode.$as_slice()),
             TileCdfSelector::IntrabcPrecision => Ok($self.intrabc_precision.$as_slice()),
+            TileCdfSelector::MorphPred { ctx } => {
+                selected_cdf_row!(
+                    $self.morph_pred,
+                    ctx,
+                    $get,
+                    $as_slice,
+                    TileCdfArray::MorphPred,
+                    "ctx"
+                )
+            }
             TileCdfSelector::FscMode { ctx, bsize_group } => {
                 let ctx = checked_context(TileCdfArray::FscMode, "ctx", ctx, FSC_MODE_CONTEXTS)?;
                 selected_cdf_row!(
@@ -1525,6 +1543,7 @@ impl TileCdfRows {
             intrabc: DEFAULT_INTRABC_CDF,
             intrabc_mode: DEFAULT_INTRABC_MODE_CDF,
             intrabc_precision: DEFAULT_INTRABC_PRECISION_CDF,
+            morph_pred: DEFAULT_MORPH_PRED_CDF,
             fsc_mode: DEFAULT_FSC_MODE_CDF,
             mrl_index: DEFAULT_MRL_INDEX_CDF,
             mrl_sec_index: DEFAULT_MRL_SEC_INDEX_CDF,
@@ -1598,6 +1617,7 @@ impl TileCdfRows {
         avg_rows!(intrabc);
         avg_row!(intrabc_mode);
         avg_row!(intrabc_precision);
+        avg_rows!(morph_pred);
         avg_rows!(fsc_mode.flatten());
         avg_rows!(mrl_index);
         avg_rows!(mrl_sec_index);
@@ -1666,6 +1686,11 @@ impl TileCdfRows {
     #[cfg(test)]
     pub(crate) const fn intrabc_precision(&self) -> &IntrabcPrecisionCdfRow {
         &self.intrabc_precision
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn morph_pred(&self) -> &MorphPredCdfRows {
+        &self.morph_pred
     }
 
     #[cfg(test)]

@@ -7,9 +7,10 @@ use splot_core::tables::conversion::{
 };
 use splot_parallel::prelude::*;
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, PlaneId,
-    ReconSample, deblock_adaptive_filter_strength, deblock_filter_choice, deblock_filter_max_width,
-    deblock_sample_filter, deblock_side_threshold_index, max_quantizer_index,
+    BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, PixelFormat,
+    PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_filter_choice,
+    deblock_filter_max_width, deblock_sample_filter, deblock_side_threshold_index,
+    max_quantizer_index,
 };
 
 const MI_SIZE: usize = 4;
@@ -141,6 +142,7 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     overlay_mi_grid(&mut chroma_grids[0], chroma_blocks[0], mi_rows, mi_cols);
     overlay_mi_grid(&mut chroma_grids[1], chroma_blocks[1], mi_rows, mi_cols);
 
+    let pixel_format = workspace.info().pixel_format();
     for plane in 0..3 {
         let plane_grid = if plane == 0 {
             &grid
@@ -148,7 +150,8 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
             &chroma_grids[plane - 1]
         };
         for pass in 0..2usize {
-            let Some(plane_pass) = PlanePass::active(plane, pass, filter, quant_deltas, bit_depth)
+            let Some(plane_pass) =
+                PlanePass::active(plane, pass, filter, quant_deltas, bit_depth, pixel_format)
             else {
                 continue;
             };
@@ -413,13 +416,21 @@ impl PlanePass {
         filter: DeblockingFilterParams,
         quant_deltas: DeblockQuantDeltas,
         bit_depth: BitDepth,
+        pixel_format: PixelFormat,
     ) -> Option<Self> {
         let apply_index = if plane == 0 { pass } else { plane + 1 };
         if !filter.apply_deblocking_filter[apply_index] {
             return None;
         }
 
-        let (plane_sub_x, plane_sub_y) = if plane == 0 { (0, 0) } else { (1, 1) };
+        let (plane_sub_x, plane_sub_y) = if plane == 0 {
+            (0, 0)
+        } else {
+            (
+                usize::from(pixel_format.subsampling_x()),
+                usize::from(pixel_format.subsampling_y()),
+            )
+        };
         Some(Self {
             plane,
             plane_id: plane_index_to_id(plane),
@@ -1186,6 +1197,23 @@ mod tests {
         );
         assert_eq!(combine_strengths(0, 5, 0, 4), (5, 4));
         assert_eq!(combine_strengths(3, 0, 2, 0), (3, 2));
+    }
+
+    #[test]
+    fn chroma_plane_pass_uses_yuv422_subsampling() {
+        let pass = PlanePass::active(
+            1,
+            0,
+            filter([false, false, true, false]),
+            DeblockQuantDeltas::ZERO,
+            BitDepth::Eight,
+            PixelFormat::Yuv422,
+        )
+        .unwrap();
+        assert_eq!(pass.plane_sub_x, 1);
+        assert_eq!(pass.plane_sub_y, 0);
+        assert_eq!(pass.row_step, 1);
+        assert_eq!(pass.col_step, 2);
     }
 
     #[test]

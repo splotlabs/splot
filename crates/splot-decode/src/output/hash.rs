@@ -7,7 +7,7 @@
 
 use core::num::NonZeroUsize;
 
-use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
+use splot_recon::{DecodedFrame, DecodedFrameHashInput, PixelFormat, ReconSample};
 
 use crate::error::Result;
 use crate::hash_report::{
@@ -60,13 +60,24 @@ fn hash_frame_from_decoded<T: ReconSample>(
         visible_luma_top: visible.y() as u32,
         visible_luma_width: visible.width() as u32,
         visible_luma_height: visible.height() as u32,
-        chroma_left: chroma.map(|_| (visible.x() / 2) as u32),
-        chroma_top: chroma.map(|_| (visible.y() / 2) as u32),
+        chroma_left: chroma
+            .map(|_| (visible.x() >> usize::from(frame.pixel_format().subsampling_x())) as u32),
+        chroma_top: chroma
+            .map(|_| (visible.y() >> usize::from(frame.pixel_format().subsampling_y())) as u32),
         chroma_width: chroma.map(|size| size.width() as u32),
         chroma_height: chroma.map(|size| size.height() as u32),
         bit_depth: frame.bit_depth().bits(),
-        pixel_format: DecodeHashPixelFormat::Yuv420,
+        pixel_format: decode_hash_pixel_format(frame.pixel_format()),
         hashes: vec![DecodeHashEntry::raw_intermediate_output_sha256(digest_hex)],
+    }
+}
+
+fn decode_hash_pixel_format(pixel_format: PixelFormat) -> DecodeHashPixelFormat {
+    match pixel_format {
+        PixelFormat::Monochrome => DecodeHashPixelFormat::Monochrome,
+        PixelFormat::Yuv420 => DecodeHashPixelFormat::Yuv420,
+        PixelFormat::Yuv422 => DecodeHashPixelFormat::Yuv422,
+        PixelFormat::Yuv444 => DecodeHashPixelFormat::Yuv444,
     }
 }
 
@@ -82,10 +93,12 @@ mod tests {
         DecodeRuntimeConfig,
     };
 
-    const BROAD_FIXTURE: &[u8] =
+    const MONO_FIXTURE: &[u8] =
         include_bytes!("../../../../tests/conformance/vectors/valid/syn-mono-intra-64x64.ivf");
     const EXPECTED_DIGEST: &str =
         "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af";
+    const MONO_EXPECTED_DIGEST: &str =
+        "2caad75a3f9a729187deee66d839eacf3a4705e62221cbdd6ece96c022334b6b";
 
     fn context(threads: ThreadCount) -> DecodeContext {
         DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
@@ -140,12 +153,19 @@ mod tests {
     }
 
     #[test]
-    fn broader_fixture_fails_closed_as_unsupported() {
-        let error = context(ThreadCount::from(1usize))
-            .decode_hash_report_bytes(BROAD_FIXTURE, DecodeOptions::default())
-            .unwrap_err();
+    fn monochrome_fixture_decodes_to_luma_only_hash_report() {
+        let report = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(MONO_FIXTURE, DecodeOptions::default())
+            .unwrap();
 
-        assert!(matches!(error, DecodeError::UnsupportedFeature { .. }));
+        assert_eq!(report.frames.len(), 1);
+        let frame = &report.frames[0];
+        assert_eq!(frame.visible_luma_width, 64);
+        assert_eq!(frame.visible_luma_height, 64);
+        assert_eq!(frame.chroma_width, None);
+        assert_eq!(frame.chroma_height, None);
+        assert_eq!(frame.pixel_format, DecodeHashPixelFormat::Monochrome);
+        assert_eq!(frame.hashes[0].digest_hex, MONO_EXPECTED_DIGEST);
     }
 
     #[test]

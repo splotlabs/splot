@@ -21,7 +21,8 @@ use splot_recon::{
 
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, SupportedChromaMode, SupportedDirectionalLumaMode,
-    reconstruct_general_intra_block_with_prediction,
+    reconstruct_general_intra_coeff_block_rect_with_prediction,
+    reconstruct_general_intra_coeff_block_with_prediction,
 };
 
 use crate::pipeline::reconstruct::*;
@@ -57,6 +58,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
     mode: SupportedChromaMode,
     num4_above_right: usize,
     num4_below_left: usize,
+    ibp_dc: bool,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     match mode {
@@ -70,7 +72,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             log2_height,
             qindex,
             false,
-            false,
+            ibp_dc,
             bit_depth,
         ),
         SupportedChromaMode::Smooth => reconstruct_general_intra_chroma_smooth_into(
@@ -208,7 +210,15 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         }
         SupportedChromaMode::Horizontal if x == 0 && y == 0 => {
             reconstruct_general_intra_chroma_cardinal_horizontal_first_into(
-                workspace, block, plane_id, x, y, log2_width, qindex, bit_depth,
+                workspace,
+                block,
+                plane_id,
+                x,
+                y,
+                log2_width,
+                log2_height,
+                qindex,
+                bit_depth,
             )
         }
         SupportedChromaMode::Horizontal => reconstruct_general_intra_cardinal_neighbour_block_into(
@@ -312,13 +322,12 @@ fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
             log2_side,
-            block.plane_tx_type,
             false,
             bit_depth,
         )?
@@ -347,33 +356,36 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
     plane_id: PlaneId,
     x: usize,
     y: usize,
-    log2_side: u32,
+    log2_width: u32,
+    log2_height: u32,
     qindex: u32,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let side = 1usize << log2_side;
-    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2)?;
-    let left = vec![noneighbour_left::<T>(bit_depth); side];
-    let mut prediction = vec![T::default(); side * side];
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let left = vec![noneighbour_left::<T>(bit_depth); height];
+    let mut prediction = vec![T::default(); width * height];
     predict_intra_cardinal_directional_rect_into(
         bit_depth,
         block_size,
         IntraCardinalDirection::Horizontal,
         IntraDirectionalAngleEdges::left(&left),
         &mut prediction,
-        side,
+        width,
     )?;
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
-            log2_side,
-            block.plane_tx_type,
+            log2_width,
+            log2_height,
             false,
             bit_depth,
         )?

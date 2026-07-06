@@ -149,13 +149,15 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     let Some(block_tx_shape) = TxShape::from_luma_4x4(n4w, n4h) else {
         return Err(geometry_error());
     };
+    let chroma_sampling =
+        ChromaSampling::from_chroma_format_idc(sequence.general.chroma_format_idc);
     let mut block_ctx = BlockCtx::new(
         BlockRect::new(frontier.r, frontier.c, n4w, n4h),
         block_tx_shape,
         mi_cols,
         mi_rows,
         bit_depth,
-        ChromaSampling::Yuv420,
+        chroma_sampling,
     );
     let chroma_mode_geometry = if frontier.has_chroma {
         let chroma_ref = frontier.chroma_ref_geometry();
@@ -862,9 +864,7 @@ fn rect_luma_plan_for_parts_ext(
         _ => {}
     }
     if let Some(p_angle @ 1..=89) = directional_p_angle
-        && ((neighbours.has_above()
-            && neighbours.num_above_right() > 0
-            && (supported_rect || (supported_one_sided_above_rect && neighbours.has_left())))
+        && ((neighbours.has_above() && supported_one_sided_above_rect)
             || (!neighbours.has_above() && supported_one_sided_above_rect && neighbours.has_left()))
     {
         return Ok(RectLumaPlan::OneSidedAbove { p_angle, use_tcq });
@@ -1401,6 +1401,11 @@ fn ensure_supported_chroma_capability(
         {
             Ok(())
         }
+        SupportedChromaMode::Horizontal
+            if cardinal_subblock && chroma_block.x() == 0 && chroma_block.y() == 0 =>
+        {
+            Ok(())
+        }
         SupportedChromaMode::VerticalFollow | SupportedChromaMode::Vertical => {
             Err(unsupported_chroma(
                 "general_intra_cardinal_vertical_chroma",
@@ -1462,6 +1467,11 @@ fn ensure_supported_rect_chroma_capability(
         | SupportedChromaMode::SmoothVertical
         | SupportedChromaMode::SmoothHorizontal
             if supported_smooth_shape && (neighbours.has_above() || neighbours.has_left()) =>
+        {
+            Ok(())
+        }
+        SupportedChromaMode::Horizontal
+            if supported_smooth_shape && chroma_block.x() == 0 && chroma_block.y() == 0 =>
         {
             Ok(())
         }
@@ -1773,6 +1783,34 @@ mod tests {
         assert!(ten_bit_general_intra_chroma_admitted(
             Some(SupportedChromaMode::HorizontalFollow),
             first_col_second_row
+        ));
+    }
+
+    #[test]
+    fn admits_top_left_horizontal_chroma_subblock() {
+        let top_left_subblock = ctx(0, 0, 8, 8);
+
+        assert!(
+            ensure_supported_chroma_capability(SupportedChromaMode::Horizontal, top_left_subblock,)
+                .is_ok()
+        );
+        assert!(!ten_bit_general_intra_chroma_admitted(
+            Some(SupportedChromaMode::Horizontal),
+            top_left_subblock
+        ));
+    }
+
+    #[test]
+    fn admits_top_left_rect_horizontal_chroma_subblock() {
+        let top_left_rect = ctx(0, 0, 8, 4);
+
+        assert!(
+            ensure_supported_rect_chroma_capability(SupportedChromaMode::Horizontal, top_left_rect,)
+                .is_ok()
+        );
+        assert!(!ten_bit_general_intra_chroma_admitted(
+            Some(SupportedChromaMode::Horizontal),
+            top_left_rect
         ));
     }
 
@@ -2225,6 +2263,24 @@ mod tests {
                 use_tcq: false,
             })
         );
+    }
+
+    #[test]
+    fn admits_right_edge_rect_d45_as_one_sided_above_luma_without_above_right() {
+        let right_edge_block = ctx(8, 479, 1, 2);
+
+        let neighbours = right_edge_block.neighbours(PlaneId::Y);
+        assert!(neighbours.has_above());
+        assert_eq!(neighbours.num_above_right(), 0);
+
+        let plan = rect_luma_plan_for_parts(None, Some(45), false, right_edge_block, false);
+        assert!(matches!(
+            plan,
+            Ok(RectLumaPlan::OneSidedAbove {
+                p_angle: 45,
+                use_tcq: false,
+            })
+        ));
     }
 
     #[test]

@@ -326,9 +326,15 @@ spec_sections = ["5.20.7.14", "5.20.7.15", "7.13.3.29"]
 id = "inter.intrabc"
 name = "Intra block copy (IntraBC)"
 category = "inter"
-fixtureable = false
+fixtureable = true
 spec_sections = ["5.18.3.4", "5.20.5.4", "7.13.3.18"]
-notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+
+[[capability]]
+id = "inter.intrabc.morph_pred"
+name = "IntrABC morphological prediction"
+category = "inter"
+fixtureable = true
+spec_sections = ["5.20.5.4", "6.19.5.4", "7.13.3.18", "7.13.3.26"]
 
 [[capability]]
 id = "inter.mv_prediction_spatial"

@@ -81,6 +81,7 @@ mod tests {
         TileCdfSelector::PaletteYMode,
         TileCdfSelector::IntrabcMode,
         TileCdfSelector::IntrabcPrecision,
+        TileCdfSelector::MorphPred { ctx: 0 },
         TileCdfSelector::FscMode {
             ctx: 0,
             bsize_group: 0,

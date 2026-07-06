@@ -20,7 +20,7 @@ use splot_core::tables::cdf::{
     DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
     DEFAULT_EOB_PT_1024_CDF, DEFAULT_FSC_MODE_CDF, DEFAULT_IDTX_SIGN_CDF,
     DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_INTRA_TX_TYPE_SET2_CDF,
-    DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF,
+    DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_MORPH_PRED_CDF,
     DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
     DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_PALETTE_Y_MODE_CDF,
     DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF,
@@ -82,6 +82,7 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
         &DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF
     );
     assert_eq!(frame.rows().delta_q(), &DEFAULT_DELTA_Q_CDF);
+    assert_eq!(frame.rows().morph_pred(), &DEFAULT_MORPH_PRED_CDF);
     assert_eq!(frame.rows().fsc_mode(), &DEFAULT_FSC_MODE_CDF);
     assert_eq!(frame.rows().mrl_index(), &DEFAULT_MRL_INDEX_CDF);
     assert_eq!(frame.rows().mrl_sec_index(), &DEFAULT_MRL_SEC_INDEX_CDF);
@@ -1204,6 +1205,10 @@ fn tx_partition_rows_load_defaults_and_report_selector_errors() {
         DEFAULT_MRL_SEC_INDEX_CDF[1].as_slice()
     );
     assert_eq!(
+        tile.row(TileCdfSelector::MorphPred { ctx: 2 }).unwrap(),
+        DEFAULT_MORPH_PRED_CDF[2].as_slice()
+    );
+    assert_eq!(
         tile.row(TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr: 2 })
             .unwrap(),
         DEFAULT_INTRA_TX_TYPE_SET1_CDF[2].as_slice()
@@ -1288,6 +1293,13 @@ fn tx_partition_rows_load_defaults_and_report_selector_errors() {
         (
             TileCdfSelector::MrlSecIndex { ctx: 3 },
             TileCdfArray::MrlSecIndex,
+            "ctx",
+            3,
+            3,
+        ),
+        (
+            TileCdfSelector::MorphPred { ctx: 3 },
+            TileCdfArray::MorphPred,
             "ctx",
             3,
             3,

@@ -281,9 +281,11 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                 SPEC_MODE_INFO
             )
         })?;
+    let (chroma_smooth_rows, chroma_smooth_cols) =
+        chroma_smooth_grid_dimensions(mi_rows, mi_cols, sequence.general.chroma_format_idc);
     let mut chroma_smooth = crate::prediction::intra_edge::TileChromaSmoothGrid::new(
-        mi_rows.div_ceil(2),
-        mi_cols.div_ceil(2),
+        chroma_smooth_rows,
+        chroma_smooth_cols,
     )
     .ok_or_else(|| {
         inter_cap!(
@@ -468,6 +470,18 @@ fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<us
         splot_core::headers::sequence::SuperblockSize::Block128x128 => Some(32),
         splot_core::headers::sequence::SuperblockSize::Block256x256 => Some(64),
     }
+}
+
+fn chroma_smooth_grid_dimensions(
+    mi_rows: usize,
+    mi_cols: usize,
+    chroma: splot_core::headers::sequence::ChromaFormatIdc,
+) -> (usize, usize) {
+    let (sub_x, sub_y) = chroma_subsampling(chroma);
+    (
+        if sub_y { mi_rows.div_ceil(2) } else { mi_rows },
+        if sub_x { mi_cols.div_ceil(2) } else { mi_cols },
+    )
 }
 
 /// AV2 § 5.20.5.7/§ 5.20.5.8 intra `segment_id` decode for a luma / non-`CHROMA_PART`
@@ -1914,6 +1928,17 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
                 )
             })?;
     }
+    if info.morph_pred {
+        super::bawp::apply_intrabc_morph_pred(
+            workspace,
+            prediction.target,
+            Mv {
+                row: info.block_mv.row,
+                col: info.block_mv.col,
+            },
+            tile_offset,
+        )?;
+    }
     if !frontier.has_chroma {
         return Ok(());
     }
@@ -2607,7 +2632,9 @@ fn map_inter_multiblock_error(
 
 #[cfg(test)]
 mod tests {
-    use super::inter_residual_geometry_supported_flags;
+    use splot_core::headers::sequence::ChromaFormatIdc;
+
+    use super::{chroma_smooth_grid_dimensions, inter_residual_geometry_supported_flags};
 
     #[test]
     fn inter_residual_geometry_allows_shared_leaves() {
@@ -2618,5 +2645,21 @@ mod tests {
     fn inter_residual_geometry_rejects_chroma_partitioned_leaves() {
         assert!(!inter_residual_geometry_supported_flags(true, false));
         assert!(!inter_residual_geometry_supported_flags(false, true));
+    }
+
+    #[test]
+    fn chroma_smooth_grid_dimensions_follow_chroma_sampling() {
+        assert_eq!(
+            chroma_smooth_grid_dimensions(17, 19, ChromaFormatIdc::Yuv420),
+            (9, 10)
+        );
+        assert_eq!(
+            chroma_smooth_grid_dimensions(17, 19, ChromaFormatIdc::Yuv422),
+            (17, 10)
+        );
+        assert_eq!(
+            chroma_smooth_grid_dimensions(17, 19, ChromaFormatIdc::Yuv444),
+            (17, 19)
+        );
     }
 }

@@ -29,12 +29,24 @@ fn frontier_skip_neighbour() -> IntrabcBlockPrelude {
         use_intrabc: true,
         is_inter: true,
         skip_flag: true,
+        morph_pred: false,
         intrabc: Some(IntrabcInfo {
             intrabc_mode: 1,
             ref_mv_idx: 0,
             mv_precision: MV_PRECISION_QUARTER_PEL,
+            morph_pred: false,
             block_mv: IntrabcBlockVector { row: -512, col: 0 },
         }),
+    }
+}
+
+fn ordinary_neighbour() -> IntrabcBlockPrelude {
+    IntrabcBlockPrelude {
+        use_intrabc: false,
+        is_inter: false,
+        skip_flag: false,
+        morph_pred: false,
+        intrabc: None,
     }
 }
 
@@ -66,6 +78,13 @@ fn selectable_large_frame_fixture() -> (SequenceHeader, FrameHeaderCore) {
     let tile_info = core.tile_info.as_mut().unwrap();
     tile_info.mi_col_starts = vec![0, 32];
     tile_info.mi_row_starts = vec![0, 32];
+    (sequence, core)
+}
+
+fn selectable_morph_fixture() -> (SequenceHeader, FrameHeaderCore) {
+    let (mut sequence, mut core) = selectable_fixture();
+    sequence.inter.as_mut().unwrap().enable_bawp = true;
+    core.allow_screen_content_tools = Some(true);
     (sequence, core)
 }
 
@@ -242,6 +261,67 @@ fn active_intrabc_newmv_nonskip_reads_block_vector_and_returns_info_for_residual
 }
 
 #[test]
+fn intrabc_morph_pred_zero_reads_symbol_and_advances() {
+    let (sequence, core) = selectable_morph_fixture();
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let payload = encode_steps(&[(Some(TileCdfSelector::MorphPred { ctx: 0 }), 0)]);
+    let mut symbols = decoder(&payload);
+    let syntax = IntrabcInfoSyntax {
+        intrabc_mode: 1,
+        ref_mv_idx: 0,
+        mv_precision: MV_PRECISION_QUARTER_PEL,
+        max_bvp_drl_bits_minus_1: 0,
+    };
+
+    let info = finish_intrabc_info_record(
+        &mut cdfs,
+        &mut symbols,
+        &sequence,
+        &core,
+        syntax,
+        Mv { row: -512, col: 0 },
+        0,
+        ByteOffset::new(20),
+    )
+    .unwrap();
+
+    assert_eq!(info.intrabc_mode, 1);
+    assert!(!info.morph_pred);
+    assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
+    assert_eq!(symbols.symbol_count(), 1);
+}
+
+#[test]
+fn intrabc_morph_pred_one_is_retained_for_reconstruction() {
+    let (sequence, core) = selectable_morph_fixture();
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let payload = encode_steps(&[(Some(TileCdfSelector::MorphPred { ctx: 0 }), 1)]);
+    let mut symbols = decoder(&payload);
+    let syntax = IntrabcInfoSyntax {
+        intrabc_mode: 1,
+        ref_mv_idx: 0,
+        mv_precision: MV_PRECISION_QUARTER_PEL,
+        max_bvp_drl_bits_minus_1: 0,
+    };
+
+    let info = finish_intrabc_info_record(
+        &mut cdfs,
+        &mut symbols,
+        &sequence,
+        &core,
+        syntax,
+        Mv { row: -512, col: 0 },
+        0,
+        ByteOffset::new(20),
+    )
+    .unwrap();
+
+    assert!(info.morph_pred);
+    assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
+    assert_eq!(symbols.symbol_count(), 1);
+}
+
+#[test]
 fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
     let (mut sequence, core) = selectable_large_frame_fixture();
     sequence.inter.as_mut().unwrap().drl_reorder = DrlReorder::Always;
@@ -265,10 +345,12 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
                     use_intrabc: true,
                     is_inter: true,
                     skip_flag: false,
+                    morph_pred: false,
                     intrabc: Some(IntrabcInfo {
                         intrabc_mode: 1,
                         ref_mv_idx: 0,
                         mv_precision: MV_PRECISION_QUARTER_PEL,
+                        morph_pred: false,
                         block_mv: mv,
                     }),
                 },
@@ -466,6 +548,7 @@ fn intrabc_geometry_derives_bilinear_fractional_luma_prediction_region() {
         intrabc_mode: 0,
         ref_mv_idx: 0,
         mv_precision: MV_PRECISION_QUARTER_PEL,
+        morph_pred: false,
         block_mv: IntrabcBlockVector { row: -132, col: 0 },
     };
 
@@ -491,6 +574,7 @@ fn intrabc_geometry_admits_fractional_border_extension_at_frame_top() {
         intrabc_mode: 0,
         ref_mv_idx: 0,
         mv_precision: MV_PRECISION_QUARTER_PEL,
+        morph_pred: false,
         block_mv: IntrabcBlockVector { row: -4, col: 0 },
     };
 
@@ -519,6 +603,7 @@ fn intrabc_geometry_uses_mi_domain_for_partial_edge_frame() {
         intrabc_mode: 1,
         ref_mv_idx: 0,
         mv_precision: MV_PRECISION_QUARTER_PEL,
+        morph_pred: false,
         block_mv: IntrabcBlockVector { row: -64, col: 0 },
     };
 
@@ -545,6 +630,7 @@ fn intrabc_geometry_rejects_source_outside_current_tile() {
         intrabc_mode: 1,
         ref_mv_idx: 0,
         mv_precision: MV_PRECISION_QUARTER_PEL,
+        morph_pred: false,
         block_mv: IntrabcBlockVector { row: 0, col: -128 },
     };
 
@@ -566,6 +652,7 @@ fn intrabc_geometry_rejects_self_referential_source() {
         intrabc_mode: 1,
         ref_mv_idx: 0,
         mv_precision: MV_PRECISION_QUARTER_PEL,
+        morph_pred: false,
         block_mv: IntrabcBlockVector { row: 0, col: 0 },
     };
 
@@ -587,6 +674,7 @@ fn intrabc_geometry_rejects_out_of_frame_source() {
         intrabc_mode: 1,
         ref_mv_idx: 0,
         mv_precision: MV_PRECISION_QUARTER_PEL,
+        morph_pred: false,
         block_mv: IntrabcBlockVector { row: -512, col: 0 },
     };
 
@@ -608,6 +696,7 @@ fn intrabc_geometry_rejects_out_of_frame_target() {
         intrabc_mode: 1,
         ref_mv_idx: 0,
         mv_precision: MV_PRECISION_QUARTER_PEL,
+        morph_pred: false,
         block_mv: IntrabcBlockVector { row: 0, col: 0 },
     };
 
@@ -642,6 +731,7 @@ fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
         intrabc_mode: 1,
         ref_mv_idx: 0,
         mv_precision: MV_PRECISION_QUARTER_PEL,
+        morph_pred: false,
         block_mv: IntrabcBlockVector { row: -64, col: 0 },
     };
 
@@ -671,6 +761,7 @@ fn intrabc_geometry_rejects_off_frame_top_left_block() {
         intrabc_mode: 1,
         ref_mv_idx: 0,
         mv_precision: MV_PRECISION_QUARTER_PEL,
+        morph_pred: false,
         block_mv: IntrabcBlockVector { row: -64, col: 0 },
     };
 
@@ -693,6 +784,7 @@ fn intrabc_geometry_rejects_missing_frame_size() {
         intrabc_mode: 1,
         ref_mv_idx: 0,
         mv_precision: MV_PRECISION_QUARTER_PEL,
+        morph_pred: false,
         block_mv: IntrabcBlockVector { row: 0, col: 0 },
     };
 
@@ -765,6 +857,7 @@ fn intrabc_newmv_one_pel_record_shifts_shell_delta() {
             intrabc_mode: 0,
             ref_mv_idx: 0,
             mv_precision: MV_PRECISION_ONE_PEL,
+            morph_pred: false,
             block_mv: IntrabcBlockVector { row: -504, col: 0 },
         }
     );
@@ -827,12 +920,7 @@ fn non_intrabc_path_reads_only_use_intrabc_symbol() {
 #[test]
 fn contexts_use_intrabc_npos_and_skip_nposbuf_boundaries() {
     let mut state = state();
-    let ordinary = IntrabcBlockPrelude {
-        use_intrabc: false,
-        is_inter: false,
-        skip_flag: false,
-        intrabc: None,
-    };
+    let ordinary = ordinary_neighbour();
     let intrabc_skip = frontier_skip_neighbour();
     state
         .record_block(15, 4, 4, 1, intrabc_skip, ByteOffset::new(0))
@@ -857,12 +945,7 @@ fn contexts_use_intrabc_npos_and_skip_nposbuf_boundaries() {
 #[test]
 fn contexts_stop_after_first_two_valid_neighbour_candidates() {
     let mut state = state();
-    let ordinary = IntrabcBlockPrelude {
-        use_intrabc: false,
-        is_inter: false,
-        skip_flag: false,
-        intrabc: None,
-    };
+    let ordinary = ordinary_neighbour();
     let intrabc_skip = frontier_skip_neighbour();
     state
         .record_block(23, 7, 1, 1, ordinary, ByteOffset::new(0))

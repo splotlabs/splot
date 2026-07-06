@@ -5,13 +5,13 @@
 
 use splot_recon::math::{approx_divide, clip3, resolve_division, round2, round2_signed};
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, PlaneId, ReconSample,
+    BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, PixelFormat, PlaneId, ReconSample,
     predict_intra_dc_rect_value, predict_intra_dc_subsampled_rect_value,
 };
 
 use crate::bitstream::tile_payload::{
     CflIndex, CflParams, GeneralIntraResidualError, LumaCoeffBlock,
-    reconstruct_general_intra_block_rect_with_prediction,
+    reconstruct_general_intra_coeff_block_rect_with_prediction,
 };
 
 use super::mhccp::{
@@ -46,6 +46,13 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     num4_below_left: usize,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    if workspace.info().pixel_format() != PixelFormat::Yuv420 {
+        return Err(
+            GeneralIntraResidualError::UnsupportedTransformToolResidual {
+                reason: "general_intra_cfl_non_420_chroma",
+            },
+        );
+    }
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let prediction = if cfl_params.index == CflIndex::Multi {
@@ -80,14 +87,13 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_block_rect_with_prediction(
-            &block.quant,
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
             &prediction,
             qindex,
             plane_id,
             log2_width,
             log2_height,
-            block.plane_tx_type,
             false,
             bit_depth,
         )?
@@ -692,4 +698,75 @@ fn mhccp_luma_ref_available(
 ) -> bool {
     (row < above || col < left.saturating_add(width))
         && (row < above.saturating_add(height) || col < left)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use splot_recon::{DecodedFrameInfo, OutputIndex, PlaneRect, PlaneSize};
+
+    use super::*;
+
+    fn workspace(pixel_format: PixelFormat) -> CurrentFrameWorkspace<u8> {
+        let luma = PlaneSize::new(16, 16).unwrap();
+        let visible = PlaneRect::new(0, 0, 16, 16).unwrap();
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Eight,
+            pixel_format,
+            luma,
+            visible,
+        )
+        .unwrap();
+        CurrentFrameWorkspace::new(info, 0).unwrap()
+    }
+
+    fn zero_block() -> LumaCoeffBlock {
+        LumaCoeffBlock {
+            all_zero: true,
+            eob: 0,
+            quant: Vec::new(),
+            intra_ist: None,
+            plane_tx_type: 0,
+        }
+    }
+
+    fn derived_alpha() -> CflParams {
+        CflParams {
+            index: CflIndex::DerivedAlpha,
+            alpha_u: 0,
+            alpha_v: 0,
+            mh_dir: None,
+        }
+    }
+
+    #[test]
+    fn cfl_reconstruction_rejects_non_420_chroma_geometry() {
+        let mut frame = workspace(PixelFormat::Yuv444);
+
+        let error = reconstruct_general_intra_chroma_cfl_block_into(
+            &mut frame,
+            &zero_block(),
+            PlaneId::U,
+            0,
+            0,
+            2,
+            2,
+            0,
+            derived_alpha(),
+            0,
+            16,
+            0,
+            0,
+            BitDepth::Eight,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            GeneralIntraResidualError::UnsupportedTransformToolResidual {
+                reason: "general_intra_cfl_non_420_chroma"
+            }
+        ));
+    }
 }

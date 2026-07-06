@@ -8,12 +8,12 @@ use splot_core::headers::frame::{
     FrameHeaderParseStatus, FrameReferenceStateView, QuantizationParams, TipFrameMode,
     parse_frame_header_core,
 };
-use splot_core::headers::sequence::SequenceHeader;
+use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
-    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
+    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter, PixelFormat,
     PlaneId as ReconPlaneId, ReconSample, ReferenceFrameStore, ReferenceSlot,
 };
 
@@ -110,6 +110,17 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
             offset,
             "inter.obu_type != regular_tile_group",
             SPEC_HEADER
+        ));
+    }
+    if !matches!(
+        sequence.general.chroma_format_idc,
+        ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
+    ) {
+        return Err(inter_cap!(
+            "inter_non_420_chroma",
+            offset,
+            "inter.chroma_format != monochrome_or_4:2:0",
+            SPEC_MC
         ));
     }
 
@@ -257,7 +268,14 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         };
         tile.tile_size()
     };
-    ensure_runtime_limits(limits, frame_width, frame_height, tile_size, bit_depth)?;
+    ensure_runtime_limits(
+        limits,
+        frame_width,
+        frame_height,
+        tile_size,
+        bit_depth,
+        sequence.general.chroma_format_idc,
+    )?;
 
     let interpolation_filter = inter.interpolation_filter.ok_or_else(|| {
         inter_missing!(
@@ -272,6 +290,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         frame_width as usize,
         frame_height as usize,
         bit_depth,
+        PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?,
     )?;
     let qindex = core
         .quantization_params

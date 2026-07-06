@@ -89,6 +89,7 @@ impl TileCdfRows {
         scale_rows!(intrabc);
         scale_row!(intrabc_mode);
         scale_row!(intrabc_precision);
+        scale_rows!(morph_pred);
         scale_rows!(fsc_mode.flatten());
         scale_rows!(mrl_index);
         scale_rows!(mrl_sec_index);

@@ -30,7 +30,7 @@ use crate::filters::deblock;
 use crate::prediction::inter;
 use crate::reference::buffer as reference_buffer;
 use crate::support::capability::missing_capability_message;
-use crate::support::pipeline_limits::{checked_add, decoded_frame_byte_budget};
+use crate::support::pipeline_limits::{checked_add, decoded_frame_storage_budget};
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 const SPEC_SECTION: &str = "7.1";
@@ -278,6 +278,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
         options.limits(),
         retained_frame_bytes,
         &key_core,
+        &sequence,
         key_envelope.offset,
     )?;
     let key_frame = decode_key_frame(
@@ -381,6 +382,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                             options.limits(),
                             retained_frame_bytes,
                             &inter_core,
+                            &sequence,
                             inter_envelope.offset,
                         )?;
                         let (frame, inter_core, frame_cdfs) = frame_engine::decode_frame(
@@ -432,6 +434,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                             options.limits(),
                             retained_frame_bytes,
                             &inter_core,
+                            &sequence,
                             inter_envelope.offset,
                         )?;
                         let (frame, inter_core, frame_cdfs) = frame_engine::decode_frame(
@@ -1074,6 +1077,7 @@ fn ensure_retained_frame_byte_limits_for_core(
     limits: crate::DecodeLimits,
     retained_frame_bytes: u64,
     core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
     offset: ByteOffset,
 ) -> Result<u64> {
     let frame_size = core.frame_size.ok_or_else(|| {
@@ -1083,8 +1087,16 @@ fn ensure_retained_frame_byte_limits_for_core(
             "decode pipeline requires parsed frame dimensions before charging retained decoded-frame bytes",
         )
     })?;
-    let frame_bytes = decoded_frame_byte_budget(frame_size, bytes_per_sample(BitDepth::Eight))
-        .map(|budget| budget.decoded_bytes)?;
+    let bit_depth = match sequence.general.bit_depth_idc {
+        BitDepthIdc::Eight => BitDepth::Eight,
+        BitDepthIdc::Ten => BitDepth::Ten,
+    };
+    let frame_bytes = decoded_frame_storage_budget(
+        frame_size,
+        sequence.general.chroma_format_idc,
+        bytes_per_sample(bit_depth),
+    )
+    .map(|budget| budget.decoded_bytes)?;
     ensure_retained_frame_byte_limits_for_bytes(limits, retained_frame_bytes, frame_bytes)
 }
 
@@ -1173,18 +1185,11 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
             "minimal tier requires a fully parsed sequence header",
         ));
     }
-    if general.seq_profile_idc.get() != 0 {
+    if !supported_profile_chroma(general.seq_profile_idc.get(), general.chroma_format_idc) {
         return Err(unsupported_at(
             "unsupported_profile",
             offset,
-            "minimal tier requires seq_profile_idc == 0",
-        ));
-    }
-    if general.chroma_format_idc != ChromaFormatIdc::Yuv420 {
-        return Err(unsupported_at(
-            "unsupported_chroma_format",
-            offset,
-            "minimal tier requires YUV 4:2:0 output",
+            "minimal tier requires a supported Annex A profile/chroma combination",
         ));
     }
     if general.max_tlayer_id.get() != 0 || general.max_mlayer_id.get() != 0 {
@@ -1209,6 +1214,24 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
         ));
     }
     Ok(())
+}
+
+fn supported_profile_chroma(profile_idc: u8, chroma: ChromaFormatIdc) -> bool {
+    match profile_idc {
+        0..=2 => matches!(
+            chroma,
+            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
+        ),
+        3 => matches!(
+            chroma,
+            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv422
+        ),
+        4 => matches!(
+            chroma,
+            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv444
+        ),
+        _ => false,
+    }
 }
 
 #[allow(clippy::unnecessary_wraps)]
@@ -1555,18 +1578,25 @@ pub(crate) fn ensure_runtime_limits(
     height: u32,
     tile_payload_bytes: u64,
     bit_depth: BitDepth,
+    chroma_format: ChromaFormatIdc,
 ) -> Result<()> {
     limits.ensure(DecodeLimitName::MaxFrameWidth, u64::from(width))?;
     limits.ensure(DecodeLimitName::MaxFrameHeight, u64::from(height))?;
-    let budget =
-        decoded_frame_byte_budget(FrameSize::new(width, height), bytes_per_sample(bit_depth))?;
+    let budget = decoded_frame_storage_budget(
+        FrameSize::new(width, height),
+        chroma_format,
+        bytes_per_sample(bit_depth),
+    )?;
     limits.ensure(DecodeLimitName::MaxLumaSamplesPerFrame, budget.luma_samples)?;
     limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, budget.decoded_bytes)?;
     limits.ensure(DecodeLimitName::MaxOutputBytes, budget.decoded_bytes)?;
     limits.ensure(DecodeLimitName::MaxTileCount, 1)?;
     limits.ensure(DecodeLimitName::MaxTilePayloadBytes, tile_payload_bytes)?;
     limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, budget.luma_samples)?;
-    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, budget.chroma_samples)?;
+    limits.ensure_allocation_len(
+        DecodeLimitName::MaxDecodedFrameBytes,
+        budget.chroma_samples_per_plane,
+    )?;
     Ok(())
 }
 
