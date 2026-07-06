@@ -65,7 +65,7 @@ use crate::error::Result;
 use crate::headers::frame::config::{parse_intrabc_params, parse_screen_content_params_full};
 use crate::headers::frame::filtering::{InterpolationFilter, read_interpolation_filter};
 use crate::headers::frame::get_ref_frames::{
-    GetRefFrames, GetRefFramesInput, RefSlot, get_ref_frames,
+    GetRefFrames, GetRefFramesInput, RESTRICTED_OH, RefSlot, get_ref_frames, get_relative_dist,
 };
 use crate::headers::frame::size::{FrameSize, ceil_log2};
 use crate::headers::sequence::SuperblockSize;
@@ -413,21 +413,32 @@ fn ref_dims(reference_state: &FrameReferenceStateView<'_>, idx: u32) -> Option<(
     Some((w, h))
 }
 
+fn ref_order_hint_to_spec(raw: u32) -> Option<i32> {
+    if raw == u32::MAX {
+        Some(RESTRICTED_OH)
+    } else {
+        i32::try_from(raw).ok()
+    }
+}
+
 fn tip_ref_counts(
     reference_state: &FrameReferenceStateView<'_>,
     ref_frame_idx: &[u32],
     current_order_hint: u32,
 ) -> Option<(usize, usize)> {
     let hints = reference_state.ref_order_hint?;
-    let current = i32::try_from(current_order_hint).ok()?;
+    let current = ref_order_hint_to_spec(current_order_hint)?;
     let mut num_past_refs = 0usize;
     let mut num_future_refs = 0usize;
     for &idx in ref_frame_idx {
         if !ref_valid(reference_state, idx) {
             return None;
         }
-        let hint = *hints.get(usize::try_from(idx).ok()?)?;
-        let dist = (current - i32::try_from(hint).ok()?).clamp(-127, 127);
+        let hint = ref_order_hint_to_spec(*hints.get(usize::try_from(idx).ok()?)?)?;
+        if hint == RESTRICTED_OH {
+            continue;
+        }
+        let dist = get_relative_dist(current, hint);
         if dist > 0 {
             num_past_refs += 1;
         } else if dist < 0 {
@@ -1711,6 +1722,17 @@ mod tests {
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsRef));
         assert_eq!(control.allow_intrabc, Some(false));
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+    }
+
+    #[test]
+    fn tip_ref_counts_skip_restricted_order_hints() {
+        let ref_valid = [true, true, true, false, false, false, false, false];
+        let ref_oh = [u32::MAX, 1, 9, 0, 0, 0, 0, 0];
+        let ref_w = [4096; 8];
+        let ref_h = [2304; 8];
+        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+
+        assert_eq!(tip_ref_counts(&rs, &[0, 1, 2], 5), Some((1, 1)));
     }
 
     #[test]

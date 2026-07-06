@@ -289,7 +289,7 @@ fn inverted_tile_group_range_is_unsupported_without_work_units() {
 
     assert_eq!(
         unsupported.reason(),
-        TilePayloadUnsupportedReason::NonSingleTile
+        TilePayloadUnsupportedReason::MissingTileFramingRecords
     );
     assert_eq!(unsupported.tile_num(), None);
 }

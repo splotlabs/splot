@@ -605,7 +605,7 @@ impl FrameEndBoundary {
 pub(crate) enum TilePayloadUnsupportedReason {
     DecodeTileSyntax,
     MissingCompleteIntraFirstTileGroup,
-    NonSingleTile,
+    MissingTileFramingRecords,
     MultipleTileGroups,
     NonClosedLoopKey,
     NonIntraFrame,
@@ -617,7 +617,7 @@ pub(crate) enum TilePayloadUnsupportedReason {
 crate::impl_reason_labels!(pub(crate) TilePayloadUnsupportedReason {
     DecodeTileSyntax => "decode_tile_syntax",
     MissingCompleteIntraFirstTileGroup => "missing_complete_intra_first_tile_group",
-    NonSingleTile => "non_single_tile",
+    MissingTileFramingRecords => "missing_tile_framing_records",
     MultipleTileGroups => "multiple_tile_groups",
     NonClosedLoopKey => "non_closed_loop_key",
     NonIntraFrame => "non_intra_frame",
@@ -632,7 +632,7 @@ impl TilePayloadUnsupportedReason {
         match self {
             Self::DecodeTileSyntax => "5.20.2.1",
             Self::MissingCompleteIntraFirstTileGroup
-            | Self::NonSingleTile
+            | Self::MissingTileFramingRecords
             | Self::MultipleTileGroups
             | Self::BridgeTile
             | Self::BruTileActivity => "5.20.1",
@@ -845,7 +845,7 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
     }
     if input.framing.tiles.is_empty() {
         return Err(unsupported_boundary_without_tile(
-            TilePayloadUnsupportedReason::NonSingleTile,
+            TilePayloadUnsupportedReason::MissingTileFramingRecords,
             input.payload_base,
             "tile groups without tile framing records are outside the current tile payload boundary tier.",
         ));

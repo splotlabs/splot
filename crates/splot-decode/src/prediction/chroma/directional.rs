@@ -151,6 +151,10 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 bit_depth,
+                MiddleEdgeAvailability {
+                    above: availability.above,
+                    left: availability.left,
+                },
             )
         }
         SupportedChromaMode::D113Follow | SupportedChromaMode::D113 => {
@@ -165,6 +169,10 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 bit_depth,
+                MiddleEdgeAvailability {
+                    above: availability.above,
+                    left: availability.left,
+                },
             )
         }
         SupportedChromaMode::D157Follow | SupportedChromaMode::D157 => {
@@ -179,6 +187,10 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 bit_depth,
+                MiddleEdgeAvailability {
+                    above: availability.above,
+                    left: availability.left,
+                },
             )
         }
         SupportedChromaMode::VerticalFollow | SupportedChromaMode::Vertical => {

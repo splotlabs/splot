@@ -143,7 +143,20 @@ impl IntraLumaPlan {
             }
             Self::DirectionalNeighbour { mode } => {
                 crate::pipeline::reconstruct::reconstruct_general_intra_directional_neighbour_block_into(
-                    workspace, luma, mode, PlaneId::Y, x, y, log2_side, qindex, use_tcq, bit_depth,
+                    workspace,
+                    luma,
+                    mode,
+                    PlaneId::Y,
+                    x,
+                    y,
+                    log2_side,
+                    qindex,
+                    use_tcq,
+                    bit_depth,
+                    crate::pipeline::reconstruct::MiddleEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
                 )
             }
             Self::DirectionalMiddle { p_angle } => {

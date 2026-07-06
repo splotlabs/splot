@@ -1021,9 +1021,10 @@ pub(crate) fn predict_directional_noneighbour<T: ReconSample>(
 /// [`reconstruct_general_intra_luma_directional_first_block_into`] /
 /// [`reconstruct_general_intra_chroma_directional_first_into`] (which are gated to
 /// the no-neighbour top-left block and use the § 7.13.2.1 flat fallbacks). It
-/// reads the genuine reconstructed left column / above row of an already-decoded
-/// neighbour, building the logical `AboveRow[-1..w)` / `LeftCol[-1..h)` edges per
-/// § 7.13.2.1.
+/// reads the caller-available reconstructed left column / above row of an
+/// already-decoded neighbour, building the logical `AboveRow[-1..w)` /
+/// `LeftCol[-1..h)` edges per § 7.13.2.1 and using the spec fallbacks for
+/// tile-unavailable edges.
 ///
 /// pAngle 135 is a § 7.13.2.8 "middle" angle (`90 < pAngle < 180`) whose
 /// derivatives are `dx = dy = Dr_Intra_Derivative[45] = 64`, so every projection
@@ -1055,13 +1056,21 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     qindex: u32,
     use_tcq: bool,
     bit_depth: BitDepth,
+    availability: MiddleEdgeAvailability,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
-    let have_left = edges.left_samples().is_some();
-    let have_above = edges.above_samples().is_some();
+    let left_samples = availability.left.then(|| edges.left_samples()).flatten();
+    let above_samples = availability.above.then(|| edges.above_samples()).flatten();
+    if (availability.left && left_samples.is_none())
+        || (availability.above && above_samples.is_none())
+    {
+        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+    }
+    let have_left = left_samples.is_some();
+    let have_above = above_samples.is_some();
     let above_corner = if have_left && have_above {
         match (x.checked_sub(1), y.checked_sub(1)) {
             (Some(cx), Some(cy)) => Some(workspace.reconstructed_sample(plane_id, cx, cy)?),
@@ -1071,8 +1080,8 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
         None
     };
     let (left, above) = build_directional_middle_edges(
-        edges.left_samples(),
-        edges.above_samples(),
+        left_samples,
+        above_samples,
         above_corner,
         have_left,
         have_above,

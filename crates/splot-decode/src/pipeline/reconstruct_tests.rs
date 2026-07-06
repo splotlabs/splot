@@ -452,6 +452,81 @@ fn zone2_top_row_left_edge_filter_matches_avm_z2_idif() {
     }
 }
 
+#[test]
+fn d135_neighbour_masks_unavailable_tile_above_edge() {
+    fn workspace_with_edges(above: u8) -> CurrentFrameWorkspace<u8> {
+        let mut ws =
+            new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420)
+                .unwrap();
+        ws.write_rect_block(
+            PlaneId::Y,
+            4,
+            4,
+            IntraRectBlockSize::new(2, 2).unwrap(),
+            &[77u8; 16],
+        )
+        .unwrap();
+        ws.write_rect_block(
+            PlaneId::Y,
+            8,
+            4,
+            IntraRectBlockSize::new(3, 2).unwrap(),
+            &[above; 32],
+        )
+        .unwrap();
+        let left: [u8; 8] = [88, 91, 94, 97, 100, 103, 106, 109];
+        let mut col = vec![0u8; 4 * 8];
+        for (row, &value) in left.iter().enumerate() {
+            for x in 0..4 {
+                col[row * 4 + x] = value;
+            }
+        }
+        ws.write_rect_block(
+            PlaneId::Y,
+            4,
+            8,
+            IntraRectBlockSize::new(2, 3).unwrap(),
+            &col,
+        )
+        .unwrap();
+        ws
+    }
+
+    fn reconstruct(mut ws: CurrentFrameWorkspace<u8>) -> Vec<u8> {
+        reconstruct_general_intra_directional_neighbour_block_into(
+            &mut ws,
+            &all_zero_luma_block(),
+            SupportedDirectionalLumaMode::D135,
+            PlaneId::Y,
+            8,
+            8,
+            3,
+            0,
+            false,
+            BitDepth::Eight,
+            MiddleEdgeAvailability {
+                above: false,
+                left: true,
+            },
+        )
+        .unwrap();
+        (0..8)
+            .flat_map(|row| (0..8).map(move |col| (row, col)))
+            .map(|(row, col)| {
+                ws.reconstructed_sample(PlaneId::Y, 8 + col, 8 + row)
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    let low_above = reconstruct(workspace_with_edges(12));
+    let high_above = reconstruct(workspace_with_edges(240));
+    assert_eq!(
+        low_above, high_above,
+        "tile-unavailable above samples must be ignored by D135 neighbour reconstruction"
+    );
+}
+
 /// §7.13.2.1 ZONE-3 CORNER GUARD — a D203 (`pAngle == 203`) zone-3 8x8 leaf at an
 /// INTERIOR position (8, 8) with `have_above == true`. The §7.13.2.1 corner
 /// `LeftCol[-1]` must be the DIAGONAL above-left `CurrFrame[y - 1][x - 1] =

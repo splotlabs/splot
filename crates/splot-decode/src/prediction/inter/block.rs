@@ -1046,6 +1046,7 @@ fn decode_block<T: ReconSample>(
         .and_then(|inter| inter.tip_frame_mode)
         .unwrap_or(TipFrameMode::Disabled);
     if tip_frame_mode != TipFrameMode::Disabled && tip_allowed_for_block(frontier, n4w, n4h) {
+        // Nonzero TIP refs still fail closed below, so no neighbour can contribute to ctx yet.
         let tip_ref = cdfs
             .read_block_symbol_trace(TileCdfSelector::TipMode { ctx: 0 }, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?
