@@ -424,6 +424,7 @@ fn plan_directional_luma_angle(
         && neighbours.num_above_right() > 0;
     let full_sb_first_row = is_full_sb && !has_above;
     let full_sb_with_edge = is_full_sb && has_edge;
+    let full_sb_top_left = is_full_sb && is_top_left;
     let full_sb_with_above = is_full_sb && has_above;
     let full_sb_with_left = is_full_sb && has_left;
     let full_sb_left_only = full_sb_first_row && has_left;
@@ -458,6 +459,7 @@ fn plan_directional_luma_angle(
     }
     match mode {
         SupportedDirectionalLumaMode::Vertical => (full_sb_with_edge
+            || full_sb_top_left
             || supports_small_cardinal_edge
             || (allow_dpcm_cardinal && is_full_sb))
             .then_some(IntraLumaPlan::CardinalNeighbour {
@@ -465,6 +467,7 @@ fn plan_directional_luma_angle(
             })
             .ok_or(UNSUPPORTED_CARDINAL_VERTICAL),
         SupportedDirectionalLumaMode::Horizontal => (full_sb_with_edge
+            || full_sb_top_left
             || supports_small_cardinal_edge
             || (allow_dpcm_cardinal && is_full_sb))
             .then_some(IntraLumaPlan::CardinalNeighbour {
@@ -900,6 +903,36 @@ mod tests {
                 }),
             },
             Case {
+                label: "vertical cardinal top-left fallback",
+                bit_depth: BitDepth::Eight,
+                row4: 0,
+                col4: 0,
+                width4: 16,
+                height4: 16,
+                frame_cols4: 32,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::Vertical),
+                expected: Expected::Plan(IntraLumaPlan::CardinalNeighbour {
+                    direction: IntraCardinalDirection::Vertical,
+                }),
+            },
+            Case {
+                label: "horizontal cardinal top-left fallback",
+                bit_depth: BitDepth::Eight,
+                row4: 0,
+                col4: 0,
+                width4: 16,
+                height4: 16,
+                frame_cols4: 32,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::Horizontal),
+                expected: Expected::Plan(IntraLumaPlan::CardinalNeighbour {
+                    direction: IntraCardinalDirection::Horizontal,
+                }),
+            },
+            Case {
                 label: "vertical cardinal",
                 bit_depth: BitDepth::Eight,
                 row4: 16,
@@ -1216,32 +1249,6 @@ mod tests {
     #[test]
     fn rejects_unsupported_luma_prediction_classes() {
         let cases = [
-            Case {
-                label: "vertical cardinal no-neighbour",
-                bit_depth: BitDepth::Eight,
-                row4: 0,
-                col4: 0,
-                width4: 16,
-                height4: 16,
-                frame_cols4: 16,
-                dc: false,
-                nondc: None,
-                directional: Some(SupportedDirectionalLumaMode::Vertical),
-                expected: Expected::Error("general_intra_cardinal_vertical_unverified"),
-            },
-            Case {
-                label: "horizontal cardinal no-neighbour",
-                bit_depth: BitDepth::Eight,
-                row4: 0,
-                col4: 0,
-                width4: 16,
-                height4: 16,
-                frame_cols4: 16,
-                dc: false,
-                nondc: None,
-                directional: Some(SupportedDirectionalLumaMode::Horizontal),
-                expected: Expected::Error("general_intra_cardinal_horizontal_unverified"),
-            },
             Case {
                 label: "4x4 vertical cardinal",
                 bit_depth: BitDepth::Eight,

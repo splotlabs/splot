@@ -372,7 +372,13 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             "5.20.6.1",
         ));
     }
-    ensure_lossless_verified_prediction_subset(lossless, frontier.has_chroma, &modes, tile_offset)?;
+    ensure_lossless_verified_prediction_subset(
+        lossless,
+        frontier.has_chroma,
+        &modes,
+        block_ctx,
+        tile_offset,
+    )?;
     if luma_only {
         ensure_10bit_general_intra_luma_capability(&modes, block_ctx, sb_mib, tile_offset)?;
     } else {
@@ -672,14 +678,15 @@ fn ensure_lossless_verified_prediction_subset(
     lossless: bool,
     has_chroma: bool,
     modes: &GeneralIntraBlockModes,
+    block_ctx: BlockCtx,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     if !lossless {
         return Ok(());
     }
-    if !modes.luma_is_dc() && !modes.uses_dpcm_y() {
+    if !lossless_luma_prediction_verified(modes, block_ctx) {
         return Err(general_intra_at!(
-            "general_intra_lossless_nondc_luma_unverified",
+            "general_intra_lossless_other_nondc_luma_unverified",
             tile_offset,
             missing_capability_message!("intra.lossless.luma_prediction", mode = "non_dc"),
             "7.13.2",
@@ -696,6 +703,20 @@ fn ensure_lossless_verified_prediction_subset(
         ));
     }
     Ok(())
+}
+
+fn lossless_luma_prediction_verified(modes: &GeneralIntraBlockModes, block_ctx: BlockCtx) -> bool {
+    if modes.luma_is_dc() || modes.uses_dpcm_y() {
+        return true;
+    }
+    let block = block_ctx.block();
+    let top_left_full_sb = block_ctx.is_top_left() && block.width4() == 16 && block.height4() == 16;
+    top_left_full_sb
+        && modes.angle_delta_y == 0
+        && matches!(
+            modes.y_mode.supported_directional(),
+            Some(SupportedDirectionalLumaMode::Vertical | SupportedDirectionalLumaMode::Horizontal)
+        )
 }
 
 fn lossless_chroma_prediction_verified(
@@ -1859,12 +1880,14 @@ mod tests {
     #[test]
     fn lossless_prediction_guard_admits_dc_luma_and_dpcm() {
         let modes = luma_modes(crate::bitstream::tile_payload::IntraYMode::DC_PRED);
+        let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
 
         assert!(
             ensure_lossless_verified_prediction_subset(
                 true,
                 false,
                 &modes,
+                top_left,
                 splot_core::span::ByteOffset::new(0),
             )
             .is_ok()
@@ -1880,6 +1903,7 @@ mod tests {
                 true,
                 false,
                 &modes,
+                top_left,
                 splot_core::span::ByteOffset::new(9),
             )
             .is_ok()
@@ -1887,12 +1911,36 @@ mod tests {
     }
 
     #[test]
+    fn lossless_prediction_guard_admits_top_left_cardinal_luma() {
+        let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
+
+        for mode in [
+            crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
+            crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
+        ] {
+            let modes = luma_modes(mode);
+            assert!(
+                ensure_lossless_verified_prediction_subset(
+                    true,
+                    false,
+                    &modes,
+                    top_left,
+                    splot_core::span::ByteOffset::new(9),
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
     fn lossless_prediction_guard_rejects_nondc_luma() {
         let modes = luma_modes(crate::bitstream::tile_payload::IntraYMode::D45_PRED_FOR_TEST);
+        let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
         let error = ensure_lossless_verified_prediction_subset(
             true,
             false,
             &modes,
+            top_left,
             splot_core::span::ByteOffset::new(9),
         )
         .expect_err("non-DC lossless luma must fail closed");
@@ -1904,7 +1952,7 @@ mod tests {
         if let DecodeError::UnsupportedFeature { unsupported } = error {
             assert_eq!(
                 unsupported.reason(),
-                "general_intra_lossless_nondc_luma_unverified"
+                "general_intra_lossless_other_nondc_luma_unverified"
             );
             assert_eq!(
                 unsupported.byte_offset(),
