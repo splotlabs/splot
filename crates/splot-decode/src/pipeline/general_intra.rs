@@ -737,7 +737,11 @@ fn lossless_luma_prediction_verified(
         && modes.angle_delta_y == 0
         && matches!(
             modes.y_mode.supported_directional(),
-            Some(SupportedDirectionalLumaMode::Vertical | SupportedDirectionalLumaMode::Horizontal)
+            Some(
+                SupportedDirectionalLumaMode::Vertical
+                    | SupportedDirectionalLumaMode::Horizontal
+                    | SupportedDirectionalLumaMode::D135
+            )
         )
 }
 
@@ -2000,70 +2004,72 @@ mod tests {
         );
     }
 
+    fn assert_lossless_directional_luma_admitted(mode: crate::bitstream::tile_payload::IntraYMode) {
+        let top_left = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
+        let modes = luma_modes(mode);
+
+        assert!(
+            ensure_lossless_verified_prediction_subset(
+                true,
+                false,
+                &modes,
+                top_left,
+                FULL_SB_N4_LUMA,
+                splot_core::span::ByteOffset::new(9),
+            )
+            .is_ok()
+        );
+    }
+
     #[test]
     fn lossless_prediction_guard_admits_top_left_cardinal_luma() {
-        let top_left = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
-
         for mode in [
             crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
             crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
         ] {
-            let modes = luma_modes(mode);
-            assert!(
-                ensure_lossless_verified_prediction_subset(
-                    true,
-                    false,
-                    &modes,
-                    top_left,
-                    FULL_SB_N4_LUMA,
-                    splot_core::span::ByteOffset::new(9),
-                )
-                .is_ok()
-            );
+            assert_lossless_directional_luma_admitted(mode);
         }
     }
 
     #[test]
-    fn lossless_prediction_guard_rejects_unverified_cardinal_variants() {
+    fn lossless_prediction_guard_admits_top_left_d135_luma() {
+        assert_lossless_directional_luma_admitted(
+            crate::bitstream::tile_payload::IntraYMode::D135_PRED_FOR_TEST,
+        );
+    }
+
+    #[test]
+    fn lossless_prediction_guard_rejects_unverified_directional_variants() {
         let top_left_8 =
             ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
         let top_left_10 = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
 
-        for (modes, block_ctx, sb_mib) in [
-            (
-                luma_modes_with_angle(
-                    crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
-                    1,
-                ),
-                top_left_8,
-                FULL_SB_N4_LUMA,
-            ),
-            (
-                luma_modes(crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST),
-                top_left_10,
-                FULL_SB_N4_LUMA,
-            ),
-            (
-                luma_modes(crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST),
-                top_left_8,
-                32,
-            ),
+        for mode in [
+            crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
+            crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
+            crate::bitstream::tile_payload::IntraYMode::D135_PRED_FOR_TEST,
         ] {
-            let error = ensure_lossless_verified_prediction_subset(
-                true,
-                false,
-                &modes,
-                block_ctx,
-                sb_mib,
-                splot_core::span::ByteOffset::new(9),
-            )
-            .expect_err("unverified lossless cardinal luma variant must fail closed");
+            for (modes, block_ctx, sb_mib) in [
+                (luma_modes_with_angle(mode, 1), top_left_8, FULL_SB_N4_LUMA),
+                (luma_modes(mode), top_left_10, FULL_SB_N4_LUMA),
+                (luma_modes(mode), top_left_8, 32),
+            ] {
+                let error = ensure_lossless_verified_prediction_subset(
+                    true,
+                    false,
+                    &modes,
+                    block_ctx,
+                    sb_mib,
+                    splot_core::span::ByteOffset::new(9),
+                )
+                .expect_err("unverified lossless directional luma variant must fail closed");
 
-            let reason = match error {
-                DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
-                _ => "",
-            };
-            assert_eq!(reason, "general_intra_lossless_other_nondc_luma_unverified");
+                let reason = match error {
+                    DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
+                    _ => "",
+                };
+                assert_eq!(reason, "general_intra_lossless_other_nondc_luma_unverified");
+            }
         }
     }
 
