@@ -13,7 +13,9 @@ use crate::bitstream::tile_payload::{
     SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
     TransformToolResidualPolicy,
 };
-use crate::prediction::intra::{IntraLumaUnsupported, plan_luma_prediction};
+use crate::prediction::intra::{
+    IntraLumaUnsupported, plan_luma_prediction, plan_luma_prediction_ext,
+};
 use crate::residual::pipeline::{
     GeneralIntraResidualPlan, RectChromaPlan, RectLumaPlan, ResidualPipelineUnsupported,
 };
@@ -380,20 +382,27 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         tile_offset,
     )?;
     if luma_only {
-        ensure_10bit_general_intra_luma_capability(&modes, block_ctx, sb_mib, tile_offset)?;
+        ensure_10bit_general_intra_luma_capability(
+            &modes,
+            block_ctx,
+            sb_mib,
+            lossless,
+            tile_offset,
+        )?;
     } else {
         ensure_10bit_general_intra_capability(
             &modes,
             block_ctx,
             (mi_cols, mi_rows),
             sb_mib,
+            lossless,
             tile_offset,
         )?;
     }
 
     if n4w != n4h
         || modes.uses_active_mrl()
-        || square_luma_needs_rect_residual_path(&modes, block_ctx, luma_use_tcq, sb_mib)
+        || square_luma_needs_rect_residual_path(&modes, block_ctx, luma_use_tcq, sb_mib, lossless)
     {
         let leaf = decode_one_general_intra_rect_block::<T>(
             intra_edge,
@@ -434,7 +443,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         ensure_supported_chroma_capability(supported_chroma, dpcm, block_ctx)
             .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?;
     }
-    let luma_plan = plan_luma_prediction(&modes, block_ctx)
+    let luma_plan = plan_luma_prediction_for_segment(&modes, block_ctx, lossless)
         .map_err(|error| general_intra_luma_plan_error(error, tile_offset))?;
 
     let residual_plan = GeneralIntraResidualPlan::square(
@@ -719,6 +728,18 @@ fn lossless_luma_prediction_verified(modes: &GeneralIntraBlockModes, block_ctx: 
         )
 }
 
+fn plan_luma_prediction_for_segment(
+    modes: &GeneralIntraBlockModes,
+    block_ctx: BlockCtx,
+    lossless: bool,
+) -> core::result::Result<crate::prediction::intra::IntraLumaPlan, IntraLumaUnsupported> {
+    if lossless && lossless_luma_prediction_verified(modes, block_ctx) {
+        plan_luma_prediction_ext(modes, block_ctx, true)
+    } else {
+        plan_luma_prediction(modes, block_ctx)
+    }
+}
+
 fn lossless_chroma_prediction_verified(
     mode: Option<SupportedChromaMode>,
     uses_dpcm_uv: bool,
@@ -764,10 +785,11 @@ fn square_luma_needs_rect_residual_path(
     block_ctx: BlockCtx,
     use_tcq: bool,
     sb_mib: usize,
+    lossless: bool,
 ) -> bool {
     let block = block_ctx.block();
     block.width4() == block.height4()
-        && plan_luma_prediction(modes, block_ctx).is_err()
+        && plan_luma_prediction_for_segment(modes, block_ctx, lossless).is_err()
         && rect_luma_plan(modes, block_ctx, use_tcq, sb_mib).is_ok()
 }
 
@@ -1205,13 +1227,14 @@ fn ensure_10bit_general_intra_luma_capability(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
     sb_mib: usize,
+    lossless: bool,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     if block_ctx.bit_depth() == BitDepth::Eight {
         return Ok(());
     }
     let luma_admitted = modes.luma_is_dc()
-        || plan_luma_prediction(modes, block_ctx).is_ok()
+        || plan_luma_prediction_for_segment(modes, block_ctx, lossless).is_ok()
         || rect_luma_plan(modes, block_ctx, false, sb_mib).is_ok();
     if luma_admitted {
         return Ok(());
@@ -1229,6 +1252,7 @@ fn ensure_10bit_general_intra_capability(
     block_ctx: BlockCtx,
     frame_n4: (usize, usize),
     sb_mib: usize,
+    lossless: bool,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     if block_ctx.bit_depth() == BitDepth::Eight {
@@ -1243,11 +1267,11 @@ fn ensure_10bit_general_intra_capability(
         ten_bit_general_intra_chroma_admitted(modes.supported_chroma_mode(), block_ctx)
     };
     let luma_admitted = modes.luma_is_dc()
-        || plan_luma_prediction(modes, block_ctx).is_ok()
+        || plan_luma_prediction_for_segment(modes, block_ctx, lossless).is_ok()
         || rect_luma_plan(modes, block_ctx, false, sb_mib).is_ok();
     if !luma_admitted || !chroma_admitted {
         if crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_MODE") {
-            let luma_plan = plan_luma_prediction(modes, block_ctx);
+            let luma_plan = plan_luma_prediction_for_segment(modes, block_ctx, lossless);
             let chroma_mode = modes.supported_chroma_mode();
             let y_neighbours = block_ctx.neighbours(PlaneId::Y);
             let uv_neighbours = block_ctx.neighbours(PlaneId::U);
@@ -2765,7 +2789,8 @@ mod tests {
             &modes,
             first_col_block,
             false,
-            32
+            32,
+            false
         ));
     }
 

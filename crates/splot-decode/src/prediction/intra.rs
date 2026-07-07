@@ -54,6 +54,14 @@ pub(crate) fn plan_luma_prediction(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
 ) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
+    plan_luma_prediction_ext(modes, block_ctx, false)
+}
+
+pub(crate) fn plan_luma_prediction_ext(
+    modes: &GeneralIntraBlockModes,
+    block_ctx: BlockCtx,
+    allow_verified_no_neighbour_cardinal: bool,
+) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
     if let Some(palette) = modes.palette_y() {
         return Ok(IntraLumaPlan::Palette { palette });
     }
@@ -70,7 +78,7 @@ pub(crate) fn plan_luma_prediction(
         modes.y_mode,
         modes.angle_delta_y,
         block_ctx,
-        modes.uses_dpcm_y(),
+        modes.uses_dpcm_y() || allow_verified_no_neighbour_cardinal,
     )
 }
 
@@ -373,13 +381,13 @@ fn plan_directional_luma_from_mode(
     y_mode: IntraYMode,
     angle_delta_y: i8,
     block_ctx: BlockCtx,
-    allow_dpcm_cardinal: bool,
+    allow_no_neighbour_cardinal: bool,
 ) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
     let mode = y_mode
         .supported_directional()
         .ok_or(UNSUPPORTED_LUMA_MODE)?;
     let p_angle = directional_p_angle(y_mode, angle_delta_y).ok_or(UNSUPPORTED_LUMA_MODE)?;
-    plan_directional_luma_angle(mode, p_angle, block_ctx, allow_dpcm_cardinal)
+    plan_directional_luma_angle(mode, p_angle, block_ctx, allow_no_neighbour_cardinal)
 }
 
 fn directional_p_angle(y_mode: IntraYMode, angle_delta_y: i8) -> Option<u16> {
@@ -405,7 +413,7 @@ fn plan_directional_luma_angle(
     mode: SupportedDirectionalLumaMode,
     p_angle: u16,
     block_ctx: BlockCtx,
-    allow_dpcm_cardinal: bool,
+    allow_no_neighbour_cardinal: bool,
 ) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
     let neighbours = block_ctx.neighbours(PlaneId::Y);
     let is_full_sb = block_ctx.block().width4() == FULL_SB_N4_LUMA;
@@ -424,7 +432,7 @@ fn plan_directional_luma_angle(
         && neighbours.num_above_right() > 0;
     let full_sb_first_row = is_full_sb && !has_above;
     let full_sb_with_edge = is_full_sb && has_edge;
-    let full_sb_top_left = is_full_sb && is_top_left;
+    let full_sb_no_neighbour_cardinal = is_full_sb && is_top_left && allow_no_neighbour_cardinal;
     let full_sb_with_above = is_full_sb && has_above;
     let full_sb_with_left = is_full_sb && has_left;
     let full_sb_left_only = full_sb_first_row && has_left;
@@ -458,22 +466,20 @@ fn plan_directional_luma_angle(
             .ok_or(UNSUPPORTED_D203_POSITION);
     }
     match mode {
-        SupportedDirectionalLumaMode::Vertical => (full_sb_with_edge
-            || full_sb_top_left
-            || supports_small_cardinal_edge
-            || (allow_dpcm_cardinal && is_full_sb))
-            .then_some(IntraLumaPlan::CardinalNeighbour {
-                direction: IntraCardinalDirection::Vertical,
-            })
-            .ok_or(UNSUPPORTED_CARDINAL_VERTICAL),
-        SupportedDirectionalLumaMode::Horizontal => (full_sb_with_edge
-            || full_sb_top_left
-            || supports_small_cardinal_edge
-            || (allow_dpcm_cardinal && is_full_sb))
-            .then_some(IntraLumaPlan::CardinalNeighbour {
-                direction: IntraCardinalDirection::Horizontal,
-            })
-            .ok_or(UNSUPPORTED_CARDINAL_HORIZONTAL),
+        SupportedDirectionalLumaMode::Vertical => {
+            (full_sb_with_edge || supports_small_cardinal_edge || full_sb_no_neighbour_cardinal)
+                .then_some(IntraLumaPlan::CardinalNeighbour {
+                    direction: IntraCardinalDirection::Vertical,
+                })
+                .ok_or(UNSUPPORTED_CARDINAL_VERTICAL)
+        }
+        SupportedDirectionalLumaMode::Horizontal => {
+            (full_sb_with_edge || supports_small_cardinal_edge || full_sb_no_neighbour_cardinal)
+                .then_some(IntraLumaPlan::CardinalNeighbour {
+                    direction: IntraCardinalDirection::Horizontal,
+                })
+                .ok_or(UNSUPPORTED_CARDINAL_HORIZONTAL)
+        }
         SupportedDirectionalLumaMode::D157 => full_sb_left_only
             .then_some(IntraLumaPlan::DirectionalNeighbour { mode })
             .ok_or(UNSUPPORTED_D157_POSITION),
@@ -903,36 +909,6 @@ mod tests {
                 }),
             },
             Case {
-                label: "vertical cardinal top-left fallback",
-                bit_depth: BitDepth::Eight,
-                row4: 0,
-                col4: 0,
-                width4: 16,
-                height4: 16,
-                frame_cols4: 32,
-                dc: false,
-                nondc: None,
-                directional: Some(SupportedDirectionalLumaMode::Vertical),
-                expected: Expected::Plan(IntraLumaPlan::CardinalNeighbour {
-                    direction: IntraCardinalDirection::Vertical,
-                }),
-            },
-            Case {
-                label: "horizontal cardinal top-left fallback",
-                bit_depth: BitDepth::Eight,
-                row4: 0,
-                col4: 0,
-                width4: 16,
-                height4: 16,
-                frame_cols4: 32,
-                dc: false,
-                nondc: None,
-                directional: Some(SupportedDirectionalLumaMode::Horizontal),
-                expected: Expected::Plan(IntraLumaPlan::CardinalNeighbour {
-                    direction: IntraCardinalDirection::Horizontal,
-                }),
-            },
-            Case {
                 label: "vertical cardinal",
                 bit_depth: BitDepth::Eight,
                 row4: 16,
@@ -1250,6 +1226,32 @@ mod tests {
     fn rejects_unsupported_luma_prediction_classes() {
         let cases = [
             Case {
+                label: "vertical cardinal no-neighbour",
+                bit_depth: BitDepth::Eight,
+                row4: 0,
+                col4: 0,
+                width4: 16,
+                height4: 16,
+                frame_cols4: 16,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::Vertical),
+                expected: Expected::Error("general_intra_cardinal_vertical_unverified"),
+            },
+            Case {
+                label: "horizontal cardinal no-neighbour",
+                bit_depth: BitDepth::Eight,
+                row4: 0,
+                col4: 0,
+                width4: 16,
+                height4: 16,
+                frame_cols4: 16,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::Horizontal),
+                expected: Expected::Error("general_intra_cardinal_horizontal_unverified"),
+            },
+            Case {
                 label: "4x4 vertical cardinal",
                 bit_depth: BitDepth::Eight,
                 row4: 1,
@@ -1292,6 +1294,54 @@ mod tests {
 
         for case in cases {
             assert_case(case);
+        }
+    }
+
+    #[test]
+    fn plans_verified_cardinal_no_neighbour_luma_with_explicit_admission() {
+        let case = Case {
+            label: "explicit cardinal no-neighbour",
+            bit_depth: BitDepth::Eight,
+            row4: 0,
+            col4: 0,
+            width4: 16,
+            height4: 16,
+            frame_cols4: 16,
+            dc: false,
+            nondc: None,
+            directional: None,
+            expected: Expected::Error("unused"),
+        };
+
+        for (y_mode, direction) in [
+            (
+                IntraYMode::V_PRED_FOR_TEST,
+                IntraCardinalDirection::Vertical,
+            ),
+            (
+                IntraYMode::H_PRED_FOR_TEST,
+                IntraCardinalDirection::Horizontal,
+            ),
+        ] {
+            let modes = GeneralIntraBlockModes::luma_only(
+                crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
+                    y_mode,
+                    angle_delta_y: 0,
+                    intra_joint_mode: 0,
+                    mrl_index: 0,
+                    mrl_sec_index: None,
+                    fsc_mode: 0,
+                    uses_mrls: 0,
+                    use_dpcm_y: 0,
+                    dpcm_mode_y: 0,
+                },
+            );
+
+            assert!(plan_luma_prediction(&modes, ctx(case)).is_err());
+            assert_eq!(
+                plan_luma_prediction_ext(&modes, ctx(case), true).unwrap(),
+                IntraLumaPlan::CardinalNeighbour { direction }
+            );
         }
     }
 
