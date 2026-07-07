@@ -72,15 +72,41 @@ const V_ADST: usize = 12;
 const H_ADST: usize = 13;
 const V_FLIPADST: usize = 14;
 const H_FLIPADST: usize = 15;
+const ZERO_QUANTIZER_DELTAS: QuantizerDeltas = QuantizerDeltas {
+    y_dc: 0,
+    u_dc: 0,
+    v_dc: 0,
+    u_ac: 0,
+    v_ac: 0,
+};
 /// AV2 § 3 `NUM_CUSTOM_QMS`: the number of built-in quantizer-matrix levels.
 const NUM_CUSTOM_QMS: usize = 15;
 thread_local! {
+    /// Active frame's § 7.14.2 per-plane quantizer deltas, installed by
+    /// [`FrameQuantizerDeltasScope`] before the general-intra block walk.
+    static FRAME_QUANTIZER_DELTAS: core::cell::Cell<QuantizerDeltas> =
+        const { core::cell::Cell::new(ZERO_QUANTIZER_DELTAS) };
     /// Active frame's § 7.14.4 built-in quantization-matrix levels (installed by
     /// [`FrameQmScope`]). General-intra reconstruction is single-threaded per frame,
     /// so a thread-local frame context is sound.
     static FRAME_QM: core::cell::Cell<Option<QmFrameLevels>> = const { core::cell::Cell::new(None) };
     /// Active block's segment id for § 7.14.4 `SegQMLevel[plane][segment_id]`.
     static FRAME_QM_SEGMENT_ID: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// RAII scope installing the frame's resolved § 7.14.2 quantizer deltas.
+pub(crate) struct FrameQuantizerDeltasScope(QuantizerDeltas);
+
+impl FrameQuantizerDeltasScope {
+    pub(crate) fn install(deltas: QuantizerDeltas) -> Self {
+        Self(FRAME_QUANTIZER_DELTAS.with(|cell| cell.replace(deltas)))
+    }
+}
+
+impl Drop for FrameQuantizerDeltasScope {
+    fn drop(&mut self) {
+        FRAME_QUANTIZER_DELTAS.with(|cell| cell.set(self.0));
+    }
 }
 
 /// RAII scope installing the frame's built-in quantization-matrix levels, restored
@@ -116,6 +142,10 @@ impl Drop for FrameQmSegmentScope {
 
 fn current_segment_id() -> usize {
     FRAME_QM_SEGMENT_ID.with(core::cell::Cell::get)
+}
+
+fn current_quantizer_deltas() -> QuantizerDeltas {
+    FRAME_QUANTIZER_DELTAS.with(core::cell::Cell::get)
 }
 
 /// § 7.14.4 built-in quantization-matrix selection for one transform block from the
@@ -2241,13 +2271,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
             actual: prediction.len(),
         });
     }
-    let deltas = QuantizerDeltas {
-        y_dc: 0,
-        u_dc: 0,
-        v_dc: 0,
-        u_ac: 0,
-        v_ac: 0,
-    };
+    let deltas = current_quantizer_deltas();
     let pels = (orig_w * orig_h) as u32;
     let tcq_two_d = use_tcq
         && CoeffTransformClass::from_plane_tx_type(plane_tx_type) == CoeffTransformClass::TwoD;

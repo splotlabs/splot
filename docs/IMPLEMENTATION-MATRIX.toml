@@ -9418,7 +9418,7 @@ change_id = "recon-dequant-quantizer-index-resolution"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Extends the §7.14.2 lookup core (RECON-DEQUANT-QUANTIZER-LOOKUP) with quantizer-index resolution and per-plane quantizer composition. `quantizer_index` implements `get_qindex( ignoreDeltaQ, segmentId )`: when the alternative-quantizer segment feature is active it returns Clip3(0, MaxQ, base + segment_alt_q_data) where base is CurrentQIndex when delta_q applies (not ignore_delta_q and delta_q_present) and base_q_idx otherwise; when inactive it returns CurrentQIndex when delta_q applies and base_q_idx otherwise (unclamped, matching the spec, since the caller maintains those in range). The `QuantizerDeltas` carrier holds the caller-resolved per-plane DC and AC delta sums (y_dc, u_dc, v_dc, u_ac, v_ac; luma AC is 0 per spec), and `dc_quantizer` and `ac_quantizer` implement `get_dc_quant( plane )` and `get_ac_quant( plane )` by selecting the plane delta and applying the lookup `quantizer_value`. Segmentation and delta_q facts (seg_feature_active_idx, the FeatureData array, the CurrentQIndex update) are resolved by the caller; recon reads no frame, segment, or tile state. All functions are total and panic-free via i64 clamp intermediates. Completeness is proven by unit vectors for the three get_qindex branches, the ignore-delta-q override, both Clip3 bounds at the 8-bit and 10-bit MaxQ, input-extreme panic-freedom, per-plane DC and AC selection (including the luma AC-0 rule), and end-to-end composition reaching the qindex-0 special case. This row does not implement the §7.14.4 dequantization process, quantizer-matrix weighting, the §7.14.3 reconstruct process, inverse transforms, residual addition, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler use inside `splot-recon`."
+notes = "Extends the §7.14.2 lookup core (RECON-DEQUANT-QUANTIZER-LOOKUP) with quantizer-index resolution and per-plane quantizer composition. `quantizer_index` implements `get_qindex( ignoreDeltaQ, segmentId )`: when the alternative-quantizer segment feature is active it returns Clip3(0, MaxQ, base + segment_alt_q_data) where base is CurrentQIndex when delta_q applies (not ignore_delta_q and delta_q_present) and base_q_idx otherwise; when inactive it returns CurrentQIndex when delta_q applies and base_q_idx otherwise (unclamped, matching the spec, since the caller maintains those in range). The `QuantizerDeltas` carrier holds the caller-resolved per-plane DC and AC delta sums (y_dc, u_dc, v_dc, u_ac, v_ac; luma AC is 0 per spec), and `dc_quantizer` and `ac_quantizer` implement `get_dc_quant( plane )` and `get_ac_quant( plane )` by selecting the plane delta and applying the lookup `quantizer_value`. Segmentation and delta_q facts (seg_feature_active_idx, the FeatureData array, the CurrentQIndex update) are resolved by the caller; recon reads no frame, segment, or tile state. All functions are total and panic-free via i64 clamp intermediates. Runtime decode now threads nonzero effective quantizer deltas through the general-intra residual path: `effective_quantizer_deltas` sums the parsed frame `DeltaQ*` values with the §5.4.8 sequence `Base*DeltaQ` values, `decode_intra_frame` installs the resolved `QuantizerDeltas` for the frame walk, and the residual reconstruction path feeds them into §7.14.4 dequant instead of forcing zeros. The committed `syn-seqdeltaq-intra-128x64.ivf` fixture decodes byte-exact to AVM raw SHA-256 3febac78b0b0e4c27e1a080073d7f4ecf51b5a6d689f495169354834d4659c11, closing the former `general_intra_nonzero_quantizer_delta_unimplemented` gate for the general-intra subset. Inter residual paths and inter-frame intra leaves still reject nonzero effective quantizer deltas until separately oracle-proven. This row does not implement live AVM/dav2d invocation in CI, reference refresh, or scheduler use inside `splot-recon`."
 
 [feature.status]
 mapped = "done"
@@ -9429,7 +9429,7 @@ write = "not-applicable"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "partial"
 perf = "not-applicable"
 
 [feature.proof]
@@ -9442,9 +9442,12 @@ tests = [
     "crates/splot-recon/src/dequant.rs::tests::dc_quantizer_selects_plane_delta",
     "crates/splot-recon/src/dequant.rs::tests::ac_quantizer_uses_zero_for_luma_and_delta_for_chroma",
     "crates/splot-recon/src/dequant.rs::tests::quantizer_composition_reaches_zero_index_special_case",
+    "crates/splot-decode/src/pipeline/general_intra_tests.rs::seqdeltaq_intra_frame_decodes_to_oracle",
 ]
 commands = [
     "cargo test -p splot-recon dequant --locked",
+    "cargo test -p splot-decode seqdeltaq_intra_frame_decodes_to_oracle --locked",
+    "cargo test -p splot-cli --test decoder_oracle --locked",
     "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
     "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p splot-recon --no-deps --locked",
     "cargo xtask check-source-lines",
@@ -9454,6 +9457,11 @@ commands = [
     "cargo xtask check-feature-status",
 ]
 fixtures = [
+    "tests/conformance/vectors/valid/syn-seqdeltaq-intra-128x64.ivf",
+    "tests/conformance/decoder-oracle.toml",
+    "crates/splot-decode/src/prediction/inter.rs",
+    "crates/splot-decode/src/pipeline/frame_engine/intra.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
     "crates/splot-recon/src/dequant.rs",
     "crates/splot-recon/src/lib.rs",
 ]

@@ -456,7 +456,15 @@ name = "Per-block delta-Q"
 category = "quant"
 fixtureable = true
 spec_sections = ["5.18.7.8", "5.20.5.11", "6.17.7.4"]
-notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+notes = "Covered by committed per-superblock delta-Q fixtures; the sequence-level base-delta fixture is tagged separately as quant.sequence_base_delta_q."
+
+[[capability]]
+id = "quant.sequence_base_delta_q"
+name = "Sequence-level base quantizer deltas"
+category = "quant"
+fixtureable = true
+spec_sections = ["5.4.8", "7.14.2"]
+notes = "Covered by syn-seqdeltaq-intra-128x64, a controlled sequence-header rewrite whose § 5.4.8 base_*_delta_q fields produce nonzero effective § 7.14.2 per-plane quantizer deltas while retaining the original AVM-coded tile payload."
 
 [[capability]]
 id = "quant.qm"

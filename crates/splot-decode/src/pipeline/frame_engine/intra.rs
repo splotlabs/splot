@@ -18,14 +18,14 @@ use splot_recon::{
     BitDepth, DecodedFrame, PixelFormat, QmFrameLevels, ReconSample, ReferenceFrameStore,
 };
 
-use crate::bitstream::tile_payload::{FrameCdfSubset, FrameQmScope};
+use crate::bitstream::tile_payload::{FrameCdfSubset, FrameQmScope, FrameQuantizerDeltasScope};
 use crate::pipeline::general_intra::general_intra_unsupported;
 use crate::pipeline::reconstruct::new_general_intra_workspace;
 use crate::pipeline::{
     deblock_quant_deltas, derive_tile_plan, ensure_runtime_limits, unsupported_at,
 };
 use crate::prediction::inter::{
-    InterReferenceState, decode_inter_blocks, effective_quantizer_deltas_are_zero,
+    InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
 };
 use crate::support::capability::missing_capability_message;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
@@ -69,14 +69,20 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     })?;
     let frame_width = frame_size.width as usize;
     let frame_height = frame_size.height as usize;
-    let qindex = core
-        .quantization_params
-        .map(|quant| quant.base_q_idx)
-        .ok_or_else(|| {
+    let quantization = core.quantization_params.ok_or_else(|| {
+        unsupported_at(
+            "frame_engine_intra_missing_base_q",
+            offset,
+            "intra frame decode requires a parsed base_q_idx",
+        )
+    })?;
+    let qindex = quantization.base_q_idx;
+    let quantizer_deltas =
+        effective_quantizer_deltas(sequence, &quantization).ok_or_else(|| {
             unsupported_at(
-                "frame_engine_intra_missing_base_q",
+                "frame_engine_intra_missing_sequence_quant",
                 offset,
-                "intra frame decode requires a parsed base_q_idx",
+                "intra frame decode requires parsed sequence quantizer offsets",
             )
         })?;
     let luma_use_tcq = core
@@ -93,18 +99,6 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
             Some(offset),
             missing_capability_message!("filters.gdf", per_block = "enabled"),
             "7.20.5",
-        ));
-    }
-    if core
-        .quantization_params
-        .as_ref()
-        .is_some_and(|quantization| !effective_quantizer_deltas_are_zero(sequence, quantization))
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_nonzero_quantizer_delta_unimplemented",
-            Some(offset),
-            missing_capability_message!("intra.residual.nonzero_quantizer_delta"),
-            "7.14.2",
         ));
     }
     let initial_cdfs = FrameCdfSubset::default_for_base_q(qindex).map_err(|_| {
@@ -177,6 +171,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         ref_motion_fields: Vec::new(),
     };
 
+    let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let _qm_scope = FrameQmScope::install(build_frame_qm_levels(core));
 
     let (frame_cdfs, filter_inputs) = decode_inter_blocks::<T>(
@@ -268,7 +263,13 @@ mod tests {
         unsupported.reason()
     }
 
-    fn decode_intra_fixture_with_core(mutate: impl FnOnce(&mut FrameHeaderCore)) -> DecodeError {
+    fn decode_intra_fixture_with_core(
+        mutate: impl FnOnce(&mut FrameHeaderCore),
+    ) -> crate::Result<(
+        DecodedFrame<u8>,
+        FrameCdfSubset,
+        Option<crate::filters::ccso::CcsoUnitGrid>,
+    )> {
         let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
             .expect("context");
         let options = DecodeOptions::default();
@@ -294,21 +295,18 @@ mod tests {
             .expect("key");
         let mut core = parse_frame_core(key, &sequence).expect("core");
         mutate(&mut core);
-        context
-            .pool()
-            .install(|| {
-                decode_intra_frame::<u8>(
-                    &plan,
-                    &candidate,
-                    Q80_FIXTURE,
-                    key,
-                    &core,
-                    &sequence,
-                    &options,
-                    BitDepth::Eight,
-                )
-            })
-            .expect_err("mutated fixture must fail closed")
+        context.pool().install(|| {
+            decode_intra_frame::<u8>(
+                &plan,
+                &candidate,
+                Q80_FIXTURE,
+                key,
+                &core,
+                &sequence,
+                &options,
+                BitDepth::Eight,
+            )
+        })
     }
 
     #[test]
@@ -317,7 +315,8 @@ mod tests {
             let gdf = core.gdf_params.as_mut().expect("gdf params");
             gdf.gdf_frame_enable = true;
             gdf.gdf_per_block = Some(true);
-        });
+        })
+        .expect_err("mutated fixture must fail closed");
         assert_eq!(
             unsupported_reason(error),
             "general_intra_gdf_per_block_unimplemented"
@@ -325,16 +324,13 @@ mod tests {
     }
 
     #[test]
-    fn intra_gate_rejects_nonzero_effective_quantizer_deltas() {
-        let error = decode_intra_fixture_with_core(|core| {
+    fn intra_frame_allows_nonzero_effective_quantizer_deltas() {
+        decode_intra_fixture_with_core(|core| {
             core.quantization_params
                 .as_mut()
                 .expect("quantization params")
                 .delta_q_y_dc = 1;
-        });
-        assert_eq!(
-            unsupported_reason(error),
-            "general_intra_nonzero_quantizer_delta_unimplemented"
-        );
+        })
+        .expect("nonzero effective quantizer deltas are installed for dequant");
     }
 }
