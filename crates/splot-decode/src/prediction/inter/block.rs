@@ -983,6 +983,7 @@ fn decode_block<T: ReconSample>(
             fsc_modes,
             palette_state,
             is_cfl_ctx,
+            segment_id,
             block_decoded,
             workspace,
             coeff_ctx,

@@ -116,6 +116,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     fsc_modes: &crate::bitstream::tile_payload::TileFscModeState,
     palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
     is_cfl_ctx: IsCflContext,
+    segment_id: u8,
     block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
     workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
@@ -130,6 +131,8 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<GeneralIntraLeafMode> {
+    let _qm_segment_scope =
+        crate::bitstream::tile_payload::FrameQmSegmentScope::install(usize::from(segment_id));
     let geometry_error = || {
         general_intra_at!(
             "general_intra_block_geometry",

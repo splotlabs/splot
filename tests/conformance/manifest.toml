@@ -90,6 +90,17 @@ description = "AVM --aq-mode intra key frame (IVF, 64x64) with frame segmentatio
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-qmseg-intra-64x64.ivf"
+description = """
+AVM --enable-qm --aq-mode intra key frame (IVF, 64x64) with segmentation \
+enabled through last_active_seg_id == 7 and using_qmatrix == 1 at built-in QM \
+level 7. The general-intra decoder decodes it byte-exact via § 5.20.5.7 \
+segment_id decode, § 7.14.2 per-segment SegQMLevel for <=8x8 transforms, and \
+§ 7.14.4 quantizer-matrix weighting; standalone, the validator emits the \
+§7.3.8.9 qm-level-unavailable diagnostic."""
+expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
+
+[[vector]]
 path = "vectors/valid/syn-deltaq-intra-128x64.ivf"
 description = "Two-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) with delta_q_present and per-superblock delta-Q over two flat DC regions (left luma 80, right 180); validates clean, and the general-intra decoder reproduces avmdec's raw output byte-for-byte."
 expect = "clean"

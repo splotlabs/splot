@@ -1018,7 +1018,12 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
 fn resolve_block_qm_selects_level_plane_and_offset() {
     let _scope = FrameQmScope::install(Some(QmFrameLevels {
         levels_gt8: [8, 3, 4],
-        levels_le8: [5, 2, 6],
+        levels_le8: {
+            let mut levels = [[0u8; 3]; 16];
+            levels[0] = [5, 2, 6];
+            levels[3] = [9, 10, 11];
+            levels
+        },
     }));
     let luma = resolve_block_qm(PlaneId::Y, DCT_DCT, 32, 32, 5, 5).unwrap();
     assert_eq!(luma.seg_level, 8);
@@ -1030,6 +1035,9 @@ fn resolve_block_qm_selects_level_plane_and_offset() {
     let chroma_v = resolve_block_qm(PlaneId::V, DCT_DCT, 8, 8, 3, 3).unwrap();
     assert_eq!(chroma_v.seg_level, 6);
     assert!(chroma_v.plane_is_chroma);
+    let _segment = FrameQmSegmentScope::install(3);
+    let luma_segment = resolve_block_qm(PlaneId::Y, DCT_DCT, 8, 8, 3, 3).unwrap();
+    assert_eq!(luma_segment.seg_level, 9);
 }
 
 /// `resolve_block_qm` is the flat path (`None`) with no installed scope, for
@@ -1039,12 +1047,12 @@ fn resolve_block_qm_none_for_flat_paths() {
     assert!(resolve_block_qm(PlaneId::Y, DCT_DCT, 32, 32, 5, 5).is_none());
     let _scope = FrameQmScope::install(Some(QmFrameLevels {
         levels_gt8: [8, 8, 8],
-        levels_le8: [8, 8, 8],
+        levels_le8: [[8, 8, 8]; 16],
     }));
     assert!(resolve_block_qm(PlaneId::Y, IDTX, 32, 32, 5, 5).is_none());
     let _flat = FrameQmScope::install(Some(QmFrameLevels {
         levels_gt8: [NUM_CUSTOM_QMS as u8, 0, 0],
-        levels_le8: [0, 0, 0],
+        levels_le8: [[0, 0, 0]; 16],
     }));
     assert!(resolve_block_qm(PlaneId::Y, DCT_DCT, 32, 32, 5, 5).is_none());
 }

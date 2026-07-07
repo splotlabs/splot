@@ -45,6 +45,9 @@ const Q80_10BIT_CHROMA_V: u16 = 520;
 const Q180_COS_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf");
 
+const QMSEG_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-qmseg-intra-64x64.ivf");
+
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
@@ -292,6 +295,18 @@ fn q180_cos_intra_frame_decodes_multi_coefficient_luma() {
     assert_hash(
         &frame,
         "8a6751d4517073bad0bbe71f4b5537df8e8b0bfee85fcd6af1ac2d5878dd59e8",
+    );
+}
+
+#[test]
+fn qmseg_intra_frame_decodes_to_oracle() {
+    let frame = decode_eight(QMSEG_FIXTURE);
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_chroma_size(&frame, 32, 32);
+    assert_distinct_gt(frame.y().samples(), 16, "QM+seg luma reconstruction");
+    assert_hash(
+        &frame,
+        "e6d6dc0726e808ddbc5f4410a3d0d0cc351b17803edd76f012157d912e47396e",
     );
 }
 
