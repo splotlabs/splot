@@ -66,7 +66,12 @@ pub(crate) fn plan_luma_prediction(
     if let Some(mode) = modes.supported_nondc_luma() {
         return plan_nondc_luma(mode, block_ctx);
     }
-    plan_directional_luma_from_mode(modes.y_mode, modes.angle_delta_y, block_ctx)
+    plan_directional_luma_from_mode(
+        modes.y_mode,
+        modes.angle_delta_y,
+        block_ctx,
+        modes.uses_dpcm_y(),
+    )
 }
 
 impl IntraLumaPlan {
@@ -360,19 +365,20 @@ fn plan_directional_luma(
     mode: SupportedDirectionalLumaMode,
     block_ctx: BlockCtx,
 ) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
-    plan_directional_luma_angle(mode, directional_mode_p_angle(mode), block_ctx)
+    plan_directional_luma_angle(mode, directional_mode_p_angle(mode), block_ctx, false)
 }
 
 fn plan_directional_luma_from_mode(
     y_mode: IntraYMode,
     angle_delta_y: i8,
     block_ctx: BlockCtx,
+    allow_dpcm_cardinal: bool,
 ) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
     let mode = y_mode
         .supported_directional()
         .ok_or(UNSUPPORTED_LUMA_MODE)?;
     let p_angle = directional_p_angle(y_mode, angle_delta_y).ok_or(UNSUPPORTED_LUMA_MODE)?;
-    plan_directional_luma_angle(mode, p_angle, block_ctx)
+    plan_directional_luma_angle(mode, p_angle, block_ctx, allow_dpcm_cardinal)
 }
 
 fn directional_p_angle(y_mode: IntraYMode, angle_delta_y: i8) -> Option<u16> {
@@ -398,6 +404,7 @@ fn plan_directional_luma_angle(
     mode: SupportedDirectionalLumaMode,
     p_angle: u16,
     block_ctx: BlockCtx,
+    allow_dpcm_cardinal: bool,
 ) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
     let neighbours = block_ctx.neighbours(PlaneId::Y);
     let is_full_sb = block_ctx.block().width4() == FULL_SB_N4_LUMA;
@@ -450,13 +457,15 @@ fn plan_directional_luma_angle(
     }
     match mode {
         SupportedDirectionalLumaMode::Vertical => (full_sb_with_edge
-            || supports_small_cardinal_edge)
+            || supports_small_cardinal_edge
+            || (allow_dpcm_cardinal && is_full_sb))
             .then_some(IntraLumaPlan::CardinalNeighbour {
                 direction: IntraCardinalDirection::Vertical,
             })
             .ok_or(UNSUPPORTED_CARDINAL_VERTICAL),
         SupportedDirectionalLumaMode::Horizontal => (full_sb_with_edge
-            || supports_small_cardinal_edge)
+            || supports_small_cardinal_edge
+            || (allow_dpcm_cardinal && is_full_sb))
             .then_some(IntraLumaPlan::CardinalNeighbour {
                 direction: IntraCardinalDirection::Horizontal,
             })
@@ -1100,7 +1109,7 @@ mod tests {
         };
 
         assert_eq!(
-            plan_directional_luma_angle(SupportedDirectionalLumaMode::D203, 209, ctx(case)),
+            plan_directional_luma_angle(SupportedDirectionalLumaMode::D203, 209, ctx(case), false),
             Ok(IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 209 })
         );
     }
@@ -1122,7 +1131,12 @@ mod tests {
         };
 
         assert_eq!(
-            plan_directional_luma_angle(SupportedDirectionalLumaMode::Horizontal, 189, ctx(case)),
+            plan_directional_luma_angle(
+                SupportedDirectionalLumaMode::Horizontal,
+                189,
+                ctx(case),
+                false,
+            ),
             Ok(IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 189 })
         );
     }
@@ -1144,7 +1158,12 @@ mod tests {
         };
 
         assert_eq!(
-            plan_directional_luma_angle(SupportedDirectionalLumaMode::Vertical, 84, ctx(case)),
+            plan_directional_luma_angle(
+                SupportedDirectionalLumaMode::Vertical,
+                84,
+                ctx(case),
+                false
+            ),
             Ok(IntraLumaPlan::DirectionalOneSidedAbove { p_angle: 84 })
         );
     }
@@ -1166,7 +1185,7 @@ mod tests {
         };
 
         assert_eq!(
-            plan_directional_luma_angle(SupportedDirectionalLumaMode::D45, 36, ctx(case)),
+            plan_directional_luma_angle(SupportedDirectionalLumaMode::D45, 36, ctx(case), false),
             Ok(IntraLumaPlan::DirectionalOneSidedAbove { p_angle: 36 })
         );
     }
@@ -1188,7 +1207,7 @@ mod tests {
         };
 
         assert_eq!(
-            plan_directional_luma_angle(SupportedDirectionalLumaMode::D113, 119, ctx(case)),
+            plan_directional_luma_angle(SupportedDirectionalLumaMode::D113, 119, ctx(case), false),
             Ok(IntraLumaPlan::DirectionalMiddle { p_angle: 119 })
         );
     }
@@ -1197,7 +1216,7 @@ mod tests {
     fn rejects_unsupported_luma_prediction_classes() {
         let cases = [
             Case {
-                label: "vertical first row",
+                label: "vertical cardinal no-neighbour",
                 bit_depth: BitDepth::Eight,
                 row4: 0,
                 col4: 0,
@@ -1208,6 +1227,45 @@ mod tests {
                 nondc: None,
                 directional: Some(SupportedDirectionalLumaMode::Vertical),
                 expected: Expected::Error("general_intra_cardinal_vertical_unverified"),
+            },
+            Case {
+                label: "horizontal cardinal no-neighbour",
+                bit_depth: BitDepth::Eight,
+                row4: 0,
+                col4: 0,
+                width4: 16,
+                height4: 16,
+                frame_cols4: 16,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::Horizontal),
+                expected: Expected::Error("general_intra_cardinal_horizontal_unverified"),
+            },
+            Case {
+                label: "4x4 vertical cardinal",
+                bit_depth: BitDepth::Eight,
+                row4: 1,
+                col4: 1,
+                width4: 1,
+                height4: 1,
+                frame_cols4: 32,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::Vertical),
+                expected: Expected::Error("general_intra_cardinal_vertical_unverified"),
+            },
+            Case {
+                label: "4x4 horizontal cardinal",
+                bit_depth: BitDepth::Eight,
+                row4: 1,
+                col4: 1,
+                width4: 1,
+                height4: 1,
+                frame_cols4: 32,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::Horizontal),
+                expected: Expected::Error("general_intra_cardinal_horizontal_unverified"),
             },
             Case {
                 label: "d45 right edge",
@@ -1227,6 +1285,45 @@ mod tests {
         for case in cases {
             assert_case(case);
         }
+    }
+
+    #[test]
+    fn plans_dpcm_cardinal_no_neighbour_luma() {
+        let modes = GeneralIntraBlockModes::luma_only(
+            crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
+                y_mode: IntraYMode::dpcm_horizontal(),
+                angle_delta_y: 0,
+                intra_joint_mode: 0,
+                mrl_index: 0,
+                mrl_sec_index: None,
+                fsc_mode: 0,
+                uses_mrls: 0,
+                use_dpcm_y: 1,
+                dpcm_mode_y: 1,
+            },
+        );
+        let case = Case {
+            label: "horizontal dpcm cardinal no-neighbour",
+            bit_depth: BitDepth::Eight,
+            row4: 0,
+            col4: 0,
+            width4: 16,
+            height4: 16,
+            frame_cols4: 16,
+            dc: false,
+            nondc: None,
+            directional: Some(SupportedDirectionalLumaMode::Horizontal),
+            expected: Expected::Plan(IntraLumaPlan::CardinalNeighbour {
+                direction: IntraCardinalDirection::Horizontal,
+            }),
+        };
+
+        assert_eq!(
+            plan_luma_prediction(&modes, ctx(case)).unwrap(),
+            IntraLumaPlan::CardinalNeighbour {
+                direction: IntraCardinalDirection::Horizontal,
+            }
+        );
     }
 
     fn assert_case(case: Case) {

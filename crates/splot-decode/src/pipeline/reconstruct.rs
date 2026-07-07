@@ -2960,12 +2960,10 @@ fn build_two_sided_middle_idif_edge<T: ReconSample>(
     Ok(edge)
 }
 
-/// Reconstructs one neighbour-having CARDINAL directional luma block — `V_PRED`
-/// (§ 7.13.2.8 step 4, pAngle 90) or `H_PRED` (step 5, pAngle 180) — over the
-/// § 7.13.2.1 edge read from the partially-built frame's **real reconstructed
-/// neighbour**, adds the decoded residual (or writes the bare prediction for an
-/// `all_zero` block), and stores the result so later blocks read it as a
-/// neighbour.
+/// Reconstructs one CARDINAL directional luma block — `V_PRED` (§ 7.13.2.8 step
+/// 4, pAngle 90) or `H_PRED` (step 5, pAngle 180) — over the §7.13.2.1 edge from
+/// a real reconstructed neighbour when present, or the no-neighbour fallback
+/// edge at the tile origin.
 ///
 /// `log2_width` and `log2_height` are the block's §7.15.4 transform dimensions
 /// and may differ (e.g. a 64x32 `TX_64X32` luma block has `log2_width == 6`,
@@ -2976,18 +2974,14 @@ fn build_two_sided_middle_idif_edge<T: ReconSample>(
 /// §7.15.4 / §7.14.3 rectangular residual (with the §7.15.4.1 √2 rescale when the
 /// log2 ratio is odd). A square block is the `log2_width == log2_height` case.
 ///
-/// The cardinal cases are a degenerate sample copy with NO IDIF, NO corner, NO
-/// edge synthesis and NO `useIBP` (which § 7.13.2.7 gates on
-/// `pAngle < 90 || pAngle > 180`):
+/// The cardinal cases are a degenerate sample copy with NO IDIF, NO corner and
+/// NO `useIBP` (which § 7.13.2.7 gates on `pAngle < 90 || pAngle > 180`):
 /// - `V_PRED` (pAngle 90): `pred[i][j] = AboveRow[j]` — every one of the H rows is
-///   a copy of the real reconstructed W-wide above row
-///   (`CurrFrame[plane][y-1][x..x+w)`). It reads ONLY the above row, so it needs
-///   `haveAbove == 1` (a real above neighbour; target a superblock row > 0).
+///   a copy of the W-wide above row, or a synthesized above row when there is no
+///   real above edge.
 /// - `H_PRED` (pAngle 180): `pred[i][j] = LeftCol[i]` — every one of the W columns
-///   is a copy of the real reconstructed H-tall left column
-///   (`CurrFrame[plane][y..y+h)][x-1]`). It reads ONLY the left column, so it
-///   needs `haveLeft == 1` (a real left neighbour; target a non-first superblock
-///   column).
+///   is a copy of the H-tall left column, or a synthesized left column when
+///   there is no real left edge.
 ///
 /// Unlike the § 7.13.2.8 "middle" angles (D135), the cardinal copy is bit-exact
 /// over a NON-flat reconstructed edge without any interpolation, so it does not
@@ -3024,24 +3018,24 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
         IntraCardinalDirection::Vertical => {
             if let Some(above) = above_samples {
                 IntraDirectionalAngleEdges::above(above)
-            } else {
-                let left = left_samples.ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
-                let fill = *left
-                    .first()
-                    .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
+            } else if let Some(left) = left_samples {
+                let fill = *left.first().unwrap_or(&noneighbour_above::<T>(bit_depth));
                 synthesized_edge = vec![fill; width];
+                IntraDirectionalAngleEdges::above(&synthesized_edge)
+            } else {
+                synthesized_edge = vec![noneighbour_above::<T>(bit_depth); width];
                 IntraDirectionalAngleEdges::above(&synthesized_edge)
             }
         }
         IntraCardinalDirection::Horizontal => {
             if let Some(left) = left_samples {
                 IntraDirectionalAngleEdges::left(left)
-            } else {
-                let above = above_samples.ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
-                let fill = *above
-                    .first()
-                    .ok_or(GeneralIntraResidualError::MissingCardinalEdge)?;
+            } else if let Some(above) = above_samples {
+                let fill = *above.first().unwrap_or(&noneighbour_left::<T>(bit_depth));
                 synthesized_edge = vec![fill; height];
+                IntraDirectionalAngleEdges::left(&synthesized_edge)
+            } else {
+                synthesized_edge = vec![noneighbour_left::<T>(bit_depth); height];
                 IntraDirectionalAngleEdges::left(&synthesized_edge)
             }
         }

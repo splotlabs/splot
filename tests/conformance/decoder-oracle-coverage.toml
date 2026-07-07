@@ -245,6 +245,13 @@ fixtureable = true
 spec_sections = ["7.13.2.7", "7.13.2.8", "9.2"]
 
 [[capability]]
+id = "intra.dpcm_y"
+name = "Lossless luma DPCM intra prediction syntax"
+category = "intra"
+fixtureable = true
+spec_sections = ["5.20.5.5", "7.13.2.7", "7.15.4"]
+
+[[capability]]
 id = "intra.mhccp"
 name = "MHCCP multi-hypothesis cross-component prediction"
 category = "intra"

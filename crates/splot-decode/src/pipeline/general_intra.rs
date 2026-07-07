@@ -362,14 +362,6 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             "7.13.2",
         ));
     }
-    if modes.uses_dpcm_y() {
-        return Err(general_intra_at!(
-            "general_intra_lossless_dpcm_y_unimplemented",
-            tile_offset,
-            missing_capability_message!("intra.luma.dpcm", mode = "active"),
-            "5.20.5.5",
-        ));
-    }
     if modes.uses_dpcm_uv() {
         return Err(general_intra_at!(
             "general_intra_lossless_dpcm_uv_block_unimplemented",
@@ -694,7 +686,7 @@ fn ensure_lossless_verified_prediction_subset(
     if !lossless {
         return Ok(());
     }
-    if !modes.luma_is_dc() {
+    if !modes.luma_is_dc() && !modes.uses_dpcm_y() {
         return Err(general_intra_at!(
             "general_intra_lossless_nondc_luma_unverified",
             tile_offset,
@@ -723,6 +715,7 @@ fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformT
         modes.angle_delta_y,
         modes.mrl_index,
         modes.mrl_sec_index,
+        modes.luma_dpcm_direction(),
     )
 }
 
@@ -1705,12 +1698,6 @@ fn general_intra_residual_error(
             missing_capability_message!("intra.luma.directional.above_edge", neighbour = "corner",),
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
-        GeneralIntraResidualError::MissingCardinalEdge => general_intra_at!(
-            "general_intra_cardinal_missing_edge",
-            offset,
-            missing_capability_message!("intra.luma.cardinal.edge", neighbour = "missing"),
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ),
         GeneralIntraResidualError::CardinalModeInMiddleAnglePath => general_intra_at!(
             "general_intra_cardinal_in_middle_angle_path",
             offset,
@@ -1815,6 +1802,14 @@ mod tests {
     }
 
     fn luma_modes(y_mode: crate::bitstream::tile_payload::IntraYMode) -> GeneralIntraBlockModes {
+        luma_modes_with_dpcm(y_mode, 0, 0)
+    }
+
+    fn luma_modes_with_dpcm(
+        y_mode: crate::bitstream::tile_payload::IntraYMode,
+        use_dpcm_y: u8,
+        dpcm_mode_y: u8,
+    ) -> GeneralIntraBlockModes {
         GeneralIntraBlockModes::luma_only(
             crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
                 y_mode,
@@ -1824,8 +1819,8 @@ mod tests {
                 mrl_sec_index: None,
                 fsc_mode: 0,
                 uses_mrls: 0,
-                use_dpcm_y: 0,
-                dpcm_mode_y: 0,
+                use_dpcm_y,
+                dpcm_mode_y,
             },
         )
     }
@@ -1849,7 +1844,7 @@ mod tests {
     }
 
     #[test]
-    fn lossless_prediction_guard_admits_dc_luma_only_subset() {
+    fn lossless_prediction_guard_admits_dc_luma_and_dpcm() {
         let modes = luma_modes(crate::bitstream::tile_payload::IntraYMode::DC_PRED);
 
         assert!(
@@ -1858,6 +1853,21 @@ mod tests {
                 false,
                 &modes,
                 splot_core::span::ByteOffset::new(0),
+            )
+            .is_ok()
+        );
+
+        let modes = luma_modes_with_dpcm(
+            crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
+            1,
+            0,
+        );
+        assert!(
+            ensure_lossless_verified_prediction_subset(
+                true,
+                false,
+                &modes,
+                splot_core::span::ByteOffset::new(9),
             )
             .is_ok()
         );

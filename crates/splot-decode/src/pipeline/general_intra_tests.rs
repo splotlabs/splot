@@ -58,6 +58,10 @@ const LOSSLESS_NONZERO_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nonzero-intra-64x64.ivf"
 );
 
+const LOSSLESS_DPCM_Y_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-dpcm-y-intra-64x64.ivf"
+);
+
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
@@ -356,6 +360,20 @@ fn lossless_nonzero_intra_frame_decodes_to_oracle() {
         LOSSLESS_NONZERO_FIXTURE,
         96,
         "1af4a4343927b77994b57ce50d3e0b09d57dc698e2ec122d8abcdc1667d70782",
+    );
+}
+
+#[test]
+fn lossless_dpcm_y_intra_frame_decodes_to_oracle() {
+    assert_eq!(LOSSLESS_DPCM_Y_FIXTURE.len(), 846);
+    let frame = decode_eight(LOSSLESS_DPCM_Y_FIXTURE);
+
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_chroma_size(&frame, 32, 32);
+    assert_distinct_gt(frame.y().samples(), 16, "lossless DPCM-Y luma");
+    assert_hash(
+        &frame,
+        "f294ce1a7dbe1d19840f716fc284a0e9c144548fb0699fef2b44e7c0c1f91d90",
     );
 }
 

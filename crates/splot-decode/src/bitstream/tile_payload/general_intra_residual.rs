@@ -12,8 +12,8 @@ use splot_core::tables::conversion::{
     TX_WIDTH, TX_WIDTH_LOG2,
 };
 use splot_recon::{
-    BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, QM_OFFSET, QmDequant,
-    QmFrameLevels, QuantizerDeltas, ReconError, ReconSample, SecondaryInverseTransform,
+    BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId, QM_OFFSET,
+    QmDequant, QmFrameLevels, QuantizerDeltas, ReconError, ReconSample, SecondaryInverseTransform,
     ac_quantizer, dc_quantizer, reconstruct_transform_block_residual_with_secondary, tx_class,
     tx_size_index,
 };
@@ -313,17 +313,13 @@ pub(crate) struct LumaTransformTypeContext {
     angle_delta_y: i8,
     mrl_index: u8,
     mrl_sec_index: Option<u8>,
+    dpcm: Option<DpcmDirection>,
 }
 
 impl LumaTransformTypeContext {
     #[must_use]
     pub(crate) const fn new(y_mode: IntraYMode, angle_delta_y: i8) -> Self {
-        Self {
-            y_mode,
-            angle_delta_y,
-            mrl_index: 0,
-            mrl_sec_index: None,
-        }
+        Self::with_mrl_indices(y_mode, angle_delta_y, 0, None, None)
     }
 
     #[must_use]
@@ -332,12 +328,7 @@ impl LumaTransformTypeContext {
         angle_delta_y: i8,
         mrl_index: u8,
     ) -> Self {
-        Self {
-            y_mode,
-            angle_delta_y,
-            mrl_index,
-            mrl_sec_index: None,
-        }
+        Self::with_mrl_indices(y_mode, angle_delta_y, mrl_index, None, None)
     }
 
     #[must_use]
@@ -346,12 +337,14 @@ impl LumaTransformTypeContext {
         angle_delta_y: i8,
         mrl_index: u8,
         mrl_sec_index: Option<u8>,
+        dpcm: Option<DpcmDirection>,
     ) -> Self {
         Self {
             y_mode,
             angle_delta_y,
             mrl_index,
             mrl_sec_index,
+            dpcm,
         }
     }
 
@@ -529,8 +522,6 @@ pub(crate) enum GeneralIntraResidualError {
         "general intra directional prediction over a real above-neighbour edge is missing its §7.13.2.1 corner sample"
     )]
     UnsupportedDirectionalAboveEdge,
-    #[error("general intra cardinal directional prediction is missing its required neighbour edge")]
-    MissingCardinalEdge,
     #[error(
         "general intra cardinal (V_PRED/H_PRED) mode reached the middle-angle path; it must be dispatched to the cardinal copy reconstruction"
     )]
@@ -1246,6 +1237,10 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         }
     };
     let eob = start.eob_read().eob().eob();
+    let segment_id = current_segment_id();
+    let lossless = frame_facts.lossless_for_segment(segment_id).ok_or(
+        unsupported_transform_tool_residual_error("unsupported_dctonly_residual_segment_id"),
+    )?;
     let metadata = ensure_transform_tool_residual_handoff(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
@@ -1254,16 +1249,13 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             plane: geometry.plane,
             tx_size: geometry.tx_size,
             is_inter,
+            lossless,
             fsc_mode,
             eob,
             luma_transform_type_context,
             active_intra_ist_policy,
             active_chroma_policy,
         },
-    )?;
-    let segment_id = current_segment_id();
-    let lossless = frame_facts.lossless_for_segment(segment_id).ok_or(
-        unsupported_transform_tool_residual_error("unsupported_dctonly_residual_segment_id"),
     )?;
     let base_config = staged_transform_tool_lossless_base_config(
         frame_facts,
@@ -1400,6 +1392,7 @@ struct TransformToolResidualInput {
     plane: usize,
     tx_size: usize,
     is_inter: bool,
+    lossless: bool,
     fsc_mode: bool,
     eob: usize,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
@@ -1416,13 +1409,14 @@ fn ensure_transform_tool_residual_handoff(
     let plane = input.plane;
     let tx_size = input.tx_size;
     let is_inter = input.is_inter;
+    let lossless = input.lossless;
     let eob = input.eob;
     let mut metadata = TransformToolResidualMetadata {
         luma_tx_type: DCT_DCT,
         ..TransformToolResidualMetadata::default()
     };
     // TODO(spec: DECODE-FIRST-INTER-FRAME-FRONTIER): 5.20.7.27 is_cctx_allowed also excludes non-4:2:0 >=32x32 chroma; exact for the admitted 4:2:0 subset.
-    if plane == 1 && frame_facts.enable_cctx() && (is_inter || eob != 1) {
+    if plane == 1 && frame_facts.enable_cctx() && !lossless && (is_inter || eob != 1) {
         let cctx_type = read_chroma_cctx_type(cdfs, symbols, input.active_chroma_policy)?;
         if is_inter && cctx_type != 0 {
             return unsupported_transform_tool_residual(
@@ -1433,6 +1427,7 @@ fn ensure_transform_tool_residual_handoff(
     }
     let tx_set = transform_set(frame_facts, plane, tx_size, is_inter)?;
     let dct_forced = (!is_inter && plane == 0 && eob == 1)
+        || lossless
         || (plane > 0 && frame_facts.enable_chroma_dctonly())
         || tx_set == TX_SET_DCTONLY
         || (!is_inter && plane == 0 && frame_facts.reduced_tx_set() == 2);
@@ -1469,6 +1464,7 @@ fn ensure_transform_tool_residual_handoff(
     }
     if is_inter
         && plane == 0
+        && !lossless
         && frame_facts.enable_inter_ist()
         && eob > 3
         && metadata.luma_tx_type == DCT_DCT
@@ -1490,6 +1486,7 @@ fn ensure_transform_tool_residual_handoff(
     }
     if !is_inter
         && plane == 0
+        && !lossless
         && frame_facts.enable_intra_ist()
         && eob != 1
         && intra_ist_can_read_sec_tx_type(metadata.luma_tx_type)
@@ -2152,6 +2149,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction<T: Reco
         false,
         block.lossless,
         None,
+        None,
         bit_depth,
     )
 }
@@ -2181,6 +2179,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: Re
         use_ddt,
         false,
         None,
+        None,
         bit_depth,
     )
 }
@@ -2208,6 +2207,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt
         use_tcq,
         use_ddt,
         block.lossless,
+        None,
         None,
         bit_depth,
     )
@@ -2238,6 +2238,7 @@ pub(crate) fn reconstruct_general_intra_luma_block_rect_with_prediction_and_ist<
         false,
         block.lossless,
         secondary.as_ref(),
+        luma_context.dpcm,
         bit_depth,
     )
 }
@@ -2255,6 +2256,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     use_ddt: bool,
     lossless: bool,
     secondary: Option<&SecondaryInverseTransform>,
+    dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
     let orig_w = 1usize << log2_width;
@@ -2305,7 +2307,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
         use_ddt,
         lossless,
         bit_depth,
-        None,
+        dpcm,
     )
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
 
@@ -2334,11 +2336,6 @@ const MAX_ADJUSTED_COEFFS: usize = 32 * 32;
 /// Maximum original transform-block sample count (a 64x64 transform).
 const MAX_ORIGINAL_SAMPLES: usize = 64 * 64;
 
-/// Reusable per-thread working buffers for the § 7.14.4 → § 7.15.4 residual
-/// chain; every used slot is fully overwritten by the chain before it is read.
-/// `InverseTransform2dOuter::resolve` bounds `adjusted <= 1024` and
-/// `samples <= 4096`, so the `min`-clamped slices are total and any
-/// inconsistency is rejected by the chain's own buffer-length checks.
 struct ResidualScratch {
     dequant: [i32; MAX_ADJUSTED_COEFFS],
     residual: [i32; MAX_ORIGINAL_SAMPLES],

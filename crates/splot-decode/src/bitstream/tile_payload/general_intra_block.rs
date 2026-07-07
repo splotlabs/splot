@@ -6,6 +6,7 @@
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::SIZE_GROUP;
+use splot_recon::{DpcmDirection, dpcm_direction};
 
 use super::DecodeTileWorkUnit;
 use super::cdf::block_context::{
@@ -431,6 +432,10 @@ impl GeneralIntraBlockModes {
 
     pub(crate) const fn uses_dpcm_y(&self) -> bool {
         self.use_dpcm_y != 0
+    }
+
+    pub(crate) const fn luma_dpcm_direction(&self) -> Option<DpcmDirection> {
+        dpcm_direction(self.use_dpcm_y != 0, self.dpcm_mode_y == 0)
     }
 
     pub(crate) const fn uses_dpcm_uv(&self) -> bool {
