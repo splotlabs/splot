@@ -357,8 +357,6 @@ pub(crate) enum GeneralIntraBlockModeError {
         "general intra mode-info block-size index {block_size_index} has no CfL MH direction size group"
     )]
     InvalidCflMhDirBlockSizeIndex { block_size_index: usize },
-    #[error("general intra mode-info selected unsupported MHCCP chroma prediction")]
-    UnsupportedMhccpMode,
     #[error(
         "general intra mode-info modeIdx {mode_idx} with directional-neighbour ctx {ctx} requires §5.20.5.5 reorder support"
     )]
@@ -585,7 +583,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     block_c: usize,
     block_n4w: usize,
     block_n4h: usize,
-    chroma_block_size_index: usize,
+    _chroma_block_size_index: usize,
     chroma_n4w: usize,
     chroma_n4h: usize,
     bit_depth_bits: u32,
@@ -610,7 +608,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
         chroma_tools,
         GeneralIntraChromaModeContext::shared_or_non_sdp(is_cfl_ctx),
         luma.y_mode,
-        chroma_block_size_index,
+        luma_block_size_index,
         chroma_n4w,
         chroma_n4h,
     )?;
@@ -768,9 +766,6 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
             IS_CFL_REASON,
         )?;
         if is_cfl != 0 {
-            if mhccp_allowed && !cfl_allowed {
-                return Err(GeneralIntraBlockModeError::UnsupportedMhccpMode);
-            }
             let cfl_params = read_cfl_alphas(
                 work_unit,
                 symbols,
@@ -848,12 +843,23 @@ fn read_cfl_alphas(
             TileCdfSelector::CflMhDir { size_group },
             CFL_MH_DIR_REASON,
         )?;
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE") {
+            eprintln!(
+                "general intra cfl mhccp block_size={block_size_index} block_n4=({block_n4w}x{block_n4h}) mhccp_allowed={mhccp_allowed} cfl_mhccp={cfl_mhccp} cfl_index={cfl_index} size_group={size_group} mh_dir={mh_dir}"
+            );
+        }
         return Ok(CflParams {
             index: CflIndex::Multi,
             alpha_u: 0,
             alpha_v: 0,
             mh_dir: Some(mh_dir),
         });
+    }
+
+    if crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_CHROMA_MODE") {
+        eprintln!(
+            "general intra cfl block_size={block_size_index} block_n4=({block_n4w}x{block_n4h}) mhccp_allowed={mhccp_allowed} cfl_mhccp={cfl_mhccp} cfl_index={cfl_index}"
+        );
     }
 
     if cfl_index != CFL_EXPLICIT {
@@ -1197,8 +1203,10 @@ mod tests {
     use crate::DecodeLimits;
 
     const BLOCK_16X16: usize = 6;
+    const BLOCK_32X16: usize = 8;
     const BLOCK_64X64: usize = 12;
     const BLOCK_256X256: usize = 18;
+    const BLOCK_4X16: usize = 19;
     const CLEAR_PARTITION_CONTEXT: usize = 0;
     const PAYLOAD: [u8; 2] = [0x12, 0xFB];
 
@@ -1707,6 +1715,100 @@ mod tests {
         );
         assert_eq!(symbols.symbol_count(), 2);
         assert_eq!(symbols.finish().unwrap().symbol_count, 2);
+    }
+
+    #[test]
+    fn active_mhccp_chroma_mode_is_admitted_when_cfl_is_disabled() {
+        let size_group = cfl_mh_dir_size_group(BLOCK_16X16).unwrap();
+        let payload = encode_symbol_sequence(&[
+            (TileCdfSelector::IsCfl { ctx: 0 }, 1),
+            (TileCdfSelector::CflMhDir { size_group }, 2),
+        ]);
+        let mut work_unit = make_work_unit(&payload);
+        let mut symbols = symbol_decoder(&payload);
+
+        let mode = decode_general_intra_chroma_block_mode(
+            &mut work_unit,
+            &mut symbols,
+            GeneralIntraChromaToolConfig::new(false, true),
+            GeneralIntraChromaModeContext::shared_or_non_sdp(0),
+            IntraYMode::DC_PRED,
+            BLOCK_16X16,
+            4,
+            4,
+        )
+        .unwrap();
+
+        assert!(mode.is_cfl());
+        assert_eq!(mode.uv_mode(), UV_CFL_PRED_MODE);
+        assert_eq!(
+            mode.cfl_params(),
+            Some(CflParams {
+                index: CflIndex::Multi,
+                alpha_u: 0,
+                alpha_v: 0,
+                mh_dir: Some(2)
+            })
+        );
+        assert_eq!(symbols.symbol_count(), 2);
+        assert_eq!(symbols.finish().unwrap().symbol_count, 2);
+    }
+
+    #[test]
+    fn shared_chroma_mhccp_dir_uses_luma_syntax_block_size() {
+        let syntax_size_group = cfl_mh_dir_size_group(BLOCK_4X16).unwrap();
+        let inherited_chroma_size_group = cfl_mh_dir_size_group(BLOCK_32X16).unwrap();
+        assert_ne!(syntax_size_group, inherited_chroma_size_group);
+        let payload = encode_symbol_sequence(&[
+            (TileCdfSelector::YModeSet, 0),
+            (TileCdfSelector::YModeIndex { ctx: 0 }, 0),
+            (TileCdfSelector::IsCfl { ctx: 0 }, 1),
+            (
+                TileCdfSelector::CflMhDir {
+                    size_group: syntax_size_group,
+                },
+                2,
+            ),
+        ]);
+        let mut work_unit = make_work_unit(&payload);
+        let mut symbols = symbol_decoder(&payload);
+        let joint_modes = empty_joint_modes();
+        let uses_mrls = empty_uses_mrls();
+
+        let modes = decode_general_intra_block_modes_with_fsc_context(
+            &mut work_unit,
+            &mut symbols,
+            GeneralIntraChromaToolConfig::new(false, true),
+            &joint_modes,
+            &uses_mrls,
+            &empty_fsc_modes(),
+            true,
+            &empty_palette_state(),
+            0,
+            BLOCK_4X16,
+            0,
+            15,
+            1,
+            4,
+            BLOCK_32X16,
+            8,
+            4,
+            8,
+        )
+        .unwrap();
+
+        assert!(modes.is_cfl());
+        assert_eq!(
+            modes.cfl_params(),
+            Some(CflParams {
+                index: CflIndex::Multi,
+                alpha_u: 0,
+                alpha_v: 0,
+                mh_dir: Some(2),
+            })
+        );
+        assert_eq!(symbols.symbol_count(), 4);
+        assert_eq!(symbols.finish().unwrap().symbol_count, 4);
     }
 
     #[test]

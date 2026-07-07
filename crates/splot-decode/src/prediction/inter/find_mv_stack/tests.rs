@@ -1197,6 +1197,62 @@ fn constraint_reorder_promotes_max_weight_nearest_unless_temporal_first() {
     );
 }
 
+#[test]
+fn temporal_scan_duplicate_weight_can_promote_candidate() {
+    let mut grid = empty_grid();
+    let first_mv = Mv { row: 0, col: 8 };
+    let temporal_mv = Mv { row: 0, col: 40 };
+    record_unit_inter(&mut grid, 5, 3, first_mv);
+    record_unit_inter(&mut grid, 3, 5, temporal_mv);
+    let block = MvBlockContext {
+        mi_row: 4,
+        mi_col: 4,
+        bw4: 2,
+        bh4: 2,
+        sb_h4: SB_H4_64,
+        ref_frame0: 0,
+        ref_frame1: None,
+        mi_rows: MI_DIM,
+        mi_cols: MI_DIM,
+    };
+    let mut source = TemporalMotionField::new(MI_DIM, MI_DIM).unwrap();
+    source.record_block(TemporalMotionBlock {
+        mi_row: 4,
+        mi_col: 4,
+        n4w: 2,
+        n4h: 2,
+        mi_rows: MI_DIM,
+        mi_cols: MI_DIM,
+        ref_order_hints: [Some(0), None],
+        mvs: [temporal_mv, Mv::ZERO],
+        warp_params: [None, None],
+    });
+    let temporal =
+        TemporalMvContext::from_references(MI_DIM, MI_DIM, 2, &[0], &[1], &[Some(source)]).unwrap();
+
+    let stack = find_mv_stack_with_temporal(
+        &grid,
+        &block,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Always,
+        Some(&temporal),
+        false,
+    );
+    assert_eq!(
+        stack.candidate(0),
+        temporal_mv,
+        "temporal duplicate weight should make the matching spatial candidate the DRL winner"
+    );
+    assert_eq!(
+        stack.candidate(1),
+        first_mv,
+        "the original first spatial candidate is swapped behind the heavier temporal candidate"
+    );
+}
+
 fn record_two_wide_column(grid: &mut NeighbourMvGrid, c: usize, mv: Mv) {
     grid.record_block(
         8,

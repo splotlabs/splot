@@ -119,6 +119,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         0,
         false,
         true,
+        None,
         IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
@@ -506,6 +507,7 @@ fn d135_neighbour_masks_unavailable_tile_above_edge() {
             3,
             0,
             false,
+            None,
             BitDepth::Eight,
             MiddleEdgeAvailability {
                 above: false,

@@ -4,17 +4,17 @@
 #[cfg(test)]
 use splot_recon::BitDepth;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect, ReconSample,
-    ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
-    blend_compound_average_equal, subpel_predict_block, subpel_predict_block_compound_intermediate,
-    warp_predict_block,
+    CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect, ReconError,
+    ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
+    WarpPredictBlockParams, blend_compound_average_equal, subpel_predict_block,
+    subpel_predict_block_compound_intermediate, warp_predict_block,
 };
 
-use super::mv_scaling::derive_plane_scaling;
+use super::mv_scaling::{PlaneScaling, derive_plane_scaling};
 use super::{Mv, SPEC_MC, unsupported_at};
 use crate::Result;
 use splot_core::span::ByteOffset;
-use splot_recon::math::clip3;
+use splot_recon::math::{clip3, round2};
 
 pub(crate) const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =
     [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)];
@@ -26,12 +26,70 @@ pub(crate) struct McBlockRect {
     pub(crate) luma_y: usize,
     pub(crate) luma_w: usize,
     pub(crate) luma_h: usize,
+    pub(crate) chroma_luma_x: usize,
+    pub(crate) chroma_luma_y: usize,
+    pub(crate) chroma_luma_w: usize,
+    pub(crate) chroma_luma_h: usize,
 }
+
+impl McBlockRect {
+    #[cfg(test)]
+    pub(crate) const fn from_luma(
+        luma_x: usize,
+        luma_y: usize,
+        luma_w: usize,
+        luma_h: usize,
+    ) -> Self {
+        Self {
+            luma_x,
+            luma_y,
+            luma_w,
+            luma_h,
+            chroma_luma_x: luma_x,
+            chroma_luma_y: luma_y,
+            chroma_luma_w: luma_w,
+            chroma_luma_h: luma_h,
+        }
+    }
+
+    const fn plane_luma_rect(self, plane: PlaneId) -> (usize, usize, usize, usize) {
+        match plane {
+            PlaneId::Y => (self.luma_x, self.luma_y, self.luma_w, self.luma_h),
+            PlaneId::U | PlaneId::V => (
+                self.chroma_luma_x,
+                self.chroma_luma_y,
+                self.chroma_luma_w,
+                self.chroma_luma_h,
+            ),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CompoundBlend {
+    Average { implicit_mask: bool },
+    DiffWeighted { inverse: bool },
+}
+
+impl CompoundBlend {
+    pub(crate) const fn average_with_implicit_mask(implicit_mask: bool) -> Self {
+        Self::Average { implicit_mask }
+    }
+}
+
+impl Default for CompoundBlend {
+    fn default() -> Self {
+        Self::Average {
+            implicit_mask: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct InterBlockParams<'a, T: ReconSample> {
     rect: McBlockRect,
     prediction: InterPrediction<'a, T>,
     interp: InterpolationFilter,
+    has_chroma: bool,
 }
 
 impl<'a, T: ReconSample> InterBlockParams<'a, T> {
@@ -45,6 +103,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             rect,
             prediction: InterPrediction::Single { reference, mv },
             interp,
+            has_chroma: true,
         }
     }
     pub(crate) const fn compound_average(
@@ -54,6 +113,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         mv0: Mv,
         mv1: Mv,
         interp: InterpolationFilter,
+        blend: CompoundBlend,
     ) -> Self {
         Self {
             rect,
@@ -62,8 +122,10 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
                 reference1,
                 mv0,
                 mv1,
+                blend,
             },
             interp,
+            has_chroma: true,
         }
     }
     pub(crate) const fn single_warp(
@@ -78,7 +140,12 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
                 warp_params,
             },
             interp: InterpolationFilter::EightTap,
+            has_chroma: true,
         }
+    }
+    pub(crate) const fn with_chroma(mut self, has_chroma: bool) -> Self {
+        self.has_chroma = has_chroma;
+        self
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -96,6 +163,7 @@ enum InterPrediction<'a, T: ReconSample> {
         reference1: &'a DecodedFrame<T>,
         mv0: Mv,
         mv1: Mv,
+        blend: CompoundBlend,
     },
 }
 #[derive(Clone, Copy, Debug)]
@@ -106,6 +174,8 @@ struct CompoundMcBlock<'a, T: ReconSample> {
     mv0: Mv,
     mv1: Mv,
     interp: InterpolationFilter,
+    blend: CompoundBlend,
+    has_chroma: bool,
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -119,6 +189,7 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
             block.rect,
             mv,
             block.interp,
+            block.has_chroma,
             offset,
         ),
         InterPrediction::SingleWarp {
@@ -129,6 +200,7 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
             reference,
             block.rect,
             warp_params,
+            block.has_chroma,
             offset,
         ),
         InterPrediction::CompoundAverage {
@@ -136,6 +208,7 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
             reference1,
             mv0,
             mv1,
+            blend,
         } => motion_compensate_compound_average_block_into(
             workspace,
             CompoundMcBlock {
@@ -145,6 +218,8 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
                 mv0,
                 mv1,
                 interp: block.interp,
+                blend,
+                has_chroma: block.has_chroma,
             },
             offset,
         ),
@@ -157,9 +232,10 @@ fn motion_compensate_single_block_into<T: ReconSample>(
     rect: McBlockRect,
     mv: Mv,
     interp: InterpolationFilter,
+    has_chroma: bool,
     offset: ByteOffset,
 ) -> Result<()> {
-    motion_compensate_planes(workspace, |workspace, plane, sub_x, sub_y| {
+    motion_compensate_planes(workspace, has_chroma, |workspace, plane, sub_x, sub_y| {
         predict_plane(
             workspace, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
         )
@@ -168,9 +244,13 @@ fn motion_compensate_single_block_into<T: ReconSample>(
 
 fn motion_compensate_planes<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
+    has_chroma: bool,
     mut predict: impl FnMut(&mut CurrentFrameWorkspace<T>, PlaneId, u32, u32) -> Result<()>,
 ) -> Result<()> {
     for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+        if plane != PlaneId::Y && !has_chroma {
+            continue;
+        }
         predict(workspace, plane, sub_x, sub_y)?;
     }
     Ok(())
@@ -181,7 +261,11 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
     block: CompoundMcBlock<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
+    let luma_diff_weighted_mask = compound_luma_diff_weighted_mask(workspace, block, offset)?;
     for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+        if plane != PlaneId::Y && !block.has_chroma {
+            continue;
+        }
         predict_compound_plane(
             workspace,
             block.reference0,
@@ -191,21 +275,55 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
             block.mv0,
             block.mv1,
             block.interp,
+            block.blend,
             sub_x,
             sub_y,
+            luma_diff_weighted_mask.as_deref(),
             offset,
         )?;
     }
     Ok(())
+}
+
+fn compound_luma_diff_weighted_mask<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    block: CompoundMcBlock<'_, T>,
+    offset: ByteOffset,
+) -> Result<Option<Vec<u16>>> {
+    let CompoundBlend::DiffWeighted { inverse } = block.blend else {
+        return Ok(None);
+    };
+    let prediction = compound_plane_prediction(
+        workspace,
+        block.reference0,
+        block.reference1,
+        PlaneId::Y,
+        block.rect,
+        block.mv0,
+        block.mv1,
+        block.interp,
+        0,
+        0,
+        offset,
+    )?;
+    Ok(Some(diff_weighted_mask(
+        &prediction.pred0,
+        &prediction.pred1,
+        workspace.info().bit_depth(),
+        prediction.block_w,
+        prediction.block_h,
+        inverse,
+    )?))
 }
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     reference: &DecodedFrame<T>,
     rect: McBlockRect,
     warp_params: [i64; 6],
+    has_chroma: bool,
     offset: ByteOffset,
 ) -> Result<()> {
-    motion_compensate_planes(workspace, |workspace, plane, sub_x, sub_y| {
+    motion_compensate_planes(workspace, has_chroma, |workspace, plane, sub_x, sub_y| {
         predict_warp_plane(
             workspace,
             reference,
@@ -233,10 +351,11 @@ fn predict_plane<T: ReconSample>(
 ) -> Result<()> {
     let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
 
-    let plane_x = rect.luma_x >> sub_x;
-    let plane_y = rect.luma_y >> sub_y;
-    let block_w = rect.luma_w >> sub_x;
-    let block_h = rect.luma_h >> sub_y;
+    let (luma_x, luma_y, luma_w, luma_h) = rect.plane_luma_rect(plane);
+    let plane_x = luma_x >> sub_x;
+    let plane_y = luma_y >> sub_y;
+    let block_w = luma_w >> sub_x;
+    let block_h = luma_h >> sub_y;
 
     let scaling = derive_plane_scaling(
         plane_x as i64,
@@ -291,10 +410,11 @@ fn predict_warp_plane<T: ReconSample>(
     let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
     let (ref_width, ref_height) = (view.width(), view.height());
 
-    let plane_x = rect.luma_x >> sub_x;
-    let plane_y = rect.luma_y >> sub_y;
-    let block_w = rect.luma_w >> sub_x;
-    let block_h = rect.luma_h >> sub_y;
+    let (luma_x, luma_y, luma_w, luma_h) = rect.plane_luma_rect(plane);
+    let plane_x = luma_x >> sub_x;
+    let plane_y = luma_y >> sub_y;
+    let block_w = luma_w >> sub_x;
+    let block_h = luma_h >> sub_y;
     let bit_depth = workspace.info().bit_depth();
     let skip_pred = !splot_recon::warp_shear_is_valid(warp_params)
         || block_w < WARPED_BLOCK_SIZE
@@ -309,6 +429,7 @@ fn predict_warp_plane<T: ReconSample>(
                 let unit_y = (plane_y + (i4 & !1) * 4) as i64;
                 let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
                     rect,
+                    plane,
                     warp_params,
                     unit_x,
                     unit_y,
@@ -383,17 +504,81 @@ fn predict_compound_plane<T: ReconSample>(
     mv0: Mv,
     mv1: Mv,
     interp: InterpolationFilter,
+    blend: CompoundBlend,
+    sub_x: u32,
+    sub_y: u32,
+    luma_diff_weighted_mask: Option<&[u16]>,
+    offset: ByteOffset,
+) -> Result<()> {
+    let prediction = compound_plane_prediction(
+        workspace, reference0, reference1, plane, rect, mv0, mv1, interp, sub_x, sub_y, offset,
+    )?;
+    let coded_luma_size = workspace.info().coded_luma_size();
+    let frame_w = coded_luma_size.width() >> sub_x;
+    let frame_h = coded_luma_size.height() >> sub_y;
+    let blended = blend_compound_average(
+        &prediction.pred0,
+        &prediction.pred1,
+        workspace.info().bit_depth(),
+        prediction.block_w,
+        prediction.block_h,
+        blend,
+        prediction.scaling0,
+        prediction.scaling1,
+        frame_w,
+        frame_h,
+        luma_diff_weighted_mask,
+        sub_x,
+        sub_y,
+    )?;
+
+    let packed: Vec<T> = blended
+        .iter()
+        .map(|&v| T::try_from_u16(v))
+        .collect::<splot_recon::Result<Vec<T>>>()?;
+    let rect = PlaneRect::new(
+        prediction.plane_x,
+        prediction.plane_y,
+        prediction.block_w,
+        prediction.block_h,
+    )?;
+    workspace.write_rect(plane, rect, &packed, prediction.block_w)?;
+    Ok(())
+}
+
+struct CompoundPlanePrediction {
+    pred0: Vec<i32>,
+    pred1: Vec<i32>,
+    plane_x: usize,
+    plane_y: usize,
+    block_w: usize,
+    block_h: usize,
+    scaling0: PlaneScaling,
+    scaling1: PlaneScaling,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compound_plane_prediction<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    reference0: &DecodedFrame<T>,
+    reference1: &DecodedFrame<T>,
+    plane: PlaneId,
+    rect: McBlockRect,
+    mv0: Mv,
+    mv1: Mv,
+    interp: InterpolationFilter,
     sub_x: u32,
     sub_y: u32,
     offset: ByteOffset,
-) -> Result<()> {
+) -> Result<CompoundPlanePrediction> {
     let (view0, ref_mi_cols0, ref_mi_rows0) = reference_plane_view(reference0, plane, offset)?;
     let (view1, ref_mi_cols1, ref_mi_rows1) = reference_plane_view(reference1, plane, offset)?;
 
-    let plane_x = rect.luma_x >> sub_x;
-    let plane_y = rect.luma_y >> sub_y;
-    let block_w = rect.luma_w >> sub_x;
-    let block_h = rect.luma_h >> sub_y;
+    let (luma_x, luma_y, luma_w, luma_h) = rect.plane_luma_rect(plane);
+    let plane_x = luma_x >> sub_x;
+    let plane_y = luma_y >> sub_y;
+    let block_w = luma_w >> sub_x;
+    let block_h = luma_h >> sub_y;
 
     let scaling0 = derive_plane_scaling(
         plane_x as i64,
@@ -450,15 +635,219 @@ fn predict_compound_plane<T: ReconSample>(
     };
     let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0)?;
     let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1)?;
-    let blended = blend_compound_average_equal(&pred0, &pred1, workspace.info().bit_depth())?;
 
-    let packed: Vec<T> = blended
+    Ok(CompoundPlanePrediction {
+        pred0,
+        pred1,
+        plane_x,
+        plane_y,
+        block_w,
+        block_h,
+        scaling0,
+        scaling1,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blend_compound_average(
+    pred0: &[i32],
+    pred1: &[i32],
+    bit_depth: splot_recon::BitDepth,
+    w: usize,
+    h: usize,
+    blend: CompoundBlend,
+    scaling0: PlaneScaling,
+    scaling1: PlaneScaling,
+    frame_w: usize,
+    frame_h: usize,
+    luma_diff_weighted_mask: Option<&[u16]>,
+    sub_x: u32,
+    sub_y: u32,
+) -> splot_recon::Result<Vec<u16>> {
+    let CompoundBlend::Average { implicit_mask } = blend else {
+        return blend_compound_diff_weighted(
+            pred0,
+            pred1,
+            bit_depth,
+            w,
+            h,
+            blend,
+            luma_diff_weighted_mask,
+            sub_x,
+            sub_y,
+        );
+    };
+    if !implicit_mask {
+        return blend_compound_average_equal(pred0, pred1, bit_depth);
+    }
+    if pred0.len() != pred1.len() {
+        return blend_compound_average_equal(pred0, pred1, bit_depth);
+    }
+
+    let last_x = frame_w as i64 - 1;
+    let last_y = frame_h as i64 - 1;
+    let ref_start_x0 = scaling0.start_x >> 10;
+    let ref_start_y0 = scaling0.start_y >> 10;
+    let ref_start_x1 = scaling1.start_x >> 10;
+    let ref_start_y1 = scaling1.start_y >> 10;
+    let max_sample = i64::from(bit_depth.max_sample());
+    let shift = 1 + compound_inter_post_round();
+    Ok(pred0
         .iter()
-        .map(|&v| T::try_from_u16(v))
-        .collect::<splot_recon::Result<Vec<T>>>()?;
-    let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
-    workspace.write_rect(plane, rect, &packed, block_w)?;
-    Ok(())
+        .zip(pred1.iter())
+        .enumerate()
+        .map(|(idx, (&left, &right))| {
+            let row = idx / w;
+            let col = idx % w;
+            let ref_y0 = ref_start_y0 + row as i64;
+            let ref_y1 = ref_start_y1 + row as i64;
+            let ref_x0 = ref_start_x0 + col as i64;
+            let ref_x1 = ref_start_x1 + col as i64;
+            let ref0_onscreen = (0..=last_x).contains(&ref_x0) && (0..=last_y).contains(&ref_y0);
+            let ref1_onscreen = (0..=last_x).contains(&ref_x1) && (0..=last_y).contains(&ref_y1);
+            let mask = match (ref0_onscreen, ref1_onscreen) {
+                (true, false) => 2,
+                (false, true) => 0,
+                _ => 1,
+            };
+            let blended = round2(i64::from(mask * left + (2 - mask) * right), shift);
+            clip3(0, max_sample, blended) as u16
+        })
+        .take(w.saturating_mul(h))
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blend_compound_diff_weighted(
+    pred0: &[i32],
+    pred1: &[i32],
+    bit_depth: splot_recon::BitDepth,
+    w: usize,
+    h: usize,
+    blend: CompoundBlend,
+    luma_diff_weighted_mask: Option<&[u16]>,
+    sub_x: u32,
+    sub_y: u32,
+) -> splot_recon::Result<Vec<u16>> {
+    if pred0.len() != pred1.len() {
+        return blend_compound_average_equal(pred0, pred1, bit_depth);
+    }
+    let CompoundBlend::DiffWeighted { inverse } = blend else {
+        return blend_compound_average_equal(pred0, pred1, bit_depth);
+    };
+    let max_sample = i64::from(bit_depth.max_sample());
+    let blend_shift = 6 + compound_inter_post_round();
+    let mask = if let Some(luma_mask) = luma_diff_weighted_mask {
+        subsample_diff_weighted_luma_mask(luma_mask, w, h, sub_x, sub_y)?
+    } else {
+        diff_weighted_mask(pred0, pred1, bit_depth, w, h, inverse)?
+    };
+    Ok(pred0
+        .iter()
+        .zip(pred1.iter())
+        .zip(mask.iter())
+        .take(w.saturating_mul(h))
+        .map(|((&left, &right), &mask)| {
+            let blended = round2(
+                i64::from(mask) * i64::from(left) + i64::from(64 - mask) * i64::from(right),
+                blend_shift,
+            );
+            clip3(0, max_sample, blended) as u16
+        })
+        .collect())
+}
+
+fn diff_weighted_mask(
+    pred0: &[i32],
+    pred1: &[i32],
+    bit_depth: splot_recon::BitDepth,
+    w: usize,
+    h: usize,
+    inverse: bool,
+) -> splot_recon::Result<Vec<u16>> {
+    if pred0.len() != pred1.len() {
+        return Err(ReconError::CompoundBlendLengthMismatch {
+            left_len: pred0.len(),
+            right_len: pred1.len(),
+        });
+    }
+    let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + compound_inter_post_round();
+    let mut mask = Vec::with_capacity(w.saturating_mul(h));
+    for (&left, &right) in pred0.iter().zip(pred1.iter()).take(w.saturating_mul(h)) {
+        let diff = round2(i64::from((left - right).unsigned_abs()), diff_round);
+        let base_mask = u16::try_from((38 + diff / 16).clamp(0, 64)).map_err(|_| {
+            ReconError::ArithmeticOverflow {
+                context: "diff-weighted compound mask",
+            }
+        })?;
+        mask.push(if inverse { 64 - base_mask } else { base_mask });
+    }
+    Ok(mask)
+}
+
+fn subsample_diff_weighted_luma_mask(
+    luma_mask: &[u16],
+    w: usize,
+    h: usize,
+    sub_x: u32,
+    sub_y: u32,
+) -> splot_recon::Result<Vec<u16>> {
+    let scale_x = 1usize
+        .checked_shl(sub_x)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "diff-weighted luma mask horizontal subsampling",
+        })?;
+    let scale_y = 1usize
+        .checked_shl(sub_y)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "diff-weighted luma mask vertical subsampling",
+        })?;
+    let luma_w = w
+        .checked_mul(scale_x)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "diff-weighted luma mask width",
+        })?;
+    let luma_h = h
+        .checked_mul(scale_y)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "diff-weighted luma mask height",
+        })?;
+    let expected = luma_w
+        .checked_mul(luma_h)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "diff-weighted luma mask sample count",
+        })?;
+    if luma_mask.len() < expected {
+        return Err(ReconError::BufferLengthMismatch {
+            expected,
+            actual: luma_mask.len(),
+        });
+    }
+
+    let mut out = Vec::with_capacity(w.saturating_mul(h));
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = 0i64;
+            for dy in 0..scale_y {
+                for dx in 0..scale_x {
+                    let mask_x = x * scale_x + dx;
+                    let mask_y = y * scale_y + dy;
+                    sum += i64::from(luma_mask[mask_y * luma_w + mask_x]);
+                }
+            }
+            let averaged = round2(sum, sub_x + sub_y);
+            out.push(
+                u16::try_from(averaged).map_err(|_| ReconError::ArithmeticOverflow {
+                    context: "diff-weighted chroma mask average",
+                })?,
+            );
+        }
+    }
+    Ok(out)
+}
+
+const fn compound_inter_post_round() -> u32 {
+    4
 }
 
 /// § 7.13.3.20 per-8x8 bounding box for the fixed-phase ext-warp kernel:
@@ -472,6 +861,7 @@ fn predict_compound_plane<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn ext_warp_unit_bounds(
     rect: McBlockRect,
+    plane: PlaneId,
     warp_params: [i64; 6],
     unit_x: i64,
     unit_y: i64,
@@ -499,10 +889,11 @@ fn ext_warp_unit_bounds(
         MV_BOUND - 1,
         (dst_x - (src_x << WARPEDMODEL_PREC_BITS)) >> (WARPEDMODEL_PREC_BITS - 3),
     );
-    let mi_row = (rect.luma_y / 4) as i64;
-    let mi_col = (rect.luma_x / 4) as i64;
-    let bh4 = (rect.luma_h / 4) as i64;
-    let bw4 = (rect.luma_w / 4) as i64;
+    let (luma_x, luma_y, luma_w, luma_h) = rect.plane_luma_rect(plane);
+    let mi_row = (luma_y / 4) as i64;
+    let mi_col = (luma_x / 4) as i64;
+    let bh4 = (luma_h / 4) as i64;
+    let bw4 = (luma_w / 4) as i64;
     let mv_row = clip3(
         -(mi_row + bh4) * 32 - MV_BORDER,
         (ref_mi_rows - mi_row) * 32 + MV_BORDER,
@@ -676,26 +1067,51 @@ mod tests {
     fn dispatcher_blends_compound_average_planes() {
         let reference0 = flat_frame(8, 8, 40, 90, 120);
         let reference1 = flat_frame(8, 8, 80, 110, 140);
-        let mut workspace = workspace(8, 8);
+        let samples = dispatch_compound_samples(&reference0, &reference1, CompoundBlend::default());
+        assert_eq!(samples.0, vec![60; 64]);
+        assert_eq!(samples.1, vec![100; 16]);
+        assert_eq!(samples.2, vec![130; 16]);
+    }
+
+    #[test]
+    fn dispatcher_subsamples_luma_diff_weighted_mask_for_chroma() {
+        let reference0 = flat_frame(8, 8, 100, 0, 0);
+        let reference1 = flat_frame(8, 8, 100, 200, 200);
+        let samples = dispatch_compound_samples(
+            &reference0,
+            &reference1,
+            CompoundBlend::DiffWeighted { inverse: false },
+        );
+        assert_eq!(samples.0, vec![100; 64]);
+        assert_eq!(samples.1, vec![81; 16]);
+        assert_eq!(samples.2, vec![81; 16]);
+    }
+
+    #[test]
+    fn dispatcher_uses_implicit_mask_for_offscreen_compound_refs() {
+        let reference = patterned_frame(32, 8);
+        let mut workspace = workspace(32, 8);
 
         motion_compensate_inter_block_into(
             &mut workspace,
             InterBlockParams::compound_average(
-                &reference0,
-                &reference1,
-                rect(0, 0, 8, 8),
-                Mv { row: 0, col: 0 },
-                Mv { row: 0, col: 0 },
+                &reference,
+                &reference,
+                rect(0, 0, 32, 4),
+                Mv { row: 0, col: 32 },
+                Mv { row: 0, col: -128 },
                 InterpolationFilter::EightTap,
+                CompoundBlend::average_with_implicit_mask(true),
             ),
             ByteOffset::new(0),
         )
-        .expect("compound-average dispatcher");
+        .expect("implicit-mask compound dispatcher");
 
-        let decoded = workspace.freeze().expect("freeze compound workspace");
-        assert_eq!(visible_samples(&decoded, PlaneId::Y), vec![60; 64]);
-        assert_eq!(visible_samples(&decoded, PlaneId::U), vec![100; 16]);
-        assert_eq!(visible_samples(&decoded, PlaneId::V), vec![130; 16]);
+        let decoded = workspace.freeze().expect("freeze implicit mask workspace");
+        let y = visible_samples(&decoded, PlaneId::Y);
+        assert_eq!(y[0], 4);
+        assert_eq!(y[20], 14);
+        assert_eq!(y[28], 12);
     }
 
     fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
@@ -710,6 +1126,35 @@ mod tests {
         )
         .expect("frame info");
         CurrentFrameWorkspace::new(info, 0).expect("workspace")
+    }
+
+    fn dispatch_compound_samples(
+        reference0: &DecodedFrame<u8>,
+        reference1: &DecodedFrame<u8>,
+        blend: CompoundBlend,
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut workspace = workspace(8, 8);
+        motion_compensate_inter_block_into(
+            &mut workspace,
+            InterBlockParams::compound_average(
+                reference0,
+                reference1,
+                rect(0, 0, 8, 8),
+                Mv { row: 0, col: 0 },
+                Mv { row: 0, col: 0 },
+                InterpolationFilter::EightTap,
+                blend,
+            ),
+            ByteOffset::new(0),
+        )
+        .expect("compound dispatcher");
+
+        let decoded = workspace.freeze().expect("freeze compound workspace");
+        (
+            visible_samples(&decoded, PlaneId::Y),
+            visible_samples(&decoded, PlaneId::U),
+            visible_samples(&decoded, PlaneId::V),
+        )
     }
 
     fn patterned_frame(width: usize, height: usize) -> DecodedFrame<u8> {
@@ -780,11 +1225,6 @@ mod tests {
     }
 
     const fn rect(luma_x: usize, luma_y: usize, luma_w: usize, luma_h: usize) -> McBlockRect {
-        McBlockRect {
-            luma_x,
-            luma_y,
-            luma_w,
-            luma_h,
-        }
+        McBlockRect::from_luma(luma_x, luma_y, luma_w, luma_h)
     }
 }

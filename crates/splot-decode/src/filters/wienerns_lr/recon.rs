@@ -248,7 +248,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let u_lr_active = lr_plane_active(PlaneId::U.index());
         let v_lr_active = lr_plane_active(PlaneId::V.index());
         let any_lr_active = luma_lr_active || u_lr_active || v_lr_active;
-        let deblocked_luma = if any_lr_active || self.ccso_grid.is_some() {
+        let gdf_active = core
+            .gdf_params
+            .as_ref()
+            .is_some_and(|gdf| gdf.gdf_frame_enable);
+        let deblocked_luma = if any_lr_active || self.ccso_grid.is_some() || gdf_active {
             self.plane_snapshot(
                 PlaneId::Y,
                 offset,
@@ -319,7 +323,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
         crate::timing::report("filter_ccso", ccso_timer);
         let lr_snapshot_timer = crate::timing::start();
-        let cdef_luma = if any_lr_active {
+        let cdef_luma = if any_lr_active || gdf_active {
             self.plane_snapshot(
                 PlaneId::Y,
                 offset,
@@ -386,6 +390,20 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             &cdef_luma,
         )?;
         crate::timing::report("filter_lr", lr_timer);
+        let gdf_timer = crate::timing::start();
+        if gdf_active {
+            crate::filters::gdf::apply_frame(
+                &mut self.workspace,
+                core,
+                &deblocked_luma,
+                &cdef_luma,
+                self.luma_width,
+                self.luma_height,
+                self.bit_depth,
+                offset,
+            )?;
+        }
+        crate::timing::report("filter_gdf", gdf_timer);
         Ok(self.workspace.freeze()?)
     }
 

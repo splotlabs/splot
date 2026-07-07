@@ -821,7 +821,7 @@ fn classify_obu(
         ObuType::OperatingPointSet if header.extended_layer_id == GLOBAL_XLAYER_ID => {
             Ok(DecodePlannedObuRole::Global)
         }
-        ObuType::SequenceHeader | ObuType::OperatingPointSet => {
+        ObuType::SequenceHeader | ObuType::OperatingPointSet | ObuType::FilmGrain => {
             Ok(DecodePlannedObuRole::SelectedLayerState)
         }
         ObuType::Msdo | ObuType::LayerConfigurationRecord | ObuType::AtlasSegment => unsupported(

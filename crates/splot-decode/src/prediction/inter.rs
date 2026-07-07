@@ -101,12 +101,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     _header: IvfHeader,
     reference: &InterReferenceState<'_, T>,
     bit_depth: BitDepth,
-) -> Result<(
-    DecodedFrame<T>,
-    FrameHeaderCore,
-    FrameCdfSubset,
-    Option<crate::filters::ccso::CcsoUnitGrid>,
-)> {
+) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
 
     if frame_envelope.header.obu_type != ObuType::RegularTileGroup {
@@ -317,7 +312,8 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         sequence
             .inter
             .as_ref()
-            .map_or(0, |seq_inter| seq_inter.num_same_ref_compound),
+            .map_or(0, |seq_inter| seq_inter.num_same_ref_compound)
+            .min(u8::try_from(num_total_refs).unwrap_or(u8::MAX)),
         &ref_frame_idx,
         reference,
         &mut workspace,
@@ -327,6 +323,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         bit_depth,
         initial_cdfs,
     )?;
+    let motion_field = filter_inputs.motion_field.clone();
 
     let mut filter_sink = crate::filters::wienerns_lr::recon_final_filter_sink(
         workspace,
@@ -356,7 +353,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         offset,
     )?;
 
-    Ok((frame, core, frame_cdfs, ccso_grid))
+    Ok((frame, core, frame_cdfs, ccso_grid, motion_field))
 }
 
 fn resolve_initial_frame_cdfs(
@@ -501,11 +498,15 @@ pub(in crate::prediction::inter) fn resolve_inter_block_params<'a, T: ReconSampl
             placed.block.mv,
             placed.block.mv1,
             placed.block.interp,
+            placed.block.compound_blend,
         )
+        .with_chroma(placed.has_chroma)
     } else if let Some(warp_params) = placed.block.warp_params {
         mc::InterBlockParams::single_warp(ref_frame0, rect, warp_params)
+            .with_chroma(placed.has_chroma)
     } else {
         mc::InterBlockParams::single(ref_frame0, rect, placed.block.mv, placed.block.interp)
+            .with_chroma(placed.has_chroma)
     })
 }
 
@@ -549,52 +550,13 @@ fn validate_compound_sequence_subset(
             SPEC_MODE_INFO
         ));
     };
-    for (enabled, reason, message, spec_section) in [
-        (
-            seq_inter.enable_masked_compound,
-            "compound_masked_compound_enabled",
-            "unsupported capability: inter.compound.masked",
-            SPEC_MODE_INFO,
-        ),
-        (
-            seq_inter.enable_cwp,
-            "compound_cwp_enabled",
-            "unsupported capability: inter.compound.cwp",
-            SPEC_MODE_INFO,
-        ),
-        (
-            seq_inter.enable_imp_msk_bld,
-            "compound_implicit_mask_enabled",
-            "unsupported capability: inter.compound.implicit_mask",
-            SPEC_MC,
-        ),
-        (
-            seq_inter.enable_opfl_refine != 0,
-            "compound_opfl_refine_enabled",
-            "unsupported capability: inter.compound.opfl_refine",
-            SPEC_MODE_INFO,
-        ),
-        (
-            seq_inter.enable_refinemv,
-            "compound_refinemv_enabled",
-            "unsupported capability: inter.compound.refinemv",
-            SPEC_MODE_INFO,
-        ),
-        (
-            seq_inter.enable_tip,
+    if seq_inter.enable_tip {
+        return Err(unsupported_compound_at(
             "compound_tip_enabled",
+            offset,
             "unsupported capability: inter.tip",
             SPEC_MODE_INFO,
-        ),
-    ] {
-        if enabled {
-            return Err(unsupported_compound_at(
-                reason,
-                offset,
-                message,
-                spec_section,
-            ));
-        }
+        ));
     }
     let tip_frame_mode = core.inter.as_ref().and_then(|inter| inter.tip_frame_mode);
     if tip_frame_mode != Some(TipFrameMode::Disabled) {
@@ -716,8 +678,27 @@ pub(crate) struct InterBlock {
     pub(crate) interp: ReconInterpolationFilter,
     pub(crate) warp_params: Option<[i64; 6]>,
     pub(crate) bawp: BawpSyntax,
-    pub(crate) interintra: Option<splot_recon::InterIntraMode>,
+    pub(crate) interintra: Option<InterIntraPrediction>,
+    pub(crate) compound_blend: mc::CompoundBlend,
     pub(crate) residual: Option<InterResidual>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InterIntraPrediction {
+    SmoothMask {
+        mode: splot_recon::InterIntraMode,
+    },
+    WedgeMask {
+        mode: splot_recon::InterIntraMode,
+        wedge_index: u8,
+    },
+}
+
+impl InterIntraPrediction {
+    pub(crate) const fn mode(self) -> splot_recon::InterIntraMode {
+        match self {
+            Self::SmoothMask { mode } | Self::WedgeMask { mode, .. } => mode,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct BawpSyntax {
@@ -734,12 +715,27 @@ pub(crate) struct BawpSyntax {
     /// § 5.20.7.6 `use_bawp_chroma`.
     pub(crate) chroma: bool,
 }
+
+pub(crate) type InterDecodeOutput<T> = (
+    DecodedFrame<T>,
+    FrameHeaderCore,
+    FrameCdfSubset,
+    Option<crate::filters::ccso::CcsoUnitGrid>,
+    TemporalMotionField,
+);
+
 #[derive(Clone, Debug)]
 pub(crate) struct PlacedInterBlock {
     pub(crate) luma_x: usize,
     pub(crate) luma_y: usize,
     pub(crate) luma_w: usize,
     pub(crate) luma_h: usize,
+    pub(crate) chroma_luma_x: usize,
+    pub(crate) chroma_luma_y: usize,
+    pub(crate) chroma_luma_w: usize,
+    pub(crate) chroma_luma_h: usize,
+    pub(crate) has_chroma: bool,
+    pub(crate) interintra_chroma: bool,
     pub(crate) block: InterBlock,
 }
 #[derive(Clone, Debug)]
@@ -771,6 +767,7 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
     pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
     pub(crate) ref_ccso_params: Vec<Option<splot_core::headers::frame::CcsoParams>>,
     pub(crate) ref_ccso_unit_grids: Vec<Option<crate::filters::ccso::CcsoUnitGrid>>,
+    pub(crate) ref_motion_fields: Vec<Option<TemporalMotionField>>,
 }
 
 impl<T: ReconSample> InterReferenceState<'_, T> {
@@ -1057,6 +1054,7 @@ mod single_ref;
 
 pub(crate) use block::decode_inter_blocks;
 use cross_frame::{ResolvedCdfLoad, order_hint_history_unwrapped, resolve_cdf_load};
+pub(crate) use find_mv_stack::TemporalMotionField;
 
 #[cfg(test)]
 mod test_support;

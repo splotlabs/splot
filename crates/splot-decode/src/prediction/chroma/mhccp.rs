@@ -84,14 +84,13 @@ pub(crate) fn derive_mhccp_params(
                     continue;
                 }
                 let center = refs.luma[row * refs.width + col];
-                equations.add(
-                    [
-                        mhccp_linear_ref(refs, row, col, mh_dir, center),
-                        round2(center.saturating_mul(center), square_shift),
-                        midpoint,
-                    ],
-                    refs.chroma[row * refs.width + col],
-                );
+                let basis = [
+                    mhccp_linear_ref(refs, row, col, mh_dir, center),
+                    round2(center.saturating_mul(center), square_shift),
+                    midpoint,
+                ];
+                let target = refs.chroma[row * refs.width + col];
+                equations.add(basis, target);
             }
         }
     }
@@ -99,9 +98,9 @@ pub(crate) fn derive_mhccp_params(
         return [0, 0, 1i64 << MHCCP_BITS];
     }
     let bit_depth_bits = i32::from(bit_depth.bits());
-    equations.apply_matrix_shift(
-        MHCCP_BITS as i32 + 6 - 2 * bit_depth_bits - ceil_log2_usize(equations.samples) as i32,
-    );
+    let matrix_shift =
+        MHCCP_BITS as i32 + 6 - 2 * bit_depth_bits - ceil_log2_usize(equations.samples) as i32;
+    equations.apply_matrix_shift(matrix_shift);
     solve_mhccp(equations, bit_depth)
 }
 

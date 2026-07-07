@@ -218,6 +218,7 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
         key_envelope,
         &sequence,
         header,
+        None,
     )?;
     let key_core = crate::pipeline::parse_frame_core(key_envelope, &sequence)?;
     let num_ref_frames = usize::from(
@@ -237,6 +238,7 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
             frames[0].frame_cdfs.clone(),
             frames[0].ccso_params.clone(),
             frames[0].ccso_grid.clone(),
+            frames[0].motion_field.clone(),
             key_core.order_hint_lsb.unwrap_or(0),
         )?,
     );
@@ -263,6 +265,7 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
         ref_frame_cdfs: meta.ref_frame_cdfs,
         ref_ccso_params: meta.ref_ccso_params,
         ref_ccso_unit_grids: meta.ref_ccso_unit_grids,
+        ref_motion_fields: meta.ref_motion_fields,
     };
     let mut core = super::parse_inter_frame_core(inter_envelope, &sequence, &inter_state)?;
     mutate(
@@ -474,25 +477,31 @@ fn comp_ref_allowed_follows_the_spec_block_size_arms() {
 }
 
 #[test]
-fn simple_path_interintra_fixture_defers_fail_closed() {
-    let Err(error) =
-        decode_fixture_with_options(SIMPLE_INTERINTRA_10BIT_FIXTURE, &DecodeOptions::default())
-    else {
-        panic!("the fixture pins the inter-intra fail-closed defer");
-    };
-    assert_eq!(unsupported_reason(error), "inter_interintra_unimplemented");
+fn simple_path_interintra_fixture_decodes_avm_bit_exact() {
+    let frames = decode_fixture(SIMPLE_INTERINTRA_10BIT_FIXTURE);
+    assert_eq!(frames.len(), 3, "key frame + two inter frames");
+    assert_eq!(
+        ten_bit_frame_hashes(&frames),
+        [
+            "73df53de5404c338dd1318408350d0975316c28927bcdf7036d5efd442eb2d51",
+            "2981a14f81c61f8cca02eceefd096fba83c406b5196224007cf8681620d9bab3",
+            "8f0c833c194e738ab2b07654bc75fb38189bfc4b1e13e90ff6d266fcaf45e110"
+        ],
+        "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
+    );
 }
 
 #[test]
-fn same_ref_compound_fixture_defers_at_the_block_comp_mode_read() {
-    let Err(error) =
-        decode_fixture_with_options(SAMEREF_COMPOUND_10BIT_FIXTURE, &DecodeOptions::default())
-    else {
-        panic!("the fixture pins the same-reference compound defer");
-    };
+fn same_ref_compound_fixture_decodes_avm_bit_exact() {
+    let frames = decode_fixture(SAMEREF_COMPOUND_10BIT_FIXTURE);
+    assert_eq!(frames.len(), 2, "key frame + one same-ref compound frame");
     assert_eq!(
-        unsupported_reason(error),
-        "compound_missing_is_joint_context"
+        ten_bit_frame_hashes(&frames),
+        [
+            "0f86a97c44d252fe35ffff48a3604ab7a8fb6af6de9b53309b917c1192b39311",
+            "9aed01f7117b8ca011ee4a3a5bd128c8ba23c00a575a344fd53cb6d324093b42"
+        ],
+        "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
     );
 }
 

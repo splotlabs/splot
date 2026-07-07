@@ -3,6 +3,7 @@
 
 //! Decoder output adapters for hash, raw, and Y4M publication.
 
+pub(crate) mod film_grain;
 pub(crate) mod hash;
 pub(crate) mod raw;
 pub(crate) mod y4m;

@@ -86,12 +86,12 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     if core
         .gdf_params
         .as_ref()
-        .is_some_and(|gdf| gdf.gdf_frame_enable)
+        .is_some_and(|gdf| gdf.gdf_frame_enable && gdf.gdf_per_block == Some(true))
     {
         return Err(general_intra_unsupported(
-            "general_intra_gdf_frame_unimplemented",
+            "general_intra_gdf_per_block_unimplemented",
             Some(offset),
-            missing_capability_message!("filters.gdf", frame = "enabled"),
+            missing_capability_message!("filters.gdf", per_block = "enabled"),
             "7.20.5",
         ));
     }
@@ -187,6 +187,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         ref_frame_cdfs: Vec::new(),
         ref_ccso_params: Vec::new(),
         ref_ccso_unit_grids: Vec::new(),
+        ref_motion_fields: Vec::new(),
     };
 
     let _qm_scope = FrameQmScope::install(build_frame_qm_levels(core));
@@ -325,16 +326,15 @@ mod tests {
     }
 
     #[test]
-    fn intra_gate_rejects_gdf_enabled_frame() {
+    fn intra_gate_rejects_gdf_per_block_frame() {
         let error = decode_intra_fixture_with_core(|core| {
-            core.gdf_params
-                .as_mut()
-                .expect("gdf params")
-                .gdf_frame_enable = true;
+            let gdf = core.gdf_params.as_mut().expect("gdf params");
+            gdf.gdf_frame_enable = true;
+            gdf.gdf_per_block = Some(true);
         });
         assert_eq!(
             unsupported_reason(error),
-            "general_intra_gdf_frame_unimplemented"
+            "general_intra_gdf_per_block_unimplemented"
         );
     }
 

@@ -8,6 +8,7 @@
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
+use crate::output::film_grain;
 use crate::pipeline::PipelineDecodedFrame;
 use crate::{DecodeOptions, DecodeStreamPlan};
 
@@ -23,8 +24,14 @@ pub(crate) fn encode_raw_stream_from_plan(
     let mut bytes = Vec::new();
     for output in &outputs {
         match &output.frame {
-            PipelineDecodedFrame::Eight(frame) => write_raw_frame(frame, &mut bytes)?,
-            PipelineDecodedFrame::Ten(frame) => write_raw_frame(frame, &mut bytes)?,
+            PipelineDecodedFrame::Eight(frame) => {
+                let display = film_grain::frame_for_output(frame, output.display_grain.as_ref())?;
+                write_raw_frame(display.as_ref(), &mut bytes)?;
+            }
+            PipelineDecodedFrame::Ten(frame) => {
+                let display = film_grain::frame_for_output(frame, output.display_grain.as_ref())?;
+                write_raw_frame(display.as_ref(), &mut bytes)?;
+            }
         }
     }
     crate::timing::report("raw_serialize", serialize_started);

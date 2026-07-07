@@ -30,6 +30,8 @@ const GM_TRANS_ONLY_PREC_DIFF: u32 = WARPEDMODEL_PREC_BITS - 3;
 const MV_BORDER: i32 = 128;
 
 const MI_SIZE: i32 = 4;
+mod temporal;
+pub(crate) use temporal::{TemporalMotionBlock, TemporalMotionField, TemporalMvContext};
 
 /// AV2 § 6.18 `MotionModes[ r ][ c ]` values in spec order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -312,6 +314,63 @@ impl NeighbourMvGrid {
     }
 
     /// Records decoded compound mode info with per-reference-list NEWMV state.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_compound_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        ref_frame0: i8,
+        ref_frame1: i8,
+        list0_is_newmv: bool,
+        list1_is_newmv: bool,
+        mv0: Mv,
+        mv1: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+        precision: BlockPrecisionRecord,
+    ) {
+        let cell = NeighbourCell {
+            is_inter: true,
+            ref_frame0,
+            ref_frame1: Some(ref_frame1),
+            y_mode: if list0_is_newmv {
+                NeighbourYMode::NewMv
+            } else {
+                NeighbourYMode::Other
+            },
+            newmv_for_list0: list0_is_newmv,
+            newmv_for_list1: list1_is_newmv,
+            mv: mv0,
+            mv1: Some(mv1),
+            skip,
+            interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
+            use_amvd,
+            motion_mode: MotionMode::Simple,
+            warp_params: None,
+            sub_mv: mv0,
+            base_r: r,
+            base_c: c,
+            bw4: n4w,
+            bh4: n4h,
+            precision,
+        };
+        for rr in r..r.saturating_add(n4h) {
+            if rr >= self.mi_rows {
+                break;
+            }
+            for cc in c..c.saturating_add(n4w) {
+                if cc >= self.mi_cols {
+                    break;
+                }
+                self.cells[rr * self.mi_cols + cc] = Some(cell);
+            }
+        }
+    }
+
+    /// Records decoded compound mode info with per-reference-list NEWMV state.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_block_with_newmv_lists(
@@ -329,42 +388,22 @@ impl NeighbourMvGrid {
         interp_filter: u8,
         use_amvd: bool,
     ) {
-        let cell = NeighbourCell {
-            is_inter: true,
+        self.record_compound_block(
+            r,
+            c,
+            n4w,
+            n4h,
             ref_frame0,
-            ref_frame1: Some(ref_frame1),
-            y_mode: if list0_is_newmv {
-                NeighbourYMode::NewMv
-            } else {
-                NeighbourYMode::Other
-            },
-            newmv_for_list0: list0_is_newmv,
-            newmv_for_list1: list1_is_newmv,
+            ref_frame1,
+            list0_is_newmv,
+            list1_is_newmv,
             mv,
-            mv1: None,
+            mv,
             skip,
-            interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
+            interp_filter,
             use_amvd,
-            motion_mode: MotionMode::Simple,
-            warp_params: None,
-            sub_mv: mv,
-            base_r: r,
-            base_c: c,
-            bw4: n4w,
-            bh4: n4h,
-            precision: BlockPrecisionRecord::default(),
-        };
-        for rr in r..r.saturating_add(n4h) {
-            if rr >= self.mi_rows {
-                break;
-            }
-            for cc in c..c.saturating_add(n4w) {
-                if cc >= self.mi_cols {
-                    break;
-                }
-                self.cells[rr * self.mi_cols + cc] = Some(cell);
-            }
-        }
+            BlockPrecisionRecord::default(),
+        );
     }
 
     fn get(&self, r: i32, c: i32) -> Option<NeighbourCell> {
@@ -538,6 +577,19 @@ fn matches_block_ref(cell: NeighbourCell, block: &MvBlockContext) -> bool {
 
 fn neighbour_matches_ref(cell: NeighbourCell, ref_frame: i8) -> bool {
     cell.is_inter && (cell.ref_frame0 == ref_frame || cell.ref_frame1 == Some(ref_frame))
+}
+
+fn matching_stack_mv(cell: NeighbourCell, block: &MvBlockContext) -> Option<Mv> {
+    if !cell.is_inter {
+        return None;
+    }
+    if cell.ref_frame0 == block.ref_frame0 {
+        return Some(cell.sub_mv);
+    }
+    if cell.ref_frame1 == Some(block.ref_frame0) {
+        return cell.mv1;
+    }
+    None
 }
 
 fn mode_ctx_match_newmv(cell: NeighbourCell, block: &MvBlockContext) -> Option<bool> {
@@ -1635,15 +1687,8 @@ impl WarpParamBank {
     }
 }
 
-/// AV2 § 7.12.2 `find_mv_stack` for the spatial-only single-prediction
-/// subset. `PruneCount` starts at zero and is shared across the spatial
-/// scan, the § 7.12.2.21 bank fill, and the § 7.12.2.20 global-MV dedup.
-/// With `derive_wrl` (§ 5.18.2 `DeriveWrl`), the § 7.12.2 `WarpParamStack`
-/// is built alongside: corner-derived model (steps 4-5), the § 7.12.2.9
-/// spatial inserts fired from every scan point (the 7 discrete probes and
-/// the § 7.12.2.5 col scan), then the step-22 tail (warp bank newest-first,
-/// `gm_params` — identity while global-motion frames defer at the frame
-/// gate — and two identity defaults).
+/// AV2 § 7.12.2 `find_mv_stack` for single-prediction callers without a
+/// precomputed temporal motion field.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn find_mv_stack(
     grid: &NeighbourMvGrid,
@@ -1653,6 +1698,39 @@ pub(crate) fn find_mv_stack(
     warp_bank: &WarpParamBank,
     derive_wrl: bool,
     drl_reorder: DrlReorder,
+    use_temporal_first: bool,
+) -> MvStack {
+    find_mv_stack_with_temporal(
+        grid,
+        block,
+        global_mv,
+        bank,
+        warp_bank,
+        derive_wrl,
+        drl_reorder,
+        None,
+        use_temporal_first,
+    )
+}
+
+/// AV2 § 7.12.2 `find_mv_stack` for the single-prediction subset.
+/// `PruneCount` starts at zero and is shared across the spatial scan, temporal
+/// scan, § 7.12.2.21 bank fill, and § 7.12.2.20 global-MV dedup.
+/// With `derive_wrl` (§ 5.18.2 `DeriveWrl`), the § 7.12.2 `WarpParamStack`
+/// is built alongside: corner-derived model (steps 4-5), the § 7.12.2.9
+/// spatial inserts fired from scan points, then the step-22 tail (warp bank
+/// newest-first, `gm_params` — identity while global-motion frames defer at
+/// the frame gate — and two identity defaults).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn find_mv_stack_with_temporal(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    global_mv: Mv,
+    bank: Option<(&RefMvBank, usize)>,
+    warp_bank: &WarpParamBank,
+    derive_wrl: bool,
+    drl_reorder: DrlReorder,
+    temporal: Option<&TemporalMvContext>,
     use_temporal_first: bool,
 ) -> MvStack {
     let mut entries: Vec<MvStackEntry> = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
@@ -1666,7 +1744,25 @@ pub(crate) fn find_mv_stack(
         }
     }
 
-    for probe in mv_stack_spatial_probes(block).into_iter().flatten() {
+    if use_temporal_first {
+        scan_temporal_mv_stack(block, temporal, &mut entries, &mut prune_count);
+    }
+
+    let probes = mv_stack_spatial_probes(block);
+    for probe in probes.iter().take(6).copied().flatten() {
+        scan_mv_stack_probe(
+            grid,
+            block,
+            probe,
+            &mut entries,
+            &mut prune_count,
+            warp.as_mut(),
+        );
+    }
+    if !use_temporal_first {
+        scan_temporal_mv_stack(block, temporal, &mut entries, &mut prune_count);
+    }
+    if let Some(probe) = probes[6] {
         scan_mv_stack_probe(
             grid,
             block,
@@ -1791,26 +1887,112 @@ fn scan_mv_stack_probe(
         return;
     }
 
-    if !matches_block_ref(cell, block) {
+    let Some(candidate_mv) = matching_stack_mv(cell, block) else {
         return;
-    }
+    };
 
+    let (_, _, adjusted_delta_col) = probe.stack_target(block);
+    insert_mv_stack_entry(
+        entries,
+        prune_count,
+        candidate_mv,
+        weight,
+        (probe.delta_row, adjusted_delta_col),
+    );
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StackInsert {
+    Inserted,
+    Updated,
+    Skipped,
+}
+
+fn insert_mv_stack_entry(
+    entries: &mut Vec<MvStackEntry>,
+    prune_count: &mut usize,
+    candidate_mv: Mv,
+    weight: u32,
+    offsets: (i32, i32),
+) -> StackInsert {
+    if entries.len() >= MAX_REF_MV_STACK_SIZE {
+        return StackInsert::Skipped;
+    }
     if *prune_count < MAX_PR_NUM {
         for entry in entries.iter_mut() {
             *prune_count += 1;
-            if entry.mv == cell.sub_mv {
+            if entry.mv == candidate_mv {
                 entry.weight = entry.weight.saturating_add(weight);
-                return;
+                return StackInsert::Updated;
             }
         }
     }
-
-    let (_, _, adjusted_delta_col) = probe.stack_target(block);
     entries.push(MvStackEntry {
-        mv: cell.sub_mv,
+        mv: candidate_mv,
         weight,
-        offsets: (probe.delta_row, adjusted_delta_col),
+        offsets,
     });
+    StackInsert::Inserted
+}
+
+fn scan_temporal_mv_stack(
+    block: &MvBlockContext,
+    temporal: Option<&TemporalMvContext>,
+    entries: &mut Vec<MvStackEntry>,
+    prune_count: &mut usize,
+) {
+    let Some(temporal) = temporal.filter(|_| block.ref_frame1.is_none()) else {
+        return;
+    };
+    let row_end = block.bh4.min(16);
+    let col_end = block.bw4.min(16);
+    let step_h4 = if block.bh4 >= 16 { 4 } else { 2 };
+    let step_w4 = if block.bw4 >= 16 { 4 } else { 2 };
+
+    let mut inserted = false;
+    if row_end >= step_h4 && col_end >= step_w4 {
+        inserted = add_temporal_mv_sample(
+            block,
+            temporal,
+            row_end - step_h4,
+            col_end - step_w4,
+            entries,
+            prune_count,
+        ) == StackInsert::Inserted;
+    }
+    if !inserted && (row_end >= 3 * step_h4 || col_end >= 3 * step_w4) {
+        add_temporal_mv_sample(
+            block,
+            temporal,
+            row_end >> 1,
+            col_end >> 1,
+            entries,
+            prune_count,
+        );
+    }
+}
+
+fn add_temporal_mv_sample(
+    block: &MvBlockContext,
+    temporal: &TemporalMvContext,
+    delta_row: usize,
+    delta_col: usize,
+    entries: &mut Vec<MvStackEntry>,
+    prune_count: &mut usize,
+) -> StackInsert {
+    let mv_row = block.mi_row.saturating_add(delta_row);
+    let mv_col = block.mi_col.saturating_add(delta_col);
+    if mv_row >= block.mi_rows || mv_col >= block.mi_cols {
+        return StackInsert::Skipped;
+    }
+    let Some(candidate_mv) = temporal.motion_field_mv(block.ref_frame0, mv_row >> 1, mv_col >> 1)
+    else {
+        return StackInsert::Skipped;
+    };
+    let Some(weight) = temporal.single_ref_weight(block.ref_frame0) else {
+        return StackInsert::Skipped;
+    };
+    insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, (0, 0))
 }
 
 fn extra_search(

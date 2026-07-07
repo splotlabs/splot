@@ -12,6 +12,7 @@ use splot_recon::{
 };
 
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
+use crate::output::film_grain;
 use crate::pipeline::PipelineDecodedFrame;
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeOptions, DecodeStreamPlan,
@@ -96,7 +97,8 @@ fn write_y4m_stream<T: ReconSample>(
         let frame = select(output).ok_or_else(|| {
             crate::pipeline::unsupported_with_spec("y4m_mixed_bit_depth_frames", None, "runtime Y4M output requires every displayed frame to share the first frame's sample bit depth", SPEC_SECTION)
         })?;
-        writer.write_frame(frame).map_err(|source| {
+        let display = film_grain::frame_for_output(frame, output.display_grain.as_ref())?;
+        writer.write_frame(display.as_ref()).map_err(|source| {
             DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
         })?;
     }

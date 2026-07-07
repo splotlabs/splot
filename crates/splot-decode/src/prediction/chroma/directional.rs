@@ -74,6 +74,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             qindex,
             false,
             ibp_dc,
+            None,
             availability,
             bit_depth,
         ),
@@ -151,6 +152,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 log2_width,
                 qindex,
                 false,
+                None,
                 bit_depth,
                 MiddleEdgeAvailability {
                     above: availability.above,
@@ -169,6 +171,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 log2_width,
                 qindex,
                 false,
+                None,
                 bit_depth,
                 MiddleEdgeAvailability {
                     above: availability.above,
@@ -187,6 +190,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 log2_width,
                 qindex,
                 false,
+                None,
                 bit_depth,
                 MiddleEdgeAvailability {
                     above: availability.above,

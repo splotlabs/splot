@@ -181,36 +181,93 @@ pub(crate) fn apply_inter_mvd_signs(
     derive_last_sign: bool,
     derive_threshold: usize,
 ) -> Result<Mv> {
-    let mut row = magnitude.row;
-    let mut col = magnitude.col;
-    if row < 0 || col < 0 {
-        return Err(mv_overflow(tile_offset));
-    }
-    let nonzero_count = usize::from(row != 0) + usize::from(col != 0);
-    let derive = derive_last_sign && nonzero_count >= derive_threshold;
+    let [signed] = apply_inter_mvd_sign_vector_set(
+        [magnitude],
+        symbols,
+        tile_offset,
+        config,
+        derive_last_sign,
+        derive_threshold,
+    )?;
+    Ok(signed)
+}
+
+pub(crate) fn apply_inter_mvd_sign_pair(
+    first: Mv,
+    second: Mv,
+    symbols: &mut SymbolDecoder<'_>,
+    tile_offset: ByteOffset,
+    config: MvReadConfig,
+    derive_last_sign: bool,
+    derive_threshold: usize,
+) -> Result<(Mv, Mv)> {
+    let [first, second] = apply_inter_mvd_sign_vector_set(
+        [first, second],
+        symbols,
+        tile_offset,
+        config,
+        derive_last_sign,
+        derive_threshold,
+    )?;
+    Ok((first, second))
+}
+
+fn apply_inter_mvd_sign_vector_set<const N: usize>(
+    mut vectors: [Mv; N],
+    symbols: &mut SymbolDecoder<'_>,
+    tile_offset: ByteOffset,
+    config: MvReadConfig,
+    derive_last_sign: bool,
+    derive_threshold: usize,
+) -> Result<[Mv; N]> {
     let shift = u32::from(MV_PRECISION_EIGHTH_PEL - config.precision());
-    let sum = (row >> shift) + (col >> shift);
-    if row != 0 {
-        let sign = if derive && col == 0 {
-            u8::try_from(sum & 1).map_err(|_| mv_overflow(tile_offset))?
-        } else {
-            read_bypass_bit(symbols, tile_offset)?
-        };
-        if sign != 0 {
-            row = -row;
+    let mut nonzero_count = 0usize;
+    let mut sum = 0i32;
+    let mut last_nonzero = None;
+    for (vector_idx, vector) in vectors.iter().enumerate() {
+        for component_idx in 0..2 {
+            let component = if component_idx == 0 {
+                vector.row
+            } else {
+                vector.col
+            };
+            if component < 0 {
+                return Err(mv_overflow(tile_offset));
+            }
+            if component != 0 {
+                nonzero_count += 1;
+                sum += component >> shift;
+                last_nonzero = Some((vector_idx, component_idx));
+            }
         }
     }
-    if col != 0 {
-        let sign = if derive {
-            u8::try_from(sum & 1).map_err(|_| mv_overflow(tile_offset))?
-        } else {
-            read_bypass_bit(symbols, tile_offset)?
-        };
-        if sign != 0 {
-            col = -col;
+
+    let derive = derive_last_sign && nonzero_count >= derive_threshold;
+    for (vector_idx, vector) in vectors.iter_mut().enumerate() {
+        for component_idx in 0..2 {
+            let component = if component_idx == 0 {
+                vector.row
+            } else {
+                vector.col
+            };
+            if component == 0 {
+                continue;
+            }
+            let sign = if derive && last_nonzero == Some((vector_idx, component_idx)) {
+                u8::try_from(sum & 1).map_err(|_| mv_overflow(tile_offset))?
+            } else {
+                read_bypass_bit(symbols, tile_offset)?
+            };
+            if sign != 0 {
+                if component_idx == 0 {
+                    vector.row = -component;
+                } else {
+                    vector.col = -component;
+                }
+            }
         }
     }
-    Ok(Mv { row, col })
+    Ok(vectors)
 }
 
 fn read_shell_diff(

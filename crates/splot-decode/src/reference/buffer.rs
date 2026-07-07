@@ -15,6 +15,7 @@ use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::error::Result;
 use crate::filters::ccso::CcsoUnitGrid;
 use crate::pipeline::{PipelineFrame, unsupported};
+use crate::prediction::inter::TemporalMotionField;
 
 /// One modeled § 7.23 reference slot.
 #[derive(Clone, Debug)]
@@ -32,6 +33,7 @@ struct Slot {
     frame_cdfs: Option<FrameCdfSubset>,
     ccso_params: Option<CcsoParams>,
     ccso_grid: Option<CcsoUnitGrid>,
+    motion_field: Option<TemporalMotionField>,
 }
 
 impl Slot {
@@ -49,6 +51,7 @@ impl Slot {
         frame_cdfs: None,
         ccso_params: None,
         ccso_grid: None,
+        motion_field: None,
     };
 
     fn refresh(&mut self, frame_index: usize, update: &FrameRefUpdate, valid: bool) {
@@ -66,6 +69,7 @@ impl Slot {
             frame_cdfs: Some(update.frame_cdfs.clone()),
             ccso_params: update.ccso_params.clone(),
             ccso_grid: update.ccso_grid.clone(),
+            motion_field: Some(update.motion_field.clone()),
         };
     }
 }
@@ -99,6 +103,8 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) ccso_params: Option<CcsoParams>,
     /// Saved frame CCSO block-enable grid for later `sb_reuse_ccso`.
     pub(crate) ccso_grid: Option<CcsoUnitGrid>,
+    /// Saved per-8x8 TMVP motion field for later § 7.9.3 projection.
+    pub(crate) motion_field: TemporalMotionField,
 }
 
 /// The minimal-tier § 7.23 reference-frame buffer over `num_ref_frames` active slots.
@@ -226,6 +232,8 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) ref_ccso_params: Vec<Option<CcsoParams>>,
     /// Saved frame CCSO block-enable grid per slot.
     pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoUnitGrid>>,
+    /// Saved per-slot TMVP motion fields.
+    pub(crate) ref_motion_fields: Vec<Option<TemporalMotionField>>,
 }
 
 impl ReferenceMetadata {
@@ -243,6 +251,7 @@ impl ReferenceMetadata {
             ref_frame_cdfs: Vec::with_capacity(num),
             ref_ccso_params: Vec::with_capacity(num),
             ref_ccso_unit_grids: Vec::with_capacity(num),
+            ref_motion_fields: Vec::with_capacity(num),
         }
     }
 
@@ -261,6 +270,7 @@ impl ReferenceMetadata {
         self.ref_frame_cdfs.push(slot.frame_cdfs.clone());
         self.ref_ccso_params.push(slot.ccso_params.clone());
         self.ref_ccso_unit_grids.push(slot.ccso_grid.clone());
+        self.ref_motion_fields.push(slot.motion_field.clone());
     }
 }
 
@@ -284,6 +294,7 @@ mod tests {
             frame_cdfs: FrameCdfSubset::from_defaults(),
             ccso_params: None,
             ccso_grid: None,
+            motion_field: TemporalMotionField::empty(),
         }
     }
 
@@ -302,6 +313,7 @@ mod tests {
             frame_cdfs: FrameCdfSubset::from_defaults(),
             ccso_params: None,
             ccso_grid: None,
+            motion_field: TemporalMotionField::empty(),
         }
     }
 
