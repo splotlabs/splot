@@ -749,21 +749,22 @@ fn lossless_luma_prediction_verified(
         )
 }
 
-fn top_left_vertical_delta_prediction_verified(
+fn top_left_no_neighbour_directional_prediction_verified(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
     sb_mib: usize,
 ) -> bool {
     let block = block_ctx.block();
-    block_ctx.bit_depth() == BitDepth::Eight
+    let top_left_full_sb = block_ctx.bit_depth() == BitDepth::Eight
         && sb_mib == FULL_SB_N4_LUMA
         && block_ctx.is_top_left()
         && block.width4() == FULL_SB_N4_LUMA
-        && block.height4() == FULL_SB_N4_LUMA
-        && modes.angle_delta_y == 2
+        && block.height4() == FULL_SB_N4_LUMA;
+    top_left_full_sb
         && matches!(
-            modes.y_mode.supported_directional(),
-            Some(SupportedDirectionalLumaMode::Vertical)
+            (modes.y_mode.supported_directional(), modes.angle_delta_y),
+            (Some(SupportedDirectionalLumaMode::Vertical), 2)
+                | (Some(SupportedDirectionalLumaMode::Horizontal), 0)
         )
 }
 
@@ -774,7 +775,8 @@ fn plan_luma_prediction_for_segment(
     sb_mib: usize,
 ) -> core::result::Result<crate::prediction::intra::IntraLumaPlan, IntraLumaUnsupported> {
     if (lossless && lossless_luma_prediction_verified(modes, block_ctx, sb_mib))
-        || (!lossless && top_left_vertical_delta_prediction_verified(modes, block_ctx, sb_mib))
+        || (!lossless
+            && top_left_no_neighbour_directional_prediction_verified(modes, block_ctx, sb_mib))
     {
         plan_luma_prediction(modes, block_ctx, true)
     } else {
@@ -2097,28 +2099,31 @@ mod tests {
     }
 
     #[test]
-    fn cardinal_vertical_top_left_guard_rejects_unverified_shapes() {
+    fn cardinal_top_left_guard_admits_only_verified_shapes() {
         let top_left_8 =
             ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
         let vertical = luma_modes_with_angle(
             crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
             2,
         );
+        let horizontal = luma_modes(crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST);
 
         assert_eq!(
             plan_luma_prediction_for_segment(&vertical, top_left_8, false, FULL_SB_N4_LUMA)
                 .expect("verified top-left V_PRED angle delta should plan"),
             crate::prediction::intra::IntraLumaPlan::DirectionalMiddle { p_angle: 96 }
         );
+        assert_eq!(
+            plan_luma_prediction_for_segment(&horizontal, top_left_8, false, FULL_SB_N4_LUMA)
+                .expect("verified top-left H_PRED cardinal should plan"),
+            crate::prediction::intra::IntraLumaPlan::CardinalNeighbour {
+                direction: IntraCardinalDirection::Horizontal,
+            }
+        );
 
         for (modes, block_ctx, sb_mib) in [
             (
                 luma_modes(crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST),
-                top_left_8,
-                FULL_SB_N4_LUMA,
-            ),
-            (
-                luma_modes(crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST),
                 top_left_8,
                 FULL_SB_N4_LUMA,
             ),
@@ -2136,6 +2141,11 @@ mod tests {
                 FULL_SB_N4_LUMA,
             ),
             (vertical, top_left_8, 32),
+            (
+                horizontal,
+                ctx_with_bit_depth(0, 0, 4, 4, BitDepth::Eight),
+                FULL_SB_N4_LUMA,
+            ),
             (
                 vertical,
                 ctx_with_bit_depth(0, 0, 4, 4, BitDepth::Eight),

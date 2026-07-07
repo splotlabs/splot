@@ -386,6 +386,11 @@ description = "Single 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-ow
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-hpred-top-left-intra-64x64-q96.ivf"
+description = "Single 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned flat luma input (Y=129, U=128, V=128), broad decode tools disabled at base_q_idx 96, and a single top-left 64x64 superblock. The block codes H_PRED syntax through section 5.20.5.3 with AngleDeltaY 0, producing pAngle 180: this is the exact section 7.13.2.8 cardinal horizontal copy over the section 7.13.2.1 no-neighbour left fallback. The old decoder failed closed as general_intra_cardinal_horizontal_unverified at byte offset 64 because the top-left block had no real left edge. avmdec raw SHA-256 is f06ae152103a1abcb6d853faf078d35c770734acd99827c625763bd8b73a2854 and splot reproduces it byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-hpred-intra-128x64-q180.ivf"
 description = "Multi-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned row-constant luma input (each row a distinct value, identical across all columns; flat chroma) with broad decode tools disabled at base_q_idx 180, so the LEFT 64x64 superblock codes DC_PRED and the RIGHT 64x64 superblock (frontier col 16) codes the cardinal section 7.13.2.8 H_PRED (pAngle 180) luma mode. H_PRED is decoded via the section 5.20.5.3 direct first-mode-set y_mode_index 6 (NOT the escape): modeIdx 6 -> Default_Mode_List_Y[1] (45) biased to modeDelta 50 -> Reordered_Y_Mode[11] == H_PRED, AngleDeltaY 0; the section 8.3.2 ctx is 0 (the DC left neighbour stored IntraJointMode 0). H_PRED is a pure HORIZONTAL copy (pred[i][j] = LeftCol[i]) of the REAL reconstructed section 7.13.2.1 left column (the right column of the already-decoded left superblock, haveLeft 1) plus residual; it reads no corner, no above, no IDIF, no useIBP. The chroma codes uv_mode 0 over the directional H_PRED luma, so section 5.20.5.3 returns UVMode == H_PRED (directional follow): a cardinal copy of the real left chroma column. The first general-intra cardinal H_PRED decode target; avmdec and dav2d raw outputs agree (md5 aac61b219518ce5057a6284262ac3bb9) and splot reproduces byte-for-byte; validates clean."
 expect = "clean"

@@ -76,6 +76,10 @@ const VPRED_TOP_LEFT_Q96_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-vpred-top-left-intra-64x64-q96.ivf"
 );
 
+const HPRED_TOP_LEFT_Q96_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-hpred-top-left-intra-64x64-q96.ivf"
+);
+
 const LOSSLESS_NONDC_LUMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d135-intra-64x64.ivf"
 );
@@ -496,6 +500,12 @@ fn lossless_cardinal_y_and_top_left_angle_delta_variants_decode_to_oracle() {
         "V_PRED angle-delta luma",
         Some((96, 144)),
         "3b0a07a4c0686c9d3d4c7715691159468e545bd70989707c25dbeee330e33ae5",
+    );
+    assert_eq!(HPRED_TOP_LEFT_Q96_FIXTURE.len(), 66);
+    assert_lossless_flat_oracle(
+        HPRED_TOP_LEFT_Q96_FIXTURE,
+        129,
+        "f06ae152103a1abcb6d853faf078d35c770734acd99827c625763bd8b73a2854",
     );
 }
 
