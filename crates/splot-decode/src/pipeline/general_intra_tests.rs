@@ -62,6 +62,10 @@ const LOSSLESS_DPCM_Y_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-dpcm-y-intra-64x64.ivf"
 );
 
+const LOSSLESS_DPCM_UV_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-dpcm-uv-intra-64x64.ivf"
+);
+
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
@@ -374,6 +378,30 @@ fn lossless_dpcm_y_intra_frame_decodes_to_oracle() {
     assert_hash(
         &frame,
         "f294ce1a7dbe1d19840f716fc284a0e9c144548fb0699fef2b44e7c0c1f91d90",
+    );
+}
+
+#[test]
+fn lossless_dpcm_uv_intra_frame_decodes_to_oracle() {
+    assert_eq!(LOSSLESS_DPCM_UV_FIXTURE.len(), 418);
+    let frame = decode_eight(LOSSLESS_DPCM_UV_FIXTURE);
+
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_chroma_size(&frame, 32, 32);
+    assert_all_samples_eq(frame.y().samples(), 128, "lossless DPCM-UV luma");
+    assert_distinct_gt(
+        frame.u().unwrap().samples(),
+        16,
+        "lossless DPCM-UV U chroma",
+    );
+    assert_distinct_gt(
+        frame.v().unwrap().samples(),
+        16,
+        "lossless DPCM-UV V chroma",
+    );
+    assert_hash(
+        &frame,
+        "2df572366da9b9c816f21f2c605552a5d6925d0e155eb197f16d9d3fc65aff3c",
     );
 }
 

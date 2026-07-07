@@ -5,7 +5,9 @@
 
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
-use splot_recon::{CurrentFrameWorkspace, IntraCardinalDirection, PlaneId, ReconSample};
+use splot_recon::{
+    CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection, PlaneId, ReconSample,
+};
 
 use crate::bitstream::tile_payload::{
     CflParams, DecodeTileWorkUnit, GeneralIntraResidualError, LumaPalette,
@@ -107,7 +109,7 @@ pub(crate) enum RectLumaPlan {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RectChromaPlan {
-    Mode(SupportedChromaMode),
+    Mode(SupportedChromaMode, Option<DpcmDirection>),
     OneSided {
         p_angle: u16,
     },
@@ -233,6 +235,7 @@ enum ResidualReconstructionPlan {
     },
     Chroma {
         mode: SupportedChromaMode,
+        dpcm: Option<DpcmDirection>,
     },
     ChromaOneSided {
         p_angle: u16,
@@ -559,10 +562,10 @@ impl DeblockRecorder<'_> {
 
 fn chroma_reconstruction(plan: RectChromaPlan) -> ResidualReconstructionPlan {
     match plan {
-        RectChromaPlan::Mode(SupportedChromaMode::Dc) => {
+        RectChromaPlan::Mode(SupportedChromaMode::Dc, None) => {
             ResidualReconstructionPlan::Rect { use_tcq: false }
         }
-        RectChromaPlan::Mode(mode) => ResidualReconstructionPlan::Chroma { mode },
+        RectChromaPlan::Mode(mode, dpcm) => ResidualReconstructionPlan::Chroma { mode, dpcm },
         RectChromaPlan::OneSided { p_angle } => {
             ResidualReconstructionPlan::ChromaOneSided { p_angle }
         }
@@ -1862,6 +1865,7 @@ impl ResidualPlanePlan {
                     qindex,
                     use_tcq,
                     Some(luma_context),
+                    None,
                     EdgeAvail::new(neighbours.has_above(), neighbours.has_left()),
                     block_ctx.bit_depth(),
                 )
@@ -1981,7 +1985,7 @@ impl ResidualPlanePlan {
                     edge_filters,
                 )
             }
-            ResidualReconstructionPlan::Chroma { mode } => {
+            ResidualReconstructionPlan::Chroma { mode, dpcm } => {
                 let neighbours = self.plane_neighbours(block_ctx, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_chroma_block_into(
                     workspace,
@@ -1993,6 +1997,7 @@ impl ResidualPlanePlan {
                     self.tx.height_log2(),
                     qindex,
                     mode,
+                    dpcm,
                     neighbours.num_above_right(),
                     neighbours.num_below_left(),
                     intra_edge.enable_ibp

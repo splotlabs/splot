@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::tile::block_context::{BlockRect, ChromaSampling, TxShape};
-use splot_recon::BitDepth;
+use splot_recon::{BitDepth, DpcmDirection};
 
 #[derive(Clone, Copy)]
 struct Case {
@@ -91,7 +91,7 @@ fn chroma_dc_uses_generic_rect_reconstruction() {
     let plan = GeneralIntraResidualPlan::square(
         ctx,
         IntraLumaPlan::Dc,
-        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc)),
+        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
         false,
         false,
     )
@@ -108,13 +108,42 @@ fn chroma_dc_uses_generic_rect_reconstruction() {
 }
 
 #[test]
+fn chroma_dpcm_direction_is_preserved_for_both_planes() {
+    let block = BlockRect::new(0, 0, 16, 16);
+    let ctx = ctx(block, BitDepth::Eight);
+    let plan = GeneralIntraResidualPlan::square(
+        ctx,
+        IntraLumaPlan::Dc,
+        Some(RectChromaPlan::Mode(
+            SupportedChromaMode::Vertical,
+            Some(DpcmDirection::Vertical),
+        )),
+        false,
+        false,
+    )
+    .expect("square plan");
+
+    for plane_id in [PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            plan.plane_plan(plane_id)
+                .expect("chroma plane")
+                .reconstruction,
+            ResidualReconstructionPlan::Chroma {
+                mode: SupportedChromaMode::Vertical,
+                dpcm: Some(DpcmDirection::Vertical)
+            }
+        );
+    }
+}
+
+#[test]
 fn fsc_coefficients_are_luma_only() {
     let block = BlockRect::new(0, 0, 16, 16);
     let ctx = ctx(block, BitDepth::Ten);
     let plan = GeneralIntraResidualPlan::square(
         ctx,
         IntraLumaPlan::Dc,
-        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc)),
+        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
         true,
         true,
     )
@@ -191,7 +220,7 @@ fn non_cfl_chroma_keeps_chunk_interleaving() {
     let plan = GeneralIntraResidualPlan::rect(
         ctx,
         RectLumaPlan::Dc { use_tcq: true },
-        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc)),
+        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
         false,
     )
     .expect("dc rect plan");
@@ -320,7 +349,7 @@ fn assert_case(case: Case) {
         GeneralIntraResidualPlan::square(
             ctx,
             IntraLumaPlan::Dc,
-            Some(RectChromaPlan::Mode(SupportedChromaMode::Dc)),
+            Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
             true,
             false,
         )
@@ -329,7 +358,7 @@ fn assert_case(case: Case) {
             ctx,
             RectLumaPlan::Dc { use_tcq: true },
             case.expect_chroma
-                .then_some(RectChromaPlan::Mode(SupportedChromaMode::Dc)),
+                .then_some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
             false,
         )
     }

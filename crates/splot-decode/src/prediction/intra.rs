@@ -163,6 +163,7 @@ impl IntraLumaPlan {
                 crate::pipeline::reconstruct::reconstruct_general_intra_cardinal_neighbour_block_into(
                     workspace, luma, direction, PlaneId::Y, x, y, log2_side, log2_side, qindex,
                     use_tcq, Some(luma_context),
+                    None,
                     crate::pipeline::reconstruct::IntraEdgeAvailability {
                         above: neighbours.has_above(),
                         left: neighbours.has_left(),
