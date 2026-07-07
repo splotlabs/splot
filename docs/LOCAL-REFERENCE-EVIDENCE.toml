@@ -1832,6 +1832,58 @@ left = "avm-vpred-top-left-q96-raw-md5"
 right = "avm-repeat-vpred-top-left-q96-raw-md5"
 
 [[evidence]]
+id = "lref-avm-syn-hpred-top-left-intra-64x64-q96"
+feature_id = "DECODE-GENERAL-INTRA-CARDINAL"
+decoder_support_rows = ["general-intra-cardinal"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 64x64 top-left no-neighbour intra fixture whose luma syntax is H_PRED with AngleDeltaY 0, yielding pAngle 180. This is the exact cardinal horizontal §7.13.2.8 copy over the §7.13.2.1 no-neighbour left fallback. splot reproduces the raw SHA-256 through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-07"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-hpred-top-left-intra-64x64-q96.ivf"
+sha256 = "b95f2820aca297084804c43a5206c571efbb7920e902ecb121ff797abd1f4b77"
+size_bytes = 66
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 64x64 8-bit 4:2:0 YUV input with flat Y=129, U=128, and V=128. Encoded with AVM at --qp=96 with broad decode tools disabled, --sb-size=64, and --min-partition-size=64 --max-partition-size=64. Temporary trace showed y_mode H_PRED with angle_delta_y=0. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3 from the local fixture build; checkout contained untracked build directories only."
+command_summary = "Local avmdec --codec=av2 --i420 --rawvideo --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:input}."
+output_digest_id = "avm-hpred-top-left-q96-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "79434c1a6d9b71c099eead43a93ce066"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 f06ae152103a1abcb6d853faf078d35c770734acd99827c625763bd8b73a2854 is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3 decode run from the same fixture build; checkout contained untracked build directories only."
+command_summary = "Repeated local avmdec --codec=av2 --i420 --rawvideo --output-bit-depth=8 --limit=1 output MD5 for {fixture:input}."
+output_digest_id = "avm-repeat-hpred-top-left-q96-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "79434c1a6d9b71c099eead43a93ce066"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-hpred-top-left-q96-raw-md5"
+right = "avm-repeat-hpred-top-left-q96-raw-md5"
+
+[[evidence]]
 id = "lref-avm-dav2d-syn-hpred-intra-128x64-q180"
 feature_id = "DECODE-GENERAL-INTRA-CARDINAL"
 decoder_support_rows = ["general-intra-cardinal"]
