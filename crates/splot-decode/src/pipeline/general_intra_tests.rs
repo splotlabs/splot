@@ -54,6 +54,10 @@ const SEQDELTAQ_FIXTURE: &[u8] =
 const LOSSLESS_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-lossless-intra-64x64.ivf");
 
+const LOSSLESS_NONZERO_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nonzero-intra-64x64.ivf"
+);
+
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
@@ -327,16 +331,31 @@ fn seqdeltaq_intra_frame_decodes_to_oracle() {
     );
 }
 
-#[test]
-fn lossless_intra_frame_decodes_to_oracle() {
-    let frame = decode_eight(LOSSLESS_FIXTURE);
+fn assert_lossless_flat_oracle(fixture: &[u8], y_sample: u8, expected_hash: &str) {
+    let frame = decode_eight(fixture);
     assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
     assert_chroma_size(&frame, 32, 32);
-    assert_all_samples_eq(frame.y().samples(), 128, "Y");
+    assert_all_samples_eq(frame.y().samples(), y_sample, "Y");
     assert_chroma_eq(&frame, 128, 128);
-    assert_hash(
-        &frame,
+    assert_hash(&frame, expected_hash);
+}
+
+#[test]
+fn lossless_intra_frame_decodes_to_oracle() {
+    assert_lossless_flat_oracle(
+        LOSSLESS_FIXTURE,
+        128,
         "cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1",
+    );
+}
+
+#[test]
+fn lossless_nonzero_intra_frame_decodes_to_oracle() {
+    assert_eq!(LOSSLESS_NONZERO_FIXTURE.len(), 72);
+    assert_lossless_flat_oracle(
+        LOSSLESS_NONZERO_FIXTURE,
+        96,
+        "1af4a4343927b77994b57ce50d3e0b09d57dc698e2ec122d8abcdc1667d70782",
     );
 }
 

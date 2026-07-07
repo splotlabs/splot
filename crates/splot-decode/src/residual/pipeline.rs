@@ -702,9 +702,6 @@ impl ResidualPlanePlan {
             self.txb_skip_fsc_mode,
             policy,
         )?;
-        if coeffs.lossless && !coeffs.all_zero {
-            return Err(GeneralIntraResidualError::UnsupportedLosslessNonZeroResidual);
-        }
         if trace_bits {
             eprintln!(
                 "general intra residual plane block={:?} plane={:?} tx_size={} xy=({}, {}) fsc={} bits={}..{} all_zero={} eob={} tx_type={} recon={:?}",
@@ -833,9 +830,6 @@ impl ResidualPlanePlan {
                     self.txb_skip_fsc_mode,
                     policy,
                 )?;
-                if coeffs.lossless && !coeffs.all_zero {
-                    return Err(GeneralIntraResidualError::UnsupportedLosslessNonZeroResidual);
-                }
                 let block = PositionedLumaCoeffBlock {
                     x,
                     y,
