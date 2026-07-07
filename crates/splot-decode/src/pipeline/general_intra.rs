@@ -20,7 +20,7 @@ use crate::residual::pipeline::{
 use crate::support::capability::missing_capability_message;
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
 
-const FULL_SB_N4_LUMA: usize = 16;
+pub(super) const FULL_SB_N4_LUMA: usize = 16;
 const MI_SIZE: usize = 4;
 const ANGLE_STEP: i32 = 3;
 const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
@@ -702,10 +702,15 @@ fn ensure_lossless_verified_prediction_subset(
         ));
     }
     if has_chroma
-        && !lossless_chroma_prediction_verified(modes.supported_chroma_mode(), modes.uses_dpcm_uv())
+        && !lossless_chroma_block_prediction_verified(
+            modes.supported_chroma_mode(),
+            modes.uses_dpcm_uv(),
+            block_ctx,
+            sb_mib,
+        )
     {
         return Err(general_intra_at!(
-            "general_intra_lossless_nondc_chroma_block_unverified",
+            "general_intra_lossless_other_nondc_chroma_block_unverified",
             tile_offset,
             missing_capability_message!("intra.lossless.chroma_prediction", mode = "non_dc"),
             "7.13.2",
@@ -749,7 +754,7 @@ fn plan_luma_prediction_for_segment(
     }
 }
 
-fn lossless_chroma_prediction_verified(
+pub(super) fn lossless_chroma_prediction_verified(
     mode: Option<SupportedChromaMode>,
     uses_dpcm_uv: bool,
 ) -> bool {
@@ -759,6 +764,25 @@ fn lossless_chroma_prediction_verified(
                 mode,
                 Some(SupportedChromaMode::Vertical | SupportedChromaMode::Horizontal)
             ))
+}
+
+pub(super) fn lossless_chroma_block_prediction_verified(
+    mode: Option<SupportedChromaMode>,
+    uses_dpcm_uv: bool,
+    block_ctx: BlockCtx,
+    sb_mib: usize,
+) -> bool {
+    if lossless_chroma_prediction_verified(mode, uses_dpcm_uv) {
+        return true;
+    }
+    let block = block_ctx.block();
+    let top_left_64_sb = block_ctx.bit_depth() == BitDepth::Eight
+        && block_ctx.chroma() == ChromaSampling::Yuv420
+        && sb_mib == FULL_SB_N4_LUMA
+        && block_ctx.is_top_left()
+        && block.width4() == FULL_SB_N4_LUMA
+        && block.height4() == FULL_SB_N4_LUMA;
+    top_left_64_sb && mode == Some(SupportedChromaMode::Horizontal) && !uses_dpcm_uv
 }
 
 fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformTypeContext {
@@ -2066,43 +2090,6 @@ mod tests {
                 Some(splot_core::span::ByteOffset::new(9))
             );
         }
-    }
-
-    #[test]
-    fn lossless_chroma_prediction_guard_only_admits_dc() {
-        assert!(lossless_chroma_prediction_verified(
-            Some(SupportedChromaMode::Dc),
-            false
-        ));
-        assert!(!lossless_chroma_prediction_verified(
-            Some(SupportedChromaMode::Smooth),
-            false
-        ));
-        assert!(!lossless_chroma_prediction_verified(
-            Some(SupportedChromaMode::D45),
-            false
-        ));
-        assert!(!lossless_chroma_prediction_verified(None, false));
-    }
-
-    #[test]
-    fn lossless_chroma_prediction_guard_admits_dpcm_cardinal_only_when_active() {
-        assert!(lossless_chroma_prediction_verified(
-            Some(SupportedChromaMode::Vertical),
-            true
-        ));
-        assert!(lossless_chroma_prediction_verified(
-            Some(SupportedChromaMode::Horizontal),
-            true
-        ));
-        assert!(!lossless_chroma_prediction_verified(
-            Some(SupportedChromaMode::Vertical),
-            false
-        ));
-        assert!(!lossless_chroma_prediction_verified(
-            Some(SupportedChromaMode::Smooth),
-            true
-        ));
     }
 
     #[test]
