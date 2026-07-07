@@ -19201,7 +19201,7 @@ change_id = "coeff-ordinary-branch-lossless-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Wires the staged AV2 §5.20.7.29 `Lossless` ordinary coefficient branch into the general-intra runtime subset. The coefficient path derives `Lossless` from segment facts, forces intra non-FSC transform units to TX_4X4, selects DCT_DCT before lower non-lossless `txSet` handling, suppresses non-lossless parity-hiding/TCQ flags for the lossless path, and threads the lossless flag into reconstruction. The committed `syn-lossless-intra-64x64.ivf` fixture carries a flat 8-bit 4:2:0 lossless DC/DC all-zero residual segment and decodes byte-exact to AVM raw SHA-256 cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1, closing the former `general_intra_lossless_segment_unimplemented` admission gate for this verified subset. Lossless DPCM mode syntax is parsed in block mode decode, but active DPCM luma or chroma fails closed before prediction. Lossless non-DC luma/chroma prediction, active FSC, nonzero lossless residual blocks, and mixed-lossless frames with active loop filters also fail closed pending AVM oracle coverage or per-segment filter lossless support. This feature remains partial: nonzero lossless residual variety, FSC/IDTX lossless cases, lossless inter inputs, DPCM prediction, live AVM/dav2d invocation in CI, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
+notes = "Wires the staged AV2 §5.20.7.29 `Lossless` ordinary coefficient branch into the general-intra runtime subset. The coefficient path derives `Lossless` from segment facts, forces intra non-FSC transform units to TX_4X4, selects DCT_DCT before lower non-lossless `txSet` handling, suppresses non-lossless parity-hiding/TCQ flags for the lossless path, and threads the lossless flag into reconstruction. The committed `syn-lossless-intra-64x64.ivf` fixture carries a flat 8-bit 4:2:0 lossless DC/DC all-zero residual segment and decodes byte-exact to AVM raw SHA-256 cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1, closing the former `general_intra_lossless_segment_unimplemented` admission gate for this verified subset; `syn-lossless-nonzero-intra-64x64.ivf` carries nonzero lossless ordinary coefficients and decodes byte-exact to AVM raw SHA-256 1af4a4343927b77994b57ce50d3e0b09d57dc698e2ec122d8abcdc1667d70782, closing `general_intra_lossless_nonzero_residual_unverified`. Lossless DPCM mode syntax is parsed in block mode decode, but active DPCM luma or chroma fails closed before prediction. Lossless non-DC luma/chroma prediction, active FSC, and mixed-lossless frames with active loop filters also fail closed pending AVM oracle coverage or per-segment filter lossless support. This feature remains partial: FSC/IDTX lossless cases, lossless inter inputs, DPCM prediction, live AVM/dav2d invocation in CI, broad `decode_block()`, and broad `decode_tile()` remain unimplemented."
 
 [feature.status]
 mapped = "done"
@@ -19225,10 +19225,12 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_rejects_inter_atomically",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_branch_lossless_tests.rs::coefficient_ordinary_branch_lossless_all_zero_preserves_tx_set_branch",
     "crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_intra_frame_decodes_to_oracle",
+    "crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_nonzero_intra_frame_decodes_to_oracle",
 ]
 commands = [
     "cargo test -p splot-decode ordinary_branch_lossless --locked",
     "cargo test -p splot-decode lossless_intra_frame_decodes_to_oracle --locked",
+    "cargo test -p splot-decode lossless_nonzero_intra_frame_decodes_to_oracle --locked",
     "cargo test -p splot-cli --test decoder_oracle --locked",
     "cargo test -p splot-decode ordinary_branch_tx_set --locked",
     "cargo test -p splot-decode ordinary_pass --locked",
@@ -19240,6 +19242,7 @@ commands = [
 ]
 fixtures = [
     "tests/conformance/vectors/valid/syn-lossless-intra-64x64.ivf",
+    "tests/conformance/vectors/valid/syn-lossless-nonzero-intra-64x64.ivf",
     "tests/conformance/decoder-oracle.toml",
     "crates/splot-decode/src/pipeline/frame_engine/intra.rs",
     "crates/splot-decode/src/pipeline/general_intra.rs",

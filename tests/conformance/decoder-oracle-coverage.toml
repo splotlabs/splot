@@ -436,6 +436,13 @@ fixtureable = true
 spec_sections = ["5.20.7.27", "5.20.7.28", "8.3.2"]
 
 [[capability]]
+id = "coeff.lossless_nonzero"
+name = "Nonzero lossless ordinary coefficient decode"
+category = "coeff"
+fixtureable = true
+spec_sections = ["5.20.7.27", "5.20.7.29", "7.15.4"]
+
+[[capability]]
 id = "coeff.parity_hiding"
 name = "Coefficient parity hiding"
 category = "coeff"

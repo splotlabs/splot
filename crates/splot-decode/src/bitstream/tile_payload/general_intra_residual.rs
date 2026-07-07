@@ -514,8 +514,6 @@ pub(crate) enum GeneralIntraResidualError {
     },
     #[error("general intra residual requires unsupported active transform-tool syntax: {reason}")]
     UnsupportedTransformToolResidual { reason: &'static str },
-    #[error("general intra lossless nonzero residual path is unverified")]
-    UnsupportedLosslessNonZeroResidual,
     #[error("general intra luma nonzero coefficient pass produced an unexpected branch result")]
     UnexpectedBranch,
     #[error("general intra luma reconstruction expected {expected} quant entries, got {actual}")]

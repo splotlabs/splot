@@ -1685,12 +1685,6 @@ fn general_intra_residual_error(
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
             )
         }
-        GeneralIntraResidualError::UnsupportedLosslessNonZeroResidual => general_intra_at!(
-            "general_intra_lossless_nonzero_residual_unverified",
-            offset,
-            missing_capability_message!("intra.residual.lossless_nonzero", residual = "nonzero"),
-            "5.20.7.29",
-        ),
         GeneralIntraResidualError::UnexpectedBranch => general_intra_at!(
             "general_intra_luma_coeff_unexpected_branch",
             offset,
