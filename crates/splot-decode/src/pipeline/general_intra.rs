@@ -528,15 +528,11 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         }
         general_intra_block_mode_error(error, tile_offset)
     })?;
-    if chroma.uses_dpcm_uv() {
-        return Err(general_intra_at!(
-            "general_intra_lossless_dpcm_uv_chroma_part_unimplemented",
-            tile_offset,
-            missing_capability_message!("intra.chroma.dpcm", mode = "active"),
-            "5.20.5.6",
-        ));
-    }
-    if lossless && !lossless_chroma_prediction_verified(chroma.supported_chroma_mode(y_mode), false)
+    if lossless
+        && !lossless_chroma_prediction_verified(
+            chroma.supported_chroma_mode(y_mode),
+            chroma.uses_dpcm_uv(),
+        )
     {
         return Err(general_intra_at!(
             "general_intra_lossless_nondc_chroma_part_unverified",
