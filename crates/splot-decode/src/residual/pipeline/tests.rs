@@ -364,5 +364,6 @@ fn empty_luma_coeffs() -> crate::bitstream::tile_payload::LumaCoeffBlock {
         quant: Vec::new(),
         intra_ist: None,
         plane_tx_type: 0,
+        lossless: false,
     }
 }

@@ -3081,3 +3081,56 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-seqdeltaq-intra-128x64-raw-md5"
 right = "avm-repeat-seqdeltaq-intra-128x64-raw-md5"
+
+
+[[evidence]]
+id = "lref-avm-syn-lossless-intra-64x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for the 8-bit 4:2:0 64x64 lossless intra IVF fixture; splot reproduces the raw SHA-256 through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-07"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-intra-64x64.ivf"
+sha256 = "0e820f52188da91da829b2fdb15170a5058bc3faaedb15975b46bc561b6ffda6"
+size_bytes = 67
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned flat-128 8-bit 4:2:0 YUV input using AVM lossless mode with broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, palette, IntraBC, FSC, IST, intra-DIP, MRL, SDP, rectangular/extended partitions, non-default intra TX, angle delta, smooth intra, and PAETH. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout version 1.0.0-33-g457cd5868 from the local fixture build; exact binary path not archived."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:input}."
+output_digest_id = "avm-lossless-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "9604569c8e5fcd812a940b82ef39b552"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1 is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Second local AVM checkout version 1.0.0-33-g457cd5868 decode run from the same fixture build; exact binary path not archived."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:input}."
+output_digest_id = "avm-repeat-lossless-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "9604569c8e5fcd812a940b82ef39b552"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-intra-64x64-raw-md5"
+right = "avm-repeat-lossless-intra-64x64-raw-md5"

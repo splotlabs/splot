@@ -14,7 +14,7 @@ use super::cdf::block_context::{
     reconstruct_minimal_y_mode, reconstruct_y_mode_first_set_directional_top_left,
     reconstruct_y_mode_offset_escape_top_left, reconstruct_y_mode_second_set_top_left,
     reconstruct_y_mode_with_neighbours, resolved_chroma_uv_mode, supported_chroma_mode,
-    uv_mode_ctx,
+    supported_chroma_mode_value, uv_mode_ctx,
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
@@ -32,6 +32,15 @@ const FIRST_MODE_COUNT: usize = 13;
 const SECOND_MODE_COUNT: usize = 16;
 
 const Y_MODE_SET_REASON: &str = "intra_y_mode_set";
+const USE_DPCM_Y_REASON: &str = "intra_use_dpcm_y";
+const DPCM_MODE_Y_REASON: &str = "intra_dpcm_mode_y";
+const USE_DPCM_UV_REASON: &str = "intra_use_dpcm_uv";
+const DPCM_MODE_UV_REASON: &str = "intra_dpcm_mode_uv";
+// AV2 § 5.20.5.5 and § 5.20.5.6 syntax literals for parse-then-fail-closed DPCM.
+const DPCM_VERTICAL_UV_MODE: u8 = 1;
+const DPCM_HORIZONTAL_UV_MODE: u8 = 2;
+const DPCM_VERTICAL_JOINT_MODE: u8 = 22;
+const DPCM_HORIZONTAL_JOINT_MODE: u8 = 50;
 const Y_MODE_INDEX_REASON: &str = "intra_y_mode_index";
 const Y_MODE_OFFSET_REASON: &str = "intra_y_mode_offset";
 const Y_SECOND_MODE_REASON: &str = "intra_y_second_mode";
@@ -71,6 +80,7 @@ pub(crate) struct GeneralIntraChromaToolConfig {
     enable_idtx_intra: bool,
     enable_mrls: bool,
     allow_screen_content_tools: bool,
+    lossless: bool,
 }
 
 impl GeneralIntraChromaToolConfig {
@@ -82,6 +92,7 @@ impl GeneralIntraChromaToolConfig {
             enable_idtx_intra: false,
             enable_mrls: false,
             allow_screen_content_tools: false,
+            lossless: false,
         }
     }
 
@@ -103,6 +114,12 @@ impl GeneralIntraChromaToolConfig {
         allow_screen_content_tools: bool,
     ) -> Self {
         self.allow_screen_content_tools = allow_screen_content_tools;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn with_lossless(mut self, lossless: bool) -> Self {
+        self.lossless = lossless;
         self
     }
 
@@ -149,6 +166,10 @@ pub(crate) struct GeneralIntraBlockModes {
     pub(crate) mrl_sec_index: Option<u8>,
     pub(crate) fsc_mode: u8,
     pub(crate) uses_mrls: u8,
+    use_dpcm_y: u8,
+    dpcm_mode_y: u8,
+    use_dpcm_uv: u8,
+    dpcm_mode_uv: u8,
     pub(crate) palette_y: Option<LumaPalette>,
 }
 
@@ -158,6 +179,8 @@ pub(crate) struct GeneralIntraChromaBlockMode {
     coeff_uv_mode: u8,
     is_cfl: bool,
     cfl_params: Option<CflParams>,
+    use_dpcm_uv: u8,
+    dpcm_mode_uv: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -182,6 +205,24 @@ impl GeneralIntraChromaBlockMode {
             coeff_uv_mode,
             is_cfl: false,
             cfl_params: None,
+            use_dpcm_uv: 0,
+            dpcm_mode_uv: 0,
+        }
+    }
+
+    const fn dpcm(dpcm_mode_uv: u8) -> Self {
+        let uv_mode = if dpcm_mode_uv == 0 {
+            DPCM_VERTICAL_UV_MODE
+        } else {
+            DPCM_HORIZONTAL_UV_MODE
+        };
+        Self {
+            uv_mode,
+            coeff_uv_mode: uv_mode,
+            is_cfl: false,
+            cfl_params: None,
+            use_dpcm_uv: 1,
+            dpcm_mode_uv,
         }
     }
 
@@ -191,6 +232,8 @@ impl GeneralIntraChromaBlockMode {
             coeff_uv_mode: UV_CFL_PRED_MODE,
             is_cfl: true,
             cfl_params: Some(cfl_params),
+            use_dpcm_uv: 0,
+            dpcm_mode_uv: 0,
         }
     }
 
@@ -210,9 +253,16 @@ impl GeneralIntraChromaBlockMode {
         self.cfl_params
     }
 
+    pub(crate) const fn uses_dpcm_uv(self) -> bool {
+        self.use_dpcm_uv != 0
+    }
+
     pub(crate) fn supported_chroma_mode(self, y_mode: IntraYMode) -> Option<SupportedChromaMode> {
         if self.is_cfl {
             return None;
+        }
+        if self.use_dpcm_uv != 0 {
+            return supported_chroma_mode_value(self.coeff_uv_mode);
         }
         supported_chroma_mode(y_mode, self.uv_mode)
     }
@@ -227,6 +277,49 @@ pub(crate) struct GeneralIntraLumaBlockMode {
     pub(crate) mrl_sec_index: Option<u8>,
     pub(crate) fsc_mode: u8,
     pub(crate) uses_mrls: u8,
+    pub(crate) use_dpcm_y: u8,
+    pub(crate) dpcm_mode_y: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DecodedLumaYMode {
+    y_mode: IntraYMode,
+    angle_delta_y: i8,
+    intra_joint_mode: u8,
+    use_dpcm_y: u8,
+    dpcm_mode_y: u8,
+}
+
+impl DecodedLumaYMode {
+    const fn from_y_mode(result: YModeEscapeResult) -> Self {
+        Self {
+            y_mode: result.y_mode,
+            angle_delta_y: result.angle_delta_y,
+            intra_joint_mode: result.intra_joint_mode,
+            use_dpcm_y: 0,
+            dpcm_mode_y: 0,
+        }
+    }
+
+    const fn dpcm(dpcm_mode_y: u8) -> Self {
+        if dpcm_mode_y == 0 {
+            Self {
+                y_mode: IntraYMode::dpcm_vertical(),
+                angle_delta_y: 0,
+                intra_joint_mode: DPCM_VERTICAL_JOINT_MODE,
+                use_dpcm_y: 1,
+                dpcm_mode_y,
+            }
+        } else {
+            Self {
+                y_mode: IntraYMode::dpcm_horizontal(),
+                angle_delta_y: 0,
+                intra_joint_mode: DPCM_HORIZONTAL_JOINT_MODE,
+                use_dpcm_y: 1,
+                dpcm_mode_y,
+            }
+        }
+    }
 }
 
 impl GeneralIntraLumaBlockMode {
@@ -250,6 +343,10 @@ impl GeneralIntraBlockModes {
             mrl_sec_index: luma.mrl_sec_index,
             fsc_mode: luma.fsc_mode,
             uses_mrls: luma.uses_mrls,
+            use_dpcm_y: luma.use_dpcm_y,
+            dpcm_mode_y: luma.dpcm_mode_y,
+            use_dpcm_uv: 0,
+            dpcm_mode_uv: 0,
             palette_y: None,
         }
     }
@@ -279,6 +376,10 @@ impl GeneralIntraBlockModes {
             mrl_sec_index: luma.mrl_sec_index,
             fsc_mode: luma.fsc_mode,
             uses_mrls: luma.uses_mrls,
+            use_dpcm_y: luma.use_dpcm_y,
+            dpcm_mode_y: luma.dpcm_mode_y,
+            use_dpcm_uv: chroma.use_dpcm_uv,
+            dpcm_mode_uv: chroma.dpcm_mode_uv,
             palette_y,
         }
     }
@@ -326,6 +427,14 @@ impl GeneralIntraBlockModes {
 
     pub(crate) const fn uses_active_fsc(&self) -> bool {
         self.fsc_mode != 0
+    }
+
+    pub(crate) const fn uses_dpcm_y(&self) -> bool {
+        self.use_dpcm_y != 0
+    }
+
+    pub(crate) const fn uses_dpcm_uv(&self) -> bool {
+        self.use_dpcm_uv != 0
     }
 
     pub(crate) const fn palette_y(&self) -> Option<LumaPalette> {
@@ -425,6 +534,7 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
     let y_mode_result = decode_luma_y_mode(
         cdfs,
         symbols,
+        chroma_tools.lossless,
         mode_ctx,
         neighbour_joint_modes,
         block_n4w,
@@ -452,7 +562,10 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
     let mut mrl_index = 0;
     let mut mrl_sec_index = None;
     let mut uses_mrls_value = 0;
-    if chroma_tools.enable_mrls && y_mode_result.y_mode.is_directional() {
+    if chroma_tools.enable_mrls
+        && y_mode_result.use_dpcm_y == 0
+        && y_mode_result.y_mode.is_directional()
+    {
         mrl_index = read_symbol(
             cdfs,
             symbols,
@@ -483,6 +596,8 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
         mrl_sec_index,
         fsc_mode,
         uses_mrls: uses_mrls_value,
+        use_dpcm_y: y_mode_result.use_dpcm_y,
+        dpcm_mode_y: y_mode_result.dpcm_mode_y,
     })
 }
 
@@ -745,10 +860,28 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
 ) -> Result<GeneralIntraChromaBlockMode, GeneralIntraBlockModeError> {
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
 
+    if chroma_tools.lossless {
+        let use_dpcm_uv = read_symbol(
+            cdfs,
+            symbols,
+            TileCdfSelector::UseDpcmUv,
+            USE_DPCM_UV_REASON,
+        )?;
+        if use_dpcm_uv != 0 {
+            let dpcm_mode_uv = read_symbol(
+                cdfs,
+                symbols,
+                TileCdfSelector::DpcmModeUv,
+                DPCM_MODE_UV_REASON,
+            )?;
+            return Ok(GeneralIntraChromaBlockMode::dpcm(dpcm_mode_uv));
+        }
+    }
+
     let cfl_allowed = mode_context.cfl_allowed_in_sdp
-        && cfl_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h);
+        && cfl_allowed_for_chroma_mode(chroma_tools, block_n4w, block_n4h);
     let mhccp_allowed = mode_context.cfl_allowed_in_sdp
-        && mhccp_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h);
+        && mhccp_allowed_for_chroma_mode(chroma_tools, block_n4w, block_n4h);
     if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRA_MODE_SYMBOLS") {
         eprintln!(
             "intra chroma block y_mode={y_mode:?} n4=({block_n4w}x{block_n4h}) bsize={block_size_index} is_cfl_ctx={} cfl_allowed={cfl_allowed} mhccp_allowed={mhccp_allowed} checkpoint={:?}",
@@ -918,11 +1051,25 @@ fn signed_cfl_alpha(sign: u8, alpha_minus_one: u8) -> i8 {
 fn decode_luma_y_mode(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
+    lossless: bool,
     mode_ctx: usize,
     neighbour_joint_modes: [u8; 2],
     block_n4w: usize,
     block_n4h: usize,
-) -> Result<YModeEscapeResult, GeneralIntraBlockModeError> {
+) -> Result<DecodedLumaYMode, GeneralIntraBlockModeError> {
+    if lossless {
+        let use_dpcm_y = read_symbol(cdfs, symbols, TileCdfSelector::UseDpcmY, USE_DPCM_Y_REASON)?;
+        if use_dpcm_y != 0 {
+            let dpcm_mode_y = read_symbol(
+                cdfs,
+                symbols,
+                TileCdfSelector::DpcmModeY,
+                DPCM_MODE_Y_REASON,
+            )?;
+            return Ok(DecodedLumaYMode::dpcm(dpcm_mode_y));
+        }
+    }
+
     let y_mode_set = read_symbol(cdfs, symbols, TileCdfSelector::YModeSet, Y_MODE_SET_REASON)?;
     if y_mode_set != 0 {
         let y_second_mode = read_literal_u8(symbols, Y_SECOND_MODE_BITS, Y_SECOND_MODE_REASON)?;
@@ -939,7 +1086,8 @@ fn decode_luma_y_mode(
             block_n4w,
             block_n4h,
             reconstruct_y_mode_second_set_top_left(y_mode_set, y_second_mode),
-        );
+        )
+        .map(DecodedLumaYMode::from_y_mode);
     }
 
     let y_mode_index = read_symbol(
@@ -964,7 +1112,8 @@ fn decode_luma_y_mode(
             block_n4w,
             block_n4h,
             reconstruct_y_mode_offset_escape_top_left(y_mode_offset),
-        );
+        )
+        .map(DecodedLumaYMode::from_y_mode);
     }
 
     let mode_idx = usize::from(y_mode_index);
@@ -977,7 +1126,8 @@ fn decode_luma_y_mode(
             block_n4w,
             block_n4h,
             reconstruct_y_mode_first_set_directional_top_left(y_mode_index),
-        );
+        )
+        .map(DecodedLumaYMode::from_y_mode);
     }
 
     let y_mode = reconstruct_minimal_y_mode(y_mode_set, y_mode_index).ok_or(
@@ -986,11 +1136,11 @@ fn decode_luma_y_mode(
             mode_idx,
         },
     )?;
-    Ok(YModeEscapeResult {
+    Ok(DecodedLumaYMode::from_y_mode(YModeEscapeResult {
         y_mode,
         angle_delta_y: 0,
         intra_joint_mode: y_mode_index,
-    })
+    }))
 }
 
 fn reconstruct_y_mode_result(
@@ -1046,6 +1196,28 @@ fn mhccp_allowed_for_non_lossless_420(
         && (block_n4w > 2 || block_n4h > 2)
         && block_n4w <= 16
         && block_n4h <= 16
+}
+
+fn cfl_allowed_for_chroma_mode(
+    chroma_tools: GeneralIntraChromaToolConfig,
+    block_n4w: usize,
+    block_n4h: usize,
+) -> bool {
+    if chroma_tools.lossless {
+        return chroma_tools.enable_cfl_intra && block_n4w == 1 && block_n4h == 1;
+    }
+    cfl_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h)
+}
+
+fn mhccp_allowed_for_chroma_mode(
+    chroma_tools: GeneralIntraChromaToolConfig,
+    block_n4w: usize,
+    block_n4h: usize,
+) -> bool {
+    if chroma_tools.lossless {
+        return chroma_tools.enable_mhccp && block_n4w == 1 && block_n4h == 1;
+    }
+    mhccp_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h)
 }
 
 fn allow_fsc_intra(
@@ -1834,6 +2006,33 @@ mod tests {
         assert_eq!(mode.uv_mode(), 0);
         assert_eq!(symbols.symbol_count(), 1);
         assert_eq!(symbols.finish().unwrap().symbol_count, 1);
+    }
+
+    #[test]
+    fn lossless_large_chroma_reads_uv_mode_without_is_cfl() {
+        let payload = encode_symbol_sequence(&[
+            (TileCdfSelector::UseDpcmUv, 0),
+            (TileCdfSelector::UvModeCflNotAllowed { ctx: 0 }, 0),
+        ]);
+        let mut work_unit = make_work_unit(&payload);
+        let mut symbols = symbol_decoder(&payload);
+
+        let mode = decode_general_intra_chroma_block_mode(
+            &mut work_unit,
+            &mut symbols,
+            GeneralIntraChromaToolConfig::new(true, true).with_lossless(true),
+            GeneralIntraChromaModeContext::shared_or_non_sdp(0),
+            IntraYMode::DC_PRED,
+            BLOCK_16X16,
+            4,
+            4,
+        )
+        .unwrap();
+
+        assert!(!mode.is_cfl());
+        assert_eq!(mode.uv_mode(), 0);
+        assert_eq!(symbols.symbol_count(), 2);
+        assert_eq!(symbols.finish().unwrap().symbol_count, 2);
     }
 
     #[test]

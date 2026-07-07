@@ -384,6 +384,10 @@ pub(crate) enum TileCdfSelector {
     RegionType {
         ctx: usize,
     },
+    UseDpcmY,
+    DpcmModeY,
+    UseDpcmUv,
+    DpcmModeUv,
     YModeSet,
     YModeIndex {
         ctx: usize,
@@ -630,6 +634,10 @@ pub(crate) enum TileCdfArray {
     SegmentId,
     SegmentIdExt,
     RegionType,
+    UseDpcmY,
+    DpcmModeY,
+    UseDpcmUv,
+    DpcmModeUv,
     YModeIndex,
     YModeOffset,
     TxbSkip,
@@ -744,6 +752,10 @@ crate::impl_reason_labels!(TileCdfArray {
     SegmentId => "TileSegmentIdCdf",
     SegmentIdExt => "TileSegmentIdExtCdf",
     RegionType => "TileRegionTypeCdf",
+    UseDpcmY => "TileUseDpcmYCdf",
+    DpcmModeY => "TileDpcmModeYCdf",
+    UseDpcmUv => "TileUseDpcmUvCdf",
+    DpcmModeUv => "TileDpcmModeUvCdf",
     YModeIndex => "TileYModeIndexCdf",
     YModeOffset => "TileYModeOffsetCdf",
     TxbSkip => "TileTxbSkipCdf",
@@ -1272,6 +1284,10 @@ macro_rules! tile_cdf_row {
                     "ctx"
                 )
             }
+            TileCdfSelector::UseDpcmY => $self.block.$block_row(BlockCdfSelector::UseDpcmY),
+            TileCdfSelector::DpcmModeY => $self.block.$block_row(BlockCdfSelector::DpcmModeY),
+            TileCdfSelector::UseDpcmUv => $self.block.$block_row(BlockCdfSelector::UseDpcmUv),
+            TileCdfSelector::DpcmModeUv => $self.block.$block_row(BlockCdfSelector::DpcmModeUv),
             TileCdfSelector::YModeSet => $self.block.$block_row(BlockCdfSelector::YModeSet),
             TileCdfSelector::YModeIndex { ctx } => {
                 $self.block.$block_row(BlockCdfSelector::YModeIndex { ctx })

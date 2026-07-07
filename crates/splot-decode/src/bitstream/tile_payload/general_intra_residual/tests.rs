@@ -104,11 +104,12 @@ fn dc_luma_context() -> LumaTransformTypeContext {
 fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
     let quant = vec![0i32; 16];
     let prediction = vec![128u8; 8];
-    let result = reconstruct_general_intra_block_with_prediction(
+    let result = reconstruct_general_intra_block_rect_with_prediction(
         &quant,
         &prediction,
         64,
         PlaneId::Y,
+        2,
         2,
         0,
         false,
@@ -969,11 +970,12 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[1] = -21;
         quant[5] = 9;
         let prediction = vec![301u16; 16];
-        reconstruct_general_intra_block_with_prediction(
+        reconstruct_general_intra_block_rect_with_prediction(
             &quant,
             &prediction,
             80,
             PlaneId::Y,
+            2,
             2,
             0,
             false,
@@ -986,11 +988,12 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[0] = -5;
         quant[9] = 61;
         let prediction = vec![144u16; 64];
-        reconstruct_general_intra_block_with_prediction(
+        reconstruct_general_intra_block_rect_with_prediction(
             &quant,
             &prediction,
             96,
             PlaneId::U,
+            3,
             3,
             0,
             false,

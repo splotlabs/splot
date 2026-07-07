@@ -210,7 +210,11 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         chroma_above_smooth,
         chroma_left_smooth,
     };
-    let chroma_tools = general_intra_chroma_tools(sequence, core);
+    let lossless = work_unit
+        .coeff_frame_facts()
+        .lossless_for_segment(usize::from(segment_id))
+        .unwrap_or(false);
+    let chroma_tools = general_intra_chroma_tools(sequence, core).with_lossless(lossless);
     let cfl_ds_filter_index = sequence_cfl_ds_filter_index(sequence);
     let sb_mib = sequence_sb_mib(sequence);
 
@@ -224,6 +228,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             is_cfl_ctx,
             cfl_ds_filter_index,
             sb_mib,
+            lossless,
             block_decoded,
             workspace,
             coeff_ctx,
@@ -357,6 +362,31 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             "7.13.2",
         ));
     }
+    if modes.uses_dpcm_y() {
+        return Err(general_intra_at!(
+            "general_intra_lossless_dpcm_y_unimplemented",
+            tile_offset,
+            missing_capability_message!("intra.luma.dpcm", mode = "active"),
+            "5.20.5.5",
+        ));
+    }
+    if modes.uses_dpcm_uv() {
+        return Err(general_intra_at!(
+            "general_intra_lossless_dpcm_uv_block_unimplemented",
+            tile_offset,
+            missing_capability_message!("intra.chroma.dpcm", mode = "active"),
+            "5.20.5.6",
+        ));
+    }
+    if lossless && modes.uses_active_fsc() {
+        return Err(general_intra_at!(
+            "general_intra_lossless_fsc_unverified",
+            tile_offset,
+            missing_capability_message!("intra.lossless.fsc", mode = "active"),
+            "5.20.6.1",
+        ));
+    }
+    ensure_lossless_verified_prediction_subset(lossless, frontier.has_chroma, &modes, tile_offset)?;
     if luma_only {
         ensure_10bit_general_intra_luma_capability(&modes, block_ctx, sb_mib, tile_offset)?;
     } else {
@@ -387,7 +417,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             qindex,
             luma_use_tcq,
             transform_tool_residual_policy,
-            luma_tx_partition_context(core, frontier),
+            luma_tx_partition_context(frame_tx_mode(core), frontier.b_size.index(), lossless),
             block_ctx,
             block_decoded,
             cfl_ds_filter_index,
@@ -436,7 +466,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         tx_skip_records,
         modes.coeff_uv_mode(),
         luma_transform_type_context(&modes),
-        luma_tx_partition_context(core, frontier),
+        luma_tx_partition_context(frame_tx_mode(core), frontier.b_size.index(), lossless),
         transform_tool_residual_policy,
         qindex,
         intra_edge,
@@ -459,6 +489,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
     is_cfl_ctx: IsCflContext,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
+    lossless: bool,
     block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
     workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
@@ -511,6 +542,22 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         }
         general_intra_block_mode_error(error, tile_offset)
     })?;
+    if chroma.uses_dpcm_uv() {
+        return Err(general_intra_at!(
+            "general_intra_lossless_dpcm_uv_chroma_part_unimplemented",
+            tile_offset,
+            missing_capability_message!("intra.chroma.dpcm", mode = "active"),
+            "5.20.5.6",
+        ));
+    }
+    if lossless && !lossless_chroma_prediction_verified(chroma.supported_chroma_mode(y_mode)) {
+        return Err(general_intra_at!(
+            "general_intra_lossless_nondc_chroma_part_unverified",
+            tile_offset,
+            missing_capability_message!("intra.lossless.chroma_prediction", mode = "non_dc"),
+            "7.13.2",
+        ));
+    }
     if trace_bits {
         eprintln!(
             "general intra chroma part mode block=({},{} {}x{}) bits={}..{} mode={chroma:?}",
@@ -638,6 +685,38 @@ fn leaf_mode_for_block(modes: &GeneralIntraBlockModes, has_chroma: bool) -> Gene
     }
 }
 
+fn ensure_lossless_verified_prediction_subset(
+    lossless: bool,
+    has_chroma: bool,
+    modes: &GeneralIntraBlockModes,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    if !lossless {
+        return Ok(());
+    }
+    if !modes.luma_is_dc() {
+        return Err(general_intra_at!(
+            "general_intra_lossless_nondc_luma_unverified",
+            tile_offset,
+            missing_capability_message!("intra.lossless.luma_prediction", mode = "non_dc"),
+            "7.13.2",
+        ));
+    }
+    if has_chroma && !lossless_chroma_prediction_verified(modes.supported_chroma_mode()) {
+        return Err(general_intra_at!(
+            "general_intra_lossless_nondc_chroma_block_unverified",
+            tile_offset,
+            missing_capability_message!("intra.lossless.chroma_prediction", mode = "non_dc"),
+            "7.13.2",
+        ));
+    }
+    Ok(())
+}
+
+fn lossless_chroma_prediction_verified(mode: Option<SupportedChromaMode>) -> bool {
+    matches!(mode, Some(SupportedChromaMode::Dc))
+}
+
 fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformTypeContext {
     LumaTransformTypeContext::with_mrl_indices(
         modes.y_mode,
@@ -648,20 +727,14 @@ fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformT
 }
 
 fn luma_tx_partition_context(
-    core: &FrameHeaderCore,
-    frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
+    tx_mode: Option<TxMode>,
+    block_size_index: usize,
+    lossless: bool,
 ) -> Option<LumaTransformPartitionContext> {
-    if frame_tx_mode(core) != Some(TxMode::Select) {
+    if tx_mode != Some(TxMode::Select) || lossless {
         return None;
     }
-    if core
-        .lossless_info
-        .as_ref()
-        .is_none_or(|lossless| lossless.lossless_array[0])
-    {
-        return None;
-    }
-    Some(LumaTransformPartitionContext::new(frontier.b_size.index()))
+    Some(LumaTransformPartitionContext::new(block_size_index))
 }
 
 fn frame_tx_mode(core: &FrameHeaderCore) -> Option<TxMode> {
@@ -1612,6 +1685,12 @@ fn general_intra_residual_error(
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
             )
         }
+        GeneralIntraResidualError::UnsupportedLosslessNonZeroResidual => general_intra_at!(
+            "general_intra_lossless_nonzero_residual_unverified",
+            offset,
+            missing_capability_message!("intra.residual.lossless_nonzero", residual = "nonzero"),
+            "5.20.7.29",
+        ),
         GeneralIntraResidualError::UnexpectedBranch => general_intra_at!(
             "general_intra_luma_coeff_unexpected_branch",
             offset,
@@ -1739,6 +1818,96 @@ mod tests {
     fn assert_rect_chroma_admitted(mode: SupportedChromaMode, block: BlockCtx) {
         assert!(ensure_supported_rect_chroma_capability(mode, block).is_ok());
         assert!(ten_bit_general_intra_chroma_admitted(Some(mode), block));
+    }
+
+    fn luma_modes(y_mode: crate::bitstream::tile_payload::IntraYMode) -> GeneralIntraBlockModes {
+        GeneralIntraBlockModes::luma_only(
+            crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
+                y_mode,
+                angle_delta_y: 0,
+                intra_joint_mode: 0,
+                mrl_index: 0,
+                mrl_sec_index: None,
+                fsc_mode: 0,
+                uses_mrls: 0,
+                use_dpcm_y: 0,
+                dpcm_mode_y: 0,
+            },
+        )
+    }
+
+    #[test]
+    fn luma_tx_partition_context_uses_current_block_lossless_flag() {
+        let block_size_index = 6;
+
+        assert_eq!(
+            luma_tx_partition_context(Some(TxMode::Select), block_size_index, false),
+            Some(LumaTransformPartitionContext::new(block_size_index))
+        );
+        assert_eq!(
+            luma_tx_partition_context(Some(TxMode::Select), block_size_index, true),
+            None
+        );
+        assert_eq!(
+            luma_tx_partition_context(Some(TxMode::Largest), block_size_index, false),
+            None
+        );
+    }
+
+    #[test]
+    fn lossless_prediction_guard_admits_dc_luma_only_subset() {
+        let modes = luma_modes(crate::bitstream::tile_payload::IntraYMode::DC_PRED);
+
+        assert!(
+            ensure_lossless_verified_prediction_subset(
+                true,
+                false,
+                &modes,
+                splot_core::span::ByteOffset::new(0),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn lossless_prediction_guard_rejects_nondc_luma() {
+        let modes = luma_modes(crate::bitstream::tile_payload::IntraYMode::D45_PRED_FOR_TEST);
+        let error = ensure_lossless_verified_prediction_subset(
+            true,
+            false,
+            &modes,
+            splot_core::span::ByteOffset::new(9),
+        )
+        .expect_err("non-DC lossless luma must fail closed");
+
+        assert!(
+            matches!(error, DecodeError::UnsupportedFeature { .. }),
+            "unexpected error: {error:?}"
+        );
+        if let DecodeError::UnsupportedFeature { unsupported } = error {
+            assert_eq!(
+                unsupported.reason(),
+                "general_intra_lossless_nondc_luma_unverified"
+            );
+            assert_eq!(
+                unsupported.byte_offset(),
+                Some(splot_core::span::ByteOffset::new(9))
+            );
+        }
+    }
+
+    #[test]
+    fn lossless_chroma_prediction_guard_only_admits_dc() {
+        assert!(lossless_chroma_prediction_verified(Some(
+            SupportedChromaMode::Dc
+        )));
+        assert!(!lossless_chroma_prediction_verified(Some(
+            SupportedChromaMode::Smooth
+        )));
+        assert!(!lossless_chroma_prediction_verified(Some(
+            SupportedChromaMode::D45
+        )));
+        assert!(!lossless_chroma_prediction_verified(None));
     }
 
     #[test]
@@ -2450,6 +2619,8 @@ mod tests {
                 mrl_sec_index: None,
                 fsc_mode: 0,
                 uses_mrls: 0,
+                use_dpcm_y: 0,
+                dpcm_mode_y: 0,
             },
         );
 

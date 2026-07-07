@@ -408,6 +408,13 @@ fixtureable = true
 spec_sections = ["7.15.3", "5.20.7.29"]
 
 [[capability]]
+id = "transform.lossless_tx4x4"
+name = "Lossless 4x4 transform-unit derivation"
+category = "transform"
+fixtureable = true
+spec_sections = ["5.20.6.1", "5.20.7.23", "5.20.7.27", "7.15.4"]
+
+[[capability]]
 id = "transform.tx_split"
 name = "Transform-unit split within a block"
 category = "transform"
@@ -449,6 +456,13 @@ name = "Base quantizer index (frame-level)"
 category = "quant"
 fixtureable = true
 spec_sections = ["5.18.6.1", "6.17.6.1", "7.14.2"]
+
+[[capability]]
+id = "quant.lossless_segment"
+name = "Lossless segment quantization"
+category = "quant"
+fixtureable = true
+spec_sections = ["5.18.2", "6.17.6.1", "7.14.2"]
 
 [[capability]]
 id = "quant.delta_q"

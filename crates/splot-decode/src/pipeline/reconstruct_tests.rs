@@ -17,6 +17,7 @@ fn all_zero_luma_block() -> LumaCoeffBlock {
         quant: Vec::new(),
         intra_ist: None,
         plane_tx_type: 0,
+        lossless: false,
     }
 }
 
@@ -1156,6 +1157,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
         quant,
         intra_ist: None,
         plane_tx_type: 3, // ADST_ADST
+        lossless: false,
     };
 
     let want = reconstruct_general_intra_coeff_block_rect_with_prediction(

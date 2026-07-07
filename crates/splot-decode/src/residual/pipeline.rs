@@ -11,7 +11,8 @@ use crate::bitstream::tile_payload::{
     CflParams, DecodeTileWorkUnit, GeneralIntraResidualError, LumaPalette,
     LumaTransformPartitionContext, LumaTransformTypeContext, PositionedLumaCoeffBlock,
     SupportedChromaMode, SupportedNonDcLumaMode, TileBlockDecodedState, TileCdfSelector,
-    TileCoeffContextState, TransformToolResidualPolicy, decode_general_intra_luma_partition_coeffs,
+    TileCoeffContextState, TransformToolResidualPolicy, current_frame_qm_segment_id,
+    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
 };
 use crate::pipeline::reconstruct::IntraEdgeAvailability as EdgeAvail;
 use crate::pipeline::reconstruct::MiddleEdgeAvailability as MiddleAvail;
@@ -28,6 +29,7 @@ const PALETTE_ROW_COPY_PREVIOUS: u8 = 2;
 const PALETTE_ROW_COPY_LAST: u8 = 1;
 const PALETTE_DIRECTION_REASON: &str = "palette_direction";
 const PALETTE_UNIFORM_REASON: &str = "palette_color_idx_uniform";
+const TX_4X4: usize = 0;
 const DCT_DCT: usize = 0;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -248,6 +250,11 @@ enum ResidualReconstructionPlan {
     },
 }
 
+struct ResidualPlaneExecution {
+    coeffs: crate::bitstream::tile_payload::LumaCoeffBlock,
+    unit_nonzero: Option<Vec<bool>>,
+}
+
 impl GeneralIntraResidualPlan {
     pub(crate) fn square(
         block_ctx: BlockCtx,
@@ -414,41 +421,46 @@ impl GeneralIntraResidualPlan {
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         deblock: &mut DeblockRecorder<'_>,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
-        let mut execute =
-            |plane: ResidualPlanePlan, eob_u_nonzero, deblock: &mut DeblockRecorder<'_>| {
-                let tx_partition_context = (plane.plane_id == PlaneId::Y)
-                    .then_some(luma_tx_partition_context)
-                    .flatten();
-                plane.execute(
-                    work_unit,
-                    symbols,
-                    coeff_ctx,
-                    workspace,
-                    block_decoded,
-                    uv_mode,
-                    luma_transform_type_context,
-                    tx_partition_context,
-                    transform_tool_residual_policy,
-                    qindex,
-                    eob_u_nonzero,
-                    intra_edge,
-                    deblock,
-                )
-            };
+        let mut execute = |plane: ResidualPlanePlan,
+                           eob_u_nonzero,
+                           u_unit_nonzero: Option<&[bool]>,
+                           deblock: &mut DeblockRecorder<'_>| {
+            let tx_partition_context = (plane.plane_id == PlaneId::Y)
+                .then_some(luma_tx_partition_context)
+                .flatten();
+            plane.execute(
+                work_unit,
+                symbols,
+                coeff_ctx,
+                workspace,
+                block_decoded,
+                uv_mode,
+                luma_transform_type_context,
+                tx_partition_context,
+                transform_tool_residual_policy,
+                qindex,
+                eob_u_nonzero,
+                u_unit_nonzero,
+                intra_edge,
+                deblock,
+            )
+        };
 
         if !self.planes.iter().any(|plane| plane.plane_id == PlaneId::Y) {
             deblock.record_chroma_part_block();
         }
         let mut u_nonzero = false;
+        let mut u_unit_nonzero = None;
         let mut deferred = Vec::new();
         for &plane in &self.planes {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
-            let coeffs = execute(plane, eob_u_nonzero, deblock)?;
+            let execution = execute(plane, eob_u_nonzero, u_unit_nonzero.as_deref(), deblock)?;
             if plane.plane_id == PlaneId::U {
-                u_nonzero = !coeffs.all_zero;
+                u_nonzero = !execution.coeffs.all_zero;
+                u_unit_nonzero = execution.unit_nonzero;
             }
             if plane.defer_reconstruction {
-                deferred.push((plane, coeffs));
+                deferred.push((plane, execution.coeffs));
             }
         }
         for (plane, coeffs) in deferred {
@@ -618,12 +630,10 @@ impl ResidualPlanePlan {
         transform_tool_residual_policy: TransformToolResidualPolicy,
         qindex: u32,
         eob_u_nonzero: bool,
+        u_unit_nonzero: Option<&[bool]>,
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         deblock: &mut DeblockRecorder<'_>,
-    ) -> core::result::Result<
-        crate::bitstream::tile_payload::LumaCoeffBlock,
-        GeneralIntraResidualError,
-    > {
+    ) -> core::result::Result<ResidualPlaneExecution, GeneralIntraResidualError> {
         let policy = transform_tool_policy_for_plane(
             transform_tool_residual_policy,
             self.plane_id,
@@ -632,6 +642,25 @@ impl ResidualPlanePlan {
         let angle_delta_uv =
             chroma_angle_delta_uv(self.plane_id, uv_mode, luma_transform_type_context);
         let palette_color_map = self.read_palette_color_map(work_unit, symbols)?;
+        if self.needs_lossless_transform_units(work_unit) {
+            return self.execute_lossless_transform_units(
+                work_unit,
+                symbols,
+                coeff_ctx,
+                workspace,
+                block_decoded,
+                uv_mode,
+                angle_delta_uv,
+                policy,
+                qindex,
+                eob_u_nonzero,
+                u_unit_nonzero,
+                palette_color_map.as_deref(),
+                intra_edge,
+                luma_transform_type_context,
+                deblock,
+            );
+        }
         if self.plane_id == PlaneId::Y
             && let Some(tx_partition_context) = luma_tx_partition_context
         {
@@ -673,6 +702,9 @@ impl ResidualPlanePlan {
             self.txb_skip_fsc_mode,
             policy,
         )?;
+        if coeffs.lossless && !coeffs.all_zero {
+            return Err(GeneralIntraResidualError::UnsupportedLosslessNonZeroResidual);
+        }
         if trace_bits {
             eprintln!(
                 "general intra residual plane block={:?} plane={:?} tx_size={} xy=({}, {}) fsc={} bits={}..{} all_zero={} eob={} tx_type={} recon={:?}",
@@ -711,7 +743,150 @@ impl ResidualPlanePlan {
                 luma_transform_type_context,
             )?;
         }
-        Ok(coeffs)
+        Ok(ResidualPlaneExecution {
+            coeffs,
+            unit_nonzero: None,
+        })
+    }
+
+    fn needs_lossless_transform_units(self, work_unit: &DecodeTileWorkUnit<'_>) -> bool {
+        work_unit
+            .coeff_frame_facts()
+            .lossless_for_segment(current_frame_qm_segment_id())
+            == Some(true)
+            && !self.fsc_mode
+            && self.tx_size != TX_4X4
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_lossless_transform_units<T: ReconSample>(
+        self,
+        work_unit: &mut DecodeTileWorkUnit<'_>,
+        symbols: &mut SymbolDecoder<'_>,
+        coeff_ctx: &mut TileCoeffContextState,
+        workspace: &mut CurrentFrameWorkspace<T>,
+        block_decoded: &mut TileBlockDecodedState,
+        uv_mode: usize,
+        angle_delta_uv: i32,
+        policy: TransformToolResidualPolicy,
+        qindex: u32,
+        eob_u_nonzero: bool,
+        u_unit_nonzero: Option<&[bool]>,
+        palette_color_map: Option<&[u8]>,
+        intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
+        luma_context: LumaTransformTypeContext,
+        deblock: &mut DeblockRecorder<'_>,
+    ) -> core::result::Result<ResidualPlaneExecution, GeneralIntraResidualError> {
+        let unit_count = self.tx.width4().checked_mul(self.tx.height4()).ok_or(
+            GeneralIntraResidualError::TransformPartitionGeometry {
+                table: "Lossless_Tx_Units",
+                index: self.tx_size,
+            },
+        )?;
+        let tx_fills_block = self.tx_fills_residual_block() && unit_count == 1;
+        let mut blocks = Vec::new();
+        let mut unit_nonzero = (self.plane_id == PlaneId::U).then(Vec::new);
+        blocks.try_reserve(unit_count).map_err(|_| {
+            GeneralIntraResidualError::TransformPartitionGeometry {
+                table: "Lossless_Tx_Units",
+                index: unit_count,
+            }
+        })?;
+        if let Some(unit_nonzero) = &mut unit_nonzero {
+            unit_nonzero.try_reserve(unit_count).map_err(|_| {
+                GeneralIntraResidualError::TransformPartitionGeometry {
+                    table: "Lossless_Tx_Units",
+                    index: unit_count,
+                }
+            })?;
+        }
+        for y4 in 0..self.tx.height4() {
+            for x4 in 0..self.tx.width4() {
+                let x = self.x + x4 * 4;
+                let y = self.y + y4 * 4;
+                if !self.lossless_unit_starts_in_frame(x, y) {
+                    continue;
+                }
+                let unit_eob_u_nonzero = if self.plane_id == PlaneId::V {
+                    u_unit_nonzero
+                        .and_then(|units| units.get(blocks.len()).copied())
+                        .unwrap_or(eob_u_nonzero)
+                } else {
+                    eob_u_nonzero
+                };
+                let coeffs = decode_general_intra_plane_coeffs(
+                    work_unit,
+                    symbols,
+                    coeff_ctx,
+                    self.coeff_plane,
+                    TX_4X4,
+                    x,
+                    y,
+                    tx_fills_block,
+                    None,
+                    unit_eob_u_nonzero,
+                    uv_mode,
+                    angle_delta_uv,
+                    DCT_DCT,
+                    false,
+                    self.fsc_mode,
+                    self.txb_skip_fsc_mode,
+                    policy,
+                )?;
+                if coeffs.lossless && !coeffs.all_zero {
+                    return Err(GeneralIntraResidualError::UnsupportedLosslessNonZeroResidual);
+                }
+                let block = PositionedLumaCoeffBlock {
+                    x,
+                    y,
+                    tx_size: TX_4X4,
+                    middle: false,
+                    coeffs,
+                };
+                let unit = self.transform_unit_plan(&block)?;
+                let unit_palette_color_map =
+                    self.palette_color_map_for_unit(palette_color_map, &block)?;
+                unit.reconstruct(
+                    workspace,
+                    &block.coeffs,
+                    block_decoded,
+                    unit_palette_color_map.as_deref(),
+                    qindex,
+                    intra_edge,
+                    luma_context,
+                )?;
+                if unit.plane_id == PlaneId::Y {
+                    deblock.record_luma_unit(
+                        block.y / 4,
+                        block.x / 4,
+                        1,
+                        1,
+                        block.tx_size,
+                        block.coeffs.eob,
+                    );
+                }
+                let (sub_x, sub_y) = self.block_ctx.chroma().subsampling(unit.plane_id);
+                let row4 = ((block.y >> 2) << sub_y) & block_decoded.sb_size4().saturating_sub(1);
+                let col4 = ((block.x >> 2) << sub_x) & block_decoded.sb_size4().saturating_sub(1);
+                block_decoded.set_block(unit.plane_id.index(), row4, col4, 1, 1);
+                if let Some(unit_nonzero) = &mut unit_nonzero {
+                    unit_nonzero.push(!block.coeffs.all_zero);
+                }
+                blocks.push(block);
+            }
+        }
+        let summary = summarize_luma_partition(&blocks);
+        Ok(ResidualPlaneExecution {
+            coeffs: summary,
+            unit_nonzero,
+        })
+    }
+
+    fn lossless_unit_starts_in_frame(self, x: usize, y: usize) -> bool {
+        let (sub_x, sub_y) = self.block_ctx.chroma().subsampling(self.plane_id);
+        let max_x = (self.block_ctx.frame_mi_cols() * 4) >> sub_x;
+        let max_y = (self.block_ctx.frame_mi_rows() * 4) >> sub_y;
+        x < max_x && y < max_y
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -731,10 +906,7 @@ impl ResidualPlanePlan {
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         luma_context: LumaTransformTypeContext,
         deblock: &mut DeblockRecorder<'_>,
-    ) -> core::result::Result<
-        crate::bitstream::tile_payload::LumaCoeffBlock,
-        GeneralIntraResidualError,
-    > {
+    ) -> core::result::Result<ResidualPlaneExecution, GeneralIntraResidualError> {
         let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
         let start_bits = symbols.consumed_bits().get();
         let mut blocks = decode_general_intra_luma_partition_coeffs(
@@ -790,7 +962,10 @@ impl ResidualPlanePlan {
                 intra_edge,
                 luma_context,
             )?;
-            return Ok(block.coeffs);
+            return Ok(ResidualPlaneExecution {
+                coeffs: block.coeffs,
+                unit_nonzero: None,
+            });
         }
 
         let sb_mask = block_decoded.sb_size4().saturating_sub(1);
@@ -843,7 +1018,10 @@ impl ResidualPlanePlan {
                 self.reconstruction
             );
         }
-        Ok(summary)
+        Ok(ResidualPlaneExecution {
+            coeffs: summary,
+            unit_nonzero: None,
+        })
     }
 
     /// Re-scopes this plan to one § 5.20.7.24 transform unit, using sibling
@@ -855,6 +1033,9 @@ impl ResidualPlanePlan {
     ) -> core::result::Result<ResidualPlanePlan, GeneralIntraResidualError> {
         let reconstruction = match self.reconstruction {
             ResidualReconstructionPlan::Rect { .. }
+            | ResidualReconstructionPlan::Chroma { .. }
+            | ResidualReconstructionPlan::ChromaMiddle { .. }
+            | ResidualReconstructionPlan::ChromaOneSided { .. }
             | ResidualReconstructionPlan::LumaPalette { .. }
             | ResidualReconstructionPlan::LumaRectCardinal { .. }
             | ResidualReconstructionPlan::LumaRectPaeth { .. }
@@ -957,6 +1138,16 @@ impl ResidualPlanePlan {
                 plan: IntraLumaPlan::NonDcNeighbour { mode },
                 use_tcq,
             } => ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq },
+            ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::NonDcFirst { mode },
+                use_tcq,
+            } => {
+                if block.x == self.x && block.y == self.y {
+                    self.reconstruction
+                } else {
+                    ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq }
+                }
+            }
             _ => {
                 if crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS") {
                     eprintln!(
@@ -978,15 +1169,7 @@ impl ResidualPlanePlan {
                 index: block.tx_size,
             },
         )?;
-        let block_ctx = BlockCtx::new(
-            BlockRect::new(block.y >> 2, block.x >> 2, width4.max(1), height4.max(1)),
-            tx,
-            self.block_ctx.frame_mi_cols(),
-            self.block_ctx.frame_mi_rows(),
-            self.block_ctx.bit_depth(),
-            self.block_ctx.chroma(),
-        )
-        .with_tile_bounds_from(self.block_ctx);
+        let block_ctx = self.transform_unit_block_ctx(block, tx, width4.max(1), height4.max(1))?;
         Ok(ResidualPlanePlan {
             block_ctx,
             tx_size: block.tx_size,
@@ -999,6 +1182,71 @@ impl ResidualPlanePlan {
             reconstruction,
             ..*self
         })
+    }
+
+    fn transform_unit_block_ctx(
+        &self,
+        block: &PositionedLumaCoeffBlock,
+        tx: TxShape,
+        width4: usize,
+        height4: usize,
+    ) -> core::result::Result<BlockCtx, GeneralIntraResidualError> {
+        if self.plane_id == PlaneId::Y {
+            return Ok(BlockCtx::new(
+                BlockRect::new(block.y >> 2, block.x >> 2, width4, height4),
+                tx,
+                self.block_ctx.frame_mi_cols(),
+                self.block_ctx.frame_mi_rows(),
+                self.block_ctx.bit_depth(),
+                self.block_ctx.chroma(),
+            )
+            .with_tile_bounds_from(self.block_ctx));
+        }
+        let (sub_x, sub_y) = self.block_ctx.chroma().subsampling(self.plane_id);
+        let scale_x = 1usize << sub_x;
+        let scale_y = 1usize << sub_y;
+        let chroma_ref = BlockRect::new(
+            (block.y >> 2).checked_mul(scale_y).ok_or(
+                GeneralIntraResidualError::TransformPartitionGeometry {
+                    table: "Lossless_Chroma_Row",
+                    index: block.tx_size,
+                },
+            )?,
+            (block.x >> 2).checked_mul(scale_x).ok_or(
+                GeneralIntraResidualError::TransformPartitionGeometry {
+                    table: "Lossless_Chroma_Col",
+                    index: block.tx_size,
+                },
+            )?,
+            width4.checked_mul(scale_x).ok_or(
+                GeneralIntraResidualError::TransformPartitionGeometry {
+                    table: "Lossless_Chroma_Width",
+                    index: block.tx_size,
+                },
+            )?,
+            height4.checked_mul(scale_y).ok_or(
+                GeneralIntraResidualError::TransformPartitionGeometry {
+                    table: "Lossless_Chroma_Height",
+                    index: block.tx_size,
+                },
+            )?,
+        );
+        let chroma_tx = TxShape::from_luma_4x4(chroma_ref.width4(), chroma_ref.height4()).ok_or(
+            GeneralIntraResidualError::TransformPartitionGeometry {
+                table: "Lossless_Chroma_Tx",
+                index: block.tx_size,
+            },
+        )?;
+        Ok(BlockCtx::new(
+            self.block_ctx.block(),
+            self.block_ctx.plane_block(PlaneId::Y).tx(),
+            self.block_ctx.frame_mi_cols(),
+            self.block_ctx.frame_mi_rows(),
+            self.block_ctx.bit_depth(),
+            self.block_ctx.chroma(),
+        )
+        .with_tile_bounds_from(self.block_ctx)
+        .with_chroma_ref(chroma_ref, chroma_tx))
     }
 
     fn palette_color_map_for_unit(
@@ -1821,6 +2069,7 @@ fn summarize_luma_partition(
             .find(|block| !block.coeffs.all_zero)
             .or_else(|| blocks.first())
             .map_or(0, |block| block.coeffs.plane_tx_type),
+        lossless: blocks.iter().any(|block| block.coeffs.lossless),
     }
 }
 

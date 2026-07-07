@@ -46,6 +46,7 @@ use super::coeff_state::CoeffContextUpdate;
 use super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
 use super::{DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
+const TX_4X4: usize = 0;
 const TX_64X64: usize = 4;
 const TX_8X8: usize = 1;
 const TX_16X16: usize = 2;
@@ -140,8 +141,12 @@ impl Drop for FrameQmSegmentScope {
     }
 }
 
-fn current_segment_id() -> usize {
+pub(crate) fn current_frame_qm_segment_id() -> usize {
     FRAME_QM_SEGMENT_ID.with(core::cell::Cell::get)
+}
+
+fn current_segment_id() -> usize {
+    current_frame_qm_segment_id()
 }
 
 fn current_quantizer_deltas() -> QuantizerDeltas {
@@ -456,6 +461,7 @@ pub(crate) struct LumaCoeffBlock {
     pub(crate) quant: Vec<i32>,
     pub(crate) intra_ist: Option<IntraIstSyntax>,
     pub(crate) plane_tx_type: usize,
+    pub(crate) lossless: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -463,8 +469,7 @@ pub(crate) struct PositionedLumaCoeffBlock {
     pub(crate) x: usize,
     pub(crate) y: usize,
     pub(crate) tx_size: usize,
-    /// § 5.20.6.3 `LumaTxMiddle`: § 5.20.7.24 passes `allowCorners = 0` for
-    /// this unit, so the top-right/bottom-left availability counts are zero.
+    /// § 5.20.6.3 `LumaTxMiddle`; § 5.20.7.24 passes `allowCorners = 0`.
     pub(crate) middle: bool,
     pub(crate) coeffs: LumaCoeffBlock,
 }
@@ -509,6 +514,8 @@ pub(crate) enum GeneralIntraResidualError {
     },
     #[error("general intra residual requires unsupported active transform-tool syntax: {reason}")]
     UnsupportedTransformToolResidual { reason: &'static str },
+    #[error("general intra lossless nonzero residual path is unverified")]
+    UnsupportedLosslessNonZeroResidual,
     #[error("general intra luma nonzero coefficient pass produced an unexpected branch result")]
     UnexpectedBranch,
     #[error("general intra luma reconstruction expected {expected} quant entries, got {actual}")]
@@ -1016,11 +1023,19 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     txb_skip_fsc_mode: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
+    let frame_facts = work_unit.coeff_frame_facts();
+    let lossless = frame_facts
+        .lossless_for_segment(current_segment_id())
+        .unwrap_or(false);
+    let tx_size = if lossless && !is_inter && !fsc_mode {
+        TX_4X4
+    } else {
+        tx_size
+    };
     let x4 = start_x >> 2;
     let y4 = start_y >> 2;
     let w4 = usize::try_from(TX_WIDTH.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
     let h4 = usize::try_from(TX_HEIGHT.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
-    let frame_facts = work_unit.coeff_frame_facts();
     let coeff_cdf_q_ctx = coeff_cdf_q_ctx_from_base_q_idx(frame_facts.base_q_idx());
     let tx_size_ctx = txb_skip_tx_size_ctx(tx_size);
 
@@ -1111,6 +1126,9 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             quant: Vec::new(),
             intra_ist: None,
             plane_tx_type: DCT_DCT,
+            lossless: frame_facts
+                .lossless_for_segment(current_segment_id())
+                .unwrap_or(false),
         });
     }
 
@@ -1144,6 +1162,10 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         );
     }
 
+    let segment_id = current_segment_id();
+    let lossless = frame_facts.lossless_for_segment(segment_id).ok_or(
+        unsupported_transform_tool_residual_error("unsupported_dctonly_residual_segment_id"),
+    )?;
     let input = CoeffUseFscFrameFactsInput::NonZero(CoeffUseFscFrameFactsNonZeroInput {
         frame: frame_facts,
         block: CoeffUseFscFrameBlockFacts {
@@ -1151,7 +1173,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             plane_tx_type: DCT_DCT,
             fsc_mode,
             is_inter,
-            segment_id: current_segment_id(),
+            segment_id,
         },
         ordinary: CoeffUseFscFrameOrdinaryFacts {
             uv_mode,
@@ -1172,6 +1194,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         quant: pass.into_block().into_quant(),
         intra_ist: None,
         plane_tx_type: DCT_DCT,
+        lossless,
     })
 }
 
@@ -1279,6 +1302,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             quant: pass.block().quant().to_vec(),
             intra_ist: metadata.intra_ist,
             plane_tx_type,
+            lossless,
         });
     }
     let pass = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
@@ -1301,6 +1325,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         quant: pass.into_block().into_quant(),
         intra_ist: metadata.intra_ist,
         plane_tx_type,
+        lossless,
     })
 }
 
@@ -1341,6 +1366,9 @@ fn staged_transform_tool_plane_tx_type(
     lossless: bool,
     base_config: CoeffOrdinaryBranchLosslessBaseConfig,
 ) -> Result<usize, GeneralIntraResidualError> {
+    if lossless {
+        return Ok(DCT_DCT);
+    }
     let mode_to_txfm = CoeffOrdinaryBranchModeToTxfmBaseConfig {
         tx_set: transform_set_from_flags(
             base_config.reduced_tx_set,
@@ -1395,9 +1423,6 @@ fn ensure_transform_tool_residual_handoff(
         luma_tx_type: DCT_DCT,
         ..TransformToolResidualMetadata::default()
     };
-    if frame_facts.lossless_for_segment(current_segment_id()) != Some(false) {
-        return unsupported_transform_tool_residual("unsupported_dctonly_residual_lossless");
-    }
     // TODO(spec: DECODE-FIRST-INTER-FRAME-FRONTIER): 5.20.7.27 is_cctx_allowed also excludes non-4:2:0 >=32x32 chroma; exact for the admitted 4:2:0 subset.
     if plane == 1 && frame_facts.enable_cctx() && (is_inter || eob != 1) {
         let cctx_type = read_chroma_cctx_type(cdfs, symbols, input.active_chroma_policy)?;
@@ -2066,31 +2091,6 @@ fn unsupported_transform_tool_residual<T>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_block_with_prediction<T: ReconSample>(
-    quant: &[i32],
-    prediction: &[T],
-    qindex: u32,
-    plane_id: PlaneId,
-    log2_side: u32,
-    plane_tx_type: usize,
-    use_tcq: bool,
-    bit_depth: BitDepth,
-) -> Result<Vec<T>, GeneralIntraResidualError> {
-    reconstruct_general_intra_block_rect_with_prediction_and_ddt(
-        quant,
-        prediction,
-        qindex,
-        plane_id,
-        log2_side,
-        log2_side,
-        plane_tx_type,
-        use_tcq,
-        false,
-        bit_depth,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_coeff_block_with_prediction<T: ReconSample>(
     block: &LumaCoeffBlock,
     prediction: &[T],
@@ -2142,7 +2142,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction<T: Reco
     use_tcq: bool,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
-    reconstruct_general_intra_block_rect_with_prediction(
+    reconstruct_general_intra_block_rect_with_prediction_core(
         &block.quant,
         prediction,
         qindex,
@@ -2151,6 +2151,9 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction<T: Reco
         log2_height,
         block.plane_tx_type,
         use_tcq,
+        false,
+        block.lossless,
+        None,
         bit_depth,
     )
 }
@@ -2178,6 +2181,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: Re
         plane_tx_type,
         use_tcq,
         use_ddt,
+        false,
         None,
         bit_depth,
     )
@@ -2205,6 +2209,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt
         block.plane_tx_type,
         use_tcq,
         use_ddt,
+        block.lossless,
         None,
         bit_depth,
     )
@@ -2233,6 +2238,7 @@ pub(crate) fn reconstruct_general_intra_luma_block_rect_with_prediction_and_ist<
         block.plane_tx_type,
         use_tcq,
         false,
+        block.lossless,
         secondary.as_ref(),
         bit_depth,
     )
@@ -2249,6 +2255,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     plane_tx_type: usize,
     use_tcq: bool,
     use_ddt: bool,
+    lossless: bool,
     secondary: Option<&SecondaryInverseTransform>,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
@@ -2298,7 +2305,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
         log2_width,
         log2_height,
         use_ddt,
-        false,
+        lossless,
         bit_depth,
         None,
     )

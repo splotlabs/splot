@@ -738,6 +738,7 @@ mod tests {
             quant: Vec::new(),
             intra_ist: None,
             plane_tx_type: 0,
+            lossless: false,
         }
     }
 
