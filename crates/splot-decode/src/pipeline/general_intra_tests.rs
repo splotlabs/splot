@@ -48,6 +48,9 @@ const Q180_COS_FIXTURE: &[u8] =
 const QMSEG_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-qmseg-intra-64x64.ivf");
 
+const SEQDELTAQ_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-seqdeltaq-intra-128x64.ivf");
+
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
@@ -307,6 +310,17 @@ fn qmseg_intra_frame_decodes_to_oracle() {
     assert_hash(
         &frame,
         "e6d6dc0726e808ddbc5f4410a3d0d0cc351b17803edd76f012157d912e47396e",
+    );
+}
+
+#[test]
+fn seqdeltaq_intra_frame_decodes_to_oracle() {
+    let frame = decode_eight(SEQDELTAQ_FIXTURE);
+    assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
+    assert_chroma_size(&frame, 64, 32);
+    assert_hash(
+        &frame,
+        "3febac78b0b0e4c27e1a080073d7f4ecf51b5a6d689f495169354834d4659c11",
     );
 }
 

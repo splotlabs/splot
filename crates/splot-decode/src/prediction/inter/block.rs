@@ -970,6 +970,11 @@ fn decode_block<T: ReconSample>(
             usize::from(segment_id),
             delta_q_state.qindex_u32(),
         );
+        ensure_intra_leaf_quantizer_delta_scope(
+            core.frame_is_intra == Some(true),
+            residual_quantizer_deltas_are_zero,
+            tile_offset,
+        )?;
         let leaf = crate::pipeline::general_intra::decode_one_general_intra_block::<T>(
             work_unit,
             symbols,
@@ -2631,6 +2636,22 @@ fn symbol_read_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
     )
 }
 
+fn ensure_intra_leaf_quantizer_delta_scope(
+    frame_is_intra: bool,
+    residual_quantizer_deltas_are_zero: bool,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    if !frame_is_intra && !residual_quantizer_deltas_are_zero {
+        return Err(inter_cap!(
+            "inter_block_intra_leaf_nonzero_quantizer_delta",
+            tile_offset,
+            "inter.residual.nonzero_quantizer_delta",
+            SPEC_MODE_INFO
+        ));
+    }
+    Ok(())
+}
+
 fn map_inter_multiblock_error(
     error: GeneralIntraMultiblockError<crate::error::DecodeError>,
     tile_offset: ByteOffset,
@@ -2652,8 +2673,14 @@ fn map_inter_multiblock_error(
 #[cfg(test)]
 mod tests {
     use splot_core::headers::sequence::ChromaFormatIdc;
+    use splot_core::span::ByteOffset;
 
-    use super::{chroma_smooth_grid_dimensions, inter_residual_geometry_supported_flags};
+    use super::{
+        chroma_smooth_grid_dimensions, ensure_intra_leaf_quantizer_delta_scope,
+        inter_residual_geometry_supported_flags,
+    };
+    use crate::error::DecodeError;
+    use crate::prediction::inter::SPEC_MODE_INFO;
 
     #[test]
     fn inter_residual_geometry_allows_shared_leaves() {
@@ -2664,6 +2691,24 @@ mod tests {
     fn inter_residual_geometry_rejects_chroma_partitioned_leaves() {
         assert!(!inter_residual_geometry_supported_flags(true, false));
         assert!(!inter_residual_geometry_supported_flags(false, true));
+    }
+
+    #[test]
+    fn inter_frame_intra_leaf_rejects_nonzero_quantizer_deltas() {
+        let result = ensure_intra_leaf_quantizer_delta_scope(false, false, ByteOffset::new(13));
+        assert!(matches!(
+            &result,
+            Err(DecodeError::UnsupportedFeature { unsupported })
+                if unsupported.reason() == "inter_block_intra_leaf_nonzero_quantizer_delta"
+                    && unsupported.spec_section() == SPEC_MODE_INFO
+                    && unsupported.byte_offset() == Some(ByteOffset::new(13))
+        ));
+    }
+
+    #[test]
+    fn intra_leaf_quantizer_delta_guard_allows_installed_or_zero_delta_scope() {
+        assert!(ensure_intra_leaf_quantizer_delta_scope(true, false, ByteOffset::new(0)).is_ok());
+        assert!(ensure_intra_leaf_quantizer_delta_scope(false, true, ByteOffset::new(0)).is_ok());
     }
 
     #[test]

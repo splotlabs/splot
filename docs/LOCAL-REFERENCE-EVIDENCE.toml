@@ -3028,3 +3028,56 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-qmseg-intra-64x64-raw-md5"
 right = "avm-repeat-qmseg-intra-64x64-raw-md5"
+
+
+[[evidence]]
+id = "lref-avm-syn-seqdeltaq-intra-128x64"
+feature_id = "RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION"
+decoder_support_rows = ["dequant-quantizer-index-resolution"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for the 8-bit 4:2:0 128x64 intra IVF fixture whose sequence header carries nonzero base_y_dc_delta_q/base_uv_dc_delta_q/base_uv_ac_delta_q effective quantizer deltas; splot reproduces the raw SHA-256 through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-07"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-seqdeltaq-intra-128x64.ivf"
+sha256 = "dfcdbef2fc7ec912d2e5dac0acb5ddcd0475771d3601ab3889c14ed28e0bc74a"
+size_bytes = 91
+format = "ivf"
+provenance_kind = "structured-rewrite-from-avm-generated-fixture"
+provenance_summary = "Derived from tests/conformance/vectors/valid/syn-deltaq-intra-128x64.ivf by reserializing the sequence header with equal_ac_dc_q false and base_y_dc_delta_q/base_uv_dc_delta_q/base_uv_ac_delta_q raw value 24, leaving frame-level read_delta_q values and tile payload bytes from the AVM-generated source fixture unchanged. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM checkout version 1.0.0-33-g457cd5868 from the local fixture build; exact binary path not archived."
+command_summary = "Local avmdec --i420 --rawvideo --limit=1 output MD5 and SHA-256 for {fixture:input}."
+output_digest_id = "avm-seqdeltaq-intra-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "6740967c87677f9d2a68cda192139002"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 3febac78b0b0e4c27e1a080073d7f4ecf51b5a6d689f495169354834d4659c11 is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Second local AVM checkout version 1.0.0-33-g457cd5868 decode run from the same fixture build; exact binary path not archived."
+command_summary = "Repeated local avmdec --i420 --rawvideo --limit=1 output MD5 for {fixture:input}."
+output_digest_id = "avm-repeat-seqdeltaq-intra-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "6740967c87677f9d2a68cda192139002"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-seqdeltaq-intra-128x64-raw-md5"
+right = "avm-repeat-seqdeltaq-intra-128x64-raw-md5"

@@ -106,6 +106,11 @@ description = "Two-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) with del
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-seqdeltaq-intra-128x64.ivf"
+description = "Two-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) derived from the delta-Q fixture by a structured sequence-header rewrite: § 5.4.8 base_y_dc_delta_q/base_uv_dc_delta_q/base_uv_ac_delta_q encode nonzero effective § 7.14.2 per-plane quantizer deltas while frame-level read_delta_q values remain zero. AVM decodes it cleanly, and the general-intra decoder reproduces avmdec's raw output byte-for-byte."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-mrl-largest-intra-128x128.ivf"
 description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with multi-reference-line (MRL) intra enabled and an active MRL directional block; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_unsupported_mrl_mode."
 expect = "clean"

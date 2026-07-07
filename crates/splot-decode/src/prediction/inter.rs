@@ -14,7 +14,7 @@ use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
     BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter, PixelFormat,
-    PlaneId as ReconPlaneId, ReconSample, ReferenceFrameStore, ReferenceSlot,
+    PlaneId as ReconPlaneId, QuantizerDeltas, ReconSample, ReferenceFrameStore, ReferenceSlot,
 };
 
 use crate::bitstream::tile_payload::FrameCdfSubset;
@@ -1029,17 +1029,45 @@ pub(crate) fn effective_quantizer_deltas_are_zero(
     sequence: &SequenceHeader,
     quantization: &QuantizationParams,
 ) -> bool {
-    let Some(tq) = sequence.transform_quant_entropy.as_ref() else {
-        return false;
-    };
-    let seq_quant = CoreSeqQuantView::from_sequence_configs(&sequence.general, tq);
+    effective_quantizer_deltas(sequence, quantization).is_some_and(|deltas| {
+        deltas.y_dc == 0
+            && deltas.u_dc == 0
+            && deltas.v_dc == 0
+            && deltas.u_ac == 0
+            && deltas.v_ac == 0
+    })
+}
 
-    quantization.delta_q_y_dc + seq_quant.base_y_dc_delta_q == 0
-        && (seq_quant.num_planes == 1
-            || (quantization.delta_q_u_dc + seq_quant.base_uv_dc_delta_q == 0
-                && quantization.delta_q_v_dc + seq_quant.base_uv_dc_delta_q == 0
-                && quantization.delta_q_u_ac + seq_quant.base_uv_ac_delta_q == 0
-                && quantization.delta_q_v_ac + seq_quant.base_uv_ac_delta_q == 0))
+pub(crate) fn effective_quantizer_deltas(
+    sequence: &SequenceHeader,
+    quantization: &QuantizationParams,
+) -> Option<QuantizerDeltas> {
+    let tq = sequence.transform_quant_entropy.as_ref()?;
+    let seq_quant = CoreSeqQuantView::from_sequence_configs(&sequence.general, tq);
+    let chroma = seq_quant.num_planes != 1;
+    Some(QuantizerDeltas {
+        y_dc: quantization.delta_q_y_dc + seq_quant.base_y_dc_delta_q,
+        u_dc: if chroma {
+            quantization.delta_q_u_dc + seq_quant.base_uv_dc_delta_q
+        } else {
+            0
+        },
+        v_dc: if chroma {
+            quantization.delta_q_v_dc + seq_quant.base_uv_dc_delta_q
+        } else {
+            0
+        },
+        u_ac: if chroma {
+            quantization.delta_q_u_ac + seq_quant.base_uv_ac_delta_q
+        } else {
+            0
+        },
+        v_ac: if chroma {
+            quantization.delta_q_v_ac + seq_quant.base_uv_ac_delta_q
+        } else {
+            0
+        },
+    })
 }
 
 mod bawp;
