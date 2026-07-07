@@ -92,15 +92,15 @@ pub struct DequantBlockParams {
 
 /// Frame-level § 7.14.4 built-in quantization-matrix levels, carried on the decode
 /// workspace when `using_qmatrix == 1`. `levels_gt8[plane]` is `qm_y/u/v[0]` (the
-/// `segLvl` used when `tw > 8 || th > 8`); `levels_le8[plane]` is
+/// `segLvl` used when `tw > 8 || th > 8`); `levels_le8[segment_id][plane]` is
 /// `SegQMLevel[plane][segment_id]` (used otherwise). The per-block `segLvl` /
 /// `useQm` / `Qm_Offset` are resolved from these by the transform-block dequant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QmFrameLevels {
     /// `qm_y[0]`, `qm_u[0]`, `qm_v[0]` (Y/U/V), used when `tw > 8 || th > 8`.
     pub levels_gt8: [u8; 3],
-    /// `SegQMLevel[Y/U/V][segment_id]`, used when `tw <= 8 && th <= 8`.
-    pub levels_le8: [u8; 3],
+    /// `SegQMLevel[Y/U/V][segment_id]`, indexed as `[segment_id][plane]`.
+    pub levels_le8: [[u8; 3]; 16],
 }
 
 /// § 7.14.4 built-in quantization-matrix selection for a transform block, resolved

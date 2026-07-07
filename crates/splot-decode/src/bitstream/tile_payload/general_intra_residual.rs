@@ -79,6 +79,8 @@ thread_local! {
     /// [`FrameQmScope`]). General-intra reconstruction is single-threaded per frame,
     /// so a thread-local frame context is sound.
     static FRAME_QM: core::cell::Cell<Option<QmFrameLevels>> = const { core::cell::Cell::new(None) };
+    /// Active block's segment id for § 7.14.4 `SegQMLevel[plane][segment_id]`.
+    static FRAME_QM_SEGMENT_ID: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
 /// RAII scope installing the frame's built-in quantization-matrix levels, restored
@@ -95,6 +97,25 @@ impl Drop for FrameQmScope {
     fn drop(&mut self) {
         FRAME_QM.with(|cell| cell.set(self.0));
     }
+}
+
+/// RAII scope installing the current block's segment id for QM dequant.
+pub(crate) struct FrameQmSegmentScope(usize);
+
+impl FrameQmSegmentScope {
+    pub(crate) fn install(segment_id: usize) -> Self {
+        Self(FRAME_QM_SEGMENT_ID.with(|cell| cell.replace(segment_id)))
+    }
+}
+
+impl Drop for FrameQmSegmentScope {
+    fn drop(&mut self) {
+        FRAME_QM_SEGMENT_ID.with(|cell| cell.set(self.0));
+    }
+}
+
+fn current_segment_id() -> usize {
+    FRAME_QM_SEGMENT_ID.with(core::cell::Cell::get)
 }
 
 /// § 7.14.4 built-in quantization-matrix selection for one transform block from the
@@ -121,7 +142,11 @@ fn resolve_block_qm(
     let seg_level = usize::from(if tw > 8 || th > 8 {
         levels.levels_gt8[plane_idx]
     } else {
-        levels.levels_le8[plane_idx]
+        let segment_id = current_segment_id();
+        levels
+            .levels_le8
+            .get(segment_id)
+            .map_or(NUM_CUSTOM_QMS as u8, |level| level[plane_idx])
     });
     if seg_level >= NUM_CUSTOM_QMS {
         return None;
@@ -140,7 +165,6 @@ const D157_PRED: usize = 6;
 const D203_PRED: usize = 7;
 const D67_PRED: usize = 8;
 const SMOOTH_H_PRED: usize = 11;
-const SEGMENT_ID: usize = 0;
 const TX_SET_DCTONLY: usize = 0;
 const TX_SET_WIDE_64: usize = 1;
 const TX_SET_HIGH_64: usize = 2;
@@ -1097,7 +1121,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             plane_tx_type: DCT_DCT,
             fsc_mode,
             is_inter,
-            segment_id: SEGMENT_ID,
+            segment_id: current_segment_id(),
         },
         ordinary: CoeffUseFscFrameOrdinaryFacts {
             uv_mode,
@@ -1186,7 +1210,8 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             active_chroma_policy,
         },
     )?;
-    let lossless = frame_facts.lossless_for_segment(SEGMENT_ID).ok_or(
+    let segment_id = current_segment_id();
+    let lossless = frame_facts.lossless_for_segment(segment_id).ok_or(
         unsupported_transform_tool_residual_error("unsupported_dctonly_residual_segment_id"),
     )?;
     let base_config = staged_transform_tool_lossless_base_config(
@@ -1340,7 +1365,7 @@ fn ensure_transform_tool_residual_handoff(
         luma_tx_type: DCT_DCT,
         ..TransformToolResidualMetadata::default()
     };
-    if frame_facts.lossless_for_segment(SEGMENT_ID) != Some(false) {
+    if frame_facts.lossless_for_segment(current_segment_id()) != Some(false) {
         return unsupported_transform_tool_residual("unsupported_dctonly_residual_lossless");
     }
     // TODO(spec: DECODE-FIRST-INTER-FRAME-FRONTIER): 5.20.7.27 is_cctx_allowed also excludes non-4:2:0 >=32x32 chroma; exact for the admitted 4:2:0 subset.

@@ -95,19 +95,6 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
             "7.20.5",
         ));
     }
-    if core.setup_qm_params.is_some_and(|qm| qm.using_qmatrix)
-        && core
-            .segmentation_params
-            .as_ref()
-            .is_some_and(|seg| seg.segmentation_enabled && seg.last_active_seg_id > 0)
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_qmatrix_segmented_blocks_unimplemented",
-            Some(offset),
-            missing_capability_message!("intra.qmatrix.segmentation", segment = "active"),
-            "7.14.4",
-        ));
-    }
     if core
         .quantization_params
         .as_ref()
@@ -244,14 +231,13 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
 
 /// The frame's § 7.14.4 built-in quantization-matrix levels for the general-intra
 /// dequant, or `None` when `using_qmatrix == 0`. `levels_gt8` is `qm_y/u/v[0]` (used
-/// when `tw > 8 || th > 8`); `levels_le8` is `SegQMLevel[Y/U/V][0]`. Multi-segment
-/// QM frames fail closed before decode until per-block `segment_id` reaches dequant.
+/// when `tw > 8 || th > 8`); `levels_le8` is `SegQMLevel[segment_id][Y/U/V]`.
 fn build_frame_qm_levels(core: &FrameHeaderCore) -> Option<QmFrameLevels> {
     let qm = core.setup_qm_params.filter(|qm| qm.using_qmatrix)?;
     let levels_le8 = core
         .lossless_info
         .as_ref()
-        .map_or([0u8; 3], |lossless| lossless.seg_qm_levels[0]);
+        .map_or([[0u8; 3]; 16], |lossless| lossless.seg_qm_levels);
     Some(QmFrameLevels {
         levels_gt8: [qm.levels[0].qm_y, qm.levels[0].qm_u, qm.levels[0].qm_v],
         levels_le8,
@@ -335,26 +321,6 @@ mod tests {
         assert_eq!(
             unsupported_reason(error),
             "general_intra_gdf_per_block_unimplemented"
-        );
-    }
-
-    #[test]
-    fn intra_gate_rejects_qmatrix_with_multiple_active_segments() {
-        let error = decode_intra_fixture_with_core(|core| {
-            core.setup_qm_params
-                .as_mut()
-                .expect("setup qm")
-                .using_qmatrix = true;
-            let seg = core
-                .segmentation_params
-                .as_mut()
-                .expect("segmentation params");
-            seg.segmentation_enabled = true;
-            seg.last_active_seg_id = 1;
-        });
-        assert_eq!(
-            unsupported_reason(error),
-            "general_intra_qmatrix_segmented_blocks_unimplemented"
         );
     }
 

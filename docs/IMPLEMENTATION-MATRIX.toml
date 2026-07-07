@@ -10549,7 +10549,7 @@ change_id = "recon-dequant-qm-weight"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Adds the AV2 §7.14.4 step-2 quantization-matrix weighting to the dequant process, consuming the generated §9.4 `Quantizer_Matrix` / `Qm_Offset` tables. To make those tables reachable from `splot-recon` (which may not depend on `splot-core`), the §9.4 `quantizer` gen-tables module is relocated to the dependency-free `splot-tables` crate via the per-module `output_dir_for` routing (the same mechanism INFRA-SHARED-SPEC-TABLES used for the §9.6/§9.7 kernels; the module had no `splot-core` consumer, so the move is byte-identical and zero-churn — the 236-table determinism count is unchanged). `quantization_matrix_weight(QmWeightIndex)` returns the built-in weight `m = Quantizer_Matrix[segLvl][plane>0][Qm_Offset[txSz] + i*tw + j]` with bounds-checked indices (typed `ReconError::InvalidQuantizerMatrixIndex`), and `qm_weighted_quantizer(q, m)` computes the §7.14.4 step-2 weighted quantizer `q2 = Round2(q*m, 5)` in `i64` clamped into `u32` (total). The caller passes the resulting `q2` to `dequant_coefficient`. This row does not implement the `useQm`/`useUserQm`/`segLvl` gating, the user-defined `UserQm` matrices, the `shift`/`useFsc` derivation, the coefficient entropy decode that produces `Quant`, the §7.15.4 inverse transform, tile syntax traversal, runtime decode output, reference refresh, AVM/dav2d invocation, or scheduler use inside `splot-recon`."
+notes = "Adds the AV2 §7.14.4 step-2 quantization-matrix weighting to the dequant process, consuming the generated §9.4 `Quantizer_Matrix` / `Qm_Offset` tables. To make those tables reachable from `splot-recon` (which may not depend on `splot-core`), the §9.4 `quantizer` gen-tables module is relocated to the dependency-free `splot-tables` crate via the per-module `output_dir_for` routing (the same mechanism INFRA-SHARED-SPEC-TABLES used for the §9.6/§9.7 kernels; the module had no `splot-core` consumer, so the move is byte-identical and zero-churn — the 236-table determinism count is unchanged). `quantization_matrix_weight(QmWeightIndex)` returns the built-in weight `m = Quantizer_Matrix[segLvl][plane>0][Qm_Offset[txSz] + i*tw + j]` with bounds-checked indices (typed `ReconError::InvalidQuantizerMatrixIndex`), and `qm_weighted_quantizer(q, m)` computes the §7.14.4 step-2 weighted quantizer `q2 = Round2(q*m, 5)` in `i64` clamped into `u32` (total). The caller passes the resulting `q2` to `dequant_coefficient`. The runtime decode path now carries the current segment id through transform residual decode and stores all 16 `SegQMLevel` triples in `QmFrameLevels`; `syn-qmseg-intra-64x64.ivf` (AVM --enable-qm --aq-mode, last_active_seg_id 7, built-in QM level 7) decodes byte-exact to AVM raw SHA-256 e6d6dc0726e808ddbc5f4410a3d0d0cc351b17803edd76f012157d912e47396e, closing the combined QM+segmentation fail-closed runtime gap. This row does not implement user-defined `UserQm` matrices, live AVM/dav2d invocation in CI, reference refresh, or scheduler use inside `splot-recon`."
 
 [feature.status]
 mapped = "done"
@@ -10560,7 +10560,7 @@ write = "not-applicable"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "partial"
 perf = "not-applicable"
 
 [feature.proof]
@@ -10570,10 +10570,14 @@ tests = [
     "crates/splot-recon/src/dequant_process.rs::tests::quantization_matrix_weight_matches_the_generated_table",
     "crates/splot-recon/src/dequant_process.rs::tests::quantization_matrix_weight_rejects_out_of_range_indices",
     "crates/splot-recon/src/dequant_process.rs::tests::quantization_matrix_weight_rejects_coords_outside_the_transform_sub_block",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::resolve_block_qm_selects_level_plane_and_offset",
+    "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::qmseg_intra_frame_decodes_to_oracle",
 ]
 commands = [
     "cargo test -p splot-recon dequant_process --locked",
     "cargo test -p splot-tables --locked",
+    "cargo test -p splot-decode general_intra --locked",
+    "cargo test -p splot-cli --test decoder_oracle --locked",
     "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
     "cargo xtask gen-tables --check",
     "cargo xtask check-dependency-direction",
@@ -10581,6 +10585,12 @@ commands = [
     "cargo xtask check-feature-status",
 ]
 fixtures = [
+    "tests/conformance/vectors/valid/syn-qmseg-intra-64x64.ivf",
+    "tests/conformance/decoder-oracle.toml",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
+    "crates/splot-decode/src/pipeline/frame_engine/intra.rs",
+    "crates/splot-decode/src/pipeline/general_intra.rs",
+    "crates/splot-decode/src/prediction/inter/block.rs",
     "crates/splot-recon/src/dequant_process.rs",
     "crates/splot-recon/src/error.rs",
     "crates/splot-recon/src/lib.rs",
