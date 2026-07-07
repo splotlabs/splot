@@ -749,13 +749,33 @@ fn lossless_luma_prediction_verified(
         )
 }
 
+fn top_left_vertical_delta_prediction_verified(
+    modes: &GeneralIntraBlockModes,
+    block_ctx: BlockCtx,
+    sb_mib: usize,
+) -> bool {
+    let block = block_ctx.block();
+    block_ctx.bit_depth() == BitDepth::Eight
+        && sb_mib == FULL_SB_N4_LUMA
+        && block_ctx.is_top_left()
+        && block.width4() == FULL_SB_N4_LUMA
+        && block.height4() == FULL_SB_N4_LUMA
+        && modes.angle_delta_y == 2
+        && matches!(
+            modes.y_mode.supported_directional(),
+            Some(SupportedDirectionalLumaMode::Vertical)
+        )
+}
+
 fn plan_luma_prediction_for_segment(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
     lossless: bool,
     sb_mib: usize,
 ) -> core::result::Result<crate::prediction::intra::IntraLumaPlan, IntraLumaUnsupported> {
-    if lossless && lossless_luma_prediction_verified(modes, block_ctx, sb_mib) {
+    if (lossless && lossless_luma_prediction_verified(modes, block_ctx, sb_mib))
+        || (!lossless && top_left_vertical_delta_prediction_verified(modes, block_ctx, sb_mib))
+    {
         plan_luma_prediction(modes, block_ctx, true)
     } else {
         plan_luma_prediction(modes, block_ctx, false)
@@ -2074,6 +2094,59 @@ mod tests {
         assert_lossless_directional_luma_admitted(
             crate::bitstream::tile_payload::IntraYMode::D135_PRED_FOR_TEST,
         );
+    }
+
+    #[test]
+    fn cardinal_vertical_top_left_guard_rejects_unverified_shapes() {
+        let top_left_8 =
+            ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
+        let vertical = luma_modes_with_angle(
+            crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
+            2,
+        );
+
+        assert_eq!(
+            plan_luma_prediction_for_segment(&vertical, top_left_8, false, FULL_SB_N4_LUMA)
+                .expect("verified top-left V_PRED angle delta should plan"),
+            crate::prediction::intra::IntraLumaPlan::DirectionalMiddle { p_angle: 96 }
+        );
+
+        for (modes, block_ctx, sb_mib) in [
+            (
+                luma_modes(crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST),
+                top_left_8,
+                FULL_SB_N4_LUMA,
+            ),
+            (
+                luma_modes(crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST),
+                top_left_8,
+                FULL_SB_N4_LUMA,
+            ),
+            (
+                luma_modes_with_angle(
+                    crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
+                    1,
+                ),
+                top_left_8,
+                FULL_SB_N4_LUMA,
+            ),
+            (
+                vertical,
+                ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
+                FULL_SB_N4_LUMA,
+            ),
+            (vertical, top_left_8, 32),
+            (
+                vertical,
+                ctx_with_bit_depth(0, 0, 4, 4, BitDepth::Eight),
+                FULL_SB_N4_LUMA,
+            ),
+        ] {
+            assert!(
+                plan_luma_prediction_for_segment(&modes, block_ctx, false, sb_mib).is_err(),
+                "unverified non-lossless cardinal luma shape must fail closed"
+            );
+        }
     }
 
     #[test]

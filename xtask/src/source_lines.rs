@@ -24,7 +24,7 @@ struct SourceLineAllowance {
 const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
     SourceLineAllowance {
         path: "crates/splot-decode/src/pipeline/general_intra.rs",
-        max_lines: 3_119,
+        max_lines: 3_192,
         reason: "temporary local decoder mission general-intra runtime frontier before module split",
     },
     SourceLineAllowance {

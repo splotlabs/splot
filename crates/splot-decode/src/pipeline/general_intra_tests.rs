@@ -72,6 +72,10 @@ const LOSSLESS_CARDINAL_Y_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-cardinal-y-h-intra-64x64.ivf"
 );
 
+const VPRED_TOP_LEFT_Q96_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-vpred-top-left-intra-64x64-q96.ivf"
+);
+
 const LOSSLESS_NONDC_LUMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d135-intra-64x64.ivf"
 );
@@ -440,24 +444,11 @@ fn lossless_nonzero_intra_frame_decodes_to_oracle() {
     );
 }
 
-#[test]
-fn lossless_dpcm_y_intra_frame_decodes_to_oracle() {
-    assert_eq!(LOSSLESS_DPCM_Y_FIXTURE.len(), 846);
-    let frame = decode_eight(LOSSLESS_DPCM_Y_FIXTURE);
-
-    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
-    assert_chroma_size(&frame, 32, 32);
-    assert_distinct_gt(frame.y().samples(), 16, "lossless DPCM-Y luma");
-    assert_hash(
-        &frame,
-        "f294ce1a7dbe1d19840f716fc284a0e9c144548fb0699fef2b44e7c0c1f91d90",
-    );
-}
-
-fn assert_lossless_cardinal_y_oracle(
+fn assert_nonflat_luma_oracle(
     fixture: &[u8],
     expected_len: usize,
     label: &str,
+    expected_chroma: Option<(u8, u8)>,
     expected_hash: &str,
 ) {
     assert_eq!(fixture.len(), expected_len);
@@ -466,23 +457,45 @@ fn assert_lossless_cardinal_y_oracle(
     assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
     assert_chroma_size(&frame, 32, 32);
     assert_distinct_gt(frame.y().samples(), 16, label);
-    assert_chroma_eq(&frame, 128, 128);
+    if let Some((u, v)) = expected_chroma {
+        assert_chroma_eq(&frame, u, v);
+    }
     assert_hash(&frame, expected_hash);
 }
 
 #[test]
-fn lossless_cardinal_y_variants_decode_to_oracle() {
-    assert_lossless_cardinal_y_oracle(
+fn lossless_dpcm_y_intra_frame_decodes_to_oracle() {
+    assert_nonflat_luma_oracle(
+        LOSSLESS_DPCM_Y_FIXTURE,
+        846,
+        "lossless DPCM-Y luma",
+        None,
+        "f294ce1a7dbe1d19840f716fc284a0e9c144548fb0699fef2b44e7c0c1f91d90",
+    );
+}
+
+#[test]
+fn lossless_cardinal_y_and_top_left_angle_delta_variants_decode_to_oracle() {
+    assert_nonflat_luma_oracle(
         LOSSLESS_CARDINAL_Y_V_FIXTURE,
         182,
         "lossless non-DPCM V_PRED luma",
+        Some((128, 128)),
         "1ed57e96fd8e3107284d54007af41a0974ea5f75b2adb16de2d3c9943dc5a7fc",
     );
-    assert_lossless_cardinal_y_oracle(
+    assert_nonflat_luma_oracle(
         LOSSLESS_CARDINAL_Y_H_FIXTURE,
         177,
         "lossless non-DPCM H_PRED luma",
+        Some((128, 128)),
         "9b37c3e091251b52640f7574105d307a638bbefd0042e900249e3f93bc5148ea",
+    );
+    assert_nonflat_luma_oracle(
+        VPRED_TOP_LEFT_Q96_FIXTURE,
+        721,
+        "V_PRED angle-delta luma",
+        Some((96, 144)),
+        "3b0a07a4c0686c9d3d4c7715691159468e545bd70989707c25dbeee330e33ae5",
     );
 }
 

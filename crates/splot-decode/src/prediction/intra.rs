@@ -434,6 +434,12 @@ fn plan_directional_luma_angle(
     let full_sb_above_left_with_above_right =
         full_sb_above_left && neighbours.num_above_right() > 0;
     if p_angle > 90 && p_angle < 180 {
+        if full_sb_no_neighbour_cardinal
+            && matches!(mode, SupportedDirectionalLumaMode::Vertical)
+            && p_angle == 96
+        {
+            return Ok(IntraLumaPlan::DirectionalMiddle { p_angle });
+        }
         let top_row_left = !has_above && has_left;
         let needs_exact_angle_or_d113_top_row = p_angle != directional_mode_p_angle(mode)
             || (matches!(mode, SupportedDirectionalLumaMode::D113) && top_row_left);
