@@ -1429,12 +1429,10 @@ pub(crate) struct OneSidedAboveMrl {
     pub above_mrl_index: usize,
 }
 
-/// Reconstructs one neighbour-having ZONE-1 ONE-SIDED directional luma/chroma
-/// block (any `pAngle < 90`, e.g. D45 § 7.13.2.8 step 1) over the § 7.13.2.1 above
-/// row PLUS the real reconstructed above-right read from the partially-built
-/// frame, adds the decoded residual (or writes the bare prediction for an
-/// `all_zero` block), and stores the result so later blocks read it as a
-/// neighbour.
+/// Reconstructs one caller-gated ZONE-1 ONE-SIDED directional luma/chroma block
+/// (`pAngle < 90`, e.g. D45 § 7.13.2.8 step 1), adds the decoded residual (or
+/// writes the bare prediction for an `all_zero` block), and stores the result so
+/// later blocks read it as a neighbour.
 ///
 /// SQUARE OR NON-SQUARE: `log2_width`/`log2_height` are the independent § 5.20.5.3
 /// `Tx_Width`/`Tx_Height` log2s. The § 7.13.2.8 projection, the `maxBaseX == w + h
@@ -1446,25 +1444,26 @@ pub(crate) struct OneSidedAboveMrl {
 /// `pred[i][j]` reads `AboveRow[base]` with `base = (i + 1 + j)` (D45,
 /// `dx = Dr_Intra_Derivative[45] = 64`, shift always `0`), up to
 /// `base == maxBaseX == w + h - 1`. So unlike the middle angles (which stay
-/// within `AboveRow[0..w)`), this reads `h` real reconstructed above-right
-/// samples. § 7.13.2.1 fills `AboveRow[i] = CurrFrame[plane][y - 1][Min(aboveLimit,
-/// x + i)]` for `i in 0..w + h`, with `aboveLimit = Min(maxX, x + w +
-/// 4 * num4AboveRight - 1)` (8-bit, `MrlIndex == 0`, `aboveMrlIndex == 0`); the
-/// `num4_above_right` (in plane 4x4 units, from § 5.20.7.25 `count_top_right_avail`
-/// over the § 5.20.2.3 `BlockDecoded` state) bounds how far the real above-right
-/// extends before the spec clamps to `CurrFrame[plane][y - 1][aboveLimit]`. The
-/// corner `AboveRow[-1] = CurrFrame[plane][y - 1][x - 1]` is read directly.
+/// within `AboveRow[0..w)`), a neighbour-having block can read `h` real
+/// reconstructed above-right samples. § 7.13.2.1 fills
+/// `AboveRow[i] = CurrFrame[plane][y - 1][Min(aboveLimit, x + i)]` for
+/// `i in 0..w + h`, with `aboveLimit = Min(maxX, x + w + 4 * num4AboveRight - 1)`
+/// (8-bit, `MrlIndex == 0`, `aboveMrlIndex == 0`); the `num4_above_right` (in
+/// plane 4x4 units, from § 5.20.7.25 `count_top_right_avail` over the § 5.20.2.3
+/// `BlockDecoded` state) bounds how far the real above-right extends before the
+/// spec clamps to `CurrFrame[plane][y - 1][aboveLimit]`. The corner
+/// `AboveRow[-1] = CurrFrame[plane][y - 1][x - 1]` is read directly.
 ///
-/// The block is gated (by the caller) to a row > 0, non-first-column,
-/// non-rightmost full 64x64 superblock (`haveLeft && haveAbove`, a real decoded
-/// above-right superblock in frame). `enable_intra_edge_filter == 0` /
-/// `MrlIndex == 0` keep the § 7.13.2.7 edge-filter / corner-filter / upsample
-/// synthesis a no-op, and `enable_ibp == 0` keeps `useIBP == 0` (§ 7.13.2.7 gates
-/// `useIBP` on `pAngle < 90`, so the IBP secondary blend is skipped only when
-/// `enable_ibp` is off). Luma uses the § 7.13.2.8 IDIF 4-tap
-/// (`enableIdif = plane == 0`); for D45 every `shift == 0`, so the IDIF reduces to
-/// the sample copy `AboveRow[base]`, bit-identical to the chroma bilinear branch
-/// over the same real reconstructed above-right.
+/// The caller currently gates this function to either the original row > 0,
+/// non-first-column, non-rightmost full 64x64 superblock (`haveLeft && haveAbove`,
+/// a real decoded above-right superblock in frame) or the 8-bit full-SB top-left
+/// D45 no-neighbour fallback. `enable_intra_edge_filter == 0` / `MrlIndex == 0`
+/// keep the § 7.13.2.7 edge-filter / corner-filter / upsample synthesis a no-op,
+/// and `enable_ibp == 0` keeps `useIBP == 0` (§ 7.13.2.7 gates `useIBP` on
+/// `pAngle < 90`, so the IBP secondary blend is skipped only when `enable_ibp` is
+/// off). Luma uses the § 7.13.2.8 IDIF 4-tap (`enableIdif = plane == 0`); for D45
+/// every `shift == 0`, so the IDIF reduces to the sample copy `AboveRow[base]`,
+/// bit-identical to the chroma bilinear branch over the same prepared edge.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -1518,6 +1517,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
             mrl.mrl_index,
             mrl.above_mrl_index,
             availability,
+            bit_depth,
             edge_filter,
         )?;
         let mut prediction = vec![T::default(); width * height];
@@ -1578,9 +1578,6 @@ fn predict_general_intra_luma_one_sided_above_mrl<T: ReconSample>(
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
-    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
-    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let above_idif = build_one_sided_above_idif_edge(
         workspace,
         PlaneId::Y,
@@ -1592,15 +1589,39 @@ fn predict_general_intra_luma_one_sided_above_mrl<T: ReconSample>(
         mrl.mrl_index,
         mrl.above_mrl_index,
         availability,
+        bit_depth,
         edge_filter,
     )?;
+    predict_general_intra_luma_one_sided_idif_mrl(
+        bit_depth,
+        p_angle,
+        log2_width,
+        log2_height,
+        IntraDirectionalAngleIdifEdges::above(&above_idif),
+        mrl.mrl_index,
+    )
+}
+
+fn predict_general_intra_luma_one_sided_idif_mrl<T: ReconSample>(
+    bit_depth: BitDepth,
+    p_angle: u16,
+    log2_width: u32,
+    log2_height: u32,
+    edges: IntraDirectionalAngleIdifEdges<'_, T>,
+    mrl_index: usize,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let mut prediction = vec![T::default(); width * height];
     predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
         bit_depth,
         block_size,
         IntraDirectionalAngle::try_from_p_angle(p_angle)?,
-        IntraDirectionalAngleIdifEdges::above(&above_idif),
-        mrl.mrl_index,
+        edges,
+        mrl_index,
         &mut prediction,
         width,
     )?;
@@ -1858,11 +1879,19 @@ fn build_one_sided_above_idif_edge<T: ReconSample>(
     mrl_index: usize,
     above_mrl_index: usize,
     availability: IntraEdgeAvailability,
+    bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     if !availability.above {
         if !availability.left {
-            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+            return build_one_sided_idif_edge(
+                width,
+                height,
+                mrl_index,
+                edge_filter,
+                || Ok(noneighbour_corner::<T>(bit_depth)),
+                |_| Ok(noneighbour_above::<T>(bit_depth)),
+            );
         }
         let fallback_col = x
             .checked_sub(mrl_index + 1)
@@ -2151,9 +2180,6 @@ fn predict_general_intra_luma_one_sided_left_mrl<T: ReconSample>(
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
-    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
-    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let left_idif = build_one_sided_left_idif_edge(
         workspace,
         PlaneId::Y,
@@ -2167,17 +2193,14 @@ fn predict_general_intra_luma_one_sided_left_mrl<T: ReconSample>(
         have_left,
         edge_filter,
     )?;
-    let mut prediction = vec![T::default(); width * height];
-    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+    predict_general_intra_luma_one_sided_idif_mrl(
         bit_depth,
-        block_size,
-        IntraDirectionalAngle::try_from_p_angle(p_angle)?,
+        p_angle,
+        log2_width,
+        log2_height,
         IntraDirectionalAngleIdifEdges::left(&left_idif),
         mrl_index,
-        &mut prediction,
-        width,
-    )?;
-    Ok(prediction)
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2383,6 +2406,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
                 above: have_above,
                 left: true,
             },
+            bit_depth,
             primary_edge_filter,
         )?;
         let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
@@ -2493,6 +2517,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
                 above: have_above,
                 left: true,
             },
+            bit_depth,
             secondary.edge_filter,
         )?;
         if matches!(plane_id, PlaneId::Y) {

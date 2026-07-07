@@ -251,6 +251,7 @@ fn zone1_above_edge_uses_first_above_sample_as_corner_at_first_column() {
         0,
         0,
         IntraEdgeAvailability::all(),
+        BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
     .unwrap();
@@ -910,6 +911,45 @@ fn zone1_d45_top_edge_synthesizes_above_from_left_corner() {
                 91,
                 "top-row D45 sample ({},{row}) must use synthesized AboveRow from left[0]",
                 64 + col,
+            );
+        }
+    }
+}
+
+#[test]
+fn zone1_d45_top_left_synthesizes_no_neighbour_above_fallback() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+
+    reconstruct_general_intra_one_sided_neighbour_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        45,
+        PlaneId::Y,
+        0,
+        0,
+        4,
+        4,
+        0,
+        0,
+        OneSidedAboveMrl::default(),
+        false,
+        None,
+        IntraEdgeAvailability {
+            above: false,
+            left: false,
+        },
+        BitDepth::Eight,
+        OneSidedEdgeFilter::default(),
+    )
+    .unwrap();
+
+    for row in 0..16 {
+        for col in 0..16 {
+            assert_eq!(
+                ws.reconstructed_sample(PlaneId::Y, col, row).unwrap(),
+                127,
+                "top-left D45 sample ({col},{row}) must use the no-neighbour above fallback",
             );
         }
     }
