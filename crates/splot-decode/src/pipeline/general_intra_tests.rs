@@ -415,22 +415,18 @@ fn assert_lossless_cardinal_y_oracle(
 
 #[test]
 fn lossless_cardinal_y_variants_decode_to_oracle() {
-    for (fixture, expected_len, label, expected_hash) in [
-        (
-            LOSSLESS_CARDINAL_Y_V_FIXTURE,
-            182,
-            "lossless non-DPCM V_PRED luma",
-            "1ed57e96fd8e3107284d54007af41a0974ea5f75b2adb16de2d3c9943dc5a7fc",
-        ),
-        (
-            LOSSLESS_CARDINAL_Y_H_FIXTURE,
-            177,
-            "lossless non-DPCM H_PRED luma",
-            "9b37c3e091251b52640f7574105d307a638bbefd0042e900249e3f93bc5148ea",
-        ),
-    ] {
-        assert_lossless_cardinal_y_oracle(fixture, expected_len, label, expected_hash);
-    }
+    assert_lossless_cardinal_y_oracle(
+        LOSSLESS_CARDINAL_Y_V_FIXTURE,
+        182,
+        "lossless non-DPCM V_PRED luma",
+        "1ed57e96fd8e3107284d54007af41a0974ea5f75b2adb16de2d3c9943dc5a7fc",
+    );
+    assert_lossless_cardinal_y_oracle(
+        LOSSLESS_CARDINAL_Y_H_FIXTURE,
+        177,
+        "lossless non-DPCM H_PRED luma",
+        "9b37c3e091251b52640f7574105d307a638bbefd0042e900249e3f93bc5148ea",
+    );
 }
 
 fn assert_lossless_dpcm_uv_oracle(

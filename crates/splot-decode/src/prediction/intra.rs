@@ -53,13 +53,6 @@ impl IntraLumaUnsupported {
 pub(crate) fn plan_luma_prediction(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
-) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
-    plan_luma_prediction_ext(modes, block_ctx, false)
-}
-
-pub(crate) fn plan_luma_prediction_ext(
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
     allow_verified_no_neighbour_cardinal: bool,
 ) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
     if let Some(palette) = modes.palette_y() {
@@ -1337,9 +1330,9 @@ mod tests {
                 },
             );
 
-            assert!(plan_luma_prediction(&modes, ctx(case)).is_err());
+            assert!(plan_luma_prediction(&modes, ctx(case), false).is_err());
             assert_eq!(
-                plan_luma_prediction_ext(&modes, ctx(case), true).unwrap(),
+                plan_luma_prediction(&modes, ctx(case), true).unwrap(),
                 IntraLumaPlan::CardinalNeighbour { direction }
             );
         }
@@ -1377,7 +1370,7 @@ mod tests {
         };
 
         assert_eq!(
-            plan_luma_prediction(&modes, ctx(case)).unwrap(),
+            plan_luma_prediction(&modes, ctx(case), false).unwrap(),
             IntraLumaPlan::CardinalNeighbour {
                 direction: IntraCardinalDirection::Horizontal,
             }

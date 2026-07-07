@@ -13,9 +13,7 @@ use crate::bitstream::tile_payload::{
     SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
     TransformToolResidualPolicy,
 };
-use crate::prediction::intra::{
-    IntraLumaUnsupported, plan_luma_prediction, plan_luma_prediction_ext,
-};
+use crate::prediction::intra::{IntraLumaUnsupported, plan_luma_prediction};
 use crate::residual::pipeline::{
     GeneralIntraResidualPlan, RectChromaPlan, RectLumaPlan, ResidualPipelineUnsupported,
 };
@@ -745,9 +743,9 @@ fn plan_luma_prediction_for_segment(
     sb_mib: usize,
 ) -> core::result::Result<crate::prediction::intra::IntraLumaPlan, IntraLumaUnsupported> {
     if lossless && lossless_luma_prediction_verified(modes, block_ctx, sb_mib) {
-        plan_luma_prediction_ext(modes, block_ctx, true)
+        plan_luma_prediction(modes, block_ctx, true)
     } else {
-        plan_luma_prediction(modes, block_ctx)
+        plan_luma_prediction(modes, block_ctx, false)
     }
 }
 
@@ -2862,7 +2860,7 @@ mod tests {
             },
         );
 
-        assert!(plan_luma_prediction(&modes, first_col_block).is_err());
+        assert!(plan_luma_prediction(&modes, first_col_block, false).is_err());
         assert_eq!(
             rect_luma_plan(&modes, first_col_block, false, 32),
             Ok(RectLumaPlan::OneSidedAbove {
