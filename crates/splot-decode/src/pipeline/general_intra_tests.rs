@@ -66,6 +66,14 @@ const LOSSLESS_DPCM_UV_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-dpcm-uv-intra-64x64.ivf"
 );
 
+const LOSSLESS_SDP_DPCM_UV_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-dpcm-uv-intra-64x64.ivf"
+);
+
+const LOSSLESS_SDP_DPCM_UV_H_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-dpcm-uv-h-intra-64x64.ivf"
+);
+
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
@@ -381,28 +389,47 @@ fn lossless_dpcm_y_intra_frame_decodes_to_oracle() {
     );
 }
 
-#[test]
-fn lossless_dpcm_uv_intra_frame_decodes_to_oracle() {
-    assert_eq!(LOSSLESS_DPCM_UV_FIXTURE.len(), 418);
-    let frame = decode_eight(LOSSLESS_DPCM_UV_FIXTURE);
+fn assert_lossless_dpcm_uv_oracle(
+    fixture: &[u8],
+    expected_len: usize,
+    label: &str,
+    expected_hash: &str,
+) {
+    assert_eq!(fixture.len(), expected_len);
+    let frame = decode_eight(fixture);
 
     assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
     assert_chroma_size(&frame, 32, 32);
-    assert_all_samples_eq(frame.y().samples(), 128, "lossless DPCM-UV luma");
-    assert_distinct_gt(
-        frame.u().unwrap().samples(),
-        16,
-        "lossless DPCM-UV U chroma",
-    );
-    assert_distinct_gt(
-        frame.v().unwrap().samples(),
-        16,
-        "lossless DPCM-UV V chroma",
-    );
-    assert_hash(
-        &frame,
-        "2df572366da9b9c816f21f2c605552a5d6925d0e155eb197f16d9d3fc65aff3c",
-    );
+    assert_all_samples_eq(frame.y().samples(), 128, label);
+    assert_distinct_gt(frame.u().unwrap().samples(), 16, label);
+    assert_distinct_gt(frame.v().unwrap().samples(), 16, label);
+    assert_hash(&frame, expected_hash);
+}
+
+#[test]
+fn lossless_dpcm_uv_variants_decode_to_oracle() {
+    for (fixture, expected_len, label, expected_hash) in [
+        (
+            LOSSLESS_DPCM_UV_FIXTURE,
+            418,
+            "lossless DPCM-UV",
+            "2df572366da9b9c816f21f2c605552a5d6925d0e155eb197f16d9d3fc65aff3c",
+        ),
+        (
+            LOSSLESS_SDP_DPCM_UV_FIXTURE,
+            418,
+            "lossless SDP DPCM-UV",
+            "2df572366da9b9c816f21f2c605552a5d6925d0e155eb197f16d9d3fc65aff3c",
+        ),
+        (
+            LOSSLESS_SDP_DPCM_UV_H_FIXTURE,
+            477,
+            "lossless SDP horizontal DPCM-UV",
+            "d679eb28950917cd3a2ae230e1a3e1e7aa3cfd720ecbf8656ed8deb1e6d28878",
+        ),
+    ] {
+        assert_lossless_dpcm_uv_oracle(fixture, expected_len, label, expected_hash);
+    }
 }
 
 const QUAD_FIXTURE: &[u8] =
