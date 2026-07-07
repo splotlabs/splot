@@ -92,6 +92,10 @@ impl IntraYMode {
     #[cfg(test)]
     pub(crate) const V_PRED_FOR_TEST: Self = Self(Self::V_PRED);
 
+    /// AV2 § 9.2 `H_PRED` luma mode, for tests.
+    #[cfg(test)]
+    pub(crate) const H_PRED_FOR_TEST: Self = Self(Self::H_PRED);
+
     /// AV2 § 9.2 `D45_PRED` luma mode, for tests.
     #[cfg(test)]
     pub(crate) const D45_PRED_FOR_TEST: Self = Self(Self::D45_PRED);

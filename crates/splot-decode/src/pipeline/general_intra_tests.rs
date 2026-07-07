@@ -62,6 +62,14 @@ const LOSSLESS_DPCM_Y_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-dpcm-y-intra-64x64.ivf"
 );
 
+const LOSSLESS_CARDINAL_Y_V_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-cardinal-y-v-intra-64x64.ivf"
+);
+
+const LOSSLESS_CARDINAL_Y_H_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-cardinal-y-h-intra-64x64.ivf"
+);
+
 const LOSSLESS_DPCM_UV_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-dpcm-uv-intra-64x64.ivf"
 );
@@ -386,6 +394,38 @@ fn lossless_dpcm_y_intra_frame_decodes_to_oracle() {
     assert_hash(
         &frame,
         "f294ce1a7dbe1d19840f716fc284a0e9c144548fb0699fef2b44e7c0c1f91d90",
+    );
+}
+
+fn assert_lossless_cardinal_y_oracle(
+    fixture: &[u8],
+    expected_len: usize,
+    label: &str,
+    expected_hash: &str,
+) {
+    assert_eq!(fixture.len(), expected_len);
+    let frame = decode_eight(fixture);
+
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_chroma_size(&frame, 32, 32);
+    assert_distinct_gt(frame.y().samples(), 16, label);
+    assert_chroma_eq(&frame, 128, 128);
+    assert_hash(&frame, expected_hash);
+}
+
+#[test]
+fn lossless_cardinal_y_variants_decode_to_oracle() {
+    assert_lossless_cardinal_y_oracle(
+        LOSSLESS_CARDINAL_Y_V_FIXTURE,
+        182,
+        "lossless non-DPCM V_PRED luma",
+        "1ed57e96fd8e3107284d54007af41a0974ea5f75b2adb16de2d3c9943dc5a7fc",
+    );
+    assert_lossless_cardinal_y_oracle(
+        LOSSLESS_CARDINAL_Y_H_FIXTURE,
+        177,
+        "lossless non-DPCM H_PRED luma",
+        "9b37c3e091251b52640f7574105d307a638bbefd0042e900249e3f93bc5148ea",
     );
 }
 
