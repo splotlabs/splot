@@ -219,6 +219,14 @@ fn frame_facts_with_fsc() -> TileCoeffFrameFacts {
     })
 }
 
+fn lossless_frame_facts() -> TileCoeffFrameFacts {
+    let mut input = frame_facts_input();
+    input.enable_idtx_intra = true;
+    input.enable_intra_ist = true;
+    input.lossless_array[0] = true;
+    TileCoeffFrameFacts::new(input)
+}
+
 fn frame_facts_input() -> TileCoeffFrameFactsInput {
     TileCoeffFrameFactsInput {
         enable_fsc: false,
@@ -314,6 +322,9 @@ fn ensure_with_test_payload_fsc_and_policy(
             plane,
             tx_size,
             is_inter,
+            lossless: facts
+                .lossless_for_segment(current_segment_id())
+                .unwrap_or(false),
             fsc_mode,
             eob,
             luma_transform_type_context: luma,
@@ -321,6 +332,41 @@ fn ensure_with_test_payload_fsc_and_policy(
             active_chroma_policy,
         },
     )
+}
+
+#[test]
+fn lossless_intra_transform_handoff_forces_dct_without_tx_type_or_ist_reads() {
+    let payload = intra_tx_type_set1_with_sec_tx_payload(
+        TX_8X8,
+        1,
+        1,
+        TileCdfSelector::MostProbableStxSet,
+        2,
+    );
+    let mut cdfs = tile_cdfs();
+    let mut symbols = symbol_decoder_for_payload(&payload);
+
+    let metadata = ensure_transform_tool_residual_handoff(
+        &mut cdfs,
+        &mut symbols,
+        TransformToolResidualInput {
+            frame_facts: lossless_frame_facts(),
+            plane: 0,
+            tx_size: TX_8X8,
+            is_inter: false,
+            lossless: true,
+            fsc_mode: false,
+            eob: 2,
+            luma_transform_type_context: Some(dc_luma_context()),
+            active_intra_ist_policy: ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
+            active_chroma_policy: ActiveChromaResidualPolicy::Reject,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(metadata.luma_tx_type, DCT_DCT);
+    assert_eq!(metadata.intra_ist, None);
+    assert_eq!(symbols.symbol_count(), 0);
 }
 
 #[test]
@@ -872,6 +918,38 @@ fn dctonly_residual_rejects_u_plane_cctx_only_when_eob_requires_cctx_type() {
         unsupported_reason(&eob_two),
         Some("unsupported_dctonly_residual_cctx")
     );
+}
+
+#[test]
+fn lossless_chroma_transform_handoff_skips_cctx_read() {
+    let mut input = frame_facts_input();
+    input.enable_cctx = true;
+    input.lossless_array[0] = true;
+    let facts = TileCoeffFrameFacts::new(input);
+    let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, 1)]);
+    let mut cdfs = tile_cdfs();
+    let mut symbols = symbol_decoder_for_payload(&payload);
+
+    let metadata = ensure_transform_tool_residual_handoff(
+        &mut cdfs,
+        &mut symbols,
+        TransformToolResidualInput {
+            frame_facts: facts,
+            plane: 1,
+            tx_size: TX_8X8,
+            is_inter: false,
+            lossless: true,
+            fsc_mode: false,
+            eob: 2,
+            luma_transform_type_context: None,
+            active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
+            active_chroma_policy: ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(metadata.cctx_type, None);
+    assert_eq!(symbols.symbol_count(), 0);
 }
 
 #[test]

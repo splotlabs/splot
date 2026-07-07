@@ -950,6 +950,64 @@ fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
     }
 }
 
+#[test]
+fn cardinal_vertical_top_left_uses_no_neighbour_above_fallback() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+
+    reconstruct_general_intra_cardinal_neighbour_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        IntraCardinalDirection::Vertical,
+        PlaneId::Y,
+        0,
+        0,
+        2,
+        2,
+        0,
+        false,
+        None,
+        IntraEdgeAvailability::all(),
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    for row in 0..4 {
+        for col in 0..4 {
+            assert_eq!(ws.reconstructed_sample(PlaneId::Y, col, row).unwrap(), 127);
+        }
+    }
+}
+
+#[test]
+fn cardinal_horizontal_top_left_uses_no_neighbour_left_fallback() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+
+    reconstruct_general_intra_cardinal_neighbour_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        IntraCardinalDirection::Horizontal,
+        PlaneId::Y,
+        0,
+        0,
+        2,
+        2,
+        0,
+        false,
+        None,
+        IntraEdgeAvailability::all(),
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    for row in 0..4 {
+        for col in 0..4 {
+            assert_eq!(ws.reconstructed_sample(PlaneId::Y, col, row).unwrap(), 129);
+        }
+    }
+}
+
 /// Reference §7.13.2.2 Paeth sample (independent of the splot-recon primitive):
 /// pick whichever of `left` / `above` / `top_left` is closest to
 /// `above + left - top_left`, ties favouring left then above.
