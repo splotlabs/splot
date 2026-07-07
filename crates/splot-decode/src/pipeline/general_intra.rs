@@ -782,7 +782,12 @@ pub(super) fn lossless_chroma_block_prediction_verified(
         && block_ctx.is_top_left()
         && block.width4() == FULL_SB_N4_LUMA
         && block.height4() == FULL_SB_N4_LUMA;
-    top_left_64_sb && mode == Some(SupportedChromaMode::Horizontal) && !uses_dpcm_uv
+    top_left_64_sb
+        && matches!(
+            mode,
+            Some(SupportedChromaMode::Horizontal | SupportedChromaMode::D135)
+        )
+        && !uses_dpcm_uv
 }
 
 fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformTypeContext {
