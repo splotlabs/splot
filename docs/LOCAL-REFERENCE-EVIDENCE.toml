@@ -1576,7 +1576,7 @@ id = "lref-avm-dav2d-syn-d45-intra-192x128-q80"
 feature_id = "DECODE-GENERAL-INTRA-ANGLE-D45"
 decoder_support_rows = ["general-intra-angle-d45"]
 kind = "reference-output-agreement"
-summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 192x128 full-grid (three superblock columns by two rows) intra IVF fixture at base_q_idx 80 whose top-left, top-middle, bottom-left, and bottom-right 64x64 superblocks are DC_PRED, whose top-right DC superblock carries a horizontal-gradient residual (so it reconstructs NON-FLAT), and whose BOTTOM-MIDDLE 64x64 superblock (frontier.r == 16, frontier.c == 16, haveLeft && haveAbove, NON-rightmost) codes the §7.13.2.8 ZONE-1 one-sided D45_PRED directional luma mode (the §5.20.5.3 y_mode_offset escape y_mode_offset == 0 -> modeIdx 7 -> modeDelta 8 -> Reordered_Y_Mode[5] == D45_PRED == canonical mode 3, §8.3.2 ctx == 0, AngleDeltaY 0) plus its uv_mode == 0 directional-follow D45 chroma. This OPENS the §7.13.2.8 zone-1 one-sided angle zone (pAngle < 90, needRight). The decisive element: D45's dx = Dr_Intra_Derivative[45] = 64 (§9.2) projects UP-AND-RIGHT into the above-right (pred[i][j] = AboveRow[base], base = (i + 1) + j, up to maxBaseX = w + h - 1 = 127), so unlike the §7.13.2.8 MIDDLE angles (which read AboveRow[0..w)) the upper-right triangle reads h REAL reconstructed above-right samples — the bottom row of the already-decoded top-right superblock (a horizontal gradient, 32 distinct values 42..228, NOT flat) — via §7.13.2.1 AboveRow[i] = CurrFrame[0][63][Min(aboveLimit, 64 + i)] with aboveLimit = Min(maxX = 191, 64 + 64 + 4*num4AboveRight - 1) and num4AboveRight = 16 (the full above-right superblock, §5.20.7.25 count_top_right_avail over §5.20.2.3 BlockDecoded). Every D45 projection has shift 0 ((i + 1) * 64 >> 1 & 0x1F == 0), so the §7.13.2.8 Dr_Interp_Filter[32][4] luma IDIF 4-tap reduces to the sample copy AboveRow[base] — bit-identical to the chroma enableIdif == 0 bilinear one-sided branch over the same real above-right. The zone-1 luma IDIF kernel (predict_intra_directional_angle_rect_one_sided_idif_into, RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION) is the new piece; it reuses the existing Dr_Interp_Filter table unchanged. The OLD code rejected this frame (general_intra_unsupported_y_mode because D45's supported_directional() returned None). The top-left, first-row (haveAbove == 0), first-column, RIGHTMOST (no decoded above-right), sub-superblock D45 blocks, the other one-sided angles D67/D203, non-zero angle deltas, and the directional-neighbour (ctx != 0) escape reorder remain out of scope and rejected."
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 192x128 full-grid (three superblock columns by two rows) intra IVF fixture at base_q_idx 80 whose top-left, top-middle, bottom-left, and bottom-right 64x64 superblocks are DC_PRED, whose top-right DC superblock carries a horizontal-gradient residual (so it reconstructs NON-FLAT), and whose BOTTOM-MIDDLE 64x64 superblock (frontier.r == 16, frontier.c == 16, haveLeft && haveAbove, NON-rightmost) codes the §7.13.2.8 ZONE-1 one-sided D45_PRED directional luma mode (the §5.20.5.3 y_mode_offset escape y_mode_offset == 0 -> modeIdx 7 -> modeDelta 8 -> Reordered_Y_Mode[5] == D45_PRED == canonical mode 3, §8.3.2 ctx == 0, AngleDeltaY 0) plus its uv_mode == 0 directional-follow D45 chroma. This OPENS the §7.13.2.8 zone-1 one-sided angle zone (pAngle < 90, needRight). The decisive element: D45's dx = Dr_Intra_Derivative[45] = 64 (§9.2) projects UP-AND-RIGHT into the above-right (pred[i][j] = AboveRow[base], base = (i + 1) + j, up to maxBaseX = w + h - 1 = 127), so unlike the §7.13.2.8 MIDDLE angles (which read AboveRow[0..w)) the upper-right triangle reads h REAL reconstructed above-right samples — the bottom row of the already-decoded top-right superblock (a horizontal gradient, 32 distinct values 42..228, NOT flat) — via §7.13.2.1 AboveRow[i] = CurrFrame[0][63][Min(aboveLimit, 64 + i)] with aboveLimit = Min(maxX = 191, 64 + 64 + 4*num4AboveRight - 1) and num4AboveRight = 16 (the full above-right superblock, §5.20.7.25 count_top_right_avail over §5.20.2.3 BlockDecoded). Every D45 projection has shift 0 ((i + 1) * 64 >> 1 & 0x1F == 0), so the §7.13.2.8 Dr_Interp_Filter[32][4] luma IDIF 4-tap reduces to the sample copy AboveRow[base] — bit-identical to the chroma enableIdif == 0 bilinear one-sided branch over the same real above-right. The zone-1 luma IDIF kernel (predict_intra_directional_angle_rect_one_sided_idif_into, RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION) is the new piece; it reuses the existing Dr_Interp_Filter table unchanged. The OLD code rejected this frame (general_intra_unsupported_y_mode because D45's supported_directional() returned None). The top-left, first-row (haveAbove == 0), first-column, RIGHTMOST variants outside the later AVM-proven y_second_mode full-SB clamp fixture, sub-superblock D45 blocks, the other one-sided angles D67/D203, non-zero angle deltas, and the directional-neighbour (ctx != 0) escape reorder remain out of scope and rejected."
 recorded_at = "2026-06-21"
 
 [[evidence.fixture]]
@@ -1674,6 +1674,58 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-d45-top-left-q96-raw-md5"
 right = "avm-repeat-d45-top-left-q96-raw-md5"
+
+[[evidence]]
+id = "lref-avm-syn-d45-right-edge-intra-128x128-q80"
+feature_id = "DECODE-GENERAL-INTRA-ANGLE-D45"
+decoder_support_rows = ["general-intra-angle-d45"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 128x128 right-edge intra fixture whose bottom-right full superblock codes D45_PRED through the §5.20.5.3 y_second_mode path. This exercises the §7.13.2.8 zone-1 one-sided luma predictor where haveAbove and haveLeft are true but num4AboveRight is 0, so §7.13.2.1 clamps above-right reads to the frame's rightmost reconstructed sample. splot reproduces the raw SHA-256 through the committed decoder-oracle metadata and decode test, proving the existing square-to-rect residual fallback handles this right-edge subset."
+recorded_at = "2026-07-08"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-d45-right-edge-intra-128x128-q80.ivf"
+sha256 = "d5b1f5f4cc02d4cf23face5657cf5871f7ee0e44ed74d51599e7c81c192b93c7"
+size_bytes = 180
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 128x128 8-bit 4:2:0 YUV input with top-left and bottom-left luma flat 100, top-right luma a horizontal gradient, bottom-right luma shaped as D45 prediction over the top-right row with right-edge clamping, and flat chroma U=120 V=130. Source SHA-256 was 702ba54cc591ee04fd24ed11c9fe210bcbf7344c02912e5f5d95555a1dba1c0a. Encoded with AVM avmenc --codec=av2 --ivf -D --threads=1 --cpu-used=2 --end-usage=q --qp=80 --limit=1 --kf-max-dist=0 --lag-in-frames=0 --cdf-update-mode=0 --i420 --width=128 --height=128 --input-bit-depth=8 --bit-depth=8 --sb-size=64 --min-partition-size=64 --max-partition-size=64 and broad decode tools disabled. Temporary trace showed the bottom-right block as y_mode_set=2, y_second_mode=5, y_mode=D45_PRED, and uv_mode=0. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3 from the local fixture build; checkout contained untracked build directories only."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:input}."
+output_digest_id = "avm-d45-right-edge-q80-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "1d92c01a3bcb29b70911e3b1af4cb752"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 fd131679dbf64ae6ad63cf2b51894995c86bda529ff5299545225b00d478ba76 is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3 decode run from the same fixture build; checkout contained untracked build directories only."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:input}."
+output_digest_id = "avm-repeat-d45-right-edge-q80-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "1d92c01a3bcb29b70911e3b1af4cb752"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-d45-right-edge-q80-raw-md5"
+right = "avm-repeat-d45-right-edge-q80-raw-md5"
 
 [[evidence]]
 id = "lref-avm-dav2d-syn-d203-intra-128x64-q80"

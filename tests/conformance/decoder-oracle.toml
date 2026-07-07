@@ -233,6 +233,13 @@ ivf_sha256 = "d647ff6d80ba301d77540ab937a9dfcf75bc7e4d705263ff1d8cf41ba6179622"
 avm_raw_sha256 = "6a8317f2ca517cb85a9157c9e8e86ffe7b4ad9580374cbfee7394e974a5cf06b"
 
 [[fixture]]
+id = "syn-d45-right-edge-intra-128x128-q80"
+status = "must_pass"
+features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+ivf_sha256 = "d5b1f5f4cc02d4cf23face5657cf5871f7ee0e44ed74d51599e7c81c192b93c7"
+avm_raw_sha256 = "fd131679dbf64ae6ad63cf2b51894995c86bda529ff5299545225b00d478ba76"
+
+[[fixture]]
 id = "syn-deep-intra-64x64-q120"
 status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
