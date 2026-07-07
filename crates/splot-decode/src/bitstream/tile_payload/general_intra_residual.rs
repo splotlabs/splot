@@ -2096,7 +2096,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_with_prediction<T: ReconSamp
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
     reconstruct_general_intra_coeff_block_rect_with_prediction(
-        block, prediction, qindex, plane_id, log2_side, log2_side, use_tcq, bit_depth,
+        block, prediction, qindex, plane_id, log2_side, log2_side, use_tcq, None, bit_depth,
     )
 }
 
@@ -2135,6 +2135,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction<T: Reco
     log2_width: u32,
     log2_height: u32,
     use_tcq: bool,
+    dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
     reconstruct_general_intra_block_rect_with_prediction_core(
@@ -2149,7 +2150,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction<T: Reco
         false,
         block.lossless,
         None,
-        None,
+        dpcm,
         bit_depth,
     )
 }

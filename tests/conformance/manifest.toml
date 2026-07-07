@@ -126,6 +126,11 @@ description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a proj
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-lossless-dpcm-uv-intra-64x64.ivf"
+description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned flat-luma, diagonal-chroma input with broad decode tools disabled. The stream carries active normal-block chroma DPCM-UV syntax (§ 5.20.5.6, use_dpcm_uv=1, dpcm_mode_uv=0) plus nonzero lossless chroma residual coefficients; avmdec and splot decode byte-exact to raw SHA-256 2df572366da9b9c816f21f2c605552a5d6925d0e155eb197f16d9d3fc65aff3c; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-mrl-largest-intra-128x128.ivf"
 description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with multi-reference-line (MRL) intra enabled and an active MRL directional block; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_unsupported_mrl_mode."
 expect = "clean"

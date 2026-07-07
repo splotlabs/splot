@@ -95,6 +95,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
             log2_width,
             log2_height,
             false,
+            None,
             bit_depth,
         )?
     };

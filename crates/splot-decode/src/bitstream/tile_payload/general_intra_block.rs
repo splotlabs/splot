@@ -258,6 +258,10 @@ impl GeneralIntraChromaBlockMode {
         self.use_dpcm_uv != 0
     }
 
+    pub(crate) const fn chroma_dpcm_direction(self) -> Option<DpcmDirection> {
+        dpcm_direction(self.use_dpcm_uv != 0, self.dpcm_mode_uv == 0)
+    }
+
     pub(crate) fn supported_chroma_mode(self, y_mode: IntraYMode) -> Option<SupportedChromaMode> {
         if self.is_cfl {
             return None;
@@ -415,6 +419,9 @@ impl GeneralIntraBlockModes {
         if self.is_cfl {
             return None;
         }
+        if self.use_dpcm_uv != 0 {
+            return supported_chroma_mode_value(self.coeff_uv_mode);
+        }
         supported_chroma_mode(self.y_mode, self.uv_mode)
     }
 
@@ -440,6 +447,10 @@ impl GeneralIntraBlockModes {
 
     pub(crate) const fn uses_dpcm_uv(&self) -> bool {
         self.use_dpcm_uv != 0
+    }
+
+    pub(crate) const fn chroma_dpcm_direction(&self) -> Option<DpcmDirection> {
+        dpcm_direction(self.use_dpcm_uv != 0, self.dpcm_mode_uv == 0)
     }
 
     pub(crate) const fn palette_y(&self) -> Option<LumaPalette> {
@@ -2038,6 +2049,51 @@ mod tests {
         assert_eq!(mode.uv_mode(), 0);
         assert_eq!(symbols.symbol_count(), 2);
         assert_eq!(symbols.finish().unwrap().symbol_count, 2);
+    }
+
+    #[test]
+    fn chroma_dpcm_modes_resolve_direction_and_coeff_mode() {
+        let luma = GeneralIntraLumaBlockMode {
+            y_mode: IntraYMode::DC_PRED,
+            angle_delta_y: 0,
+            intra_joint_mode: 0,
+            mrl_index: 0,
+            mrl_sec_index: None,
+            fsc_mode: 0,
+            uses_mrls: 0,
+            use_dpcm_y: 0,
+            dpcm_mode_y: 0,
+        };
+
+        let vertical = GeneralIntraChromaBlockMode::dpcm(0);
+        assert_eq!(
+            vertical.chroma_dpcm_direction(),
+            Some(DpcmDirection::Vertical)
+        );
+        assert_eq!(
+            vertical.supported_chroma_mode(IntraYMode::DC_PRED),
+            Some(SupportedChromaMode::Vertical)
+        );
+        let modes = GeneralIntraBlockModes::from_luma_chroma(luma, vertical);
+        assert_eq!(modes.chroma_dpcm_direction(), Some(DpcmDirection::Vertical));
+        assert_eq!(
+            modes.supported_chroma_mode(),
+            Some(SupportedChromaMode::Vertical)
+        );
+
+        let horizontal = GeneralIntraChromaBlockMode::dpcm(1);
+        assert_eq!(
+            horizontal.chroma_dpcm_direction(),
+            Some(DpcmDirection::Horizontal)
+        );
+        assert_eq!(
+            horizontal.supported_chroma_mode(IntraYMode::DC_PRED),
+            Some(SupportedChromaMode::Horizontal)
+        );
+        assert_eq!(
+            GeneralIntraBlockModes::from_luma_chroma(luma, horizontal).supported_chroma_mode(),
+            Some(SupportedChromaMode::Horizontal)
+        );
     }
 
     #[test]

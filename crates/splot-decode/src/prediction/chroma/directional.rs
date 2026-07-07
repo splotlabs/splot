@@ -14,8 +14,8 @@
 //! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, IntraDirectionalAngleEdges,
-    IntraRectBlockSize, IntraSmoothMode, PlaneId, ReconSample,
+    BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection,
+    IntraDirectionalAngleEdges, IntraRectBlockSize, IntraSmoothMode, PlaneId, ReconSample,
     predict_intra_cardinal_directional_rect_into,
 };
 
@@ -56,6 +56,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
     log2_height: u32,
     qindex: u32,
     mode: SupportedChromaMode,
+    dpcm: Option<DpcmDirection>,
     num4_above_right: usize,
     num4_below_left: usize,
     ibp_dc: bool,
@@ -211,6 +212,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 None,
+                dpcm,
                 availability,
                 bit_depth,
             )
@@ -228,6 +230,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 qindex,
                 false,
                 None,
+                dpcm,
                 availability,
                 bit_depth,
             )
@@ -242,6 +245,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 log2_width,
                 log2_height,
                 qindex,
+                dpcm,
                 bit_depth,
             )
         }
@@ -257,6 +261,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             qindex,
             false,
             None,
+            dpcm,
             availability,
             bit_depth,
         ),
@@ -386,6 +391,7 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
     log2_width: u32,
     log2_height: u32,
     qindex: u32,
+    dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
@@ -414,6 +420,7 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
             log2_width,
             log2_height,
             false,
+            dpcm,
             bit_depth,
         )?
     };

@@ -6,9 +6,9 @@
 //! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraCardinalDirection, IntraDcEdges,
-    IntraDirectionalAngle, IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges,
-    IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
+    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, DpcmDirection, IntraCardinalDirection,
+    IntraDcEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges,
+    IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraMiddleDirectionalAngleIdifMrlEdges, IntraPaethEdges,
     IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode, OutputIndex, PixelFormat, PlaneId,
     PlaneRect, PlaneSize, ReconSample, apply_ibp_dr_blend_rect, apply_intra_edge_filter,
@@ -156,6 +156,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
             log2_width,
             log2_height,
             use_tcq,
+            None,
             bit_depth,
         )?
     };
@@ -536,6 +537,7 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
             log2_width,
             log2_height,
             use_tcq,
+            None,
             bit_depth,
         )?
     };
@@ -1233,6 +1235,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
             log2_width,
             log2_height,
             use_tcq,
+            None,
             bit_depth,
         )?
     };
@@ -1380,6 +1383,7 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
             log2_width,
             log2_height,
             use_tcq,
+            None,
             bit_depth,
         )?
     };
@@ -1550,6 +1554,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
             log2_width,
             log2_height,
             use_tcq,
+            None,
             bit_depth,
         )?
     };
@@ -1654,6 +1659,7 @@ fn write_luma_prediction_block<T: ReconSample>(
             log2_width,
             log2_height,
             use_tcq,
+            None,
             bit_depth,
         )?
     };
@@ -1766,6 +1772,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
             log2_width,
             log2_height,
             use_tcq,
+            None,
             bit_depth,
         )?
     };
@@ -2119,6 +2126,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             log2_width,
             log2_height,
             use_tcq,
+            None,
             bit_depth,
         )?
     };
@@ -2531,6 +2539,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             log2_width,
             log2_height,
             use_tcq,
+            None,
             bit_depth,
         )?
     };
@@ -2649,6 +2658,7 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_block_into<T: Reco
             log2_width,
             log2_height,
             use_tcq,
+            None,
             bit_depth,
         )?
     };
@@ -2726,6 +2736,7 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
             log2_width,
             log2_height,
             use_tcq,
+            None,
             bit_depth,
         )?
     };
@@ -3002,6 +3013,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
     qindex: u32,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
     availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
@@ -3071,6 +3083,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
             log2_width,
             log2_height,
             use_tcq,
+            dpcm,
             bit_depth,
         )?
     };

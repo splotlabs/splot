@@ -102,6 +102,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         3,
         0,
         crate::bitstream::tile_payload::SupportedChromaMode::Dc,
+        None,
         0,
         0,
         true,
@@ -135,6 +136,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         3,
         0,
         crate::bitstream::tile_payload::SupportedChromaMode::Dc,
+        None,
         0,
         0,
         false,
@@ -764,6 +766,7 @@ fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
         0,
         false,
         None,
+        None,
         IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
@@ -803,6 +806,7 @@ fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
         6, // log2_height = 6 -> 64
         0,
         false,
+        None,
         None,
         IntraEdgeAvailability::all(),
         BitDepth::Eight,
@@ -847,6 +851,7 @@ fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
         5, // log2_height = 5 -> 32
         0,
         false,
+        None,
         None,
         IntraEdgeAvailability::all(),
         BitDepth::Eight,
@@ -933,6 +938,7 @@ fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
         0,
         false,
         None,
+        None,
         IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
@@ -952,42 +958,22 @@ fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
 
 #[test]
 fn cardinal_vertical_top_left_uses_no_neighbour_above_fallback() {
-    let mut ws =
-        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
-
-    reconstruct_general_intra_cardinal_neighbour_block_into(
-        &mut ws,
-        &all_zero_luma_block(),
-        IntraCardinalDirection::Vertical,
-        PlaneId::Y,
-        0,
-        0,
-        2,
-        2,
-        0,
-        false,
-        None,
-        IntraEdgeAvailability::all(),
-        BitDepth::Eight,
-    )
-    .unwrap();
-
-    for row in 0..4 {
-        for col in 0..4 {
-            assert_eq!(ws.reconstructed_sample(PlaneId::Y, col, row).unwrap(), 127);
-        }
-    }
+    assert_cardinal_top_left_fallback(IntraCardinalDirection::Vertical, 127);
 }
 
 #[test]
 fn cardinal_horizontal_top_left_uses_no_neighbour_left_fallback() {
+    assert_cardinal_top_left_fallback(IntraCardinalDirection::Horizontal, 129);
+}
+
+fn assert_cardinal_top_left_fallback(direction: IntraCardinalDirection, expected: u8) {
     let mut ws =
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
     reconstruct_general_intra_cardinal_neighbour_block_into(
         &mut ws,
         &all_zero_luma_block(),
-        IntraCardinalDirection::Horizontal,
+        direction,
         PlaneId::Y,
         0,
         0,
@@ -996,6 +982,7 @@ fn cardinal_horizontal_top_left_uses_no_neighbour_left_fallback() {
         0,
         false,
         None,
+        None,
         IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
@@ -1003,7 +990,10 @@ fn cardinal_horizontal_top_left_uses_no_neighbour_left_fallback() {
 
     for row in 0..4 {
         for col in 0..4 {
-            assert_eq!(ws.reconstructed_sample(PlaneId::Y, col, row).unwrap(), 129);
+            assert_eq!(
+                ws.reconstructed_sample(PlaneId::Y, col, row).unwrap(),
+                expected
+            );
         }
     }
 }
@@ -1226,6 +1216,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
         3,
         4,
         true,
+        None,
         BitDepth::Eight,
     )
     .unwrap();
