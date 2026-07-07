@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_recon::{CurrentFrameWorkspace, IntraCardinalDirection, PlaneId, ReconSample};
+use splot_recon::{BitDepth, CurrentFrameWorkspace, IntraCardinalDirection, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
     GeneralIntraBlockModes, GeneralIntraResidualError, IntraYMode, LumaCoeffBlock, LumaPalette,
@@ -423,6 +423,7 @@ fn plan_directional_luma_angle(
         && block_ctx.block().width4() >= 2
         && block_ctx.block().height4() >= 2
         && neighbours.num_above_right() > 0;
+    let full_sb_top_left_no_neighbour = is_full_sb && is_top_left && !has_edge;
     let full_sb_first_row = is_full_sb && !has_above;
     let full_sb_with_edge = is_full_sb && has_edge;
     let full_sb_no_neighbour_cardinal = is_full_sb && is_top_left && allow_no_neighbour_cardinal;
@@ -455,7 +456,11 @@ fn plan_directional_luma_angle(
     if p_angle > 0 && p_angle < 90 {
         return (full_sb_above_left_with_above_right
             || supports_small_one_sided_above
-            || full_sb_no_above_left)
+            || full_sb_no_above_left
+            || (full_sb_top_left_no_neighbour
+                && block_ctx.bit_depth() == BitDepth::Eight
+                && matches!(mode, SupportedDirectionalLumaMode::D45)
+                && p_angle == 45))
             .then_some(IntraLumaPlan::DirectionalOneSidedAbove { p_angle })
             .ok_or(UNSUPPORTED_D45_POSITION);
     }
@@ -771,6 +776,19 @@ mod tests {
                 expected: Expected::Plan(IntraLumaPlan::NonDcFirst {
                     mode: SupportedNonDcLumaMode::Smooth,
                 }),
+            },
+            Case {
+                label: "d45 top-left no-neighbour fallback",
+                bit_depth: BitDepth::Eight,
+                row4: 0,
+                col4: 0,
+                width4: 16,
+                height4: 16,
+                frame_cols4: 16,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::D45),
+                expected: Expected::Plan(IntraLumaPlan::DirectionalOneSidedAbove { p_angle: 45 }),
             },
             Case {
                 label: "smooth full-sb neighbour",
@@ -1284,6 +1302,19 @@ mod tests {
                 width4: 16,
                 height4: 16,
                 frame_cols4: 32,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::D45),
+                expected: Expected::Error("general_intra_d45_unverified_position"),
+            },
+            Case {
+                label: "10-bit d45 top-left no-neighbour",
+                bit_depth: BitDepth::Ten,
+                row4: 0,
+                col4: 0,
+                width4: 16,
+                height4: 16,
+                frame_cols4: 16,
                 dc: false,
                 nondc: None,
                 directional: Some(SupportedDirectionalLumaMode::D45),
