@@ -543,9 +543,12 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         general_intra_block_mode_error(error, tile_offset)
     })?;
     if lossless
-        && !lossless_chroma_prediction_verified(
+        && !lossless_chroma_part_prediction_verified(
             chroma.supported_chroma_mode(y_mode),
             chroma.uses_dpcm_uv(),
+            y_mode,
+            block_ctx,
+            sb_mib,
         )
     {
         return Err(general_intra_at!(
@@ -770,6 +773,22 @@ pub(super) fn lossless_chroma_prediction_verified(
             ))
 }
 
+pub(super) fn lossless_chroma_part_prediction_verified(
+    mode: Option<SupportedChromaMode>,
+    uses_dpcm_uv: bool,
+    y_mode: crate::bitstream::tile_payload::IntraYMode,
+    block_ctx: BlockCtx,
+    sb_mib: usize,
+) -> bool {
+    if lossless_chroma_prediction_verified(mode, uses_dpcm_uv) {
+        return true;
+    }
+    lossless_chroma_top_left_64_sb(block_ctx, sb_mib)
+        && y_mode == crate::bitstream::tile_payload::IntraYMode::DC_PRED
+        && matches!(mode, Some(SupportedChromaMode::Horizontal))
+        && !uses_dpcm_uv
+}
+
 pub(super) fn lossless_chroma_block_prediction_verified(
     mode: Option<SupportedChromaMode>,
     uses_dpcm_uv: bool,
@@ -779,19 +798,22 @@ pub(super) fn lossless_chroma_block_prediction_verified(
     if lossless_chroma_prediction_verified(mode, uses_dpcm_uv) {
         return true;
     }
-    let block = block_ctx.block();
-    let top_left_64_sb = block_ctx.bit_depth() == BitDepth::Eight
-        && block_ctx.chroma() == ChromaSampling::Yuv420
-        && sb_mib == FULL_SB_N4_LUMA
-        && block_ctx.is_top_left()
-        && block.width4() == FULL_SB_N4_LUMA
-        && block.height4() == FULL_SB_N4_LUMA;
-    top_left_64_sb
+    lossless_chroma_top_left_64_sb(block_ctx, sb_mib)
         && matches!(
             mode,
             Some(SupportedChromaMode::Horizontal | SupportedChromaMode::D135)
         )
         && !uses_dpcm_uv
+}
+
+fn lossless_chroma_top_left_64_sb(block_ctx: BlockCtx, sb_mib: usize) -> bool {
+    let block = block_ctx.block();
+    block_ctx.bit_depth() == BitDepth::Eight
+        && block_ctx.chroma() == ChromaSampling::Yuv420
+        && sb_mib == FULL_SB_N4_LUMA
+        && block_ctx.is_top_left()
+        && block.width4() == FULL_SB_N4_LUMA
+        && block.height4() == FULL_SB_N4_LUMA
 }
 
 fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformTypeContext {
