@@ -3205,7 +3205,7 @@ sha256 = "9dd34ef93d09517c7052261099867bfcdf0c5ce42e4d18c3af6825375aac6007"
 size_bytes = 182
 format = "ivf"
 provenance_kind = "avm-generated-from-project-owned-synthetic-input"
-provenance_summary = "Generated locally from a project-owned 64x64 8-bit 4:2:0 YUV input with Y[x,y] = 32 + 3*x and U=V=128 using AVM lossless mode with broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, palette, IntraBC, FSC, IST, intra-DIP, MRL, SDP, rectangular/extended partitions, non-default intra TX, angle delta, smooth intra, PAETH, parity hiding, TCQ, and trellis quantization. AVM is not vendored."
+provenance_summary = "Generated locally from a project-owned 64x64 8-bit 4:2:0 YUV input with Y[x,y] = 32 + 3*x and U=V=128 using AVM lossless mode with broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, palette, IntraBC, FSC, IST, intra-DIP, MRL, SDP, rectangular/extended partitions, non-default intra TX, angle delta, PAETH, parity hiding, TCQ, and trellis quantization; smooth intra was left enabled. AVM is not vendored."
 license = "PolyForm-Noncommercial-1.0.0"
 
 [[evidence.fixture]]
@@ -3216,7 +3216,7 @@ sha256 = "bd6504eb89de2ce465b73082970fc3b40eabca5d837ab67a90fa05b15d5afa1c"
 size_bytes = 177
 format = "ivf"
 provenance_kind = "avm-generated-from-project-owned-synthetic-input"
-provenance_summary = "Generated locally from a project-owned 64x64 8-bit 4:2:0 YUV input with Y[x,y] = 32 + 3*y and U=V=128 using AVM lossless mode with broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, palette, IntraBC, FSC, IST, intra-DIP, MRL, SDP, rectangular/extended partitions, non-default intra TX, angle delta, smooth intra, PAETH, parity hiding, TCQ, and trellis quantization. AVM is not vendored."
+provenance_summary = "Generated locally from a project-owned 64x64 8-bit 4:2:0 YUV input with Y[x,y] = 32 + 3*y and U=V=128 using AVM lossless mode with broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, palette, IntraBC, FSC, IST, intra-DIP, MRL, SDP, rectangular/extended partitions, non-default intra TX, angle delta, PAETH, parity hiding, TCQ, and trellis quantization; smooth intra was left enabled. AVM is not vendored."
 license = "PolyForm-Noncommercial-1.0.0"
 
 [[evidence.reference_run]]
