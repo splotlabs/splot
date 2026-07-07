@@ -76,6 +76,10 @@ const LOSSLESS_NONDC_CHROMA_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-h-intra-64x64.ivf"
 );
 
+const LOSSLESS_NONDC_CHROMA_D135_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d135-intra-64x64.ivf"
+);
+
 const LOSSLESS_DPCM_UV_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-dpcm-uv-intra-64x64.ivf"
 );
@@ -487,6 +491,26 @@ fn lossless_nondc_chroma_h_frame_decodes_to_oracle() {
 }
 
 #[test]
+fn lossless_nondc_chroma_d135_frame_decodes_to_oracle() {
+    assert_eq!(LOSSLESS_NONDC_CHROMA_D135_FIXTURE.len(), 71);
+    let frame = decode_eight(LOSSLESS_NONDC_CHROMA_D135_FIXTURE);
+
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_chroma_size(&frame, 32, 32);
+    assert_all_samples_eq(
+        frame.y().samples(),
+        128,
+        "lossless explicit D135 chroma luma",
+    );
+    assert_eq!(distinct_count(frame.u().unwrap().samples()), 3);
+    assert_eq!(distinct_count(frame.v().unwrap().samples()), 3);
+    assert_hash(
+        &frame,
+        "b0ca9c37b56e8144a85510c024dbf468738cbda9bb77218bcffbc68d4b634725",
+    );
+}
+
+#[test]
 fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     let top_left_8 = block_ctx(
         0,
@@ -505,6 +529,12 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     ));
     assert!(general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::Horizontal),
+        false,
+        top_left_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D135),
         false,
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
@@ -530,7 +560,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
 }
 
 #[test]
-fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_h_shapes() {
+fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
     for (block_ctx, sb_mib) in [
         (
             block_ctx(
@@ -578,12 +608,14 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_h_shapes() {
             general_intra::FULL_SB_N4_LUMA,
         ),
     ] {
-        assert!(!general_intra::lossless_chroma_block_prediction_verified(
-            Some(SupportedChromaMode::Horizontal),
-            false,
-            block_ctx,
-            sb_mib,
-        ));
+        for mode in [SupportedChromaMode::Horizontal, SupportedChromaMode::D135] {
+            assert!(!general_intra::lossless_chroma_block_prediction_verified(
+                Some(mode),
+                false,
+                block_ctx,
+                sb_mib,
+            ));
+        }
     }
 }
 

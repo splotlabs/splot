@@ -3336,3 +3336,55 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-lossless-nondc-chroma-h-intra-64x64-raw-md5"
 right = "avm-repeat-lossless-nondc-chroma-h-intra-64x64-raw-md5"
+
+[[evidence]]
+id = "lref-avm-syn-lossless-nondc-chroma-d135-intra-64x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 4:2:0 64x64 lossless intra IVF fixture whose normal-block chroma uses explicit non-DPCM D135_PRED while luma stays DC. The chroma source matches the top-left D135 predictor, so the lossless residual is all-zero; splot reproduces the raw SHA-256 value through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-07"
+
+[[evidence.fixture]]
+id = "d135-pred-chroma-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d135-intra-64x64.ivf"
+sha256 = "f03aa2f6d957f801af7b73a68e13d61fae2a991212165a15ce7fd97d1b8de5bf"
+size_bytes = 71
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 64x64 8-bit 4:2:0 YUV input with Y=128 and matching U/V 32x32 chroma planes set to 127 above the diagonal, 128 on the diagonal, and 129 below the diagonal, matching the top-left no-neighbour D135 predictor, using AVM lossless mode with broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, CCTX, palette, IntraBC, FSC, intra-DIP, IBP, MRL, SDP, rectangular/extended partitions, non-default intra TX, angle delta, parity hiding, TCQ, and trellis quantization. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec-lossless-nondc-chroma-d135"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3 from the local fixture build; checkout contained untracked build directories only."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:d135-pred-chroma-input}."
+output_digest_id = "avm-lossless-nondc-chroma-d135-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "d382be3aca80f14ad660702a01caca10"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 b0ca9c37b56e8144a85510c024dbf468738cbda9bb77218bcffbc68d4b634725 is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat-lossless-nondc-chroma-d135"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3 decode run from the same fixture build; checkout contained untracked build directories only."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:d135-pred-chroma-input}."
+output_digest_id = "avm-repeat-lossless-nondc-chroma-d135-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "d382be3aca80f14ad660702a01caca10"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-nondc-chroma-d135-intra-64x64-raw-md5"
+right = "avm-repeat-lossless-nondc-chroma-d135-intra-64x64-raw-md5"
