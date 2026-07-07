@@ -576,6 +576,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         block_ctx,
         cfl_ds_filter_index,
         sb_mib,
+        lossless,
     )
     .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?;
     let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan)
@@ -785,7 +786,10 @@ pub(super) fn lossless_chroma_part_prediction_verified(
     }
     lossless_chroma_top_left_64_sb(block_ctx, sb_mib)
         && y_mode == crate::bitstream::tile_payload::IntraYMode::DC_PRED
-        && matches!(mode, Some(SupportedChromaMode::Horizontal))
+        && matches!(
+            mode,
+            Some(SupportedChromaMode::Horizontal | SupportedChromaMode::D135)
+        )
         && !uses_dpcm_uv
 }
 
@@ -1214,6 +1218,7 @@ fn chroma_plan_for_parts(
     block_ctx: BlockCtx,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
+    lossless: bool,
 ) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
     if chroma.is_cfl() {
         return cfl_chroma_plan(
@@ -1229,7 +1234,18 @@ fn chroma_plan_for_parts(
             "general_intra_chroma_part_non_dc_chroma",
             missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
         ))?;
-    ensure_supported_rect_chroma_capability(mode, block_ctx)?;
+    if let Err(error) = ensure_supported_rect_chroma_capability(mode, block_ctx)
+        && !(lossless
+            && lossless_chroma_part_prediction_verified(
+                Some(mode),
+                chroma.uses_dpcm_uv(),
+                y_mode,
+                block_ctx,
+                sb_mib,
+            ))
+    {
+        return Err(error);
+    }
     Ok(rect_chroma_plan_for_mode(
         mode,
         angle_delta_y,
