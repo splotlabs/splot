@@ -9,9 +9,9 @@ use crate::Result;
 use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
 
 const COMPOUND_MODE_NEAR_NEARMV: u8 = 0;
-const COMP_REF_CTX_NO_NEIGHBOUR: usize = 1;
-const COMP_REF1_BIT_TYPE_SAME_SIDE: usize = 0;
-const FULL_SB_N4: usize = 16;
+const COMPOUND_MODE_SAME_REF_NEW_NEWMV: u8 = 3;
+const RANKED_REF0_TO_PRUNE: usize = 3;
+const MAX_REFS_PER_FRAME: usize = 7;
 const SPEC_READ_REF_FRAMES: &str = "5.20.7.10";
 const SPEC_INTER_BLOCK_MODE_INFO: &str = "5.20.7.6";
 
@@ -20,31 +20,88 @@ const SPEC_INTER_BLOCK_MODE_INFO: &str = "5.20.7.6";
 pub(crate) struct CompoundParseInput {
     /// § 6.19.7.11 `NumTotalRefs`.
     pub(crate) num_total_refs: usize,
-    /// Sequence § 5.4.6 `NumSameRefCompound`.
+    /// Frame-capped sequence § 5.4.6 `NumSameRefCompound`.
     pub(crate) num_same_ref_compound: u8,
-    /// Whether this block has decoded spatial neighbours.
-    pub(crate) has_neighbour: bool,
-    /// § 8.3.2 `is_joint` context.
-    pub(crate) is_joint_ctx: usize,
-    /// Decoded § 5.20.5.10 `skip` flag.
-    pub(crate) skip: u8,
-    /// Block width in 4x4 MI units.
-    pub(crate) n4w: usize,
-    /// Block height in 4x4 MI units.
-    pub(crate) n4h: usize,
-    /// Block top-left row in 4x4 MI units.
-    pub(crate) mi_row: usize,
-    /// Block top-left column in 4x4 MI units.
-    pub(crate) mi_col: usize,
-    /// Frame height in 4x4 MI units.
-    pub(crate) mi_rows: usize,
-    /// Frame width in 4x4 MI units.
-    pub(crate) mi_cols: usize,
+    /// § 8.3.2 reference-prediction contexts indexed by candidate reference.
+    pub(crate) ref_contexts: [usize; MAX_REFS_PER_FRAME],
+    /// Whether each ranked reference is at non-negative display distance from the current frame.
+    pub(crate) ref_distance_nonnegative: [bool; MAX_REFS_PER_FRAME],
+    /// § 8.3.2 `is_joint` context for different-reference compound.
+    pub(crate) is_joint_ctx: Option<usize>,
+}
+
+/// Compound AV2 §5.20.7.6 `YMode` values currently admitted by the decoder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CompoundYMode {
+    /// `NEAR_NEARMV`.
+    NearNear,
+    /// `NEAR_NEWMV`.
+    NearNew,
+    /// `NEW_NEWMV`.
+    NewNew,
+}
+
+impl CompoundYMode {
+    pub(crate) const fn has_newmv(self) -> bool {
+        match self {
+            Self::NearNear => false,
+            Self::NearNew | Self::NewNew => true,
+        }
+    }
+
+    pub(crate) const fn has_nearmv(self) -> bool {
+        match self {
+            Self::NearNear | Self::NearNew => true,
+            Self::NewNew => false,
+        }
+    }
+
+    pub(crate) const fn reads_drl_idx(self) -> bool {
+        self.has_newmv() || self.has_nearmv()
+    }
+
+    pub(crate) const fn has_second_drl(self, skip_mode_present: bool) -> bool {
+        match self {
+            Self::NearNear | Self::NearNew => !skip_mode_present,
+            Self::NewNew => false,
+        }
+    }
+
+    pub(crate) const fn mvd_sign_derivation_threshold(self) -> usize {
+        match self {
+            Self::NearNear | Self::NearNew => 1,
+            Self::NewNew => 4,
+        }
+    }
+
+    pub(crate) const fn use_amvd_index(self) -> Option<usize> {
+        match self {
+            Self::NearNear => None,
+            Self::NearNew => Some(0),
+            Self::NewNew => Some(7),
+        }
+    }
+
+    pub(crate) const fn list0_is_newmv(self) -> bool {
+        match self {
+            Self::NearNear | Self::NearNew => false,
+            Self::NewNew => true,
+        }
+    }
+
+    pub(crate) const fn list1_is_newmv(self) -> bool {
+        match self {
+            Self::NearNear => false,
+            Self::NearNew | Self::NewNew => true,
+        }
+    }
 }
 
 /// The parsed compound syntax handed to motion compensation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CompoundBlockSyntax {
+    /// § 5.20.7.6 compound `YMode`.
+    pub(crate) y_mode: CompoundYMode,
     /// § 5.20.7.11 `RefFrame[0]`.
     pub(crate) ref_frame0: i8,
     /// § 5.20.7.11 `RefFrame[1]`.
@@ -74,37 +131,94 @@ pub(crate) fn read_compound_reference_pair(
             .map_err(|_| compound_symbol_read_error(tile_offset))
     };
 
-    if input.num_same_ref_compound > 1 {
-        let comp_ref0 = read_symbol(TileCdfSelector::CompRef0 {
-            ctx: COMP_REF_CTX_NO_NEIGHBOUR,
-            ref_idx: 0,
-        })?;
-        if comp_ref0 != 1 {
-            return Err(compound_cap!(
-                "compound_block_missing_first_ref",
-                tile_offset,
-                "inter.compound.comp_ref0 != 1",
-                SPEC_READ_REF_FRAMES
-            ));
+    let n_refs = input.num_total_refs;
+    let same_ref_compound = usize::from(input.num_same_ref_compound).min(n_refs);
+    let mut ref_frames = [n_refs.saturating_sub(1); 2];
+    let mut n_bits = 0usize;
+    let mut may_have_same_ref_compound = same_ref_compound > 0;
+    let mut ref_idx = 0usize;
+
+    while (compound_ref_loop_has_more(ref_idx, n_refs, n_bits) || may_have_same_ref_compound)
+        && n_bits < 2
+    {
+        let implicit_ref0 = n_bits == 0
+            && (ref_idx >= RANKED_REF0_TO_PRUNE - 1
+                || ref_idx >= n_refs.saturating_sub(2) && ref_idx + 1 >= same_ref_compound);
+        let comp_ref = if implicit_ref0 {
+            1
+        } else if n_bits == 0 {
+            read_symbol(TileCdfSelector::CompRef0 {
+                ctx: *input.ref_contexts.get(ref_idx).ok_or_else(|| {
+                    compound_missing!(
+                        "compound_missing_ref0_context",
+                        tile_offset,
+                        "inter.compound.ref_context",
+                        SPEC_READ_REF_FRAMES
+                    )
+                })?,
+                ref_idx,
+            })?
+        } else {
+            let first_ref = ref_frames[0];
+            let bit_type = compound_ref_bit_type(input, first_ref, ref_idx, tile_offset)?;
+            read_symbol(TileCdfSelector::CompRef1 {
+                ctx: *input.ref_contexts.get(ref_idx).ok_or_else(|| {
+                    compound_missing!(
+                        "compound_missing_ref1_context",
+                        tile_offset,
+                        "inter.compound.ref_context",
+                        SPEC_READ_REF_FRAMES
+                    )
+                })?,
+                bit_type,
+                ref_idx,
+            })?
+        };
+
+        if comp_ref != 0 {
+            ref_frames[n_bits] = ref_idx;
+            n_bits += 1;
         }
-    }
-    if input.num_same_ref_compound > 0 {
-        let comp_ref1 = read_symbol(TileCdfSelector::CompRef1 {
-            ctx: COMP_REF_CTX_NO_NEIGHBOUR,
-            bit_type: COMP_REF1_BIT_TYPE_SAME_SIDE,
-            ref_idx: 0,
-        })?;
-        if comp_ref1 != 0 {
-            return Err(compound_cap!(
-                "compound_block_same_ref_pair",
-                tile_offset,
-                "inter.compound.comp_ref1 != 0",
-                SPEC_READ_REF_FRAMES
-            ));
+
+        if ref_idx < same_ref_compound && may_have_same_ref_compound {
+            may_have_same_ref_compound = comp_ref == 0 && ref_idx + 1 < same_ref_compound;
+            if comp_ref == 0 {
+                ref_idx += 1;
+            }
+        } else {
+            may_have_same_ref_compound = false;
+            ref_idx += 1;
         }
     }
 
-    Ok((0, 1))
+    if n_bits < 2 {
+        ref_frames[1] = n_refs.saturating_sub(1);
+    }
+    if n_bits < 1 {
+        ref_frames[0] = if same_ref_compound > 0 && n_refs.saturating_sub(1) < same_ref_compound {
+            n_refs.saturating_sub(1)
+        } else {
+            n_refs.saturating_sub(2)
+        };
+    }
+
+    let ref0 = i8::try_from(ref_frames[0]).map_err(|_| {
+        compound_cap!(
+            "compound_ref0_out_of_range",
+            tile_offset,
+            "inter.compound.ref_frame0",
+            SPEC_READ_REF_FRAMES
+        )
+    })?;
+    let ref1 = i8::try_from(ref_frames[1]).map_err(|_| {
+        compound_cap!(
+            "compound_ref1_out_of_range",
+            tile_offset,
+            "inter.compound.ref_frame1",
+            SPEC_READ_REF_FRAMES
+        )
+    })?;
+    Ok((ref0, ref1))
 }
 
 /// Reads the §5.20.7.6 compound mode symbols with the mode context derived
@@ -114,23 +228,49 @@ pub(crate) fn read_compound_mode_syntax(
     symbols: &mut SymbolDecoder<'_>,
     pair: (i8, i8),
     new_mv_context: usize,
-    is_joint_ctx: usize,
+    is_joint_ctx: Option<usize>,
     tile_offset: ByteOffset,
 ) -> Result<CompoundBlockSyntax> {
-    if new_mv_context != 0 {
-        return Err(compound_cap!(
-            "compound_block_neighbour_context",
-            tile_offset,
-            "inter.compound.neighbour_context",
-            SPEC_INTER_BLOCK_MODE_INFO
-        ));
-    }
     let mut read_symbol = |selector| {
         cdfs.read_block_symbol_trace(selector, symbols)
             .map(splot_core::symbol::Symbol::get)
             .map_err(|_| compound_symbol_read_error(tile_offset))
     };
 
+    if pair.0 == pair.1 {
+        let compound_mode = read_symbol(TileCdfSelector::CompoundModeSameRefs {
+            ctx: new_mv_context,
+        })?;
+        let y_mode = match compound_mode {
+            COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
+            1 => CompoundYMode::NearNew,
+            COMPOUND_MODE_SAME_REF_NEW_NEWMV => CompoundYMode::NewNew,
+            _ => {
+                return Err(compound_cap!(
+                    "compound_block_unsupported_same_ref_mode",
+                    tile_offset,
+                    "inter.compound.same_ref_mode not in {NEAR_NEARMV, NEAR_NEWMV, NEW_NEWMV}",
+                    SPEC_INTER_BLOCK_MODE_INFO
+                ));
+            }
+        };
+        return Ok(CompoundBlockSyntax {
+            y_mode,
+            ref_frame0: pair.0,
+            ref_frame1: pair.1,
+            mv0: Mv::ZERO,
+            mv1: Mv::ZERO,
+        });
+    }
+
+    let is_joint_ctx = is_joint_ctx.ok_or_else(|| {
+        compound_missing!(
+            "compound_missing_is_joint_context",
+            tile_offset,
+            "inter.compound.is_joint_context",
+            SPEC_INTER_BLOCK_MODE_INFO
+        )
+    })?;
     let is_joint = read_symbol(TileCdfSelector::IsJoint { ctx: is_joint_ctx })?;
     if is_joint != 0 {
         return Err(compound_cap!(
@@ -154,6 +294,7 @@ pub(crate) fn read_compound_mode_syntax(
     }
 
     Ok(CompoundBlockSyntax {
+        y_mode: CompoundYMode::NearNear,
         ref_frame0: pair.0,
         ref_frame1: pair.1,
         mv0: Mv::ZERO,
@@ -162,12 +303,10 @@ pub(crate) fn read_compound_mode_syntax(
 }
 
 fn gate_compound_subset(input: CompoundParseInput, tile_offset: ByteOffset) -> Result<()> {
-    let full_sb_geometry = input.n4w == FULL_SB_N4
-        && input.n4h == FULL_SB_N4
-        && input.mi_row == 0
-        && input.mi_col == 0
-        && input.mi_rows == FULL_SB_N4
-        && input.mi_cols == FULL_SB_N4;
+    if input.num_total_refs == 1 && input.num_same_ref_compound > 0 {
+        return Ok(());
+    }
+
     for (missing, reason, message, spec_section) in [
         (
             input.num_total_refs != 2,
@@ -176,27 +315,9 @@ fn gate_compound_subset(input: CompoundParseInput, tile_offset: ByteOffset) -> R
             SPEC_READ_REF_FRAMES,
         ),
         (
-            input.has_neighbour,
-            "compound_block_neighbour_context",
-            "unsupported capability: inter.compound.neighbour_context",
-            SPEC_INTER_BLOCK_MODE_INFO,
-        ),
-        (
-            input.is_joint_ctx != 1,
+            input.is_joint_ctx != Some(1),
             "compound_is_joint_context",
             "unsupported capability: inter.compound.is_joint_ctx != 1",
-            SPEC_INTER_BLOCK_MODE_INFO,
-        ),
-        (
-            input.skip != 1,
-            "compound_block_residual",
-            "unsupported capability: inter.compound.residual",
-            SPEC_INTER_BLOCK_MODE_INFO,
-        ),
-        (
-            !full_sb_geometry,
-            "compound_block_geometry",
-            "unsupported capability: inter.compound.block_geometry",
             SPEC_INTER_BLOCK_MODE_INFO,
         ),
     ] {
@@ -211,6 +332,44 @@ fn gate_compound_subset(input: CompoundParseInput, tile_offset: ByteOffset) -> R
     }
 
     Ok(())
+}
+
+fn compound_ref_loop_has_more(ref_idx: usize, n_refs: usize, n_bits: usize) -> bool {
+    n_refs
+        .checked_add(n_bits)
+        .and_then(|limit| limit.checked_sub(2))
+        .is_some_and(|limit| ref_idx < limit)
+}
+
+fn compound_ref_bit_type(
+    input: CompoundParseInput,
+    first_ref: usize,
+    second_ref: usize,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    let first_nonnegative = *input
+        .ref_distance_nonnegative
+        .get(first_ref)
+        .ok_or_else(|| {
+            compound_missing!(
+                "compound_missing_first_ref_distance",
+                tile_offset,
+                "inter.compound.ref_distance[first]",
+                SPEC_READ_REF_FRAMES
+            )
+        })?;
+    let second_nonnegative = *input
+        .ref_distance_nonnegative
+        .get(second_ref)
+        .ok_or_else(|| {
+            compound_missing!(
+                "compound_missing_second_ref_distance",
+                tile_offset,
+                "inter.compound.ref_distance[second]",
+                SPEC_READ_REF_FRAMES
+            )
+        })?;
+    Ok(usize::from(first_nonnegative ^ second_nonnegative))
 }
 
 fn compound_symbol_read_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
@@ -258,15 +417,9 @@ mod tests {
         CompoundParseInput {
             num_total_refs: 2,
             num_same_ref_compound: 0,
-            has_neighbour: false,
-            is_joint_ctx: 1,
-            skip: 1,
-            n4w: 16,
-            n4h: 16,
-            mi_row: 0,
-            mi_col: 0,
-            mi_rows: 16,
-            mi_cols: 16,
+            ref_contexts: [1; MAX_REFS_PER_FRAME],
+            ref_distance_nonnegative: [true; MAX_REFS_PER_FRAME],
+            is_joint_ctx: Some(1),
         }
     }
 
@@ -312,6 +465,7 @@ mod tests {
         assert_eq!(
             syntax,
             CompoundBlockSyntax {
+                y_mode: CompoundYMode::NearNear,
                 ref_frame0: 0,
                 ref_frame1: 1,
                 mv0: Mv::ZERO,
@@ -337,18 +491,15 @@ mod tests {
         encode_symbol(
             &mut enc_tile,
             &mut encoder,
-            TileCdfSelector::CompRef0 {
-                ctx: COMP_REF_CTX_NO_NEIGHBOUR,
-                ref_idx: 0,
-            },
+            TileCdfSelector::CompRef0 { ctx: 1, ref_idx: 0 },
             1,
         );
         encode_symbol(
             &mut enc_tile,
             &mut encoder,
             TileCdfSelector::CompRef1 {
-                ctx: COMP_REF_CTX_NO_NEIGHBOUR,
-                bit_type: COMP_REF1_BIT_TYPE_SAME_SIDE,
+                ctx: 1,
+                bit_type: 0,
                 ref_idx: 0,
             },
             0,
@@ -379,13 +530,10 @@ mod tests {
         assert_eq!(syntax.ref_frame1, 1);
         symbols.exit_symbol().unwrap();
         for selector in [
-            TileCdfSelector::CompRef0 {
-                ctx: COMP_REF_CTX_NO_NEIGHBOUR,
-                ref_idx: 0,
-            },
+            TileCdfSelector::CompRef0 { ctx: 1, ref_idx: 0 },
             TileCdfSelector::CompRef1 {
-                ctx: COMP_REF_CTX_NO_NEIGHBOUR,
-                bit_type: COMP_REF1_BIT_TYPE_SAME_SIDE,
+                ctx: 1,
+                bit_type: 0,
                 ref_idx: 0,
             },
         ] {
@@ -397,14 +545,57 @@ mod tests {
     }
 
     #[test]
+    fn compound_average_reads_same_reference_mode_symbol() {
+        let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut encoder = SymbolEncoder::new();
+        encode_symbol(
+            &mut enc_tile,
+            &mut encoder,
+            TileCdfSelector::CompoundModeSameRefs { ctx: 0 },
+            COMPOUND_MODE_NEAR_NEARMV,
+        );
+        let bytes = encoder.finish().unwrap().into_bytes();
+
+        let mut input = default_input();
+        input.num_total_refs = 1;
+        input.num_same_ref_compound = 2;
+        let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&bytes);
+        let syntax =
+            read_compound_average_syntax(&mut dec_tile, &mut symbols, input, ByteOffset::new(0))
+                .unwrap();
+
+        assert_eq!(syntax.ref_frame0, 0);
+        assert_eq!(syntax.ref_frame1, 0);
+        symbols.exit_symbol().unwrap();
+        assert_eq!(
+            enc_tile
+                .row(TileCdfSelector::CompoundModeSameRefs { ctx: 0 })
+                .unwrap(),
+            dec_tile
+                .row(TileCdfSelector::CompoundModeSameRefs { ctx: 0 })
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn compound_average_rejects_joint_mode() {
+        assert_compound_average_rejects_is_joint_symbol(1);
+    }
+
+    #[test]
+    fn compound_average_rejects_short_payload() {
+        assert_compound_average_rejects_is_joint_symbol(0);
+    }
+
+    fn assert_compound_average_rejects_is_joint_symbol(symbol: u8) {
         let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut encoder = SymbolEncoder::new();
         encode_symbol(
             &mut enc_tile,
             &mut encoder,
             TileCdfSelector::IsJoint { ctx: 1 },
-            1,
+            symbol,
         );
         let bytes = encoder.finish().unwrap().into_bytes();
 
@@ -422,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn compound_average_rejects_short_payload() {
+    fn compound_average_does_not_gate_residual_geometry_before_reading_symbols() {
         let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut encoder = SymbolEncoder::new();
         encode_symbol(
@@ -431,32 +622,25 @@ mod tests {
             TileCdfSelector::IsJoint { ctx: 1 },
             0,
         );
+        encode_symbol(
+            &mut enc_tile,
+            &mut encoder,
+            TileCdfSelector::CompoundModeNonJoint { ctx: 0 },
+            COMPOUND_MODE_NEAR_NEARMV,
+        );
         let bytes = encoder.finish().unwrap().into_bytes();
 
         let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&bytes);
-        assert!(
-            read_compound_average_syntax(
-                &mut dec_tile,
-                &mut symbols,
-                default_input(),
-                ByteOffset::new(0),
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn compound_average_rejects_unsupported_geometry_before_reading_symbols() {
-        let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut symbols = symbol_decoder(&[0x80, 0x00]);
-        let mut input = default_input();
-        input.n4w = 8;
         let before = symbols.consumed_bits();
-        let result =
-            read_compound_average_syntax(&mut dec_tile, &mut symbols, input, ByteOffset::new(0));
+        let result = read_compound_average_syntax(
+            &mut dec_tile,
+            &mut symbols,
+            default_input(),
+            ByteOffset::new(0),
+        );
 
-        assert!(result.is_err());
-        assert_eq!(before, symbols.consumed_bits());
+        assert!(result.is_ok());
+        assert!(symbols.consumed_bits() > before);
     }
 }

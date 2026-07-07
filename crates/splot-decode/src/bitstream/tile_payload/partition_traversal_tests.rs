@@ -253,6 +253,23 @@ fn child_calls_thread_chroma_reference_to_chroma_offset_descendants() {
 }
 
 #[test]
+fn uv_cfl_context_uses_chroma_reference_base_for_offset_blocks() {
+    let mut uv_cfls = TileUvCflState::new(16, 16).unwrap();
+    uv_cfls.record_block(0, 4, 4, 4, true);
+    let bounds = TilePartitionBounds {
+        mi_row_start: 0,
+        mi_row_end: 16,
+        mi_col_start: 0,
+        mi_col_end: 16,
+    };
+    let chroma_ref = ChromaRefGeometry::new(0, 8, BlockSize::new(BLOCK_16X16).unwrap());
+
+    let ctx = is_cfl_context_for_chroma_ref(&uv_cfls, bounds, chroma_ref);
+
+    assert_eq!(ctx.get(), 1);
+}
+
+#[test]
 fn shared_mixed_chroma_ref_size_mismatch_forces_inter() {
     let work_unit = make_work_unit(&[0x80], CdfUpdateMode::Enabled);
     let symbols = symbol_decoder_for_work_unit(&work_unit).unwrap();

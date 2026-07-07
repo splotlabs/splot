@@ -21,10 +21,18 @@ use splot_core::ivf::IvfHeader;
 use splot_recon::{BitDepth, DecodedFrame, ReconSample};
 
 use crate::bitstream::tile_payload::FrameCdfSubset;
-use crate::prediction::inter::{self, InterReferenceState};
+use crate::prediction::inter::{self, InterReferenceState, TemporalMotionField};
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
 pub(crate) mod intra;
+
+type FrameDecodeOutput<T> = (
+    DecodedFrame<T>,
+    FrameHeaderCore,
+    FrameCdfSubset,
+    Option<crate::filters::ccso::CcsoUnitGrid>,
+    TemporalMotionField,
+);
 
 /// The frame-level branch of the unified decode engine.
 ///
@@ -53,12 +61,7 @@ pub(crate) fn decode_frame<T: ReconSample>(
     header: IvfHeader,
     setup: &FrameSetup<'_, T>,
     bit_depth: BitDepth,
-) -> Result<(
-    DecodedFrame<T>,
-    FrameHeaderCore,
-    FrameCdfSubset,
-    Option<crate::filters::ccso::CcsoUnitGrid>,
-)> {
+) -> Result<FrameDecodeOutput<T>> {
     match *setup {
         FrameSetup::Inter(reference) => inter::decode_inter_frame(
             plan,
@@ -83,7 +86,13 @@ pub(crate) fn decode_frame<T: ReconSample>(
                 options,
                 bit_depth,
             )?;
-            Ok((frame, core, frame_cdfs, ccso_grid))
+            Ok((
+                frame,
+                core,
+                frame_cdfs,
+                ccso_grid,
+                TemporalMotionField::empty(),
+            ))
         }
     }
 }

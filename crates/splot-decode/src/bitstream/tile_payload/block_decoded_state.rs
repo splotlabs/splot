@@ -158,8 +158,10 @@ impl TileBlockDecodedState {
     /// **superblock-relative** luma MI position (`row & sbMask`, `col & sbMask`);
     /// `step_x4` and `step_y4` are the transform-block width and height in plane
     /// 4x4 units (`Tx_Width[txSz] >> MI_SIZE_LOG2`, `Tx_Height[txSz] >>
-    /// MI_SIZE_LOG2`). For a single full-block transform these equal the block's
-    /// plane 4x4 width and height.
+    /// MI_SIZE_LOG2`), clamped to the minimum one plane 4x4 unit when chroma
+    /// subsampling maps a thin luma block to a 4-sample chroma transform. For a
+    /// single full-block transform these equal the block's plane 4x4 width and
+    /// height.
     pub(crate) fn set_block(
         &mut self,
         plane: usize,
@@ -171,6 +173,8 @@ impl TileBlockDecodedState {
         if plane >= self.num_planes {
             return;
         }
+        let step_x4 = step_x4.max(1);
+        let step_y4 = step_y4.max(1);
         let (sub_x, sub_y) = plane_subsampling(plane, self.subsampling_x, self.subsampling_y);
         let base_x = (sub_block_mi_col >> sub_x) as isize;
         let base_y = (sub_block_mi_row >> sub_y) as isize;
@@ -390,6 +394,17 @@ mod tests {
         state.force_decoded(0, 8, 7);
         state.force_decoded(0, 9, 7);
         assert_eq!(state.count_top_right_avail(0, 0, 8, 8), 2);
+    }
+
+    #[test]
+    fn set_block_marks_thin_subsampled_chroma_transform_unit() {
+        let mut state = TileBlockDecodedState::new(3, 1, 1, SB_SIZE4, 32, 32).unwrap();
+        state.clear_superblock(0, 0);
+
+        state.set_block(1, 9, 12, 2, 0);
+
+        assert!(state.flag(1, 6, 4));
+        assert_eq!(state.count_top_right_avail(1, 5, 5, 1), 1);
     }
 
     #[test]

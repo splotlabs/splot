@@ -71,6 +71,31 @@ fn intra_tx_type_set1_payload(tx_size: usize, intra_tx_type: u8) -> Vec<u8> {
     )])
 }
 
+fn intra_tx_type_set1_with_sec_tx_payload(
+    tx_size: usize,
+    intra_tx_type: u8,
+    sec_tx_type: u8,
+    stx_selector: TileCdfSelector,
+    most_probable_stx_set: u8,
+) -> Vec<u8> {
+    encode_transform_symbols(&[
+        (
+            TileCdfSelector::IntraTxTypeSet1 {
+                tx_size_sqr: TX_SIZE_SQR[tx_size] as usize,
+            },
+            intra_tx_type,
+        ),
+        (
+            TileCdfSelector::SecTxType {
+                is_inter: 0,
+                tx_size_sqr: TX_SIZE_SQR[tx_size] as usize,
+            },
+            sec_tx_type,
+        ),
+        (stx_selector, most_probable_stx_set),
+    ])
+}
+
 fn dc_luma_context() -> LumaTransformTypeContext {
     LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)
 }
@@ -709,6 +734,64 @@ fn luma_txtype_residual_adst_adst_uses_reduced_ist_eob_limit() {
 }
 
 #[test]
+fn luma_txtype_residual_adst_adst_uses_reduced_ist_stx_cdf() {
+    let payload = intra_tx_type_set1_with_sec_tx_payload(
+        TX_8X8,
+        1,
+        1,
+        TileCdfSelector::MostProbableStxSetAdst,
+        2,
+    );
+    let luma = dc_luma_context();
+    let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
+
+    let metadata = ensure_with_test_payload_and_policy(
+        frame_facts(false, true, false, false),
+        0,
+        TX_8X8,
+        false,
+        5,
+        Some(luma),
+        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
+        ActiveChromaResidualPolicy::Reject,
+        &payload,
+    )
+    .unwrap();
+
+    assert_eq!(expected, ADST_ADST);
+    assert_eq!(metadata.luma_tx_type, ADST_ADST);
+    assert_eq!(
+        metadata.intra_ist,
+        Some(IntraIstSyntax {
+            sec_tx_type: 1,
+            most_probable_stx_set: Some(2),
+        })
+    );
+}
+
+#[test]
+fn intra_ist_stx_selector_uses_reduced_adst_cdf_for_every_large_size() {
+    for tx_size in 0..TX_WIDTH.len() {
+        let (width, height) = tx_size_dimensions(tx_size).unwrap();
+        let expected = if width >= 8 && height >= 8 {
+            TileCdfSelector::MostProbableStxSetAdst
+        } else {
+            TileCdfSelector::MostProbableStxSet
+        };
+        assert_eq!(
+            intra_ist_most_probable_stx_selector(tx_size, ADST_ADST).unwrap(),
+            expected,
+            "tx_size={tx_size} width={width} height={height}"
+        );
+        assert_eq!(
+            intra_ist_most_probable_stx_selector(tx_size, DCT_DCT).unwrap(),
+            TileCdfSelector::MostProbableStxSet,
+            "tx_size={tx_size} width={width} height={height}"
+        );
+    }
+}
+
+#[test]
 fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
     let luma = dc_luma_context();
     let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
@@ -718,6 +801,7 @@ fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
         0,
         0,
         0,
+        DCT_DCT,
         false,
         TransformToolResidualMetadata {
             luma_tx_type: expected,
@@ -741,6 +825,7 @@ fn luma_txtype_residual_staged_base_config_derives_coeff_tool_flags() {
             0,
             0,
             0,
+            DCT_DCT,
             false,
             TransformToolResidualMetadata {
                 luma_tx_type,

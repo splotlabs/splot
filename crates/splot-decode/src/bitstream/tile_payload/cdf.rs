@@ -552,6 +552,10 @@ pub(crate) enum TileCdfSelector {
     CompoundModeNonJoint {
         ctx: usize,
     },
+    CompoundModeSameRefs {
+        ctx: usize,
+    },
+    CompoundType,
     CompGroupIdx {
         ctx: usize,
     },
@@ -692,6 +696,8 @@ pub(crate) enum TileCdfArray {
     CompMode,
     IsJoint,
     CompoundModeNonJoint,
+    CompoundModeSameRefs,
+    CompoundType,
     CompGroupIdx,
     CwpIdx,
     CompRef1,
@@ -804,6 +810,8 @@ crate::impl_reason_labels!(TileCdfArray {
     CompMode => "TileCompModeCdf",
     IsJoint => "TileIsJointCdf",
     CompoundModeNonJoint => "TileCompoundModeNonJointCdf",
+    CompoundModeSameRefs => "TileCompoundModeSameRefsCdf",
+    CompoundType => "TileCompoundTypeCdf",
     CompGroupIdx => "TileCompGroupIdxCdf",
     CwpIdx => "TileCwpIdxCdf",
     CompRef0 => "TileCompRef0Cdf",
@@ -1451,6 +1459,10 @@ macro_rules! tile_cdf_row {
             TileCdfSelector::CompoundModeNonJoint { ctx } => $self
                 .block
                 .$block_row(BlockCdfSelector::CompoundModeNonJoint { ctx }),
+            TileCdfSelector::CompoundModeSameRefs { ctx } => $self
+                .block
+                .$block_row(BlockCdfSelector::CompoundModeSameRefs { ctx }),
+            TileCdfSelector::CompoundType => $self.block.$block_row(BlockCdfSelector::CompoundType),
             TileCdfSelector::CompGroupIdx { ctx } => $self
                 .block
                 .$block_row(BlockCdfSelector::CompGroupIdx { ctx }),
@@ -1893,6 +1905,11 @@ impl TileCdfRows {
     #[cfg(test)]
     pub(crate) const fn compound_mode_non_joint(&self) -> &block_rows::CompoundModeNonJointCdfRows {
         self.block.compound_mode_non_joint()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn compound_type(&self) -> &block_rows::CompoundTypeCdfRow {
+        self.block.compound_type()
     }
 
     #[cfg(test)]

@@ -9,7 +9,9 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_recon::{PlaneRect, PlaneSize};
 
-use crate::bitstream::tile_payload::{DecodeBlockFrontier, TileCdfSelector, TileCdfSubset};
+use crate::bitstream::tile_payload::{
+    BlockSize, DecodeBlockFrontier, TileCdfSelector, TileCdfSubset,
+};
 use crate::error::Result;
 use crate::prediction::inter::mv_scaling::{PlaneScaling, derive_plane_scaling};
 use crate::prediction::inter::{
@@ -96,6 +98,16 @@ impl IntrabcBlockContext {
         }
     }
 
+    const fn from_chroma_ref(row: usize, col: usize, b_size: BlockSize) -> Self {
+        Self {
+            row,
+            col,
+            b_size: b_size.index(),
+            is_chroma_part: false,
+            mixed_region: true,
+        }
+    }
+
     #[cfg(test)]
     const fn new(row: usize, col: usize, b_size: usize, is_chroma_part: bool) -> Self {
         Self {
@@ -140,6 +152,31 @@ impl IntrabcBlockGeometry {
             n4w,
             n4h,
         }
+    }
+
+    pub(crate) fn from_chroma_ref(
+        row: usize,
+        col: usize,
+        b_size: BlockSize,
+        tile_offset: ByteOffset,
+    ) -> Result<Self> {
+        let n4w = b_size.num_4x4_wide().map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
+            )
+        })?;
+        let n4h = b_size.num_4x4_high().map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
+            )
+        })?;
+        Ok(Self {
+            block: IntrabcBlockContext::from_chroma_ref(row, col, b_size),
+            n4w,
+            n4h,
+        })
     }
 
     #[cfg(test)]
@@ -1147,6 +1184,30 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
         ));
     }
     if !fractional && rects_overlap(source, target) {
+        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRABC_GEOMETRY") {
+            eprintln!(
+                "intrabc geometry overlap offset={} mi=({}, {}) n4={}x{} block_px=({}, {}) {}x{} mv=({}, {}) target=({}, {}) {}x{} source=({}, {}) {}x{}",
+                tile_offset.get(),
+                geometry.block.row,
+                geometry.block.col,
+                geometry.n4w,
+                geometry.n4h,
+                block.x,
+                block.y,
+                block.width,
+                block.height,
+                info.block_mv.row,
+                info.block_mv.col,
+                target.x(),
+                target.y(),
+                target.width(),
+                target.height(),
+                source.x(),
+                source.y(),
+                source.width(),
+                source.height(),
+            );
+        }
         return Err(wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_mv_validity",

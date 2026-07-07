@@ -5,7 +5,8 @@ use splot_recon::{CurrentFrameWorkspace, IntraCardinalDirection, PlaneId, ReconS
 
 use crate::bitstream::tile_payload::{
     GeneralIntraBlockModes, GeneralIntraResidualError, IntraYMode, LumaCoeffBlock, LumaPalette,
-    SupportedDirectionalLumaMode, SupportedNonDcLumaMode, TileBlockDecodedState,
+    LumaTransformTypeContext, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
+    TileBlockDecodedState,
 };
 use crate::support::capability::missing_capability_message;
 use crate::tile::block_context::BlockCtx;
@@ -80,6 +81,7 @@ impl IntraLumaPlan {
         qindex: u32,
         use_tcq: bool,
         enable_ibp: bool,
+        luma_context: LumaTransformTypeContext,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let luma_block = block_ctx.plane_block(PlaneId::Y);
         let tx = luma_block.tx();
@@ -106,6 +108,7 @@ impl IntraLumaPlan {
                     qindex,
                     use_tcq,
                     ibp_dc,
+                    Some(luma_context),
                     crate::pipeline::reconstruct::IntraEdgeAvailability {
                         above: neighbours.has_above(),
                         left: neighbours.has_left(),
@@ -115,7 +118,16 @@ impl IntraLumaPlan {
             }
             Self::NonDcFirst { mode } => {
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_nondc_first_block_into(
-                    workspace, luma, mode, x, y, log2_side, qindex, use_tcq, bit_depth,
+                    workspace,
+                    luma,
+                    mode,
+                    x,
+                    y,
+                    log2_side,
+                    qindex,
+                    use_tcq,
+                    luma_context,
+                    bit_depth,
                 )
             }
             Self::NonDcNeighbour { mode } => {
@@ -138,13 +150,14 @@ impl IntraLumaPlan {
                         above: neighbours.has_above(),
                         left: neighbours.has_left(),
                     },
+                    luma_context,
                     bit_depth,
                 )
             }
             Self::CardinalNeighbour { direction } => {
                 crate::pipeline::reconstruct::reconstruct_general_intra_cardinal_neighbour_block_into(
                     workspace, luma, direction, PlaneId::Y, x, y, log2_side, log2_side, qindex,
-                    use_tcq, None,
+                    use_tcq, Some(luma_context),
                     crate::pipeline::reconstruct::IntraEdgeAvailability {
                         above: neighbours.has_above(),
                         left: neighbours.has_left(),
@@ -164,7 +177,16 @@ impl IntraLumaPlan {
             }
             Self::DirectionalFirst { mode } => {
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_directional_first_block_into(
-                    workspace, luma, mode, x, y, log2_side, qindex, use_tcq, bit_depth,
+                    workspace,
+                    luma,
+                    mode,
+                    x,
+                    y,
+                    log2_side,
+                    qindex,
+                    use_tcq,
+                    luma_context,
+                    bit_depth,
                 )
             }
             Self::DirectionalNeighbour { mode } => {
@@ -178,6 +200,7 @@ impl IntraLumaPlan {
                     log2_side,
                     qindex,
                     use_tcq,
+                    Some(luma_context),
                     bit_depth,
                     crate::pipeline::reconstruct::MiddleEdgeAvailability {
                         above: neighbours.has_above(),
@@ -198,7 +221,7 @@ impl IntraLumaPlan {
                     log2_side,
                     qindex,
                     use_tcq,
-                    None,
+                    Some(luma_context),
                     bit_depth,
                     crate::pipeline::reconstruct::MiddleEdgeAvailability {
                         above: neighbours.has_above(),
@@ -227,7 +250,7 @@ impl IntraLumaPlan {
                     num4_above_right,
                     crate::pipeline::reconstruct::OneSidedAboveMrl::default(),
                     use_tcq,
-                    None,
+                    Some(luma_context),
                     crate::pipeline::reconstruct::IntraEdgeAvailability {
                         above: neighbours.has_above(),
                         left: neighbours.has_left(),
@@ -251,7 +274,7 @@ impl IntraLumaPlan {
                     neighbours.has_above(),
                     0,
                     use_tcq,
-                    None,
+                    Some(luma_context),
                     crate::pipeline::reconstruct::IntraEdgeAvailability {
                         above: neighbours.has_above(),
                         left: neighbours.has_left(),
@@ -456,10 +479,8 @@ fn plan_directional_luma_angle(
         SupportedDirectionalLumaMode::D135 => {
             if is_top_left && is_full_sb {
                 Ok(IntraLumaPlan::DirectionalFirst { mode })
-            } else if full_sb_first_row || full_sb_above_left || (!is_top_left && has_left) {
+            } else if full_sb_first_row || full_sb_above_left || (!is_top_left && has_edge) {
                 Ok(IntraLumaPlan::DirectionalNeighbour { mode })
-            } else if !is_top_left && has_above {
-                Err(UNSUPPORTED_MULTIROW_DIRECTIONAL)
             } else if !is_top_left {
                 Err(UNSUPPORTED_MULTIBLOCK_DIRECTIONAL)
             } else {
@@ -541,14 +562,6 @@ const UNSUPPORTED_D203_POSITION: IntraLumaUnsupported = unsupported(
         "intra.luma.directional.d203",
         neighbour = "left_below_left",
         block = "non_full_sb_or_not_first_row",
-    ),
-);
-
-const UNSUPPORTED_MULTIROW_DIRECTIONAL: IntraLumaUnsupported = unsupported(
-    "general_intra_multirow_directional_luma",
-    missing_capability_message!(
-        "intra.luma.directional.multirow",
-        neighbour = "first_col_or_subpartition",
     ),
 );
 
@@ -679,6 +692,7 @@ mod tests {
             0,
             false,
             false,
+            LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0),
         )
         .unwrap();
         (0..8)
@@ -995,6 +1009,21 @@ mod tests {
                 }),
             },
             Case {
+                label: "d135 first column above-only",
+                bit_depth: BitDepth::Eight,
+                row4: 16,
+                col4: 0,
+                width4: 16,
+                height4: 16,
+                frame_cols4: 32,
+                dc: false,
+                nondc: None,
+                directional: Some(SupportedDirectionalLumaMode::D135),
+                expected: Expected::Plan(IntraLumaPlan::DirectionalNeighbour {
+                    mode: SupportedDirectionalLumaMode::D135,
+                }),
+            },
+            Case {
                 label: "d157 interior subpartition",
                 bit_depth: BitDepth::Ten,
                 row4: 40,
@@ -1191,19 +1220,6 @@ mod tests {
                 nondc: None,
                 directional: Some(SupportedDirectionalLumaMode::D45),
                 expected: Expected::Error("general_intra_d45_unverified_position"),
-            },
-            Case {
-                label: "d135 first column multirow",
-                bit_depth: BitDepth::Eight,
-                row4: 16,
-                col4: 0,
-                width4: 16,
-                height4: 16,
-                frame_cols4: 32,
-                dc: false,
-                nondc: None,
-                directional: Some(SupportedDirectionalLumaMode::D135),
-                expected: Expected::Error("general_intra_multirow_directional_luma"),
             },
         ];
 

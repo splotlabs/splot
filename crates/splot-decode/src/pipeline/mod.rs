@@ -5,10 +5,11 @@
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
+use splot_core::headers::film_grain::{FilmGrainModel, MAX_FILM_GRAIN, parse_film_grain};
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameSize, FrameType, TxMode,
-    parse_frame_header_core,
+    CoreSeqQuantView, FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput,
+    FrameHeaderParseMode, FrameHeaderParseStatus, FrameReferenceStateView, FrameSize, FrameType,
+    TxMode, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, SequenceHeader, parse_sequence_header,
@@ -53,6 +54,12 @@ pub(crate) enum PipelineDecodedFrame {
     Ten(DecodedFrame<u16>),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ActiveFilmGrain {
+    pub(crate) model: FilmGrainModel,
+    pub(crate) grain_seed: u16,
+}
+
 pub(crate) fn deblock_quant_deltas(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -69,7 +76,9 @@ pub(crate) fn deblock_quant_deltas(
 
 pub(crate) struct PipelineFrame {
     pub(crate) frame: PipelineDecodedFrame,
+    pub(crate) display_grain: Option<ActiveFilmGrain>,
     pub(crate) frame_cdfs: FrameCdfSubset,
+    pub(crate) motion_field: inter::TemporalMotionField,
     pub(crate) ccso_params: Option<splot_core::headers::frame::CcsoParams>,
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     pub(crate) frame_rate_numerator: u32,
@@ -134,6 +143,118 @@ impl PipelineFrame {
         }
     }
 }
+
+struct FilmGrainSlots {
+    models: [Option<FilmGrainModel>; MAX_FILM_GRAIN],
+}
+
+impl FilmGrainSlots {
+    fn new() -> Self {
+        Self {
+            models: std::array::from_fn(|_| None),
+        }
+    }
+
+    fn update_from_obus(&mut self, obus: &[ObuEnvelope<'_>]) -> Result<()> {
+        for envelope in obus {
+            self.update_from_obu(*envelope)?;
+        }
+        Ok(())
+    }
+
+    fn update_from_obu(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
+        let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+        let film_grain = parse_film_grain(&mut reader).map_err(|_| {
+            unsupported_feature_at(
+                "film_grain_obu_parse",
+                envelope.offset,
+                "runtime film-grain synthesis requires a fully parseable film_grain_obu",
+                "5.14",
+            )
+        })?;
+        for update in film_grain.models {
+            let slot = usize::from(update.slot);
+            let Some(target) = self.models.get_mut(slot) else {
+                return Err(unsupported_feature_at(
+                    "film_grain_slot_out_of_range",
+                    envelope.offset,
+                    "film_grain_obu updated a model slot outside MAX_FILM_GRAIN",
+                    "5.14",
+                ));
+            };
+            *target = Some(update.model);
+        }
+        Ok(())
+    }
+
+    fn active_for_core(
+        &self,
+        core: &FrameHeaderCore,
+        frame_offset: ByteOffset,
+    ) -> Result<Option<ActiveFilmGrain>> {
+        let Some(config) = film_grain_config_for_core(core, frame_offset)? else {
+            return Ok(None);
+        };
+        if !config.apply_grain {
+            return Ok(None);
+        }
+        let fgm_id = config.fgm_id.ok_or_else(|| {
+            unsupported_feature_at(
+                "film_grain_config_missing_fgm_id",
+                frame_offset,
+                "apply_grain frames must carry fgm_id for load_grain_model",
+                "5.18.10.1",
+            )
+        })?;
+        let grain_seed = config.grain_seed.ok_or_else(|| {
+            unsupported_feature_at(
+                "film_grain_config_missing_seed",
+                frame_offset,
+                "apply_grain frames must carry grain_seed for film-grain synthesis",
+                "5.18.10.1",
+            )
+        })?;
+        let model = self
+            .models
+            .get(usize::from(fgm_id))
+            .and_then(Option::as_ref)
+            .cloned()
+            .ok_or_else(|| {
+                unsupported_feature_at(
+                    "film_grain_model_unavailable",
+                    frame_offset,
+                    "apply_grain references an fgm_id whose model slot is unavailable",
+                    "6.17.10.1",
+                )
+            })?;
+        Ok(Some(ActiveFilmGrain { model, grain_seed }))
+    }
+}
+
+fn film_grain_config_for_core(
+    core: &FrameHeaderCore,
+    frame_offset: ByteOffset,
+) -> Result<Option<FilmGrainConfig>> {
+    if let Some(tail) = core.intra_tail.as_ref() {
+        return Ok(Some(tail.film_grain));
+    }
+    if let Some(config) = core.sef_film_grain {
+        return Ok(Some(config));
+    }
+    if core
+        .inter_tail
+        .as_ref()
+        .is_some_and(|tail| tail.apply_grain)
+    {
+        return Err(unsupported_feature_at(
+            "inter_film_grain_config_unmodeled",
+            frame_offset,
+            "inter header parsing does not yet preserve fgm_id and grain_seed for apply_grain",
+            "5.18.10.1",
+        ));
+    }
+    Ok(None)
+}
 #[cfg(test)]
 pub(crate) fn decode_frame_from_plan(
     bytes: &[u8],
@@ -157,6 +278,7 @@ pub(crate) fn decode_frames_from_plan(
 ) -> Result<Vec<PipelineFrame>> {
     decode_frames_from_plan_with_ivf_preflight(bytes, options, plan, |_| Ok(()))
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_key_frame(
     bytes: &[u8],
     options: &DecodeOptions,
@@ -165,53 +287,61 @@ pub(crate) fn decode_key_frame(
     frame_envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     header: IvfHeader,
+    display_grain: Option<ActiveFilmGrain>,
 ) -> Result<PipelineFrame> {
     let core = parse_frame_core(frame_envelope, sequence)?;
-    let (frame, frame_cdfs, ccso_params, ccso_grid) = match sequence.general.bit_depth_idc {
-        BitDepthIdc::Eight => {
-            let (frame, core, frame_cdfs, ccso_grid) = frame_engine::decode_frame::<u8>(
-                plan,
-                candidate,
-                bytes,
-                frame_envelope,
-                core,
-                sequence,
-                options,
-                header,
-                &frame_engine::FrameSetup::Intra,
-                BitDepth::Eight,
-            )?;
-            (
-                PipelineDecodedFrame::Eight(frame),
-                frame_cdfs,
-                core.ccso_params,
-                ccso_grid,
-            )
-        }
-        BitDepthIdc::Ten => {
-            let (frame, core, frame_cdfs, ccso_grid) = frame_engine::decode_frame::<u16>(
-                plan,
-                candidate,
-                bytes,
-                frame_envelope,
-                core,
-                sequence,
-                options,
-                header,
-                &frame_engine::FrameSetup::Intra,
-                BitDepth::Ten,
-            )?;
-            (
-                PipelineDecodedFrame::Ten(frame),
-                frame_cdfs,
-                core.ccso_params,
-                ccso_grid,
-            )
-        }
-    };
+    let (frame, frame_cdfs, ccso_params, ccso_grid, motion_field) =
+        match sequence.general.bit_depth_idc {
+            BitDepthIdc::Eight => {
+                let (frame, core, frame_cdfs, ccso_grid, motion_field) =
+                    frame_engine::decode_frame::<u8>(
+                        plan,
+                        candidate,
+                        bytes,
+                        frame_envelope,
+                        core,
+                        sequence,
+                        options,
+                        header,
+                        &frame_engine::FrameSetup::Intra,
+                        BitDepth::Eight,
+                    )?;
+                (
+                    PipelineDecodedFrame::Eight(frame),
+                    frame_cdfs,
+                    core.ccso_params,
+                    ccso_grid,
+                    motion_field,
+                )
+            }
+            BitDepthIdc::Ten => {
+                let (frame, core, frame_cdfs, ccso_grid, motion_field) =
+                    frame_engine::decode_frame::<u16>(
+                        plan,
+                        candidate,
+                        bytes,
+                        frame_envelope,
+                        core,
+                        sequence,
+                        options,
+                        header,
+                        &frame_engine::FrameSetup::Intra,
+                        BitDepth::Ten,
+                    )?;
+                (
+                    PipelineDecodedFrame::Ten(frame),
+                    frame_cdfs,
+                    core.ccso_params,
+                    ccso_grid,
+                    motion_field,
+                )
+            }
+        };
     Ok(PipelineFrame {
         frame,
+        display_grain,
         frame_cdfs,
+        motion_field,
         ccso_params,
         ccso_grid,
         frame_rate_numerator: header.timebase_denominator,
@@ -245,9 +375,12 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
 
     let sequence = parse_sequence(sequence_envelope)?;
     validate_sequence(&sequence, sequence_envelope.offset)?;
+    let mut film_grain_slots = FilmGrainSlots::new();
+    film_grain_slots.update_from_obus(leading_film_grain_obus(leading_obus)?)?;
 
     let key_core = parse_frame_core(key_envelope, &sequence)?;
     ensure_intra_header_complete(&key_core, key_envelope.offset)?;
+    let key_display_grain = film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;
     let mut candidates = plan.frame_candidates_all();
     let key_candidate = candidates.next().ok_or_else(|| {
         unsupported(
@@ -289,6 +422,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
         key_envelope,
         &sequence,
         header,
+        key_display_grain,
     )?;
     retained_frame_bytes =
         ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
@@ -303,6 +437,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
         frames[0].frame_cdfs.clone(),
         frames[0].ccso_params.clone(),
         frames[0].ccso_grid.clone(),
+        frames[0].motion_field.clone(),
         key_hint,
     )?;
     let key_implicit = key_core.implicit_output_frame == Some(true);
@@ -341,7 +476,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     &mut next_unvalidated_following_ivf_record,
                 )?;
                 let inter_frame_timer = crate::timing::start();
-                let (inter_frame, inter_core, frame_cdfs, ccso_grid) =
+                let (inter_frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
                     match sequence.general.bit_depth_idc {
                         BitDepthIdc::Eight => {
                             let (store, meta) = reference.build_store_eight(&frames)?;
@@ -359,6 +494,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                                 ref_frame_cdfs: meta.ref_frame_cdfs,
                                 ref_ccso_params: meta.ref_ccso_params,
                                 ref_ccso_unit_grids: meta.ref_ccso_unit_grids,
+                                ref_motion_fields: meta.ref_motion_fields,
                             };
                             let inter_core = inter::parse_validated_inter_frame_core(
                                 inter_envelope,
@@ -383,7 +519,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                                 &sequence,
                                 inter_envelope.offset,
                             )?;
-                            let (frame, inter_core, frame_cdfs, ccso_grid) =
+                            let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
                                 frame_engine::decode_frame(
                                     plan,
                                     next_candidate,
@@ -401,6 +537,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                                 inter_core,
                                 frame_cdfs,
                                 ccso_grid,
+                                motion_field,
                             )
                         }
                         BitDepthIdc::Ten => {
@@ -419,6 +556,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                                 ref_frame_cdfs: meta.ref_frame_cdfs,
                                 ref_ccso_params: meta.ref_ccso_params,
                                 ref_ccso_unit_grids: meta.ref_ccso_unit_grids,
+                                ref_motion_fields: meta.ref_motion_fields,
                             };
                             let inter_core = inter::parse_validated_inter_frame_core(
                                 inter_envelope,
@@ -443,7 +581,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                                 &sequence,
                                 inter_envelope.offset,
                             )?;
-                            let (frame, inter_core, frame_cdfs, ccso_grid) =
+                            let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
                                 frame_engine::decode_frame(
                                     plan,
                                     next_candidate,
@@ -461,13 +599,18 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                                 inter_core,
                                 frame_cdfs,
                                 ccso_grid,
+                                motion_field,
                             )
                         }
                     };
                 crate::timing::report("inter_frame_decode", inter_frame_timer);
+                let inter_display_grain =
+                    film_grain_slots.active_for_core(&inter_core, inter_envelope.offset)?;
                 let inter_frame = PipelineFrame {
                     frame: inter_frame,
+                    display_grain: inter_display_grain,
                     frame_cdfs,
+                    motion_field,
                     ccso_params: inter_core.ccso_params.clone(),
                     ccso_grid,
                     frame_rate_numerator: header.timebase_denominator,
@@ -491,6 +634,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     frames[frame_index].frame_cdfs.clone(),
                     frames[frame_index].ccso_params.clone(),
                     frames[frame_index].ccso_grid.clone(),
+                    frames[frame_index].motion_field.clone(),
                     inter_hint,
                 )?;
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
@@ -520,6 +664,102 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                 );
                 if inter_immediate && !scheduler.already_emitted(frame_index) {
                     let emitted = scheduler.on_immediate(frame_index, inter_hint);
+                    output_frame_bytes = charge_emitted_outputs(
+                        options,
+                        &frames,
+                        &scheduler,
+                        &emitted,
+                        output_frame_bytes,
+                    )?;
+                }
+                if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                    break;
+                }
+            }
+            ObuType::ClosedLoopKey => {
+                let (key_sequence_envelope, key_film_grain_obus, key_envelope) =
+                    following_key_frame_unit(
+                        ivf,
+                        next_candidate,
+                        &mut next_unvalidated_following_ivf_record,
+                    )?;
+                let key_sequence = parse_sequence(key_sequence_envelope)?;
+                validate_sequence(&key_sequence, key_sequence_envelope.offset)?;
+                film_grain_slots.update_from_obus(key_film_grain_obus)?;
+                ensure_repeated_key_sequence_compatible(
+                    &sequence,
+                    &key_sequence,
+                    key_sequence_envelope.offset,
+                )?;
+                let key_core = parse_frame_core(key_envelope, &key_sequence)?;
+                ensure_intra_header_complete(&key_core, key_envelope.offset)?;
+                let key_display_grain =
+                    film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;
+                ensure_retained_frame_byte_limits_for_core(
+                    options.limits(),
+                    retained_frame_bytes,
+                    &key_core,
+                    &key_sequence,
+                    key_envelope.offset,
+                )?;
+                let key_frame_timer = crate::timing::start();
+                let key_frame = decode_key_frame(
+                    bytes,
+                    options,
+                    plan,
+                    next_candidate,
+                    key_envelope,
+                    &key_sequence,
+                    header,
+                    key_display_grain,
+                )?;
+                crate::timing::report("key_frame_decode", key_frame_timer);
+                let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
+                    options.limits(),
+                    retained_frame_bytes,
+                    &key_frame,
+                )?;
+                let frame_index = frames.len();
+                frames.push(key_frame);
+                if let Some(frame) = frames.last() {
+                    dump_coded_frame_for_diagnostics(frame);
+                }
+                retained_frame_bytes = next_retained_frame_bytes;
+                let key_hint = disp_hints.extend(&key_core)?;
+                let key_update = frame_ref_update_from_core(
+                    &key_core,
+                    key_envelope.offset,
+                    frames[frame_index].frame_cdfs.clone(),
+                    frames[frame_index].ccso_params.clone(),
+                    frames[frame_index].ccso_grid.clone(),
+                    frames[frame_index].motion_field.clone(),
+                    key_hint,
+                )?;
+                let key_implicit = key_core.implicit_output_frame == Some(true);
+                let key_immediate = key_core.immediate_output_frame == Some(true);
+                let evicted = scheduler.refresh(
+                    key_update.refresh_frame_flags,
+                    frame_index,
+                    key_hint,
+                    key_implicit,
+                    true,
+                );
+                output_frame_bytes = charge_emitted_outputs(
+                    options,
+                    &frames,
+                    &scheduler,
+                    &evicted,
+                    output_frame_bytes,
+                )?;
+                reference.update(frame_index, &key_update);
+                disp_hints.refresh(
+                    key_update.refresh_frame_flags,
+                    key_hint,
+                    key_implicit || key_immediate,
+                    true,
+                );
+                if key_immediate && !scheduler.already_emitted(frame_index) {
+                    let emitted = scheduler.on_immediate(frame_index, key_hint);
                     output_frame_bytes = charge_emitted_outputs(
                         options,
                         &frames,
@@ -924,6 +1164,54 @@ pub(crate) fn following_inter_envelope<'a>(
     ))
 }
 
+fn following_key_frame_unit<'a>(
+    ivf: &'a ParsedIvfBitstream<'a>,
+    candidate: &DecodePlannedObu,
+    next_unvalidated_following_ivf_record: &mut usize,
+) -> Result<(ObuEnvelope<'a>, &'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
+    for (ivf_frame_index, ivf_frame) in ivf.frames.iter().enumerate() {
+        let Some(position) = ivf_frame
+            .obus
+            .iter()
+            .position(|envelope| envelope.offset == candidate.offset())
+        else {
+            continue;
+        };
+        require_following_key_ivf_obu_order_through(
+            ivf,
+            next_unvalidated_following_ivf_record,
+            ivf_frame_index,
+        )?;
+        let obus = ivf_frame.obus.as_slice();
+        let ([_, sequence_envelope, key_envelope], _) = require_leading_frame_unit(obus)?;
+        if key_envelope.offset != candidate.offset() {
+            return Err(unsupported_at(
+                "unexpected_key_obu_order",
+                candidate.offset(),
+                missing_capability_message!("frame.sequence repeated_key_frame_unit"),
+            ));
+        }
+        let indices = minimal_frame_unit_indices(obus)?;
+        if position != indices.frame {
+            return Err(unsupported_at(
+                "unexpected_key_obu_order",
+                candidate.offset(),
+                missing_capability_message!("frame.sequence repeated_key_frame_unit"),
+            ));
+        }
+        return Ok((
+            sequence_envelope,
+            leading_film_grain_obus(obus)?,
+            key_envelope,
+        ));
+    }
+    Err(unsupported_at(
+        "missing_key_ivf_obu",
+        candidate.offset(),
+        "the planned key candidate offset was not found in the parsed IVF payloads",
+    ))
+}
+
 fn is_leading_record_regular_after_key(
     ivf_frame_index: usize,
     position: usize,
@@ -956,6 +1244,25 @@ fn require_following_ivf_obu_order_through(
         .skip(*next_unvalidated_following_ivf_record)
     {
         require_following_ivf_record_obu_order(frame.obus.as_slice(), ivf_frame_index)?;
+    }
+    *next_unvalidated_following_ivf_record =
+        (*next_unvalidated_following_ivf_record).max(validation_end);
+    Ok(())
+}
+
+fn require_following_key_ivf_obu_order_through(
+    ivf: &ParsedIvfBitstream<'_>,
+    next_unvalidated_following_ivf_record: &mut usize,
+    target_ivf_frame_index: usize,
+) -> Result<()> {
+    let validation_end = target_ivf_frame_index.saturating_add(1);
+    for frame in ivf
+        .frames
+        .iter()
+        .take(validation_end)
+        .skip(*next_unvalidated_following_ivf_record)
+    {
+        require_leading_ivf_obu_order(frame.obus.as_slice())?;
     }
     *next_unvalidated_following_ivf_record =
         (*next_unvalidated_following_ivf_record).max(validation_end);
@@ -1159,8 +1466,12 @@ fn ensure_output_frame_byte_limits(
 pub(crate) fn require_minimal_obu_order<'a>(
     obus: &'a [ObuEnvelope<'a>],
 ) -> Result<[ObuEnvelope<'a>; 3]> {
-    let frame_unit_len = minimal_frame_unit_len(obus)?;
-    Ok([obus[0], obus[frame_unit_len - 2], obus[frame_unit_len - 1]])
+    let indices = minimal_frame_unit_indices(obus)?;
+    Ok([
+        obus[indices.temporal_delimiter],
+        obus[indices.sequence],
+        obus[indices.frame],
+    ])
 }
 
 fn require_leading_frame_unit<'a>(
@@ -1182,15 +1493,34 @@ fn require_leading_frame_unit<'a>(
         ObuType::ClosedLoopKey,
         "missing_closed_loop_key",
     )?;
-    Ok((frame_unit, minimal_frame_unit_len(obus)?))
+    Ok((frame_unit, minimal_frame_unit_indices(obus)?.len()))
 }
 
-fn minimal_frame_unit_len(obus: &[ObuEnvelope<'_>]) -> Result<usize> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MinimalFrameUnitIndices {
+    temporal_delimiter: usize,
+    sequence: usize,
+    first_film_grain: usize,
+    frame: usize,
+}
+
+impl MinimalFrameUnitIndices {
+    const fn len(self) -> usize {
+        self.frame + 1
+    }
+}
+
+fn leading_film_grain_obus<'a>(obus: &'a [ObuEnvelope<'a>]) -> Result<&'a [ObuEnvelope<'a>]> {
+    let indices = minimal_frame_unit_indices(obus)?;
+    Ok(&obus[indices.first_film_grain..indices.frame])
+}
+
+fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUnitIndices> {
     if obus.is_empty() {
         return Err(unsupported(
             "unexpected_obu_order",
             None,
-            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, and closed-loop-key OBU",
+            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, optional film-grain state, and closed-loop-key OBU",
         ));
     }
     let mut sequence_index = 1usize;
@@ -1204,17 +1534,29 @@ fn minimal_frame_unit_len(obus: &[ObuEnvelope<'_>]) -> Result<usize> {
         unsupported(
             "unexpected_obu_order",
             None,
-            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, and closed-loop-key OBU",
+            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, optional film-grain state, and closed-loop-key OBU",
         )
     })?;
+    let mut frame_index = frame_index;
+    while obus
+        .get(frame_index)
+        .is_some_and(|envelope| envelope.header.obu_type == ObuType::FilmGrain)
+    {
+        frame_index += 1;
+    }
     if frame_index >= obus.len() {
         return Err(unsupported(
             "unexpected_obu_order",
             None,
-            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, and closed-loop-key OBU",
+            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, optional film-grain state, and closed-loop-key OBU",
         ));
     }
-    Ok(frame_index + 1)
+    Ok(MinimalFrameUnitIndices {
+        temporal_delimiter: 0,
+        sequence: sequence_index,
+        first_film_grain: sequence_index + 1,
+        frame: frame_index,
+    })
 }
 
 fn require_obu_type(
@@ -1279,6 +1621,21 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
             "missing_sequence_intra_config",
             offset,
             "minimal tier requires a fully parsed sequence intra config",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_repeated_key_sequence_compatible(
+    leading: &SequenceHeader,
+    repeated: &SequenceHeader,
+    offset: ByteOffset,
+) -> Result<()> {
+    if repeated != leading {
+        return Err(unsupported_at(
+            "repeated_key_sequence_changed",
+            offset,
+            "repeated closed-loop-key frame units must repeat the leading sequence until runtime sequence switching is implemented",
         ));
     }
     Ok(())
@@ -1353,6 +1710,7 @@ pub(crate) fn frame_ref_update_from_core(
     frame_cdfs: FrameCdfSubset,
     ccso_params: Option<splot_core::headers::frame::CcsoParams>,
     ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    motion_field: inter::TemporalMotionField,
     order_hint: u32,
 ) -> Result<reference_buffer::FrameRefUpdate> {
     let refresh_frame_flags = core.refresh_frame_flags.ok_or_else(|| {
@@ -1393,6 +1751,7 @@ pub(crate) fn frame_ref_update_from_core(
         frame_cdfs,
         ccso_params,
         ccso_grid,
+        motion_field,
         lr_frame_filter_class_counts: lr_frame_filter_class_counts(core),
         lr_frame_filter_taps: lr_frame_filter_taps(core),
     })
@@ -1726,6 +2085,7 @@ mod tests {
     const OBU_CLOSED_LOOP_KEY: u8 = 0x10;
     const OBU_REGULAR_TILE_GROUP: u8 = 0x1C;
     const OBU_OPERATING_POINT_SET: u8 = 0x48;
+    const OBU_FILM_GRAIN: u8 = 0x5C;
 
     fn obu(header: u8) -> [u8; 2] {
         [0x01, header]
@@ -1764,6 +2124,39 @@ mod tests {
         assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
         assert_eq!(frame_unit_len, 4);
         assert!(is_leading_record_regular_after_key(0, 4, &obus));
+        assert!(require_leading_ivf_obu_order(&obus).is_ok());
+    }
+
+    #[test]
+    fn leading_frame_unit_allows_film_grain_before_key() {
+        let bytes = [
+            obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+            obu(OBU_OPERATING_POINT_SET).as_slice(),
+            obu(OBU_SEQUENCE_HEADER).as_slice(),
+            obu(OBU_FILM_GRAIN).as_slice(),
+            obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+            obu(OBU_REGULAR_TILE_GROUP).as_slice(),
+        ]
+        .concat();
+        let obus = annexb_obus(&bytes);
+
+        let leading = require_leading_frame_unit(&obus);
+        assert!(leading.is_ok());
+        let Ok(([td, sequence, key], frame_unit_len)) = leading else {
+            return;
+        };
+
+        assert_eq!(td.header.obu_type, ObuType::TemporalDelimiter);
+        assert_eq!(sequence.header.obu_type, ObuType::SequenceHeader);
+        let film_grain_result = leading_film_grain_obus(&obus);
+        assert!(film_grain_result.is_ok());
+        let Ok(film_grain_obus) = film_grain_result else {
+            return;
+        };
+        assert_eq!(film_grain_obus.len(), 1);
+        assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
+        assert_eq!(frame_unit_len, 5);
+        assert!(is_leading_record_regular_after_key(0, 5, &obus));
         assert!(require_leading_ivf_obu_order(&obus).is_ok());
     }
 }

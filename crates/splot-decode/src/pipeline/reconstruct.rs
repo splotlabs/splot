@@ -112,6 +112,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
     qindex: u32,
     use_tcq: bool,
     ibp_dc: bool,
+    luma_context: Option<LumaTransformTypeContext>,
     availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
@@ -135,6 +136,17 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
     };
     let out = if block.all_zero {
         prediction
+    } else if let Some(luma_context) = luma_context {
+        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
+            block,
+            &prediction,
+            qindex,
+            log2_width,
+            log2_height,
+            use_tcq,
+            bit_depth,
+            luma_context,
+        )?
     } else {
         reconstruct_general_intra_coeff_block_rect_with_prediction(
             block,
@@ -163,6 +175,7 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
     log2_height: u32,
     qindex: u32,
     use_tcq: bool,
+    luma_context: LumaTransformTypeContext,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
@@ -190,15 +203,15 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
     let out = if block.all_zero {
         prediction
     } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
+        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
             block,
             &prediction,
             qindex,
-            PlaneId::Y,
             log2_width,
             log2_height,
             use_tcq,
             bit_depth,
+            luma_context,
         )?
     };
     workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
@@ -350,6 +363,7 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_neighbour_block_into<T: Recon
     num4_above_right: usize,
     num4_below_left: usize,
     availability: IntraEdgeAvailability,
+    luma_context: LumaTransformTypeContext,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     reconstruct_general_intra_luma_smooth_rect_block_with_availability_into(
@@ -364,7 +378,7 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_neighbour_block_into<T: Recon
         use_tcq,
         num4_above_right,
         num4_below_left,
-        None,
+        Some(luma_context),
         availability,
         bit_depth,
     )
@@ -779,39 +793,41 @@ fn noneighbour_sample<T: ReconSample>(value: u16) -> T {
     T::try_from_u16(value).unwrap_or_default()
 }
 
-/// Shared tail for the no-neighbour (top-left) luma first-block reconstructors:
-/// given the already-built § 7.13.2 prediction, adds the decoded AC residual (or
-/// writes the bare prediction for an `all_zero` block) and stores the result into
-/// the workspace.
 #[allow(clippy::too_many_arguments)]
-fn reconstruct_general_intra_luma_first_block_into<T: ReconSample>(
+fn reconstruct_general_intra_luma_first_block_with<T: ReconSample, F>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
-    prediction: Vec<T>,
     x: usize,
     y: usize,
     log2_side: u32,
     qindex: u32,
     use_tcq: bool,
+    luma_context: LumaTransformTypeContext,
     bit_depth: BitDepth,
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2, log2)?;
-    let out = if block.all_zero {
-        prediction
-    } else {
-        reconstruct_general_intra_coeff_block_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            PlaneId::Y,
-            log2_side,
-            use_tcq,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
-    Ok(())
+    build_prediction: F,
+) -> core::result::Result<(), GeneralIntraResidualError>
+where
+    F: FnOnce(
+        IntraRectBlockSize,
+        usize,
+        BitDepth,
+    ) -> core::result::Result<Vec<T>, GeneralIntraResidualError>,
+{
+    let (side, block_size) = luma_square_prediction_geometry(log2_side)?;
+    let prediction = build_prediction(block_size, side, bit_depth)?;
+    write_luma_prediction_block(
+        workspace,
+        block,
+        prediction,
+        x,
+        y,
+        log2_side,
+        log2_side,
+        qindex,
+        use_tcq,
+        bit_depth,
+        Some(luma_context),
+    )
 }
 
 fn luma_square_prediction_geometry(
@@ -840,12 +856,22 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_first_block_into<T: ReconSamp
     log2_side: u32,
     qindex: u32,
     use_tcq: bool,
+    luma_context: LumaTransformTypeContext,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let (side, block_size) = luma_square_prediction_geometry(log2_side)?;
-    let prediction = predict_nondc_noneighbour_smooth(mode, block_size, side, bit_depth)?;
-    reconstruct_general_intra_luma_first_block_into(
-        workspace, block, prediction, x, y, log2_side, qindex, use_tcq, bit_depth,
+    reconstruct_general_intra_luma_first_block_with(
+        workspace,
+        block,
+        x,
+        y,
+        log2_side,
+        qindex,
+        use_tcq,
+        luma_context,
+        bit_depth,
+        |block_size, side, bit_depth| {
+            predict_nondc_noneighbour_smooth(mode, block_size, side, bit_depth)
+        },
     )
 }
 
@@ -899,12 +925,22 @@ pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into<T: Rec
     log2_side: u32,
     qindex: u32,
     use_tcq: bool,
+    luma_context: LumaTransformTypeContext,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let (side, block_size) = luma_square_prediction_geometry(log2_side)?;
-    let prediction = predict_directional_noneighbour(mode, block_size, side, bit_depth)?;
-    reconstruct_general_intra_luma_first_block_into(
-        workspace, block, prediction, x, y, log2_side, qindex, use_tcq, bit_depth,
+    reconstruct_general_intra_luma_first_block_with(
+        workspace,
+        block,
+        x,
+        y,
+        log2_side,
+        qindex,
+        use_tcq,
+        luma_context,
+        bit_depth,
+        |block_size, side, bit_depth| {
+            predict_directional_noneighbour(mode, block_size, side, bit_depth)
+        },
     )
 }
 
@@ -977,6 +1013,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     log2_side: u32,
     qindex: u32,
     use_tcq: bool,
+    luma_context: Option<LumaTransformTypeContext>,
     bit_depth: BitDepth,
     availability: MiddleEdgeAvailability,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
@@ -1035,6 +1072,17 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     }
     let out = if block.all_zero {
         prediction
+    } else if let Some(luma_context) = luma_context {
+        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
+            block,
+            &prediction,
+            qindex,
+            log2_side,
+            log2_side,
+            use_tcq,
+            bit_depth,
+            luma_context,
+        )?
     } else {
         reconstruct_general_intra_coeff_block_with_prediction(
             block,
@@ -1579,12 +1627,24 @@ fn write_luma_prediction_block<T: ReconSample>(
     qindex: u32,
     use_tcq: bool,
     bit_depth: BitDepth,
+    luma_context: Option<LumaTransformTypeContext>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let out = if block.all_zero {
         prediction
+    } else if let Some(luma_context) = luma_context {
+        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
+            block,
+            &prediction,
+            qindex,
+            log2_width,
+            log2_height,
+            use_tcq,
+            bit_depth,
+            luma_context,
+        )?
     } else {
         reconstruct_general_intra_coeff_block_rect_with_prediction(
             block,
@@ -1655,6 +1715,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<T: ReconS
         qindex,
         use_tcq,
         bit_depth,
+        None,
     )
 }
 
@@ -2168,6 +2229,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSa
         qindex,
         use_tcq,
         bit_depth,
+        None,
     )
 }
 

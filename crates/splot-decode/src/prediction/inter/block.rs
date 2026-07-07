@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use std::borrow::Cow;
+
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameType, MvPrecision, TipFrameMode, TxMode, get_qindex,
@@ -14,28 +16,27 @@ use splot_core::tables::conversion::{
 };
 use splot_recon::PlaneId as ReconPlaneId;
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IDENTITY_WARP_PARAMS, InterIntraMode,
+    BitDepth, CurrentFrameIntraEdges, CurrentFrameWorkspace, IDENTITY_WARP_PARAMS, InterIntraMode,
     InterpolationFilter as ReconInterpolationFilter, IntraCardinalDirection,
     IntraDirectionalAngleEdges, IntraRectBlockSize, ReconSample, apply_intra_ibp_dc_rect,
     predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
 };
 
-use super::compound::{
-    CompoundParseInput, read_compound_mode_syntax, read_compound_reference_pair,
-};
 use super::find_mv_stack::{
     BlockNeighbourContext, BlockPrecisionRecord, ModeContext, MotionMode, MvBlockContext,
-    NeighbourMvGrid, NeighbourYMode, block_neighbour_ctx, find_mode_ctx, find_mv_stack,
+    NeighbourMvGrid, NeighbourYMode, TemporalMotionField, TemporalMvContext, block_neighbour_ctx,
+    find_mode_ctx, find_mv_stack, find_mv_stack_with_temporal,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
-    MV_PRECISION_TWO_PEL, MvReadConfig, apply_inter_mvd_signs, lower_mv_precision,
-    mv_clamp_to_integer, read_newmv_amvd_block_mvd, read_newmv_block_mvd_magnitude,
+    MvReadConfig, apply_inter_mvd_signs, mv_clamp_to_integer, read_newmv_amvd_block_mvd,
+    read_newmv_block_mvd_magnitude,
 };
 use super::{
-    BawpSyntax, InterBlock, InterReferenceState, InterResidual, InterResidualBlock, Mv,
-    PlacedInterBlock, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO,
-    effective_quantizer_deltas_are_zero, mc, unsupported_at, unsupported_compound_at,
+    BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
+    InterResidualBlock, Mv, PlacedInterBlock, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
+    SINGLE_MODE_NEWMV, SPEC_MODE_INFO, effective_quantizer_deltas_are_zero, mc, unsupported_at,
+    unsupported_compound_at,
 };
 use crate::bitstream::tile_payload::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, BlockSize, CoeffContextReset,
@@ -94,29 +95,6 @@ const WEDGE_0: u8 = 0;
 const WEDGE_90: u8 = 5;
 const NUM_WEDGE_DIST: u8 = 4;
 
-/// The § 7.12.2 `useTemporalFirst` per-block term: the block's reference is
-/// within order-hint distance 2 (07:3383-3391). The frame-level terms are
-/// computed once per frame; the TIP and compound arms defer upstream.
-fn block_ref_within_temporal_distance<T: splot_recon::ReconSample>(
-    reference: &InterReferenceState<'_, T>,
-    ref_frame_idx: &[u32],
-    current_order_hint: u32,
-    ref_frame0: i8,
-) -> bool {
-    let Some(hint) = usize::try_from(ref_frame0)
-        .ok()
-        .and_then(|list_ref| ref_frame_idx.get(list_ref))
-        .and_then(|&slot| reference.ref_order_hint.get(slot as usize))
-    else {
-        return false;
-    };
-    let dist = super::get_relative_dist(
-        current_order_hint as i32,
-        i32::try_from(*hint).unwrap_or(i32::MAX),
-    );
-    dist.abs() <= 2
-}
-
 fn trace_inter_block_mode(mi_row: usize, mi_col: usize) -> bool {
     if !crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_BLOCK_MODE") {
         return false;
@@ -166,6 +144,7 @@ pub(crate) struct InterFilterInputs {
     pub(crate) lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     pub(crate) lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     pub(crate) tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    pub(crate) motion_field: TemporalMotionField,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -249,6 +228,31 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             "inter_mi_dimensions",
             offset,
             "inter.mi_dimensions",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let current_order_hint = core.order_hint_lsb.unwrap_or(0);
+    let temporal_context = TemporalMvContext::from_references(
+        mi_rows,
+        mi_cols,
+        current_order_hint,
+        ref_frame_idx,
+        &reference.ref_order_hint,
+        &reference.ref_motion_fields,
+    )
+    .ok_or_else(|| {
+        inter_cap!(
+            "inter_temporal_motion_context",
+            offset,
+            "inter.temporal_motion_context",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols).ok_or_else(|| {
+        inter_cap!(
+            "inter_temporal_motion_field",
+            offset,
+            "inter.temporal_motion_field",
             SPEC_MODE_INFO
         )
     })?;
@@ -387,6 +391,8 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                     &mut intrabc_state,
                     &mut segment_id_state,
                     &mut mv_grid,
+                    &temporal_context,
+                    &mut motion_field,
                     &mut y_smooth,
                     &mut chroma_smooth,
                     &mut ref_mv_bank,
@@ -421,7 +427,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                     allow_bawp,
                     allow_warpmv_mode,
                     frame_is_switch,
-                    core.order_hint_lsb.unwrap_or(0),
+                    current_order_hint,
                     tile_offset,
                 )?;
                 decoded_any = true;
@@ -474,6 +480,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         lr_source_blocks: active_source_blocks,
         lr_unit_filters: unit_filters,
         tx_skip_records,
+        motion_field,
     };
     Ok((frame_cdfs, filter_inputs))
 }
@@ -620,6 +627,8 @@ fn decode_block<T: ReconSample>(
     intrabc_state: &mut TileIntrabcPreludeState,
     segment_id_state: &mut TileSegmentIdState,
     mv_grid: &mut NeighbourMvGrid,
+    temporal_context: &TemporalMvContext,
+    motion_field: &mut TemporalMotionField,
     y_smooth: &mut crate::prediction::intra_edge::TileYSmoothGrid,
     chroma_smooth: &mut crate::prediction::intra_edge::TileChromaSmoothGrid,
     ref_mv_bank: &mut Option<super::find_mv_stack::RefMvBank>,
@@ -688,11 +697,18 @@ fn decode_block<T: ReconSample>(
             frontier.has_chroma,
         );
     }
+    let placed_geometry = placed_inter_geometry(frontier, n4w, n4h, tile_offset)?;
     let placed_block = |block| PlacedInterBlock {
-        luma_x: mi_col * 4,
-        luma_y: mi_row * 4,
-        luma_w: n4w * 4,
-        luma_h: n4h * 4,
+        luma_x: placed_geometry.luma_x,
+        luma_y: placed_geometry.luma_y,
+        luma_w: placed_geometry.luma_w,
+        luma_h: placed_geometry.luma_h,
+        chroma_luma_x: placed_geometry.chroma_luma_x,
+        chroma_luma_y: placed_geometry.chroma_luma_y,
+        chroma_luma_w: placed_geometry.chroma_luma_w,
+        chroma_luma_h: placed_geometry.chroma_luma_h,
+        has_chroma: placed_geometry.has_chroma,
+        interintra_chroma: placed_geometry.interintra_chroma,
         block,
     };
 
@@ -738,13 +754,13 @@ fn decode_block<T: ReconSample>(
         }
         !has_past || !has_future
     };
-    let temporal_first_frame = drl_reorder != DrlReorder::Always
-        && core
-            .inter
-            .as_ref()
-            .and_then(|inter| inter.use_ref_frame_mvs)
-            == Some(true)
-        && refs_one_sided;
+    let use_temporal = core
+        .inter
+        .as_ref()
+        .and_then(|inter| inter.use_ref_frame_mvs)
+        == Some(true);
+    let temporal_stack_context = use_temporal.then_some(temporal_context);
+    let temporal_first_frame = drl_reorder != DrlReorder::Always && use_temporal && refs_one_sided;
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
 
     let is_inter = if core.frame_is_intra == Some(true)
@@ -1104,163 +1120,52 @@ fn decode_block<T: ReconSample>(
     }
 
     if uses_compound {
-        let is_joint_ctx = compound_is_joint_ctx.ok_or_else(|| {
-            compound_missing!(
-                "compound_missing_is_joint_context",
-                tile_offset,
-                "inter.compound.is_joint_context",
-                SPEC_MODE_INFO
-            )
-        })?;
-        let pair = read_compound_reference_pair(
-            cdfs,
+        return compound_path::decode_compound_inter_block(
+            work_unit,
             symbols,
-            CompoundParseInput {
-                num_total_refs,
-                num_same_ref_compound,
-                has_neighbour: neighbour_ctx.has_neighbour,
-                is_joint_ctx,
-                skip,
-                n4w,
-                n4h,
-                mi_row,
-                mi_col,
-                mi_rows,
-                mi_cols,
-            },
-            tile_offset,
-        )?;
-        block_ctx.ref_frame0 = pair.0;
-        block_ctx.ref_frame1 = Some(pair.1);
-        let mode_ctx = find_mode_ctx(mv_grid, &block_ctx);
-        let compound = read_compound_mode_syntax(
-            cdfs,
-            symbols,
-            pair,
-            mode_ctx.new_mv_context,
-            is_joint_ctx,
-            tile_offset,
-        )?;
-        let ref_mv_idx0 = read_drl_idx(
-            cdfs,
-            symbols,
-            mode_ctx.new_mv_context,
-            max_drl_bits_minus_1,
-            tile_offset,
-        )?;
-        let ref_mv_idx1 = read_drl_idx(
-            cdfs,
-            symbols,
-            mode_ctx.new_mv_context,
-            max_drl_bits_minus_1,
-            tile_offset,
-        )?;
-        if ref_mv_idx0 != 0 || ref_mv_idx1 != 0 {
-            return Err(compound_cap!(
-                "compound_block_drl_idx",
-                tile_offset,
-                "inter.compound.drl_idx != 0",
-                SPEC_MODE_INFO
-            ));
-        }
-        let interp_ctx = neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true);
-        trace_interp_filter_context(
-            "compound",
-            mi_row,
-            mi_col,
-            compound.ref_frame0,
-            true,
-            interp_ctx,
+            coeff_ctx,
+            sequence,
+            core,
+            frontier,
+            workspace,
+            mv_grid,
+            temporal_stack_context,
+            motion_field,
+            &mut block_ctx,
             &neighbour_ctx,
-            symbols,
-        );
-        let interp = resolve_interp_filter(
-            cdfs,
-            symbols,
-            frame_interpolation_filter,
-            SINGLE_MODE_NEARMV,
-            interp_ctx,
-            tile_offset,
-        )?;
-        mv_grid.record_block(
-            mi_row,
-            mi_col,
-            n4w,
-            n4h,
-            true,
-            compound.ref_frame0,
-            Some(compound.ref_frame1),
-            NeighbourYMode::Other,
-            compound.mv0,
-            skip == 1,
-            interp_filter_symbol(interp),
-            false,
-            BlockPrecisionRecord::most_probable(frame_mv_precision(core, tile_offset)?),
-        );
-        if let Some(bank) = ref_mv_bank.as_mut() {
-            bank.update_for_block(
-                compound.ref_frame0,
-                Some(compound.ref_frame1),
-                compound.mv0,
-                Some(compound.mv1),
-                mi_row,
-                mi_col,
-                n4w,
-                n4h,
-                sb_h4,
-            );
-        }
-        reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
-        record_inter_deblock_geometry(
+            ref_mv_bank,
+            warp_param_bank,
             deblock_blocks,
             chroma_deblock_blocks,
             tx_skip_records,
-            frontier,
-            n4w,
-            n4h,
-            None,
-            block_qindex,
-            tile_offset,
-        )?;
-        let placed = placed_block(InterBlock {
-            ref_frame0: compound.ref_frame0,
-            ref_frame1: Some(compound.ref_frame1),
-            mv: compound.mv0,
-            mv1: compound.mv1,
-            interp,
-            warp_params: None,
-            bawp: BawpSyntax::default(),
-            interintra: None,
-            residual: None,
-        });
-        reconstruct_placed_inter_block(
-            workspace,
-            &placed,
+            intrabc_state,
             ref_frame_idx,
             reference,
+            num_total_refs,
+            num_same_ref_compound,
+            compound_is_joint_ctx,
+            skip,
+            n4w,
+            n4h,
+            mi_row,
+            mi_col,
+            mi_rows,
+            mi_cols,
+            sb_h4,
+            max_drl_bits_minus_1,
+            drl_reorder,
+            temporal_first_frame,
+            enable_adaptive_mvd,
+            residual_quantizer_deltas_are_zero,
+            residual_tool_policy,
             block_qindex,
+            frame_interpolation_filter,
             luma_use_tcq,
             residual_use_ddt,
             bit_depth,
-            sequence_enables_ibp(sequence),
+            entry_checkpoint,
             tile_offset,
-        )?;
-        intrabc_state.record_block(
-            frontier.r,
-            frontier.c,
-            n4w,
-            n4h,
-            IntrabcBlockPrelude::from_use_skip(
-                IntrabcUseSkip {
-                    use_intrabc: false,
-                    skip_flag: skip == 1,
-                },
-                None,
-            ),
-            tile_offset,
-        )?;
-        trace_leaf_exit("compound", frontier, entry_checkpoint, symbols.checkpoint());
-        return Ok(non_intra_leaf_mode(frontier));
+        );
     }
 
     let ref_frame0: i8 = if num_total_refs >= 2 {
@@ -1336,7 +1241,7 @@ fn decode_block<T: ReconSample>(
                 current_order_hint,
                 ref_frame0,
             );
-        let stack = find_mv_stack(
+        let stack = find_mv_stack_with_temporal(
             mv_grid,
             &block_ctx,
             Mv::ZERO,
@@ -1346,6 +1251,7 @@ fn decode_block<T: ReconSample>(
             warp_param_bank,
             derive_wrl,
             drl_reorder,
+            temporal_stack_context,
             use_temporal_first,
         );
         if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_BLOCK_MODE") {
@@ -1437,16 +1343,6 @@ fn decode_block<T: ReconSample>(
             WarpInterIntraSyntax::default()
         };
         let warp_interintra_mode = interintra_prediction_mode(warp_inter_intra, tile_offset)?;
-        if warp_interintra_mode.is_some()
-            && (!frontier.has_chroma || frontier.chroma_ref_geometry().size() != frontier.b_size)
-        {
-            return Err(inter_cap!(
-                "inter_interintra_sub8x8_chroma_unimplemented",
-                tile_offset,
-                "inter.interintra.sub8x8_chroma",
-                "5.20.7.22"
-            ));
-        }
         let residual = if skip == 0 {
             if !residual_quantizer_deltas_are_zero {
                 return Err(inter_cap!(
@@ -1525,6 +1421,22 @@ fn decode_block<T: ReconSample>(
             warp.warp_params,
             warp.block_precision,
         );
+        record_temporal_motion_block(
+            motion_field,
+            reference,
+            ref_frame_idx,
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            mi_rows,
+            mi_cols,
+            ref_frame0,
+            None,
+            warp.mv,
+            Mv::ZERO,
+            Some(warp.warp_params),
+        );
         warp_param_bank.update(ref_frame0, warp.warp_params);
         if let Some(bank) = ref_mv_bank.as_mut() {
             bank.update_for_block(
@@ -1555,6 +1467,7 @@ fn decode_block<T: ReconSample>(
             warp_params: Some(warp.warp_params),
             bawp: BawpSyntax::default(),
             interintra: warp_interintra_mode,
+            compound_blend: mc::CompoundBlend::default(),
             residual,
         });
         reconstruct_placed_inter_block(
@@ -1656,8 +1569,8 @@ fn decode_block<T: ReconSample>(
             symbols.checkpoint()
         );
     }
-    if !bawp.enabled {
-        read_inter_intra_flag_syntax(
+    let interintra = if !bawp.enabled {
+        let syntax = read_inter_intra_syntax(
             cdfs,
             symbols,
             core,
@@ -1666,7 +1579,10 @@ fn decode_block<T: ReconSample>(
             n4h,
             tile_offset,
         )?;
-    }
+        interintra_prediction_mode(syntax, tile_offset)?
+    } else {
+        None
+    };
     let use_temporal_first = temporal_first_frame
         && block_ref_within_temporal_distance(
             reference,
@@ -1674,7 +1590,7 @@ fn decode_block<T: ReconSample>(
             current_order_hint,
             ref_frame0,
         );
-    let stack = find_mv_stack(
+    let stack = find_mv_stack_with_temporal(
         mv_grid,
         &block_ctx,
         Mv::ZERO,
@@ -1684,6 +1600,7 @@ fn decode_block<T: ReconSample>(
         warp_param_bank,
         false,
         drl_reorder,
+        temporal_stack_context,
         use_temporal_first,
     );
 
@@ -1850,7 +1767,7 @@ fn decode_block<T: ReconSample>(
     )?;
     if trace_first_row {
         eprintln!(
-            "inter block r={mi_row} c={mi_col} b={} skip={skip} ref={ref_frame0} mode={single_mode} use_amvd={use_amvd} mv=({}, {}) residual_blocks={} checkpoint={:?}",
+            "inter block r={mi_row} c={mi_col} b={} skip={skip} ref={ref_frame0} mode={single_mode} use_amvd={use_amvd} mv=({}, {}) interintra={interintra:?} residual_blocks={} checkpoint={:?}",
             frontier.b_size.index(),
             mv.row,
             mv.col,
@@ -1881,6 +1798,22 @@ fn decode_block<T: ReconSample>(
         use_amvd,
         precision,
     );
+    record_temporal_motion_block(
+        motion_field,
+        reference,
+        ref_frame_idx,
+        mi_row,
+        mi_col,
+        n4w,
+        n4h,
+        mi_rows,
+        mi_cols,
+        ref_frame0,
+        None,
+        mv,
+        Mv::ZERO,
+        None,
+    );
     if let Some(bank) = ref_mv_bank.as_mut() {
         bank.update_for_block(ref_frame0, None, mv, None, mi_row, mi_col, n4w, n4h, sb_h4);
     }
@@ -1907,7 +1840,8 @@ fn decode_block<T: ReconSample>(
         interp,
         warp_params: None,
         bawp,
-        interintra: None,
+        interintra,
+        compound_blend: mc::CompoundBlend::default(),
         residual,
     });
     reconstruct_placed_inter_block(
@@ -1932,6 +1866,75 @@ fn non_intra_leaf_mode(frontier: &DecodeBlockFrontier) -> GeneralIntraLeafMode {
         return leaf.with_uv_cfl(false);
     }
     leaf
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PlacedInterGeometry {
+    luma_x: usize,
+    luma_y: usize,
+    luma_w: usize,
+    luma_h: usize,
+    chroma_luma_x: usize,
+    chroma_luma_y: usize,
+    chroma_luma_w: usize,
+    chroma_luma_h: usize,
+    has_chroma: bool,
+    interintra_chroma: bool,
+}
+
+fn placed_inter_geometry(
+    frontier: &DecodeBlockFrontier,
+    n4w: usize,
+    n4h: usize,
+    tile_offset: ByteOffset,
+) -> Result<PlacedInterGeometry> {
+    let luma_x = frontier.c * 4;
+    let luma_y = frontier.r * 4;
+    let luma_w = n4w * 4;
+    let luma_h = n4h * 4;
+    let (chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h) = if frontier.has_chroma {
+        let chroma_ref = frontier.chroma_ref_geometry();
+        let chroma_n4w = chroma_ref.size().num_4x4_wide().map_err(|_| {
+            inter_diag!(
+                "inter_chroma_ref_width",
+                tile_offset,
+                "invalid inter chroma reference width",
+                "5.20.4.1"
+            )
+        })?;
+        let chroma_n4h = chroma_ref.size().num_4x4_high().map_err(|_| {
+            inter_diag!(
+                "inter_chroma_ref_height",
+                tile_offset,
+                "invalid inter chroma reference height",
+                "5.20.4.1"
+            )
+        })?;
+        (
+            chroma_ref.col() * 4,
+            chroma_ref.row() * 4,
+            chroma_n4w * 4,
+            chroma_n4h * 4,
+        )
+    } else {
+        (luma_x, luma_y, luma_w, luma_h)
+    };
+    let mixed_offset_chroma = !frontier.is_luma_part()
+        && !frontier.is_chroma_part()
+        && frontier.is_mixed_region()
+        && frontier.chroma_offset;
+    Ok(PlacedInterGeometry {
+        luma_x,
+        luma_y,
+        luma_w,
+        luma_h,
+        chroma_luma_x,
+        chroma_luma_y,
+        chroma_luma_w,
+        chroma_luma_h,
+        has_chroma: frontier.has_chroma,
+        interintra_chroma: frontier.has_chroma && !mixed_offset_chroma,
+    })
 }
 
 /// Reconstructs the § 7.11.5 IntrABC predictor for a leaf: always luma, and — for
@@ -1999,15 +2002,23 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
     if !frontier.has_chroma {
         return Ok(());
     }
-    if frontier.chroma_offset {
-        return Err(inter_cap!(
-            "inter_intrabc_chroma",
+    let chroma_prediction = if frontier.chroma_offset {
+        let chroma_ref = frontier.chroma_ref_geometry();
+        derive_intrabc_luma_prediction_geometry(
+            core,
+            IntrabcBlockGeometry::from_chroma_ref(
+                chroma_ref.row(),
+                chroma_ref.col(),
+                chroma_ref.size(),
+                tile_offset,
+            )?,
+            info,
             tile_offset,
-            "inter.intrabc.chroma",
-            SPEC_MODE_INFO
-        ));
-    }
-    let luma = prediction.target; // § 7.11.5: co-located chroma (`!chroma_offset`) is exactly the luma target subsampled; one block vector drives every plane
+        )?
+    } else {
+        prediction
+    };
+    let luma = chroma_prediction.target;
     for plane in [ReconPlaneId::U, ReconPlaneId::V] {
         let (cx, cy) = (luma.x() >> sub_x, luma.y() >> sub_y);
         let (cw, ch) = (luma.width() >> sub_x, luma.height() >> sub_y);
@@ -2021,8 +2032,8 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
             i64::from(info.block_mv.col),
             sub_x,
             sub_y,
-            prediction.ref_mi_cols,
-            prediction.ref_mi_rows,
+            chroma_prediction.ref_mi_cols,
+            chroma_prediction.ref_mi_rows,
             cw as i64,
             ch as i64,
         );
@@ -2136,9 +2147,53 @@ fn sequence_enables_ibp(sequence: &SequenceHeader) -> bool {
         .is_some_and(|intra| intra.enable_ibp)
 }
 
+fn interintra_cardinal_edge<T: ReconSample>(
+    mode: InterIntraMode,
+    edges: &CurrentFrameIntraEdges<T>,
+    len: usize,
+    bit_depth: BitDepth,
+) -> splot_recon::Result<Cow<'_, [T]>> {
+    let sample = |above: bool| {
+        if above {
+            edges
+                .left_samples()
+                .and_then(|left| left.first().copied())
+                .map_or_else(|| no_neighbour_above(bit_depth), Ok)
+        } else {
+            edges
+                .above_samples()
+                .and_then(|above_edge| above_edge.first().copied())
+                .map_or_else(|| no_neighbour_left(bit_depth), Ok)
+        }
+    };
+    match mode {
+        InterIntraMode::Vertical => edges.above_samples().map_or_else(
+            || sample(true).map(|value| Cow::Owned(vec![value; len])),
+            |above| Ok(Cow::Borrowed(above)),
+        ),
+        InterIntraMode::Horizontal => edges.left_samples().map_or_else(
+            || sample(false).map(|value| Cow::Owned(vec![value; len])),
+            |left| Ok(Cow::Borrowed(left)),
+        ),
+        InterIntraMode::Dc | InterIntraMode::Smooth => Ok(Cow::Borrowed(&[])),
+    }
+}
+
+fn no_neighbour_above<T: ReconSample>(bit_depth: BitDepth) -> splot_recon::Result<T> {
+    let midpoint = 1u16 << (u32::from(bit_depth.bits()) - 1);
+    T::try_from_u16(midpoint - 1)
+}
+
+fn no_neighbour_left<T: ReconSample>(bit_depth: BitDepth) -> splot_recon::Result<T> {
+    let midpoint = 1u16 << (u32::from(bit_depth.bits()) - 1);
+    T::try_from_u16(midpoint + 1)
+}
+
 /// One plane's § 5.20.7.22 `IntraPred` snapshot for the interintra blend.
 struct InterIntraPlanePrediction<T> {
     plane: ReconPlaneId,
+    sub_x: u32,
+    sub_y: u32,
     x: usize,
     y: usize,
     size: IntraRectBlockSize,
@@ -2148,10 +2203,6 @@ struct InterIntraPlanePrediction<T> {
 /// Predicts the § 5.20.7.22 interintra intra predictor for every plane of the
 /// block into caller-owned snapshots (edges are read from already-reconstructed
 /// neighbours, so this runs before motion compensation overwrites the block).
-/// Blocks whose chroma belongs to another leaf (§ 5.20.7.22 `sub8x8Inter`,
-/// `MiSize != ChromaMiSize`) never reach this blend: the parse arm defers
-/// them, because their chroma needs the aggregated sub-8x8 prediction and no
-/// interintra blend rather than this per-plane path.
 fn predict_interintra_planes<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
@@ -2170,10 +2221,23 @@ fn predict_interintra_planes<T: ReconSample>(
     };
     let mut planes = Vec::with_capacity(mc::YUV420_MC_PLANES.len());
     for (plane, sub_x, sub_y) in mc::YUV420_MC_PLANES {
-        let x = placed.luma_x >> sub_x;
-        let y = placed.luma_y >> sub_y;
-        let w = placed.luma_w >> sub_x;
-        let h = placed.luma_h >> sub_y;
+        if plane != ReconPlaneId::Y && !placed.interintra_chroma {
+            continue;
+        }
+        let (luma_x, luma_y, luma_w, luma_h) = if plane == ReconPlaneId::Y {
+            (placed.luma_x, placed.luma_y, placed.luma_w, placed.luma_h)
+        } else {
+            (
+                placed.chroma_luma_x,
+                placed.chroma_luma_y,
+                placed.chroma_luma_w,
+                placed.chroma_luma_h,
+            )
+        };
+        let x = luma_x >> sub_x;
+        let y = luma_y >> sub_y;
+        let w = luma_w >> sub_x;
+        let h = luma_h >> sub_y;
         if !w.is_power_of_two() || !h.is_power_of_two() {
             return Err(geometry_error());
         }
@@ -2196,22 +2260,22 @@ fn predict_interintra_planes<T: ReconSample>(
             }
             InterIntraMode::Vertical | InterIntraMode::Horizontal => {
                 let (direction, edge) = if mode == InterIntraMode::Vertical {
-                    (IntraCardinalDirection::Vertical, edges.above_samples())
+                    (
+                        IntraCardinalDirection::Vertical,
+                        interintra_cardinal_edge(mode, &edges, w, bit_depth)
+                            .map_err(|_| geometry_error())?,
+                    )
                 } else {
-                    (IntraCardinalDirection::Horizontal, edges.left_samples())
-                };
-                let Some(edge) = edge else {
-                    return Err(inter_cap!(
-                        "inter_interintra_edge_unavailable",
-                        tile_offset,
-                        "inter.interintra.boundary_edge_synthesis",
-                        "7.13.2.1"
-                    ));
+                    (
+                        IntraCardinalDirection::Horizontal,
+                        interintra_cardinal_edge(mode, &edges, h, bit_depth)
+                            .map_err(|_| geometry_error())?,
+                    )
                 };
                 let prepared = if mode == InterIntraMode::Vertical {
-                    IntraDirectionalAngleEdges::above(edge)
+                    IntraDirectionalAngleEdges::above(edge.as_ref())
                 } else {
-                    IntraDirectionalAngleEdges::left(edge)
+                    IntraDirectionalAngleEdges::left(edge.as_ref())
                 };
                 predict_intra_cardinal_directional_rect_into(
                     bit_depth,
@@ -2234,6 +2298,8 @@ fn predict_interintra_planes<T: ReconSample>(
         }
         planes.push(InterIntraPlanePrediction {
             plane,
+            sub_x,
+            sub_y,
             x,
             y,
             size,
@@ -2261,12 +2327,23 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
         luma_y: placed.luma_y,
         luma_w: placed.luma_w,
         luma_h: placed.luma_h,
+        chroma_luma_x: placed.chroma_luma_x,
+        chroma_luma_y: placed.chroma_luma_y,
+        chroma_luma_w: placed.chroma_luma_w,
+        chroma_luma_h: placed.chroma_luma_h,
     };
     let intra_predictions = placed
         .block
         .interintra
-        .map(|mode| {
-            predict_interintra_planes(workspace, placed, mode, enable_ibp, bit_depth, tile_offset)
+        .map(|prediction| {
+            predict_interintra_planes(
+                workspace,
+                placed,
+                prediction.mode(),
+                enable_ibp,
+                bit_depth,
+                tile_offset,
+            )
         })
         .transpose()?;
     let block_params =
@@ -2301,25 +2378,40 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
             tile_offset,
         )?;
     }
-    if let (Some(predictions), Some(mode)) = (intra_predictions, placed.block.interintra) {
+    if let (Some(predictions), Some(interintra)) = (intra_predictions, placed.block.interintra) {
         for prediction in predictions {
-            workspace
-                .blend_smooth_interintra_rect(
-                    prediction.plane,
-                    prediction.x,
-                    prediction.y,
-                    prediction.size,
-                    mode,
-                    &prediction.samples,
+            let blend = match interintra {
+                InterIntraPrediction::SmoothMask { mode } => workspace
+                    .blend_smooth_interintra_rect(
+                        prediction.plane,
+                        prediction.x,
+                        prediction.y,
+                        prediction.size,
+                        mode,
+                        &prediction.samples,
+                    ),
+                InterIntraPrediction::WedgeMask { wedge_index, .. } => workspace
+                    .blend_wedge_interintra_rect(
+                        prediction.plane,
+                        prediction.x,
+                        prediction.y,
+                        prediction.size,
+                        placed.luma_w,
+                        placed.luma_h,
+                        usize::from(wedge_index),
+                        prediction.sub_x,
+                        prediction.sub_y,
+                        &prediction.samples,
+                    ),
+            };
+            blend.map_err(|_| {
+                inter_diag!(
+                    "inter_interintra_blend",
+                    tile_offset,
+                    "interintra blend failed",
+                    "7.13.3.30"
                 )
-                .map_err(|_| {
-                    inter_diag!(
-                        "inter_interintra_blend",
-                        tile_offset,
-                        "interintra blend failed",
-                        "7.13.3.30"
-                    )
-                })?;
+            })?;
         }
     }
     if let Some(residual) = placed.block.residual.as_ref() {
@@ -2336,246 +2428,41 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
     Ok(())
 }
 
+mod compound_path;
 mod filter_records;
 mod residual;
+mod syntax;
+mod temporal;
 mod warp;
 
 use self::filter_records::record_inter_deblock_geometry;
+pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
+use self::syntax::{
+    effective_force_integer_mv, frame_mv_precision, interp_filter_symbol, lowered_pred_mv,
+    read_block_mv_precision_syntax, read_drl_idx, read_use_amvd_syntax, resolve_interp_filter,
+    trace_interp_filter_context,
+};
+use self::temporal::{block_ref_within_temporal_distance, record_temporal_motion_block};
 use self::warp::{
     WarpInterIntraSyntax, inter_mv_read_config, inter_mvd_sign_derivation_allowed,
     interintra_prediction_mode, read_warp_extend_syntax, read_warp_inter_intra_syntax,
     read_warp_inter_mode_syntax, read_warp_newmv_delta_syntax, read_warp_newmv_motion_mode_syntax,
-    read_warpmv_delta_syntax,
+    read_warpmv_delta_syntax, read_wedge_mode_syntax,
 };
 
 use self::residual::{
     read_inter_residual, reset_inter_skip_coeff_contexts, transform_tool_residual_policy,
 };
 
-fn resolve_interp_filter(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    frame_interpolation_filter: FrameInterpolationFilter,
-    mode_for_needs_interp_filter: u8,
-    ctx: usize,
-    tile_offset: ByteOffset,
-) -> Result<ReconInterpolationFilter> {
-    match frame_interpolation_filter {
-        FrameInterpolationFilter::Eighttap => Ok(ReconInterpolationFilter::EightTap),
-        FrameInterpolationFilter::EighttapSmooth => Ok(ReconInterpolationFilter::EightTapSmooth),
-        FrameInterpolationFilter::EighttapSharp => Ok(ReconInterpolationFilter::EightTapSharp),
-        FrameInterpolationFilter::Bilinear => Ok(ReconInterpolationFilter::Bilinear),
-        FrameInterpolationFilter::Switchable => {
-            if mode_for_needs_interp_filter == SINGLE_MODE_GLOBALMV {
-                return Ok(ReconInterpolationFilter::EightTap);
-            }
-            let symbol = cdfs
-                .read_block_symbol_trace(TileCdfSelector::InterpFilter { ctx }, symbols)
-                .map_err(|_| symbol_read_error(tile_offset))?;
-            interp_filter_from_symbol(symbol.get(), tile_offset)
-        }
-        _ => Err(inter_cap!(
-            "inter_unsupported_interpolation_filter",
-            tile_offset,
-            "inter.interpolation_filter",
-            SPEC_MODE_INFO
-        )),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn trace_interp_filter_context(
-    kind: &'static str,
-    mi_row: usize,
-    mi_col: usize,
-    ref_frame0: i8,
-    ref_frame1_is_inter: bool,
-    ctx: usize,
-    neighbour_ctx: &super::find_mv_stack::BlockNeighbourContext,
-    symbols: &SymbolDecoder<'_>,
-) {
-    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_INTERP_FILTER_CTX") {
-        return;
-    }
-    eprintln!(
-        "interp_filter_ctx kind={kind} r={mi_row} c={mi_col} ref0={ref_frame0} ref1_is_inter={ref_frame1_is_inter} ctx={ctx} neighbour={neighbour_ctx:?} checkpoint={:?}",
-        symbols.checkpoint(),
-    );
-}
-
-pub(crate) fn interp_filter_no_neighbour_ctx(ref_frame1_is_inter: bool) -> usize {
-    INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE
-        + usize::from(ref_frame1_is_inter) * INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET
-}
-
-fn interp_filter_symbol(filter: ReconInterpolationFilter) -> u8 {
-    match filter {
-        ReconInterpolationFilter::EightTap => 0,
-        ReconInterpolationFilter::EightTapSmooth => 1,
-        ReconInterpolationFilter::EightTapSharp => 2,
-        ReconInterpolationFilter::Bilinear => 3,
-    }
-}
-
-fn interp_filter_from_symbol(
-    symbol: u8,
-    tile_offset: ByteOffset,
-) -> Result<ReconInterpolationFilter> {
-    match symbol {
-        0 => Ok(ReconInterpolationFilter::EightTap),
-        1 => Ok(ReconInterpolationFilter::EightTapSmooth),
-        2 => Ok(ReconInterpolationFilter::EightTapSharp),
-        3 => Ok(ReconInterpolationFilter::Bilinear),
-        _ => Err(inter_cap!(
-            "inter_invalid_interp_filter_symbol",
-            tile_offset,
-            "inter.interp_filter symbol out of range",
-            SPEC_MODE_INFO
-        )),
-    }
-}
-
-fn read_drl_idx(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    new_mv_context: usize,
-    max_drl_bits_minus_1: u32,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
-    let m = max_drl_bits_minus_1.saturating_add(1) as usize;
-    for idx in 0..m {
-        let bank = idx.min(2);
-        let drl_mode = cdfs
-            .read_block_symbol_trace(
-                TileCdfSelector::DrlMode {
-                    idx: bank,
-                    ctx: new_mv_context,
-                },
-                symbols,
-            )
-            .map_err(|_| symbol_read_error(tile_offset))?;
-        if drl_mode.get() == 0 {
-            return Ok(idx);
-        }
-    }
-    Ok(m)
-}
-
-fn read_use_amvd_syntax(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    enable_adaptive_mvd: bool,
-    single_mode: u8,
-    ctx: usize,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    if !enable_adaptive_mvd || single_mode != SINGLE_MODE_NEWMV {
-        return Ok(false);
-    }
-    let use_amvd = cdfs
-        .read_block_symbol_trace(TileCdfSelector::UseAmvd { index: 4, ctx }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?;
-    Ok(use_amvd.get() != 0)
-}
-
-fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
-    core.force_integer_mv
-        .or_else(|| core.inter.as_ref().and_then(|inter| inter.force_integer_mv))
-        .unwrap_or(false)
-}
-
-/// § 5.18.2 `FrameMvPrecision` as a Table 6.19 code.
-fn frame_mv_precision(core: &FrameHeaderCore, tile_offset: ByteOffset) -> Result<u8> {
-    if core.frame_is_intra == Some(true) {
-        return Ok(0);
-    }
-    Ok(inter_mv_read_config(core, tile_offset)?.precision())
-}
-
-/// § 5.18.2 `UsePerBlockMvPrecision`: `enable_flex_mvres` outside the
-/// `force_integer_mv` path (which pins `MV_PRECISION_ONE_PEL`).
-fn use_per_block_mv_precision(sequence: &SequenceHeader, core: &FrameHeaderCore) -> bool {
-    sequence
-        .inter
-        .as_ref()
-        .is_some_and(|inter| inter.enable_flex_mvres)
-        && !effective_force_integer_mv(core)
-}
-
-/// § 5.20.7.13 per-block MV precision: the `use_most_probable_precision` and
-/// `pb_mv_precision` reads plus the `adjustedPrecision` derivation.
-#[allow(clippy::too_many_arguments)]
-fn read_block_mv_precision_syntax(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    neighbour_ctx: &BlockNeighbourContext,
-    frame_precision: u8,
-    block_has_newmv: bool,
-    is_adaptive_mvd: bool,
-    tile_offset: ByteOffset,
-) -> Result<BlockPrecisionRecord> {
-    if is_adaptive_mvd
-        || !block_has_newmv
-        || !use_per_block_mv_precision(sequence, core)
-        || frame_precision < MV_PRECISION_HALF_PEL
-    {
-        return Ok(BlockPrecisionRecord::most_probable(frame_precision));
-    }
-    let use_most_probable = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::UseMostProbablePrecision {
-                ctx: neighbour_ctx.most_probable_precision_ctx(),
-            },
-            symbols,
-        )
-        .map_err(|_| symbol_read_error(tile_offset))?;
-    if use_most_probable.get() != 0 {
-        return Ok(BlockPrecisionRecord::most_probable(frame_precision));
-    }
-    let pb_mv_precision = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::PbMvPrecision {
-                ctx: neighbour_ctx.pb_mv_precision_ctx(frame_precision),
-                frame_ctx: usize::from(frame_precision - MV_PRECISION_HALF_PEL),
-            },
-            symbols,
-        )
-        .map_err(|_| symbol_read_error(tile_offset))?;
-    let adjusted = MV_PRECISION_ONE_PEL
-        .max(frame_precision - 2)
-        .checked_sub(pb_mv_precision.get())
-        .filter(|&adjusted| adjusted > 0)
-        .ok_or_else(|| symbol_read_error(tile_offset))?;
-    let mv_precision = if adjusted <= MV_PRECISION_TWO_PEL {
-        adjusted - 1
-    } else {
-        adjusted
-    };
-    Ok(BlockPrecisionRecord::explicit(mv_precision))
-}
-
-/// § 5.20.7.13 `assign_mv` predictor rounding: `lower_mv_precision` applies to
-/// NEWMV-family predictors below `MV_PRECISION_HALF_PEL`.
-fn lowered_pred_mv(precision: BlockPrecisionRecord, pred_mv: Mv) -> Mv {
-    if precision.mv_precision < MV_PRECISION_HALF_PEL {
-        lower_mv_precision(precision.mv_precision, pred_mv)
-    } else {
-        pred_mv
-    }
-}
-
 /// § 5.20.7.14 `read_motion_mode` SIMPLE-path prefix: the § 5.20.7.15
-/// `read_interintra_mode(0)` `inter_intra` flag, read for single-reference
-/// non-warp blocks of 8x8..=64x64 when the frame enables the INTERINTRA
-/// motion mode. Interintra prediction is beyond the current frontier, so a
-/// set flag defers; reading it keeps entropy sync for flag == 0.
+/// `read_interintra_mode(0)` `inter_intra` flag and tail, read for
+/// single-reference non-warp blocks of 8x8..=64x64 when the frame enables the
+/// INTERINTRA motion mode.
 /// `use_bawp` zeroes `motion_mode_allowed` (05:13818), so the caller skips
 /// this read for BAWP blocks; the other bail-outs (skip_mode, TIP/INTRA
 /// references, segmentation features) are frontier-rejected before this
 /// point.
-fn read_inter_intra_flag_syntax(
+fn read_inter_intra_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     core: &FrameHeaderCore,
@@ -2583,14 +2470,14 @@ fn read_inter_intra_flag_syntax(
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<WarpInterIntraSyntax> {
     let frame_enables_interintra = core
         .inter
         .as_ref()
         .and_then(|inter| inter.frame_enabled_motion_modes)
         .is_some_and(|modes| modes[splot_core::headers::frame::INTERINTRA]);
     if !frame_enables_interintra || b_size < BLOCK_8X8 || n4w.max(n4h) > CHUNK_64_N4 {
-        return Ok(());
+        return Ok(WarpInterIntraSyntax::default());
     }
     let bsize_group = *SIZE_GROUP_LOOKUP.get(b_size).ok_or_else(|| {
         inter_cap!(
@@ -2603,15 +2490,60 @@ fn read_inter_intra_flag_syntax(
     let inter_intra = cdfs
         .read_block_symbol_trace(TileCdfSelector::InterIntra { bsize_group }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?;
-    if inter_intra.get() != 0 {
+    if inter_intra.get() > 1 {
         return Err(inter_cap!(
-            "inter_interintra_unimplemented",
+            "inter_interintra_symbol",
             tile_offset,
-            "inter.inter_intra prediction",
+            "inter.inter_intra symbol out of range",
             "5.20.7.15"
         ));
     }
-    Ok(())
+    if inter_intra.get() == 0 {
+        return Ok(WarpInterIntraSyntax::default());
+    }
+
+    let mode = cdfs
+        .read_block_symbol_trace(TileCdfSelector::InterIntraMode { bsize_group }, symbols)
+        .map_err(|_| symbol_read_error(tile_offset))?
+        .get();
+    if mode >= INTERINTRA_MODES {
+        return Err(inter_cap!(
+            "inter_interintra_mode_symbol",
+            tile_offset,
+            "inter.interintra_mode symbol out of range",
+            "5.20.7.15"
+        ));
+    }
+
+    let use_wedge = if WEDGE_USED_BY_BSIZE.get(b_size).copied().unwrap_or(false) {
+        let symbol = cdfs
+            .read_block_symbol_trace(TileCdfSelector::WedgeInterIntra, symbols)
+            .map_err(|_| symbol_read_error(tile_offset))?
+            .get();
+        if symbol > 1 {
+            return Err(inter_cap!(
+                "inter_simple_interintra_wedge_symbol",
+                tile_offset,
+                "inter.use_wedge_interintra symbol out of range",
+                "5.20.7.15"
+            ));
+        }
+        symbol != 0
+    } else {
+        false
+    };
+    let wedge_index = if use_wedge {
+        Some(read_wedge_mode_syntax(cdfs, symbols, tile_offset)?)
+    } else {
+        None
+    };
+
+    Ok(WarpInterIntraSyntax {
+        enabled: true,
+        mode: Some(mode),
+        use_wedge,
+        wedge_index,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

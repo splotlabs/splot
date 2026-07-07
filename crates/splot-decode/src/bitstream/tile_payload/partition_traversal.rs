@@ -436,19 +436,38 @@ impl TilePartitionBounds {
             && r < self.mi_row_end
     }
 
+    fn avail_u_at(self, r: usize, c: usize) -> bool {
+        r.checked_sub(1)
+            .is_some_and(|candidate_r| self.is_inside(candidate_r, c))
+    }
+
+    fn avail_l_at(self, r: usize, c: usize) -> bool {
+        c.checked_sub(1)
+            .is_some_and(|candidate_c| self.is_inside(r, candidate_c))
+    }
+
     fn avail_u(self, call: TilePartitionCall) -> bool {
-        match call.r.checked_sub(1) {
-            Some(candidate_r) => self.is_inside(candidate_r, call.c),
-            None => false,
-        }
+        self.avail_u_at(call.r, call.c)
     }
 
     fn avail_l(self, call: TilePartitionCall) -> bool {
-        match call.c.checked_sub(1) {
-            Some(candidate_c) => self.is_inside(call.r, candidate_c),
-            None => false,
-        }
+        self.avail_l_at(call.r, call.c)
     }
+}
+
+fn is_cfl_context_for_chroma_ref(
+    uv_cfls: &TileUvCflState,
+    tile_bounds: TilePartitionBounds,
+    chroma_ref: ChromaRefGeometry,
+) -> IsCflContext {
+    let row = chroma_ref.row();
+    let col = chroma_ref.col();
+    IsCflContext::new(uv_cfls.is_cfl_ctx(
+        row,
+        col,
+        tile_bounds.avail_u_at(row, col),
+        tile_bounds.avail_l_at(row, col),
+    ))
 }
 
 /// One consumed partition decision.
@@ -1498,14 +1517,9 @@ where
                         &symbols,
                     );
                     let tree_type = frontier.tree_type;
-                    let avail_u_chroma = tile_bounds.avail_u(call);
-                    let avail_l_chroma = tile_bounds.avail_l(call);
-                    let is_cfl_ctx = IsCflContext::new(uv_cfls.is_cfl_ctx(
-                        call.r,
-                        call.c,
-                        avail_u_chroma,
-                        avail_l_chroma,
-                    ));
+                    let chroma_ref = frontier.chroma_ref_geometry();
+                    let is_cfl_ctx =
+                        is_cfl_context_for_chroma_ref(uv_cfls, tile_bounds, chroma_ref);
                     let leaf_mode = on_leaf(
                         work_unit,
                         &mut symbols,
@@ -1632,8 +1646,8 @@ where
                             plane,
                             sub_block_mi_row,
                             sub_block_mi_col,
-                            block_n4w >> sub_x,
-                            block_n4h >> sub_y,
+                            (block_n4w >> sub_x).max(1),
+                            (block_n4h >> sub_y).max(1),
                         );
                     }
                     if tree_type != PartitionTreeType::ChromaPart {

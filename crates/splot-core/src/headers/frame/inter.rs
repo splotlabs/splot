@@ -280,6 +280,8 @@ pub struct InterControl {
     pub tmvp_sample_step_minus_1: Option<bool>,
     /// `TipFrameMode` (mirror :4743-4845), when derived.
     pub tip_frame_mode: Option<TipFrameMode>,
+    /// `opfl_refine_type` from `frame_opfl_refine_type()` (§ 5.18.3.2), when derived.
+    pub opfl_refine_type: Option<u32>,
     /// `max_drl_bits_minus_1` (mirror :4863-4881), when read or inferred.
     pub max_drl_bits_minus_1: Option<u32>,
     /// `FrameMvPrecision` (mirror :4885-4917), when derived.
@@ -740,6 +742,7 @@ fn parse_inter_reference_region(
         } else {
             read_frame_opfl_refine_type(reader, seq.enable_opfl_refine)?
         };
+        control.opfl_refine_type = Some(opfl_refine_type);
         if tip_frame_mode != TipFrameMode::Disabled && seq.enable_tip_hole_fill {
             reader.read_flag()?;
         }
@@ -761,7 +764,8 @@ fn parse_inter_reference_region(
     } else {
         control.tip_frame_mode = Some(TipFrameMode::Disabled);
         if !bru_inactive && !ctx.is_bridge {
-            read_frame_opfl_refine_type(reader, seq.enable_opfl_refine)?;
+            control.opfl_refine_type =
+                Some(read_frame_opfl_refine_type(reader, seq.enable_opfl_refine)?);
         }
     }
 
@@ -1178,6 +1182,7 @@ mod tests {
         let rs = FrameReferenceStateView::unknown();
         let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::Disabled));
+        assert_eq!(control.opfl_refine_type, Some(REFINE_SWITCHABLE));
         assert_eq!(control.allow_intrabc, Some(false));
         assert_eq!(control.mv_precision, Some(MvPrecision::HalfPel));
         assert_eq!(
@@ -1202,6 +1207,7 @@ mod tests {
         let rs = FrameReferenceStateView::unknown();
         let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::Disabled));
+        assert_eq!(control.opfl_refine_type, Some(REFINE_NONE));
         assert_eq!(control.allow_intrabc, Some(false));
         assert_eq!(control.mv_precision, Some(MvPrecision::HalfPel));
         assert_eq!(
@@ -1725,6 +1731,7 @@ mod tests {
         let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
 
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsOutput));
+        assert_eq!(control.opfl_refine_type, Some(REFINE_ALL));
         assert_eq!(control.stop, Some(InterStop::PoisonedReferenceState));
         assert_eq!(reader.consumed_bits(), 21);
     }

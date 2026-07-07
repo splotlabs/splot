@@ -345,11 +345,15 @@ impl BlockCtx {
         let sb_mask = block_decoded.sb_size4().saturating_sub(1);
         let x4 = (block.col4 & sb_mask) >> sub_x;
         let y4 = (block.row4 & sb_mask) >> sub_y;
+        let num_above_right =
+            block_decoded.count_top_right_avail(plane.index(), x4, y4, plane_block.width4());
+        let num_below_left =
+            block_decoded.count_bottom_left_avail(plane.index(), x4, y4, plane_block.height4());
         NeighbourAvailability::new(
             block.row4 > self.tile_mi_row_start,
             block.col4 > self.tile_mi_col_start,
-            block_decoded.count_top_right_avail(plane.index(), x4, y4, plane_block.width4()),
-            block_decoded.count_bottom_left_avail(plane.index(), x4, y4, plane_block.height4()),
+            num_above_right,
+            num_below_left,
         )
     }
 

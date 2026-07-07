@@ -15,10 +15,10 @@ use splot_core::tables::cdf::{
     DEFAULT_COEFF_BASE_UV_CDF, DEFAULT_COEFF_BR_CDF, DEFAULT_COEFF_BR_IDTX_CDF,
     DEFAULT_COEFF_BR_LF_CDF, DEFAULT_COEFF_BR_UV_CDF, DEFAULT_COMP_GROUP_IDX_CDF,
     DEFAULT_COMP_MODE_CDF, DEFAULT_COMP_REF0_CDF, DEFAULT_COMP_REF1_CDF,
-    DEFAULT_COMPOUND_MODE_NON_JOINT_CDF, DEFAULT_CWP_IDX_CDF, DEFAULT_DC_SIGN_CDF,
-    DEFAULT_DELTA_Q_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
-    DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
-    DEFAULT_EOB_PT_1024_CDF, DEFAULT_FSC_MODE_CDF, DEFAULT_IDTX_SIGN_CDF,
+    DEFAULT_COMPOUND_MODE_NON_JOINT_CDF, DEFAULT_COMPOUND_TYPE_CDF, DEFAULT_CWP_IDX_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_DELTA_Q_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
+    DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF,
+    DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_FSC_MODE_CDF, DEFAULT_IDTX_SIGN_CDF,
     DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_INTRA_TX_TYPE_SET2_CDF,
     DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_MORPH_PRED_CDF,
     DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
@@ -191,6 +191,7 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
         frame.rows().compound_mode_non_joint(),
         &DEFAULT_COMPOUND_MODE_NON_JOINT_CDF
     );
+    assert_eq!(frame.rows().compound_type(), &DEFAULT_COMPOUND_TYPE_CDF);
     assert_eq!(frame.rows().comp_group_idx(), &DEFAULT_COMP_GROUP_IDX_CDF);
     assert_eq!(frame.rows().cwp_idx(), &DEFAULT_CWP_IDX_CDF);
     assert_eq!(frame.rows().comp_ref0(), &DEFAULT_COMP_REF0_CDF);
@@ -341,6 +342,10 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
             "compound_mode_non_joint ctx {ctx}"
         );
     }
+    assert_eq!(
+        tile.row(TileCdfSelector::CompoundType).unwrap(),
+        DEFAULT_COMPOUND_TYPE_CDF.as_slice()
+    );
     for (ctx, expected) in DEFAULT_COMP_GROUP_IDX_CDF.iter().enumerate() {
         assert_eq!(
             tile.row(TileCdfSelector::CompGroupIdx { ctx }).unwrap(),

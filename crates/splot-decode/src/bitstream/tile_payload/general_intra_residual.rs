@@ -14,7 +14,8 @@ use splot_core::tables::conversion::{
 use splot_recon::{
     BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, QM_OFFSET, QmDequant,
     QmFrameLevels, QuantizerDeltas, ReconError, ReconSample, SecondaryInverseTransform,
-    ac_quantizer, dc_quantizer, reconstruct_transform_block_residual_with_secondary, tx_size_index,
+    ac_quantizer, dc_quantizer, reconstruct_transform_block_residual_with_secondary, tx_class,
+    tx_size_index,
 };
 
 use super::cdf::TileCdfSelector;
@@ -610,6 +611,7 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
             false,
             uv_mode,
             angle_delta_uv,
+            DCT_DCT,
             false,
             fsc_mode,
             fsc_mode,
@@ -954,6 +956,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     eob_u_nonzero: bool,
     uv_mode: usize,
     angle_delta_uv: i32,
+    chroma_inter_tx_type: usize,
     is_inter: bool,
     fsc_mode: bool,
     txb_skip_fsc_mode: bool,
@@ -1078,6 +1081,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             coeff_cdf_q_ctx,
             uv_mode,
             angle_delta_uv,
+            chroma_inter_tx_type,
             is_inter,
             fsc_mode,
             luma,
@@ -1099,7 +1103,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             uv_mode,
             angle_delta_uv,
             luma_tx_type: DCT_DCT,
-            chroma_inter_tx_type: DCT_DCT,
+            chroma_inter_tx_type,
         },
     });
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
@@ -1127,6 +1131,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     coeff_cdf_q_ctx: usize,
     uv_mode: usize,
     angle_delta_uv: i32,
+    chroma_inter_tx_type: usize,
     is_inter: bool,
     fsc_mode: bool,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
@@ -1189,6 +1194,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         geometry.plane,
         uv_mode,
         angle_delta_uv,
+        chroma_inter_tx_type,
         lossless,
         metadata,
     );
@@ -1248,6 +1254,7 @@ fn staged_transform_tool_lossless_base_config(
     plane: usize,
     uv_mode: usize,
     angle_delta_uv: i32,
+    chroma_inter_tx_type: usize,
     lossless: bool,
     metadata: TransformToolResidualMetadata,
 ) -> CoeffOrdinaryBranchLosslessBaseConfig {
@@ -1267,7 +1274,7 @@ fn staged_transform_tool_lossless_base_config(
         uv_mode,
         angle_delta_uv,
         luma_tx_type: metadata.luma_tx_type,
-        chroma_inter_tx_type: DCT_DCT,
+        chroma_inter_tx_type,
         parity_hiding,
         use_tcq,
     }
@@ -1415,6 +1422,7 @@ fn ensure_transform_tool_residual_handoff(
             symbols,
             input.luma_transform_type_context,
             tx_size,
+            metadata.luma_tx_type,
             input.active_intra_ist_policy,
         )?;
     }
@@ -1437,6 +1445,7 @@ fn read_intra_ist_sec_tx(
     symbols: &mut SymbolDecoder<'_>,
     luma_context: Option<LumaTransformTypeContext>,
     tx_size: usize,
+    luma_tx_type: usize,
     policy: ActiveIntraIstResidualPolicy,
 ) -> Result<Option<IntraIstSyntax>, GeneralIntraResidualError> {
     let luma_context = require_luma_context(
@@ -1462,7 +1471,7 @@ fn read_intra_ist_sec_tx(
         Some(read_transform_symbol(
             cdfs,
             symbols,
-            TileCdfSelector::MostProbableStxSet,
+            intra_ist_most_probable_stx_selector(tx_size, luma_tx_type)?,
         )?)
     };
     let syntax = IntraIstSyntax {
@@ -1494,6 +1503,18 @@ fn inter_ist_can_read_sec_tx(
 
 const fn intra_ist_can_read_sec_tx_type(luma_tx_type: usize) -> bool {
     matches!(luma_tx_type, DCT_DCT | ADST_ADST)
+}
+
+fn intra_ist_most_probable_stx_selector(
+    tx_size: usize,
+    luma_tx_type: usize,
+) -> Result<TileCdfSelector, GeneralIntraResidualError> {
+    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
+    if luma_tx_type == ADST_ADST && tx_width >= 8 && tx_height >= 8 {
+        Ok(TileCdfSelector::MostProbableStxSetAdst)
+    } else {
+        Ok(TileCdfSelector::MostProbableStxSet)
+    }
 }
 
 fn ist_eob_limit(tx_size: usize, tx_type: usize) -> Result<usize, GeneralIntraResidualError> {
@@ -2333,6 +2354,7 @@ fn intra_secondary_inverse_transform(
         n,
         kernel,
         sec_tx_type: ist.sec_tx_type,
+        primary_scan_class: tx_class(block.plane_tx_type),
         transpose,
         bit_depth,
     }))

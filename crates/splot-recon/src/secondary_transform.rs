@@ -7,9 +7,9 @@
 //! ([`07-decoding-process.md`](../../../docs/spec/av2/1.0.0/07-decoding-process.md)
 //! `#s-7-15-3`) that runs over the dequantized coefficients before the § 7.15.4
 //! 2D inverse transform when `sec_tx_type != 0`. It gathers the first `n`
-//! coefficients in § 5.20.7.30 2D scan order, multiplies them by the § 9.7 IST
-//! kernel, and scatters the `Round2Signed` / `Clip3` results back into the
-//! top-left scan sub-block of `Dequant`.
+//! coefficients in the caller-resolved primary scan order, multiplies them by
+//! the § 9.7 IST kernel, and scatters the `Round2Signed` / `Clip3` results back
+//! into the top-left scan sub-block of `Dequant`.
 //!
 //! Feature tracking: `RECON-SECONDARY-INVERSE-TRANSFORM`.
 //!
@@ -72,8 +72,9 @@ const STX_SCAN_ORDER_8X8: [usize; 64] = [
 /// the output width are derived internally. `n` is the § 7.15.3 input
 /// coefficient count (`IST_4X4_HEIGHT`, `IST_8X8_HEIGHT`, or the reduced
 /// `IST_8X8_HEIGHT_RED`); `kernel` and `sec_tx_type` (`1..=3`) select the § 9.7
-/// IST kernel; `transpose` chooses the § 7.15.3 output layout; `bit_depth` bounds
-/// the `Clip3`.
+/// IST kernel; `primary_scan_class` aligns the IST input support with the
+/// primary transform scan; `transpose` chooses the § 7.15.3 output layout;
+/// `bit_depth` bounds the `Clip3`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SecondaryInverseTransform {
     /// Operating width `Min(32, Tx_Width[txSz])` (a power of two in `4..=32`).
@@ -86,6 +87,8 @@ pub struct SecondaryInverseTransform {
     pub kernel: usize,
     /// § 7.15.3 secondary transform type (`sec_tx_type`, `1..=3`).
     pub sec_tx_type: usize,
+    /// AVM-compatible input scan class for the primary transform.
+    pub primary_scan_class: TransformClass,
     /// § 7.15.3 output transpose flag.
     pub transpose: bool,
     /// Active decoded bit depth (bounds the `Clip3`).
@@ -98,7 +101,8 @@ pub struct SecondaryInverseTransform {
 /// The process gathers the first `params.n` coefficients of `dequant` in
 /// § 5.20.7.30 2D scan order (zeroing those positions), multiplies the gathered
 /// vector by the § 9.7 IST kernel (`Ist_4x4_Kernel` or `Ist_8x8_Kernel` selected
-/// by `large = w >= 8 && h >= 8`), applies `Round2Signed(t, 7)` and the
+/// by `large = w >= 8 && h >= 8`), clears the dequantized coefficient block as
+/// AVM does before writeback, applies `Round2Signed(t, 7)` and the
 /// `Clip3(±(1 << (BitDepth + 7)))` bound, and scatters the results into the
 /// top-left scan sub-block via `Stx_Scan_Order_4x4` / `Stx_Scan_Order_8x8` (and,
 /// for the large case, `Stx_Scan_Map`), honoring `transpose`.
@@ -124,6 +128,7 @@ pub fn secondary_inverse_transform(
         n,
         kernel,
         sec_tx_type,
+        primary_scan_class,
         transpose,
         bit_depth,
     } = *params;
@@ -156,13 +161,13 @@ pub fn secondary_inverse_transform(
 
     let mut scan = [0u16; MAX_DIM * MAX_DIM];
     let scan = &mut scan[..expected];
-    coefficient_scan_order(w, h, TransformClass::TwoD, scan)?;
+    coefficient_scan_order(w, h, primary_scan_class, scan)?;
     let mut coefs = [0i64; IST_8X8_HEIGHT];
     for (slot, &pos) in coefs[..n].iter_mut().zip(scan.iter()) {
         let index = pos as usize;
         *slot = i64::from(dequant[index]);
-        dequant[index] = 0;
     }
+    dequant.fill(0);
 
     let (scan_bwl, scan_w) = if large {
         (3u32, 8usize)
@@ -226,6 +231,7 @@ mod tests {
             n,
             kernel,
             sec_tx_type: sec,
+            primary_scan_class: TransformClass::TwoD,
             transpose,
             bit_depth: BitDepth::Eight,
         }
@@ -241,7 +247,7 @@ mod tests {
         };
         let mut scan = [0u16; MAX_DIM * MAX_DIM];
         let scan = &mut scan[..p.w * p.h];
-        coefficient_scan_order(p.w, p.h, TransformClass::TwoD, scan).unwrap();
+        coefficient_scan_order(p.w, p.h, p.primary_scan_class, scan).unwrap();
         let coefs: Vec<i64> = scan[..p.n]
             .iter()
             .map(|&pos| i64::from(dequant[pos as usize]))
@@ -249,6 +255,7 @@ mod tests {
         for &pos in &scan[..p.n] {
             dequant[pos as usize] = 0;
         }
+        dequant.fill(0);
         let stx = p.sec_tx_type - 1;
         let bound = 1i64 << (u32::from(p.bit_depth.bits()) + 7);
         for i in 0..kernel_width {
@@ -304,6 +311,31 @@ mod tests {
         let mut transposed = base;
         secondary_inverse_transform(&mut transposed, &p_transposed).unwrap();
         assert_ne!(plain, transposed);
+    }
+
+    #[test]
+    fn input_scan_class_selects_gather_order() {
+        let base: [i32; 16] = core::array::from_fn(|i| (i as i32 + 1) * 3);
+        let two_d = params(4, 4, IST_4X4_HEIGHT, 2, 1, false);
+        let mut horizontal = two_d;
+        horizontal.primary_scan_class = TransformClass::Horizontal;
+
+        let mut produced_two_d = base;
+        secondary_inverse_transform(&mut produced_two_d, &two_d).unwrap();
+        let mut produced_horizontal = base;
+        secondary_inverse_transform(&mut produced_horizontal, &horizontal).unwrap();
+
+        assert_ne!(produced_two_d, produced_horizontal);
+        assert_matches_reference(base, &horizontal);
+    }
+
+    #[test]
+    fn secondary_transform_clears_coefficients_outside_the_support_region() {
+        let mut dequant = [0i32; 16];
+        dequant[15] = 4096;
+        secondary_inverse_transform(&mut dequant, &params(4, 4, IST_4X4_HEIGHT, 0, 1, false))
+            .unwrap();
+        assert_eq!(dequant[15], 0);
     }
 
     #[test]

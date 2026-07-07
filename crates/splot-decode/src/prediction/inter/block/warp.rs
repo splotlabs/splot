@@ -616,41 +616,71 @@ fn read_warp_ref_idx(
     Ok(ref_warp_idx)
 }
 
+const WEDGE_ANGLE_DIST_TO_INDEX: [[i8; 4]; 20] = [
+    [-1, 0, 1, 2],
+    [3, 4, 5, 6],
+    [7, 8, 9, 10],
+    [11, 12, 13, 14],
+    [15, 16, 17, 18],
+    [-1, 19, 20, 21],
+    [22, 23, 24, 25],
+    [26, 27, 28, 29],
+    [30, 31, 32, 33],
+    [34, 35, 36, 37],
+    [-1, 38, 39, 40],
+    [-1, 41, 42, 43],
+    [-1, 44, 45, 46],
+    [-1, 47, 48, 49],
+    [-1, 50, 51, 52],
+    [-1, 53, 54, 55],
+    [-1, 56, 57, 58],
+    [-1, 59, 60, 61],
+    [-1, 62, 63, 64],
+    [-1, 65, 66, 67],
+];
+
 /// Maps a parsed § 5.20.7.15 interintra read onto the supported prediction
-/// subset: smooth-mask II_DC/II_V/II_H. Wedge interintra (§ 7.13.3.27 tables)
-/// and II_SMOOTH stay fail-closed defers after the bit-exact parse.
+/// subset: II_DC/II_V/II_H with either smooth or wedge blending. II_SMOOTH stays
+/// a fail-closed defer after the bit-exact parse.
 pub(crate) fn interintra_prediction_mode(
     syntax: WarpInterIntraSyntax,
     tile_offset: ByteOffset,
-) -> Result<Option<InterIntraMode>> {
+) -> Result<Option<InterIntraPrediction>> {
     if !syntax.enabled {
         return Ok(None);
     }
-    if syntax.use_wedge {
-        return Err(inter_cap!(
-            "inter_wedge_interintra_prediction_unimplemented",
-            tile_offset,
-            "inter.interintra.wedge_mask",
-            "7.13.3.27"
-        ));
-    }
-    match syntax.mode {
-        Some(0) => Ok(Some(InterIntraMode::Dc)),
-        Some(1) => Ok(Some(InterIntraMode::Vertical)),
-        Some(2) => Ok(Some(InterIntraMode::Horizontal)),
+    let mode = match syntax.mode {
+        Some(0) => InterIntraMode::Dc,
+        Some(1) => InterIntraMode::Vertical,
+        Some(2) => InterIntraMode::Horizontal,
         Some(3) => Err(inter_cap!(
             "inter_warp_interintra_smooth_unimplemented",
             tile_offset,
             "inter.interintra.ii_smooth",
             "7.13.3.29"
-        )),
+        ))?,
         _ => Err(inter_cap!(
             "inter_interintra_mode_missing",
             tile_offset,
             "inter.interintra.mode",
             "5.20.7.15"
-        )),
-    }
+        ))?,
+    };
+    Ok(Some(if syntax.use_wedge {
+        InterIntraPrediction::WedgeMask {
+            mode,
+            wedge_index: syntax.wedge_index.ok_or_else(|| {
+                inter_cap!(
+                    "inter_wedge_interintra_index_missing",
+                    tile_offset,
+                    "inter.interintra.wedge_index",
+                    "5.20.7.15"
+                )
+            })?,
+        }
+    } else {
+        InterIntraPrediction::SmoothMask { mode }
+    }))
 }
 
 pub(crate) fn read_warp_inter_intra_syntax(
@@ -708,7 +738,7 @@ pub(crate) fn read_warp_inter_intra_syntax(
             .get();
         if symbol > 1 {
             return Err(inter_cap!(
-                "inter_wedge_interintra_symbol",
+                "inter_warp_interintra_wedge_symbol",
                 tile_offset,
                 "inter.use_wedge_interintra symbol out of range",
                 SPEC_MODE_INFO
@@ -800,7 +830,20 @@ pub(crate) fn read_wedge_mode_syntax(
         }
         symbol
     };
-    Ok(angle.saturating_mul(NUM_WEDGE_DIST).saturating_add(dist))
+    let index = WEDGE_ANGLE_DIST_TO_INDEX
+        .get(usize::from(angle))
+        .and_then(|row| row.get(usize::from(dist)))
+        .copied()
+        .filter(|&index| index >= 0)
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_wedge_mode_index",
+                tile_offset,
+                "inter.wedge_angle_dist index out of range",
+                SPEC_MODE_INFO
+            )
+        })?;
+    u8::try_from(index).map_err(|_| warp_model_error(tile_offset))
 }
 
 #[allow(clippy::too_many_arguments)]

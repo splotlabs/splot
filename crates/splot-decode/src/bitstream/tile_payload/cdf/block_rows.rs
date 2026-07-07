@@ -7,11 +7,12 @@ use splot_core::tables::cdf::{
     DEFAULT_CCTX_TYPE_CDF, DEFAULT_CFL_ALPHA_CDF, DEFAULT_CFL_INDEX_CDF, DEFAULT_CFL_MH_DIR_CDF,
     DEFAULT_CFL_MHCCP_CDF, DEFAULT_CFL_SIGN_CDF, DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_COMP_MODE_CDF,
     DEFAULT_COMP_REF0_CDF, DEFAULT_COMP_REF1_CDF, DEFAULT_COMPOUND_MODE_NON_JOINT_CDF,
-    DEFAULT_CWP_IDX_CDF, DEFAULT_DC_SIGN_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF,
-    DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF,
-    DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF,
-    DEFAULT_EXPLICIT_BAWP_CDF, DEFAULT_EXPLICIT_BAWP_SCALE_CDF, DEFAULT_IDENTITY_ROW_Y_CDF,
-    DEFAULT_INTER_INTRA_CDF, DEFAULT_INTER_INTRA_MODE_CDF, DEFAULT_INTER_TX_TYPE_INDEX_SET1_CDF,
+    DEFAULT_COMPOUND_MODE_SAME_REFS_CDF, DEFAULT_COMPOUND_TYPE_CDF, DEFAULT_CWP_IDX_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
+    DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF,
+    DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_EXPLICIT_BAWP_CDF,
+    DEFAULT_EXPLICIT_BAWP_SCALE_CDF, DEFAULT_IDENTITY_ROW_Y_CDF, DEFAULT_INTER_INTRA_CDF,
+    DEFAULT_INTER_INTRA_MODE_CDF, DEFAULT_INTER_TX_TYPE_INDEX_SET1_CDF,
     DEFAULT_INTER_TX_TYPE_INDEX_SET2_CDF, DEFAULT_INTER_TX_TYPE_LONG_CDF,
     DEFAULT_INTER_TX_TYPE_OFFSET_SET1_CDF, DEFAULT_INTER_TX_TYPE_OFFSET_SET2_CDF,
     DEFAULT_INTER_TX_TYPE_SET1_CDF, DEFAULT_INTER_TX_TYPE_SET2_CDF, DEFAULT_INTER_TX_TYPE_SET3_CDF,
@@ -91,6 +92,7 @@ const COMP_MODE_CONTEXTS: usize = 5;
 const IS_JOINT_CONTEXTS: usize = 2;
 const COMPOUND_MODE_CONTEXTS: usize = 5;
 const COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN: usize = 6;
+const COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN: usize = 5;
 const COMP_GROUP_IDX_CONTEXTS: usize = 12;
 const CWP_IDX_CONTEXTS: usize = 4;
 const COMP_REF1_BIT_TYPES: usize = 2;
@@ -176,6 +178,9 @@ pub(crate) type CompModeCdfRows = [[i32; CDF_ROW_LEN]; COMP_MODE_CONTEXTS];
 pub(crate) type IsJointCdfRows = [[i32; CDF_ROW_LEN]; IS_JOINT_CONTEXTS];
 pub(crate) type CompoundModeNonJointCdfRows =
     [[i32; COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN]; COMPOUND_MODE_CONTEXTS];
+pub(crate) type CompoundModeSameRefsCdfRows =
+    [[i32; COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN]; COMPOUND_MODE_CONTEXTS];
+pub(crate) type CompoundTypeCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type CompGroupIdxCdfRows = [[i32; CDF_ROW_LEN]; COMP_GROUP_IDX_CONTEXTS];
 pub(crate) type CwpIdxCdfRows = [[i32; CDF_ROW_LEN]; CWP_IDX_CONTEXTS];
 pub(crate) type CompRef0CdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
@@ -372,6 +377,10 @@ pub(crate) enum BlockCdfSelector {
     CompoundModeNonJoint {
         ctx: usize,
     },
+    CompoundModeSameRefs {
+        ctx: usize,
+    },
+    CompoundType,
     CompGroupIdx {
         ctx: usize,
     },
@@ -530,6 +539,8 @@ pub(crate) struct BlockCdfRows {
     pub(crate) comp_mode: CompModeCdfRows,
     pub(crate) is_joint: IsJointCdfRows,
     pub(crate) compound_mode_non_joint: CompoundModeNonJointCdfRows,
+    pub(crate) compound_mode_same_refs: CompoundModeSameRefsCdfRows,
+    pub(crate) compound_type: CompoundTypeCdfRow,
     pub(crate) comp_group_idx: CompGroupIdxCdfRows,
     pub(crate) cwp_idx: CwpIdxCdfRows,
     pub(crate) comp_ref0: CompRef0CdfRows,
@@ -879,6 +890,15 @@ macro_rules! block_cdf_row {
                 $get,
                 $as_slice
             ),
+            BlockCdfSelector::CompoundModeSameRefs { ctx } => block_row_slice!(
+                $self.compound_mode_same_refs,
+                ctx,
+                "ctx",
+                TileCdfArray::CompoundModeSameRefs,
+                $get,
+                $as_slice
+            ),
+            BlockCdfSelector::CompoundType => Ok($self.compound_type.$as_slice()),
             BlockCdfSelector::CompGroupIdx { ctx } => block_row_slice!(
                 $self.comp_group_idx,
                 ctx,
@@ -1251,6 +1271,8 @@ macro_rules! block_cdf_count_rows {
         $rows!(comp_mode);
         $rows!(is_joint);
         $rows!(compound_mode_non_joint);
+        $rows!(compound_mode_same_refs);
+        $row!(compound_type);
         $rows!(comp_group_idx);
         $rows!(cwp_idx);
         $rows!(comp_ref0.flatten());
@@ -1350,6 +1372,8 @@ impl BlockCdfRows {
             comp_mode: DEFAULT_COMP_MODE_CDF,
             is_joint: DEFAULT_IS_JOINT_CDF,
             compound_mode_non_joint: DEFAULT_COMPOUND_MODE_NON_JOINT_CDF,
+            compound_mode_same_refs: DEFAULT_COMPOUND_MODE_SAME_REFS_CDF,
+            compound_type: DEFAULT_COMPOUND_TYPE_CDF,
             comp_group_idx: DEFAULT_COMP_GROUP_IDX_CDF,
             cwp_idx: DEFAULT_CWP_IDX_CDF,
             comp_ref0: DEFAULT_COMP_REF0_CDF,
@@ -1584,6 +1608,11 @@ impl BlockCdfRows {
     #[cfg(test)]
     pub(crate) const fn compound_mode_non_joint(&self) -> &CompoundModeNonJointCdfRows {
         &self.compound_mode_non_joint
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn compound_type(&self) -> &CompoundTypeCdfRow {
+        &self.compound_type
     }
 
     #[cfg(test)]
