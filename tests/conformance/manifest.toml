@@ -111,6 +111,11 @@ description = "Two-superblock 8-bit 4:2:0 intra key frame (IVF, 128x64) derived 
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-lossless-intra-64x64.ivf"
+description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned flat-128 input with broad decode tools disabled. The stream carries a § 5.18.2 lossless segment whose intra non-FSC residual path derives 4x4 transform units (§ 5.20.6.1, § 5.20.7.27) and decodes byte-exact to the avmdec raw SHA-256 cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-mrl-largest-intra-128x128.ivf"
 description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with multi-reference-line (MRL) intra enabled and an active MRL directional block; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_unsupported_mrl_mode."
 expect = "clean"

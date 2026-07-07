@@ -51,6 +51,9 @@ const QMSEG_FIXTURE: &[u8] =
 const SEQDELTAQ_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-seqdeltaq-intra-128x64.ivf");
 
+const LOSSLESS_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-lossless-intra-64x64.ivf");
+
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
@@ -321,6 +324,19 @@ fn seqdeltaq_intra_frame_decodes_to_oracle() {
     assert_hash(
         &frame,
         "3febac78b0b0e4c27e1a080073d7f4ecf51b5a6d689f495169354834d4659c11",
+    );
+}
+
+#[test]
+fn lossless_intra_frame_decodes_to_oracle() {
+    let frame = decode_eight(LOSSLESS_FIXTURE);
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_chroma_size(&frame, 32, 32);
+    assert_all_samples_eq(frame.y().samples(), 128, "Y");
+    assert_chroma_eq(&frame, 128, 128);
+    assert_hash(
+        &frame,
+        "cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1",
     );
 }
 

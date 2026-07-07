@@ -22,7 +22,7 @@ impl ChromaSampling {
         }
     }
 
-    const fn subsampling(self, plane: PlaneId) -> (u32, u32) {
+    pub(crate) const fn subsampling(self, plane: PlaneId) -> (u32, u32) {
         match (self, plane) {
             (_, PlaneId::Y) | (Self::Yuv444, PlaneId::U | PlaneId::V) => (0, 0),
             (Self::Monochrome | Self::Yuv420, PlaneId::U | PlaneId::V) => (1, 1),

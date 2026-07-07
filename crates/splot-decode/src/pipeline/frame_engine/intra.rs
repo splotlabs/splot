@@ -48,18 +48,6 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     Option<crate::filters::ccso::CcsoUnitGrid>,
 )> {
     let offset = frame_envelope.offset;
-    if core
-        .lossless_info
-        .as_ref()
-        .is_some_and(|lossless| lossless.has_lossless_segment)
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_lossless_segment_unimplemented",
-            Some(offset),
-            missing_capability_message!("intra.segmentation", lossless = "segment"),
-            "5.18.2",
-        ));
-    }
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_at(
             "frame_engine_intra_missing_frame_size",
@@ -89,6 +77,19 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         .lossless_info
         .as_ref()
         .is_some_and(|lossless| lossless.allow_tcq);
+    if core
+        .lossless_info
+        .as_ref()
+        .is_some_and(|lossless| lossless.has_lossless_segment && !lossless.coded_lossless)
+        && mixed_lossless_filters_active(core)
+    {
+        return Err(general_intra_unsupported(
+            "general_intra_mixed_lossless_filters_unimplemented",
+            Some(offset),
+            missing_capability_message!("filters.lossless_segments", mode = "mixed"),
+            "7.17",
+        ));
+    }
     if core
         .gdf_params
         .as_ref()
@@ -224,6 +225,26 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     Ok((frame, frame_cdfs, ccso_grid))
 }
 
+fn mixed_lossless_filters_active(core: &FrameHeaderCore) -> bool {
+    core.deblocking_filter_params
+        .as_ref()
+        .is_some_and(|filter| filter.apply_deblocking_filter.iter().any(|active| *active))
+        || core
+            .gdf_params
+            .as_ref()
+            .is_some_and(|gdf| gdf.gdf_frame_enable)
+        || core
+            .cdef_params
+            .as_ref()
+            .is_some_and(|cdef| cdef.cdef_frame_enable)
+        || core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr)
+        || core.lr_params_partial.as_ref().is_some_and(|lr| lr.uses_lr)
+        || core
+            .ccso_params
+            .as_ref()
+            .is_some_and(|ccso| ccso.planes.iter().any(|plane| plane.ccso_planes))
+}
+
 /// The frame's § 7.14.4 built-in quantization-matrix levels for the general-intra
 /// dequant, or `None` when `using_qmatrix == 0`. `levels_gt8` is `qm_y/u/v[0]` (used
 /// when `tw > 8 || th > 8`); `levels_le8` is `SegQMLevel[segment_id][Y/U/V]`.
@@ -320,6 +341,25 @@ mod tests {
         assert_eq!(
             unsupported_reason(error),
             "general_intra_gdf_per_block_unimplemented"
+        );
+    }
+
+    #[test]
+    fn intra_gate_rejects_mixed_lossless_active_deblock() {
+        let error = decode_intra_fixture_with_core(|core| {
+            let lossless = core.lossless_info.as_mut().expect("lossless info");
+            lossless.has_lossless_segment = true;
+            lossless.coded_lossless = false;
+            let deblock = core
+                .deblocking_filter_params
+                .as_mut()
+                .expect("deblock params");
+            deblock.apply_deblocking_filter = [true, false, false, false];
+        })
+        .expect_err("mutated mixed-lossless filtered fixture must fail closed");
+        assert_eq!(
+            unsupported_reason(error),
+            "general_intra_mixed_lossless_filters_unimplemented"
         );
     }
 

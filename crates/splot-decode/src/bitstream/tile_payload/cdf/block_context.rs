@@ -62,6 +62,14 @@ impl IntraYMode {
         MODE_TO_ANGLE.get(self.value()).copied().flatten()
     }
 
+    pub(crate) const fn dpcm_vertical() -> Self {
+        Self(Self::V_PRED)
+    }
+
+    pub(crate) const fn dpcm_horizontal() -> Self {
+        Self(Self::H_PRED)
+    }
+
     /// Returns true for AV2 § 9.2 `PAETH_PRED`.
     pub(crate) const fn is_paeth(self) -> bool {
         self.0 == Self::PAETH_PRED
@@ -332,6 +340,13 @@ pub(crate) fn supported_chroma_mode(
             .flatten();
     }
 
+    CHROMA_EXPLICIT_BY_MODE
+        .get(usize::from(uv_mode_value))
+        .copied()
+        .flatten()
+}
+
+pub(crate) fn supported_chroma_mode_value(uv_mode_value: u8) -> Option<SupportedChromaMode> {
     CHROMA_EXPLICIT_BY_MODE
         .get(usize::from(uv_mode_value))
         .copied()

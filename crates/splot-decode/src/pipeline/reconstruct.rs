@@ -226,9 +226,9 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
 /// per-plane). This reads the predicted samples of the square block at `(x, y)`
 /// (side `1 << log2_side`), composes the § 7.14.4 dequantization, § 7.15.4
 /// inverse transform, and § 7.14.3 residual addition over them (via
-/// [`reconstruct_general_intra_block_with_prediction`], which is the §7.14.3
-/// reconstruction over an arbitrary per-sample prediction — identical for inter
-/// and intra), then writes the reconstructed block back. An `all_zero` block
+/// [`reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt`], which
+/// is the §7.14.3 reconstruction over an arbitrary per-sample prediction —
+/// identical for inter and intra), then writes the reconstructed block back. An `all_zero` block
 /// leaves the prediction untouched (the residual is zero), so this is a no-op
 /// for the skipped-transform case. `qindex == base_q_idx` for the minimal-tool
 /// frame; `use_tcq` adds the § 7.14.4 TCQ `dqDenom` term (luma DCT_DCT only).
