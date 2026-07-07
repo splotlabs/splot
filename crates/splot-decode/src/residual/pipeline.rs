@@ -12,9 +12,10 @@ use splot_recon::{
 use crate::bitstream::tile_payload::{
     CflParams, DecodeTileWorkUnit, GeneralIntraResidualError, LumaPalette,
     LumaTransformPartitionContext, LumaTransformTypeContext, PositionedLumaCoeffBlock,
-    SupportedChromaMode, SupportedNonDcLumaMode, TileBlockDecodedState, TileCdfSelector,
-    TileCoeffContextState, TransformToolResidualPolicy, current_frame_qm_segment_id,
-    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
+    SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
+    TileBlockDecodedState, TileCdfSelector, TileCoeffContextState, TransformToolResidualPolicy,
+    current_frame_qm_segment_id, decode_general_intra_luma_partition_coeffs,
+    decode_general_intra_plane_coeffs,
 };
 use crate::pipeline::reconstruct::IntraEdgeAvailability as EdgeAvail;
 use crate::pipeline::reconstruct::MiddleEdgeAvailability as MiddleAvail;
@@ -1118,6 +1119,24 @@ impl ResidualPlanePlan {
                 plan: IntraLumaPlan::DirectionalOneSidedLeft { p_angle },
                 use_tcq,
             } => ResidualReconstructionPlan::LumaRectOneSidedLeft { p_angle, use_tcq },
+            ResidualReconstructionPlan::LumaSquare {
+                plan:
+                    IntraLumaPlan::DirectionalFirst {
+                        mode: SupportedDirectionalLumaMode::D135,
+                    },
+                use_tcq,
+            } if block.coeffs.lossless => {
+                if block.x == self.x && block.y == self.y {
+                    self.reconstruction
+                } else {
+                    ResidualReconstructionPlan::LumaRectMiddle {
+                        p_angle: crate::prediction::intra::directional_mode_p_angle(
+                            SupportedDirectionalLumaMode::D135,
+                        ),
+                        use_tcq,
+                    }
+                }
+            }
             ResidualReconstructionPlan::LumaSquare {
                 plan: IntraLumaPlan::DirectionalNeighbour { mode },
                 use_tcq,

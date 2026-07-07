@@ -72,6 +72,10 @@ const LOSSLESS_CARDINAL_Y_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-cardinal-y-h-intra-64x64.ivf"
 );
 
+const LOSSLESS_NONDC_LUMA_D135_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d135-intra-64x64.ivf"
+);
+
 const LOSSLESS_NONDC_CHROMA_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-h-intra-64x64.ivf"
 );
@@ -471,6 +475,21 @@ fn lossless_cardinal_y_variants_decode_to_oracle() {
         177,
         "lossless non-DPCM H_PRED luma",
         "9b37c3e091251b52640f7574105d307a638bbefd0042e900249e3f93bc5148ea",
+    );
+}
+
+#[test]
+fn lossless_nondc_luma_d135_frame_decodes_to_oracle() {
+    assert_eq!(LOSSLESS_NONDC_LUMA_D135_FIXTURE.len(), 68);
+    let frame = decode_eight(LOSSLESS_NONDC_LUMA_D135_FIXTURE);
+
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_chroma_size(&frame, 32, 32);
+    assert_eq!(distinct_count(frame.y().samples()), 3);
+    assert_chroma_eq(&frame, 128, 128);
+    assert_hash(
+        &frame,
+        "71248f8ced1be4c7b0ac9a1c5b4d4eda9b616249b91b0c1464029f06e86cb942",
     );
 }
 
