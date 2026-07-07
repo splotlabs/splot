@@ -84,6 +84,10 @@ const D45_TOP_LEFT_Q96_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-d45-top-left-intra-64x64-q96.ivf"
 );
 
+const D45_RIGHT_EDGE_Q80_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-d45-right-edge-intra-128x128-q80.ivf"
+);
+
 const LOSSLESS_NONDC_LUMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d135-intra-64x64.ivf"
 );
@@ -520,6 +524,30 @@ fn d45_top_left_no_neighbour_intra_frame_decodes_to_oracle() {
         D45_TOP_LEFT_Q96_FIXTURE,
         127,
         "6a8317f2ca517cb85a9157c9e8e86ffe7b4ad9580374cbfee7394e974a5cf06b",
+    );
+}
+
+#[test]
+fn d45_right_edge_clamped_above_intra_frame_decodes_to_oracle() {
+    assert_eq!(D45_RIGHT_EDGE_Q80_FIXTURE.len(), 180);
+    let frame = decode_eight(D45_RIGHT_EDGE_Q80_FIXTURE);
+
+    assert_yuv420_frame(&frame, BitDepth::Eight, 128, 128);
+    assert_chroma_size(&frame, 64, 64);
+    assert_chroma_eq(&frame, 120, 130);
+
+    let y = frame.y().samples();
+    let at = |r: usize, c: usize| y[r * 128 + c];
+    let block: Vec<u8> = (0..64)
+        .flat_map(|i| (0..64).map(move |j| at(64 + i, 64 + j)))
+        .collect();
+    assert_distinct_gt(&block, 32, "D45 right-edge block reconstruction");
+    assert_eq!(at(64, 64), 42);
+    assert_eq!(at(64, 126), 227);
+    assert_eq!(at(64, 127), 227);
+    assert_hash(
+        &frame,
+        "fd131679dbf64ae6ad63cf2b51894995c86bda529ff5299545225b00d478ba76",
     );
 }
 
