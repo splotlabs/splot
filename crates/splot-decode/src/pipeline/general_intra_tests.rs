@@ -182,6 +182,10 @@ const LOSSLESS_SDP_NONDC_CHROMA_D135_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d135-leftedge-128x64.ivf"
 );
 
+const LOSSLESS_SDP_NONDC_CHROMA_D113_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d113-leftedge-128x64.ivf"
+);
+
 const LOSSLESS_SDP_NONDC_CHROMA_D157_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d157-leftedge-128x64.ivf"
 );
@@ -951,12 +955,12 @@ fn lossless_nondc_chroma_d135_leftedge_frame_decodes_to_oracle() {
 
 #[test]
 fn lossless_nondc_chroma_d113_leftedge_frame_decodes_to_oracle() {
-    assert_lossless_explicit_chroma_oracle(
+    assert_lossless_explicit_chroma_leftedge_pair_oracle(
         LOSSLESS_NONDC_CHROMA_D113_LEFTEDGE_FIXTURE,
         269,
-        (128, 64),
-        (64, 32),
-        "lossless explicit D113 left-edge",
+        LOSSLESS_SDP_NONDC_CHROMA_D113_LEFTEDGE_FIXTURE,
+        242,
+        "D113",
         "31e9ff391a6e9eb3872aa4aef9fadced89d0fe5da1f5bfeaf8a143e8208ad9bd",
     );
 }
@@ -1140,7 +1144,11 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
             general_intra::FULL_SB_N4_LUMA,
         ));
     }
-    for mode in [SupportedChromaMode::D135, SupportedChromaMode::D157] {
+    for mode in [
+        SupportedChromaMode::D113,
+        SupportedChromaMode::D135,
+        SupportedChromaMode::D157,
+    ] {
         assert!(general_intra::lossless_chroma_part_prediction_verified(
             Some(mode),
             false,
@@ -1390,16 +1398,18 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
             SupportedChromaMode::Vertical,
             SupportedChromaMode::Horizontal,
             SupportedChromaMode::D45,
+            SupportedChromaMode::D113,
             SupportedChromaMode::D135,
             SupportedChromaMode::D157,
             SupportedChromaMode::Paeth,
         ] {
             let neighbours = block_ctx.neighbours(PlaneId::U);
-            let proven_left_edge_directional =
-                matches!(mode, SupportedChromaMode::D135 | SupportedChromaMode::D157)
-                    && !neighbours.has_above()
-                    && neighbours.has_left()
-                    && sb_mib == general_intra::FULL_SB_N4_LUMA;
+            let proven_left_edge_directional = matches!(
+                mode,
+                SupportedChromaMode::D113 | SupportedChromaMode::D135 | SupportedChromaMode::D157
+            ) && !neighbours.has_above()
+                && neighbours.has_left()
+                && sb_mib == general_intra::FULL_SB_N4_LUMA;
             if proven_left_edge_directional {
                 continue;
             }

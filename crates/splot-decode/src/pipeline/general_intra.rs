@@ -756,7 +756,7 @@ pub(super) fn lossless_chroma_part_prediction_verified(
         && neighbours.has_left()
         && matches!(
             mode,
-            Some(SupportedChromaMode::D135 | SupportedChromaMode::D157)
+            Some(SupportedChromaMode::D113 | SupportedChromaMode::D135 | SupportedChromaMode::D157)
         );
     top_left || left_edge_directional
 }
