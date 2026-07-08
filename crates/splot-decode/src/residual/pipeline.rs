@@ -278,6 +278,7 @@ impl GeneralIntraResidualPlan {
         chroma_plan: Option<RectChromaPlan>,
         luma_use_tcq: bool,
         luma_fsc_mode: bool,
+        luma_lossless_tx_size: Option<usize>,
         lossless: bool,
     ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
         let mut planes = Vec::new();
@@ -299,6 +300,7 @@ impl GeneralIntraResidualPlan {
             luma_reconstruction,
             chroma_reconstruction,
             luma_fsc_mode,
+            luma_lossless_tx_size,
             lossless,
         )?;
         Ok(Self { planes })
@@ -309,6 +311,7 @@ impl GeneralIntraResidualPlan {
         luma_plan: RectLumaPlan,
         chroma_plan: Option<RectChromaPlan>,
         luma_fsc_mode: bool,
+        luma_lossless_tx_size: Option<usize>,
         lossless: bool,
     ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
         let mut planes = Vec::new();
@@ -404,6 +407,7 @@ impl GeneralIntraResidualPlan {
             luma_reconstruction,
             chroma_reconstruction,
             luma_fsc_mode,
+            luma_lossless_tx_size,
             lossless,
         )?;
         Ok(Self { planes })
@@ -583,6 +587,7 @@ fn chroma_reconstruction(plan: RectChromaPlan) -> ResidualReconstructionPlan {
 }
 
 impl ResidualPlanePlan {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         block_ctx: BlockCtx,
         plane_id: PlaneId,
@@ -591,6 +596,7 @@ impl ResidualPlanePlan {
         residual_height4: usize,
         fsc_mode: bool,
         txb_skip_fsc_mode: bool,
+        tx_size_override: Option<usize>,
     ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
         let block = block_ctx.plane_block(plane_id);
         let tx = block.tx();
@@ -598,7 +604,7 @@ impl ResidualPlanePlan {
             plane_id,
             block_ctx,
             coeff_plane: coeff_plane(plane_id),
-            tx_size: tx_size_for_plan(tx, plane_id)?,
+            tx_size: tx_size_override.unwrap_or(tx_size_for_plan(tx, plane_id)?),
             x: block.x(),
             y: block.y(),
             tx,
@@ -644,8 +650,9 @@ impl ResidualPlanePlan {
         let angle_delta_uv =
             chroma_angle_delta_uv(self.plane_id, uv_mode, luma_transform_type_context);
         let palette_color_map = self.read_palette_color_map(work_unit, symbols)?;
-        if self.needs_lossless_transform_units(work_unit) {
+        if let Some(unit_tx_size) = self.lossless_transform_unit_tx_size(work_unit) {
             return self.execute_lossless_transform_units(
+                unit_tx_size,
                 work_unit,
                 symbols,
                 coeff_ctx,
@@ -728,18 +735,28 @@ impl ResidualPlanePlan {
         })
     }
 
-    fn needs_lossless_transform_units(self, work_unit: &DecodeTileWorkUnit<'_>) -> bool {
-        work_unit
+    fn lossless_transform_unit_tx_size(self, work_unit: &DecodeTileWorkUnit<'_>) -> Option<usize> {
+        if work_unit
             .coeff_frame_facts()
             .lossless_for_segment(current_frame_qm_segment_id())
-            == Some(true)
-            && !self.fsc_mode
-            && self.tx_size != TX_4X4
+            != Some(true)
+            || (!self.fsc_mode && self.tx_size == TX_4X4)
+        {
+            return None;
+        }
+        if !self.fsc_mode {
+            return Some(TX_4X4);
+        }
+        let (log2_width, log2_height) = tx_size_log2(self.tx_size).ok()?;
+        let unit_width4 = (1usize << log2_width) >> 2;
+        let unit_height4 = (1usize << log2_height) >> 2;
+        (unit_width4 < self.tx.width4() || unit_height4 < self.tx.height4()).then_some(self.tx_size)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn execute_lossless_transform_units<T: ReconSample>(
         self,
+        unit_tx_size: usize,
         work_unit: &mut DecodeTileWorkUnit<'_>,
         symbols: &mut SymbolDecoder<'_>,
         coeff_ctx: &mut TileCoeffContextState,
@@ -755,23 +772,13 @@ impl ResidualPlanePlan {
         luma_context: LumaTransformTypeContext,
         deblock: &mut DeblockRecorder<'_>,
     ) -> core::result::Result<ResidualPlaneExecution, GeneralIntraResidualError> {
-        let unit_count = self.tx.width4().checked_mul(self.tx.height4()).ok_or(
-            GeneralIntraResidualError::TransformPartitionGeometry {
-                table: "Lossless_Tx_Units",
-                index: self.tx_size,
-            },
-        )?;
-        let tx_fills_block = self.tx_fills_residual_block() && unit_count == 1;
+        let (log2_width, log2_height) = tx_size_log2(unit_tx_size)?;
+        let unit_width4 = (1usize << log2_width) >> 2;
+        let unit_height4 = (1usize << log2_height) >> 2;
         let mut blocks = Vec::new();
         let mut last_unit_nonzero = None;
-        blocks.try_reserve(unit_count).map_err(|_| {
-            GeneralIntraResidualError::TransformPartitionGeometry {
-                table: "Lossless_Tx_Units",
-                index: unit_count,
-            }
-        })?;
-        for y4 in 0..self.tx.height4() {
-            for x4 in 0..self.tx.width4() {
+        for y4 in (0..self.tx.height4()).step_by(unit_height4) {
+            for x4 in (0..self.tx.width4()).step_by(unit_width4) {
                 let x = self.x + x4 * 4;
                 let y = self.y + y4 * 4;
                 if !self.lossless_unit_starts_in_frame(x, y) {
@@ -782,10 +789,10 @@ impl ResidualPlanePlan {
                     symbols,
                     coeff_ctx,
                     self.coeff_plane,
-                    TX_4X4,
+                    unit_tx_size,
                     x,
                     y,
-                    tx_fills_block,
+                    false,
                     None,
                     eob_u_nonzero,
                     uv_mode,
@@ -799,7 +806,7 @@ impl ResidualPlanePlan {
                 let block = PositionedLumaCoeffBlock {
                     x,
                     y,
-                    tx_size: TX_4X4,
+                    tx_size: unit_tx_size,
                     middle: false,
                     coeffs,
                 };
@@ -816,11 +823,13 @@ impl ResidualPlanePlan {
                     luma_context,
                 )?;
                 if unit.plane_id == PlaneId::Y {
+                    let row4 = block.y / 4;
+                    let col4 = block.x / 4;
                     deblock.record_luma_unit(
-                        block.y / 4,
-                        block.x / 4,
-                        1,
-                        1,
+                        row4,
+                        col4,
+                        unit_width4,
+                        unit_height4,
                         block.tx_size,
                         block.coeffs.eob,
                     );
@@ -828,7 +837,8 @@ impl ResidualPlanePlan {
                 let (sub_x, sub_y) = self.block_ctx.chroma().subsampling(unit.plane_id);
                 let row4 = ((block.y >> 2) << sub_y) & block_decoded.sb_size4().saturating_sub(1);
                 let col4 = ((block.x >> 2) << sub_x) & block_decoded.sb_size4().saturating_sub(1);
-                block_decoded.set_block(unit.plane_id.index(), row4, col4, 1, 1);
+                let plane = unit.plane_id.index();
+                block_decoded.set_block(plane, row4, col4, unit_width4, unit_height4);
                 if unit.plane_id == PlaneId::U {
                     last_unit_nonzero = Some(!block.coeffs.all_zero);
                 }
@@ -2269,6 +2279,7 @@ fn push_ordered_planes(
     luma_reconstruction: ResidualReconstructionPlan,
     chroma_reconstruction: Option<ResidualReconstructionPlan>,
     luma_fsc_mode: bool,
+    luma_lossless_tx_size: Option<usize>,
     lossless: bool,
 ) -> core::result::Result<(), ResidualPipelineUnsupported> {
     let block = block_ctx.block();
@@ -2293,6 +2304,7 @@ fn push_ordered_planes(
                         block.height4(),
                         luma_fsc_mode,
                         luma_fsc_mode,
+                        luma_lossless_tx_size,
                     )?);
                     if let Some(reconstruction) = chroma_reconstruction
                         && (!double_chroma_w || chunk_x.is_multiple_of(2))
@@ -2390,6 +2402,7 @@ fn chroma_plans(
             block.height4(),
             false,
             txb_skip_fsc_mode,
+            None,
         )?;
         Ok(if defer_reconstruction {
             plan.with_deferred_reconstruction()

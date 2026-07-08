@@ -24,6 +24,9 @@ const BLOCK_32X16: usize = 8;
 const BLOCK_64X64: usize = 12;
 const BLOCK_256X256: usize = 18;
 const BLOCK_4X16: usize = 19;
+const TX_4X4: usize = 0;
+const TX_16X16: usize = 2;
+const TX_32X32: usize = 3;
 const CLEAR_PARTITION_CONTEXT: usize = 0;
 const PAYLOAD: [u8; 2] = [0x12, 0xFB];
 
@@ -959,4 +962,76 @@ fn cfl_mh_dir_size_group_uses_generated_size_group() {
             block_size_index
         } if block_size_index == invalid
     ));
+}
+
+#[test]
+fn lossless_luma_tx_size_reads_selected_large_transform() {
+    let size_group = lossless_tx_size_group(BLOCK_16X16).unwrap();
+    let payload = encode_symbol_sequence(&[(
+        TileCdfSelector::LosslessTxSize {
+            size_group,
+            is_inter: 0,
+        },
+        1,
+    )]);
+    let mut work_unit = make_work_unit(&payload);
+    let mut symbols = symbol_decoder(&payload);
+
+    assert_eq!(
+        read_lossless_luma_tx_size(&mut work_unit, &mut symbols, BLOCK_16X16, true, true).unwrap(),
+        TX_16X16
+    );
+    assert_eq!(symbols.symbol_count(), 1);
+}
+
+#[test]
+fn lossless_luma_tx_size_zero_keeps_4x4_transform() {
+    let size_group = lossless_tx_size_group(BLOCK_16X16).unwrap();
+    let payload = encode_symbol_sequence(&[(
+        TileCdfSelector::LosslessTxSize {
+            size_group,
+            is_inter: 0,
+        },
+        0,
+    )]);
+    let mut work_unit = make_work_unit(&payload);
+    let mut symbols = symbol_decoder(&payload);
+
+    assert_eq!(
+        read_lossless_luma_tx_size(&mut work_unit, &mut symbols, BLOCK_16X16, true, true).unwrap(),
+        TX_4X4
+    );
+    assert_eq!(symbols.symbol_count(), 1);
+}
+
+#[test]
+fn lossless_luma_tx_size_skips_intra_non_fsc() {
+    let mut work_unit = make_work_unit(&[]);
+    let mut symbols = symbol_decoder(&[]);
+
+    assert_eq!(
+        read_lossless_luma_tx_size(&mut work_unit, &mut symbols, BLOCK_16X16, false, true).unwrap(),
+        TX_4X4
+    );
+    assert_eq!(symbols.symbol_count(), 0);
+}
+
+#[test]
+fn lossless_luma_tx_size_caps_large_blocks_to_32x32() {
+    let size_group = lossless_tx_size_group(BLOCK_64X64).unwrap();
+    let payload = encode_symbol_sequence(&[(
+        TileCdfSelector::LosslessTxSize {
+            size_group,
+            is_inter: 0,
+        },
+        1,
+    )]);
+    let mut work_unit = make_work_unit(&payload);
+    let mut symbols = symbol_decoder(&payload);
+
+    assert_eq!(
+        read_lossless_luma_tx_size(&mut work_unit, &mut symbols, BLOCK_64X64, true, true).unwrap(),
+        TX_32X32
+    );
+    assert_eq!(symbols.symbol_count(), 1);
 }
