@@ -3,7 +3,8 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use super::super::cdf::FrameCdfSubset;
+use super::super::cdf::{FrameCdfSubset, TileCdfSelector};
+use super::super::encode_symbol_sequence;
 use super::ordinary_pass::CoeffOrdinaryBranchError;
 use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryBranchLosslessInput,
@@ -12,16 +13,18 @@ use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchTxSizeDimensionsBaseConfig, CoeffOrdinaryBranchTxSizeDimensionsInput,
     CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput, CoeffOrdinaryTxSizeGeometryConfig,
     apply_coeff_ordinary_branch_from_lossless, apply_coeff_ordinary_branch_from_tx_set,
-    apply_coeff_ordinary_branch_from_tx_size_dimensions,
+    apply_coeff_ordinary_branch_from_tx_size_dimensions, read_lossless_tx_size_base_config,
 };
 use super::test_support::{
     OrdinaryBranchRun, run_ordinary_branch, seeded_context_state, symbol_decoder,
 };
 
+const TX_4X4: usize = 0;
 const TX_8X8: usize = 1;
 const UV_SMOOTH_PRED: usize = 9;
 const DCT_DCT: usize = 0;
 const ADST_ADST: usize = 3;
+const IDTX: usize = 9;
 const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
     [0x00, 0x00, 0x80],
     [0xff, 0x00, 0x80],
@@ -36,8 +39,12 @@ fn payload_from(first: u8, second: u8, suffix: [u8; 3]) -> [u8; 12] {
 }
 
 fn tx_size_geometry(tx_size: usize) -> CoeffOrdinaryTxSizeGeometryConfig {
+    tx_size_geometry_for_plane(tx_size, 1)
+}
+
+fn tx_size_geometry_for_plane(tx_size: usize, plane: usize) -> CoeffOrdinaryTxSizeGeometryConfig {
     CoeffOrdinaryTxSizeGeometryConfig {
-        plane: 1,
+        plane,
         start_x: 4,
         start_y: 4,
         tx_size,
@@ -116,9 +123,19 @@ fn explicit_input_with_inter(
     lossless: bool,
     is_inter: bool,
 ) -> CoeffOrdinaryBranchTxSizeDimensionsInput {
+    explicit_input_with_inter_for_plane(tx_size, plane_tx_type, lossless, is_inter, 1)
+}
+
+fn explicit_input_with_inter_for_plane(
+    tx_size: usize,
+    plane_tx_type: usize,
+    lossless: bool,
+    is_inter: bool,
+    plane: usize,
+) -> CoeffOrdinaryBranchTxSizeDimensionsInput {
     CoeffOrdinaryBranchTxSizeDimensionsInput::NonZero(
         CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput {
-            geometry: tx_size_geometry(tx_size),
+            geometry: tx_size_geometry_for_plane(tx_size, plane),
             coeff_cdf_q_ctx: 0,
             is_inter,
             base_config: explicit_base_config(plane_tx_type),
@@ -181,9 +198,12 @@ fn lossless_input_with_entropy_flags(
     })
 }
 
-fn lossless_inter_input(tx_size: usize) -> CoeffOrdinaryBranchLosslessInput {
+fn lossless_inter_input_for_plane(
+    tx_size: usize,
+    plane: usize,
+) -> CoeffOrdinaryBranchLosslessInput {
     CoeffOrdinaryBranchLosslessInput::NonZero(CoeffOrdinaryBranchLosslessNonZeroInput {
-        geometry: tx_size_geometry(tx_size),
+        geometry: tx_size_geometry_for_plane(tx_size, plane),
         coeff_cdf_q_ctx: 0,
         is_inter: true,
         base_config: lossless_base_config(UV_SMOOTH_PRED, 0, false),
@@ -219,6 +239,16 @@ fn find_payload_for_explicit(
     lossless: bool,
     is_inter: bool,
 ) -> [u8; 12] {
+    find_payload_for_explicit_with_plane(tx_size, plane_tx_type, lossless, is_inter, 1)
+}
+
+fn find_payload_for_explicit_with_plane(
+    tx_size: usize,
+    plane_tx_type: usize,
+    lossless: bool,
+    is_inter: bool,
+    plane: usize,
+) -> [u8; 12] {
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
             for suffix in PAYLOAD_SUFFIXES {
@@ -226,7 +256,13 @@ fn find_payload_for_explicit(
                 let result = std::panic::catch_unwind(|| {
                     run_explicit(
                         &payload,
-                        explicit_input_with_inter(tx_size, plane_tx_type, lossless, is_inter),
+                        explicit_input_with_inter_for_plane(
+                            tx_size,
+                            plane_tx_type,
+                            lossless,
+                            is_inter,
+                            plane,
+                        ),
                     );
                 });
                 if result.is_ok() {
@@ -244,6 +280,18 @@ fn assert_lossless_matches_dct_dct(input: CoeffOrdinaryBranchLosslessInput) {
         run_lossless(&payload, input),
         run_explicit(&payload, explicit_input(TX_8X8, DCT_DCT, true))
     );
+}
+
+fn assert_lossless_inter_matches_explicit(plane: usize, tx_size: usize, plane_tx_type: usize) {
+    let payload = find_payload_for_explicit_with_plane(tx_size, plane_tx_type, true, true, plane);
+
+    let derived = run_lossless(&payload, lossless_inter_input_for_plane(tx_size, plane));
+    let explicit = run_explicit(
+        &payload,
+        explicit_input_with_inter_for_plane(tx_size, plane_tx_type, true, true, plane),
+    );
+
+    assert_eq!(derived, explicit);
 }
 
 #[test]
@@ -326,15 +374,51 @@ fn coefficient_ordinary_branch_lossless_rejects_invalid_tx_size_atomically() {
 
 #[test]
 fn coefficient_ordinary_branch_lossless_inter_selects_dct_dct() {
-    let payload = find_payload_for_explicit(TX_8X8, DCT_DCT, true, true);
+    assert_lossless_inter_matches_explicit(1, TX_8X8, DCT_DCT);
+}
 
-    assert_eq!(
-        run_lossless(&payload, lossless_inter_input(TX_8X8)),
-        run_explicit(
-            &payload,
-            explicit_input_with_inter(TX_8X8, DCT_DCT, true, true)
+#[test]
+fn coefficient_ordinary_branch_lossless_inter_luma_large_tx_selects_idtx() {
+    assert_lossless_inter_matches_explicit(0, TX_8X8, IDTX);
+}
+
+#[test]
+fn coefficient_ordinary_branch_lossless_inter_luma_4x4_reads_tx_type_symbol() {
+    for (symbol, expected_tx_type) in [(0, DCT_DCT), (1, IDTX)] {
+        let payload = encode_symbol_sequence(&[(TileCdfSelector::LosslessInterTxType, symbol)]);
+        let frame = FrameCdfSubset::from_defaults();
+        let mut tile = frame.tile_copy();
+        let mut symbols = symbol_decoder(&payload);
+
+        let config = read_lossless_tx_size_base_config(
+            &mut tile,
+            &mut symbols,
+            tx_size_geometry_for_plane(TX_4X4, 0),
+            true,
         )
-    );
+        .unwrap();
+
+        assert_eq!(config.plane_tx_type, expected_tx_type);
+        assert_eq!(symbols.symbol_count(), 1);
+    }
+}
+
+#[test]
+fn coefficient_ordinary_branch_lossless_inter_luma_large_tx_skips_tx_type_symbol() {
+    let frame = FrameCdfSubset::from_defaults();
+    let mut tile = frame.tile_copy();
+    let mut symbols = symbol_decoder(&[]);
+
+    let config = read_lossless_tx_size_base_config(
+        &mut tile,
+        &mut symbols,
+        tx_size_geometry_for_plane(TX_8X8, 0),
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(config.plane_tx_type, IDTX);
+    assert_eq!(symbols.symbol_count(), 0);
 }
 
 #[test]
