@@ -11,7 +11,7 @@ use crate::bitstream::tile_payload::{
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
     GeneralIntraLeafMode, IntraYMode, IsCflContext, LumaTransformPartitionContext,
     LumaTransformTypeContext, SupportedChromaMode, SupportedDirectionalLumaMode,
-    SupportedNonDcLumaMode, TransformToolResidualPolicy,
+    SupportedNonDcLumaMode, TransformToolResidualPolicy, read_lossless_luma_tx_size,
 };
 use crate::prediction::intra::{IntraLumaUnsupported, plan_luma_prediction};
 use crate::residual::pipeline::{
@@ -351,6 +351,14 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     } else {
         ensure_10bit_general_intra_capability(&modes, block_ctx, sb_mib, lossless, tile_offset)?;
     }
+    let luma_lossless_tx_size = if lossless && modes.uses_active_fsc() {
+        Some(
+            read_lossless_luma_tx_size(work_unit, symbols, frontier.b_size.index(), true, true)
+                .map_err(|error| general_intra_block_mode_error(error, tile_offset))?,
+        )
+    } else {
+        None
+    };
 
     if n4w != n4h
         || modes.uses_active_mrl()
@@ -370,6 +378,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             qindex,
             luma_use_tcq,
             lossless,
+            luma_lossless_tx_size,
             transform_tool_residual_policy,
             luma_tx_partition_context(frame_tx_mode(core), frontier.b_size.index(), lossless),
             block_ctx,
@@ -401,6 +410,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         chroma_plan,
         luma_use_tcq,
         modes.uses_active_fsc(),
+        luma_lossless_tx_size,
         lossless,
     )
     .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
@@ -547,6 +557,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
     qindex: u32,
     luma_use_tcq: bool,
     lossless: bool,
+    luma_lossless_tx_size: Option<usize>,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     luma_tx_partition_context: Option<LumaTransformPartitionContext>,
     block_ctx: BlockCtx,
@@ -571,6 +582,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
         luma_plan,
         chroma_plan,
         modes.uses_active_fsc(),
+        luma_lossless_tx_size,
         lossless,
     )
     .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
@@ -1876,6 +1888,19 @@ fn general_intra_block_mode_error(
                 "8.3.2",
             )
         }
+        GeneralIntraBlockModeError::InvalidLosslessTxSizeGroup { .. } => general_intra_at!(
+            "general_intra_invalid_lossless_tx_size_group",
+            offset,
+            "general intra decode could not map MiSize through Size_Group for lossless_tx_size",
+            "8.3.2",
+        ),
+        GeneralIntraBlockModeError::InvalidLosslessTxSizeBlock { .. }
+        | GeneralIntraBlockModeError::InvalidLosslessTxSize { .. } => general_intra_at!(
+            "general_intra_invalid_lossless_tx_size",
+            offset,
+            "general intra decode could not derive a lossless transform size for MiSize",
+            "5.20.6.1",
+        ),
         GeneralIntraBlockModeError::InvalidPaletteYSize { .. } => general_intra_at!(
             "general_intra_invalid_palette_y_size",
             offset,

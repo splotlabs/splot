@@ -14,6 +14,7 @@ macro_rules! tile_cdf_common_count_rows {
         $rows!(tx_2or3_partition_type.flatten().flatten());
         $rows!(tx_partition_type.flatten().flatten());
         $rows!(tx_partition_type_reduced.flatten().flatten());
+        $rows!(lossless_tx_size.flatten());
         $row!(delta_q);
         $rows!(cdef_index0);
         $rows!(ccso_blk.flatten());
@@ -63,11 +64,11 @@ use splot_core::tables::cdf::{
     DEFAULT_CDEF_INDEX0_CDF, DEFAULT_DELTA_Q_CDF, DEFAULT_DO_EXT_PARTITION_CDF,
     DEFAULT_DO_SPLIT_CDF, DEFAULT_DO_SQUARE_SPLIT_CDF, DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF,
     DEFAULT_FSC_MODE_CDF, DEFAULT_INTRABC_CDF, DEFAULT_INTRABC_MODE_CDF,
-    DEFAULT_INTRABC_PRECISION_CDF, DEFAULT_MORPH_PRED_CDF, DEFAULT_MRL_INDEX_CDF,
-    DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_RECT_TYPE_CDF, DEFAULT_REGION_TYPE_CDF,
-    DEFAULT_SEG_ID_EXT_FLAG_CDF, DEFAULT_SEGMENT_ID_CDF, DEFAULT_SEGMENT_ID_EXT_CDF,
-    DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
-    DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF,
+    DEFAULT_INTRABC_PRECISION_CDF, DEFAULT_LOSSLESS_TX_SIZE_CDF, DEFAULT_MORPH_PRED_CDF,
+    DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_RECT_TYPE_CDF,
+    DEFAULT_REGION_TYPE_CDF, DEFAULT_SEG_ID_EXT_FLAG_CDF, DEFAULT_SEGMENT_ID_CDF,
+    DEFAULT_SEGMENT_ID_EXT_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF,
+    DEFAULT_TX_PARTITION_TYPE_CDF, DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF,
 };
 
 use self::block_rows::BlockCdfRows;
@@ -96,6 +97,8 @@ const TXFM_SPLIT_GROUPS: usize = 9;
 const TX_2OR3_PARTITION_TYPE_CONTEXTS: usize = 2;
 const TX_PARTITION_TYPE_CONTEXTS: usize = 14;
 const TX_PARTITION_TYPE_ROW_LEN: usize = 8;
+const LOSSLESS_TX_SIZE_GROUPS: usize = 4;
+const LOSSLESS_TX_SIZE_IS_INTER_CONTEXTS: usize = 2;
 const DELTA_Q_CDF_ROW_LEN: usize = 9;
 const FSC_MODE_CONTEXTS: usize = 4;
 const FSC_BSIZE_CONTEXTS: usize = 6;
@@ -132,6 +135,8 @@ type Tx2Or3PartitionTypeCdfRows = [[[[i32; CDF_ROW_LEN]; TX_2OR3_PARTITION_TYPE_
     TX_IS_INTER_CONTEXTS]; TX_FSC_CONTEXTS];
 type TxPartitionTypeCdfRows = [[[[i32; TX_PARTITION_TYPE_ROW_LEN]; TX_PARTITION_TYPE_CONTEXTS];
     TX_IS_INTER_CONTEXTS]; TX_FSC_CONTEXTS];
+type LosslessTxSizeCdfRows =
+    [[[i32; CDF_ROW_LEN]; LOSSLESS_TX_SIZE_IS_INTER_CONTEXTS]; LOSSLESS_TX_SIZE_GROUPS];
 type DeltaQCdfRow = [i32; DELTA_Q_CDF_ROW_LEN];
 type FscModeCdfRows = [[[i32; CDF_ROW_LEN]; FSC_BSIZE_CONTEXTS]; FSC_MODE_CONTEXTS];
 type CdefIndex0CdfRows = [[i32; CDF_ROW_LEN]; CDEF_STRENGTH_INDEX0_CONTEXTS];
@@ -354,6 +359,10 @@ pub(crate) enum TileCdfSelector {
         is_inter: usize,
         ctx: usize,
         reduced: bool,
+    },
+    LosslessTxSize {
+        size_group: usize,
+        is_inter: usize,
     },
     DeltaQ,
     CdefIndex0 {
@@ -649,6 +658,7 @@ tile_cdf_arrays! {
     Tx2Or3PartitionType => "TileTx2or3PartitionTypeCdf",
     TxPartitionType => "TileTxPartitionTypeCdf",
     TxPartitionTypeReduced => "TileTxPartitionTypeReducedCdf",
+    LosslessTxSize => "TileLosslessTxSizeCdf",
     CdefIndex0 => "TileCdefIndex0Cdf",
     CcsoBlk => "TileCcsoBlkCdf",
     CdefIndexMinus1 => "TileCdefIndexMinus1Cdf",
@@ -928,6 +938,7 @@ pub(crate) struct TileCdfRows {
     tx_2or3_partition_type: Tx2Or3PartitionTypeCdfRows,
     tx_partition_type: TxPartitionTypeCdfRows,
     tx_partition_type_reduced: TxPartitionTypeCdfRows,
+    lossless_tx_size: LosslessTxSizeCdfRows,
     delta_q: DeltaQCdfRow,
     cdef_index0: CdefIndex0CdfRows,
     ccso_blk: CcsoBlkCdfRows,
@@ -1101,6 +1112,30 @@ macro_rules! tile_cdf_row {
                 let rows = $tx_partition_rows($self, reduced);
                 selected_cdf_row!(rows[fsc_mode][is_inter], ctx, $get, $as_slice, array, "ctx")
             }
+            TileCdfSelector::LosslessTxSize {
+                size_group,
+                is_inter,
+            } => {
+                let max_exclusive = $self.lossless_tx_size.len();
+                let group = $self.lossless_tx_size.$get(size_group).ok_or(
+                    TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::LosslessTxSize,
+                        index_name: "size_group",
+                        actual: size_group,
+                        max_exclusive,
+                    },
+                )?;
+                let max_exclusive = group.len();
+                let row = group
+                    .$get(is_inter)
+                    .ok_or(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::LosslessTxSize,
+                        index_name: "is_inter",
+                        actual: is_inter,
+                        max_exclusive,
+                    })?;
+                Ok(row.$as_slice())
+            }
             TileCdfSelector::DeltaQ => Ok($self.delta_q.$as_slice()),
             TileCdfSelector::CdefIndex0 { ctx } => {
                 selected_cdf_row!(
@@ -1237,6 +1272,7 @@ impl TileCdfRows {
             tx_2or3_partition_type: DEFAULT_TX_2OR3_PARTITION_TYPE_CDF,
             tx_partition_type: DEFAULT_TX_PARTITION_TYPE_CDF,
             tx_partition_type_reduced: DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF,
+            lossless_tx_size: DEFAULT_LOSSLESS_TX_SIZE_CDF,
             delta_q: DEFAULT_DELTA_Q_CDF,
             cdef_index0: DEFAULT_CDEF_INDEX0_CDF,
             ccso_blk: DEFAULT_CCSO_BLK_CDF,

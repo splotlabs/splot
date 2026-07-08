@@ -86,9 +86,15 @@ fn plans_square_and_rectangular_residual_planes() {
 fn omits_chroma_plans_for_luma_only_blocks() {
     let block = BlockRect::new(0, 0, 16, 8);
     let ctx = ctx(block, BitDepth::Eight);
-    let plan =
-        GeneralIntraResidualPlan::rect(ctx, RectLumaPlan::Dc { use_tcq: true }, None, false, false)
-            .expect("rect luma plan");
+    let plan = GeneralIntraResidualPlan::rect(
+        ctx,
+        RectLumaPlan::Dc { use_tcq: true },
+        None,
+        false,
+        None,
+        false,
+    )
+    .expect("rect luma plan");
     assert!(plan.plane_plan(PlaneId::U).is_none());
     assert!(plan.plane_plan(PlaneId::V).is_none());
     assert_eq!(plan.transforms().chroma_tx(), None);
@@ -104,6 +110,7 @@ fn chroma_dc_uses_generic_rect_reconstruction() {
         Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
         false,
         false,
+        None,
         false,
     )
     .expect("square plan");
@@ -131,6 +138,7 @@ fn chroma_dpcm_direction_is_preserved_for_both_planes() {
         )),
         false,
         false,
+        None,
         false,
     )
     .expect("square plan");
@@ -158,6 +166,7 @@ fn fsc_coefficients_are_luma_only() {
         Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
         true,
         true,
+        None,
         false,
     )
     .expect("square fsc plan");
@@ -181,9 +190,15 @@ fn fsc_coefficients_are_luma_only() {
 fn large_luma_chunks_do_not_fill_parent_residual_block() {
     let block = BlockRect::new(0, 0, 32, 16);
     let ctx = ctx(block, BitDepth::Ten);
-    let plan =
-        GeneralIntraResidualPlan::rect(ctx, RectLumaPlan::Dc { use_tcq: true }, None, false, false)
-            .expect("rect luma plan");
+    let plan = GeneralIntraResidualPlan::rect(
+        ctx,
+        RectLumaPlan::Dc { use_tcq: true },
+        None,
+        false,
+        None,
+        false,
+    )
+    .expect("rect luma plan");
     let luma: Vec<_> = plan
         .planes
         .iter()
@@ -221,6 +236,7 @@ fn cfl_chroma_keeps_read_order_and_defers_reconstruction() {
             sb_mib: 16,
         }),
         false,
+        None,
         false,
     )
     .expect("cfl rect plan");
@@ -237,6 +253,7 @@ fn non_cfl_chroma_keeps_chunk_interleaving() {
         RectLumaPlan::Dc { use_tcq: true },
         Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
         false,
+        None,
         false,
     )
     .expect("dc rect plan");
@@ -255,6 +272,7 @@ fn non_lossless_chroma_uses_partition_chroma_ref() {
         RectLumaPlan::Dc { use_tcq: false },
         Some(RectChromaPlan::Mode(SupportedChromaMode::Paeth, None)),
         false,
+        None,
         false,
     )
     .expect("non-lossless chroma ref plan");
@@ -273,6 +291,7 @@ fn non_lossless_yuv444_chroma_follows_each_residual_chunk() {
         RectLumaPlan::Dc { use_tcq: true },
         Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
         false,
+        None,
         false,
     )
     .expect("non-lossless yuv444 rect plan");
@@ -312,6 +331,7 @@ fn lossless_large_chroma_follows_each_residual_chunk() {
         RectLumaPlan::Dc { use_tcq: false },
         Some(RectChromaPlan::Mode(SupportedChromaMode::D45, None)),
         false,
+        None,
         true,
     )
     .expect("lossless rect plan");
@@ -441,6 +461,7 @@ fn palette_map_is_sliced_for_each_partitioned_transform_size() {
         },
         None,
         false,
+        None,
         false,
     )
     .expect("palette rect plan");
@@ -497,6 +518,7 @@ fn directional_first_d135_partition_handoff_stays_lossless_only() {
         None,
         false,
         false,
+        None,
         false,
     )
     .expect("d135 square plan");
@@ -558,6 +580,7 @@ fn assert_case(case: Case) {
             Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
             true,
             false,
+            None,
             false,
         )
     } else {
@@ -567,6 +590,7 @@ fn assert_case(case: Case) {
             case.expect_chroma
                 .then_some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
             false,
+            None,
             false,
         )
     }
