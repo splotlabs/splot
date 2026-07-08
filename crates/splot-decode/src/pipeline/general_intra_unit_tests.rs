@@ -151,6 +151,28 @@ fn luma_modes_with_parts(
     })
 }
 
+fn luma_mrl_modes(
+    y_mode: IntraYMode,
+    angle_delta_y: i8,
+    mrl_index: u8,
+    mrl_sec_index: Option<u8>,
+) -> GeneralIntraBlockModes {
+    GeneralIntraBlockModes::luma_only(crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
+        y_mode,
+        angle_delta_y,
+        intra_joint_mode: 0,
+        mrl_index,
+        mrl_sec_index,
+        fsc_mode: 0,
+        uses_mrls: 1,
+        use_dip: 0,
+        dip_transpose: 0,
+        dip_mode: 0,
+        use_dpcm_y: 0,
+        dpcm_mode_y: 0,
+    })
+}
+
 fn with_active_fsc(mut modes: GeneralIntraBlockModes) -> GeneralIntraBlockModes {
     modes.fsc_mode = 1;
     modes
@@ -315,6 +337,32 @@ fn lossless_active_fsc_frontier_admits_edge_backed_rect_prediction_shapes() {
         )
     })
     .expect("edge-backed active FSC prediction shape should reach residual decode");
+}
+
+#[test]
+fn lossless_prediction_guard_admits_top_row_active_mrl_rect_luma() {
+    let modes = luma_mrl_modes(IntraYMode::D67_PRED_FOR_TEST, -1, 3, Some(0));
+    let top_row_left_edge = ctx_with_bit_depth(0, 8, 8, 2, BitDepth::Eight);
+
+    assert_eq!(
+        rect_luma_plan(&modes, top_row_left_edge, false, 32),
+        Ok(RectLumaPlan::OneSidedAboveMrl {
+            p_angle: 64,
+            mrl_index: 3,
+            above_mrl_index: 0,
+            secondary_mrl: false,
+            use_tcq: false,
+        })
+    );
+    ensure_lossless_verified_prediction_subset(
+        true,
+        false,
+        &modes,
+        top_row_left_edge,
+        32,
+        splot_core::span::ByteOffset::new(34),
+    )
+    .expect("top-row edge-backed active MRL luma should reach residual decode");
 }
 
 #[test]
@@ -895,6 +943,21 @@ fn admits_rect_luma_mrl_cases() {
                 above_mrl_index: 0,
                 is_sb_boundary: true,
                 secondary_mrl: true,
+                use_tcq: false,
+            },
+        ),
+        (
+            "top-row rect d67 one-sided above from left edge",
+            IntraYMode::D67_PRED_FOR_TEST,
+            -1,
+            3,
+            Some(0),
+            ctx(0, 8, 8, 2),
+            RectLumaPlan::OneSidedAboveMrl {
+                p_angle: 64,
+                mrl_index: 3,
+                above_mrl_index: 0,
+                secondary_mrl: false,
                 use_tcq: false,
             },
         ),

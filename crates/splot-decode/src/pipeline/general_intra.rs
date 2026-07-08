@@ -723,7 +723,6 @@ fn lossless_edge_backed_rect_luma_prediction_verified(
     sb_mib: usize,
 ) -> bool {
     if block_ctx.bit_depth() != BitDepth::Eight
-        || modes.uses_active_mrl()
         || modes.palette_y().is_some()
         || (modes.y_mode.supported_directional().is_none()
             && modes.supported_nondc_luma().is_none()
@@ -1003,7 +1002,7 @@ fn rect_luma_mrl_plan_for_parts(
             use_tcq,
         });
     }
-    if p_angle > 0 && p_angle < 90 && neighbours.has_above() {
+    if p_angle > 0 && p_angle < 90 && (neighbours.has_above() || neighbours.has_left()) {
         let p_angle = u16::try_from(p_angle).map_err(|_| unsupported_rect_luma())?;
         return Ok(RectLumaPlan::OneSidedAboveMrl {
             p_angle,
