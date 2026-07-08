@@ -90,6 +90,9 @@ impl IntraYMode {
     pub(crate) const D67_PRED_FOR_TEST: Self = Self(Self::D67_PRED);
 
     #[cfg(test)]
+    pub(crate) const D203_PRED_FOR_TEST: Self = Self(Self::D203_PRED);
+
+    #[cfg(test)]
     pub(crate) const D135_PRED_FOR_TEST: Self = Self(Self::D135_PRED);
 
     #[cfg(test)]

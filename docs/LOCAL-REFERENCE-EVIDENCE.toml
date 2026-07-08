@@ -4587,3 +4587,56 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-lossless-nondc-luma-d157-chroma-follow-leftedge-128x64-raw-md5"
 right = "avm-repeat-lossless-nondc-luma-d157-chroma-follow-leftedge-128x64-raw-md5"
+
+[[evidence]]
+id = "lref-avm-syn-lossless-nondc-luma-d203-chroma-follow-leftedge-128x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 4:2:0 128x64 lossless intra IVF fixture whose first-row right 64x64 block has a decoded left neighbor, no above neighbor, explicit non-DPCM D203_PRED luma, and non-DPCM uv_mode=0 D203-follow chroma. The fixture exercises the lossless luma and follow-chroma predictor guards for the left-edge D203 subset; splot reproduces the raw SHA-256 value through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-08"
+command = "Local reproduction decoded the committed syn-d203-intra-128x64-q80.ivf to raw with avmdec, wrapped that 128x64 I420 payload as Y4M, then encoded it with local AVM lossless mode, 64x64 square partitions, SDP disabled, angle delta disabled, and broad decode tools disabled."
+
+[[evidence.fixture]]
+id = "d203-follow-leftedge-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-nondc-luma-d203-chroma-follow-leftedge-128x64.ivf"
+sha256 = "5a3ef1c24c065ad59f59944a9cd05e506c28fa233b4167f5b057e411e65ebf1a"
+size_bytes = 1235
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally by AVM-encoding a project-owned 128x64 8-bit 4:2:0 Y4M input produced from the committed syn-d203-intra-128x64-q80.ivf decoded source image. Source Y4M SHA-256 was 4ccc52d6d50d30cfb4ddd5d3ea2fc36c79fa5a46a5c807bd3414e8f54dd9df0b; decoded raw SHA-256 was 3b95907f8808cc9d0bdd2eb376c8726019f7a4490cf8ecfcccab883fb11f8a3f. AVM inspect showed the right block carrying D203 luma and D203 chroma, and splot pre-fix failed closed at byte offset 66 with general_intra_lossless_other_nondc_luma_unverified. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec-lossless-nondc-luma-d203-chroma-follow-leftedge"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3 from the local fixture build; checkout contained untracked build directories only."
+command_summary = "Local avmdec rawvideo output MD5 and SHA-256 for {fixture:d203-follow-leftedge-input}."
+output_digest_id = "avm-lossless-nondc-luma-d203-chroma-follow-leftedge-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "2789636ec6bca9efcac829bbd7ca3712"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 3b95907f8808cc9d0bdd2eb376c8726019f7a4490cf8ecfcccab883fb11f8a3f is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat-lossless-nondc-luma-d203-chroma-follow-leftedge"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3 decode run from the committed fixture copy; checkout contained untracked build directories only."
+command_summary = "Repeated local avmdec rawvideo output MD5 for {fixture:d203-follow-leftedge-input}."
+output_digest_id = "avm-repeat-lossless-nondc-luma-d203-chroma-follow-leftedge-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "2789636ec6bca9efcac829bbd7ca3712"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-nondc-luma-d203-chroma-follow-leftedge-128x64-raw-md5"
+right = "avm-repeat-lossless-nondc-luma-d203-chroma-follow-leftedge-128x64-raw-md5"
