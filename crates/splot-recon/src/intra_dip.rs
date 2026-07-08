@@ -130,7 +130,7 @@ fn validate_dip_mode(dip_mode: usize) -> Result<()> {
 }
 
 fn validate_dip_size(size: IntraRectBlockSize) -> Result<()> {
-    if size.sample_count() >= 64 {
+    if size.width() >= 4 && size.height() >= 4 {
         Ok(())
     } else {
         Err(ReconError::UnsupportedIntraDipBlockSize {
@@ -433,24 +433,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_too_small_blocks() {
-        let err = predict_intra_dip_rect_into(
-            BitDepth::Eight,
-            rect_size(2, 3),
-            0,
-            false,
-            IntraDipEdges::new(&[128u8; 10], &[128u8; 5], 128),
-            &mut [0u8; 32],
-            4,
-        )
-        .unwrap_err();
-        assert_eq!(
-            err,
-            ReconError::UnsupportedIntraDipBlockSize {
-                width: 4,
-                height: 8,
+    fn accepts_quarter_grid_blocks() {
+        let size = rect_size(2, 2);
+        let left = [80u8, 84, 88, 92, 96];
+        let above = [180u8, 176, 172, 168, 164];
+        for mode in 0..DIP_MODE_COUNT {
+            for transpose in [false, true] {
+                let mut output = [0u8; 16];
+                predict_intra_dip_rect_into(
+                    BitDepth::Eight,
+                    size,
+                    mode,
+                    transpose,
+                    IntraDipEdges::new(&left, &above, 128),
+                    &mut output,
+                    4,
+                )
+                .unwrap();
+                assert!(output.iter().any(|&sample| sample > 0));
             }
-        );
+        }
     }
 
     #[test]
