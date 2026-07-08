@@ -859,10 +859,8 @@ pub(super) fn lossless_chroma_block_prediction_verified(
         ))
         || (!neighbours.has_above()
             && neighbours.has_left()
-            && matches!(
-                mode,
-                M::D45 | M::D45Follow | M::D157 | M::D157Follow | M::D203 | M::D203Follow
-            ))
+            && (matches!(mode, M::D45 | M::D45Follow | M::D113)
+                || matches!(mode, M::D157 | M::D157Follow | M::D203 | M::D203Follow)))
 }
 
 fn lossless_chroma_full_64_block(block_ctx: BlockCtx) -> bool {
