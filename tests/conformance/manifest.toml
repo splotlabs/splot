@@ -286,6 +286,11 @@ description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 128x64) from a pro
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-lossless-nondc-chroma-vfollow-leftedge-128x64.ivf"
+description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned flat-left-luma / horizontal-gradient-right-luma input with flat-left-chroma and column-gradient-right-chroma, with broad decode tools and SDP disabled. The stream carries a first-row right 64x64 block with a decoded left neighbor and no above neighbor, V_PRED luma syntax (§ 5.20.5.5, y_mode_set=0 and y_mode_idx=5), follow-mode non-DPCM V_PRED chroma syntax (§ 5.20.5.6, uv_mode_idx=0 resolves to VerticalFollow, use_dpcm_uv=0), and lossless 4x4 chroma residual units; avmdec and splot decode byte-exact to raw SHA-256 84b2a3c6212d5694b8914ca017b6dc7f6d6ae4876fc22582f2b924a5629e5304; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-lossless-nondc-chroma-h-leftedge-128x64.ivf"
 description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned flat-left-luma / horizontal-gradient-right-luma input with flat-left-chroma and row-gradient-right-chroma, with broad decode tools and SDP disabled. The stream carries a first-row right 64x64 block with a decoded left neighbor and no above neighbor, V_PRED luma syntax (§ 5.20.5.5, y_mode_set=0 and y_mode_idx=5), explicit non-DPCM H_PRED chroma syntax (§ 5.20.5.6, uv_mode_idx=6 resolves to H_PRED under V-luma chroma mode ordering, use_dpcm_uv=0), and lossless 4x4 chroma residual units; avmdec and splot decode byte-exact to raw SHA-256 a5e8e56e191e9558ed8591013fa884fb573c320adea6aa6db475680a69167740; validates clean."
 expect = "clean"
