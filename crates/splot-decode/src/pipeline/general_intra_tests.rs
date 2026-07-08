@@ -174,6 +174,10 @@ const LOSSLESS_SDP_NONDC_CHROMA_D45_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d45-intra-64x64.ivf"
 );
 
+const LOSSLESS_SDP_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d45-leftedge-128x64.ivf"
+);
+
 const LOSSLESS_SDP_NONDC_CHROMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d135-intra-64x64.ivf"
 );
@@ -907,12 +911,12 @@ fn assert_lossless_explicit_chroma_oracle(
 
 #[test]
 fn lossless_nondc_chroma_d45_leftedge_frame_decodes_to_oracle() {
-    assert_lossless_explicit_chroma_oracle(
+    assert_lossless_explicit_chroma_leftedge_pair_oracle(
         LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE,
         129,
-        (128, 64),
-        (64, 32),
-        "lossless explicit D45 left-edge",
+        LOSSLESS_SDP_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE,
+        120,
+        "D45",
         "56a0c73c398f6adb27194cb8d3908cea02791d63e79658c7552cc15a0752fc01",
     );
 }
@@ -1145,6 +1149,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         ));
     }
     for mode in [
+        SupportedChromaMode::D45,
         SupportedChromaMode::D113,
         SupportedChromaMode::D135,
         SupportedChromaMode::D157,
@@ -1404,10 +1409,8 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
             SupportedChromaMode::Paeth,
         ] {
             let neighbours = block_ctx.neighbours(PlaneId::U);
-            let proven_left_edge_directional = matches!(
-                mode,
-                SupportedChromaMode::D113 | SupportedChromaMode::D135 | SupportedChromaMode::D157
-            ) && !neighbours.has_above()
+            let proven_left_edge_directional = matches!(mode, M::D45 | M::D113 | M::D135 | M::D157)
+                && !neighbours.has_above()
                 && neighbours.has_left()
                 && sb_mib == general_intra::FULL_SB_N4_LUMA;
             if proven_left_edge_directional {
