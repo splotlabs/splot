@@ -731,6 +731,8 @@ fn lossless_luma_prediction_verified(
     block_ctx: BlockCtx,
     sb_mib: usize,
 ) -> bool {
+    use SupportedDirectionalLumaMode as L;
+
     if modes.luma_is_dc() || modes.uses_dpcm_y() {
         return true;
     }
@@ -743,20 +745,17 @@ fn lossless_luma_prediction_verified(
     let top_left_directional = block_ctx.is_top_left()
         && matches!(
             directional,
-            Some(
-                SupportedDirectionalLumaMode::Vertical
-                    | SupportedDirectionalLumaMode::Horizontal
-                    | SupportedDirectionalLumaMode::D45
-                    | SupportedDirectionalLumaMode::D135
-            )
+            Some(L::Vertical | L::Horizontal | L::D45 | L::D135)
         );
     let top_left_paeth = block_ctx.is_top_left() && modes.y_mode.is_paeth();
     let y_neighbours = block_ctx.neighbours(PlaneId::Y);
     let left_edge_d45_or_d113 = !y_neighbours.has_above()
         && y_neighbours.has_left()
-        && (directional == Some(SupportedDirectionalLumaMode::D45)
-            || (directional == Some(SupportedDirectionalLumaMode::D113)
-                && modes.supported_chroma_mode() == Some(SupportedChromaMode::D113Follow)));
+        && (directional == Some(L::D45)
+            || (directional == Some(L::D113)
+                && modes.supported_chroma_mode() == Some(SupportedChromaMode::D113Follow))
+            || (directional == Some(L::D135)
+                && modes.supported_chroma_mode() == Some(SupportedChromaMode::D135Follow)));
     full_64_sb_8bit
         && modes.angle_delta_y == 0
         && (top_left_directional || top_left_paeth || left_edge_d45_or_d113)
@@ -861,8 +860,10 @@ pub(super) fn lossless_chroma_block_prediction_verified(
         ))
         || (!neighbours.has_above()
             && neighbours.has_left()
-            && (matches!(mode, M::D45 | M::D45Follow | M::D113 | M::D113Follow)
-                || matches!(mode, M::D157 | M::D157Follow | M::D203 | M::D203Follow)))
+            && (matches!(
+                mode,
+                M::D45 | M::D45Follow | M::D113 | M::D113Follow | M::D135Follow
+            ) || matches!(mode, M::D157 | M::D157Follow | M::D203 | M::D203Follow)))
 }
 
 fn lossless_chroma_full_64_block(block_ctx: BlockCtx) -> bool {
