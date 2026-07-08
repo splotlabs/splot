@@ -847,7 +847,10 @@ pub(super) fn lossless_chroma_block_prediction_verified(
                     | M::D113Follow
                     | M::D135
                     | M::D135Follow
-            ) || matches!(mode, M::D157 | M::D157Follow | M::D203 | M::D203Follow)))
+            ) || matches!(
+                mode,
+                M::D157 | M::D157Follow | M::D203 | M::D203Follow | M::Paeth
+            )))
 }
 
 fn lossless_chroma_full_64_block(block_ctx: BlockCtx) -> bool {

@@ -1113,6 +1113,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         SupportedChromaMode::D157Follow,
         SupportedChromaMode::D203,
         SupportedChromaMode::D203Follow,
+        SupportedChromaMode::Paeth,
     ] {
         assert!(general_intra::lossless_chroma_block_prediction_verified(
             Some(mode),
@@ -1336,7 +1337,7 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
     use SupportedChromaMode as M;
 
     let reject_all_block_modes = [M::Vertical, M::Horizontal, M::D135, M::Paeth];
-    let reject_left_edge_block_modes = [M::Horizontal, M::Paeth];
+    let reject_left_edge_block_modes = [M::Horizontal];
     for (block_ctx, sb_mib, block_modes) in [
         (
             block_ctx(
@@ -1457,7 +1458,7 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
                 SupportedChromaMode::SmoothVertical,
                 SupportedChromaMode::Horizontal,
                 SupportedChromaMode::D67,
-                SupportedChromaMode::Paeth,
+                SupportedChromaMode::SmoothHorizontal,
             ],
         ),
         (
