@@ -1155,6 +1155,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         SupportedChromaMode::D135,
         SupportedChromaMode::D157,
         SupportedChromaMode::D203,
+        SupportedChromaMode::Paeth,
     ] {
         assert!(general_intra::lossless_chroma_part_prediction_verified(
             Some(mode),
@@ -1396,7 +1397,7 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
             let neighbours = block_ctx.neighbours(PlaneId::U);
             let proven_left_edge_directional = matches!(
                 mode,
-                M::Horizontal | M::D45 | M::D113 | M::D135 | M::D157 | M::D203
+                M::Horizontal | M::D45 | M::D113 | M::D135 | M::D157 | M::D203 | M::Paeth
             ) && !neighbours.has_above()
                 && neighbours.has_left()
                 && sb_mib == general_intra::FULL_SB_N4_LUMA;
