@@ -829,7 +829,11 @@ pub(super) fn lossless_chroma_part_prediction_verified(
         && y_mode == IntraYMode::DC_PRED
         && matches!(
             mode,
-            Some(SupportedChromaMode::Horizontal | SupportedChromaMode::D135)
+            Some(
+                SupportedChromaMode::Horizontal
+                    | SupportedChromaMode::D135
+                    | SupportedChromaMode::Paeth
+            )
         )
 }
 
