@@ -246,7 +246,13 @@ fn lossless_prediction_guard_precedes_active_fsc_frontier() {
         splot_core::span::ByteOffset::new(11),
     )
     .and_then(|()| {
-        ensure_lossless_fsc_frontier(true, &modes, splot_core::span::ByteOffset::new(11))
+        ensure_lossless_fsc_frontier(
+            true,
+            &modes,
+            ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
+            FULL_SB_N4_LUMA,
+            splot_core::span::ByteOffset::new(11),
+        )
     })
     .expect_err("unverified lossless luma prediction must fail before active FSC");
 
@@ -258,7 +264,7 @@ fn lossless_prediction_guard_precedes_active_fsc_frontier() {
 }
 
 #[test]
-fn lossless_active_fsc_frontier_still_rejects_verified_prediction_shapes() {
+fn lossless_active_fsc_frontier_still_rejects_non_rect_prediction_shapes() {
     let modes = with_active_fsc(luma_modes(IntraYMode::DC_PRED));
     let error = ensure_lossless_verified_prediction_subset(
         true,
@@ -269,7 +275,13 @@ fn lossless_active_fsc_frontier_still_rejects_verified_prediction_shapes() {
         splot_core::span::ByteOffset::new(12),
     )
     .and_then(|()| {
-        ensure_lossless_fsc_frontier(true, &modes, splot_core::span::ByteOffset::new(12))
+        ensure_lossless_fsc_frontier(
+            true,
+            &modes,
+            ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight),
+            FULL_SB_N4_LUMA,
+            splot_core::span::ByteOffset::new(12),
+        )
     })
     .expect_err("active FSC must fail closed until lossless FSC residuals are verified");
 
@@ -278,6 +290,31 @@ fn lossless_active_fsc_frontier_still_rejects_verified_prediction_shapes() {
         _ => "",
     };
     assert_eq!(reason, "general_intra_lossless_fsc_unverified");
+}
+
+#[test]
+fn lossless_active_fsc_frontier_admits_edge_backed_rect_prediction_shapes() {
+    let modes = with_active_fsc(luma_modes_with_angle(IntraYMode::D67_PRED_FOR_TEST, -2));
+    let above_only = ctx_with_bit_depth(3, 0, 1, 1, BitDepth::Eight);
+
+    ensure_lossless_verified_prediction_subset(
+        true,
+        false,
+        &modes,
+        above_only,
+        FULL_SB_N4_LUMA,
+        splot_core::span::ByteOffset::new(12),
+    )
+    .and_then(|()| {
+        ensure_lossless_fsc_frontier(
+            true,
+            &modes,
+            above_only,
+            FULL_SB_N4_LUMA,
+            splot_core::span::ByteOffset::new(12),
+        )
+    })
+    .expect("edge-backed active FSC prediction shape should reach residual decode");
 }
 
 #[test]
