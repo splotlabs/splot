@@ -817,27 +817,34 @@ fn admits_rect_angle_luma_cases() {
                 use_tcq: false,
             },
         ),
+        (
+            "first-column vpred angle-delta middle uses above edge",
+            93,
+            ctx(4, 0, 8, 4),
+            RectLumaPlan::Middle {
+                p_angle: 93,
+                use_tcq: false,
+            },
+        ),
+        (
+            "top-row d157 middle uses left edge",
+            157,
+            ctx(0, 4, 2, 1),
+            RectLumaPlan::Middle {
+                p_angle: 157,
+                use_tcq: false,
+            },
+        ),
     ] {
         assert_rect_luma_plan(None, Some(p_angle), block, expected, label);
     }
 }
 
 #[test]
-fn admits_top_row_rect_d113_angle_delta_as_middle_left_only() {
-    let rect_block = ctx(0, 312, 4, 8);
-    let mode = RectLumaPlan::Middle {
-        p_angle: 104,
-        use_tcq: false,
-    };
-
+fn rejects_rect_middle_luma_without_any_edge() {
     assert_eq!(
-        rect_luma_middle_left_only_plan(
-            IntraYMode::D113_PRED_FOR_TEST,
-            Some(104),
-            rect_block,
-            false,
-        ),
-        Some(mode)
+        rect_luma_plan_for_parts(None, Some(157), false, ctx(0, 0, 2, 1), false),
+        Err(unsupported_rect_luma())
     );
 }
 

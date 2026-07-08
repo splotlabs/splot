@@ -861,10 +861,6 @@ fn rect_luma_plan(
         block_ctx,
         use_tcq,
     )
-    .or_else(|error| {
-        rect_luma_middle_left_only_plan(modes.y_mode, directional_p_angle, block_ctx, use_tcq)
-            .ok_or(error)
-    })
 }
 
 fn rect_luma_mrl_plan(
@@ -980,13 +976,13 @@ fn rect_luma_plan_for_parts_ext(
     let supported_one_sided_above_rect = block.width4() >= 1 && block.height4() >= 1;
     let supported_one_sided_left_rect = block.width4() >= 1 && block.height4() >= 1;
     let neighbours = block_ctx.neighbours(PlaneId::Y);
+    let has_edge = neighbours.has_above() || neighbours.has_left();
     if luma_is_paeth {
         return Ok(RectLumaPlan::Paeth { use_tcq });
     }
     if let Some(mode) = nondc {
         return Ok(RectLumaPlan::Smooth { mode, use_tcq });
     }
-    let has_edge = neighbours.has_above() || neighbours.has_left();
     match directional_p_angle {
         Some(90) if supported_cardinal_rect && has_edge => {
             return Ok(RectLumaPlan::Cardinal {
@@ -1000,9 +996,7 @@ fn rect_luma_plan_for_parts_ext(
                 use_tcq,
             });
         }
-        Some(p_angle @ 91..=179)
-            if supported_middle_rect && neighbours.has_above() && neighbours.has_left() =>
-        {
+        Some(p_angle @ 91..=179) if supported_middle_rect && has_edge => {
             return Ok(RectLumaPlan::Middle { p_angle, use_tcq });
         }
         _ => {}
@@ -1022,28 +1016,6 @@ fn rect_luma_plan_for_parts_ext(
         _ => {}
     }
     Err(unsupported_rect_luma())
-}
-
-fn rect_luma_middle_left_only_plan(
-    y_mode: IntraYMode,
-    directional_p_angle: Option<u16>,
-    block_ctx: BlockCtx,
-    use_tcq: bool,
-) -> Option<RectLumaPlan> {
-    let p_angle = directional_p_angle?;
-    if !(91..=179).contains(&p_angle) {
-        return None;
-    }
-    let mode = y_mode.supported_directional()?;
-    let neighbours = block_ctx.neighbours(PlaneId::Y);
-    let top_row_left = !neighbours.has_above() && neighbours.has_left();
-    if !top_row_left {
-        return None;
-    }
-    let base_p_angle = directional_p_angle_for_luma(y_mode, 0, block_ctx)?;
-    let needs_delta_or_d113 =
-        p_angle != base_p_angle || matches!(mode, SupportedDirectionalLumaMode::D113);
-    needs_delta_or_d113.then_some(RectLumaPlan::Middle { p_angle, use_tcq })
 }
 
 fn rect_luma_directional_p_angle(
