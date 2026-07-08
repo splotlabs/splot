@@ -226,6 +226,11 @@ description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 128x64) from a pro
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-lossless-nondc-chroma-d135-leftedge-128x64.ivf"
+description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned flat-luma, first-row left-edge D135-shaped chroma input with broad decode tools and SDP disabled. The stream carries a first-row right 64x64 block with a decoded left neighbor and no above neighbor, H_PRED luma syntax, explicit non-DPCM D135_PRED chroma syntax (§ 5.20.5.6, uv_mode=8 resolves to D135_PRED, use_dpcm_uv=0), and lossless 4x4 chroma residual units; avmdec and splot decode byte-exact to raw SHA-256 2f7c27a87a7af7eaa9cc4d44b137a777bf323a7098d8ae33152e30a4060f4576; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-lossless-nondc-chroma-d113-leftedge-128x64.ivf"
 description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 128x64) from a project-owned flat-luma, D113-shaped chroma input with broad decode tools and SDP disabled. The stream carries a first-row right 64x64 block with a decoded left neighbor and no above neighbor, active DPCM-Y luma syntax (§ 5.20.5.5, use_dpcm_y=1), explicit non-DPCM D113_PRED chroma syntax (§ 5.20.5.6, uv_mode=10 resolves to D113_PRED, use_dpcm_uv=0), and lossless 4x4 residual units; avmdec and splot decode byte-exact to raw SHA-256 31e9ff391a6e9eb3872aa4aef9fadced89d0fe5da1f5bfeaf8a143e8208ad9bd; validates clean."
 expect = "clean"
