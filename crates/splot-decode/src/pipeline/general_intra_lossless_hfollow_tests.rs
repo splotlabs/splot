@@ -24,6 +24,9 @@ const LOSSLESS_SDP_NONDC_CHROMA_V_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
 const LOSSLESS_NONDC_CHROMA_VFOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-vfollow-leftedge-128x64.ivf"
 );
+const LOSSLESS_SDP_NONDC_CHROMA_VFOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-vfollow-leftedge-128x64.ivf"
+);
 const LOSSLESS_NONDC_CHROMA_PAETH_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-paeth-leftedge-128x64.ivf"
 );
@@ -154,6 +157,13 @@ fn lossless_nondc_chroma_ramped_leftedge_frames_decode_to_oracles() {
         },
         LosslessRampedLeftedgeOracle {
             fixture: LOSSLESS_NONDC_CHROMA_VFOLLOW_LEFTEDGE_FIXTURE,
+            expected_len: 230,
+            u_samples: &[(0, 128), (32, 72), (63, 184)],
+            v_samples: &[(0, 128), (32, 183), (63, 71)],
+            expected_hash: "84b2a3c6212d5694b8914ca017b6dc7f6d6ae4876fc22582f2b924a5629e5304",
+        },
+        LosslessRampedLeftedgeOracle {
+            fixture: LOSSLESS_SDP_NONDC_CHROMA_VFOLLOW_LEFTEDGE_FIXTURE,
             expected_len: 230,
             u_samples: &[(0, 128), (32, 72), (63, 184)],
             v_samples: &[(0, 128), (32, 183), (63, 71)],

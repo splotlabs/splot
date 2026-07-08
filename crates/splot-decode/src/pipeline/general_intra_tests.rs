@@ -1132,6 +1132,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     ));
     for mode in [
         SupportedChromaMode::Vertical,
+        SupportedChromaMode::VerticalFollow,
         SupportedChromaMode::Horizontal,
         SupportedChromaMode::D45,
         SupportedChromaMode::D113,
@@ -1150,6 +1151,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     }
     for mode in [
         SupportedChromaMode::Vertical,
+        SupportedChromaMode::VerticalFollow,
         SupportedChromaMode::Horizontal,
         SupportedChromaMode::D45,
         SupportedChromaMode::D113,
@@ -1399,6 +1401,7 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
             let proven_left_edge_directional = matches!(
                 mode,
                 M::Vertical
+                    | M::VerticalFollow
                     | M::Horizontal
                     | M::D45
                     | M::D113
