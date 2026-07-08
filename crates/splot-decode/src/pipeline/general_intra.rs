@@ -752,9 +752,13 @@ pub(super) fn lossless_chroma_part_prediction_verified(
             )
         );
     let neighbours = block_ctx.neighbours(PlaneId::U);
-    let left_edge_d135 =
-        !neighbours.has_above() && neighbours.has_left() && mode == Some(SupportedChromaMode::D135);
-    top_left || left_edge_d135
+    let left_edge_directional = !neighbours.has_above()
+        && neighbours.has_left()
+        && matches!(
+            mode,
+            Some(SupportedChromaMode::D135 | SupportedChromaMode::D157)
+        );
+    top_left || left_edge_directional
 }
 
 pub(super) fn lossless_chroma_block_prediction_verified(

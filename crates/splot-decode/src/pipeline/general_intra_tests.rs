@@ -182,6 +182,10 @@ const LOSSLESS_SDP_NONDC_CHROMA_D135_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d135-leftedge-128x64.ivf"
 );
 
+const LOSSLESS_SDP_NONDC_CHROMA_D157_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d157-leftedge-128x64.ivf"
+);
+
 const LOSSLESS_SDP_NONDC_CHROMA_PAETH_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-paeth-intra-64x64.ivf"
 );
@@ -909,22 +913,38 @@ fn lossless_nondc_chroma_d45_leftedge_frame_decodes_to_oracle() {
     );
 }
 
+fn assert_lossless_explicit_chroma_leftedge_pair_oracle(
+    normal_fixture: &[u8],
+    normal_len: usize,
+    sdp_fixture: &[u8],
+    sdp_len: usize,
+    mode_label: &str,
+    expected_hash: &str,
+) {
+    for (fixture, expected_len, prefix) in [
+        (normal_fixture, normal_len, "lossless explicit"),
+        (sdp_fixture, sdp_len, "lossless SDP explicit"),
+    ] {
+        let label = format!("{prefix} {mode_label} left-edge");
+        assert_lossless_explicit_chroma_oracle(
+            fixture,
+            expected_len,
+            (128, 64),
+            (64, 32),
+            &label,
+            expected_hash,
+        );
+    }
+}
+
 #[test]
 fn lossless_nondc_chroma_d135_leftedge_frame_decodes_to_oracle() {
-    assert_lossless_explicit_chroma_oracle(
+    assert_lossless_explicit_chroma_leftedge_pair_oracle(
         LOSSLESS_NONDC_CHROMA_D135_LEFTEDGE_FIXTURE,
         276,
-        (128, 64),
-        (64, 32),
-        "lossless explicit D135 left-edge",
-        "2f7c27a87a7af7eaa9cc4d44b137a777bf323a7098d8ae33152e30a4060f4576",
-    );
-    assert_lossless_explicit_chroma_oracle(
         LOSSLESS_SDP_NONDC_CHROMA_D135_LEFTEDGE_FIXTURE,
         275,
-        (128, 64),
-        (64, 32),
-        "lossless SDP explicit D135 left-edge",
+        "D135",
         "2f7c27a87a7af7eaa9cc4d44b137a777bf323a7098d8ae33152e30a4060f4576",
     );
 }
@@ -943,12 +963,12 @@ fn lossless_nondc_chroma_d113_leftedge_frame_decodes_to_oracle() {
 
 #[test]
 fn lossless_nondc_chroma_d157_leftedge_frame_decodes_to_oracle() {
-    assert_lossless_explicit_chroma_oracle(
+    assert_lossless_explicit_chroma_leftedge_pair_oracle(
         LOSSLESS_NONDC_CHROMA_D157_LEFTEDGE_FIXTURE,
         331,
-        (128, 64),
-        (64, 32),
-        "lossless explicit D157 left-edge",
+        LOSSLESS_SDP_NONDC_CHROMA_D157_LEFTEDGE_FIXTURE,
+        331,
+        "D157",
         "88077765e8df42e0b3a6d00e8f84c705caf83080cc0fb1c0b79f04e855f015bc",
     );
 }
@@ -1105,48 +1125,30 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         left_edge_8,
         32,
     ));
-    assert!(general_intra::lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::Vertical),
-        false,
-        crate::bitstream::tile_payload::IntraYMode::DC_PRED,
-        top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::Horizontal),
-        false,
-        crate::bitstream::tile_payload::IntraYMode::DC_PRED,
-        top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::D45),
-        false,
-        crate::bitstream::tile_payload::IntraYMode::DC_PRED,
-        top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::D135),
-        false,
-        crate::bitstream::tile_payload::IntraYMode::DC_PRED,
-        top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::Paeth),
-        false,
-        crate::bitstream::tile_payload::IntraYMode::DC_PRED,
-        top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::D135),
-        false,
-        crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
+    for mode in [
+        SupportedChromaMode::Vertical,
+        SupportedChromaMode::Horizontal,
+        SupportedChromaMode::D45,
+        SupportedChromaMode::D135,
+        SupportedChromaMode::Paeth,
+    ] {
+        assert!(general_intra::lossless_chroma_part_prediction_verified(
+            Some(mode),
+            false,
+            crate::bitstream::tile_payload::IntraYMode::DC_PRED,
+            top_left_8,
+            general_intra::FULL_SB_N4_LUMA,
+        ));
+    }
+    for mode in [SupportedChromaMode::D135, SupportedChromaMode::D157] {
+        assert!(general_intra::lossless_chroma_part_prediction_verified(
+            Some(mode),
+            false,
+            crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
+            left_edge_8,
+            general_intra::FULL_SB_N4_LUMA,
+        ));
+    }
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::Smooth),
         false,
@@ -1389,14 +1391,16 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
             SupportedChromaMode::Horizontal,
             SupportedChromaMode::D45,
             SupportedChromaMode::D135,
+            SupportedChromaMode::D157,
             SupportedChromaMode::Paeth,
         ] {
             let neighbours = block_ctx.neighbours(PlaneId::U);
-            let proven_left_edge_d135 = mode == SupportedChromaMode::D135
-                && !neighbours.has_above()
-                && neighbours.has_left()
-                && sb_mib == general_intra::FULL_SB_N4_LUMA;
-            if proven_left_edge_d135 {
+            let proven_left_edge_directional =
+                matches!(mode, SupportedChromaMode::D135 | SupportedChromaMode::D157)
+                    && !neighbours.has_above()
+                    && neighbours.has_left()
+                    && sb_mib == general_intra::FULL_SB_N4_LUMA;
+            if proven_left_edge_directional {
                 continue;
             }
             assert!(!general_intra::lossless_chroma_part_prediction_verified(
