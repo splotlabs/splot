@@ -1,0 +1,1011 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+#![allow(clippy::expect_used)]
+
+use super::*;
+
+fn ctx(row4: usize, col4: usize, width4: usize, height4: usize) -> BlockCtx {
+    ctx_with_bit_depth(row4, col4, width4, height4, BitDepth::Ten)
+}
+
+fn ctx_with_bit_depth(
+    row4: usize,
+    col4: usize,
+    width4: usize,
+    height4: usize,
+    bit_depth: BitDepth,
+) -> BlockCtx {
+    BlockCtx::new(
+        BlockRect::new(row4, col4, width4, height4),
+        TxShape::from_luma_4x4(width4, height4).expect("valid transform shape"),
+        480,
+        270,
+        bit_depth,
+        ChromaSampling::Yuv420,
+    )
+}
+
+fn assert_chroma_admitted(mode: SupportedChromaMode, block: BlockCtx) {
+    assert!(ensure_supported_chroma_capability(mode, None, block).is_ok());
+    assert!(ten_bit_general_intra_chroma_admitted(Some(mode), block));
+}
+
+fn assert_rect_chroma_admitted(mode: SupportedChromaMode, block: BlockCtx) {
+    assert!(ensure_supported_rect_chroma_capability(mode, block).is_ok());
+    assert!(ten_bit_general_intra_chroma_admitted(Some(mode), block));
+}
+
+fn assert_rect_chroma_plan(
+    mode: SupportedChromaMode,
+    angle_delta: i8,
+    block: BlockCtx,
+    expected: RectChromaPlan,
+    label: &str,
+) {
+    assert!(
+        ensure_supported_rect_chroma_capability(mode, block).is_ok(),
+        "{label}"
+    );
+    assert!(
+        ten_bit_general_intra_chroma_admitted(Some(mode), block),
+        "{label}"
+    );
+    assert_eq!(
+        rect_chroma_plan_for_mode(mode, angle_delta, None, block),
+        expected,
+        "{label}"
+    );
+}
+
+fn assert_rect_luma_plan(
+    mode: Option<crate::bitstream::tile_payload::SupportedNonDcLumaMode>,
+    directional_p_angle: Option<u16>,
+    block: BlockCtx,
+    expected: RectLumaPlan,
+    label: &str,
+) {
+    assert_eq!(
+        rect_luma_plan_for_parts(mode, directional_p_angle, false, block, false),
+        Ok(expected),
+        "{label}"
+    );
+}
+
+fn rect_luma_plan_for_parts(
+    nondc: Option<SupportedNonDcLumaMode>,
+    directional_p_angle: Option<u16>,
+    luma_is_dc: bool,
+    block_ctx: BlockCtx,
+    use_tcq: bool,
+) -> core::result::Result<RectLumaPlan, IntraLumaUnsupported> {
+    rect_luma_plan_for_parts_ext(
+        false,
+        nondc,
+        directional_p_angle,
+        luma_is_dc,
+        block_ctx,
+        use_tcq,
+    )
+}
+
+fn assert_rect_luma_mrl_plan(
+    y_mode: IntraYMode,
+    angle_delta_y: i8,
+    mrl_index: u8,
+    mrl_sec_index: Option<u8>,
+    block: BlockCtx,
+    expected: RectLumaPlan,
+    label: &str,
+) {
+    assert_eq!(
+        rect_luma_mrl_plan_for_parts(
+            y_mode,
+            angle_delta_y,
+            mrl_index,
+            mrl_sec_index,
+            block,
+            false,
+            32,
+        ),
+        Ok(expected),
+        "{label}"
+    );
+}
+
+fn luma_modes(y_mode: IntraYMode) -> GeneralIntraBlockModes {
+    luma_modes_with_angle(y_mode, 0)
+}
+
+fn luma_modes_with_angle(y_mode: IntraYMode, angle_delta_y: i8) -> GeneralIntraBlockModes {
+    luma_modes_with_parts(y_mode, angle_delta_y, 0, 0)
+}
+
+fn luma_modes_with_dpcm(
+    y_mode: IntraYMode,
+    use_dpcm_y: u8,
+    dpcm_mode_y: u8,
+) -> GeneralIntraBlockModes {
+    luma_modes_with_parts(y_mode, 0, use_dpcm_y, dpcm_mode_y)
+}
+
+fn luma_modes_with_parts(
+    y_mode: IntraYMode,
+    angle_delta_y: i8,
+    use_dpcm_y: u8,
+    dpcm_mode_y: u8,
+) -> GeneralIntraBlockModes {
+    GeneralIntraBlockModes::luma_only(crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
+        y_mode,
+        angle_delta_y,
+        intra_joint_mode: 0,
+        mrl_index: 0,
+        mrl_sec_index: None,
+        fsc_mode: 0,
+        uses_mrls: 0,
+        use_dpcm_y,
+        dpcm_mode_y,
+    })
+}
+
+#[test]
+fn luma_tx_partition_context_uses_current_block_lossless_flag() {
+    let block_size_index = 6;
+
+    assert_eq!(
+        luma_tx_partition_context(Some(TxMode::Select), block_size_index, false),
+        Some(LumaTransformPartitionContext::new(block_size_index))
+    );
+    assert_eq!(
+        luma_tx_partition_context(Some(TxMode::Select), block_size_index, true),
+        None
+    );
+    assert_eq!(
+        luma_tx_partition_context(Some(TxMode::Largest), block_size_index, false),
+        None
+    );
+}
+
+#[test]
+fn lossless_prediction_guard_admits_dc_luma_and_dpcm() {
+    let modes = luma_modes(IntraYMode::DC_PRED);
+    let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
+
+    assert!(
+        ensure_lossless_verified_prediction_subset(
+            true,
+            false,
+            &modes,
+            top_left,
+            FULL_SB_N4_LUMA,
+            splot_core::span::ByteOffset::new(0),
+        )
+        .is_ok()
+    );
+
+    let modes = luma_modes_with_dpcm(IntraYMode::V_PRED_FOR_TEST, 1, 0);
+    assert!(
+        ensure_lossless_verified_prediction_subset(
+            true,
+            false,
+            &modes,
+            top_left,
+            FULL_SB_N4_LUMA,
+            splot_core::span::ByteOffset::new(9),
+        )
+        .is_ok()
+    );
+}
+
+fn assert_lossless_directional_luma_admitted(mode: IntraYMode) {
+    let top_left = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
+    let modes = luma_modes(mode);
+
+    assert!(
+        ensure_lossless_verified_prediction_subset(
+            true,
+            false,
+            &modes,
+            top_left,
+            FULL_SB_N4_LUMA,
+            splot_core::span::ByteOffset::new(9),
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn lossless_prediction_guard_admits_top_left_cardinal_luma() {
+    for mode in [IntraYMode::V_PRED_FOR_TEST, IntraYMode::H_PRED_FOR_TEST] {
+        assert_lossless_directional_luma_admitted(mode);
+    }
+}
+
+#[test]
+fn lossless_prediction_guard_admits_top_left_d135_luma() {
+    assert_lossless_directional_luma_admitted(IntraYMode::D135_PRED_FOR_TEST);
+}
+
+#[test]
+fn cardinal_top_left_guard_admits_only_verified_shapes() {
+    let top_left_8 = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
+    let vertical = luma_modes_with_angle(IntraYMode::V_PRED_FOR_TEST, 2);
+    let horizontal = luma_modes(IntraYMode::H_PRED_FOR_TEST);
+
+    assert_eq!(
+        plan_luma_prediction_for_segment(&vertical, top_left_8, false, FULL_SB_N4_LUMA)
+            .expect("verified top-left V_PRED angle delta should plan"),
+        crate::prediction::intra::IntraLumaPlan::DirectionalMiddle { p_angle: 96 }
+    );
+    assert_eq!(
+        plan_luma_prediction_for_segment(&horizontal, top_left_8, false, FULL_SB_N4_LUMA)
+            .expect("verified top-left H_PRED cardinal should plan"),
+        crate::prediction::intra::IntraLumaPlan::CardinalNeighbour {
+            direction: IntraCardinalDirection::Horizontal,
+        }
+    );
+
+    for (modes, block_ctx, sb_mib) in [
+        (
+            luma_modes(IntraYMode::V_PRED_FOR_TEST),
+            top_left_8,
+            FULL_SB_N4_LUMA,
+        ),
+        (
+            luma_modes_with_angle(IntraYMode::V_PRED_FOR_TEST, 1),
+            top_left_8,
+            FULL_SB_N4_LUMA,
+        ),
+        (
+            vertical,
+            ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
+            FULL_SB_N4_LUMA,
+        ),
+        (vertical, top_left_8, 32),
+        (
+            horizontal,
+            ctx_with_bit_depth(0, 0, 4, 4, BitDepth::Eight),
+            FULL_SB_N4_LUMA,
+        ),
+        (
+            vertical,
+            ctx_with_bit_depth(0, 0, 4, 4, BitDepth::Eight),
+            FULL_SB_N4_LUMA,
+        ),
+    ] {
+        assert!(
+            plan_luma_prediction_for_segment(&modes, block_ctx, false, sb_mib).is_err(),
+            "unverified non-lossless cardinal luma shape must fail closed"
+        );
+    }
+}
+
+#[test]
+fn lossless_prediction_guard_rejects_unverified_directional_variants() {
+    let top_left_8 = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
+    let top_left_10 = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
+
+    for mode in [
+        IntraYMode::V_PRED_FOR_TEST,
+        IntraYMode::H_PRED_FOR_TEST,
+        IntraYMode::D45_PRED_FOR_TEST,
+        IntraYMode::D135_PRED_FOR_TEST,
+    ] {
+        for (modes, block_ctx, sb_mib) in [
+            (luma_modes_with_angle(mode, 1), top_left_8, FULL_SB_N4_LUMA),
+            (luma_modes(mode), top_left_10, FULL_SB_N4_LUMA),
+            (luma_modes(mode), top_left_8, 32),
+        ] {
+            let error = ensure_lossless_verified_prediction_subset(
+                true,
+                false,
+                &modes,
+                block_ctx,
+                sb_mib,
+                splot_core::span::ByteOffset::new(9),
+            )
+            .expect_err("unverified lossless directional luma variant must fail closed");
+
+            let reason = match error {
+                DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
+                _ => "",
+            };
+            assert_eq!(reason, "general_intra_lossless_other_nondc_luma_unverified");
+        }
+    }
+}
+
+#[test]
+fn admits_10bit_chroma_edge_cases() {
+    for (mode, block) in [
+        (
+            SupportedChromaMode::Vertical,
+            ctx(0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
+        ),
+        (
+            SupportedChromaMode::HorizontalFollow,
+            ctx(FULL_SB_N4_LUMA, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
+        ),
+        (
+            SupportedChromaMode::Paeth,
+            ctx(0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
+        ),
+    ] {
+        assert_chroma_admitted(mode, block);
+    }
+}
+
+#[test]
+fn admits_top_left_horizontal_chroma_subblock() {
+    let top_left_subblock = ctx(0, 0, 8, 8);
+
+    assert!(
+        ensure_supported_chroma_capability(
+            SupportedChromaMode::Horizontal,
+            None,
+            top_left_subblock,
+        )
+        .is_ok()
+    );
+    assert!(!ten_bit_general_intra_chroma_admitted(
+        Some(SupportedChromaMode::Horizontal),
+        top_left_subblock
+    ));
+}
+
+#[test]
+fn admits_top_left_vertical_chroma_only_for_dpcm() {
+    let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
+
+    assert!(
+        ensure_supported_chroma_capability(SupportedChromaMode::Vertical, None, top_left).is_err()
+    );
+    assert!(
+        ensure_supported_chroma_capability(
+            SupportedChromaMode::Vertical,
+            Some(DpcmDirection::Vertical),
+            top_left,
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn admits_top_left_rect_horizontal_chroma_subblock() {
+    let top_left_rect = ctx(0, 0, 8, 4);
+
+    assert!(
+        ensure_supported_rect_chroma_capability(SupportedChromaMode::Horizontal, top_left_rect,)
+            .is_ok()
+    );
+    assert!(!ten_bit_general_intra_chroma_admitted(
+        Some(SupportedChromaMode::Horizontal),
+        top_left_rect
+    ));
+}
+
+#[test]
+fn admits_top_left_smooth_chroma_subblock() {
+    let top_left = ctx(0, 0, 2, 2);
+
+    assert!(
+        ensure_supported_chroma_capability(SupportedChromaMode::SmoothHorizontal, None, top_left)
+            .is_ok()
+    );
+    assert!(
+        ensure_supported_rect_chroma_capability(SupportedChromaMode::SmoothHorizontal, top_left,)
+            .is_ok()
+    );
+    assert!(!ten_bit_general_intra_chroma_admitted(
+        Some(SupportedChromaMode::SmoothHorizontal),
+        top_left
+    ));
+}
+
+#[test]
+fn admits_10bit_rect_chroma_edge_cases() {
+    for (mode, block) in [
+        (
+            SupportedChromaMode::Horizontal,
+            ctx(0, 224, 32, FULL_SB_N4_LUMA),
+        ),
+        (SupportedChromaMode::Smooth, ctx(0, 288, FULL_SB_N4_LUMA, 8)),
+        (
+            SupportedChromaMode::Paeth,
+            ctx(FULL_SB_N4_LUMA, 192, FULL_SB_N4_LUMA, 8),
+        ),
+    ] {
+        assert_rect_chroma_admitted(mode, block);
+    }
+}
+
+#[test]
+fn admits_10bit_small_rect_smooth_chroma_with_above_left_edges() {
+    let rect_block = ctx(24, 200, 2, 4);
+
+    assert_rect_chroma_admitted(SupportedChromaMode::Smooth, rect_block);
+}
+
+#[test]
+fn admits_square_smooth_chroma_subblock_with_above_left_edges() {
+    let square_block = ctx(24, 200, 8, 8);
+
+    assert_chroma_admitted(SupportedChromaMode::Smooth, square_block);
+}
+
+#[test]
+fn admits_small_vertical_follow_chroma_with_above_edge() {
+    let small_block = ctx(20, 218, 2, 2);
+
+    assert_chroma_admitted(SupportedChromaMode::VerticalFollow, small_block);
+}
+
+#[test]
+fn admits_rect_vertical_follow_chroma_with_left_only_edge() {
+    let first_row_rect_block = ctx(0, 416, 8, FULL_SB_N4_LUMA);
+
+    assert_chroma_admitted(SupportedChromaMode::VerticalFollow, first_row_rect_block);
+    assert_rect_chroma_admitted(SupportedChromaMode::VerticalFollow, first_row_rect_block);
+}
+
+#[test]
+fn admits_small_d135_follow_chroma_with_above_left_edges() {
+    let small_block = ctx(24, 200, 8, 8);
+
+    assert_chroma_admitted(SupportedChromaMode::D135Follow, small_block);
+}
+
+#[test]
+fn admits_square_middle_chroma_with_one_sided_edge() {
+    let above_only = ctx(FULL_SB_N4_LUMA, 0, 8, 8);
+    let left_only = ctx(0, FULL_SB_N4_LUMA, 8, 8);
+    let modes = [
+        SupportedChromaMode::D113Follow,
+        SupportedChromaMode::D113,
+        SupportedChromaMode::D135Follow,
+        SupportedChromaMode::D135,
+        SupportedChromaMode::D157Follow,
+        SupportedChromaMode::D157,
+    ];
+
+    for mode in modes {
+        assert_chroma_admitted(mode, above_only);
+        assert_chroma_admitted(mode, left_only);
+    }
+}
+
+#[test]
+fn admits_small_d157_follow_chroma_with_above_left_edges() {
+    let small_block = ctx(16, 416, 8, 8);
+
+    assert_chroma_admitted(SupportedChromaMode::D157Follow, small_block);
+}
+
+#[test]
+fn admits_small_d67_follow_chroma_with_above_right_edge() {
+    let small_block = ctx(28, 216, 2, 4);
+
+    assert_chroma_admitted(SupportedChromaMode::D67Follow, small_block);
+    assert_rect_chroma_admitted(SupportedChromaMode::D67Follow, small_block);
+}
+
+#[test]
+fn admits_d67_follow_chroma_with_above_only_edge() {
+    let first_col_block = ctx(128, 0, 32, 32);
+
+    assert_chroma_admitted(SupportedChromaMode::D67Follow, first_col_block);
+    assert_rect_chroma_admitted(SupportedChromaMode::D67Follow, first_col_block);
+}
+
+#[test]
+fn admits_top_left_full_sb_d45_chroma() {
+    let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
+
+    assert!(ensure_supported_chroma_capability(SupportedChromaMode::D45, None, top_left).is_ok());
+}
+
+#[test]
+fn admits_rect_d113_chroma_at_tile_start_with_above_edge() {
+    let tile_start_block = ctx(8, 16, 16, 8).with_tile_bounds(0, 16, 16, 32);
+    let neighbours = tile_start_block.neighbours(PlaneId::U);
+
+    assert!(neighbours.has_above());
+    assert!(!neighbours.has_left());
+    assert!(
+        ensure_supported_rect_chroma_capability(SupportedChromaMode::D113, tile_start_block)
+            .is_ok()
+    );
+}
+
+#[test]
+fn admits_chroma_ref_rect_d157_follow_chroma_with_above_left_edges() {
+    let chroma_ref = BlockRect::new(24, 220, 2, 4);
+    let chroma_tx = TxShape::from_luma_4x4(2, 4).expect("valid chroma reference transform");
+    let rect_block = ctx(24, 221, 1, 4).with_chroma_ref(chroma_ref, chroma_tx);
+
+    assert_rect_chroma_admitted(SupportedChromaMode::D157Follow, rect_block);
+}
+
+#[test]
+fn admits_10bit_square_paeth_chroma_subblock_with_above_left_edges() {
+    let square_subblock = ctx(40, 160, 8, 8);
+
+    assert_chroma_admitted(SupportedChromaMode::Paeth, square_subblock);
+}
+
+#[test]
+fn admits_10bit_small_d203_follow_chroma_subblock() {
+    let d203_subblock = ctx(32, 300, 2, 8);
+
+    assert_chroma_admitted(SupportedChromaMode::D203Follow, d203_subblock);
+}
+
+#[test]
+fn admits_rect_d203_follow_chroma_subblock_with_left_edge() {
+    let d203_subblock = ctx(32, 300, 2, 8);
+
+    assert!(
+        ensure_supported_rect_chroma_capability(SupportedChromaMode::D203Follow, d203_subblock,)
+            .is_ok()
+    );
+}
+
+#[test]
+fn admits_rect_smooth_luma_cases() {
+    use crate::bitstream::tile_payload::SupportedNonDcLumaMode::{
+        Smooth, SmoothHorizontal, SmoothVertical,
+    };
+
+    for (label, mode, block) in [
+        (
+            "large vertical rect with left-only edge",
+            SmoothVertical,
+            ctx(0, 256, 32, FULL_SB_N4_LUMA),
+        ),
+        (
+            "small rect with above-left edges",
+            Smooth,
+            ctx(24, 200, 2, 4),
+        ),
+        (
+            "thin rect with above-left edges",
+            Smooth,
+            ctx(48, 150, 1, 4),
+        ),
+        (
+            "small horizontal rect with left edge",
+            SmoothHorizontal,
+            ctx(17, 220, 4, 1),
+        ),
+    ] {
+        assert_rect_luma_plan(
+            Some(mode),
+            None,
+            block,
+            RectLumaPlan::Smooth {
+                mode,
+                use_tcq: false,
+            },
+            label,
+        );
+    }
+}
+
+#[test]
+fn admits_small_rect_paeth_luma_regardless_of_neighbour_edges() {
+    let want = Ok(RectLumaPlan::Paeth { use_tcq: false });
+    for block in [ctx(18, 220, 4, 2), ctx(0, 0, 4, 2)] {
+        assert_eq!(
+            rect_luma_plan_for_parts_ext(true, None, None, false, block, false),
+            want
+        );
+    }
+}
+
+#[test]
+fn admits_rect_luma_mrl_cases() {
+    for (label, y_mode, angle_delta_y, mrl_index, mrl_sec_index, block, expected) in [
+        (
+            "small rect d135 middle",
+            IntraYMode::D135_PRED_FOR_TEST,
+            0,
+            3,
+            Some(0),
+            ctx(20, 216, 1, 4),
+            RectLumaPlan::MiddleMrl {
+                p_angle: 135,
+                mrl_index: 3,
+                above_mrl_index: 3,
+                is_sb_boundary: false,
+                secondary_mrl: false,
+                use_tcq: false,
+            },
+        ),
+        (
+            "small square vertical cardinal secondary",
+            IntraYMode::V_PRED_FOR_TEST,
+            0,
+            3,
+            Some(1),
+            ctx(16, 264, 4, 4),
+            RectLumaPlan::CardinalMrl {
+                direction: IntraCardinalDirection::Vertical,
+                mrl_index: 3,
+                above_mrl_index: 3,
+                secondary_mrl: true,
+                use_tcq: false,
+            },
+        ),
+        (
+            "d45 one-sided above sb boundary",
+            IntraYMode::D45_PRED_FOR_TEST,
+            -2,
+            1,
+            Some(0),
+            ctx(32, 216, 4, 4),
+            RectLumaPlan::OneSidedAboveMrl {
+                p_angle: 40,
+                mrl_index: 1,
+                above_mrl_index: 0,
+                secondary_mrl: false,
+                use_tcq: false,
+            },
+        ),
+        (
+            "small square d157 middle",
+            IntraYMode::D157_PRED_FOR_TEST,
+            3,
+            1,
+            Some(0),
+            ctx(26, 222, 2, 2),
+            RectLumaPlan::MiddleMrl {
+                p_angle: 167,
+                mrl_index: 1,
+                above_mrl_index: 1,
+                is_sb_boundary: false,
+                secondary_mrl: false,
+                use_tcq: false,
+            },
+        ),
+        (
+            "top-row rect d113 middle",
+            IntraYMode::D113_PRED_FOR_TEST,
+            -1,
+            2,
+            Some(1),
+            ctx(0, 316, 4, 8),
+            RectLumaPlan::MiddleMrl {
+                p_angle: 109,
+                mrl_index: 2,
+                above_mrl_index: 0,
+                is_sb_boundary: true,
+                secondary_mrl: true,
+                use_tcq: false,
+            },
+        ),
+        (
+            "rect d67 one-sided left after wide-angle mapping",
+            IntraYMode::D67_PRED_FOR_TEST,
+            0,
+            2,
+            Some(0),
+            ctx(22, 313, 2, 8),
+            RectLumaPlan::OneSidedLeftMrl {
+                p_angle: 246,
+                mrl_index: 2,
+                secondary_mrl: false,
+                use_tcq: false,
+            },
+        ),
+    ] {
+        assert_rect_luma_mrl_plan(
+            y_mode,
+            angle_delta_y,
+            mrl_index,
+            mrl_sec_index,
+            block,
+            expected,
+            label,
+        );
+    }
+}
+
+#[test]
+fn admits_right_edge_rect_d45_as_one_sided_above_luma_without_above_right() {
+    let right_edge_block = ctx(8, 479, 1, 2);
+
+    let neighbours = right_edge_block.neighbours(PlaneId::Y);
+    assert!(neighbours.has_above());
+    assert_eq!(neighbours.num_above_right(), 0);
+
+    let plan = rect_luma_plan_for_parts(None, Some(45), false, right_edge_block, false);
+    assert!(matches!(
+        plan,
+        Ok(RectLumaPlan::OneSidedAbove {
+            p_angle: 45,
+            use_tcq: false,
+        })
+    ));
+}
+
+#[test]
+fn admits_rect_cardinal_luma_cases() {
+    for (label, p_angle, block, direction) in [
+        (
+            "large vertical with above edge",
+            90,
+            ctx(FULL_SB_N4_LUMA, 256, 32, FULL_SB_N4_LUMA),
+            IntraCardinalDirection::Vertical,
+        ),
+        (
+            "vertical with left-only edge",
+            90,
+            ctx(0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
+            IntraCardinalDirection::Vertical,
+        ),
+        (
+            "horizontal with above-only edge",
+            180,
+            ctx(80, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
+            IntraCardinalDirection::Horizontal,
+        ),
+        (
+            "small vertical with above edge",
+            90,
+            ctx(24, 204, 1, 2),
+            IntraCardinalDirection::Vertical,
+        ),
+    ] {
+        assert_rect_luma_plan(
+            None,
+            Some(p_angle),
+            block,
+            RectLumaPlan::Cardinal {
+                direction,
+                use_tcq: false,
+            },
+            label,
+        );
+    }
+}
+
+#[test]
+fn admits_rect_angle_luma_cases() {
+    for (label, p_angle, block, expected) in [
+        (
+            "small rect d67 one-sided above",
+            76,
+            ctx(28, 216, 2, 4),
+            RectLumaPlan::OneSidedAbove {
+                p_angle: 76,
+                use_tcq: false,
+            },
+        ),
+        (
+            "small first-row hpred one-sided left",
+            186,
+            ctx(0, 264, 8, 4),
+            RectLumaPlan::OneSidedLeft {
+                p_angle: 186,
+                use_tcq: false,
+            },
+        ),
+        (
+            "small rect middle",
+            151,
+            ctx(26, 204, 1, 2),
+            RectLumaPlan::Middle {
+                p_angle: 151,
+                use_tcq: false,
+            },
+        ),
+        (
+            "rect d67 one-sided above",
+            61,
+            ctx(8, 336, FULL_SB_N4_LUMA, 8),
+            RectLumaPlan::OneSidedAbove {
+                p_angle: 61,
+                use_tcq: false,
+            },
+        ),
+        (
+            "rect d135 middle",
+            126,
+            ctx(FULL_SB_N4_LUMA, 320, 8, FULL_SB_N4_LUMA),
+            RectLumaPlan::Middle {
+                p_angle: 126,
+                use_tcq: false,
+            },
+        ),
+    ] {
+        assert_rect_luma_plan(None, Some(p_angle), block, expected, label);
+    }
+}
+
+#[test]
+fn admits_top_row_rect_d113_angle_delta_as_middle_left_only() {
+    let rect_block = ctx(0, 312, 4, 8);
+    let mode = RectLumaPlan::Middle {
+        p_angle: 104,
+        use_tcq: false,
+    };
+
+    assert_eq!(
+        rect_luma_middle_left_only_plan(
+            IntraYMode::D113_PRED_FOR_TEST,
+            Some(104),
+            rect_block,
+            false,
+        ),
+        Some(mode)
+    );
+}
+
+#[test]
+fn square_d67_angle_delta_uses_rect_residual_path_when_square_plan_rejects() {
+    let first_col_block = ctx(128, 0, 32, 32);
+    let modes = GeneralIntraBlockModes::luma_only(
+        crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
+            y_mode: IntraYMode::D67_PRED_FOR_TEST,
+            angle_delta_y: -1,
+            intra_joint_mode: 0,
+            mrl_index: 0,
+            mrl_sec_index: None,
+            fsc_mode: 0,
+            uses_mrls: 0,
+            use_dpcm_y: 0,
+            dpcm_mode_y: 0,
+        },
+    );
+
+    assert!(plan_luma_prediction(&modes, first_col_block, false).is_err());
+    assert_eq!(
+        rect_luma_plan(&modes, first_col_block, false, 32),
+        Ok(RectLumaPlan::OneSidedAbove {
+            p_angle: 64,
+            use_tcq: false,
+        })
+    );
+    assert!(square_luma_needs_rect_residual_path(
+        &modes,
+        first_col_block,
+        false,
+        32,
+        false
+    ));
+}
+
+#[test]
+fn admits_rect_middle_chroma_cases() {
+    for (label, mode, angle_delta, block, expected) in [
+        (
+            "above-left d135 follow",
+            SupportedChromaMode::D135Follow,
+            -3,
+            ctx(FULL_SB_N4_LUMA, 320, 8, FULL_SB_N4_LUMA),
+            RectChromaPlan::Middle { p_angle: 126 },
+        ),
+        (
+            "top-row d113 follow with left-only edge",
+            SupportedChromaMode::D113Follow,
+            -1,
+            ctx(0, 316, 4, 8),
+            RectChromaPlan::Middle { p_angle: 110 },
+        ),
+        (
+            "top-row d157 follow with left-only edge",
+            SupportedChromaMode::D157Follow,
+            -1,
+            ctx(0, 352, 16, 8),
+            RectChromaPlan::Middle { p_angle: 154 },
+        ),
+        (
+            "top-row d135 with left-only edge",
+            SupportedChromaMode::D135,
+            -3,
+            ctx(0, 320, 32, 16),
+            RectChromaPlan::Middle { p_angle: 135 },
+        ),
+    ] {
+        assert_rect_chroma_plan(mode, angle_delta, block, expected, label);
+    }
+}
+
+#[test]
+fn follows_luma_angle_delta_for_directional_chroma() {
+    let tall_chroma_block = ctx(48, 220, 4, 16);
+
+    assert_eq!(
+        rect_chroma_plan_for_mode(
+            SupportedChromaMode::VerticalFollow,
+            -1,
+            None,
+            tall_chroma_block,
+        ),
+        RectChromaPlan::OneSided { p_angle: 87 }
+    );
+    assert_eq!(
+        rect_chroma_plan_for_mode(
+            SupportedChromaMode::VerticalFollow,
+            1,
+            None,
+            tall_chroma_block,
+        ),
+        RectChromaPlan::Middle { p_angle: 93 }
+    );
+    assert_eq!(
+        rect_chroma_plan_for_mode(SupportedChromaMode::Vertical, 1, None, tall_chroma_block),
+        RectChromaPlan::Mode(SupportedChromaMode::Vertical, None)
+    );
+    assert_eq!(
+        rect_chroma_plan_for_mode(
+            SupportedChromaMode::Vertical,
+            1,
+            Some(DpcmDirection::Vertical),
+            tall_chroma_block,
+        ),
+        RectChromaPlan::Mode(SupportedChromaMode::Vertical, Some(DpcmDirection::Vertical))
+    );
+}
+
+#[test]
+fn admits_top_row_rect_d45_follow_chroma_with_left_only_edge() {
+    let first_row_rect_block = ctx(0, 352, 32, 16);
+    let right_edge_rect_block = ctx(28, 478, 2, 2);
+
+    assert!(
+        ensure_supported_rect_chroma_capability(
+            SupportedChromaMode::D45Follow,
+            first_row_rect_block,
+        )
+        .is_ok()
+    );
+    assert!(ten_bit_general_intra_chroma_admitted(
+        Some(SupportedChromaMode::D45Follow),
+        first_row_rect_block
+    ));
+    assert!(
+        right_edge_rect_block
+            .neighbours(PlaneId::U)
+            .num_above_right()
+            == 0
+            && ensure_supported_rect_chroma_capability(
+                SupportedChromaMode::D45,
+                right_edge_rect_block,
+            )
+            .is_ok()
+    );
+    assert_eq!(
+        rect_chroma_plan_for_mode(SupportedChromaMode::D45, 0, None, right_edge_rect_block),
+        RectChromaPlan::OneSided { p_angle: 45 }
+    );
+}
+
+#[test]
+fn admits_rect_middle_chroma_with_one_sided_edge() {
+    let first_row_rect_block = ctx(0, 320, 8, FULL_SB_N4_LUMA);
+    let first_col_rect_block = ctx(320, 0, FULL_SB_N4_LUMA, 8);
+    let modes = [
+        SupportedChromaMode::D113Follow,
+        SupportedChromaMode::D113,
+        SupportedChromaMode::D135Follow,
+        SupportedChromaMode::D135,
+        SupportedChromaMode::D157Follow,
+        SupportedChromaMode::D157,
+    ];
+
+    for mode in modes {
+        assert_rect_chroma_admitted(mode, first_row_rect_block);
+        assert_rect_chroma_admitted(mode, first_col_rect_block);
+    }
+}
+
+#[test]
+fn keeps_10bit_vertical_chroma_top_left_gated() {
+    let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
+
+    assert!(!ten_bit_general_intra_chroma_admitted(
+        Some(SupportedChromaMode::Vertical),
+        top_left
+    ));
+}

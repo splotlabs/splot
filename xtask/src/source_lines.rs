@@ -23,29 +23,14 @@ struct SourceLineAllowance {
 
 const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
     SourceLineAllowance {
-        path: "crates/splot-decode/src/pipeline/general_intra.rs",
-        max_lines: 3_202,
-        reason: "temporary local decoder mission general-intra runtime frontier before module split",
-    },
-    SourceLineAllowance {
         path: "crates/splot-decode/src/pipeline/reconstruct.rs",
         max_lines: 3_500,
         reason: "temporary local decoder mission intra-reconstruction frontier before module split",
     },
     SourceLineAllowance {
-        path: "crates/splot-decode/src/residual/pipeline.rs",
-        max_lines: 2_520,
-        reason: "temporary local decoder mission residual runtime frontier before module split",
-    },
-    SourceLineAllowance {
         path: "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs",
         max_lines: 3_000,
         reason: "temporary local decoder mission partition-traversal frontier before module split",
-    },
-    SourceLineAllowance {
-        path: "crates/splot-decode/src/prediction/inter/block.rs",
-        max_lines: 2_760,
-        reason: "temporary local decoder mission unified per-block decode engine before module split",
     },
 ];
 

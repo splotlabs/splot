@@ -24,7 +24,6 @@ impl TemporalMotionCell {
     }
 }
 
-/// Per-reference-frame 8x8 TMVP state retained for § 7.9.3 projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TemporalMotionField {
     width8: usize,
@@ -172,7 +171,6 @@ impl ProjectedTemporalMotionField {
     }
 }
 
-/// Frame-local § 7.9.3 motion field used by § 7.12.2.7 temporal MV scans.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TemporalMvContext {
     current_order_hint: u32,

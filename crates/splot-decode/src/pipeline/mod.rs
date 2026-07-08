@@ -19,7 +19,7 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, ParsedIvfBitstream, parse_bitstream_partial};
 use splot_core::symbol::SymbolDecoder;
 use splot_core::types::ObuType;
-use splot_recon::{BitDepth, DecodedFrame, DecodedFrameHashInput, PlaneId};
+use splot_recon::{BitDepth, DecodedFrame, DecodedFrameHashInput};
 
 use crate::bitstream::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
@@ -117,29 +117,7 @@ impl PipelineFrame {
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
         match &self.frame {
             PipelineDecodedFrame::Eight(frame) => frame,
-            PipelineDecodedFrame::Ten(_) => {
-                panic!("frame() called on a 10-bit PipelineFrame; use into_frame_ten()")
-            }
-        }
-    }
-    #[cfg(test)]
-    #[allow(clippy::panic)]
-    pub(crate) fn into_frame_eight(self) -> DecodedFrame<u8> {
-        match self.frame {
-            PipelineDecodedFrame::Eight(frame) => frame,
-            PipelineDecodedFrame::Ten(_) => {
-                panic!("into_frame_eight() called on a 10-bit PipelineFrame")
-            }
-        }
-    }
-    #[cfg(test)]
-    #[allow(clippy::panic)]
-    pub(crate) fn into_frame_ten(self) -> DecodedFrame<u16> {
-        match self.frame {
-            PipelineDecodedFrame::Ten(frame) => frame,
-            PipelineDecodedFrame::Eight(_) => {
-                panic!("into_frame_ten() called on an 8-bit PipelineFrame")
-            }
+            PipelineDecodedFrame::Ten(_) => panic!("frame() called on a 10-bit PipelineFrame"),
         }
     }
 }
@@ -427,9 +405,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
     retained_frame_bytes =
         ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
     frames.push(key_frame);
-    if let Some(frame) = frames.last() {
-        dump_coded_frame_for_diagnostics(frame);
-    }
     let key_hint = disp_hints.extend(&key_core)?;
     let key_update = frame_ref_update_from_core(
         &key_core,
@@ -623,9 +598,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                 )?;
                 let frame_index = frames.len();
                 frames.push(inter_frame);
-                if let Some(frame) = frames.last() {
-                    dump_coded_frame_for_diagnostics(frame);
-                }
                 retained_frame_bytes = next_retained_frame_bytes;
                 let inter_hint = disp_hints.extend(&inter_core)?;
                 let inter_update = frame_ref_update_from_core(
@@ -721,9 +693,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                 )?;
                 let frame_index = frames.len();
                 frames.push(key_frame);
-                if let Some(frame) = frames.last() {
-                    dump_coded_frame_for_diagnostics(frame);
-                }
                 retained_frame_bytes = next_retained_frame_bytes;
                 let key_hint = disp_hints.extend(&key_core)?;
                 let key_update = frame_ref_update_from_core(
@@ -799,9 +768,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
     select_output_frames(frames, limited)
 }
 
-/// Charges the output count/byte limits for newly emitted display frames.
-/// Frames past the caller's `output_frame_limit` are discarded before
-/// output, so they are not charged.
 fn charge_emitted_outputs(
     options: &DecodeOptions,
     frames: &[PipelineFrame],
@@ -845,12 +811,6 @@ fn frame_is_output(core: &FrameHeaderCore) -> bool {
     core.immediate_output_frame == Some(true) || core.implicit_output_frame == Some(true)
 }
 
-/// § 7.21 output scheduling: implicit-output frames are held in their
-/// reference slots and released in `output_ordering` (order-hint) order —
-/// flushed by an immediate-output frame (§ 7.21.6 with -1), by their slot
-/// being refreshed (§ 7.23 → § 7.21.6 with the slot), by a successive-hint
-/// chain (§ 7.21.3/§ 7.21.4), or by the end-of-stream flush (§ 7.21.5).
-/// Single-layer streams only: `output_ordering(i)` reduces to the order hint.
 struct OutputScheduler {
     pending: Vec<Option<(usize, u32)>>,
     emitted: Vec<usize>,
@@ -864,7 +824,6 @@ impl OutputScheduler {
         }
     }
 
-    /// § 7.21.1 output process, deduplicated per decoded frame.
     fn emit(&mut self, frame_index: usize, newly: &mut Vec<usize>) {
         if !self.emitted.contains(&frame_index) {
             self.emitted.push(frame_index);
@@ -877,8 +836,6 @@ impl OutputScheduler {
         }
     }
 
-    /// The § 7.21.6 leading loop: outputs held frames with a lower ordering,
-    /// lowest first.
     fn flush_lower_than(&mut self, ordering: u32, newly: &mut Vec<usize>) {
         loop {
             let next = self
@@ -895,7 +852,6 @@ impl OutputScheduler {
         }
     }
 
-    /// § 7.21.3 / § 7.21.4 successive-hint outputs.
     fn output_successive(&mut self, ordering: u32, newly: &mut Vec<usize>) {
         let mut target = ordering.saturating_add(1);
         loop {
@@ -916,7 +872,6 @@ impl OutputScheduler {
         }
     }
 
-    /// § 7.21.6 with `refIdx == -1` (an immediate-output frame).
     fn on_immediate(&mut self, frame_index: usize, ordering: u32) -> Vec<usize> {
         let mut newly = Vec::new();
         self.flush_lower_than(ordering, &mut newly);
@@ -925,12 +880,6 @@ impl OutputScheduler {
         newly
     }
 
-    /// § 7.23 slot update: for each refreshed slot in index order, first
-    /// releases a held eligible frame (§ 7.21.6 with the slot), then stores
-    /// the current frame, so a later slot's flush chain can output the
-    /// current frame. Already-output frames are never re-held (§ 7.21.4
-    /// eligibility excludes them), and a key/switch frame is eligible only
-    /// through its first refreshed slot (§ 7.23 `RefValid = first`).
     fn refresh(
         &mut self,
         refresh_frame_flags: u32,
@@ -958,12 +907,10 @@ impl OutputScheduler {
         newly
     }
 
-    /// Whether the § 7.21.1 output process already emitted this frame.
     fn already_emitted(&self, frame_index: usize) -> bool {
         self.emitted.contains(&frame_index)
     }
 
-    /// § 7.21.5 end-of-stream flush, lowest ordering first.
     fn flush_all(&mut self) -> Vec<usize> {
         let mut newly = Vec::new();
         self.flush_lower_than(u32::MAX, &mut newly);
@@ -971,13 +918,6 @@ impl OutputScheduler {
     }
 }
 
-/// § 5.18.2 `get_disp_order_hint` state: the extended display order hint and
-/// § 7.23 showable flags (`RefImplicitOutputFrame | RefImmediateOutputFrame`)
-/// per reference slot. Single-layer surface: the layer dependency maps are
-/// identity. The extension feeds the § 7.21 output-scheduling comparisons
-/// and the stored `RefOrderHint`; parse-side order-hint consumers still
-/// window on the coded LSBs, so the first frame whose extended hint diverges
-/// from its LSB defers fail-closed.
 struct DispOrderHints {
     order_hint_bits: u32,
     slots: Vec<Option<(u32, bool)>>,
@@ -991,7 +931,6 @@ impl DispOrderHints {
         }
     }
 
-    /// § 5.18.2 `get_disp_order_hint` over the previous reference state.
     fn extend(&self, core: &FrameHeaderCore) -> Result<u32> {
         let Some(lsb) = core.order_hint_lsb else {
             if core.implicit_output_frame == Some(true) {
@@ -1032,8 +971,6 @@ impl DispOrderHints {
         Ok(disp)
     }
 
-    /// § 7.23 per-slot store of `RefOrderHint` and the showable flags, with
-    /// the key/switch `RefValid = first` rule.
     fn refresh(
         &mut self,
         refresh_frame_flags: u32,
@@ -1050,47 +987,6 @@ impl DispOrderHints {
             first = false;
         }
     }
-}
-
-/// Diagnostics-only decode-order frame dump, gated on the
-/// `SPLOT_DUMP_CODED_FRAMES` env var naming an append-target path: every
-/// decoded frame's visible planes are appended as little-endian samples for
-/// oracle diffing (non-output frames included). Write failures are ignored.
-fn dump_coded_frame_for_diagnostics(frame: &PipelineFrame) {
-    let Some(path) = std::env::var_os("SPLOT_DUMP_CODED_FRAMES") else {
-        return;
-    };
-    let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    else {
-        return;
-    };
-    let mut bytes: Vec<u8> = Vec::new();
-    match &frame.frame {
-        PipelineDecodedFrame::Eight(frame) => {
-            for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-                let Some(plane) = frame.plane(plane) else {
-                    continue;
-                };
-                for row in plane.visible_rows() {
-                    bytes.extend(row.iter().flat_map(|&s| u16::from(s).to_le_bytes()));
-                }
-            }
-        }
-        PipelineDecodedFrame::Ten(frame) => {
-            for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-                let Some(plane) = frame.plane(plane) else {
-                    continue;
-                };
-                for row in plane.visible_rows() {
-                    bytes.extend(row.iter().flat_map(|&s| s.to_le_bytes()));
-                }
-            }
-        }
-    }
-    let _ = std::io::Write::write_all(&mut file, &bytes);
 }
 
 fn select_output_frames(
@@ -1757,11 +1653,6 @@ pub(crate) fn frame_ref_update_from_core(
     })
 }
 
-/// Clones the parsed frame-level Wiener-NS bank taps for § 7.23 retention:
-/// the § 5.18 filter-match dictionary of LATER frames resolves
-/// `RefFrameLrWienerNs` from these. Temporal-copy banks (`frame_filters_on`
-/// with no local bank) retain empty taps — their resolution stays with the
-/// temporal-prediction defer.
 fn lr_frame_filter_taps(core: &FrameHeaderCore) -> [Vec<Vec<i16>>; 3] {
     let mut taps: [Vec<Vec<i16>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let Some(lr) = core.lr_params.as_ref() else {
@@ -2031,9 +1922,6 @@ pub(crate) fn ensure_runtime_limits(
     Ok(())
 }
 
-/// Builds the sole `decode/unsupported-feature` carrier: a stable `reason`, the
-/// AV2 `spec_section` it grounds in, a human-readable `message`, and the byte
-/// offset when known. Every unsupported-feature helper funnels here.
 pub(crate) fn unsupported_with_spec(
     reason: &'static str,
     byte_offset: Option<ByteOffset>,
@@ -2076,87 +1964,5 @@ pub(crate) fn unsupported_feature_at(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use splot_core::stream::parse_bitstream_partial;
-
-    const OBU_SEQUENCE_HEADER: u8 = 0x04;
-    const OBU_TEMPORAL_DELIMITER: u8 = 0x08;
-    const OBU_CLOSED_LOOP_KEY: u8 = 0x10;
-    const OBU_REGULAR_TILE_GROUP: u8 = 0x1C;
-    const OBU_OPERATING_POINT_SET: u8 = 0x48;
-    const OBU_FILM_GRAIN: u8 = 0x5C;
-
-    fn obu(header: u8) -> [u8; 2] {
-        [0x01, header]
-    }
-
-    fn annexb_obus(bytes: &[u8]) -> Vec<ObuEnvelope<'_>> {
-        let parsed = parse_bitstream_partial(bytes);
-        assert!(matches!(parsed, ParsedBitstream::AnnexB(_)));
-        let ParsedBitstream::AnnexB(parsed) = parsed else {
-            return Vec::new();
-        };
-        assert!(parsed.error.is_none());
-        parsed.obus
-    }
-
-    #[test]
-    fn leading_frame_unit_allows_ops_before_sequence() {
-        let bytes = [
-            obu(OBU_TEMPORAL_DELIMITER).as_slice(),
-            obu(OBU_OPERATING_POINT_SET).as_slice(),
-            obu(OBU_SEQUENCE_HEADER).as_slice(),
-            obu(OBU_CLOSED_LOOP_KEY).as_slice(),
-            obu(OBU_REGULAR_TILE_GROUP).as_slice(),
-        ]
-        .concat();
-        let obus = annexb_obus(&bytes);
-
-        let leading = require_leading_frame_unit(&obus);
-        assert!(leading.is_ok());
-        let Ok(([td, sequence, key], frame_unit_len)) = leading else {
-            return;
-        };
-
-        assert_eq!(td.header.obu_type, ObuType::TemporalDelimiter);
-        assert_eq!(sequence.header.obu_type, ObuType::SequenceHeader);
-        assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
-        assert_eq!(frame_unit_len, 4);
-        assert!(is_leading_record_regular_after_key(0, 4, &obus));
-        assert!(require_leading_ivf_obu_order(&obus).is_ok());
-    }
-
-    #[test]
-    fn leading_frame_unit_allows_film_grain_before_key() {
-        let bytes = [
-            obu(OBU_TEMPORAL_DELIMITER).as_slice(),
-            obu(OBU_OPERATING_POINT_SET).as_slice(),
-            obu(OBU_SEQUENCE_HEADER).as_slice(),
-            obu(OBU_FILM_GRAIN).as_slice(),
-            obu(OBU_CLOSED_LOOP_KEY).as_slice(),
-            obu(OBU_REGULAR_TILE_GROUP).as_slice(),
-        ]
-        .concat();
-        let obus = annexb_obus(&bytes);
-
-        let leading = require_leading_frame_unit(&obus);
-        assert!(leading.is_ok());
-        let Ok(([td, sequence, key], frame_unit_len)) = leading else {
-            return;
-        };
-
-        assert_eq!(td.header.obu_type, ObuType::TemporalDelimiter);
-        assert_eq!(sequence.header.obu_type, ObuType::SequenceHeader);
-        let film_grain_result = leading_film_grain_obus(&obus);
-        assert!(film_grain_result.is_ok());
-        let Ok(film_grain_obus) = film_grain_result else {
-            return;
-        };
-        assert_eq!(film_grain_obus.len(), 1);
-        assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
-        assert_eq!(frame_unit_len, 5);
-        assert!(is_leading_record_regular_after_key(0, 5, &obus));
-        assert!(require_leading_ivf_obu_order(&obus).is_ok());
-    }
-}
+#[path = "mod_tests.rs"]
+mod tests;

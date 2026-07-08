@@ -27,6 +27,7 @@ mod partition_allowed;
 mod partition_size;
 mod partition_traversal;
 #[cfg(test)]
+#[path = "tile_payload/test_support_tests.rs"]
 mod test_support;
 mod tile_frontier;
 
@@ -272,7 +273,6 @@ impl TileFrameFacts {
     }
 }
 
-/// Parsed frame/sequence facts used by coefficient decoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCoeffFrameFacts {
     enable_fsc: bool,
@@ -288,7 +288,6 @@ pub(crate) struct TileCoeffFrameFacts {
     base_q_idx: u32,
 }
 
-/// Named input for parsed frame/sequence facts used by coefficient decoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCoeffFrameFactsInput {
     pub(crate) enable_fsc: bool,
@@ -405,7 +404,6 @@ pub(crate) enum TileBruPath {
     Inactive,
 }
 
-/// Deterministic plan for framed tile payload work.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTilePayloadPlan<'a> {
     source: TilePayloadSource,
@@ -446,7 +444,6 @@ impl<'a> DecodeTilePayloadPlan<'a> {
     }
 }
 
-/// One deterministic tile work unit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTileWorkUnit<'a> {
     source: TilePayloadSource,
@@ -779,7 +776,6 @@ impl fmt::Display for TilePayloadUnsupported {
     }
 }
 
-/// Plans the minimal tile-payload boundary and stops at `decode_tile()`.
 pub(crate) fn plan_tile_payload_boundary<'a>(
     input: &TilePayloadBoundaryInput<'a, '_>,
 ) -> Result<DecodeTilePayloadPlan<'a>, TilePayloadBoundaryError> {

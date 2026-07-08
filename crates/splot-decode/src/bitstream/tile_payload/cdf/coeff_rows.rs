@@ -87,145 +87,84 @@ pub(crate) type CoeffBrIdtxCdfRows =
 pub(crate) type IdtxSignCdfRows =
     [[[[i32; IDTX_SIGN_ROW_LEN]; IDTX_SIGN_CONTEXTS]; FSC_TX_SIZE_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
 
-/// Coefficient CDF selector for AV2 §8.3.2 row selection
-/// over AV2 §9.3 default CDF banks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffCdfSelector {
-    /// `TileCoeffBaseCdf[coeff_cdf_q_ctx][tx_size][ctx][tcq_ctx]`.
     Base {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Transform-size context.
         tx_size: usize,
-        /// Significant-coefficient context.
         ctx: usize,
-        /// `(tcqState >> 1) & 1` context.
         tcq_ctx: usize,
     },
-    /// `TileCoeffBasePhCdf[coeff_cdf_q_ctx][ctx]`.
     BasePh {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Parity-hidden significant-coefficient context.
         ctx: usize,
     },
-    /// `TileCoeffBaseUvCdf[coeff_cdf_q_ctx][ctx]`.
     BaseUv {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Chroma significant-coefficient context.
         ctx: usize,
     },
-    /// `TileCoeffBaseLfCdf[coeff_cdf_q_ctx][tx_size][ctx][tcq_ctx]`.
     BaseLf {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Transform-size context.
         tx_size: usize,
-        /// Low-frequency significant-coefficient context.
         ctx: usize,
-        /// `(tcqState >> 1) & 1` context.
         tcq_ctx: usize,
     },
-    /// `TileCoeffBaseLfUvCdf[coeff_cdf_q_ctx][ctx]`.
     BaseLfUv {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Chroma low-frequency significant-coefficient context.
         ctx: usize,
     },
-    /// `TileCoeffBaseEobCdf[coeff_cdf_q_ctx][tx_size][ctx]`.
     BaseEob {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Transform-size context.
         tx_size: usize,
-        /// EOB significant-coefficient context.
         ctx: usize,
     },
-    /// `TileCoeffBaseEobUvCdf[coeff_cdf_q_ctx][ctx]`.
     BaseEobUv {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Chroma EOB significant-coefficient context.
         ctx: usize,
     },
-    /// `TileCoeffBaseBobCdf[coeff_cdf_q_ctx][Min(TX_16X16, txSzCtx)][ctx]`.
     BaseBob {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// `Min(TX_16X16, txSzCtx)` transform-size context.
         tx_size_ctx: usize,
-        /// Begin-of-block significant-coefficient context.
         ctx: usize,
     },
-    /// `TileCoeffBaseIdtxCdf[coeff_cdf_q_ctx][Min(TX_16X16, txSzCtx)][ctx]`.
     BaseIdtx {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// `Min(TX_16X16, txSzCtx)` transform-size context.
         tx_size_ctx: usize,
-        /// Identity-transform significant-coefficient context.
         ctx: usize,
     },
-    /// `TileCoeffBaseLfEobCdf[coeff_cdf_q_ctx][tx_size][ctx]`.
     BaseLfEob {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Transform-size context.
         tx_size: usize,
-        /// Low-frequency EOB significant-coefficient context.
         ctx: usize,
     },
-    /// `TileCoeffBaseLfEobUvCdf[coeff_cdf_q_ctx][ctx]`.
     BaseLfEobUv {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Chroma low-frequency EOB significant-coefficient context.
         ctx: usize,
     },
-    /// `TileCoeffBrCdf[coeff_cdf_q_ctx][ctx]`.
     Br {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Base-range context.
         ctx: usize,
     },
-    /// `TileCoeffBrUvCdf[coeff_cdf_q_ctx][ctx]`.
     BrUv {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Chroma base-range context.
         ctx: usize,
     },
-    /// `TileCoeffBrLfCdf[coeff_cdf_q_ctx][ctx]`.
     BrLf {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// Low-frequency base-range context.
         ctx: usize,
     },
-    /// `TileCoeffBrIdtxCdf[coeff_cdf_q_ctx][Min(TX_16X16, txSzCtx)][ctx]`.
     BrIdtx {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// `Min(TX_16X16, txSzCtx)` transform-size context.
         tx_size_ctx: usize,
-        /// Identity-transform base-range context.
         ctx: usize,
     },
-    /// `TileIdtxSignCdf[coeff_cdf_q_ctx][Min(TX_16X16, txSzCtx)][ctx]`.
     IdtxSign {
-        /// Coefficient-CDF quantization context.
         coeff_cdf_q_ctx: usize,
-        /// `Min(TX_16X16, txSzCtx)` transform-size context.
         tx_size_ctx: usize,
-        /// Identity-transform sign context.
         ctx: usize,
     },
 }
 
-/// Supported coefficient CDF rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffCdfRows {
     pub(crate) coeff_base: CoeffBaseCdfRows,
@@ -570,6 +509,27 @@ macro_rules! blend_row_family {
     };
 }
 
+macro_rules! coeff_cdf_lifecycle_families {
+    ($macro:ident $(, $arg:tt)*) => {
+        $macro!(4 $(, $arg)*, coeff_base);
+        $macro!(2 $(, $arg)*, coeff_base_ph);
+        $macro!(2 $(, $arg)*, coeff_base_uv);
+        $macro!(4 $(, $arg)*, coeff_base_lf);
+        $macro!(2 $(, $arg)*, coeff_base_lf_uv);
+        $macro!(3 $(, $arg)*, coeff_base_eob);
+        $macro!(2 $(, $arg)*, coeff_base_eob_uv);
+        $macro!(3 $(, $arg)*, coeff_base_bob);
+        $macro!(3 $(, $arg)*, coeff_base_idtx);
+        $macro!(3 $(, $arg)*, coeff_base_lf_eob);
+        $macro!(2 $(, $arg)*, coeff_base_lf_eob_uv);
+        $macro!(2 $(, $arg)*, coeff_br);
+        $macro!(2 $(, $arg)*, coeff_br_uv);
+        $macro!(2 $(, $arg)*, coeff_br_lf);
+        $macro!(3 $(, $arg)*, coeff_br_idtx);
+        $macro!(3 $(, $arg)*, idtx_sign);
+    };
+}
+
 impl CoeffCdfRows {
     pub(crate) fn row(&self, selector: CoeffCdfSelector) -> Result<&[i32], TileCdfError> {
         coeff_cdf_row!(self, selector, as_slice)
@@ -583,60 +543,15 @@ impl CoeffCdfRows {
     }
 
     pub(crate) fn avg_from_tile(&mut self, tile_num: u32, tile: &Self, num_log2: u8) {
-        avg_row_family!(4, self, tile, tile_num, num_log2, coeff_base);
-        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_base_ph);
-        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_base_uv);
-        avg_row_family!(4, self, tile, tile_num, num_log2, coeff_base_lf);
-        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_base_lf_uv);
-        avg_row_family!(3, self, tile, tile_num, num_log2, coeff_base_eob);
-        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_base_eob_uv);
-        avg_row_family!(3, self, tile, tile_num, num_log2, coeff_base_bob);
-        avg_row_family!(3, self, tile, tile_num, num_log2, coeff_base_idtx);
-        avg_row_family!(3, self, tile, tile_num, num_log2, coeff_base_lf_eob);
-        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_base_lf_eob_uv);
-        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_br);
-        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_br_uv);
-        avg_row_family!(2, self, tile, tile_num, num_log2, coeff_br_lf);
-        avg_row_family!(3, self, tile, tile_num, num_log2, coeff_br_idtx);
-        avg_row_family!(3, self, tile, tile_num, num_log2, idtx_sign);
+        coeff_cdf_lifecycle_families!(avg_row_family, self, tile, tile_num, num_log2);
     }
 
     pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
-        blend_row_family!(4, self, saved, coeff_base);
-        blend_row_family!(2, self, saved, coeff_base_ph);
-        blend_row_family!(2, self, saved, coeff_base_uv);
-        blend_row_family!(4, self, saved, coeff_base_lf);
-        blend_row_family!(2, self, saved, coeff_base_lf_uv);
-        blend_row_family!(3, self, saved, coeff_base_eob);
-        blend_row_family!(2, self, saved, coeff_base_eob_uv);
-        blend_row_family!(3, self, saved, coeff_base_bob);
-        blend_row_family!(3, self, saved, coeff_base_idtx);
-        blend_row_family!(3, self, saved, coeff_base_lf_eob);
-        blend_row_family!(2, self, saved, coeff_base_lf_eob_uv);
-        blend_row_family!(2, self, saved, coeff_br);
-        blend_row_family!(2, self, saved, coeff_br_uv);
-        blend_row_family!(2, self, saved, coeff_br_lf);
-        blend_row_family!(3, self, saved, coeff_br_idtx);
-        blend_row_family!(3, self, saved, idtx_sign);
+        coeff_cdf_lifecycle_families!(blend_row_family, self, saved);
     }
 
     pub(crate) fn scale_counts_for_frame_end_update(&mut self) {
-        scale_row_family!(4, self, coeff_base);
-        scale_row_family!(2, self, coeff_base_ph);
-        scale_row_family!(2, self, coeff_base_uv);
-        scale_row_family!(4, self, coeff_base_lf);
-        scale_row_family!(2, self, coeff_base_lf_uv);
-        scale_row_family!(3, self, coeff_base_eob);
-        scale_row_family!(2, self, coeff_base_eob_uv);
-        scale_row_family!(3, self, coeff_base_bob);
-        scale_row_family!(3, self, coeff_base_idtx);
-        scale_row_family!(3, self, coeff_base_lf_eob);
-        scale_row_family!(2, self, coeff_base_lf_eob_uv);
-        scale_row_family!(2, self, coeff_br);
-        scale_row_family!(2, self, coeff_br_uv);
-        scale_row_family!(2, self, coeff_br_lf);
-        scale_row_family!(3, self, coeff_br_idtx);
-        scale_row_family!(3, self, idtx_sign);
+        coeff_cdf_lifecycle_families!(scale_row_family, self);
     }
 }
 

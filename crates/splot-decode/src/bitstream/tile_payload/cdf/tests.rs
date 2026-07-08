@@ -31,6 +31,391 @@ use splot_core::tables::cdf::{
     DEFAULT_Y_MODE_SET_CDF,
 };
 
+use super::block_rows::*;
+
+impl FrameCdfSubset {
+    pub(crate) const fn rows(&self) -> &TileCdfRows {
+        &self.rows
+    }
+}
+
+impl TileCdfSubset {
+    pub(crate) const fn rows(&self) -> &TileCdfRows {
+        &self.rows
+    }
+
+    pub(crate) fn rows_mut(&mut self) -> &mut TileCdfRows {
+        &mut self.rows
+    }
+}
+
+impl TileCdfWorkUnitBoundary {
+    pub(crate) const fn saved_cdfs(&self) -> &SavedCdfSubset {
+        &self.saved_cdfs
+    }
+}
+
+impl TileCdfRows {
+    pub(crate) const fn do_square_split(&self) -> &DoSquareSplitCdfRows {
+        &self.do_square_split
+    }
+
+    pub(crate) const fn rect_type(&self) -> &RectTypeCdfRows {
+        &self.rect_type
+    }
+
+    pub(crate) const fn do_uneven_4way_partition(&self) -> &DoUneven4WayPartitionCdfRows {
+        &self.do_uneven_4way_partition
+    }
+
+    pub(crate) const fn tx_do_partition(&self) -> &TxDoPartitionCdfRows {
+        &self.tx_do_partition
+    }
+
+    pub(crate) const fn tx_2or3_partition_type(&self) -> &Tx2Or3PartitionTypeCdfRows {
+        &self.tx_2or3_partition_type
+    }
+
+    pub(crate) const fn tx_partition_type(&self) -> &TxPartitionTypeCdfRows {
+        &self.tx_partition_type
+    }
+
+    pub(crate) const fn tx_partition_type_reduced(&self) -> &TxPartitionTypeCdfRows {
+        &self.tx_partition_type_reduced
+    }
+
+    pub(crate) const fn delta_q(&self) -> &DeltaQCdfRow {
+        &self.delta_q
+    }
+
+    pub(crate) const fn intrabc_mode(&self) -> &IntrabcModeCdfRow {
+        &self.intrabc_mode
+    }
+
+    pub(crate) const fn intrabc_precision(&self) -> &IntrabcPrecisionCdfRow {
+        &self.intrabc_precision
+    }
+
+    pub(crate) const fn morph_pred(&self) -> &MorphPredCdfRows {
+        &self.morph_pred
+    }
+
+    pub(crate) const fn fsc_mode(&self) -> &FscModeCdfRows {
+        &self.fsc_mode
+    }
+
+    pub(crate) const fn mrl_index(&self) -> &MrlIndexCdfRows {
+        &self.mrl_index
+    }
+
+    pub(crate) const fn mrl_sec_index(&self) -> &MrlSecIndexCdfRows {
+        &self.mrl_sec_index
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn region_type(&self) -> &RegionTypeCdfRows {
+        &self.region_type
+    }
+
+    pub(crate) const fn y_mode_set(&self) -> &block_rows::YModeSetCdfRow {
+        self.block.y_mode_set()
+    }
+
+    pub(crate) const fn y_mode_index(&self) -> &block_rows::YModeIndexCdfRows {
+        self.block.y_mode_index()
+    }
+
+    pub(crate) const fn txb_skip(&self) -> &block_rows::TxbSkipCdfRows {
+        self.block.txb_skip()
+    }
+
+    pub(crate) const fn is_long_side_dct(&self) -> &block_rows::IsLongSideDctCdfRows {
+        self.block.is_long_side_dct()
+    }
+
+    pub(crate) const fn intra_tx_type_long(&self) -> &block_rows::IntraTxTypeLongCdfRows {
+        self.block.intra_tx_type_long()
+    }
+
+    pub(crate) const fn intra_tx_type_set1(&self) -> &block_rows::IntraTxTypeSet1CdfRows {
+        self.block.intra_tx_type_set1()
+    }
+
+    pub(crate) const fn intra_tx_type_set2(&self) -> &block_rows::IntraTxTypeSet2CdfRows {
+        self.block.intra_tx_type_set2()
+    }
+
+    pub(crate) const fn sec_tx_type(&self) -> &block_rows::SecTxTypeCdfRows {
+        self.block.sec_tx_type()
+    }
+
+    pub(crate) const fn most_probable_stx_set(&self) -> &block_rows::MostProbableStxSetCdfRow {
+        self.block.most_probable_stx_set()
+    }
+
+    pub(crate) const fn most_probable_stx_set_adst(
+        &self,
+    ) -> &block_rows::MostProbableStxSetAdstCdfRow {
+        self.block.most_probable_stx_set_adst()
+    }
+
+    pub(crate) const fn cctx_type(&self) -> &block_rows::CctxTypeCdfRow {
+        self.block.cctx_type()
+    }
+
+    pub(crate) const fn palette_y_mode(&self) -> &block_rows::PaletteYModeCdfRow {
+        self.block.palette_y_mode()
+    }
+
+    pub(crate) const fn uv_mode_cfl_not_allowed(&self) -> &block_rows::UvModeCflNotAllowedCdfRows {
+        self.block.uv_mode_cfl_not_allowed()
+    }
+
+    pub(crate) const fn is_cfl(&self) -> &block_rows::IsCflCdfRows {
+        self.block.is_cfl()
+    }
+
+    pub(crate) const fn cfl_index(&self) -> &block_rows::CflIndexCdfRow {
+        self.block.cfl_index()
+    }
+
+    pub(crate) const fn cfl_sign(&self) -> &block_rows::CflSignCdfRow {
+        self.block.cfl_sign()
+    }
+
+    pub(crate) const fn cfl_alpha(&self) -> &block_rows::CflAlphaCdfRows {
+        self.block.cfl_alpha()
+    }
+
+    pub(crate) const fn cfl_mhccp(&self) -> &block_rows::CflMhccpCdfRow {
+        self.block.cfl_mhccp()
+    }
+
+    pub(crate) const fn cfl_mh_dir(&self) -> &block_rows::CflMhDirCdfRows {
+        self.block.cfl_mh_dir()
+    }
+
+    pub(crate) const fn v_txb_skip(&self) -> &block_rows::VTxbSkipCdfRows {
+        self.block.v_txb_skip()
+    }
+
+    pub(crate) const fn eob_extra(&self) -> &block_rows::EobExtraCdfRows {
+        self.block.eob_extra()
+    }
+
+    pub(crate) const fn comp_mode(&self) -> &block_rows::CompModeCdfRows {
+        self.block.comp_mode()
+    }
+
+    pub(crate) const fn is_joint(&self) -> &block_rows::IsJointCdfRows {
+        self.block.is_joint()
+    }
+
+    pub(crate) const fn compound_mode_non_joint(&self) -> &block_rows::CompoundModeNonJointCdfRows {
+        self.block.compound_mode_non_joint()
+    }
+
+    pub(crate) const fn compound_type(&self) -> &block_rows::CompoundTypeCdfRow {
+        self.block.compound_type()
+    }
+
+    pub(crate) const fn comp_group_idx(&self) -> &block_rows::CompGroupIdxCdfRows {
+        self.block.comp_group_idx()
+    }
+
+    pub(crate) const fn cwp_idx(&self) -> &block_rows::CwpIdxCdfRows {
+        self.block.cwp_idx()
+    }
+
+    pub(crate) const fn comp_ref0(&self) -> &block_rows::CompRef0CdfRows {
+        self.block.comp_ref0()
+    }
+
+    pub(crate) const fn comp_ref1(&self) -> &block_rows::CompRef1CdfRows {
+        self.block.comp_ref1()
+    }
+
+    pub(crate) const fn tip_mode(&self) -> &block_rows::TipModeCdfRows {
+        self.block.tip_mode()
+    }
+
+    pub(crate) const fn use_wiener_ns(&self) -> &block_rows::UseWienerNsCdfRow {
+        self.block.use_wiener_ns()
+    }
+
+    pub(crate) const fn wiener_ns_length(&self) -> &block_rows::WienerNsLengthCdfRows {
+        self.block.wiener_ns_length()
+    }
+
+    pub(crate) const fn wiener_ns_uv_sym(&self) -> &block_rows::WienerNsUvSymCdfRow {
+        self.block.wiener_ns_uv_sym()
+    }
+
+    pub(crate) const fn wiener_ns_base(&self) -> &block_rows::WienerNsBaseCdfRow {
+        self.block.wiener_ns_base()
+    }
+}
+
+impl BlockCdfRows {
+    pub(crate) const fn y_mode_set(&self) -> &YModeSetCdfRow {
+        &self.y_mode_set
+    }
+
+    pub(crate) const fn y_mode_index(&self) -> &YModeIndexCdfRows {
+        &self.y_mode_index
+    }
+
+    pub(crate) const fn txb_skip(&self) -> &TxbSkipCdfRows {
+        &self.txb_skip
+    }
+
+    pub(crate) const fn uv_mode_cfl_not_allowed(&self) -> &UvModeCflNotAllowedCdfRows {
+        &self.uv_mode_cfl_not_allowed
+    }
+
+    pub(crate) const fn is_cfl(&self) -> &IsCflCdfRows {
+        &self.is_cfl
+    }
+
+    pub(crate) const fn cfl_index(&self) -> &CflIndexCdfRow {
+        &self.cfl_index
+    }
+
+    pub(crate) const fn cfl_sign(&self) -> &CflSignCdfRow {
+        &self.cfl_sign
+    }
+
+    pub(crate) const fn cfl_alpha(&self) -> &CflAlphaCdfRows {
+        &self.cfl_alpha
+    }
+
+    pub(crate) const fn cfl_mhccp(&self) -> &CflMhccpCdfRow {
+        &self.cfl_mhccp
+    }
+
+    pub(crate) const fn cfl_mh_dir(&self) -> &CflMhDirCdfRows {
+        &self.cfl_mh_dir
+    }
+
+    pub(crate) const fn v_txb_skip(&self) -> &VTxbSkipCdfRows {
+        &self.v_txb_skip
+    }
+
+    pub(crate) const fn eob_extra(&self) -> &EobExtraCdfRows {
+        &self.eob_extra
+    }
+
+    pub(crate) const fn comp_mode(&self) -> &CompModeCdfRows {
+        &self.comp_mode
+    }
+
+    pub(crate) const fn is_joint(&self) -> &IsJointCdfRows {
+        &self.is_joint
+    }
+
+    pub(crate) const fn compound_mode_non_joint(&self) -> &CompoundModeNonJointCdfRows {
+        &self.compound_mode_non_joint
+    }
+
+    pub(crate) const fn compound_type(&self) -> &CompoundTypeCdfRow {
+        &self.compound_type
+    }
+
+    pub(crate) const fn comp_group_idx(&self) -> &CompGroupIdxCdfRows {
+        &self.comp_group_idx
+    }
+
+    pub(crate) const fn cwp_idx(&self) -> &CwpIdxCdfRows {
+        &self.cwp_idx
+    }
+
+    pub(crate) const fn comp_ref0(&self) -> &CompRef0CdfRows {
+        &self.comp_ref0
+    }
+
+    pub(crate) const fn comp_ref1(&self) -> &CompRef1CdfRows {
+        &self.comp_ref1
+    }
+
+    pub(crate) const fn tip_mode(&self) -> &TipModeCdfRows {
+        &self.tip_mode
+    }
+
+    pub(crate) const fn use_wiener_ns(&self) -> &UseWienerNsCdfRow {
+        &self.use_wiener_ns
+    }
+
+    pub(crate) const fn wiener_ns_length(&self) -> &WienerNsLengthCdfRows {
+        &self.wiener_ns_length
+    }
+
+    pub(crate) const fn wiener_ns_uv_sym(&self) -> &WienerNsUvSymCdfRow {
+        &self.wiener_ns_uv_sym
+    }
+
+    pub(crate) const fn wiener_ns_base(&self) -> &WienerNsBaseCdfRow {
+        &self.wiener_ns_base
+    }
+
+    pub(crate) const fn is_long_side_dct(&self) -> &IsLongSideDctCdfRows {
+        &self.is_long_side_dct
+    }
+
+    pub(crate) const fn intra_tx_type_long(&self) -> &IntraTxTypeLongCdfRows {
+        &self.intra_tx_type_long
+    }
+
+    pub(crate) const fn intra_tx_type_set1(&self) -> &IntraTxTypeSet1CdfRows {
+        &self.intra_tx_type_set1
+    }
+
+    pub(crate) const fn intra_tx_type_set2(&self) -> &IntraTxTypeSet2CdfRows {
+        &self.intra_tx_type_set2
+    }
+
+    pub(crate) const fn sec_tx_type(&self) -> &SecTxTypeCdfRows {
+        &self.sec_tx_type
+    }
+
+    pub(crate) const fn most_probable_stx_set(&self) -> &MostProbableStxSetCdfRow {
+        &self.most_probable_stx_set
+    }
+
+    pub(crate) const fn most_probable_stx_set_adst(&self) -> &MostProbableStxSetAdstCdfRow {
+        &self.most_probable_stx_set_adst
+    }
+
+    pub(crate) const fn cctx_type(&self) -> &CctxTypeCdfRow {
+        &self.cctx_type
+    }
+
+    pub(crate) const fn palette_y_mode(&self) -> &PaletteYModeCdfRow {
+        &self.palette_y_mode
+    }
+}
+
+impl SavedCdfSubset {
+    pub(crate) const fn rows(&self) -> &TileCdfRows {
+        &self.rows
+    }
+}
+
+impl TileCdfWorkUnitBoundary {
+    pub(crate) const fn frame_cdfs(&self) -> &FrameCdfSubset {
+        &self.frame_cdfs
+    }
+}
+
+impl TileCdfRows {
+    pub(crate) const fn do_split(&self) -> &DoSplitCdfRows {
+        &self.do_split
+    }
+
+    pub(crate) const fn do_ext_partition(&self) -> &DoExtPartitionCdfRows {
+        &self.do_ext_partition
+    }
+}
+
 fn coeff(selector: CoeffCdfSelector) -> TileCdfSelector {
     TileCdfSelector::Coeff(selector)
 }

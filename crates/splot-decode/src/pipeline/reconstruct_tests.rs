@@ -7,6 +7,15 @@
 
 use super::*;
 
+impl IntraEdgeAvailability {
+    const fn all() -> Self {
+        Self {
+            above: true,
+            left: true,
+        }
+    }
+}
+
 /// An `all_zero` (`txb_skip`) luma block: reconstruction writes the bare
 /// §7.13.2 prediction (zero residual), the only kind these cardinal
 /// rect/transpose guards exercise.
@@ -358,10 +367,11 @@ fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
     )
     .unwrap();
 
-    reconstruct_general_intra_two_sided_middle_luma_block_into(
+    reconstruct_general_intra_middle_neighbour_rect_block_into(
         &mut ws,
         &all_zero_luma_block(),
         132,
+        PlaneId::Y,
         8,
         8,
         3,
@@ -370,6 +380,10 @@ fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
         false,
         None,
         BitDepth::Eight,
+        MiddleEdgeAvailability {
+            above: true,
+            left: true,
+        },
         TwoSidedMiddleEdgeFilters {
             above: OneSidedEdgeFilter::default(),
             left: OneSidedEdgeFilter::default(),

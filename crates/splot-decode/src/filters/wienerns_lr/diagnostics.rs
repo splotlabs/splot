@@ -67,9 +67,6 @@ pub(crate) fn wienerns_lr_selectable_transform_record_error_reason(
     unsupported_feature_at(reason, offset, message, spec_section)
 }
 
-/// `get_seq_sb_size()` (AV2 § 5.18.2) for the selectable transform-record frontier:
-/// the § 5.18.2 intra-capped superblock used by the per-block delta-Q, IntrABC, and
-/// CCSO grid derivations (a single source for the shared `partition` lookup).
 pub(crate) fn intra_capped_seq_sb_size(
     sequence: &SequenceHeader,
     tile_offset: ByteOffset,

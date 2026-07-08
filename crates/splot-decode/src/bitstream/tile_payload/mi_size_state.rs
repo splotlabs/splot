@@ -30,7 +30,6 @@ type MiSizeGrid = Vec<MiSizeRow>;
 type PlaneGrids = [MiSizeGrid; PLANE_COUNT];
 type PlaneLines = [MiSizeRow; PLANE_COUNT];
 
-/// Mutable tile-local MI-size state used by partition contexts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileMiSizeState {
     mi_rows: usize,
@@ -41,7 +40,6 @@ pub(crate) struct TileMiSizeState {
 }
 
 impl TileMiSizeState {
-    /// Computes the padded allocation shape used by this state.
     pub(crate) fn allocation(
         mi_rows: usize,
         mi_cols: usize,
@@ -70,7 +68,6 @@ impl TileMiSizeState {
         })
     }
 
-    /// Creates a state initialized like AV2 clear-left/above context.
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -93,14 +90,12 @@ impl TileMiSizeState {
         })
     }
 
-    /// Resets the left MI-size partition context for a new superblock row.
     pub(crate) fn clear_left_context(&mut self) {
         for line in &mut self.left_mi_sizes {
             line.fill(CLEAR_PARTITION_CONTEXT);
         }
     }
 
-    /// Applies AV2 § 5.20.4.1 luma MI-size writes for one block.
     pub(crate) fn update_luma_block(
         &mut self,
         r: usize,
@@ -110,7 +105,6 @@ impl TileMiSizeState {
         self.update_plane_block(LUMA_PLANE, r, c, mi_size)
     }
 
-    /// Applies AV2 § 5.20.4.1 chroma MI-size writes for caller-supplied chroma facts.
     pub(crate) fn update_chroma_block(
         &mut self,
         chroma_mi_row: usize,
@@ -120,7 +114,6 @@ impl TileMiSizeState {
         self.update_plane_block(CHROMA_PLANE, chroma_mi_row, chroma_mi_col, chroma_mi_size)
     }
 
-    /// Builds a short-lived read-only partition-context view over this state.
     pub(crate) fn with_context_state<R>(
         &self,
         f: impl for<'ctx> FnOnce(TilePartitionContextState<'ctx>) -> R,
@@ -206,24 +199,8 @@ impl TileMiSizeState {
             col_end,
         })
     }
-
-    #[cfg(test)]
-    fn mi_size_at(&self, plane: usize, row: usize, col: usize) -> usize {
-        self.mi_sizes[plane][row][col]
-    }
-
-    #[cfg(test)]
-    fn left_mi_size_at(&self, plane: usize, row: usize) -> usize {
-        self.left_mi_sizes[plane][row]
-    }
-
-    #[cfg(test)]
-    fn above_mi_size_at(&self, plane: usize, col: usize) -> usize {
-        self.above_mi_sizes[plane][col]
-    }
 }
 
-/// Padded allocation accounting for [`TileMiSizeState`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileMiSizeStateAllocation {
     padded_rows: usize,
@@ -272,7 +249,6 @@ impl TileMiSizeRegion {
     }
 }
 
-/// Error returned by the tile MI-size state boundary.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TileMiSizeStateError {
     #[error("MI-size state dimensions must be nonzero, got {mi_rows}x{mi_cols}")]
@@ -464,232 +440,5 @@ fn row_slices(grid: &[MiSizeRow]) -> Result<Vec<&[usize]>, TileMiSizeStateError>
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
-    use super::*;
-
-    const BLOCK_4X4: usize = 0;
-    const BLOCK_8X8: usize = 3;
-    const BLOCK_16X8: usize = 5;
-    const BLOCK_64X64: usize = 12;
-    const BLOCK_256X256: usize = 18;
-
-    fn block(index: usize) -> BlockSize {
-        BlockSize::new(index).unwrap()
-    }
-
-    fn new_state(mi_rows: usize, mi_cols: usize) -> TileMiSizeState {
-        TileMiSizeState::new(mi_rows, mi_cols, block(BLOCK_64X64)).unwrap()
-    }
-
-    #[test]
-    fn initializes_luma_and_chroma_with_clear_context_sentinel() {
-        let state = new_state(2, 3);
-
-        for plane in 0..2 {
-            for row in 0..2 {
-                for col in 0..3 {
-                    assert_eq!(state.mi_size_at(plane, row, col), BLOCK_256X256);
-                }
-                assert_eq!(state.left_mi_size_at(plane, row), CLEAR_PARTITION_CONTEXT);
-            }
-            for col in 0..3 {
-                assert_eq!(state.above_mi_size_at(plane, col), CLEAR_PARTITION_CONTEXT);
-            }
-        }
-        assert_eq!(state.mi_sizes[0].len(), 16);
-        assert_eq!(state.mi_sizes[0][0].len(), 16);
-        assert_eq!(state.left_mi_sizes[0].len(), 16);
-        assert_eq!(state.above_mi_sizes[0].len(), 16);
-    }
-
-    #[test]
-    fn allocation_accounting_includes_superblock_padding_and_neighbor_lines() {
-        let allocation = TileMiSizeState::allocation(18, 18, block(BLOCK_64X64)).unwrap();
-
-        assert_eq!(allocation.padded_rows(), 32);
-        assert_eq!(allocation.padded_cols(), 32);
-        assert_eq!(allocation.padded_grid_cells(), 1024);
-        assert_eq!(allocation.entry_count(), 2 * (1024 + 32 + 32));
-    }
-
-    #[test]
-    fn rejects_empty_dimensions() {
-        assert!(matches!(
-            TileMiSizeState::new(0, 1, block(BLOCK_64X64)).unwrap_err(),
-            TileMiSizeStateError::EmptyDimensions {
-                mi_rows: 0,
-                mi_cols: 1
-            }
-        ));
-        assert!(matches!(
-            TileMiSizeState::new(1, 0, block(BLOCK_64X64)).unwrap_err(),
-            TileMiSizeStateError::EmptyDimensions {
-                mi_rows: 1,
-                mi_cols: 0
-            }
-        ));
-    }
-
-    #[test]
-    fn updates_luma_footprint_and_neighbor_lines() {
-        let mut state = new_state(6, 6);
-
-        state.update_luma_block(1, 2, block(BLOCK_16X8)).unwrap();
-
-        for row in 1..3 {
-            for col in 2..6 {
-                assert_eq!(state.mi_size_at(0, row, col), BLOCK_16X8);
-            }
-            assert_eq!(
-                state.left_mi_size_at(0, row),
-                partition_context_left(BLOCK_16X8).unwrap()
-            );
-        }
-        for col in 2..6 {
-            assert_eq!(
-                state.above_mi_size_at(0, col),
-                partition_context_above(BLOCK_16X8).unwrap()
-            );
-        }
-        assert_eq!(state.mi_size_at(0, 0, 2), BLOCK_256X256);
-        assert_eq!(state.mi_size_at(1, 1, 2), BLOCK_256X256);
-        assert_eq!(state.left_mi_size_at(0, 0), CLEAR_PARTITION_CONTEXT);
-        assert_eq!(state.above_mi_size_at(0, 1), CLEAR_PARTITION_CONTEXT);
-    }
-
-    #[test]
-    fn updates_chroma_footprint_without_touching_luma() {
-        let mut state = new_state(4, 4);
-
-        state.update_chroma_block(1, 1, block(BLOCK_8X8)).unwrap();
-
-        for row in 1..3 {
-            for col in 1..3 {
-                assert_eq!(state.mi_size_at(1, row, col), BLOCK_8X8);
-                assert_eq!(state.mi_size_at(0, row, col), BLOCK_256X256);
-            }
-            assert_eq!(
-                state.left_mi_size_at(1, row),
-                partition_context_left(BLOCK_8X8).unwrap()
-            );
-            assert_eq!(state.left_mi_size_at(0, row), CLEAR_PARTITION_CONTEXT);
-        }
-        for col in 1..3 {
-            assert_eq!(
-                state.above_mi_size_at(1, col),
-                partition_context_above(BLOCK_8X8).unwrap()
-            );
-            assert_eq!(state.above_mi_size_at(0, col), CLEAR_PARTITION_CONTEXT);
-        }
-    }
-
-    #[test]
-    fn accepts_edge_block_footprint_inside_padded_superblock_extent() {
-        let mut state = new_state(18, 18);
-
-        state.update_luma_block(16, 16, block(BLOCK_64X64)).unwrap();
-
-        for row in 16..32 {
-            for col in 16..32 {
-                assert_eq!(state.mi_size_at(0, row, col), BLOCK_64X64);
-            }
-            assert_eq!(
-                state.left_mi_size_at(0, row),
-                partition_context_left(BLOCK_64X64).unwrap()
-            );
-        }
-        for col in 16..32 {
-            assert_eq!(
-                state.above_mi_size_at(0, col),
-                partition_context_above(BLOCK_64X64).unwrap()
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_start_outside_visible_dimensions_without_mutating_state() {
-        let mut state = new_state(2, 2);
-        let before = state.clone();
-
-        let err = state.update_luma_block(2, 0, block(BLOCK_4X4)).unwrap_err();
-
-        assert!(matches!(
-            err,
-            TileMiSizeStateError::BlockStartOutOfBounds {
-                plane: 0,
-                r: 2,
-                c: 0,
-                mi_rows: 2,
-                mi_cols: 2
-            }
-        ));
-        assert_eq!(state, before);
-    }
-
-    #[test]
-    fn rejects_footprint_outside_padded_extent_without_mutating_state() {
-        let mut state = new_state(16, 16);
-        let before = state.clone();
-
-        let err = state
-            .update_luma_block(0, 0, block(BLOCK_256X256))
-            .unwrap_err();
-
-        assert!(matches!(
-            err,
-            TileMiSizeStateError::BlockOutOfBounds {
-                plane: 0,
-                r: 0,
-                c: 0,
-                row_end: 64,
-                col_end: 64,
-                mi_rows: 16,
-                mi_cols: 16
-            }
-        ));
-        assert_eq!(state, before);
-    }
-
-    #[test]
-    fn rejects_coordinate_overflow_without_mutating_state() {
-        let mut state = new_state(2, 2);
-        let before = state.clone();
-
-        let err = state
-            .update_chroma_block(usize::MAX, 0, block(BLOCK_4X4))
-            .unwrap_err();
-
-        assert!(matches!(
-            err,
-            TileMiSizeStateError::CoordinateOverflow {
-                coordinate: "row",
-                base: usize::MAX,
-                offset: 1
-            }
-        ));
-        assert_eq!(state, before);
-    }
-
-    #[test]
-    fn context_state_view_is_available_after_mutation() {
-        let mut state = new_state(16, 16);
-        state.update_luma_block(0, 0, block(BLOCK_64X64)).unwrap();
-        state.update_chroma_block(4, 4, block(BLOCK_8X8)).unwrap();
-
-        let mi0_rows: Vec<&[usize]> = state.mi_sizes[0].iter().map(Vec::as_slice).collect();
-        let mi1_rows: Vec<&[usize]> = state.mi_sizes[1].iter().map(Vec::as_slice).collect();
-        let expected = TilePartitionContextState::new(
-            [&mi0_rows, &mi1_rows],
-            [&state.left_mi_sizes[0], &state.left_mi_sizes[1]],
-            [&state.above_mi_sizes[0], &state.above_mi_sizes[1]],
-        );
-
-        state
-            .with_context_state(|context| {
-                assert_eq!(context, expected);
-            })
-            .unwrap();
-    }
-}
+#[path = "mi_size_state_tests.rs"]
+mod tests;

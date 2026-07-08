@@ -13,6 +13,7 @@ use splot_core::symbol_encoder::SymbolEncoder;
 
 use crate::bitstream::tile_payload::{FrameCdfSubset, MvCdfSelector};
 use crate::error::DecodeError;
+use crate::filters::wienerns_lr::intrabc_ref_mv_stack::build_intrabc_ref_mv_stack;
 
 use super::*;
 
@@ -20,6 +21,78 @@ const BLOCK_16X16: usize = 6;
 
 fn no_off() -> ByteOffset {
     ByteOffset::new(0)
+}
+
+impl IntrabcBlockContext {
+    const fn new(row: usize, col: usize, b_size: usize, is_chroma_part: bool) -> Self {
+        Self {
+            row,
+            col,
+            b_size,
+            is_chroma_part,
+            mixed_region: true,
+        }
+    }
+
+    const fn new_with_mixed_region(
+        row: usize,
+        col: usize,
+        b_size: usize,
+        is_chroma_part: bool,
+        mixed_region: bool,
+    ) -> Self {
+        Self {
+            row,
+            col,
+            b_size,
+            is_chroma_part,
+            mixed_region,
+        }
+    }
+}
+
+impl IntrabcBlockGeometry {
+    const fn new(block: IntrabcBlockContext, n4w: usize, n4h: usize) -> Self {
+        Self { block, n4w, n4h }
+    }
+}
+
+fn read_intrabc_info_record(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    geometry: IntrabcBlockGeometry,
+    tile_offset: ByteOffset,
+) -> Result<IntrabcInfo> {
+    let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
+    let stack_geometry = IntrabcStackGeometry {
+        mi_row: geometry.block.row,
+        mi_col: geometry.block.col,
+        n4w: geometry.n4w,
+        n4h: geometry.n4h,
+        sb_samples: superblock_samples(sequence, tile_offset)?,
+        frame_w: i32::MAX,
+        frame_h: i32::MAX,
+        max_bvp_drl_bits_minus_1: syntax.max_bvp_drl_bits_minus_1,
+    };
+    let stack = build_intrabc_ref_mv_stack(&IntrabcRefMvBank::new(0), stack_geometry, false, &[]);
+    let pred_mv = *stack.get(syntax.ref_mv_idx).ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_mv_idx_out_of_range",
+        )
+    })?;
+    finish_intrabc_info_record(
+        cdfs,
+        symbols,
+        sequence,
+        core,
+        syntax,
+        pred_mv,
+        0,
+        tile_offset,
+    )
 }
 
 /// A `skip` IntrABC neighbour prelude with an integer block vector, for

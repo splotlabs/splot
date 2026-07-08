@@ -9,10 +9,9 @@ use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
 use super::super::TileCoeffFrameFacts;
 use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::TileCoeffContextState;
-use super::AllZeroCoeffBlockInput;
 use super::fsc_quant_pass::{
     CoeffFscBranch, CoeffFscBranchError, CoeffFscBranchTxSizeInput,
-    CoeffFscBranchTxSizeNonZeroInput, apply_coeff_fsc_branch_from_tx_size,
+    CoeffFscBranchTxSizeNonZeroInput, apply_coeff_fsc_branch_from_tx_size, tx_size_table_usize,
 };
 use super::max_level::CoeffTransformClass;
 use super::ordinary_pass::geometry::{
@@ -21,21 +20,18 @@ use super::ordinary_pass::geometry::{
     apply_coeff_ordinary_branch_from_lossless,
 };
 use super::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
+use super::{AllZeroCoeffBlockInput, CoeffBranchInput};
 
 const IDTX: usize = 9;
-pub(crate) enum CoeffUseFscBranchInput {
-    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    NonZero(CoeffUseFscBranchNonZeroInput),
-}
+pub(crate) type CoeffUseFscBranchInput =
+    CoeffBranchInput<CoeffOrdinaryTxSizeGeometryConfig, CoeffUseFscBranchNonZeroInput>;
 pub(crate) struct CoeffUseFscBranchNonZeroInput {
     pub(crate) use_fsc: bool,
     pub(crate) ordinary: CoeffOrdinaryBranchLosslessNonZeroInput,
     pub(crate) fsc: CoeffFscBranchTxSizeNonZeroInput,
 }
-pub(crate) enum CoeffUseFscConditionInput {
-    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    NonZero(CoeffUseFscConditionNonZeroInput),
-}
+pub(crate) type CoeffUseFscConditionInput =
+    CoeffBranchInput<CoeffOrdinaryTxSizeGeometryConfig, CoeffUseFscConditionNonZeroInput>;
 pub(crate) struct CoeffUseFscConditionNonZeroInput {
     pub(crate) condition: CoeffUseFscConditionFacts,
     pub(crate) ordinary: CoeffOrdinaryBranchLosslessNonZeroInput,
@@ -58,10 +54,8 @@ impl CoeffUseFscConditionFacts {
             && (self.fsc_mode || self.is_inter)
     }
 }
-pub(crate) enum CoeffUseFscSharedFactsInput {
-    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    NonZero(CoeffUseFscSharedFactsNonZeroInput),
-}
+pub(crate) type CoeffUseFscSharedFactsInput =
+    CoeffBranchInput<CoeffOrdinaryTxSizeGeometryConfig, CoeffUseFscSharedFactsNonZeroInput>;
 pub(crate) struct CoeffUseFscSharedFactsNonZeroInput {
     pub(crate) facts: CoeffUseFscSharedFacts,
     pub(crate) ordinary_base_config: CoeffOrdinaryBranchLosslessBaseConfig,
@@ -88,10 +82,8 @@ impl CoeffUseFscSharedFacts {
         }
     }
 }
-pub(crate) enum CoeffUseFscBaseQFactsInput {
-    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    NonZero(CoeffUseFscBaseQFactsNonZeroInput),
-}
+pub(crate) type CoeffUseFscBaseQFactsInput =
+    CoeffBranchInput<CoeffOrdinaryTxSizeGeometryConfig, CoeffUseFscBaseQFactsNonZeroInput>;
 pub(crate) struct CoeffUseFscBaseQFactsNonZeroInput {
     pub(crate) facts: CoeffUseFscBaseQFacts,
     pub(crate) ordinary_base_config: CoeffOrdinaryBranchLosslessBaseConfig,
@@ -119,10 +111,8 @@ impl CoeffUseFscBaseQFacts {
         }
     }
 }
-pub(crate) enum CoeffUseFscFrameFactsInput {
-    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    NonZero(CoeffUseFscFrameFactsNonZeroInput),
-}
+pub(crate) type CoeffUseFscFrameFactsInput =
+    CoeffBranchInput<CoeffOrdinaryTxSizeGeometryConfig, CoeffUseFscFrameFactsNonZeroInput>;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffUseFscFrameBlockFacts {
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
@@ -257,24 +247,18 @@ pub(crate) fn apply_coeff_use_fsc_branch(
     }
 }
 
-pub(crate) fn apply_coeff_use_fsc_branch_from_condition(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffUseFscConditionInput,
-) -> Result<CoeffUseFscBranch, CoeffUseFscBranchError> {
-    let input = match input {
-        CoeffUseFscConditionInput::AllZero(input) => CoeffUseFscBranchInput::AllZero(input),
-        CoeffUseFscConditionInput::NonZero(input) => {
-            CoeffUseFscBranchInput::NonZero(CoeffUseFscBranchNonZeroInput {
-                use_fsc: input.condition.use_fsc(),
-                ordinary: input.ordinary,
-                fsc: input.fsc,
-            })
-        }
-    };
-    apply_coeff_use_fsc_branch(state, cdfs, symbols, input)
-}
+coeff_branch_map_adapter!(
+    pub(crate) fn apply_coeff_use_fsc_branch_from_condition(
+        CoeffUseFscConditionInput
+    ) -> Result<CoeffUseFscBranch, CoeffUseFscBranchError>,
+    input,
+    CoeffUseFscBranchNonZeroInput {
+        use_fsc: input.condition.use_fsc(),
+        ordinary: input.ordinary,
+        fsc: input.fsc,
+    },
+    apply_coeff_use_fsc_branch,
+);
 
 pub(crate) fn apply_coeff_use_fsc_branch_from_shared_facts(
     state: &mut TileCoeffContextState,
@@ -324,24 +308,18 @@ pub(crate) fn apply_coeff_use_fsc_branch_from_shared_facts(
     }
 }
 
-pub(crate) fn apply_coeff_use_fsc_branch_from_base_q_facts(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffUseFscBaseQFactsInput,
-) -> Result<CoeffUseFscBranch, CoeffUseFscBranchError> {
-    let input = match input {
-        CoeffUseFscBaseQFactsInput::AllZero(input) => CoeffUseFscSharedFactsInput::AllZero(input),
-        CoeffUseFscBaseQFactsInput::NonZero(input) => {
-            CoeffUseFscSharedFactsInput::NonZero(CoeffUseFscSharedFactsNonZeroInput {
-                facts: input.facts.shared_facts(),
-                ordinary_base_config: input.ordinary_base_config,
-                lossless: input.lossless,
-            })
-        }
-    };
-    apply_coeff_use_fsc_branch_from_shared_facts(state, cdfs, symbols, input)
-}
+coeff_branch_map_adapter!(
+    pub(crate) fn apply_coeff_use_fsc_branch_from_base_q_facts(
+        CoeffUseFscBaseQFactsInput
+    ) -> Result<CoeffUseFscBranch, CoeffUseFscBranchError>,
+    input,
+    CoeffUseFscSharedFactsNonZeroInput {
+        facts: input.facts.shared_facts(),
+        ordinary_base_config: input.ordinary_base_config,
+        lossless: input.lossless,
+    },
+    apply_coeff_use_fsc_branch_from_shared_facts,
+);
 
 pub(crate) fn apply_coeff_use_fsc_branch_from_frame_facts(
     state: &mut TileCoeffContextState,
@@ -349,12 +327,7 @@ pub(crate) fn apply_coeff_use_fsc_branch_from_frame_facts(
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffUseFscFrameFactsInput,
 ) -> Result<CoeffUseFscBranch, CoeffUseFscBranchError> {
-    let input = match input {
-        CoeffUseFscFrameFactsInput::AllZero(input) => CoeffUseFscBaseQFactsInput::AllZero(input),
-        CoeffUseFscFrameFactsInput::NonZero(input) => {
-            CoeffUseFscBaseQFactsInput::NonZero(input.base_q_input()?)
-        }
-    };
+    let input = input.try_map_nonzero(CoeffUseFscFrameFactsNonZeroInput::base_q_input)?;
     apply_coeff_use_fsc_branch_from_base_q_facts(state, cdfs, symbols, input)
 }
 
@@ -369,21 +342,5 @@ fn fsc_block_from_tx_size_geometry(
         y4: geometry.start_y >> 2,
         w4: tx_width >> 2,
         h4: tx_height >> 2,
-    })
-}
-
-fn tx_size_table_usize(
-    table: &[i32],
-    table_name: &'static str,
-    tx_size: usize,
-) -> Result<usize, CoeffFscBranchError> {
-    let value = table
-        .get(tx_size)
-        .copied()
-        .ok_or(CoeffFscBranchError::InvalidTransformSize { tx_size })?;
-    usize::try_from(value).map_err(|_| CoeffFscBranchError::InvalidTransformSizeTableValue {
-        table: table_name,
-        tx_size,
-        value,
     })
 }

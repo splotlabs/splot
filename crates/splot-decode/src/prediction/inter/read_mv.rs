@@ -14,27 +14,18 @@ const MV_LOW: i32 = -(1 << 16);
 const MV_UPP: i32 = 1 << 16;
 const AMVD_INDEX_TO_MVD: [i32; 9] = [0, 2, 4, 6, 8, 16, 32, 64, 128];
 
-/// AV2 Table 6.19 `MV_PRECISION_EIGHT_PEL`.
 pub(crate) const MV_PRECISION_EIGHT_PEL: u8 = 0;
-/// AV2 Table 6.19 `MV_PRECISION_FOUR_PEL`.
 pub(crate) const MV_PRECISION_FOUR_PEL: u8 = 1;
-/// AV2 Table 6.19 `MV_PRECISION_TWO_PEL`.
 pub(crate) const MV_PRECISION_TWO_PEL: u8 = 2;
-/// AV2 Table 6.19 `MV_PRECISION_ONE_PEL`.
 pub(crate) const MV_PRECISION_ONE_PEL: u8 = 3;
-/// AV2 Table 6.19 `MV_PRECISION_HALF_PEL`.
 pub(crate) const MV_PRECISION_HALF_PEL: u8 = 4;
-/// AV2 Table 6.19 `MV_PRECISION_QUARTER_PEL`.
 pub(crate) const MV_PRECISION_QUARTER_PEL: u8 = 5;
-/// AV2 Table 6.19 `MV_PRECISION_EIGHTH_PEL`.
 pub(crate) const MV_PRECISION_EIGHTH_PEL: u8 = 6;
 
-/// AV2 §3 `MV_INTRABC_CONTEXT`.
 pub(crate) const MV_INTRABC_CONTEXT: usize = 1;
 const INTER_MV_CONTEXT: usize = 0;
 const MV_CONTEXTS: usize = 2;
 
-/// Configuration for AV2 §5.20.7.20 `read_mv()`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MvReadConfig {
     precision: u8,
@@ -48,7 +39,6 @@ impl MvReadConfig {
         mv_ctx: INTER_MV_CONTEXT,
     };
 
-    /// Configuration for inter `read_mv()` from §5.20.7.20.
     pub(crate) const fn inter(precision: u8) -> Self {
         Self {
             precision,
@@ -56,7 +46,6 @@ impl MvReadConfig {
         }
     }
 
-    /// Configuration for IntrABC `read_mv()` from §5.20.5.4.
     pub(crate) const fn intrabc(precision: u8) -> Self {
         Self {
             precision,
@@ -69,7 +58,6 @@ impl MvReadConfig {
     }
 }
 
-/// AV2 §5.20.7.13 `mv_clamp_to_integer(v)`.
 pub(crate) const fn mv_clamp_to_integer(v: i32) -> i32 {
     if v < MV_LOW + 1 {
         MV_LOW + 8
@@ -80,10 +68,6 @@ pub(crate) const fn mv_clamp_to_integer(v: i32) -> i32 {
     }
 }
 
-/// AV2 §5.20.7.13 `lower_mv_precision(precision, candMv)`: rounds a candidate
-/// motion vector to the requested Table 6.19 precision. Eighth-pel input is
-/// already on the grid (`radix == 1`), where `Round2(a - 1, 0)` would diverge
-/// from the identity.
 pub(crate) fn lower_mv_precision(precision: u8, mv: Mv) -> Mv {
     if precision >= MV_PRECISION_EIGHTH_PEL {
         return mv;
@@ -109,7 +93,6 @@ pub(crate) fn lower_mv_precision(precision: u8, mv: Mv) -> Mv {
     }
 }
 
-/// Reads the signed MV difference for the single-reference EighthPel NEWMV path.
 #[allow(dead_code)]
 pub(crate) fn read_newmv_block_mvd(
     cdfs: &mut TileCdfSubset,
@@ -128,7 +111,6 @@ pub(crate) fn read_newmv_block_mvd_magnitude(
     read_newmv_block_mvd_magnitude_with_config(cdfs, symbols, tile_offset, config)
 }
 
-/// Reads the AV2 §5.20.7.21 adaptive-MVD vector for the NEWMV path.
 pub(crate) fn read_newmv_amvd_block_mvd(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -148,7 +130,6 @@ pub(crate) fn read_newmv_amvd_block_mvd(
     Ok(Mv { row, col })
 }
 
-/// Reads the configured §5.20.7.20 SHELL-coded MV delta and explicit sign pass.
 pub(crate) fn read_newmv_block_mvd_with_config(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -530,18 +511,10 @@ fn read_symbol(
 }
 
 fn read_bypass_bit(symbols: &mut SymbolDecoder<'_>, tile_offset: ByteOffset) -> Result<u8> {
-    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
-    let before = trace.then(|| symbols.checkpoint());
     let value = symbols
         .read_bool()
         .map(u8::from)
         .map_err(|_| mv_symbol_error(tile_offset))?;
-    if let Some(before) = before {
-        eprintln!(
-            "raw_literal kind=mv_bypass width=1 value={value} checkpoint_before={before:?} checkpoint_after={:?}",
-            symbols.checkpoint(),
-        );
-    }
     Ok(value)
 }
 
@@ -549,17 +522,9 @@ fn read_literal(symbols: &mut SymbolDecoder<'_>, n: u32, tile_offset: ByteOffset
     if n == 0 {
         return Ok(0);
     }
-    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
-    let before = trace.then(|| symbols.checkpoint());
     let value = symbols
         .read_literal(n)
         .map_err(|_| mv_symbol_error(tile_offset))?;
-    if let Some(before) = before {
-        eprintln!(
-            "raw_literal kind=mv_literal width={n} value={value} checkpoint_before={before:?} checkpoint_after={:?}",
-            symbols.checkpoint(),
-        );
-    }
     Ok(value)
 }
 

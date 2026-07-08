@@ -2,10 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::symbol::SymbolDecoder;
-use splot_core::tables::conversion::{
-    ADJUSTED_TX_SIZE, MODE_TO_ANGLE, MODE_TO_TXFM, TX_HEIGHT, TX_HEIGHT_LOG2, TX_SIZE_SQR,
-    TX_SIZE_SQR_UP, TX_WIDTH, TX_WIDTH_LOG2,
-};
+use splot_core::tables::conversion::{MODE_TO_ANGLE, MODE_TO_TXFM};
 
 use super::super::super::cdf::TileCdfSubset;
 use super::super::super::coeff_state::TileCoeffContextState;
@@ -13,13 +10,15 @@ use super::super::base_level_pass::CoeffBaseDerivedLevelPassConfig;
 use super::super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::super::max_level::CoeffTransformClass;
 use super::super::scan_walk::{CoeffScanOrderError, derive_coeff_scan_order};
-use super::super::{AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput};
+use super::super::{
+    AllZeroCoeffBlockInput, CoeffBranchInput, CoeffTxSizeTables as CoeffOrdinaryTxSizeTables,
+    DEFAULT_TX_SIZE_TABLES, NonZeroCoeffEobContextInput,
+};
 use super::{
     CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchPlaneTxTypeBaseConfig,
-    CoeffOrdinaryBranchPlaneTypeInput, CoeffOrdinaryBranchPlaneTypeNonZeroInput,
-    CoeffOrdinaryPlaneTypeStateContextConfig, CoeffOrdinaryStateContextConfig,
-    CoeffOrdinaryStateContextPassInput, NonZeroCoeffOrdinaryDerivedBasePass,
-    apply_coeff_ordinary_branch_from_plane_type,
+    CoeffOrdinaryBranchPlaneTypeNonZeroInput, CoeffOrdinaryPlaneTypeStateContextConfig,
+    CoeffOrdinaryStateContextConfig, CoeffOrdinaryStateContextPassInput,
+    NonZeroCoeffOrdinaryDerivedBasePass, apply_coeff_ordinary_branch_from_plane_type,
     apply_nonzero_coeff_ordinary_pass_with_state_context,
 };
 
@@ -71,10 +70,10 @@ const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
 ];
 
-pub(crate) enum CoeffOrdinaryBranchTxSizeDimensionsInput {
-    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    NonZero(CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput),
-}
+pub(crate) type CoeffOrdinaryBranchTxSizeDimensionsInput = CoeffBranchInput<
+    CoeffOrdinaryTxSizeGeometryConfig,
+    CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput,
+>;
 
 pub(crate) struct CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput {
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
@@ -92,10 +91,8 @@ struct CoeffOrdinaryStagedTxSizeDimensionsInput {
     lossless: bool,
 }
 
-pub(crate) enum CoeffOrdinaryBranchModeToTxfmInput {
-    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput),
-}
+pub(crate) type CoeffOrdinaryBranchModeToTxfmInput =
+    CoeffBranchInput<CoeffOrdinaryTxSizeGeometryConfig, CoeffOrdinaryBranchModeToTxfmNonZeroInput>;
 
 pub(crate) struct CoeffOrdinaryBranchModeToTxfmNonZeroInput {
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
@@ -105,10 +102,8 @@ pub(crate) struct CoeffOrdinaryBranchModeToTxfmNonZeroInput {
     pub(crate) lossless: bool,
 }
 
-pub(crate) enum CoeffOrdinaryBranchTxSetInput {
-    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    NonZero(CoeffOrdinaryBranchTxSetNonZeroInput),
-}
+pub(crate) type CoeffOrdinaryBranchTxSetInput =
+    CoeffBranchInput<CoeffOrdinaryTxSizeGeometryConfig, CoeffOrdinaryBranchTxSetNonZeroInput>;
 
 pub(crate) struct CoeffOrdinaryBranchTxSetNonZeroInput {
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
@@ -118,10 +113,8 @@ pub(crate) struct CoeffOrdinaryBranchTxSetNonZeroInput {
     pub(crate) lossless: bool,
 }
 
-pub(crate) enum CoeffOrdinaryBranchLosslessInput {
-    AllZero(CoeffOrdinaryTxSizeGeometryConfig),
-    NonZero(CoeffOrdinaryBranchLosslessNonZeroInput),
-}
+pub(crate) type CoeffOrdinaryBranchLosslessInput =
+    CoeffBranchInput<CoeffOrdinaryTxSizeGeometryConfig, CoeffOrdinaryBranchLosslessNonZeroInput>;
 
 pub(crate) struct CoeffOrdinaryBranchLosslessNonZeroInput {
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
@@ -171,17 +164,7 @@ pub(crate) struct CoeffOrdinaryBranchTxSetBaseConfig {
     pub(crate) use_tcq: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CoeffOrdinaryBranchLosslessBaseConfig {
-    pub(crate) reduced_tx_set: usize,
-    pub(crate) enable_chroma_dctonly: bool,
-    pub(crate) uv_mode: usize,
-    pub(crate) angle_delta_uv: i32,
-    pub(crate) luma_tx_type: usize,
-    pub(crate) chroma_inter_tx_type: usize,
-    pub(crate) parity_hiding: bool,
-    pub(crate) use_tcq: bool,
-}
+pub(crate) type CoeffOrdinaryBranchLosslessBaseConfig = CoeffOrdinaryBranchTxSetBaseConfig;
 
 impl CoeffOrdinaryBranchModeToTxfmBaseConfig {
     fn tx_size_base_config(
@@ -217,28 +200,13 @@ impl CoeffOrdinaryBranchTxSetBaseConfig {
             use_tcq: self.use_tcq,
         })
     }
-}
 
-impl CoeffOrdinaryBranchLosslessBaseConfig {
     #[allow(clippy::unused_self)]
     const fn lossless_tx_size_base_config(self) -> CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
         CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
             plane_tx_type: DCT_DCT,
             parity_hiding: false,
             use_tcq: false,
-        }
-    }
-
-    const fn tx_set_base_config(self) -> CoeffOrdinaryBranchTxSetBaseConfig {
-        CoeffOrdinaryBranchTxSetBaseConfig {
-            reduced_tx_set: self.reduced_tx_set,
-            enable_chroma_dctonly: self.enable_chroma_dctonly,
-            uv_mode: self.uv_mode,
-            angle_delta_uv: self.angle_delta_uv,
-            luma_tx_type: self.luma_tx_type,
-            chroma_inter_tx_type: self.chroma_inter_tx_type,
-            parity_hiding: self.parity_hiding,
-            use_tcq: self.use_tcq,
         }
     }
 }
@@ -259,37 +227,6 @@ struct CoeffOrdinaryTxSizeDimensions {
     tx_width_log2: u32,
     tx_height_log2: u32,
 }
-
-#[derive(Clone, Copy)]
-struct CoeffOrdinaryTxSizeTables<'a> {
-    adjusted_tx_size: &'a [i32],
-    tx_size_sqr: &'a [i32],
-    tx_size_sqr_up: &'a [i32],
-    tx_width: &'a [i32],
-    tx_height: &'a [i32],
-    tx_width_log2: &'a [i32],
-    tx_height_log2: &'a [i32],
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy)]
-#[allow(clippy::struct_field_names)]
-pub(crate) struct CoeffOrdinaryTestDimensionTables<'a> {
-    pub(crate) tx_width: &'a [i32],
-    pub(crate) tx_height: &'a [i32],
-    pub(crate) tx_width_log2: &'a [i32],
-    pub(crate) tx_height_log2: &'a [i32],
-}
-
-const DEFAULT_TX_SIZE_TABLES: CoeffOrdinaryTxSizeTables<'static> = CoeffOrdinaryTxSizeTables {
-    adjusted_tx_size: &ADJUSTED_TX_SIZE,
-    tx_size_sqr: &TX_SIZE_SQR,
-    tx_size_sqr_up: &TX_SIZE_SQR_UP,
-    tx_width: &TX_WIDTH,
-    tx_height: &TX_HEIGHT,
-    tx_width_log2: &TX_WIDTH_LOG2,
-    tx_height_log2: &TX_HEIGHT_LOG2,
-};
 
 struct CoeffOrdinaryDerivedTxSize {
     raw_dimensions: CoeffOrdinaryTxSizeDimensions,
@@ -406,10 +343,10 @@ impl CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
     }
 }
 
-pub(crate) enum CoeffOrdinaryBranchCoeffsGeometryInput<'a> {
-    AllZero(CoeffOrdinaryCoeffsGeometryConfig),
-    NonZero(CoeffOrdinaryBranchCoeffsGeometryNonZeroInput<'a>),
-}
+pub(crate) type CoeffOrdinaryBranchCoeffsGeometryInput<'a> = CoeffBranchInput<
+    CoeffOrdinaryCoeffsGeometryConfig,
+    CoeffOrdinaryBranchCoeffsGeometryNonZeroInput<'a>,
+>;
 
 pub(crate) struct CoeffOrdinaryBranchCoeffsGeometryNonZeroInput<'a> {
     pub(crate) geometry: CoeffOrdinaryCoeffsGeometryConfig,
@@ -441,10 +378,8 @@ impl CoeffOrdinaryCoeffsGeometryConfig {
     }
 }
 
-pub(crate) enum CoeffOrdinaryBranchGeometryInput<'a> {
-    AllZero(AllZeroCoeffBlockInput),
-    NonZero(CoeffOrdinaryBranchGeometryNonZeroInput<'a>),
-}
+pub(crate) type CoeffOrdinaryBranchGeometryInput<'a> =
+    CoeffBranchInput<AllZeroCoeffBlockInput, CoeffOrdinaryBranchGeometryNonZeroInput<'a>>;
 
 pub(crate) struct CoeffOrdinaryBranchGeometryNonZeroInput<'a> {
     pub(crate) start: NonZeroCoeffBlockStartInput,
@@ -465,27 +400,22 @@ pub(crate) fn apply_coeff_ordinary_branch_from_geometry(
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffOrdinaryBranchGeometryInput<'_>,
 ) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
-    let input = match input {
-        CoeffOrdinaryBranchGeometryInput::AllZero(input) => {
-            CoeffOrdinaryBranchPlaneTypeInput::AllZero(input)
+    let input = input.map_nonzero(|input| {
+        let block = input.start.block;
+        CoeffOrdinaryBranchPlaneTypeNonZeroInput {
+            start: input.start,
+            scan: input.scan,
+            base_config: input.base_config,
+            state_context: CoeffOrdinaryPlaneTypeStateContextConfig {
+                coeff_cdf_q_ctx: input.state_context.coeff_cdf_q_ctx,
+                x4: block.x4,
+                y4: block.y4,
+                w4: block.w4,
+                h4: block.h4,
+            },
+            lossless: input.lossless,
         }
-        CoeffOrdinaryBranchGeometryInput::NonZero(input) => {
-            let block = input.start.block;
-            CoeffOrdinaryBranchPlaneTypeInput::NonZero(CoeffOrdinaryBranchPlaneTypeNonZeroInput {
-                start: input.start,
-                scan: input.scan,
-                base_config: input.base_config,
-                state_context: CoeffOrdinaryPlaneTypeStateContextConfig {
-                    coeff_cdf_q_ctx: input.state_context.coeff_cdf_q_ctx,
-                    x4: block.x4,
-                    y4: block.y4,
-                    w4: block.w4,
-                    h4: block.h4,
-                },
-                lossless: input.lossless,
-            })
-        }
-    };
+    });
     apply_coeff_ordinary_branch_from_plane_type(state, cdfs, symbols, input)
 }
 
@@ -590,53 +520,6 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffOrdinaryBranchTxSizeDimensionsInput,
-    adjusted_tx_size_table: &[i32],
-    tx_size_sqr_table: &[i32],
-    tx_size_sqr_up_table: &[i32],
-) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
-    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
-        state,
-        cdfs,
-        symbols,
-        input,
-        CoeffOrdinaryTxSizeTables {
-            adjusted_tx_size: adjusted_tx_size_table,
-            tx_size_sqr: tx_size_sqr_table,
-            tx_size_sqr_up: tx_size_sqr_up_table,
-            ..DEFAULT_TX_SIZE_TABLES
-        },
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_dimension_tables(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffOrdinaryBranchTxSizeDimensionsInput,
-    dimension_tables: CoeffOrdinaryTestDimensionTables<'_>,
-) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
-    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
-        state,
-        cdfs,
-        symbols,
-        input,
-        CoeffOrdinaryTxSizeTables {
-            tx_width: dimension_tables.tx_width,
-            tx_height: dimension_tables.tx_height,
-            tx_width_log2: dimension_tables.tx_width_log2,
-            tx_height_log2: dimension_tables.tx_height_log2,
-            ..DEFAULT_TX_SIZE_TABLES
-        },
-    )
-}
-
 fn apply_coeff_ordinary_branch_from_tx_set_with_tables(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -644,25 +527,19 @@ fn apply_coeff_ordinary_branch_from_tx_set_with_tables(
     input: CoeffOrdinaryBranchTxSetInput,
     tables: CoeffOrdinaryTxSizeTables<'_>,
 ) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
-    let input = match input {
-        CoeffOrdinaryBranchTxSetInput::AllZero(geometry) => {
-            CoeffOrdinaryBranchModeToTxfmInput::AllZero(geometry)
-        }
-        CoeffOrdinaryBranchTxSetInput::NonZero(input) => {
-            let base_config = input.base_config.mode_to_txfm_base_config(
-                input.geometry,
-                input.is_inter,
-                tables,
-            )?;
-            CoeffOrdinaryBranchModeToTxfmInput::NonZero(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
-                geometry: input.geometry,
-                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
-                is_inter: input.is_inter,
-                base_config,
-                lossless: input.lossless,
-            })
-        }
-    };
+    let input = input.try_map_nonzero(|input| {
+        let base_config =
+            input
+                .base_config
+                .mode_to_txfm_base_config(input.geometry, input.is_inter, tables)?;
+        Ok::<_, CoeffOrdinaryBranchError>(CoeffOrdinaryBranchModeToTxfmNonZeroInput {
+            geometry: input.geometry,
+            coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+            is_inter: input.is_inter,
+            base_config,
+            lossless: input.lossless,
+        })
+    })?;
     apply_coeff_ordinary_branch_from_mode_to_txfm_with_tables(state, cdfs, symbols, input, tables)
 }
 
@@ -714,7 +591,7 @@ fn apply_coeff_ordinary_branch_from_lossless_with_tables(
                     geometry: input.geometry,
                     coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
                     is_inter: input.is_inter,
-                    base_config: input.base_config.tx_set_base_config(),
+                    base_config: input.base_config,
                     lossless: input.lossless,
                 }),
                 tables,
@@ -744,9 +621,8 @@ fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless_with_tables(
         }
         base_config.lossless_tx_size_base_config()
     } else {
-        let tx_set_base_config = base_config.tx_set_base_config();
         let mode_to_txfm_base_config =
-            tx_set_base_config.mode_to_txfm_base_config(geometry, is_inter, tables)?;
+            base_config.mode_to_txfm_base_config(geometry, is_inter, tables)?;
         mode_to_txfm_base_config.tx_size_base_config(geometry, is_inter, lossless, tables)?
     };
     apply_staged_nonzero_coeff_ordinary_pass_from_tx_size_dimensions_with_tables(
@@ -785,7 +661,7 @@ fn apply_staged_nonzero_coeff_ordinary_pass_from_tx_size_dimensions_with_tables(
     .map_err(CoeffOrdinaryBranchError::from)
 }
 
-fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
+pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -847,28 +723,21 @@ fn apply_coeff_ordinary_branch_from_mode_to_txfm_with_tables(
     input: CoeffOrdinaryBranchModeToTxfmInput,
     tables: CoeffOrdinaryTxSizeTables<'_>,
 ) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
-    let input = match input {
-        CoeffOrdinaryBranchModeToTxfmInput::AllZero(geometry) => {
-            CoeffOrdinaryBranchTxSizeDimensionsInput::AllZero(geometry)
-        }
-        CoeffOrdinaryBranchModeToTxfmInput::NonZero(input) => {
-            let base_config = input.base_config.tx_size_base_config(
-                input.geometry,
-                input.is_inter,
-                input.lossless,
-                tables,
-            )?;
-            CoeffOrdinaryBranchTxSizeDimensionsInput::NonZero(
-                CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput {
-                    geometry: input.geometry,
-                    coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
-                    is_inter: input.is_inter,
-                    base_config,
-                    lossless: input.lossless,
-                },
-            )
-        }
-    };
+    let input = input.try_map_nonzero(|input| {
+        let base_config = input.base_config.tx_size_base_config(
+            input.geometry,
+            input.is_inter,
+            input.lossless,
+            tables,
+        )?;
+        Ok::<_, CoeffOrdinaryBranchError>(CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput {
+            geometry: input.geometry,
+            coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
+            is_inter: input.is_inter,
+            base_config,
+            lossless: input.lossless,
+        })
+    })?;
     apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
         state, cdfs, symbols, input, tables,
     )

@@ -43,10 +43,6 @@ pub(crate) fn read_warp_inter_mode_syntax(
     }))
 }
 
-/// § 5.20.7.14 `read_motion_mode` WARP_NEWMV branch: the `use_extend_warp`
-/// and `use_local_warp` reads, gated on § 7.11.4 `WarpSampleFound[ 0 ]` and
-/// the frame-enabled motion modes. LOCALWARP prediction is beyond the
-/// frontier, so that flag defers; otherwise the selected mode is returned.
 pub(crate) fn read_warp_newmv_motion_mode_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -85,9 +81,6 @@ pub(crate) fn read_warp_newmv_motion_mode_syntax(
     Ok(MotionMode::DeltaWarp)
 }
 
-/// § 4.8 `Round2` over a signed § 7.13.3.24 projection difference: the
-/// spec's integer form `(x + (1 << (n - 1))) >> n` with an arithmetic shift
-/// (AVM `ROUND_POWER_OF_TWO_64`), NOT the sign-magnitude `Round2Signed`.
 const fn warp_round2(value: i64, n: u32) -> i64 {
     if n == 0 {
         return value;
@@ -95,17 +88,12 @@ const fn warp_round2(value: i64, n: u32) -> i64 {
     (value + (1i64 << (n - 1))) >> n
 }
 
-/// AV2 § 3 `LS_MV_MAX`.
 const LS_MV_MAX: i64 = 256;
 
-/// § 7.13.3.23 `ls_product`.
 const fn ls_product(a: i64, b: i64) -> i64 {
     ((a * b) >> 2) + (a + b)
 }
 
-/// § 7.13.3.23 warp estimation: integer least-squares fit over the § 7.12.3
-/// warp samples, falling back to a pure translation when the determinant is
-/// zero.
 #[allow(clippy::too_many_arguments)]
 fn local_warp_estimation(
     samples: &[[i64; 4]],
@@ -186,9 +174,6 @@ fn local_warp_estimation(
     Ok(params)
 }
 
-/// § 7.13.3.24 extend-warp estimation: extends the base neighbour's warp
-/// model through the block's signalled MV. The global-motion `params` arm is
-/// statically unreachable (global-motion frames defer at the frame gate).
 #[allow(clippy::too_many_arguments)]
 fn extend_warp_estimation(
     mv_grid: &NeighbourMvGrid,
@@ -355,10 +340,6 @@ pub(crate) fn inter_mvd_sign_derivation_allowed(
         && config.precision() < MV_PRECISION_QUARTER_PEL
 }
 
-/// § 5.20.7.13 EXTENDWARP / LOCALWARP tail: DRL, block precision, and the
-/// NEWMV MVD — no `warp_idx` loop and no `read_warp_delta` — then the
-/// mode's model derivation (§ 7.13.3.24 extension or § 7.13.3.23 least
-/// squares over the § 7.12.3 warp samples).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn read_warp_extend_syntax(
     cdfs: &mut TileCdfSubset,
@@ -639,9 +620,6 @@ const WEDGE_ANGLE_DIST_TO_INDEX: [[i8; 4]; 20] = [
     [-1, 65, 66, 67],
 ];
 
-/// Maps a parsed § 5.20.7.15 interintra read onto the supported prediction
-/// subset: II_DC/II_V/II_H with either smooth or wedge blending. II_SMOOTH stays
-/// a fail-closed defer after the bit-exact parse.
 pub(crate) fn interintra_prediction_mode(
     syntax: WarpInterIntraSyntax,
     tile_offset: ByteOffset,

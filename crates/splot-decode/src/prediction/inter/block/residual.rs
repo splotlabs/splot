@@ -238,9 +238,6 @@ fn residual_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
     inter_uses_selectable_tx_partitions(core) || intra_frame_needs_selectable_tx_partitions(core)
 }
 
-/// True for an **intra-frame** IntrABC block whose § 5.20.6.2 residual needs
-/// `read_tx_partition` bits — the parsed `TxMode` for an intra frame lives on
-/// `core.intra_tail`, not `core.inter_tail`.
 fn intra_frame_needs_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
     core.inter_tail.is_none()
         && core
@@ -280,7 +277,6 @@ fn read_inter_residual_luma_chunk(
             blocks,
             luma_tx_types,
             luma_tx_records,
-            frontier,
             luma_chunk_x4,
             luma_chunk_y4,
             chunk_end_x4,
@@ -298,28 +294,6 @@ fn read_inter_residual_luma_chunk(
         let mut x4 = luma_chunk_x4;
         while x4 < chunk_end_x4 {
             let tx_fills_block = tx_w4 == block_n4w && tx_h4 == block_n4h;
-            if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS") {
-                let start_x = x4 * MI_SIZE;
-                let start_y = y4 * MI_SIZE;
-                if start_x >= 1760 && (160..=224).contains(&start_y) {
-                    eprintln!(
-                        "inter residual luma read r={} c={} b={} n4={}x{} chunk=({}, {}) start=({start_x},{start_y}) tx_size={tx_size} tx4={}x{} fills={tx_fills_block} has_chroma={} chroma_offset={} luma_part={} chroma_part={}",
-                        frontier.r,
-                        frontier.c,
-                        frontier.b_size.index(),
-                        block_n4w,
-                        block_n4h,
-                        luma_chunk_x4,
-                        luma_chunk_y4,
-                        tx_w4,
-                        tx_h4,
-                        frontier.has_chroma,
-                        frontier.chroma_offset,
-                        frontier.is_luma_part(),
-                        frontier.is_chroma_part()
-                    );
-                }
-            }
             let coeffs = read_inter_residual_plane(
                 work_unit,
                 symbols,
@@ -363,7 +337,6 @@ fn read_inter_residual_luma_records_for_chunk(
     blocks: &mut Vec<InterResidualBlock>,
     luma_tx_types: &mut InterLumaTxTypeMap,
     luma_tx_records: &[SelectableLumaTxRecord],
-    frontier: &DecodeBlockFrontier,
     luma_chunk_x4: usize,
     luma_chunk_y4: usize,
     chunk_end_x4: usize,
@@ -382,32 +355,6 @@ fn read_inter_residual_luma_records_for_chunk(
     }) {
         decoded_any = true;
         let tx_fills_block = record.cols == block_n4w && record.rows == block_n4h;
-        let trace_residual = crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS");
-        let start_x = record.col * MI_SIZE;
-        let start_y = record.row * MI_SIZE;
-        let trace_this = trace_residual
-            && ((512..=640).contains(&start_x) && start_y <= 128
-                || (start_x >= 1760 && (160..=224).contains(&start_y)));
-        if trace_this {
-            eprintln!(
-                "inter residual luma read start r={} c={} b={} n4={}x{} chunk=({}, {}) start=({start_x},{start_y}) tx_size={} tx4={}x{} fills={tx_fills_block} has_chroma={} chroma_offset={} luma_part={} chroma_part={} checkpoint={:?}",
-                frontier.r,
-                frontier.c,
-                frontier.b_size.index(),
-                block_n4w,
-                block_n4h,
-                luma_chunk_x4,
-                luma_chunk_y4,
-                record.tx_size,
-                record.cols,
-                record.rows,
-                frontier.has_chroma,
-                frontier.chroma_offset,
-                frontier.is_luma_part(),
-                frontier.is_chroma_part(),
-                symbols.checkpoint()
-            );
-        }
         let coeffs = read_inter_residual_plane(
             work_unit,
             symbols,
@@ -429,15 +376,6 @@ fn read_inter_residual_luma_records_for_chunk(
             coeffs.plane_tx_type,
             tile_offset,
         )?;
-        if trace_this {
-            eprintln!(
-                "inter residual luma read done start=({start_x},{start_y}) tx_size={} all_zero={} eob={} checkpoint={:?}",
-                record.tx_size,
-                coeffs.all_zero,
-                coeffs.eob,
-                symbols.checkpoint()
-            );
-        }
         push_inter_residual_block(
             blocks,
             ReconPlaneId::Y,
@@ -531,24 +469,6 @@ fn read_inter_residual_chroma_group(
                 subsampling_x,
                 subsampling_y,
             );
-            let trace_this = crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_RESIDUAL_BLOCKS")
-                && ((256..=320).contains(&start_x) && start_y <= 64
-                    || (start_x >= 880 && (80..=112).contains(&start_y)));
-            if trace_this {
-                eprintln!(
-                    "inter residual chroma read start block=({},{} b={}) local=({}, {}) start=({start_x},{start_y}) tx_size={tx_size} tx4={}x{} plane_size={}x{} checkpoint={:?}",
-                    frontier.r,
-                    frontier.c,
-                    frontier.b_size.index(),
-                    x4,
-                    y4,
-                    tx_w4,
-                    tx_h4,
-                    num4x4_w,
-                    num4x4_h,
-                    symbols.checkpoint()
-                );
-            }
             let u = read_inter_residual_plane(
                 work_unit,
                 symbols,
@@ -564,14 +484,6 @@ fn read_inter_residual_chroma_group(
                 tile_offset,
             )?;
             let u_nonzero = !u.all_zero;
-            if trace_this {
-                eprintln!(
-                    "inter residual chroma read u done start=({start_x},{start_y}) all_zero={} eob={} checkpoint={:?}",
-                    u.all_zero,
-                    u.eob,
-                    symbols.checkpoint()
-                );
-            }
             push_inter_residual_block(
                 blocks,
                 ReconPlaneId::U,
@@ -595,14 +507,6 @@ fn read_inter_residual_chroma_group(
                 residual_tool_policy,
                 tile_offset,
             )?;
-            if trace_this {
-                eprintln!(
-                    "inter residual chroma read v done start=({start_x},{start_y}) all_zero={} eob={} checkpoint={:?}",
-                    v.all_zero,
-                    v.eob,
-                    symbols.checkpoint()
-                );
-            }
             push_inter_residual_block(
                 blocks,
                 ReconPlaneId::V,
@@ -691,15 +595,7 @@ fn read_inter_residual_plane(
         false,
         residual_tool_policy,
     )
-    .map_err(|error| {
-        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_RESIDUAL_ERROR") {
-            eprintln!(
-                "inter residual error offset={} plane={plane} tx_size={tx_size} start=({start_x},{start_y}) fills={tx_fills_block}: {error:?}",
-                tile_offset.get(),
-            );
-        }
-        residual_read_error(tile_offset)
-    })
+    .map_err(|_| residual_read_error(tile_offset))
 }
 
 pub(crate) fn transform_tool_residual_policy(
@@ -786,58 +682,5 @@ fn residual_read_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
-mod tests {
-    use super::*;
-
-    fn tx_size_for(width: usize, height: usize) -> usize {
-        TX_WIDTH
-            .iter()
-            .zip(TX_HEIGHT.iter())
-            .position(|(&w, &h)| w == width as i32 && h == height as i32)
-            .expect("tx size")
-    }
-
-    #[test]
-    fn luma_tx_type_map_scales_chroma_coordinates_with_mi_floor() {
-        let offset = ByteOffset::new(0);
-        let mut map = InterLumaTxTypeMap::new(9, 4, 8, 8, offset).unwrap();
-        map.update(9, 4, tx_size_for(8, 4), V_DCT, offset).unwrap();
-
-        assert_eq!(map.chroma_inter_tx_type(9, 4, 4, 2, true, true), V_DCT);
-        assert_eq!(map.chroma_inter_tx_type(9, 4, 5, 3, true, true), DCT_DCT);
-    }
-
-    #[test]
-    fn luma_tx_type_map_updates_on_16x16_units() {
-        let offset = ByteOffset::new(0);
-        let mut map = InterLumaTxTypeMap::new(0, 0, 8, 8, offset).unwrap();
-        map.update(0, 0, tx_size_for(32, 16), V_DCT, offset)
-            .unwrap();
-
-        assert_eq!(map.values[map.index(0, 0).unwrap()], V_DCT);
-        assert_eq!(map.values[map.index(0, 4).unwrap()], V_DCT);
-        assert_eq!(map.values[map.index(0, 7).unwrap()], DCT_DCT);
-    }
-
-    #[test]
-    fn chroma_group_start_waits_for_subsampled_luma_chunks() {
-        assert_eq!(
-            completed_chroma_group_start(0, 0, 2, 2, false, false),
-            Some((0, 0))
-        );
-        assert_eq!(completed_chroma_group_start(0, 0, 2, 2, true, false), None);
-        assert_eq!(
-            completed_chroma_group_start(1, 0, 2, 2, true, false),
-            Some((0, 0))
-        );
-        assert_eq!(
-            completed_chroma_group_start(1, 1, 2, 2, true, true),
-            Some((0, 0))
-        );
-        assert_eq!(
-            completed_chroma_group_start(0, 1, 1, 2, true, true),
-            Some((0, 0))
-        );
-    }
-}
+#[path = "residual_tests.rs"]
+mod tests;

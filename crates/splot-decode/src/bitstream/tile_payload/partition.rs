@@ -14,29 +14,18 @@ use super::cdf::{TileCdfError, TileCdfSubset};
 
 const EXT_PARTITION_TYPES: usize = 10;
 
-/// AV2 § 6.19.3 partition values.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(usize)]
 pub(crate) enum PartitionType {
-    /// `PARTITION_NONE`.
     None = 0,
-    /// `PARTITION_HORZ`.
     Horz = 1,
-    /// `PARTITION_VERT`.
     Vert = 2,
-    /// `PARTITION_HORZ_3`.
     Horz3 = 3,
-    /// `PARTITION_VERT_3`.
     Vert3 = 4,
-    /// `PARTITION_HORZ_4A`.
     Horz4A = 5,
-    /// `PARTITION_HORZ_4B`.
     Horz4B = 6,
-    /// `PARTITION_VERT_4A`.
     Vert4A = 7,
-    /// `PARTITION_VERT_4B`.
     Vert4B = 8,
-    /// `PARTITION_SPLIT`.
     Split = 9,
 }
 
@@ -59,14 +48,12 @@ impl PartitionType {
     }
 }
 
-/// Caller-provided AV2 § 5.20.3.2 allowed partition set.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AllowedPartitions {
     flags: [bool; EXT_PARTITION_TYPES],
 }
 
 impl AllowedPartitions {
-    /// Creates an allowed partition set in AV2 partition enum order.
     #[must_use]
     pub(crate) const fn new(flags: [bool; EXT_PARTITION_TYPES]) -> Self {
         Self { flags }
@@ -150,7 +137,6 @@ impl RectPartitionFamily {
     }
 }
 
-/// Inputs for one AV2 § 5.20.3.2 partition decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReadPartitionDecisionInput<'a> {
     allowed: AllowedPartitions,
@@ -162,7 +148,6 @@ pub(crate) struct ReadPartitionDecisionInput<'a> {
 }
 
 impl<'a> ReadPartitionDecisionInput<'a> {
-    /// Creates one partition decision input from already-derived caller facts.
     #[must_use]
     pub(crate) const fn new(
         allowed: AllowedPartitions,
@@ -183,29 +168,19 @@ impl<'a> ReadPartitionDecisionInput<'a> {
     }
 }
 
-/// Trace of branch-local syntax consumed by one partition decision.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ReadPartitionDecisionTrace {
-    /// Decoded `do_split`, when read.
     pub(crate) do_split: Option<bool>,
-    /// Decoded `do_square_split`, when read.
     pub(crate) do_square_split: Option<bool>,
-    /// Decoded `rect_type`, when read.
     pub(crate) rect_type: Option<RectPartitionType>,
-    /// Decoded `do_ext_partition`, when read.
     pub(crate) do_ext_partition: Option<bool>,
-    /// Decoded `do_uneven_4way_partition`, when read.
     pub(crate) do_uneven_4way_partition: Option<bool>,
-    /// Decoded `uneven_4way_partition_type`, when read.
     pub(crate) uneven_4way_partition_type: Option<bool>,
 }
 
-/// Result of one AV2 § 5.20.3.2 partition decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReadPartitionDecision {
-    /// Final partition outcome.
     pub(crate) partition: PartitionType,
-    /// Branch-local syntax consumption trace.
     pub(crate) trace: ReadPartitionDecisionTrace,
 }
 
@@ -215,38 +190,22 @@ impl ReadPartitionDecision {
     }
 }
 
-/// Error returned by the crate-private partition decision boundary.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PartitionDecisionError {
-    /// The caller-provided allowed set was empty.
     #[error("partition decision has no allowed partitions")]
     EmptyAllowedSet,
-    /// The CDF context selector failed.
     #[error("partition decision CDF selection failed: {0}")]
     Cdf(#[from] TileCdfError),
-    /// An `S()` partition symbol read failed.
     #[error("partition decision symbol read failed: {0}")]
     Symbol(#[from] PartitionEntrySymbolReadError),
-    /// An `L(1)` literal read failed.
     #[error("partition decision literal read failed: {0}")]
     Literal(#[source] CoreError),
-    /// A binary `S()` returned a value outside the expected boolean domain.
     #[error("{syntax} decoded symbol {symbol} is outside the boolean domain")]
-    BooleanSymbolOutOfRange {
-        /// Syntax element name.
-        syntax: &'static str,
-        /// Raw decoded symbol.
-        symbol: u8,
-    },
-    /// A final table result was inconsistent with caller-provided allowed facts.
+    BooleanSymbolOutOfRange { syntax: &'static str, symbol: u8 },
     #[error("partition decision selected disallowed partition {partition:?}")]
-    FinalPartitionDisallowed {
-        /// Final partition from the decision branch.
-        partition: PartitionType,
-    },
+    FinalPartitionDisallowed { partition: PartitionType },
 }
 
-/// Runs one AV2 § 5.20.3.2 partition decision over caller-provided facts.
 pub(crate) fn read_partition_decision(
     input: ReadPartitionDecisionInput<'_>,
     cdfs: &mut TileCdfSubset,
@@ -354,19 +313,10 @@ fn read_rect_partition(
     };
 
     let uneven_4way_partition_type = if do_uneven_4way_partition {
-        let trace_raw = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
-        let raw_before = trace_raw.then(|| symbols.checkpoint());
         let value = symbols
             .read_literal(1)
             .map_err(PartitionDecisionError::Literal)?
             != 0;
-        if let Some(raw_before) = raw_before {
-            eprintln!(
-                "raw_literal kind=partition reason=uneven_4way_partition_type width=1 value={} checkpoint_before={raw_before:?} checkpoint_after={:?}",
-                u8::from(value),
-                symbols.checkpoint(),
-            );
-        }
         trace.uneven_4way_partition_type = Some(value);
         value
     } else {
@@ -420,34 +370,7 @@ fn read_partition_bool(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<bool, PartitionDecisionError> {
-    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_PARTITION_SYMBOLS");
-    let before = trace.then(|| symbols.checkpoint());
-    let row_before = if trace {
-        cdfs.row(selector).ok().map(<[i32]>::to_vec)
-    } else {
-        None
-    };
     let symbol = cdfs.read_partition_entry_symbol(selector, symbols)?;
-    if trace {
-        let after = symbols.checkpoint();
-        eprintln!(
-            "partition bool syntax={} selector={:?} value={} before_bits={} after_bits={} before_symbols={} after_symbols={} before_state=({}, {}, {}) after_state=({}, {}, {}) row_before={:?}",
-            syntax,
-            selector,
-            symbol.get(),
-            before.map_or(0, |checkpoint| checkpoint.consumed_bits.get()),
-            after.consumed_bits.get(),
-            before.map_or(0, |checkpoint| checkpoint.symbol_count),
-            after.symbol_count,
-            before.map_or(0, |checkpoint| checkpoint.symbol_max_bits),
-            before.map_or(0, |checkpoint| checkpoint.symbol_value),
-            before.map_or(0, |checkpoint| checkpoint.symbol_range),
-            after.symbol_max_bits,
-            after.symbol_value,
-            after.symbol_range,
-            row_before,
-        );
-    }
     symbol_to_bool(syntax, symbol)
 }
 
@@ -463,497 +386,5 @@ fn symbol_to_bool(syntax: &'static str, symbol: Symbol) -> Result<bool, Partitio
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
-    use splot_core::span::ByteOffset;
-    use splot_core::symbol::{CdfUpdateMode, SymbolDecoderConfig};
-
-    use super::super::cdf::FrameCdfSubset;
-    use super::*;
-
-    const BLOCK_4X4: usize = 0;
-    const BLOCK_16X16: usize = 6;
-    const BLOCK_32X32: usize = 9;
-
-    fn allowed(partitions: &[PartitionType]) -> AllowedPartitions {
-        let mut flags = [false; EXT_PARTITION_TYPES];
-        for partition in partitions {
-            flags[partition.index()] = true;
-        }
-        AllowedPartitions::new(flags)
-    }
-
-    fn partition_context() -> PartitionContextInput<'static> {
-        static LEFT0: [usize; 32] = [BLOCK_4X4; 32];
-        static LEFT1: [usize; 32] = [BLOCK_4X4; 32];
-        static ABOVE0: [usize; 32] = [BLOCK_4X4; 32];
-        static ABOVE1: [usize; 32] = [BLOCK_4X4; 32];
-        PartitionContextInput::new(BLOCK_32X32, 0, 0, 0, [&LEFT0, &LEFT1], [&ABOVE0, &ABOVE1])
-            .unwrap()
-    }
-
-    fn square_context() -> SquareSplitContextInput<'static> {
-        static ROW0: [usize; 2] = [BLOCK_4X4; 2];
-        static ROW1: [usize; 2] = [BLOCK_4X4; 2];
-        static GRID0: [&[usize]; 2] = [&ROW0, &ROW1];
-        static GRID1: [&[usize]; 2] = [&ROW0, &ROW1];
-        SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, false, [&GRID0, &GRID1]).unwrap()
-    }
-
-    fn input(
-        allowed: AllowedPartitions,
-        implied_partition: Option<PartitionType>,
-        bru_active: bool,
-        rect_type: Option<RectPartitionType>,
-    ) -> ReadPartitionDecisionInput<'static> {
-        ReadPartitionDecisionInput::new(
-            allowed,
-            implied_partition,
-            bru_active,
-            rect_type,
-            partition_context(),
-            square_context(),
-        )
-    }
-
-    fn decoder(payload: &'static [u8], update_mode: CdfUpdateMode) -> SymbolDecoder<'static> {
-        SymbolDecoder::with_base_and_config(
-            payload,
-            ByteOffset::new(0),
-            SymbolDecoderConfig::new().with_cdf_update_mode(update_mode),
-        )
-        .unwrap()
-    }
-
-    fn cdfs() -> TileCdfSubset {
-        FrameCdfSubset::from_defaults().tile_copy()
-    }
-
-    fn decision(
-        input: ReadPartitionDecisionInput<'static>,
-        payload: &'static [u8],
-    ) -> (
-        Result<ReadPartitionDecision, PartitionDecisionError>,
-        TileCdfSubset,
-        SymbolDecoder<'static>,
-    ) {
-        let mut cdfs = cdfs();
-        let mut symbols = decoder(payload, CdfUpdateMode::Enabled);
-        let result = read_partition_decision(input, &mut cdfs, &mut symbols);
-        (result, cdfs, symbols)
-    }
-
-    #[test]
-    fn implied_partition_returns_without_symbol_consumption() {
-        let mut cdfs = cdfs();
-        let before = cdfs.clone();
-        let mut symbols = decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
-
-        let result = read_partition_decision(
-            input(
-                allowed(&[PartitionType::Horz, PartitionType::Vert]),
-                Some(PartitionType::Vert),
-                true,
-                None,
-            ),
-            &mut cdfs,
-            &mut symbols,
-        )
-        .unwrap();
-
-        assert_eq!(result.partition, PartitionType::Vert);
-        assert_eq!(result.trace, ReadPartitionDecisionTrace::default());
-        assert_eq!(symbols.symbol_count(), 0);
-        assert_eq!(cdfs, before);
-    }
-
-    #[test]
-    fn single_allowed_returns_in_spec_order_without_symbol_consumption() {
-        let (result, cdfs_after, symbols) = decision(
-            input(allowed(&[PartitionType::Horz4B]), None, true, None),
-            &[0xFF, 0xFF],
-        );
-
-        assert_eq!(result.unwrap().partition, PartitionType::Horz4B);
-        assert_eq!(symbols.symbol_count(), 0);
-        assert_eq!(cdfs_after, cdfs());
-    }
-
-    #[test]
-    fn inactive_bru_returns_none_without_symbol_consumption() {
-        let (result, cdfs_after, symbols) = decision(
-            input(
-                allowed(&[
-                    PartitionType::None,
-                    PartitionType::Horz,
-                    PartitionType::Vert,
-                ]),
-                None,
-                false,
-                None,
-            ),
-            &[0xFF, 0xFF],
-        );
-
-        assert_eq!(result.unwrap().partition, PartitionType::None);
-        assert_eq!(symbols.symbol_count(), 0);
-        assert_eq!(cdfs_after, cdfs());
-    }
-
-    #[test]
-    fn disallowed_implied_partition_falls_through_to_single_allowed() {
-        let (result, cdfs_after, symbols) = decision(
-            input(
-                allowed(&[PartitionType::Horz]),
-                Some(PartitionType::Vert),
-                true,
-                None,
-            ),
-            &[0xFF, 0xFF],
-        );
-
-        assert_eq!(result.unwrap().partition, PartitionType::Horz);
-        assert_eq!(symbols.symbol_count(), 0);
-        assert_eq!(cdfs_after, cdfs());
-    }
-
-    #[test]
-    fn disallowed_implied_partition_falls_through_to_reached_syntax() {
-        let (result, _, symbols) = decision(
-            input(
-                allowed(&[PartitionType::None, PartitionType::Horz]),
-                Some(PartitionType::Vert),
-                true,
-                Some(RectPartitionType::Horz),
-            ),
-            &[0x00, 0x80],
-        );
-        let result = result.unwrap();
-
-        assert_eq!(result.partition, PartitionType::None);
-        assert_eq!(result.trace.do_split, Some(false));
-        assert_eq!(symbols.symbol_count(), 1);
-    }
-
-    #[test]
-    fn inactive_bru_returns_none_even_when_none_is_disallowed() {
-        let (result, cdfs_after, symbols) = decision(
-            input(
-                allowed(&[PartitionType::Horz, PartitionType::Vert]),
-                None,
-                false,
-                None,
-            ),
-            &[0xFF, 0xFF],
-        );
-
-        assert_eq!(result.unwrap().partition, PartitionType::None);
-        assert_eq!(symbols.symbol_count(), 0);
-        assert_eq!(cdfs_after, cdfs());
-    }
-
-    #[test]
-    fn do_split_false_returns_none_and_stops() {
-        let (result, cdfs_after, symbols) = decision(
-            input(
-                allowed(&[
-                    PartitionType::None,
-                    PartitionType::Split,
-                    PartitionType::Horz,
-                ]),
-                None,
-                true,
-                Some(RectPartitionType::Horz),
-            ),
-            &[0x00, 0x80],
-        );
-        let result = result.unwrap();
-
-        assert_eq!(result.partition, PartitionType::None);
-        assert_eq!(result.trace.do_split, Some(false));
-        assert_eq!(result.trace.do_square_split, None);
-        assert_eq!(symbols.symbol_count(), 1);
-        assert_ne!(cdfs_after, cdfs());
-    }
-
-    #[test]
-    fn square_split_true_returns_split_before_rect_symbols() {
-        let (result, _, symbols) = decision(
-            input(
-                allowed(&[
-                    PartitionType::Split,
-                    PartitionType::Horz,
-                    PartitionType::Vert,
-                ]),
-                None,
-                true,
-                None,
-            ),
-            &[0xFF, 0xFF],
-        );
-        let result = result.unwrap();
-
-        assert_eq!(result.partition, PartitionType::Split);
-        assert_eq!(result.trace.do_split, None);
-        assert_eq!(result.trace.do_square_split, Some(true));
-        assert_eq!(result.trace.rect_type, None);
-        assert_eq!(symbols.symbol_count(), 1);
-    }
-
-    #[test]
-    fn rect_type_symbol_selects_vertical_non_extended_partition() {
-        let (result, _, symbols) = decision(
-            input(
-                allowed(&[PartitionType::Horz, PartitionType::Vert]),
-                None,
-                true,
-                None,
-            ),
-            &[0xFF, 0xFF],
-        );
-        let result = result.unwrap();
-
-        assert_eq!(result.partition, PartitionType::Vert);
-        assert_eq!(result.trace.do_square_split, None);
-        assert_eq!(result.trace.rect_type, Some(RectPartitionType::Vert));
-        assert_eq!(symbols.symbol_count(), 1);
-    }
-
-    #[test]
-    fn forced_horizontal_rect_reads_ext_symbol_once() {
-        let (result, _, symbols) = decision(
-            input(
-                allowed(&[PartitionType::Horz, PartitionType::Horz3]),
-                None,
-                true,
-                Some(RectPartitionType::Horz),
-            ),
-            &[0xFF, 0xFF],
-        );
-        let result = result.unwrap();
-
-        assert_eq!(result.partition, PartitionType::Horz3);
-        assert_eq!(result.trace.do_ext_partition, Some(true));
-        assert_eq!(result.trace.do_uneven_4way_partition, None);
-        assert_eq!(symbols.symbol_count(), 1);
-    }
-
-    #[test]
-    fn uneven_four_way_literal_selects_table_variant() {
-        let (result, _, symbols) = decision(
-            input(
-                allowed(&[
-                    PartitionType::Horz,
-                    PartitionType::Horz3,
-                    PartitionType::Horz4A,
-                    PartitionType::Horz4B,
-                ]),
-                None,
-                true,
-                Some(RectPartitionType::Horz),
-            ),
-            &[0xFF, 0xFF],
-        );
-        let result = result.unwrap();
-
-        assert_eq!(result.partition, PartitionType::Horz4B);
-        assert_eq!(result.trace.do_ext_partition, Some(true));
-        assert_eq!(result.trace.do_uneven_4way_partition, Some(true));
-        assert_eq!(result.trace.uneven_4way_partition_type, Some(true));
-        assert_eq!(symbols.symbol_count(), 3);
-    }
-
-    #[test]
-    fn uneven_four_way_without_three_way_reads_only_literal() {
-        let (result, _, symbols) = decision(
-            input(
-                allowed(&[
-                    PartitionType::Vert,
-                    PartitionType::Vert4A,
-                    PartitionType::Vert4B,
-                ]),
-                None,
-                true,
-                Some(RectPartitionType::Vert),
-            ),
-            &[0xFF, 0xFF],
-        );
-        let result = result.unwrap();
-
-        assert_eq!(result.partition, PartitionType::Vert4B);
-        assert_eq!(result.trace.do_ext_partition, Some(true));
-        assert_eq!(result.trace.do_uneven_4way_partition, None);
-        assert_eq!(result.trace.uneven_4way_partition_type, Some(true));
-        assert_eq!(symbols.symbol_count(), 2);
-    }
-
-    #[test]
-    fn empty_allowed_set_is_rejected_before_symbol_consumption() {
-        let mut cdfs = cdfs();
-        let before = cdfs.clone();
-        let mut symbols = decoder(&[0x80, 0x00], CdfUpdateMode::Enabled);
-
-        let err = read_partition_decision(
-            input(
-                AllowedPartitions::new([false; EXT_PARTITION_TYPES]),
-                None,
-                true,
-                None,
-            ),
-            &mut cdfs,
-            &mut symbols,
-        )
-        .unwrap_err();
-
-        assert!(matches!(err, PartitionDecisionError::EmptyAllowedSet));
-        assert_eq!(symbols.symbol_count(), 0);
-        assert_eq!(cdfs, before);
-    }
-
-    #[test]
-    fn impossible_final_table_result_is_rejected() {
-        let mut cdfs = cdfs();
-        let mut symbols = decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
-
-        let err = read_partition_decision(
-            input(
-                allowed(&[PartitionType::Vert, PartitionType::Vert3]),
-                None,
-                true,
-                Some(RectPartitionType::Horz),
-            ),
-            &mut cdfs,
-            &mut symbols,
-        )
-        .unwrap_err();
-
-        assert!(matches!(
-            err,
-            PartitionDecisionError::FinalPartitionDisallowed {
-                partition: PartitionType::Horz
-            }
-        ));
-    }
-
-    #[test]
-    fn cdf_selector_error_fails_before_symbol_consumption() {
-        static EMPTY: [usize; 0] = [];
-        static ROW0: [usize; 2] = [BLOCK_4X4; 2];
-        static ROW1: [usize; 2] = [BLOCK_4X4; 2];
-        static GRID0: [&[usize]; 2] = [&ROW0, &ROW1];
-        static GRID1: [&[usize]; 2] = [&ROW0, &ROW1];
-        let input = ReadPartitionDecisionInput::new(
-            allowed(&[PartitionType::None, PartitionType::Horz]),
-            None,
-            true,
-            Some(RectPartitionType::Horz),
-            PartitionContextInput::new(BLOCK_32X32, 0, 1, 0, [&EMPTY, &EMPTY], [&EMPTY, &EMPTY])
-                .unwrap(),
-            SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, false, [&GRID0, &GRID1])
-                .unwrap(),
-        );
-        let mut cdfs = cdfs();
-        let before = cdfs.clone();
-        let mut symbols = decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
-
-        let err = read_partition_decision(input, &mut cdfs, &mut symbols).unwrap_err();
-
-        assert!(matches!(
-            err,
-            PartitionDecisionError::Cdf(TileCdfError::PartitionNeighborOutOfRange { .. })
-        ));
-        assert_eq!(symbols.symbol_count(), 0);
-        assert_eq!(cdfs, before);
-    }
-
-    #[test]
-    fn empty_payload_literal_branch_is_deterministic() {
-        let mut cdfs = cdfs();
-        let mut symbols = decoder(&[], CdfUpdateMode::Enabled);
-
-        let result = read_partition_decision(
-            input(
-                allowed(&[PartitionType::Vert4A, PartitionType::Vert4B]),
-                None,
-                true,
-                Some(RectPartitionType::Vert),
-            ),
-            &mut cdfs,
-            &mut symbols,
-        )
-        .unwrap();
-
-        assert_eq!(result.partition, PartitionType::Vert4A);
-        assert_eq!(result.trace.uneven_4way_partition_type, Some(false));
-        assert_eq!(symbols.symbol_count(), 1);
-    }
-
-    #[test]
-    fn repeated_inputs_are_deterministic() {
-        let input = input(
-            allowed(&[
-                PartitionType::Split,
-                PartitionType::Horz,
-                PartitionType::Vert,
-            ]),
-            None,
-            true,
-            None,
-        );
-
-        let (first, first_cdfs, first_symbols) = decision(input, &[0x00, 0x80]);
-        let (second, second_cdfs, second_symbols) = decision(input, &[0x00, 0x80]);
-
-        assert_eq!(first.unwrap(), second.unwrap());
-        assert_eq!(first_cdfs, second_cdfs);
-        assert_eq!(
-            first_symbols.consumed_bits().get(),
-            second_symbols.consumed_bits().get()
-        );
-    }
-
-    #[test]
-    fn bounded_payload_matrix_never_panics() {
-        let allowed_sets = [
-            allowed(&[
-                PartitionType::None,
-                PartitionType::Split,
-                PartitionType::Horz,
-            ]),
-            allowed(&[
-                PartitionType::Split,
-                PartitionType::Horz,
-                PartitionType::Vert,
-            ]),
-            allowed(&[
-                PartitionType::Horz,
-                PartitionType::Horz3,
-                PartitionType::Horz4A,
-            ]),
-            allowed(&[
-                PartitionType::Vert,
-                PartitionType::Vert3,
-                PartitionType::Vert4A,
-            ]),
-        ];
-        let payloads: [&[u8]; 5] = [&[], &[0x00], &[0x80], &[0x00, 0x80], &[0xFF, 0xFF]];
-
-        for allowed in allowed_sets {
-            for payload in payloads {
-                let mut cdfs = cdfs();
-                let mut symbols = SymbolDecoder::with_base_and_config(
-                    payload,
-                    ByteOffset::new(0),
-                    SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-                )
-                .unwrap();
-                let _ = read_partition_decision(
-                    input(allowed, None, true, None),
-                    &mut cdfs,
-                    &mut symbols,
-                );
-            }
-        }
-    }
-}
+#[path = "partition_tests.rs"]
+mod tests;

@@ -16,11 +16,10 @@ use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchGeometryInput, CoeffOrdinaryBranchGeometryNonZeroInput,
     CoeffOrdinaryBranchTxSizeDimensionsBaseConfig, CoeffOrdinaryBranchTxSizeDimensionsInput,
     CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput, CoeffOrdinaryCoeffsGeometryConfig,
-    CoeffOrdinaryGeometryStateContextConfig, CoeffOrdinaryTestDimensionTables,
-    CoeffOrdinaryTxSizeGeometryConfig, apply_coeff_ordinary_branch_from_coeffs_geometry,
-    apply_coeff_ordinary_branch_from_geometry, apply_coeff_ordinary_branch_from_tx_size_dimensions,
-    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_dimension_tables,
-    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables, tx_size_scan_for_test,
+    CoeffOrdinaryGeometryStateContextConfig, CoeffOrdinaryTxSizeGeometryConfig,
+    apply_coeff_ordinary_branch_from_coeffs_geometry, apply_coeff_ordinary_branch_from_geometry,
+    apply_coeff_ordinary_branch_from_tx_size_dimensions,
+    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables, tx_size_scan_for_test,
 };
 use super::ordinary_pass::{
     CoeffOrdinaryBranch, CoeffOrdinaryBranchError, CoeffOrdinaryBranchInput,
@@ -33,7 +32,9 @@ use super::test_support::{
     OrdinaryBranchRun, run_ordinary_branch, seeded_context_state, setup_start_with_input,
     symbol_decoder,
 };
-use super::{AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput};
+use super::{
+    AllZeroCoeffBlockInput, CoeffTxSizeTables, DEFAULT_TX_SIZE_TABLES, NonZeroCoeffEobContextInput,
+};
 
 const DC_ONLY_SCAN: [u16; 1] = [0];
 const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
@@ -42,6 +43,60 @@ const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
     [0x55, 0xaa, 0x80],
     [0xff, 0xff, 0x80],
 ];
+
+#[derive(Clone, Copy)]
+#[allow(clippy::struct_field_names)]
+struct CoeffOrdinaryTestDimensionTables<'a> {
+    tx_width: &'a [i32],
+    tx_height: &'a [i32],
+    tx_width_log2: &'a [i32],
+    tx_height_log2: &'a [i32],
+}
+
+fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_tables(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryBranchTxSizeDimensionsInput,
+    adjusted_tx_size_table: &[i32],
+    tx_size_sqr_table: &[i32],
+    tx_size_sqr_up_table: &[i32],
+) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
+    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
+        state,
+        cdfs,
+        symbols,
+        input,
+        CoeffTxSizeTables {
+            adjusted_tx_size: adjusted_tx_size_table,
+            tx_size_sqr: tx_size_sqr_table,
+            tx_size_sqr_up: tx_size_sqr_up_table,
+            ..DEFAULT_TX_SIZE_TABLES
+        },
+    )
+}
+
+fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_test_dimension_tables(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffOrdinaryBranchTxSizeDimensionsInput,
+    dimension_tables: CoeffOrdinaryTestDimensionTables<'_>,
+) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
+    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
+        state,
+        cdfs,
+        symbols,
+        input,
+        CoeffTxSizeTables {
+            tx_width: dimension_tables.tx_width,
+            tx_height: dimension_tables.tx_height,
+            tx_width_log2: dimension_tables.tx_width_log2,
+            tx_height_log2: dimension_tables.tx_height_log2,
+            ..DEFAULT_TX_SIZE_TABLES
+        },
+    )
+}
 
 fn payload_from(first: u8, second: u8, suffix: [u8; 3]) -> [u8; 12] {
     [

@@ -53,25 +53,6 @@ pub(super) fn resolve_interp_filter(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn trace_interp_filter_context(
-    kind: &'static str,
-    mi_row: usize,
-    mi_col: usize,
-    ref_frame0: i8,
-    ref_frame1_is_inter: bool,
-    ctx: usize,
-    neighbour_ctx: &BlockNeighbourContext,
-    symbols: &SymbolDecoder<'_>,
-) {
-    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_INTERP_FILTER_CTX") {
-        return;
-    }
-    eprintln!(
-        "interp_filter_ctx kind={kind} r={mi_row} c={mi_col} ref0={ref_frame0} ref1_is_inter={ref_frame1_is_inter} ctx={ctx} neighbour={neighbour_ctx:?} checkpoint={:?}",
-        symbols.checkpoint(),
-    );
-}
-
 pub(crate) fn interp_filter_no_neighbour_ctx(ref_frame1_is_inter: bool) -> usize {
     INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE
         + usize::from(ref_frame1_is_inter) * INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET
@@ -153,7 +134,6 @@ pub(super) fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
         .unwrap_or(false)
 }
 
-/// § 5.18.2 `FrameMvPrecision` as a Table 6.19 code.
 pub(super) fn frame_mv_precision(core: &FrameHeaderCore, tile_offset: ByteOffset) -> Result<u8> {
     if core.frame_is_intra == Some(true) {
         return Ok(0);
@@ -161,8 +141,6 @@ pub(super) fn frame_mv_precision(core: &FrameHeaderCore, tile_offset: ByteOffset
     Ok(inter_mv_read_config(core, tile_offset)?.precision())
 }
 
-/// § 5.18.2 `UsePerBlockMvPrecision`: `enable_flex_mvres` outside the
-/// `force_integer_mv` path (which pins `MV_PRECISION_ONE_PEL`).
 fn use_per_block_mv_precision(sequence: &SequenceHeader, core: &FrameHeaderCore) -> bool {
     sequence
         .inter
@@ -171,8 +149,6 @@ fn use_per_block_mv_precision(sequence: &SequenceHeader, core: &FrameHeaderCore)
         && !effective_force_integer_mv(core)
 }
 
-/// § 5.20.7.13 per-block MV precision: the `use_most_probable_precision` and
-/// `pb_mv_precision` reads plus the `adjustedPrecision` derivation.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn read_block_mv_precision_syntax(
     cdfs: &mut TileCdfSubset,
@@ -225,8 +201,6 @@ pub(super) fn read_block_mv_precision_syntax(
     Ok(BlockPrecisionRecord::explicit(mv_precision))
 }
 
-/// § 5.20.7.13 `assign_mv` predictor rounding: `lower_mv_precision` applies to
-/// NEWMV-family predictors below `MV_PRECISION_HALF_PEL`.
 pub(super) fn lowered_pred_mv(precision: BlockPrecisionRecord, pred_mv: Mv) -> Mv {
     if precision.mv_precision < MV_PRECISION_HALF_PEL {
         lower_mv_precision(precision.mv_precision, pred_mv)

@@ -21,7 +21,7 @@ use super::block::{
 use super::compound_is_joint_context_from_order_hints;
 use super::test_support::fixture_sequence_and_key_core;
 use crate::error::{DecodeError, Result};
-use crate::pipeline::{PipelineFrame, decode_frames_from_plan};
+use crate::pipeline::{PipelineDecodedFrame, PipelineFrame, decode_frames_from_plan};
 use crate::{
     DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeOptions, DecodeRuntimeConfig,
     DecodeStreamPlan,
@@ -140,7 +140,9 @@ fn fixture_sequence_and_quantization(bytes: &[u8]) -> (SequenceHeader, Quantizat
 fn assert_yuv420_8bit_frames(frames: &[PipelineFrame], width: usize, height: usize) {
     let visible_size = PlaneSize::new(width, height).expect("valid visible size");
     for (index, output) in frames.iter().enumerate() {
-        let frame = output.frame();
+        let PipelineDecodedFrame::Eight(frame) = &output.frame else {
+            panic!("frame {index} decoded as 10-bit");
+        };
         assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
         assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "frame {index}");
         assert_eq!(frame.y().visible_size(), visible_size, "frame {index}");
@@ -151,9 +153,10 @@ fn frame_hashes(frames: &[PipelineFrame]) -> Vec<String> {
     frames
         .iter()
         .map(|output| {
-            DecodedFrameHashInput::new(output.frame())
-                .compute_hash()
-                .to_hex()
+            let PipelineDecodedFrame::Eight(frame) = &output.frame else {
+                panic!("frame decoded as 10-bit");
+            };
+            DecodedFrameHashInput::new(frame).compute_hash().to_hex()
         })
         .collect()
 }
@@ -404,9 +407,10 @@ fn ten_bit_frame_hashes(frames: &[PipelineFrame]) -> Vec<String> {
     frames
         .iter()
         .map(|output| {
-            DecodedFrameHashInput::new(output.frame_ten().expect("10-bit frame"))
-                .compute_hash()
-                .to_hex()
+            let PipelineDecodedFrame::Ten(frame) = &output.frame else {
+                panic!("frame decoded as 8-bit");
+            };
+            DecodedFrameHashInput::new(frame).compute_hash().to_hex()
         })
         .collect()
 }

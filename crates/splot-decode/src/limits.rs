@@ -25,6 +25,26 @@ const DEFAULT_MAX_LOOP_RESTORATION_SOURCE_READS: u64 = DEFAULT_MAX_TILE_PARTITIO
 const DEFAULT_MAX_OUTPUT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_HOST_ALLOCATION_LEN: u64 = isize::MAX as u64;
 
+macro_rules! decode_limit_accessors {
+    ($(
+        $get:ident, $with:ident, $name:ident, $get_doc:literal, $with_doc:literal;
+    )*) => {
+        $(
+            #[doc = $get_doc]
+            #[must_use]
+            pub const fn $get(self) -> DecodeLimitThreshold {
+                self.threshold(DecodeLimitName::$name)
+            }
+
+            #[doc = $with_doc]
+            #[must_use]
+            pub const fn $with(self, threshold: DecodeLimitThreshold) -> Self {
+                self.with_limit(DecodeLimitName::$name, threshold)
+            }
+        )*
+    };
+}
+
 /// Runtime decoder options supplied by the caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeOptions {
@@ -253,15 +273,13 @@ impl DecodeLimits {
         left: u64,
         right: u64,
     ) -> DecodeLimitResult<DecodeLimitCheck> {
-        let actual = left
-            .checked_add(right)
-            .ok_or(DecodeLimitError::ArithmeticOverflow {
-                name,
-                op: DecodeLimitOp::Add,
-                left,
-                right,
-            })?;
-        self.ensure(name, actual)
+        self.ensure_checked_arithmetic(
+            name,
+            left,
+            right,
+            DecodeLimitOp::Add,
+            left.checked_add(right),
+        )
     }
 
     /// Computes checked multiplication, then compares the product against a typed limit.
@@ -277,14 +295,29 @@ impl DecodeLimits {
         left: u64,
         right: u64,
     ) -> DecodeLimitResult<DecodeLimitCheck> {
-        let actual = left
-            .checked_mul(right)
-            .ok_or(DecodeLimitError::ArithmeticOverflow {
-                name,
-                op: DecodeLimitOp::Mul,
-                left,
-                right,
-            })?;
+        self.ensure_checked_arithmetic(
+            name,
+            left,
+            right,
+            DecodeLimitOp::Mul,
+            left.checked_mul(right),
+        )
+    }
+
+    fn ensure_checked_arithmetic(
+        self,
+        name: DecodeLimitName,
+        left: u64,
+        right: u64,
+        op: DecodeLimitOp,
+        actual: Option<u64>,
+    ) -> DecodeLimitResult<DecodeLimitCheck> {
+        let actual = actual.ok_or(DecodeLimitError::ArithmeticOverflow {
+            name,
+            op,
+            left,
+            right,
+        })?;
         self.ensure(name, actual)
     }
 
@@ -309,199 +342,23 @@ impl DecodeLimits {
             .map_err(|_| DecodeLimitError::HostAllocationTooLarge { name, actual })
     }
 
-    /// Returns the maximum input byte threshold.
-    #[must_use]
-    pub const fn max_input_bytes(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxInputBytes)
-    }
-
-    /// Returns a copy with the maximum input byte threshold replaced.
-    #[must_use]
-    pub const fn with_max_input_bytes(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxInputBytes, threshold)
-    }
-
-    /// Returns the maximum OBU count threshold.
-    #[must_use]
-    pub const fn max_obus(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxObus)
-    }
-
-    /// Returns a copy with the maximum OBU count threshold replaced.
-    #[must_use]
-    pub const fn with_max_obus(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxObus, threshold)
-    }
-
-    /// Returns the maximum IVF frame-record traversal threshold.
-    #[must_use]
-    pub const fn max_ivf_frame_records(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxIvfFrameRecords)
-    }
-
-    /// Returns a copy with the maximum IVF frame-record threshold replaced.
-    #[must_use]
-    pub const fn with_max_ivf_frame_records(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxIvfFrameRecords, threshold)
-    }
-
-    /// Returns the maximum decoded frame count threshold.
-    #[must_use]
-    pub const fn max_frames_to_decode(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxFramesToDecode)
-    }
-
-    /// Returns a copy with the maximum decoded frame count threshold replaced.
-    #[must_use]
-    pub const fn with_max_frames_to_decode(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxFramesToDecode, threshold)
-    }
-
-    /// Returns the maximum output frame count threshold.
-    #[must_use]
-    pub const fn max_output_frames(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxOutputFrames)
-    }
-
-    /// Returns a copy with the maximum output frame count threshold replaced.
-    #[must_use]
-    pub const fn with_max_output_frames(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxOutputFrames, threshold)
-    }
-
-    /// Returns the maximum frame width threshold.
-    #[must_use]
-    pub const fn max_frame_width(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxFrameWidth)
-    }
-
-    /// Returns a copy with the maximum frame width threshold replaced.
-    #[must_use]
-    pub const fn with_max_frame_width(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxFrameWidth, threshold)
-    }
-
-    /// Returns the maximum frame height threshold.
-    #[must_use]
-    pub const fn max_frame_height(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxFrameHeight)
-    }
-
-    /// Returns a copy with the maximum frame height threshold replaced.
-    #[must_use]
-    pub const fn with_max_frame_height(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxFrameHeight, threshold)
-    }
-
-    /// Returns the maximum luma samples per frame threshold.
-    #[must_use]
-    pub const fn max_luma_samples_per_frame(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxLumaSamplesPerFrame)
-    }
-
-    /// Returns a copy with the maximum luma samples per frame threshold replaced.
-    #[must_use]
-    pub const fn with_max_luma_samples_per_frame(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxLumaSamplesPerFrame, threshold)
-    }
-
-    /// Returns the maximum decoded frame byte threshold.
-    #[must_use]
-    pub const fn max_decoded_frame_bytes(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxDecodedFrameBytes)
-    }
-
-    /// Returns a copy with the maximum decoded frame byte threshold replaced.
-    #[must_use]
-    pub const fn with_max_decoded_frame_bytes(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxDecodedFrameBytes, threshold)
-    }
-
-    /// Returns the maximum reference slot threshold.
-    #[must_use]
-    pub const fn max_reference_slots(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxReferenceSlots)
-    }
-
-    /// Returns a copy with the maximum reference slot threshold replaced.
-    #[must_use]
-    pub const fn with_max_reference_slots(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxReferenceSlots, threshold)
-    }
-
-    /// Returns the maximum reference-store byte threshold.
-    #[must_use]
-    pub const fn max_reference_store_bytes(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxReferenceStoreBytes)
-    }
-
-    /// Returns a copy with the maximum reference-store byte threshold replaced.
-    #[must_use]
-    pub const fn with_max_reference_store_bytes(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxReferenceStoreBytes, threshold)
-    }
-
-    /// Returns the maximum tile count threshold.
-    #[must_use]
-    pub const fn max_tile_count(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxTileCount)
-    }
-
-    /// Returns a copy with the maximum tile count threshold replaced.
-    #[must_use]
-    pub const fn with_max_tile_count(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxTileCount, threshold)
-    }
-
-    /// Returns the maximum tile partition traversal step threshold.
-    #[must_use]
-    pub const fn max_tile_partition_steps(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxTilePartitionSteps)
-    }
-
-    /// Returns a copy with the maximum tile partition traversal step threshold replaced.
-    #[must_use]
-    pub const fn with_max_tile_partition_steps(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxTilePartitionSteps, threshold)
-    }
-
-    /// Returns the maximum tile payload byte threshold.
-    #[must_use]
-    pub const fn max_tile_payload_bytes(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxTilePayloadBytes)
-    }
-
-    /// Returns a copy with the maximum tile payload byte threshold replaced.
-    #[must_use]
-    pub const fn with_max_tile_payload_bytes(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxTilePayloadBytes, threshold)
-    }
-
-    /// Returns the maximum loop-restoration source-read operation threshold.
-    #[must_use]
-    pub const fn max_loop_restoration_source_reads(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxLoopRestorationSourceReads)
-    }
-
-    /// Returns a copy with the maximum loop-restoration source-read operation threshold replaced.
-    #[must_use]
-    pub const fn with_max_loop_restoration_source_reads(
-        self,
-        threshold: DecodeLimitThreshold,
-    ) -> Self {
-        self.with_limit(DecodeLimitName::MaxLoopRestorationSourceReads, threshold)
-    }
-
-    /// Returns the maximum output byte threshold.
-    #[must_use]
-    pub const fn max_output_bytes(self) -> DecodeLimitThreshold {
-        self.threshold(DecodeLimitName::MaxOutputBytes)
-    }
-
-    /// Returns a copy with the maximum output byte threshold replaced.
-    #[must_use]
-    pub const fn with_max_output_bytes(self, threshold: DecodeLimitThreshold) -> Self {
-        self.with_limit(DecodeLimitName::MaxOutputBytes, threshold)
+    decode_limit_accessors! {
+        max_input_bytes, with_max_input_bytes, MaxInputBytes, "Returns the maximum input byte threshold.", "Returns a copy with the maximum input byte threshold replaced.";
+        max_obus, with_max_obus, MaxObus, "Returns the maximum OBU count threshold.", "Returns a copy with the maximum OBU count threshold replaced.";
+        max_ivf_frame_records, with_max_ivf_frame_records, MaxIvfFrameRecords, "Returns the maximum IVF frame-record traversal threshold.", "Returns a copy with the maximum IVF frame-record threshold replaced.";
+        max_frames_to_decode, with_max_frames_to_decode, MaxFramesToDecode, "Returns the maximum decoded frame count threshold.", "Returns a copy with the maximum decoded frame count threshold replaced.";
+        max_output_frames, with_max_output_frames, MaxOutputFrames, "Returns the maximum output frame count threshold.", "Returns a copy with the maximum output frame count threshold replaced.";
+        max_frame_width, with_max_frame_width, MaxFrameWidth, "Returns the maximum frame width threshold.", "Returns a copy with the maximum frame width threshold replaced.";
+        max_frame_height, with_max_frame_height, MaxFrameHeight, "Returns the maximum frame height threshold.", "Returns a copy with the maximum frame height threshold replaced.";
+        max_luma_samples_per_frame, with_max_luma_samples_per_frame, MaxLumaSamplesPerFrame, "Returns the maximum luma samples per frame threshold.", "Returns a copy with the maximum luma samples per frame threshold replaced.";
+        max_decoded_frame_bytes, with_max_decoded_frame_bytes, MaxDecodedFrameBytes, "Returns the maximum decoded frame byte threshold.", "Returns a copy with the maximum decoded frame byte threshold replaced.";
+        max_reference_slots, with_max_reference_slots, MaxReferenceSlots, "Returns the maximum reference slot threshold.", "Returns a copy with the maximum reference slot threshold replaced.";
+        max_reference_store_bytes, with_max_reference_store_bytes, MaxReferenceStoreBytes, "Returns the maximum reference-store byte threshold.", "Returns a copy with the maximum reference-store byte threshold replaced.";
+        max_tile_count, with_max_tile_count, MaxTileCount, "Returns the maximum tile count threshold.", "Returns a copy with the maximum tile count threshold replaced.";
+        max_tile_partition_steps, with_max_tile_partition_steps, MaxTilePartitionSteps, "Returns the maximum tile partition traversal step threshold.", "Returns a copy with the maximum tile partition traversal step threshold replaced.";
+        max_tile_payload_bytes, with_max_tile_payload_bytes, MaxTilePayloadBytes, "Returns the maximum tile payload byte threshold.", "Returns a copy with the maximum tile payload byte threshold replaced.";
+        max_loop_restoration_source_reads, with_max_loop_restoration_source_reads, MaxLoopRestorationSourceReads, "Returns the maximum loop-restoration source-read operation threshold.", "Returns a copy with the maximum loop-restoration source-read operation threshold replaced.";
+        max_output_bytes, with_max_output_bytes, MaxOutputBytes, "Returns the maximum output byte threshold.", "Returns a copy with the maximum output byte threshold replaced.";
     }
 }
 

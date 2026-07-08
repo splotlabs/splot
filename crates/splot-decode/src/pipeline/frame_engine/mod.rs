@@ -34,21 +34,11 @@ type FrameDecodeOutput<T> = (
     TemporalMotionField,
 );
 
-/// The frame-level branch of the unified decode engine.
-///
-/// `Inter` carries the per-slot reference state a coded inter frame reads; `Intra`
-/// (key / intra-only frames) is near-empty because its frame-level setup is
-/// self-contained. Intra frames join `decode_frame` in a later step; the variant
-/// is defined now so the branch shape is stable.
 pub(crate) enum FrameSetup<'a, T: ReconSample> {
     Intra,
     Inter(&'a InterReferenceState<'a, T>),
 }
 
-/// Decodes one frame through the unified engine.
-///
-/// Returns the reconstructed frame, its (possibly-updated) header core, and the
-/// end-of-frame CDF subset the reference bookkeeping retains.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_frame<T: ReconSample>(
     plan: &DecodeStreamPlan,

@@ -5,7 +5,6 @@ use splot_core::symbol::SymbolDecoder;
 
 use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
 
-/// Errors from `read_single_ref`.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SingleRefReadError {
     #[error("read_single_ref requires NumTotalRefs > 0 (§6.19.7.11), got {num_total_refs}")]
@@ -20,10 +19,6 @@ pub(crate) enum SingleRefReadError {
     SymbolRead { ref_idx: usize },
 }
 
-/// Reads `single_ref` symbols and returns the selected `RefFrame[0]`.
-///
-/// `contexts` supplies one § 8.3.2 context per decision. The legal one-reference
-/// case returns 0 without reading a symbol.
 pub(crate) fn read_single_ref(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

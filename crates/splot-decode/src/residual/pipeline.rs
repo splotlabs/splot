@@ -481,14 +481,6 @@ impl GeneralIntraResidualPlan {
         }
         Ok(())
     }
-
-    #[cfg(test)]
-    fn plane_plan(&self, plane_id: PlaneId) -> Option<ResidualPlanePlan> {
-        self.planes
-            .iter()
-            .find(|plane| plane.plane_id == plane_id)
-            .copied()
-    }
 }
 
 pub(crate) struct DeblockRecorder<'a> {
@@ -684,8 +676,6 @@ impl ResidualPlanePlan {
                 deblock,
             );
         }
-        let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
-        let start_bits = symbols.consumed_bits().get();
         let coeffs = crate::bitstream::tile_payload::decode_general_intra_plane_coeffs(
             work_unit,
             symbols,
@@ -705,23 +695,6 @@ impl ResidualPlanePlan {
             self.txb_skip_fsc_mode,
             policy,
         )?;
-        if trace_bits {
-            eprintln!(
-                "general intra residual plane block={:?} plane={:?} tx_size={} xy=({}, {}) fsc={} bits={}..{} all_zero={} eob={} tx_type={} recon={:?}",
-                self.block_ctx.block(),
-                self.plane_id,
-                self.tx_size,
-                self.x,
-                self.y,
-                self.fsc_mode,
-                start_bits,
-                symbols.consumed_bits().get(),
-                coeffs.all_zero,
-                coeffs.eob,
-                coeffs.plane_tx_type,
-                self.reconstruction
-            );
-        }
         if self.plane_id == PlaneId::Y {
             deblock.record_luma_unit(
                 self.y / 4,
@@ -888,8 +861,6 @@ impl ResidualPlanePlan {
         luma_context: LumaTransformTypeContext,
         deblock: &mut DeblockRecorder<'_>,
     ) -> core::result::Result<ResidualPlaneExecution, GeneralIntraResidualError> {
-        let trace_bits = crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS");
-        let start_bits = symbols.consumed_bits().get();
         let mut blocks = decode_general_intra_luma_partition_coeffs(
             work_unit,
             symbols,
@@ -906,23 +877,6 @@ impl ResidualPlanePlan {
         )?;
         if blocks.len() == 1 {
             let block = blocks.remove(0);
-            if trace_bits {
-                eprintln!(
-                    "general intra residual plane block={:?} plane={:?} tx_size={} xy=({}, {}) fsc={} bits={}..{} all_zero={} eob={} tx_type={} recon={:?}",
-                    self.block_ctx.block(),
-                    self.plane_id,
-                    block.tx_size,
-                    block.x,
-                    block.y,
-                    self.fsc_mode,
-                    start_bits,
-                    symbols.consumed_bits().get(),
-                    block.coeffs.all_zero,
-                    block.coeffs.eob,
-                    block.coeffs.plane_tx_type,
-                    self.reconstruction
-                );
-            }
             let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
             deblock.record_luma_unit(
                 block.y / 4,
@@ -981,33 +935,12 @@ impl ResidualPlanePlan {
             );
         }
         let summary = summarize_luma_partition(&blocks);
-        if trace_bits {
-            eprintln!(
-                "general intra residual partition block={:?} plane={:?} tx_size={} xy=({}, {}) parts={} fsc={} bits={}..{} all_zero={} eob={} tx_type={} recon={:?}",
-                self.block_ctx.block(),
-                self.plane_id,
-                self.tx_size,
-                self.x,
-                self.y,
-                blocks.len(),
-                self.fsc_mode,
-                start_bits,
-                symbols.consumed_bits().get(),
-                summary.all_zero,
-                summary.eob,
-                summary.plane_tx_type,
-                self.reconstruction
-            );
-        }
         Ok(ResidualPlaneExecution {
             coeffs: summary,
             last_unit_nonzero: None,
         })
     }
 
-    /// Re-scopes this plan to one § 5.20.7.24 transform unit, using sibling
-    /// samples from the workspace and per-unit `BlockDecoded` counts. Middle
-    /// units carry `allowCorners = 0`.
     fn transform_unit_plan(
         &self,
         block: &PositionedLumaCoeffBlock,
@@ -1148,12 +1081,6 @@ impl ResidualPlanePlan {
                 }
             }
             _ => {
-                if crate::trace_flags::trace_flag!("SPLOT_TRACE_GENERAL_INTRA_BITS") {
-                    eprintln!(
-                        "general intra partition defer recon={:?} xy=({}, {}) unit=({}, {}, tx={})",
-                        self.reconstruction, self.x, self.y, block.x, block.y, block.tx_size
-                    );
-                }
                 return Err(GeneralIntraResidualError::UnsupportedTransformPartition {
                     reason: "general_intra_partitioned_interior_edge_prediction",
                 });
@@ -1393,9 +1320,6 @@ impl ResidualPlanePlan {
         self.tx.width4() == self.residual_width4 && self.tx.height4() == self.residual_height4
     }
 
-    /// Re-derives AVM's per-TU WAIP remap for directional units. Non-MRL
-    /// square directional plans may move onto rect arms when unit dimensions
-    /// place their `pAngle` in another prediction zone.
     fn unit_directional_replan(
         &self,
         luma_context: LumaTransformTypeContext,
