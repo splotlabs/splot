@@ -102,6 +102,10 @@ const LOSSLESS_NONDC_LUMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d45-leftedge-128x64.ivf"
 );
 
+const LOSSLESS_NONDC_LUMA_D135_CHROMA_FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d135-chroma-follow-leftedge-128x64.ivf"
+);
+
 const LOSSLESS_NONDC_LUMA_D113_CHROMA_FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d113-chroma-follow-leftedge-128x64.ivf"
 );
@@ -638,6 +642,15 @@ fn lossless_nondc_luma_d45_and_d135_frames_decode_to_oracle() {
         32,
         "386bf9550c5623bc5eb0fba92f0985b2bd0f9d06c5fa991d32407f3b17f99c6f",
     );
+    assert_lossless_directional_luma_oracle(
+        LOSSLESS_NONDC_LUMA_D135_CHROMA_FOLLOW_LEFTEDGE_FIXTURE,
+        132,
+        128,
+        64,
+        64,
+        32,
+        "a79860d10164c5b4f17a10491a17280856a424b47846e90989af62d8f609bfa1",
+    );
 }
 
 #[test]
@@ -1012,6 +1025,12 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D135Follow),
+        false,
+        left_edge_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::D157),
         false,
         left_edge_8,
@@ -1090,6 +1109,12 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     ));
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::D113),
+        false,
+        top_left_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(!general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D135Follow),
         false,
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
@@ -1224,6 +1249,42 @@ fn lossless_luma_prediction_guard_rejects_unproven_d113_chroma_cross_product() {
         splot_core::span::ByteOffset::new(13),
     )
     .expect_err("D113 luma with explicit non-follow chroma must fail closed");
+
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("unexpected error: {error:?}");
+    };
+    assert_eq!(
+        unsupported.reason(),
+        "general_intra_lossless_other_nondc_luma_unverified"
+    );
+
+    let mut modes = GeneralIntraBlockModes::luma_only(GeneralIntraLumaBlockMode {
+        y_mode: IntraYMode::D135_PRED_FOR_TEST,
+        angle_delta_y: 0,
+        intra_joint_mode: 0,
+        mrl_index: 0,
+        mrl_sec_index: None,
+        fsc_mode: 0,
+        uses_mrls: 0,
+        use_dpcm_y: 0,
+        dpcm_mode_y: 0,
+    });
+    modes.uv_mode = 1;
+    let error = general_intra::ensure_lossless_verified_prediction_subset(
+        true,
+        true,
+        &modes,
+        block_ctx(
+            0,
+            general_intra::FULL_SB_N4_LUMA,
+            general_intra::FULL_SB_N4_LUMA,
+            general_intra::FULL_SB_N4_LUMA,
+            BitDepth::Eight,
+        ),
+        general_intra::FULL_SB_N4_LUMA,
+        splot_core::span::ByteOffset::new(14),
+    )
+    .expect_err("D135 luma with explicit non-follow chroma must fail closed");
 
     let DecodeError::UnsupportedFeature { unsupported } = error else {
         panic!("unexpected error: {error:?}");
