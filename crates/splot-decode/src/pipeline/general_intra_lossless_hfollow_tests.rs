@@ -18,6 +18,9 @@ const LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
 const LOSSLESS_NONDC_CHROMA_V_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-v-leftedge-128x64.ivf"
 );
+const LOSSLESS_NONDC_CHROMA_VFOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-vfollow-leftedge-128x64.ivf"
+);
 const LOSSLESS_NONDC_CHROMA_PAETH_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-paeth-leftedge-128x64.ivf"
 );
@@ -103,19 +106,44 @@ fn lossless_nondc_chroma_v_leftedge_frame_decodes_to_oracle() {
 }
 
 #[test]
-fn lossless_nondc_chroma_h_leftedge_frame_decodes_to_oracle() {
-    assert_eq!(LOSSLESS_NONDC_CHROMA_H_LEFTEDGE_FIXTURE.len(), 238);
+fn lossless_nondc_chroma_ramped_leftedge_frames_decode_to_oracles() {
+    for oracle in [
+        LosslessRampedLeftedgeOracle {
+            fixture: LOSSLESS_NONDC_CHROMA_H_LEFTEDGE_FIXTURE,
+            expected_len: 238,
+            u_samples: &[(0, 128), (63, 72)],
+            v_samples: &[(0, 128), (63, 184)],
+            expected_hash: "a5e8e56e191e9558ed8591013fa884fb573c320adea6aa6db475680a69167740",
+        },
+        LosslessRampedLeftedgeOracle {
+            fixture: LOSSLESS_NONDC_CHROMA_VFOLLOW_LEFTEDGE_FIXTURE,
+            expected_len: 230,
+            u_samples: &[(0, 128), (32, 72), (63, 184)],
+            v_samples: &[(0, 128), (32, 183), (63, 71)],
+            expected_hash: "84b2a3c6212d5694b8914ca017b6dc7f6d6ae4876fc22582f2b924a5629e5304",
+        },
+    ] {
+        assert_lossless_ramped_leftedge_oracle(&oracle);
+    }
+}
+
+struct LosslessRampedLeftedgeOracle {
+    fixture: &'static [u8],
+    expected_len: usize,
+    u_samples: &'static [(usize, u8)],
+    v_samples: &'static [(usize, u8)],
+    expected_hash: &'static str,
+}
+
+fn assert_lossless_ramped_leftedge_oracle(oracle: &LosslessRampedLeftedgeOracle) {
+    assert_eq!(oracle.fixture.len(), oracle.expected_len);
     let options = DecodeOptions::default();
     let context =
         DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context
-        .plan_bytes(LOSSLESS_NONDC_CHROMA_H_LEFTEDGE_FIXTURE, options)
-        .expect("plan");
+    let plan = context.plan_bytes(oracle.fixture, options).expect("plan");
     let decoded = context
         .pool()
-        .install(|| {
-            decode_frame_from_plan(LOSSLESS_NONDC_CHROMA_H_LEFTEDGE_FIXTURE, &options, &plan)
-        })
+        .install(|| decode_frame_from_plan(oracle.fixture, &options, &plan))
         .expect("decode");
     let PipelineDecodedFrame::Eight(frame) = decoded.frame else {
         panic!("fixture decoded as 10-bit");
@@ -167,13 +195,20 @@ fn lossless_nondc_chroma_h_leftedge_frame_decodes_to_oracle() {
     assert_eq!(frame.y().samples()[0], 128);
     assert_eq!(frame.y().samples()[64], 72);
     assert_eq!(frame.y().samples()[127], 184);
-    assert_eq!(frame.u().unwrap().samples()[0], 128);
-    assert_eq!(frame.u().unwrap().samples()[63], 72);
-    assert_eq!(frame.v().unwrap().samples()[0], 128);
-    assert_eq!(frame.v().unwrap().samples()[63], 184);
+
+    let u_plane = frame.u().unwrap();
+    for &(index, expected) in oracle.u_samples {
+        assert_eq!(u_plane.samples()[index], expected);
+    }
+
+    let v_plane = frame.v().unwrap();
+    for &(index, expected) in oracle.v_samples {
+        assert_eq!(v_plane.samples()[index], expected);
+    }
+
     assert_eq!(
         DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
-        "a5e8e56e191e9558ed8591013fa884fb573c320adea6aa6db475680a69167740"
+        oracle.expected_hash
     );
 }
 
