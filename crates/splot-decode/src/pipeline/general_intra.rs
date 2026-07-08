@@ -755,12 +755,13 @@ fn lossless_luma_prediction_verified(
             || (directional == Some(L::D113)
                 && modes.supported_chroma_mode() == Some(SupportedChromaMode::D113Follow))
             || (directional == Some(L::D135)
-                && modes.supported_chroma_mode() == Some(SupportedChromaMode::D135Follow)));
+                && modes.supported_chroma_mode() == Some(SupportedChromaMode::D135Follow))
+            || (directional == Some(L::D157)
+                && modes.supported_chroma_mode() == Some(SupportedChromaMode::D157Follow)));
     full_64_sb_8bit
         && modes.angle_delta_y == 0
         && (top_left_directional || top_left_paeth || left_edge_d45_or_d113)
 }
-
 fn top_left_no_neighbour_directional_prediction_verified(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
@@ -779,7 +780,6 @@ fn top_left_no_neighbour_directional_prediction_verified(
                 | (Some(SupportedDirectionalLumaMode::Horizontal), 0)
         )
 }
-
 fn plan_luma_prediction_for_segment(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
