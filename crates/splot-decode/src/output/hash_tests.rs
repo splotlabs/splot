@@ -96,18 +96,13 @@ fn malformed_input_fails_before_hash_report() {
 }
 
 #[test]
-fn raw_annex_b_payload_fails_closed_as_unsupported() {
+fn raw_annex_b_payload_decodes_to_hash_report() {
     let ivf_payload = &MINIMAL_FIXTURE[44..];
-    let error = context(ThreadCount::from(1usize))
+    let report = context(ThreadCount::from(1usize))
         .decode_hash_report_bytes(ivf_payload, DecodeOptions::default())
-        .unwrap_err();
+        .unwrap();
 
-    assert!(matches!(
-        error,
-        DecodeError::UnsupportedFeature {
-            unsupported
-        } if unsupported.reason() == "non_ivf_input"
-    ));
+    assert_eq!(report.frames[0].hashes[0].digest_hex, EXPECTED_DIGEST);
 }
 
 #[test]

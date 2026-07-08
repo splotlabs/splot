@@ -39,6 +39,17 @@ fn minimal_fixture_decodes_to_exact_raw_bytes() {
 }
 
 #[test]
+fn raw_annex_b_payload_decodes_to_exact_raw_bytes() {
+    let mut bytes = Vec::new();
+
+    context(ThreadCount::from(1usize))
+        .decode_raw_bytes(&MINIMAL_FIXTURE[44..], DecodeOptions::default(), &mut bytes)
+        .unwrap();
+
+    assert_eq!(bytes, expected_minimal_raw());
+}
+
+#[test]
 fn zero_ivf_timebase_does_not_block_raw_output() {
     for input in [
         minimal_fixture_with_timebase(0, 30),

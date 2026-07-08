@@ -85,6 +85,70 @@ pub(crate) struct PipelineFrame {
     pub(crate) frame_rate_denominator: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PipelineFrameRate {
+    numerator: u32,
+    denominator: u32,
+}
+
+impl PipelineFrameRate {
+    const ANNEX_B_DEFAULT: Self = Self {
+        numerator: 1,
+        denominator: 1,
+    };
+
+    pub(crate) const fn from_ivf_header(header: IvfHeader) -> Self {
+        Self {
+            numerator: header.timebase_denominator,
+            denominator: header.timebase_numerator,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RuntimeStream<'a> {
+    AnnexB {
+        obus: &'a [ObuEnvelope<'a>],
+    },
+    Ivf {
+        ivf: &'a ParsedIvfBitstream<'a>,
+        header: IvfHeader,
+    },
+}
+
+impl<'a> RuntimeStream<'a> {
+    const fn ivf_header(self) -> Option<IvfHeader> {
+        match self {
+            Self::AnnexB { .. } => None,
+            Self::Ivf { header, .. } => Some(header),
+        }
+    }
+
+    const fn frame_rate(self) -> PipelineFrameRate {
+        match self {
+            Self::AnnexB { .. } => PipelineFrameRate::ANNEX_B_DEFAULT,
+            Self::Ivf { header, .. } => PipelineFrameRate::from_ivf_header(header),
+        }
+    }
+
+    fn leading_obus(self) -> Result<&'a [ObuEnvelope<'a>]> {
+        match self {
+            Self::AnnexB { obus } => Ok(obus),
+            Self::Ivf { ivf, .. } => ivf
+                .frames
+                .first()
+                .map(|frame| frame.obus.as_slice())
+                .ok_or_else(|| {
+                    unsupported(
+                        "missing_first_ivf_frame",
+                        None,
+                        "minimal tier requires at least one IVF frame",
+                    )
+                }),
+        }
+    }
+}
+
 impl PipelineFrame {
     pub(crate) fn frame_eight(&self) -> Result<&DecodedFrame<u8>> {
         match &self.frame {
@@ -264,7 +328,7 @@ pub(crate) fn decode_key_frame(
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    header: IvfHeader,
+    frame_rate: PipelineFrameRate,
     display_grain: Option<ActiveFilmGrain>,
 ) -> Result<PipelineFrame> {
     let core = parse_frame_core(frame_envelope, sequence)?;
@@ -280,7 +344,6 @@ pub(crate) fn decode_key_frame(
                         core,
                         sequence,
                         options,
-                        header,
                         &frame_engine::FrameSetup::Intra,
                         BitDepth::Eight,
                     )?;
@@ -302,7 +365,6 @@ pub(crate) fn decode_key_frame(
                         core,
                         sequence,
                         options,
-                        header,
                         &frame_engine::FrameSetup::Intra,
                         BitDepth::Ten,
                     )?;
@@ -322,8 +384,8 @@ pub(crate) fn decode_key_frame(
         motion_field,
         ccso_params,
         ccso_grid,
-        frame_rate_numerator: header.timebase_denominator,
-        frame_rate_denominator: header.timebase_numerator,
+        frame_rate_numerator: frame_rate.numerator,
+        frame_rate_denominator: frame_rate.denominator,
     })
 }
 
@@ -331,24 +393,18 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
     bytes: &[u8],
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
-    preflight: impl FnOnce(IvfHeader) -> Result<()>,
+    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
 ) -> Result<Vec<PipelineFrame>> {
     ensure_multiframe_plan_shape(plan)?;
     let runtime_parse_timer = crate::timing::start();
     let parsed = parse_bitstream_partial(bytes);
     crate::timing::report("runtime_reparse", runtime_parse_timer);
-    let (ivf, header) = require_multiframe_ivf(&parsed)?;
-    preflight(header)?;
+    let stream = require_runtime_stream(&parsed)?;
+    preflight(stream.ivf_header())?;
+    let frame_rate = stream.frame_rate();
 
-    let first_ivf_frame = ivf.frames.first().ok_or_else(|| {
-        unsupported(
-            "missing_first_ivf_frame",
-            None,
-            "minimal tier requires at least one IVF frame",
-        )
-    })?;
-    let leading_obus = first_ivf_frame.obus.as_slice();
-    let ([_td_envelope, sequence_envelope, key_envelope], _) =
+    let leading_obus = stream.leading_obus()?;
+    let ([_td_envelope, sequence_envelope, key_envelope], leading_frame_unit_len) =
         require_leading_frame_unit(leading_obus)?;
 
     let sequence = parse_sequence(sequence_envelope)?;
@@ -385,6 +441,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
     let mut retained_frame_bytes = 0;
     let mut output_frame_bytes = 0;
     let mut next_unvalidated_following_ivf_record = 1;
+    let mut next_unvalidated_following_annexb_obu = leading_frame_unit_len;
     ensure_retained_frame_byte_limits_for_core(
         options.limits(),
         retained_frame_bytes,
@@ -399,7 +456,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
         key_candidate,
         key_envelope,
         &sequence,
-        header,
+        frame_rate,
         key_display_grain,
     )?;
     retained_frame_bytes =
@@ -445,11 +502,18 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
     for next_candidate in candidates {
         match next_candidate.obu_type() {
             ObuType::RegularTileGroup => {
-                let inter_envelope = following_inter_envelope(
-                    ivf,
-                    next_candidate,
-                    &mut next_unvalidated_following_ivf_record,
-                )?;
+                let inter_envelope = match stream {
+                    RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
+                        obus,
+                        next_candidate,
+                        &mut next_unvalidated_following_annexb_obu,
+                    )?,
+                    RuntimeStream::Ivf { ivf, .. } => following_inter_envelope(
+                        ivf,
+                        next_candidate,
+                        &mut next_unvalidated_following_ivf_record,
+                    )?,
+                };
                 let inter_frame_timer = crate::timing::start();
                 let (inter_frame, inter_core, frame_cdfs, ccso_grid, motion_field) = match sequence
                     .general
@@ -490,7 +554,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                                 inter_core,
                                 &sequence,
                                 options,
-                                header,
                                 &frame_engine::FrameSetup::Inter(&inter_state),
                                 BitDepth::Eight,
                             )?;
@@ -537,7 +600,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                                 inter_core,
                                 &sequence,
                                 options,
-                                header,
                                 &frame_engine::FrameSetup::Inter(&inter_state),
                                 BitDepth::Ten,
                             )?;
@@ -560,8 +622,8 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     motion_field,
                     ccso_params: inter_core.ccso_params.clone(),
                     ccso_grid,
-                    frame_rate_numerator: header.timebase_denominator,
-                    frame_rate_denominator: header.timebase_numerator,
+                    frame_rate_numerator: frame_rate.numerator,
+                    frame_rate_denominator: frame_rate.denominator,
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
@@ -621,12 +683,18 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                 }
             }
             ObuType::ClosedLoopKey => {
-                let (key_sequence_envelope, key_film_grain_obus, key_envelope) =
-                    following_key_frame_unit(
+                let (key_sequence_envelope, key_film_grain_obus, key_envelope) = match stream {
+                    RuntimeStream::AnnexB { obus } => following_annexb_key_frame_unit(
+                        obus,
+                        next_candidate,
+                        &mut next_unvalidated_following_annexb_obu,
+                    )?,
+                    RuntimeStream::Ivf { ivf, .. } => following_key_frame_unit(
                         ivf,
                         next_candidate,
                         &mut next_unvalidated_following_ivf_record,
-                    )?;
+                    )?,
+                };
                 let key_sequence = parse_sequence(key_sequence_envelope)?;
                 validate_sequence(&key_sequence, key_sequence_envelope.offset)?;
                 film_grain_slots.update_from_obus(key_film_grain_obus)?;
@@ -654,7 +722,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     next_candidate,
                     key_envelope,
                     &key_sequence,
-                    header,
+                    frame_rate,
                     key_display_grain,
                 )?;
                 crate::timing::report("key_frame_decode", key_frame_timer);
@@ -777,6 +845,34 @@ fn output_frame_limit_reached(options: &DecodeOptions, output_frame_count: usize
     options
         .output_frame_limit()
         .is_some_and(|limit| output_frame_count as u64 >= limit.get())
+}
+
+fn require_runtime_stream<'a>(parsed: &'a ParsedBitstream<'a>) -> Result<RuntimeStream<'a>> {
+    match parsed {
+        ParsedBitstream::AnnexB(partial) => {
+            if partial.error.is_some() {
+                return Err(unsupported(
+                    "annex_b_runtime_parse_error",
+                    None,
+                    "runtime reparse of the bounded Annex B input must stay complete",
+                ));
+            }
+            if partial.obus.is_empty() {
+                return Err(unsupported(
+                    "empty_annex_b_input",
+                    None,
+                    "minimal tier requires at least one Annex B OBU",
+                ));
+            }
+            Ok(RuntimeStream::AnnexB {
+                obus: partial.obus.as_slice(),
+            })
+        }
+        ParsedBitstream::Ivf(ivf) => {
+            let header = require_multiframe_ivf(ivf)?;
+            Ok(RuntimeStream::Ivf { ivf, header })
+        }
+    }
 }
 
 fn frame_is_output(core: &FrameHeaderCore) -> bool {
@@ -1032,6 +1128,50 @@ pub(crate) fn following_inter_envelope<'a>(
     ))
 }
 
+fn following_annexb_inter_envelope<'a>(
+    obus: &'a [ObuEnvelope<'a>],
+    candidate: &DecodePlannedObu,
+    next_unvalidated_following_obu: &mut usize,
+) -> Result<ObuEnvelope<'a>> {
+    let Some(position) = obus
+        .iter()
+        .position(|envelope| envelope.offset == candidate.offset())
+    else {
+        return Err(unsupported_at(
+            "missing_inter_annexb_obu",
+            candidate.offset(),
+            "the planned inter candidate offset was not found in the parsed Annex B OBUs",
+        ));
+    };
+    require_following_annexb_obu_order_through(obus, next_unvalidated_following_obu, position)?;
+    let inter_envelope = obus[position];
+    require_obu_type(
+        inter_envelope,
+        ObuType::RegularTileGroup,
+        "missing_inter_regular_tile_group",
+    )?;
+    if is_leading_record_regular_after_key(0, position, obus) {
+        return Ok(inter_envelope);
+    }
+    let Some(td_envelope) = position
+        .checked_sub(1)
+        .and_then(|previous| obus.get(previous))
+        .copied()
+    else {
+        return Err(unsupported_at(
+            "missing_inter_temporal_delimiter",
+            candidate.offset(),
+            missing_capability_message!("inter.ivf_frame_unit_order"),
+        ));
+    };
+    require_obu_type(
+        td_envelope,
+        ObuType::TemporalDelimiter,
+        "missing_inter_temporal_delimiter",
+    )?;
+    Ok(inter_envelope)
+}
+
 fn following_key_frame_unit<'a>(
     ivf: &'a ParsedIvfBitstream<'a>,
     candidate: &DecodePlannedObu,
@@ -1077,6 +1217,54 @@ fn following_key_frame_unit<'a>(
         "missing_key_ivf_obu",
         candidate.offset(),
         "the planned key candidate offset was not found in the parsed IVF payloads",
+    ))
+}
+
+fn following_annexb_key_frame_unit<'a>(
+    obus: &'a [ObuEnvelope<'a>],
+    candidate: &DecodePlannedObu,
+    next_unvalidated_following_obu: &mut usize,
+) -> Result<(ObuEnvelope<'a>, &'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
+    let Some(position) = obus
+        .iter()
+        .position(|envelope| envelope.offset == candidate.offset())
+    else {
+        return Err(unsupported_at(
+            "missing_key_annexb_obu",
+            candidate.offset(),
+            "the planned key candidate offset was not found in the parsed Annex B OBUs",
+        ));
+    };
+    let start = obus
+        .iter()
+        .take(position + 1)
+        .rposition(|envelope| envelope.header.obu_type == ObuType::TemporalDelimiter)
+        .ok_or_else(|| {
+            unsupported_at(
+                "missing_key_temporal_delimiter",
+                candidate.offset(),
+                missing_capability_message!("frame.sequence repeated_key_frame_unit"),
+            )
+        })?;
+    require_following_annexb_obu_order_through(
+        obus,
+        next_unvalidated_following_obu,
+        start.saturating_sub(1),
+    )?;
+    let frame_unit = &obus[start..=position];
+    let ([_, sequence_envelope, key_envelope], _) = require_leading_frame_unit(frame_unit)?;
+    if key_envelope.offset != candidate.offset() {
+        return Err(unsupported_at(
+            "unexpected_key_obu_order",
+            candidate.offset(),
+            missing_capability_message!("frame.sequence repeated_key_frame_unit"),
+        ));
+    }
+    *next_unvalidated_following_obu = position.saturating_add(1);
+    Ok((
+        sequence_envelope,
+        leading_film_grain_obus(frame_unit)?,
+        key_envelope,
     ))
 }
 
@@ -1187,6 +1375,53 @@ fn require_inter_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
     }
     Ok(())
 }
+
+fn require_following_annexb_obu_order_through(
+    obus: &[ObuEnvelope<'_>],
+    next_unvalidated_following_obu: &mut usize,
+    target_position: usize,
+) -> Result<()> {
+    while *next_unvalidated_following_obu <= target_position {
+        if is_leading_record_regular_after_key(0, *next_unvalidated_following_obu, obus) {
+            let envelope = obus[*next_unvalidated_following_obu];
+            require_obu_type(
+                envelope,
+                ObuType::RegularTileGroup,
+                "unexpected_leading_obu_after_key",
+            )?;
+            *next_unvalidated_following_obu += 1;
+            continue;
+        }
+
+        let Some(td_envelope) = obus.get(*next_unvalidated_following_obu).copied() else {
+            return Err(unsupported(
+                "unexpected_inter_obu_order",
+                None,
+                missing_capability_message!("inter.ivf_frame_unit_order"),
+            ));
+        };
+        require_obu_type(
+            td_envelope,
+            ObuType::TemporalDelimiter,
+            "unexpected_inter_obu_order",
+        )?;
+        let frame_index = next_unvalidated_following_obu.saturating_add(1);
+        let Some(frame_envelope) = obus.get(frame_index).copied() else {
+            return Err(unsupported_at(
+                "unexpected_inter_obu_order",
+                td_envelope.offset,
+                missing_capability_message!("inter.ivf_frame_unit_order"),
+            ));
+        };
+        require_obu_type(
+            frame_envelope,
+            ObuType::RegularTileGroup,
+            "unexpected_inter_obu_order",
+        )?;
+        *next_unvalidated_following_obu = frame_index.saturating_add(1);
+    }
+    Ok(())
+}
 fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<()> {
     let frame_count = plan.frame_candidate_count();
     if frame_count == 0 {
@@ -1206,16 +1441,7 @@ fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<()> {
         ))
     }
 }
-fn require_multiframe_ivf<'a>(
-    parsed: &'a ParsedBitstream<'a>,
-) -> Result<(&'a ParsedIvfBitstream<'a>, IvfHeader)> {
-    let ParsedBitstream::Ivf(ivf) = parsed else {
-        return Err(unsupported(
-            "non_ivf_input",
-            None,
-            missing_capability_message!("container.ivf"),
-        ));
-    };
+fn require_multiframe_ivf(ivf: &ParsedIvfBitstream<'_>) -> Result<IvfHeader> {
     let Some(header) = ivf.header else {
         return Err(unsupported(
             "missing_ivf_header",
@@ -1242,7 +1468,7 @@ fn require_multiframe_ivf<'a>(
             missing_capability_message!("container.ivf_av02_frame_records"),
         ));
     }
-    Ok((ivf, header))
+    Ok(header)
 }
 
 fn supported_ivf_warnings(warnings: &[IvfWarning]) -> bool {

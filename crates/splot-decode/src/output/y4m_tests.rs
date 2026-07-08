@@ -44,6 +44,20 @@ fn minimal_fixture_decodes_to_exact_y4m_bytes() {
 }
 
 #[test]
+fn raw_annex_b_payload_y4m_fails_without_timebase() {
+    let error = context(ThreadCount::from(1usize))
+        .decode_y4m_bytes(&MINIMAL_FIXTURE[44..], DecodeOptions::default(), Vec::new())
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        DecodeError::UnsupportedFeature {
+            unsupported
+        } if unsupported.reason() == "annex_b_y4m_timebase"
+    ));
+}
+
+#[test]
 fn output_byte_limit_fails_before_writer_success() {
     let expected = expected_minimal_y4m();
     let options = DecodeOptions::new(
