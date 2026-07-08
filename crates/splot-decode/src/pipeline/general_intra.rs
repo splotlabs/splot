@@ -814,7 +814,8 @@ pub(super) fn lossless_chroma_part_prediction_verified(
         && matches!(
             mode,
             Some(
-                SupportedChromaMode::D45
+                SupportedChromaMode::Horizontal
+                    | SupportedChromaMode::D45
                     | SupportedChromaMode::D113
                     | SupportedChromaMode::D135
                     | SupportedChromaMode::D157
