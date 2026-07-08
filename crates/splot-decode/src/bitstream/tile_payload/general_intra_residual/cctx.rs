@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+//! Cross-chroma transform reconstruction helpers.
+
+use splot_recon::math::round2_signed;
+use splot_recon::{
+    BitDepth, PlaneId, ReconSample, inverse_transform_2d_outer, reconstruct_add_residual,
+};
+
+use super::reconstruct::{dequantize_coeff_block, reconstruct_block_setup};
+use super::{GeneralIntraResidualError, LumaCoeffBlock, with_residual_scratch};
+
+const CCTX_PREC_BITS: u32 = 8;
+const CCTX_MTX: [[i32; 2]; 6] = [
+    [181, 181],
+    [222, 128],
+    [128, 222],
+    [181, -181],
+    [222, -128],
+    [128, -222],
+];
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: ReconSample>(
+    u_block: &LumaCoeffBlock,
+    u_prediction: &[T],
+    v_block: &LumaCoeffBlock,
+    v_prediction: &[T],
+    qindex: u32,
+    log2_width: u32,
+    log2_height: u32,
+    cctx_type: usize,
+    bit_depth: BitDepth,
+) -> Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
+    let u_setup = reconstruct_block_setup(
+        u_prediction.len(),
+        qindex,
+        PlaneId::U,
+        log2_width,
+        log2_height,
+        u_block.plane_tx_type,
+        u_block.use_tcq,
+        false,
+        u_block.lossless,
+        None,
+        bit_depth,
+    )?;
+    let v_setup = reconstruct_block_setup(
+        v_prediction.len(),
+        qindex,
+        PlaneId::V,
+        log2_width,
+        log2_height,
+        u_block.plane_tx_type,
+        v_block.use_tcq,
+        false,
+        v_block.lossless,
+        None,
+        bit_depth,
+    )?;
+    if u_setup.adjusted != v_setup.adjusted || u_setup.samples != v_setup.samples {
+        return Err(GeneralIntraResidualError::UnexpectedBranch);
+    }
+
+    let mut u_out = vec![T::default(); u_setup.samples];
+    let mut v_out = vec![T::default(); v_setup.samples];
+    with_residual_scratch(|scratch| {
+        let u_dequant = &mut scratch.dequant[..u_setup.adjusted];
+        let v_dequant = &mut scratch.dequant_pair[..v_setup.adjusted];
+        dequantize_coeff_block(u_block, &u_setup.params, u_dequant)?;
+        dequantize_coeff_block(v_block, &v_setup.params, v_dequant)?;
+        apply_cross_chroma_transform(cctx_type, bit_depth, u_dequant, v_dequant)?;
+
+        let residual = &mut scratch.residual[..u_setup.samples];
+        inverse_transform_2d_outer(&u_setup.transform, u_dequant, residual)?;
+        reconstruct_add_residual(u_prediction, residual, bit_depth, &mut u_out)?;
+        inverse_transform_2d_outer(&v_setup.transform, v_dequant, residual)?;
+        reconstruct_add_residual(v_prediction, residual, bit_depth, &mut v_out)?;
+        Ok::<(), GeneralIntraResidualError>(())
+    })?;
+    Ok((u_out, v_out))
+}
+
+pub(super) fn apply_cross_chroma_transform(
+    cctx_type: usize,
+    bit_depth: BitDepth,
+    u_dequant: &mut [i32],
+    v_dequant: &mut [i32],
+) -> Result<(), GeneralIntraResidualError> {
+    if u_dequant.len() != v_dequant.len() {
+        return Err(GeneralIntraResidualError::UnexpectedBranch);
+    }
+    let [cos, sin] = *CCTX_MTX
+        .get(
+            cctx_type
+                .checked_sub(1)
+                .ok_or(GeneralIntraResidualError::UnexpectedBranch)?,
+        )
+        .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
+    let bound = 1i64 << (u32::from(bit_depth.bits()) + 7);
+    for (u, v) in u_dequant.iter_mut().zip(v_dequant.iter_mut()) {
+        let saved_u = i64::from(*u);
+        let saved_v = i64::from(*v);
+        let next_u = round2_signed(
+            saved_u * i64::from(cos) - saved_v * i64::from(sin),
+            CCTX_PREC_BITS,
+        )
+        .clamp(-bound, bound - 1);
+        let next_v = round2_signed(
+            saved_u * i64::from(sin) + saved_v * i64::from(cos),
+            CCTX_PREC_BITS,
+        )
+        .clamp(-bound, bound - 1);
+        *u = next_u as i32;
+        *v = next_v as i32;
+    }
+    Ok(())
+}
