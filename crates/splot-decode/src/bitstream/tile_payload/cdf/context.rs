@@ -60,57 +60,74 @@ impl<'a> PartitionContextInput<'a> {
     }
 
     pub(crate) fn do_split_selector(self) -> Result<TileCdfSelector, TileCdfError> {
-        let plane_start = checked_plane(TileCdfArray::DoSplit, self.plane_start)?;
-        let ctx = self.neighbor_partition_context(
+        self.neighbor_partition_selector(
             TileCdfArray::DoSplit,
-            plane_start,
-            PARTITION_SIZE_ADJUST[self.b_size.index()],
+            &PARTITION_SIZE_ADJUST,
             DO_SPLIT_CONTEXTS,
-        )?;
-
-        Ok(TileCdfSelector::DoSplit { plane_start, ctx })
+            |plane_start, ctx| TileCdfSelector::DoSplit { plane_start, ctx },
+        )
     }
 
     pub(crate) fn rect_type_selector(self) -> Result<TileCdfSelector, TileCdfError> {
-        let plane_start = checked_plane(TileCdfArray::RectType, self.plane_start)?;
-        let ctx = self.neighbor_partition_context(
+        self.neighbor_partition_selector(
             TileCdfArray::RectType,
-            plane_start,
-            PARTITION_SIZE_ADJUST_RECT_TYPE[self.b_size.index()],
+            &PARTITION_SIZE_ADJUST_RECT_TYPE,
             RECT_TYPE_CONTEXTS,
-        )?;
-
-        Ok(TileCdfSelector::RectType { plane_start, ctx })
+            |plane_start, ctx| TileCdfSelector::RectType { plane_start, ctx },
+        )
     }
 
     pub(crate) fn do_ext_partition_selector(
         self,
         rect_type: RectPartitionType,
     ) -> Result<TileCdfSelector, TileCdfError> {
-        let plane_start = checked_plane(TileCdfArray::DoExtPartition, self.plane_start)?;
-        let ctx = self.extended_partition_context(
+        self.extended_partition_selector(
             TileCdfArray::DoExtPartition,
-            plane_start,
             rect_type,
             DO_EXT_PARTITION_CONTEXTS,
-        )?;
-
-        Ok(TileCdfSelector::DoExtPartition { plane_start, ctx })
+            |plane_start, ctx| TileCdfSelector::DoExtPartition { plane_start, ctx },
+        )
     }
 
     pub(crate) fn do_uneven_4way_partition_selector(
         self,
         rect_type: RectPartitionType,
     ) -> Result<TileCdfSelector, TileCdfError> {
-        let plane_start = checked_plane(TileCdfArray::DoUneven4WayPartition, self.plane_start)?;
-        let ctx = self.extended_partition_context(
+        self.extended_partition_selector(
             TileCdfArray::DoUneven4WayPartition,
-            plane_start,
             rect_type,
             DO_UNEVEN_4WAY_PARTITION_CONTEXTS,
-        )?;
+            |plane_start, ctx| TileCdfSelector::DoUneven4WayPartition { plane_start, ctx },
+        )
+    }
 
-        Ok(TileCdfSelector::DoUneven4WayPartition { plane_start, ctx })
+    fn neighbor_partition_selector(
+        self,
+        array: TileCdfArray,
+        size_adjustments: &[usize; BLOCK_SIZES],
+        max_exclusive: usize,
+        selector: impl FnOnce(usize, usize) -> TileCdfSelector,
+    ) -> Result<TileCdfSelector, TileCdfError> {
+        let plane_start = checked_plane(array, self.plane_start)?;
+        let ctx = self.neighbor_partition_context(
+            array,
+            plane_start,
+            size_adjustments[self.b_size.index()],
+            max_exclusive,
+        )?;
+        Ok(selector(plane_start, ctx))
+    }
+
+    fn extended_partition_selector(
+        self,
+        array: TileCdfArray,
+        rect_type: RectPartitionType,
+        max_exclusive: usize,
+        selector: impl FnOnce(usize, usize) -> TileCdfSelector,
+    ) -> Result<TileCdfSelector, TileCdfError> {
+        let plane_start = checked_plane(array, self.plane_start)?;
+        let ctx = self.extended_partition_context(array, plane_start, rect_type, max_exclusive)?;
+        Ok(selector(plane_start, ctx))
     }
 
     fn neighbor_partition_context(

@@ -12,9 +12,9 @@ use splot_core::headers::frame::CcsoParams;
 use splot_recon::{DecodedFrame, ReferenceFrameStore, ReferenceSlot};
 
 use crate::bitstream::tile_payload::FrameCdfSubset;
-use crate::error::Result;
+use crate::error::{DecodeReferenceStateError, Result};
 use crate::filters::ccso::CcsoUnitGrid;
-use crate::pipeline::{PipelineFrame, unsupported};
+use crate::pipeline::PipelineFrame;
 use crate::prediction::inter::TemporalMotionField;
 
 #[derive(Clone, Debug)]
@@ -99,13 +99,7 @@ pub(crate) struct RuntimeReferenceBuffer {
 
 impl RuntimeReferenceBuffer {
     pub(crate) fn new(num_ref_frames: usize) -> Result<Self> {
-        if num_ref_frames == 0 || num_ref_frames > ReferenceSlot::MAX_SLOTS {
-            return Err(unsupported(
-                "unsupported_num_ref_frames",
-                None,
-                "minimal multi-frame decode requires 1..=16 active reference slots",
-            ));
-        }
+        ReferenceFrameStore::<()>::with_capacity(num_ref_frames)?;
         Ok(Self {
             slots: vec![Slot::EMPTY; num_ref_frames],
             frame_counter: 0,
@@ -161,25 +155,50 @@ impl RuntimeReferenceBuffer {
             if !slot.valid {
                 continue;
             }
-            let frame_index = slot.frame_index.ok_or_else(|| {
-                unsupported(
-                    "reference_slot_missing_frame",
-                    None,
-                    "a §7.23 valid reference slot has no stored decoded frame",
-                )
-            })?;
-            let frame = frames.get(frame_index).ok_or_else(|| {
-                unsupported(
-                    "reference_slot_frame_index_out_of_range",
-                    None,
-                    "a §7.23 reference slot points past the decoded-frame buffer",
-                )
-            })?;
+            let frame_index = slot
+                .frame_index
+                .ok_or(DecodeReferenceStateError::MissingFrame { slot: i })?;
+            let frame =
+                frames
+                    .get(frame_index)
+                    .ok_or(DecodeReferenceStateError::FrameIndexOutOfRange {
+                        slot: i,
+                        frame_index,
+                        frame_count: frames.len(),
+                    })?;
             let reference_slot = ReferenceSlot::new(i)?;
-            store.put(reference_slot, frame_view(frame)?)?;
+            let frame = frame_view(frame)?;
+            ensure_slot_matches_frame(i, slot, frame_index, frame)?;
+            store.put(reference_slot, frame)?;
         }
         Ok((store, meta))
     }
+}
+
+fn ensure_slot_matches_frame<T: splot_recon::ReconSample>(
+    slot_index: usize,
+    slot: &Slot,
+    frame_index: usize,
+    frame: &DecodedFrame<T>,
+) -> core::result::Result<(), DecodeReferenceStateError> {
+    let size = frame.coded_luma_size();
+    let expected_width = slot.width;
+    let expected_height = slot.height;
+    let actual_width = size.width();
+    let actual_height = size.height();
+    if u32::try_from(actual_width) != Ok(expected_width)
+        || u32::try_from(actual_height) != Ok(expected_height)
+    {
+        return Err(DecodeReferenceStateError::FrameSizeMismatch {
+            slot: slot_index,
+            frame_index,
+            expected_width,
+            expected_height,
+            actual_width,
+            actual_height,
+        });
+    }
+    Ok(())
 }
 
 #[allow(clippy::struct_field_names)]

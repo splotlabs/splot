@@ -71,11 +71,18 @@ fuzz_target!(|data: &[u8]| {
         if let Err(DecodeError::Output { source }) =
             context.decode_y4m_bytes(bitstream, options, &mut writer)
         {
-            assert_eq!(source.operation(), DecodeOutputOperation::WriteY4mStream);
-            assert_eq!(source.source_kind(), "io");
+            assert_failing_writer_output_error(&source);
         }
     }
 });
+
+fn assert_failing_writer_output_error(source: &splot_decode::DecodeOutputError) {
+    match source.source_kind() {
+        "io" => assert_eq!(source.operation(), DecodeOutputOperation::WriteY4mStream),
+        "y4m" | "frame_set" => assert_eq!(source.operation(), DecodeOutputOperation::SerializeY4m),
+        kind => panic!("unexpected runtime Y4M output source kind {kind}"),
+    }
+}
 
 fn mutated_minimal_fixture(mutations: &[u8]) -> Vec<u8> {
     let mut bytes = MINIMAL_FIXTURE.to_vec();

@@ -40,7 +40,9 @@ impl DecodeDiagnosticReport {
     #[must_use]
     pub fn from_decode_error(error: &DecodeError) -> Option<Self> {
         match error {
-            DecodeError::Pool { .. } | DecodeError::Reconstruction { .. } => None,
+            DecodeError::Pool { .. }
+            | DecodeError::Reconstruction { .. }
+            | DecodeError::ReferenceState { .. } => None,
             DecodeError::Limit { source } => Some(Self::resource_limit(*source)),
             DecodeError::MalformedSource { issue } => Some(Self::malformed_source(issue)),
             DecodeError::UnsupportedStructure { unsupported } => {

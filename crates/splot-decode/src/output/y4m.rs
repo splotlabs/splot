@@ -18,7 +18,6 @@ use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeOptions, DecodeStreamPlan,
 };
 
-const SPEC_SECTION: &str = "7.1";
 const MINIMAL_Y4M_LUMA_WIDTH: usize = 64;
 const MINIMAL_Y4M_LUMA_HEIGHT: usize = 64;
 
@@ -35,14 +34,11 @@ pub(crate) fn encode_y4m_stream_from_plan(
         |header| preflight_y4m_minimal_header(header, limits),
     )?;
     let first = outputs.first().ok_or_else(|| {
-        crate::pipeline::unsupported_with_spec(
-            "empty_decoded_frame_set",
-            None,
+        DecodeOutputError::invalid_frame_set(
+            DecodeOutputOperation::SerializeY4m,
             "runtime Y4M output requires at least one decoded frame",
-            SPEC_SECTION,
         )
     })?;
-    ensure_y4m_timebase(first.frame_rate_numerator, first.frame_rate_denominator)?;
     let frame_rate = Y4mFrameRate::new(first.frame_rate_numerator, first.frame_rate_denominator)
         .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
 
@@ -91,7 +87,10 @@ fn write_y4m_stream<T: ReconSample>(
         .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
     for output in outputs {
         let frame = select(output).ok_or_else(|| {
-            crate::pipeline::unsupported_with_spec("y4m_mixed_bit_depth_frames", None, "runtime Y4M output requires every displayed frame to share the first frame's sample bit depth", SPEC_SECTION)
+            DecodeOutputError::invalid_frame_set(
+                DecodeOutputOperation::SerializeY4m,
+                "runtime Y4M output requires every displayed frame to share the first frame's sample bit depth",
+            )
         })?;
         let display = film_grain::frame_for_output(frame, output.display_grain.as_ref())?;
         writer.write_frame(display.as_ref()).map_err(|source| {
@@ -105,23 +104,9 @@ fn write_y4m_stream<T: ReconSample>(
 }
 
 fn preflight_y4m_minimal_header(header: IvfHeader, limits: DecodeLimits) -> Result<()> {
-    ensure_y4m_timebase(header.timebase_denominator, header.timebase_numerator)?;
     let frame_rate = Y4mFrameRate::new(header.timebase_denominator, header.timebase_numerator)
         .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
     ensure_minimal_y4m_output_limit(limits, frame_rate)
-}
-
-fn ensure_y4m_timebase(numerator: u32, denominator: u32) -> Result<()> {
-    if numerator == 0 || denominator == 0 {
-        Err(crate::pipeline::unsupported_with_spec(
-            "invalid_ivf_timebase",
-            None,
-            "runtime Y4M output requires a nonzero IVF timebase",
-            SPEC_SECTION,
-        ))
-    } else {
-        Ok(())
-    }
 }
 
 fn ensure_minimal_y4m_output_limit(limits: DecodeLimits, frame_rate: Y4mFrameRate) -> Result<()> {

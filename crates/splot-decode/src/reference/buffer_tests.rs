@@ -4,6 +4,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
+use crate::pipeline::{PipelineDecodedFrame, PipelineFrame};
+use splot_recon::{
+    BitDepth, DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane,
+    PlaneRect, PlaneSize,
+};
 
 fn key_update() -> FrameRefUpdate {
     FrameRefUpdate {
@@ -47,6 +52,34 @@ fn valid_count(buf: &RuntimeReferenceBuffer) -> usize {
     buf.slots.iter().filter(|s| s.valid).count()
 }
 
+fn decoded_frame(width: usize, height: usize) -> DecodedFrame<u8> {
+    let size = PlaneSize::new(width, height).unwrap();
+    let rect = PlaneRect::new(0, 0, width, height).unwrap();
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Monochrome,
+        size,
+        rect,
+    )
+    .unwrap();
+    let y = Plane::from_vec(size, width, rect, vec![0; width * height]).unwrap();
+    DecodedFrame::try_new(info, FramePlanes::new(y, None, None)).unwrap()
+}
+
+fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
+    PipelineFrame {
+        frame: PipelineDecodedFrame::Eight(decoded_frame(width, height)),
+        display_grain: None,
+        frame_cdfs: FrameCdfSubset::from_defaults(),
+        motion_field: TemporalMotionField::empty(),
+        ccso_params: None,
+        ccso_grid: None,
+        frame_rate_numerator: 1,
+        frame_rate_denominator: 1,
+    }
+}
+
 #[test]
 fn key_refresh_marks_only_first_slot_valid() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
@@ -87,5 +120,81 @@ fn per_slot_adaptation_is_tracked_independently() {
 
 #[test]
 fn zero_slots_rejected() {
-    assert!(RuntimeReferenceBuffer::new(0).is_err());
+    let Err(error) = RuntimeReferenceBuffer::new(0) else {
+        panic!("zero reference slots must be rejected");
+    };
+
+    assert!(matches!(
+        error,
+        crate::DecodeError::Reconstruction {
+            source: splot_recon::ReconError::InvalidReferenceStoreCapacity {
+                capacity: 0,
+                max_slots: ReferenceSlot::MAX_SLOTS
+            }
+        }
+    ));
+}
+
+#[test]
+fn valid_slot_without_frame_index_is_reference_state_error() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.slots[0].valid = true;
+
+    let Err(error) = buf.build_store_eight(&[]) else {
+        panic!("missing decoded-frame index must be rejected");
+    };
+
+    assert!(matches!(
+        error,
+        crate::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::MissingFrame { slot: 0 },
+        }
+    ));
+}
+
+#[test]
+fn valid_slot_with_out_of_range_frame_index_is_reference_state_error() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.slots[0].valid = true;
+    buf.slots[0].frame_index = Some(3);
+
+    let Err(error) = buf.build_store_eight(&[]) else {
+        panic!("out-of-range decoded-frame index must be rejected");
+    };
+
+    assert!(matches!(
+        error,
+        crate::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::FrameIndexOutOfRange {
+                slot: 0,
+                frame_index: 3,
+                frame_count: 0,
+            },
+        }
+    ));
+}
+
+#[test]
+fn valid_slot_with_mismatched_frame_size_is_reference_state_error() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &key_update());
+    let frames = vec![pipeline_frame(32, 64)];
+
+    let Err(error) = buf.build_store_eight(&frames) else {
+        panic!("mismatched retained-frame size must be rejected");
+    };
+
+    assert!(matches!(
+        error,
+        crate::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::FrameSizeMismatch {
+                slot: 0,
+                frame_index: 0,
+                expected_width: 64,
+                expected_height: 64,
+                actual_width: 32,
+                actual_height: 64,
+            },
+        }
+    ));
 }

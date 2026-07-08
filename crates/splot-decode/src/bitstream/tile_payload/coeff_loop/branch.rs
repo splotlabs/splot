@@ -6,11 +6,10 @@
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::TileCdfSubset;
-use super::super::coeff_state::{TileCoeffContextState, TransformCoeffBlockState};
+use super::super::coeff_state::TransformCoeffBlockState;
 use super::{
-    AllZeroCoeffBlock, AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffEobContextInput,
-    NonZeroCoeffEobSymbolRead, adjusted_coeff_extent, apply_all_zero_coeff_block,
-    read_nonzero_coeff_eob_from_context,
+    AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffEobContextInput,
+    NonZeroCoeffEobSymbolRead, adjusted_coeff_extent, read_nonzero_coeff_eob_from_context,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,38 +40,15 @@ impl NonZeroCoeffBlockStart {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoeffBlockEobBranchInput {
-    AllZero(AllZeroCoeffBlockInput),
-    NonZero(NonZeroCoeffBlockStartInput),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CoeffBlockEobBranch {
-    AllZero(AllZeroCoeffBlock),
-    NonZero(NonZeroCoeffBlockStart),
-}
-
-pub(crate) fn read_coeff_block_eob_branch(
-    state: &mut TileCoeffContextState,
+pub(crate) fn read_nonzero_coeff_block_start(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    input: CoeffBlockEobBranchInput,
-) -> Result<CoeffBlockEobBranch, CoeffLoopContextError> {
-    match input {
-        CoeffBlockEobBranchInput::AllZero(input) => {
-            apply_all_zero_coeff_block(state, input).map(CoeffBlockEobBranch::AllZero)
-        }
-        CoeffBlockEobBranchInput::NonZero(input) => {
-            let width = adjusted_coeff_extent(input.block.w4);
-            let height = adjusted_coeff_extent(input.block.h4);
-            let block = TransformCoeffBlockState::new(width, height)?;
-            let eob_read = read_nonzero_coeff_eob_from_context(cdfs, symbols, input.eob)?;
+    input: NonZeroCoeffBlockStartInput,
+) -> Result<NonZeroCoeffBlockStart, CoeffLoopContextError> {
+    let width = adjusted_coeff_extent(input.block.w4);
+    let height = adjusted_coeff_extent(input.block.h4);
+    let block = TransformCoeffBlockState::new(width, height)?;
+    let eob_read = read_nonzero_coeff_eob_from_context(cdfs, symbols, input.eob)?;
 
-            Ok(CoeffBlockEobBranch::NonZero(NonZeroCoeffBlockStart {
-                eob_read,
-                block,
-            }))
-        }
-    }
+    Ok(NonZeroCoeffBlockStart { eob_read, block })
 }

@@ -13,12 +13,11 @@ use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::{
     CoeffCdfSelector, FrameCdfSubset, TileCdfArray, TileCdfError, TileCdfSelector, TileCdfSubset,
 };
-use super::super::coeff_state::TileCoeffContextState;
 use super::base_symbol::{
     CoeffBaseRangeRead, CoeffBaseSymbolRead, CoeffBaseSymbolReadError, CoeffBaseSymbolReadInput,
     CoeffBaseSymbolSource, read_nonzero_coeff_base_symbols,
 };
-use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStartInput};
+use super::branch::NonZeroCoeffBlockStartInput;
 use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
 use super::*;
 
@@ -50,12 +49,10 @@ fn setup_walk(
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload, mode);
-    let mut state = TileCoeffContextState::new(4, 4).ok()?;
-    let branch = read_coeff_block_eob_branch(
-        &mut state,
+    let start = read_nonzero_coeff_block_start(
         &mut tile,
         &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+        NonZeroCoeffBlockStartInput {
             block: AllZeroCoeffBlockInput {
                 plane: 0,
                 x4: 0,
@@ -70,12 +67,9 @@ fn setup_walk(
                 tx_height_log2: 3,
                 coeff_cdf_q_ctx: 0,
             },
-        }),
+        },
     )
     .ok()?;
-    let CoeffBlockEobBranch::NonZero(start) = branch else {
-        return None;
-    };
     if start.eob_read().eob().eob() != SCAN.len() {
         return None;
     }

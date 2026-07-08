@@ -799,6 +799,7 @@ fn error_signature(error: DecodeError) -> String {
             unsupported.byte_offset()
         ),
         DecodeError::Reconstruction { source } => format!("reconstruction:{source}"),
+        DecodeError::ReferenceState { source } => format!("reference-state:{source}"),
         DecodeError::Output { source } => format!(
             "output:{}:{}:{}",
             source.operation(),

@@ -20,6 +20,7 @@ use splot_recon::{
 use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::error::DecodeError;
 use crate::pipeline::ensure_runtime_limits;
+use crate::reference::buffer::ReferenceMetadata;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
 macro_rules! inter_cap {
@@ -706,7 +707,48 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
     pub(crate) ref_motion_fields: Vec<Option<TemporalMotionField>>,
 }
 
-impl<T: ReconSample> InterReferenceState<'_, T> {
+impl<'a, T: ReconSample> InterReferenceState<'a, T> {
+    pub(crate) fn empty(store: &'a ReferenceFrameStore<&'a DecodedFrame<T>>) -> Self {
+        Self {
+            store,
+            ref_valid: Vec::new(),
+            ref_order_hint: Vec::new(),
+            ref_frame_width: Vec::new(),
+            ref_frame_height: Vec::new(),
+            ref_base_q_idx: Vec::new(),
+            ref_is_inter: Vec::new(),
+            ref_adapted: Vec::new(),
+            lr_frame_filter_class_counts: Vec::new(),
+            lr_frame_filter_taps: Vec::new(),
+            ref_frame_cdfs: Vec::new(),
+            ref_ccso_params: Vec::new(),
+            ref_ccso_unit_grids: Vec::new(),
+            ref_motion_fields: Vec::new(),
+        }
+    }
+
+    pub(crate) fn from_metadata(
+        store: &'a ReferenceFrameStore<&'a DecodedFrame<T>>,
+        metadata: ReferenceMetadata,
+    ) -> Self {
+        Self {
+            store,
+            ref_valid: metadata.ref_valid,
+            ref_order_hint: metadata.ref_order_hint,
+            ref_frame_width: metadata.ref_frame_width,
+            ref_frame_height: metadata.ref_frame_height,
+            ref_base_q_idx: metadata.ref_base_q_idx,
+            ref_is_inter: metadata.ref_is_inter,
+            ref_adapted: metadata.ref_adapted,
+            lr_frame_filter_class_counts: metadata.lr_frame_filter_class_counts,
+            lr_frame_filter_taps: metadata.lr_frame_filter_taps,
+            ref_frame_cdfs: metadata.ref_frame_cdfs,
+            ref_ccso_params: metadata.ref_ccso_params,
+            ref_ccso_unit_grids: metadata.ref_ccso_unit_grids,
+            ref_motion_fields: metadata.ref_motion_fields,
+        }
+    }
+
     fn frame_for_slot(&self, slot: u32) -> Option<&DecodedFrame<T>> {
         let slot = ReferenceSlot::new(slot as usize).ok()?;
         self.store.get(slot).ok().flatten().copied()

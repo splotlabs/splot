@@ -48,6 +48,22 @@ const TX_SET_DCT_IDTX: usize = 7;
 const TX_SET_DCT_IDTX_IDDCT: usize = 8;
 const MAX_REDUCED_TX_SET: usize = 3;
 
+macro_rules! coeff_default_tx_tables_adapter {
+    (
+        $vis:vis fn $name:ident($input_ty:ty) -> $ok_ty:ty,
+        $callee:path $(,)?
+    ) => {
+        $vis fn $name(
+            state: &mut TileCoeffContextState,
+            cdfs: &mut TileCdfSubset,
+            symbols: &mut SymbolDecoder<'_>,
+            input: $input_ty,
+        ) -> Result<$ok_ty, CoeffOrdinaryBranchError> {
+            $callee(state, cdfs, symbols, input, DEFAULT_TX_SIZE_TABLES)
+        }
+    };
+}
+
 const TX_TYPE_IN_SET_INTRA: [[u8; 16]; 7] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
@@ -445,80 +461,38 @@ pub(crate) fn apply_coeff_ordinary_branch_from_coeffs_geometry(
     apply_coeff_ordinary_branch_from_geometry(state, cdfs, symbols, input)
 }
 
-pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffOrdinaryBranchTxSizeDimensionsInput,
-) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
-    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
-        state,
-        cdfs,
-        symbols,
-        input,
-        DEFAULT_TX_SIZE_TABLES,
-    )
-}
+coeff_default_tx_tables_adapter!(
+    pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions(
+        CoeffOrdinaryBranchTxSizeDimensionsInput
+    ) -> CoeffOrdinaryBranch,
+    apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables,
+);
 
-pub(crate) fn apply_coeff_ordinary_branch_from_mode_to_txfm(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffOrdinaryBranchModeToTxfmInput,
-) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
-    apply_coeff_ordinary_branch_from_mode_to_txfm_with_tables(
-        state,
-        cdfs,
-        symbols,
-        input,
-        DEFAULT_TX_SIZE_TABLES,
-    )
-}
+coeff_default_tx_tables_adapter!(
+    pub(crate) fn apply_coeff_ordinary_branch_from_mode_to_txfm(
+        CoeffOrdinaryBranchModeToTxfmInput
+    ) -> CoeffOrdinaryBranch,
+    apply_coeff_ordinary_branch_from_mode_to_txfm_with_tables,
+);
 
-pub(crate) fn apply_coeff_ordinary_branch_from_tx_set(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffOrdinaryBranchTxSetInput,
-) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
-    apply_coeff_ordinary_branch_from_tx_set_with_tables(
-        state,
-        cdfs,
-        symbols,
-        input,
-        DEFAULT_TX_SIZE_TABLES,
-    )
-}
+coeff_default_tx_tables_adapter!(
+    pub(crate) fn apply_coeff_ordinary_branch_from_tx_set(CoeffOrdinaryBranchTxSetInput)
+        -> CoeffOrdinaryBranch,
+    apply_coeff_ordinary_branch_from_tx_set_with_tables,
+);
 
-pub(crate) fn apply_coeff_ordinary_branch_from_lossless(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffOrdinaryBranchLosslessInput,
-) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
-    apply_coeff_ordinary_branch_from_lossless_with_tables(
-        state,
-        cdfs,
-        symbols,
-        input,
-        DEFAULT_TX_SIZE_TABLES,
-    )
-}
+coeff_default_tx_tables_adapter!(
+    pub(crate) fn apply_coeff_ordinary_branch_from_lossless(CoeffOrdinaryBranchLosslessInput)
+        -> CoeffOrdinaryBranch,
+    apply_coeff_ordinary_branch_from_lossless_with_tables,
+);
 
-pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffOrdinaryStagedLosslessNonZeroInput,
-) -> Result<NonZeroCoeffOrdinaryDerivedBasePass, CoeffOrdinaryBranchError> {
-    apply_staged_nonzero_coeff_ordinary_branch_from_lossless_with_tables(
-        state,
-        cdfs,
-        symbols,
-        input,
-        DEFAULT_TX_SIZE_TABLES,
-    )
-}
+coeff_default_tx_tables_adapter!(
+    pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+        CoeffOrdinaryStagedLosslessNonZeroInput
+    ) -> NonZeroCoeffOrdinaryDerivedBasePass,
+    apply_staged_nonzero_coeff_ordinary_branch_from_lossless_with_tables,
+);
 
 fn apply_coeff_ordinary_branch_from_tx_set_with_tables(
     state: &mut TileCoeffContextState,
@@ -989,11 +963,15 @@ fn tx_size_dimensions(
     tables: CoeffOrdinaryTxSizeTables<'_>,
     tx_size: usize,
 ) -> Result<CoeffOrdinaryTxSizeDimensions, CoeffOrdinaryBranchError> {
+    let tx_width = tx_size_table_usize(tables.tx_width, "Tx_Width", tx_size)?;
+    let tx_height = tx_size_table_usize(tables.tx_height, "Tx_Height", tx_size)?;
+    let tx_width_log2 = tx_size_table_u32(tables.tx_width_log2, "Tx_Width_Log2", tx_size)?;
+    let tx_height_log2 = tx_size_table_u32(tables.tx_height_log2, "Tx_Height_Log2", tx_size)?;
     Ok(CoeffOrdinaryTxSizeDimensions {
-        tx_width: tx_size_table_usize(tables.tx_width, "Tx_Width", tx_size)?,
-        tx_height: tx_size_table_usize(tables.tx_height, "Tx_Height", tx_size)?,
-        tx_width_log2: tx_size_table_u32(tables.tx_width_log2, "Tx_Width_Log2", tx_size)?,
-        tx_height_log2: tx_size_table_u32(tables.tx_height_log2, "Tx_Height_Log2", tx_size)?,
+        tx_width,
+        tx_height,
+        tx_width_log2,
+        tx_height_log2,
     })
 }
 
@@ -1061,14 +1039,7 @@ fn tx_size_table_u32(
     table_name: &'static str,
     tx_size: usize,
 ) -> Result<u32, CoeffOrdinaryBranchError> {
-    let value = tx_size_table_value(table, tx_size)?;
-    u32::try_from(value).map_err(
-        |_| CoeffOrdinaryBranchError::InvalidTransformSizeTableValue {
-            table: table_name,
-            tx_size,
-            value,
-        },
-    )
+    tx_size_table_usize(table, table_name, tx_size).map(|value| value as u32)
 }
 
 fn tx_size_table_value(table: &[i32], tx_size: usize) -> Result<i32, CoeffOrdinaryBranchError> {

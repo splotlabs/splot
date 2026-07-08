@@ -55,12 +55,61 @@ pub enum DecodeError {
         #[from]
         source: splot_recon::ReconError,
     },
+    /// Runtime reference-frame state was internally inconsistent.
+    #[error("decode reference state failed: {source}")]
+    ReferenceState {
+        /// Underlying reference-state consistency failure.
+        #[from]
+        source: DecodeReferenceStateError,
+    },
     /// Decode output serialization or caller-writer I/O failed.
     #[error("decode output failed: {source}")]
     Output {
         /// Output serialization or write failure.
         #[from]
         source: DecodeOutputError,
+    },
+}
+
+/// Runtime reference-frame state consistency failure.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum DecodeReferenceStateError {
+    /// A slot marked valid had no decoded-frame index attached.
+    #[error("valid reference slot {slot} has no stored decoded-frame index")]
+    MissingFrame {
+        /// Zero-based reference slot index.
+        slot: usize,
+    },
+    /// A slot pointed past the decoded-frame buffer.
+    #[error(
+        "reference slot {slot} points to decoded-frame index {frame_index}, but only {frame_count} frames are available"
+    )]
+    FrameIndexOutOfRange {
+        /// Zero-based reference slot index.
+        slot: usize,
+        /// Stored decoded-frame index.
+        frame_index: usize,
+        /// Number of decoded frames available to the builder.
+        frame_count: usize,
+    },
+    /// A valid slot's frame-size metadata disagreed with its retained frame.
+    #[error(
+        "reference slot {slot} metadata size {expected_width}x{expected_height} does not match decoded-frame index {frame_index} size {actual_width}x{actual_height}"
+    )]
+    FrameSizeMismatch {
+        /// Zero-based reference slot index.
+        slot: usize,
+        /// Stored decoded-frame index.
+        frame_index: usize,
+        /// Slot metadata width in luma samples.
+        expected_width: u32,
+        /// Slot metadata height in luma samples.
+        expected_height: u32,
+        /// Retained decoded-frame coded luma width in samples.
+        actual_width: usize,
+        /// Retained decoded-frame coded luma height in samples.
+        actual_height: usize,
     },
 }
 
@@ -247,6 +296,14 @@ pub enum DecodeOutputError {
         #[source]
         source: splot_recon::Y4mError,
     },
+    /// The decoded frame set cannot be serialized by the requested output format.
+    #[error("{operation} failed: {reason}")]
+    InvalidFrameSet {
+        /// Stable operation identifier.
+        operation: DecodeOutputOperation,
+        /// Stable reason for the frame-set rejection.
+        reason: &'static str,
+    },
     /// The caller-provided output writer returned an I/O error.
     #[error("{operation} failed: {source}")]
     Io {
@@ -265,6 +322,12 @@ impl DecodeOutputError {
         Self::Y4m { operation, source }
     }
 
+    /// Creates an output error for a decoded frame-set shape that cannot be serialized.
+    #[must_use]
+    pub const fn invalid_frame_set(operation: DecodeOutputOperation, reason: &'static str) -> Self {
+        Self::InvalidFrameSet { operation, reason }
+    }
+
     /// Creates a caller-writer output error.
     #[must_use]
     pub const fn io(operation: DecodeOutputOperation, source: io::Error) -> Self {
@@ -275,7 +338,9 @@ impl DecodeOutputError {
     #[must_use]
     pub const fn operation(&self) -> DecodeOutputOperation {
         match self {
-            Self::Y4m { operation, .. } | Self::Io { operation, .. } => *operation,
+            Self::Y4m { operation, .. }
+            | Self::InvalidFrameSet { operation, .. }
+            | Self::Io { operation, .. } => *operation,
         }
     }
 
@@ -284,6 +349,7 @@ impl DecodeOutputError {
     pub const fn source_kind(&self) -> &'static str {
         match self {
             Self::Y4m { .. } => "y4m",
+            Self::InvalidFrameSet { .. } => "frame_set",
             Self::Io { .. } => "io",
         }
     }
@@ -293,6 +359,7 @@ impl DecodeOutputError {
     pub fn source_message(&self) -> String {
         match self {
             Self::Y4m { source, .. } => source.to_string(),
+            Self::InvalidFrameSet { reason, .. } => reason.to_string(),
             Self::Io { source, .. } => source.to_string(),
         }
     }

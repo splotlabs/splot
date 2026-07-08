@@ -7,7 +7,7 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
-use super::branch::{CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStartInput};
+use super::branch::NonZeroCoeffBlockStartInput;
 use super::fsc_level_pass::{
     CoeffFscLevelPassConfig, NonZeroCoeffFscLevelPass, apply_nonzero_coeff_fsc_level_pass,
 };
@@ -259,17 +259,8 @@ fn setup_level_pass(
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload);
-    let mut state = TileCoeffContextState::new(4, 4).ok()?;
-    let branch = read_coeff_block_eob_branch(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(nonzero_start_input()),
-    )
-    .ok()?;
-    let CoeffBlockEobBranch::NonZero(start) = branch else {
-        return None;
-    };
+    let start =
+        read_nonzero_coeff_block_start(&mut tile, &mut symbols, nonzero_start_input()).ok()?;
     if start.eob_read().eob().eob() != SCAN.len() - 2 {
         return None;
     }
@@ -284,15 +275,7 @@ fn setup_seeded_eob_read(payload: &[u8]) -> (TileCdfSubset, SymbolDecoder<'_>) {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload);
-    let mut context = seeded_context_state();
-    let start = read_coeff_block_eob_branch(
-        &mut context,
-        &mut tile,
-        &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(nonzero_start_input()),
-    )
-    .unwrap();
-    assert!(matches!(start, CoeffBlockEobBranch::NonZero(_)));
+    read_nonzero_coeff_block_start(&mut tile, &mut symbols, nonzero_start_input()).unwrap();
     (tile, symbols)
 }
 

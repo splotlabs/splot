@@ -91,6 +91,15 @@ fn unsupported(error: &TilePayloadBoundaryError) -> TilePayloadUnsupported {
     *unsupported
 }
 
+fn invalid_grid_tile_num(error: &TilePayloadBoundaryError) -> u32 {
+    let TilePayloadBoundaryError::Malformed(TilePayloadMalformed::InvalidTileGrid { tile_num }) =
+        error
+    else {
+        panic!("expected invalid tile grid");
+    };
+    *tile_num
+}
+
 fn limit_error(error: &TilePayloadBoundaryError) -> DecodeLimitError {
     let TilePayloadBoundaryError::Limit(limit) = error else {
         panic!("expected tile payload boundary limit");
@@ -303,14 +312,8 @@ fn single_nonzero_tile_num_is_rejected_by_grid_lookup() {
 
     let error = plan_tile_payload_boundary(&input(&payload, &framing, DecodeLimits::unlimited()))
         .unwrap_err();
-    let unsupported = unsupported(&error);
 
-    assert_eq!(
-        unsupported.reason(),
-        TilePayloadUnsupportedReason::InvalidTileGrid
-    );
-    assert_eq!(unsupported.tile_num(), Some(1));
-    assert_eq!(unsupported.byte_offset(), ByteOffset::new(256));
+    assert_eq!(invalid_grid_tile_num(&error), 1);
 }
 
 #[test]
@@ -579,11 +582,7 @@ fn invalid_grid_and_offset_overflow_are_structured() {
         DecodeLimits::unlimited(),
     );
     let error = plan_tile_payload_boundary(&input).unwrap_err();
-    let unsupported = unsupported(&error);
-    assert_eq!(
-        unsupported.reason(),
-        TilePayloadUnsupportedReason::InvalidTileGrid
-    );
+    assert_eq!(invalid_grid_tile_num(&error), 0);
 
     let overflow = checked_byte_offset(
         ByteOffset::new(u64::MAX),
@@ -618,11 +617,7 @@ fn non_increasing_mi_grid_ranges_are_invalid() {
     for grid in grids {
         let input = input_with_grid(&payload, &framing, grid, DecodeLimits::unlimited());
         let error = plan_tile_payload_boundary(&input).unwrap_err();
-        let unsupported = unsupported(&error);
-        assert_eq!(
-            unsupported.reason(),
-            TilePayloadUnsupportedReason::InvalidTileGrid
-        );
+        assert_eq!(invalid_grid_tile_num(&error), 0);
     }
 }
 

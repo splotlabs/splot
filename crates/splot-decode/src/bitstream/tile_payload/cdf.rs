@@ -958,6 +958,13 @@ macro_rules! selected_cdf_row {
     }};
 }
 
+macro_rules! partition_cdf_row {
+    ($self:expr, $field:ident, $array:expr, $plane:expr, $ctx:expr, $get:ident, $as_slice:ident) => {{
+        let plane = $plane;
+        selected_cdf_row!($self.$field[plane], $ctx, $get, $as_slice, $array, "ctx")
+    }};
+}
+
 macro_rules! tile_cdf_row {
     (
         $self:expr,
@@ -970,58 +977,58 @@ macro_rules! tile_cdf_row {
     ) => {
         match $selector {
             TileCdfSelector::DoSplit { plane_start, ctx } => {
-                let plane = checked_plane(TileCdfArray::DoSplit, plane_start)?;
-                selected_cdf_row!(
-                    $self.do_split[plane],
+                partition_cdf_row!(
+                    $self,
+                    do_split,
+                    TileCdfArray::DoSplit,
+                    checked_plane(TileCdfArray::DoSplit, plane_start)?,
                     ctx,
                     $get,
-                    $as_slice,
-                    TileCdfArray::DoSplit,
-                    "ctx"
+                    $as_slice
                 )
             }
             TileCdfSelector::DoExtPartition { plane_start, ctx } => {
-                let plane = checked_plane(TileCdfArray::DoExtPartition, plane_start)?;
-                selected_cdf_row!(
-                    $self.do_ext_partition[plane],
+                partition_cdf_row!(
+                    $self,
+                    do_ext_partition,
+                    TileCdfArray::DoExtPartition,
+                    checked_plane(TileCdfArray::DoExtPartition, plane_start)?,
                     ctx,
                     $get,
-                    $as_slice,
-                    TileCdfArray::DoExtPartition,
-                    "ctx"
+                    $as_slice
                 )
             }
             TileCdfSelector::DoSquareSplit { plane_start, ctx } => {
-                let plane = checked_square_split_plane(plane_start)?;
-                selected_cdf_row!(
-                    $self.do_square_split[plane],
+                partition_cdf_row!(
+                    $self,
+                    do_square_split,
+                    TileCdfArray::DoSquareSplit,
+                    checked_square_split_plane(plane_start)?,
                     ctx,
                     $get,
-                    $as_slice,
-                    TileCdfArray::DoSquareSplit,
-                    "ctx"
+                    $as_slice
                 )
             }
             TileCdfSelector::RectType { plane_start, ctx } => {
-                let plane = checked_plane(TileCdfArray::RectType, plane_start)?;
-                selected_cdf_row!(
-                    $self.rect_type[plane],
+                partition_cdf_row!(
+                    $self,
+                    rect_type,
+                    TileCdfArray::RectType,
+                    checked_plane(TileCdfArray::RectType, plane_start)?,
                     ctx,
                     $get,
-                    $as_slice,
-                    TileCdfArray::RectType,
-                    "ctx"
+                    $as_slice
                 )
             }
             TileCdfSelector::DoUneven4WayPartition { plane_start, ctx } => {
-                let plane = checked_plane(TileCdfArray::DoUneven4WayPartition, plane_start)?;
-                selected_cdf_row!(
-                    $self.do_uneven_4way_partition[plane],
+                partition_cdf_row!(
+                    $self,
+                    do_uneven_4way_partition,
+                    TileCdfArray::DoUneven4WayPartition,
+                    checked_plane(TileCdfArray::DoUneven4WayPartition, plane_start)?,
                     ctx,
                     $get,
-                    $as_slice,
-                    TileCdfArray::DoUneven4WayPartition,
-                    "ctx"
+                    $as_slice
                 )
             }
             TileCdfSelector::TxDoPartition {

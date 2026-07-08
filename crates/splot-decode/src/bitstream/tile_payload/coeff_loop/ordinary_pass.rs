@@ -19,10 +19,7 @@ use super::base_symbol::{
     CoeffBaseSymbolRead, CoeffBaseSymbolReadError, CoeffBaseSymbolReadInput,
     read_nonzero_coeff_base_symbols,
 };
-use super::branch::{
-    CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStart,
-    NonZeroCoeffBlockStartInput, read_coeff_block_eob_branch,
-};
+use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::level_state::{CoeffLevelStateWriteError, apply_nonzero_coeff_base_levels};
 use super::max_level::{CoeffMaxLevelConfig, CoeffTransformClass, derive_nonzero_coeff_max_levels};
 use super::quant_pass::{
@@ -42,7 +39,8 @@ use super::sign_symbol::{
 };
 use super::{
     AllZeroCoeffBlock, AllZeroCoeffBlockInput, CoeffBranchInput, CoeffLoopContextError,
-    NonZeroCoeffEobSymbolRead, commit_nonzero_coeff_context,
+    NonZeroCoeffEobSymbolRead, apply_all_zero_coeff_block, commit_nonzero_coeff_context,
+    read_nonzero_coeff_block_start,
 };
 
 pub(crate) mod geometry;
@@ -354,13 +352,6 @@ pub(crate) enum CoeffOrdinaryBranchError {
     Branch(#[from] CoeffLoopContextError),
     #[error("ordinary coefficient branch nonzero pass failed: {0}")]
     Ordinary(#[from] CoeffOrdinaryPassError),
-    #[error(
-        "ordinary coefficient branch returned unexpected {actual} arm while expecting {expected}"
-    )]
-    UnexpectedBranch {
-        expected: &'static str,
-        actual: &'static str,
-    },
 }
 
 pub(crate) fn apply_coeff_ordinary_branch(
@@ -370,37 +361,11 @@ pub(crate) fn apply_coeff_ordinary_branch(
     input: CoeffOrdinaryBranchInput<'_>,
 ) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
     match input {
-        CoeffOrdinaryBranchInput::AllZero(input) => {
-            match read_coeff_block_eob_branch(
-                state,
-                cdfs,
-                symbols,
-                CoeffBlockEobBranchInput::AllZero(input),
-            )? {
-                CoeffBlockEobBranch::AllZero(block) => Ok(CoeffOrdinaryBranch::AllZero(block)),
-                CoeffBlockEobBranch::NonZero(_) => {
-                    Err(CoeffOrdinaryBranchError::UnexpectedBranch {
-                        expected: "all-zero",
-                        actual: "nonzero",
-                    })
-                }
-            }
-        }
+        CoeffOrdinaryBranchInput::AllZero(input) => Ok(CoeffOrdinaryBranch::AllZero(
+            apply_all_zero_coeff_block(state, input)?,
+        )),
         CoeffOrdinaryBranchInput::NonZero(input) => {
-            let start = match read_coeff_block_eob_branch(
-                state,
-                cdfs,
-                symbols,
-                CoeffBlockEobBranchInput::NonZero(input.start),
-            )? {
-                CoeffBlockEobBranch::NonZero(start) => start,
-                CoeffBlockEobBranch::AllZero(_) => {
-                    return Err(CoeffOrdinaryBranchError::UnexpectedBranch {
-                        expected: "nonzero",
-                        actual: "all-zero",
-                    });
-                }
-            };
+            let start = read_nonzero_coeff_block_start(cdfs, symbols, input.start)?;
             apply_nonzero_coeff_ordinary_pass_with_state_context(
                 state,
                 cdfs,

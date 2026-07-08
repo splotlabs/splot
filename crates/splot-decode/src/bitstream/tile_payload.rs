@@ -609,7 +609,6 @@ pub(crate) enum TilePayloadUnsupportedReason {
     NonIntraFrame,
     BridgeTile,
     BruTileActivity,
-    InvalidTileGrid,
 }
 
 crate::impl_reason_labels!(pub(crate) TilePayloadUnsupportedReason {
@@ -621,7 +620,6 @@ crate::impl_reason_labels!(pub(crate) TilePayloadUnsupportedReason {
     NonIntraFrame => "non_intra_frame",
     BridgeTile => "bridge_tile",
     BruTileActivity => "bru_tile_activity",
-    InvalidTileGrid => "invalid_tile_grid",
 });
 
 impl TilePayloadUnsupportedReason {
@@ -635,7 +633,6 @@ impl TilePayloadUnsupportedReason {
             | Self::BridgeTile
             | Self::BruTileActivity => "5.20.1",
             Self::NonClosedLoopKey | Self::NonIntraFrame => "7.1",
-            Self::InvalidTileGrid => "6.19.1",
         }
     }
 }
@@ -720,6 +717,9 @@ pub(crate) enum TilePayloadMalformed {
         tile_size: u64,
         payload_len: u64,
     },
+    InvalidTileGrid {
+        tile_num: u32,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -751,6 +751,9 @@ impl fmt::Display for TilePayloadMalformed {
                 f,
                 "tile {tile_num} byte range [{tile_data_offset}, +{tile_size}) exceeds payload length {payload_len}"
             ),
+            Self::InvalidTileGrid { tile_num } => {
+                write!(f, "tile grid facts do not cover framed tile {tile_num}")
+            }
         }
     }
 }
@@ -863,12 +866,8 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         .with_tile_grid(input.grid.tile_cols, input.grid.tile_rows);
     let mut work_units = Vec::with_capacity(input.framing.tiles.len());
     for tile in &input.framing.tiles {
-        let (tile_row, tile_col, mi_row_range, mi_col_range) = grid_ranges(
-            input.grid,
-            tile.tile_num,
-            input.payload_base,
-            tile.tile_data_offset,
-        )?;
+        let (tile_row, tile_col, mi_row_range, mi_col_range) =
+            grid_ranges(input.grid, tile.tile_num)?;
         let tile_bytes = tile_slice(
             input.payload,
             tile.tile_num,
@@ -954,11 +953,9 @@ fn tile_slice(
 fn grid_ranges(
     grid: TileGridFacts<'_>,
     tile_num: u32,
-    payload_base: ByteOffset,
-    tile_data_offset: u64,
 ) -> Result<(u32, u32, core::ops::Range<u32>, core::ops::Range<u32>), TilePayloadBoundaryError> {
     if grid.tile_cols == 0 || grid.tile_rows == 0 {
-        return Err(invalid_grid(tile_num, payload_base, tile_data_offset));
+        return Err(invalid_grid(tile_num));
     }
     let tile_count =
         grid.tile_cols
@@ -970,7 +967,7 @@ fn grid_ranges(
                 right: u64::from(grid.tile_rows),
             })?;
     if tile_num >= tile_count {
-        return Err(invalid_grid(tile_num, payload_base, tile_data_offset));
+        return Err(invalid_grid(tile_num));
     }
     let tile_row = tile_num / grid.tile_cols;
     let tile_col = tile_num % grid.tile_cols;
@@ -981,17 +978,17 @@ fn grid_ranges(
         .get(row)
         .zip(grid.mi_row_starts.get(row + 1))
     else {
-        return Err(invalid_grid(tile_num, payload_base, tile_data_offset));
+        return Err(invalid_grid(tile_num));
     };
     let Some((&mi_col_start, &mi_col_end)) = grid
         .mi_col_starts
         .get(col)
         .zip(grid.mi_col_starts.get(col + 1))
     else {
-        return Err(invalid_grid(tile_num, payload_base, tile_data_offset));
+        return Err(invalid_grid(tile_num));
     };
     if mi_row_start >= mi_row_end || mi_col_start >= mi_col_end {
-        return Err(invalid_grid(tile_num, payload_base, tile_data_offset));
+        return Err(invalid_grid(tile_num));
     }
     Ok((
         tile_row,
@@ -1001,25 +998,8 @@ fn grid_ranges(
     ))
 }
 
-fn invalid_grid(
-    tile_num: u32,
-    payload_base: ByteOffset,
-    tile_data_offset: u64,
-) -> TilePayloadBoundaryError {
-    unsupported_boundary_with_tile(
-        TilePayloadUnsupportedReason::InvalidTileGrid,
-        tile_num,
-        payload_base,
-        tile_data_offset,
-        "tile grid facts do not cover the framed tile number.",
-    )
-    .unwrap_or_else(|_| {
-        unsupported_boundary_without_tile(
-            TilePayloadUnsupportedReason::InvalidTileGrid,
-            payload_base,
-            "tile grid facts do not cover the framed tile number.",
-        )
-    })
+fn invalid_grid(tile_num: u32) -> TilePayloadBoundaryError {
+    TilePayloadBoundaryError::Malformed(TilePayloadMalformed::InvalidTileGrid { tile_num })
 }
 
 fn unsupported_boundary_without_tile(
@@ -1030,44 +1010,12 @@ fn unsupported_boundary_without_tile(
     TilePayloadBoundaryError::Unsupported(unsupported_without_tile(reason, byte_offset, message))
 }
 
-fn unsupported_boundary_with_tile(
-    reason: TilePayloadUnsupportedReason,
-    tile_num: u32,
-    payload_base: ByteOffset,
-    tile_data_offset: u64,
-    message: &'static str,
-) -> Result<TilePayloadBoundaryError, DecodeLimitError> {
-    Ok(TilePayloadBoundaryError::Unsupported(unsupported_tile(
-        reason,
-        tile_num,
-        payload_base,
-        tile_data_offset,
-        message,
-    )?))
-}
-
 fn unsupported_without_tile(
     reason: TilePayloadUnsupportedReason,
     byte_offset: ByteOffset,
     message: &'static str,
 ) -> TilePayloadUnsupported {
     TilePayloadUnsupported::new(reason, None, byte_offset, message)
-}
-
-fn unsupported_tile(
-    reason: TilePayloadUnsupportedReason,
-    tile_num: u32,
-    payload_base: ByteOffset,
-    tile_data_offset: u64,
-    message: &'static str,
-) -> Result<TilePayloadUnsupported, DecodeLimitError> {
-    let byte_offset = checked_tile_byte_offset(payload_base, tile_data_offset)?;
-    Ok(TilePayloadUnsupported::new(
-        reason,
-        Some(tile_num),
-        byte_offset,
-        message,
-    ))
 }
 
 fn checked_tile_byte_offset(base: ByteOffset, delta: u64) -> Result<ByteOffset, DecodeLimitError> {

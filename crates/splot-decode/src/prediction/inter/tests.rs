@@ -254,22 +254,7 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
         &mut next_unvalidated_following_ivf_record,
     )?;
     let (store, meta) = reference.build_store_eight(&frames)?;
-    let inter_state = super::InterReferenceState {
-        store: &store,
-        ref_valid: meta.ref_valid,
-        ref_order_hint: meta.ref_order_hint,
-        ref_frame_width: meta.ref_frame_width,
-        ref_frame_height: meta.ref_frame_height,
-        ref_base_q_idx: meta.ref_base_q_idx,
-        ref_is_inter: meta.ref_is_inter,
-        ref_adapted: meta.ref_adapted,
-        lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
-        lr_frame_filter_taps: Vec::new(),
-        ref_frame_cdfs: meta.ref_frame_cdfs,
-        ref_ccso_params: meta.ref_ccso_params,
-        ref_ccso_unit_grids: meta.ref_ccso_unit_grids,
-        ref_motion_fields: meta.ref_motion_fields,
-    };
+    let inter_state = super::InterReferenceState::from_metadata(&store, meta);
     let mut core = super::parse_inter_frame_core(inter_envelope, &sequence, &inter_state)?;
     mutate(
         core.quantization_params
