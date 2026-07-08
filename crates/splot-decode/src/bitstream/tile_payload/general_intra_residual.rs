@@ -12,10 +12,9 @@ use splot_core::tables::conversion::{
     TX_WIDTH, TX_WIDTH_LOG2,
 };
 use splot_recon::{
-    BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId, QM_OFFSET,
-    QmDequant, QmFrameLevels, QuantizerDeltas, ReconError, ReconSample, SecondaryInverseTransform,
-    ac_quantizer, dc_quantizer, reconstruct_transform_block_residual_with_secondary, tx_class,
-    tx_size_index,
+    BitDepth, DpcmDirection, PlaneId, QM_OFFSET, QmDequant, QmFrameLevels, QuantizerDeltas,
+    ReconError, ReconSample, SecondaryInverseTransform,
+    reconstruct_transform_block_residual_with_secondary, tx_class, tx_size_index,
 };
 
 use super::cdf::TileCdfSelector;
@@ -45,6 +44,14 @@ use super::coeff_loop::{
 use super::coeff_state::CoeffContextUpdate;
 use super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
 use super::{DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
+
+mod cctx;
+mod reconstruct;
+
+#[cfg(test)]
+use cctx::apply_cross_chroma_transform;
+pub(crate) use cctx::reconstruct_general_intra_chroma_cctx_pair_with_predictions;
+use reconstruct::reconstruct_block_setup;
 
 const TX_4X4: usize = 0;
 const TX_64X64: usize = 4;
@@ -436,6 +443,7 @@ pub(crate) struct LumaCoeffBlock {
     pub(crate) eob: usize,
     pub(crate) quant: Vec<i32>,
     pub(crate) intra_ist: Option<IntraIstSyntax>,
+    pub(crate) cctx_type: Option<usize>,
     pub(crate) plane_tx_type: usize,
     pub(crate) use_tcq: bool,
     pub(crate) lossless: bool,
@@ -1084,6 +1092,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             eob: 0,
             quant: Vec::new(),
             intra_ist: None,
+            cctx_type: None,
             plane_tx_type: DCT_DCT,
             use_tcq: false,
             lossless: frame_facts
@@ -1154,6 +1163,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         eob: pass.eob_read().eob().eob(),
         quant: pass.into_block().into_quant(),
         intra_ist: None,
+        cctx_type: None,
         plane_tx_type: DCT_DCT,
         use_tcq,
         lossless,
@@ -1260,6 +1270,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             eob: pass.eob_read().eob().eob(),
             quant: pass.block().quant().to_vec(),
             intra_ist: metadata.intra_ist,
+            cctx_type: metadata.cctx_type,
             plane_tx_type,
             use_tcq: false,
             lossless,
@@ -1284,6 +1295,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         eob,
         quant: pass.into_block().into_quant(),
         intra_ist: metadata.intra_ist,
+        cctx_type: metadata.cctx_type,
         plane_tx_type,
         use_tcq: base_config.use_tcq,
         lossless,
@@ -2245,67 +2257,35 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
-    let orig_w = 1usize << log2_width;
-    let orig_h = 1usize << log2_height;
-
-    let adj_w = 1usize << log2_width.min(5);
-    let adj_h = 1usize << log2_height.min(5);
-    let adjusted = adj_w * adj_h;
-    if quant.len() != adjusted {
+    let setup = reconstruct_block_setup(
+        prediction.len(),
+        qindex,
+        plane_id,
+        log2_width,
+        log2_height,
+        plane_tx_type,
+        use_tcq,
+        use_ddt,
+        lossless,
+        dpcm,
+        bit_depth,
+    )?;
+    if quant.len() != setup.adjusted {
         return Err(GeneralIntraResidualError::QuantLength {
-            expected: adjusted,
+            expected: setup.adjusted,
             actual: quant.len(),
         });
     }
-    let samples = orig_w * orig_h;
-    if prediction.len() != samples {
-        return Err(GeneralIntraResidualError::PredictionLength {
-            expected: samples,
-            actual: prediction.len(),
-        });
-    }
-    let deltas = current_quantizer_deltas();
-    let pels = (orig_w * orig_h) as u32;
-    let tcq_two_d = use_tcq
-        && CoeffTransformClass::from_plane_tx_type(plane_tx_type) == CoeffTransformClass::TwoD;
-    let dq_shift = u32::from(pels > 256) + u32::from(pels > 1024) + u32::from(tcq_two_d);
-    let dq_denom = 1u32 << dq_shift;
-    let params = DequantBlockParams {
-        dc_quant: dc_quantizer(plane_id, qindex, deltas, bit_depth),
-        ac_quant: ac_quantizer(plane_id, qindex, deltas, bit_depth),
-        tx_width: adj_w,
-        tx_height: adj_h,
-        dq_denom,
-        bit_depth,
-        qm: resolve_block_qm(
-            plane_id,
-            plane_tx_type,
-            adj_w,
-            adj_h,
-            log2_width,
-            log2_height,
-        ),
-    };
-    let transform = InverseTransform2dOuter::resolve(
-        plane_tx_type,
-        log2_width,
-        log2_height,
-        use_ddt,
-        lossless,
-        bit_depth,
-        dpcm,
-    )
-    .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
 
-    let mut out = vec![T::default(); samples];
+    let mut out = vec![T::default(); setup.samples];
     with_residual_scratch(|scratch| {
-        let dequant_scratch = &mut scratch.dequant[..adjusted.min(MAX_ADJUSTED_COEFFS)];
-        let residual_scratch = &mut scratch.residual[..samples.min(MAX_ORIGINAL_SAMPLES)];
+        let dequant_scratch = &mut scratch.dequant[..setup.adjusted];
+        let residual_scratch = &mut scratch.residual[..setup.samples];
         reconstruct_transform_block_residual_with_secondary(
             prediction,
             quant,
-            &params,
-            &transform,
+            &setup.params,
+            &setup.transform,
             secondary,
             dequant_scratch,
             residual_scratch,
@@ -2322,6 +2302,7 @@ const MAX_ORIGINAL_SAMPLES: usize = 64 * 64;
 
 struct ResidualScratch {
     dequant: [i32; MAX_ADJUSTED_COEFFS],
+    dequant_pair: [i32; MAX_ADJUSTED_COEFFS],
     residual: [i32; MAX_ORIGINAL_SAMPLES],
 }
 
@@ -2335,6 +2316,7 @@ fn with_residual_scratch<R>(f: impl FnOnce(&mut ResidualScratch) -> R) -> R {
         let mut scratch = cell.take().unwrap_or_else(|| {
             Box::new(ResidualScratch {
                 dequant: [0; MAX_ADJUSTED_COEFFS],
+                dequant_pair: [0; MAX_ADJUSTED_COEFFS],
                 residual: [0; MAX_ORIGINAL_SAMPLES],
             })
         });

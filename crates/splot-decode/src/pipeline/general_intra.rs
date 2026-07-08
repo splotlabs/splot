@@ -919,6 +919,13 @@ fn rect_luma_plan(
     if let Some(palette) = modes.palette_y() {
         return Ok(RectLumaPlan::Palette { palette, use_tcq });
     }
+    if modes.uses_active_dip() {
+        return Ok(RectLumaPlan::Dip {
+            mode: modes.dip_mode,
+            transpose: modes.dip_transpose != 0,
+            use_tcq,
+        });
+    }
     if modes.uses_active_mrl() {
         return rect_luma_mrl_plan(modes, block_ctx, use_tcq, sb_mib);
     }

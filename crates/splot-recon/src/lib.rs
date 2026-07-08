@@ -25,6 +25,7 @@ mod intra;
 mod intra_basic;
 mod intra_dc_math;
 mod intra_dc_subsampled;
+mod intra_dip;
 mod intra_directional;
 mod intra_directional_angle;
 mod intra_ibp_angular;
@@ -88,6 +89,7 @@ pub use intra_dc_math::resolve_divisor;
 pub use intra_dc_subsampled::{
     predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
 };
+pub use intra_dip::{IntraDipEdge, IntraDipEdges, predict_intra_dip_rect_into};
 pub use intra_directional::{IntraCardinalDirection, predict_intra_cardinal_directional_rect_into};
 pub use intra_directional_angle::{
     IntraDirectionalAngle, IntraDirectionalAngleEdge, IntraDirectionalAngleEdges,

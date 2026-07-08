@@ -7,14 +7,14 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, DpcmDirection, IntraCardinalDirection,
-    IntraDcEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges,
+    IntraDcEdges, IntraDipEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges,
     IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraMiddleDirectionalAngleIdifMrlEdges, IntraPaethEdges,
     IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode, OutputIndex, PixelFormat, PlaneId,
     PlaneRect, PlaneSize, ReconSample, apply_ibp_dr_blend_rect, apply_intra_edge_filter,
     apply_intra_ibp_dc_rect, filter_intra_edge_corner,
     predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
-    predict_intra_directional_angle_rect_into,
+    predict_intra_dip_rect_into, predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_into,
     predict_intra_directional_angle_rect_one_sided_idif_mrl_into,
     predict_intra_middle_directional_angle_rect_idif_into,
@@ -34,6 +34,8 @@ use crate::bitstream::tile_payload::{
 };
 pub(crate) use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_block_into;
 pub(crate) use crate::prediction::chroma::directional::reconstruct_general_intra_chroma_block_into;
+
+const MI_SIZE: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntraEdgeAvailability {
@@ -134,6 +136,65 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
     };
     workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    dip_mode: u8,
+    dip_transpose: bool,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    use_tcq: bool,
+    num4_above_right: usize,
+    num4_below_left: usize,
+    luma_context: LumaTransformTypeContext,
+    availability: IntraEdgeAvailability,
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let (left, above, top_left) = dip_reference_edges(
+        workspace,
+        x,
+        y,
+        width,
+        height,
+        num4_above_right,
+        num4_below_left,
+        availability,
+        bit_depth,
+    )?;
+    let mut prediction = vec![T::default(); width * height];
+    predict_intra_dip_rect_into(
+        bit_depth,
+        block_size,
+        usize::from(dip_mode),
+        dip_transpose,
+        IntraDipEdges::new(&left, &above, top_left),
+        &mut prediction,
+        width,
+    )?;
+    write_luma_prediction_block(
+        workspace,
+        block,
+        prediction,
+        x,
+        y,
+        log2_width,
+        log2_height,
+        qindex,
+        use_tcq,
+        bit_depth,
+        Some(luma_context),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -733,6 +794,141 @@ pub(crate) fn predict_directional_noneighbour<T: ReconSample>(
         bit_depth, block_size, angle, edges, &mut out, side,
     )?;
     Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dip_reference_edges<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    num4_above_right: usize,
+    num4_below_left: usize,
+    availability: IntraEdgeAvailability,
+    bit_depth: BitDepth,
+) -> core::result::Result<(Vec<T>, Vec<T>, T), GeneralIntraResidualError> {
+    let above_len = width + (width >> 2);
+    let left_len = height + (height >> 2);
+    let above = if availability.above {
+        collect_available_dip_above_edge(workspace, x, y, width, above_len, num4_above_right)?
+    } else if availability.left {
+        vec![left_seed(workspace, x, y)?; above_len]
+    } else {
+        vec![noneighbour_above::<T>(bit_depth); above_len]
+    };
+    let left = if availability.left {
+        collect_available_dip_left_edge(workspace, x, y, height, left_len, num4_below_left)?
+    } else if availability.above {
+        vec![above_seed(workspace, x, y)?; left_len]
+    } else {
+        vec![noneighbour_left::<T>(bit_depth); left_len]
+    };
+    let top_left = match (availability.above, availability.left) {
+        (true, true) => {
+            let corner_x = x
+                .checked_sub(1)
+                .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+            let corner_y = y
+                .checked_sub(1)
+                .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+            workspace.reconstructed_sample(PlaneId::Y, corner_x, corner_y)?
+        }
+        (true, false) => above_seed(workspace, x, y)?,
+        (false, true) => left_seed(workspace, x, y)?,
+        (false, false) => noneighbour_corner::<T>(bit_depth),
+    };
+    Ok((left, above, top_left))
+}
+
+fn collect_available_dip_above_edge<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    x: usize,
+    y: usize,
+    width: usize,
+    edge_len: usize,
+    num4_above_right: usize,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    let sample_y = y
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let storage_width = workspace.plane(PlaneId::Y)?.storage_size().width();
+    let readable = width
+        .saturating_add(num4_above_right.saturating_mul(MI_SIZE))
+        .min(edge_len);
+    let mut edge = Vec::with_capacity(edge_len);
+    for offset in 0..readable {
+        let Some(sample_x) = x.checked_add(offset) else {
+            break;
+        };
+        if sample_x >= storage_width {
+            break;
+        }
+        edge.push(workspace.reconstructed_sample(PlaneId::Y, sample_x, sample_y)?);
+    }
+    extend_edge_with_last(edge, edge_len)
+}
+
+fn collect_available_dip_left_edge<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    x: usize,
+    y: usize,
+    height: usize,
+    edge_len: usize,
+    num4_below_left: usize,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    let sample_x = x
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let storage_height = workspace.plane(PlaneId::Y)?.storage_size().height();
+    let readable = height
+        .saturating_add(num4_below_left.saturating_mul(MI_SIZE))
+        .min(edge_len);
+    let mut edge = Vec::with_capacity(edge_len);
+    for offset in 0..readable {
+        let Some(sample_y) = y.checked_add(offset) else {
+            break;
+        };
+        if sample_y >= storage_height {
+            break;
+        }
+        edge.push(workspace.reconstructed_sample(PlaneId::Y, sample_x, sample_y)?);
+    }
+    extend_edge_with_last(edge, edge_len)
+}
+
+fn extend_edge_with_last<T: ReconSample>(
+    mut edge: Vec<T>,
+    edge_len: usize,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    let last = edge
+        .last()
+        .copied()
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    edge.resize(edge_len, last);
+    Ok(edge)
+}
+
+fn left_seed<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    x: usize,
+    y: usize,
+) -> core::result::Result<T, GeneralIntraResidualError> {
+    let sample_x = x
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    Ok(workspace.reconstructed_sample(PlaneId::Y, sample_x, y)?)
+}
+
+fn above_seed<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    x: usize,
+    y: usize,
+) -> core::result::Result<T, GeneralIntraResidualError> {
+    let sample_y = y
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    Ok(workspace.reconstructed_sample(PlaneId::Y, x, sample_y)?)
 }
 
 #[allow(clippy::too_many_arguments)]
