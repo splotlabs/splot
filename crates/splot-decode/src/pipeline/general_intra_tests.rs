@@ -100,6 +100,10 @@ const LOSSLESS_NONDC_CHROMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d135-intra-64x64.ivf"
 );
 
+const LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d45-leftedge-128x64.ivf"
+);
+
 const LOSSLESS_SDP_NONDC_CHROMA_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-h-intra-64x64.ivf"
 );
@@ -612,6 +616,34 @@ fn lossless_nondc_chroma_d135_frame_decodes_to_oracle() {
 }
 
 #[test]
+fn lossless_nondc_chroma_d45_leftedge_frame_decodes_to_oracle() {
+    assert_eq!(LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE.len(), 129);
+    let frame = decode_eight(LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE);
+
+    assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
+    assert_chroma_size(&frame, 64, 32);
+    assert_all_samples_eq(
+        frame.y().samples(),
+        128,
+        "lossless explicit D45 left-edge chroma luma",
+    );
+    assert_distinct_gt(
+        frame.u().unwrap().samples(),
+        4,
+        "lossless explicit D45 left-edge U",
+    );
+    assert_distinct_gt(
+        frame.v().unwrap().samples(),
+        4,
+        "lossless explicit D45 left-edge V",
+    );
+    assert_hash(
+        &frame,
+        "56a0c73c398f6adb27194cb8d3908cea02791d63e79658c7552cc15a0752fc01",
+    );
+}
+
+#[test]
 fn lossless_sdp_nondc_chroma_d135_frame_decodes_to_oracle() {
     assert_lossless_chroma_d135_oracle(
         LOSSLESS_SDP_NONDC_CHROMA_D135_FIXTURE,
@@ -657,6 +689,13 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         general_intra::FULL_SB_N4_LUMA,
         BitDepth::Eight,
     );
+    let left_edge_8 = block_ctx(
+        0,
+        general_intra::FULL_SB_N4_LUMA,
+        general_intra::FULL_SB_N4_LUMA,
+        general_intra::FULL_SB_N4_LUMA,
+        BitDepth::Eight,
+    );
     assert!(general_intra::lossless_chroma_prediction_verified(
         Some(SupportedChromaMode::Dc),
         false,
@@ -676,6 +715,18 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         false,
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D45),
+        false,
+        left_edge_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D45),
+        false,
+        left_edge_8,
+        32,
     ));
     assert!(general_intra::lossless_chroma_part_prediction_verified(
         Some(SupportedChromaMode::Horizontal),
@@ -698,9 +749,21 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::Vertical),
+        false,
+        top_left_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(!general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::D45),
         false,
         top_left_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(!general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::Vertical),
+        false,
+        left_edge_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(!general_intra::lossless_chroma_part_prediction_verified(
@@ -794,6 +857,76 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
                 Some(mode),
                 false,
                 crate::bitstream::tile_payload::IntraYMode::DC_PRED,
+                block_ctx,
+                sb_mib,
+            ));
+        }
+    }
+    for (block_ctx, sb_mib, modes) in [
+        (
+            block_ctx(
+                0,
+                general_intra::FULL_SB_N4_LUMA,
+                general_intra::FULL_SB_N4_LUMA,
+                general_intra::FULL_SB_N4_LUMA,
+                BitDepth::Ten,
+            ),
+            general_intra::FULL_SB_N4_LUMA,
+            [
+                SupportedChromaMode::Vertical,
+                SupportedChromaMode::D45,
+                SupportedChromaMode::Horizontal,
+                SupportedChromaMode::D135,
+            ],
+        ),
+        (
+            block_ctx(
+                0,
+                general_intra::FULL_SB_N4_LUMA,
+                general_intra::FULL_SB_N4_LUMA,
+                general_intra::FULL_SB_N4_LUMA,
+                BitDepth::Eight,
+            ),
+            32,
+            [
+                SupportedChromaMode::Vertical,
+                SupportedChromaMode::Smooth,
+                SupportedChromaMode::Horizontal,
+                SupportedChromaMode::D135,
+            ],
+        ),
+        (
+            block_ctx(0, general_intra::FULL_SB_N4_LUMA, 8, 8, BitDepth::Eight),
+            general_intra::FULL_SB_N4_LUMA,
+            [
+                SupportedChromaMode::Vertical,
+                SupportedChromaMode::D45,
+                SupportedChromaMode::Horizontal,
+                SupportedChromaMode::D135,
+            ],
+        ),
+        (
+            block_ctx_with_chroma(
+                0,
+                general_intra::FULL_SB_N4_LUMA,
+                general_intra::FULL_SB_N4_LUMA,
+                general_intra::FULL_SB_N4_LUMA,
+                BitDepth::Eight,
+                ChromaSampling::Yuv444,
+            ),
+            general_intra::FULL_SB_N4_LUMA,
+            [
+                SupportedChromaMode::Vertical,
+                SupportedChromaMode::D45,
+                SupportedChromaMode::Horizontal,
+                SupportedChromaMode::D135,
+            ],
+        ),
+    ] {
+        for mode in modes {
+            assert!(!general_intra::lossless_chroma_block_prediction_verified(
+                Some(mode),
+                false,
                 block_ctx,
                 sb_mib,
             ));

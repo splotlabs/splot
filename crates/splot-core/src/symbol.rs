@@ -22,6 +22,7 @@ pub(crate) const MIN_SYMBOLS: usize = 2;
 pub(crate) const MAX_SYMBOLS: usize = 8;
 pub(crate) const MAX_LITERAL_BITS: u32 = 32;
 pub(crate) const MAX_CDF_COUNT: i32 = 32;
+const BYPASS_LITERAL_CHUNK_BITS: u32 = 8;
 
 /// Relative bit position inside the tile payload consumed by a symbol decoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -108,7 +109,7 @@ impl Default for SymbolDecoderConfig {
 pub struct SymbolDecoderSummary {
     /// Number of bits consumed after advancing to `paddingEndPosition`.
     pub consumed_bits: SymbolBitPosition,
-    /// Number of frame symbols counted by `read_literal` and `read_symbol`.
+    /// Number of frame symbols counted by `read_literal`, `read_unary`, and `read_symbol`.
     pub symbol_count: u64,
     /// Relative `trailingBitPosition` inside the tile payload.
     pub trailing_bit_position: SymbolBitPosition,
@@ -121,7 +122,7 @@ pub struct SymbolDecoderSummary {
 pub struct SymbolDecoderCheckpoint {
     /// Number of bits consumed from the tile payload.
     pub consumed_bits: SymbolBitPosition,
-    /// Number of frame symbols counted by `read_literal` and `read_symbol`.
+    /// Number of frame symbols counted by `read_literal`, `read_unary`, and `read_symbol`.
     pub symbol_count: u64,
     /// Current signed `SymbolMaxBits` value.
     pub symbol_max_bits: i64,
@@ -244,16 +245,7 @@ impl<'a> SymbolDecoder<'a> {
     /// cannot supply a required coded bit.
     #[track_caller]
     pub fn read_bool(&mut self) -> Result<bool> {
-        let cur = self.symbol_range >> 1;
-        let symbol = self.symbol_value < cur;
-        if !symbol {
-            self.symbol_value -= cur;
-        }
-
-        let num_bits = self.num_bits_to_read(1);
-        let new_data = self.reader.read_bits(num_bits)?;
-        self.symbol_value = (self.symbol_value << 1) | (new_data ^ 1);
-        self.symbol_max_bits -= 1;
+        let symbol = self.read_bypass_bits(1)? != 0;
         trace::emit(
             "read_bool",
             u32::from(symbol),
@@ -281,9 +273,79 @@ impl<'a> SymbolDecoder<'a> {
 
         self.frame_symbol_count = self.frame_symbol_count.saturating_add(u64::from(n));
         let mut value = 0u32;
-        for _ in 0..n {
-            value = (value << 1) | u32::from(self.read_bool()?);
+        let mut remaining = n;
+        while remaining > 0 {
+            let chunk_bits = remaining.min(BYPASS_LITERAL_CHUNK_BITS);
+            value = (value << chunk_bits) | self.read_bypass_bits(chunk_bits)?;
+            remaining -= chunk_bits;
         }
+        trace::emit(
+            "read_literal",
+            value,
+            self.reader.consumed_bits(),
+            self.symbol_max_bits,
+        );
+        Ok(value)
+    }
+
+    /// Decodes an AVM-style truncated unary bypass value.
+    ///
+    /// The result is the number of zero bits before the terminating one bit,
+    /// capped at `max_bits`. When the cap is reached, exactly `max_bits` zero
+    /// bits are consumed and no terminator is read. The bypass run is normalized
+    /// once, matching AVM's `avm_read_unary`.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidSymbolDecoderState`] if `max_bits > 32`, or
+    /// propagates [`Error::UnexpectedEof`] from the bounded bit reader.
+    #[track_caller]
+    pub fn read_unary(&mut self, max_bits: u32) -> Result<u32> {
+        if max_bits > MAX_LITERAL_BITS {
+            return Err(
+                self.state_error(SymbolDecoderErrorKind::LiteralWidthTooLarge {
+                    requested: max_bits,
+                    max: MAX_LITERAL_BITS,
+                }),
+            );
+        }
+        if max_bits == 0 {
+            trace::emit(
+                "read_unary",
+                0,
+                self.reader.consumed_bits(),
+                self.symbol_max_bits,
+            );
+            return Ok(0);
+        }
+
+        let mut split = u64::from(self.symbol_range) << max_bits;
+        let mut value = 0u32;
+        let mut consumed = 0u32;
+        let mut scaled_value = self.scaled_bypass_value(max_bits);
+
+        for _ in 0..max_bits {
+            split >>= 1;
+            consumed += 1;
+            if scaled_value >= split {
+                scaled_value -= split;
+                value += 1;
+            } else {
+                break;
+            }
+        }
+
+        let normalized = scaled_value >> (max_bits - consumed);
+        let symbol_value = u32::try_from(normalized)
+            .map_err(|_| self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange))?;
+        self.advance_bypass(consumed, symbol_value)?;
+        self.frame_symbol_count = self.frame_symbol_count.saturating_add(u64::from(consumed));
+
+        trace::emit(
+            "read_unary",
+            value,
+            self.reader.consumed_bits(),
+            self.symbol_max_bits,
+        );
         Ok(value)
     }
 
@@ -460,6 +522,51 @@ impl<'a> SymbolDecoder<'a> {
         }
     }
 
+    fn read_bypass_bits(&mut self, bits: u32) -> Result<u32> {
+        debug_assert!(bits <= BYPASS_LITERAL_CHUNK_BITS);
+
+        let mut split = u64::from(self.symbol_range) << bits;
+        let mut value = 0u32;
+        let mut scaled_value = self.scaled_bypass_value(bits);
+        for _ in 0..bits {
+            split >>= 1;
+            value <<= 1;
+            if scaled_value >= split {
+                scaled_value -= split;
+            } else {
+                value |= 1;
+            }
+        }
+
+        let symbol_value = u32::try_from(scaled_value)
+            .map_err(|_| self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange))?;
+        self.advance_bypass(bits, symbol_value)?;
+        Ok(value)
+    }
+
+    fn scaled_bypass_value(&self, bits: u32) -> u64 {
+        (u64::from(self.symbol_value) << bits) | self.peek_inverted_bits(bits)
+    }
+
+    fn peek_inverted_bits(&self, bits: u32) -> u64 {
+        let num_bits = self.num_bits_to_read(bits);
+        let start = self.reader.consumed_bits();
+        let mut value = 0u64;
+        for offset in 0..num_bits {
+            value = (value << 1) | u64::from(self.bit_at(start + u64::from(offset)).unwrap_or(0));
+        }
+        let padded_data = value << (bits - num_bits);
+        padded_data ^ mask_for_bits(bits)
+    }
+
+    fn advance_bypass(&mut self, bits: u32, symbol_value: u32) -> Result<()> {
+        let num_bits = self.num_bits_to_read(bits);
+        let _ = self.reader.read_bits(num_bits)?;
+        self.symbol_value = symbol_value;
+        self.symbol_max_bits -= i64::from(bits);
+        Ok(())
+    }
+
     fn bit_at(&self, bit_position: u64) -> Option<u8> {
         let byte_index = usize::try_from(bit_position / 8).ok()?;
         let bit_offset = (bit_position % 8) as u8;
@@ -573,6 +680,10 @@ fn total_bits(len: usize) -> u64 {
         Ok(bytes) => bytes.saturating_mul(8),
         Err(_) => u64::MAX,
     }
+}
+
+fn mask_for_bits(bits: u32) -> u64 {
+    if bits == 0 { 0 } else { (1u64 << bits) - 1 }
 }
 
 pub(crate) fn floor_log2(value: u32) -> u32 {
