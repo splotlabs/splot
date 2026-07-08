@@ -752,6 +752,7 @@ fn lossless_luma_prediction_verified(
             Some(
                 SupportedDirectionalLumaMode::Vertical
                     | SupportedDirectionalLumaMode::Horizontal
+                    | SupportedDirectionalLumaMode::D45
                     | SupportedDirectionalLumaMode::D135
             )
         )
@@ -2163,6 +2164,7 @@ mod tests {
         for mode in [
             IntraYMode::V_PRED_FOR_TEST,
             IntraYMode::H_PRED_FOR_TEST,
+            IntraYMode::D45_PRED_FOR_TEST,
             IntraYMode::D135_PRED_FOR_TEST,
         ] {
             for (modes, block_ctx, sb_mib) in [

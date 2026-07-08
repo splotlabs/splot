@@ -92,6 +92,10 @@ const LOSSLESS_NONDC_LUMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d135-intra-64x64.ivf"
 );
 
+const LOSSLESS_NONDC_LUMA_D45_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d45-intra-64x64.ivf"
+);
+
 const LOSSLESS_NONDC_CHROMA_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-h-intra-64x64.ivf"
 );
@@ -556,18 +560,32 @@ fn d45_right_edge_clamped_above_intra_frame_decodes_to_oracle() {
 }
 
 #[test]
-fn lossless_nondc_luma_d135_frame_decodes_to_oracle() {
-    assert_eq!(LOSSLESS_NONDC_LUMA_D135_FIXTURE.len(), 68);
-    let frame = decode_eight(LOSSLESS_NONDC_LUMA_D135_FIXTURE);
+fn lossless_nondc_luma_d45_and_d135_frames_decode_to_oracle() {
+    assert_lossless_directional_luma_oracle(
+        LOSSLESS_NONDC_LUMA_D135_FIXTURE,
+        68,
+        "71248f8ced1be4c7b0ac9a1c5b4d4eda9b616249b91b0c1464029f06e86cb942",
+    );
+    assert_lossless_directional_luma_oracle(
+        LOSSLESS_NONDC_LUMA_D45_FIXTURE,
+        76,
+        "f545bb90a2b6ae346fef77c06b92f5e632df636bc364d860158ff0d1cf782dd3",
+    );
+}
+
+fn assert_lossless_directional_luma_oracle(
+    fixture: &[u8],
+    expected_len: usize,
+    expected_hash: &str,
+) {
+    assert_eq!(fixture.len(), expected_len);
+    let frame = decode_eight(fixture);
 
     assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
     assert_chroma_size(&frame, 32, 32);
     assert_eq!(distinct_count(frame.y().samples()), 3);
     assert_chroma_eq(&frame, 128, 128);
-    assert_hash(
-        &frame,
-        "71248f8ced1be4c7b0ac9a1c5b4d4eda9b616249b91b0c1464029f06e86cb942",
-    );
+    assert_hash(&frame, expected_hash);
 }
 
 #[test]
