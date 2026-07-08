@@ -9,7 +9,9 @@ use splot_parallel::ThreadCount;
 use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize, ReconSample};
 
 use super::*;
-use crate::bitstream::tile_payload::SupportedChromaMode;
+use crate::bitstream::tile_payload::{
+    GeneralIntraBlockModes, GeneralIntraLumaBlockMode, IntraYMode, SupportedChromaMode,
+};
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
 use crate::{DecodeContext, DecodeRuntimeConfig};
 
@@ -94,6 +96,10 @@ const LOSSLESS_NONDC_LUMA_D135_FIXTURE: &[u8] = include_bytes!(
 
 const LOSSLESS_NONDC_LUMA_D45_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d45-intra-64x64.ivf"
+);
+
+const LOSSLESS_NONDC_LUMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d45-leftedge-128x64.ivf"
 );
 
 const LOSSLESS_NONDC_CHROMA_H_FIXTURE: &[u8] = include_bytes!(
@@ -564,25 +570,46 @@ fn lossless_nondc_luma_d45_and_d135_frames_decode_to_oracle() {
     assert_lossless_directional_luma_oracle(
         LOSSLESS_NONDC_LUMA_D135_FIXTURE,
         68,
+        64,
+        64,
+        32,
+        32,
         "71248f8ced1be4c7b0ac9a1c5b4d4eda9b616249b91b0c1464029f06e86cb942",
     );
     assert_lossless_directional_luma_oracle(
         LOSSLESS_NONDC_LUMA_D45_FIXTURE,
         76,
+        64,
+        64,
+        32,
+        32,
         "f545bb90a2b6ae346fef77c06b92f5e632df636bc364d860158ff0d1cf782dd3",
+    );
+    assert_lossless_directional_luma_oracle(
+        LOSSLESS_NONDC_LUMA_D45_LEFTEDGE_FIXTURE,
+        84,
+        128,
+        64,
+        64,
+        32,
+        "386bf9550c5623bc5eb0fba92f0985b2bd0f9d06c5fa991d32407f3b17f99c6f",
     );
 }
 
 fn assert_lossless_directional_luma_oracle(
     fixture: &[u8],
     expected_len: usize,
+    width: usize,
+    height: usize,
+    chroma_width: usize,
+    chroma_height: usize,
     expected_hash: &str,
 ) {
     assert_eq!(fixture.len(), expected_len);
     let frame = decode_eight(fixture);
 
-    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
-    assert_chroma_size(&frame, 32, 32);
+    assert_yuv420_frame(&frame, BitDepth::Eight, width, height);
+    assert_chroma_size(&frame, chroma_width, chroma_height);
     assert_eq!(distinct_count(frame.y().samples()), 3);
     assert_chroma_eq(&frame, 128, 128);
     assert_hash(&frame, expected_hash);
@@ -741,6 +768,12 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D45Follow),
+        false,
+        left_edge_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::D45),
         false,
         left_edge_8,
@@ -811,6 +844,48 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
+}
+
+#[test]
+fn lossless_luma_prediction_guard_rejects_unverified_nondc_with_offset() {
+    let modes = GeneralIntraBlockModes::luma_only(GeneralIntraLumaBlockMode {
+        y_mode: IntraYMode::D45_PRED_FOR_TEST,
+        angle_delta_y: 0,
+        intra_joint_mode: 0,
+        mrl_index: 0,
+        mrl_sec_index: None,
+        fsc_mode: 0,
+        uses_mrls: 0,
+        use_dpcm_y: 0,
+        dpcm_mode_y: 0,
+    });
+    let error = general_intra::ensure_lossless_verified_prediction_subset(
+        true,
+        false,
+        &modes,
+        block_ctx(
+            0,
+            0,
+            general_intra::FULL_SB_N4_LUMA,
+            general_intra::FULL_SB_N4_LUMA,
+            BitDepth::Ten,
+        ),
+        general_intra::FULL_SB_N4_LUMA,
+        splot_core::span::ByteOffset::new(9),
+    )
+    .expect_err("non-DC 10-bit lossless luma must fail closed");
+
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("unexpected error: {error:?}");
+    };
+    assert_eq!(
+        unsupported.reason(),
+        "general_intra_lossless_other_nondc_luma_unverified"
+    );
+    assert_eq!(
+        unsupported.byte_offset(),
+        Some(splot_core::span::ByteOffset::new(9))
+    );
 }
 
 #[test]

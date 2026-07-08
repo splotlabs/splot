@@ -694,7 +694,7 @@ fn leaf_mode_for_block(modes: &GeneralIntraBlockModes, has_chroma: bool) -> Gene
     }
 }
 
-fn ensure_lossless_verified_prediction_subset(
+pub(super) fn ensure_lossless_verified_prediction_subset(
     lossless: bool,
     has_chroma: bool,
     modes: &GeneralIntraBlockModes,
@@ -740,22 +740,26 @@ fn lossless_luma_prediction_verified(
         return true;
     }
     let block = block_ctx.block();
-    let top_left_64_sb = block_ctx.bit_depth() == BitDepth::Eight
+    let full_64_sb_8bit = block_ctx.bit_depth() == BitDepth::Eight
         && sb_mib == FULL_SB_N4_LUMA
-        && block_ctx.is_top_left()
         && block.width4() == FULL_SB_N4_LUMA
         && block.height4() == FULL_SB_N4_LUMA;
-    top_left_64_sb
-        && modes.angle_delta_y == 0
+    let directional = modes.y_mode.supported_directional();
+    let top_left_directional = block_ctx.is_top_left()
         && matches!(
-            modes.y_mode.supported_directional(),
+            directional,
             Some(
                 SupportedDirectionalLumaMode::Vertical
                     | SupportedDirectionalLumaMode::Horizontal
                     | SupportedDirectionalLumaMode::D45
                     | SupportedDirectionalLumaMode::D135
             )
-        )
+        );
+    let y_neighbours = block_ctx.neighbours(PlaneId::Y);
+    let left_edge_d45 = !y_neighbours.has_above()
+        && y_neighbours.has_left()
+        && matches!(directional, Some(SupportedDirectionalLumaMode::D45));
+    full_64_sb_8bit && modes.angle_delta_y == 0 && (top_left_directional || left_edge_d45)
 }
 
 fn top_left_no_neighbour_directional_prediction_verified(
@@ -839,14 +843,16 @@ pub(super) fn lossless_chroma_block_prediction_verified(
         return false;
     }
     let neighbours = block_ctx.neighbours(PlaneId::U);
+    let d45 = matches!(
+        mode,
+        Some(SupportedChromaMode::D45 | SupportedChromaMode::D45Follow)
+    );
     ((sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left())
         && matches!(
             mode,
             Some(SupportedChromaMode::Horizontal | SupportedChromaMode::D135)
         ))
-        || (!neighbours.has_above()
-            && neighbours.has_left()
-            && mode == Some(SupportedChromaMode::D45))
+        || (!neighbours.has_above() && neighbours.has_left() && d45)
 }
 
 fn lossless_chroma_full_64_block(block_ctx: BlockCtx) -> bool {
@@ -2188,36 +2194,6 @@ mod tests {
                 };
                 assert_eq!(reason, "general_intra_lossless_other_nondc_luma_unverified");
             }
-        }
-    }
-
-    #[test]
-    fn lossless_prediction_guard_rejects_nondc_luma() {
-        let modes = luma_modes(IntraYMode::D45_PRED_FOR_TEST);
-        let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
-        let error = ensure_lossless_verified_prediction_subset(
-            true,
-            false,
-            &modes,
-            top_left,
-            FULL_SB_N4_LUMA,
-            splot_core::span::ByteOffset::new(9),
-        )
-        .expect_err("non-DC lossless luma must fail closed");
-
-        assert!(
-            matches!(error, DecodeError::UnsupportedFeature { .. }),
-            "unexpected error: {error:?}"
-        );
-        if let DecodeError::UnsupportedFeature { unsupported } = error {
-            assert_eq!(
-                unsupported.reason(),
-                "general_intra_lossless_other_nondc_luma_unverified"
-            );
-            assert_eq!(
-                unsupported.byte_offset(),
-                Some(splot_core::span::ByteOffset::new(9))
-            );
         }
     }
 
