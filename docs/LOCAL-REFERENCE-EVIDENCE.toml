@@ -4226,6 +4226,59 @@ left = "avm-lossless-sdp-nondc-chroma-d157-leftedge-128x64-raw-md5"
 right = "avm-repeat-lossless-sdp-nondc-chroma-d157-leftedge-128x64-raw-md5"
 
 [[evidence]]
+id = "lref-avm-syn-lossless-sdp-nondc-chroma-d203-leftedge-128x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 4:2:0 128x64 lossless intra IVF fixture whose first-row right 64x64 block has a decoded left neighbor, no above neighbor, H_PRED luma, and SDP/chroma-part explicit non-DPCM D203_PRED chroma. The fixture exercises the lossless SDP chroma-part verifier over a left-edge directional chroma block; splot reproduces the raw SHA-256 value through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-08"
+command = "bash /tmp/splot-d203-sdp-fixture/final/generate.sh /tmp/splot-d203-sdp-fixture/final; /Users/bartosztomczyk/Devel/avm/build/avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 -o /tmp/splot-d203-sdp-fixture/final/avmdec.i420 /tmp/splot-d203-sdp-fixture/final/syn-lossless-sdp-nondc-chroma-d203-leftedge-128x64.ivf"
+
+[[evidence.fixture]]
+id = "sdp-d203-leftedge-chroma-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d203-leftedge-128x64.ivf"
+sha256 = "a3f6106256183189a70fee768209306cd951ae24e818f4a3d55799bcfdfc8645"
+size_bytes = 73
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 128x64 I420 source with flat luma, flat U, a V-plane two-column left-block right edge whose first chroma row is 130 and remaining rows are 128, and a right chroma block constructed from the D203 predictor over that left edge. The source was encoded with AVM lossless mode, SDP enabled, 64x64 square partitions, and broad decode tools disabled. AVM inspect showed all block sizes BLOCK_64X64, left luma DC_PRED, right luma H_PRED, left chroma UV_DC_PRED, and right chroma UV_D203_PRED. AVM decode raw matched the generated source byte-for-byte; splot pre-fix decode failed closed at byte offset 64 with general_intra_lossless_nondc_chroma_part_unverified. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec-lossless-sdp-nondc-chroma-d203-leftedge"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3 from the local fixture build; checkout contained untracked build directories only."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:sdp-d203-leftedge-chroma-input}."
+output_digest_id = "avm-lossless-sdp-nondc-chroma-d203-leftedge-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "43fc3d2104496b3d8666620df88a1418"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 904929c7d5b575bec168d7f46ae69f77f503ed30af05ca6966c18e0b42914b40 is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat-lossless-sdp-nondc-chroma-d203-leftedge"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3 decode run from the committed fixture copy; checkout contained untracked build directories only."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:sdp-d203-leftedge-chroma-input}."
+output_digest_id = "avm-repeat-lossless-sdp-nondc-chroma-d203-leftedge-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "43fc3d2104496b3d8666620df88a1418"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-sdp-nondc-chroma-d203-leftedge-128x64-raw-md5"
+right = "avm-repeat-lossless-sdp-nondc-chroma-d203-leftedge-128x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-syn-lossless-sdp-nondc-chroma-paeth-intra-64x64"
 feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
 decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
