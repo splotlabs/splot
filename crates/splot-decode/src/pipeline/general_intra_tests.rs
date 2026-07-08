@@ -102,6 +102,10 @@ const LOSSLESS_NONDC_LUMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d45-leftedge-128x64.ivf"
 );
 
+const LOSSLESS_NONDC_LUMA_PAETH_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-paeth-intra-64x64.ivf"
+);
+
 const LOSSLESS_NONDC_CHROMA_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-h-intra-64x64.ivf"
 );
@@ -593,6 +597,25 @@ fn lossless_nondc_luma_d45_and_d135_frames_decode_to_oracle() {
         64,
         32,
         "386bf9550c5623bc5eb0fba92f0985b2bd0f9d06c5fa991d32407f3b17f99c6f",
+    );
+}
+
+#[test]
+fn lossless_nondc_luma_paeth_frame_decodes_to_oracle() {
+    assert_eq!(LOSSLESS_NONDC_LUMA_PAETH_FIXTURE.len(), 176);
+    let frame = decode_eight(LOSSLESS_NONDC_LUMA_PAETH_FIXTURE);
+
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_chroma_size(&frame, 32, 32);
+    assert_distinct_gt(
+        frame.y().samples(),
+        16,
+        "lossless Paeth vertical-gradient luma",
+    );
+    assert_chroma_eq(&frame, 128, 128);
+    assert_hash(
+        &frame,
+        "9b37c3e091251b52640f7574105d307a638bbefd0042e900249e3f93bc5148ea",
     );
 }
 

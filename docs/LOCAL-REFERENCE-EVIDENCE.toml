@@ -3494,6 +3494,58 @@ left = "avm-lossless-cardinal-y-h-intra-64x64-raw-md5"
 right = "avm-repeat-lossless-cardinal-y-h-intra-64x64-raw-md5"
 
 [[evidence]]
+id = "lref-avm-syn-lossless-nondc-luma-paeth-intra-64x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 4:2:0 64x64 lossless intra IVF fixture whose luma uses explicit non-DPCM PAETH_PRED while chroma stays DC. The vertical luma gradient makes AVM select Paeth without DPCM; splot reproduces the raw SHA-256 value through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-08"
+
+[[evidence.fixture]]
+id = "paeth-pred-luma-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-nondc-luma-paeth-intra-64x64.ivf"
+sha256 = "3d27e4b653231826c84cc7a072267149fdc3292e8b9d3813f17563d9c51c817e"
+size_bytes = 176
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 64x64 8-bit 4:2:0 YUV input with Y[x,y] = 32 + 3*y and U=V=128 using AVM lossless mode with broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, CCTX, palette, IntraBC, FSC, intra-DIP, IBP, MRL, SDP, rectangular/extended partitions, non-default intra TX, angle delta, intra edge filtering, parity hiding, TCQ, and trellis quantization. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec-lossless-nondc-luma-paeth"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3 from the local fixture build; checkout contained untracked build directories only."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:paeth-pred-luma-input}."
+output_digest_id = "avm-lossless-nondc-luma-paeth-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "0bf51b053a9f269b7d4cf5487e3a5bf8"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 9b37c3e091251b52640f7574105d307a638bbefd0042e900249e3f93bc5148ea is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat-lossless-nondc-luma-paeth"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3 decode run from the same fixture build; checkout contained untracked build directories only."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:paeth-pred-luma-input}."
+output_digest_id = "avm-repeat-lossless-nondc-luma-paeth-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "0bf51b053a9f269b7d4cf5487e3a5bf8"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-nondc-luma-paeth-intra-64x64-raw-md5"
+right = "avm-repeat-lossless-nondc-luma-paeth-intra-64x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-syn-lossless-nondc-luma-d135-intra-64x64"
 feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
 decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]

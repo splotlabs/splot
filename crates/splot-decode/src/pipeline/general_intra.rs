@@ -755,11 +755,14 @@ fn lossless_luma_prediction_verified(
                     | SupportedDirectionalLumaMode::D135
             )
         );
+    let top_left_paeth = block_ctx.is_top_left() && modes.y_mode.is_paeth();
     let y_neighbours = block_ctx.neighbours(PlaneId::Y);
     let left_edge_d45 = !y_neighbours.has_above()
         && y_neighbours.has_left()
         && matches!(directional, Some(SupportedDirectionalLumaMode::D45));
-    full_64_sb_8bit && modes.angle_delta_y == 0 && (top_left_directional || left_edge_d45)
+    full_64_sb_8bit
+        && modes.angle_delta_y == 0
+        && (top_left_directional || top_left_paeth || left_edge_d45)
 }
 
 fn top_left_no_neighbour_directional_prediction_verified(
