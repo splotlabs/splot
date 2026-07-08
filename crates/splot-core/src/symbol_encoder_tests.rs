@@ -238,23 +238,29 @@ fn literal_domain_errors_fail_before_mutation() {
 
 #[test]
 fn unary_domain_errors_fail_before_mutation() {
-    let mut encoder = SymbolEncoder::new();
-    assert!(matches!(
-        encoder.write_unary(0, 33),
+    let baseline = SymbolEncoder::new();
+
+    let mut width_encoder = baseline.clone();
+    assert_eq!(
+        width_encoder.write_unary(0, 33),
         Err(WriteError::BitWidthTooLarge {
             requested: 33,
             max: 32
         })
-    ));
-    assert!(matches!(
-        encoder.write_unary(33, 32),
+    );
+    assert_eq!(width_encoder.operation_count(), baseline.operation_count());
+    assert_eq!(width_encoder.symbol_count(), baseline.symbol_count());
+
+    let mut value_encoder = baseline.clone();
+    assert_eq!(
+        value_encoder.write_unary(33, 32),
         Err(WriteError::ValueTooWide {
             value: 33,
             width_bits: 32
         })
-    ));
-    assert_eq!(encoder.operation_count(), 0);
-    assert_eq!(encoder.symbol_count(), 0);
+    );
+    assert_eq!(value_encoder.operation_count(), baseline.operation_count());
+    assert_eq!(value_encoder.symbol_count(), baseline.symbol_count());
 }
 
 #[test]
