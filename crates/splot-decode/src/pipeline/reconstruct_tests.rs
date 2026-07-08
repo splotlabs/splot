@@ -933,6 +933,53 @@ fn zone1_d45_top_edge_synthesizes_above_from_left_corner() {
 }
 
 #[test]
+fn zone1_d45_top_edge_mrl_uses_offset_left_reference() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(96, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+    let adjacent_left: Vec<u8> = vec![200; 16];
+    let offset_left: Vec<u8> = (0..16).map(|y| 77 + y as u8).collect();
+    lay_left_col(&mut ws, 63, 4, &adjacent_left);
+    lay_left_col(&mut ws, 60, 4, &offset_left);
+
+    reconstruct_general_intra_one_sided_neighbour_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        45,
+        PlaneId::Y,
+        64,
+        0,
+        4,
+        4,
+        0,
+        0,
+        OneSidedAboveMrl {
+            mrl_index: 3,
+            above_mrl_index: 0,
+        },
+        false,
+        None,
+        IntraEdgeAvailability {
+            above: false,
+            left: true,
+        },
+        BitDepth::Eight,
+        OneSidedEdgeFilter::default(),
+    )
+    .unwrap();
+
+    for row in 0..16 {
+        for col in 0..16 {
+            assert_eq!(
+                ws.reconstructed_sample(PlaneId::Y, 64 + col, row).unwrap(),
+                77,
+                "top-row MRL sample ({},{row}) must use the offset left reference",
+                64 + col,
+            );
+        }
+    }
+}
+
+#[test]
 fn zone1_d45_top_left_synthesizes_no_neighbour_above_fallback() {
     let mut ws =
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
