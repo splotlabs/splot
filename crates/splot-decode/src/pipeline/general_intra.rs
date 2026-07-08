@@ -42,6 +42,7 @@ fn general_intra_chroma_tools(
         .map_or(GeneralIntraChromaToolConfig::disabled(), |intra| {
             GeneralIntraChromaToolConfig::new(intra.enable_cfl_intra, intra.enable_mhccp)
                 .with_enable_mrls(intra.enable_mrls)
+                .with_enable_dip(intra.enable_dip)
         })
         .with_enable_idtx_intra(
             sequence
@@ -115,6 +116,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     core: &FrameHeaderCore,
     joint_modes: &crate::bitstream::tile_payload::TileIntraJointModeState,
     uses_mrls: &crate::bitstream::tile_payload::TileUsesMrlsState,
+    use_dip: &crate::bitstream::tile_payload::TileUseDipState,
     fsc_modes: &crate::bitstream::tile_payload::TileFscModeState,
     palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
     is_cfl_ctx: IsCflContext,
@@ -278,7 +280,22 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             u32::from(bit_depth.bits()),
         )
         .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
-        GeneralIntraBlockModes::luma_only(luma).with_palette_y(palette_y)
+        let (use_dip_value, dip_transpose, dip_mode) =
+            crate::bitstream::tile_payload::read_general_intra_dip_mode_info(
+                work_unit,
+                symbols,
+                chroma_tools,
+                use_dip,
+                luma.y_mode,
+                palette_y,
+                frontier.r,
+                frontier.c,
+                n4w,
+                n4h,
+            )
+            .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
+        GeneralIntraBlockModes::luma_only(luma.with_dip(use_dip_value, dip_transpose, dip_mode))
+            .with_palette_y(palette_y)
     } else {
         let (chroma_block_size_index, chroma_n4w, chroma_n4h) =
             chroma_mode_geometry.unwrap_or((frontier.b_size.index(), n4w, n4h));
@@ -288,6 +305,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             chroma_tools,
             joint_modes,
             uses_mrls,
+            use_dip,
             fsc_modes,
             use_neighbor_fsc_context,
             palette_state,
@@ -594,6 +612,7 @@ fn leaf_mode(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
         modes.uses_mrls,
     )
     .with_palette_y(modes.palette_y())
+    .with_use_dip(modes.use_dip)
 }
 
 fn leaf_mode_for_block(modes: &GeneralIntraBlockModes, has_chroma: bool) -> GeneralIntraLeafMode {

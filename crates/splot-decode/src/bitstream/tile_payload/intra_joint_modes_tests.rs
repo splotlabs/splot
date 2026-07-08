@@ -159,38 +159,64 @@ fn uses_mrls_empty_dimensions_are_rejected() {
     ));
 }
 
+fn record_fsc_and_use_dip(
+    fsc: &mut TileFscModeState,
+    use_dip: &mut TileUseDipState,
+    block_r: usize,
+    block_c: usize,
+) {
+    fsc.record_block(block_r, block_c, 1, 1, 1);
+    use_dip.record_block(block_r, block_c, 1, 1, 1);
+}
+
 #[test]
-fn fsc_modes_neighbours_select_context_sum() {
+fn fsc_and_use_dip_neighbours_select_context_sum() {
     let mut state = TileFscModeState::new(32, 32, SB_N4).unwrap();
-    state.record_block(7, 11, 1, 1, 1);
-    state.record_block(11, 7, 1, 1, 1);
+    let mut use_dip = TileUseDipState::new(32, 32, SB_N4).unwrap();
+    record_fsc_and_use_dip(&mut state, &mut use_dip, 7, 11);
+    record_fsc_and_use_dip(&mut state, &mut use_dip, 11, 7);
 
     assert_eq!(state.fsc_mode_ctx(8, 8, 4, 4), 2);
+    assert_eq!(use_dip.use_dip_ctx(8, 8, 4, 4), 2);
 }
 
 #[test]
-fn fsc_modes_npos_excludes_above_superblock_row_neighbours() {
+fn fsc_and_use_dip_npos_excludes_above_superblock_row_neighbours() {
     let mut state = TileFscModeState::new(32, 32, SB_N4).unwrap();
-    state.record_block(31, 15, 1, 1, 1);
-    state.record_block(15, 31, 1, 1, 1);
-    state.record_block(15, 16, 1, 1, 1);
+    let mut use_dip = TileUseDipState::new(32, 32, SB_N4).unwrap();
+    record_fsc_and_use_dip(&mut state, &mut use_dip, 31, 15);
+    record_fsc_and_use_dip(&mut state, &mut use_dip, 15, 31);
+    record_fsc_and_use_dip(&mut state, &mut use_dip, 15, 16);
 
     assert_eq!(state.fsc_mode_ctx(16, 16, 16, 16), 1);
+    assert_eq!(use_dip.use_dip_ctx(16, 16, 16, 16), 1);
 }
 
 #[test]
-fn fsc_modes_empty_dimensions_are_rejected() {
+fn fsc_and_use_dip_empty_dimensions_are_rejected() {
     assert!(matches!(
         TileFscModeState::new(0, 4, SB_N4),
         Err(TileFscModeStateError::EmptyDimensions { .. })
+    ));
+    assert!(matches!(
+        TileUseDipState::new(0, 4, SB_N4),
+        Err(TileUseDipStateError::EmptyDimensions { .. })
     ));
     assert!(matches!(
         TileFscModeState::new(4, 0, SB_N4),
         Err(TileFscModeStateError::EmptyDimensions { .. })
     ));
     assert!(matches!(
+        TileUseDipState::new(4, 0, SB_N4),
+        Err(TileUseDipStateError::EmptyDimensions { .. })
+    ));
+    assert!(matches!(
         TileFscModeState::new(4, 4, 0),
         Err(TileFscModeStateError::EmptySuperblockSize)
+    ));
+    assert!(matches!(
+        TileUseDipState::new(4, 4, 0),
+        Err(TileUseDipStateError::EmptySuperblockSize)
     ));
 }
 

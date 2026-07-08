@@ -11,8 +11,9 @@ use super::DecodeTileWorkUnit;
 use super::block_decoded_state::TileBlockDecodedState;
 use super::intra_joint_modes::{
     IsCflContext, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
-    TileIntraJointModeStateError, TileLumaPaletteState, TileLumaPaletteStateError,
-    TileUsesMrlsState, TileUsesMrlsStateError, TileUvCflState, TileUvCflStateError,
+    TileIntraJointModeStateError, TileLumaPaletteState, TileLumaPaletteStateError, TileUseDipState,
+    TileUseDipStateError, TileUsesMrlsState, TileUsesMrlsStateError, TileUvCflState,
+    TileUvCflStateError,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::PartitionType;
@@ -47,6 +48,8 @@ pub(crate) enum TilePartitionFrontierError {
     IntraJointModeState(#[from] TileIntraJointModeStateError),
     #[error("minimal-tier intra UsesMrls state failed: {0}")]
     UsesMrlsState(#[from] TileUsesMrlsStateError),
+    #[error("minimal-tier intra UseDip state failed: {0}")]
+    UseDipState(#[from] TileUseDipStateError),
     #[error("minimal-tier intra FscModes state failed: {0}")]
     FscModeState(#[from] TileFscModeStateError),
     #[error("minimal-tier luma palette state failed: {0}")]
@@ -104,6 +107,7 @@ where
         &DecodeBlockFrontier,
         &TileIntraJointModeState,
         &TileUsesMrlsState,
+        &TileUseDipState,
         &TileFscModeState,
         &TileLumaPaletteState,
         IsCflContext,
@@ -130,6 +134,7 @@ where
         &DecodeBlockFrontier,
         &TileIntraJointModeState,
         &TileUsesMrlsState,
+        &TileUseDipState,
         &TileFscModeState,
         &TileLumaPaletteState,
         IsCflContext,
@@ -154,6 +159,7 @@ where
         &DecodeBlockFrontier,
         &TileIntraJointModeState,
         &TileUsesMrlsState,
+        &TileUseDipState,
         &TileFscModeState,
         &TileLumaPaletteState,
         IsCflContext,
@@ -174,6 +180,8 @@ where
         .max(1);
     let mut uses_mrls = TileUsesMrlsState::new(mi_rows, mi_cols, sb_size4)
         .map_err(TilePartitionFrontierError::from)?;
+    let mut use_dip = TileUseDipState::new(mi_rows, mi_cols, sb_size4)
+        .map_err(TilePartitionFrontierError::from)?;
     let mut fsc_modes = TileFscModeState::new(mi_rows, mi_cols, sb_size4)
         .map_err(TilePartitionFrontierError::from)?;
     let mut palette_y = TileLumaPaletteState::new(mi_rows, mi_cols, sb_size4)
@@ -186,6 +194,7 @@ where
         &mut mi_size_state,
         &mut joint_modes,
         &mut uses_mrls,
+        &mut use_dip,
         &mut fsc_modes,
         &mut palette_y,
         &mut uv_cfls,

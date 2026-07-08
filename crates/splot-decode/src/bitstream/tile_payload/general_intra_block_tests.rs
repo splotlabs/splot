@@ -90,6 +90,10 @@ fn empty_uses_mrls() -> TileUsesMrlsState {
     TileUsesMrlsState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
 }
 
+fn empty_use_dip() -> TileUseDipState {
+    TileUseDipState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
+}
+
 fn empty_fsc_modes() -> TileFscModeState {
     TileFscModeState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
 }
@@ -151,6 +155,7 @@ fn decode_general_intra_block_modes(
         chroma_tools,
         joint_modes,
         uses_mrls,
+        &empty_use_dip(),
         fsc_modes,
         true,
         palette_state,
@@ -517,6 +522,70 @@ fn active_palette_y_mode_reads_size_and_literal_colors() {
 }
 
 #[test]
+fn active_dip_mode_info_reads_flag_transpose_and_mode_after_palette() {
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::with_config(
+        SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    );
+    for (selector, value) in [
+        (TileCdfSelector::YModeSet, 0),
+        (TileCdfSelector::YModeIndex { ctx: 0 }, 0),
+        (TileCdfSelector::UvModeCflNotAllowed { ctx: 0 }, 0),
+        (TileCdfSelector::UseDip { ctx: 2 }, 1),
+    ] {
+        tile.with_row_mut(selector, |row| {
+            encoder.write_symbol(row, Symbol::new(value))
+        })
+        .unwrap()
+        .unwrap();
+    }
+    encoder.write_literal(1, 1).unwrap();
+    tile.with_row_mut(TileCdfSelector::DipMode, |row| {
+        encoder.write_symbol(row, Symbol::new(5))
+    })
+    .unwrap()
+    .unwrap();
+    let payload = encoder.finish().unwrap().into_bytes();
+    let mut work_unit = make_work_unit(&payload);
+    let mut symbols = symbol_decoder(&payload);
+    let joint_modes = empty_joint_modes();
+    let uses_mrls = empty_uses_mrls();
+    let mut use_dip = TileUseDipState::new(2 * SB_N4, 2 * SB_N4, SB_N4).unwrap();
+    use_dip.record_block(7, 11, 1, 1, 1);
+    use_dip.record_block(11, 7, 1, 1, 1);
+
+    let modes = decode_general_intra_block_modes_with_fsc_context(
+        &mut work_unit,
+        &mut symbols,
+        GeneralIntraChromaToolConfig::disabled().with_enable_dip(true),
+        &joint_modes,
+        &uses_mrls,
+        &use_dip,
+        &empty_fsc_modes(),
+        true,
+        &empty_palette_state(),
+        0,
+        BLOCK_16X16,
+        8,
+        8,
+        4,
+        4,
+        BLOCK_16X16,
+        4,
+        4,
+        8,
+    )
+    .unwrap();
+
+    assert!(modes.uses_active_dip());
+    assert_eq!(modes.use_dip, 1);
+    assert_eq!(modes.dip_transpose, 1);
+    assert_eq!(modes.dip_mode, 5);
+    assert_eq!(symbols.symbol_count(), 6);
+    assert_eq!(symbols.finish().unwrap().symbol_count, 6);
+}
+
+#[test]
 fn mrl_symbols_use_retained_neighbour_contexts() {
     let payload = encode_symbol_sequence(&[
         (TileCdfSelector::YModeSet, 0),
@@ -667,6 +736,7 @@ fn shared_chroma_mhccp_dir_uses_luma_syntax_block_size() {
         GeneralIntraChromaToolConfig::new(false, true),
         &joint_modes,
         &uses_mrls,
+        &empty_use_dip(),
         &empty_fsc_modes(),
         true,
         &empty_palette_state(),
@@ -758,6 +828,9 @@ fn chroma_dpcm_modes_resolve_direction_and_coeff_mode() {
         mrl_sec_index: None,
         fsc_mode: 0,
         uses_mrls: 0,
+        use_dip: 0,
+        dip_transpose: 0,
+        dip_mode: 0,
         use_dpcm_y: 0,
         dpcm_mode_y: 0,
     };

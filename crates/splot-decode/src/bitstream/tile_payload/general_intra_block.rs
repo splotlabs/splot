@@ -20,7 +20,7 @@ use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
 use super::intra_joint_modes::{
     LumaPalette, PALETTE_MAX_SIZE, TileFscModeState, TileIntraJointModeState, TileLumaPaletteState,
-    TileUsesMrlsState,
+    TileUseDipState, TileUsesMrlsState,
 };
 
 const CHROMA_MODE_COUNT: u8 = 8;
@@ -56,6 +56,9 @@ const CFL_MH_DIR_REASON: &str = "intra_cfl_mh_dir";
 const FSC_MODE_REASON: &str = "intra_fsc_mode";
 const MRL_INDEX_REASON: &str = "intra_mrl_index";
 const MRL_SEC_INDEX_REASON: &str = "intra_mrl_sec_index";
+const USE_DIP_REASON: &str = "intra_use_dip";
+const DIP_TRANSPOSE_REASON: &str = "intra_dip_transpose";
+const DIP_MODE_REASON: &str = "intra_dip_mode";
 const PALETTE_Y_MODE_REASON: &str = "intra_palette_y_mode";
 const PALETTE_Y_SIZE_REASON: &str = "intra_palette_y_size";
 const PALETTE_CACHE_REASON: &str = "intra_palette_color_cache";
@@ -79,6 +82,7 @@ pub(crate) struct GeneralIntraChromaToolConfig {
     enable_mhccp: bool,
     enable_idtx_intra: bool,
     enable_mrls: bool,
+    enable_dip: bool,
     allow_screen_content_tools: bool,
     lossless: bool,
 }
@@ -91,6 +95,7 @@ impl GeneralIntraChromaToolConfig {
             enable_mhccp,
             enable_idtx_intra: false,
             enable_mrls: false,
+            enable_dip: false,
             allow_screen_content_tools: false,
             lossless: false,
         }
@@ -105,6 +110,12 @@ impl GeneralIntraChromaToolConfig {
     #[must_use]
     pub(crate) const fn with_enable_mrls(mut self, enable_mrls: bool) -> Self {
         self.enable_mrls = enable_mrls;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn with_enable_dip(mut self, enable_dip: bool) -> Self {
+        self.enable_dip = enable_dip;
         self
     }
 
@@ -166,6 +177,9 @@ pub(crate) struct GeneralIntraBlockModes {
     pub(crate) mrl_sec_index: Option<u8>,
     pub(crate) fsc_mode: u8,
     pub(crate) uses_mrls: u8,
+    pub(crate) use_dip: u8,
+    pub(crate) dip_transpose: u8,
+    pub(crate) dip_mode: u8,
     use_dpcm_y: u8,
     dpcm_mode_y: u8,
     use_dpcm_uv: u8,
@@ -281,8 +295,21 @@ pub(crate) struct GeneralIntraLumaBlockMode {
     pub(crate) mrl_sec_index: Option<u8>,
     pub(crate) fsc_mode: u8,
     pub(crate) uses_mrls: u8,
+    pub(crate) use_dip: u8,
+    pub(crate) dip_transpose: u8,
+    pub(crate) dip_mode: u8,
     pub(crate) use_dpcm_y: u8,
     pub(crate) dpcm_mode_y: u8,
+}
+
+impl GeneralIntraLumaBlockMode {
+    #[must_use]
+    pub(crate) const fn with_dip(mut self, use_dip: u8, dip_transpose: u8, dip_mode: u8) -> Self {
+        self.use_dip = use_dip;
+        self.dip_transpose = dip_transpose;
+        self.dip_mode = dip_mode;
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -340,6 +367,9 @@ impl GeneralIntraBlockModes {
             mrl_sec_index: luma.mrl_sec_index,
             fsc_mode: luma.fsc_mode,
             uses_mrls: luma.uses_mrls,
+            use_dip: luma.use_dip,
+            dip_transpose: luma.dip_transpose,
+            dip_mode: luma.dip_mode,
             use_dpcm_y: luma.use_dpcm_y,
             dpcm_mode_y: luma.dpcm_mode_y,
             use_dpcm_uv: 0,
@@ -365,6 +395,9 @@ impl GeneralIntraBlockModes {
             mrl_sec_index: luma.mrl_sec_index,
             fsc_mode: luma.fsc_mode,
             uses_mrls: luma.uses_mrls,
+            use_dip: luma.use_dip,
+            dip_transpose: luma.dip_transpose,
+            dip_mode: luma.dip_mode,
             use_dpcm_y: luma.use_dpcm_y,
             dpcm_mode_y: luma.dpcm_mode_y,
             use_dpcm_uv: chroma.use_dpcm_uv,
@@ -414,6 +447,10 @@ impl GeneralIntraBlockModes {
 
     pub(crate) const fn uses_active_fsc(&self) -> bool {
         self.fsc_mode != 0
+    }
+
+    pub(crate) const fn uses_active_dip(&self) -> bool {
+        self.use_dip != 0
     }
 
     pub(crate) const fn uses_dpcm_y(&self) -> bool {
@@ -554,6 +591,9 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
         mrl_sec_index,
         fsc_mode,
         uses_mrls: uses_mrls_value,
+        use_dip: 0,
+        dip_transpose: 0,
+        dip_mode: 0,
         use_dpcm_y: y_mode_result.use_dpcm_y,
         dpcm_mode_y: y_mode_result.dpcm_mode_y,
     })
@@ -566,6 +606,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     chroma_tools: GeneralIntraChromaToolConfig,
     joint_modes: &TileIntraJointModeState,
     uses_mrls: &TileUsesMrlsState,
+    use_dip: &TileUseDipState,
     fsc_modes: &TileFscModeState,
     use_neighbor_fsc_context: bool,
     palette_state: &TileLumaPaletteState,
@@ -617,6 +658,19 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
         block_n4h,
         bit_depth_bits,
     )?;
+    let (use_dip_value, dip_transpose, dip_mode) = read_general_intra_dip_mode_info(
+        work_unit,
+        symbols,
+        chroma_tools,
+        use_dip,
+        luma.y_mode,
+        palette_y,
+        block_r,
+        block_c,
+        block_n4w,
+        block_n4h,
+    )?;
+    let luma = luma.with_dip(use_dip_value, dip_transpose, dip_mode);
 
     Ok(GeneralIntraBlockModes::from_luma_chroma_palette(
         luma, uv_mode, palette_y,
@@ -668,6 +722,40 @@ pub(crate) fn read_general_intra_palette_y_mode(
             .map(Some);
     }
     Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_general_intra_dip_mode_info(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    chroma_tools: GeneralIntraChromaToolConfig,
+    use_dip: &TileUseDipState,
+    y_mode: IntraYMode,
+    palette_y: Option<LumaPalette>,
+    block_r: usize,
+    block_c: usize,
+    block_n4w: usize,
+    block_n4h: usize,
+) -> Result<(u8, u8, u8), GeneralIntraBlockModeError> {
+    if !dip_mode_info_allowed(chroma_tools, y_mode, palette_y, block_n4w, block_n4h) {
+        return Ok((0, 0, 0));
+    }
+
+    let ctx = use_dip.use_dip_ctx(block_r, block_c, block_n4w, block_n4h);
+    let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
+    let use_dip_value = read_symbol(
+        cdfs,
+        symbols,
+        TileCdfSelector::UseDip { ctx },
+        USE_DIP_REASON,
+    )?;
+    if use_dip_value == 0 {
+        return Ok((0, 0, 0));
+    }
+
+    let dip_transpose = read_literal_u8(symbols, 1, DIP_TRANSPOSE_REASON)?;
+    let dip_mode = read_symbol(cdfs, symbols, TileCdfSelector::DipMode, DIP_MODE_REASON)?;
+    Ok((use_dip_value, dip_transpose, dip_mode))
 }
 
 fn read_palette_colors_y(
@@ -1076,6 +1164,21 @@ fn palette_y_mode_allowed(
         && block_size_index >= PALETTE_MIN_BLOCK_SIZE_INDEX
         && block_n4w.saturating_mul(4) <= PALETTE_MAX_SAMPLES
         && block_n4h.saturating_mul(4) <= PALETTE_MAX_SAMPLES
+}
+
+fn dip_mode_info_allowed(
+    chroma_tools: GeneralIntraChromaToolConfig,
+    y_mode: IntraYMode,
+    palette_y: Option<LumaPalette>,
+    block_n4w: usize,
+    block_n4h: usize,
+) -> bool {
+    chroma_tools.enable_dip
+        && y_mode == IntraYMode::DC_PRED
+        && palette_y.is_none()
+        && block_n4w > 1
+        && block_n4h > 1
+        && block_n4w.saturating_mul(block_n4h) >= 8
 }
 
 fn fsc_bsize_group(block_size_index: usize) -> Option<usize> {

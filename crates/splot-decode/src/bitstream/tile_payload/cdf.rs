@@ -485,6 +485,10 @@ pub(crate) enum TileCdfSelector {
     CflMhDir {
         size_group: usize,
     },
+    UseDip {
+        ctx: usize,
+    },
+    DipMode,
     VTxbSkip {
         coeff_cdf_q_ctx: usize,
         ctx: usize,
@@ -682,6 +686,8 @@ tile_cdf_arrays! {
     IsCfl => "TileIsCflCdf",
     CflAlpha => "TileCflAlphaCdf",
     CflMhDir => "TileCflMhDirCdf",
+    UseDip => "TileUseDipCdf",
+    DipMode => "TileDipModeCdf",
     VTxbSkip => "TileVTxbSkipCdf",
     EobExtra => "TileEobExtraCdf",
     EobPt => "TileEobPtCdf",

@@ -16,19 +16,19 @@ use splot_core::tables::cdf::{
     DEFAULT_COEFF_BR_LF_CDF, DEFAULT_COEFF_BR_UV_CDF, DEFAULT_COMP_GROUP_IDX_CDF,
     DEFAULT_COMP_MODE_CDF, DEFAULT_COMP_REF0_CDF, DEFAULT_COMP_REF1_CDF,
     DEFAULT_COMPOUND_MODE_NON_JOINT_CDF, DEFAULT_COMPOUND_TYPE_CDF, DEFAULT_CWP_IDX_CDF,
-    DEFAULT_DC_SIGN_CDF, DEFAULT_DELTA_Q_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF,
-    DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF,
-    DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_FSC_MODE_CDF, DEFAULT_IDTX_SIGN_CDF,
-    DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_INTRA_TX_TYPE_SET2_CDF,
-    DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_MORPH_PRED_CDF,
-    DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
-    DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_PALETTE_Y_MODE_CDF,
-    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TIP_MODE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF,
-    DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
-    DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_WIENER_NS_CDF,
-    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
-    DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
-    DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_DELTA_Q_CDF, DEFAULT_DIP_MODE_CDF, DEFAULT_EOB_EXTRA_CDF,
+    DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF,
+    DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_FSC_MODE_CDF,
+    DEFAULT_IDTX_SIGN_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
+    DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF,
+    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_MORPH_PRED_CDF, DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
+    DEFAULT_MOST_PROBABLE_STX_SET_CDF, DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF,
+    DEFAULT_PALETTE_Y_MODE_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TIP_MODE_CDF,
+    DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
+    DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_DIP_CDF,
+    DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
+    DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF,
+    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 use super::block_rows::*;
@@ -195,6 +195,14 @@ impl TileCdfRows {
         self.block.cfl_mh_dir()
     }
 
+    pub(crate) const fn use_dip(&self) -> &block_rows::UseDipCdfRows {
+        self.block.use_dip()
+    }
+
+    pub(crate) const fn dip_mode(&self) -> &block_rows::DipModeCdfRow {
+        self.block.dip_mode()
+    }
+
     pub(crate) const fn v_txb_skip(&self) -> &block_rows::VTxbSkipCdfRows {
         self.block.v_txb_skip()
     }
@@ -295,6 +303,14 @@ impl BlockCdfRows {
 
     pub(crate) const fn cfl_mh_dir(&self) -> &CflMhDirCdfRows {
         &self.cfl_mh_dir
+    }
+
+    pub(crate) const fn use_dip(&self) -> &UseDipCdfRows {
+        &self.use_dip
+    }
+
+    pub(crate) const fn dip_mode(&self) -> &DipModeCdfRow {
+        &self.dip_mode
     }
 
     pub(crate) const fn v_txb_skip(&self) -> &VTxbSkipCdfRows {
@@ -567,6 +583,8 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
     assert_eq!(frame.rows().cfl_alpha(), &DEFAULT_CFL_ALPHA_CDF);
     assert_eq!(frame.rows().cfl_mhccp(), &DEFAULT_CFL_MHCCP_CDF);
     assert_eq!(frame.rows().cfl_mh_dir(), &DEFAULT_CFL_MH_DIR_CDF);
+    assert_eq!(frame.rows().use_dip(), &DEFAULT_USE_DIP_CDF);
+    assert_eq!(frame.rows().dip_mode(), &DEFAULT_DIP_MODE_CDF);
     assert_eq!(frame.rows().palette_y_mode(), &DEFAULT_PALETTE_Y_MODE_CDF);
     assert_eq!(frame.rows().v_txb_skip(), &DEFAULT_V_TXB_SKIP_CDF);
     assert_eq!(frame.rows().eob_extra(), &DEFAULT_EOB_EXTRA_CDF);
@@ -697,6 +715,32 @@ fn cfl_cdf_selectors_match_generated_defaults_and_check_bounds() {
         "size_group",
         4,
         4,
+    );
+}
+
+#[test]
+fn dip_cdf_selectors_match_generated_defaults_and_check_bounds() {
+    let frame = FrameCdfSubset::from_defaults();
+    let tile = frame.tile_copy();
+
+    for (ctx, expected) in DEFAULT_USE_DIP_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::UseDip { ctx }).unwrap(),
+            expected.as_slice(),
+            "use_dip ctx {ctx}"
+        );
+    }
+    assert_eq!(
+        tile.row(TileCdfSelector::DipMode).unwrap(),
+        DEFAULT_DIP_MODE_CDF.as_slice()
+    );
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::UseDip { ctx: 3 },
+        TileCdfArray::UseDip,
+        "ctx",
+        3,
+        3,
     );
 }
 

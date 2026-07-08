@@ -11,6 +11,7 @@ const NON_DIRECTIONAL_MODES_COUNT: u8 = 5;
 const DC_PRED_JOINT_MODE: u8 = 0;
 const NO_MRL: u8 = 0;
 const NO_FSC: u8 = 0;
+const NO_DIP: u8 = 0;
 pub(crate) const PALETTE_MAX_SIZE: usize = 8;
 const JOINT_NEIGHBOUR_SAMPLES: [NeighbourSample; 2] =
     [NeighbourSample::LeftBottom, NeighbourSample::AboveRight];
@@ -368,6 +369,43 @@ impl TileUsesMrlsState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TileUseDipState {
+    grid: MiGrid<u8>,
+    sb_size4: usize,
+}
+
+impl TileUseDipState {
+    pub(crate) fn new(
+        mi_rows: usize,
+        mi_cols: usize,
+        sb_size4: usize,
+    ) -> Result<Self, TileUseDipStateError> {
+        let grid = mi_grid_new!(
+            TileUseDipStateError,
+            NO_DIP,
+            mi_rows,
+            mi_cols,
+            require_nonzero(sb_size4, TileUseDipStateError::EmptySuperblockSize),
+        )?;
+        Ok(Self { grid, sb_size4 })
+    }
+
+    pub(crate) fn use_dip_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
+        let [first, second] = npos_grid_values(NO_DIP, &self.grid, r, c, n4w, n4h, self.sb_size4);
+        usize::from(first != 0) + usize::from(second != 0)
+    }
+
+    pub(crate) fn record_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, use_dip: u8) {
+        self.grid
+            .record_block((r, c), (n4w, n4h), u8::from(use_dip != 0));
+    }
+
+    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
+        self.grid.record_block((r, c), (n4w, n4h), NO_DIP);
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileSegmentIdState {
     grid: MiGrid<u8>,
 }
@@ -711,6 +749,22 @@ pub(crate) enum TileUsesMrlsStateError {
         right: usize,
     },
     #[error("intra UsesMrls state allocation failed: {source}")]
+    Allocation { source: TryReserveError },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TileUseDipStateError {
+    #[error("intra UseDip state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
+    EmptyDimensions { mi_rows: usize, mi_cols: usize },
+    #[error("intra UseDip state requires non-empty superblock size")]
+    EmptySuperblockSize,
+    #[error("intra UseDip state arithmetic overflow in {operation}: {left} * {right}")]
+    ArithmeticOverflow {
+        operation: &'static str,
+        left: usize,
+        right: usize,
+    },
+    #[error("intra UseDip state allocation failed: {source}")]
     Allocation { source: TryReserveError },
 }
 
