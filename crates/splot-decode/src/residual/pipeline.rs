@@ -24,6 +24,13 @@ use crate::prediction::intra::IntraLumaPlan;
 use crate::support::capability::missing_capability_message;
 use crate::tile::block_context::{BlockCtx, BlockRect, NeighbourAvailability, TxShape};
 
+mod chroma_pair;
+mod deblock_recorder;
+mod plane_execution;
+
+pub(crate) use deblock_recorder::DeblockRecorder;
+use plane_execution::{ResidualPlaneExecution, execute_residual_plane};
+
 const CHROMA_PLANES: [PlaneId; 2] = [PlaneId::U, PlaneId::V];
 const CHUNK_64_N4: usize = 16;
 const PALETTE_MAX_SIZE: usize = 8;
@@ -53,6 +60,11 @@ pub(crate) enum RectLumaPlan {
         use_tcq: bool,
     },
     Dc {
+        use_tcq: bool,
+    },
+    Dip {
+        mode: u8,
+        transpose: bool,
         use_tcq: bool,
     },
     Middle {
@@ -187,6 +199,11 @@ enum ResidualReconstructionPlan {
         mode: SupportedNonDcLumaMode,
         use_tcq: bool,
     },
+    LumaRectDip {
+        mode: u8,
+        transpose: bool,
+        use_tcq: bool,
+    },
     LumaRectMiddle {
         p_angle: u16,
         use_tcq: bool,
@@ -254,11 +271,6 @@ enum ResidualReconstructionPlan {
     },
 }
 
-struct ResidualPlaneExecution {
-    coeffs: crate::bitstream::tile_payload::LumaCoeffBlock,
-    last_unit_nonzero: Option<bool>,
-}
-
 impl GeneralIntraResidualPlan {
     pub(crate) fn square(
         block_ctx: BlockCtx,
@@ -306,6 +318,15 @@ impl GeneralIntraResidualPlan {
                 ResidualReconstructionPlan::LumaPalette { palette, use_tcq }
             }
             RectLumaPlan::Dc { use_tcq } => ResidualReconstructionPlan::Rect { use_tcq },
+            RectLumaPlan::Dip {
+                mode,
+                transpose,
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectDip {
+                mode,
+                transpose,
+                use_tcq,
+            },
             RectLumaPlan::Middle { p_angle, use_tcq } => {
                 ResidualReconstructionPlan::LumaRectMiddle { p_angle, use_tcq }
             }
@@ -429,12 +450,17 @@ impl GeneralIntraResidualPlan {
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         deblock: &mut DeblockRecorder<'_>,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
-        let mut execute =
-            |plane: ResidualPlanePlan, eob_u_nonzero, deblock: &mut DeblockRecorder<'_>| {
-                let tx_partition_context = (plane.plane_id == PlaneId::Y)
-                    .then_some(luma_tx_partition_context)
-                    .flatten();
-                plane.execute(
+        if !self.planes.iter().any(|plane| plane.plane_id == PlaneId::Y) {
+            deblock.record_chroma_part_block();
+        }
+        let mut u_nonzero = false;
+        let mut pending_u = None;
+        let mut deferred = Vec::new();
+        for &plane in &self.planes {
+            let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
+            if chroma_pair::can_hold_for_cctx_pair(plane, work_unit) {
+                let execution = execute_residual_plane(
+                    plane.with_deferred_reconstruction(),
                     work_unit,
                     symbols,
                     coeff_ctx,
@@ -442,23 +468,66 @@ impl GeneralIntraResidualPlan {
                     block_decoded,
                     uv_mode,
                     luma_transform_type_context,
-                    tx_partition_context,
+                    luma_tx_partition_context,
+                    transform_tool_residual_policy,
+                    qindex,
+                    false,
+                    intra_edge,
+                    deblock,
+                )?;
+                u_nonzero = execution
+                    .last_unit_nonzero
+                    .unwrap_or(!execution.coeffs.all_zero);
+                pending_u = Some((plane, execution.coeffs));
+                continue;
+            }
+            if plane.plane_id == PlaneId::V
+                && !plane.defer_reconstruction
+                && let Some((u_plane, u_coeffs)) = pending_u.take()
+            {
+                let execution = execute_residual_plane(
+                    plane.with_deferred_reconstruction(),
+                    work_unit,
+                    symbols,
+                    coeff_ctx,
+                    workspace,
+                    block_decoded,
+                    uv_mode,
+                    luma_transform_type_context,
+                    luma_tx_partition_context,
                     transform_tool_residual_policy,
                     qindex,
                     eob_u_nonzero,
                     intra_edge,
                     deblock,
-                )
-            };
-
-        if !self.planes.iter().any(|plane| plane.plane_id == PlaneId::Y) {
-            deblock.record_chroma_part_block();
-        }
-        let mut u_nonzero = false;
-        let mut deferred = Vec::new();
-        for &plane in &self.planes {
-            let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
-            let execution = execute(plane, eob_u_nonzero, deblock)?;
+                )?;
+                chroma_pair::reconstruct_chroma_pair_or_planes(
+                    workspace,
+                    block_decoded,
+                    (u_plane, u_coeffs),
+                    Some((plane, execution.coeffs)),
+                    qindex,
+                    intra_edge,
+                    luma_transform_type_context,
+                )?;
+                continue;
+            }
+            let execution = execute_residual_plane(
+                plane,
+                work_unit,
+                symbols,
+                coeff_ctx,
+                workspace,
+                block_decoded,
+                uv_mode,
+                luma_transform_type_context,
+                luma_tx_partition_context,
+                transform_tool_residual_policy,
+                qindex,
+                eob_u_nonzero,
+                intra_edge,
+                deblock,
+            )?;
             if plane.plane_id == PlaneId::U {
                 u_nonzero = execution
                     .last_unit_nonzero
@@ -468,89 +537,26 @@ impl GeneralIntraResidualPlan {
                 deferred.push((plane, execution.coeffs));
             }
         }
-        for (plane, coeffs) in deferred {
-            plane.reconstruct(
+        if let Some((u_plane, u_coeffs)) = pending_u {
+            chroma_pair::reconstruct_chroma_pair_or_planes(
                 workspace,
-                &coeffs,
                 block_decoded,
+                (u_plane, u_coeffs),
                 None,
                 qindex,
                 intra_edge,
                 luma_transform_type_context,
             )?;
         }
+        chroma_pair::reconstruct_deferred_planes(
+            workspace,
+            block_decoded,
+            deferred,
+            qindex,
+            intra_edge,
+            luma_transform_type_context,
+        )?;
         Ok(())
-    }
-}
-
-pub(crate) struct DeblockRecorder<'a> {
-    pub(crate) blocks: &'a mut Vec<crate::filters::deblock::DeblockBlock>,
-    pub(crate) chroma_blocks: &'a mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
-    pub(crate) tx_skip_records:
-        &'a mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
-    pub(crate) block_r: usize,
-    pub(crate) block_c: usize,
-    pub(crate) block_w4: usize,
-    pub(crate) block_h4: usize,
-    pub(crate) luma_tx: usize,
-    pub(crate) chroma_tx: Option<usize>,
-    pub(crate) qindex: u32,
-}
-
-impl DeblockRecorder<'_> {
-    fn record_chroma_part_block(&mut self) {
-        for chroma in self.chroma_blocks.iter_mut() {
-            chroma.push(crate::filters::deblock::DeblockBlock {
-                r: self.block_r,
-                c: self.block_c,
-                block_r: self.block_r,
-                block_c: self.block_c,
-                chroma_base_r: self.block_r,
-                chroma_base_c: self.block_c,
-                n4w: self.block_w4,
-                n4h: self.block_h4,
-                luma_tx: self.luma_tx,
-                chroma_tx: self.chroma_tx,
-                qindex: self.qindex,
-                skip: false,
-            });
-        }
-    }
-
-    fn record_luma_unit(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        luma_tx: usize,
-        eob: usize,
-    ) {
-        self.blocks.push(crate::filters::deblock::DeblockBlock {
-            r,
-            c,
-            block_r: self.block_r,
-            block_c: self.block_c,
-            chroma_base_r: self.block_r,
-            chroma_base_c: self.block_c,
-            n4w,
-            n4h,
-            luma_tx,
-            chroma_tx: self.chroma_tx,
-            qindex: self.qindex,
-            skip: false,
-        });
-        self.tx_skip_records.push(
-            crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
-                row: r,
-                col: c,
-                rows: n4h,
-                cols: n4w,
-                skip_flag: false,
-                eob,
-                intra_ist: None,
-            },
-        );
     }
 }
 
@@ -957,7 +963,8 @@ impl ResidualPlanePlan {
             | ResidualReconstructionPlan::LumaRectMiddle { .. }
             | ResidualReconstructionPlan::LumaRectOneSidedAbove { .. }
             | ResidualReconstructionPlan::LumaRectOneSidedLeft { .. }
-            | ResidualReconstructionPlan::LumaRectOneSidedLeftMrl { .. } => self.reconstruction,
+            | ResidualReconstructionPlan::LumaRectOneSidedLeftMrl { .. }
+            | ResidualReconstructionPlan::LumaRectDip { .. } => self.reconstruction,
             ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
                 p_angle,
                 mrl_index,
@@ -1019,6 +1026,14 @@ impl ResidualPlanePlan {
                 plan: IntraLumaPlan::Dc,
                 use_tcq,
             } => ResidualReconstructionPlan::Rect { use_tcq },
+            ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::Dip { mode, transpose },
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectDip {
+                mode,
+                transpose,
+                use_tcq,
+            },
             ResidualReconstructionPlan::LumaSquare {
                 plan: IntraLumaPlan::PaethNeighbour,
                 use_tcq,
@@ -1443,6 +1458,31 @@ impl ResidualPlanePlan {
                     neighbours.num_above_right(),
                     neighbours.num_below_left(),
                     Some(luma_context),
+                    EdgeAvail::new(edges.has_above(), edges.has_left()),
+                    block_ctx.bit_depth(),
+                )
+            }
+            ResidualReconstructionPlan::LumaRectDip {
+                mode,
+                transpose,
+                use_tcq,
+            } => {
+                let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
+                let edges = block_ctx.neighbours(PlaneId::Y);
+                crate::pipeline::reconstruct::reconstruct_general_intra_luma_dip_rect_block_into(
+                    workspace,
+                    coeffs,
+                    mode,
+                    transpose,
+                    self.x,
+                    self.y,
+                    self.tx.width_log2(),
+                    self.tx.height_log2(),
+                    qindex,
+                    use_tcq,
+                    neighbours.num_above_right(),
+                    neighbours.num_below_left(),
+                    luma_context,
                     EdgeAvail::new(edges.has_above(), edges.has_left()),
                     block_ctx.bit_depth(),
                 )
@@ -1989,11 +2029,13 @@ fn summarize_luma_partition(
             .fold(0usize, |sum, block| sum.saturating_add(block.coeffs.eob)),
         quant: Vec::new(),
         intra_ist: blocks.iter().find_map(|block| block.coeffs.intra_ist),
+        cctx_type: blocks.iter().find_map(|block| block.coeffs.cctx_type),
         plane_tx_type: blocks
             .iter()
             .find(|block| !block.coeffs.all_zero)
             .or_else(|| blocks.first())
             .map_or(0, |block| block.coeffs.plane_tx_type),
+        use_tcq: blocks.iter().any(|block| block.coeffs.use_tcq),
         lossless: blocks.iter().any(|block| block.coeffs.lossless),
     }
 }

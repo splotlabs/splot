@@ -6,8 +6,8 @@
 use thiserror::Error;
 
 use crate::{
-    BitDepth, IntraDcEdge, IntraDirectionalAngleEdge, IntraMiddleDirectionalAngle, IntraPaethEdge,
-    IntraSmoothEdge, PlaneId, PlaneRect, PlaneSize, ReferenceSlot,
+    BitDepth, IntraDcEdge, IntraDipEdge, IntraDirectionalAngleEdge, IntraMiddleDirectionalAngle,
+    IntraPaethEdge, IntraSmoothEdge, PlaneId, PlaneRect, PlaneSize, ReferenceSlot,
 };
 
 /// Result alias used by `splot-recon` constructors and helpers.
@@ -377,6 +377,46 @@ pub enum ReconError {
         min: i64,
         /// Maximum sample value allowed by the active bit depth.
         max: i64,
+    },
+    /// A DIP mode index was outside the generated AV2 table range.
+    #[error("unsupported DIP intra prediction mode {mode}; expected 0 through {max}")]
+    UnsupportedIntraDipMode {
+        /// Rejected `dip_mode` value.
+        mode: usize,
+        /// Maximum supported `dip_mode` value.
+        max: usize,
+    },
+    /// A DIP block was too small for AV2 data-driven intra prediction.
+    #[error(
+        "unsupported DIP intra prediction block size {width}x{height}; expected each side at least 4 samples"
+    )]
+    UnsupportedIntraDipBlockSize {
+        /// Block width in samples.
+        width: usize,
+        /// Block height in samples.
+        height: usize,
+    },
+    /// A supplied DIP intra prediction edge did not match the block size.
+    #[error("DIP intra prediction {} edge length mismatch: expected {expected} samples, got {actual}", .edge.name())]
+    IntraDipEdgeLengthMismatch {
+        /// Edge whose sample count was checked.
+        edge: IntraDipEdge,
+        /// Expected edge sample count.
+        expected: usize,
+        /// Actual edge sample count.
+        actual: usize,
+    },
+    /// A DIP intra prediction edge sample exceeded the active bit depth.
+    #[error("DIP intra prediction {} edge sample {sample_index} value {value} exceeds maximum {max}", .edge.name())]
+    IntraDipSampleOutOfRange {
+        /// Edge containing the out-of-range sample.
+        edge: IntraDipEdge,
+        /// Zero-based index within the edge samples.
+        sample_index: usize,
+        /// Observed sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
     },
     /// An intra prediction block backing allocation failed.
     #[error("failed to allocate {context}")]

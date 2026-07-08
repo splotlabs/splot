@@ -886,6 +886,14 @@ fn luma_txtype_residual_staged_base_config_derives_coeff_tool_flags() {
 }
 
 #[test]
+fn coefficient_block_use_tcq_suppresses_fsc() {
+    let facts = frame_facts_with_coeff_tools(true, true);
+
+    assert!(coefficient_block_use_tcq(facts, 0, IDTX, false, false));
+    assert!(!coefficient_block_use_tcq(facts, 0, IDTX, false, true));
+}
+
+#[test]
 fn luma_txtype_residual_safe_policy_rejects_non_dct_luma_tx_type() {
     let payload = intra_tx_type_set1_payload(TX_8X8, 1);
 
@@ -1038,6 +1046,132 @@ fn dctonly_residual_long_set_maps_dct_symbol_only_for_long_side_dct() {
     assert_eq!(TX_TYPE_INV_LONG[1][1][0], DCT_DCT);
     assert_ne!(TX_TYPE_INV_LONG[0][0][0], DCT_DCT);
     assert_ne!(TX_TYPE_INV_LONG[0][1][0], DCT_DCT);
+}
+
+#[test]
+fn fsc_idtx_block_reconstructs_without_tcq_dequant_shift() {
+    let block = LumaCoeffBlock {
+        all_zero: false,
+        eob: 16,
+        quant: vec![0, 0, 0, 3, 0, 0, 2, 9, 0, 0, 0, 6, 0, 0, 0, 6],
+        intra_ist: None,
+        cctx_type: None,
+        plane_tx_type: IDTX,
+        use_tcq: false,
+        lossless: false,
+    };
+    let prediction = vec![
+        38u8, 40, 42, 43, 40, 41, 42, 43, 41, 41, 42, 42, 42, 42, 42, 42,
+    ];
+
+    let fsc = reconstruct_general_intra_coeff_block_rect_with_prediction(
+        &block,
+        &prediction,
+        78,
+        PlaneId::Y,
+        2,
+        2,
+        true,
+        None,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    assert_eq!(
+        fsc,
+        vec![
+            38, 40, 42, 61, 40, 41, 54, 96, 41, 41, 42, 77, 42, 42, 42, 77
+        ]
+    );
+
+    let mut ordinary_tcq = block;
+    ordinary_tcq.use_tcq = true;
+    let ordinary = reconstruct_general_intra_coeff_block_rect_with_prediction(
+        &ordinary_tcq,
+        &prediction,
+        78,
+        PlaneId::Y,
+        2,
+        2,
+        true,
+        None,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    assert_eq!(
+        ordinary,
+        vec![
+            38, 40, 42, 52, 40, 41, 48, 69, 41, 41, 42, 60, 42, 42, 42, 60
+        ]
+    );
+}
+
+#[test]
+fn cctx_minus30_rotates_saved_chroma_dequant_pair() {
+    let mut u = [-108, -54, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 54, 0, 0, 0];
+    let mut v = [0i32; 16];
+
+    apply_cross_chroma_transform(5, BitDepth::Eight, &mut u, &mut v).unwrap();
+
+    assert_eq!(u, [-94, -47, 0, 0, 0, 0, 0, 0, 47, 0, 0, 0, 47, 0, 0, 0]);
+    assert_eq!(v, [54, 27, 0, 0, 0, 0, 0, 0, -27, 0, 0, 0, -27, 0, 0, 0]);
+}
+
+#[test]
+fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
+    let u_block = LumaCoeffBlock {
+        all_zero: false,
+        eob: 7,
+        quant: vec![-2, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+        intra_ist: None,
+        cctx_type: Some(5),
+        plane_tx_type: DCT_ADST,
+        use_tcq: false,
+        lossless: false,
+    };
+    let v_block = LumaCoeffBlock {
+        all_zero: true,
+        eob: 0,
+        quant: Vec::new(),
+        intra_ist: None,
+        cctx_type: None,
+        plane_tx_type: DCT_DCT,
+        use_tcq: false,
+        lossless: false,
+    };
+    let u_prediction = [
+        124u8, 125, 125, 126, 126, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+    ];
+    let v_prediction = [
+        126u8, 126, 126, 127, 126, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+    ];
+
+    let (u, v) = reconstruct_general_intra_chroma_cctx_pair_with_predictions(
+        &u_block,
+        &u_prediction,
+        &v_block,
+        &v_prediction,
+        83,
+        2,
+        2,
+        5,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    assert_eq!(
+        u,
+        vec![
+            123, 122, 124, 127, 123, 120, 119, 120, 125, 123, 124, 125, 125, 123, 124, 126
+        ]
+    );
+    assert_eq!(
+        v,
+        vec![
+            127, 127, 127, 127, 128, 131, 131, 131, 128, 129, 129, 128, 128, 129, 129, 128
+        ]
+    );
 }
 
 #[test]

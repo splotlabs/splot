@@ -53,6 +53,37 @@ pub(crate) fn validate_sample_type<T: ReconSample>(bit_depth: BitDepth) -> Resul
     }
 }
 
+pub(crate) trait IntraEdgeError: Copy {
+    fn length_mismatch(self, expected: usize, actual: usize) -> ReconError;
+
+    fn sample_out_of_range(self, sample_index: usize, value: u16, max: u16) -> ReconError;
+}
+
+pub(crate) fn validate_intra_edge_samples<T, Edge>(
+    edge: Edge,
+    samples: &[T],
+    expected_len: usize,
+    bit_depth: BitDepth,
+) -> Result<()>
+where
+    T: ReconSample,
+    Edge: IntraEdgeError,
+{
+    if samples.len() != expected_len {
+        return Err(edge.length_mismatch(expected_len, samples.len()));
+    }
+
+    let max = bit_depth.max_sample();
+    for (sample_index, sample) in samples.iter().copied().enumerate() {
+        let value = sample.to_u16();
+        if value > max {
+            return Err(edge.sample_out_of_range(sample_index, value, max));
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_dc_edge<T: ReconSample>(
     edge: IntraDcEdge,
     samples: Option<&[T]>,
