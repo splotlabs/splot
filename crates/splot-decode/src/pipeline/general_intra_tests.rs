@@ -838,7 +838,7 @@ fn lossless_nondc_chroma_paeth_frame_decodes_to_oracle() {
     );
 }
 
-fn assert_lossless_explicit_chroma_oracle(
+pub(super) fn assert_lossless_explicit_chroma_oracle(
     fixture: &[u8],
     expected_len: usize,
     frame_size: (usize, usize),
@@ -1147,6 +1147,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         SupportedChromaMode::Vertical,
         SupportedChromaMode::Horizontal,
         SupportedChromaMode::D45,
+        SupportedChromaMode::D113,
         SupportedChromaMode::D135,
         SupportedChromaMode::D157,
         SupportedChromaMode::D203,
