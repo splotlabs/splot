@@ -102,6 +102,10 @@ const LOSSLESS_NONDC_LUMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d45-leftedge-128x64.ivf"
 );
 
+const LOSSLESS_NONDC_LUMA_D113_CHROMA_FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d113-chroma-follow-leftedge-128x64.ivf"
+);
+
 const LOSSLESS_NONDC_LUMA_PAETH_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-paeth-intra-64x64.ivf"
 );
@@ -655,6 +659,25 @@ fn lossless_nondc_luma_paeth_frame_decodes_to_oracle() {
     );
 }
 
+#[test]
+fn lossless_nondc_luma_d113_chroma_follow_leftedge_frame_decodes_to_oracle() {
+    assert_eq!(
+        LOSSLESS_NONDC_LUMA_D113_CHROMA_FOLLOW_LEFTEDGE_FIXTURE.len(),
+        2939
+    );
+    let frame = decode_eight(LOSSLESS_NONDC_LUMA_D113_CHROMA_FOLLOW_LEFTEDGE_FIXTURE);
+
+    assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
+    assert_chroma_size(&frame, 64, 32);
+    assert_distinct_gt(frame.y().samples(), 16, "lossless D113 left-edge luma");
+    assert_distinct_gt(frame.u().unwrap().samples(), 16, "lossless D113-follow U");
+    assert_distinct_gt(frame.v().unwrap().samples(), 16, "lossless D113-follow V");
+    assert_hash(
+        &frame,
+        "9bee7cd3840dd6ea99742cbbef41dc6f55643352bcff0452144208f7b1531284",
+    );
+}
+
 fn assert_lossless_directional_luma_oracle(
     fixture: &[u8],
     expected_len: usize,
@@ -983,6 +1006,12 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D113Follow),
+        false,
+        left_edge_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::D157),
         false,
         left_edge_8,
@@ -1163,6 +1192,45 @@ fn lossless_luma_prediction_guard_rejects_unverified_nondc_with_offset() {
     assert_eq!(
         unsupported.byte_offset(),
         Some(splot_core::span::ByteOffset::new(9))
+    );
+}
+
+#[test]
+fn lossless_luma_prediction_guard_rejects_unproven_d113_chroma_cross_product() {
+    let mut modes = GeneralIntraBlockModes::luma_only(GeneralIntraLumaBlockMode {
+        y_mode: IntraYMode::D113_PRED_FOR_TEST,
+        angle_delta_y: 0,
+        intra_joint_mode: 0,
+        mrl_index: 0,
+        mrl_sec_index: None,
+        fsc_mode: 0,
+        uses_mrls: 0,
+        use_dpcm_y: 0,
+        dpcm_mode_y: 0,
+    });
+    modes.uv_mode = 7;
+    let error = general_intra::ensure_lossless_verified_prediction_subset(
+        true,
+        true,
+        &modes,
+        block_ctx(
+            0,
+            general_intra::FULL_SB_N4_LUMA,
+            general_intra::FULL_SB_N4_LUMA,
+            general_intra::FULL_SB_N4_LUMA,
+            BitDepth::Eight,
+        ),
+        general_intra::FULL_SB_N4_LUMA,
+        splot_core::span::ByteOffset::new(13),
+    )
+    .expect_err("D113 luma with explicit non-follow chroma must fail closed");
+
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("unexpected error: {error:?}");
+    };
+    assert_eq!(
+        unsupported.reason(),
+        "general_intra_lossless_other_nondc_luma_unverified"
     );
 }
 
@@ -1355,6 +1423,7 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
     ] {
         for mode in [
             SupportedChromaMode::D113,
+            SupportedChromaMode::D113Follow,
             SupportedChromaMode::D157,
             SupportedChromaMode::D157Follow,
             SupportedChromaMode::D203,
@@ -1370,6 +1439,7 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
     }
     for mode in [
         SupportedChromaMode::D113,
+        SupportedChromaMode::D113Follow,
         SupportedChromaMode::D157,
         SupportedChromaMode::D157Follow,
         SupportedChromaMode::D203,

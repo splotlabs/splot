@@ -752,12 +752,14 @@ fn lossless_luma_prediction_verified(
         );
     let top_left_paeth = block_ctx.is_top_left() && modes.y_mode.is_paeth();
     let y_neighbours = block_ctx.neighbours(PlaneId::Y);
-    let left_edge_d45 = !y_neighbours.has_above()
+    let left_edge_d45_or_d113 = !y_neighbours.has_above()
         && y_neighbours.has_left()
-        && matches!(directional, Some(SupportedDirectionalLumaMode::D45));
+        && (directional == Some(SupportedDirectionalLumaMode::D45)
+            || (directional == Some(SupportedDirectionalLumaMode::D113)
+                && modes.supported_chroma_mode() == Some(SupportedChromaMode::D113Follow)));
     full_64_sb_8bit
         && modes.angle_delta_y == 0
-        && (top_left_directional || top_left_paeth || left_edge_d45)
+        && (top_left_directional || top_left_paeth || left_edge_d45_or_d113)
 }
 
 fn top_left_no_neighbour_directional_prediction_verified(
@@ -859,7 +861,7 @@ pub(super) fn lossless_chroma_block_prediction_verified(
         ))
         || (!neighbours.has_above()
             && neighbours.has_left()
-            && (matches!(mode, M::D45 | M::D45Follow | M::D113)
+            && (matches!(mode, M::D45 | M::D45Follow | M::D113 | M::D113Follow)
                 || matches!(mode, M::D157 | M::D157Follow | M::D203 | M::D203Follow)))
 }
 

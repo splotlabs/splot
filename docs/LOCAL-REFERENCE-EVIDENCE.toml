@@ -4428,3 +4428,56 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-lossless-nondc-chroma-d113-leftedge-128x64-raw-md5"
 right = "avm-repeat-lossless-nondc-chroma-d113-leftedge-128x64-raw-md5"
+
+[[evidence]]
+id = "lref-avm-syn-lossless-nondc-luma-d113-chroma-follow-leftedge-128x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 4:2:0 128x64 lossless intra IVF fixture whose first-row right 64x64 block has a decoded left neighbor, no above neighbor, explicit non-DPCM D113_PRED luma, and non-DPCM uv_mode=0 D113-follow chroma. The fixture exercises the lossless luma and follow-chroma predictor guards for the left-edge D113 subset; splot reproduces the raw SHA-256 value through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-08"
+command = "python3 /tmp/gen_d113follow_leftedge_y4m.py; /Users/bartosztomczyk/Devel/avm/build/avmenc -D --codec=av2 --ivf --limit=1 --passes=1 --threads=1 --cpu-used=0 --end-usage=q --qp=0 --lossless=1 --bit-depth=8 --input-bit-depth=8 --sb-size=64 --min-partition-size=64 --max-partition-size=64 --enable-sdp=0 --enable-extended-sdp=0 --enable-cfl-intra=0 --enable-mhccp=0 --enable-cctx=0 --enable-cdef=0 --enable-deblocking=0 --enable-restoration=0 --enable-ccso=0 --enable-gdf=0 --enable-pc-wiener=0 --enable-wiener-nonsep=0 --enable-qm=0 --enable-tcq=0 --enable-trellis-quant=0 --enable-fsc=0 --enable-flip-idtx=0 --enable-idtx-intra=0 --enable-ist=0 --enable-intra-dip=0 --enable-ibp=0 --enable-mrls=0 --enable-intra-edge-filter=0 --enable-angle-delta=0 --enable-palette=0 --enable-intrabc=0 --enable-paeth-intra=0 --enable-smooth-intra=0 --enable-rect-partitions=0 --enable-ext-partitions=0 --enable-uneven-4way-partitions=0 --enable-tx-partition=0 --deltaq-mode=0 --enable-chroma-deltaq=0 --enable-keyframe-filtering=0 --force-video-mode=0 --test-decode=fatal -o /tmp/splot-d113follow-leftedge/syn-lossless-d113follow-leftedge-128x64.ivf /tmp/splot-d113follow-leftedge/syn-lossless-d113follow-leftedge-128x64.y4m"
+
+[[evidence.fixture]]
+id = "d113-follow-leftedge-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-nondc-luma-d113-chroma-follow-leftedge-128x64.ivf"
+sha256 = "25c7ae7c80a6cdd3c6bf56c16e9cacbbb5463a2e2db73efae43e909318aa8ed3"
+size_bytes = 2939
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 128x64 8-bit 4:2:0 Y4M input with D113-shaped right-block luma and chroma over decoded left-edge seed columns. Source Y4M SHA-256 was 40dde27a9198bd9ace6d20741c3423038a038a375ae634a9ea3c45f471ec7fe4; decoded raw SHA-256 was 9bee7cd3840dd6ea99742cbbef41dc6f55643352bcff0452144208f7b1531284. Encoded with AVM lossless mode, 64x64 square partitions, SDP disabled, and broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, CCTX, chroma-dctonly, palette, IntraBC, FSC, IST, intra-DIP, IBP, MRL, intra edge filtering, smooth intra, Paeth, rectangular/extended/4-way partitions, tx partitioning, non-default intra TX, angle delta, delta-Q, chroma delta-Q, parity hiding, TCQ, trellis quantization, and keyframe filtering. splot pre-fix tracing showed the target right block with use_dpcm_y=0, y_mode=IntraYMode(5), use_dpcm_uv=0, uv_mode=0, coeff_uv_mode=5, and byte-offset 65 fail-closed at general_intra_lossless_other_nondc_luma_unverified. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec-lossless-nondc-luma-d113-chroma-follow-leftedge"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3 from the local fixture build; checkout contained untracked build directories only."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:d113-follow-leftedge-input}."
+output_digest_id = "avm-lossless-nondc-luma-d113-chroma-follow-leftedge-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "7c2cc8061555a5a42d9639fb65dbb0d3"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 9bee7cd3840dd6ea99742cbbef41dc6f55643352bcff0452144208f7b1531284 is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat-lossless-nondc-luma-d113-chroma-follow-leftedge"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3 decode run from the committed fixture copy; checkout contained untracked build directories only."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:d113-follow-leftedge-input}."
+output_digest_id = "avm-repeat-lossless-nondc-luma-d113-chroma-follow-leftedge-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "7c2cc8061555a5a42d9639fb65dbb0d3"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-nondc-luma-d113-chroma-follow-leftedge-128x64-raw-md5"
+right = "avm-repeat-lossless-nondc-luma-d113-chroma-follow-leftedge-128x64-raw-md5"
