@@ -227,6 +227,82 @@ fn lossless_prediction_guard_admits_top_left_d135_luma() {
 }
 
 #[test]
+fn lossless_prediction_guard_admits_edge_backed_rect_luma() {
+    let smooth_modes = luma_modes(IntraYMode::SMOOTH_PRED_FOR_TEST);
+    let top_row_left_edge = ctx_with_bit_depth(0, 6, 2, 2, BitDepth::Eight);
+
+    assert_eq!(
+        rect_luma_plan(&smooth_modes, top_row_left_edge, false, FULL_SB_N4_LUMA),
+        Ok(RectLumaPlan::Smooth {
+            mode: SupportedNonDcLumaMode::Smooth,
+            use_tcq: false,
+        })
+    );
+    assert!(
+        ensure_lossless_verified_prediction_subset(
+            true,
+            false,
+            &smooth_modes,
+            top_row_left_edge,
+            FULL_SB_N4_LUMA,
+            splot_core::span::ByteOffset::new(9),
+        )
+        .is_ok()
+    );
+
+    let directional_modes = luma_modes_with_angle(IntraYMode::D67_PRED_FOR_TEST, -2);
+    let above_only = ctx_with_bit_depth(3, 0, 1, 1, BitDepth::Eight);
+
+    assert_eq!(
+        rect_luma_plan(&directional_modes, above_only, false, FULL_SB_N4_LUMA),
+        Ok(RectLumaPlan::OneSidedAbove {
+            p_angle: 61,
+            use_tcq: false,
+        })
+    );
+    assert!(
+        ensure_lossless_verified_prediction_subset(
+            true,
+            false,
+            &directional_modes,
+            above_only,
+            FULL_SB_N4_LUMA,
+            splot_core::span::ByteOffset::new(9),
+        )
+        .is_ok()
+    );
+
+    for (modes, block_ctx) in [
+        (
+            &smooth_modes,
+            ctx_with_bit_depth(0, 0, 2, 2, BitDepth::Eight),
+        ),
+        (&smooth_modes, ctx(0, 6, 2, 2)),
+        (
+            &directional_modes,
+            ctx_with_bit_depth(0, 0, 1, 1, BitDepth::Eight),
+        ),
+        (&directional_modes, ctx(3, 0, 1, 1)),
+    ] {
+        let error = ensure_lossless_verified_prediction_subset(
+            true,
+            false,
+            modes,
+            block_ctx,
+            FULL_SB_N4_LUMA,
+            splot_core::span::ByteOffset::new(9),
+        )
+        .expect_err("edge-backed 8-bit subset must not admit no-edge or 10-bit blocks");
+
+        let reason = match error {
+            DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
+            _ => "",
+        };
+        assert_eq!(reason, "general_intra_lossless_other_nondc_luma_unverified");
+    }
+}
+
+#[test]
 fn cardinal_top_left_guard_admits_only_verified_shapes() {
     let top_left_8 = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
     let vertical = luma_modes_with_angle(IntraYMode::V_PRED_FOR_TEST, 2);

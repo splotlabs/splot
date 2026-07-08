@@ -676,9 +676,32 @@ fn lossless_luma_prediction_verified(
                 && modes.supported_chroma_mode() == Some(SupportedChromaMode::D157Follow))
             || (directional == Some(L::D203)
                 && modes.supported_chroma_mode() == Some(SupportedChromaMode::D203Follow)));
-    full_64_sb_8bit
+    let edge_backed_rect =
+        lossless_edge_backed_rect_luma_prediction_verified(modes, block_ctx, sb_mib);
+    (full_64_sb_8bit
         && modes.angle_delta_y == 0
-        && (top_left_directional || top_left_paeth || left_edge_d45_or_d113)
+        && (top_left_directional || top_left_paeth || left_edge_d45_or_d113))
+        || edge_backed_rect
+}
+
+fn lossless_edge_backed_rect_luma_prediction_verified(
+    modes: &GeneralIntraBlockModes,
+    block_ctx: BlockCtx,
+    sb_mib: usize,
+) -> bool {
+    if block_ctx.bit_depth() != BitDepth::Eight
+        || modes.uses_active_mrl()
+        || modes.uses_active_fsc()
+        || modes.palette_y().is_some()
+        || (modes.y_mode.supported_directional().is_none()
+            && modes.supported_nondc_luma().is_none()
+            && !modes.y_mode.is_paeth())
+    {
+        return false;
+    }
+    let neighbours = block_ctx.neighbours(PlaneId::Y);
+    (neighbours.has_above() || neighbours.has_left())
+        && rect_luma_plan(modes, block_ctx, false, sb_mib).is_ok()
 }
 fn top_left_no_neighbour_directional_prediction_verified(
     modes: &GeneralIntraBlockModes,

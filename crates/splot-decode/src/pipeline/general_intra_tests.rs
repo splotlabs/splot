@@ -1275,12 +1275,12 @@ fn lossless_luma_prediction_guard_rejects_unverified_nondc_with_offset() {
 }
 
 #[test]
-fn lossless_luma_prediction_guard_rejects_unproven_d113_chroma_cross_product() {
+fn lossless_prediction_guard_rejects_unproven_smooth_chroma_cross_product() {
     for (y_mode, uv_mode, offset) in [
-        (IntraYMode::D113_PRED_FOR_TEST, 7, 13),
-        (IntraYMode::D135_PRED_FOR_TEST, 1, 14),
-        (IntraYMode::D157_PRED_FOR_TEST, 1, 15),
-        (IntraYMode::D203_PRED_FOR_TEST, 1, 16),
+        (IntraYMode::D113_PRED_FOR_TEST, 2, 13),
+        (IntraYMode::D135_PRED_FOR_TEST, 2, 14),
+        (IntraYMode::D157_PRED_FOR_TEST, 2, 15),
+        (IntraYMode::D203_PRED_FOR_TEST, 2, 16),
     ] {
         let mut modes = GeneralIntraBlockModes::luma_only(GeneralIntraLumaBlockMode {
             y_mode,
@@ -1308,14 +1308,14 @@ fn lossless_luma_prediction_guard_rejects_unproven_d113_chroma_cross_product() {
             general_intra::FULL_SB_N4_LUMA,
             splot_core::span::ByteOffset::new(offset),
         )
-        .expect_err("explicit non-follow chroma must fail closed");
+        .expect_err("smooth chroma must fail closed");
 
         let DecodeError::UnsupportedFeature { unsupported } = error else {
             panic!("unexpected error: {error:?}");
         };
         assert_eq!(
             unsupported.reason(),
-            "general_intra_lossless_other_nondc_luma_unverified"
+            "general_intra_lossless_other_nondc_chroma_block_unverified"
         );
     }
 }
