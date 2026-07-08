@@ -13,6 +13,7 @@ use super::{BawpSyntax, Mv, PlacedInterBlock};
 use crate::Result;
 
 const SHIFT: u32 = 8;
+const MAX_BAWP_RECT_DIM: usize = 64;
 
 const fn to_fullmv(mv: i32) -> i32 {
     (mv + 3 + if mv >= 0 { 1 } else { 0 }) >> 3
@@ -53,9 +54,9 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     mv: Mv,
     _tile_offset: ByteOffset,
 ) -> Result<()> {
-    let Some(size) = morph_target_size(target) else {
+    if !target.width().is_power_of_two() || !target.height().is_power_of_two() {
         return Ok(());
-    };
+    }
 
     let dy = to_fullmv(mv.row);
     let dx = to_fullmv(mv.col);
@@ -96,6 +97,9 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     let avail_left = target.x() > 0;
     let (width, height, num_up, num_left) =
         bawp_template_counts(target.width(), target.height(), true, avail_up, avail_left);
+    let Some(size) = morph_dimensions_size(width, height) else {
+        return Ok(());
+    };
     let edges = workspace.intra_dc_edges_for_rect(PlaneId::Y, target.x(), target.y(), size)?;
 
     let mut sum_x = 0i64;
@@ -187,7 +191,7 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
         -(1 << (SHIFT - 1))
     };
 
-    workspace.apply_bawp_rect(PlaneId::Y, target.x(), target.y(), size, alpha, beta)?;
+    apply_bawp_region(workspace, PlaneId::Y, target, alpha, beta)?;
     Ok(())
 }
 
@@ -255,10 +259,6 @@ fn apply_bawp_plane<T: ReconSample>(
     if !plane_w.is_power_of_two() || !plane_h.is_power_of_two() {
         return Ok(luma_alpha);
     }
-    let Some(size) = morph_dimensions_size(plane_w, plane_h) else {
-        return Ok(luma_alpha);
-    };
-
     let avail_up = plane_y > 0;
     let avail_left = plane_x > 0;
     let Some(width_for_counts) = usize::try_from(bw).ok() else {
@@ -274,6 +274,9 @@ fn apply_bawp_plane<T: ReconSample>(
         avail_up,
         avail_left,
     );
+    let Some(size) = morph_dimensions_size(width, height) else {
+        return Ok(luma_alpha);
+    };
 
     let edges = workspace.intra_dc_edges_for_rect(plane, plane_x, plane_y, size)?;
     let ref_at = |row: i64, col: i64| -> Option<i64> {
@@ -380,16 +383,18 @@ fn apply_bawp_plane<T: ReconSample>(
         -(1 << (SHIFT - 1))
     };
 
-    workspace.apply_bawp_rect(plane, plane_x, plane_y, size, alpha, beta)?;
+    apply_bawp_region(
+        workspace,
+        plane,
+        PlaneRect::new(plane_x, plane_y, plane_w, plane_h)?,
+        alpha,
+        beta,
+    )?;
     Ok(if plane == PlaneId::Y {
         alpha
     } else {
         luma_alpha
     })
-}
-
-fn morph_target_size(target: PlaneRect) -> Option<IntraRectBlockSize> {
-    morph_dimensions_size(target.width(), target.height())
 }
 
 fn morph_dimensions_size(width: usize, height: usize) -> Option<IntraRectBlockSize> {
@@ -401,6 +406,46 @@ fn morph_dimensions_size(width: usize, height: usize) -> Option<IntraRectBlockSi
         u8::try_from(height.trailing_zeros()).ok()?,
     )
     .ok()
+}
+
+fn apply_bawp_region<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    plane: PlaneId,
+    rect: PlaneRect,
+    alpha: i64,
+    beta: i64,
+) -> Result<()> {
+    let storage = workspace.plane(plane)?.storage_size();
+    let x = rect.x();
+    let y = rect.y();
+    let width = rect.width();
+    let height = rect.height();
+    if x >= storage.width() || y >= storage.height() {
+        return Ok(());
+    }
+    let visible_width = width.min(storage.width() - x);
+    let visible_height = height.min(storage.height() - y);
+    let mut y_offset = 0usize;
+    while y_offset < height && y_offset < visible_height {
+        let chunk_h = (height - y_offset).min(MAX_BAWP_RECT_DIM);
+        let Some(chunk_y) = y.checked_add(y_offset) else {
+            return Ok(());
+        };
+        let mut x_offset = 0usize;
+        while x_offset < width && x_offset < visible_width {
+            let chunk_w = (width - x_offset).min(MAX_BAWP_RECT_DIM);
+            let Some(chunk_x) = x.checked_add(x_offset) else {
+                return Ok(());
+            };
+            let Some(size) = morph_dimensions_size(chunk_w, chunk_h) else {
+                return Ok(());
+            };
+            workspace.apply_bawp_rect(plane, chunk_x, chunk_y, size, alpha, beta)?;
+            x_offset += chunk_w;
+        }
+        y_offset += chunk_h;
+    }
+    Ok(())
 }
 
 fn fullpel_ref_pos(origin: usize, delta: i32) -> Option<i64> {

@@ -73,6 +73,57 @@ fn inter_bawp_skips_unavailable_top_left_reference_template() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn intrabc_morph_pred_applies_large_luma_block() -> TestResult {
+    let mut workspace = workspace(160, 160, 40)?;
+    for col in 24..40 {
+        workspace.set_reconstructed_sample(PlaneId::Y, col, 23, 20)?;
+    }
+    for row in 24..40 {
+        workspace.set_reconstructed_sample(PlaneId::Y, 23, row, 20)?;
+    }
+
+    apply_intrabc_morph_pred(
+        &mut workspace,
+        PlaneRect::new(16, 16, 128, 128)?,
+        Mv { row: 64, col: 64 },
+        splot_core::span::ByteOffset::new(0),
+    )?;
+
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 143, 143)?, 60);
+    Ok(())
+}
+
+#[test]
+fn inter_bawp_applies_large_luma_block() -> TestResult {
+    let mut workspace = workspace(160, 160, 40)?;
+    let reference = frame(
+        160,
+        160,
+        vec![20; 160 * 160],
+        vec![20; 80 * 80],
+        vec![20; 80 * 80],
+    )?;
+
+    apply_bawp(
+        &mut workspace,
+        &reference,
+        &placed_luma_block(16, 16, 128, 128),
+        BawpSyntax {
+            enabled: true,
+            ..BawpSyntax::default()
+        },
+        Mv { row: 0, col: 0 },
+        splot_core::span::ByteOffset::new(0),
+    )?;
+
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 143, 143)?, 60);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 15, 15)?, 40);
+    Ok(())
+}
+
 fn workspace(width: usize, height: usize, fill: u8) -> TestResult<CurrentFrameWorkspace<u8>> {
     let luma_size = PlaneSize::new(width, height)?;
     let visible = PlaneRect::new(0, 0, width, height)?;
