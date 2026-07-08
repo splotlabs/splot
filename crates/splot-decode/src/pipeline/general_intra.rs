@@ -339,7 +339,6 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         sb_mib,
         tile_offset,
     )?;
-    ensure_lossless_fsc_frontier(lossless, &modes, block_ctx, sb_mib, tile_offset)?;
     if luma_only {
         ensure_10bit_general_intra_luma_capability(
             &modes,
@@ -661,27 +660,6 @@ pub(super) fn ensure_lossless_verified_prediction_subset(
             tile_offset,
             missing_capability_message!("intra.lossless.chroma_prediction", mode = "non_dc"),
             "7.13.2",
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn ensure_lossless_fsc_frontier(
-    lossless: bool,
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    sb_mib: usize,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    if lossless
-        && modes.uses_active_fsc()
-        && !lossless_edge_backed_rect_luma_prediction_verified(modes, block_ctx, sb_mib)
-    {
-        return Err(general_intra_at!(
-            "general_intra_lossless_fsc_unverified",
-            tile_offset,
-            missing_capability_message!("intra.lossless.fsc", mode = "active"),
-            "5.20.6.1",
         ));
     }
     Ok(())

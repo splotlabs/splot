@@ -257,7 +257,7 @@ fn lossless_prediction_guard_admits_top_left_d135_luma() {
 }
 
 #[test]
-fn lossless_prediction_guard_precedes_active_fsc_frontier() {
+fn lossless_prediction_guard_rejects_unverified_active_fsc_luma() {
     let modes = with_active_fsc(luma_modes(IntraYMode::D45_PRED_FOR_TEST));
     let error = ensure_lossless_verified_prediction_subset(
         true,
@@ -267,16 +267,7 @@ fn lossless_prediction_guard_precedes_active_fsc_frontier() {
         FULL_SB_N4_LUMA,
         splot_core::span::ByteOffset::new(11),
     )
-    .and_then(|()| {
-        ensure_lossless_fsc_frontier(
-            true,
-            &modes,
-            ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
-            FULL_SB_N4_LUMA,
-            splot_core::span::ByteOffset::new(11),
-        )
-    })
-    .expect_err("unverified lossless luma prediction must fail before active FSC");
+    .expect_err("unverified active-FSC lossless luma prediction must fail");
 
     let reason = match error {
         DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
@@ -286,9 +277,10 @@ fn lossless_prediction_guard_precedes_active_fsc_frontier() {
 }
 
 #[test]
-fn lossless_active_fsc_frontier_still_rejects_non_rect_prediction_shapes() {
+fn lossless_prediction_guard_admits_top_left_active_fsc_dc_luma() {
     let modes = with_active_fsc(luma_modes(IntraYMode::DC_PRED));
-    let error = ensure_lossless_verified_prediction_subset(
+
+    ensure_lossless_verified_prediction_subset(
         true,
         false,
         &modes,
@@ -296,26 +288,11 @@ fn lossless_active_fsc_frontier_still_rejects_non_rect_prediction_shapes() {
         FULL_SB_N4_LUMA,
         splot_core::span::ByteOffset::new(12),
     )
-    .and_then(|()| {
-        ensure_lossless_fsc_frontier(
-            true,
-            &modes,
-            ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight),
-            FULL_SB_N4_LUMA,
-            splot_core::span::ByteOffset::new(12),
-        )
-    })
-    .expect_err("active FSC must fail closed until lossless FSC residuals are verified");
-
-    let reason = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
-        _ => "",
-    };
-    assert_eq!(reason, "general_intra_lossless_fsc_unverified");
+    .expect("verified DC prediction should not be blocked by active FSC");
 }
 
 #[test]
-fn lossless_active_fsc_frontier_admits_edge_backed_rect_prediction_shapes() {
+fn lossless_prediction_guard_admits_edge_backed_active_fsc_rect_luma() {
     let modes = with_active_fsc(luma_modes_with_angle(IntraYMode::D67_PRED_FOR_TEST, -2));
     let above_only = ctx_with_bit_depth(3, 0, 1, 1, BitDepth::Eight);
 
@@ -327,16 +304,7 @@ fn lossless_active_fsc_frontier_admits_edge_backed_rect_prediction_shapes() {
         FULL_SB_N4_LUMA,
         splot_core::span::ByteOffset::new(12),
     )
-    .and_then(|()| {
-        ensure_lossless_fsc_frontier(
-            true,
-            &modes,
-            above_only,
-            FULL_SB_N4_LUMA,
-            splot_core::span::ByteOffset::new(12),
-        )
-    })
-    .expect("edge-backed active FSC prediction shape should reach residual decode");
+    .expect("edge-backed active-FSC prediction shape should reach residual decode");
 }
 
 #[test]
