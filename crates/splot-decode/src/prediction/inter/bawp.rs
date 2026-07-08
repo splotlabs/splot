@@ -9,7 +9,7 @@ use splot_recon::{
     ReferencePlaneView,
 };
 
-use super::{BawpSyntax, Mv, PlacedInterBlock, unsupported_at};
+use super::{BawpSyntax, Mv, PlacedInterBlock};
 use crate::Result;
 
 const SHIFT: u32 = 8;
@@ -51,63 +51,52 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     target: PlaneRect,
     mv: Mv,
-    tile_offset: ByteOffset,
+    _tile_offset: ByteOffset,
 ) -> Result<()> {
-    let bounds_error = || {
-        inter_diag!(
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_morph_pred",
-            tile_offset,
-            "intrabc morph_pred reference template out of bounds",
-            "7.13.3.25"
-        )
+    let Some(size) = morph_target_size(target) else {
+        return Ok(());
     };
-    if !target.width().is_power_of_two() || !target.height().is_power_of_two() {
-        return Err(bounds_error());
-    }
-    let size = IntraRectBlockSize::new(
-        u8::try_from(target.width().trailing_zeros()).map_err(|_| bounds_error())?,
-        u8::try_from(target.height().trailing_zeros()).map_err(|_| bounds_error())?,
-    )
-    .map_err(|_| bounds_error())?;
 
     let dy = to_fullmv(mv.row);
     let dx = to_fullmv(mv.col);
-    let ref_y = i64::try_from(target.y())
-        .map_err(|_| bounds_error())?
-        .checked_add(i64::from(dy))
-        .ok_or_else(bounds_error)?;
-    let ref_x = i64::try_from(target.x())
-        .map_err(|_| bounds_error())?
-        .checked_add(i64::from(dx))
-        .ok_or_else(bounds_error)?;
+    let Some(ref_y) = fullpel_ref_pos(target.y(), dy) else {
+        return Ok(());
+    };
+    let Some(ref_x) = fullpel_ref_pos(target.x(), dx) else {
+        return Ok(());
+    };
     if ref_x < 1 || ref_y < 1 {
-        return Err(bounds_error());
+        return Ok(());
     }
 
-    let plane = workspace.plane(PlaneId::Y).map_err(|_| bounds_error())?;
-    let plane_width = i64::try_from(plane.storage_size().width()).map_err(|_| bounds_error())?;
-    let plane_height = i64::try_from(plane.storage_size().height()).map_err(|_| bounds_error())?;
-    let bw = i64::try_from(target.width()).map_err(|_| bounds_error())?;
-    let bh = i64::try_from(target.height()).map_err(|_| bounds_error())?;
-    if ref_x + bw > plane_width || ref_y + bh > plane_height {
-        return Err(bounds_error());
+    let plane = workspace.plane(PlaneId::Y)?;
+    let Some(plane_width) = i64::try_from(plane.storage_size().width()).ok() else {
+        return Ok(());
+    };
+    let Some(plane_height) = i64::try_from(plane.storage_size().height()).ok() else {
+        return Ok(());
+    };
+    let Some(bw) = i64::try_from(target.width()).ok() else {
+        return Ok(());
+    };
+    let Some(bh) = i64::try_from(target.height()).ok() else {
+        return Ok(());
+    };
+    let Some(ref_right) = ref_x.checked_add(bw) else {
+        return Ok(());
+    };
+    let Some(ref_bottom) = ref_y.checked_add(bh) else {
+        return Ok(());
+    };
+    if ref_right > plane_width || ref_bottom > plane_height {
+        return Ok(());
     }
 
     let avail_up = target.y() > 0;
     let avail_left = target.x() > 0;
     let (width, height, num_up, num_left) =
         bawp_template_counts(target.width(), target.height(), true, avail_up, avail_left);
-    let edges = workspace
-        .intra_dc_edges_for_rect(PlaneId::Y, target.x(), target.y(), size)
-        .map_err(|_| bounds_error())?;
-    let sample_at = |row: i64, col: i64| -> Result<i64> {
-        let row = usize::try_from(row).map_err(|_| bounds_error())?;
-        let col = usize::try_from(col).map_err(|_| bounds_error())?;
-        workspace
-            .reconstructed_sample(PlaneId::Y, col, row)
-            .map(|sample| i64::from(sample.to_u16()))
-            .map_err(|_| bounds_error())
-    };
+    let edges = workspace.intra_dc_edges_for_rect(PlaneId::Y, target.x(), target.y(), size)?;
 
     let mut sum_x = 0i64;
     let mut sum_y = 0i64;
@@ -115,38 +104,70 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     let mut sum_xy = 0i64;
     let mut count = 0i64;
     if let Some(step) = width.checked_div(num_up).filter(|_| num_up > 0) {
-        let above = edges.above_samples().ok_or_else(bounds_error)?;
+        let Some(above) = edges.above_samples() else {
+            return Ok(());
+        };
         let mut i = step >> 1;
         while i < width {
-            let recon = i64::from(above.get(i).ok_or_else(bounds_error)?.to_u16());
-            let reference_sample = sample_at(
-                ref_y - 1,
-                ref_x + i64::try_from(i).map_err(|_| bounds_error())?,
-            )?;
+            let Some(recon) = above.get(i).map(|sample| i64::from(sample.to_u16())) else {
+                return Ok(());
+            };
+            let Some(sample_col) = i64::try_from(i)
+                .ok()
+                .and_then(|offset| ref_x.checked_add(offset))
+            else {
+                return Ok(());
+            };
+            let Some(reference_sample) = intrabc_morph_sample(workspace, ref_y - 1, sample_col)
+            else {
+                return Ok(());
+            };
             sum_x += reference_sample;
             sum_y += recon;
             sum_xy += reference_sample * recon;
             sum_xx += reference_sample * reference_sample;
             i += step;
         }
-        count += i64::try_from(num_up).map_err(|_| bounds_error())?;
+        let Some(delta_count) = i64::try_from(num_up).ok() else {
+            return Ok(());
+        };
+        let Some(next_count) = count.checked_add(delta_count) else {
+            return Ok(());
+        };
+        count = next_count;
     }
     if let Some(step) = height.checked_div(num_left).filter(|_| num_left > 0) {
-        let left = edges.left_samples().ok_or_else(bounds_error)?;
+        let Some(left) = edges.left_samples() else {
+            return Ok(());
+        };
         let mut i = step >> 1;
         while i < height {
-            let recon = i64::from(left.get(i).ok_or_else(bounds_error)?.to_u16());
-            let reference_sample = sample_at(
-                ref_y + i64::try_from(i).map_err(|_| bounds_error())?,
-                ref_x - 1,
-            )?;
+            let Some(recon) = left.get(i).map(|sample| i64::from(sample.to_u16())) else {
+                return Ok(());
+            };
+            let Some(sample_row) = i64::try_from(i)
+                .ok()
+                .and_then(|offset| ref_y.checked_add(offset))
+            else {
+                return Ok(());
+            };
+            let Some(reference_sample) = intrabc_morph_sample(workspace, sample_row, ref_x - 1)
+            else {
+                return Ok(());
+            };
             sum_x += reference_sample;
             sum_y += recon;
             sum_xy += reference_sample * recon;
             sum_xx += reference_sample * reference_sample;
             i += step;
         }
-        count += i64::try_from(num_left).map_err(|_| bounds_error())?;
+        let Some(delta_count) = i64::try_from(num_left).ok() else {
+            return Ok(());
+        };
+        let Some(next_count) = count.checked_add(delta_count) else {
+            return Ok(());
+        };
+        count = next_count;
     }
 
     let mut alpha = 1i64 << SHIFT;
@@ -166,9 +187,8 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
         -(1 << (SHIFT - 1))
     };
 
-    workspace
-        .apply_bawp_rect(PlaneId::Y, target.x(), target.y(), size, alpha, beta)
-        .map_err(|_| bounds_error())
+    workspace.apply_bawp_rect(PlaneId::Y, target.x(), target.y(), size, alpha, beta)?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -184,14 +204,6 @@ fn apply_bawp_plane<T: ReconSample>(
     luma_alpha: i64,
     tile_offset: ByteOffset,
 ) -> Result<i64> {
-    let bounds_error = || {
-        inter_diag!(
-            "inter_bawp_reference_bounds",
-            tile_offset,
-            "inter.bawp reference template out of bounds",
-            "7.13.3.25"
-        )
-    };
     let plane_x = placed.luma_x >> sub_x;
     let plane_y = placed.luma_y >> sub_y;
     let plane_w = placed.luma_w >> sub_x;
@@ -199,50 +211,75 @@ fn apply_bawp_plane<T: ReconSample>(
     let (ref_samples, ref_width, ref_height) = reference_plane(reference, plane, tile_offset)?;
     let dy = to_fullmv(mv.row);
     let dx = to_fullmv(mv.col);
-    let ref_y =
-        (i64::try_from(placed.luma_y).map_err(|_| bounds_error())? + i64::from(dy)) >> sub_y;
-    let ref_x =
-        (i64::try_from(placed.luma_x).map_err(|_| bounds_error())? + i64::from(dx)) >> sub_x;
-    let plane_width = i64::try_from(ref_width).map_err(|_| bounds_error())?;
-    let plane_height = i64::try_from(ref_height).map_err(|_| bounds_error())?;
+    let Some(ref_y) = fullpel_ref_pos(placed.luma_y, dy).map(|y| y >> sub_y) else {
+        return Ok(luma_alpha);
+    };
+    let Some(ref_x) = fullpel_ref_pos(placed.luma_x, dx).map(|x| x >> sub_x) else {
+        return Ok(luma_alpha);
+    };
+    let Some(plane_width) = i64::try_from(ref_width).ok() else {
+        return Ok(luma_alpha);
+    };
+    let Some(plane_height) = i64::try_from(ref_height).ok() else {
+        return Ok(luma_alpha);
+    };
+    let Some(plane_x_i64) = i64::try_from(plane_x).ok() else {
+        return Ok(luma_alpha);
+    };
+    let Some(plane_y_i64) = i64::try_from(plane_y).ok() else {
+        return Ok(luma_alpha);
+    };
+    let Some(plane_w_i64) = i64::try_from(plane_w).ok() else {
+        return Ok(luma_alpha);
+    };
+    let Some(plane_h_i64) = i64::try_from(plane_h).ok() else {
+        return Ok(luma_alpha);
+    };
     let (bw, bh) = (
-        i64::try_from(plane_w)
-            .map_err(|_| bounds_error())?
-            .min(plane_width - i64::try_from(plane_x).map_err(|_| bounds_error())?),
-        i64::try_from(plane_h)
-            .map_err(|_| bounds_error())?
-            .min(plane_height - i64::try_from(plane_y).map_err(|_| bounds_error())?),
+        plane_w_i64.min(plane_width - plane_x_i64),
+        plane_h_i64.min(plane_height - plane_y_i64),
     );
-    if ref_x < 1 || ref_y < 1 || ref_x + bw > plane_width || ref_y + bh > plane_height {
-        return Err(bounds_error());
+    if bw <= 0 || bh <= 0 {
+        return Ok(luma_alpha);
+    }
+    let Some(ref_right) = ref_x.checked_add(bw) else {
+        return Ok(luma_alpha);
+    };
+    let Some(ref_bottom) = ref_y.checked_add(bh) else {
+        return Ok(luma_alpha);
+    };
+    if ref_x < 1 || ref_y < 1 || ref_right > plane_width || ref_bottom > plane_height {
+        return Ok(luma_alpha);
     }
 
     if !plane_w.is_power_of_two() || !plane_h.is_power_of_two() {
-        return Err(bounds_error());
+        return Ok(luma_alpha);
     }
-    let size = IntraRectBlockSize::new(
-        u8::try_from(plane_w.trailing_zeros()).map_err(|_| bounds_error())?,
-        u8::try_from(plane_h.trailing_zeros()).map_err(|_| bounds_error())?,
-    )
-    .map_err(|_| bounds_error())?;
+    let Some(size) = morph_dimensions_size(plane_w, plane_h) else {
+        return Ok(luma_alpha);
+    };
 
     let avail_up = plane_y > 0;
     let avail_left = plane_x > 0;
+    let Some(width_for_counts) = usize::try_from(bw).ok() else {
+        return Ok(luma_alpha);
+    };
+    let Some(height_for_counts) = usize::try_from(bh).ok() else {
+        return Ok(luma_alpha);
+    };
     let (width, height, num_up, num_left) = bawp_template_counts(
-        usize::try_from(bw).map_err(|_| bounds_error())?,
-        usize::try_from(bh).map_err(|_| bounds_error())?,
+        width_for_counts,
+        height_for_counts,
         plane == PlaneId::Y,
         avail_up,
         avail_left,
     );
 
-    let edges = workspace
-        .intra_dc_edges_for_rect(plane, plane_x, plane_y, size)
-        .map_err(|_| bounds_error())?;
-    let ref_at = |row: i64, col: i64| -> Result<i64> {
-        let row = usize::try_from(row).map_err(|_| bounds_error())?;
-        let col = usize::try_from(col).map_err(|_| bounds_error())?;
-        Ok(ref_samples.sample(row, col))
+    let edges = workspace.intra_dc_edges_for_rect(plane, plane_x, plane_y, size)?;
+    let ref_at = |row: i64, col: i64| -> Option<i64> {
+        let row = usize::try_from(row).ok()?;
+        let col = usize::try_from(col).ok()?;
+        Some(ref_samples.sample(row, col))
     };
 
     let mut sum_x = 0i64;
@@ -251,38 +288,68 @@ fn apply_bawp_plane<T: ReconSample>(
     let mut sum_xy = 0i64;
     let mut count = 0i64;
     if let Some(step) = width.checked_div(num_up).filter(|_| num_up > 0) {
-        let above = edges.above_samples().ok_or_else(bounds_error)?;
+        let Some(above) = edges.above_samples() else {
+            return Ok(luma_alpha);
+        };
         let mut i = step >> 1;
         while i < width {
-            let recon = i64::from(above.get(i).ok_or_else(bounds_error)?.to_u16());
-            let reference_sample = ref_at(
-                ref_y - 1,
-                ref_x + i64::try_from(i).map_err(|_| bounds_error())?,
-            )?;
+            let Some(recon) = above.get(i).map(|sample| i64::from(sample.to_u16())) else {
+                return Ok(luma_alpha);
+            };
+            let Some(sample_col) = i64::try_from(i)
+                .ok()
+                .and_then(|offset| ref_x.checked_add(offset))
+            else {
+                return Ok(luma_alpha);
+            };
+            let Some(reference_sample) = ref_at(ref_y - 1, sample_col) else {
+                return Ok(luma_alpha);
+            };
             sum_x += reference_sample;
             sum_y += recon;
             sum_xy += reference_sample * recon;
             sum_xx += reference_sample * reference_sample;
             i += step;
         }
-        count += i64::try_from(num_up).map_err(|_| bounds_error())?;
+        let Some(delta_count) = i64::try_from(num_up).ok() else {
+            return Ok(luma_alpha);
+        };
+        let Some(next_count) = count.checked_add(delta_count) else {
+            return Ok(luma_alpha);
+        };
+        count = next_count;
     }
     if let Some(step) = height.checked_div(num_left).filter(|_| num_left > 0) {
-        let left = edges.left_samples().ok_or_else(bounds_error)?;
+        let Some(left) = edges.left_samples() else {
+            return Ok(luma_alpha);
+        };
         let mut i = step >> 1;
         while i < height {
-            let recon = i64::from(left.get(i).ok_or_else(bounds_error)?.to_u16());
-            let reference_sample = ref_at(
-                ref_y + i64::try_from(i).map_err(|_| bounds_error())?,
-                ref_x - 1,
-            )?;
+            let Some(recon) = left.get(i).map(|sample| i64::from(sample.to_u16())) else {
+                return Ok(luma_alpha);
+            };
+            let Some(sample_row) = i64::try_from(i)
+                .ok()
+                .and_then(|offset| ref_y.checked_add(offset))
+            else {
+                return Ok(luma_alpha);
+            };
+            let Some(reference_sample) = ref_at(sample_row, ref_x - 1) else {
+                return Ok(luma_alpha);
+            };
             sum_x += reference_sample;
             sum_y += recon;
             sum_xy += reference_sample * recon;
             sum_xx += reference_sample * reference_sample;
             i += step;
         }
-        count += i64::try_from(num_left).map_err(|_| bounds_error())?;
+        let Some(delta_count) = i64::try_from(num_left).ok() else {
+            return Ok(luma_alpha);
+        };
+        let Some(next_count) = count.checked_add(delta_count) else {
+            return Ok(luma_alpha);
+        };
+        count = next_count;
     }
 
     let mut alpha = 1i64 << SHIFT;
@@ -313,14 +380,46 @@ fn apply_bawp_plane<T: ReconSample>(
         -(1 << (SHIFT - 1))
     };
 
-    workspace
-        .apply_bawp_rect(plane, plane_x, plane_y, size, alpha, beta)
-        .map_err(|_| bounds_error())?;
+    workspace.apply_bawp_rect(plane, plane_x, plane_y, size, alpha, beta)?;
     Ok(if plane == PlaneId::Y {
         alpha
     } else {
         luma_alpha
     })
+}
+
+fn morph_target_size(target: PlaneRect) -> Option<IntraRectBlockSize> {
+    morph_dimensions_size(target.width(), target.height())
+}
+
+fn morph_dimensions_size(width: usize, height: usize) -> Option<IntraRectBlockSize> {
+    if !width.is_power_of_two() || !height.is_power_of_two() {
+        return None;
+    }
+    IntraRectBlockSize::new(
+        u8::try_from(width.trailing_zeros()).ok()?,
+        u8::try_from(height.trailing_zeros()).ok()?,
+    )
+    .ok()
+}
+
+fn fullpel_ref_pos(origin: usize, delta: i32) -> Option<i64> {
+    i64::try_from(origin)
+        .ok()
+        .and_then(|origin| origin.checked_add(i64::from(delta)))
+}
+
+fn intrabc_morph_sample<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    row: i64,
+    col: i64,
+) -> Option<i64> {
+    let row = usize::try_from(row).ok()?;
+    let col = usize::try_from(col).ok()?;
+    workspace
+        .reconstructed_sample(PlaneId::Y, col, row)
+        .ok()
+        .map(|sample| i64::from(sample.to_u16()))
 }
 
 fn reference_plane<T: ReconSample>(
