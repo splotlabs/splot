@@ -5,23 +5,13 @@ const PRIMARY_REF_NONE: u8 = 7;
 const PRIMARY_REF_CHOOSE: u8 = 8;
 const INITIAL_QP_DIFF: i64 = 512;
 
-/// Resolved saved-CDF source for AV2 § 5 `set_primary_ref_frame_and_ctx`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResolvedCdfLoad {
-    /// The frame initializes CDFs from defaults.
     Default,
-    /// The frame loads saved CDFs from a primary reference slot and may blend a secondary.
-    LoadSlot {
-        /// Resolved reference-buffer slot for the primary CDF load.
-        primary: u32,
-        /// Resolved reference-buffer slot for the secondary CDF blend.
-        blend: Option<u32>,
-    },
-    /// A signalled real primary reference is outside `ref_frame_idx`.
+    LoadSlot { primary: u32, blend: Option<u32> },
     OutOfRangePrimary,
 }
 
-/// Resolves the saved-CDF slot AV2 § 5 would load, including `PRIMARY_REF_CHOOSE`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_cdf_load(
     signal_primary_ref_frame: Option<bool>,
@@ -86,7 +76,6 @@ pub(crate) fn resolve_cdf_load(
     }
 }
 
-/// Returns AV2 § 5 primary and secondary `ref_frame_idx` indices for CDF loading.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn choose_primary_secondary_ref_frame(
     signal_primary_ref_frame: Option<bool>,
@@ -208,12 +197,10 @@ fn get_relative_dist(a: i32, b: i32) -> i32 {
     (a - b).clamp(-127, 127)
 }
 
-/// `FloorLog2(x)` (AV2 § 4): the index of the most-significant set bit, 0 for `x == 0`.
 pub(crate) fn floor_log2(x: u64) -> i32 {
     if x == 0 { 0 } else { x.ilog2() as i32 }
 }
 
-/// Returns whether stored reference order hints can be used without AV2 § 5.18.2 wrap fixup.
 pub(crate) fn order_hint_history_unwrapped(
     ref_valid: &[bool],
     ref_order_hint: &[u32],

@@ -113,13 +113,6 @@ fn lr_unit_filter_for_block<'a>(
         .ok_or_else(|| luma_lr_filter_error(offset))
 }
 
-/// Merges one plane's source blocks into maximal horizontally contiguous runs
-/// whose every filter-visible input matches, so the § 7.20 filters and their
-/// materialized windows run once per run instead of once per 4x4/2x2 block.
-///
-/// Filter output depends only on a sample's absolute coordinate, the § 7.20.1/
-/// 7.20.2 bounds, the tile bounds, and the LR unit selection — all held equal
-/// by [`lr_blocks_mergeable`] — so a merged run is bit-identical to its parts.
 #[cfg(test)]
 fn coalesced_lr_source_rows(
     lr_source_blocks: &[WienerNsLrSourceBlock],
@@ -138,8 +131,6 @@ fn coalesced_lr_source_rows(
     coalesce_bucketed_lr_rows(rows)
 }
 
-/// One-pass [`coalesced_lr_source_rows`] for all three planes, so the block
-/// list is scanned once instead of once per plane.
 pub(crate) fn coalesced_lr_source_rows_all(
     lr_source_blocks: &[WienerNsLrSourceBlock],
 ) -> [Vec<WienerNsLrSourceBlock>; 3] {
@@ -231,9 +222,6 @@ fn clipped_lr_source_block(
     Ok(clipped)
 }
 
-/// § 7.20.2-resolved source samples covering one restoration block plus the
-/// filter and classification read reach, materialized once so per-tap reads
-/// are direct lookups.
 struct LrSourceWindow<T> {
     samples: Vec<T>,
     stride: usize,
@@ -242,12 +230,6 @@ struct LrSourceWindow<T> {
 }
 
 impl<T: ReconSample> LrSourceWindow<T> {
-    /// Resolves every source sample the filter can reach for a `width` x
-    /// `height` block at (`block_x`, `block_y`) through the § 7.20.2 selector.
-    ///
-    /// The selector's clipped x depends only on x and its clipped y / source
-    /// frame depend only on y, so each row is resolved with two x-extreme
-    /// probes and per-sample clamping between them.
     #[allow(clippy::too_many_arguments)]
     fn materialize(
         plane: PlaneId,
@@ -366,8 +348,6 @@ impl<T: ReconSample> LrSourceWindow<T> {
         })
     }
 
-    /// Returns the row-major samples from plane-absolute (`x`, `y`) onward,
-    /// with the window stride, for strided consumers.
     fn tail_from(&self, x: isize, y: isize) -> Option<(&[T], usize)> {
         let col = usize::try_from(x.checked_sub(self.origin_x)?).ok()?;
         let row = usize::try_from(y.checked_sub(self.origin_y)?).ok()?;
@@ -378,8 +358,6 @@ impl<T: ReconSample> LrSourceWindow<T> {
         self.samples.get(start..).map(|tail| (tail, self.stride))
     }
 
-    /// Plane-absolute read; coordinates beyond the materialized reach cannot
-    /// occur for reads within the radius and fall back to the default sample.
     fn get_abs(&self, x: isize, y: isize) -> T {
         let col = x.saturating_sub(self.origin_x);
         let row = y.saturating_sub(self.origin_y);
@@ -483,7 +461,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             })
     }
 
-    /// Applies §7.17 luma loop restoration over already-coalesced luma runs.
     pub(crate) fn apply_luma_lr_runs(
         &mut self,
         core: &FrameHeaderCore,
@@ -570,8 +547,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.publish_lr_outputs(PlaneId::Y, filtered, offset)
     }
 
-    /// Publishes filtered LR rectangles: banded on the pool when installed,
-    /// with the serial in-order `write_rect` loop as the fallback shape.
     fn publish_lr_outputs(
         &mut self,
         plane_id: PlaneId,
@@ -627,7 +602,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
     }
 
-    /// Applies §7.17 chroma loop restoration over already-coalesced plane runs.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn apply_chroma_lr_runs(
         &mut self,
@@ -945,9 +919,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Ok(subclasses)
     }
 
-    /// § 7.20.4 `BlockStartX` is the 64-sample window containing the
-    /// classified cell (derived from `class_x`, not the merged run's x), so a
-    /// coalesced run classifies identically to per-block dispatch.
     #[allow(clippy::too_many_arguments)]
     fn luma_lr_subclass_at(
         &self,
@@ -997,76 +968,5 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 }
 
 #[cfg(test)]
-mod coalesce_tests {
-    use super::*;
-
-    fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
-        WienerNsLrSourceBlock {
-            plane,
-            row: y / 4,
-            col: x / 4,
-            unit_row: 0,
-            unit_col: 0,
-            tile_mi_row_start: 0,
-            tile_mi_row_end: 4,
-            tile_mi_col_start: 0,
-            tile_mi_col_end: 4,
-            x,
-            y,
-            width: 4,
-            height: 4,
-            luma_start_x: 0,
-            luma_end_x: 15,
-            luma_start_y: 0,
-            luma_end_y: 15,
-            frame_luma_end_y: 15,
-            luma_stripe_start_y: 0,
-            luma_stripe_end_y: 15,
-        }
-    }
-
-    #[test]
-    fn merges_contiguous_row_blocks_and_splits_on_filter_visible_fields() {
-        let mut stripe_split = block(0, 8, 0);
-        stripe_split.luma_stripe_end_y = 7;
-        let mut unit_split = block(0, 12, 4);
-        unit_split.unit_col = 1;
-        let blocks = [
-            block(0, 4, 0),
-            block(1, 0, 0),
-            block(0, 0, 0),
-            stripe_split,
-            block(0, 12, 0),
-            block(0, 0, 4),
-            block(0, 4, 4),
-            block(0, 8, 4),
-            unit_split,
-        ];
-
-        let runs = coalesced_lr_source_rows(&blocks, 0);
-        let shapes: Vec<_> = runs
-            .iter()
-            .map(|run| (run.x, run.y, run.width, run.height))
-            .collect();
-        assert_eq!(
-            shapes,
-            vec![
-                (0, 0, 8, 4),
-                (8, 0, 4, 4),
-                (12, 0, 4, 4),
-                (0, 4, 12, 4),
-                (12, 4, 4, 4)
-            ],
-            "runs must merge contiguous same-row blocks and split when any \
-             filter-visible field differs"
-        );
-        assert!(runs.iter().all(|run| run.plane == 0));
-    }
-
-    #[test]
-    fn does_not_merge_across_row_gaps() {
-        let blocks = [block(0, 0, 0), block(0, 8, 0)];
-        let runs = coalesced_lr_source_rows(&blocks, 0);
-        assert_eq!(runs.len(), 2);
-    }
-}
+#[path = "final_filters_tests.rs"]
+mod tests;

@@ -16,6 +16,7 @@ mod deblock_filter;
 mod dequant;
 mod dequant_process;
 mod error;
+mod film_grain;
 mod format;
 mod frame;
 mod geometry;
@@ -34,6 +35,8 @@ mod inverse_transform_2d;
 mod inverse_transform_2d_outer;
 mod loop_restoration;
 pub mod math;
+#[doc(hidden)]
+pub mod mhccp;
 mod pc_wiener;
 mod plane;
 mod reconstruct;
@@ -69,6 +72,7 @@ pub use dequant_process::{
     dequantize_block, qm_weighted_quantizer, quantization_matrix_weight,
 };
 pub use error::{ReconError, Result};
+pub use film_grain::apply_film_grain;
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
 pub use frame::{DecodedFrame, DecodedFrameInfo, FramePlanes, SharedFrame};
 pub use geometry::{OutputIndex, PlaneRect, PlaneSize};

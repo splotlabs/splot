@@ -18,17 +18,10 @@ use crate::Result;
 use super::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
 use splot_core::span::ByteOffset;
 
-/// AV2 §3 `MI_SIZE`: one mode-info unit spans four samples.
 const MI_SIZE: usize = 4;
-/// Wraps an already-reconstructed [`CurrentFrameWorkspace`] and the filter-state
-/// inputs (deblock geometry, CDEF/CCSO/LR grids) so the shared §7.2 in-loop filter
-/// chain can run over it. The workspace is filled by the unified decode engine; this
-/// sink only carries the frozen samples plus the retained filter parameters.
 pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     workspace: CurrentFrameWorkspace<T>,
     bit_depth: BitDepth,
-    /// The §5.4.4 `cfl_ds_filter_index` sequence value used by §7.13.5 luma
-    /// downsampling; value `3` aliases filter `0`.
     cfl_ds_filter_index: u8,
     luma_width: usize,
     luma_height: usize,
@@ -42,13 +35,6 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
 }
 
-/// AV2 §7.13.2.17 intra edge filter strength selection process. Returns the
-/// edge-filter strength `0..=3` for a `w` x `h` transform, `filter_type` (0 or 1,
-/// from §7.13.2.15/16 — `1` when the relevant neighbour uses a smooth mode), and
-/// `delta` (the §7.13.2.7 `angleAbove = pAngle - 90` / `angleLeft = pAngle - 180`).
-/// Strength `0` means `av2_filter_intra_edge` is a no-op, so the §7.13.2.8
-/// prediction over the UNFILTERED edge is bit-exact. Transcribed VERBATIM from the
-/// committed spec mirror `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-17`.
 #[allow(clippy::if_same_then_else)]
 pub(crate) fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta: i32) -> u8 {
     let d = delta.unsigned_abs();
@@ -113,9 +99,6 @@ pub(crate) fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta:
 }
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
-    /// Wraps an already-reconstructed workspace so the caller can run the shared
-    /// §7.2 final filter chain over it: feed the filter state via the `set_*`
-    /// methods, then finish with [`Self::into_filtered_frame`].
     pub(crate) fn for_final_filtering(
         workspace: CurrentFrameWorkspace<T>,
         luma_width: usize,
@@ -139,8 +122,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
     }
 
-    /// Hands over externally accumulated § 7.17 deblock geometry (luma list +
-    /// per-plane chroma lists) for the final filter chain.
     pub(crate) fn set_deblock_blocks(
         &mut self,
         luma: Vec<crate::filters::deblock::DeblockBlock>,
@@ -150,25 +131,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.chroma_deblock_blocks = chroma;
     }
 
-    /// Retains the parsed CDEF unit grid for the §7.2 final filter chain.
     pub(crate) fn set_cdef_grid(&mut self, grid: Option<crate::filters::cdef::CdefUnitGrid>) {
         self.cdef_grid = grid;
     }
 
-    /// Retains the selectable walk's parsed CCSO block-enable grid for the final
-    /// filter chain.
     pub(crate) fn set_ccso_grid(&mut self, grid: Option<crate::filters::ccso::CcsoUnitGrid>) {
         self.ccso_grid = grid;
     }
 
-    /// Retains the sequence-level §5.4.4 `cfl_ds_filter_index` used by
-    /// chroma Wiener NS LR luma companion reads.
     pub(crate) const fn set_cfl_ds_filter_index(&mut self, index: u8) {
         self.cfl_ds_filter_index = index;
     }
 
-    /// Retains per-luma-transform skip/EOB facts for CDEF skip-grid and
-    /// multi-class luma Wiener NS LR classification.
     pub(crate) fn set_tx_skip_records(
         &mut self,
         records: Vec<super::WienerNsLrTxSkipTransformRecord>,
@@ -176,8 +150,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.tx_skip_records = records;
     }
 
-    /// Retains active loop-restoration source blocks from the full selectable
-    /// walk for final LR filtering.
     pub(crate) fn set_lr_source_blocks(
         &mut self,
         blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
@@ -185,8 +157,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.lr_source_blocks = blocks;
     }
 
-    /// Retains entropy-coded per-unit Wiener NS filters from the full selectable
-    /// walk for final LR filtering.
     pub(crate) fn set_lr_unit_filters(
         &mut self,
         filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
@@ -194,8 +164,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.lr_unit_filters = filters;
     }
 
-    /// Runs the §7.2 in-loop filter chain (deblock → CDEF → CCSO → LR) over
-    /// the reconstructed workspace and freezes the filtered frame.
     pub(crate) fn into_filtered_frame(
         mut self,
         core: &splot_core::headers::frame::FrameHeaderCore,
@@ -463,9 +431,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 }
 
-/// § 7.17 chroma deblock geometry for one 4:2:0 chroma transform at
-/// plane-sample (`x`, `y`): chroma MI cells map ×2 onto the luma MI grid.
-/// Returns the chroma list index (U = 0, V = 1) with the record.
 pub(crate) fn chroma_transform_deblock_block(
     plane_id: PlaneId,
     x: usize,
@@ -499,18 +464,12 @@ pub(crate) fn chroma_transform_deblock_block(
     ))
 }
 
-/// Maps a §5.20.6 `TxSize` index to its `(log2_width, log2_height)` sample
-/// dimensions via the §9 `Tx_Width` / `Tx_Height` log2 tables, or `None` when the
-/// index is outside the 19-entry table range.
 fn tx_size_log2(tx_size: usize) -> Option<(u32, u32)> {
     let w = u32::try_from(*TX_WIDTH_LOG2.get(tx_size)?).ok()?;
     let h = u32::try_from(*TX_HEIGHT_LOG2.get(tx_size)?).ok()?;
     Some((w, h))
 }
 
-/// The MI-unit `(width, height)` of a transform with the given log2 sample
-/// dimensions (one MI unit spans `MI_SIZE` samples; a transform is at least one MI
-/// unit per axis).
 fn mi_extent(log2_width: u32, log2_height: u32) -> (usize, usize) {
     let mi_w = (1usize << log2_width >> 2).max(1);
     let mi_h = (1usize << log2_height >> 2).max(1);

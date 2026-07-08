@@ -39,6 +39,14 @@ Lazy rules:
 - The shortest working diff wins only after the real problem is understood; the
   smallest change in the wrong place is a second bug.
 
+Reduction and cleanup work must delete more complexity than it adds. Do not add
+new xtask commands, budget ratchets, status-matrix rows, generated reports, or
+process documentation just to justify a cleanup. Use existing gates and report
+measurements in the PR or final note unless the user explicitly asks for a new
+enforced policy. Do not move code or tests merely to game line-count metrics;
+split files only when the resulting ownership or readability is better on its
+own.
+
 Bug fixes target root cause, not symptoms. For a touched function, inspect its
 callers and fix the shared function once when that is the smaller correct
 change.

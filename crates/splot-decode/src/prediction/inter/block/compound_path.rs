@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::symbol::{SymbolDecoder, SymbolDecoderCheckpoint};
+use splot_core::symbol::SymbolDecoder;
 
 use super::super::compound::{
     CompoundParseInput, CompoundYMode, read_compound_mode_syntax, read_compound_reference_pair,
@@ -58,7 +58,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     bit_depth: BitDepth,
-    entry_checkpoint: SymbolDecoderCheckpoint,
     tile_offset: ByteOffset,
 ) -> Result<GeneralIntraLeafMode> {
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
@@ -403,16 +402,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         ));
     }
     let interp_ctx = neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true);
-    trace_interp_filter_context(
-        "compound",
-        mi_row,
-        mi_col,
-        compound.ref_frame0,
-        true,
-        interp_ctx,
-        neighbour_ctx,
-        symbols,
-    );
     let interp = resolve_interp_filter(
         cdfs,
         symbols,
@@ -563,7 +552,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         ),
         tile_offset,
     )?;
-    trace_leaf_exit("compound", frontier, entry_checkpoint, symbols.checkpoint());
     Ok(non_intra_leaf_mode(frontier))
 }
 

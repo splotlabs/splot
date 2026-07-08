@@ -467,8 +467,6 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Runs `f` with a per-thread reusable frame-sized grid reset to all-`None`
-/// cells, so each coding block avoids reallocating and refilling the grid.
 fn with_selectable_tx_grid<R>(
     rows: usize,
     cols: usize,
@@ -506,9 +504,6 @@ impl SelectableLumaTxGrid {
         })
     }
 
-    /// Restores the all-`None` cell state. `set_tx_size` writes cells only
-    /// inside rects it also records, so clearing the recorded rects (with the
-    /// same edge clipping) covers every set cell.
     fn reset(&mut self) {
         for record in &self.records {
             let row_end = record.row.saturating_add(record.rows).min(self.rows);
@@ -690,73 +685,59 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
     tile_offset: ByteOffset,
 ) -> Result<Vec<SelectableLumaTxRecord>> {
     with_selectable_tx_grid(grid_size.0, grid_size.1, |grid| {
-    let b_size = frontier.b_size.index();
-    if b_size == BLOCK_4X4 {
-        grid.set_tx_size(frontier.r, frontier.c, 1, 1, false, false)
-            .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
-    } else {
-        let max_tx_size = table_usize("Max_Tx_Size_Rect", &MAX_TX_SIZE_RECT, b_size)
-            .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
-        let tx_w4 = tx_dimension("Tx_Width", &TX_WIDTH, max_tx_size, tile_offset)? / MI_SIZE;
-        let tx_h4 = tx_dimension("Tx_Height", &TX_HEIGHT, max_tx_size, tile_offset)? / MI_SIZE;
+        let b_size = frontier.b_size.index();
+        if b_size == BLOCK_4X4 {
+            grid.set_tx_size(frontier.r, frontier.c, 1, 1, false, false)
+                .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+        } else {
+            let max_tx_size = table_usize("Max_Tx_Size_Rect", &MAX_TX_SIZE_RECT, b_size)
+                .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+            let tx_w4 = tx_dimension("Tx_Width", &TX_WIDTH, max_tx_size, tile_offset)? / MI_SIZE;
+            let tx_h4 = tx_dimension("Tx_Height", &TX_HEIGHT, max_tx_size, tile_offset)? / MI_SIZE;
+            let extent = frontier_4x4_extent(
+                frontier,
+                tile_offset,
+                selectable_reason!("inter_block_width"),
+                selectable_reason!("inter_block_height"),
+            )?;
+            let row_end = frontier.r.checked_add(extent.rows).ok_or_else(|| {
+                selectable_decode_error(tile_offset, selectable_reason!("inter_row_end_overflow"))
+            })?;
+            let col_end = frontier.c.checked_add(extent.cols).ok_or_else(|| {
+                selectable_decode_error(tile_offset, selectable_reason!("inter_col_end_overflow"))
+            })?;
+            for row in (frontier.r..row_end).step_by(tx_h4) {
+                for col in (frontier.c..col_end).step_by(tx_w4) {
+                    let Some(tx_partition) = read_tx_partition_symbols(
+                        work_unit,
+                        symbols,
+                        grid,
+                        row,
+                        col,
+                        max_tx_size,
+                        b_size,
+                        fsc_mode,
+                        true,
+                        tile_offset,
+                    )?
+                    else {
+                        continue;
+                    };
+                    apply_tx_partition(grid, row, col, max_tx_size, tx_partition)
+                        .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+                }
+            }
+        }
         let extent = frontier_4x4_extent(
             frontier,
             tile_offset,
-            selectable_reason!("inter_block_width"),
-            selectable_reason!("inter_block_height"),
+            selectable_reason!("inter_region_width"),
+            selectable_reason!("inter_region_height"),
         )?;
-        let row_end = frontier.r.checked_add(extent.rows).ok_or_else(|| {
-            selectable_decode_error(tile_offset, selectable_reason!("inter_row_end_overflow"))
-        })?;
-        let col_end = frontier.c.checked_add(extent.cols).ok_or_else(|| {
-            selectable_decode_error(tile_offset, selectable_reason!("inter_col_end_overflow"))
-        })?;
-        for row in (frontier.r..row_end).step_by(tx_h4) {
-            for col in (frontier.c..col_end).step_by(tx_w4) {
-                let Some(tx_partition) = read_tx_partition_symbols(
-                    work_unit,
-                    symbols,
-                    grid,
-                    row,
-                    col,
-                    max_tx_size,
-                    b_size,
-                    fsc_mode,
-                    true,
-                    tile_offset,
-                )?
-                else {
-                    continue;
-                };
-                if trace_tx_partition_for(row, col) {
-                    eprintln!(
-                        "tx partition inter row={row} col={col} max_tx_size={max_tx_size} b_size={b_size} partition={tx_partition} checkpoint={:?}",
-                        symbols.checkpoint(),
-                    );
-                }
-                apply_tx_partition(grid, row, col, max_tx_size, tx_partition)
-                    .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
-            }
-        }
-    }
-    let extent = frontier_4x4_extent(
-        frontier,
-        tile_offset,
-        selectable_reason!("inter_region_width"),
-        selectable_reason!("inter_region_height"),
-    )?;
-    let records = grid
-        .records_for_region(frontier.r, frontier.c, extent.rows, extent.cols)
-        .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
-    if trace_tx_partition_for(frontier.r, frontier.c) {
-        eprintln!(
-            "tx records inter r={} c={} b={} records={records:?}",
-            frontier.r,
-            frontier.c,
-            frontier.b_size.index(),
-        );
-    }
-    Ok(records)
+        let records = grid
+            .records_for_region(frontier.r, frontier.c, extent.rows, extent.cols)
+            .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+        Ok(records)
     })
     .map_err(|error| selectable_transform_record_error(error, tile_offset))?
 }
@@ -1016,18 +997,7 @@ fn read_tx_symbol(
         .read_block_symbol_trace(selector, symbols)
         .map(|symbol| usize::from(symbol.get()))
         .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("symbol_read")))?;
-    if crate::trace_flags::trace_flag!("SPLOT_TRACE_TX_PARTITION") {
-        eprintln!(
-            "tx symbol selector={selector:?} value={value} checkpoint={:?}",
-            symbols.checkpoint(),
-        );
-    }
     Ok(value)
-}
-
-fn trace_tx_partition_for(row: usize, col: usize) -> bool {
-    crate::trace_flags::trace_flag!("SPLOT_TRACE_TX_PARTITION")
-        && ((row == 0 && (128..=144).contains(&col)) || (row == 16 && col == 336))
 }
 
 fn read_delta_q_abs(

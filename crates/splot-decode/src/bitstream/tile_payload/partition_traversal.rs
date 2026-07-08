@@ -91,7 +91,6 @@ const WIENER_NS_TAPS_PRESENT: [[[bool; WIENER_NS_CHROMA_COEFFS]; WIENER_NS_LUMA_
     ],
 ];
 
-/// Partition-context state for § 8.3.2 selectors.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionContextState<'a> {
@@ -101,7 +100,6 @@ pub(crate) struct TilePartitionContextState<'a> {
 }
 
 impl<'a> TilePartitionContextState<'a> {
-    /// Creates a read-only context-state view for § 8.3.2 partition selectors.
     #[must_use]
     pub(crate) const fn new(
         mi_sizes: [&'a [&'a [usize]]; 2],
@@ -116,27 +114,19 @@ impl<'a> TilePartitionContextState<'a> {
     }
 }
 
-/// BRU state supported by partition traversal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePartitionBruState {
-    /// Normal non-BRU path: `bru_mode == BRU_ACTIVE`.
     Active,
-    /// BRU, bridge, or inactive paths are unsupported.
     Unsupported,
 }
 
-/// Loop-restoration syntax state supported by partition traversal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePartitionLoopRestorationState {
-    /// No §5.20.10.4 `read_lr()` syntax is needed before partition reads.
     NoSyntax,
-    /// Narrow frame-level Wiener NS LR unit syntax is supported before partition reads.
     FrameWienerNs(TilePartitionWienerNsLoopRestorationState),
-    /// Root `read_lr()` syntax is unsupported.
     UnsupportedReadLrSyntax,
 }
 
-/// Narrow frame-level Wiener NS LR state supported by partition traversal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionWienerNsLoopRestorationState {
     plane_enabled: [bool; 3],
@@ -145,7 +135,6 @@ pub(crate) struct TilePartitionWienerNsLoopRestorationState {
 }
 
 impl TilePartitionWienerNsLoopRestorationState {
-    /// Creates checked-copyable Wiener NS LR unit facts for the active frame.
     #[must_use]
     pub(crate) const fn new(
         plane_enabled: [bool; 3],
@@ -160,7 +149,6 @@ impl TilePartitionWienerNsLoopRestorationState {
     }
 }
 
-/// Frame and sequence facts required by partition traversal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionFrameFacts {
     mi_rows: usize,
@@ -181,7 +169,6 @@ pub(crate) struct TilePartitionFrameFacts {
 }
 
 impl TilePartitionFrameFacts {
-    /// Creates checked frame facts for partition traversal.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub(crate) fn new(
         mi_rows: usize,
@@ -219,14 +206,12 @@ impl TilePartitionFrameFacts {
         })
     }
 
-    /// Superblock size used by this frame's tile partition traversal.
     #[must_use]
     pub(crate) const fn sb_size(&self) -> BlockSize {
         self.sb_size
     }
 }
 
-/// Input to crate-private partition traversal.
 #[derive(Debug)]
 pub(crate) struct TilePartitionTraversalInput<'work, 'payload, 'ctx> {
     work_unit: &'work mut DecodeTileWorkUnit<'payload>,
@@ -236,7 +221,6 @@ pub(crate) struct TilePartitionTraversalInput<'work, 'payload, 'ctx> {
 }
 
 impl<'work, 'payload, 'ctx> TilePartitionTraversalInput<'work, 'payload, 'ctx> {
-    /// Creates traversal input from explicit caller facts.
     #[must_use]
     pub(crate) const fn new(
         work_unit: &'work mut DecodeTileWorkUnit<'payload>,
@@ -253,7 +237,6 @@ impl<'work, 'payload, 'ctx> TilePartitionTraversalInput<'work, 'payload, 'ctx> {
     }
 }
 
-/// AV2 § 5.20.4.1 chroma-reference geometry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ChromaRefGeometry {
     row: usize,
@@ -262,31 +245,26 @@ pub(crate) struct ChromaRefGeometry {
 }
 
 impl ChromaRefGeometry {
-    /// Builds a chroma-reference geometry from explicit `(row, col, size)` facts.
     pub(crate) const fn new(row: usize, col: usize, size: BlockSize) -> Self {
         Self { row, col, size }
     }
 
-    /// AV2 § 5.20.4.1 `ChromaMiRow`.
     #[allow(dead_code)]
     pub(crate) const fn row(self) -> usize {
         self.row
     }
 
-    /// AV2 § 5.20.4.1 `ChromaMiCol`.
     #[allow(dead_code)]
     pub(crate) const fn col(self) -> usize {
         self.col
     }
 
-    /// AV2 § 5.20.4.1 `ChromaMiSize`.
     #[allow(dead_code)]
     pub(crate) const fn size(self) -> BlockSize {
         self.size
     }
 }
 
-/// One `decode_partition()` call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionCall {
     pub(crate) r: usize,
@@ -299,7 +277,6 @@ pub(crate) struct TilePartitionCall {
     cfl_allowed_in_sdp: bool,
     extended_sdp_allowed: bool,
     intra_region: bool,
-    /// AV2 § 5.20.4.1 chroma-reference geometry inherited after chroma offset.
     chroma_ref: Option<ChromaRefGeometry>,
 }
 
@@ -320,7 +297,6 @@ impl TilePartitionCall {
         }
     }
 
-    /// Builds a child `decode_partition` call from explicit caller facts.
     #[allow(clippy::too_many_arguments)]
     pub(crate) const fn child(
         r: usize,
@@ -349,22 +325,18 @@ impl TilePartitionCall {
         }
     }
 
-    /// AV2 § 5.20.3.1 partition tree type (`SHARED`, `LUMA_PART`, `CHROMA_PART`).
     pub(crate) const fn tree_type(self) -> PartitionTreeType {
         self.tree_type
     }
 
-    /// AV2 § 5.20.3.1 `CflAllowedInSdp` inherited by this node.
     pub(crate) const fn cfl_allowed_in_sdp(self) -> bool {
         self.cfl_allowed_in_sdp
     }
 
-    /// Sets AV2 § 5.20.3.1 `CflAllowedInSdp` on this child call.
     pub(crate) const fn set_cfl_allowed_in_sdp(&mut self, value: bool) {
         self.cfl_allowed_in_sdp = value;
     }
 
-    /// AV2 § 5.20.4.1 effective chroma-reference geometry for this node.
     pub(crate) fn chroma_ref_geometry(self) -> ChromaRefGeometry {
         if !self.chroma_offset && self.has_chroma {
             return ChromaRefGeometry {
@@ -407,7 +379,6 @@ impl TilePartitionCall {
     }
 }
 
-/// AV2 tile-local MI bounds used by § 5.20.9.1 `is_inside`.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TilePartitionBounds {
@@ -470,7 +441,6 @@ fn is_cfl_context_for_chroma_ref(
     ))
 }
 
-/// One consumed partition decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionFrontierStep {
     pub(crate) call: TilePartitionCall,
@@ -479,7 +449,6 @@ pub(crate) struct TilePartitionFrontierStep {
     pub(crate) symbol_count_after: u64,
 }
 
-/// First § 5.20.4.1 `decode_block()` boundary reached by traversal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeBlockFrontier {
     pub(crate) r: usize,
@@ -497,23 +466,18 @@ pub(crate) struct DecodeBlockFrontier {
 }
 
 impl DecodeBlockFrontier {
-    /// True when this leaf is in the SDP luma-only tree.
     pub(crate) const fn is_luma_part(&self) -> bool {
         matches!(self.tree_type, PartitionTreeType::LumaPart)
     }
 
-    /// True when this leaf is in the SDP chroma-only tree.
     pub(crate) const fn is_chroma_part(&self) -> bool {
         matches!(self.tree_type, PartitionTreeType::ChromaPart)
     }
 
-    /// True when AV2 §5.20.3.1 `RegionType` is `MIXED_REGION`.
     pub(crate) const fn is_mixed_region(&self) -> bool {
         !self.intra_region
     }
 
-    /// True when AV2 §5.20.7.3 forces `is_inter = 1` because shared luma has
-    /// crossed the §5.20.4.1 chroma reference boundary.
     pub(crate) const fn shared_mixed_chroma_ref_forces_inter(&self) -> bool {
         !self.is_luma_part()
             && !self.is_chroma_part()
@@ -521,7 +485,6 @@ impl DecodeBlockFrontier {
             && self.b_size.index() != self.chroma_ref.size.index()
     }
 
-    /// Stored luma `YMode` inherited by an SDP chroma-only leaf.
     pub(crate) const fn stored_luma_y_mode(&self) -> Option<IntraYMode> {
         match self.stored_luma_y_mode {
             Some(facts) => Some(facts.y_mode),
@@ -529,7 +492,6 @@ impl DecodeBlockFrontier {
         }
     }
 
-    /// Stored luma `AngleDeltaY` inherited by an SDP chroma-only leaf.
     pub(crate) const fn stored_luma_angle_delta_y(&self) -> Option<i8> {
         match self.stored_luma_y_mode {
             Some(facts) => Some(facts.angle_delta_y),
@@ -537,19 +499,16 @@ impl DecodeBlockFrontier {
         }
     }
 
-    /// AV2 §5.20.3.1 `CflAllowedInSdp` for SDP chroma leaves.
     pub(crate) const fn cfl_allowed_in_sdp(&self) -> bool {
         self.cfl_allowed_in_sdp
     }
 
-    /// AV2 § 5.20.4.1 effective chroma-reference geometry for this leaf.
     #[allow(dead_code)]
     pub(crate) const fn chroma_ref_geometry(&self) -> ChromaRefGeometry {
         self.chroma_ref
     }
 }
 
-/// Mode-state update returned by a decoded partition leaf.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraLeafMode {
     intra_joint_mode: Option<u8>,
@@ -558,27 +517,15 @@ pub(crate) struct GeneralIntraLeafMode {
     fsc_mode: Option<u8>,
     uses_mrls: Option<u8>,
     palette_y: Option<LumaPalette>,
-    /// AV2 § 5.20.5.3 `UVCfls` value (`UVMode == UV_CFL_PRED`) for chroma leaves
-    /// that read `is_cfl`; `None` for luma-only / inter leaves, which never set
-    /// a chroma `UVCfls` cell.
     uv_cfl: Option<bool>,
-    /// `true` for an intra-block-copy leaf (`use_intrabc`, § 5.20.5.3). It carries
-    /// no luma intra mode (like an inter leaf) but is legal inside a key frame, so
-    /// the walk records it as a non-intra neighbour: AV2 `av2_get_joint_mode`
-    /// returns `DC_PRED` for both inter and intraBC neighbours (blockd.c), so the
-    /// § 8.3.2 mode-context grids treat the two identically.
     intrabc: bool,
 }
 
 impl GeneralIntraLeafMode {
-    /// § 7.13.2.16 `is_smooth` over the leaf's luma mode: `true` for
-    /// SMOOTH / SMOOTH_V / SMOOTH_H, `false` for other modes and for
-    /// chroma-part leaves (which carry no luma mode).
     pub(crate) fn y_mode_is_smooth(&self) -> bool {
         self.y_mode.is_some_and(IntraYMode::is_smooth)
     }
 
-    /// Leaf with a decoded luma mode (`TreeType != CHROMA_PART`).
     #[must_use]
     pub(crate) const fn luma(
         intra_joint_mode: u8,
@@ -599,7 +546,6 @@ impl GeneralIntraLeafMode {
         }
     }
 
-    /// Leaf without intra luma mode state: SDP chroma-only or inter block.
     #[must_use]
     pub(crate) const fn no_luma_mode() -> Self {
         Self {
@@ -614,22 +560,17 @@ impl GeneralIntraLeafMode {
         }
     }
 
-    /// Marks a no-luma-mode leaf as an intra-block-copy block so the walk admits
-    /// it inside a key frame and records it as a non-intra (`DC_PRED`) neighbour.
     #[must_use]
     pub(crate) const fn mark_intrabc(mut self) -> Self {
         self.intrabc = true;
         self
     }
 
-    /// `true` when this leaf is an intra-block-copy block ([`Self::mark_intrabc`]).
     #[must_use]
     pub(crate) const fn is_intrabc(&self) -> bool {
         self.intrabc
     }
 
-    /// SDP chroma-only leaf carrying its decoded `is_cfl` (`UVCfls`) value so the
-    /// partition walk can update the § 8.3.2 `is_cfl` neighbour context grid.
     #[must_use]
     pub(crate) const fn chroma(uv_cfl: bool) -> Self {
         Self {
@@ -644,23 +585,18 @@ impl GeneralIntraLeafMode {
         }
     }
 
-    /// Attaches decoded luma palette state for future §5.20.8 cache lookups.
     #[must_use]
     pub(crate) const fn with_palette_y(mut self, palette_y: Option<LumaPalette>) -> Self {
         self.palette_y = palette_y;
         self
     }
 
-    /// Attaches a decoded `is_cfl` (`UVCfls`) value to a luma leaf that also
-    /// decoded its chroma side (a non-SDP shared luma+chroma block), so the walk
-    /// updates the § 8.3.2 `is_cfl` neighbour context grid.
     #[must_use]
     pub(crate) const fn with_uv_cfl(mut self, uv_cfl: bool) -> Self {
         self.uv_cfl = Some(uv_cfl);
         self
     }
 
-    /// Decoded §5.20.5.3 luma intra `y_mode`, if this leaf carried luma mode state.
     #[allow(dead_code)]
     #[must_use]
     pub(crate) const fn luma_y_mode(self) -> Option<IntraYMode> {
@@ -668,7 +604,6 @@ impl GeneralIntraLeafMode {
     }
 }
 
-/// Successful partition traversal plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionTraversalPlan {
     pub(crate) tile_num: u32,
@@ -681,7 +616,6 @@ pub(crate) struct TilePartitionTraversalPlan {
     symbol_count_after: u64,
 }
 
-/// Successful root LR-unit syntax scan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileLoopRestorationRootFrontier {
     symbol_count_after: u64,
@@ -692,118 +626,78 @@ pub(crate) struct TileLoopRestorationRootFrontier {
     active_source_blocks: Vec<WienerNsLrSourceBlock>,
 }
 
-/// Caller-visible selection state for one supported Wiener NS LR unit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrUnitSelection {
-    /// Plane whose LR unit syntax was consumed.
     pub(crate) plane: usize,
-    /// Absolute LR unit row after tile-origin offset adjustment.
     pub(crate) unit_row: usize,
-    /// Absolute LR unit column after tile-origin offset adjustment.
     pub(crate) unit_col: usize,
-    /// Whether AV2 §5.20.10.5 selected `RESTORE_WIENER_NONSEP`.
     pub(crate) active: bool,
 }
 
-/// Caller-visible §7.20.1 source-bound facts for one active Wiener NS LR block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrSourceBlock {
-    /// Plane whose active LR unit covers the block.
     pub(crate) plane: usize,
-    /// Loop-restore block row in luma 4x4 units.
     pub(crate) row: usize,
-    /// Loop-restore block column in luma 4x4 units.
     pub(crate) col: usize,
-    /// Absolute LR unit row selected for this block.
     pub(crate) unit_row: usize,
-    /// Absolute LR unit column selected for this block.
     pub(crate) unit_col: usize,
-    /// Tile `MiRowStart` bound used by AV2 §7.20.4 `get_tx_skip`.
     pub(crate) tile_mi_row_start: usize,
-    /// Tile `MiRowEnd` bound used by AV2 §7.20.4 `get_tx_skip`.
     pub(crate) tile_mi_row_end: usize,
-    /// Tile `MiColStart` bound retained with the LR block for symmetry.
     pub(crate) tile_mi_col_start: usize,
-    /// Tile `MiColEnd` bound used by AV2 §7.20.4 `BlockEndX`.
     pub(crate) tile_mi_col_end: usize,
-    /// Block x coordinate in current-plane samples.
     pub(crate) x: usize,
-    /// Block y coordinate in current-plane samples.
     pub(crate) y: usize,
-    /// Block width in current-plane samples.
     pub(crate) width: usize,
-    /// Block height in current-plane samples.
     pub(crate) height: usize,
-    /// Inclusive `LumaStartX` bound from AV2 §7.20.1.
     pub(crate) luma_start_x: usize,
-    /// Inclusive `LumaEndX` bound from AV2 §7.20.1.
     pub(crate) luma_end_x: usize,
-    /// Inclusive `LumaStartY` bound from AV2 §7.20.1.
     pub(crate) luma_start_y: usize,
-    /// Inclusive `LumaEndY` bound from AV2 §7.20.1.
     pub(crate) luma_end_y: usize,
-    /// Inclusive full-frame luma Y bound (`MiRows * MI_SIZE - 1`) used by
-    /// AV2 §7.20.3 `get_luma_sample`.
     pub(crate) frame_luma_end_y: usize,
-    /// Inclusive `LumaStripeStartY` bound from AV2 §7.20.1.
     pub(crate) luma_stripe_start_y: usize,
-    /// Inclusive `LumaStripeEndY` bound from AV2 §7.20.1.
     pub(crate) luma_stripe_end_y: usize,
 }
 
-/// Caller-visible entropy-coded Wiener NS filter for one active LR unit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrUnitFilter {
-    /// Plane whose LR unit filter was consumed.
     pub(crate) plane: usize,
-    /// Absolute LR unit row after tile-origin offset adjustment.
     pub(crate) unit_row: usize,
-    /// Absolute LR unit column after tile-origin offset adjustment.
     pub(crate) unit_col: usize,
-    /// Number of active coefficient slots for this plane.
     pub(crate) coeff_count: usize,
-    /// Decoded unit-filter coefficients. Luma uses `0..16`; chroma uses `0..18`.
     pub(crate) coeffs: [i16; WIENER_NS_CHROMA_COEFFS],
 }
 
 impl TileLoopRestorationRootFrontier {
-    /// Symbol count after consuming supported root LR syntax.
     #[must_use]
     pub(crate) const fn symbol_count_after(&self) -> u64 {
         self.symbol_count_after
     }
 
-    /// Consumed tile-payload bits after supported root LR syntax.
     #[must_use]
     pub(crate) const fn consumed_bits_after(&self) -> u64 {
         self.consumed_bits_after
     }
 
-    /// Number of supported frame-level Wiener NS LR units consumed.
     #[must_use]
     pub(crate) const fn lr_units_consumed(&self) -> usize {
         self.lr_units_consumed
     }
 
-    /// Number of consumed LR units that selected `RESTORE_WIENER_NONSEP`.
     #[must_use]
     pub(crate) const fn active_wiener_ns_units(&self) -> usize {
         self.active_wiener_ns_units
     }
 
-    /// Supported frame-level Wiener NS LR unit selections in syntax order.
     #[must_use]
     pub(crate) fn selections(&self) -> &[WienerNsLrUnitSelection] {
         &self.selections
     }
 
-    /// Active Wiener NS blocks with caller-resolved §7.20.1 source bounds.
     #[must_use]
     pub(crate) fn active_source_blocks(&self) -> &[WienerNsLrSourceBlock] {
         &self.active_source_blocks
     }
 
-    /// Whether every consumed LR unit selected `RESTORE_NONE`.
     #[must_use]
     pub(crate) const fn all_lr_units_inactive(&self) -> bool {
         self.active_wiener_ns_units == 0
@@ -909,180 +803,111 @@ impl WienerNsLrUnitActivity {
 }
 
 impl TilePartitionTraversalPlan {
-    /// Ordered partition decisions consumed before the first block boundary.
     #[must_use]
     pub(crate) fn steps(&self) -> &[TilePartitionFrontierStep] {
         &self.steps
     }
 
-    /// Pending sibling child calls that cannot be processed before block syntax.
     #[must_use]
     pub(crate) fn pending_children(&self) -> &[TilePartitionCall] {
         &self.pending_children
     }
 
-    /// First block boundary.
     #[must_use]
     pub(crate) const fn frontier(&self) -> DecodeBlockFrontier {
         self.frontier
     }
 
-    /// Symbol count after planning traversal.
     #[must_use]
     pub(crate) const fn symbol_count_after(&self) -> u64 {
         self.symbol_count_after
     }
 }
 
-/// Planned block boundary plus the live symbol cursor positioned before block syntax.
 pub(crate) struct TilePartitionTraversalCursor<'payload> {
     plan: TilePartitionTraversalPlan,
     symbols: SymbolDecoder<'payload>,
 }
 
 impl<'payload> TilePartitionTraversalCursor<'payload> {
-    /// Splits the cursor into the deterministic plan and live symbol decoder.
     #[must_use]
     pub(crate) fn into_parts(self) -> (TilePartitionTraversalPlan, SymbolDecoder<'payload>) {
         (self.plan, self.symbols)
     }
 }
 
-/// Error returned by partition traversal.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TilePartitionTraversalError {
-    /// Resource limit rejected traversal.
     #[error("partition traversal rejected by resource limit: {0}")]
     Limit(#[from] DecodeLimitError),
-    /// The § 5.20.2.3 `BlockDecoded` state allocation/sizing failed.
     #[error("partition traversal block-decoded state failed: {0}")]
     BlockDecoded(#[from] super::block_decoded_state::TileBlockDecodedStateError),
-    /// The § 5.20.5.3 `YModes` state allocation/sizing failed.
     #[error("partition traversal intra YMode state failed: {0}")]
     IntraYModeState(#[from] TileIntraYModeStateError),
-    /// The § 5.20.5.3 `UsesMrls` state allocation/sizing failed.
     #[error("partition traversal intra UsesMrls state failed: {0}")]
     UsesMrlsState(#[from] TileUsesMrlsStateError),
-    /// The § 5.20.5.3 `FscModes` state allocation/sizing failed.
     #[error("partition traversal intra FscModes state failed: {0}")]
     FscModeState(#[from] TileFscModeStateError),
-    /// The § 5.20.5.3 luma palette state allocation/sizing failed.
     #[error("partition traversal luma palette state failed: {0}")]
     LumaPaletteState(#[from] TileLumaPaletteStateError),
-    /// A partition-size lookup failed.
     #[error("partition traversal size lookup failed: {0}")]
     Size(#[from] PartitionSizeError),
-    /// Allowed-partition derivation failed.
     #[error("partition traversal allowed-set derivation failed: {0}")]
     Allowed(#[from] PartitionAllowedError),
-    /// Partition decision failed.
     #[error("partition traversal decision failed: {0}")]
     Decision(#[from] PartitionDecisionError),
-    /// Symbol decoder initialization failed.
     #[error("partition traversal symbol initialization failed: {0}")]
     Symbol(#[from] splot_core::Error),
-    /// CDF context access failed.
     #[error("partition traversal CDF context failed: {0}")]
     Cdf(#[from] TileCdfError),
-    /// Unsupported traversal path.
     #[error("partition traversal unsupported path: {0:?}")]
     Unsupported(TilePartitionTraversalUnsupported),
-    /// A coordinate subtraction underflowed.
     #[error("{coordinate} coordinate underflow: {base} - {offset}")]
     CoordinateUnderflow {
-        /// Coordinate name.
         coordinate: &'static str,
-        /// Base coordinate.
         base: usize,
-        /// Derived offset.
         offset: usize,
     },
-    /// A coordinate addition overflowed.
     #[error("{coordinate} coordinate overflow: {base} + {offset}")]
     CoordinateOverflow {
-        /// Coordinate name.
         coordinate: &'static str,
-        /// Base coordinate.
         base: usize,
-        /// Derived offset.
         offset: usize,
     },
-    /// A coordinate multiplication overflowed.
     #[error("{coordinate} coordinate offset overflow: {left} * {right}")]
     CoordinateOffsetOverflow {
-        /// Coordinate name.
         coordinate: &'static str,
-        /// Left operand.
         left: usize,
-        /// Right operand.
         right: usize,
     },
-    /// Loop-restoration unit size was invalid for a supported LR plane.
     #[error("loop restoration plane {plane} has invalid unit size {unit_size}")]
-    InvalidLoopRestorationUnitSize {
-        /// Plane index.
-        plane: usize,
-        /// Invalid `LoopRestorationSize[plane]`.
-        unit_size: usize,
-    },
-    /// A selected partition had no valid child size.
+    InvalidLoopRestorationUnitSize { plane: usize, unit_size: usize },
     #[error("partition traversal selected invalid child size for {partition:?} at bSize {b_size}")]
     InvalidPartitionSubsize {
-        /// Selected partition.
         partition: PartitionType,
-        /// Source block size.
         b_size: usize,
     },
-    /// Extended SDP decoded an invalid region type symbol.
     #[error("partition traversal decoded invalid extended SDP region type {value}")]
-    InvalidRegionType {
-        /// Decoded `region_type` symbol.
-        value: u8,
-    },
-    /// Internal child-call arity invariant failed.
+    InvalidRegionType { value: u8 },
     #[error("partition traversal produced more than four child calls")]
     TooManyChildCalls,
-    /// Traversal found no in-frame `decode_block`.
     #[error("partition traversal reached no in-frame decode_block frontier")]
     NoBlockFrontier,
-    /// A luma/shared intra leaf did not provide mode state for later neighbours.
     #[error("partition traversal missing intra luma mode state at ({r}, {c})")]
-    MissingIntraLumaModeState {
-        /// MI row.
-        r: usize,
-        /// MI column.
-        c: usize,
-    },
-    /// A luma/shared intra leaf did not provide MRL state for later neighbours.
+    MissingIntraLumaModeState { r: usize, c: usize },
     #[error("partition traversal missing intra UsesMrls state at ({r}, {c})")]
-    MissingIntraUsesMrlsState {
-        /// MI row.
-        r: usize,
-        /// MI column.
-        c: usize,
-    },
-    /// A luma/shared intra leaf did not provide FSC state for later neighbours.
+    MissingIntraUsesMrlsState { r: usize, c: usize },
     #[error("partition traversal missing intra FscModes state at ({r}, {c})")]
-    MissingIntraFscModeState {
-        /// MI row.
-        r: usize,
-        /// MI column.
-        c: usize,
-    },
+    MissingIntraFscModeState { r: usize, c: usize },
 }
 
-/// Unsupported partition traversal capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePartitionTraversalUnsupported {
-    /// Extended SDP region signaling is unsupported.
     ExtendedSdp,
-    /// Root `read_lr()` syntax is unsupported.
     ReadLoopRestoration,
-    /// BRU/bridge/inactive behavior is unsupported.
     BruOrBridge,
 }
 
-/// Plans AV2 § 5.20.3.1 partition traversal to the first block boundary.
 pub(crate) fn plan_tile_partition_traversal_frontier(
     input: TilePartitionTraversalInput<'_, '_, '_>,
 ) -> Result<TilePartitionTraversalPlan, TilePartitionTraversalError> {
@@ -1166,7 +991,6 @@ fn decode_block_frontier(
     }
 }
 
-/// Consumes supported AV2 §5.20.10.4 superblock-root `read_lr()` syntax.
 pub(crate) fn consume_tile_loop_restoration_root_frontier(
     input: TilePartitionTraversalInput<'_, '_, '_>,
 ) -> Result<TileLoopRestorationRootFrontier, TilePartitionTraversalError> {
@@ -1206,7 +1030,6 @@ pub(crate) fn consume_tile_loop_restoration_root_frontier(
     })
 }
 
-/// Plans partition traversal and returns the live symbol cursor at the block boundary.
 pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
     input: TilePartitionTraversalInput<'_, 'payload, '_>,
 ) -> Result<TilePartitionTraversalCursor<'payload>, TilePartitionTraversalError> {
@@ -1313,7 +1136,6 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
     Err(TilePartitionTraversalError::NoBlockFrontier)
 }
 
-/// Full general-intra partition-tree output.
 pub(crate) struct GeneralIntraPartitionTreeOutput<'payload> {
     pub(crate) symbols: SymbolDecoder<'payload>,
     pub(crate) active_source_blocks: Vec<WienerNsLrSourceBlock>,
@@ -1326,25 +1148,16 @@ enum TilePartitionStackEntry {
     ExtendedSdpChromaBlock(TilePartitionCall),
 }
 
-/// Error from the general intra full partition-tree walk, distinguishing
-/// traversal/MI-state failures from a caller leaf-decode failure `E`.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GeneralIntraTreeWalkError<E> {
-    /// A partition traversal step failed.
     #[error("partition tree walk traversal failed: {0}")]
     Traversal(#[from] TilePartitionTraversalError),
-    /// An MI-size state update failed.
     #[error("partition tree walk MI-size update failed: {0}")]
     MiSize(TileMiSizeStateError),
-    /// The caller's per-leaf-block decode failed.
     #[error("partition tree walk leaf-block decode failed")]
     Leaf(E),
 }
 
-/// Drives the full AV2 § 5.20.3.1 general-intra partition tree in DFS order.
-///
-/// Keeps MI-size, intra-mode, MRL, FSC, UV-CFL, and block-decoded state in step
-/// with interleaved partition and block syntax.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_partition_tree<'payload, E, F>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
@@ -1684,7 +1497,6 @@ fn read_loop_restoration_for_call(
     lr_activity: &mut WienerNsLrUnitActivity,
     limits: DecodeLimits,
 ) -> Result<(), TilePartitionTraversalError> {
-    trace_lr_call(frame, call);
     if call.b_size != frame.sb_size {
         return Ok(());
     }
@@ -1786,17 +1598,6 @@ fn read_wiener_ns_lr_units_for_plane(
         unit_size,
     )?);
 
-    trace_lr_unit_range(
-        plane,
-        unit_size,
-        frame_filters_on,
-        call,
-        unit_row_start,
-        unit_row_end,
-        unit_col_start,
-        unit_col_end,
-    );
-
     for unit_row in unit_row_start..unit_row_end {
         for unit_col in unit_col_start..unit_col_end {
             let unit_row = checked_add("lr_unit_row", unit_row, lr_row_offset)?;
@@ -1831,42 +1632,6 @@ fn read_wiener_ns_lr_units_for_plane(
     }
     Ok(())
 }
-
-fn trace_lr_call(frame: TilePartitionFrameFacts, call: TilePartitionCall) {
-    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX") {
-        return;
-    }
-    eprintln!(
-        "lr call=({}, {}) b_size={} sb_size={} tree={:?} state={:?}",
-        call.r,
-        call.c,
-        call.b_size.index(),
-        frame.sb_size.index(),
-        call.tree_type,
-        frame.loop_restoration,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn trace_lr_unit_range(
-    plane: usize,
-    unit_size: usize,
-    frame_filters_on: bool,
-    call: TilePartitionCall,
-    row_start: usize,
-    row_end: usize,
-    col_start: usize,
-    col_end: usize,
-) {
-    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX") {
-        return;
-    }
-    eprintln!(
-        "lr units plane={} unit_size={} frame_filters_on={} call=({}, {}) rows={}..{} cols={}..{}",
-        plane, unit_size, frame_filters_on, call.r, call.c, row_start, row_end, col_start, col_end,
-    );
-}
-
 #[allow(clippy::too_many_arguments)]
 fn read_wiener_ns_lr_unit(
     plane: usize,
@@ -1878,27 +1643,12 @@ fn read_wiener_ns_lr_unit(
     lr_activity: &mut WienerNsLrUnitActivity,
     limits: DecodeLimits,
 ) -> Result<bool, TilePartitionTraversalError> {
-    let trace_row = crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX")
-        .then(|| {
-            cdfs.row(super::cdf::TileCdfSelector::UseWienerNs)
-                .ok()
-                .map(<[i32]>::to_vec)
-        })
-        .flatten();
     let use_wiener_ns = cdfs
         .with_row_mut(super::cdf::TileCdfSelector::UseWienerNs, |row| {
             symbols.read_symbol(row)
         })??
         .get()
         != 0;
-    trace_wiener_ns_lr_unit(
-        plane,
-        unit_row,
-        unit_col,
-        use_wiener_ns,
-        symbols,
-        trace_row.as_deref(),
-    );
     lr_activity.record(plane, unit_row, unit_col, use_wiener_ns)?;
     if use_wiener_ns && !frame_filters_on {
         let filter =
@@ -1916,35 +1666,17 @@ fn read_wiener_ns_lr_unit(
     }
     Ok(use_wiener_ns)
 }
-
-fn trace_wiener_ns_lr_unit(
-    plane: usize,
-    unit_row: usize,
-    unit_col: usize,
-    active: bool,
-    symbols: &SymbolDecoder<'_>,
-    row_before: Option<&[i32]>,
-) {
-    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_LR_SYNTAX") {
-        return;
-    }
-    eprintln!(
-        "lr unit plane={plane} unit=({unit_row},{unit_col}) active={active} symbols={} row_before={row_before:?}",
-        symbols.symbol_count(),
-    );
-}
-
 fn read_wiener_ns_unit_filter(
     plane: usize,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     state: &mut WienerNsUnitFilterState,
 ) -> Result<[i16; WIENER_NS_CHROMA_COEFFS], TilePartitionTraversalError> {
-    let merged = read_wiener_ns_raw_literal(symbols, 1, "wiener_ns_merged")? != 0;
+    let merged = read_wiener_ns_raw_literal(symbols, 1)? != 0;
     let previous_bank_size = state.bank_size[plane];
     let mut ref_from_last = 0usize;
     while ref_from_last < previous_bank_size.saturating_sub(1) {
-        let use_bank = read_wiener_ns_raw_literal(symbols, 1, "wiener_ns_use_bank")? != 0;
+        let use_bank = read_wiener_ns_raw_literal(symbols, 1)? != 0;
         if use_bank {
             break;
         }
@@ -2145,15 +1877,12 @@ fn read_wiener_ns_4part_wref(
             base: usize::from(k),
             offset: 0,
         })?;
-    let literal = usize::try_from(read_wiener_ns_raw_literal(
-        symbols,
-        bits,
-        "wiener_ns_4part_wref",
-    )?)
-    .map_err(|_| TilePartitionTraversalError::CoordinateOverflow {
-        coordinate: "wiener_ns_4part_literal",
-        base: usize::from(k),
-        offset: 0,
+    let literal = usize::try_from(read_wiener_ns_raw_literal(symbols, bits)?).map_err(|_| {
+        TilePartitionTraversalError::CoordinateOverflow {
+            coordinate: "wiener_ns_4part_literal",
+            base: usize::from(k),
+            offset: 0,
+        }
     })?;
     let offset = *part_offsets.get(wiener_ns_base).ok_or(
         TilePartitionTraversalError::CoordinateOverflow {
@@ -2170,17 +1899,8 @@ fn read_wiener_ns_4part_wref(
 fn read_wiener_ns_raw_literal(
     symbols: &mut SymbolDecoder<'_>,
     bits: u32,
-    reason: &'static str,
 ) -> Result<u32, TilePartitionTraversalError> {
-    let trace_raw = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
-    let raw_before = trace_raw.then(|| symbols.checkpoint());
     let value = symbols.read_literal(bits)?;
-    if let Some(raw_before) = raw_before {
-        eprintln!(
-            "raw_literal kind=wiener_ns reason={reason} width={bits} value={value} checkpoint_before={raw_before:?} checkpoint_after={:?}",
-            symbols.checkpoint(),
-        );
-    }
     Ok(value)
 }
 
@@ -2262,10 +1982,6 @@ fn record_active_wiener_ns_source_blocks_for_unit(
     Ok(())
 }
 
-/// Tile-constant inputs of the § 7.20.1 MI-to-unit mapping. The mapping
-/// factors per axis — a block's unit row depends only on its MI row and its
-/// unit column only on its MI column — so a unit's members are the product
-/// of the per-axis matching sets.
 #[derive(Clone, Copy)]
 struct LrUnitGeometry {
     unit_rows: usize,
@@ -2494,19 +2210,6 @@ fn read_frontier_partition_decision(
     let decision_input =
         facts.read_partition_decision_input(true, partition_context, square_context);
     let decision = super::partition::read_partition_decision(decision_input, cdfs, symbols)?;
-    if crate::trace_flags::trace_flag!("SPLOT_TRACE_PARTITION_DECISIONS") {
-        eprintln!(
-            "partition call=({}, {}) b_size={} tree={:?} intra_region={} decision={:?} trace={:?} symbols={}",
-            call.r,
-            call.c,
-            call.b_size.index(),
-            call.tree_type,
-            call.intra_region,
-            decision.partition,
-            decision.trace,
-            symbols.symbol_count(),
-        );
-    }
     Ok(decision)
 }
 
@@ -2529,7 +2232,6 @@ fn plane_subsampling(frame: TilePartitionFrameFacts, plane: usize) -> (usize, us
     }
 }
 
-/// AV2 § 5.20.3.1 partition-CDF plane index.
 const fn partition_cdf_plane(tree_type: PartitionTreeType) -> usize {
     matches!(tree_type, PartitionTreeType::ChromaPart) as usize
 }
@@ -2585,37 +2287,13 @@ fn read_extended_sdp_region_type(
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<(TilePartitionCall, bool), TilePartitionTraversalError> {
     if !should_read_extended_sdp_region_type(frame, call, partition)? {
-        trace_extended_sdp_region_type(frame, call, partition, None, None, symbols);
         return Ok((call, false));
     }
     let ctx = intra_region_context(call.b_size)?;
     let selector = super::cdf::TileCdfSelector::RegionType { ctx };
-    let trace_cdf = crate::trace_flags::trace_flag!("SPLOT_TRACE_CDF_SELECTORS");
-    let row_before = if trace_cdf {
-        cdfs.row(selector).ok().map(<[i32]>::to_vec)
-    } else {
-        None
-    };
-    let checkpoint_before = trace_cdf.then(|| symbols.checkpoint());
     let region_type = cdfs
         .with_row_mut(selector, |row| symbols.read_symbol(row))??
         .get();
-    if trace_cdf {
-        eprintln!(
-            "cdf selector={selector:?} value={} symbols={} row_before={row_before:?} checkpoint_before={checkpoint_before:?} checkpoint_after={:?}",
-            region_type,
-            symbols.symbol_count(),
-            symbols.checkpoint(),
-        );
-    }
-    trace_extended_sdp_region_type(
-        frame,
-        call,
-        partition,
-        Some(ctx),
-        Some(u32::from(region_type)),
-        symbols,
-    );
     match region_type {
         INTRA_REGION => Ok((
             call.with_tree_type(PartitionTreeType::LumaPart)
@@ -2645,37 +2323,6 @@ fn should_read_extended_sdp_region_type(
     }
     is_bsize_allowed_for_extended_sdp(call.b_size, partition)
 }
-
-fn trace_extended_sdp_region_type(
-    frame: TilePartitionFrameFacts,
-    call: TilePartitionCall,
-    partition: PartitionType,
-    ctx: Option<usize>,
-    region_type: Option<u32>,
-    symbols: &SymbolDecoder<'_>,
-) {
-    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_PARTITION_DECISIONS") {
-        return;
-    }
-    eprintln!(
-        "extended_sdp_region call=({}, {}) b_size={} parent={:?} tree={:?} intra_region={} ext_allowed={} frame_ext={} sb={} bru={:?} partition={:?} ctx={:?} value={:?} symbols={}",
-        call.r,
-        call.c,
-        call.b_size.index(),
-        call.parent_size.map(BlockSize::index),
-        call.tree_type,
-        call.intra_region,
-        call.extended_sdp_allowed,
-        frame.enable_extended_sdp,
-        frame.sb_size.index(),
-        frame.bru_state,
-        partition,
-        ctx,
-        region_type,
-        symbols.symbol_count(),
-    );
-}
-
 fn is_bsize_allowed_for_extended_sdp(
     b_size: BlockSize,
     partition: PartitionType,
@@ -2732,7 +2379,6 @@ struct SdpPartitionState {
     top_luma_uneven_horz: bool,
     top_luma_uneven_vert: bool,
     chroma_follows_luma: bool,
-    /// AV2 §5.20.3.1 `LumaPartitions[r][c]` for collocated CHROMA_PART roots.
     luma_64x64_partition: Option<PartitionType>,
 }
 
@@ -2796,7 +2442,6 @@ impl SdpPartitionState {
         cfl_allowed_in_sdp
     }
 
-    /// AV2 §5.20.3.2 `partition_implied` for CHROMA_PART 64x64 roots.
     fn forced_chroma_partition(
         &self,
         frame: TilePartitionFrameFacts,

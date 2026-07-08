@@ -11,7 +11,6 @@ use super::{
     TilePartitionTraversalError, checked_add, checked_scaled_add, valid_subsize,
 };
 
-/// Up-to-four ordered child calls produced by one `decode_partition` step.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionChildCalls {
     calls: [TilePartitionCall; 4],
@@ -36,7 +35,6 @@ impl TilePartitionChildCalls {
         Ok(())
     }
 
-    /// The produced child calls in spec decode order.
     pub(crate) fn as_slice(&self) -> &[TilePartitionCall] {
         &self.calls[..self.len]
     }
@@ -247,7 +245,6 @@ fn push_four_way_children(
     children.push(r, c, sub_size, call.has_chroma)
 }
 
-/// Expands one decoded partition into its ordered child `decode_partition` calls.
 pub(crate) fn child_calls(
     call: TilePartitionCall,
     partition: PartitionType,

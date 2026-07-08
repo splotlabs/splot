@@ -17,7 +17,7 @@ use splot_recon::{
 /// The committed conformant luma-skip fixture exercised by every minimal-tier
 /// runtime adapter test.
 pub(crate) const MINIMAL_FIXTURE: &[u8] =
-    include_bytes!("../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf");
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf");
 
 /// Returns [`MINIMAL_FIXTURE`] with its IVF time base rewritten to
 /// `numerator / denominator`.

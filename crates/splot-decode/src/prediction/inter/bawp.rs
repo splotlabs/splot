@@ -14,19 +14,10 @@ use crate::Result;
 
 const SHIFT: u32 = 8;
 
-/// § 7.13.3.25 `to_fullmv`.
 const fn to_fullmv(mv: i32) -> i32 {
     (mv + 3 + if mv >= 0 { 1 } else { 0 }) >> 3
 }
 
-/// Applies § 7.13.3.25 to the motion-compensated prediction: luma always,
-/// chroma when `use_bawp_chroma`, deriving the implicit scale from the
-/// above/left templates (or the explicit-scale arm) and `Clip1`-scaling the
-/// block in place. Runs after motion compensation and before the residual;
-/// BAWP blocks never carry interintra or warp (§ 5.20.7.14 excludes them).
-/// Template availability is frame-origin-based: the decode entry enforces a
-/// single tile, so the § 5.20.7.15 tile-relative `AvailU`/`AvailL` reduce to
-/// the frame origin here.
 pub(crate) fn apply_bawp<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     reference: &DecodedFrame<T>,
@@ -56,8 +47,6 @@ pub(crate) fn apply_bawp<T: ReconSample>(
     Ok(())
 }
 
-/// Applies the intra-frame IntrABC `morph_pred` BAWP adjustment after the luma
-/// IntrABC predictor has been copied into `target`.
 pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     target: PlaneRect,
@@ -344,9 +333,6 @@ fn reference_plane<T: ReconSample>(
     Ok((view, width, height))
 }
 
-/// § 7.13.3.25 template geometry: the in-plane clamped block size (`bw`,
-/// `bh`) selects the sampled template extents and counts; the `12 -> 8`
-/// arms serve exactly the clamped frame-edge sizes.
 fn bawp_template_counts(
     bw: usize,
     bh: usize,
@@ -382,30 +368,5 @@ fn bawp_template_counts(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::bawp_template_counts;
-
-    #[test]
-    fn template_counts_follow_the_clamped_size_table() {
-        for (case, expected) in [
-            ((16, 16, true, true, true), (16, 16, 16, 16)),
-            ((12, 16, true, true, true), (8, 16, 8, 8)),
-            ((16, 12, true, true, true), (16, 8, 8, 8)),
-            ((4, 4, true, true, true), (4, 4, 4, 4)),
-            ((16, 4, true, true, true), (16, 4, 16, 0)),
-            ((4, 16, true, true, true), (4, 16, 0, 16)),
-            ((32, 8, true, true, false), (16, 8, 16, 0)),
-            ((8, 32, true, false, true), (8, 16, 0, 16)),
-            ((32, 32, false, true, true), (8, 8, 8, 8)),
-            ((12, 12, false, true, true), (8, 8, 8, 8)),
-            ((64, 64, true, false, false), (16, 16, 0, 0)),
-        ] {
-            let (bw, bh, luma, up, left) = case;
-            assert_eq!(
-                bawp_template_counts(bw, bh, luma, up, left),
-                expected,
-                "bw={bw} bh={bh} luma={luma} up={up} left={left}"
-            );
-        }
-    }
-}
+#[path = "bawp_tests.rs"]
+mod tests;

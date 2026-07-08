@@ -13,6 +13,12 @@ const N4_32: usize = 8;
 const SB_H4_64: usize = 16;
 const MI_DIM: usize = 16;
 
+impl MvStack {
+    fn num_mv_found(&self) -> usize {
+        self.stack.len()
+    }
+}
+
 fn block_at(mi_row: usize, mi_col: usize) -> MvBlockContext {
     MvBlockContext {
         mi_row,

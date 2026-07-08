@@ -7,6 +7,10 @@ use std::collections::TryReserveError;
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
+use splot_core::tables::conversion::{
+    ADJUSTED_TX_SIZE, TX_HEIGHT, TX_HEIGHT_LOG2, TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_WIDTH,
+    TX_WIDTH_LOG2,
+};
 
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
@@ -27,6 +31,19 @@ const MAX_NONZERO_EOB_PT: usize = 11;
 const EOB_GROUP_START: [usize; MAX_NONZERO_EOB_PT + 1] =
     [0, 1, 2, 3, 5, 9, 17, 33, 65, 129, 257, 513];
 const EOB_OFFSET_BITS: [usize; MAX_NONZERO_EOB_PT + 1] = [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+macro_rules! coeff_branch_map_adapter {
+    ($vis:vis fn $name:ident($input_ty:ty) -> $result_ty:ty, $nonzero:ident, $mapped:expr, $callee:path,) => {
+        $vis fn $name(
+            state: &mut TileCoeffContextState,
+            cdfs: &mut TileCdfSubset,
+            symbols: &mut SymbolDecoder<'_>,
+            input: $input_ty,
+        ) -> $result_ty {
+            let input = input.map_nonzero(|$nonzero| $mapped);
+            $callee(state, cdfs, symbols, input)
+        }
+    };
+}
 pub(crate) mod base_level_pass;
 pub(crate) mod base_symbol;
 mod branch;
@@ -80,6 +97,70 @@ pub(crate) struct AllZeroCoeffBlockInput {
     pub(crate) y4: usize,
     pub(crate) w4: usize,
     pub(crate) h4: usize,
+}
+
+pub(crate) enum CoeffBranchInput<AllZero, NonZero> {
+    AllZero(AllZero),
+    NonZero(NonZero),
+}
+
+impl<AllZero, NonZero> CoeffBranchInput<AllZero, NonZero> {
+    pub(crate) fn map_nonzero<NextNonZero>(
+        self,
+        map: impl FnOnce(NonZero) -> NextNonZero,
+    ) -> CoeffBranchInput<AllZero, NextNonZero> {
+        match self {
+            Self::AllZero(input) => CoeffBranchInput::AllZero(input),
+            Self::NonZero(input) => CoeffBranchInput::NonZero(map(input)),
+        }
+    }
+
+    pub(crate) fn try_map_nonzero<NextNonZero, E>(
+        self,
+        map: impl FnOnce(NonZero) -> Result<NextNonZero, E>,
+    ) -> Result<CoeffBranchInput<AllZero, NextNonZero>, E> {
+        match self {
+            Self::AllZero(input) => Ok(CoeffBranchInput::AllZero(input)),
+            Self::NonZero(input) => map(input).map(CoeffBranchInput::NonZero),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct CoeffTxSizeTables<'a> {
+    pub(crate) adjusted_tx_size: &'a [i32],
+    pub(crate) tx_size_sqr: &'a [i32],
+    pub(crate) tx_size_sqr_up: &'a [i32],
+    pub(crate) tx_width: &'a [i32],
+    pub(crate) tx_height: &'a [i32],
+    pub(crate) tx_width_log2: &'a [i32],
+    pub(crate) tx_height_log2: &'a [i32],
+}
+
+pub(crate) const DEFAULT_TX_SIZE_TABLES: CoeffTxSizeTables<'static> = CoeffTxSizeTables {
+    adjusted_tx_size: &ADJUSTED_TX_SIZE,
+    tx_size_sqr: &TX_SIZE_SQR,
+    tx_size_sqr_up: &TX_SIZE_SQR_UP,
+    tx_width: &TX_WIDTH,
+    tx_height: &TX_HEIGHT,
+    tx_width_log2: &TX_WIDTH_LOG2,
+    tx_height_log2: &TX_HEIGHT_LOG2,
+};
+
+pub(crate) fn commit_nonzero_coeff_context(
+    state: &mut TileCoeffContextState,
+    context: AllZeroCoeffBlockInput,
+    quant_state: &quant_state::NonZeroCoeffQuantState,
+) -> Result<(), TileCoeffStateError> {
+    state.update_after_coeffs(CoeffContextUpdate {
+        plane: context.plane,
+        x4: context.x4,
+        y4: context.y4,
+        w4: context.w4,
+        h4: context.h4,
+        cul_level: quant_state.cul_level(),
+        dc_category: quant_state.dc_category(),
+    })
 }
 
 #[allow(clippy::struct_field_names)]
@@ -351,8 +432,6 @@ pub(crate) fn read_nonzero_coeff_eob(
     symbols: &mut SymbolDecoder<'_>,
     input: NonZeroCoeffEobSymbolInput,
 ) -> Result<NonZeroCoeffEobSymbolRead, CoeffLoopContextError> {
-    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_COEFF_EOB");
-    let before = trace.then(|| symbols.checkpoint());
     let eob_pt_symbol = cdfs
         .read_block_symbol_trace(
             TileCdfSelector::EobPt {
@@ -391,23 +470,6 @@ pub(crate) fn read_nonzero_coeff_eob(
         eob_extra,
         eob_extra_bits: eob_extra_bits as usize,
     })?;
-    if let Some(before) = before {
-        eprintln!(
-            "coeff eob size={:?} qctx={} eob_ctx={} eob_pt_symbol={} eob_pt_extra_width={} eob_pt_extra={} eob_pt={} eob_extra={} eob_extra_bits={} eob={} checkpoint_before={:?} checkpoint_after={:?}",
-            input.size,
-            input.coeff_cdf_q_ctx,
-            input.eob_ctx,
-            eob_pt_symbol,
-            eob_pt_extra_width,
-            eob_pt_extra,
-            eob_pt,
-            eob_extra,
-            eob_extra_bits,
-            eob.eob(),
-            before,
-            symbols.checkpoint(),
-        );
-    }
     Ok(NonZeroCoeffEobSymbolRead {
         eob,
         eob_pt_symbol,
@@ -504,17 +566,9 @@ fn read_eob_literal(
     if width == 0 {
         return Ok(0);
     }
-    let trace = crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS");
-    let before = trace.then(|| symbols.checkpoint());
     let value = symbols
         .read_literal(width)
         .map_err(|source| CoeffLoopContextError::EobLiteralRead { syntax, source })?;
-    if let Some(before) = before {
-        eprintln!(
-            "raw_literal kind=eob syntax={syntax} width={width} value={value} checkpoint_before={before:?} checkpoint_after={:?}",
-            symbols.checkpoint(),
-        );
-    }
     Ok(value)
 }
 
@@ -558,361 +612,10 @@ mod ordinary_pass_tests;
 #[cfg(test)]
 mod ordinary_state_context_tests;
 #[cfg(test)]
+#[path = "coeff_loop/test_support_tests.rs"]
 mod test_support;
 #[cfg(test)]
-mod use_fsc_branch_tests;
+#[path = "coeff_loop_tests.rs"]
+mod tests;
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-    use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
-    use super::*;
-
-    fn update(plane: usize, x4: usize, y4: usize, w4: usize, h4: usize) -> CoeffContextUpdate {
-        CoeffContextUpdate {
-            plane,
-            x4,
-            y4,
-            w4,
-            h4,
-            cul_level: 4,
-            dc_category: 2,
-        }
-    }
-
-    #[test]
-    fn luma_all_zero_context_reads_zero_state_for_first_block() {
-        let state = TileCoeffContextState::new(16, 16).unwrap();
-        let ctx = luma_all_zero_context(
-            &state,
-            LumaAllZeroContextInput {
-                x4: 0,
-                y4: 0,
-                w4: 16,
-                h4: 16,
-                tx_fills_block: true,
-                fsc_active: false,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(ctx, 0);
-    }
-
-    #[test]
-    fn luma_all_zero_context_reduces_state_lines_when_not_filling() {
-        let mut state = TileCoeffContextState::new(8, 8).unwrap();
-        state.update_after_coeffs(update(0, 2, 3, 2, 2)).unwrap();
-        let ctx = luma_all_zero_context(
-            &state,
-            LumaAllZeroContextInput {
-                x4: 1,
-                y4: 2,
-                w4: 4,
-                h4: 4,
-                tx_fills_block: false,
-                fsc_active: false,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(ctx, 5);
-    }
-
-    #[test]
-    fn luma_all_zero_context_fsc_overrides_state() {
-        let mut state = TileCoeffContextState::new(4, 4).unwrap();
-        state.update_after_coeffs(update(0, 0, 0, 4, 4)).unwrap();
-        let ctx = luma_all_zero_context(
-            &state,
-            LumaAllZeroContextInput {
-                x4: 0,
-                y4: 0,
-                w4: 4,
-                h4: 4,
-                tx_fills_block: true,
-                fsc_active: true,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(ctx, 9);
-    }
-
-    #[test]
-    fn v_all_zero_context_combines_level_dc_state_and_geometry() {
-        let mut state = TileCoeffContextState::new(8, 8).unwrap();
-        state.update_after_coeffs(update(2, 2, 5, 2, 1)).unwrap();
-        let ctx = v_all_zero_context(
-            &state,
-            VAllZeroContextInput {
-                x4: 1,
-                y4: 4,
-                w4: 4,
-                h4: 3,
-                chroma_block_larger_than_tx: true,
-                eob_u_nonzero: true,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(ctx, 11);
-    }
-
-    #[test]
-    fn all_zero_context_reductions_bound_out_of_range_and_pathological_counts() {
-        let mut state = TileCoeffContextState::new(2, 2).unwrap();
-        state.update_after_coeffs(update(2, 0, 0, 1, 1)).unwrap();
-
-        let luma = luma_all_zero_context(
-            &state,
-            LumaAllZeroContextInput {
-                x4: usize::MAX,
-                y4: usize::MAX,
-                w4: usize::MAX,
-                h4: usize::MAX,
-                tx_fills_block: false,
-                fsc_active: false,
-            },
-        )
-        .unwrap();
-        let v = v_all_zero_context(
-            &state,
-            VAllZeroContextInput {
-                x4: usize::MAX,
-                y4: usize::MAX,
-                w4: usize::MAX,
-                h4: usize::MAX,
-                chroma_block_larger_than_tx: false,
-                eob_u_nonzero: false,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(luma, 1);
-        assert_eq!(v, 0);
-    }
-
-    #[test]
-    fn all_zero_coeff_block_applies_zero_state_and_context_writes() {
-        let mut state = TileCoeffContextState::new(6, 6).unwrap();
-        state.update_after_coeffs(update(0, 1, 2, 3, 2)).unwrap();
-
-        let applied = apply_all_zero_coeff_block(
-            &mut state,
-            AllZeroCoeffBlockInput {
-                plane: 0,
-                x4: 1,
-                y4: 2,
-                w4: 3,
-                h4: 2,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(applied.eob(), 0);
-        assert_eq!(applied.cul_level(), 0);
-        assert_eq!(applied.dc_category(), 0);
-        assert_eq!(applied.block().width(), 12);
-        assert_eq!(applied.block().height(), 8);
-        assert!(applied.block().level().iter().all(|level| *level == 0));
-        assert!(applied.block().quant_sign().iter().all(|sign| *sign == 0));
-        assert!(applied.block().quant().iter().all(|quant| *quant == 0));
-        assert_eq!(state.above_level(0).unwrap(), &[0, 0, 0, 0, 0, 0]);
-        assert_eq!(state.above_dc(0).unwrap(), &[0, 0, 0, 0, 0, 0]);
-        assert_eq!(state.left_level(0).unwrap(), &[0, 0, 0, 0, 0, 0]);
-        assert_eq!(state.left_dc(0).unwrap(), &[0, 0, 0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn all_zero_coeff_block_rejects_bad_ranges_without_mutation() {
-        let mut state = TileCoeffContextState::new(2, 2).unwrap();
-        state.update_after_coeffs(update(0, 0, 0, 1, 1)).unwrap();
-        let before = state.clone();
-
-        let err = apply_all_zero_coeff_block(
-            &mut state,
-            AllZeroCoeffBlockInput {
-                plane: 0,
-                x4: 2,
-                y4: 0,
-                w4: 1,
-                h4: 1,
-            },
-        )
-        .unwrap_err();
-
-        assert!(matches!(
-            err,
-            CoeffLoopContextError::State(TileCoeffStateError::ContextRangeOutOfBounds {
-                context: "above",
-                start: 2,
-                end: 3,
-                len: 2
-            })
-        ));
-        assert_eq!(state, before);
-    }
-
-    #[test]
-    fn all_zero_coeff_block_rejects_zero_transform_extent_before_mutation() {
-        let mut state = TileCoeffContextState::new(2, 2).unwrap();
-        state.update_after_coeffs(update(0, 0, 0, 1, 1)).unwrap();
-        let before = state.clone();
-
-        let err = apply_all_zero_coeff_block(
-            &mut state,
-            AllZeroCoeffBlockInput {
-                plane: 0,
-                x4: 0,
-                y4: 0,
-                w4: 0,
-                h4: 1,
-            },
-        )
-        .unwrap_err();
-
-        assert!(matches!(
-            err,
-            CoeffLoopContextError::State(TileCoeffStateError::InvalidAdjustedTransformExtent {
-                axis: "width",
-                value: 0
-            })
-        ));
-        assert_eq!(state, before);
-    }
-
-    #[test]
-    fn all_zero_coeff_block_saturates_adjusted_extent_to_spec_cap() {
-        let mut state = TileCoeffContextState::new(16, 16).unwrap();
-
-        let applied = apply_all_zero_coeff_block(
-            &mut state,
-            AllZeroCoeffBlockInput {
-                plane: 2,
-                x4: 0,
-                y4: 0,
-                w4: 16,
-                h4: 16,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(applied.block().width(), 32);
-        assert_eq!(applied.block().height(), 32);
-        assert_eq!(applied.block().quant().len(), 1024);
-    }
-
-    #[test]
-    fn nonzero_coeff_eob_maps_small_points_without_refinements() {
-        let eob_one = nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 1,
-            eob_extra: false,
-            eob_extra_bits: 0,
-        })
-        .unwrap();
-        let eob_two = nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 2,
-            eob_extra: false,
-            eob_extra_bits: 0,
-        })
-        .unwrap();
-
-        assert_eq!(eob_one.eob_pt(), 1);
-        assert_eq!(eob_one.eob(), 1);
-        assert_eq!(eob_two.eob_pt(), 2);
-        assert_eq!(eob_two.eob(), 2);
-    }
-
-    #[test]
-    fn nonzero_coeff_eob_applies_eob_extra_and_refinement_bits() {
-        assert_nonzero_coeff_eob(
-            NonZeroCoeffEobInput {
-                eob_pt: 6,
-                eob_extra: true,
-                eob_extra_bits: 0b110,
-            },
-            31,
-        );
-    }
-
-    #[test]
-    fn nonzero_coeff_eob_reaches_max_av2_eob() {
-        assert_nonzero_coeff_eob(
-            NonZeroCoeffEobInput {
-                eob_pt: 11,
-                eob_extra: true,
-                eob_extra_bits: 0xFF,
-            },
-            1024,
-        );
-    }
-
-    fn assert_nonzero_coeff_eob(input: NonZeroCoeffEobInput, expected: usize) {
-        let eob = nonzero_coeff_eob(input).unwrap();
-
-        assert_eq!(eob.eob(), expected);
-    }
-
-    #[test]
-    fn nonzero_coeff_eob_rejects_invalid_eob_points() {
-        let zero = nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 0,
-            eob_extra: false,
-            eob_extra_bits: 0,
-        })
-        .unwrap_err();
-        let oversized = nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 12,
-            eob_extra: false,
-            eob_extra_bits: 0,
-        })
-        .unwrap_err();
-
-        assert!(matches!(
-            zero,
-            CoeffLoopContextError::InvalidEobPoint { eob_pt: 0 }
-        ));
-        assert!(matches!(
-            oversized,
-            CoeffLoopContextError::InvalidEobPoint { eob_pt: 12 }
-        ));
-    }
-
-    #[test]
-    fn nonzero_coeff_eob_rejects_refinements_for_small_points() {
-        let err = nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 1,
-            eob_extra: true,
-            eob_extra_bits: 0,
-        })
-        .unwrap_err();
-
-        assert!(matches!(
-            err,
-            CoeffLoopContextError::UnexpectedEobRefinement {
-                eob_pt: 1,
-                eob_extra: true,
-                eob_extra_bits: 0
-            }
-        ));
-    }
-
-    #[test]
-    fn nonzero_coeff_eob_rejects_out_of_range_refinement_bits() {
-        let err = nonzero_coeff_eob(NonZeroCoeffEobInput {
-            eob_pt: 4,
-            eob_extra: false,
-            eob_extra_bits: 0b10,
-        })
-        .unwrap_err();
-
-        assert!(matches!(
-            err,
-            CoeffLoopContextError::EobExtraBitsOutOfRange {
-                eob_pt: 4,
-                eob_extra_bits: 2,
-                max_eob_extra_bits: 1
-            }
-        ));
-    }
-}
+mod use_fsc_branch_tests;

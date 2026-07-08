@@ -9,7 +9,7 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::{
-    CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
+    TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
 };
 use super::base_level_pass::{
     CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError,
@@ -41,7 +41,8 @@ use super::sign_symbol::{
     preflight_nonzero_coeff_signs, read_preflighted_nonzero_coeff_sign,
 };
 use super::{
-    AllZeroCoeffBlock, AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffEobSymbolRead,
+    AllZeroCoeffBlock, AllZeroCoeffBlockInput, CoeffBranchInput, CoeffLoopContextError,
+    NonZeroCoeffEobSymbolRead, commit_nonzero_coeff_context,
 };
 
 pub(crate) mod geometry;
@@ -71,10 +72,8 @@ pub(crate) struct CoeffOrdinaryStateContextPassInput<'a> {
     pub(crate) lossless: bool,
 }
 
-pub(crate) enum CoeffOrdinaryBranchInput<'a> {
-    AllZero(AllZeroCoeffBlockInput),
-    NonZero(CoeffOrdinaryBranchNonZeroInput<'a>),
-}
+pub(crate) type CoeffOrdinaryBranchInput<'a> =
+    CoeffBranchInput<AllZeroCoeffBlockInput, CoeffOrdinaryBranchNonZeroInput<'a>>;
 
 pub(crate) struct CoeffOrdinaryBranchNonZeroInput<'a> {
     pub(crate) start: NonZeroCoeffBlockStartInput,
@@ -84,10 +83,8 @@ pub(crate) struct CoeffOrdinaryBranchNonZeroInput<'a> {
     pub(crate) lossless: bool,
 }
 
-pub(crate) enum CoeffOrdinaryBranchPlaneTxTypeInput<'a> {
-    AllZero(AllZeroCoeffBlockInput),
-    NonZero(CoeffOrdinaryBranchPlaneTxTypeNonZeroInput<'a>),
-}
+pub(crate) type CoeffOrdinaryBranchPlaneTxTypeInput<'a> =
+    CoeffBranchInput<AllZeroCoeffBlockInput, CoeffOrdinaryBranchPlaneTxTypeNonZeroInput<'a>>;
 
 pub(crate) struct CoeffOrdinaryBranchPlaneTxTypeNonZeroInput<'a> {
     pub(crate) start: NonZeroCoeffBlockStartInput,
@@ -97,10 +94,8 @@ pub(crate) struct CoeffOrdinaryBranchPlaneTxTypeNonZeroInput<'a> {
     pub(crate) lossless: bool,
 }
 
-pub(crate) enum CoeffOrdinaryBranchPlaneTypeInput<'a> {
-    AllZero(AllZeroCoeffBlockInput),
-    NonZero(CoeffOrdinaryBranchPlaneTypeNonZeroInput<'a>),
-}
+pub(crate) type CoeffOrdinaryBranchPlaneTypeInput<'a> =
+    CoeffBranchInput<AllZeroCoeffBlockInput, CoeffOrdinaryBranchPlaneTypeNonZeroInput<'a>>;
 
 pub(crate) struct CoeffOrdinaryBranchPlaneTypeNonZeroInput<'a> {
     pub(crate) start: NonZeroCoeffBlockStartInput,
@@ -183,14 +178,7 @@ impl CoeffOrdinaryPlaneTypeStateContextConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CoeffOrdinaryContextCommitConfig {
-    pub(crate) plane: usize,
-    pub(crate) x4: usize,
-    pub(crate) y4: usize,
-    pub(crate) w4: usize,
-    pub(crate) h4: usize,
-}
+pub(crate) type CoeffOrdinaryContextCommitConfig = AllZeroCoeffBlockInput;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffOrdinaryPass {
@@ -298,8 +286,6 @@ impl NonZeroCoeffOrdinaryDerivedBasePass {
         self.base_level_pass.block()
     }
 
-    /// Consumes the pass, handing the block state to the caller without
-    /// copying it.
     #[must_use]
     pub(crate) fn into_block(self) -> TransformCoeffBlockState {
         self.base_level_pass.into_block()
@@ -433,28 +419,20 @@ pub(crate) fn apply_coeff_ordinary_branch(
     }
 }
 
-pub(crate) fn apply_coeff_ordinary_branch_from_plane_tx_type(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffOrdinaryBranchPlaneTxTypeInput<'_>,
-) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
-    let input = match input {
-        CoeffOrdinaryBranchPlaneTxTypeInput::AllZero(input) => {
-            CoeffOrdinaryBranchInput::AllZero(input)
-        }
-        CoeffOrdinaryBranchPlaneTxTypeInput::NonZero(input) => {
-            CoeffOrdinaryBranchInput::NonZero(CoeffOrdinaryBranchNonZeroInput {
-                start: input.start,
-                scan: input.scan,
-                base_config: input.base_config.base_config(),
-                state_context: input.state_context,
-                lossless: input.lossless,
-            })
-        }
-    };
-    apply_coeff_ordinary_branch(state, cdfs, symbols, input)
-}
+coeff_branch_map_adapter!(
+    pub(crate) fn apply_coeff_ordinary_branch_from_plane_tx_type(
+        CoeffOrdinaryBranchPlaneTxTypeInput<'_>
+    ) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError>,
+    input,
+    CoeffOrdinaryBranchNonZeroInput {
+        start: input.start,
+        scan: input.scan,
+        base_config: input.base_config.base_config(),
+        state_context: input.state_context,
+        lossless: input.lossless,
+    },
+    apply_coeff_ordinary_branch,
+);
 
 pub(crate) fn apply_coeff_ordinary_branch_from_plane_type(
     state: &mut TileCoeffContextState,
@@ -462,22 +440,13 @@ pub(crate) fn apply_coeff_ordinary_branch_from_plane_type(
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffOrdinaryBranchPlaneTypeInput<'_>,
 ) -> Result<CoeffOrdinaryBranch, CoeffOrdinaryBranchError> {
-    let input = match input {
-        CoeffOrdinaryBranchPlaneTypeInput::AllZero(input) => {
-            CoeffOrdinaryBranchPlaneTxTypeInput::AllZero(input)
-        }
-        CoeffOrdinaryBranchPlaneTypeInput::NonZero(input) => {
-            CoeffOrdinaryBranchPlaneTxTypeInput::NonZero(
-                CoeffOrdinaryBranchPlaneTxTypeNonZeroInput {
-                    start: input.start,
-                    scan: input.scan,
-                    base_config: input.base_config,
-                    state_context: input.state_context.state_context(input.base_config.plane),
-                    lossless: input.lossless,
-                },
-            )
-        }
-    };
+    let input = input.map_nonzero(|input| CoeffOrdinaryBranchPlaneTxTypeNonZeroInput {
+        start: input.start,
+        scan: input.scan,
+        base_config: input.base_config,
+        state_context: input.state_context.state_context(input.base_config.plane),
+        lossless: input.lossless,
+    });
     apply_coeff_ordinary_branch_from_plane_tx_type(state, cdfs, symbols, input)
 }
 
@@ -531,13 +500,6 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
     let mut base_level_pass =
         apply_nonzero_coeff_base_derived_level_pass(cdfs, symbols, input.start, walk, base_config)?;
     let first_pass = base_level_pass.first_pass();
-    trace_ordinary_coeff_base_pass(
-        base_config,
-        sign_config,
-        &base_level_pass,
-        symbols.checkpoint(),
-        "after-base",
-    );
     let sign_inputs = derive_nonzero_coeff_sign_inputs(
         base_level_pass.block(),
         base_level_pass.walk(),
@@ -584,16 +546,6 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
             config: quant_config,
         },
     )?;
-    trace_ordinary_coeff_tail_pass(
-        base_config,
-        sign_config,
-        &sign_inputs,
-        &sign_reads,
-        &quant_pass,
-        symbols.checkpoint(),
-        "after-tail",
-    );
-
     Ok(NonZeroCoeffOrdinaryDerivedBasePass {
         base_level_pass,
         sign_inputs,
@@ -667,16 +619,7 @@ fn commit_coeff_context(
     pass: &NonZeroCoeffOrdinaryDerivedBasePass,
     context: CoeffOrdinaryContextCommitConfig,
 ) -> Result<(), CoeffOrdinaryPassError> {
-    let quant_state = pass.quant_pass().quant_state();
-    state.update_after_coeffs(CoeffContextUpdate {
-        plane: context.plane,
-        x4: context.x4,
-        y4: context.y4,
-        w4: context.w4,
-        h4: context.h4,
-        cul_level: quant_state.cul_level(),
-        dc_category: quant_state.dc_category(),
-    })?;
+    commit_nonzero_coeff_context(state, context, pass.quant_pass().quant_state())?;
     Ok(())
 }
 
@@ -799,154 +742,4 @@ fn apply_interleaved_sign_and_quant_pass(
         sign_reads,
         NonZeroCoeffQuantPass::from_interleaved_parts(read_quants, quant_state),
     ))
-}
-
-fn trace_ordinary_coeff_base_pass(
-    config: CoeffBaseDerivedLevelPassConfig,
-    sign_config: CoeffOrdinaryDerivedSignPassConfig<'_>,
-    pass: &NonZeroCoeffBaseDerivedLevelPass,
-    checkpoint: splot_core::symbol::SymbolDecoderCheckpoint,
-    stage: &'static str,
-) {
-    if !trace_ordinary_coeff_enabled(config, sign_config) {
-        return;
-    }
-    eprintln!(
-        "ordinary coeff {stage} plane={} qctx={} tx_size_ctx={} size={}x{} x4={} y4={} w4={} h4={} tx_class={:?} parity_hiding={} tcq={} eob={} eob_pt={} base_reads={} sum_abs1={} num_nonzero={} hidden={} tcq_state={} checkpoint={:?}",
-        config.plane,
-        config.coeff_cdf_q_ctx,
-        config.tx_size_ctx,
-        config.tx_width,
-        config.tx_height,
-        sign_config.x4,
-        sign_config.y4,
-        sign_config.w4,
-        sign_config.h4,
-        config.tx_class,
-        config.parity_hiding,
-        config.use_tcq,
-        pass.eob_read().eob().eob(),
-        pass.eob_read().eob().eob_pt(),
-        pass.base_reads().len(),
-        pass.first_pass().sum_abs1(),
-        pass.first_pass().num_nonzero(),
-        pass.first_pass().is_hidden(),
-        pass.first_pass().tcq_state(),
-        checkpoint,
-    );
-    for (index, (input, read)) in pass
-        .derived_inputs()
-        .iter()
-        .copied()
-        .zip(pass.base_reads().iter().copied())
-        .enumerate()
-    {
-        if should_trace_coeff_entry(index, read.level()) {
-            eprintln!(
-                "ordinary coeff base index={} scan={} pos={} row={} col={} source={:?} base_symbol={} base_range={:?} level={} input_base_levels={}",
-                index,
-                read.entry().scan_index(),
-                read.entry().pos(),
-                read.entry().row(),
-                read.entry().col(),
-                input.base,
-                read.base_symbol(),
-                read.base_range_symbol(),
-                read.level(),
-                input.base_levels,
-            );
-        }
-    }
-}
-
-fn trace_ordinary_coeff_tail_pass(
-    config: CoeffBaseDerivedLevelPassConfig,
-    sign_config: CoeffOrdinaryDerivedSignPassConfig<'_>,
-    sign_inputs: &[CoeffSignReadInput],
-    sign_reads: &[CoeffSignRead],
-    quant_pass: &NonZeroCoeffQuantPass,
-    checkpoint: splot_core::symbol::SymbolDecoderCheckpoint,
-    stage: &'static str,
-) {
-    if !trace_ordinary_coeff_enabled(config, sign_config) {
-        return;
-    }
-    eprintln!(
-        "ordinary coeff {stage} plane={} qctx={} tx_size_ctx={} size={}x{} x4={} y4={} w4={} h4={} sign_reads={} quant_reads={} cul_level={} dc_category={} checkpoint={:?}",
-        config.plane,
-        config.coeff_cdf_q_ctx,
-        config.tx_size_ctx,
-        config.tx_width,
-        config.tx_height,
-        sign_config.x4,
-        sign_config.y4,
-        sign_config.w4,
-        sign_config.h4,
-        sign_reads.len(),
-        quant_pass.read_quants().len(),
-        quant_pass.quant_state().cul_level(),
-        quant_pass.quant_state().dc_category(),
-        checkpoint,
-    );
-    for (index, ((input, sign), quant)) in sign_inputs
-        .iter()
-        .copied()
-        .zip(sign_reads.iter().copied())
-        .zip(quant_pass.read_quants().iter().copied())
-        .enumerate()
-    {
-        if should_trace_coeff_entry(index, sign.level()) {
-            eprintln!(
-                "ordinary coeff tail index={} scan={} pos={} row={} col={} sign_source={:?} sign_symbol={:?} sign={} level={} quant_path={:?}",
-                index,
-                sign.entry().scan_index(),
-                sign.entry().pos(),
-                sign.entry().row(),
-                sign.entry().col(),
-                input.source,
-                sign.symbol(),
-                sign.sign(),
-                sign.level(),
-                quant.path(),
-            );
-        }
-    }
-}
-
-fn trace_ordinary_coeff_enabled(
-    config: CoeffBaseDerivedLevelPassConfig,
-    sign_config: CoeffOrdinaryDerivedSignPassConfig<'_>,
-) -> bool {
-    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_ORDINARY_COEFF_PASS") {
-        return false;
-    }
-    let Some(target) = crate::trace_flags::trace_value!("SPLOT_TRACE_ORDINARY_COEFF_TARGET") else {
-        return true;
-    };
-    let mut parts = target.split(',');
-    let Some(plane) = parts.next().and_then(|part| part.parse::<usize>().ok()) else {
-        return false;
-    };
-    let Some(x4) = parts.next().and_then(|part| part.parse::<usize>().ok()) else {
-        return false;
-    };
-    let Some(y4) = parts.next().and_then(|part| part.parse::<usize>().ok()) else {
-        return false;
-    };
-    let Some(w4) = parts.next().and_then(|part| part.parse::<usize>().ok()) else {
-        return false;
-    };
-    let Some(h4) = parts.next().and_then(|part| part.parse::<usize>().ok()) else {
-        return false;
-    };
-    parts.next().is_none()
-        && config.plane == plane
-        && sign_config.x4 == x4
-        && sign_config.y4 == y4
-        && sign_config.w4 == w4
-        && sign_config.h4 == h4
-}
-
-fn should_trace_coeff_entry(index: usize, level: u32) -> bool {
-    index < 8 || level != 0
 }

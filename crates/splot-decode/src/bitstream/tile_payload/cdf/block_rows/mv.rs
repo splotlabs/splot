@@ -91,66 +91,40 @@ macro_rules! joint_shell_class_row_match {
     };
 }
 
-/// CDF selector for the AV2 § 5.20.7.20 `read_mv()` row family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MvCdfSelector {
-    /// `TileJointShellSetCdf[MvCtx]`.
     JointShellSet {
-        /// §5.20.7.20 `MvCtx`.
         mv_ctx: usize,
     },
-    /// `TileJointShellPClassQCdf[MvCtx]`.
     JointShellClass {
-        /// `P == MvPrecision` (Table 6.19; `2` never occurs as a block precision).
         precision: usize,
-        /// `Q == shell_set`.
         shell_set: usize,
-        /// §5.20.7.20 `MvCtx`.
         mv_ctx: usize,
     },
-    /// `TileJointShellLastTwoClassesCdf[MvCtx]`.
     JointShellLastTwo {
-        /// §5.20.7.20 `MvCtx`.
         mv_ctx: usize,
     },
-    /// `TileShellOffsetLowClassCdf[MvCtx][shellClass]`.
     ShellOffsetLowClass {
-        /// §5.20.7.20 `MvCtx`.
         mv_ctx: usize,
-        /// `shellClass` for the low-class offset rows.
         shell_class: usize,
     },
-    /// `TileShellOffsetClass2Cdf[MvCtx]`.
     ShellOffsetClass2 {
-        /// §5.20.7.20 `MvCtx`.
         mv_ctx: usize,
     },
-    /// `TileShellOffsetOtherClassCdf[MvCtx][i]`.
     ShellOffsetOtherClass {
-        /// §5.20.7.20 `MvCtx`.
         mv_ctx: usize,
-        /// The §5.20.7.20 loop counter `i`.
         i: usize,
     },
-    /// `TileColMvGreaterCdf[MvCtx][i]`.
     ColMvGreater {
-        /// §5.20.7.20 `MvCtx`.
         mv_ctx: usize,
-        /// The §5.20.7.20 loop counter `i`.
         i: usize,
     },
-    /// `TileColMvIndexCdf[MvCtx][Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)]`.
     ColMvIndex {
-        /// §5.20.7.20 `MvCtx`.
         mv_ctx: usize,
-        /// `Min(shellClass, NUM_CTX_COL_MV_INDEX - 1)`.
         ctx: usize,
     },
-    /// `TileAmvdJointCdf`.
     AmvdJoint,
-    /// `TileAmvdIndexCdf[comp]`.
     AmvdIndex {
-        /// `comp == 0` for row and `comp == 1` for column.
         comp: usize,
     },
 }

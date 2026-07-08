@@ -95,47 +95,12 @@ const WEDGE_0: u8 = 0;
 const WEDGE_90: u8 = 5;
 const NUM_WEDGE_DIST: u8 = 4;
 
-fn trace_inter_block_mode(mi_row: usize, mi_col: usize) -> bool {
-    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_BLOCK_MODE") {
-        return false;
-    }
-    let Some(window) = crate::trace_flags::trace_value!("SPLOT_TRACE_INTER_BLOCK_WINDOW") else {
-        return (mi_row == 0 && mi_col <= 256)
-            || ((8..=12).contains(&mi_row) && (144..=156).contains(&mi_col))
-            || (mi_row == 16 && mi_col == 128);
-    };
-    let Some((rows, cols)) = window.split_once(',') else {
-        return false;
-    };
-    let Some((row_start, row_end)) = rows.split_once(':') else {
-        return false;
-    };
-    let Some((col_start, col_end)) = cols.split_once(':') else {
-        return false;
-    };
-    let Ok(row_start) = row_start.parse::<usize>() else {
-        return false;
-    };
-    let Ok(row_end) = row_end.parse::<usize>() else {
-        return false;
-    };
-    let Ok(col_start) = col_start.parse::<usize>() else {
-        return false;
-    };
-    let Ok(col_end) = col_end.parse::<usize>() else {
-        return false;
-    };
-    (row_start..=row_end).contains(&mi_row) && (col_start..=col_end).contains(&mi_col)
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WarpInterMode {
     Warpmv,
     WarpNewmv,
 }
 
-/// Per-frame filter state the inter block walk hands to the shared § 7.2
-/// final filter chain.
 pub(crate) struct InterFilterInputs {
     pub(crate) deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,
     pub(crate) chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2],
@@ -303,7 +268,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     let mut tx_skip_records = Vec::new();
     let mut decoded_any = false;
     let limits = options.limits();
-    trace_symbol_frame_marker(offset);
     let mut active_source_blocks = Vec::new();
     let mut unit_filters = Vec::new();
     for tile in work_units {
@@ -485,17 +449,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     Ok((frame_cdfs, filter_inputs))
 }
 
-fn trace_symbol_frame_marker(offset: ByteOffset) {
-    use std::io::Write as _;
-
-    let Some(path) = std::env::var_os("SPLOT_SYMBOL_TRACE") else {
-        return;
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
-        let _ = writeln!(file, "# inter frame offset={}", offset.get());
-    }
-}
-
 fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<usize> {
     let partition = sequence.partition?;
     core.frame_is_intra?;
@@ -518,11 +471,6 @@ fn chroma_smooth_grid_dimensions(
     )
 }
 
-/// AV2 § 5.20.5.7/§ 5.20.5.8 intra `segment_id` decode for a luma / non-`CHROMA_PART`
-/// leaf. Returns `0` with no symbols read when segmentation is disabled. Uses the
-/// § 5.20.5.8 spatial predictor + § 8.3.2 CDF context from the `SegmentIds` grid, the
-/// `skip_flag && !HasLosslessSegment` shortcut, `seg_id_ext_flag` (when
-/// `enable_ext_seg`), and `neg_deinterleave`.
 #[allow(clippy::too_many_arguments)]
 fn read_intra_segment_id(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -588,8 +536,6 @@ pub(super) const fn segment_neighbour_availability(
     (r > tile_mi_row_start, c > tile_mi_col_start)
 }
 
-/// AV2 § 7.14.2 `get_qindex(0, segment_id)`: the delta-q-adjusted `current_qindex`
-/// offset by the segment's `SEG_LVL_ALT_Q` feature when segmentation is active.
 fn segment_block_qindex(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -610,9 +556,6 @@ fn segment_block_qindex(
     get_qindex(&quant, current_qindex, seg, segment_id)
 }
 
-/// The unified per-block decode engine: reads `is_inter` and forks to the intra
-/// predictors or motion compensation, then decodes residual, inverse-transforms,
-/// and reconstructs. One block engine for key and inter frames.
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn decode_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -684,19 +627,6 @@ fn decode_block<T: ReconSample>(
     })?;
     let mi_row = frontier.r;
     let mi_col = frontier.c;
-    let entry_checkpoint = symbols.checkpoint();
-    let trace_first_row = trace_inter_block_mode(mi_row, mi_col);
-    if trace_first_row {
-        eprintln!(
-            "inter block entry r={mi_row} c={mi_col} b={} n4={}x{} tree_luma={} tree_chroma={} has_chroma={} checkpoint={entry_checkpoint:?}",
-            frontier.b_size.index(),
-            n4w,
-            n4h,
-            frontier.is_luma_part(),
-            frontier.is_chroma_part(),
-            frontier.has_chroma,
-        );
-    }
     let placed_geometry = placed_inter_geometry(frontier, n4w, n4h, tile_offset)?;
     let placed_block = |block| PlacedInterBlock {
         luma_x: placed_geometry.luma_x,
@@ -781,13 +711,6 @@ fn decode_block<T: ReconSample>(
         .map_err(|_| symbol_read_error(tile_offset))?
         .get()
     };
-    if trace_first_row {
-        eprintln!(
-            "inter block is_inter r={mi_row} c={mi_col} value={is_inter} ctx={} checkpoint={:?}",
-            neighbour_ctx.is_inter_ctx,
-            symbols.checkpoint()
-        );
-    }
     if is_inter == 0 {
         let seg_pre_skip = core
             .segmentation_params
@@ -827,14 +750,6 @@ fn decode_block<T: ReconSample>(
                 IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
                 tile_offset,
             )?;
-            if trace_first_row {
-                eprintln!(
-                    "inter block intra-prelude r={mi_row} c={mi_col} use_intrabc={} skip={} checkpoint={:?}",
-                    use_skip.use_intrabc,
-                    use_skip.skip_flag,
-                    symbols.checkpoint()
-                );
-            }
             if !seg_pre_skip {
                 segment_id = read_intra_segment_id(
                     work_unit,
@@ -961,7 +876,6 @@ fn decode_block<T: ReconSample>(
             if let Some(bank) = ref_mv_bank.as_mut() {
                 bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, sb_h4);
             }
-            trace_leaf_exit("intrabc", frontier, entry_checkpoint, symbols.checkpoint());
             return Ok(non_intra_leaf_mode(frontier).mark_intrabc());
         }
         let block_qindex = segment_block_qindex(
@@ -1025,7 +939,6 @@ fn decode_block<T: ReconSample>(
                 bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, sb_h4);
             }
         }
-        trace_leaf_exit("intra", frontier, entry_checkpoint, symbols.checkpoint());
         return Ok(leaf);
     }
     if is_inter != 1 {
@@ -1048,13 +961,6 @@ fn decode_block<T: ReconSample>(
         .map_err(|_| symbol_read_error(tile_offset))?
     };
     let skip = skip.get();
-    if trace_first_row {
-        eprintln!(
-            "inter block skip r={mi_row} c={mi_col} value={skip} ctx={} checkpoint={:?}",
-            neighbour_ctx.skip_ctx,
-            symbols.checkpoint()
-        );
-    }
     if skip != 0 && skip != 1 {
         return Err(inter_cap!(
             "inter_block_unexpected_skip",
@@ -1077,13 +983,6 @@ fn decode_block<T: ReconSample>(
     ccso_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     delta_q_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     let block_qindex = delta_q_state.qindex_u32();
-    if trace_first_row {
-        eprintln!(
-            "inter block after-side-info r={mi_row} c={mi_col} checkpoint={:?}",
-            symbols.checkpoint()
-        );
-    }
-
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let tip_frame_mode = core
         .inter
@@ -1118,13 +1017,6 @@ fn decode_block<T: ReconSample>(
     } else {
         false
     };
-    if trace_first_row {
-        eprintln!(
-            "inter block reference-mode r={mi_row} c={mi_col} uses_compound={uses_compound} reference_select={reference_select} checkpoint={:?}",
-            symbols.checkpoint()
-        );
-    }
-
     if uses_compound {
         return compound_path::decode_compound_inter_block(
             work_unit,
@@ -1169,7 +1061,6 @@ fn decode_block<T: ReconSample>(
             luma_use_tcq,
             residual_use_ddt,
             bit_depth,
-            entry_checkpoint,
             tile_offset,
         );
     }
@@ -1211,13 +1102,6 @@ fn decode_block<T: ReconSample>(
     };
     block_ctx.ref_frame0 = ref_frame0;
     let mode_ctx = find_mode_ctx(mv_grid, &block_ctx);
-    if trace_first_row {
-        eprintln!(
-            "inter block ref r={mi_row} c={mi_col} ref_frame0={ref_frame0} checkpoint={:?}",
-            symbols.checkpoint()
-        );
-    }
-
     let force_integer_mv = effective_force_integer_mv(core);
     let warp_mode = read_warp_inter_mode_syntax(
         cdfs,
@@ -1229,15 +1113,6 @@ fn decode_block<T: ReconSample>(
         mode_ctx.warp_mv_count,
         tile_offset,
     )?;
-    if trace_first_row {
-        eprintln!(
-            "inter block warp-mode r={mi_row} c={mi_col} value={warp_mode:?} allow={} force_integer_mv={} ctx={} checkpoint={:?}",
-            allow_warpmv_mode,
-            force_integer_mv,
-            mode_ctx.warp_mv_count,
-            symbols.checkpoint()
-        );
-    }
     if let Some(warp_mode) = warp_mode {
         let derive_wrl = n4w >= 2 && n4h >= 2;
         let use_temporal_first = temporal_first_frame
@@ -1260,16 +1135,6 @@ fn decode_block<T: ReconSample>(
             temporal_stack_context,
             use_temporal_first,
         );
-        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_BLOCK_MODE") {
-            eprintln!(
-                "inter block warp-selected r={mi_row} c={mi_col} b={} n4={}x{} mode={warp_mode:?} stack0={:?} checkpoint={:?}",
-                frontier.b_size.index(),
-                n4w,
-                n4h,
-                stack.candidate(0),
-                symbols.checkpoint()
-            );
-        }
         let mv_config = inter_mv_read_config(core, tile_offset)?;
         let motion_mode = if warp_mode == WarpInterMode::WarpNewmv {
             read_warp_newmv_motion_mode_syntax(
@@ -1395,23 +1260,6 @@ fn decode_block<T: ReconSample>(
             delta_q_state.qindex_u32(),
             tile_offset,
         )?;
-        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_BLOCK_MODE") {
-            eprintln!(
-                "inter block warp r={mi_row} c={mi_col} mode={warp_mode:?} ref={ref_frame0} ref_mv_idx={} ref_warp_idx={} precision={} warpmv_with_mvd={} mv=({}, {}) params={:?} warp_inter_intra={:?} residual_blocks={} checkpoint={:?}",
-                warp.ref_mv_idx,
-                warp.ref_warp_idx,
-                warp.precision_idx,
-                warp.warpmv_with_mvd,
-                warp.mv.row,
-                warp.mv.col,
-                warp.warp_params,
-                warp_inter_intra,
-                residual
-                    .as_ref()
-                    .map_or(0, |residual| residual.blocks.len()),
-                symbols.checkpoint()
-            );
-        }
         mv_grid.record_warp_block(
             mi_row,
             mi_col,
@@ -1488,7 +1336,6 @@ fn decode_block<T: ReconSample>(
             sequence_enables_ibp(sequence),
             tile_offset,
         )?;
-        trace_leaf_exit("warp", frontier, entry_checkpoint, symbols.checkpoint());
         return Ok(non_intra_leaf_mode(frontier));
     }
 
@@ -1501,13 +1348,6 @@ fn decode_block<T: ReconSample>(
         )
         .map_err(|_| symbol_read_error(tile_offset))?;
     let single_mode = single_mode.get();
-    if trace_first_row {
-        eprintln!(
-            "inter block single-mode r={mi_row} c={mi_col} value={single_mode} ctx={} checkpoint={:?}",
-            mode_ctx.new_mv_context,
-            symbols.checkpoint()
-        );
-    }
     if single_mode != SINGLE_MODE_NEARMV
         && single_mode != SINGLE_MODE_GLOBALMV
         && single_mode != SINGLE_MODE_NEWMV
@@ -1527,13 +1367,6 @@ fn decode_block<T: ReconSample>(
         neighbour_ctx.amvd_ctx(ref_frame0),
         tile_offset,
     )?;
-    if trace_first_row {
-        eprintln!(
-            "inter block use-amvd r={mi_row} c={mi_col} value={use_amvd} enable={} checkpoint={:?}",
-            enable_adaptive_mvd,
-            symbols.checkpoint()
-        );
-    }
     let bawp = read_bawp_syntax(
         cdfs,
         symbols,
@@ -1565,16 +1398,6 @@ fn decode_block<T: ReconSample>(
     } else {
         bawp
     };
-    if trace_first_row {
-        eprintln!(
-            "inter block bawp r={mi_row} c={mi_col} luma={} chroma={} allow={} frame_switch={} checkpoint={:?}",
-            bawp.enabled,
-            bawp.chroma,
-            allow_bawp,
-            frame_is_switch,
-            symbols.checkpoint()
-        );
-    }
     let interintra = if !bawp.enabled {
         let syntax = read_inter_intra_syntax(
             cdfs,
@@ -1621,13 +1444,6 @@ fn decode_block<T: ReconSample>(
     } else {
         0
     };
-    if trace_first_row {
-        eprintln!(
-            "inter block drl r={mi_row} c={mi_col} ref_mv_idx={ref_mv_idx} max_drl_bits_minus_1={max_drl_bits_minus_1} checkpoint={:?}",
-            symbols.checkpoint()
-        );
-    }
-
     let frame_mv_config = inter_mv_read_config(core, tile_offset)?;
     let precision = read_block_mv_precision_syntax(
         cdfs,
@@ -1681,16 +1497,6 @@ fn decode_block<T: ReconSample>(
     };
 
     let interp_ctx = neighbour_ctx.interp_filter_ctx(ref_frame0, false);
-    trace_interp_filter_context(
-        "single",
-        mi_row,
-        mi_col,
-        ref_frame0,
-        false,
-        interp_ctx,
-        &neighbour_ctx,
-        symbols,
-    );
     let interp = resolve_interp_filter(
         cdfs,
         symbols,
@@ -1699,14 +1505,6 @@ fn decode_block<T: ReconSample>(
         interp_ctx,
         tile_offset,
     )?;
-    if trace_first_row {
-        eprintln!(
-            "inter block interp r={mi_row} c={mi_col} frame_filter={frame_interpolation_filter:?} filter={interp:?} ctx={} checkpoint={:?}",
-            interp_ctx,
-            symbols.checkpoint()
-        );
-    }
-
     let residual = if skip == 0 {
         if !residual_quantizer_deltas_are_zero {
             return Err(inter_cap!(
@@ -1717,24 +1515,6 @@ fn decode_block<T: ReconSample>(
             ));
         }
         if !inter_residual_geometry_supported(frontier) {
-            if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_RESIDUAL_GUARD") {
-                let chroma_ref = frontier.chroma_ref_geometry();
-                eprintln!(
-                    "inter residual geometry rejected r={} c={} b={} n4={}x{} has_chroma={} chroma_offset={} luma_part={} chroma_part={} chroma_ref=({}, {}, {})",
-                    frontier.r,
-                    frontier.c,
-                    frontier.b_size.index(),
-                    n4w,
-                    n4h,
-                    frontier.has_chroma,
-                    frontier.chroma_offset,
-                    frontier.is_luma_part(),
-                    frontier.is_chroma_part(),
-                    chroma_ref.row(),
-                    chroma_ref.col(),
-                    chroma_ref.size().index()
-                );
-            }
             return Err(inter_cap!(
                 "inter_block_chroma_partitioned_residual",
                 tile_offset,
@@ -1771,19 +1551,6 @@ fn decode_block<T: ReconSample>(
         delta_q_state.qindex_u32(),
         tile_offset,
     )?;
-    if trace_first_row {
-        eprintln!(
-            "inter block r={mi_row} c={mi_col} b={} skip={skip} ref={ref_frame0} mode={single_mode} use_amvd={use_amvd} mv=({}, {}) interintra={interintra:?} residual_blocks={} checkpoint={:?}",
-            frontier.b_size.index(),
-            mv.row,
-            mv.col,
-            residual
-                .as_ref()
-                .map_or(0, |residual| residual.blocks.len()),
-            symbols.checkpoint()
-        );
-    }
-
     let y_mode = if single_mode == SINGLE_MODE_NEWMV {
         NeighbourYMode::NewMv
     } else {
@@ -1862,7 +1629,6 @@ fn decode_block<T: ReconSample>(
         sequence_enables_ibp(sequence),
         tile_offset,
     )?;
-    trace_leaf_exit("inter", frontier, entry_checkpoint, symbols.checkpoint());
     Ok(non_intra_leaf_mode(frontier))
 }
 
@@ -1943,15 +1709,6 @@ fn placed_inter_geometry(
     })
 }
 
-/// Reconstructs the § 7.11.5 IntrABC predictor for a leaf: always luma, and — for
-/// a leaf that carries its own co-located chroma — the U/V planes via the same
-/// block vector at a subsampled plane scaling.
-///
-/// The § 5.20.4.1 chroma-offset case (a small luma leaf whose chroma is inherited
-/// from a larger `chroma_ref_geometry` block) is deferred and fails closed: the
-/// chroma block is not the luma rectangle subsampled, so deriving U/V from the
-/// luma target would write the predictor into the wrong rectangle. Only
-/// co-located chroma (`!chroma_offset`) is reconstructed here.
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_intrabc_predictor<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -2056,8 +1813,6 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
     Ok(())
 }
 
-/// AV2 § 5.20.7.10 `is_comp_ref_allowed()`: `Min(w, h) >= 8 ||
-/// is_thin_4xn_nx4_block()`, in units of 4-sample mode-info columns/rows.
 pub(crate) fn is_comp_ref_allowed(n4w: usize, n4h: usize) -> bool {
     n4w.min(n4h) >= 2 || (n4w == 1 && n4h >= 4) || (n4h == 1 && n4w >= 4)
 }
@@ -2126,26 +1881,6 @@ const fn inter_residual_geometry_supported_flags(is_luma_part: bool, is_chroma_p
     !is_luma_part && !is_chroma_part
 }
 
-fn trace_leaf_exit(
-    branch: &'static str,
-    frontier: &DecodeBlockFrontier,
-    before: splot_core::symbol::SymbolDecoderCheckpoint,
-    after: splot_core::symbol::SymbolDecoderCheckpoint,
-) {
-    if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTER_LEAF_EXIT")
-        && before.symbol_max_bits >= -14
-        && after.symbol_max_bits < -14
-    {
-        eprintln!(
-            "inter leaf crossed exit floor branch={branch} r={} c={} b={} before={before:?} after={after:?}",
-            frontier.r,
-            frontier.c,
-            frontier.b_size.index()
-        );
-    }
-}
-
-/// The § 5.3 `enable_ibp` sequence flag driving the § 7.13.2.12 IBP DC arm.
 fn sequence_enables_ibp(sequence: &SequenceHeader) -> bool {
     sequence
         .intra
@@ -2195,7 +1930,6 @@ fn no_neighbour_left<T: ReconSample>(bit_depth: BitDepth) -> splot_recon::Result
     T::try_from_u16(midpoint + 1)
 }
 
-/// One plane's § 5.20.7.22 `IntraPred` snapshot for the interintra blend.
 struct InterIntraPlanePrediction<T> {
     plane: ReconPlaneId,
     sub_x: u32,
@@ -2206,9 +1940,6 @@ struct InterIntraPlanePrediction<T> {
     samples: Vec<T>,
 }
 
-/// Predicts the § 5.20.7.22 interintra intra predictor for every plane of the
-/// block into caller-owned snapshots (edges are read from already-reconstructed
-/// neighbours, so this runs before motion compensation overwrites the block).
 fn predict_interintra_planes<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
@@ -2446,7 +2177,6 @@ pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
 use self::syntax::{
     effective_force_integer_mv, frame_mv_precision, interp_filter_symbol, lowered_pred_mv,
     read_block_mv_precision_syntax, read_drl_idx, read_use_amvd_syntax, resolve_interp_filter,
-    trace_interp_filter_context,
 };
 use self::temporal::{block_ref_within_temporal_distance, record_temporal_motion_block};
 use self::warp::{
@@ -2460,14 +2190,6 @@ use self::residual::{
     read_inter_residual, reset_inter_skip_coeff_contexts, transform_tool_residual_policy,
 };
 
-/// § 5.20.7.14 `read_motion_mode` SIMPLE-path prefix: the § 5.20.7.15
-/// `read_interintra_mode(0)` `inter_intra` flag and tail, read for
-/// single-reference non-warp blocks of 8x8..=64x64 when the frame enables the
-/// INTERINTRA motion mode.
-/// `use_bawp` zeroes `motion_mode_allowed` (05:13818), so the caller skips
-/// this read for BAWP blocks; the other bail-outs (skip_mode, TIP/INTRA
-/// references, segmentation features) are frontier-rejected before this
-/// point.
 fn read_inter_intra_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -2671,59 +2393,5 @@ fn map_inter_multiblock_error(
 }
 
 #[cfg(test)]
-mod tests {
-    use splot_core::headers::sequence::ChromaFormatIdc;
-    use splot_core::span::ByteOffset;
-
-    use super::{
-        chroma_smooth_grid_dimensions, ensure_intra_leaf_quantizer_delta_scope,
-        inter_residual_geometry_supported_flags,
-    };
-    use crate::error::DecodeError;
-    use crate::prediction::inter::SPEC_MODE_INFO;
-
-    #[test]
-    fn inter_residual_geometry_allows_shared_leaves() {
-        assert!(inter_residual_geometry_supported_flags(false, false));
-    }
-
-    #[test]
-    fn inter_residual_geometry_rejects_chroma_partitioned_leaves() {
-        assert!(!inter_residual_geometry_supported_flags(true, false));
-        assert!(!inter_residual_geometry_supported_flags(false, true));
-    }
-
-    #[test]
-    fn inter_frame_intra_leaf_rejects_nonzero_quantizer_deltas() {
-        let result = ensure_intra_leaf_quantizer_delta_scope(false, false, ByteOffset::new(13));
-        assert!(matches!(
-            &result,
-            Err(DecodeError::UnsupportedFeature { unsupported })
-                if unsupported.reason() == "inter_block_intra_leaf_nonzero_quantizer_delta"
-                    && unsupported.spec_section() == SPEC_MODE_INFO
-                    && unsupported.byte_offset() == Some(ByteOffset::new(13))
-        ));
-    }
-
-    #[test]
-    fn intra_leaf_quantizer_delta_guard_allows_installed_or_zero_delta_scope() {
-        assert!(ensure_intra_leaf_quantizer_delta_scope(true, false, ByteOffset::new(0)).is_ok());
-        assert!(ensure_intra_leaf_quantizer_delta_scope(false, true, ByteOffset::new(0)).is_ok());
-    }
-
-    #[test]
-    fn chroma_smooth_grid_dimensions_follow_chroma_sampling() {
-        assert_eq!(
-            chroma_smooth_grid_dimensions(17, 19, ChromaFormatIdc::Yuv420),
-            (9, 10)
-        );
-        assert_eq!(
-            chroma_smooth_grid_dimensions(17, 19, ChromaFormatIdc::Yuv422),
-            (17, 10)
-        );
-        assert_eq!(
-            chroma_smooth_grid_dimensions(17, 19, ChromaFormatIdc::Yuv444),
-            (17, 19)
-        );
-    }
-}
+#[path = "block_tests.rs"]
+mod tests;

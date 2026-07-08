@@ -13,7 +13,6 @@ use super::CoeffLoopContextError;
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::CoeffTransformClass;
 
-/// One checked § 5.20.7.27 coefficient scan entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffScanEntry {
     scan_index: usize,
@@ -32,25 +31,21 @@ impl CoeffScanEntry {
         }
     }
 
-    /// Scan index `c` from the § 5.20.7.27 loop.
     #[must_use]
     pub(crate) const fn scan_index(self) -> usize {
         self.scan_index
     }
 
-    /// Raster coefficient position `scan[c]`.
     #[must_use]
     pub(crate) const fn pos(self) -> usize {
         self.pos
     }
 
-    /// Row derived by the spec's `get_tx_row_col` operation.
     #[must_use]
     pub(crate) const fn row(self) -> usize {
         self.row
     }
 
-    /// Column derived by the spec's `get_tx_row_col` operation.
     #[must_use]
     pub(crate) const fn col(self) -> usize {
         self.col
@@ -67,14 +62,12 @@ impl CoeffScanEntry {
     }
 }
 
-/// Checked ordinary non-FSC coefficient scan window.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffScanWalk {
     entries: Vec<CoeffScanEntry>,
 }
 
 impl NonZeroCoeffScanWalk {
-    /// Entries in visited order: `eob - 1`, ..., `0`.
     #[must_use]
     pub(crate) fn entries(&self) -> &[CoeffScanEntry] {
         &self.entries
@@ -86,7 +79,6 @@ impl NonZeroCoeffScanWalk {
     }
 }
 
-/// Checked FSC/IDTX coefficient scan window.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FscCoeffScanWalk {
     bob: usize,
@@ -95,43 +87,30 @@ pub(crate) struct FscCoeffScanWalk {
 }
 
 impl FscCoeffScanWalk {
-    /// Begin-of-block scan index `bob = segEob - eob`.
     #[must_use]
     pub(crate) const fn bob(&self) -> usize {
         self.bob
     }
 
-    /// Caller-resolved `segEob` from AV2 § 5.20.7.27.
     #[must_use]
     pub(crate) const fn seg_eob(&self) -> usize {
         self.seg_eob
     }
 
-    /// Entries in visited order: `bob`, ..., `segEob - 1`.
     #[must_use]
     pub(crate) fn entries(&self) -> &[CoeffScanEntry] {
         &self.entries
     }
 }
 
-/// Error returned while deriving an AV2 coefficient scan order.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffScanOrderError {
-    /// `get_scan(txSz, txClass)` received an unsupported scan extent.
     #[error("coefficient scan order invalid scan shape {width}x{height}")]
-    InvalidShape {
-        /// Scan width after `Min(Tx_Width[txSz], 32)`.
-        width: usize,
-        /// Scan height after `Min(Tx_Height[txSz], 32)`.
-        height: usize,
-    },
-    /// Allocation for the derived scan order failed.
+    InvalidShape { width: usize, height: usize },
     #[error("coefficient scan order allocation failed: {0}")]
     Allocation(#[from] TryReserveError),
 }
 
-/// Derives AV2 § 5.20.7.30 `get_scan(txSz, txClass)` output from resolved
-/// transform facts (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30`).
 pub(crate) fn derive_coeff_scan_order(
     tx_width: usize,
     tx_height: usize,
@@ -214,9 +193,6 @@ where
     Ok(entries)
 }
 
-/// Walks the ordinary non-FSC AV2 § 5.20.7.27 nonzero coefficient scan window
-/// over a caller-supplied scan order
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`).
 pub(crate) fn walk_nonzero_coeff_scan(
     start: &NonZeroCoeffBlockStart,
     scan: &[u16],
@@ -237,9 +213,6 @@ pub(crate) fn walk_nonzero_coeff_scan(
     Ok(NonZeroCoeffScanWalk { entries })
 }
 
-/// Walks the FSC/IDTX AV2 § 5.20.7.27 coefficient scan window for a
-/// caller-resolved `segEob` and scan order
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27`).
 pub(crate) fn walk_fsc_coeff_scan(
     start: &NonZeroCoeffBlockStart,
     seg_eob: usize,

@@ -14,23 +14,17 @@ use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 use crate::bitstream::tile_payload::GeneralIntraResidualError;
 use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
 
-/// Tile-wide per-MI intra smoothness grid (§7.13.2.15/16 `is_smooth`).
 pub(crate) struct TileSmoothGrid {
     mi_rows: usize,
     mi_cols: usize,
     cells: Vec<bool>,
 }
 
-/// `YModes` smoothness for luma edge filters. Inter blocks record `false`
-/// because their `YModes` entry is an inter mode, matching AVM's raw-mode
-/// `is_smooth` check.
 pub(crate) type TileYSmoothGrid = TileSmoothGrid;
 
-/// `UVModes` smoothness for chroma edge filters.
 pub(crate) type TileChromaSmoothGrid = TileSmoothGrid;
 
 impl TileSmoothGrid {
-    /// Builds an all-`false` grid, or `None` when the dimensions overflow.
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let cells = mi_rows.checked_mul(mi_cols)?;
         Some(Self {
@@ -40,7 +34,6 @@ impl TileSmoothGrid {
         })
     }
 
-    /// Records a decoded block's luma smoothness into every covered MI cell.
     pub(crate) fn record(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, smooth: bool) {
         for row in r..(r + n4h).min(self.mi_rows) {
             for col in c..(c + n4w).min(self.mi_cols) {
@@ -49,15 +42,11 @@ impl TileSmoothGrid {
         }
     }
 
-    /// §7.13.2.15/16 neighbour smoothness for the block at luma MI
-    /// (`mi_col`, `mi_row`): the cell above the origin and the cell to its
-    /// left. Off-grid neighbours contribute `false`.
     pub(crate) fn block_smoothness(&self, mi_col: usize, mi_row: usize) -> (bool, bool) {
         let (col, row) = (mi_col as isize, mi_row as isize);
         (self.at(col, row - 1), self.at(col - 1, row))
     }
 
-    /// Reads the smoothness at (`col`, `row`); off-grid reads are `false`.
     fn at(&self, col: isize, row: isize) -> bool {
         if col < 0 || row < 0 {
             return false;
@@ -70,28 +59,17 @@ impl TileSmoothGrid {
     }
 }
 
-/// The per-block §7.13.2.7 inputs threaded through the residual pipeline.
-/// The smoothness pair is resolved once at the coding block's MI origin —
-/// §7.13.2.15/16 read `YModes[MiRow - 1][MiCol]` / `[MiRow][MiCol - 1]` of
-/// the BLOCK, and every transform unit of the block reuses it.
 #[derive(Clone, Copy)]
 pub(crate) struct IntraEdgeCtx {
-    /// §5.3 `enable_ibp`.
     pub(crate) enable_ibp: bool,
-    /// §5.3 `enable_intra_edge_filter`.
     pub(crate) enable_intra_edge_filter: bool,
-    /// §7.13.2.15 `is_smooth` of the block's above neighbour.
     pub(crate) above_smooth: bool,
-    /// §7.13.2.16 `is_smooth` of the block's left neighbour.
     pub(crate) left_smooth: bool,
-    /// Chroma §7.13.2.15 `is_smooth` of the block's above neighbour.
     pub(crate) chroma_above_smooth: bool,
-    /// Chroma §7.13.2.16 `is_smooth` of the block's left neighbour.
     pub(crate) chroma_left_smooth: bool,
 }
 
 impl IntraEdgeCtx {
-    /// Returns an edge-filter context whose smoothness pair is the chroma pair.
     pub(crate) const fn chroma(self) -> Self {
         Self {
             above_smooth: self.chroma_above_smooth,
@@ -101,9 +79,6 @@ impl IntraEdgeCtx {
     }
 }
 
-/// The pure §7.13.2.7 step-1 shape of one read edge: which edge, its
-/// §7.13.2.17 strength inputs, the far-extension need, and whether the
-/// §7.13.2.14 corner blend fires.
 struct EdgeSpec {
     above: bool,
     filter_type: bool,
@@ -112,9 +87,6 @@ struct EdgeSpec {
     corner_applies: bool,
 }
 
-/// §7.13.2.7 step-1 spec for the PRIMARY read edge of a one-sided leaf
-/// (07:5619-5644): per-edge filter types under `applyIbp` (with the ±180
-/// angle wraps and the widened far needs), the OR'd filter type otherwise.
 fn one_sided_read_edge_spec(
     above_smooth: bool,
     left_smooth: bool,
@@ -164,10 +136,6 @@ fn one_sided_read_edge_spec(
     }
 }
 
-/// §7.13.2.7 step-1 spec for the IBP SECONDARY (opposite) read edge of a
-/// `useIBP` leaf: the zone-1 primary reads above, so the secondary reads the
-/// LEFT edge with `filterTypeLeft` / `angleLeft` / `needBottom` — and
-/// symmetrically for zone-3 (07:5628-5636).
 fn ibp_secondary_edge_spec(above_smooth: bool, left_smooth: bool, p_angle: i32) -> EdgeSpec {
     let zone1 = p_angle < 90;
     let mut angle_above = p_angle - 90;
@@ -199,12 +167,6 @@ fn ibp_secondary_edge_spec(above_smooth: bool, left_smooth: bool, p_angle: i32) 
     }
 }
 
-/// Assembles a per-unit [`OneSidedEdgeFilter`] from an [`EdgeSpec`]: the
-/// §7.13.2.17 strength, the §7.13.2.7 `numPx` storage clamp, and the
-/// §7.13.2.14 `corner_opposite` sample. Availability is frame geometry: the
-/// production walk has every prior block reconstructed, and at frame edges
-/// the corner reads the same §7.13.2.1 fallback sample the edge builders use
-/// (the above edge's `x == 0` corner falls back to the block column itself).
 #[allow(clippy::too_many_arguments)]
 fn assemble_unit_edge_filter<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
@@ -254,26 +216,15 @@ fn assemble_unit_edge_filter<T: ReconSample>(
     })
 }
 
-/// Which §7.13.2.7 read edge a per-unit filter resolution targets.
 #[derive(Clone, Copy)]
 pub(crate) enum UnitEdgeRole {
-    /// The PRIMARY read edge of a one-sided leaf (07:5619-5644).
-    Primary {
-        /// §7.13.2.7 `applyIbp` (per-edge filter types + widened far needs).
-        apply_ibp: bool,
-    },
-    /// The IBP SECONDARY (opposite) read edge of a `useIBP` leaf.
+    Primary { apply_ibp: bool },
     IbpSecondary,
 }
 
-/// The unit's §7.13.2.1 edge availability: the §7.13.2.7 strength filter
-/// only runs over an edge with real samples, and the §7.13.2.14 corner
-/// blend needs both edges.
 #[derive(Clone, Copy)]
 pub(crate) struct UnitEdges {
-    /// The unit has an above row to read.
     pub(crate) above: bool,
-    /// The unit has a left column to read.
     pub(crate) left: bool,
 }
 
@@ -283,9 +234,6 @@ impl UnitEdges {
     }
 }
 
-/// Resolves a per-unit §7.13.2.7 edge filter for a one-sided luma unit, or
-/// the no-op default when `enable_intra_edge_filter == 0` or the read edge
-/// has no real samples.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn unit_edge_filter<T: ReconSample>(
     ctx: IntraEdgeCtx,
@@ -301,9 +249,6 @@ pub(crate) fn unit_edge_filter<T: ReconSample>(
     unit_edge_filter_for_plane(ctx, workspace, PlaneId::Y, p_angle, role, edges, x, y, w, h)
 }
 
-/// Plane-aware variant of [`unit_edge_filter`] for chroma one-sided
-/// directional units. The § 7.13.2.7 edge filter math is plane-independent; only
-/// the backing plane read for the edge samples/corner differs.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn unit_edge_filter_for_plane<T: ReconSample>(
     ctx: IntraEdgeCtx,
@@ -334,14 +279,6 @@ pub(crate) fn unit_edge_filter_for_plane<T: ReconSample>(
     assemble_unit_edge_filter(workspace, plane_id, &spec, x, y, w, h)
 }
 
-/// Resolves the per-unit §7.13.2.7 filters for BOTH edges of a zone-2
-/// (`90 < pAngle < 180`) unit, or the no-op defaults when
-/// `enable_intra_edge_filter == 0`. `applyIbp` (`enable_ibp` and a
-/// non-4x4 unit — not zone-gated, 07:5611-5613) keeps the PER-EDGE
-/// §7.13.2.15/16 filter types; otherwise the OR'd `filterType` seeds both
-/// edges. `angleAbove = pAngle - 90`, `angleLeft = pAngle - 180` (in-range
-/// for zone-2 either way), no far spans, and the §7.13.2.14 corner fires
-/// at `(w + h) >= 24` (07:5619-5644).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn unit_middle_edge_filters<T: ReconSample>(
     ctx: IntraEdgeCtx,
@@ -396,49 +333,5 @@ pub(crate) fn unit_middle_edge_filters<T: ReconSample>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn grid_records_and_reads_cells() {
-        let mut grid = TileYSmoothGrid::new(4, 4).unwrap();
-        grid.record(1, 1, 2, 2, true);
-        assert!(grid.at(1, 1));
-        assert!(grid.at(2, 2));
-        assert!(!grid.at(0, 0));
-        assert!(!grid.at(-1, 1));
-        assert!(!grid.at(1, 4));
-    }
-
-    #[test]
-    fn one_sided_spec_ors_smoothness_without_ibp() {
-        let spec = one_sided_read_edge_spec(false, true, 45, false);
-        assert!(spec.above);
-        assert!(spec.filter_type, "zone-1 without IBP ORs above|left");
-        assert_eq!(spec.angle_delta, -45);
-        assert!(spec.need_far);
-        assert!(!spec.corner_applies, "one-sided zone-1 lacks needLeft");
-    }
-
-    #[test]
-    fn one_sided_spec_keeps_per_edge_smoothness_under_ibp() {
-        let spec = one_sided_read_edge_spec(false, true, 45, true);
-        assert!(!spec.filter_type, "applyIbp keeps the per-edge above type");
-        assert!(spec.corner_applies, "applyIbp forces needAbove && needLeft");
-        let secondary = ibp_secondary_edge_spec(false, true, 45);
-        assert!(!secondary.above);
-        assert!(secondary.filter_type, "secondary reads the left type");
-        assert_eq!(secondary.angle_delta, 45 - 180 + 180);
-        assert!(secondary.need_far, "zone-1 secondary needs the bottom span");
-    }
-
-    #[test]
-    fn zone3_secondary_reads_above_with_wrapped_angle() {
-        let secondary = ibp_secondary_edge_spec(true, false, 203);
-        assert!(secondary.above);
-        assert!(secondary.filter_type);
-        assert_eq!(secondary.angle_delta, 203 - 90 - 180);
-        assert!(secondary.need_far, "pAngle > 180 needs the right span");
-    }
-}
+#[path = "intra_edge_tests.rs"]
+mod tests;

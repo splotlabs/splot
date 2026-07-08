@@ -31,7 +31,6 @@ use crate::{
     DecodePlannedObu, DecodeStreamPlan,
 };
 
-/// Sequence CDF facts needed by the tile CDF save policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameCandidateCdfFacts {
     enable_avg_cdf: bool,
@@ -39,7 +38,6 @@ pub(crate) struct FrameCandidateCdfFacts {
 }
 
 impl FrameCandidateCdfFacts {
-    /// Creates CDF policy facts from the active sequence header.
     #[must_use]
     pub(crate) const fn new(enable_avg_cdf: bool, avg_cdf_type: bool) -> Self {
         Self {
@@ -49,7 +47,6 @@ impl FrameCandidateCdfFacts {
     }
 }
 
-/// Sequence facts needed by future coefficient decoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameCandidateCoeffFacts {
     enable_fsc: bool,
@@ -61,7 +58,6 @@ pub(crate) struct FrameCandidateCoeffFacts {
 }
 
 impl FrameCandidateCoeffFacts {
-    /// Creates coefficient frame facts from the active sequence header.
     #[allow(clippy::fn_params_excessive_bools)]
     #[must_use]
     pub(crate) const fn new(
@@ -82,8 +78,6 @@ impl FrameCandidateCoeffFacts {
         }
     }
 
-    /// Creates coefficient frame facts from a parsed AV2 § 5.4.8 sequence
-    /// transform/quant/entropy configuration.
     #[must_use]
     pub(crate) const fn from_tq(tq: &SequenceTqEntropyConfig) -> Self {
         Self::new(
@@ -97,7 +91,6 @@ impl FrameCandidateCoeffFacts {
     }
 }
 
-/// Normalized parser facts required by the tile-payload boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameCandidateTileFacts<'a> {
     obu_type: ObuType,
@@ -118,114 +111,31 @@ pub(crate) struct FrameCandidateTileFacts<'a> {
 }
 
 impl<'a> FrameCandidateTileFacts<'a> {
-    /// Derives normalized tile facts from a state-aware frame-header core parse.
-    ///
-    /// # Errors
-    /// Returns a local derivation error when the frame header did not reach the
-    /// complete intra path or lacks facts required by the tile boundary.
     pub(crate) fn from_frame_core(
         core: &'a FrameHeaderCore,
         coeff: FrameCandidateCoeffFacts,
     ) -> Result<Self, FrameCandidateTileBoundaryError> {
-        if core.status != FrameHeaderParseStatus::IntraHeaderComplete {
-            return Err(FrameCandidateTileBoundaryError::Unsupported {
-                reason: FrameCandidateTileUnsupportedReason::IncompleteFrameHeader,
-            });
-        }
-        if core.frame_is_intra != Some(true) {
-            return Err(FrameCandidateTileBoundaryError::Unsupported {
-                reason: FrameCandidateTileUnsupportedReason::NonIntraFrame,
-            });
-        }
-        if core.is_bridge {
-            return Err(FrameCandidateTileBoundaryError::Unsupported {
-                reason: FrameCandidateTileUnsupportedReason::BridgeFrame,
-            });
-        }
-        let tile_info = core
-            .tile_info
-            .as_ref()
-            .ok_or(FrameCandidateTileBoundaryError::MissingFact { fact: "tile_info" })?;
-        let quant =
-            core.quantization_params
-                .ok_or(FrameCandidateTileBoundaryError::MissingFact {
-                    fact: "quantization_params",
-                })?;
-        let disable_cdf_update =
-            core.disable_cdf_update
-                .ok_or(FrameCandidateTileBoundaryError::MissingFact {
-                    fact: "disable_cdf_update",
-                })?;
-        let lossless = core
-            .lossless_info
-            .ok_or(FrameCandidateTileBoundaryError::MissingFact {
-                fact: "lossless_info",
-            })?;
-        let tail = core
-            .intra_tail
-            .ok_or(FrameCandidateTileBoundaryError::MissingFact { fact: "intra_tail" })?;
-        let coeff_frame_facts = TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
-            enable_fsc: coeff.enable_fsc,
-            enable_idtx_intra: coeff.enable_idtx_intra,
-            enable_intra_ist: coeff.enable_intra_ist,
-            enable_inter_ist: coeff.enable_inter_ist,
-            enable_chroma_dctonly: coeff.enable_chroma_dctonly,
-            enable_cctx: coeff.enable_cctx,
-            reduced_tx_set: usize::from(tail.reduced_tx_set),
-            lossless_array: lossless.lossless_array,
-            allow_tcq: lossless.allow_tcq,
-            allow_parity_hiding: lossless.allow_parity_hiding,
-            base_q_idx: quant.base_q_idx,
-        });
-
-        Ok(Self {
-            obu_type: core.obu_type,
-            frame_is_intra: true,
-            is_bridge: false,
-            tile_cols: tile_info.tile_cols,
-            tile_rows: tile_info.tile_rows,
-            mi_col_starts: &tile_info.mi_col_starts,
-            mi_row_starts: &tile_info.mi_row_starts,
-            tile_cols_log2: tile_info.tile_cols_log2,
-            tile_rows_log2: tile_info.tile_rows_log2,
-            tile_size_bytes: tile_info.tile_size_bytes,
-            context_update_tile_id: tile_info.context_update_tile_id,
-            base_q_idx: quant.base_q_idx,
-            coeff_frame_facts,
-            disable_cdf_update,
-            tile_group_structure_start_bits: core.consumed_bits.checked_add(1).ok_or(
-                DecodeLimitError::ArithmeticOverflow {
-                    name: DecodeLimitName::MaxInputBytes,
-                    op: DecodeLimitOp::Add,
-                    left: core.consumed_bits,
-                    right: 1,
-                },
-            )?,
-        })
+        Self::from_core(core, coeff, FrameCandidateTilePath::Intra)
     }
 
-    /// Derives normalized tile facts from a state-aware **inter** frame-header core
-    /// parse (AV2 § 5.18.2 `InterHeaderComplete`).
-    ///
-    /// This mirrors [`Self::from_frame_core`] for the inter path: the tile geometry,
-    /// `base_q_idx`, `disable_cdf_update`, and coefficient frame facts are read from
-    /// the same shared `core` fields, but `reduced_tx_set` comes from the parsed
-    /// `core.inter_tail` (the inter tail) instead of `core.intra_tail`, and the
-    /// completion gate is `InterHeaderComplete` with `frame_is_intra == false`.
-    ///
-    /// # Errors
-    /// Returns a local derivation error when the frame header did not reach the
-    /// complete inter path or lacks facts required by the tile boundary.
     pub(crate) fn from_inter_frame_core(
         core: &'a FrameHeaderCore,
         coeff: FrameCandidateCoeffFacts,
     ) -> Result<Self, FrameCandidateTileBoundaryError> {
-        if core.status != FrameHeaderParseStatus::InterHeaderComplete {
+        Self::from_core(core, coeff, FrameCandidateTilePath::Inter)
+    }
+
+    fn from_core(
+        core: &'a FrameHeaderCore,
+        coeff: FrameCandidateCoeffFacts,
+        path: FrameCandidateTilePath,
+    ) -> Result<Self, FrameCandidateTileBoundaryError> {
+        if core.status != path.expected_status() {
             return Err(FrameCandidateTileBoundaryError::Unsupported {
                 reason: FrameCandidateTileUnsupportedReason::IncompleteFrameHeader,
             });
         }
-        if core.frame_is_intra != Some(false) {
+        if core.frame_is_intra != Some(path.frame_is_intra()) {
             return Err(FrameCandidateTileBoundaryError::Unsupported {
                 reason: FrameCandidateTileUnsupportedReason::NonIntraFrame,
             });
@@ -254,10 +164,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
             .ok_or(FrameCandidateTileBoundaryError::MissingFact {
                 fact: "lossless_info",
             })?;
-        let tail = core
-            .inter_tail
-            .as_ref()
-            .ok_or(FrameCandidateTileBoundaryError::MissingFact { fact: "inter_tail" })?;
+        let reduced_tx_set = path.reduced_tx_set(core)?;
         let coeff_frame_facts = TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
             enable_fsc: coeff.enable_fsc,
             enable_idtx_intra: coeff.enable_idtx_intra,
@@ -265,7 +172,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
             enable_inter_ist: coeff.enable_inter_ist,
             enable_chroma_dctonly: coeff.enable_chroma_dctonly,
             enable_cctx: coeff.enable_cctx,
-            reduced_tx_set: usize::from(tail.reduced_tx_set),
+            reduced_tx_set,
             lossless_array: lossless.lossless_array,
             allow_tcq: lossless.allow_tcq,
             allow_parity_hiding: lossless.allow_parity_hiding,
@@ -274,7 +181,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
 
         Ok(Self {
             obu_type: core.obu_type,
-            frame_is_intra: false,
+            frame_is_intra: path.frame_is_intra(),
             is_bridge: false,
             tile_cols: tile_info.tile_cols,
             tile_rows: tile_info.tile_rows,
@@ -339,7 +246,43 @@ impl<'a> FrameCandidateTileFacts<'a> {
     }
 }
 
-/// Tile-group position facts supplied by stateful frame traversal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrameCandidateTilePath {
+    Intra,
+    Inter,
+}
+
+impl FrameCandidateTilePath {
+    const fn expected_status(self) -> FrameHeaderParseStatus {
+        match self {
+            Self::Intra => FrameHeaderParseStatus::IntraHeaderComplete,
+            Self::Inter => FrameHeaderParseStatus::InterHeaderComplete,
+        }
+    }
+
+    const fn frame_is_intra(self) -> bool {
+        matches!(self, Self::Intra)
+    }
+
+    fn reduced_tx_set(
+        self,
+        core: &FrameHeaderCore,
+    ) -> Result<usize, FrameCandidateTileBoundaryError> {
+        match self {
+            Self::Intra => core
+                .intra_tail
+                .as_ref()
+                .map(|tail| usize::from(tail.reduced_tx_set))
+                .ok_or(FrameCandidateTileBoundaryError::MissingFact { fact: "intra_tail" }),
+            Self::Inter => core
+                .inter_tail
+                .as_ref()
+                .map(|tail| usize::from(tail.reduced_tx_set))
+                .ok_or(FrameCandidateTileBoundaryError::MissingFact { fact: "inter_tail" }),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileGroupPositionFacts {
     is_first_tile_group: bool,
@@ -347,7 +290,6 @@ pub(crate) struct TileGroupPositionFacts {
 }
 
 impl TileGroupPositionFacts {
-    /// Creates tile-group position facts.
     #[must_use]
     pub(crate) const fn new(is_first_tile_group: bool, is_last_tile_group: bool) -> Self {
         Self {
@@ -357,7 +299,6 @@ impl TileGroupPositionFacts {
     }
 }
 
-/// Input to the crate-private tile-payload derivation bridge.
 #[derive(Clone, Debug)]
 pub(crate) struct FrameCandidateTileBoundaryInput<'payload, 'facts> {
     plan: &'facts DecodeStreamPlan,
@@ -372,7 +313,6 @@ pub(crate) struct FrameCandidateTileBoundaryInput<'payload, 'facts> {
 }
 
 impl<'payload, 'facts> FrameCandidateTileBoundaryInput<'payload, 'facts> {
-    /// Creates tile-payload derivation input from planned provenance and parser facts.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub(crate) const fn new(
@@ -405,72 +345,44 @@ impl<'payload, 'facts> FrameCandidateTileBoundaryInput<'payload, 'facts> {
     }
 }
 
-/// Error from crate-private tile-payload input derivation.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum FrameCandidateTileBoundaryError {
-    /// Candidate metadata is not usable as source-backed tile input.
     #[error("malformed frame-candidate tile input: {0}")]
     Malformed(FrameCandidateTileMalformed),
-    /// Required parser facts are absent.
     #[error("missing parser fact for tile-payload derivation: {fact}")]
-    MissingFact {
-        /// Missing fact label.
-        fact: &'static str,
-    },
-    /// The frame candidate is outside the current derivation tier.
+    MissingFact { fact: &'static str },
     #[error("unsupported frame-candidate tile input: {reason}")]
     Unsupported {
-        /// Unsupported reason.
         reason: FrameCandidateTileUnsupportedReason,
     },
-    /// A decode resource limit rejected derivation before tile work was retained.
     #[error("frame-candidate tile derivation rejected by resource limit: {0}")]
     Limit(#[from] DecodeLimitError),
-    /// The derived input reached the existing tile-payload boundary.
     #[error("tile-payload boundary failed after derivation: {0}")]
     Boundary(#[from] TilePayloadBoundaryError),
 }
 
-/// Malformed derivation input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FrameCandidateTileMalformed {
-    /// The candidate is not contained in the supplied stream plan.
     CandidateNotInPlan,
-    /// The plan format and candidate source kind disagree.
     PlanSourceKindMismatch {
-        /// Plan container format.
         format: BitstreamFormat,
-        /// Candidate source kind.
         source_kind: DecodeObuSourceKind,
     },
-    /// A field on the borrowed OBU envelope disagrees with the planned OBU.
     CandidateEnvelopeMismatch {
-        /// Mismatched field label.
         field: &'static str,
     },
-    /// The declared OBU size is smaller than its parsed header.
     ObuSizeSmallerThanHeader {
-        /// Declared `num_bytes_in_obu`.
         size: u32,
-        /// Header size in bytes.
         header_size: u8,
     },
-    /// The OBU or tile-group payload range falls outside the source container.
     SourceRangeOutOfBounds {
-        /// Range label.
         range: &'static str,
     },
-    /// The § 5.19 structure is not complete.
     TileGroupStructureIncomplete,
-    /// The § 5.19 structure is structurally invalid.
     TileGroupStructureInvalid,
-    /// The § 5.19-derived payload region does not match the OBU payload.
     TileGroupPayloadRangeInvalid,
-    /// The tile-group range is invalid.
     TileGroupRangeInvalid {
-        /// `tg_start`.
         tg_start: u32,
-        /// `tg_end`.
         tg_end: u32,
     },
 }
@@ -510,22 +422,14 @@ impl fmt::Display for FrameCandidateTileMalformed {
     }
 }
 
-/// Unsupported derivation reason.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FrameCandidateTileUnsupportedReason {
-    /// Planned OBU is not a frame candidate.
     CandidateNotFrame,
-    /// Tile group is not the first group of the coded frame.
     NonFirstTileGroup,
-    /// Tile group is not the final group of the coded frame.
     NonLastTileGroup,
-    /// Frame header did not parse to complete intra facts.
     IncompleteFrameHeader,
-    /// Frame is not intra.
     NonIntraFrame,
-    /// Bridge frame behavior is outside this tier.
     BridgeFrame,
-    /// Tile group is not the one-tile, one-group minimal tier.
     NonSingleTileGroup,
 }
 
@@ -543,7 +447,6 @@ impl fmt::Display for FrameCandidateTileUnsupportedReason {
     }
 }
 
-/// Derives and plans the minimal tile-payload boundary for one frame candidate.
 pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
     input: &FrameCandidateTileBoundaryInput<'payload, '_>,
 ) -> Result<DecodeTilePayloadPlan<'payload>, FrameCandidateTileBoundaryError> {

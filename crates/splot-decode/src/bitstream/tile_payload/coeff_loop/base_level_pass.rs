@@ -29,7 +29,6 @@ use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
 
 const PHTHRESH: usize = 4;
 
-/// Caller-resolved facts for deriving ordinary non-FSC base/level selectors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffBaseDerivedLevelPassConfig {
     pub(crate) coeff_cdf_q_ctx: usize,
@@ -43,7 +42,6 @@ pub(crate) struct CoeffBaseDerivedLevelPassConfig {
     pub(crate) use_tcq: bool,
 }
 
-/// First-pass hidden-parity and TCQ state after base/level reads.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CoeffBaseFirstPassSummary {
     sum_abs1: u32,
@@ -99,7 +97,6 @@ impl CoeffBaseFirstPassSummary {
     }
 }
 
-/// Result of the derived ordinary non-FSC base/level first pass.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffBaseDerivedLevelPass {
     eob_read: NonZeroCoeffEobSymbolRead,
@@ -141,9 +138,6 @@ impl NonZeroCoeffBaseDerivedLevelPass {
         &self.block
     }
 
-    /// Splits the walk (shared) from the block (mutable) so the interleaved
-    /// sign/quant tail pass can write quantized values into this pass's block
-    /// without cloning it.
     #[must_use]
     pub(crate) const fn walk_and_block_mut(
         &mut self,
@@ -151,15 +145,12 @@ impl NonZeroCoeffBaseDerivedLevelPass {
         (&self.walk, &mut self.block)
     }
 
-    /// Consumes the pass, handing the block state to the caller without
-    /// copying it.
     #[must_use]
     pub(crate) fn into_block(self) -> TransformCoeffBlockState {
         self.block
     }
 }
 
-/// Error returned by the derived ordinary base/level first-pass boundary.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffBaseDerivedLevelPassError {
     #[error("coefficient base/level scan entries {entries} do not match eob {eob}")]
@@ -190,7 +181,6 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
     State(#[from] TileCoeffStateError),
 }
 
-/// Runs the ordinary non-FSC base/level first pass with runtime selector derivation.
 pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -227,11 +217,6 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     })
 }
 
-/// Validates config, geometry, and entry-count consistency before any symbol
-/// is consumed. Entry coordinates need no per-entry re-validation:
-/// `walk_nonzero_coeff_scan` bounds every scan position against the same block
-/// and derives the row/col pair from it, and the read loop's `set_level` still
-/// rejects any out-of-range coordinate before writing.
 fn preflight_pass(
     eob_read: NonZeroCoeffEobSymbolRead,
     block: &TransformCoeffBlockState,

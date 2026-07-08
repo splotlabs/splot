@@ -14,13 +14,11 @@ use super::fsc_level_pass::{
 use super::fsc_quant_pass::{
     CoeffFscBranch, CoeffFscBranchError, CoeffFscBranchInput, CoeffFscBranchNonZeroInput,
     CoeffFscBranchScanOrderInput, CoeffFscBranchScanOrderNonZeroInput, CoeffFscBranchSegEobInput,
-    CoeffFscBranchSegEobNonZeroInput, CoeffFscBranchTestDimensionTables,
-    CoeffFscBranchTestTxSizeTables, CoeffFscBranchTxSizeInput, CoeffFscBranchTxSizeNonZeroInput,
+    CoeffFscBranchSegEobNonZeroInput, CoeffFscBranchTxSizeInput, CoeffFscBranchTxSizeNonZeroInput,
     CoeffFscContextCommitConfig, CoeffFscQuantPassError, NonZeroCoeffFscQuantPass,
     apply_coeff_fsc_branch, apply_coeff_fsc_branch_from_scan_extent,
-    apply_coeff_fsc_branch_from_scan_order,
-    apply_coeff_fsc_branch_from_scan_order_with_test_dimension_tables,
-    apply_coeff_fsc_branch_from_tx_size, apply_coeff_fsc_branch_from_tx_size_with_test_tables,
+    apply_coeff_fsc_branch_from_scan_order, apply_coeff_fsc_branch_from_scan_order_with_tables,
+    apply_coeff_fsc_branch_from_tx_size, apply_coeff_fsc_branch_from_tx_size_with_tables,
     apply_nonzero_coeff_fsc_quant_pass, apply_nonzero_coeff_fsc_quant_pass_with_context_commit,
 };
 use super::fsc_sign_pass::{
@@ -48,6 +46,39 @@ const PAYLOAD_SUFFIXES: [[u8; 6]; 6] = [
     [0x00, 0x00, 0b0011_0100, 0x00, 0x00, 0x80],
     [0xff, 0xff, 0b0011_0100, 0xff, 0x00, 0x80],
 ];
+
+#[derive(Clone, Copy)]
+struct CoeffFscBranchTestDimensionTables<'a> {
+    tx_width: &'a [i32],
+    tx_height: &'a [i32],
+}
+
+fn apply_coeff_fsc_branch_from_tx_size_with_test_tables(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffFscBranchTxSizeInput,
+    tables: CoeffTxSizeTables<'_>,
+) -> Result<CoeffFscBranch, CoeffFscBranchError> {
+    apply_coeff_fsc_branch_from_tx_size_with_tables(state, cdfs, symbols, input, tables)
+}
+
+fn apply_coeff_fsc_branch_from_scan_order_with_test_dimension_tables(
+    state: &mut TileCoeffContextState,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    input: CoeffFscBranchScanOrderInput,
+    tables: CoeffFscBranchTestDimensionTables<'_>,
+) -> Result<CoeffFscBranch, CoeffFscBranchError> {
+    apply_coeff_fsc_branch_from_scan_order_with_tables(
+        state,
+        cdfs,
+        symbols,
+        input,
+        tables.tx_width,
+        tables.tx_height,
+    )
+}
 
 fn find_candidate_payload<T>(
     mut candidate: impl FnMut([u8; 8]) -> Option<T>,
@@ -190,8 +221,8 @@ fn fsc_branch_tx_size_input(
     })
 }
 
-fn small_tx_size_tables() -> CoeffFscBranchTestTxSizeTables<'static> {
-    CoeffFscBranchTestTxSizeTables {
+fn small_tx_size_tables() -> CoeffTxSizeTables<'static> {
+    CoeffTxSizeTables {
         adjusted_tx_size: &[0, 1],
         tx_size_sqr: &[0, 1],
         tx_size_sqr_up: &[0, 1],
@@ -474,7 +505,7 @@ fn assert_tx_size_error_preserves_state(
 
 fn assert_tx_size_table_error_preserves_state(
     input: CoeffFscBranchTxSizeInput,
-    tables: CoeffFscBranchTestTxSizeTables<'_>,
+    tables: CoeffTxSizeTables<'_>,
     assert_error: impl FnOnce(&CoeffFscBranchError),
 ) {
     assert_branch_error_preserves_state(
@@ -1006,7 +1037,7 @@ fn coefficient_fsc_branch_tx_size_rejects_invalid_tx_size_without_mutation() {
 fn coefficient_fsc_branch_tx_size_rejects_invalid_adjusted_table_value_without_mutation() {
     assert_tx_size_table_error_preserves_state(
         fsc_branch_tx_size_input(TX_8X8, tx_size_block_input()),
-        CoeffFscBranchTestTxSizeTables {
+        CoeffTxSizeTables {
             adjusted_tx_size: &[0, -1],
             ..small_tx_size_tables()
         },
@@ -1027,7 +1058,7 @@ fn coefficient_fsc_branch_tx_size_rejects_invalid_adjusted_table_value_without_m
 fn coefficient_fsc_branch_tx_size_rejects_invalid_tx_size_table_index_without_mutation() {
     assert_tx_size_table_error_preserves_state(
         fsc_branch_tx_size_input(TX_8X8, tx_size_block_input()),
-        CoeffFscBranchTestTxSizeTables {
+        CoeffTxSizeTables {
             adjusted_tx_size: &[0, 99],
             ..small_tx_size_tables()
         },

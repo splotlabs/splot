@@ -7,10 +7,6 @@
 use crate::prediction::inter::mv_scaling::PlaneScaling;
 use splot_recon::{BitDepth, InterpolationFilter, SubpelPredictParams};
 
-/// Builds the §7.13.3.18 `BILINEAR` IntrABC sub-pel parameters for a `w` x `h`
-/// target from its §7.13.3.17 `scaling` (`startX` / `startY` / `stepX` / `stepY`
-/// and the `firstX..lastX` clip bounds). Shared by the full-recon fractional
-/// predictor and its unit test so the reference is the same parameter mapping.
 pub(crate) fn intrabc_bilinear_params(
     scaling: PlaneScaling,
     w: usize,

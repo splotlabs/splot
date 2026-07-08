@@ -17,7 +17,6 @@ use crate::filters::ccso::CcsoUnitGrid;
 use crate::pipeline::{PipelineFrame, unsupported};
 use crate::prediction::inter::TemporalMotionField;
 
-/// One modeled § 7.23 reference slot.
 #[derive(Clone, Debug)]
 struct Slot {
     valid: bool,
@@ -74,50 +73,31 @@ impl Slot {
     }
 }
 
-/// Per-frame § 7.23 refresh inputs.
 #[derive(Clone, Debug)]
 pub(crate) struct FrameRefUpdate {
-    /// Slot refresh bitmask.
     pub(crate) refresh_frame_flags: u32,
-    /// Unwrapped display order hint.
     pub(crate) order_hint: u32,
-    /// Frame width.
     pub(crate) width: u32,
-    /// Frame height.
     pub(crate) height: u32,
-    /// Frame `base_q_idx`.
     pub(crate) base_q_idx: u32,
-    /// Whether § 7.23 should apply KEY/SWITCH first-slot validity.
     pub(crate) is_key_or_switch: bool,
-    /// Whether the stored frame is `INTER_FRAME`.
     pub(crate) is_inter: bool,
-    /// Whether the stored frame adapted its CDFs.
     pub(crate) adapted: bool,
-    /// Per-plane retained frame-level Wiener-NS filter class counts.
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
-    /// Per-plane retained frame-level Wiener-NS filter taps (class-major).
     pub(crate) lr_frame_filter_taps: [Vec<Vec<i16>>; 3],
-    /// Saved frame CDF context for later cross-frame CDF initialization.
     pub(crate) frame_cdfs: FrameCdfSubset,
-    /// Saved frame CCSO parameters for later `reuse_ccso`.
     pub(crate) ccso_params: Option<CcsoParams>,
-    /// Saved frame CCSO block-enable grid for later `sb_reuse_ccso`.
     pub(crate) ccso_grid: Option<CcsoUnitGrid>,
-    /// Saved per-8x8 TMVP motion field for later § 7.9.3 projection.
     pub(crate) motion_field: TemporalMotionField,
 }
 
-/// The minimal-tier § 7.23 reference-frame buffer over `num_ref_frames` active slots.
 pub(crate) struct RuntimeReferenceBuffer {
     slots: Vec<Slot>,
-    /// Modeled § 7.23 `FrameCounter`; the current subset deduplicates by frame index.
     frame_counter: u32,
-    /// Whether the first update has run.
     started: bool,
 }
 
 impl RuntimeReferenceBuffer {
-    /// Creates an empty buffer with `num_ref_frames` active slots (1..=NUM_REF_FRAMES).
     pub(crate) fn new(num_ref_frames: usize) -> Result<Self> {
         if num_ref_frames == 0 || num_ref_frames > ReferenceSlot::MAX_SLOTS {
             return Err(unsupported(
@@ -133,7 +113,6 @@ impl RuntimeReferenceBuffer {
         })
     }
 
-    /// Applies the § 7.23 refresh for a decoded frame.
     pub(crate) fn update(&mut self, frame_index: usize, update: &FrameRefUpdate) {
         if self.started {
             self.frame_counter = self.frame_counter.wrapping_add(1);
@@ -151,7 +130,6 @@ impl RuntimeReferenceBuffer {
         let _ = self.frame_counter;
     }
 
-    /// Builds the borrowed reference store and metadata for the next inter frame.
     pub(crate) fn build_store_eight<'a>(
         &self,
         frames: &'a [PipelineFrame],
@@ -159,7 +137,6 @@ impl RuntimeReferenceBuffer {
         self.build_store(frames, PipelineFrame::frame_eight)
     }
 
-    /// Builds the borrowed 10-bit reference store and metadata for the next inter frame.
     pub(crate) fn build_store_ten<'a>(
         &self,
         frames: &'a [PipelineFrame],
@@ -205,34 +182,20 @@ impl RuntimeReferenceBuffer {
     }
 }
 
-/// Reference metadata arrays borrowed by [`super::inter::InterReferenceState`].
 #[allow(clippy::struct_field_names)]
 pub(crate) struct ReferenceMetadata {
-    /// `RefValid[i]` per slot.
     pub(crate) ref_valid: Vec<bool>,
-    /// `RefOrderHint[i]` per slot.
     pub(crate) ref_order_hint: Vec<u32>,
-    /// `RefFrameWidth[i]` per slot.
     pub(crate) ref_frame_width: Vec<u32>,
-    /// `RefFrameHeight[i]` per slot.
     pub(crate) ref_frame_height: Vec<u32>,
-    /// `RefBaseQIdx[i]` per slot.
     pub(crate) ref_base_q_idx: Vec<u32>,
-    /// `RefFrameType[i] == INTER_FRAME` per slot (§ 7.23).
     pub(crate) ref_is_inter: Vec<bool>,
-    /// Whether the frame stored in slot `i` adapted its CDFs.
     pub(crate) ref_adapted: Vec<bool>,
-    /// Retained frame-level Wiener-NS filter class counts per slot and plane.
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
-    /// Retained frame-level Wiener-NS filter taps per slot (plane, class-major).
     pub(crate) lr_frame_filter_taps: Vec<[Vec<Vec<i16>>; 3]>,
-    /// Saved frame CDF context per slot.
     pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
-    /// Saved frame CCSO parameters per slot.
     pub(crate) ref_ccso_params: Vec<Option<CcsoParams>>,
-    /// Saved frame CCSO block-enable grid per slot.
     pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoUnitGrid>>,
-    /// Saved per-slot TMVP motion fields.
     pub(crate) ref_motion_fields: Vec<Option<TemporalMotionField>>,
 }
 
@@ -275,92 +238,5 @@ impl ReferenceMetadata {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
-    use super::*;
-
-    fn key_update() -> FrameRefUpdate {
-        FrameRefUpdate {
-            refresh_frame_flags: 0xFF,
-            order_hint: 0,
-            width: 64,
-            height: 64,
-            base_q_idx: 70,
-            is_key_or_switch: true,
-            is_inter: false,
-            adapted: false,
-            lr_frame_filter_class_counts: [1, 0, 0],
-            lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
-            frame_cdfs: FrameCdfSubset::from_defaults(),
-            ccso_params: None,
-            ccso_grid: None,
-            motion_field: TemporalMotionField::empty(),
-        }
-    }
-
-    fn inter_update(adapted: bool) -> FrameRefUpdate {
-        FrameRefUpdate {
-            refresh_frame_flags: 1 << 1,
-            order_hint: 1,
-            width: 64,
-            height: 64,
-            base_q_idx: 109,
-            is_key_or_switch: false,
-            is_inter: true,
-            adapted,
-            lr_frame_filter_class_counts: [0, 0, 0],
-            lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
-            frame_cdfs: FrameCdfSubset::from_defaults(),
-            ccso_params: None,
-            ccso_grid: None,
-            motion_field: TemporalMotionField::empty(),
-        }
-    }
-
-    fn valid_count(buf: &RuntimeReferenceBuffer) -> usize {
-        buf.slots.iter().filter(|s| s.valid).count()
-    }
-
-    #[test]
-    fn key_refresh_marks_only_first_slot_valid() {
-        let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-        buf.update(0, &key_update());
-        assert_eq!(valid_count(&buf), 1);
-        assert!(buf.slots[0].valid);
-        assert!(!buf.slots[1].valid);
-        assert_eq!(buf.slots[0].base_q_idx, 70);
-        assert_eq!(buf.slots[0].frame_index, Some(0));
-        assert_eq!(buf.slots[0].lr_frame_filter_class_counts, [1, 0, 0]);
-    }
-
-    #[test]
-    fn inter_refresh_adds_a_second_valid_slot() {
-        let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-        buf.update(0, &key_update());
-        buf.update(1, &inter_update(false));
-        assert_eq!(valid_count(&buf), 2);
-        assert!(buf.slots[0].valid);
-        assert!(buf.slots[1].valid);
-        assert_eq!(buf.slots[1].order_hint, 1);
-        assert_eq!(buf.slots[1].base_q_idx, 109);
-        assert_eq!(buf.slots[1].frame_index, Some(1));
-        assert!(buf.slots[1].is_inter);
-        assert!(!buf.slots[1].adapted);
-    }
-
-    #[test]
-    fn per_slot_adaptation_is_tracked_independently() {
-        let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-        buf.update(0, &key_update());
-        buf.update(1, &inter_update(true));
-        assert!(!buf.slots[0].adapted);
-        assert!(buf.slots[1].adapted);
-        assert!(!buf.slots[0].is_inter);
-        assert!(buf.slots[1].is_inter);
-    }
-
-    #[test]
-    fn zero_slots_rejected() {
-        assert!(RuntimeReferenceBuffer::new(0).is_err());
-    }
-}
+#[path = "buffer_tests.rs"]
+mod tests;

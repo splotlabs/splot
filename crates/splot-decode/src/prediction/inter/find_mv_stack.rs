@@ -7,14 +7,10 @@ use splot_recon::math::round2_signed;
 use super::Mv;
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
 
-/// AV2 § 3 `MAX_REF_MV_STACK_SIZE`: the maximum number of motion vectors in the
-/// stack.
 pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
 
-/// AV2 § 3 `MAX_WARP_REF_CANDIDATES`: the § 7.12.2 `WarpParamStack` size.
 pub(crate) const MAX_WARP_REF_CANDIDATES: usize = 4;
 
-/// AV2 § 7.12.2.20 `Default_Warp_Params`: the identity warp model.
 pub(crate) const DEFAULT_WARP_PARAMS: [i64; 6] = [
     0,
     0,
@@ -24,7 +20,6 @@ pub(crate) const DEFAULT_WARP_PARAMS: [i64; 6] = [
     1 << WARPEDMODEL_PREC_BITS,
 ];
 
-/// AV2 § 3 `GM_TRANS_ONLY_PREC_DIFF = WARPEDMODEL_PREC_BITS - 3`.
 const GM_TRANS_ONLY_PREC_DIFF: u32 = WARPEDMODEL_PREC_BITS - 3;
 
 const MV_BORDER: i32 = 128;
@@ -33,24 +28,17 @@ const MI_SIZE: i32 = 4;
 mod temporal;
 pub(crate) use temporal::{TemporalMotionBlock, TemporalMotionField, TemporalMvContext};
 
-/// AV2 § 6.18 `MotionModes[ r ][ c ]` values in spec order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub(crate) enum MotionMode {
-    /// `SIMPLE` (0).
     Simple,
-    /// `INTERINTRA` (1). Not yet produced: SIMPLE-path interintra defers.
     #[allow(dead_code)]
     InterIntra,
-    /// `LOCALWARP` (2).
     LocalWarp,
-    /// `DELTAWARP` (3).
     DeltaWarp,
-    /// `EXTENDWARP` (4).
     ExtendWarp,
 }
 
 impl MotionMode {
-    /// § 8.3.2 warp-context predicate: `MotionModes[ .. ] >= LOCALWARP`.
     const fn is_warp(self) -> bool {
         matches!(self, Self::LocalWarp | Self::DeltaWarp | Self::ExtendWarp)
     }
@@ -71,9 +59,6 @@ struct NeighbourCell {
     use_amvd: bool,
     motion_mode: MotionMode,
     warp_params: Option<[i64; 6]>,
-    /// § 7.13.3.20 `SubMvs[ r ][ c ][ 0 ]`: the covering 8x8 unit's warp
-    /// projection for warp blocks, the block MV otherwise (§ 7.12.2.12
-    /// `get_mv` reads this; the banks and § 7.12.3 read the block `mv`).
     sub_mv: Mv,
     base_r: usize,
     base_c: usize,
@@ -113,18 +98,13 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     },
 };
 
-/// § 5.20.7.13 `UseMostProbablePrecisions` / `MvPrecisions` grid values for one block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockPrecisionRecord {
-    /// `UseMostProbablePrecisions[ r ][ c ]`.
     pub(crate) use_most_probable_precision: bool,
-    /// `MvPrecisions[ r ][ c ]` (Table 6.19 code).
     pub(crate) mv_precision: u8,
 }
 
 impl BlockPrecisionRecord {
-    /// The § 5.20.7.13 inter path that keeps `MvPrecision = FrameMvPrecision`
-    /// (`use_most_probable_precision = 1`).
     pub(crate) const fn most_probable(mv_precision: u8) -> Self {
         Self {
             use_most_probable_precision: true,
@@ -132,8 +112,6 @@ impl BlockPrecisionRecord {
         }
     }
 
-    /// The § 5.20.5.3 / § 5.20.7.12 intra and IntrABC grid values and the
-    /// explicit `pb_mv_precision` path (`use_most_probable_precision = 0`).
     pub(crate) const fn explicit(mv_precision: u8) -> Self {
         Self {
             use_most_probable_precision: false,
@@ -143,8 +121,6 @@ impl BlockPrecisionRecord {
 }
 
 impl Default for BlockPrecisionRecord {
-    /// The § 5.20.7.13 non-flex inter path: `use_most_probable_precision = 1`
-    /// at the `MV_PRECISION_EIGHTH_PEL` frame default.
     fn default() -> Self {
         Self::most_probable(super::read_mv::MV_PRECISION_EIGHTH_PEL)
     }
@@ -153,16 +129,12 @@ impl Default for BlockPrecisionRecord {
 const SWITCHABLE_FILTERS: u8 = 3;
 const INTER_FILTER_COMP_OFFSET: usize = SWITCHABLE_FILTERS as usize + 1;
 
-/// Luma mode class needed by § 7.11.3 `has_newmv_for_list`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NeighbourYMode {
-    /// The neighbour coded a new list-0 MV.
     NewMv,
-    /// Any neighbour mode that does not increment `NewMvCount`.
     Other,
 }
 
-/// Per-MI mode-info grid read by the § 7.11 / § 7.12 spatial scans.
 pub(crate) struct NeighbourMvGrid {
     mi_rows: usize,
     mi_cols: usize,
@@ -170,7 +142,6 @@ pub(crate) struct NeighbourMvGrid {
 }
 
 impl NeighbourMvGrid {
-    /// Builds an empty MI grid, returning `None` if the dimensions overflow.
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let cells = mi_rows.checked_mul(mi_cols)?;
         Some(Self {
@@ -180,7 +151,6 @@ impl NeighbourMvGrid {
         })
     }
 
-    /// Records a decoded block's mode info into every covered MI cell.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_block(
         &mut self,
@@ -217,7 +187,6 @@ impl NeighbourMvGrid {
         );
     }
 
-    /// Records a decoded warp block's mode info into every covered MI cell.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_warp_block(
         &mut self,
@@ -313,7 +282,6 @@ impl NeighbourMvGrid {
         }
     }
 
-    /// Records decoded compound mode info with per-reference-list NEWMV state.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_compound_block(
         &mut self,
@@ -370,7 +338,6 @@ impl NeighbourMvGrid {
         }
     }
 
-    /// Records decoded compound mode info with per-reference-list NEWMV state.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_block_with_newmv_lists(
@@ -418,27 +385,16 @@ impl NeighbourMvGrid {
     }
 }
 
-/// The block geometry + reference the § 7.11 / § 7.12 spatial scan needs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MvBlockContext {
-    /// `MiRow`: the block's MI top-left row.
     pub(crate) mi_row: usize,
-    /// `MiCol`: the block's MI top-left column.
     pub(crate) mi_col: usize,
-    /// `bw4 = Num_4x4_Blocks_Wide[MiSize]`.
     pub(crate) bw4: usize,
-    /// `bh4 = Num_4x4_Blocks_High[MiSize]`.
     pub(crate) bh4: usize,
-    /// `Num_4x4_Blocks_High[SbSize]`: the superblock height in MI units, for the
-    /// `isSbBorder` derivation.
     pub(crate) sb_h4: usize,
-    /// `RefFrame[0]`: the block's single-reference frame index.
     pub(crate) ref_frame0: i8,
-    /// `RefFrame[1]`, or `None` for single-reference mode context.
     pub(crate) ref_frame1: Option<i8>,
-    /// `MiRows`: the frame MI height (for § 5.20.9.4 clamp bounds).
     pub(crate) mi_rows: usize,
-    /// `MiCols`: the frame MI width (for § 5.20.9.5 clamp bounds).
     pub(crate) mi_cols: usize,
 }
 
@@ -504,7 +460,6 @@ impl RelativeProbe {
         )
     }
 
-    /// § 7.11.4 probe delta after the superblock-border column adjustment.
     fn warp_context_delta(self, block: &MvBlockContext) -> (i32, i32) {
         let mut delta_col = self.delta_col;
         if self.delta_row < 0 && block.is_sb_border() {
@@ -611,30 +566,16 @@ fn mode_ctx_match_newmv(cell: NeighbourCell, block: &MvBlockContext) -> Option<b
     None
 }
 
-/// The result of § 7.11.2 `find_mode_ctx` for single prediction: the
-/// `NewMvContext` and the `NewMvCount` a later block uses for the § 8.3.2
-/// `single_mode` / DRL CDF contexts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ModeContext {
-    /// AV2 § 7.11.2 `NewMvContext = nearestMatch + ((NewMvCount > 0) ? 2 : 0)`.
     pub(crate) new_mv_context: usize,
-    /// AV2 § 7.11.2 `NewMvCount` (0..=3): the number of NEW-MV neighbours found.
     pub(crate) new_mv_count: usize,
-    /// AV2 § 7.11.2 `WarpMvCount`: matching warp-mode neighbours.
     pub(crate) warp_mv_count: usize,
-    /// § 7.11.4 `WarpSampleFound[ 0 ]`: a warp-scan probe hit an inter cell
-    /// whose reference matches the block's first reference.
     pub(crate) warp_sample_found: bool,
-    /// § 7.11.4 `WarpSampleFound[ 1 ]`: the same scan matched against the
-    /// block's second reference (compound only).
     pub(crate) warp_sample_found1: bool,
-    /// § 7.11.4 `ExtendDeltaRow` / `ExtendDeltaCol`: the first warp-scan
-    /// probe (post superblock-border adjustment) whose cell matched the
-    /// block's first reference.
     pub(crate) extend_delta: Option<(i32, i32)>,
 }
 
-/// AV2 § 7.11.2 `find_mode_ctx` for single prediction.
 pub(crate) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> ModeContext {
     let mut new_mv_count = 0usize;
     let mut warp_mv_count = 0usize;
@@ -688,19 +629,10 @@ pub(crate) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
     }
 }
 
-/// § 5.20.7.2 neighbour-buffer-derived § 8.3.2 contexts.
-///
-/// Carries both spec neighbour lists: `NPosBuf` (any in-frame neighbour) feeds
-/// `is_inter`/`skip_flag`/`use_amvd`/`comp_mode`/`single_ref`; `NPos` (which
-/// also drops the row above the superblock) feeds `interp_filter` and the
-/// per-block MV-precision contexts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockNeighbourContext {
-    /// AV2 § 8.3.2 `is_inter` context: from `NNumBuf` + `NIntra[]`.
     pub(crate) is_inter_ctx: usize,
-    /// AV2 § 8.3.2 `skip_flag` context: `ctx += Skips[NPosBuf[n]]` (no `skip_mode`).
     pub(crate) skip_ctx: usize,
-    /// True when `NNumBuf >= 1`.
     pub(crate) has_neighbour: bool,
     ref_counts: [u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS],
     cells: [NeighbourCell; 2],
@@ -712,7 +644,6 @@ pub(crate) struct BlockNeighbourContext {
 impl BlockNeighbourContext {
     const MAX_NEIGHBOUR_REFS: usize = 7;
 
-    /// AV2 § 8.3.2 `single_ref` context for `ref_idx`.
     pub(crate) fn single_ref_ctx(&self, ref_idx: usize, num_total_refs: usize) -> Option<usize> {
         let this_count = u32::from(*self.ref_counts.get(ref_idx)?);
         let next_start = ref_idx.checked_add(1)?;
@@ -732,7 +663,6 @@ impl BlockNeighbourContext {
         })
     }
 
-    /// AV2 `comp_inter` / reference-mode context used when `reference_select` is active.
     pub(crate) fn comp_mode_ctx(
         &self,
         ref_frame_idx: &[u32],
@@ -797,7 +727,6 @@ impl BlockNeighbourContext {
         }
     }
 
-    /// AV2 § 8.3.2 `interp_filter` context for switchable interpolation.
     pub(crate) fn interp_filter_ctx(&self, ref_frame0: i8, ref_frame1_is_inter: bool) -> usize {
         let mut neighbour_filter_type = [SWITCHABLE_FILTERS; 2];
         for (slot, cell) in self.npos_cells.iter().take(self.npos_count).enumerate() {
@@ -820,7 +749,6 @@ impl BlockNeighbourContext {
         ctx
     }
 
-    /// AV2 § 8.3.2 `use_amvd` context for the current single-reference block.
     pub(crate) fn amvd_ctx(&self, ref_frame0: i8) -> usize {
         self.cells
             .iter()
@@ -829,9 +757,6 @@ impl BlockNeighbourContext {
             .count()
     }
 
-    /// AV2 § 8.3.2 `use_extend_warp` context: `NPos` neighbour count with
-    /// `MotionModes >= LOCALWARP` (every recorded warp block resolves to a
-    /// warp motion mode, so `is_warp` models the comparison exactly).
     pub(crate) fn use_extend_warp_ctx(&self) -> usize {
         self.npos_cells
             .iter()
@@ -840,8 +765,6 @@ impl BlockNeighbourContext {
             .count()
     }
 
-    /// AV2 § 8.3.2 `use_local_warp` context: `hasWarp` plus the `NPos`
-    /// neighbour count with `MotionModes == LOCALWARP`.
     pub(crate) fn use_local_warp_ctx(&self) -> usize {
         let cells = self.npos_cells.iter().take(self.npos_count);
         usize::from(cells.clone().any(|cell| cell.is_warp()))
@@ -850,8 +773,6 @@ impl BlockNeighbourContext {
                 .count()
     }
 
-    /// AV2 § 8.3.2 `use_most_probable_precision` context: neighbour count with
-    /// `UseMostProbablePrecisions[ NPos ]` set.
     pub(crate) fn most_probable_precision_ctx(&self) -> usize {
         self.npos_cells
             .iter()
@@ -860,8 +781,6 @@ impl BlockNeighbourContext {
             .count()
     }
 
-    /// AV2 § 8.3.2 `pb_mv_precision` context: `1` when any neighbour's
-    /// `MvPrecisions[ NPos ]` is below `FrameMvPrecision`.
     pub(crate) fn pb_mv_precision_ctx(&self, frame_precision: u8) -> usize {
         usize::from(
             self.npos_cells
@@ -872,7 +791,6 @@ impl BlockNeighbourContext {
     }
 }
 
-/// Derives the § 5.20.7.2 neighbour buffer contexts for a block.
 pub(crate) fn block_neighbour_ctx(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -914,8 +832,6 @@ pub(crate) fn block_neighbour_ctx(
         }
     }
 
-    trace_neighbour_context(block, &buf, num_buf, is_inter_ctx, skip_ctx);
-
     BlockNeighbourContext {
         is_inter_ctx,
         skip_ctx,
@@ -926,41 +842,6 @@ pub(crate) fn block_neighbour_ctx(
         npos_cells: lists.npos,
         npos_count: lists.npos_len,
     }
-}
-
-fn trace_neighbour_context(
-    block: &MvBlockContext,
-    cells: &[NeighbourCell; 2],
-    cell_count: usize,
-    is_inter_ctx: usize,
-    skip_ctx: usize,
-) {
-    let Some(target) = crate::trace_flags::trace_value!("SPLOT_TRACE_NEIGHBOUR_CTX") else {
-        return;
-    };
-    let Some((row, col)) = target.split_once(':') else {
-        return;
-    };
-    let Ok(row) = row.parse::<usize>() else {
-        return;
-    };
-    let Ok(col) = col.parse::<usize>() else {
-        return;
-    };
-    if block.mi_row != row || block.mi_col != col {
-        return;
-    }
-    eprintln!(
-        "neighbour ctx r={} c={} bw4={} bh4={} count={} is_inter_ctx={} skip_ctx={} cells={:?}",
-        block.mi_row,
-        block.mi_col,
-        block.bw4,
-        block.bh4,
-        cell_count,
-        is_inter_ctx,
-        skip_ctx,
-        &cells[..cell_count],
-    );
 }
 
 fn is_backward_ref_frame(
@@ -984,9 +865,6 @@ fn is_backward_ref_frame(
     (order_hint - current_order_hint).clamp(-127, 127) > 0
 }
 
-/// The two § 5.20.7.2 neighbour lists: `buf` = `NPosBuf` (any in-frame
-/// neighbour) and `npos` = `NPos` (additionally drops the row above the
-/// superblock boundary).
 struct NeighbourContextLists {
     buf: [NeighbourCell; 2],
     buf_len: usize,
@@ -1023,7 +901,6 @@ fn collect_neighbour_context_cells(
     lists
 }
 
-/// § 7.12.2 `RefStackMv` candidates for single prediction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MvStack {
     stack: Vec<(Mv, (i32, i32))>,
@@ -1032,13 +909,6 @@ pub(crate) struct MvStack {
 }
 
 impl MvStack {
-    /// `NumMvFound`: the number of candidate MVs.
-    #[cfg(test)]
-    pub(crate) fn num_mv_found(&self) -> usize {
-        self.stack.len()
-    }
-
-    /// Returns `RefStackMv[idx][0]`, saturating to the final fallback candidate.
     pub(crate) fn candidate(&self, idx: usize) -> Mv {
         self.stack
             .get(idx)
@@ -1046,8 +916,6 @@ impl MvStack {
             .map_or(Mv::ZERO, |entry| entry.0)
     }
 
-    /// Returns § 7.12.2 `RefStackRowOffset[idx]` / `RefStackColOffset[idx]`
-    /// (`(0, 0)` for candidates that did not come from an adjacent scan).
     pub(crate) fn candidate_offsets(&self, idx: usize) -> (i32, i32) {
         self.stack
             .get(idx)
@@ -1055,8 +923,6 @@ impl MvStack {
             .map_or((0, 0), |entry| entry.1)
     }
 
-    /// Returns `WarpParamStack[idx]`; out-of-range indices resolve to the
-    /// identity default like the unfilled slots (§ 7.12.2 initialization).
     pub(crate) fn warp_candidate(&self, idx: usize) -> [i64; 6] {
         self.warp
             .slots
@@ -1065,8 +931,6 @@ impl MvStack {
             .unwrap_or(DEFAULT_WARP_PARAMS)
     }
 
-    /// § 7.12.2.2 `get_warp_motion_vector`: projects the block's central luma
-    /// sample through `WarpParamStack[idx]` at the requested precision.
     pub(crate) fn warp_predicted_mv(&self, idx: usize, precision: u8) -> Mv {
         let params = self.warp_candidate(idx);
         let block = &self.block;
@@ -1095,23 +959,12 @@ impl MvStack {
     }
 }
 
-/// The § 7.13.3.24 neighbour-parameter lookup at the extend-warp base
-/// position: a warp neighbour supplies its stored model, otherwise the
-/// neighbour's translational MV lifts to a warp model. The global-motion arm
-/// is statically unreachable (frames signalling `use_global_motion` defer at
-/// the frame gate, so `GmType` is always `IDENTITY` here).
 pub(crate) enum ExtendWarpNeighbour {
-    /// The § 7 `params` array for the extension math.
     Params([i64; 6]),
-    /// The base cell needs the second reference list's MV, which the grid
-    /// does not retain yet.
     List1MvUnretained,
-    /// No decoded cell at the base position.
     Missing,
 }
 
-/// Resolves the § 7.13.3.24 `params` for the neighbour at
-/// `(MiRow + deltaRow, MiCol + deltaCol)`.
 pub(crate) fn extend_warp_neighbour_params(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -1143,19 +996,13 @@ pub(crate) fn extend_warp_neighbour_params(
     ExtendWarpNeighbour::Params(params)
 }
 
-/// AV2 § 3 `LEAST_SQUARES_SAMPLES_MAX`.
 const LEAST_SQUARES_SAMPLES_MAX: usize = 8;
 
-/// The § 7.12.3 warp-sample collection outcome.
 pub(crate) enum WarpSampleCollection {
-    /// `CandList[ 0 ][ .. ]` rows: `[ srcY, srcX, dstY, dstX ]` in eighth-pel.
     Samples(Vec<[i64; 4]>),
-    /// A candidate matched on the second reference list, whose MV the grid
-    /// does not retain yet.
     List1MvUnretained,
 }
 
-/// AV2 § 7.12.3 find warp samples for `ref = 0`.
 pub(crate) fn find_warp_samples(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -1266,13 +1113,9 @@ pub(crate) fn find_warp_samples(
     WarpSampleCollection::Samples(samples)
 }
 
-/// AV2 § 3 `REF_MV_BANK_SIZE` (entries per bank list).
 const REF_MV_BANK_SIZE: usize = 4;
-/// AV2 § 3 `BANK_REFS_PER_FRAME`.
 const BANK_REFS_PER_FRAME: i32 = 9;
-/// AV2 § 3 `MAX_RMB_SB_HITS`.
 const MAX_RMB_SB_HITS: u32 = 64;
-/// AV2 § 3 `MAX_PR_NUM`.
 const MAX_PR_NUM: usize = 16;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1282,13 +1125,6 @@ struct RefMvBankEntry {
     mv1: Mv,
 }
 
-/// AV2 § 7.12.2.21 / § 5.20.2.2 reference motion-vector bank: nine ring
-/// buffers of recent block MVs, filled into the MV stack after the spatial
-/// scan. Contents persist across superblocks and are cleared once per
-/// superblock row (§ 5.20.2 `clear_left_context`); the per-superblock
-/// reset zeroes only the hit counters and re-seeds by appending from the
-/// row above. Compound weights (`cwp`) are not retained: every admitted
-/// producer uses `CWP_EQUAL`.
 pub(crate) struct RefMvBank {
     entries: [[RefMvBankEntry; REF_MV_BANK_SIZE]; BANK_REFS_PER_FRAME as usize],
     sizes: [usize; BANK_REFS_PER_FRAME as usize],
@@ -1312,7 +1148,6 @@ impl RefMvBank {
         }
     }
 
-    /// § 7.12.2.21 `get_rmb_list_index` for the single-prediction subset.
     fn list_index(ref_frame0: i8, ref_frame1: Option<i8>) -> usize {
         match (ref_frame0, ref_frame1) {
             (r0, None) if (0..=5).contains(&r0) => r0 as usize,
@@ -1329,11 +1164,6 @@ impl RefMvBank {
         }
     }
 
-    /// § 5.20.2.2 `reset_refmv_bank`, invoked at the first leaf of each
-    /// superblock (detected from the leaf coordinates): zeroes the hit
-    /// counters, clears the bank contents only on a superblock-row
-    /// transition (§ 5.20.2 `clear_left_context`), and re-seeds from the
-    /// decoded row above unless this is the top superblock row.
     pub(crate) fn reset_for_leaf(
         &mut self,
         grid: &NeighbourMvGrid,
@@ -1363,7 +1193,6 @@ impl RefMvBank {
         });
     }
 
-    /// § 5.20.7 `update_ref_mv_count` unit-budget bookkeeping.
     fn update_unit_budget(
         &mut self,
         mi_row: usize,
@@ -1383,9 +1212,6 @@ impl RefMvBank {
         }
     }
 
-    /// § 5.20.7 `update_ref_mv_count` for non-inter blocks: accrues the
-    /// unit budget without a bank write, under the same
-    /// `RefMvBankHits < MAX_RMB_SB_HITS` gate as the inter arm.
     pub(crate) fn update_count_for_non_inter(
         &mut self,
         mi_row: usize,
@@ -1400,7 +1226,6 @@ impl RefMvBank {
         self.update_unit_budget(mi_row, mi_col, n4w, n4h, sb_size4);
     }
 
-    /// § 5.20.7 per-block bank update (`fromWithinSb == 1`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_for_block(
         &mut self,
@@ -1426,7 +1251,6 @@ impl RefMvBank {
         self.update(ref_frame0, ref_frame1, mv, mv1, true);
     }
 
-    /// § 5.20.7 `update_ref_mv_bank` tail: move-to-tail on match, else append.
     fn update(
         &mut self,
         ref_frame0: i8,
@@ -1455,8 +1279,6 @@ impl RefMvBank {
         );
     }
 
-    /// § 7.12.2.21 fill: newest-first bank candidates appended to the stack
-    /// with the § check_rmb_cand prune and in-frame bounds checks.
     fn fill(
         &self,
         block: &MvBlockContext,
@@ -1510,9 +1332,6 @@ impl RefMvBank {
     }
 }
 
-/// § 5.20.2.2 row-above seed walk shared by the MV and warp banks: visits
-/// up to four decoded inter blocks along the row directly above the
-/// superblock (8x8-aligned columns), stepping by each candidate's width.
 fn seed_walk_from_row_above(
     grid: &NeighbourMvGrid,
     sb_row: usize,
@@ -1543,9 +1362,6 @@ fn seed_walk_from_row_above(
     }
 }
 
-/// § 5.20.2.2 bank ring update shared by the MV and warp banks: a `matches`
-/// hit rotates the EXISTING entry to the tail (most-recently-used) without
-/// rewriting it; a miss appends, growing the ring or evicting the oldest.
 fn bank_ring_update<T: Copy>(
     entries: &mut [T],
     size: &mut usize,
@@ -1582,23 +1398,10 @@ fn bank_ring_update<T: Copy>(
     }
 }
 
-/// AV2 § 3 `WARP_PARAM_BANK_SIZE`.
 const WARP_PARAM_BANK_SIZE: usize = 4;
-/// AV2 § 3 `MAX_WARP_SB_HITS`.
 const MAX_WARP_SB_HITS: u32 = 64;
-/// AV2 § 3 `REFS_PER_FRAME`: the warp bank indexes by the plain reference
-/// index (05:10313), not the MV bank's nine-list mapping.
 const WARP_BANK_REFS: usize = 7;
 
-/// AV2 § 5.20.2.2 / § 5.20.7 warp parameter bank: a four-entry ring of
-/// recent warp models per reference frame, filled into the warp stack
-/// newest-first by the § 7.12.2.20 tail. Contents clear once per superblock
-/// row (§ 5.20.2 `clear_left_context`); the per-superblock reset zeroes only
-/// `WarpBankHits` and re-seeds list-0 models from the row above
-/// (`candFromSbAbove == 1`). Unlike the MV bank, the per-block update is
-/// unconditional for warp motion modes (05:10144) — no `enable_refmvbank` /
-/// BRU gate and no unit budget, only the flat `MAX_WARP_SB_HITS` cap.
-/// List-1 models stay behind the compound-warp defer.
 pub(crate) struct WarpParamBank {
     entries: [[[i64; 6]; WARP_PARAM_BANK_SIZE]; WARP_BANK_REFS],
     sizes: [usize; WARP_BANK_REFS],
@@ -1618,8 +1421,6 @@ impl WarpParamBank {
         }
     }
 
-    /// The § 5.20.2.2 warp-bank arm of `reset_refmv_bank` +
-    /// `clear_left_context`, invoked at the first leaf of each superblock.
     pub(crate) fn reset_for_leaf(
         &mut self,
         grid: &NeighbourMvGrid,
@@ -1647,9 +1448,6 @@ impl WarpParamBank {
         });
     }
 
-    /// § 5.20.7 `update_warp_param_bank` for the single-reference surface:
-    /// `params_equal` compares only the non-translational members, and a hit
-    /// keeps the existing entry (its translation is not rewritten).
     pub(crate) fn update(&mut self, ref_frame0: i8, params: [i64; 6]) {
         if self.sb_hits >= MAX_WARP_SB_HITS {
             return;
@@ -1670,7 +1468,6 @@ impl WarpParamBank {
         );
     }
 
-    /// The § 7.12.2.20 warp tail: bank entries inserted newest-first.
     fn fill(&self, ref_frame0: i8, warp: &mut WarpParamStack) {
         let Some(ref_idx) = usize::try_from(ref_frame0)
             .ok()
@@ -1687,8 +1484,6 @@ impl WarpParamBank {
     }
 }
 
-/// AV2 § 7.12.2 `find_mv_stack` for single-prediction callers without a
-/// precomputed temporal motion field.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn find_mv_stack(
     grid: &NeighbourMvGrid,
@@ -1713,14 +1508,6 @@ pub(crate) fn find_mv_stack(
     )
 }
 
-/// AV2 § 7.12.2 `find_mv_stack` for the single-prediction subset.
-/// `PruneCount` starts at zero and is shared across the spatial scan, temporal
-/// scan, § 7.12.2.21 bank fill, and § 7.12.2.20 global-MV dedup.
-/// With `derive_wrl` (§ 5.18.2 `DeriveWrl`), the § 7.12.2 `WarpParamStack`
-/// is built alongside: corner-derived model (steps 4-5), the § 7.12.2.9
-/// spatial inserts fired from scan points, then the step-22 tail (warp bank
-/// newest-first, `gm_params` — identity while global-motion frames defer at
-/// the frame gate — and two identity defaults).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn find_mv_stack_with_temporal(
     grid: &NeighbourMvGrid,
@@ -1829,8 +1616,6 @@ struct MvStackEntry {
     offsets: (i32, i32),
 }
 
-/// § 7.12.2.5: scan the far-left column, skipping points whose column starts
-/// the same block as the immediate left neighbour (`MiColBase` gate).
 fn scan_mv_stack_col(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -2040,9 +1825,6 @@ fn extra_search(
     }
 }
 
-/// § 7.12.2.20 `insert_mvp_candidate` for blocks wider and taller than 32:
-/// a mixture of two existing candidates (row from `y_cand`, column from
-/// `x_cand`), budget-deduped against the stack, then appended.
 fn insert_mixture_candidate(
     entries: &mut Vec<MvStackEntry>,
     prune_count: &mut usize,
@@ -2074,9 +1856,6 @@ fn insert_mixture_candidate(
     });
 }
 
-/// AV2 § 7.12.2 `WarpParamStack` + `NumWarpFound`: at most four warp models,
-/// default-initialized to identity; § 7.12.2.11 inserts cap at the stack
-/// size with no deduplication of any kind.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WarpParamStack {
     slots: [[i64; 6]; MAX_WARP_REF_CANDIDATES],
@@ -2091,7 +1870,6 @@ impl WarpParamStack {
         }
     }
 
-    /// § 7.12.2.11 insert warp candidate.
     fn insert(&mut self, params: [i64; 6]) {
         if self.num_found < MAX_WARP_REF_CANDIDATES {
             self.slots[self.num_found] = params;
@@ -2099,8 +1877,6 @@ impl WarpParamStack {
         }
     }
 
-    /// § 7.12.2.9 add warp motion vector: a decoded warp neighbour whose
-    /// list-0 reference matches the block's inserts its stored model.
     fn add_scan_point(&mut self, cell: NeighbourCell, block: &MvBlockContext) {
         if cell.is_inter
             && cell.is_warp()
@@ -2112,8 +1888,6 @@ impl WarpParamStack {
     }
 }
 
-/// § 7.12.2.3 generate points from corners: derives a warp model from the
-/// motion at three corners of the block and § 7.12.2.11-inserts it.
 fn generate_points_from_corners(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -2167,9 +1941,6 @@ fn generate_points_from_corners(
     warp.insert(wmmat);
 }
 
-/// § 7.12.2.4 warp corner: records the corner position and motion (a warp
-/// neighbour projects its model at the corner; a translational neighbour
-/// contributes its per-list sub-MV).
 #[allow(clippy::too_many_arguments)]
 fn warp_corner(
     grid: &NeighbourMvGrid,
@@ -2232,9 +2003,6 @@ fn warp_corner(
     }
 }
 
-/// § 7.13.3.20 `SubMvs` projection: the covering 8x8 unit's center through
-/// the block's warp model, with the `MV_LOW/MV_UPP` clip but no block-level
-/// clamp.
 fn warp_sub_mv_at(params: [i64; 6], block_r: usize, block_c: usize, rr: usize, cc: usize) -> Mv {
     let i8 = (rr.saturating_sub(block_r)) >> 1;
     let j8 = (cc.saturating_sub(block_c)) >> 1;
@@ -2257,8 +2025,6 @@ fn warp_sub_mv_at(params: [i64; 6], block_r: usize, block_c: usize, rr: usize, c
     }
 }
 
-/// § 7.12.2.4 `get_warp_motion_vector_xy_pos`: projects a 4x4 position
-/// through a neighbour's warp model into an eighth-pel motion vector.
 fn warp_motion_vector_at(
     params: [i64; 6],
     block: &MvBlockContext,
@@ -2276,8 +2042,6 @@ fn warp_motion_vector_at(
     )
 }
 
-/// The shared § 7.12.2.2 / § 7.12.2.4 projection tail: the
-/// `MV_LOW + 1 .. MV_UPP - 1` clip, then the § 5.20.9.4/.5 clamps.
 fn clip_and_clamp_projected_mv(block: &MvBlockContext, row: i64, col: i64) -> Mv {
     let bound = (1i64 << 16) - 1;
     let row = row.clamp(-bound, bound);
@@ -2291,9 +2055,6 @@ fn clip_and_clamp_projected_mv(block: &MvBlockContext, row: i64, col: i64) -> Mv
     )
 }
 
-/// § 7.13.3.21-adjacent `reduce_warp_model` (07:8586-8604): quantizes the
-/// non-translational members to `WARP_PARAM_REDUCE_BITS` steps around the
-/// identity offsets.
 pub(crate) fn reduce_warp_model(params: &mut [i64; 6]) {
     let max_value = (1i64 << (WARPEDMODEL_PREC_BITS - 1)) - (1i64 << WARP_PARAM_REDUCE_BITS);
     let min_value = -max_value;

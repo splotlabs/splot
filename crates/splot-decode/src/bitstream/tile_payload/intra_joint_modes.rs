@@ -110,9 +110,6 @@ fn require_nonzero<E>(value: usize, error: E) -> Result<(), E> {
     if value == 0 { Err(error) } else { Ok(()) }
 }
 
-/// Builds a per-tile [`MiGrid`] filled with `$default`, mapping the shared
-/// `EmptyDimensions` / `ArithmeticOverflow` / `Allocation` build failures onto the
-/// state's `$err` variants, with `$precheck` for any extra precondition.
 macro_rules! mi_grid_new {
     ($err:ident, $default:expr, $mi_rows:expr, $mi_cols:expr, $precheck:expr $(,)?) => {
         MiGrid::new(
@@ -131,7 +128,6 @@ macro_rules! mi_grid_new {
     };
 }
 
-/// Tile-local AV2 § 5.20.5.3 `IntraJointModes[r][c]` grid.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileIntraJointModeState {
     grid: MiGrid<u8>,
@@ -166,7 +162,6 @@ impl LumaPalette {
     }
 }
 
-/// Tile-local luma `PaletteSizes` / `PaletteColors` state for §5.20.8 cache lookup.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileLumaPaletteState {
     grid: MiGrid<Option<LumaPalette>>,
@@ -253,7 +248,6 @@ fn push_palette_cache(cache: &mut [u16; 2 * PALETTE_MAX_SIZE], len: &mut usize, 
 }
 
 impl TileIntraJointModeState {
-    /// Creates a `DC_PRED`-initialized `IntraJointModes` grid.
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -279,15 +273,12 @@ impl TileIntraJointModeState {
         )
     }
 
-    /// AV2 § 8.3.2 `y_mode_index` / `y_mode_offset` context.
     pub(crate) fn y_mode_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
         let [left, above] = self.neighbour_joint_modes(r, c, n4w, n4h);
         (left >= NON_DIRECTIONAL_MODES_COUNT) as usize
             + (above >= NON_DIRECTIONAL_MODES_COUNT) as usize
     }
 
-    /// Returns the left and above `get_joint_mode` values for §5.20.5.5
-    /// `get_intra_y_mode_set`, in spec `dir` order: `[dir == 0, dir == 1]`.
     pub(crate) fn neighbour_joint_modes(
         &self,
         r: usize,
@@ -301,7 +292,6 @@ impl TileIntraJointModeState {
         ]
     }
 
-    /// Writes the block's `IntraJointMode` into each covered in-grid MI cell.
     pub(crate) fn record_block(
         &mut self,
         r: usize,
@@ -319,7 +309,6 @@ impl TileIntraJointModeState {
     }
 }
 
-/// Tile-local AV2 § 5.20.5.3 `UsesMrls[r][c]` grid.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileUsesMrlsState {
     grid: MiGrid<u8>,
@@ -327,7 +316,6 @@ pub(crate) struct TileUsesMrlsState {
 }
 
 impl TileUsesMrlsState {
-    /// Creates a `UsesMrls` grid.
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -343,20 +331,16 @@ impl TileUsesMrlsState {
         Ok(Self { grid, sb_size4 })
     }
 
-    /// AV2 § 8.3.2 `mrl_index` CDF context.
     pub(crate) fn mrl_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
         let [first, second] = self.neighbour_uses_mrls(r, c, n4w, n4h);
         (first > 0) as usize + (second > 0) as usize
     }
 
-    /// AV2 § 8.3.2 `mrl_sec_index` CDF context.
     pub(crate) fn mrl_sec_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
         let [first, second] = self.neighbour_uses_mrls(r, c, n4w, n4h);
         (first == 2) as usize + (second == 2) as usize
     }
 
-    /// Returns the first two `UsesMrls` values selected by AV2 § 5.20.4.1
-    /// `add_neighbor` / `NPos` order, with missing entries left at `0`.
     pub(crate) fn neighbour_uses_mrls(
         &self,
         r: usize,
@@ -367,7 +351,6 @@ impl TileUsesMrlsState {
         npos_grid_values(NO_MRL, &self.grid, r, c, n4w, n4h, self.sb_size4)
     }
 
-    /// Writes the block's derived `UsesMrls` value into every MI cell it covers.
     pub(crate) fn record_block(
         &mut self,
         r: usize,
@@ -384,26 +367,21 @@ impl TileUsesMrlsState {
     }
 }
 
-/// Tile-local AV2 § 5.20.5.7 `SegmentIds[r][c]` grid (default `0`, the pre-write
-/// segment-id); the intra mode-info decode fills it as each block resolves.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileSegmentIdState {
     grid: MiGrid<u8>,
 }
 
 impl TileSegmentIdState {
-    /// Creates a `SegmentIds` grid initialized to `0`.
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileSegmentIdStateError> {
         let grid = mi_grid_new!(TileSegmentIdStateError, 0u8, mi_rows, mi_cols, Ok(()))?;
         Ok(Self { grid })
     }
 
-    /// `SegmentIds[r][c]` (tile-relative MI), or `None` outside the grid.
     pub(crate) fn cell(&self, r: usize, c: usize) -> Option<u8> {
         self.grid.cell(r, c)
     }
 
-    /// Writes `segment_id` into every MI cell the block covers.
     pub(crate) fn record_block(
         &mut self,
         r: usize,
@@ -415,9 +393,6 @@ impl TileSegmentIdState {
         self.grid.record_block((r, c), (n4w, n4h), segment_id);
     }
 
-    /// AV2 § 5.20.5.8 spatial predictor `pred` and the § 8.3.2 `segment_id` /
-    /// `seg_id_ext_flag` CDF context, from the up / up-left / left `SegmentIds`
-    /// neighbours (`-1` when unavailable).
     pub(crate) fn predictor_and_ctx(
         &self,
         r: usize,
@@ -462,8 +437,6 @@ impl TileSegmentIdState {
     }
 }
 
-/// AV2 § 5.20.5.8 `neg_deinterleave(diff, ref, max)`, computed in `i64` so the
-/// intermediate subtractions cannot underflow; the result lies in `0..max`.
 pub(crate) fn neg_deinterleave(diff: i64, reference: i64, max: i64) -> i64 {
     if reference == 0 {
         return diff;
@@ -492,7 +465,6 @@ pub(crate) fn neg_deinterleave(diff: i64, reference: i64, max: i64) -> i64 {
     }
 }
 
-/// Tile-local AV2 § 5.20.5.3 `FscModes[r][c]` grid.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileFscModeState {
     grid: MiGrid<u8>,
@@ -500,7 +472,6 @@ pub(crate) struct TileFscModeState {
 }
 
 impl TileFscModeState {
-    /// Creates a `FscModes` grid initialized to `0`.
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -516,13 +487,11 @@ impl TileFscModeState {
         Ok(Self { grid, sb_size4 })
     }
 
-    /// AV2 § 8.3.2 `fsc_mode` CDF context for an intra block.
     pub(crate) fn fsc_mode_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
         let [first, second] = self.neighbour_fsc_modes(r, c, n4w, n4h);
         usize::from(first) + usize::from(second)
     }
 
-    /// Writes the block's decoded `fsc_mode` value into every MI cell it covers.
     pub(crate) fn record_block(
         &mut self,
         r: usize,
@@ -620,32 +589,27 @@ fn npos_neighbour_values(
     values
 }
 
-/// AV2 § 8.3.2 `is_cfl` CDF context.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IsCflContext(usize);
 
 impl IsCflContext {
-    /// Wraps the derived `is_cfl` context value.
     #[must_use]
     pub(crate) const fn new(ctx: usize) -> Self {
         Self(ctx)
     }
 
-    /// The `TileIsCflCdf[ctx]` index.
     #[must_use]
     pub(crate) const fn get(self) -> usize {
         self.0
     }
 }
 
-/// Tile-local AV2 § 5.20.5.3 `UVCfls[r][c]` grid.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileUvCflState {
     grid: MiGrid<u8>,
 }
 
 impl TileUvCflState {
-    /// Creates a `UVCfls` grid.
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileUvCflStateError> {
         let grid = MiGrid::new(
             mi_rows,
@@ -663,7 +627,6 @@ impl TileUvCflState {
         Ok(Self { grid })
     }
 
-    /// AV2 § 8.3.2 `is_cfl` CDF context.
     pub(crate) fn is_cfl_ctx(&self, r: usize, c: usize, avail_u: bool, avail_l: bool) -> usize {
         let [above, left] = gated_neighbour_values(
             [
@@ -677,7 +640,6 @@ impl TileUvCflState {
         usize::from(above != 0) + usize::from(left != 0)
     }
 
-    /// Writes the block's `UVCfls` value into every chroma MI cell it covers.
     pub(crate) fn record_block(
         &mut self,
         r: usize,
@@ -780,7 +742,6 @@ pub(crate) enum TileIntraJointModeStateError {
     Allocation { source: TryReserveError },
 }
 
-/// Tile-local AV2 § 5.20.5.3 `YModes[r][c]` grid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileIntraYModeFacts {
     pub(crate) y_mode: IntraYMode,
@@ -793,7 +754,6 @@ pub(crate) struct TileIntraYModeState {
 }
 
 impl TileIntraYModeState {
-    /// Creates an empty `YModes` grid for the given tile MI dimensions.
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileIntraYModeStateError> {
         let grid = MiGrid::new(
             mi_rows,
@@ -811,7 +771,6 @@ impl TileIntraYModeState {
         Ok(Self { grid })
     }
 
-    /// Writes a luma/shared block's `YMode` into every MI cell it covers.
     pub(crate) fn record_block(
         &mut self,
         r: usize,
@@ -835,7 +794,6 @@ impl TileIntraYModeState {
         self.grid.record_block((r, c), (n4w, n4h), None);
     }
 
-    /// Reads the stored luma mode facts for a chroma-only SDP block.
     pub(crate) fn y_mode_facts_at(&self, row: usize, col: usize) -> Option<TileIntraYModeFacts> {
         self.grid.cell(row, col).flatten()
     }
@@ -856,293 +814,5 @@ pub(crate) enum TileIntraYModeStateError {
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use super::*;
-
-    const D135_JOINT_MODE: u8 = 36;
-    const SMOOTH_V_JOINT_MODE: u8 = 2;
-    const SB_N4: usize = 16;
-
-    #[test]
-    fn out_of_frame_neighbours_give_context_zero() {
-        let state = TileIntraJointModeState::new(16, 16).unwrap();
-        assert_eq!(state.y_mode_index_ctx(0, 0, 16, 16), 0);
-    }
-
-    #[test]
-    fn non_directional_neighbour_keeps_context_zero() {
-        let mut state = TileIntraJointModeState::new(16, 32).unwrap();
-        state.record_block(0, 0, 16, 16, SMOOTH_V_JOINT_MODE);
-        assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
-    }
-
-    #[test]
-    fn directional_left_neighbour_raises_context_to_one() {
-        let mut state = TileIntraJointModeState::new(16, 32).unwrap();
-        state.record_block(0, 0, 16, 16, D135_JOINT_MODE);
-        assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 1);
-    }
-
-    #[test]
-    fn directional_above_neighbour_raises_context_to_one() {
-        let mut state = TileIntraJointModeState::new(32, 16).unwrap();
-        state.record_block(0, 0, 16, 16, D135_JOINT_MODE);
-        assert_eq!(state.y_mode_index_ctx(16, 0, 16, 16), 1);
-    }
-
-    #[test]
-    fn directional_both_neighbours_raise_context_to_two() {
-        let mut state = TileIntraJointModeState::new(32, 32).unwrap();
-        state.record_block(0, 16, 16, 16, D135_JOINT_MODE);
-        state.record_block(16, 0, 16, 16, D135_JOINT_MODE);
-        assert_eq!(state.y_mode_index_ctx(16, 16, 16, 16), 2);
-    }
-
-    #[test]
-    fn non_intra_block_resets_directional_neighbour_to_dc() {
-        let mut state = TileIntraJointModeState::new(64, 64).unwrap();
-        state.record_block(32, 0, 16, 16, D135_JOINT_MODE);
-        state.record_block(16, 16, 16, 16, D135_JOINT_MODE);
-        assert_eq!(state.y_mode_index_ctx(32, 16, 16, 16), 2);
-
-        state.record_non_intra_block(32, 0, 16, 16);
-        state.record_non_intra_block(16, 16, 16, 16);
-        assert_eq!(state.neighbour_joint_modes(32, 16, 16, 16), [0, 0]);
-        assert_eq!(state.y_mode_index_ctx(32, 16, 16, 16), 0);
-    }
-
-    #[test]
-    fn get_joint_mode_uses_the_spec_neighbour_positions() {
-        let mut state = TileIntraJointModeState::new(8, 8).unwrap();
-        state.record_block(3, 1, 1, 1, D135_JOINT_MODE);
-        assert_eq!(state.get_joint_mode(0, 2, 2, 2, 2), D135_JOINT_MODE);
-        state.record_block(1, 3, 1, 1, D135_JOINT_MODE);
-        assert_eq!(state.get_joint_mode(1, 2, 2, 2, 2), D135_JOINT_MODE);
-    }
-
-    #[test]
-    fn last_non_directional_mode_does_not_raise_the_context() {
-        let mut state = TileIntraJointModeState::new(16, 32).unwrap();
-        state.record_block(0, 0, 16, 16, NON_DIRECTIONAL_MODES_COUNT - 1);
-        assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
-    }
-
-    #[test]
-    fn empty_dimensions_are_rejected() {
-        assert!(matches!(
-            TileIntraJointModeState::new(0, 4),
-            Err(TileIntraJointModeStateError::EmptyDimensions { .. })
-        ));
-        assert!(matches!(
-            TileIntraJointModeState::new(4, 0),
-            Err(TileIntraJointModeStateError::EmptyDimensions { .. })
-        ));
-    }
-
-    #[test]
-    fn record_block_clips_to_the_grid() {
-        let mut state = TileIntraJointModeState::new(4, 4).unwrap();
-        state.record_block(2, 2, 16, 16, D135_JOINT_MODE);
-        assert_eq!(state.get_joint_mode(0, 2, 3, 1, 1), D135_JOINT_MODE);
-    }
-
-    #[test]
-    fn uses_mrls_out_of_frame_neighbours_give_context_zero() {
-        let state = TileUsesMrlsState::new(16, 16, SB_N4).unwrap();
-
-        assert_eq!(state.mrl_index_ctx(0, 0, 16, 16), 0);
-        assert_eq!(state.mrl_sec_index_ctx(0, 0, 16, 16), 0);
-    }
-
-    #[test]
-    fn uses_mrls_neighbours_select_index_and_secondary_contexts() {
-        let mut state = TileUsesMrlsState::new(32, 32, SB_N4).unwrap();
-        state.record_block(7, 11, 1, 1, 2);
-        state.record_block(11, 7, 1, 1, 1);
-
-        assert_eq!(state.neighbour_uses_mrls(8, 8, 4, 4), [1, 2]);
-        assert_eq!(state.mrl_index_ctx(8, 8, 4, 4), 2);
-        assert_eq!(state.mrl_sec_index_ctx(8, 8, 4, 4), 1);
-    }
-
-    #[test]
-    fn uses_mrls_npos_excludes_above_superblock_row_neighbours() {
-        let mut state = TileUsesMrlsState::new(32, 32, SB_N4).unwrap();
-        state.record_block(31, 15, 1, 1, 1);
-        state.record_block(15, 31, 1, 1, 2);
-        state.record_block(15, 16, 1, 1, 2);
-
-        assert_eq!(state.neighbour_uses_mrls(16, 16, 16, 16), [1, 0]);
-        assert_eq!(state.mrl_index_ctx(16, 16, 16, 16), 1);
-        assert_eq!(state.mrl_sec_index_ctx(16, 16, 16, 16), 0);
-    }
-
-    #[test]
-    fn uses_mrls_npos_uses_fallback_positions() {
-        let mut state = TileUsesMrlsState::new(16, 16, SB_N4).unwrap();
-        state.record_block(7, 3, 1, 1, 1);
-        state.record_block(7, 0, 1, 1, 2);
-
-        assert_eq!(state.neighbour_uses_mrls(8, 0, 4, 4), [1, 2]);
-        assert_eq!(state.mrl_index_ctx(8, 0, 4, 4), 2);
-        assert_eq!(state.mrl_sec_index_ctx(8, 0, 4, 4), 1);
-    }
-
-    #[test]
-    fn uses_mrls_record_block_clips_to_the_grid() {
-        let mut state = TileUsesMrlsState::new(4, 4, SB_N4).unwrap();
-        state.record_block(2, 2, 16, 16, 2);
-
-        assert_eq!(state.neighbour_uses_mrls(2, 3, 1, 1), [2, 0]);
-        assert_eq!(state.mrl_index_ctx(0, 0, 1, 1), 0);
-    }
-
-    #[test]
-    fn uses_mrls_empty_dimensions_are_rejected() {
-        assert!(matches!(
-            TileUsesMrlsState::new(0, 4, SB_N4),
-            Err(TileUsesMrlsStateError::EmptyDimensions { .. })
-        ));
-        assert!(matches!(
-            TileUsesMrlsState::new(4, 0, SB_N4),
-            Err(TileUsesMrlsStateError::EmptyDimensions { .. })
-        ));
-        assert!(matches!(
-            TileUsesMrlsState::new(4, 4, 0),
-            Err(TileUsesMrlsStateError::EmptySuperblockSize)
-        ));
-    }
-
-    #[test]
-    fn fsc_modes_neighbours_select_context_sum() {
-        let mut state = TileFscModeState::new(32, 32, SB_N4).unwrap();
-        state.record_block(7, 11, 1, 1, 1);
-        state.record_block(11, 7, 1, 1, 1);
-
-        assert_eq!(state.fsc_mode_ctx(8, 8, 4, 4), 2);
-    }
-
-    #[test]
-    fn fsc_modes_npos_excludes_above_superblock_row_neighbours() {
-        let mut state = TileFscModeState::new(32, 32, SB_N4).unwrap();
-        state.record_block(31, 15, 1, 1, 1);
-        state.record_block(15, 31, 1, 1, 1);
-        state.record_block(15, 16, 1, 1, 1);
-
-        assert_eq!(state.fsc_mode_ctx(16, 16, 16, 16), 1);
-    }
-
-    #[test]
-    fn fsc_modes_empty_dimensions_are_rejected() {
-        assert!(matches!(
-            TileFscModeState::new(0, 4, SB_N4),
-            Err(TileFscModeStateError::EmptyDimensions { .. })
-        ));
-        assert!(matches!(
-            TileFscModeState::new(4, 0, SB_N4),
-            Err(TileFscModeStateError::EmptyDimensions { .. })
-        ));
-        assert!(matches!(
-            TileFscModeState::new(4, 4, 0),
-            Err(TileFscModeStateError::EmptySuperblockSize)
-        ));
-    }
-
-    #[test]
-    fn y_mode_state_records_and_clips_blocks() {
-        let mut state = TileIntraYModeState::new(4, 4).unwrap();
-        state.record_block(2, 2, 16, 16, IntraYMode::DC_PRED, -3);
-
-        let expected = Some(TileIntraYModeFacts {
-            y_mode: IntraYMode::DC_PRED,
-            angle_delta_y: -3,
-        });
-        assert_eq!(state.y_mode_facts_at(2, 2), expected);
-        assert_eq!(state.y_mode_facts_at(3, 3), expected);
-        assert_eq!(state.y_mode_facts_at(0, 0), None);
-        assert_eq!(state.y_mode_facts_at(4, 4), None);
-    }
-
-    #[test]
-    fn uv_cfl_out_of_frame_neighbours_give_context_zero() {
-        let state = TileUvCflState::new(16, 16).unwrap();
-        assert_eq!(state.is_cfl_ctx(0, 0, false, false), 0);
-    }
-
-    #[test]
-    fn uv_cfl_non_cfl_neighbour_keeps_context_zero() {
-        let mut state = TileUvCflState::new(16, 32).unwrap();
-        state.record_block(0, 0, 16, 16, false);
-        assert_eq!(state.is_cfl_ctx(0, 16, false, true), 0);
-    }
-
-    #[test]
-    fn uv_cfl_left_neighbour_raises_context_to_one() {
-        let mut state = TileUvCflState::new(16, 32).unwrap();
-        state.record_block(0, 0, 16, 16, true);
-        assert_eq!(state.is_cfl_ctx(0, 16, false, true), 1);
-    }
-
-    #[test]
-    fn uv_cfl_above_neighbour_raises_context_to_one() {
-        let mut state = TileUvCflState::new(32, 16).unwrap();
-        state.record_block(0, 0, 16, 16, true);
-        assert_eq!(state.is_cfl_ctx(16, 0, true, false), 1);
-    }
-
-    #[test]
-    fn uv_cfl_both_neighbours_raise_context_to_two() {
-        let mut state = TileUvCflState::new(32, 32).unwrap();
-        state.record_block(0, 0, 16, 16, true);
-        state.record_block(16, 0, 16, 16, true);
-        state.record_block(0, 16, 16, 16, true);
-        assert_eq!(state.is_cfl_ctx(16, 16, true, true), 2);
-    }
-
-    #[test]
-    fn uv_cfl_availability_gate_overrides_a_cfl_neighbour() {
-        let mut state = TileUvCflState::new(16, 32).unwrap();
-        state.record_block(0, 0, 16, 16, true);
-        assert_eq!(state.is_cfl_ctx(0, 16, false, false), 0);
-    }
-
-    #[test]
-    fn uv_cfl_record_block_clips_to_the_grid_and_rejects_empty_dimensions() {
-        let mut state = TileUvCflState::new(4, 4).unwrap();
-        state.record_block(2, 2, 16, 16, true);
-        assert_eq!(state.is_cfl_ctx(3, 3, true, true), 2);
-        assert_eq!(state.is_cfl_ctx(2, 3, false, true), 1);
-        assert!(TileUvCflState::new(0, 4).is_err());
-        assert!(TileUvCflState::new(4, 0).is_err());
-    }
-
-    /// AV2 § 5.20.5.8 `neg_deinterleave` across its four branches, with asymmetric
-    /// `(diff, ref, max)` triples so a swapped branch cannot pass by coincidence.
-    #[test]
-    fn neg_deinterleave_matches_spec_branches() {
-        assert_eq!(neg_deinterleave(3, 0, 8), 3);
-        assert_eq!(neg_deinterleave(2, 7, 8), 5);
-        assert_eq!(neg_deinterleave(2, 1, 8), 0);
-        assert_eq!(neg_deinterleave(1, 1, 8), 2);
-        assert_eq!(neg_deinterleave(5, 1, 8), 5);
-        assert_eq!(neg_deinterleave(1, 6, 8), 7);
-        assert_eq!(neg_deinterleave(2, 6, 8), 5);
-        assert_eq!(neg_deinterleave(3, 6, 8), 4);
-    }
-
-    /// AV2 § 5.20.5.8 predictor + § 8.3.2 context: no neighbour => pred 0 / ctx 0;
-    /// equal up/up-left/left => ctx 2; a differing left is selected as the predictor.
-    #[test]
-    fn segment_id_predictor_and_context() {
-        let mut state = TileSegmentIdState::new(4, 4).unwrap();
-        assert_eq!(state.predictor_and_ctx(0, 0, false, false), (0, 0));
-        state.record_block(0, 0, 2, 1, 5);
-        state.record_block(0, 1, 1, 1, 5);
-        state.record_block(1, 0, 1, 1, 5);
-        assert_eq!(state.predictor_and_ctx(1, 1, true, true), (5, 2));
-        state.record_block(1, 0, 1, 1, 3);
-        assert_eq!(state.predictor_and_ctx(1, 1, true, true), (5, 1));
-    }
-}
+#[path = "intra_joint_modes_tests.rs"]
+mod tests;

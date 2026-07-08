@@ -6,9 +6,6 @@ use splot_recon::ReconSample;
 use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField};
 use super::super::{InterReferenceState, Mv};
 
-/// The § 7.12.2 `useTemporalFirst` per-block term: the block's reference is
-/// within order-hint distance 2 (07:3383-3391). The frame-level terms are
-/// computed once per frame; the TIP and compound arms defer upstream.
 pub(super) fn block_ref_within_temporal_distance<T: ReconSample>(
     reference: &InterReferenceState<'_, T>,
     ref_frame_idx: &[u32],

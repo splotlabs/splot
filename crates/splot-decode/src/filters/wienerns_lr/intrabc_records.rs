@@ -12,7 +12,7 @@ use splot_recon::{PlaneRect, PlaneSize};
 use crate::bitstream::tile_payload::{
     BlockSize, DecodeBlockFrontier, TileCdfSelector, TileCdfSubset,
 };
-use crate::error::Result;
+use crate::error::{DecodeError, Result};
 use crate::prediction::inter::mv_scaling::{PlaneScaling, derive_plane_scaling};
 use crate::prediction::inter::{
     Mv,
@@ -24,8 +24,8 @@ use crate::prediction::inter::{
 
 use super::intrabc_ref_mv_stack::{
     DrlReorderMode, IntrabcRefMvBank, IntrabcStackAdmission, IntrabcStackGeometry,
-    SpatialIntrabcScan, SpatialScanGeometry, build_intrabc_ref_mv_stack,
-    intrabc_ref_stack_admission, spatial_intrabc_scan_with_base_col,
+    SpatialIntrabcScan, SpatialScanGeometry, intrabc_ref_stack_admission,
+    spatial_intrabc_scan_with_base_col,
 };
 use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
 
@@ -34,15 +34,19 @@ const MI_SIZE: usize = 4;
 const INTRABC_CONTEXT_MAX: usize = 2;
 const SKIP_CONTEXT_MAX: usize = 2;
 const MORPH_PRED_CONTEXT_MAX: usize = 2;
+const INTRABC_GEOMETRY_REASON: &str =
+    "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry";
 
-/// Result of the §5.20.5.3 `use_intrabc` / `read_skip` prefix.
+fn intrabc_geometry_error(tile_offset: ByteOffset) -> DecodeError {
+    wienerns_lr_selectable_transform_record_error_reason(tile_offset, INTRABC_GEOMETRY_REASON)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntrabcUseSkip {
     pub(crate) use_intrabc: bool,
     pub(crate) skip_flag: bool,
 }
 
-/// Luma/shared mode-info facts retained by the transform-record handoff.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntrabcBlockPrelude {
     pub(crate) use_intrabc: bool,
@@ -77,7 +81,6 @@ impl IntrabcBlockPrelude {
     }
 }
 
-/// Minimal block facts needed by the local IntrABC syntax handoff.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntrabcBlockContext {
     row: usize,
@@ -107,37 +110,8 @@ impl IntrabcBlockContext {
             mixed_region: true,
         }
     }
-
-    #[cfg(test)]
-    const fn new(row: usize, col: usize, b_size: usize, is_chroma_part: bool) -> Self {
-        Self {
-            row,
-            col,
-            b_size,
-            is_chroma_part,
-            mixed_region: true,
-        }
-    }
-
-    #[cfg(test)]
-    const fn new_with_mixed_region(
-        row: usize,
-        col: usize,
-        b_size: usize,
-        is_chroma_part: bool,
-        mixed_region: bool,
-    ) -> Self {
-        Self {
-            row,
-            col,
-            b_size,
-            is_chroma_part,
-            mixed_region,
-        }
-    }
 }
 
-/// Current block geometry for §5.20.5.3 IntrABC context derivation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntrabcBlockGeometry {
     block: IntrabcBlockContext,
@@ -160,32 +134,20 @@ impl IntrabcBlockGeometry {
         b_size: BlockSize,
         tile_offset: ByteOffset,
     ) -> Result<Self> {
-        let n4w = b_size.num_4x4_wide().map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?;
-        let n4h = b_size.num_4x4_high().map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?;
+        let n4w = b_size
+            .num_4x4_wide()
+            .map_err(|_| intrabc_geometry_error(tile_offset))?;
+        let n4h = b_size
+            .num_4x4_high()
+            .map_err(|_| intrabc_geometry_error(tile_offset))?;
         Ok(Self {
             block: IntrabcBlockContext::from_chroma_ref(row, col, b_size),
             n4w,
             n4h,
         })
     }
-
-    #[cfg(test)]
-    const fn new(block: IntrabcBlockContext, n4w: usize, n4h: usize) -> Self {
-        Self { block, n4w, n4h }
-    }
 }
 
-/// Retained §5.20.5.4 IntrABC syntax and vector facts.
 #[cfg_attr(
     not(test),
     allow(
@@ -202,7 +164,6 @@ pub(crate) struct IntrabcInfo {
     pub(crate) block_mv: IntrabcBlockVector,
 }
 
-/// Retained IntrABC block vector in eighth-pel units.
 #[cfg_attr(
     not(test),
     allow(
@@ -216,7 +177,6 @@ pub(crate) struct IntrabcBlockVector {
     pub(crate) col: i32,
 }
 
-/// Checked luma current-frame prediction geometry derived from an IntrABC block vector.
 #[cfg_attr(
     not(test),
     allow(
@@ -228,12 +188,8 @@ pub(crate) struct IntrabcBlockVector {
 pub(crate) struct IntrabcPredictionGeometry {
     pub(crate) scaling: PlaneScaling,
     pub(crate) fractional: bool,
-    /// The integer-copy source rectangle. For fractional vectors, the bilinear
-    /// predictor reads through `scaling` and §7.13.3.18 reference clipping instead.
     pub(crate) source: PlaneRect,
     pub(crate) target: PlaneRect,
-    /// Frame luma MI columns/rows, so the caller can re-derive a subsampled chroma
-    /// plane scaling for the same block vector.
     pub(crate) ref_mi_cols: i64,
     pub(crate) ref_mi_rows: i64,
 }
@@ -368,12 +324,7 @@ impl IntrabcMiArea {
         let y = checked_mi_to_luma(self.rows.start, tile_offset)?;
         let width = checked_mi_to_luma(self.cols.len(), tile_offset)?;
         let height = checked_mi_to_luma(self.rows.len(), tile_offset)?;
-        PlaneRect::new(x, y, width, height).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })
+        PlaneRect::new(x, y, width, height).map_err(|_| intrabc_geometry_error(tile_offset))
     }
 }
 
@@ -405,7 +356,6 @@ impl From<IntrabcBlockVector> for Mv {
     }
 }
 
-/// Tile-local neighbour state for IntrABC and skip contexts used by §8.3.2.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileIntrabcPreludeState {
     mi_rows: usize,
@@ -497,7 +447,6 @@ impl TileIntrabcPreludeState {
         Ok(())
     }
 
-    /// Resets the §7.12.2 ref-MV bank when entering a new superblock row.
     pub(crate) fn prepare_for_block(&mut self, row: usize, col: usize) {
         if self.enable_refmvbank {
             self.bank.enter_block_superblock(row, col);
@@ -773,8 +722,6 @@ pub(crate) fn read_intrabc_use_and_skip(
     })
 }
 
-/// Reads one §5.20.5.3 `use_intrabc` block's mode info: the block-vector syntax,
-/// the §7.11 ref-MV stack prediction, and the finished record.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn read_intrabc_info(
     cdfs: &mut TileCdfSubset,
@@ -807,46 +754,6 @@ pub(crate) fn read_intrabc_info(
         tile_offset,
     )?;
     Ok(info)
-}
-
-#[cfg(test)]
-fn read_intrabc_info_record(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    geometry: IntrabcBlockGeometry,
-    tile_offset: ByteOffset,
-) -> Result<IntrabcInfo> {
-    use super::intrabc_ref_mv_stack::build_intrabc_ref_mv_stack;
-    let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
-    let stack_geometry = IntrabcStackGeometry {
-        mi_row: geometry.block.row,
-        mi_col: geometry.block.col,
-        n4w: geometry.n4w,
-        n4h: geometry.n4h,
-        sb_samples: superblock_samples(sequence, tile_offset)?,
-        frame_w: i32::MAX,
-        frame_h: i32::MAX,
-        max_bvp_drl_bits_minus_1: syntax.max_bvp_drl_bits_minus_1,
-    };
-    let stack = build_intrabc_ref_mv_stack(&IntrabcRefMvBank::new(0), stack_geometry, false, &[]);
-    let pred_mv = *stack.get(syntax.ref_mv_idx).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_mv_idx_out_of_range",
-        )
-    })?;
-    finish_intrabc_info_record(
-        cdfs,
-        symbols,
-        sequence,
-        core,
-        syntax,
-        pred_mv,
-        0,
-        tile_offset,
-    )
 }
 
 fn read_intrabc_info_syntax(
@@ -971,13 +878,6 @@ fn ensure_intrabc_ref_stack_supported(
         max_bvp_drl_bits_minus_1: syntax.max_bvp_drl_bits_minus_1,
     };
     let spatial = state.spatial_intrabc_scan(geometry);
-    trace_intrabc_ref_stack(
-        state,
-        stack_geometry,
-        &spatial,
-        syntax.ref_mv_idx,
-        tile_offset,
-    );
     match intrabc_ref_stack_admission(
         state.bank(),
         stack_geometry,
@@ -992,47 +892,6 @@ fn ensure_intrabc_ref_stack_supported(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack",
         )),
     }
-}
-
-fn trace_intrabc_ref_stack(
-    state: &TileIntrabcPreludeState,
-    stack_geometry: IntrabcStackGeometry,
-    spatial: &SpatialIntrabcScan,
-    ref_mv_idx: usize,
-    tile_offset: ByteOffset,
-) {
-    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRABC_REF_STACK") {
-        return;
-    }
-    let mut ordered: Vec<_> = spatial.candidates.clone();
-    let nearest_len = spatial.nearest_len.min(ordered.len());
-    if state.drl_reorder.use_sort(nearest_len) && nearest_len > 1 {
-        super::intrabc_ref_mv_stack::sort_nearest_max_weight_to_slot0(&mut ordered[..nearest_len]);
-    }
-    let sorted: Vec<Mv> = ordered.iter().map(|entry| entry.mv).collect();
-    let stack = build_intrabc_ref_mv_stack(
-        state.bank(),
-        stack_geometry,
-        state.enable_refmvbank,
-        &sorted,
-    );
-    eprintln!(
-        "intrabc ref_stack offset={} mi=({}, {}) n4={}x{} ref_mv_idx={} nearest_len={} spatial_defer={} spatial={:?} sorted={:?} bank={:?} stack={:?} enable_refmvbank={} drl_reorder={:?}",
-        tile_offset.get(),
-        stack_geometry.mi_row,
-        stack_geometry.mi_col,
-        stack_geometry.n4w,
-        stack_geometry.n4h,
-        ref_mv_idx,
-        spatial.nearest_len,
-        spatial.defer,
-        spatial.candidates,
-        sorted,
-        state.bank().entries(),
-        stack,
-        state.enable_refmvbank,
-        state.drl_reorder,
-    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1148,66 +1007,12 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
     if !fractional
         && (!source.is_within(domain.storage) || !rect_is_within_rect(source, domain.tile_bounds))
     {
-        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRABC_GEOMETRY") {
-            eprintln!(
-                "intrabc geometry source_bounds offset={} mi=({}, {}) n4={}x{} block_px=({}, {}) {}x{} mv=({}, {}) target=({}, {}) {}x{} source=({}, {}) {}x{} storage={}x{} tile=({}, {}) {}x{}",
-                tile_offset.get(),
-                geometry.block.row,
-                geometry.block.col,
-                geometry.n4w,
-                geometry.n4h,
-                block.x,
-                block.y,
-                block.width,
-                block.height,
-                info.block_mv.row,
-                info.block_mv.col,
-                target.x(),
-                target.y(),
-                target.width(),
-                target.height(),
-                source.x(),
-                source.y(),
-                source.width(),
-                source.height(),
-                domain.storage.width(),
-                domain.storage.height(),
-                domain.tile_bounds.x(),
-                domain.tile_bounds.y(),
-                domain.tile_bounds.width(),
-                domain.tile_bounds.height(),
-            );
-        }
         return Err(wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_source_bounds",
         ));
     }
     if !fractional && rects_overlap(source, target) {
-        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRABC_GEOMETRY") {
-            eprintln!(
-                "intrabc geometry overlap offset={} mi=({}, {}) n4={}x{} block_px=({}, {}) {}x{} mv=({}, {}) target=({}, {}) {}x{} source=({}, {}) {}x{}",
-                tile_offset.get(),
-                geometry.block.row,
-                geometry.block.col,
-                geometry.n4w,
-                geometry.n4h,
-                block.x,
-                block.y,
-                block.width,
-                block.height,
-                info.block_mv.row,
-                info.block_mv.col,
-                target.x(),
-                target.y(),
-                target.width(),
-                target.height(),
-                source.x(),
-                source.y(),
-                source.width(),
-                source.height(),
-            );
-        }
         return Err(wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_mv_validity",
@@ -1251,32 +1056,16 @@ fn intrabc_clamped_target(
     let tile_y = domain.tile_bounds.y();
     let tile_right = tile_x
         .checked_add(domain.tile_bounds.width())
-        .ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?;
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
     let tile_bottom = tile_y
         .checked_add(domain.tile_bounds.height())
-        .ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?;
-    let nominal_right = target_x.checked_add(width).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })?;
-    let nominal_bottom = target_y.checked_add(height).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })?;
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
+    let nominal_right = target_x
+        .checked_add(width)
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
+    let nominal_bottom = target_y
+        .checked_add(height)
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
     let visible_right = nominal_right.min(domain.storage.width()).min(tile_right);
     let visible_bottom = nominal_bottom.min(domain.storage.height()).min(tile_bottom);
     if target_x < tile_x
@@ -1293,12 +1082,8 @@ fn intrabc_clamped_target(
     }
     let eff_width = visible_right - target_x;
     let eff_height = visible_bottom - target_y;
-    PlaneRect::new(target_x, target_y, eff_width, eff_height).map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })
+    PlaneRect::new(target_x, target_y, eff_width, eff_height)
+        .map_err(|_| intrabc_geometry_error(tile_offset))
 }
 
 fn intrabc_luma_prediction_domain(
@@ -1312,38 +1097,26 @@ fn intrabc_luma_prediction_domain(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_frame_size",
         )
     })?;
-    let tile_info = core.tile_info.as_ref().ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })?;
-    let mi_cols = tile_info.mi_col_starts.last().copied().ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })?;
-    let mi_rows = tile_info.mi_row_starts.last().copied().ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })?;
+    let tile_info = core
+        .tile_info
+        .as_ref()
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
+    let mi_cols = tile_info
+        .mi_col_starts
+        .last()
+        .copied()
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
+    let mi_rows = tile_info
+        .mi_row_starts
+        .last()
+        .copied()
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
     if mi_cols == 0 || mi_rows == 0 {
-        return Err(wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        ));
+        return Err(intrabc_geometry_error(tile_offset));
     }
     let width = checked_mi_u32_to_luma(mi_cols, tile_offset)?;
     let height = checked_mi_u32_to_luma(mi_rows, tile_offset)?;
-    let storage = PlaneSize::new(width, height).map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })?;
+    let storage = PlaneSize::new(width, height).map_err(|_| intrabc_geometry_error(tile_offset))?;
     let tile_area = IntrabcMiArea::from_tile_starts(
         &tile_info.mi_row_starts,
         &tile_info.mi_col_starts,
@@ -1367,25 +1140,10 @@ fn tile_interval_for_block(
     bounds_reason: &'static str,
     tile_offset: ByteOffset,
 ) -> Result<(usize, usize)> {
-    checked_mi_end(
-        block_start,
-        block_len,
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        tile_offset,
-    )?;
+    checked_mi_end(block_start, block_len, INTRABC_GEOMETRY_REASON, tile_offset)?;
     for window in starts.windows(2) {
-        let start = usize::try_from(window[0]).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?;
-        let end = usize::try_from(window[1]).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?;
+        let start = usize::try_from(window[0]).map_err(|_| intrabc_geometry_error(tile_offset))?;
+        let end = usize::try_from(window[1]).map_err(|_| intrabc_geometry_error(tile_offset))?;
         if block_start >= start && block_start < end {
             return Ok((start, end));
         }
@@ -1419,33 +1177,19 @@ fn checked_mi_end(
 }
 
 fn checked_mi_to_luma(mi: usize, tile_offset: ByteOffset) -> Result<usize> {
-    mi.checked_mul(MI_SIZE).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })
+    mi.checked_mul(MI_SIZE)
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))
 }
 
 fn checked_mi_u32_to_luma(mi: u32, tile_offset: ByteOffset) -> Result<usize> {
     checked_mi_to_luma(
-        usize::try_from(mi).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?,
+        usize::try_from(mi).map_err(|_| intrabc_geometry_error(tile_offset))?,
         tile_offset,
     )
 }
 
 fn checked_i64_from_usize(value: usize, tile_offset: ByteOffset) -> Result<i64> {
-    i64::try_from(value).map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })
+    i64::try_from(value).map_err(|_| intrabc_geometry_error(tile_offset))
 }
 
 fn rect_is_within_rect(rect: PlaneRect, bounds: PlaneRect) -> bool {
@@ -1498,75 +1242,32 @@ fn intrabc_luma_source_envelope(
     let source_x = i64::try_from(target.x())
         .ok()
         .and_then(|value| value.checked_add(i64::from(delta_col)))
-        .ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?;
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
     let source_y = i64::try_from(target.y())
         .ok()
         .and_then(|value| value.checked_add(i64::from(delta_row)))
-        .ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?;
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
     if source_x < 0 || source_y < 0 {
-        if crate::trace_flags::trace_flag!("SPLOT_TRACE_INTRABC_GEOMETRY") {
-            eprintln!(
-                "intrabc geometry source_negative offset={} target=({}, {}) {}x{} mv=({}, {}) source=({}, {})",
-                tile_offset.get(),
-                target.x(),
-                target.y(),
-                target.width(),
-                target.height(),
-                block_mv.row,
-                block_mv.col,
-                source_x,
-                source_y,
-            );
-        }
         return Err(wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_source_bounds",
         ));
     }
-    let source_width = target.width().checked_add(right_border).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })?;
-    let source_height = target.height().checked_add(bottom_border).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })?;
+    let source_width = target
+        .width()
+        .checked_add(right_border)
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
+    let source_height = target
+        .height()
+        .checked_add(bottom_border)
+        .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
     PlaneRect::new(
-        usize::try_from(source_x).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?,
-        usize::try_from(source_y).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-            )
-        })?,
+        usize::try_from(source_x).map_err(|_| intrabc_geometry_error(tile_offset))?,
+        usize::try_from(source_y).map_err(|_| intrabc_geometry_error(tile_offset))?,
         source_width,
         source_height,
     )
-    .map_err(|_| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_geometry",
-        )
-    })
+    .map_err(|_| intrabc_geometry_error(tile_offset))
 }
 
 fn superblock_samples(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<i32> {

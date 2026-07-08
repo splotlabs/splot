@@ -33,25 +33,6 @@ pub(crate) struct McBlockRect {
 }
 
 impl McBlockRect {
-    #[cfg(test)]
-    pub(crate) const fn from_luma(
-        luma_x: usize,
-        luma_y: usize,
-        luma_w: usize,
-        luma_h: usize,
-    ) -> Self {
-        Self {
-            luma_x,
-            luma_y,
-            luma_w,
-            luma_h,
-            chroma_luma_x: luma_x,
-            chroma_luma_y: luma_y,
-            chroma_luma_w: luma_w,
-            chroma_luma_h: luma_h,
-        }
-    }
-
     const fn plane_luma_rect(self, plane: PlaneId) -> (usize, usize, usize, usize) {
         match plane {
             PlaneId::Y => (self.luma_x, self.luma_y, self.luma_w, self.luma_h),
@@ -850,14 +831,6 @@ const fn compound_inter_post_round() -> u32 {
     4
 }
 
-/// § 7.13.3.20 per-8x8 bounding box for the fixed-phase ext-warp kernel:
-/// derives the unit's translational MV (`get_sub_block_warp_mv` with
-/// `rnd == 0`), applies the § 5.20.9.4 / § 5.20.9.5 MV clamps and the
-/// § 7.13.3.17 unscaled scaling, and narrows the reference read window to
-/// the projected span with -3/+4 tap margins. Bounds derive from the
-/// visible reference geometry on the admitted equal-size unscaled-reference
-/// surface; the § 7.13.3.15 `is_scaled` arm and non-8-aligned mi padding
-/// are beyond the frontier (upstream gates defer both).
 #[allow(clippy::too_many_arguments)]
 fn ext_warp_unit_bounds(
     rect: McBlockRect,
@@ -931,12 +904,6 @@ fn ext_warp_unit_bounds(
     (first_x, first_y, last_x, last_y)
 }
 
-/// § 7.13.3.18 fractional-vector IntraBC prediction: the CURRENT frame is the
-/// reference (`refIdx == -1`, reads clipped to the frame region,
-/// 07-decoding-process.md:7824-7828) and the separable convolution runs with
-/// the 2-tap BILINEAR `Subpel_Filters` row. Copies the reconstructed luma
-/// plane into the reference view per call — acceptable while fractional-DV
-/// blocks are rare; upgrade to a borrowed strided view if that changes.
 pub(crate) fn intrabc_predict_fractional_luma_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     target: PlaneRect,
@@ -945,16 +912,6 @@ pub(crate) fn intrabc_predict_fractional_luma_into<T: ReconSample>(
     intrabc_predict_subpel_plane_into(workspace, PlaneId::Y, target, scaling)
 }
 
-/// § 7.13.3.18 IntrABC sub-pel bilinear predictor for any `plane`: reads the
-/// already-reconstructed current frame through `scaling` (with § reference
-/// clipping) and writes the bilinear prediction into `target`. Luma passes
-/// `PlaneId::Y`; a chroma plane passes its (subsampled) target and scaling.
-///
-/// Chroma always routes here (bilinear at a full-pel phase is an exact copy), so
-/// unlike the luma path there is no integer-DV `copy_rect_within_plane` fast path;
-/// each call snapshots the whole plane storage into a view. Acceptable while
-/// IntrABC blocks are rare; an integer-DV fast path or a borrowed strided view is
-/// the follow-up if intraBC-heavy frames show up in profiling.
 pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
@@ -1026,205 +983,5 @@ pub(crate) fn reference_plane_view<T: ReconSample>(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
-mod tests {
-    use super::*;
-    use splot_recon::{DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane, PlaneSize};
-
-    #[test]
-    fn dispatcher_zero_mv_copies_single_reference_planes() {
-        let reference = patterned_frame(8, 8);
-        let mut workspace = workspace(8, 8);
-
-        motion_compensate_inter_block_into(
-            &mut workspace,
-            InterBlockParams::single(
-                &reference,
-                rect(0, 0, 8, 8),
-                Mv { row: 0, col: 0 },
-                InterpolationFilter::EightTap,
-            ),
-            ByteOffset::new(0),
-        )
-        .expect("single-reference dispatcher");
-
-        let decoded = workspace.freeze().expect("freeze dispatched workspace");
-        assert_eq!(
-            visible_samples(&decoded, PlaneId::Y),
-            visible_samples(&reference, PlaneId::Y)
-        );
-        assert_eq!(
-            visible_samples(&decoded, PlaneId::U),
-            visible_samples(&reference, PlaneId::U)
-        );
-        assert_eq!(
-            visible_samples(&decoded, PlaneId::V),
-            visible_samples(&reference, PlaneId::V)
-        );
-    }
-
-    #[test]
-    fn dispatcher_blends_compound_average_planes() {
-        let reference0 = flat_frame(8, 8, 40, 90, 120);
-        let reference1 = flat_frame(8, 8, 80, 110, 140);
-        let samples = dispatch_compound_samples(&reference0, &reference1, CompoundBlend::default());
-        assert_eq!(samples.0, vec![60; 64]);
-        assert_eq!(samples.1, vec![100; 16]);
-        assert_eq!(samples.2, vec![130; 16]);
-    }
-
-    #[test]
-    fn dispatcher_subsamples_luma_diff_weighted_mask_for_chroma() {
-        let reference0 = flat_frame(8, 8, 100, 0, 0);
-        let reference1 = flat_frame(8, 8, 100, 200, 200);
-        let samples = dispatch_compound_samples(
-            &reference0,
-            &reference1,
-            CompoundBlend::DiffWeighted { inverse: false },
-        );
-        assert_eq!(samples.0, vec![100; 64]);
-        assert_eq!(samples.1, vec![81; 16]);
-        assert_eq!(samples.2, vec![81; 16]);
-    }
-
-    #[test]
-    fn dispatcher_uses_implicit_mask_for_offscreen_compound_refs() {
-        let reference = patterned_frame(32, 8);
-        let mut workspace = workspace(32, 8);
-
-        motion_compensate_inter_block_into(
-            &mut workspace,
-            InterBlockParams::compound_average(
-                &reference,
-                &reference,
-                rect(0, 0, 32, 4),
-                Mv { row: 0, col: 32 },
-                Mv { row: 0, col: -128 },
-                InterpolationFilter::EightTap,
-                CompoundBlend::average_with_implicit_mask(true),
-            ),
-            ByteOffset::new(0),
-        )
-        .expect("implicit-mask compound dispatcher");
-
-        let decoded = workspace.freeze().expect("freeze implicit mask workspace");
-        let y = visible_samples(&decoded, PlaneId::Y);
-        assert_eq!(y[0], 4);
-        assert_eq!(y[20], 14);
-        assert_eq!(y[28], 12);
-    }
-
-    fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
-        let luma_size = PlaneSize::new(width, height).expect("luma size");
-        let visible = PlaneRect::new(0, 0, width, height).expect("visible rect");
-        let info = DecodedFrameInfo::new(
-            OutputIndex::new(0),
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            luma_size,
-            visible,
-        )
-        .expect("frame info");
-        CurrentFrameWorkspace::new(info, 0).expect("workspace")
-    }
-
-    fn dispatch_compound_samples(
-        reference0: &DecodedFrame<u8>,
-        reference1: &DecodedFrame<u8>,
-        blend: CompoundBlend,
-    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        let mut workspace = workspace(8, 8);
-        motion_compensate_inter_block_into(
-            &mut workspace,
-            InterBlockParams::compound_average(
-                reference0,
-                reference1,
-                rect(0, 0, 8, 8),
-                Mv { row: 0, col: 0 },
-                Mv { row: 0, col: 0 },
-                InterpolationFilter::EightTap,
-                blend,
-            ),
-            ByteOffset::new(0),
-        )
-        .expect("compound dispatcher");
-
-        let decoded = workspace.freeze().expect("freeze compound workspace");
-        (
-            visible_samples(&decoded, PlaneId::Y),
-            visible_samples(&decoded, PlaneId::U),
-            visible_samples(&decoded, PlaneId::V),
-        )
-    }
-
-    fn patterned_frame(width: usize, height: usize) -> DecodedFrame<u8> {
-        let y: Vec<u8> = (0..width * height)
-            .map(|sample| u8::try_from(sample).expect("luma sample"))
-            .collect();
-        let chroma_width = width / 2;
-        let chroma_height = height / 2;
-        let u: Vec<u8> = (0..chroma_width * chroma_height)
-            .map(|sample| 100 + u8::try_from(sample).expect("u sample"))
-            .collect();
-        let v: Vec<u8> = (0..chroma_width * chroma_height)
-            .map(|sample| 150 + u8::try_from(sample).expect("v sample"))
-            .collect();
-        frame(width, height, y, u, v)
-    }
-
-    fn flat_frame(width: usize, height: usize, y: u8, u: u8, v: u8) -> DecodedFrame<u8> {
-        let chroma_width = width / 2;
-        let chroma_height = height / 2;
-        frame(
-            width,
-            height,
-            vec![y; width * height],
-            vec![u; chroma_width * chroma_height],
-            vec![v; chroma_width * chroma_height],
-        )
-    }
-
-    fn frame(width: usize, height: usize, y: Vec<u8>, u: Vec<u8>, v: Vec<u8>) -> DecodedFrame<u8> {
-        let luma_size = PlaneSize::new(width, height).expect("luma size");
-        let luma_rect = PlaneRect::new(0, 0, width, height).expect("luma rect");
-        let chroma_width = width / 2;
-        let chroma_height = height / 2;
-        let chroma_size = PlaneSize::new(chroma_width, chroma_height).expect("chroma size");
-        let chroma_rect = PlaneRect::new(0, 0, chroma_width, chroma_height).expect("chroma rect");
-        let info = DecodedFrameInfo::new(
-            OutputIndex::new(0),
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            luma_size,
-            luma_rect,
-        )
-        .expect("frame info");
-
-        DecodedFrame::try_new(
-            info,
-            FramePlanes::new(
-                plane(luma_size, width, luma_rect, y),
-                Some(plane(chroma_size, chroma_width, chroma_rect, u)),
-                Some(plane(chroma_size, chroma_width, chroma_rect, v)),
-            ),
-        )
-        .expect("decoded frame")
-    }
-
-    fn plane(size: PlaneSize, stride: usize, visible: PlaneRect, samples: Vec<u8>) -> Plane<u8> {
-        Plane::from_vec(size, stride, visible, samples).expect("plane")
-    }
-
-    fn visible_samples(frame: &DecodedFrame<u8>, plane: PlaneId) -> Vec<u8> {
-        frame
-            .plane(plane)
-            .expect("frame plane")
-            .visible_rows()
-            .flat_map(|row| row.iter().copied())
-            .collect()
-    }
-
-    const fn rect(luma_x: usize, luma_y: usize, luma_w: usize, luma_h: usize) -> McBlockRect {
-        McBlockRect::from_luma(luma_x, luma_y, luma_w, luma_h)
-    }
-}
+#[path = "mc_tests.rs"]
+mod tests;

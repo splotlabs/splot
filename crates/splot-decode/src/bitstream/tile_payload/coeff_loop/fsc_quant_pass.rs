@@ -6,14 +6,11 @@
 use std::collections::TryReserveError;
 
 use splot_core::symbol::SymbolDecoder;
-use splot_core::tables::conversion::{
-    ADJUSTED_TX_SIZE, TX_HEIGHT, TX_HEIGHT_LOG2, TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_WIDTH,
-    TX_WIDTH_LOG2,
-};
+use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
 
 use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::{
-    CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
+    TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
 };
 use super::branch::{
     CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStart,
@@ -41,8 +38,9 @@ use super::scan_walk::{
     walk_fsc_coeff_scan,
 };
 use super::{
-    AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffEobContextInput,
-    NonZeroCoeffEobSymbolRead,
+    AllZeroCoeffBlockInput, CoeffBranchInput, CoeffLoopContextError,
+    CoeffTxSizeTables as CoeffFscBranchTxSizeTables, DEFAULT_TX_SIZE_TABLES,
+    NonZeroCoeffEobContextInput, NonZeroCoeffEobSymbolRead, commit_nonzero_coeff_context,
 };
 
 const FSC_MAX_LEVEL: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
@@ -57,51 +55,12 @@ struct CoeffFscBranchTxSizeDimensions {
 }
 
 #[derive(Clone, Copy)]
-struct CoeffFscBranchTxSizeTables<'a> {
-    adjusted_tx_size: &'a [i32],
-    tx_size_sqr: &'a [i32],
-    tx_size_sqr_up: &'a [i32],
-    tx_width: &'a [i32],
-    tx_height: &'a [i32],
-    tx_width_log2: &'a [i32],
-    tx_height_log2: &'a [i32],
-}
-
-#[derive(Clone, Copy)]
 struct CoeffFscBranchTxSizeFacts {
     raw_dimensions: CoeffFscBranchTxSizeDimensions,
     level_config: CoeffFscLevelPassConfig,
     context: CoeffFscContextCommitConfig,
 }
 
-#[cfg(test)]
-#[derive(Clone, Copy)]
-pub(crate) struct CoeffFscBranchTestDimensionTables<'a> {
-    pub(crate) tx_width: &'a [i32],
-    pub(crate) tx_height: &'a [i32],
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy)]
-pub(crate) struct CoeffFscBranchTestTxSizeTables<'a> {
-    pub(crate) adjusted_tx_size: &'a [i32],
-    pub(crate) tx_size_sqr: &'a [i32],
-    pub(crate) tx_size_sqr_up: &'a [i32],
-    pub(crate) tx_width: &'a [i32],
-    pub(crate) tx_height: &'a [i32],
-    pub(crate) tx_width_log2: &'a [i32],
-    pub(crate) tx_height_log2: &'a [i32],
-}
-
-const DEFAULT_TX_SIZE_TABLES: CoeffFscBranchTxSizeTables<'static> = CoeffFscBranchTxSizeTables {
-    adjusted_tx_size: &ADJUSTED_TX_SIZE,
-    tx_size_sqr: &TX_SIZE_SQR,
-    tx_size_sqr_up: &TX_SIZE_SQR_UP,
-    tx_width: &TX_WIDTH,
-    tx_height: &TX_HEIGHT,
-    tx_width_log2: &TX_WIDTH_LOG2,
-    tx_height_log2: &TX_HEIGHT_LOG2,
-};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffFscQuantPass {
     eob_read: NonZeroCoeffEobSymbolRead,
@@ -114,18 +73,9 @@ pub(crate) struct NonZeroCoeffFscQuantPass {
     quant_state: NonZeroCoeffQuantState,
     block: TransformCoeffBlockState,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CoeffFscContextCommitConfig {
-    pub(crate) plane: usize,
-    pub(crate) x4: usize,
-    pub(crate) y4: usize,
-    pub(crate) w4: usize,
-    pub(crate) h4: usize,
-}
-pub(crate) enum CoeffFscBranchInput<'a> {
-    AllZero(AllZeroCoeffBlockInput),
-    NonZero(CoeffFscBranchNonZeroInput<'a>),
-}
+pub(crate) type CoeffFscContextCommitConfig = AllZeroCoeffBlockInput;
+pub(crate) type CoeffFscBranchInput<'a> =
+    CoeffBranchInput<AllZeroCoeffBlockInput, CoeffFscBranchNonZeroInput<'a>>;
 pub(crate) struct CoeffFscBranchNonZeroInput<'a> {
     pub(crate) start: NonZeroCoeffBlockStartInput,
     pub(crate) seg_eob: usize,
@@ -133,20 +83,16 @@ pub(crate) struct CoeffFscBranchNonZeroInput<'a> {
     pub(crate) level_config: CoeffFscLevelPassConfig,
     pub(crate) context: CoeffFscContextCommitConfig,
 }
-pub(crate) enum CoeffFscBranchSegEobInput<'a> {
-    AllZero(AllZeroCoeffBlockInput),
-    NonZero(CoeffFscBranchSegEobNonZeroInput<'a>),
-}
+pub(crate) type CoeffFscBranchSegEobInput<'a> =
+    CoeffBranchInput<AllZeroCoeffBlockInput, CoeffFscBranchSegEobNonZeroInput<'a>>;
 pub(crate) struct CoeffFscBranchSegEobNonZeroInput<'a> {
     pub(crate) start: NonZeroCoeffBlockStartInput,
     pub(crate) scan: &'a [u16],
     pub(crate) level_config: CoeffFscLevelPassConfig,
     pub(crate) context: CoeffFscContextCommitConfig,
 }
-pub(crate) enum CoeffFscBranchTxSizeInput {
-    AllZero(AllZeroCoeffBlockInput),
-    NonZero(CoeffFscBranchTxSizeNonZeroInput),
-}
+pub(crate) type CoeffFscBranchTxSizeInput =
+    CoeffBranchInput<AllZeroCoeffBlockInput, CoeffFscBranchTxSizeNonZeroInput>;
 pub(crate) struct CoeffFscBranchTxSizeNonZeroInput {
     pub(crate) block: AllZeroCoeffBlockInput,
     pub(crate) tx_size: usize,
@@ -161,10 +107,8 @@ pub(crate) struct CoeffFscStagedTxSizeNonZeroInput {
     pub(crate) plane_tx_type: usize,
     pub(crate) coeff_cdf_q_ctx: usize,
 }
-pub(crate) enum CoeffFscBranchScanOrderInput {
-    AllZero(AllZeroCoeffBlockInput),
-    NonZero(CoeffFscBranchScanOrderNonZeroInput),
-}
+pub(crate) type CoeffFscBranchScanOrderInput =
+    CoeffBranchInput<AllZeroCoeffBlockInput, CoeffFscBranchScanOrderNonZeroInput>;
 pub(crate) struct CoeffFscBranchScanOrderNonZeroInput {
     pub(crate) start: NonZeroCoeffBlockStartInput,
     pub(crate) tx_size: usize,
@@ -334,26 +278,20 @@ pub(crate) fn apply_coeff_fsc_branch(
     Ok(CoeffFscBranch { pass })
 }
 
-pub(crate) fn apply_coeff_fsc_branch_from_scan_extent(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffFscBranchSegEobInput<'_>,
-) -> Result<CoeffFscBranch, CoeffFscBranchError> {
-    let input = match input {
-        CoeffFscBranchSegEobInput::AllZero(input) => CoeffFscBranchInput::AllZero(input),
-        CoeffFscBranchSegEobInput::NonZero(input) => {
-            CoeffFscBranchInput::NonZero(CoeffFscBranchNonZeroInput {
-                start: input.start,
-                seg_eob: input.scan.len(),
-                scan: input.scan,
-                level_config: input.level_config,
-                context: input.context,
-            })
-        }
-    };
-    apply_coeff_fsc_branch(state, cdfs, symbols, input)
-}
+coeff_branch_map_adapter!(
+    pub(crate) fn apply_coeff_fsc_branch_from_scan_extent(
+        CoeffFscBranchSegEobInput<'_>
+    ) -> Result<CoeffFscBranch, CoeffFscBranchError>,
+    input,
+    CoeffFscBranchNonZeroInput {
+        start: input.start,
+        seg_eob: input.scan.len(),
+        scan: input.scan,
+        level_config: input.level_config,
+        context: input.context,
+    },
+    apply_coeff_fsc_branch,
+);
 
 pub(crate) fn apply_coeff_fsc_branch_from_tx_size(
     state: &mut TileCoeffContextState,
@@ -404,32 +342,7 @@ pub(crate) fn apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
     .map_err(CoeffFscBranchError::from)
 }
 
-#[cfg(test)]
-pub(crate) fn apply_coeff_fsc_branch_from_tx_size_with_test_tables(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffFscBranchTxSizeInput,
-    tables: CoeffFscBranchTestTxSizeTables<'_>,
-) -> Result<CoeffFscBranch, CoeffFscBranchError> {
-    apply_coeff_fsc_branch_from_tx_size_with_tables(
-        state,
-        cdfs,
-        symbols,
-        input,
-        CoeffFscBranchTxSizeTables {
-            adjusted_tx_size: tables.adjusted_tx_size,
-            tx_size_sqr: tables.tx_size_sqr,
-            tx_size_sqr_up: tables.tx_size_sqr_up,
-            tx_width: tables.tx_width,
-            tx_height: tables.tx_height,
-            tx_width_log2: tables.tx_width_log2,
-            tx_height_log2: tables.tx_height_log2,
-        },
-    )
-}
-
-fn apply_coeff_fsc_branch_from_tx_size_with_tables(
+pub(crate) fn apply_coeff_fsc_branch_from_tx_size_with_tables(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -492,25 +405,7 @@ pub(crate) fn apply_coeff_fsc_branch_from_scan_order(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn apply_coeff_fsc_branch_from_scan_order_with_test_dimension_tables(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffFscBranchScanOrderInput,
-    tables: CoeffFscBranchTestDimensionTables<'_>,
-) -> Result<CoeffFscBranch, CoeffFscBranchError> {
-    apply_coeff_fsc_branch_from_scan_order_with_tables(
-        state,
-        cdfs,
-        symbols,
-        input,
-        tables.tx_width,
-        tables.tx_height,
-    )
-}
-
-fn apply_coeff_fsc_branch_from_scan_order_with_tables(
+pub(crate) fn apply_coeff_fsc_branch_from_scan_order_with_tables(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -660,7 +555,7 @@ fn tx_size_table_tx_size(
     Ok(value)
 }
 
-fn tx_size_table_usize(
+pub(super) fn tx_size_table_usize(
     table: &[i32],
     table_name: &'static str,
     tx_size: usize,
@@ -717,94 +612,10 @@ pub(crate) fn apply_nonzero_coeff_fsc_quant_pass_with_context_commit(
         });
     }
 
-    let trace = trace_fsc_block_enabled(context);
-    let before = trace.then(|| symbols.checkpoint());
     let pass = apply_nonzero_coeff_fsc_quant_pass(cdfs, symbols, level_pass, scan, config)?;
-    if trace {
-        trace_fsc_block(context, before, symbols.checkpoint(), &pass);
-    }
-    let quant_state = pass.quant_state();
-    state
-        .update_after_coeffs(CoeffContextUpdate {
-            plane: context.plane,
-            x4: context.x4,
-            y4: context.y4,
-            w4: context.w4,
-            h4: context.h4,
-            cul_level: quant_state.cul_level(),
-            dc_category: quant_state.dc_category(),
-        })
+    commit_nonzero_coeff_context(state, context, pass.quant_state())
         .map_err(CoeffFscQuantPassError::ContextUpdate)?;
     Ok(pass)
-}
-
-fn trace_fsc_block_enabled(context: CoeffFscContextCommitConfig) -> bool {
-    let Some(value) = crate::trace_flags::trace_value!("SPLOT_TRACE_FSC_BLOCK") else {
-        return false;
-    };
-    if value.is_empty() || value == "1" {
-        return true;
-    }
-    let Some((y4, x4)) = value.split_once(',') else {
-        return true;
-    };
-    let Ok(y4) = y4.parse::<usize>() else {
-        return false;
-    };
-    let Ok(x4) = x4.parse::<usize>() else {
-        return false;
-    };
-    context.y4 == y4 && context.x4 == x4
-}
-
-fn trace_fsc_block(
-    context: CoeffFscContextCommitConfig,
-    before: Option<splot_core::symbol::SymbolDecoderCheckpoint>,
-    after: splot_core::symbol::SymbolDecoderCheckpoint,
-    pass: &NonZeroCoeffFscQuantPass,
-) {
-    eprintln!(
-        "fsc block y4={} x4={} w4={} h4={} before={:?} after={:?} eob={} bob={} seg_eob={} level_reads={} sign_entries={} read_quants={} cul_level={} dc_category={}",
-        context.y4,
-        context.x4,
-        context.w4,
-        context.h4,
-        before,
-        after,
-        pass.eob_read().eob().eob(),
-        pass.level_walk().bob(),
-        pass.level_walk().seg_eob(),
-        pass.level_reads().len(),
-        pass.sign_entries().len(),
-        pass.read_quants().len(),
-        pass.quant_state().cul_level(),
-        pass.quant_state().dc_category(),
-    );
-    for (index, ((entry, input), read_quant)) in pass
-        .sign_entries()
-        .iter()
-        .copied()
-        .zip(pass.sign_inputs().iter().copied())
-        .zip(pass.read_quants().iter().copied())
-        .enumerate()
-    {
-        let sign = pass.sign_reads()[index];
-        let write = pass.quant_state().writes()[index];
-        eprintln!(
-            "fsc entry index={} scan={} pos={} row={} col={} level={} source={:?} sign_symbol={:?} sign={} read_quant={:?} quant={} checkpoint_after_entry_unavailable",
-            index,
-            entry.scan_index(),
-            entry.pos(),
-            entry.row(),
-            entry.col(),
-            input.level,
-            input.source,
-            sign.symbol(),
-            sign.sign(),
-            read_quant.path(),
-            write.quant(),
-        );
-    }
 }
 
 struct FscInterleavedQuantPass {

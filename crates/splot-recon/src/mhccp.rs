@@ -3,12 +3,12 @@
 
 //! AV2 § 7.13.6 MHCCP parameter derivation helpers.
 
-use splot_recon::BitDepth;
-use splot_recon::math::{clip3, round2, round2_signed};
+use crate::BitDepth;
+use crate::math::{clip3, round2, round2_signed};
 
 #[doc = "AV2 § 3 symbols and § 7.13.6 MHCCP process constants."]
-pub(crate) const MHCCP_BITS: u32 = 16;
-pub(crate) const MHCCP_PARAM_COUNT: usize = 3;
+pub const MHCCP_BITS: u32 = 16;
+pub const MHCCP_PARAM_COUNT: usize = 3;
 const DIV_PREC_BITS: u32 = 14;
 const DIV_PREC_BITS_POW2: u32 = 8;
 const DIV_SLOT_BITS: u32 = 3;
@@ -18,13 +18,38 @@ const DIVISION_POW2_W: [i64; 8] = [214, 153, 113, 86, 67, 53, 43, 35];
 const DIVISION_POW2_O: [i64; 8] = [4822, 5952, 6624, 6792, 6408, 5424, 3792, 1466];
 const DIVISION_POW2_B: [i64; 8] = [12784, 12054, 11670, 11583, 11764, 12195, 12870, 13782];
 
-pub(crate) struct MhccpRefs {
-    pub(crate) width: usize,
-    pub(crate) height: usize,
-    pub(crate) above: usize,
-    pub(crate) left: usize,
-    pub(crate) luma: Vec<i64>,
-    pub(crate) chroma: Vec<i64>,
+/// Reference samples used to derive AV2 § 7.13.6 MHCCP parameters.
+pub struct MhccpRefs {
+    /// Reference grid width.
+    pub width: usize,
+    /// Reference grid height.
+    pub height: usize,
+    /// Number of above-reference rows.
+    pub above: usize,
+    /// Number of left-reference columns.
+    pub left: usize,
+    /// Luma reference samples.
+    pub luma: Vec<i64>,
+    /// Chroma reference samples.
+    pub chroma: Vec<i64>,
+}
+
+impl MhccpRefs {
+    fn has_edge_refs(&self) -> bool {
+        self.above != 0 || self.left != 0
+    }
+
+    fn is_edge_ref_sample(&self, row: usize, col: usize) -> bool {
+        row < self.above || col < self.left
+    }
+
+    fn luma_at(&self, row: usize, col: usize) -> i64 {
+        self.luma[row * self.width + col]
+    }
+
+    fn chroma_at(&self, row: usize, col: usize) -> i64 {
+        self.chroma[row * self.width + col]
+    }
 }
 
 const UPPER_TRIANGLE: [(usize, usize); 6] = [(0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2)];
@@ -69,28 +94,22 @@ impl NormalEquations {
     }
 }
 
-pub(crate) fn derive_mhccp_params(
+/// Derives the three MHCCP model parameters for a reference sample set.
+#[must_use]
+pub fn derive_mhccp_params(
     refs: &MhccpRefs,
     mh_dir: u8,
     bit_depth: BitDepth,
 ) -> [i64; MHCCP_PARAM_COUNT] {
     let mut equations = NormalEquations::default();
-    if refs.above > 0 || refs.left > 0 {
+    if refs.has_edge_refs() {
         let square_shift = u32::from(bit_depth.bits());
         let midpoint = 1i64 << (square_shift - 1);
-        for row in 1..refs.height.saturating_sub(1) {
-            for col in 1..refs.width.saturating_sub(1) {
-                if row >= refs.above && col >= refs.left {
-                    continue;
-                }
-                let center = refs.luma[row * refs.width + col];
-                let basis = [
-                    mhccp_linear_ref(refs, row, col, mh_dir, center),
-                    round2(center.saturating_mul(center), square_shift),
-                    midpoint,
-                ];
-                let target = refs.chroma[row * refs.width + col];
-                equations.add(basis, target);
+        for (row, col) in mhccp_interior_positions(refs.width, refs.height) {
+            if refs.is_edge_ref_sample(row, col) {
+                let center = refs.luma_at(row, col);
+                let basis = mhccp_basis(refs, row, col, mh_dir, center, square_shift, midpoint);
+                equations.add(basis, refs.chroma_at(row, col));
             }
         }
     }
@@ -104,11 +123,32 @@ pub(crate) fn derive_mhccp_params(
     solve_mhccp(equations, bit_depth)
 }
 
+fn mhccp_interior_positions(width: usize, height: usize) -> impl Iterator<Item = (usize, usize)> {
+    (1..height.saturating_sub(1))
+        .flat_map(move |row| (1..width.saturating_sub(1)).map(move |col| (row, col)))
+}
+
+fn mhccp_basis(
+    refs: &MhccpRefs,
+    row: usize,
+    col: usize,
+    mh_dir: u8,
+    center: i64,
+    square_shift: u32,
+    midpoint: i64,
+) -> [i64; MHCCP_PARAM_COUNT] {
+    [
+        mhccp_linear_ref(refs, row, col, mh_dir, center),
+        round2(center.saturating_mul(center), square_shift),
+        midpoint,
+    ]
+}
+
 fn mhccp_linear_ref(refs: &MhccpRefs, row: usize, col: usize, mh_dir: u8, center: i64) -> i64 {
     match mh_dir {
         0 => center,
-        1 => refs.luma[(row - 1) * refs.width + col],
-        _ => refs.luma[row * refs.width + col - 1],
+        1 => refs.luma_at(row - 1, col),
+        _ => refs.luma_at(row, col - 1),
     }
 }
 
@@ -217,15 +257,26 @@ fn division_scale(norm_diff: i64) -> i64 {
     scale
 }
 
-pub(crate) fn mul_fixed32_adapt(a: i64, b: i64, shift: u32) -> i64 {
+/// Multiplies fixed-point values with adaptive down-shifting to avoid overflow.
+#[must_use]
+pub fn mul_fixed32_adapt(a: i64, b: i64, shift: u32) -> i64 {
     let (lhs, rhs, adjustment) = scaled_multiply_terms(a, b, shift);
-    let product = lhs.saturating_mul(rhs);
+    round_scaled_product(lhs.saturating_mul(rhs), adjustment)
+}
+
+fn round_scaled_product(product: i64, adjustment: i32) -> i64 {
     if adjustment <= 0 {
         product
-    } else if adjustment > 29 {
+    } else {
+        round_positive_scaled_product(product, adjustment as u32)
+    }
+}
+
+fn round_positive_scaled_product(product: i64, adjustment: u32) -> i64 {
+    if adjustment > 29 {
         0
     } else {
-        round2_signed(product, adjustment as u32)
+        round2_signed(product, adjustment)
     }
 }
 

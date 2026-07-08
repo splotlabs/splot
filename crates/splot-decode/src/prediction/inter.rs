@@ -396,18 +396,6 @@ fn resolve_initial_frame_cdfs(
         enable_avg_cdf,
         avg_cdf_type,
     );
-    trace_initial_frame_cdfs(
-        current_base_q_idx,
-        current_order_hint,
-        inter_ctrl.signal_primary_ref_frame,
-        inter_ctrl.primary_ref_frame,
-        inter_ctrl.disable_cross_frame_cdf_init,
-        enable_avg_cdf,
-        avg_cdf_type,
-        &inter_ctrl.ref_frame_idx,
-        reference,
-        cdf_load,
-    );
     match cdf_load {
         ResolvedCdfLoad::Default => default_cdfs(),
         ResolvedCdfLoad::OutOfRangePrimary => Err(inter_cap!(
@@ -433,52 +421,6 @@ fn resolve_initial_frame_cdfs(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn trace_initial_frame_cdfs<T: ReconSample>(
-    current_base_q_idx: u32,
-    current_order_hint: i32,
-    signal_primary_ref_frame: Option<bool>,
-    primary_ref_frame: Option<u8>,
-    disable_cross_frame_cdf_init: Option<bool>,
-    enable_avg_cdf: bool,
-    avg_cdf_type: u8,
-    ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, T>,
-    cdf_load: ResolvedCdfLoad,
-) {
-    if !crate::trace_flags::trace_flag!("SPLOT_TRACE_CDF_LIFECYCLE") {
-        return;
-    }
-    let ref_size: Vec<_> = reference
-        .ref_frame_width
-        .iter()
-        .zip(&reference.ref_frame_height)
-        .map(|(w, h)| (*w, *h))
-        .collect();
-    let ref_has_cdfs: Vec<_> = reference
-        .ref_frame_cdfs
-        .iter()
-        .map(Option::is_some)
-        .collect();
-    eprintln!(
-        "cdf lifecycle base_q={} order_hint={} signal_primary_ref_frame={:?} primary_ref_frame={:?} disable_cross_frame_cdf_init={:?} enable_avg_cdf={} avg_cdf_type={} ref_frame_idx={:?} ref_valid={:?} ref_is_inter={:?} ref_base_q_idx={:?} ref_order_hint={:?} ref_size={:?} ref_has_cdfs={:?} load={:?}",
-        current_base_q_idx,
-        current_order_hint,
-        signal_primary_ref_frame,
-        primary_ref_frame,
-        disable_cross_frame_cdf_init,
-        enable_avg_cdf,
-        avg_cdf_type,
-        ref_frame_idx,
-        reference.ref_valid,
-        reference.ref_is_inter,
-        reference.ref_base_q_idx,
-        reference.ref_order_hint,
-        ref_size,
-        ref_has_cdfs,
-        cdf_load,
-    );
-}
-
 pub(in crate::prediction::inter) fn resolve_inter_block_params<'a, T: ReconSample>(
     ref_frame_idx: &[u32],
     reference: &'a InterReferenceState<'a, T>,
@@ -702,17 +644,11 @@ impl InterIntraPrediction {
 }
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct BawpSyntax {
-    /// § 5.20.7.6 `use_bawp`.
     pub(crate) enabled: bool,
-    /// § 5.20.7.6 `explicit_bawp`.
     pub(crate) explicit: bool,
-    /// § 5.20.7.6 `explicit_bawp_scale` (`1` = positive scale).
     pub(crate) explicit_scale_positive: bool,
-    /// § 7.13.3.25 `listIndex` (the `explicit_bawp` context value).
     pub(crate) list_index: u8,
-    /// § 7.13.3.25 `firstRefDist > 4` for the explicit-scale arm.
     pub(crate) ref_dist_gt4: bool,
-    /// § 5.20.7.6 `use_bawp_chroma`.
     pub(crate) chroma: bool,
 }
 
@@ -1085,6 +1021,7 @@ use cross_frame::{ResolvedCdfLoad, order_hint_history_unwrapped, resolve_cdf_loa
 pub(crate) use find_mv_stack::TemporalMotionField;
 
 #[cfg(test)]
+#[path = "inter/test_support_tests.rs"]
 mod test_support;
 
 #[cfg(test)]

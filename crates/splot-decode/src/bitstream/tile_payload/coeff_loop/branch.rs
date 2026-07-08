@@ -13,16 +13,12 @@ use super::{
     read_nonzero_coeff_eob_from_context,
 };
 
-/// Caller-resolved facts for starting the nonzero § 5.20.7.27 coefficient path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffBlockStartInput {
-    /// Transform-block geometry for the local coefficient arrays.
     pub(crate) block: AllZeroCoeffBlockInput,
-    /// Caller-resolved facts for reading the nonzero EOB syntax.
     pub(crate) eob: NonZeroCoeffEobContextInput,
 }
 
-/// Zeroed local block state plus the decoded nonzero EOB syntax.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffBlockStart {
     eob_read: NonZeroCoeffEobSymbolRead,
@@ -30,43 +26,33 @@ pub(crate) struct NonZeroCoeffBlockStart {
 }
 
 impl NonZeroCoeffBlockStart {
-    /// Decoded nonzero EOB syntax result.
     #[must_use]
     pub(crate) const fn eob_read(&self) -> NonZeroCoeffEobSymbolRead {
         self.eob_read
     }
 
-    /// Zero-initialized local transform coefficient state.
     #[must_use]
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         &self.block
     }
 
-    /// Consumes the start state into its decoded EOB facts and local block.
     pub(crate) fn into_parts(self) -> (NonZeroCoeffEobSymbolRead, TransformCoeffBlockState) {
         (self.eob_read, self.block)
     }
 }
 
-/// Caller-selected § 5.20.7.27 coefficient EOB branch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffBlockEobBranchInput {
-    /// Decoded `all_zero == 1`.
     AllZero(AllZeroCoeffBlockInput),
-    /// Decoded `all_zero == 0`.
     NonZero(NonZeroCoeffBlockStartInput),
 }
 
-/// Result of the § 5.20.7.27 coefficient EOB branch handoff.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffBlockEobBranch {
-    /// All-zero coefficient state was applied.
     AllZero(AllZeroCoeffBlock),
-    /// Nonzero EOB syntax was read after local block state was initialized.
     NonZero(NonZeroCoeffBlockStart),
 }
 
-/// Dispatches the AV2 § 5.20.7.27 branch after caller-decoded `all_zero`.
 pub(crate) fn read_coeff_block_eob_branch(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,

@@ -13,21 +13,18 @@ use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::{CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
 use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
 
-/// Base symbol row for one ordinary non-FSC coefficient.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffBaseSymbolSource {
     BaseEob { selector: CoeffCdfSelector },
     Base { selector: CoeffCdfSelector },
 }
 
-/// Base-range read policy for one ordinary non-FSC coefficient.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffBaseRangeRead {
     Disabled,
     Enabled { selector: CoeffCdfSelector },
 }
 
-/// Read facts for one checked scan-walk entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffBaseSymbolReadInput {
     pub(crate) entry: CoeffScanEntry,
@@ -36,7 +33,6 @@ pub(crate) struct CoeffBaseSymbolReadInput {
     pub(crate) base_range: CoeffBaseRangeRead,
 }
 
-/// Decoded base/base-range symbols for one ordinary non-FSC coefficient.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffBaseSymbolRead {
     entry: CoeffScanEntry,
@@ -67,7 +63,6 @@ impl CoeffBaseSymbolRead {
     }
 }
 
-/// Error returned by the coefficient base symbol-read boundary.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffBaseSymbolReadError {
     #[error("coefficient base symbol input count {inputs} does not match scan entries {entries}")]
@@ -86,7 +81,6 @@ pub(crate) enum CoeffBaseSymbolReadError {
     SymbolRead(#[from] BlockSymbolTraceReadError),
 }
 
-/// Reads ordinary non-FSC §5.20.7.27 coefficient base symbols over a checked scan walk.
 pub(crate) fn read_nonzero_coeff_base_symbols(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -121,7 +115,6 @@ pub(crate) fn read_nonzero_coeff_base_symbols(
     Ok(reads)
 }
 
-/// Reads one ordinary non-FSC §5.20.7.27 coefficient base/base-range symbol pair.
 pub(crate) fn read_coeff_base_symbol(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

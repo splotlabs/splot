@@ -80,22 +80,14 @@ const ZERO_QUANTIZER_DELTAS: QuantizerDeltas = QuantizerDeltas {
     u_ac: 0,
     v_ac: 0,
 };
-/// AV2 § 3 `NUM_CUSTOM_QMS`: the number of built-in quantizer-matrix levels.
 const NUM_CUSTOM_QMS: usize = 15;
 thread_local! {
-    /// Active frame's § 7.14.2 per-plane quantizer deltas, installed by
-    /// [`FrameQuantizerDeltasScope`] before the general-intra block walk.
     static FRAME_QUANTIZER_DELTAS: core::cell::Cell<QuantizerDeltas> =
         const { core::cell::Cell::new(ZERO_QUANTIZER_DELTAS) };
-    /// Active frame's § 7.14.4 built-in quantization-matrix levels (installed by
-    /// [`FrameQmScope`]). General-intra reconstruction is single-threaded per frame,
-    /// so a thread-local frame context is sound.
     static FRAME_QM: core::cell::Cell<Option<QmFrameLevels>> = const { core::cell::Cell::new(None) };
-    /// Active block's segment id for § 7.14.4 `SegQMLevel[plane][segment_id]`.
     static FRAME_QM_SEGMENT_ID: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
-/// RAII scope installing the frame's resolved § 7.14.2 quantizer deltas.
 pub(crate) struct FrameQuantizerDeltasScope(QuantizerDeltas);
 
 impl FrameQuantizerDeltasScope {
@@ -110,8 +102,6 @@ impl Drop for FrameQuantizerDeltasScope {
     }
 }
 
-/// RAII scope installing the frame's built-in quantization-matrix levels, restored
-/// on drop so nothing leaks into a later frame. `None` is the flat dequant path.
 pub(crate) struct FrameQmScope(Option<QmFrameLevels>);
 
 impl FrameQmScope {
@@ -126,7 +116,6 @@ impl Drop for FrameQmScope {
     }
 }
 
-/// RAII scope installing the current block's segment id for QM dequant.
 pub(crate) struct FrameQmSegmentScope(usize);
 
 impl FrameQmSegmentScope {
@@ -153,10 +142,6 @@ fn current_quantizer_deltas() -> QuantizerDeltas {
     FRAME_QUANTIZER_DELTAS.with(core::cell::Cell::get)
 }
 
-/// § 7.14.4 built-in quantization-matrix selection for one transform block from the
-/// active [`FrameQmScope`]: `Some` when `useQm` (`using_qmatrix`,
-/// `PlaneTxType < IDTX`, `segLvl < NUM_CUSTOM_QMS`), else `None` (flat). `tw`/`th`
-/// are the `Min(32, …)` dequant dims; `useUserQm` (§ 5.13) is not modelled.
 fn resolve_block_qm(
     plane_id: PlaneId,
     plane_tx_type: usize,
@@ -387,8 +372,6 @@ pub(crate) enum TransformToolResidualPolicy {
 }
 
 impl TransformToolResidualPolicy {
-    /// `Allow` unless the sequence enables a transform tool, in which case the
-    /// caller-selected active-tool policies apply with no luma context.
     pub(crate) fn from_sequence_tools(
         sequence: &splot_core::headers::sequence::SequenceHeader,
         active_intra_ist: ActiveIntraIstResidualPolicy,
@@ -462,7 +445,6 @@ pub(crate) struct PositionedLumaCoeffBlock {
     pub(crate) x: usize,
     pub(crate) y: usize,
     pub(crate) tx_size: usize,
-    /// § 5.20.6.3 `LumaTxMiddle`; § 5.20.7.24 passes `allowCorners = 0`.
     pub(crate) middle: bool,
     pub(crate) coeffs: LumaCoeffBlock,
 }
@@ -1077,12 +1059,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         },
     };
 
-    if crate::trace_flags::trace_flag!("SPLOT_TRACE_TXB_SKIP") {
-        eprintln!(
-            "txb_skip read plane={plane} tx_size={tx_size} tx_size_ctx={tx_size_ctx} start=({start_x},{start_y}) x4={x4} y4={y4} w4={w4} h4={h4} fills={tx_fills_block} is_inter={is_inter} fsc={fsc_mode} txb_fsc={txb_skip_fsc_mode} above_or={above_level_or} left_or={left_level_or} eob_u={eob_u_nonzero} selector={selector:?} checkpoint={:?}",
-            symbols.checkpoint(),
-        );
-    }
     let all_zero = work_unit
         .cdf_mut()
         .tile_cdfs_mut()
@@ -1090,13 +1066,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         .map_err(|source| GeneralIntraResidualError::AllZeroRead { source })?
         .get()
         != 0;
-    if crate::trace_flags::trace_flag!("SPLOT_TRACE_TXB_SKIP") {
-        eprintln!(
-            "txb_skip done plane={plane} start=({start_x},{start_y}) all_zero={all_zero} checkpoint={:?}",
-            symbols.checkpoint(),
-        );
-    }
-
     if all_zero {
         context
             .update_after_coeffs(CoeffContextUpdate {
@@ -2331,10 +2300,8 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     Ok(out)
 }
 
-/// Maximum adjusted coefficient count (§ 7.15.4 caps each adjusted side at 32).
 const MAX_ADJUSTED_COEFFS: usize = 32 * 32;
 
-/// Maximum original transform-block sample count (a 64x64 transform).
 const MAX_ORIGINAL_SAMPLES: usize = 64 * 64;
 
 struct ResidualScratch {

@@ -8,9 +8,6 @@ use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-/// Records § 7.17 deblock geometry for one inter block: per decoded transform
-/// when residual was read, or the § 5.20.6.2 `Max_Tx_Size_Rect` tiling for a
-/// skipped block (which reads no transform symbols).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_inter_deblock_geometry(
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,

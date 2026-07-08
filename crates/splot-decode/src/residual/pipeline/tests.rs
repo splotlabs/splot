@@ -5,6 +5,15 @@ use super::*;
 use crate::tile::block_context::{BlockRect, ChromaSampling, TxShape};
 use splot_recon::{BitDepth, DpcmDirection};
 
+impl GeneralIntraResidualPlan {
+    fn plane_plan(&self, plane_id: PlaneId) -> Option<ResidualPlanePlan> {
+        self.planes
+            .iter()
+            .find(|plane| plane.plane_id == plane_id)
+            .copied()
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Case {
     label: &'static str,

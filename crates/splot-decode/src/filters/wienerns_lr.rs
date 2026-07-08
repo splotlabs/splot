@@ -16,7 +16,6 @@ pub(crate) mod tx_records;
 
 pub(crate) use self::recon::chroma_transform_deblock_block;
 
-/// Wraps a reconstructed workspace in the shared § 7.2 final-filter sink.
 pub(crate) fn recon_final_filter_sink<T: splot_recon::ReconSample>(
     workspace: splot_recon::CurrentFrameWorkspace<T>,
     luma_width: usize,
@@ -108,8 +107,6 @@ fn wienerns_lr_tx_skip_grid_index(row: usize, col: usize, cols: usize) -> ReconR
         })
 }
 
-/// Derives the § 5.20.6.1 `LrTxSkip[row][col] = skip_flag || (eob == 0)` grid used
-/// by the § 7.20.4 PC-Wiener loop-restoration classifier.
 pub(crate) fn derive_wienerns_lr_tx_skip_grid_retention(
     rows: usize,
     cols: usize,
