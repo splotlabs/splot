@@ -276,9 +276,9 @@ spec_sections = ["5.20.5.5", "7.13.2.1"]
 id = "intra.paeth"
 name = "PAETH intra prediction"
 category = "intra"
-fixtureable = false
+fixtureable = true
 spec_sections = ["7.13.2.2"]
-notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+notes = "Distinct AVM lossless Paeth fixtures cover top-left normal-block, SDP/chroma-part, and first-row left-edge normal-block chroma subsets."
 
 [[capability]]
 id = "intra.per_unit_prediction"

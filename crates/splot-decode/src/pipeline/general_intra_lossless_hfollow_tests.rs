@@ -18,6 +18,9 @@ const LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
 const LOSSLESS_NONDC_CHROMA_V_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-v-leftedge-128x64.ivf"
 );
+const LOSSLESS_NONDC_CHROMA_PAETH_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-paeth-leftedge-128x64.ivf"
+);
 const LOSSLESS_NONDC_CHROMA_HFOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-hfollow-leftedge-128x64.ivf"
 );
@@ -93,6 +96,18 @@ fn lossless_nondc_chroma_v_leftedge_frame_decodes_to_oracle() {
     assert_eq!(
         DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
         "026ab3ce735e8d3c0a4b413ac6ab4c970631908887c1e7b7395cdf4464d72ea5"
+    );
+}
+
+#[test]
+fn lossless_nondc_chroma_paeth_leftedge_frame_decodes_to_oracle() {
+    assert_lossless_explicit_chroma_oracle(
+        LOSSLESS_NONDC_CHROMA_PAETH_LEFTEDGE_FIXTURE,
+        122,
+        (128, 64),
+        (64, 32),
+        "lossless Paeth left-edge",
+        "b064c9c6fbeaac7b04e7c5cc4430f1af7a968488b9f2508127e82024f973fb96",
     );
 }
 
