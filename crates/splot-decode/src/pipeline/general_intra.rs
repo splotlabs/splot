@@ -808,6 +808,7 @@ pub(super) fn lossless_chroma_part_prediction_verified(
                 SupportedChromaMode::Vertical
                     | SupportedChromaMode::VerticalFollow
                     | SupportedChromaMode::Horizontal
+                    | SupportedChromaMode::HorizontalFollow
                     | SupportedChromaMode::D45
                     | SupportedChromaMode::D113
                     | SupportedChromaMode::D135

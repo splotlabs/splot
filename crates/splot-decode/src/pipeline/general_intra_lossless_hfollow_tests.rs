@@ -42,6 +42,9 @@ const LOSSLESS_SDP_NONDC_CHROMA_PAETH_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
 const LOSSLESS_NONDC_CHROMA_HFOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-hfollow-leftedge-128x64.ivf"
 );
+const LOSSLESS_SDP_NONDC_CHROMA_HFOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-hfollow-leftedge-128x64.ivf"
+);
 const LOSSLESS_SDP_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d45-leftedge-128x64.ivf"
 );
@@ -286,12 +289,23 @@ fn lossless_nondc_chroma_paeth_leftedge_frame_decodes_to_oracle() {
 
 #[test]
 fn lossless_nondc_chroma_hfollow_leftedge_frame_decodes_to_oracle() {
-    assert_lossless_explicit_chroma_oracle(
-        LOSSLESS_NONDC_CHROMA_HFOLLOW_LEFTEDGE_FIXTURE,
-        158,
-        (128, 64),
-        (64, 32),
-        "lossless H-follow left-edge",
-        "879dfd582fb00d3f068b5ac2f3eaf3a4c28449c8c763c18aa8645a5fde20448b",
-    );
+    for (fixture, label) in [
+        (
+            LOSSLESS_NONDC_CHROMA_HFOLLOW_LEFTEDGE_FIXTURE,
+            "lossless H-follow left-edge",
+        ),
+        (
+            LOSSLESS_SDP_NONDC_CHROMA_HFOLLOW_LEFTEDGE_FIXTURE,
+            "lossless SDP H-follow left-edge",
+        ),
+    ] {
+        assert_lossless_explicit_chroma_oracle(
+            fixture,
+            158,
+            (128, 64),
+            (64, 32),
+            label,
+            "879dfd582fb00d3f068b5ac2f3eaf3a4c28449c8c763c18aa8645a5fde20448b",
+        );
+    }
 }
