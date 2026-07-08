@@ -21,6 +21,9 @@ const LOSSLESS_NONDC_CHROMA_V_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
 const LOSSLESS_NONDC_CHROMA_PAETH_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-paeth-leftedge-128x64.ivf"
 );
+const LOSSLESS_NONDC_CHROMA_H_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-h-leftedge-128x64.ivf"
+);
 const LOSSLESS_NONDC_CHROMA_HFOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-hfollow-leftedge-128x64.ivf"
 );
@@ -96,6 +99,81 @@ fn lossless_nondc_chroma_v_leftedge_frame_decodes_to_oracle() {
     assert_eq!(
         DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
         "026ab3ce735e8d3c0a4b413ac6ab4c970631908887c1e7b7395cdf4464d72ea5"
+    );
+}
+
+#[test]
+fn lossless_nondc_chroma_h_leftedge_frame_decodes_to_oracle() {
+    assert_eq!(LOSSLESS_NONDC_CHROMA_H_LEFTEDGE_FIXTURE.len(), 238);
+    let options = DecodeOptions::default();
+    let context =
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    let plan = context
+        .plan_bytes(LOSSLESS_NONDC_CHROMA_H_LEFTEDGE_FIXTURE, options)
+        .expect("plan");
+    let decoded = context
+        .pool()
+        .install(|| {
+            decode_frame_from_plan(LOSSLESS_NONDC_CHROMA_H_LEFTEDGE_FIXTURE, &options, &plan)
+        })
+        .expect("decode");
+    let PipelineDecodedFrame::Eight(frame) = decoded.frame else {
+        panic!("fixture decoded as 10-bit");
+    };
+
+    assert_eq!(frame.bit_depth(), BitDepth::Eight);
+    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
+    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
+    assert_eq!(
+        frame.u().unwrap().visible_size(),
+        PlaneSize::new(64, 32).unwrap()
+    );
+    assert_eq!(
+        frame.v().unwrap().visible_size(),
+        PlaneSize::new(64, 32).unwrap()
+    );
+    assert!(
+        frame
+            .y()
+            .samples()
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 4
+    );
+    assert!(
+        frame
+            .u()
+            .unwrap()
+            .samples()
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 4
+    );
+    assert!(
+        frame
+            .v()
+            .unwrap()
+            .samples()
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 4
+    );
+    assert_eq!(frame.y().samples()[0], 128);
+    assert_eq!(frame.y().samples()[64], 72);
+    assert_eq!(frame.y().samples()[127], 184);
+    assert_eq!(frame.u().unwrap().samples()[0], 128);
+    assert_eq!(frame.u().unwrap().samples()[63], 72);
+    assert_eq!(frame.v().unwrap().samples()[0], 128);
+    assert_eq!(frame.v().unwrap().samples()[63], 184);
+    assert_eq!(
+        DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
+        "a5e8e56e191e9558ed8591013fa884fb573c320adea6aa6db475680a69167740"
     );
 }
 
