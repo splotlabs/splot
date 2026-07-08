@@ -437,6 +437,7 @@ pub(crate) struct LumaCoeffBlock {
     pub(crate) quant: Vec<i32>,
     pub(crate) intra_ist: Option<IntraIstSyntax>,
     pub(crate) plane_tx_type: usize,
+    pub(crate) use_tcq: bool,
     pub(crate) lossless: bool,
 }
 
@@ -1084,6 +1085,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             quant: Vec::new(),
             intra_ist: None,
             plane_tx_type: DCT_DCT,
+            use_tcq: false,
             lossless: frame_facts
                 .lossless_for_segment(current_segment_id())
                 .unwrap_or(false),
@@ -1124,6 +1126,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     let lossless = frame_facts.lossless_for_segment(segment_id).ok_or(
         unsupported_transform_tool_residual_error("unsupported_dctonly_residual_segment_id"),
     )?;
+    let use_tcq = coefficient_block_use_tcq(frame_facts, plane, DCT_DCT, lossless, false);
     let input = CoeffUseFscFrameFactsInput::NonZero(CoeffUseFscFrameFactsNonZeroInput {
         frame: frame_facts,
         block: CoeffUseFscFrameBlockFacts {
@@ -1152,6 +1155,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         quant: pass.into_block().into_quant(),
         intra_ist: None,
         plane_tx_type: DCT_DCT,
+        use_tcq,
         lossless,
     })
 }
@@ -1219,7 +1223,11 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             active_chroma_policy,
         },
     )?;
-    let base_config = staged_transform_tool_lossless_base_config(
+    let use_fsc = frame_facts.enable_fsc()
+        && metadata.luma_tx_type == IDTX
+        && geometry.plane == 0
+        && (fsc_mode || is_inter);
+    let mut base_config = staged_transform_tool_lossless_base_config(
         frame_facts,
         geometry.plane,
         uv_mode,
@@ -1228,12 +1236,11 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         lossless,
         metadata,
     );
+    if use_fsc {
+        base_config.use_tcq = false;
+    }
     let plane_tx_type =
         staged_transform_tool_plane_tx_type(geometry, is_inter, lossless, base_config)?;
-    let use_fsc = frame_facts.enable_fsc()
-        && metadata.luma_tx_type == IDTX
-        && geometry.plane == 0
-        && (fsc_mode || is_inter);
     if use_fsc {
         let pass = apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
             context,
@@ -1254,6 +1261,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             quant: pass.block().quant().to_vec(),
             intra_ist: metadata.intra_ist,
             plane_tx_type,
+            use_tcq: false,
             lossless,
         });
     }
@@ -1277,6 +1285,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         quant: pass.into_block().into_quant(),
         intra_ist: metadata.intra_ist,
         plane_tx_type,
+        use_tcq: base_config.use_tcq,
         lossless,
     })
 }
@@ -1310,6 +1319,20 @@ fn staged_transform_tool_lossless_base_config(
         parity_hiding,
         use_tcq,
     }
+}
+
+fn coefficient_block_use_tcq(
+    frame_facts: TileCoeffFrameFacts,
+    plane: usize,
+    plane_tx_type: usize,
+    lossless: bool,
+    use_fsc: bool,
+) -> bool {
+    frame_facts.allow_tcq()
+        && plane == 0
+        && !lossless
+        && CoeffTransformClass::from_plane_tx_type(plane_tx_type) == CoeffTransformClass::TwoD
+        && !use_fsc
 }
 
 fn staged_transform_tool_plane_tx_type(
@@ -2108,7 +2131,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction<T: Reco
         log2_width,
         log2_height,
         block.plane_tx_type,
-        use_tcq,
+        use_tcq && block.use_tcq,
         false,
         block.lossless,
         None,
@@ -2167,7 +2190,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt
         log2_width,
         log2_height,
         block.plane_tx_type,
-        use_tcq,
+        use_tcq && block.use_tcq,
         use_ddt,
         block.lossless,
         None,
@@ -2197,7 +2220,7 @@ pub(crate) fn reconstruct_general_intra_luma_block_rect_with_prediction_and_ist<
         log2_width,
         log2_height,
         block.plane_tx_type,
-        use_tcq,
+        use_tcq && block.use_tcq,
         false,
         block.lossless,
         secondary.as_ref(),

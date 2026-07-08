@@ -49,6 +49,7 @@ fn all_zero_luma_block() -> LumaCoeffBlock {
         quant: Vec::new(),
         intra_ist: None,
         plane_tx_type: 0,
+        use_tcq: false,
         lossless: false,
     }
 }

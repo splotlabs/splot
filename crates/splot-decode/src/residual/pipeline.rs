@@ -1994,6 +1994,7 @@ fn summarize_luma_partition(
             .find(|block| !block.coeffs.all_zero)
             .or_else(|| blocks.first())
             .map_or(0, |block| block.coeffs.plane_tx_type),
+        use_tcq: blocks.iter().any(|block| block.coeffs.use_tcq),
         lossless: blocks.iter().any(|block| block.coeffs.lossless),
     }
 }
