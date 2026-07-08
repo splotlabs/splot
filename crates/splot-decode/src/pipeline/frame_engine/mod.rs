@@ -17,7 +17,6 @@
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
-use splot_core::ivf::IvfHeader;
 use splot_recon::{BitDepth, DecodedFrame, ReconSample};
 
 use crate::bitstream::tile_payload::FrameCdfSubset;
@@ -48,7 +47,6 @@ pub(crate) fn decode_frame<T: ReconSample>(
     core: FrameHeaderCore,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
-    header: IvfHeader,
     setup: &FrameSetup<'_, T>,
     bit_depth: BitDepth,
 ) -> Result<FrameDecodeOutput<T>> {
@@ -61,7 +59,6 @@ pub(crate) fn decode_frame<T: ReconSample>(
             core,
             sequence,
             options,
-            header,
             reference,
             bit_depth,
         ),

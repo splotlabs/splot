@@ -31,7 +31,16 @@ pub(crate) fn encode_y4m_stream_from_plan(
         bytes,
         options,
         plan,
-        |header| preflight_y4m_minimal_header(header, limits),
+        |header| {
+            let Some(header) = header else {
+                return Err(crate::pipeline::unsupported(
+                    "annex_b_y4m_timebase",
+                    None,
+                    "Y4M output requires IVF timebase metadata",
+                ));
+            };
+            preflight_y4m_minimal_header(header, limits)
+        },
     )?;
     let first = outputs.first().ok_or_else(|| {
         DecodeOutputError::invalid_frame_set(

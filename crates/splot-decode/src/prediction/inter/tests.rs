@@ -220,7 +220,7 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
         key_candidate,
         key_envelope,
         &sequence,
-        header,
+        crate::pipeline::PipelineFrameRate::from_ivf_header(header),
         None,
     )?;
     let key_core = crate::pipeline::parse_frame_core(key_envelope, &sequence)?;

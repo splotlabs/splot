@@ -9,7 +9,6 @@ use splot_core::headers::frame::{
     parse_frame_header_core,
 };
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
-use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
@@ -99,7 +98,6 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     core: FrameHeaderCore,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
-    _header: IvfHeader,
     reference: &InterReferenceState<'_, T>,
     bit_depth: BitDepth,
 ) -> Result<InterDecodeOutput<T>> {
