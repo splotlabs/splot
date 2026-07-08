@@ -151,6 +151,11 @@ fn luma_modes_with_parts(
     })
 }
 
+fn with_active_fsc(mut modes: GeneralIntraBlockModes) -> GeneralIntraBlockModes {
+    modes.fsc_mode = 1;
+    modes
+}
+
 #[test]
 fn luma_tx_partition_context_uses_current_block_lossless_flag() {
     let block_size_index = 6;
@@ -227,6 +232,52 @@ fn lossless_prediction_guard_admits_top_left_cardinal_luma() {
 #[test]
 fn lossless_prediction_guard_admits_top_left_d135_luma() {
     assert_lossless_directional_luma_admitted(IntraYMode::D135_PRED_FOR_TEST);
+}
+
+#[test]
+fn lossless_prediction_guard_precedes_active_fsc_frontier() {
+    let modes = with_active_fsc(luma_modes(IntraYMode::D45_PRED_FOR_TEST));
+    let error = ensure_lossless_verified_prediction_subset(
+        true,
+        false,
+        &modes,
+        ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
+        FULL_SB_N4_LUMA,
+        splot_core::span::ByteOffset::new(11),
+    )
+    .and_then(|()| {
+        ensure_lossless_fsc_frontier(true, &modes, splot_core::span::ByteOffset::new(11))
+    })
+    .expect_err("unverified lossless luma prediction must fail before active FSC");
+
+    let reason = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
+        _ => "",
+    };
+    assert_eq!(reason, "general_intra_lossless_other_nondc_luma_unverified");
+}
+
+#[test]
+fn lossless_active_fsc_frontier_still_rejects_verified_prediction_shapes() {
+    let modes = with_active_fsc(luma_modes(IntraYMode::DC_PRED));
+    let error = ensure_lossless_verified_prediction_subset(
+        true,
+        false,
+        &modes,
+        ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight),
+        FULL_SB_N4_LUMA,
+        splot_core::span::ByteOffset::new(12),
+    )
+    .and_then(|()| {
+        ensure_lossless_fsc_frontier(true, &modes, splot_core::span::ByteOffset::new(12))
+    })
+    .expect_err("active FSC must fail closed until lossless FSC residuals are verified");
+
+    let reason = match error {
+        DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
+        _ => "",
+    };
+    assert_eq!(reason, "general_intra_lossless_fsc_unverified");
 }
 
 #[test]
