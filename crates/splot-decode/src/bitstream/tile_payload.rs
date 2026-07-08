@@ -68,6 +68,7 @@ pub(crate) use general_intra_residual::{
     LumaTransformPartitionContext, LumaTransformTypeContext, PositionedLumaCoeffBlock,
     TransformToolResidualPolicy, current_frame_qm_segment_id,
     decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
+    reconstruct_general_intra_chroma_cctx_pair_with_predictions,
     reconstruct_general_intra_coeff_block_rect_with_prediction,
     reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt,
     reconstruct_general_intra_coeff_block_with_prediction,

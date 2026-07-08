@@ -25,6 +25,7 @@ fn all_zero_luma_block() -> LumaCoeffBlock {
         eob: 0,
         quant: Vec::new(),
         intra_ist: None,
+        cctx_type: None,
         plane_tx_type: 0,
         use_tcq: false,
         lossless: false,
@@ -1259,6 +1260,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
         eob: 10,
         quant,
         intra_ist: None,
+        cctx_type: None,
         plane_tx_type: 3, // ADST_ADST
         use_tcq: true,
         lossless: false,
