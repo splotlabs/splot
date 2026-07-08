@@ -3806,6 +3806,58 @@ left = "avm-lossless-sdp-nondc-chroma-h-intra-64x64-raw-md5"
 right = "avm-repeat-lossless-sdp-nondc-chroma-h-intra-64x64-raw-md5"
 
 [[evidence]]
+id = "lref-avm-syn-lossless-sdp-nondc-chroma-v-intra-64x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 4:2:0 64x64 lossless intra IVF fixture whose SDP/chroma-part chroma uses explicit non-DPCM V_PRED while luma stays DC. The vertical-stripe chroma source carries nonzero lossless residual coefficients; splot reproduces the raw SHA-256 value through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-08"
+
+[[evidence.fixture]]
+id = "sdp-v-pred-chroma-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-v-intra-64x64.ivf"
+sha256 = "8284e26a460d5dabc898fa6f4d183f8ca890273366df3f8aca34920364edff5e"
+size_bytes = 98
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 64x64 8-bit 4:2:0 Y4M input with flat Y=128 and row-invariant chroma stripes: U=80 when (x/8)%2==0, otherwise U=176, and V=255-U. Source Y4M SHA-256 was ae963d2b6fe7684a34562a1de2f25ba2ca8e24135f3911bee68fba28e58734a7. Encoded with AVM lossless mode, SDP enabled, 64x64 square partitions, Paeth and smooth intra disabled, and broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, CCTX, palette, IntraBC, FSC, intra-DIP, IBP, MRL, intra edge filtering, rectangular/extended/4-way partitions, non-default intra TX, angle delta, parity hiding, TCQ, and trellis quantization. splot pre-fix tracing showed the SDP/chroma-part path with y_mode=DC_PRED, use_dpcm_uv=0, uv_mode_base=5, uv_mode_idx=None, uv_mode=5, coeff_uv_mode=1, and byte-offset 64 fail-closed at general_intra_lossless_nondc_chroma_part_unverified. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec-lossless-sdp-nondc-chroma-v"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3 from the local fixture build; checkout contained untracked build directories only."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:sdp-v-pred-chroma-input}."
+output_digest_id = "avm-lossless-sdp-nondc-chroma-v-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "8e186d6d0d5787ba44d42ba7706b2183"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 f9e6cee7db3659e1c280789df8307ff8168a8b4ff043b64d489fa50816ebdba4 is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat-lossless-sdp-nondc-chroma-v"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3 decode run from the same fixture build; checkout contained untracked build directories only."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:sdp-v-pred-chroma-input}."
+output_digest_id = "avm-repeat-lossless-sdp-nondc-chroma-v-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "8e186d6d0d5787ba44d42ba7706b2183"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-sdp-nondc-chroma-v-intra-64x64-raw-md5"
+right = "avm-repeat-lossless-sdp-nondc-chroma-v-intra-64x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-syn-lossless-sdp-nondc-chroma-d45-intra-64x64"
 feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
 decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
