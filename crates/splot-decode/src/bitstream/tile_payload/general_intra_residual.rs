@@ -58,6 +58,7 @@ const TX_64X64: usize = 4;
 const TX_8X8: usize = 1;
 const TX_16X16: usize = 2;
 const TX_32X32: usize = 3;
+const TX_8X4: usize = 6;
 const TX_8X16: usize = 7;
 const IST_4X4_HEIGHT: usize = 8;
 const IST_8X8_HEIGHT_RED: usize = 20;
@@ -1354,6 +1355,9 @@ fn staged_transform_tool_plane_tx_type(
     base_config: CoeffOrdinaryBranchLosslessBaseConfig,
 ) -> Result<usize, GeneralIntraResidualError> {
     if lossless {
+        if geometry.plane == 0 && base_config.luma_tx_type == IDTX && !is_inter {
+            return Ok(IDTX);
+        }
         return Ok(DCT_DCT);
     }
     let mode_to_txfm = CoeffOrdinaryBranchModeToTxfmBaseConfig {

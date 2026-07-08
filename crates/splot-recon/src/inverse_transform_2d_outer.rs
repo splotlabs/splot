@@ -70,14 +70,14 @@ pub enum DpcmDirection {
 /// size is `1 << log2`. `row_type` / `col_type` / `row_shift` / `col_shift` are
 /// the caller-resolved § 7.15.4.1 selections (the caller derives `rowType` /
 /// `colType` via `get_transform_1d_type`, out of scope here). When `lossless`
-/// the block must be 4x4 (`log2_width == log2_height == 2`).
+/// without IDTX the Walsh-Hadamard core requires a 4x4 block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InverseTransform2dOuter {
     /// Original (unadjusted) transform width base-2 logarithm (`log2W`), 2..=6.
     pub log2_width: u32,
     /// Original (unadjusted) transform height base-2 logarithm (`log2H`), 2..=6.
     pub log2_height: u32,
-    /// Whether the block is lossless (forces the Walsh-Hadamard transform path).
+    /// Whether the block is lossless.
     pub lossless: bool,
     /// Whether `PlaneTxType` is `IDTX` (selects the lossless bit-shift shortcut).
     pub plane_tx_type_is_idtx: bool,
@@ -122,8 +122,9 @@ impl InverseTransform2dOuter {
     /// sample sizes `w = 1 << Min(log2_width, 5)` and `h = 1 << Min(log2_height,
     /// 5)`, exactly as § 7.15.4.1 sets `rowType = get_transform_1d_type(0, w)` and
     /// `colType = get_transform_1d_type(1, h)`. (When `lossless`, the apply step
-    /// takes the Walsh-Hadamard path and ignores `row_type` / `col_type`; they are
-    /// still resolved here for a uniform, total constructor.)
+    /// takes either the IDTX shortcut or Walsh-Hadamard path and ignores
+    /// `row_type` / `col_type`; they are still resolved here for a uniform, total
+    /// constructor.)
     ///
     /// This is a `const fn` so a fixed transform shape resolves at compile time.
     ///
@@ -217,9 +218,9 @@ const _RESOLVE_CONST_EVAL_CHECK: () = assert!(matches!(
 ///
 /// # Errors
 /// Returns [`ReconError::InvalidInverseTransform2dShape`] if `log2_width` /
-/// `log2_height` are not each in `2..=6` (or not both `2` when lossless), and
-/// [`ReconError::InverseTransform2dOuterBufferMismatch`] if `dequant` is not the
-/// adjusted `adjW * adjH` or `residual` is not the original `w * h`.
+/// `log2_height` are not each in `2..=6` (or not both `2` for lossless non-IDTX),
+/// and [`ReconError::InverseTransform2dOuterBufferMismatch`] if `dequant` is not
+/// the adjusted `adjW * adjH` or `residual` is not the original `w * h`.
 pub fn inverse_transform_2d_outer(
     params: &InverseTransform2dOuter,
     dequant: &[i32],
@@ -228,7 +229,9 @@ pub fn inverse_transform_2d_outer(
     let (log2_w, log2_h) = (params.log2_width, params.log2_height);
     if !(MIN_LOG2_DIM..=MAX_LOG2_DIM).contains(&log2_w)
         || !(MIN_LOG2_DIM..=MAX_LOG2_DIM).contains(&log2_h)
-        || (params.lossless && (log2_w != MIN_LOG2_DIM || log2_h != MIN_LOG2_DIM))
+        || (params.lossless
+            && !params.plane_tx_type_is_idtx
+            && (log2_w != MIN_LOG2_DIM || log2_h != MIN_LOG2_DIM))
     {
         return Err(ReconError::InvalidInverseTransform2dShape {
             log2_w,
@@ -393,6 +396,27 @@ mod tests {
         assert_eq!(residual[0], 8);
         assert_eq!(residual[7], -4);
         assert_eq!(residual[15], 1);
+    }
+
+    #[test]
+    fn lossless_idtx_shortcut_admits_rectangular_transform_sizes() {
+        let mut dequant = [0i32; 32];
+        dequant[0] = 64;
+        dequant[7] = -32;
+        dequant[31] = 15;
+        let p = params(3, 2, true, true, dct(), dct(), 0, 0, None);
+
+        let mut residual = [0i32; 32];
+        inverse_transform_2d_outer(&p, &dequant, &mut residual).unwrap();
+
+        let mut expected = [0i32; 32];
+        for (e, &d) in expected.iter_mut().zip(dequant.iter()) {
+            *e = d >> 3;
+        }
+        assert_eq!(residual, expected);
+        assert_eq!(residual[0], 8);
+        assert_eq!(residual[7], -4);
+        assert_eq!(residual[31], 1);
     }
 
     #[test]
@@ -720,11 +744,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_4x4_lossless() {
+    fn rejects_non_4x4_lossless_walsh_hadamard() {
         let mut residual = [0i32; 32];
         assert!(matches!(
             inverse_transform_2d_outer(
-                &params(3, 2, true, true, dct(), dct(), 0, 0, None),
+                &params(3, 2, true, false, dct(), dct(), 0, 0, None),
                 &[0i32; 32],
                 &mut residual
             ),
