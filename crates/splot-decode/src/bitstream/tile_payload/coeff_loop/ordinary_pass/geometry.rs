@@ -535,11 +535,6 @@ fn apply_coeff_ordinary_branch_from_lossless_with_tables(
             )
         }
         CoeffOrdinaryBranchLosslessInput::NonZero(input) if input.lossless => {
-            if input.is_inter {
-                return Err(CoeffOrdinaryBranchError::UnsupportedLosslessSubset {
-                    reason: "inter",
-                });
-            }
             apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
                 state,
                 cdfs,
@@ -590,9 +585,6 @@ fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless_with_tables(
         lossless,
     } = input;
     let base_config = if lossless {
-        if is_inter {
-            return Err(CoeffOrdinaryBranchError::UnsupportedLosslessSubset { reason: "inter" });
-        }
         base_config.lossless_tx_size_base_config()
     } else {
         let mode_to_txfm_base_config =

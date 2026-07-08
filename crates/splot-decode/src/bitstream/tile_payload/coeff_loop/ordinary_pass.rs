@@ -326,8 +326,6 @@ pub(crate) enum CoeffOrdinaryBranchError {
     InvalidScanShape { width: usize, height: usize },
     #[error("ordinary coefficient branch Mode_To_Txfm handoff does not support {reason}")]
     UnsupportedModeToTxfmSubset { reason: &'static str },
-    #[error("ordinary coefficient branch lossless handoff does not support {reason}")]
-    UnsupportedLosslessSubset { reason: &'static str },
     #[error("ordinary coefficient branch invalid UVMode {uv_mode} for Mode_To_Txfm")]
     InvalidUvMode { uv_mode: usize },
     #[error("ordinary coefficient branch invalid intra transform set {tx_set}")]

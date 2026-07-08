@@ -107,11 +107,20 @@ fn explicit_input(
     plane_tx_type: usize,
     lossless: bool,
 ) -> CoeffOrdinaryBranchTxSizeDimensionsInput {
+    explicit_input_with_inter(tx_size, plane_tx_type, lossless, false)
+}
+
+fn explicit_input_with_inter(
+    tx_size: usize,
+    plane_tx_type: usize,
+    lossless: bool,
+    is_inter: bool,
+) -> CoeffOrdinaryBranchTxSizeDimensionsInput {
     CoeffOrdinaryBranchTxSizeDimensionsInput::NonZero(
         CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput {
             geometry: tx_size_geometry(tx_size),
             coeff_cdf_q_ctx: 0,
-            is_inter: false,
+            is_inter,
             base_config: explicit_base_config(plane_tx_type),
             lossless,
         },
@@ -204,13 +213,21 @@ fn run_lossless(payload: &[u8], input: CoeffOrdinaryBranchLosslessInput) -> Ordi
     })
 }
 
-fn find_payload_for_explicit(tx_size: usize, plane_tx_type: usize, lossless: bool) -> [u8; 12] {
+fn find_payload_for_explicit(
+    tx_size: usize,
+    plane_tx_type: usize,
+    lossless: bool,
+    is_inter: bool,
+) -> [u8; 12] {
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
             for suffix in PAYLOAD_SUFFIXES {
                 let payload = payload_from(first, second, suffix);
                 let result = std::panic::catch_unwind(|| {
-                    run_explicit(&payload, explicit_input(tx_size, plane_tx_type, lossless));
+                    run_explicit(
+                        &payload,
+                        explicit_input_with_inter(tx_size, plane_tx_type, lossless, is_inter),
+                    );
                 });
                 if result.is_ok() {
                     return payload;
@@ -222,7 +239,7 @@ fn find_payload_for_explicit(tx_size: usize, plane_tx_type: usize, lossless: boo
 }
 
 fn assert_lossless_matches_dct_dct(input: CoeffOrdinaryBranchLosslessInput) {
-    let payload = find_payload_for_explicit(TX_8X8, DCT_DCT, true);
+    let payload = find_payload_for_explicit(TX_8X8, DCT_DCT, true, false);
     assert_eq!(
         run_lossless(&payload, input),
         run_explicit(&payload, explicit_input(TX_8X8, DCT_DCT, true))
@@ -253,7 +270,7 @@ fn coefficient_ordinary_branch_lossless_disables_non_lossless_entropy_flags() {
 
 #[test]
 fn coefficient_ordinary_branch_lossless_delegates_non_lossless_to_tx_set() {
-    let payload = find_payload_for_explicit(TX_8X8, ADST_ADST, false);
+    let payload = find_payload_for_explicit(TX_8X8, ADST_ADST, false, false);
 
     let explicit = run_tx_set(&payload, tx_set_input(TX_8X8, UV_SMOOTH_PRED, 0, false));
     let derived = run_lossless(
@@ -308,13 +325,16 @@ fn coefficient_ordinary_branch_lossless_rejects_invalid_tx_size_atomically() {
 }
 
 #[test]
-fn coefficient_ordinary_branch_lossless_rejects_inter_atomically() {
-    assert_lossless_error_preserves_state(lossless_inter_input(TX_8X8), |err| {
-        assert!(matches!(
-            err,
-            CoeffOrdinaryBranchError::UnsupportedLosslessSubset { reason: "inter" }
-        ));
-    });
+fn coefficient_ordinary_branch_lossless_inter_selects_dct_dct() {
+    let payload = find_payload_for_explicit(TX_8X8, DCT_DCT, true, true);
+
+    assert_eq!(
+        run_lossless(&payload, lossless_inter_input(TX_8X8)),
+        run_explicit(
+            &payload,
+            explicit_input_with_inter(TX_8X8, DCT_DCT, true, true)
+        )
+    );
 }
 
 #[test]
