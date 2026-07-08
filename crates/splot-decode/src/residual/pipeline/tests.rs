@@ -256,6 +256,45 @@ fn non_lossless_chroma_uses_partition_chroma_ref() {
 }
 
 #[test]
+fn non_lossless_yuv444_chroma_follows_each_residual_chunk() {
+    let block = BlockRect::new(0, 0, 32, 16);
+    let ctx = ctx_with_chroma(block, BitDepth::Eight, ChromaSampling::Yuv444);
+    let plan = GeneralIntraResidualPlan::rect(
+        ctx,
+        RectLumaPlan::Dc { use_tcq: true },
+        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
+        false,
+        false,
+    )
+    .expect("non-lossless yuv444 rect plan");
+
+    let order: Vec<_> = plan
+        .planes
+        .iter()
+        .map(|plane| {
+            (
+                plane.plane_id,
+                plane.x,
+                plane.y,
+                plane.tx.width4(),
+                plane.tx.height4(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        order,
+        [
+            (PlaneId::Y, 0, 0, 16, 16),
+            (PlaneId::U, 0, 0, 16, 16),
+            (PlaneId::V, 0, 0, 16, 16),
+            (PlaneId::Y, 64, 0, 16, 16),
+            (PlaneId::U, 64, 0, 16, 16),
+            (PlaneId::V, 64, 0, 16, 16),
+        ]
+    );
+}
+
+#[test]
 fn lossless_large_chroma_follows_each_residual_chunk() {
     let block = BlockRect::new(0, 0, 32, 16);
     let ctx = ctx(block, BitDepth::Eight);
@@ -542,8 +581,12 @@ fn assert_case(case: Case) {
 }
 
 fn ctx(block: BlockRect, bit_depth: BitDepth) -> BlockCtx {
+    ctx_with_chroma(block, bit_depth, ChromaSampling::Yuv420)
+}
+
+fn ctx_with_chroma(block: BlockRect, bit_depth: BitDepth, chroma: ChromaSampling) -> BlockCtx {
     let tx = TxShape::from_luma_4x4(block.width4(), block.height4()).expect("test tx shape");
-    BlockCtx::new(block, tx, 32, 32, bit_depth, ChromaSampling::Yuv420)
+    BlockCtx::new(block, tx, 32, 32, bit_depth, chroma)
 }
 
 fn empty_luma_coeffs() -> crate::bitstream::tile_payload::LumaCoeffBlock {

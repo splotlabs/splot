@@ -84,6 +84,35 @@ fn wide_literals_decode_back_across_public_domain() {
 }
 
 #[test]
+fn wide_unary_values_decode_back_across_public_domain() {
+    for (value, max_bits) in [
+        (0, 0),
+        (0, 21),
+        (7, 21),
+        (8, 21),
+        (20, 21),
+        (21, 21),
+        (31, 32),
+        (32, 32),
+    ] {
+        let mut encoder = SymbolEncoder::new();
+        encoder.write_unary(value, max_bits).unwrap();
+        let output = encoder.finish().unwrap();
+        let expected_bits = if value < max_bits {
+            value + 1
+        } else {
+            max_bits
+        };
+
+        let mut decoder = SymbolDecoder::new(output.bytes()).unwrap();
+        assert_eq!(decoder.read_unary(max_bits).unwrap(), value);
+        assert_eq!(output.symbol_count(), u64::from(expected_bits));
+        assert_eq!(output.operation_count(), expected_bits.div_ceil(8) as usize);
+        assert_decoder_finish_matches(decoder, &output);
+    }
+}
+
+#[test]
 fn symbols_decode_back_across_all_supported_arities() {
     let config = SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled);
     let decoder_config = SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled);
@@ -201,6 +230,27 @@ fn literal_domain_errors_fail_before_mutation() {
         Err(WriteError::ValueTooWide {
             value: 2,
             width_bits: 1
+        })
+    ));
+    assert_eq!(encoder.operation_count(), 0);
+    assert_eq!(encoder.symbol_count(), 0);
+}
+
+#[test]
+fn unary_domain_errors_fail_before_mutation() {
+    let mut encoder = SymbolEncoder::new();
+    assert!(matches!(
+        encoder.write_unary(0, 33),
+        Err(WriteError::BitWidthTooLarge {
+            requested: 33,
+            max: 32
+        })
+    ));
+    assert!(matches!(
+        encoder.write_unary(33, 32),
+        Err(WriteError::ValueTooWide {
+            value: 33,
+            width_bits: 32
         })
     ));
     assert_eq!(encoder.operation_count(), 0);

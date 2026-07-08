@@ -232,14 +232,17 @@ impl SymbolEncoder {
     /// `max_bits` zero bits and no terminator.
     ///
     /// # Errors
-    /// Returns [`WriteError::ValueTooWide`] when `value > max_bits`,
-    /// [`WriteError::BitWidthTooLarge`] when the resulting unary code does not fit
-    /// this writer's single bounded bypass chunk. This synthesis helper keeps one
-    /// unary value in one chunk, so longer unary codes are rejected even though the
-    /// decoder accepts them. Returns [`WriteError::SymbolOutputTooLarge`] if the
-    /// output limit would be exceeded, or [`WriteError::SymbolOperationLimit`] if
-    /// the operation limit would be exceeded.
+    /// Returns [`WriteError::BitWidthTooLarge`] when `max_bits > 32`,
+    /// [`WriteError::ValueTooWide`] when `value > max_bits`,
+    /// [`WriteError::SymbolOutputTooLarge`] if the output limit would be exceeded,
+    /// or [`WriteError::SymbolOperationLimit`] if the operation limit would be exceeded.
     pub fn write_unary(&mut self, value: u32, max_bits: u32) -> WriteResult<()> {
+        if max_bits > MAX_LITERAL_BITS {
+            return Err(WriteError::BitWidthTooLarge {
+                requested: max_bits,
+                max: MAX_LITERAL_BITS,
+            });
+        }
         if value > max_bits {
             return Err(WriteError::ValueTooWide {
                 value: u64::from(value),
@@ -252,16 +255,16 @@ impl SymbolEncoder {
         } else {
             max_bits
         };
-        if bits > BYPASS_LITERAL_CHUNK_BITS {
-            return Err(WriteError::BitWidthTooLarge {
-                requested: bits,
-                max: BYPASS_LITERAL_CHUNK_BITS,
-            });
-        }
 
-        self.ensure_projected_steps(u64::from(bits), usize::from(bits > 0))?;
-        if bits > 0 {
-            self.push_bypass_chunk(u32::from(value < max_bits), bits);
+        let chunk_count = bits.div_ceil(BYPASS_LITERAL_CHUNK_BITS) as usize;
+        self.ensure_projected_steps(u64::from(bits), chunk_count)?;
+        let has_terminator = value < max_bits;
+        let mut remaining = bits;
+        while remaining > 0 {
+            let chunk_bits = remaining.min(BYPASS_LITERAL_CHUNK_BITS);
+            remaining -= chunk_bits;
+            let chunk_value = u32::from(has_terminator && remaining == 0);
+            self.push_bypass_chunk(chunk_value, chunk_bits);
         }
         self.symbol_count = self.symbol_count.saturating_add(u64::from(bits));
         Ok(())

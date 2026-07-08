@@ -2334,7 +2334,7 @@ fn push_ordered_planes(
                     {
                         let chunk_width = if double_chroma_w { 2 } else { 1 };
                         let chunk_height = if double_chroma_h { 2 } else { 1 };
-                        let chroma_ctx = if lossless {
+                        let chroma_ctx = if lossless || (sub_x == 0 && sub_y == 0) {
                             residual_chunk_ctx(
                                 block_ctx,
                                 chunk_x,
