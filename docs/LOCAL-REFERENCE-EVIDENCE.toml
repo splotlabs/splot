@@ -3910,6 +3910,58 @@ left = "avm-lossless-nondc-chroma-d135-intra-64x64-raw-md5"
 right = "avm-repeat-lossless-nondc-chroma-d135-intra-64x64-raw-md5"
 
 [[evidence]]
+id = "lref-avm-syn-lossless-nondc-chroma-d45-intra-64x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 4:2:0 64x64 lossless intra IVF fixture whose top-left normal-block chroma uses explicit non-DPCM D45_PRED while luma stays DC. The saturated diagonal chroma source carries nonzero lossless residual coefficients; splot reproduces the raw SHA-256 value through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-08"
+
+[[evidence.fixture]]
+id = "d45-top-left-chroma-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d45-intra-64x64.ivf"
+sha256 = "c8e2fcb6f41d5e031dacdc5e7c3f8144d4fad814ddbf713749fa31032684795d"
+size_bytes = 123
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 64x64 8-bit 4:2:0 YUV input with flat Y=128 and saturated one-sided diagonal chroma: U=64+39*min(31,row+1+col) and V=192-39*min(31,row+1+col), clamped to 8-bit. Source SHA-256 was fda4ade10312b47ac3e2d8803a2aaaccb6f24a2b04ca6a5acb420c8770521ff4. Encoded with AVM lossless mode, 64x64 square partitions, SDP disabled, and broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, CCTX, palette, IntraBC, FSC, intra-DIP, IBP, MRL, intra edge filtering, rectangular/extended/4-way partitions, non-default intra TX, angle delta, parity hiding, TCQ, and trellis quantization. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec-lossless-nondc-chroma-d45"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3 from the local fixture build; checkout contained untracked build directories only."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:d45-top-left-chroma-input}."
+output_digest_id = "avm-lossless-nondc-chroma-d45-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "c11036927b9b3de7b2174356e2f301af"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 fda4ade10312b47ac3e2d8803a2aaaccb6f24a2b04ca6a5acb420c8770521ff4 is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat-lossless-nondc-chroma-d45"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3 decode run from the same fixture build; checkout contained untracked build directories only."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:d45-top-left-chroma-input}."
+output_digest_id = "avm-repeat-lossless-nondc-chroma-d45-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "c11036927b9b3de7b2174356e2f301af"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-nondc-chroma-d45-intra-64x64-raw-md5"
+right = "avm-repeat-lossless-nondc-chroma-d45-intra-64x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-syn-lossless-nondc-chroma-d45-leftedge-128x64"
 feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
 decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
