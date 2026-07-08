@@ -1149,6 +1149,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         ));
     }
     for mode in [
+        SupportedChromaMode::Vertical,
         SupportedChromaMode::Horizontal,
         SupportedChromaMode::D45,
         SupportedChromaMode::D113,
@@ -1397,7 +1398,14 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
             let neighbours = block_ctx.neighbours(PlaneId::U);
             let proven_left_edge_directional = matches!(
                 mode,
-                M::Horizontal | M::D45 | M::D113 | M::D135 | M::D157 | M::D203 | M::Paeth
+                M::Vertical
+                    | M::Horizontal
+                    | M::D45
+                    | M::D113
+                    | M::D135
+                    | M::D157
+                    | M::D203
+                    | M::Paeth
             ) && !neighbours.has_above()
                 && neighbours.has_left()
                 && sb_mib == general_intra::FULL_SB_N4_LUMA;
