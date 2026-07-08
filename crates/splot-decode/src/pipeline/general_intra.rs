@@ -761,6 +761,7 @@ pub(super) fn lossless_chroma_part_prediction_verified(
                     | SupportedChromaMode::D113
                     | SupportedChromaMode::D135
                     | SupportedChromaMode::D157
+                    | SupportedChromaMode::D203
             )
         );
     top_left || left_edge_directional

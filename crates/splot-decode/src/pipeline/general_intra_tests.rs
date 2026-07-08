@@ -17,7 +17,6 @@ use crate::{DecodeContext, DecodeRuntimeConfig};
 
 const Q80_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf");
-
 const Q80_LUMA: u8 = 100;
 const Q80_CHROMA_U: u8 = 120;
 const Q80_CHROMA_V: u8 = 130;
@@ -25,191 +24,147 @@ const Q80_CHROMA_V: u8 = 130;
 const Q80_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-10bit-q80.ivf"
 );
-
 const Q180_COS_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-cos-intra-64x64-10bit-q180.ivf"
 );
-
 const TWO_SB_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-2sb-intra-128x64-10bit-q80.ivf"
 );
-
 const Q160_SMCHROMA_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-smchroma-intra-64x64-10bit-q160.ivf"
 );
-
 const SMCHROMA_2SB_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-2sb-smchroma-intra-128x64-10bit-q160.ivf"
 );
-
 const Q80_10BIT_LUMA: u16 = 400;
 const Q80_10BIT_CHROMA_U: u16 = 480;
 const Q80_10BIT_CHROMA_V: u16 = 520;
 
 const Q180_COS_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf");
-
 const QMSEG_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-qmseg-intra-64x64.ivf");
-
 const SEQDELTAQ_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-seqdeltaq-intra-128x64.ivf");
-
 const LOSSLESS_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-lossless-intra-64x64.ivf");
-
 const LOSSLESS_NONZERO_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nonzero-intra-64x64.ivf"
 );
-
 const LOSSLESS_DPCM_Y_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-dpcm-y-intra-64x64.ivf"
 );
-
 const LOSSLESS_CARDINAL_Y_V_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-cardinal-y-v-intra-64x64.ivf"
 );
-
 const LOSSLESS_CARDINAL_Y_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-cardinal-y-h-intra-64x64.ivf"
 );
-
 const VPRED_TOP_LEFT_Q96_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-vpred-top-left-intra-64x64-q96.ivf"
 );
-
 const HPRED_TOP_LEFT_Q96_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-hpred-top-left-intra-64x64-q96.ivf"
 );
-
 const D45_TOP_LEFT_Q96_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-d45-top-left-intra-64x64-q96.ivf"
 );
-
 const D45_RIGHT_EDGE_Q80_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-d45-right-edge-intra-128x128-q80.ivf"
 );
-
 const LOSSLESS_NONDC_LUMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d135-intra-64x64.ivf"
 );
-
 const LOSSLESS_NONDC_LUMA_D45_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d45-intra-64x64.ivf"
 );
-
 const LOSSLESS_NONDC_LUMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d45-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_NONDC_LUMA_D135_CHROMA_FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d135-chroma-follow-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_NONDC_LUMA_D113_CHROMA_FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d113-chroma-follow-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_NONDC_LUMA_D157_CHROMA_FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d157-chroma-follow-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_NONDC_LUMA_D203_CHROMA_FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d203-chroma-follow-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_NONDC_LUMA_PAETH_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-paeth-intra-64x64.ivf"
 );
-
 const LOSSLESS_NONDC_CHROMA_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-h-intra-64x64.ivf"
 );
-
 const LOSSLESS_NONDC_CHROMA_V_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-v-intra-64x64.ivf"
 );
-
 const LOSSLESS_NONDC_CHROMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d135-intra-64x64.ivf"
 );
-
 const LOSSLESS_NONDC_CHROMA_D45_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d45-intra-64x64.ivf"
 );
-
 const LOSSLESS_NONDC_CHROMA_PAETH_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-paeth-intra-64x64.ivf"
 );
-
 const LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d45-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_NONDC_CHROMA_D135_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d135-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_NONDC_CHROMA_D113_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d113-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_NONDC_CHROMA_D157_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d157-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_NONDC_CHROMA_D203_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d203-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_SDP_NONDC_CHROMA_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-h-intra-64x64.ivf"
 );
-
 const LOSSLESS_SDP_NONDC_CHROMA_V_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-v-intra-64x64.ivf"
 );
-
 const LOSSLESS_SDP_NONDC_CHROMA_D45_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d45-intra-64x64.ivf"
 );
-
 const LOSSLESS_SDP_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d45-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_SDP_NONDC_CHROMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d135-intra-64x64.ivf"
 );
-
 const LOSSLESS_SDP_NONDC_CHROMA_D135_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d135-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_SDP_NONDC_CHROMA_D113_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d113-leftedge-128x64.ivf"
 );
-
 const LOSSLESS_SDP_NONDC_CHROMA_D157_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d157-leftedge-128x64.ivf"
 );
-
+const LOSSLESS_SDP_NONDC_CHROMA_D203_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d203-leftedge-128x64.ivf"
+);
 const LOSSLESS_SDP_NONDC_CHROMA_PAETH_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-paeth-intra-64x64.ivf"
 );
-
 const LOSSLESS_DPCM_UV_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-dpcm-uv-intra-64x64.ivf"
 );
-
 const LOSSLESS_SDP_DPCM_UV_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-dpcm-uv-intra-64x64.ivf"
 );
-
 const LOSSLESS_SDP_DPCM_UV_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-dpcm-uv-h-intra-64x64.ivf"
 );
-
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
@@ -443,11 +398,9 @@ fn ten_bit_dc_luma_smooth_chroma_decodes_to_oracle() {
 const SMOOTH_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-smooth-intra-64x64-10bit-q80.ivf"
 );
-
 const SPLIT_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-split-intra-64x64-10bit-q110.ivf"
 );
-
 const FLAT_Q255_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-10bit-q255.ivf"
 );
@@ -991,6 +944,25 @@ fn lossless_nondc_chroma_d203_leftedge_frame_decodes_to_oracle() {
         "lossless explicit D203 left-edge",
         "78d0d448f8c327f44ccb2598e68ad9560923aff0f8c0c98eb3febb1b7cb36d38",
     );
+    assert_eq!(LOSSLESS_SDP_NONDC_CHROMA_D203_LEFTEDGE_FIXTURE.len(), 73);
+    let frame = decode_eight(LOSSLESS_SDP_NONDC_CHROMA_D203_LEFTEDGE_FIXTURE);
+
+    assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
+    assert_chroma_size(&frame, 64, 32);
+    assert_all_samples_eq(
+        frame.u().unwrap().samples(),
+        128,
+        "lossless SDP explicit D203 left-edge U",
+    );
+    assert_distinct_gt(
+        frame.v().unwrap().samples(),
+        1,
+        "lossless SDP explicit D203 left-edge V",
+    );
+    assert_hash(
+        &frame,
+        "904929c7d5b575bec168d7f46ae69f77f503ed30af05ca6966c18e0b42914b40",
+    );
 }
 
 #[test]
@@ -1153,6 +1125,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         SupportedChromaMode::D113,
         SupportedChromaMode::D135,
         SupportedChromaMode::D157,
+        SupportedChromaMode::D203,
     ] {
         assert!(general_intra::lossless_chroma_part_prediction_verified(
             Some(mode),
@@ -1406,13 +1379,15 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
             SupportedChromaMode::D113,
             SupportedChromaMode::D135,
             SupportedChromaMode::D157,
+            SupportedChromaMode::D203,
             SupportedChromaMode::Paeth,
         ] {
             let neighbours = block_ctx.neighbours(PlaneId::U);
-            let proven_left_edge_directional = matches!(mode, M::D45 | M::D113 | M::D135 | M::D157)
-                && !neighbours.has_above()
-                && neighbours.has_left()
-                && sb_mib == general_intra::FULL_SB_N4_LUMA;
+            let proven_left_edge_directional =
+                matches!(mode, M::D45 | M::D113 | M::D135 | M::D157 | M::D203)
+                    && !neighbours.has_above()
+                    && neighbours.has_left()
+                    && sb_mib == general_intra::FULL_SB_N4_LUMA;
             if proven_left_edge_directional {
                 continue;
             }
