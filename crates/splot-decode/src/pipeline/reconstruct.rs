@@ -1658,6 +1658,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             have_above,
             mrl_index,
             availability.left,
+            bit_depth,
             edge_filter,
         )?;
         let mut prediction = vec![T::default(); width * height];
@@ -1731,6 +1732,7 @@ fn predict_general_intra_luma_one_sided_left_mrl<T: ReconSample>(
         have_above,
         mrl_index,
         have_left,
+        bit_depth,
         edge_filter,
     )?;
     predict_general_intra_luma_one_sided_idif_mrl(
@@ -1816,10 +1818,35 @@ fn build_one_sided_left_idif_edge<T: ReconSample>(
     have_above: bool,
     mrl_index: usize,
     have_left: bool,
+    bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     if !have_left {
-        return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+        if !have_above {
+            return build_one_sided_idif_edge(
+                width,
+                height,
+                mrl_index,
+                edge_filter,
+                || Ok(noneighbour_corner::<T>(bit_depth)),
+                |_| Ok(noneighbour_left::<T>(bit_depth)),
+            );
+        }
+        if mrl_index != 0 {
+            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+        }
+        let fallback_row = y
+            .checked_sub(1)
+            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+        let fallback = workspace.reconstructed_sample(plane_id, x, fallback_row)?;
+        return build_one_sided_idif_edge(
+            width,
+            height,
+            mrl_index,
+            edge_filter,
+            || Ok(fallback),
+            |_| Ok(fallback),
+        );
     }
     let left_col = x
         .checked_sub(1)
@@ -1939,6 +1966,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             have_above,
             0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
             true,
+            bit_depth,
             primary_edge_filter,
         )?;
         let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
@@ -1977,6 +2005,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             have_above,
             0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
             true,
+            bit_depth,
             secondary.edge_filter,
         )?;
         if matches!(plane_id, PlaneId::Y) {

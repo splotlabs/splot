@@ -969,6 +969,46 @@ fn zone1_d45_top_left_synthesizes_no_neighbour_above_fallback() {
     }
 }
 
+#[test]
+fn zone3_d203_top_left_synthesizes_no_neighbour_left_fallback() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+
+    reconstruct_general_intra_one_sided_left_neighbour_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        203,
+        PlaneId::Y,
+        0,
+        0,
+        4,
+        4,
+        0,
+        0,
+        false,
+        0,
+        false,
+        None,
+        IntraEdgeAvailability {
+            above: false,
+            left: false,
+        },
+        BitDepth::Eight,
+        OneSidedEdgeFilter::default(),
+    )
+    .unwrap();
+
+    for row in 0..16 {
+        for col in 0..16 {
+            assert_eq!(
+                ws.reconstructed_sample(PlaneId::Y, col, row).unwrap(),
+                129,
+                "top-left D203 sample ({col},{row}) must use the no-neighbour left fallback",
+            );
+        }
+    }
+}
+
 /// §7.13.2.1 NO-LEFT FALLBACK GUARD — the symmetric H_PRED case at the frame
 /// LEFT edge (`x == 0`, `haveLeft == 0`) with a NON-FLAT reconstructed above row.
 /// §7.13.2.1 synthesizes `LeftCol[i] = CurrFrame[plane][y-1][x]` (`above[0]`),
