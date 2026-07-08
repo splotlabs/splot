@@ -146,6 +146,10 @@ const LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d45-leftedge-128x64.ivf"
 );
 
+const LOSSLESS_NONDC_CHROMA_D135_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d135-leftedge-128x64.ivf"
+);
+
 const LOSSLESS_NONDC_CHROMA_D113_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d113-leftedge-128x64.ivf"
 );
@@ -902,6 +906,18 @@ fn lossless_nondc_chroma_d45_leftedge_frame_decodes_to_oracle() {
 }
 
 #[test]
+fn lossless_nondc_chroma_d135_leftedge_frame_decodes_to_oracle() {
+    assert_lossless_explicit_chroma_oracle(
+        LOSSLESS_NONDC_CHROMA_D135_LEFTEDGE_FIXTURE,
+        276,
+        (128, 64),
+        (64, 32),
+        "lossless explicit D135 left-edge",
+        "2f7c27a87a7af7eaa9cc4d44b137a777bf323a7098d8ae33152e30a4060f4576",
+    );
+}
+
+#[test]
 fn lossless_nondc_chroma_d113_leftedge_frame_decodes_to_oracle() {
     assert_lossless_explicit_chroma_oracle(
         LOSSLESS_NONDC_CHROMA_D113_LEFTEDGE_FIXTURE,
@@ -1072,6 +1088,12 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     ));
     assert!(general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::D113Follow),
+        false,
+        left_edge_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D135),
         false,
         left_edge_8,
         general_intra::FULL_SB_N4_LUMA,
@@ -1320,7 +1342,11 @@ fn lossless_luma_prediction_guard_rejects_unproven_d113_chroma_cross_product() {
 
 #[test]
 fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
-    for (block_ctx, sb_mib) in [
+    use SupportedChromaMode as M;
+
+    let reject_all_block_modes = [M::Vertical, M::Horizontal, M::D135, M::Paeth];
+    let reject_left_edge_block_modes = [M::Vertical, M::Horizontal, M::Paeth];
+    for (block_ctx, sb_mib, block_modes) in [
         (
             block_ctx(
                 0,
@@ -1330,6 +1356,7 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
                 BitDepth::Ten,
             ),
             general_intra::FULL_SB_N4_LUMA,
+            reject_all_block_modes.as_slice(),
         ),
         (
             block_ctx(
@@ -1340,6 +1367,7 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
                 BitDepth::Eight,
             ),
             32,
+            reject_all_block_modes.as_slice(),
         ),
         (
             block_ctx(
@@ -1350,10 +1378,12 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
                 BitDepth::Eight,
             ),
             general_intra::FULL_SB_N4_LUMA,
+            reject_left_edge_block_modes.as_slice(),
         ),
         (
             block_ctx(0, 0, 8, 8, BitDepth::Eight),
             general_intra::FULL_SB_N4_LUMA,
+            reject_all_block_modes.as_slice(),
         ),
         (
             block_ctx_with_chroma(
@@ -1365,14 +1395,10 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
                 ChromaSampling::Yuv444,
             ),
             general_intra::FULL_SB_N4_LUMA,
+            reject_all_block_modes.as_slice(),
         ),
     ] {
-        for mode in [
-            SupportedChromaMode::Vertical,
-            SupportedChromaMode::Horizontal,
-            SupportedChromaMode::D135,
-            SupportedChromaMode::Paeth,
-        ] {
+        for &mode in block_modes {
             assert!(!general_intra::lossless_chroma_block_prediction_verified(
                 Some(mode),
                 false,
@@ -1427,7 +1453,7 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
                 SupportedChromaMode::Vertical,
                 SupportedChromaMode::Smooth,
                 SupportedChromaMode::Horizontal,
-                SupportedChromaMode::D135,
+                SupportedChromaMode::D67,
                 SupportedChromaMode::Paeth,
             ],
         ),
