@@ -840,29 +840,26 @@ pub(super) fn lossless_chroma_block_prediction_verified(
     block_ctx: BlockCtx,
     sb_mib: usize,
 ) -> bool {
+    use SupportedChromaMode as M;
+
     if lossless_chroma_prediction_verified(mode, uses_dpcm_uv) {
         return true;
     }
     if uses_dpcm_uv || !lossless_chroma_full_64_block(block_ctx) {
         return false;
     }
+    let Some(mode) = mode else {
+        return false;
+    };
     let neighbours = block_ctx.neighbours(PlaneId::U);
-    let d45 = matches!(
-        mode,
-        Some(SupportedChromaMode::D45 | SupportedChromaMode::D45Follow)
-    );
     ((sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left())
         && matches!(
             mode,
-            Some(
-                SupportedChromaMode::Horizontal
-                    | SupportedChromaMode::Vertical
-                    | SupportedChromaMode::D45
-                    | SupportedChromaMode::D135
-                    | SupportedChromaMode::Paeth
-            )
+            M::Horizontal | M::Vertical | M::D45 | M::D135 | M::Paeth
         ))
-        || (!neighbours.has_above() && neighbours.has_left() && d45)
+        || (!neighbours.has_above()
+            && neighbours.has_left()
+            && matches!(mode, M::D45 | M::D45Follow | M::D203 | M::D203Follow))
 }
 
 fn lossless_chroma_full_64_block(block_ctx: BlockCtx) -> bool {

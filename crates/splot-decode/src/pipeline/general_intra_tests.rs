@@ -130,6 +130,10 @@ const LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d45-leftedge-128x64.ivf"
 );
 
+const LOSSLESS_NONDC_CHROMA_D203_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d203-leftedge-128x64.ivf"
+);
+
 const LOSSLESS_SDP_NONDC_CHROMA_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-h-intra-64x64.ivf"
 );
@@ -740,6 +744,8 @@ fn lossless_nondc_chroma_d45_frame_decodes_to_oracle() {
     assert_lossless_explicit_chroma_oracle(
         LOSSLESS_NONDC_CHROMA_D45_FIXTURE,
         123,
+        (64, 64),
+        (32, 32),
         "lossless explicit D45",
         "fda4ade10312b47ac3e2d8803a2aaaccb6f24a2b04ca6a5acb420c8770521ff4",
     );
@@ -750,6 +756,8 @@ fn lossless_nondc_chroma_paeth_frame_decodes_to_oracle() {
     assert_lossless_explicit_chroma_oracle(
         LOSSLESS_NONDC_CHROMA_PAETH_FIXTURE,
         131,
+        (64, 64),
+        (32, 32),
         "lossless explicit Paeth",
         "82bece3a5ee82789940b30339ec764d664f12c8fdd0f6201a7a25cbc74dcda53",
     );
@@ -758,13 +766,15 @@ fn lossless_nondc_chroma_paeth_frame_decodes_to_oracle() {
 fn assert_lossless_explicit_chroma_oracle(
     fixture: &[u8],
     expected_len: usize,
+    frame_size: (usize, usize),
+    chroma_size: (usize, usize),
     label_prefix: &str,
     expected_hash: &str,
 ) {
     assert_eq!(fixture.len(), expected_len);
     let frame = decode_eight(fixture);
-    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
-    assert_chroma_size(&frame, 32, 32);
+    assert_yuv420_frame(&frame, BitDepth::Eight, frame_size.0, frame_size.1);
+    assert_chroma_size(&frame, chroma_size.0, chroma_size.1);
     assert_all_samples_eq(
         frame.y().samples(),
         128,
@@ -785,29 +795,25 @@ fn assert_lossless_explicit_chroma_oracle(
 
 #[test]
 fn lossless_nondc_chroma_d45_leftedge_frame_decodes_to_oracle() {
-    assert_eq!(LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE.len(), 129);
-    let frame = decode_eight(LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE);
-
-    assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
-    assert_chroma_size(&frame, 64, 32);
-    assert_all_samples_eq(
-        frame.y().samples(),
-        128,
-        "lossless explicit D45 left-edge chroma luma",
-    );
-    assert_distinct_gt(
-        frame.u().unwrap().samples(),
-        4,
-        "lossless explicit D45 left-edge U",
-    );
-    assert_distinct_gt(
-        frame.v().unwrap().samples(),
-        4,
-        "lossless explicit D45 left-edge V",
-    );
-    assert_hash(
-        &frame,
+    assert_lossless_explicit_chroma_oracle(
+        LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE,
+        129,
+        (128, 64),
+        (64, 32),
+        "lossless explicit D45 left-edge",
         "56a0c73c398f6adb27194cb8d3908cea02791d63e79658c7552cc15a0752fc01",
+    );
+}
+
+#[test]
+fn lossless_nondc_chroma_d203_leftedge_frame_decodes_to_oracle() {
+    assert_lossless_explicit_chroma_oracle(
+        LOSSLESS_NONDC_CHROMA_D203_LEFTEDGE_FIXTURE,
+        1248,
+        (128, 64),
+        (64, 32),
+        "lossless explicit D203 left-edge",
+        "78d0d448f8c327f44ccb2598e68ad9560923aff0f8c0c98eb3febb1b7cb36d38",
     );
 }
 
@@ -816,6 +822,8 @@ fn lossless_sdp_nondc_chroma_d45_frame_decodes_to_oracle() {
     assert_lossless_explicit_chroma_oracle(
         LOSSLESS_SDP_NONDC_CHROMA_D45_FIXTURE,
         118,
+        (64, 64),
+        (32, 32),
         "lossless SDP explicit D45",
         "fda4ade10312b47ac3e2d8803a2aaaccb6f24a2b04ca6a5acb420c8770521ff4",
     );
@@ -838,6 +846,8 @@ fn lossless_sdp_nondc_chroma_paeth_frame_decodes_to_oracle() {
     assert_lossless_explicit_chroma_oracle(
         LOSSLESS_SDP_NONDC_CHROMA_PAETH_FIXTURE,
         131,
+        (64, 64),
+        (32, 32),
         "lossless SDP explicit Paeth",
         "82bece3a5ee82789940b30339ec764d664f12c8fdd0f6201a7a25cbc74dcda53",
     );
@@ -935,6 +945,18 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D203),
+        false,
+        left_edge_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D203Follow),
+        false,
+        left_edge_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::D45),
         false,
         left_edge_8,
@@ -983,6 +1005,18 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     ));
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::D45Follow),
+        false,
+        top_left_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(!general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D203),
+        false,
+        top_left_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(!general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D203Follow),
         false,
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
@@ -1215,6 +1249,64 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
                 sb_mib,
             ));
         }
+    }
+    let left_edge_8 = block_ctx(
+        0,
+        general_intra::FULL_SB_N4_LUMA,
+        general_intra::FULL_SB_N4_LUMA,
+        general_intra::FULL_SB_N4_LUMA,
+        BitDepth::Eight,
+    );
+    for (block_ctx, uses_dpcm_uv) in [
+        (
+            block_ctx(
+                0,
+                general_intra::FULL_SB_N4_LUMA,
+                general_intra::FULL_SB_N4_LUMA,
+                general_intra::FULL_SB_N4_LUMA,
+                BitDepth::Ten,
+            ),
+            false,
+        ),
+        (
+            block_ctx(0, general_intra::FULL_SB_N4_LUMA, 8, 8, BitDepth::Eight),
+            false,
+        ),
+        (
+            block_ctx_with_chroma(
+                0,
+                general_intra::FULL_SB_N4_LUMA,
+                general_intra::FULL_SB_N4_LUMA,
+                general_intra::FULL_SB_N4_LUMA,
+                BitDepth::Eight,
+                ChromaSampling::Yuv444,
+            ),
+            false,
+        ),
+        (left_edge_8, true),
+    ] {
+        for mode in [SupportedChromaMode::D203, SupportedChromaMode::D203Follow] {
+            assert!(!general_intra::lossless_chroma_block_prediction_verified(
+                Some(mode),
+                uses_dpcm_uv,
+                block_ctx,
+                general_intra::FULL_SB_N4_LUMA,
+            ));
+        }
+    }
+    for mode in [SupportedChromaMode::D203, SupportedChromaMode::D203Follow] {
+        assert!(!general_intra::lossless_chroma_block_prediction_verified(
+            Some(mode),
+            false,
+            block_ctx(
+                0,
+                0,
+                general_intra::FULL_SB_N4_LUMA,
+                general_intra::FULL_SB_N4_LUMA,
+                BitDepth::Eight,
+            ),
+            general_intra::FULL_SB_N4_LUMA,
+        ));
     }
 }
 
