@@ -157,3 +157,26 @@ fn raw_output_error_report_uses_raw_support_row() {
     assert_eq!(details.source_kind, "io");
     assert_eq!(details.source_message, "closed writer");
 }
+
+#[test]
+fn frame_set_output_error_report_uses_stable_source_kind() {
+    let error = DecodeError::Output {
+        source: DecodeOutputError::invalid_frame_set(
+            DecodeOutputOperation::SerializeY4m,
+            "runtime Y4M output requires at least one decoded frame",
+        ),
+    };
+
+    let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
+
+    assert_eq!(report.diagnostic.rule_id, OUTPUT_ERROR_RULE_ID);
+    let DecodeDiagnosticDetails::OutputError(details) = report.details else {
+        panic!("expected output-error details");
+    };
+    assert_eq!(details.operation, "serialize_y4m");
+    assert_eq!(details.source_kind, "frame_set");
+    assert_eq!(
+        details.source_message,
+        "runtime Y4M output requires at least one decoded frame"
+    );
+}

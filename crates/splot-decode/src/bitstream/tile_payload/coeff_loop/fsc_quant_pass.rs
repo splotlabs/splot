@@ -12,10 +12,7 @@ use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::{
     TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
 };
-use super::branch::{
-    CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStart,
-    NonZeroCoeffBlockStartInput, read_coeff_block_eob_branch,
-};
+use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::fsc_level_pass::{
     CoeffFscLevelPassConfig, CoeffFscLevelPassError, CoeffFscLevelRead, NonZeroCoeffFscLevelPass,
     apply_nonzero_coeff_fsc_level_pass,
@@ -41,6 +38,7 @@ use super::{
     AllZeroCoeffBlockInput, CoeffBranchInput, CoeffLoopContextError,
     CoeffTxSizeTables as CoeffFscBranchTxSizeTables, DEFAULT_TX_SIZE_TABLES,
     NonZeroCoeffEobContextInput, NonZeroCoeffEobSymbolRead, commit_nonzero_coeff_context,
+    read_nonzero_coeff_block_start,
 };
 
 const FSC_MAX_LEVEL: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
@@ -223,11 +221,6 @@ pub(crate) enum CoeffFscBranchError {
     Level(#[from] CoeffFscLevelPassError),
     #[error("coefficient FSC branch quant pass failed: {0}")]
     Quant(#[from] CoeffFscQuantPassError),
-    #[error("coefficient FSC branch returned unexpected {actual} arm while expecting {expected}")]
-    UnexpectedBranch {
-        expected: &'static str,
-        actual: &'static str,
-    },
 }
 
 pub(crate) fn apply_coeff_fsc_branch(
@@ -249,20 +242,7 @@ pub(crate) fn apply_coeff_fsc_branch(
         });
     }
 
-    let start = match read_coeff_block_eob_branch(
-        state,
-        cdfs,
-        symbols,
-        CoeffBlockEobBranchInput::NonZero(input.start),
-    )? {
-        CoeffBlockEobBranch::NonZero(start) => start,
-        CoeffBlockEobBranch::AllZero(_) => {
-            return Err(CoeffFscBranchError::UnexpectedBranch {
-                expected: "nonzero",
-                actual: "all-zero",
-            });
-        }
-    };
+    let start = read_nonzero_coeff_block_start(cdfs, symbols, input.start)?;
     let walk = walk_fsc_coeff_scan(&start, input.seg_eob, input.scan)?;
     let level_pass =
         apply_nonzero_coeff_fsc_level_pass(cdfs, symbols, start, walk, input.level_config)?;

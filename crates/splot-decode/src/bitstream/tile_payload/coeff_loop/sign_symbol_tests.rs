@@ -9,7 +9,7 @@ use splot_core::symbol::{CdfUpdateMode, SymbolDecoderConfig};
 use super::super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::super::cdf::{FrameCdfSubset, TileCdfArray, TileCdfError};
 use super::super::super::coeff_state::TransformCoeffBlockState;
-use super::super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStartInput};
+use super::super::branch::NonZeroCoeffBlockStartInput;
 use super::super::max_level::CoeffTransformClass;
 use super::super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
 use super::super::*;
@@ -35,25 +35,14 @@ fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
     .unwrap()
 }
 
-fn branch_nonzero(
-    branch: CoeffBlockEobBranch,
-) -> Option<super::super::branch::NonZeroCoeffBlockStart> {
-    match branch {
-        CoeffBlockEobBranch::AllZero(_) => None,
-        CoeffBlockEobBranch::NonZero(start) => Some(start),
-    }
-}
-
 fn setup_walk(payload: &[u8], scan: &[u16]) -> Option<NonZeroCoeffScanWalk> {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload, CdfUpdateMode::Enabled);
-    let mut state = super::super::super::coeff_state::TileCoeffContextState::new(4, 4).ok()?;
-    let branch = read_coeff_block_eob_branch(
-        &mut state,
+    let start = read_nonzero_coeff_block_start(
         &mut tile,
         &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+        NonZeroCoeffBlockStartInput {
             block: AllZeroCoeffBlockInput {
                 plane: 0,
                 x4: 0,
@@ -68,10 +57,9 @@ fn setup_walk(payload: &[u8], scan: &[u16]) -> Option<NonZeroCoeffScanWalk> {
                 tx_height_log2: 3,
                 coeff_cdf_q_ctx: 0,
             },
-        }),
+        },
     )
     .ok()?;
-    let start = branch_nonzero(branch)?;
     if start.eob_read().eob().eob() != scan.len() {
         return None;
     }

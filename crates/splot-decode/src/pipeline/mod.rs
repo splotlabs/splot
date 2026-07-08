@@ -451,133 +451,105 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     &mut next_unvalidated_following_ivf_record,
                 )?;
                 let inter_frame_timer = crate::timing::start();
-                let (inter_frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
-                    match sequence.general.bit_depth_idc {
-                        BitDepthIdc::Eight => {
-                            let (store, meta) = reference.build_store_eight(&frames)?;
-                            let inter_state = inter::InterReferenceState {
-                                store: &store,
-                                ref_valid: meta.ref_valid,
-                                ref_order_hint: meta.ref_order_hint,
-                                ref_frame_width: meta.ref_frame_width,
-                                ref_frame_height: meta.ref_frame_height,
-                                ref_base_q_idx: meta.ref_base_q_idx,
-                                ref_is_inter: meta.ref_is_inter,
-                                ref_adapted: meta.ref_adapted,
-                                lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
-                                lr_frame_filter_taps: meta.lr_frame_filter_taps,
-                                ref_frame_cdfs: meta.ref_frame_cdfs,
-                                ref_ccso_params: meta.ref_ccso_params,
-                                ref_ccso_unit_grids: meta.ref_ccso_unit_grids,
-                                ref_motion_fields: meta.ref_motion_fields,
-                            };
-                            let inter_core = inter::parse_validated_inter_frame_core(
-                                inter_envelope,
-                                &sequence,
-                                &inter_state,
+                let (inter_frame, inter_core, frame_cdfs, ccso_grid, motion_field) = match sequence
+                    .general
+                    .bit_depth_idc
+                {
+                    BitDepthIdc::Eight => {
+                        let (store, meta) = reference.build_store_eight(&frames)?;
+                        let inter_state = inter::InterReferenceState::from_metadata(&store, meta);
+                        let inter_core = inter::parse_validated_inter_frame_core(
+                            inter_envelope,
+                            &sequence,
+                            &inter_state,
+                        )?;
+                        if frame_is_output(&inter_core) {
+                            let next_output_frame_count = checked_add(
+                                DecodeLimitName::MaxOutputFrames,
+                                scheduler.emitted.len() as u64,
+                                1,
                             )?;
-                            if frame_is_output(&inter_core) {
-                                let next_output_frame_count = checked_add(
-                                    DecodeLimitName::MaxOutputFrames,
-                                    scheduler.emitted.len() as u64,
-                                    1,
-                                )?;
-                                ensure_output_frame_count_limit(
-                                    options.limits(),
-                                    next_output_frame_count,
-                                )?;
-                            }
-                            ensure_retained_frame_byte_limits_for_core(
+                            ensure_output_frame_count_limit(
                                 options.limits(),
-                                retained_frame_bytes,
-                                &inter_core,
-                                &sequence,
-                                inter_envelope.offset,
+                                next_output_frame_count,
                             )?;
-                            let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
-                                frame_engine::decode_frame(
-                                    plan,
-                                    next_candidate,
-                                    bytes,
-                                    inter_envelope,
-                                    inter_core,
-                                    &sequence,
-                                    options,
-                                    header,
-                                    &frame_engine::FrameSetup::Inter(&inter_state),
-                                    BitDepth::Eight,
-                                )?;
-                            (
-                                PipelineDecodedFrame::Eight(frame),
-                                inter_core,
-                                frame_cdfs,
-                                ccso_grid,
-                                motion_field,
-                            )
                         }
-                        BitDepthIdc::Ten => {
-                            let (store, meta) = reference.build_store_ten(&frames)?;
-                            let inter_state = inter::InterReferenceState {
-                                store: &store,
-                                ref_valid: meta.ref_valid,
-                                ref_order_hint: meta.ref_order_hint,
-                                ref_frame_width: meta.ref_frame_width,
-                                ref_frame_height: meta.ref_frame_height,
-                                ref_base_q_idx: meta.ref_base_q_idx,
-                                ref_is_inter: meta.ref_is_inter,
-                                ref_adapted: meta.ref_adapted,
-                                lr_frame_filter_class_counts: meta.lr_frame_filter_class_counts,
-                                lr_frame_filter_taps: meta.lr_frame_filter_taps,
-                                ref_frame_cdfs: meta.ref_frame_cdfs,
-                                ref_ccso_params: meta.ref_ccso_params,
-                                ref_ccso_unit_grids: meta.ref_ccso_unit_grids,
-                                ref_motion_fields: meta.ref_motion_fields,
-                            };
-                            let inter_core = inter::parse_validated_inter_frame_core(
+                        ensure_retained_frame_byte_limits_for_core(
+                            options.limits(),
+                            retained_frame_bytes,
+                            &inter_core,
+                            &sequence,
+                            inter_envelope.offset,
+                        )?;
+                        let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
+                            frame_engine::decode_frame(
+                                plan,
+                                next_candidate,
+                                bytes,
                                 inter_envelope,
-                                &sequence,
-                                &inter_state,
-                            )?;
-                            if frame_is_output(&inter_core) {
-                                let next_output_frame_count = checked_add(
-                                    DecodeLimitName::MaxOutputFrames,
-                                    scheduler.emitted.len() as u64,
-                                    1,
-                                )?;
-                                ensure_output_frame_count_limit(
-                                    options.limits(),
-                                    next_output_frame_count,
-                                )?;
-                            }
-                            ensure_retained_frame_byte_limits_for_core(
-                                options.limits(),
-                                retained_frame_bytes,
-                                &inter_core,
-                                &sequence,
-                                inter_envelope.offset,
-                            )?;
-                            let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
-                                frame_engine::decode_frame(
-                                    plan,
-                                    next_candidate,
-                                    bytes,
-                                    inter_envelope,
-                                    inter_core,
-                                    &sequence,
-                                    options,
-                                    header,
-                                    &frame_engine::FrameSetup::Inter(&inter_state),
-                                    BitDepth::Ten,
-                                )?;
-                            (
-                                PipelineDecodedFrame::Ten(frame),
                                 inter_core,
-                                frame_cdfs,
-                                ccso_grid,
-                                motion_field,
-                            )
+                                &sequence,
+                                options,
+                                header,
+                                &frame_engine::FrameSetup::Inter(&inter_state),
+                                BitDepth::Eight,
+                            )?;
+                        (
+                            PipelineDecodedFrame::Eight(frame),
+                            inter_core,
+                            frame_cdfs,
+                            ccso_grid,
+                            motion_field,
+                        )
+                    }
+                    BitDepthIdc::Ten => {
+                        let (store, meta) = reference.build_store_ten(&frames)?;
+                        let inter_state = inter::InterReferenceState::from_metadata(&store, meta);
+                        let inter_core = inter::parse_validated_inter_frame_core(
+                            inter_envelope,
+                            &sequence,
+                            &inter_state,
+                        )?;
+                        if frame_is_output(&inter_core) {
+                            let next_output_frame_count = checked_add(
+                                DecodeLimitName::MaxOutputFrames,
+                                scheduler.emitted.len() as u64,
+                                1,
+                            )?;
+                            ensure_output_frame_count_limit(
+                                options.limits(),
+                                next_output_frame_count,
+                            )?;
                         }
-                    };
+                        ensure_retained_frame_byte_limits_for_core(
+                            options.limits(),
+                            retained_frame_bytes,
+                            &inter_core,
+                            &sequence,
+                            inter_envelope.offset,
+                        )?;
+                        let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
+                            frame_engine::decode_frame(
+                                plan,
+                                next_candidate,
+                                bytes,
+                                inter_envelope,
+                                inter_core,
+                                &sequence,
+                                options,
+                                header,
+                                &frame_engine::FrameSetup::Inter(&inter_state),
+                                BitDepth::Ten,
+                            )?;
+                        (
+                            PipelineDecodedFrame::Ten(frame),
+                            inter_core,
+                            frame_cdfs,
+                            ccso_grid,
+                            motion_field,
+                        )
+                    }
+                };
                 crate::timing::report("inter_frame_decode", inter_frame_timer);
                 let inter_display_grain =
                     film_grain_slots.active_for_core(&inter_core, inter_envelope.offset)?;

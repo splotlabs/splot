@@ -11,11 +11,10 @@ use splot_recon::{DpcmDirection, dpcm_direction};
 use super::DecodeTileWorkUnit;
 use super::cdf::block_context::{
     IntraYMode, MODE_INDEX_COUNT, NON_DIRECTIONAL_MODES_COUNT, SupportedChromaMode,
-    SupportedDirectionalLumaMode, SupportedNonDcLumaMode, YModeEscapeResult,
-    reconstruct_minimal_y_mode, reconstruct_y_mode_first_set_directional_top_left,
-    reconstruct_y_mode_offset_escape_top_left, reconstruct_y_mode_second_set_top_left,
-    reconstruct_y_mode_with_neighbours, resolved_chroma_uv_mode, supported_chroma_mode,
-    supported_chroma_mode_value, uv_mode_ctx,
+    SupportedNonDcLumaMode, YModeEscapeResult, reconstruct_minimal_y_mode,
+    reconstruct_y_mode_first_set_directional_top_left, reconstruct_y_mode_offset_escape_top_left,
+    reconstruct_y_mode_second_set_top_left, reconstruct_y_mode_with_neighbours,
+    resolved_chroma_uv_mode, supported_chroma_mode, supported_chroma_mode_value, uv_mode_ctx,
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
@@ -1011,17 +1010,6 @@ fn reconstruct_y_mode_result(
             mode_idx,
         },
     )
-}
-
-#[allow(dead_code)]
-fn supported_directional_luma(
-    y_mode: IntraYMode,
-    angle_delta_y: i8,
-) -> Option<SupportedDirectionalLumaMode> {
-    if angle_delta_y != 0 {
-        return None;
-    }
-    y_mode.supported_directional()
 }
 
 fn cfl_allowed_for_non_lossless_420(

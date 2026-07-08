@@ -10,9 +10,9 @@ use splot_core::symbol::{CdfUpdateMode, SymbolBitPosition, SymbolDecoder, Symbol
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
 use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
-use super::branch::{CoeffBlockEobBranch, NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
+use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::ordinary_pass::CoeffOrdinaryBranch;
-use super::{CoeffBlockEobBranchInput, read_coeff_block_eob_branch};
+use super::read_nonzero_coeff_block_start;
 
 pub(crate) type BranchRun<T> = (
     T,
@@ -101,9 +101,8 @@ pub(crate) fn run_optional_branch<'a, T>(
     ))
 }
 
-/// Reads the non-zero EOB branch for `start` over a default tile and returns the
-/// tile, the live decoder, and the non-zero block start (or `None` if any step
-/// fails or the branch is all-zero).
+/// Reads the non-zero EOB start over a default tile and returns the tile, the
+/// live decoder, and the non-zero block start.
 pub(crate) fn setup_start_with_input(
     payload: &[u8],
     start: NonZeroCoeffBlockStartInput,
@@ -111,16 +110,6 @@ pub(crate) fn setup_start_with_input(
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload);
-    let mut state = TileCoeffContextState::new(4, 4).ok()?;
-    let branch = read_coeff_block_eob_branch(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        CoeffBlockEobBranchInput::NonZero(start),
-    )
-    .ok()?;
-    let CoeffBlockEobBranch::NonZero(start) = branch else {
-        return None;
-    };
+    let start = read_nonzero_coeff_block_start(&mut tile, &mut symbols, start).ok()?;
     Some((tile, symbols, start))
 }

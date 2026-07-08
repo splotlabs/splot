@@ -24,6 +24,23 @@ impl TemporalMotionCell {
     }
 }
 
+fn allocate_temporal_grid<T>(mi_rows: usize, mi_cols: usize) -> Option<(usize, usize, Vec<T>)>
+where
+    T: Clone + Default,
+{
+    let width8 = mi_cols.div_ceil(2);
+    let height8 = mi_rows.div_ceil(2);
+    let cells = width8.checked_mul(height8)?;
+    Some((width8, height8, vec![T::default(); cells]))
+}
+
+fn temporal_grid_index(width8: usize, height8: usize, y8: usize, x8: usize) -> Option<usize> {
+    if y8 >= height8 || x8 >= width8 {
+        return None;
+    }
+    Some(y8 * width8 + x8)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TemporalMotionField {
     width8: usize,
@@ -41,13 +58,11 @@ impl TemporalMotionField {
     }
 
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        let width8 = mi_cols.div_ceil(2);
-        let height8 = mi_rows.div_ceil(2);
-        let cells = width8.checked_mul(height8)?;
+        let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
         Some(Self {
             width8,
             height8,
-            cells: vec![TemporalMotionCell::default(); cells],
+            cells,
         })
     }
 
@@ -94,17 +109,14 @@ impl TemporalMotionField {
     }
 
     fn cell(&self, y8: usize, x8: usize) -> Option<TemporalMotionCell> {
-        if y8 >= self.height8 || x8 >= self.width8 {
-            return None;
-        }
-        self.cells.get(y8 * self.width8 + x8).copied()
+        self.cells
+            .get(temporal_grid_index(self.width8, self.height8, y8, x8)?)
+            .copied()
     }
 
     fn cell_mut(&mut self, y8: usize, x8: usize) -> Option<&mut TemporalMotionCell> {
-        if y8 >= self.height8 || x8 >= self.width8 {
-            return None;
-        }
-        self.cells.get_mut(y8 * self.width8 + x8)
+        self.cells
+            .get_mut(temporal_grid_index(self.width8, self.height8, y8, x8)?)
     }
 }
 
@@ -137,28 +149,25 @@ struct ProjectedTemporalMotionField {
 
 impl ProjectedTemporalMotionField {
     fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        let width8 = mi_cols.div_ceil(2);
-        let height8 = mi_rows.div_ceil(2);
-        let cells = width8.checked_mul(height8)?;
+        let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
         Some(Self {
             width8,
             height8,
-            cells: vec![ProjectedTemporalMotionCell::default(); cells],
+            cells,
         })
     }
 
     fn cell(&self, y8: usize, x8: usize) -> Option<ProjectedTemporalMotionCell> {
-        if y8 >= self.height8 || x8 >= self.width8 {
-            return None;
-        }
-        self.cells.get(y8 * self.width8 + x8).copied()
+        self.cells
+            .get(temporal_grid_index(self.width8, self.height8, y8, x8)?)
+            .copied()
     }
 
     fn set_if_empty(&mut self, y8: usize, x8: usize, mv: Mv, ref_offset: i32) {
-        if y8 >= self.height8 || x8 >= self.width8 {
+        let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8) else {
             return;
-        }
-        let Some(cell) = self.cells.get_mut(y8 * self.width8 + x8) else {
+        };
+        let Some(cell) = self.cells.get_mut(index) else {
             return;
         };
         if !cell.valid {

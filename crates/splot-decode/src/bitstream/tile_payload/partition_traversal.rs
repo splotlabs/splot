@@ -447,6 +447,17 @@ pub(crate) struct TilePartitionFrontierStep {
     pub(crate) decision: ReadPartitionDecision,
     pub(crate) symbol_count_before: u64,
     pub(crate) symbol_count_after: u64,
+    using_extended_sdp: bool,
+}
+
+impl TilePartitionFrontierStep {
+    const fn partition(self) -> PartitionType {
+        self.decision.partition
+    }
+
+    const fn using_extended_sdp(self) -> bool {
+        self.using_extended_sdp
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1076,34 +1087,24 @@ pub(crate) fn plan_tile_partition_traversal_cursor<'payload>(
             limits,
         )?;
 
-        let symbol_count_before = symbols.symbol_count();
-        let forced_chroma_partition = sdp_state.forced_chroma_partition(frame, call);
-        let decision = read_frontier_partition_decision(
+        let step = read_frontier_partition_step(
             call,
             frame,
             tile_bounds,
             context,
-            forced_chroma_partition,
+            &mut sdp_state,
             &mut cdfs,
             &mut symbols,
         )?;
-        let symbol_count_after = symbols.symbol_count();
-        let partition = decision.partition;
-        let call = call.with_cfl_allowed_in_sdp(sdp_state.record_partition(frame, call, partition));
-        let (call, using_extended_sdp) =
-            read_extended_sdp_region_type(frame, call, partition, &mut cdfs, &mut symbols)?;
-        if using_extended_sdp {
+        if step.using_extended_sdp() {
             return Err(TilePartitionTraversalError::Unsupported(
                 TilePartitionTraversalUnsupported::ExtendedSdp,
             ));
         }
-        steps.push(TilePartitionFrontierStep {
-            call,
-            decision,
-            symbol_count_before,
-            symbol_count_after,
-        });
 
+        let call = step.call;
+        let partition = step.partition();
+        steps.push(step);
         let sub_size = valid_subsize(partition, call.b_size)?;
         let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
         if partition == PartitionType::None {
@@ -1261,32 +1262,21 @@ where
                             limits,
                         )?;
 
-                        let forced_chroma_partition =
-                            sdp_state.forced_chroma_partition(frame, call);
-                        let decision = mi_size_state
+                        let step = mi_size_state
                             .with_context_state(|context| {
-                                read_frontier_partition_decision(
+                                read_frontier_partition_step(
                                     call,
                                     frame,
                                     tile_bounds,
                                     context,
-                                    forced_chroma_partition,
+                                    &mut sdp_state,
                                     work_unit.cdf_mut().tile_cdfs_mut(),
                                     &mut symbols,
                                 )
                             })
                             .map_err(GeneralIntraTreeWalkError::MiSize)??;
-                        let partition = decision.partition;
-                        let call = call.with_cfl_allowed_in_sdp(
-                            sdp_state.record_partition(frame, call, partition),
-                        );
-                        let (call, using_extended_sdp) = read_extended_sdp_region_type(
-                            frame,
-                            call,
-                            partition,
-                            work_unit.cdf_mut().tile_cdfs_mut(),
-                            &mut symbols,
-                        )?;
+                        let call = step.call;
+                        let partition = step.partition();
 
                         let sub_size = valid_subsize(partition, call.b_size)?;
                         let chroma_offset =
@@ -1294,7 +1284,7 @@ where
                         if partition != PartitionType::None {
                             let children =
                                 child_calls(call, partition, sub_size, frame, chroma_offset)?;
-                            if using_extended_sdp {
+                            if step.using_extended_sdp() {
                                 stack.push(TilePartitionStackEntry::ExtendedSdpChromaBlock(
                                     extended_sdp_chroma_call(frame, call),
                                 ));
@@ -2156,6 +2146,40 @@ fn checked_mul_shifted(
     shift: usize,
 ) -> Result<usize, TilePartitionTraversalError> {
     Ok(checked_mul(coordinate, value, scale)? >> shift)
+}
+
+fn read_frontier_partition_step(
+    call: TilePartitionCall,
+    frame: TilePartitionFrameFacts,
+    tile_bounds: TilePartitionBounds,
+    context: TilePartitionContextState<'_>,
+    sdp_state: &mut SdpPartitionState,
+    cdfs: &mut super::cdf::TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+) -> Result<TilePartitionFrontierStep, TilePartitionTraversalError> {
+    let symbol_count_before = symbols.symbol_count();
+    let forced_chroma_partition = sdp_state.forced_chroma_partition(frame, call);
+    let decision = read_frontier_partition_decision(
+        call,
+        frame,
+        tile_bounds,
+        context,
+        forced_chroma_partition,
+        cdfs,
+        symbols,
+    )?;
+    let symbol_count_after = symbols.symbol_count();
+    let partition = decision.partition;
+    let call = call.with_cfl_allowed_in_sdp(sdp_state.record_partition(frame, call, partition));
+    let (call, using_extended_sdp) =
+        read_extended_sdp_region_type(frame, call, partition, cdfs, symbols)?;
+    Ok(TilePartitionFrontierStep {
+        call,
+        decision,
+        symbol_count_before,
+        symbol_count_after,
+        using_extended_sdp,
+    })
 }
 
 fn read_frontier_partition_decision(

@@ -39,8 +39,8 @@ use super::coeff_loop::use_fsc_branch::{
     apply_coeff_use_fsc_branch_from_frame_facts, coeff_cdf_q_ctx_from_base_q_idx,
 };
 use super::coeff_loop::{
-    AllZeroCoeffBlockInput, CoeffBlockEobBranch, CoeffBlockEobBranchInput, CoeffLoopContextError,
-    NonZeroCoeffBlockStartInput, NonZeroCoeffEobContextInput, read_coeff_block_eob_branch,
+    AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
+    NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
 };
 use super::coeff_state::CoeffContextUpdate;
 use super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
@@ -1183,11 +1183,10 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         w4: tx_width >> 2,
         h4: tx_height >> 2,
     };
-    let start = match read_coeff_block_eob_branch(
-        context,
+    let start = read_nonzero_coeff_block_start(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
-        CoeffBlockEobBranchInput::NonZero(NonZeroCoeffBlockStartInput {
+        NonZeroCoeffBlockStartInput {
             block,
             eob: NonZeroCoeffEobContextInput {
                 plane: geometry.plane,
@@ -1196,15 +1195,9 @@ fn decode_staged_transform_tool_nonzero_coeffs(
                 tx_height_log2,
                 coeff_cdf_q_ctx,
             },
-        }),
+        },
     )
-    .map_err(|source| GeneralIntraResidualError::NonZeroStart { source })?
-    {
-        CoeffBlockEobBranch::NonZero(start) => start,
-        CoeffBlockEobBranch::AllZero(_) => {
-            return Err(GeneralIntraResidualError::UnexpectedBranch);
-        }
-    };
+    .map_err(|source| GeneralIntraResidualError::NonZeroStart { source })?;
     let eob = start.eob_read().eob().eob();
     let segment_id = current_segment_id();
     let lossless = frame_facts.lossless_for_segment(segment_id).ok_or(

@@ -47,10 +47,7 @@ macro_rules! coeff_branch_map_adapter {
 pub(crate) mod base_level_pass;
 pub(crate) mod base_symbol;
 mod branch;
-pub(crate) use branch::{
-    CoeffBlockEobBranch, CoeffBlockEobBranchInput, NonZeroCoeffBlockStartInput,
-    read_coeff_block_eob_branch,
-};
+pub(crate) use branch::{NonZeroCoeffBlockStartInput, read_nonzero_coeff_block_start};
 pub(crate) mod fsc_level_pass;
 pub(crate) mod fsc_quant_pass;
 #[cfg(test)]

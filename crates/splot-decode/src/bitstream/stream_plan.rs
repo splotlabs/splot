@@ -902,22 +902,38 @@ fn issue_from_core_error(
 }
 
 fn issue_from_ivf_error(error: &IvfError) -> DecodeSourceIssue {
-    DecodeSourceIssue {
-        kind: DecodeSourceIssueKind::IvfContainerError,
-        rule_id: Some(error.rule_id()),
-        offset: Some(error.offset()),
-        frame_index: ivf_error_frame_index(error),
-        message: error.to_string(),
-    }
+    issue_from_ivf_source(
+        DecodeSourceIssueKind::IvfContainerError,
+        error.rule_id(),
+        error.offset(),
+        ivf_error_frame_index(error),
+        error.to_string(),
+    )
 }
 
 fn issue_from_ivf_warning(warning: &IvfWarning) -> DecodeSourceIssue {
+    issue_from_ivf_source(
+        DecodeSourceIssueKind::IvfWarning,
+        warning.rule_id(),
+        warning.offset(),
+        ivf_warning_frame_index(warning),
+        warning.to_string(),
+    )
+}
+
+fn issue_from_ivf_source(
+    kind: DecodeSourceIssueKind,
+    rule_id: &'static str,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+    message: String,
+) -> DecodeSourceIssue {
     DecodeSourceIssue {
-        kind: DecodeSourceIssueKind::IvfWarning,
-        rule_id: Some(warning.rule_id()),
-        offset: Some(warning.offset()),
-        frame_index: ivf_warning_frame_index(warning),
-        message: warning.to_string(),
+        kind,
+        rule_id: Some(rule_id),
+        offset: Some(offset),
+        frame_index,
+        message,
     }
 }
 

@@ -33,12 +33,6 @@ pub(crate) struct MvReadConfig {
 }
 
 impl MvReadConfig {
-    #[allow(dead_code)]
-    const INTER_EIGHTH_PEL: Self = Self {
-        precision: MV_PRECISION_EIGHTH_PEL,
-        mv_ctx: INTER_MV_CONTEXT,
-    };
-
     pub(crate) const fn inter(precision: u8) -> Self {
         Self {
             precision,
@@ -91,15 +85,6 @@ pub(crate) fn lower_mv_precision(precision: u8, mv: Mv) -> Mv {
         row: round(mv.row),
         col: round(mv.col),
     }
-}
-
-#[allow(dead_code)]
-pub(crate) fn read_newmv_block_mvd(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    tile_offset: ByteOffset,
-) -> Result<Mv> {
-    read_newmv_block_mvd_with_config(cdfs, symbols, tile_offset, MvReadConfig::INTER_EIGHTH_PEL)
 }
 
 pub(crate) fn read_newmv_block_mvd_magnitude(
@@ -484,19 +469,6 @@ fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i64, tile_offset: ByteOffset) -> 
     let extra = read_bypass_bit(symbols, tile_offset)?;
     let result = (u64::from(v) << 1) - m + u64::from(extra);
     i64::try_from(result).map_err(|_| mv_overflow(tile_offset))
-}
-
-#[allow(dead_code)]
-fn apply_sign(
-    magnitude: i32,
-    symbols: &mut SymbolDecoder<'_>,
-    tile_offset: ByteOffset,
-) -> Result<i32> {
-    if magnitude == 0 {
-        return Ok(0);
-    }
-    let sign = read_bypass_bit(symbols, tile_offset)?;
-    Ok(if sign != 0 { -magnitude } else { magnitude })
 }
 
 fn read_symbol(

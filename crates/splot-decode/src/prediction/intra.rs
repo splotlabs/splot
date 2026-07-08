@@ -294,25 +294,6 @@ impl IntraLumaPlan {
     }
 }
 
-#[allow(dead_code)]
-fn plan_luma_prediction_from_parts(
-    luma_is_dc: bool,
-    nondc: Option<SupportedNonDcLumaMode>,
-    directional: Option<SupportedDirectionalLumaMode>,
-    block_ctx: BlockCtx,
-) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
-    if luma_is_dc {
-        return Ok(IntraLumaPlan::Dc);
-    }
-    if let Some(mode) = nondc {
-        return plan_nondc_luma(mode, block_ctx);
-    }
-    if let Some(mode) = directional {
-        return plan_directional_luma(mode, block_ctx);
-    }
-    Err(UNSUPPORTED_LUMA_MODE)
-}
-
 fn plan_nondc_luma(
     mode: SupportedNonDcLumaMode,
     block_ctx: BlockCtx,
@@ -360,14 +341,6 @@ fn plan_nondc_luma(
         }
         _ => Err(UNSUPPORTED_MULTIBLOCK_NON_DC_SUBBLOCK),
     }
-}
-
-#[allow(dead_code)]
-fn plan_directional_luma(
-    mode: SupportedDirectionalLumaMode,
-    block_ctx: BlockCtx,
-) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
-    plan_directional_luma_angle(mode, directional_mode_p_angle(mode), block_ctx, false)
 }
 
 fn plan_directional_luma_from_mode(

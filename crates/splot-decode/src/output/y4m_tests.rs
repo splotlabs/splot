@@ -11,7 +11,6 @@ use crate::test_support::{MINIMAL_FIXTURE, minimal_fixture_with_timebase};
 use crate::{
     DecodeContext, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError, DecodeLimitName,
     DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeRuntimeConfig, OUTPUT_ERROR_RULE_ID,
-    UNSUPPORTED_FEATURE_RULE_ID,
 };
 
 const MONO_FIXTURE: &[u8] =
@@ -100,7 +99,7 @@ fn monochrome_y4m_output_limit_charges_luma_only_payload() {
 }
 
 #[test]
-fn zero_ivf_timebase_fails_as_source_diagnostic_before_y4m_serialization() {
+fn zero_ivf_timebase_fails_as_y4m_output_diagnostic_before_writer_success() {
     for input in [
         minimal_fixture_with_timebase(0, 30),
         minimal_fixture_with_timebase(1, 0),
@@ -114,22 +113,25 @@ fn zero_ivf_timebase_fails_as_source_diagnostic_before_y4m_serialization() {
         assert!(bytes.is_empty());
         assert!(matches!(
             error,
-            DecodeError::UnsupportedFeature {
-                ref unsupported
-            } if unsupported.reason() == "invalid_ivf_timebase"
+            DecodeError::Output {
+                ref source
+            } if source.operation().as_str() == "serialize_y4m"
+                && source.source_kind() == "y4m"
         ));
 
         let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
-        assert_eq!(report.diagnostic.rule_id, UNSUPPORTED_FEATURE_RULE_ID);
-        assert_eq!(report.diagnostic.spec_section, Some("7.1"));
+        assert_eq!(report.diagnostic.rule_id, OUTPUT_ERROR_RULE_ID);
+        assert_eq!(report.diagnostic.spec_section, None);
         assert!(matches!(
             &report.details,
-            DecodeDiagnosticDetails::UnsupportedFeature(_)
+            DecodeDiagnosticDetails::OutputError(_)
         ));
-        let DecodeDiagnosticDetails::UnsupportedFeature(details) = report.details else {
+        let DecodeDiagnosticDetails::OutputError(details) = report.details else {
             return;
         };
-        assert_eq!(details.unsupported_reason, "invalid_ivf_timebase");
+        assert_eq!(details.operation, "serialize_y4m");
+        assert_eq!(details.source_kind, "y4m");
+        assert!(details.source_message.contains("invalid Y4M frame rate"));
     }
 }
 

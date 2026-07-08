@@ -153,22 +153,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
             "intra frame decode requires a reference store",
         )
     })?;
-    let reference = InterReferenceState {
-        store: &store,
-        ref_valid: Vec::new(),
-        ref_order_hint: Vec::new(),
-        ref_frame_width: Vec::new(),
-        ref_frame_height: Vec::new(),
-        ref_base_q_idx: Vec::new(),
-        ref_is_inter: Vec::new(),
-        ref_adapted: Vec::new(),
-        lr_frame_filter_class_counts: Vec::new(),
-        lr_frame_filter_taps: Vec::new(),
-        ref_frame_cdfs: Vec::new(),
-        ref_ccso_params: Vec::new(),
-        ref_ccso_unit_grids: Vec::new(),
-        ref_motion_fields: Vec::new(),
-    };
+    let reference = InterReferenceState::empty(&store);
 
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let _qm_scope = FrameQmScope::install(build_frame_qm_levels(core));
