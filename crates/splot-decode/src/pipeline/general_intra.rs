@@ -797,7 +797,13 @@ pub(super) fn lossless_chroma_block_prediction_verified(
             && neighbours.has_left()
             && (matches!(
                 mode,
-                M::D45 | M::D45Follow | M::D113 | M::D113Follow | M::D135 | M::D135Follow
+                M::HorizontalFollow
+                    | M::D45
+                    | M::D45Follow
+                    | M::D113
+                    | M::D113Follow
+                    | M::D135
+                    | M::D135Follow
             ) || matches!(mode, M::D157 | M::D157Follow | M::D203 | M::D203Follow)))
 }
 
