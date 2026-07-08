@@ -234,9 +234,11 @@ impl SymbolEncoder {
     /// # Errors
     /// Returns [`WriteError::ValueTooWide`] when `value > max_bits`,
     /// [`WriteError::BitWidthTooLarge`] when the resulting unary code does not fit
-    /// this writer's bounded bypass chunk, [`WriteError::SymbolOutputTooLarge`] if
-    /// the output limit would be exceeded, or [`WriteError::SymbolOperationLimit`]
-    /// if the operation limit would be exceeded.
+    /// this writer's single bounded bypass chunk. This synthesis helper keeps one
+    /// unary value in one chunk, so longer unary codes are rejected even though the
+    /// decoder accepts them. Returns [`WriteError::SymbolOutputTooLarge`] if the
+    /// output limit would be exceeded, or [`WriteError::SymbolOperationLimit`] if
+    /// the operation limit would be exceeded.
     pub fn write_unary(&mut self, value: u32, max_bits: u32) -> WriteResult<()> {
         if value > max_bits {
             return Err(WriteError::ValueTooWide {

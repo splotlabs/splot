@@ -16,6 +16,7 @@ use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
 const MIN_M: u32 = 1;
 const MAX_M: u32 = 6;
 const MAX_COEFF_REM_BITS: u32 = 32;
+/// AV2 §6 rejects a 21-zero prefix because `length == 20` requires a terminator.
 const MAX_EXP_GOLOMB_PREFIX_BITS: u32 = 21;
 
 /// Block-level facts for §5.20.7.28 `read_quant` parsing.
