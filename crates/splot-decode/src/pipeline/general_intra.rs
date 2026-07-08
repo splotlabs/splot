@@ -857,6 +857,7 @@ pub(super) fn lossless_chroma_block_prediction_verified(
                 SupportedChromaMode::Horizontal
                     | SupportedChromaMode::D45
                     | SupportedChromaMode::D135
+                    | SupportedChromaMode::Paeth
             )
         ))
         || (!neighbours.has_above() && neighbours.has_left() && d45)
