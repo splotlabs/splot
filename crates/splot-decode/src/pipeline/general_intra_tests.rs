@@ -130,6 +130,10 @@ const LOSSLESS_SDP_NONDC_CHROMA_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-h-intra-64x64.ivf"
 );
 
+const LOSSLESS_SDP_NONDC_CHROMA_D45_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d45-intra-64x64.ivf"
+);
+
 const LOSSLESS_SDP_NONDC_CHROMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d135-intra-64x64.ivf"
 );
@@ -772,6 +776,16 @@ fn lossless_nondc_chroma_d45_leftedge_frame_decodes_to_oracle() {
 }
 
 #[test]
+fn lossless_sdp_nondc_chroma_d45_frame_decodes_to_oracle() {
+    assert_lossless_explicit_chroma_oracle(
+        LOSSLESS_SDP_NONDC_CHROMA_D45_FIXTURE,
+        118,
+        "lossless SDP explicit D45",
+        "fda4ade10312b47ac3e2d8803a2aaaccb6f24a2b04ca6a5acb420c8770521ff4",
+    );
+}
+
+#[test]
 fn lossless_sdp_nondc_chroma_d135_frame_decodes_to_oracle() {
     assert_lossless_chroma_d135_oracle(
         LOSSLESS_SDP_NONDC_CHROMA_D135_FIXTURE,
@@ -886,6 +900,13 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     ));
     assert!(general_intra::lossless_chroma_part_prediction_verified(
         Some(SupportedChromaMode::Horizontal),
+        false,
+        crate::bitstream::tile_payload::IntraYMode::DC_PRED,
+        top_left_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_part_prediction_verified(
+        Some(SupportedChromaMode::D45),
         false,
         crate::bitstream::tile_payload::IntraYMode::DC_PRED,
         top_left_8,
@@ -1063,6 +1084,7 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
         }
         for mode in [
             SupportedChromaMode::Horizontal,
+            SupportedChromaMode::D45,
             SupportedChromaMode::D135,
             SupportedChromaMode::Paeth,
         ] {

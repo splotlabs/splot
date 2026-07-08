@@ -831,6 +831,7 @@ pub(super) fn lossless_chroma_part_prediction_verified(
             mode,
             Some(
                 SupportedChromaMode::Horizontal
+                    | SupportedChromaMode::D45
                     | SupportedChromaMode::D135
                     | SupportedChromaMode::Paeth
             )
