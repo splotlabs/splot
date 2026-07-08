@@ -853,7 +853,11 @@ pub(super) fn lossless_chroma_block_prediction_verified(
     ((sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left())
         && matches!(
             mode,
-            Some(SupportedChromaMode::Horizontal | SupportedChromaMode::D135)
+            Some(
+                SupportedChromaMode::Horizontal
+                    | SupportedChromaMode::D45
+                    | SupportedChromaMode::D135
+            )
         ))
         || (!neighbours.has_above() && neighbours.has_left() && d45)
 }
@@ -1621,6 +1625,7 @@ fn ensure_supported_chroma_capability(
                 block = "non_full_sb_or_not_first_row",
             ),
         )),
+        SupportedChromaMode::D45 if full_sb && neighbours.is_top_left() => Ok(()),
         SupportedChromaMode::D45Follow
         | SupportedChromaMode::D45
         | SupportedChromaMode::D67Follow
@@ -2465,6 +2470,15 @@ mod tests {
             Some(SupportedChromaMode::D67Follow),
             first_col_block
         ));
+    }
+
+    #[test]
+    fn admits_top_left_full_sb_d45_chroma() {
+        let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
+
+        assert!(
+            ensure_supported_chroma_capability(SupportedChromaMode::D45, None, top_left).is_ok()
+        );
     }
 
     #[test]

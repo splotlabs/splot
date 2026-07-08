@@ -114,6 +114,10 @@ const LOSSLESS_NONDC_CHROMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d135-intra-64x64.ivf"
 );
 
+const LOSSLESS_NONDC_CHROMA_D45_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d45-intra-64x64.ivf"
+);
+
 const LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d45-leftedge-128x64.ivf"
 );
@@ -684,6 +688,26 @@ fn lossless_nondc_chroma_d135_frame_decodes_to_oracle() {
 }
 
 #[test]
+fn lossless_nondc_chroma_d45_frame_decodes_to_oracle() {
+    assert_eq!(LOSSLESS_NONDC_CHROMA_D45_FIXTURE.len(), 123);
+    let frame = decode_eight(LOSSLESS_NONDC_CHROMA_D45_FIXTURE);
+
+    assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
+    assert_chroma_size(&frame, 32, 32);
+    assert_all_samples_eq(
+        frame.y().samples(),
+        128,
+        "lossless explicit D45 chroma luma",
+    );
+    assert_distinct_gt(frame.u().unwrap().samples(), 4, "lossless explicit D45 U");
+    assert_distinct_gt(frame.v().unwrap().samples(), 4, "lossless explicit D45 V");
+    assert_hash(
+        &frame,
+        "fda4ade10312b47ac3e2d8803a2aaaccb6f24a2b04ca6a5acb420c8770521ff4",
+    );
+}
+
+#[test]
 fn lossless_nondc_chroma_d45_leftedge_frame_decodes_to_oracle() {
     assert_eq!(LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE.len(), 129);
     let frame = decode_eight(LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE);
@@ -787,6 +811,12 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     assert!(general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::D45),
         false,
+        top_left_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D45),
+        false,
         left_edge_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
@@ -829,7 +859,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D45),
+        Some(SupportedChromaMode::D45Follow),
         false,
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
