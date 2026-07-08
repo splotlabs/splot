@@ -161,6 +161,11 @@ description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a proj
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-lossless-sdp-nondc-chroma-d45-intra-64x64.ivf"
+description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned flat-luma, D45-shaped chroma input with SDP enabled and broad decode tools disabled. The stream carries DC luma plus SDP/chroma-part explicit non-DPCM D45_PRED chroma syntax (§ 5.20.5.6, uv_mode=7 resolves to D45_PRED, use_dpcm_uv=0) with lossless 4x4 chroma residual units; avmdec and splot decode byte-exact to raw SHA-256 fda4ade10312b47ac3e2d8803a2aaaccb6f24a2b04ca6a5acb420c8770521ff4; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-lossless-sdp-nondc-chroma-d135-intra-64x64.ivf"
 description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned flat-luma, mixed checker/diagonal chroma input with SDP enabled and broad decode tools disabled. The stream carries DC luma plus SDP/chroma-part explicit non-DPCM D135_PRED chroma syntax (§ 5.20.5.6, uv_mode=8 resolves to D135_PRED, use_dpcm_uv=0) with nonzero lossless residual coefficients; avmdec and splot decode byte-exact to raw SHA-256 73ffedb0ffe07b92f4f48c4da43f2572687397ad3e136e4553629de993096f5d; validates clean."
 expect = "clean"
