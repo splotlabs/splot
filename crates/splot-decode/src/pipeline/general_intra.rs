@@ -433,16 +433,12 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
 
     let chroma_plan = if frontier.has_chroma {
         Some(
-            chroma_plan_for_modes(&modes, block_ctx, cfl_ds_filter_index, sb_mib)
+            chroma_plan_for_modes(&modes, block_ctx, cfl_ds_filter_index, sb_mib, lossless)
                 .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?,
         )
     } else {
         None
     };
-    if let Some(RectChromaPlan::Mode(supported_chroma, dpcm)) = chroma_plan {
-        ensure_supported_chroma_capability(supported_chroma, dpcm, block_ctx)
-            .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?;
-    }
     let luma_plan = plan_luma_prediction_for_segment(&modes, block_ctx, lossless, sb_mib)
         .map_err(|error| general_intra_luma_plan_error(error, tile_offset))?;
 
@@ -474,7 +470,6 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         intra_edge,
         tile_offset,
     )?;
-
     if frontier.has_chroma {
         record_chroma_smooth(chroma_smooth, block_ctx, modes.supported_chroma_mode());
     }
@@ -861,6 +856,7 @@ pub(super) fn lossless_chroma_block_prediction_verified(
             mode,
             Some(
                 SupportedChromaMode::Horizontal
+                    | SupportedChromaMode::Vertical
                     | SupportedChromaMode::D45
                     | SupportedChromaMode::D135
                     | SupportedChromaMode::Paeth
@@ -1211,6 +1207,7 @@ fn chroma_plan_for_modes(
     block_ctx: BlockCtx,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
+    lossless: bool,
 ) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
     if modes.is_cfl() {
         return cfl_chroma_plan(
@@ -1224,7 +1221,18 @@ fn chroma_plan_for_modes(
         "general_intra_non_dc_chroma",
         missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
     ))?;
-    ensure_supported_chroma_capability(mode, modes.chroma_dpcm_direction(), block_ctx)?;
+    if let Err(error) =
+        ensure_supported_chroma_capability(mode, modes.chroma_dpcm_direction(), block_ctx)
+        && !(lossless
+            && lossless_chroma_block_prediction_verified(
+                Some(mode),
+                modes.uses_dpcm_uv(),
+                block_ctx,
+                sb_mib,
+            ))
+    {
+        return Err(error);
+    }
     Ok(rect_chroma_plan_for_mode(
         mode,
         modes.angle_delta_y,
@@ -2282,6 +2290,10 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(!ten_bit_general_intra_chroma_admitted(
+            Some(SupportedChromaMode::Vertical),
+            top_left,
+        ));
     }
 
     #[test]
@@ -3185,15 +3197,5 @@ mod tests {
             assert_rect_chroma_admitted(mode, first_row_rect_block);
             assert_rect_chroma_admitted(mode, first_col_rect_block);
         }
-    }
-
-    #[test]
-    fn keeps_10bit_vertical_chroma_top_left_gated() {
-        let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
-
-        assert!(!ten_bit_general_intra_chroma_admitted(
-            Some(SupportedChromaMode::Vertical),
-            top_left
-        ));
     }
 }
