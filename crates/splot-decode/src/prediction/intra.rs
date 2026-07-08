@@ -18,6 +18,7 @@ const FULL_SB_N4_LUMA: usize = 16;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IntraLumaPlan {
     Palette { palette: LumaPalette },
+    Dip { mode: u8, transpose: bool },
     Dc,
     NonDcFirst { mode: SupportedNonDcLumaMode },
     NonDcNeighbour { mode: SupportedNonDcLumaMode },
@@ -57,6 +58,12 @@ pub(crate) fn plan_luma_prediction(
 ) -> core::result::Result<IntraLumaPlan, IntraLumaUnsupported> {
     if let Some(palette) = modes.palette_y() {
         return Ok(IntraLumaPlan::Palette { palette });
+    }
+    if modes.uses_active_dip() {
+        return Ok(IntraLumaPlan::Dip {
+            mode: modes.dip_mode,
+            transpose: modes.dip_transpose != 0,
+        });
     }
     if modes.luma_is_dc() {
         return Ok(IntraLumaPlan::Dc);
@@ -100,6 +107,30 @@ impl IntraLumaPlan {
         let neighbours = block_ctx.neighbours(PlaneId::Y);
         match self {
             Self::Palette { .. } => Err(GeneralIntraResidualError::UnexpectedBranch),
+            Self::Dip { mode, transpose } => {
+                let decode_aware =
+                    block_ctx.neighbours_from_block_decoded(PlaneId::Y, block_decoded);
+                crate::pipeline::reconstruct::reconstruct_general_intra_luma_dip_rect_block_into(
+                    workspace,
+                    luma,
+                    mode,
+                    transpose,
+                    x,
+                    y,
+                    log2_side,
+                    log2_side,
+                    qindex,
+                    use_tcq,
+                    decode_aware.num_above_right(),
+                    decode_aware.num_below_left(),
+                    luma_context,
+                    crate::pipeline::reconstruct::IntraEdgeAvailability {
+                        above: neighbours.has_above(),
+                        left: neighbours.has_left(),
+                    },
+                    bit_depth,
+                )
+            }
             Self::Dc => {
                 let ibp_dc = enable_ibp && log2_side != 2;
                 crate::pipeline::reconstruct::reconstruct_general_intra_block_rect_with_availability_into(

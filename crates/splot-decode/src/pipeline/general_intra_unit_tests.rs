@@ -733,6 +733,43 @@ fn admits_small_rect_paeth_luma_regardless_of_neighbour_edges() {
 }
 
 #[test]
+fn active_dip_luma_routes_before_dc() {
+    let modes = GeneralIntraBlockModes::luma_only(
+        crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
+            y_mode: IntraYMode::DC_PRED,
+            angle_delta_y: 0,
+            intra_joint_mode: 0,
+            mrl_index: 0,
+            mrl_sec_index: None,
+            fsc_mode: 0,
+            uses_mrls: 0,
+            use_dip: 1,
+            dip_transpose: 1,
+            dip_mode: 2,
+            use_dpcm_y: 0,
+            dpcm_mode_y: 0,
+        },
+    );
+    let block = ctx(0, 10, 2, 4);
+
+    assert_eq!(
+        plan_luma_prediction(&modes, block, false),
+        Ok(crate::prediction::intra::IntraLumaPlan::Dip {
+            mode: 2,
+            transpose: true,
+        })
+    );
+    assert_eq!(
+        rect_luma_plan(&modes, block, true, 16),
+        Ok(RectLumaPlan::Dip {
+            mode: 2,
+            transpose: true,
+            use_tcq: true,
+        })
+    );
+}
+
+#[test]
 fn admits_rect_luma_mrl_cases() {
     for (label, y_mode, angle_delta_y, mrl_index, mrl_sec_index, block, expected) in [
         (

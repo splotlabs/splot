@@ -55,6 +55,11 @@ pub(crate) enum RectLumaPlan {
     Dc {
         use_tcq: bool,
     },
+    Dip {
+        mode: u8,
+        transpose: bool,
+        use_tcq: bool,
+    },
     Middle {
         p_angle: u16,
         use_tcq: bool,
@@ -187,6 +192,11 @@ enum ResidualReconstructionPlan {
         mode: SupportedNonDcLumaMode,
         use_tcq: bool,
     },
+    LumaRectDip {
+        mode: u8,
+        transpose: bool,
+        use_tcq: bool,
+    },
     LumaRectMiddle {
         p_angle: u16,
         use_tcq: bool,
@@ -306,6 +316,15 @@ impl GeneralIntraResidualPlan {
                 ResidualReconstructionPlan::LumaPalette { palette, use_tcq }
             }
             RectLumaPlan::Dc { use_tcq } => ResidualReconstructionPlan::Rect { use_tcq },
+            RectLumaPlan::Dip {
+                mode,
+                transpose,
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectDip {
+                mode,
+                transpose,
+                use_tcq,
+            },
             RectLumaPlan::Middle { p_angle, use_tcq } => {
                 ResidualReconstructionPlan::LumaRectMiddle { p_angle, use_tcq }
             }
@@ -957,7 +976,8 @@ impl ResidualPlanePlan {
             | ResidualReconstructionPlan::LumaRectMiddle { .. }
             | ResidualReconstructionPlan::LumaRectOneSidedAbove { .. }
             | ResidualReconstructionPlan::LumaRectOneSidedLeft { .. }
-            | ResidualReconstructionPlan::LumaRectOneSidedLeftMrl { .. } => self.reconstruction,
+            | ResidualReconstructionPlan::LumaRectOneSidedLeftMrl { .. }
+            | ResidualReconstructionPlan::LumaRectDip { .. } => self.reconstruction,
             ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
                 p_angle,
                 mrl_index,
@@ -1019,6 +1039,14 @@ impl ResidualPlanePlan {
                 plan: IntraLumaPlan::Dc,
                 use_tcq,
             } => ResidualReconstructionPlan::Rect { use_tcq },
+            ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::Dip { mode, transpose },
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectDip {
+                mode,
+                transpose,
+                use_tcq,
+            },
             ResidualReconstructionPlan::LumaSquare {
                 plan: IntraLumaPlan::PaethNeighbour,
                 use_tcq,
@@ -1443,6 +1471,31 @@ impl ResidualPlanePlan {
                     neighbours.num_above_right(),
                     neighbours.num_below_left(),
                     Some(luma_context),
+                    EdgeAvail::new(edges.has_above(), edges.has_left()),
+                    block_ctx.bit_depth(),
+                )
+            }
+            ResidualReconstructionPlan::LumaRectDip {
+                mode,
+                transpose,
+                use_tcq,
+            } => {
+                let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
+                let edges = block_ctx.neighbours(PlaneId::Y);
+                crate::pipeline::reconstruct::reconstruct_general_intra_luma_dip_rect_block_into(
+                    workspace,
+                    coeffs,
+                    mode,
+                    transpose,
+                    self.x,
+                    self.y,
+                    self.tx.width_log2(),
+                    self.tx.height_log2(),
+                    qindex,
+                    use_tcq,
+                    neighbours.num_above_right(),
+                    neighbours.num_below_left(),
+                    luma_context,
                     EdgeAvail::new(edges.has_above(), edges.has_left()),
                     block_ctx.bit_depth(),
                 )
