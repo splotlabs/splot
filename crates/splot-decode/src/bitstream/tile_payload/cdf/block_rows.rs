@@ -8,9 +8,9 @@ use splot_core::tables::cdf::{
     DEFAULT_CFL_MHCCP_CDF, DEFAULT_CFL_SIGN_CDF, DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_COMP_MODE_CDF,
     DEFAULT_COMP_REF0_CDF, DEFAULT_COMP_REF1_CDF, DEFAULT_COMPOUND_MODE_NON_JOINT_CDF,
     DEFAULT_COMPOUND_MODE_SAME_REFS_CDF, DEFAULT_COMPOUND_TYPE_CDF, DEFAULT_CWP_IDX_CDF,
-    DEFAULT_DC_SIGN_CDF, DEFAULT_DPCM_MODE_UV_CDF, DEFAULT_DPCM_MODE_Y_CDF, DEFAULT_DRL_MODE_CDF,
-    DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF,
-    DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_DIP_MODE_CDF, DEFAULT_DPCM_MODE_UV_CDF, DEFAULT_DPCM_MODE_Y_CDF,
+    DEFAULT_DRL_MODE_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF,
+    DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF,
     DEFAULT_EOB_PT_1024_CDF, DEFAULT_EXPLICIT_BAWP_CDF, DEFAULT_EXPLICIT_BAWP_SCALE_CDF,
     DEFAULT_IDENTITY_ROW_Y_CDF, DEFAULT_INTER_INTRA_CDF, DEFAULT_INTER_INTRA_MODE_CDF,
     DEFAULT_INTER_TX_TYPE_INDEX_SET1_CDF, DEFAULT_INTER_TX_TYPE_INDEX_SET2_CDF,
@@ -27,8 +27,8 @@ use splot_core::tables::cdf::{
     DEFAULT_PALETTE_Y_MODE_CDF, DEFAULT_PALETTE_Y_SIZE_CDF, DEFAULT_PB_MV_PRECISION_CDF,
     DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF,
     DEFAULT_TIP_MODE_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_AMVD_CDF, DEFAULT_USE_BAWP_CDF,
-    DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_DPCM_UV_CDF, DEFAULT_USE_DPCM_Y_CDF,
-    DEFAULT_USE_EXTEND_WARP_CDF, DEFAULT_USE_LOCAL_WARP_CDF,
+    DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_DIP_CDF, DEFAULT_USE_DPCM_UV_CDF,
+    DEFAULT_USE_DPCM_Y_CDF, DEFAULT_USE_EXTEND_WARP_CDF, DEFAULT_USE_LOCAL_WARP_CDF,
     DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF, DEFAULT_USE_WIENER_NS_CDF,
     DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WARP_DELTA_PARAM_HIGH_CDF,
     DEFAULT_WARP_DELTA_PARAM_LOW_CDF, DEFAULT_WARP_DELTA_PARAM_SIGN_CDF, DEFAULT_WARP_IDX_CDF,
@@ -61,6 +61,8 @@ const TX_SIZE_CONTEXTS: usize = 5;
 const TXB_SKIP_CONTEXTS: usize = 10;
 const UV_MODE_CONTEXTS: usize = 2;
 const CFL_CONTEXTS: usize = 3;
+const DIP_CONTEXTS: usize = 3;
+const DIP_MODE_ROW_LEN: usize = 7;
 const CFL_ALPHA_CONTEXTS: usize = 6;
 const CFL_ALPHA_CDF_ROW_LEN: usize = 9;
 const CFL_SIGN_CDF_ROW_LEN: usize = 9;
@@ -150,6 +152,8 @@ pub(crate) type CflSignCdfRow = [i32; CFL_SIGN_CDF_ROW_LEN];
 pub(crate) type CflAlphaCdfRows = [[i32; CFL_ALPHA_CDF_ROW_LEN]; CFL_ALPHA_CONTEXTS];
 pub(crate) type CflMhccpCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type CflMhDirCdfRows = [[i32; CFL_MH_DIR_CDF_ROW_LEN]; CFL_MH_DIR_GROUPS];
+pub(crate) type UseDipCdfRows = [[i32; CDF_ROW_LEN]; DIP_CONTEXTS];
+pub(crate) type DipModeCdfRow = [i32; DIP_MODE_ROW_LEN];
 pub(crate) type VTxbSkipCdfRows = [[[i32; CDF_ROW_LEN]; V_TXB_SKIP_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type EobExtraCdfRows = [[i32; CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type DcSignCdfRows =
@@ -285,6 +289,8 @@ pub(crate) struct BlockCdfRows {
     pub(crate) cfl_alpha: CflAlphaCdfRows,
     pub(crate) cfl_mhccp: CflMhccpCdfRow,
     pub(crate) cfl_mh_dir: CflMhDirCdfRows,
+    pub(crate) use_dip: UseDipCdfRows,
+    pub(crate) dip_mode: DipModeCdfRow,
     pub(crate) v_txb_skip: VTxbSkipCdfRows,
     pub(crate) eob_extra: EobExtraCdfRows,
     pub(crate) eob_pt_16: EobPt16CdfRows,
@@ -468,6 +474,15 @@ macro_rules! block_cdf_row {
                 $get,
                 $as_slice
             ),
+            TileCdfSelector::UseDip { ctx } => block_row_slice!(
+                $self.use_dip,
+                ctx,
+                "ctx",
+                TileCdfArray::UseDip,
+                $get,
+                $as_slice
+            ),
+            TileCdfSelector::DipMode => Ok($self.dip_mode.$as_slice()),
             TileCdfSelector::VTxbSkip {
                 coeff_cdf_q_ctx,
                 ctx,
@@ -1028,6 +1043,8 @@ macro_rules! block_cdf_count_rows {
         $rows!(cfl_alpha);
         $row!(cfl_mhccp);
         $rows!(cfl_mh_dir);
+        $rows!(use_dip);
+        $row!(dip_mode);
         $rows!(eob_pt_16.flatten());
         $rows!(eob_pt_32.flatten());
         $rows!(eob_pt_64.flatten());
@@ -1131,6 +1148,8 @@ impl BlockCdfRows {
             cfl_alpha: DEFAULT_CFL_ALPHA_CDF,
             cfl_mhccp: DEFAULT_CFL_MHCCP_CDF,
             cfl_mh_dir: DEFAULT_CFL_MH_DIR_CDF,
+            use_dip: DEFAULT_USE_DIP_CDF,
+            dip_mode: DEFAULT_DIP_MODE_CDF,
             v_txb_skip: DEFAULT_V_TXB_SKIP_CDF,
             eob_extra: DEFAULT_EOB_EXTRA_CDF,
             eob_pt_16: DEFAULT_EOB_PT_16_CDF,

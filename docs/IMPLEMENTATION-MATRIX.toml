@@ -14341,9 +14341,10 @@ id = "DECODE-GENERAL-INTRA-BLOCK-MODES"
 name = "General intra block mode-info decode"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.5.3", "8.3.2"]
+spec_sections = ["5.20.5.3", "5.20.7.9", "8.3.2"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-9",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
 ]
 crate = "splot-decode"
@@ -14352,7 +14353,7 @@ change_id = "decode-general-intra-block-modes"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Adds crate-private general intra block mode-info decode in `splot-decode` for the AVM-oracle general intra path, decoding the AV2 §5.20.5.3 `intra_frame_mode_info` mode symbols in spec order without the frozen minimal-tier trace's value assertions. `decode_general_intra_block_modes` reads `read_intra_y_mode` (`y_mode_set`, then `y_mode_index` with the §8.3.2 tile-origin context) and reconstructs the typed non-directional luma `YMode`, then `read_intra_uv_mode` (`uv_mode` with the §8.3.2 `is_directional_mode(YMode)` context, plus the `uv_mode == CHROMA_MODE_COUNT - 1` `uv_mode_idx` escape). It is wired into the general intra frame path after the §5.20.3.1 partition frontier, advancing the rejection from the partition frontier to the residual step. For the minimal-tool subset (no intra block copy, segmentation, GDF, CDEF, CCSO, delta-Q, lossless DPCM, palette, DIP, FSC, MRL, CfL, or MHCCP) those tool branches read no symbols. It does not reconstruct the typed `UVMode`, decode the residual or transform-block syntax, read coefficient symbols, write `Quant`, dequantize, inverse transform, add residuals, reconstruct pixels, handle the directional / escape / second-mode `YMode` reconstruction paths, or invoke AVM/dav2d."
+notes = "Adds crate-private general intra block mode-info decode in `splot-decode` for the AVM-oracle general intra path, decoding the AV2 §5.20.5.3 `intra_frame_mode_info` mode symbols in spec order without the frozen minimal-tier trace's value assertions. `decode_general_intra_block_modes` reads `read_intra_y_mode` (`y_mode_set`, then `y_mode_index` with the §8.3.2 tile-origin context) and reconstructs the typed non-directional luma `YMode`, then `read_intra_uv_mode` (`uv_mode` with the §8.3.2 `is_directional_mode(YMode)` context, plus the `uv_mode == CHROMA_MODE_COUNT - 1` `uv_mode_idx` escape). It is wired into the general intra frame path after the §5.20.3.1 partition frontier, advancing the rejection from the partition frontier to the residual step. For the minimal-tool subset (no intra block copy, segmentation, GDF, CDEF, CCSO, delta-Q, lossless DPCM, palette, DIP, FSC, MRL, CfL, or MHCCP) those tool branches read no symbols. Follow-on DIP syntax support exposes generated `TileUseDipCdf` / `TileDipModeCdf` rows, retains tile-local `UseDip` NPos context, carries `enable_dip` from `sequence_intra_config()`, and consumes AV2 §5.20.7.9 `dip_mode_info()` after palette for enabled DC luma blocks with `PaletteSizeY == 0`, reading `use_dip`, `dip_transpose`, and `dip_mode` as metadata so active DIP streams remain entropy-synchronized. It does not implement the §7.13.2.4-§7.13.2.6 data-driven intra prediction process, reconstruct the typed `UVMode`, decode the residual or transform-block syntax, read coefficient symbols, write `Quant`, dequantize, inverse transform, add residuals, reconstruct pixels, handle the directional / escape / second-mode `YMode` reconstruction paths, or invoke AVM/dav2d."
 
 [feature.status]
 mapped = "done"
@@ -14369,17 +14370,24 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs::tests::decodes_dc_luma_mode_and_a_chroma_mode_in_spec_order",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs::tests::active_dip_mode_info_reads_flag_transpose_and_mode_after_palette",
+    "crates/splot-decode/src/bitstream/tile_payload/cdf.rs::tests::dip_cdf_selectors_match_generated_defaults_and_check_bounds",
+    "crates/splot-decode/src/bitstream/tile_payload/intra_joint_modes.rs::tests::fsc_and_use_dip_neighbours_select_context_sum",
     "crates/splot-cli/tests/decode_cli.rs::decode_general_intra_fixture_decodes_luma_coeffs_and_reaches_chroma",
 ]
 commands = [
     "cargo test -p splot-decode general_intra_block --locked",
+    "cargo test -p splot-decode dip_cdf_selectors_match_generated_defaults_and_check_bounds --locked",
+    "cargo test -p splot-decode use_dip --locked",
     "cargo test -p splot-cli --test decode_cli --locked",
     "cargo xtask check-decoder-support",
     "cargo xtask check-decoder-conformance-coverage",
     "cargo xtask check-feature-status",
 ]
 fixtures = [
+    "crates/splot-decode/src/bitstream/tile_payload/cdf.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/intra_joint_modes.rs",
     "crates/splot-decode/src/pipeline/mod.rs",
     "tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf",
 ]

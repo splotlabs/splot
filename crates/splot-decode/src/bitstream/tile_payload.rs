@@ -59,7 +59,8 @@ pub(crate) use general_intra_block::{
     CflIndex, CflParams, GeneralIntraBlockModeError, GeneralIntraBlockModes,
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
     decode_general_intra_block_modes_with_fsc_context, decode_general_intra_chroma_block_mode,
-    decode_general_intra_luma_block_mode_with_fsc_context, read_general_intra_palette_y_mode,
+    decode_general_intra_luma_block_mode_with_fsc_context, read_general_intra_dip_mode_info,
+    read_general_intra_palette_y_mode,
 };
 pub(crate) use general_intra_residual::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, FrameQmScope, FrameQmSegmentScope,
@@ -80,7 +81,7 @@ pub(crate) use input::{
 pub(crate) use intra_joint_modes::IsCflContext;
 pub(crate) use intra_joint_modes::{
     LumaPalette, TileFscModeState, TileIntraJointModeState, TileLumaPaletteState,
-    TileSegmentIdState, TileUsesMrlsState, neg_deinterleave,
+    TileSegmentIdState, TileUseDipState, TileUsesMrlsState, neg_deinterleave,
 };
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;

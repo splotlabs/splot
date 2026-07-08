@@ -1247,6 +1247,9 @@ fn lossless_luma_prediction_guard_rejects_unverified_nondc_with_offset() {
         mrl_sec_index: None,
         fsc_mode: 0,
         uses_mrls: 0,
+        use_dip: 0,
+        dip_transpose: 0,
+        dip_mode: 0,
         use_dpcm_y: 0,
         dpcm_mode_y: 0,
     });
@@ -1295,6 +1298,9 @@ fn lossless_luma_prediction_guard_rejects_unproven_d113_chroma_cross_product() {
             mrl_sec_index: None,
             fsc_mode: 0,
             uses_mrls: 0,
+            use_dip: 0,
+            dip_transpose: 0,
+            dip_mode: 0,
             use_dpcm_y: 0,
             dpcm_mode_y: 0,
         });
