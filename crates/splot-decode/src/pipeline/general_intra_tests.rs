@@ -1101,6 +1101,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         general_intra::FULL_SB_N4_LUMA,
     ));
     for mode in [
+        SupportedChromaMode::Vertical,
         SupportedChromaMode::HorizontalFollow,
         SupportedChromaMode::D45,
         SupportedChromaMode::D45Follow,
@@ -1193,12 +1194,6 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         Some(SupportedChromaMode::D203Follow),
         false,
         top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(!general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::Vertical),
-        false,
-        left_edge_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
@@ -1335,7 +1330,7 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
     use SupportedChromaMode as M;
 
     let reject_all_block_modes = [M::Vertical, M::Horizontal, M::D135, M::Paeth];
-    let reject_left_edge_block_modes = [M::Vertical, M::Horizontal, M::Paeth];
+    let reject_left_edge_block_modes = [M::Horizontal, M::Paeth];
     for (block_ctx, sb_mib, block_modes) in [
         (
             block_ctx(
@@ -1452,8 +1447,8 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
             ),
             32,
             [
-                SupportedChromaMode::Vertical,
                 SupportedChromaMode::Smooth,
+                SupportedChromaMode::SmoothVertical,
                 SupportedChromaMode::Horizontal,
                 SupportedChromaMode::D67,
                 SupportedChromaMode::Paeth,
