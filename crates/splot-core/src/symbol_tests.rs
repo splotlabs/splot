@@ -154,6 +154,87 @@ fn read_literal_rejects_wide_width() {
 }
 
 #[test]
+fn read_unary_matches_literal_bit_loop_state() {
+    let payloads = [
+        [0xA7, 0x39, 0xC1, 0x5E, 0x82, 0x44, 0x19, 0xD0],
+        [0x12, 0xF4, 0x67, 0x88, 0x9A, 0xBC, 0xDE, 0xF0],
+        [0xFF, 0x00, 0x81, 0x7E, 0x42, 0x24, 0x18, 0x80],
+    ];
+    let widths = [1, 5, 6, 21, 32];
+
+    for payload in payloads {
+        for max_bits in widths {
+            let mut unary = SymbolDecoder::new(&payload).unwrap();
+            let mut literal = SymbolDecoder::new(&payload).unwrap();
+            prime_unary_comparison_decoder(&mut unary);
+            prime_unary_comparison_decoder(&mut literal);
+
+            let unary_value = unary.read_unary(max_bits).unwrap();
+            let literal_value = read_unary_as_literal_bits(&mut literal, max_bits);
+
+            assert_eq!(unary_value, literal_value, "max_bits={max_bits}");
+            assert_eq!(
+                unary.checkpoint(),
+                literal.checkpoint(),
+                "max_bits={max_bits}"
+            );
+        }
+    }
+}
+
+#[test]
+fn read_literal_chunks_match_one_bit_loop_state() {
+    let payloads = [
+        [0xA7, 0x39, 0xC1, 0x5E, 0x82, 0x44, 0x19, 0xD0],
+        [0x12, 0xF4, 0x67, 0x88, 0x9A, 0xBC, 0xDE, 0xF0],
+        [0xFF, 0x00, 0x81, 0x7E, 0x42, 0x24, 0x18, 0x80],
+    ];
+    let widths = [2, 3, 6, 7, 8, 9, 16, 21, 32];
+
+    for payload in payloads {
+        for width in widths {
+            let mut chunked = SymbolDecoder::new(&payload).unwrap();
+            let mut bit_loop = SymbolDecoder::new(&payload).unwrap();
+            prime_unary_comparison_decoder(&mut chunked);
+            prime_unary_comparison_decoder(&mut bit_loop);
+
+            let chunked_value = chunked.read_literal(width).unwrap();
+            let loop_value = read_literal_as_one_bit_chunks(&mut bit_loop, width);
+
+            assert_eq!(chunked_value, loop_value, "width={width}");
+            assert_eq!(chunked.checkpoint(), bit_loop.checkpoint(), "width={width}");
+        }
+    }
+}
+
+fn prime_unary_comparison_decoder(decoder: &mut SymbolDecoder<'_>) {
+    let mut cdf = [8192, 16_384, 24_576, 0, 0];
+    let _ = decoder.read_symbol(&mut cdf).unwrap();
+    let _ = decoder.read_literal(3).unwrap();
+    let _ = decoder.read_bool().unwrap();
+}
+
+fn read_unary_as_literal_bits(decoder: &mut SymbolDecoder<'_>, max_bits: u32) -> u32 {
+    let mut value = 0;
+    for _ in 0..max_bits {
+        if decoder.read_literal(1).unwrap() == 0 {
+            value += 1;
+        } else {
+            break;
+        }
+    }
+    value
+}
+
+fn read_literal_as_one_bit_chunks(decoder: &mut SymbolDecoder<'_>, width: u32) -> u32 {
+    let mut value = 0;
+    for _ in 0..width {
+        value = (value << 1) | decoder.read_literal(1).unwrap();
+    }
+    value
+}
+
+#[test]
 fn num_bits_to_read_does_not_truncate_large_symbol_max_bits() {
     let mut decoder = SymbolDecoder::new(&[0x80, 0x00]).unwrap();
     decoder.symbol_max_bits = i64::from(u32::MAX) + 1;

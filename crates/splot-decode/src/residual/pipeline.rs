@@ -256,7 +256,7 @@ enum ResidualReconstructionPlan {
 
 struct ResidualPlaneExecution {
     coeffs: crate::bitstream::tile_payload::LumaCoeffBlock,
-    unit_nonzero: Option<Vec<bool>>,
+    last_unit_nonzero: Option<bool>,
 }
 
 impl GeneralIntraResidualPlan {
@@ -266,6 +266,7 @@ impl GeneralIntraResidualPlan {
         chroma_plan: Option<RectChromaPlan>,
         luma_use_tcq: bool,
         luma_fsc_mode: bool,
+        lossless: bool,
     ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
         let mut planes = Vec::new();
         let luma_reconstruction = ResidualReconstructionPlan::LumaSquare {
@@ -286,6 +287,7 @@ impl GeneralIntraResidualPlan {
             luma_reconstruction,
             chroma_reconstruction,
             luma_fsc_mode,
+            lossless,
         )?;
         Ok(Self { planes })
     }
@@ -295,6 +297,7 @@ impl GeneralIntraResidualPlan {
         luma_plan: RectLumaPlan,
         chroma_plan: Option<RectChromaPlan>,
         luma_fsc_mode: bool,
+        lossless: bool,
     ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
         let mut planes = Vec::new();
         let chroma_reconstruction = chroma_plan.map(chroma_reconstruction);
@@ -380,6 +383,7 @@ impl GeneralIntraResidualPlan {
             luma_reconstruction,
             chroma_reconstruction,
             luma_fsc_mode,
+            lossless,
         )?;
         Ok(Self { planes })
     }
@@ -425,43 +429,40 @@ impl GeneralIntraResidualPlan {
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         deblock: &mut DeblockRecorder<'_>,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
-        let mut execute = |plane: ResidualPlanePlan,
-                           eob_u_nonzero,
-                           u_unit_nonzero: Option<&[bool]>,
-                           deblock: &mut DeblockRecorder<'_>| {
-            let tx_partition_context = (plane.plane_id == PlaneId::Y)
-                .then_some(luma_tx_partition_context)
-                .flatten();
-            plane.execute(
-                work_unit,
-                symbols,
-                coeff_ctx,
-                workspace,
-                block_decoded,
-                uv_mode,
-                luma_transform_type_context,
-                tx_partition_context,
-                transform_tool_residual_policy,
-                qindex,
-                eob_u_nonzero,
-                u_unit_nonzero,
-                intra_edge,
-                deblock,
-            )
-        };
+        let mut execute =
+            |plane: ResidualPlanePlan, eob_u_nonzero, deblock: &mut DeblockRecorder<'_>| {
+                let tx_partition_context = (plane.plane_id == PlaneId::Y)
+                    .then_some(luma_tx_partition_context)
+                    .flatten();
+                plane.execute(
+                    work_unit,
+                    symbols,
+                    coeff_ctx,
+                    workspace,
+                    block_decoded,
+                    uv_mode,
+                    luma_transform_type_context,
+                    tx_partition_context,
+                    transform_tool_residual_policy,
+                    qindex,
+                    eob_u_nonzero,
+                    intra_edge,
+                    deblock,
+                )
+            };
 
         if !self.planes.iter().any(|plane| plane.plane_id == PlaneId::Y) {
             deblock.record_chroma_part_block();
         }
         let mut u_nonzero = false;
-        let mut u_unit_nonzero = None;
         let mut deferred = Vec::new();
         for &plane in &self.planes {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
-            let execution = execute(plane, eob_u_nonzero, u_unit_nonzero.as_deref(), deblock)?;
+            let execution = execute(plane, eob_u_nonzero, deblock)?;
             if plane.plane_id == PlaneId::U {
-                u_nonzero = !execution.coeffs.all_zero;
-                u_unit_nonzero = execution.unit_nonzero;
+                u_nonzero = execution
+                    .last_unit_nonzero
+                    .unwrap_or(!execution.coeffs.all_zero);
             }
             if plane.defer_reconstruction {
                 deferred.push((plane, execution.coeffs));
@@ -634,7 +635,6 @@ impl ResidualPlanePlan {
         transform_tool_residual_policy: TransformToolResidualPolicy,
         qindex: u32,
         eob_u_nonzero: bool,
-        u_unit_nonzero: Option<&[bool]>,
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         deblock: &mut DeblockRecorder<'_>,
     ) -> core::result::Result<ResidualPlaneExecution, GeneralIntraResidualError> {
@@ -658,7 +658,6 @@ impl ResidualPlanePlan {
                 policy,
                 qindex,
                 eob_u_nonzero,
-                u_unit_nonzero,
                 palette_color_map.as_deref(),
                 intra_edge,
                 luma_transform_type_context,
@@ -746,7 +745,7 @@ impl ResidualPlanePlan {
         }
         Ok(ResidualPlaneExecution {
             coeffs,
-            unit_nonzero: None,
+            last_unit_nonzero: None,
         })
     }
 
@@ -772,7 +771,6 @@ impl ResidualPlanePlan {
         policy: TransformToolResidualPolicy,
         qindex: u32,
         eob_u_nonzero: bool,
-        u_unit_nonzero: Option<&[bool]>,
         palette_color_map: Option<&[u8]>,
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         luma_context: LumaTransformTypeContext,
@@ -786,21 +784,13 @@ impl ResidualPlanePlan {
         )?;
         let tx_fills_block = self.tx_fills_residual_block() && unit_count == 1;
         let mut blocks = Vec::new();
-        let mut unit_nonzero = (self.plane_id == PlaneId::U).then(Vec::new);
+        let mut last_unit_nonzero = None;
         blocks.try_reserve(unit_count).map_err(|_| {
             GeneralIntraResidualError::TransformPartitionGeometry {
                 table: "Lossless_Tx_Units",
                 index: unit_count,
             }
         })?;
-        if let Some(unit_nonzero) = &mut unit_nonzero {
-            unit_nonzero.try_reserve(unit_count).map_err(|_| {
-                GeneralIntraResidualError::TransformPartitionGeometry {
-                    table: "Lossless_Tx_Units",
-                    index: unit_count,
-                }
-            })?;
-        }
         for y4 in 0..self.tx.height4() {
             for x4 in 0..self.tx.width4() {
                 let x = self.x + x4 * 4;
@@ -808,13 +798,6 @@ impl ResidualPlanePlan {
                 if !self.lossless_unit_starts_in_frame(x, y) {
                     continue;
                 }
-                let unit_eob_u_nonzero = if self.plane_id == PlaneId::V {
-                    u_unit_nonzero
-                        .and_then(|units| units.get(blocks.len()).copied())
-                        .unwrap_or(eob_u_nonzero)
-                } else {
-                    eob_u_nonzero
-                };
                 let coeffs = decode_general_intra_plane_coeffs(
                     work_unit,
                     symbols,
@@ -825,7 +808,7 @@ impl ResidualPlanePlan {
                     y,
                     tx_fills_block,
                     None,
-                    unit_eob_u_nonzero,
+                    eob_u_nonzero,
                     uv_mode,
                     angle_delta_uv,
                     DCT_DCT,
@@ -867,8 +850,8 @@ impl ResidualPlanePlan {
                 let row4 = ((block.y >> 2) << sub_y) & block_decoded.sb_size4().saturating_sub(1);
                 let col4 = ((block.x >> 2) << sub_x) & block_decoded.sb_size4().saturating_sub(1);
                 block_decoded.set_block(unit.plane_id.index(), row4, col4, 1, 1);
-                if let Some(unit_nonzero) = &mut unit_nonzero {
-                    unit_nonzero.push(!block.coeffs.all_zero);
+                if unit.plane_id == PlaneId::U {
+                    last_unit_nonzero = Some(!block.coeffs.all_zero);
                 }
                 blocks.push(block);
             }
@@ -876,7 +859,7 @@ impl ResidualPlanePlan {
         let summary = summarize_luma_partition(&blocks);
         Ok(ResidualPlaneExecution {
             coeffs: summary,
-            unit_nonzero,
+            last_unit_nonzero,
         })
     }
 
@@ -962,7 +945,7 @@ impl ResidualPlanePlan {
             )?;
             return Ok(ResidualPlaneExecution {
                 coeffs: block.coeffs,
-                unit_nonzero: None,
+                last_unit_nonzero: None,
             });
         }
 
@@ -1018,7 +1001,7 @@ impl ResidualPlanePlan {
         }
         Ok(ResidualPlaneExecution {
             coeffs: summary,
-            unit_nonzero: None,
+            last_unit_nonzero: None,
         })
     }
 
@@ -2320,10 +2303,14 @@ fn push_ordered_planes(
     luma_reconstruction: ResidualReconstructionPlan,
     chroma_reconstruction: Option<ResidualReconstructionPlan>,
     luma_fsc_mode: bool,
+    lossless: bool,
 ) -> core::result::Result<(), ResidualPipelineUnsupported> {
     let block = block_ctx.block();
     let width_chunks = (block.width4() >> 4).max(1);
     let height_chunks = (block.height4() >> 4).max(1);
+    let (sub_x, sub_y) = block_ctx.chroma().subsampling(PlaneId::U);
+    let double_chroma_w = sub_x != 0 && width_chunks > 1 && !lossless;
+    let double_chroma_h = sub_y != 0 && height_chunks > 1 && !lossless;
     let defer_chroma_reconstruction = chroma_reconstruction
         .is_some_and(chroma_depends_on_complete_luma)
         && (width_chunks > 1 || height_chunks > 1);
@@ -2333,7 +2320,7 @@ fn push_ordered_planes(
             for chunk_y in start_chunk_y..(start_chunk_y + 2).min(height_chunks) {
                 for chunk_x in start_chunk_x..(start_chunk_x + 2).min(width_chunks) {
                     planes.push(ResidualPlanePlan::new(
-                        luma_chunk_ctx(block_ctx, chunk_x, chunk_y)?,
+                        residual_chunk_ctx(block_ctx, chunk_x, chunk_y, 1, 1)?,
                         PlaneId::Y,
                         luma_reconstruction,
                         block.width4(),
@@ -2342,11 +2329,24 @@ fn push_ordered_planes(
                         luma_fsc_mode,
                     )?);
                     if let Some(reconstruction) = chroma_reconstruction
-                        && chunk_x % 2 == 0
-                        && chunk_y % 2 == 0
+                        && (!double_chroma_w || chunk_x.is_multiple_of(2))
+                        && (!double_chroma_h || chunk_y.is_multiple_of(2))
                     {
+                        let chunk_width = if double_chroma_w { 2 } else { 1 };
+                        let chunk_height = if double_chroma_h { 2 } else { 1 };
+                        let chroma_ctx = if lossless || (sub_x == 0 && sub_y == 0) {
+                            residual_chunk_ctx(
+                                block_ctx,
+                                chunk_x,
+                                chunk_y,
+                                chunk_width,
+                                chunk_height,
+                            )?
+                        } else {
+                            block_ctx
+                        };
                         planes.extend(chroma_plans(
-                            block_ctx,
+                            chroma_ctx,
                             reconstruction,
                             luma_fsc_mode,
                             defer_chroma_reconstruction,
@@ -2363,10 +2363,12 @@ const fn chroma_depends_on_complete_luma(reconstruction: ResidualReconstructionP
     matches!(reconstruction, ResidualReconstructionPlan::ChromaCfl { .. })
 }
 
-fn luma_chunk_ctx(
+fn residual_chunk_ctx(
     block_ctx: BlockCtx,
     chunk_x: usize,
     chunk_y: usize,
+    chunk_width: usize,
+    chunk_height: usize,
 ) -> core::result::Result<BlockCtx, ResidualPipelineUnsupported> {
     let block = block_ctx.block();
     let offset_x4 = chunk_x
@@ -2379,12 +2381,12 @@ fn luma_chunk_ctx(
         .width4()
         .checked_sub(offset_x4)
         .ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?
-        .min(CHUNK_64_N4);
+        .min(CHUNK_64_N4.saturating_mul(chunk_width));
     let height4 = block
         .height4()
         .checked_sub(offset_y4)
         .ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?
-        .min(CHUNK_64_N4);
+        .min(CHUNK_64_N4.saturating_mul(chunk_height));
     let row4 = block
         .row4()
         .checked_add(offset_y4)

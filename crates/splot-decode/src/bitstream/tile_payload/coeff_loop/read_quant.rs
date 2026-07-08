@@ -16,6 +16,8 @@ use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
 const MIN_M: u32 = 1;
 const MAX_M: u32 = 6;
 const MAX_COEFF_REM_BITS: u32 = 32;
+/// AV2 §6 rejects a 21-zero prefix because `length == 20` requires a terminator.
+const MAX_EXP_GOLOMB_PREFIX_BITS: u32 = 21;
 
 /// Block-level facts for §5.20.7.28 `read_quant` parsing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -233,21 +235,19 @@ impl CoeffReadQuantState {
         let k = m + 1;
         let c_max = (m + 4).min(6);
 
-        let mut q = 0;
-        while q < c_max {
-            if read_one_bit(symbols, index, "q_length_bit")? {
-                break;
-            }
-            q += 1;
-        }
+        let q = read_bypass_trace(symbols, index, c_max, "q_length", BypassSyntax::Unary)?;
 
         let (length, x_base) = if q == c_max {
-            let mut prefix = 0u32;
-            while !read_one_bit(symbols, index, "golomb_length_bit")? {
-                prefix = checked_add(index, prefix, 1, "golomb length prefix + 1")?;
-                if prefix > MAX_COEFF_REM_BITS.saturating_sub(k) {
-                    return Err(quant_overflow(index, "coeff_rem literal width"));
-                }
+            let prefix = read_bypass_trace(
+                symbols,
+                index,
+                MAX_EXP_GOLOMB_PREFIX_BITS,
+                "golomb_length",
+                BypassSyntax::Unary,
+            )?;
+            if prefix >= MAX_EXP_GOLOMB_PREFIX_BITS || prefix > MAX_COEFF_REM_BITS.saturating_sub(k)
+            {
+                return Err(quant_overflow(index, "coeff_rem literal width"));
             }
             let length = checked_add(index, prefix, k, "golomb length + k")?;
             let q_base = checked_shl_u64(index, u64::from(q), m, "q << m")?;
@@ -282,7 +282,8 @@ impl CoeffReadQuantState {
         if length > MAX_COEFF_REM_BITS {
             return Err(quant_overflow(index, "coeff_rem literal width"));
         }
-        let coeff_rem = read_literal(symbols, index, length, "coeff_rem")?;
+        let coeff_rem =
+            read_bypass_trace(symbols, index, length, "coeff_rem", BypassSyntax::Literal)?;
         let x = checked_u32(
             index,
             checked_add_u64(
@@ -363,32 +364,56 @@ fn quant_threshold(
         })
 }
 
-fn read_one_bit(
-    symbols: &mut SymbolDecoder<'_>,
-    index: usize,
-    syntax: &'static str,
-) -> Result<bool, CoeffReadQuantError> {
-    Ok(read_literal(symbols, index, 1, syntax)? != 0)
+#[derive(Clone, Copy)]
+enum BypassSyntax {
+    Literal,
+    Unary,
 }
 
-fn read_literal(
+impl BypassSyntax {
+    const fn trace_kind(self) -> &'static str {
+        match self {
+            Self::Literal => "raw_literal",
+            Self::Unary => "raw_unary",
+        }
+    }
+
+    const fn width_label(self) -> &'static str {
+        match self {
+            Self::Literal => "width",
+            Self::Unary => "max_bits",
+        }
+    }
+
+    fn read(self, symbols: &mut SymbolDecoder<'_>, bits: u32) -> Result<u32, CoreError> {
+        match self {
+            Self::Literal => symbols.read_literal(bits),
+            Self::Unary => symbols.read_unary(bits),
+        }
+    }
+}
+
+fn read_bypass_trace(
     symbols: &mut SymbolDecoder<'_>,
     index: usize,
-    width: u32,
+    bits: u32,
     syntax: &'static str,
+    kind: BypassSyntax,
 ) -> Result<u32, CoeffReadQuantError> {
     let raw_before =
         crate::trace_flags::trace_flag!("SPLOT_TRACE_RAW_LITERALS").then(|| symbols.checkpoint());
-    let value = symbols
-        .read_literal(width)
+    let value = kind
+        .read(symbols, bits)
         .map_err(|source| CoeffReadQuantError::LiteralRead {
             index,
             syntax,
             source,
         })?;
     if let Some(raw_before) = raw_before {
+        let trace_kind = kind.trace_kind();
+        let width_label = kind.width_label();
         eprintln!(
-            "raw_literal kind=coeff_quant syntax={syntax} index={index} width={width} value={value} checkpoint_before={raw_before:?} checkpoint_after={:?}",
+            "{trace_kind} kind=coeff_quant syntax={syntax} index={index} {width_label}={bits} value={value} checkpoint_before={raw_before:?} checkpoint_after={:?}",
             symbols.checkpoint(),
         );
     }
@@ -463,16 +488,10 @@ mod tests {
         length: u32,
         coeff_rem: u32,
     ) {
-        for _ in 0..q {
-            enc.write_bool(false).unwrap();
-        }
-        if q < c_max {
-            enc.write_bool(true).unwrap();
-        } else {
-            for _ in 0..golomb_prefix {
-                enc.write_bool(false).unwrap();
-            }
-            enc.write_bool(true).unwrap();
+        enc.write_unary(q, c_max).unwrap();
+        if q == c_max {
+            enc.write_unary(golomb_prefix, MAX_EXP_GOLOMB_PREFIX_BITS)
+                .unwrap();
         }
         enc.write_literal(coeff_rem, length).unwrap();
     }

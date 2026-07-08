@@ -9,9 +9,9 @@ use super::*;
 use crate::bitstream::tile_payload::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, CflIndex, GeneralIntraBlockModes,
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
-    GeneralIntraLeafMode, IsCflContext, LumaTransformPartitionContext, LumaTransformTypeContext,
-    SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
-    TransformToolResidualPolicy,
+    GeneralIntraLeafMode, IntraYMode, IsCflContext, LumaTransformPartitionContext,
+    LumaTransformTypeContext, SupportedChromaMode, SupportedDirectionalLumaMode,
+    SupportedNonDcLumaMode, TransformToolResidualPolicy,
 };
 use crate::prediction::intra::{IntraLumaUnsupported, plan_luma_prediction};
 use crate::residual::pipeline::{
@@ -416,6 +416,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             tx_skip_records,
             qindex,
             luma_use_tcq,
+            lossless,
             transform_tool_residual_policy,
             luma_tx_partition_context(frame_tx_mode(core), frontier.b_size.index(), lossless),
             block_ctx,
@@ -451,6 +452,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         chroma_plan,
         luma_use_tcq,
         modes.uses_active_fsc(),
+        lossless,
     )
     .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
     execute_general_intra_residual_plan(
@@ -622,6 +624,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     qindex: u32,
     luma_use_tcq: bool,
+    lossless: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     luma_tx_partition_context: Option<LumaTransformPartitionContext>,
     block_ctx: BlockCtx,
@@ -641,9 +644,14 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
         None
     };
 
-    let residual_plan =
-        GeneralIntraResidualPlan::rect(block_ctx, luma_plan, chroma_plan, modes.uses_active_fsc())
-            .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
+    let residual_plan = GeneralIntraResidualPlan::rect(
+        block_ctx,
+        luma_plan,
+        chroma_plan,
+        modes.uses_active_fsc(),
+        lossless,
+    )
+    .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
     execute_general_intra_residual_plan(
         residual_plan,
         work_unit,
@@ -799,20 +807,22 @@ pub(super) fn lossless_chroma_prediction_verified(
 pub(super) fn lossless_chroma_part_prediction_verified(
     mode: Option<SupportedChromaMode>,
     uses_dpcm_uv: bool,
-    y_mode: crate::bitstream::tile_payload::IntraYMode,
+    y_mode: IntraYMode,
     block_ctx: BlockCtx,
     sb_mib: usize,
 ) -> bool {
     if lossless_chroma_prediction_verified(mode, uses_dpcm_uv) {
         return true;
     }
-    lossless_chroma_top_left_64_sb(block_ctx, sb_mib)
-        && y_mode == crate::bitstream::tile_payload::IntraYMode::DC_PRED
+    !uses_dpcm_uv
+        && lossless_chroma_full_64_block(block_ctx)
+        && sb_mib == FULL_SB_N4_LUMA
+        && block_ctx.is_top_left()
+        && y_mode == IntraYMode::DC_PRED
         && matches!(
             mode,
             Some(SupportedChromaMode::Horizontal | SupportedChromaMode::D135)
         )
-        && !uses_dpcm_uv
 }
 
 pub(super) fn lossless_chroma_block_prediction_verified(
@@ -824,22 +834,25 @@ pub(super) fn lossless_chroma_block_prediction_verified(
     if lossless_chroma_prediction_verified(mode, uses_dpcm_uv) {
         return true;
     }
-    lossless_chroma_top_left_64_sb(block_ctx, sb_mib)
+    if uses_dpcm_uv || !lossless_chroma_full_64_block(block_ctx) {
+        return false;
+    }
+    let neighbours = block_ctx.neighbours(PlaneId::U);
+    ((sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left())
         && matches!(
             mode,
             Some(SupportedChromaMode::Horizontal | SupportedChromaMode::D135)
-        )
-        && !uses_dpcm_uv
+        ))
+        || (!neighbours.has_above()
+            && neighbours.has_left()
+            && mode == Some(SupportedChromaMode::D45))
 }
 
-fn lossless_chroma_top_left_64_sb(block_ctx: BlockCtx, sb_mib: usize) -> bool {
+fn lossless_chroma_full_64_block(block_ctx: BlockCtx) -> bool {
     let block = block_ctx.block();
     block_ctx.bit_depth() == BitDepth::Eight
         && block_ctx.chroma() == ChromaSampling::Yuv420
-        && sb_mib == FULL_SB_N4_LUMA
-        && block_ctx.is_top_left()
-        && block.width4() == FULL_SB_N4_LUMA
-        && block.height4() == FULL_SB_N4_LUMA
+        && (block.width4(), block.height4()) == (FULL_SB_N4_LUMA, FULL_SB_N4_LUMA)
 }
 
 fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformTypeContext {
@@ -928,7 +941,7 @@ fn rect_luma_mrl_plan(
 }
 
 fn rect_luma_mrl_plan_for_parts(
-    y_mode: crate::bitstream::tile_payload::IntraYMode,
+    y_mode: IntraYMode,
     angle_delta_y: i8,
     mrl_index: u8,
     mrl_sec_index: Option<u8>,
@@ -1091,7 +1104,7 @@ fn rect_luma_plan_for_parts_ext(
 }
 
 fn rect_luma_middle_left_only_plan(
-    y_mode: crate::bitstream::tile_payload::IntraYMode,
+    y_mode: IntraYMode,
     directional_p_angle: Option<u16>,
     block_ctx: BlockCtx,
     use_tcq: bool,
@@ -1120,7 +1133,7 @@ fn rect_luma_directional_p_angle(
 }
 
 fn directional_p_angle_for_luma(
-    y_mode: crate::bitstream::tile_payload::IntraYMode,
+    y_mode: IntraYMode,
     angle_delta_y: i8,
     block_ctx: BlockCtx,
 ) -> Option<u16> {
@@ -1235,7 +1248,7 @@ fn rect_chroma_plan_for_mode(
 
 fn chroma_plan_for_parts(
     chroma: GeneralIntraChromaBlockMode,
-    y_mode: crate::bitstream::tile_payload::IntraYMode,
+    y_mode: IntraYMode,
     angle_delta_y: i8,
     block_ctx: BlockCtx,
     cfl_ds_filter_index: u8,
@@ -1971,19 +1984,16 @@ mod tests {
         assert!(ten_bit_general_intra_chroma_admitted(Some(mode), block));
     }
 
-    fn luma_modes(y_mode: crate::bitstream::tile_payload::IntraYMode) -> GeneralIntraBlockModes {
+    fn luma_modes(y_mode: IntraYMode) -> GeneralIntraBlockModes {
         luma_modes_with_angle(y_mode, 0)
     }
 
-    fn luma_modes_with_angle(
-        y_mode: crate::bitstream::tile_payload::IntraYMode,
-        angle_delta_y: i8,
-    ) -> GeneralIntraBlockModes {
+    fn luma_modes_with_angle(y_mode: IntraYMode, angle_delta_y: i8) -> GeneralIntraBlockModes {
         luma_modes_with_parts(y_mode, angle_delta_y, 0, 0)
     }
 
     fn luma_modes_with_dpcm(
-        y_mode: crate::bitstream::tile_payload::IntraYMode,
+        y_mode: IntraYMode,
         use_dpcm_y: u8,
         dpcm_mode_y: u8,
     ) -> GeneralIntraBlockModes {
@@ -1991,7 +2001,7 @@ mod tests {
     }
 
     fn luma_modes_with_parts(
-        y_mode: crate::bitstream::tile_payload::IntraYMode,
+        y_mode: IntraYMode,
         angle_delta_y: i8,
         use_dpcm_y: u8,
         dpcm_mode_y: u8,
@@ -2031,7 +2041,7 @@ mod tests {
 
     #[test]
     fn lossless_prediction_guard_admits_dc_luma_and_dpcm() {
-        let modes = luma_modes(crate::bitstream::tile_payload::IntraYMode::DC_PRED);
+        let modes = luma_modes(IntraYMode::DC_PRED);
         let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
 
         assert!(
@@ -2046,11 +2056,7 @@ mod tests {
             .is_ok()
         );
 
-        let modes = luma_modes_with_dpcm(
-            crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
-            1,
-            0,
-        );
+        let modes = luma_modes_with_dpcm(IntraYMode::V_PRED_FOR_TEST, 1, 0);
         assert!(
             ensure_lossless_verified_prediction_subset(
                 true,
@@ -2064,7 +2070,7 @@ mod tests {
         );
     }
 
-    fn assert_lossless_directional_luma_admitted(mode: crate::bitstream::tile_payload::IntraYMode) {
+    fn assert_lossless_directional_luma_admitted(mode: IntraYMode) {
         let top_left = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
         let modes = luma_modes(mode);
 
@@ -2083,30 +2089,22 @@ mod tests {
 
     #[test]
     fn lossless_prediction_guard_admits_top_left_cardinal_luma() {
-        for mode in [
-            crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
-            crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
-        ] {
+        for mode in [IntraYMode::V_PRED_FOR_TEST, IntraYMode::H_PRED_FOR_TEST] {
             assert_lossless_directional_luma_admitted(mode);
         }
     }
 
     #[test]
     fn lossless_prediction_guard_admits_top_left_d135_luma() {
-        assert_lossless_directional_luma_admitted(
-            crate::bitstream::tile_payload::IntraYMode::D135_PRED_FOR_TEST,
-        );
+        assert_lossless_directional_luma_admitted(IntraYMode::D135_PRED_FOR_TEST);
     }
 
     #[test]
     fn cardinal_top_left_guard_admits_only_verified_shapes() {
         let top_left_8 =
             ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
-        let vertical = luma_modes_with_angle(
-            crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
-            2,
-        );
-        let horizontal = luma_modes(crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST);
+        let vertical = luma_modes_with_angle(IntraYMode::V_PRED_FOR_TEST, 2);
+        let horizontal = luma_modes(IntraYMode::H_PRED_FOR_TEST);
 
         assert_eq!(
             plan_luma_prediction_for_segment(&vertical, top_left_8, false, FULL_SB_N4_LUMA)
@@ -2123,15 +2121,12 @@ mod tests {
 
         for (modes, block_ctx, sb_mib) in [
             (
-                luma_modes(crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST),
+                luma_modes(IntraYMode::V_PRED_FOR_TEST),
                 top_left_8,
                 FULL_SB_N4_LUMA,
             ),
             (
-                luma_modes_with_angle(
-                    crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
-                    1,
-                ),
+                luma_modes_with_angle(IntraYMode::V_PRED_FOR_TEST, 1),
                 top_left_8,
                 FULL_SB_N4_LUMA,
             ),
@@ -2166,9 +2161,9 @@ mod tests {
         let top_left_10 = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
 
         for mode in [
-            crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
-            crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
-            crate::bitstream::tile_payload::IntraYMode::D135_PRED_FOR_TEST,
+            IntraYMode::V_PRED_FOR_TEST,
+            IntraYMode::H_PRED_FOR_TEST,
+            IntraYMode::D135_PRED_FOR_TEST,
         ] {
             for (modes, block_ctx, sb_mib) in [
                 (luma_modes_with_angle(mode, 1), top_left_8, FULL_SB_N4_LUMA),
@@ -2196,7 +2191,7 @@ mod tests {
 
     #[test]
     fn lossless_prediction_guard_rejects_nondc_luma() {
-        let modes = luma_modes(crate::bitstream::tile_payload::IntraYMode::D45_PRED_FOR_TEST);
+        let modes = luma_modes(IntraYMode::D45_PRED_FOR_TEST);
         let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
         let error = ensure_lossless_verified_prediction_subset(
             true,
@@ -2675,7 +2670,7 @@ mod tests {
 
         assert_eq!(
             rect_luma_mrl_plan_for_parts(
-                crate::bitstream::tile_payload::IntraYMode::D135_PRED_FOR_TEST,
+                IntraYMode::D135_PRED_FOR_TEST,
                 0,
                 3,
                 Some(0),
@@ -2700,7 +2695,7 @@ mod tests {
 
         assert_eq!(
             rect_luma_mrl_plan_for_parts(
-                crate::bitstream::tile_payload::IntraYMode::V_PRED_FOR_TEST,
+                IntraYMode::V_PRED_FOR_TEST,
                 0,
                 3,
                 Some(1),
@@ -2724,7 +2719,7 @@ mod tests {
 
         assert_eq!(
             rect_luma_mrl_plan_for_parts(
-                crate::bitstream::tile_payload::IntraYMode::D45_PRED_FOR_TEST,
+                IntraYMode::D45_PRED_FOR_TEST,
                 -2,
                 1,
                 Some(0),
@@ -2748,7 +2743,7 @@ mod tests {
 
         assert_eq!(
             rect_luma_mrl_plan_for_parts(
-                crate::bitstream::tile_payload::IntraYMode::D157_PRED_FOR_TEST,
+                IntraYMode::D157_PRED_FOR_TEST,
                 3,
                 1,
                 Some(0),
@@ -2773,7 +2768,7 @@ mod tests {
 
         assert_eq!(
             rect_luma_mrl_plan_for_parts(
-                crate::bitstream::tile_payload::IntraYMode::D113_PRED_FOR_TEST,
+                IntraYMode::D113_PRED_FOR_TEST,
                 -1,
                 2,
                 Some(1),
@@ -2798,7 +2793,7 @@ mod tests {
 
         assert_eq!(
             rect_luma_mrl_plan_for_parts(
-                crate::bitstream::tile_payload::IntraYMode::D67_PRED_FOR_TEST,
+                IntraYMode::D67_PRED_FOR_TEST,
                 0,
                 2,
                 Some(0),
@@ -2939,7 +2934,7 @@ mod tests {
 
         assert_eq!(
             rect_luma_middle_left_only_plan(
-                crate::bitstream::tile_payload::IntraYMode::D113_PRED_FOR_TEST,
+                IntraYMode::D113_PRED_FOR_TEST,
                 Some(104),
                 rect_block,
                 false,
@@ -2967,7 +2962,7 @@ mod tests {
         let first_col_block = ctx(128, 0, 32, 32);
         let modes = GeneralIntraBlockModes::luma_only(
             crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
-                y_mode: crate::bitstream::tile_payload::IntraYMode::D67_PRED_FOR_TEST,
+                y_mode: IntraYMode::D67_PRED_FOR_TEST,
                 angle_delta_y: -1,
                 intra_joint_mode: 0,
                 mrl_index: 0,

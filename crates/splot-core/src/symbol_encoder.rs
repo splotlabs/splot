@@ -20,6 +20,7 @@ const DEFAULT_MAX_OPERATIONS: usize = 1 << 20;
 const SYMBOL_VALUE_BITS: u32 = 15;
 const EXIT_Y_WINDOW: u32 = (1 << (SYMBOL_VALUE_BITS - 1)) - 1;
 const INITIAL_CODE_BITS: u64 = SYMBOL_VALUE_BITS as u64;
+const BYPASS_LITERAL_CHUNK_BITS: u32 = 8;
 
 /// Configuration for [`SymbolEncoder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +126,7 @@ impl SymbolEncoderOutput {
 pub struct SymbolEncoder {
     config: SymbolEncoderConfig,
     range: u32,
+    value_limit: u32,
     step_bits: u64,
     symbol_count: u64,
     steps: Vec<RangeStep>,
@@ -137,6 +139,7 @@ impl SymbolEncoder {
         Self {
             config: SymbolEncoderConfig::new(),
             range: SYMBOL_RANGE_INIT,
+            value_limit: SYMBOL_RANGE_INIT,
             step_bits: 0,
             symbol_count: 0,
             steps: Vec::new(),
@@ -149,6 +152,7 @@ impl SymbolEncoder {
         Self {
             config,
             range: SYMBOL_RANGE_INIT,
+            value_limit: SYMBOL_RANGE_INIT,
             step_bits: 0,
             symbol_count: 0,
             steps: Vec::new(),
@@ -182,7 +186,7 @@ impl SymbolEncoder {
     /// primitive operation count.
     pub fn write_bool(&mut self, value: bool) -> WriteResult<()> {
         self.ensure_projected_steps(1, 1)?;
-        self.push_bool(value);
+        self.push_bypass_chunk(u32::from(value), 1);
         Ok(())
     }
 
@@ -207,11 +211,62 @@ impl SymbolEncoder {
             });
         }
 
-        self.ensure_projected_steps(u64::from(n), n as usize)?;
-        for bit in (0..n).rev() {
-            self.push_bool(((value >> bit) & 1) != 0);
+        let chunk_count = n.div_ceil(BYPASS_LITERAL_CHUNK_BITS) as usize;
+        self.ensure_projected_steps(u64::from(n), chunk_count)?;
+        let mut remaining = n;
+        while remaining > 0 {
+            let chunk_bits = remaining.min(BYPASS_LITERAL_CHUNK_BITS);
+            remaining -= chunk_bits;
+            let chunk_mask = (1u32 << chunk_bits) - 1;
+            let chunk_value = (value >> remaining) & chunk_mask;
+            self.push_bypass_chunk(chunk_value, chunk_bits);
         }
         self.symbol_count = self.symbol_count.saturating_add(u64::from(n));
+        Ok(())
+    }
+
+    /// Writes a truncated unary bypass value for [`crate::symbol::SymbolDecoder::read_unary`].
+    ///
+    /// Values smaller than `max_bits` are written as `value` zero bits followed
+    /// by one terminating bit. A value equal to `max_bits` writes exactly
+    /// `max_bits` zero bits and no terminator.
+    ///
+    /// # Errors
+    /// Returns [`WriteError::BitWidthTooLarge`] when `max_bits > 32`,
+    /// [`WriteError::ValueTooWide`] when `value > max_bits`,
+    /// [`WriteError::SymbolOutputTooLarge`] if the output limit would be exceeded,
+    /// or [`WriteError::SymbolOperationLimit`] if the operation limit would be exceeded.
+    pub fn write_unary(&mut self, value: u32, max_bits: u32) -> WriteResult<()> {
+        if max_bits > MAX_LITERAL_BITS {
+            return Err(WriteError::BitWidthTooLarge {
+                requested: max_bits,
+                max: MAX_LITERAL_BITS,
+            });
+        }
+        if value > max_bits {
+            return Err(WriteError::ValueTooWide {
+                value: u64::from(value),
+                width_bits: max_bits,
+            });
+        }
+
+        let bits = if value < max_bits {
+            value.saturating_add(1)
+        } else {
+            max_bits
+        };
+
+        let chunk_count = bits.div_ceil(BYPASS_LITERAL_CHUNK_BITS) as usize;
+        self.ensure_projected_steps(u64::from(bits), chunk_count)?;
+        let has_terminator = value < max_bits;
+        let mut remaining = bits;
+        while remaining > 0 {
+            let chunk_bits = remaining.min(BYPASS_LITERAL_CHUNK_BITS);
+            remaining -= chunk_bits;
+            let chunk_value = u32::from(has_terminator && remaining == 0);
+            self.push_bypass_chunk(chunk_value, chunk_bits);
+        }
+        self.symbol_count = self.symbol_count.saturating_add(u64::from(bits));
         Ok(())
     }
 
@@ -237,10 +292,12 @@ impl SymbolEncoder {
         let step = self.symbol_step(cdf, shape.n, symbol)?;
         self.ensure_projected_steps(u64::from(step.bits), 1)?;
         self.range = step.range_after;
+        self.value_limit = step.range_after;
         self.step_bits = self.step_bits.saturating_add(u64::from(step.bits));
-        self.steps.push(RangeStep {
+        self.steps.push(RangeStep::Symbol {
             low: step.low,
             bits: step.bits,
+            residual_limit: step.range_after >> step.bits,
         });
         self.symbol_count = self.symbol_count.saturating_add(1);
 
@@ -278,11 +335,28 @@ impl SymbolEncoder {
         })
     }
 
-    fn push_bool(&mut self, value: bool) {
-        let half = self.range >> 1;
-        let low = if value { 0 } else { half };
-        self.steps.push(RangeStep { low, bits: 1 });
-        self.step_bits = self.step_bits.saturating_add(1);
+    fn push_bypass_chunk(&mut self, value: u32, bits: u32) {
+        debug_assert!(bits <= BYPASS_LITERAL_CHUNK_BITS);
+
+        let mut split = u64::from(self.range) << bits;
+        let mut low = 0u64;
+        let mut high = u64::from(self.value_limit) << bits;
+        for bit in (0..bits).rev() {
+            split >>= 1;
+            if ((value >> bit) & 1) == 0 {
+                low += split;
+            } else {
+                high = high.min(low + split);
+            }
+        }
+        let residual_limit = high - low;
+        self.steps.push(RangeStep::Bypass {
+            low,
+            bits,
+            residual_limit,
+        });
+        self.value_limit = residual_limit as u32;
+        self.step_bits = self.step_bits.saturating_add(u64::from(bits));
     }
 
     fn symbol_step(&self, cdf: &[i32], n: usize, target: usize) -> WriteResult<SymbolStep> {
@@ -365,9 +439,11 @@ impl SymbolEncoder {
             }
         })?;
         // TODO(spec: ENC-BITSTREAM-WRITER): Replace this correctness-first
-        for candidate in 0..self.range {
+        for candidate in 0..self.value_limit {
             suffixes.clear();
-            let initial = self.backward_candidate(candidate, &mut suffixes);
+            let Some(initial) = self.backward_candidate(candidate, &mut suffixes) else {
+                continue;
+            };
             if !exit_window_matches(initial, &suffixes) {
                 continue;
             }
@@ -394,17 +470,45 @@ impl SymbolEncoder {
         Err(WriteError::SymbolFinalizationFailed)
     }
 
-    fn backward_candidate(&self, candidate: u32, suffixes: &mut Vec<BitChunk>) -> u32 {
+    fn backward_candidate(&self, candidate: u32, suffixes: &mut Vec<BitChunk>) -> Option<u32> {
         let mut next = candidate;
         for step in self.steps.iter().rev() {
-            let mask = mask_for_bits(step.bits);
-            suffixes.push(BitChunk {
-                value: next & mask,
-                bits: step.bits,
-            });
-            next = step.low + (next >> step.bits);
+            match *step {
+                RangeStep::Symbol {
+                    low,
+                    bits,
+                    residual_limit,
+                } => {
+                    let mask = mask_for_bits(bits);
+                    suffixes.push(BitChunk {
+                        value: next & mask,
+                        bits,
+                    });
+                    let residual = next >> bits;
+                    if residual >= residual_limit {
+                        return None;
+                    }
+                    next = low + residual;
+                }
+                RangeStep::Bypass {
+                    low,
+                    bits,
+                    residual_limit,
+                } => {
+                    if u64::from(next) >= residual_limit {
+                        return None;
+                    }
+                    let scaled = low + u64::from(next);
+                    let mask = u64::from(mask_for_bits(bits));
+                    suffixes.push(BitChunk {
+                        value: (scaled & mask) as u32,
+                        bits,
+                    });
+                    next = u32::try_from(scaled >> bits).ok()?;
+                }
+            }
         }
-        next
+        Some(next)
     }
 }
 
@@ -415,9 +519,17 @@ impl Default for SymbolEncoder {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RangeStep {
-    low: u32,
-    bits: u32,
+enum RangeStep {
+    Symbol {
+        low: u32,
+        bits: u32,
+        residual_limit: u32,
+    },
+    Bypass {
+        low: u64,
+        bits: u32,
+        residual_limit: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
