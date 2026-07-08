@@ -21,10 +21,11 @@ use splot_core::tables::cdf::{
     DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_FSC_MODE_CDF,
     DEFAULT_IDTX_SIGN_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
     DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF,
-    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_MORPH_PRED_CDF, DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
-    DEFAULT_MOST_PROBABLE_STX_SET_CDF, DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF,
-    DEFAULT_PALETTE_Y_MODE_CDF, DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TIP_MODE_CDF,
-    DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
+    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF, DEFAULT_MORPH_PRED_CDF,
+    DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
+    DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_PALETTE_Y_MODE_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TIP_MODE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF,
+    DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
     DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_DIP_CDF,
     DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
     DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF,
@@ -82,6 +83,10 @@ impl TileCdfRows {
 
     pub(crate) const fn tx_partition_type_reduced(&self) -> &TxPartitionTypeCdfRows {
         &self.tx_partition_type_reduced
+    }
+
+    pub(crate) const fn lossless_inter_tx_type(&self) -> &LosslessInterTxTypeCdfRow {
+        &self.lossless_inter_tx_type
     }
 
     pub(crate) const fn delta_q(&self) -> &DeltaQCdfRow {
@@ -539,6 +544,10 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
         frame.rows().tx_partition_type_reduced(),
         &DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF
     );
+    assert_eq!(
+        frame.rows().lossless_inter_tx_type(),
+        &DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF
+    );
     assert_eq!(frame.rows().delta_q(), &DEFAULT_DELTA_Q_CDF);
     assert_eq!(frame.rows().morph_pred(), &DEFAULT_MORPH_PRED_CDF);
     assert_eq!(frame.rows().fsc_mode(), &DEFAULT_FSC_MODE_CDF);
@@ -942,6 +951,9 @@ fn selector_returns_rows_and_bounds_errors() {
         })
         .unwrap();
     assert_eq!(row, DEFAULT_DO_SQUARE_SPLIT_CDF[0][0].as_slice());
+
+    let row = tile.row(TileCdfSelector::LosslessInterTxType).unwrap();
+    assert_eq!(row, DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF.as_slice());
 
     let err = tile
         .with_row_mut(

@@ -8,6 +8,7 @@ use std::collections::TryReserveError;
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::TileCdfSubset;
+use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::coeff_state::{
     TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
 };
@@ -340,6 +341,8 @@ pub(crate) enum CoeffOrdinaryBranchError {
     InvalidLumaTxType { tx_type: usize },
     #[error("ordinary coefficient branch chroma-inter TxTypes value {tx_type} is out of range")]
     InvalidChromaInterTxType { tx_type: usize },
+    #[error("ordinary coefficient branch lossless inter transform type read failed: {0}")]
+    LosslessInterTxType(#[from] BlockSymbolTraceReadError),
     #[error(
         "ordinary coefficient branch directional UVMode {uv_mode} angle_delta_uv {angle_delta_uv} overflowed"
     )]

@@ -4,7 +4,7 @@
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{MODE_TO_ANGLE, MODE_TO_TXFM};
 
-use super::super::super::cdf::TileCdfSubset;
+use super::super::super::cdf::{TileCdfSelector, TileCdfSubset};
 use super::super::super::coeff_state::TileCoeffContextState;
 use super::super::base_level_pass::CoeffBaseDerivedLevelPassConfig;
 use super::super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
@@ -23,6 +23,8 @@ use super::{
 };
 
 const DCT_DCT: usize = 0;
+const IDTX: usize = 9;
+const TX_4X4: usize = 0;
 const V_PRED: usize = 1;
 const D45_PRED: usize = 3;
 const D203_PRED: usize = 7;
@@ -216,14 +218,41 @@ impl CoeffOrdinaryBranchTxSetBaseConfig {
             use_tcq: self.use_tcq,
         })
     }
+}
 
-    #[allow(clippy::unused_self)]
-    const fn lossless_tx_size_base_config(self) -> CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
-        CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
-            plane_tx_type: DCT_DCT,
-            parity_hiding: false,
-            use_tcq: false,
-        }
+pub(crate) fn read_lossless_tx_size_base_config(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    is_inter: bool,
+) -> Result<CoeffOrdinaryBranchTxSizeDimensionsBaseConfig, CoeffOrdinaryBranchError> {
+    let plane_tx_type = if is_inter && geometry.plane == 0 {
+        read_lossless_inter_plane_tx_type(cdfs, symbols, geometry.tx_size)?
+    } else {
+        DCT_DCT
+    };
+    Ok(CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
+        plane_tx_type,
+        parity_hiding: false,
+        use_tcq: false,
+    })
+}
+
+fn read_lossless_inter_plane_tx_type(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    tx_size: usize,
+) -> Result<usize, CoeffOrdinaryBranchError> {
+    if tx_size != TX_4X4 {
+        return Ok(IDTX);
+    }
+    let lossless_inter_tx_type = cdfs
+        .read_block_symbol_trace(TileCdfSelector::LosslessInterTxType, symbols)?
+        .get();
+    if lossless_inter_tx_type == 0 {
+        Ok(DCT_DCT)
+    } else {
+        Ok(IDTX)
     }
 }
 
@@ -535,6 +564,8 @@ fn apply_coeff_ordinary_branch_from_lossless_with_tables(
             )
         }
         CoeffOrdinaryBranchLosslessInput::NonZero(input) if input.lossless => {
+            let base_config =
+                read_lossless_tx_size_base_config(cdfs, symbols, input.geometry, input.is_inter)?;
             apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
                 state,
                 cdfs,
@@ -544,7 +575,7 @@ fn apply_coeff_ordinary_branch_from_lossless_with_tables(
                         geometry: input.geometry,
                         coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
                         is_inter: input.is_inter,
-                        base_config: input.base_config.lossless_tx_size_base_config(),
+                        base_config,
                         lossless: input.lossless,
                     },
                 ),
@@ -585,7 +616,7 @@ fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless_with_tables(
         lossless,
     } = input;
     let base_config = if lossless {
-        base_config.lossless_tx_size_base_config()
+        read_lossless_tx_size_base_config(cdfs, symbols, geometry, is_inter)?
     } else {
         let mode_to_txfm_base_config =
             base_config.mode_to_txfm_base_config(geometry, is_inter, tables)?;
