@@ -4014,6 +4014,59 @@ left = "avm-lossless-sdp-nondc-chroma-d135-intra-64x64-raw-md5"
 right = "avm-repeat-lossless-sdp-nondc-chroma-d135-intra-64x64-raw-md5"
 
 [[evidence]]
+id = "lref-avm-syn-lossless-sdp-nondc-chroma-d135-leftedge-128x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 4:2:0 128x64 lossless intra IVF fixture whose first-row right 64x64 block has a decoded left neighbor, no above neighbor, H_PRED luma, and SDP/chroma-part explicit non-DPCM D135_PRED chroma. The fixture exercises the lossless SDP chroma-part verifier over a left-edge directional chroma block; splot reproduces the raw SHA-256 value through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-08"
+command = "/Users/bartosztomczyk/Devel/avm/build/avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 -o /tmp/splot-sdp-d135-leftedge/source.i420 tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d135-leftedge-128x64.ivf; /Users/bartosztomczyk/Devel/avm/build/avmenc -D --codec=av2 --ivf --limit=1 --passes=1 --threads=1 --cpu-used=0 --end-usage=q --qp=0 --lossless=1 --bit-depth=8 --input-bit-depth=8 --width=128 --height=64 --i420 --sb-size=64 --min-partition-size=64 --max-partition-size=64 --enable-sdp=1 --enable-extended-sdp=0 --enable-cfl-intra=0 --enable-mhccp=0 --enable-cctx=0 --enable-cdef=0 --enable-deblocking=0 --enable-restoration=0 --enable-ccso=0 --enable-gdf=0 --enable-pc-wiener=0 --enable-wiener-nonsep=0 --enable-qm=0 --enable-tcq=0 --enable-trellis-quant=0 --enable-fsc=0 --enable-flip-idtx=0 --enable-idtx-intra=0 --enable-ist=0 --enable-intra-dip=0 --enable-ibp=0 --enable-mrls=0 --enable-intra-edge-filter=0 --enable-angle-delta=0 --enable-palette=0 --enable-intrabc=0 --enable-paeth-intra=0 --enable-smooth-intra=0 --enable-rect-partitions=0 --enable-ext-partitions=0 --enable-uneven-4way-partitions=0 --enable-tx-partition=0 --deltaq-mode=0 --enable-chroma-deltaq=0 --enable-keyframe-filtering=0 --force-video-mode=0 --test-decode=fatal -o /tmp/splot-sdp-d135-leftedge/syn-lossless-sdp-nondc-chroma-d135-leftedge-128x64.ivf /tmp/splot-sdp-d135-leftedge/source.i420"
+
+[[evidence.fixture]]
+id = "sdp-d135-leftedge-chroma-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d135-leftedge-128x64.ivf"
+sha256 = "57f034eb437af371f6e7216db57eba19245149d6b1934a44035cb48c77cb68c2"
+size_bytes = 275
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally by decoding the committed project-owned lossless normal-block D135 left-edge chroma fixture to raw I420 (source SHA-256 2f7c27a87a7af7eaa9cc4d44b137a777bf323a7098d8ae33152e30a4060f4576) and re-encoding that deterministic source with AVM lossless mode, SDP enabled, 64x64 square partitions, and broad decode tools disabled. AVM inspect showed left luma DC_PRED, right luma H_PRED, left chroma UV_H_PRED, and right chroma UV_D135_PRED. splot pre-fix decode failed closed at byte offset 65 with general_intra_lossless_nondc_chroma_part_unverified. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec-lossless-sdp-nondc-chroma-d135-leftedge"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3 from the local fixture build; checkout contained untracked build directories only."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:sdp-d135-leftedge-chroma-input}."
+output_digest_id = "avm-lossless-sdp-nondc-chroma-d135-leftedge-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "5d521be3c03d7feab3788dfe371c1b42"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 2f7c27a87a7af7eaa9cc4d44b137a777bf323a7098d8ae33152e30a4060f4576 is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat-lossless-sdp-nondc-chroma-d135-leftedge"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3 decode run from the committed fixture copy; checkout contained untracked build directories only."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:sdp-d135-leftedge-chroma-input}."
+output_digest_id = "avm-repeat-lossless-sdp-nondc-chroma-d135-leftedge-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "5d521be3c03d7feab3788dfe371c1b42"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-sdp-nondc-chroma-d135-leftedge-128x64-raw-md5"
+right = "avm-repeat-lossless-sdp-nondc-chroma-d135-leftedge-128x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-syn-lossless-sdp-nondc-chroma-paeth-intra-64x64"
 feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
 decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]

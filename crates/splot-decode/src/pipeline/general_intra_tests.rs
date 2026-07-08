@@ -6,7 +6,7 @@
 use std::{collections::BTreeSet, fmt::Debug};
 
 use splot_parallel::ThreadCount;
-use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize, ReconSample};
+use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneSize, ReconSample};
 
 use super::*;
 use crate::bitstream::tile_payload::{
@@ -176,6 +176,10 @@ const LOSSLESS_SDP_NONDC_CHROMA_D45_FIXTURE: &[u8] = include_bytes!(
 
 const LOSSLESS_SDP_NONDC_CHROMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d135-intra-64x64.ivf"
+);
+
+const LOSSLESS_SDP_NONDC_CHROMA_D135_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d135-leftedge-128x64.ivf"
 );
 
 const LOSSLESS_SDP_NONDC_CHROMA_PAETH_FIXTURE: &[u8] = include_bytes!(
@@ -915,6 +919,14 @@ fn lossless_nondc_chroma_d135_leftedge_frame_decodes_to_oracle() {
         "lossless explicit D135 left-edge",
         "2f7c27a87a7af7eaa9cc4d44b137a777bf323a7098d8ae33152e30a4060f4576",
     );
+    assert_lossless_explicit_chroma_oracle(
+        LOSSLESS_SDP_NONDC_CHROMA_D135_LEFTEDGE_FIXTURE,
+        275,
+        (128, 64),
+        (64, 32),
+        "lossless SDP explicit D135 left-edge",
+        "2f7c27a87a7af7eaa9cc4d44b137a777bf323a7098d8ae33152e30a4060f4576",
+    );
 }
 
 #[test]
@@ -1068,66 +1080,25 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
-    assert!(general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D45),
-        false,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D45Follow),
-        false,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D113),
-        false,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D113Follow),
-        false,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D135),
-        false,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D135Follow),
-        false,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D157),
-        false,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D157Follow),
-        false,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D203),
-        false,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D203Follow),
-        false,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
+    for mode in [
+        SupportedChromaMode::D45,
+        SupportedChromaMode::D45Follow,
+        SupportedChromaMode::D113,
+        SupportedChromaMode::D113Follow,
+        SupportedChromaMode::D135,
+        SupportedChromaMode::D135Follow,
+        SupportedChromaMode::D157,
+        SupportedChromaMode::D157Follow,
+        SupportedChromaMode::D203,
+        SupportedChromaMode::D203Follow,
+    ] {
+        assert!(general_intra::lossless_chroma_block_prediction_verified(
+            Some(mode),
+            false,
+            left_edge_8,
+            general_intra::FULL_SB_N4_LUMA,
+        ));
+    }
     assert!(general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::D45),
         false,
@@ -1167,6 +1138,13 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         false,
         crate::bitstream::tile_payload::IntraYMode::DC_PRED,
         top_left_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(general_intra::lossless_chroma_part_prediction_verified(
+        Some(SupportedChromaMode::D135),
+        false,
+        crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
+        left_edge_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
@@ -1413,6 +1391,14 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
             SupportedChromaMode::D135,
             SupportedChromaMode::Paeth,
         ] {
+            let neighbours = block_ctx.neighbours(PlaneId::U);
+            let proven_left_edge_d135 = mode == SupportedChromaMode::D135
+                && !neighbours.has_above()
+                && neighbours.has_left()
+                && sb_mib == general_intra::FULL_SB_N4_LUMA;
+            if proven_left_edge_d135 {
+                continue;
+            }
             assert!(!general_intra::lossless_chroma_part_prediction_verified(
                 Some(mode),
                 false,

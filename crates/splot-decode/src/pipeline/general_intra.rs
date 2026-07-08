@@ -736,11 +736,11 @@ pub(super) fn lossless_chroma_part_prediction_verified(
     if lossless_chroma_prediction_verified(mode, uses_dpcm_uv) {
         return true;
     }
-    !uses_dpcm_uv
-        && lossless_chroma_full_64_block(block_ctx)
-        && sb_mib == FULL_SB_N4_LUMA
+    if uses_dpcm_uv || !lossless_chroma_full_64_block(block_ctx) || sb_mib != FULL_SB_N4_LUMA {
+        return false;
+    }
+    let top_left = y_mode == IntraYMode::DC_PRED
         && block_ctx.is_top_left()
-        && y_mode == IntraYMode::DC_PRED
         && matches!(
             mode,
             Some(
@@ -750,7 +750,11 @@ pub(super) fn lossless_chroma_part_prediction_verified(
                     | SupportedChromaMode::D135
                     | SupportedChromaMode::Paeth
             )
-        )
+        );
+    let neighbours = block_ctx.neighbours(PlaneId::U);
+    let left_edge_d135 =
+        !neighbours.has_above() && neighbours.has_left() && mode == Some(SupportedChromaMode::D135);
+    top_left || left_edge_d135
 }
 
 pub(super) fn lossless_chroma_block_prediction_verified(
