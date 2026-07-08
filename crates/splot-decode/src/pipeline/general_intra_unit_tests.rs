@@ -505,6 +505,17 @@ fn admits_top_left_full_sb_d45_chroma() {
 }
 
 #[test]
+fn admits_top_left_full_sb_d157_chroma() {
+    let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
+
+    assert!(ensure_supported_chroma_capability(SupportedChromaMode::D157, None, top_left).is_ok());
+    assert!(
+        ensure_supported_chroma_capability(SupportedChromaMode::D157Follow, None, top_left)
+            .is_err()
+    );
+}
+
+#[test]
 fn admits_rect_d113_chroma_at_tile_start_with_above_edge() {
     let tile_start_block = ctx(8, 16, 16, 8).with_tile_bounds(0, 16, 16, 32);
     let neighbours = tile_start_block.neighbours(PlaneId::U);

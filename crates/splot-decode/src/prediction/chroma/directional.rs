@@ -121,7 +121,15 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         ),
         SupportedChromaMode::D135Follow | SupportedChromaMode::D135 if x == 0 && y == 0 => {
             reconstruct_general_intra_chroma_directional_first_into(
-                workspace, block, plane_id, x, y, log2_width, qindex, bit_depth,
+                workspace,
+                block,
+                SupportedDirectionalLumaMode::D135,
+                plane_id,
+                x,
+                y,
+                log2_width,
+                qindex,
+                bit_depth,
             )
         }
         SupportedChromaMode::D135Follow | SupportedChromaMode::D135 => {
@@ -160,6 +168,19 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                     above: availability.above,
                     left: availability.left,
                 },
+            )
+        }
+        SupportedChromaMode::D157 if x == 0 && y == 0 => {
+            reconstruct_general_intra_chroma_directional_first_into(
+                workspace,
+                block,
+                SupportedDirectionalLumaMode::D157,
+                plane_id,
+                x,
+                y,
+                log2_width,
+                qindex,
+                bit_depth,
             )
         }
         SupportedChromaMode::D157Follow | SupportedChromaMode::D157 => {
@@ -300,6 +321,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
 fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
+    mode: SupportedDirectionalLumaMode,
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -310,12 +332,7 @@ fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
-    let prediction = predict_directional_noneighbour(
-        SupportedDirectionalLumaMode::D135,
-        block_size,
-        side,
-        bit_depth,
-    )?;
+    let prediction = predict_directional_noneighbour(mode, block_size, side, bit_depth)?;
     let out = if block.all_zero {
         prediction
     } else {
