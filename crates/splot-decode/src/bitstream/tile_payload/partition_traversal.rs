@@ -13,7 +13,8 @@ use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
 use super::intra_joint_modes::{
     IsCflContext, LumaPalette, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
     TileIntraYModeFacts, TileIntraYModeState, TileIntraYModeStateError, TileLumaPaletteState,
-    TileLumaPaletteStateError, TileUsesMrlsState, TileUsesMrlsStateError, TileUvCflState,
+    TileLumaPaletteStateError, TileUseDipState, TileUseDipStateError, TileUsesMrlsState,
+    TileUsesMrlsStateError, TileUvCflState,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::{PartitionDecisionError, PartitionType, ReadPartitionDecision};
@@ -527,6 +528,7 @@ pub(crate) struct GeneralIntraLeafMode {
     angle_delta_y: Option<i8>,
     fsc_mode: Option<u8>,
     uses_mrls: Option<u8>,
+    use_dip: Option<u8>,
     palette_y: Option<LumaPalette>,
     uv_cfl: Option<bool>,
     intrabc: bool,
@@ -551,6 +553,7 @@ impl GeneralIntraLeafMode {
             angle_delta_y: Some(angle_delta_y),
             fsc_mode: Some(fsc_mode),
             uses_mrls: Some(uses_mrls),
+            use_dip: Some(0),
             palette_y: None,
             uv_cfl: None,
             intrabc: false,
@@ -565,6 +568,7 @@ impl GeneralIntraLeafMode {
             angle_delta_y: None,
             fsc_mode: None,
             uses_mrls: None,
+            use_dip: None,
             palette_y: None,
             uv_cfl: None,
             intrabc: false,
@@ -590,6 +594,7 @@ impl GeneralIntraLeafMode {
             angle_delta_y: None,
             fsc_mode: None,
             uses_mrls: None,
+            use_dip: None,
             palette_y: None,
             uv_cfl: Some(uv_cfl),
             intrabc: false,
@@ -599,6 +604,12 @@ impl GeneralIntraLeafMode {
     #[must_use]
     pub(crate) const fn with_palette_y(mut self, palette_y: Option<LumaPalette>) -> Self {
         self.palette_y = palette_y;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn with_use_dip(mut self, use_dip: u8) -> Self {
+        self.use_dip = Some(use_dip);
         self
     }
 
@@ -857,6 +868,8 @@ pub(crate) enum TilePartitionTraversalError {
     IntraYModeState(#[from] TileIntraYModeStateError),
     #[error("partition traversal intra UsesMrls state failed: {0}")]
     UsesMrlsState(#[from] TileUsesMrlsStateError),
+    #[error("partition traversal intra UseDip state failed: {0}")]
+    UseDipState(#[from] TileUseDipStateError),
     #[error("partition traversal intra FscModes state failed: {0}")]
     FscModeState(#[from] TileFscModeStateError),
     #[error("partition traversal luma palette state failed: {0}")]
@@ -910,6 +923,8 @@ pub(crate) enum TilePartitionTraversalError {
     MissingIntraUsesMrlsState { r: usize, c: usize },
     #[error("partition traversal missing intra FscModes state at ({r}, {c})")]
     MissingIntraFscModeState { r: usize, c: usize },
+    #[error("partition traversal missing intra UseDip state at ({r}, {c})")]
+    MissingIntraUseDipState { r: usize, c: usize },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1166,6 +1181,7 @@ pub(crate) fn decode_general_intra_partition_tree<'payload, E, F>(
     mi_size_state: &mut TileMiSizeState,
     joint_modes: &mut TileIntraJointModeState,
     uses_mrls: &mut TileUsesMrlsState,
+    use_dip: &mut TileUseDipState,
     fsc_modes: &mut TileFscModeState,
     palette_y: &mut TileLumaPaletteState,
     uv_cfls: &mut TileUvCflState,
@@ -1180,6 +1196,7 @@ where
         &DecodeBlockFrontier,
         &TileIntraJointModeState,
         &TileUsesMrlsState,
+        &TileUseDipState,
         &TileFscModeState,
         &TileLumaPaletteState,
         IsCflContext,
@@ -1329,6 +1346,7 @@ where
                         &frontier,
                         joint_modes,
                         uses_mrls,
+                        use_dip,
                         fsc_modes,
                         palette_y,
                         is_cfl_ctx,
@@ -1385,9 +1403,22 @@ where
                                     c: call.c,
                                 },
                             )?;
+                            let use_dip_value = leaf_mode.use_dip.ok_or(
+                                TilePartitionTraversalError::MissingIntraUseDipState {
+                                    r: call.r,
+                                    c: call.c,
+                                },
+                            )?;
                             joint_modes
                                 .record_block(call.r, call.c, block_n4w, block_n4h, joint_mode);
                             fsc_modes.record_block(call.r, call.c, block_n4w, block_n4h, fsc_mode);
+                            use_dip.record_block(
+                                call.r,
+                                call.c,
+                                block_n4w,
+                                block_n4h,
+                                use_dip_value,
+                            );
                             uses_mrls.record_block(
                                 call.r,
                                 call.c,
@@ -1422,6 +1453,7 @@ where
                             joint_modes
                                 .record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
                             fsc_modes.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
+                            use_dip.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
                             uses_mrls.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
                             palette_y.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
                             if leaf_mode.is_intrabc() {
