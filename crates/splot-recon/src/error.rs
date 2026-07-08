@@ -388,7 +388,7 @@ pub enum ReconError {
     },
     /// A DIP block was too small for AV2 data-driven intra prediction.
     #[error(
-        "unsupported DIP intra prediction block size {width}x{height}; expected at least 64 samples"
+        "unsupported DIP intra prediction block size {width}x{height}; expected each side at least 4 samples"
     )]
     UnsupportedIntraDipBlockSize {
         /// Block width in samples.

@@ -5,7 +5,9 @@
 //!
 //! Feature tracking: `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
-use crate::intra_dc_math::{validate_output_shape, validate_sample_type};
+use crate::intra_dc_math::{
+    IntraEdgeError, validate_intra_edge_samples, validate_output_shape, validate_sample_type,
+};
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
 /// Edge identifier for PAETH intra prediction inputs.
@@ -26,6 +28,25 @@ impl IntraPaethEdge {
             Self::Left => "left",
             Self::Above => "above",
             Self::TopLeft => "top-left",
+        }
+    }
+}
+
+impl IntraEdgeError for IntraPaethEdge {
+    fn length_mismatch(self, expected: usize, actual: usize) -> ReconError {
+        ReconError::IntraPaethEdgeLengthMismatch {
+            edge: self,
+            expected,
+            actual,
+        }
+    }
+
+    fn sample_out_of_range(self, sample_index: usize, value: u16, max: u16) -> ReconError {
+        ReconError::IntraPaethSampleOutOfRange {
+            edge: self,
+            sample_index,
+            value,
+            max,
         }
     }
 }
@@ -86,9 +107,14 @@ pub fn predict_intra_paeth_rect_into<T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
-    validate_edge(IntraPaethEdge::Left, edges.left, size.height(), bit_depth)?;
-    validate_edge(IntraPaethEdge::Above, edges.above, size.width(), bit_depth)?;
-    validate_sample(IntraPaethEdge::TopLeft, 0, edges.top_left, bit_depth)?;
+    validate_intra_edge_samples(IntraPaethEdge::Left, edges.left, size.height(), bit_depth)?;
+    validate_intra_edge_samples(IntraPaethEdge::Above, edges.above, size.width(), bit_depth)?;
+    validate_intra_edge_samples(
+        IntraPaethEdge::TopLeft,
+        core::slice::from_ref(&edges.top_left),
+        1,
+        bit_depth,
+    )?;
     validate_output_shape(
         size,
         output.len(),
@@ -129,47 +155,6 @@ pub(crate) fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: 
         above
     } else {
         top_left
-    }
-}
-
-fn validate_edge<T: ReconSample>(
-    edge: IntraPaethEdge,
-    samples: &[T],
-    expected_len: usize,
-    bit_depth: BitDepth,
-) -> Result<()> {
-    if samples.len() != expected_len {
-        return Err(ReconError::IntraPaethEdgeLengthMismatch {
-            edge,
-            expected: expected_len,
-            actual: samples.len(),
-        });
-    }
-
-    for (sample_index, sample) in samples.iter().copied().enumerate() {
-        validate_sample(edge, sample_index, sample, bit_depth)?;
-    }
-
-    Ok(())
-}
-
-fn validate_sample<T: ReconSample>(
-    edge: IntraPaethEdge,
-    sample_index: usize,
-    sample: T,
-    bit_depth: BitDepth,
-) -> Result<()> {
-    let value = sample.to_u16();
-    let max = bit_depth.max_sample();
-    if value > max {
-        Err(ReconError::IntraPaethSampleOutOfRange {
-            edge,
-            sample_index,
-            value,
-            max,
-        })
-    } else {
-        Ok(())
     }
 }
 

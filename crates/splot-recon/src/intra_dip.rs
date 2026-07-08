@@ -5,7 +5,9 @@
 //!
 //! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
-use crate::intra_dc_math::{validate_output_shape, validate_sample_type};
+use crate::intra_dc_math::{
+    IntraEdgeError, validate_intra_edge_samples, validate_output_shape, validate_sample_type,
+};
 use crate::math::round2;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
@@ -31,6 +33,25 @@ impl IntraDipEdge {
             Self::Left => "left",
             Self::Above => "above",
             Self::TopLeft => "top-left",
+        }
+    }
+}
+
+impl IntraEdgeError for IntraDipEdge {
+    fn length_mismatch(self, expected: usize, actual: usize) -> ReconError {
+        ReconError::IntraDipEdgeLengthMismatch {
+            edge: self,
+            expected,
+            actual,
+        }
+    }
+
+    fn sample_out_of_range(self, sample_index: usize, value: u16, max: u16) -> ReconError {
+        ReconError::IntraDipSampleOutOfRange {
+            edge: self,
+            sample_index,
+            value,
+            max,
         }
     }
 }
@@ -130,7 +151,7 @@ fn validate_dip_mode(dip_mode: usize) -> Result<()> {
 }
 
 fn validate_dip_size(size: IntraRectBlockSize) -> Result<()> {
-    if size.sample_count() >= 64 {
+    if size.width() >= 4 && size.height() >= 4 {
         Ok(())
     } else {
         Err(ReconError::UnsupportedIntraDipBlockSize {
@@ -145,58 +166,24 @@ fn validate_dip_edges<T: ReconSample>(
     size: IntraRectBlockSize,
     edges: IntraDipEdges<'_, T>,
 ) -> Result<()> {
-    validate_dip_edge(
+    validate_intra_edge_samples(
         IntraDipEdge::Left,
         edges.left,
         size.height() + (size.height() >> 2),
         bit_depth,
     )?;
-    validate_dip_edge(
+    validate_intra_edge_samples(
         IntraDipEdge::Above,
         edges.above,
         size.width() + (size.width() >> 2),
         bit_depth,
     )?;
-    validate_dip_sample(IntraDipEdge::TopLeft, 0, edges.top_left, bit_depth)
-}
-
-fn validate_dip_edge<T: ReconSample>(
-    edge: IntraDipEdge,
-    samples: &[T],
-    expected_len: usize,
-    bit_depth: BitDepth,
-) -> Result<()> {
-    if samples.len() != expected_len {
-        return Err(ReconError::IntraDipEdgeLengthMismatch {
-            edge,
-            expected: expected_len,
-            actual: samples.len(),
-        });
-    }
-    for (sample_index, sample) in samples.iter().copied().enumerate() {
-        validate_dip_sample(edge, sample_index, sample, bit_depth)?;
-    }
-    Ok(())
-}
-
-fn validate_dip_sample<T: ReconSample>(
-    edge: IntraDipEdge,
-    sample_index: usize,
-    sample: T,
-    bit_depth: BitDepth,
-) -> Result<()> {
-    let value = sample.to_u16();
-    let max = bit_depth.max_sample();
-    if value > max {
-        Err(ReconError::IntraDipSampleOutOfRange {
-            edge,
-            sample_index,
-            value,
-            max,
-        })
-    } else {
-        Ok(())
-    }
+    validate_intra_edge_samples(
+        IntraDipEdge::TopLeft,
+        core::slice::from_ref(&edges.top_left),
+        1,
+        bit_depth,
+    )
 }
 
 fn dip_features<T: ReconSample>(
@@ -433,24 +420,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_too_small_blocks() {
-        let err = predict_intra_dip_rect_into(
-            BitDepth::Eight,
-            rect_size(2, 3),
-            0,
-            false,
-            IntraDipEdges::new(&[128u8; 10], &[128u8; 5], 128),
-            &mut [0u8; 32],
-            4,
-        )
-        .unwrap_err();
-        assert_eq!(
-            err,
-            ReconError::UnsupportedIntraDipBlockSize {
-                width: 4,
-                height: 8,
+    fn accepts_quarter_grid_blocks() {
+        let size = rect_size(2, 2);
+        let left = [80u8, 84, 88, 92, 96];
+        let above = [180u8, 176, 172, 168, 164];
+        for mode in 0..DIP_MODE_COUNT {
+            for transpose in [false, true] {
+                let mut output = [0u8; 16];
+                predict_intra_dip_rect_into(
+                    BitDepth::Eight,
+                    size,
+                    mode,
+                    transpose,
+                    IntraDipEdges::new(&left, &above, 128),
+                    &mut output,
+                    4,
+                )
+                .unwrap();
+                assert!(output.iter().any(|&sample| sample > 0));
             }
-        );
+        }
     }
 
     #[test]
