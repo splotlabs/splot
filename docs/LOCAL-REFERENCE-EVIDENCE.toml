@@ -3598,6 +3598,58 @@ left = "avm-lossless-nondc-luma-d45-intra-64x64-raw-md5"
 right = "avm-repeat-lossless-nondc-luma-d45-intra-64x64-raw-md5"
 
 [[evidence]]
+id = "lref-avm-syn-lossless-nondc-luma-d45-leftedge-128x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 4:2:0 128x64 lossless intra IVF fixture whose first-row right 64x64 block has a decoded left neighbor, no above neighbor, explicit non-DPCM D45_PRED luma, and chroma following D45 from flat chroma input. The fixture exercises the lossless luma and follow-chroma predictor guards for the left-edge D45 subset; splot reproduces the raw SHA-256 value through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-08"
+
+[[evidence.fixture]]
+id = "d45-leftedge-luma-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-nondc-luma-d45-leftedge-128x64.ivf"
+sha256 = "59e0df1344f75f72449dc9c9a98af78b15dd27a3ca5fa3bf272841fd441b023e"
+size_bytes = 84
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 128x64 8-bit 4:2:0 YUV input with a flat left 64x64 luma block at Y=128, a right 64x64 luma block set to 127 above the anti-diagonal, 128 on the anti-diagonal, and 129 below the anti-diagonal, and U=V=128. Encoded with AVM lossless mode, 64x64 square partitions, SDP disabled, and broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, CCTX, palette, IntraBC, FSC, intra-DIP, IBP, MRL, intra edge filtering, rectangular/extended/4-way partitions, non-default intra TX, angle delta, parity hiding, TCQ, and trellis quantization; the right block uses uv_mode=0, which resolves chroma through the luma D45 follow path. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec-lossless-nondc-luma-d45-leftedge"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3 from the local fixture build; checkout contained untracked build directories only."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:d45-leftedge-luma-input}."
+output_digest_id = "avm-lossless-nondc-luma-d45-leftedge-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "ef7c7231103abaff17a1e222c4c5600f"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 386bf9550c5623bc5eb0fba92f0985b2bd0f9d06c5fa991d32407f3b17f99c6f is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat-lossless-nondc-luma-d45-leftedge"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3 decode run from the same fixture build; checkout contained untracked build directories only."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:d45-leftedge-luma-input}."
+output_digest_id = "avm-repeat-lossless-nondc-luma-d45-leftedge-128x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "ef7c7231103abaff17a1e222c4c5600f"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-nondc-luma-d45-leftedge-128x64-raw-md5"
+right = "avm-repeat-lossless-nondc-luma-d45-leftedge-128x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-syn-lossless-nondc-chroma-h-intra-64x64"
 feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
 decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
