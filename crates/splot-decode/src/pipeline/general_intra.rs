@@ -791,7 +791,7 @@ pub(super) fn lossless_chroma_block_prediction_verified(
     ((sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left())
         && matches!(
             mode,
-            M::Horizontal | M::Vertical | M::D45 | M::D135 | M::D157 | M::D203 | M::Paeth
+            M::Horizontal | M::Vertical | M::D45 | M::D113 | M::D135 | M::D157 | M::D203 | M::Paeth
         ))
         || (!neighbours.has_above()
             && neighbours.has_left()

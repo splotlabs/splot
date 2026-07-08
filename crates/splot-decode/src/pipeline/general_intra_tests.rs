@@ -1189,7 +1189,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D113),
+        Some(SupportedChromaMode::D113Follow),
         false,
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
@@ -1555,7 +1555,6 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
         }
     }
     for mode in [
-        SupportedChromaMode::D113,
         SupportedChromaMode::D113Follow,
         SupportedChromaMode::D157Follow,
         SupportedChromaMode::D203Follow,
