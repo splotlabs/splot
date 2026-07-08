@@ -114,6 +114,10 @@ const LOSSLESS_NONDC_LUMA_D157_CHROMA_FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_b
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d157-chroma-follow-leftedge-128x64.ivf"
 );
 
+const LOSSLESS_NONDC_LUMA_D203_CHROMA_FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d203-chroma-follow-leftedge-128x64.ivf"
+);
+
 const LOSSLESS_NONDC_LUMA_PAETH_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-paeth-intra-64x64.ivf"
 );
@@ -722,6 +726,21 @@ fn lossless_nondc_luma_d113_and_d157_chroma_follow_leftedge_frames_decode_to_ora
         &d157_frame,
         "01e55c1f2112e99af5bdae258410262ca5e0641e74b73bfec366c7df222d00b4",
     );
+
+    assert_eq!(
+        LOSSLESS_NONDC_LUMA_D203_CHROMA_FOLLOW_LEFTEDGE_FIXTURE.len(),
+        1235
+    );
+    let d203_frame = decode_eight(LOSSLESS_NONDC_LUMA_D203_CHROMA_FOLLOW_LEFTEDGE_FIXTURE);
+
+    assert_yuv420_frame(&d203_frame, BitDepth::Eight, 128, 64);
+    assert_chroma_size(&d203_frame, 64, 32);
+    assert_distinct_gt(d203_frame.y().samples(), 16, "lossless D203 left-edge luma");
+    assert_chroma_eq(&d203_frame, 120, 130);
+    assert_hash(
+        &d203_frame,
+        "3b95907f8808cc9d0bdd2eb376c8726019f7a4490cf8ecfcccab883fb11f8a3f",
+    );
 }
 
 fn assert_lossless_directional_luma_oracle(
@@ -1259,6 +1278,7 @@ fn lossless_luma_prediction_guard_rejects_unproven_d113_chroma_cross_product() {
         (IntraYMode::D113_PRED_FOR_TEST, 7, 13),
         (IntraYMode::D135_PRED_FOR_TEST, 1, 14),
         (IntraYMode::D157_PRED_FOR_TEST, 1, 15),
+        (IntraYMode::D203_PRED_FOR_TEST, 1, 16),
     ] {
         let mut modes = GeneralIntraBlockModes::luma_only(GeneralIntraLumaBlockMode {
             y_mode,
