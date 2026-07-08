@@ -246,6 +246,11 @@ description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 128x64) from a pro
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-lossless-sdp-nondc-chroma-paeth-leftedge-128x64.ivf"
+description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 128x64) from the project-owned lossless Paeth left-edge chroma source re-encoded with SDP enabled. The stream carries a first-row right 64x64 block with a decoded left neighbor and no above neighbor, DPCM-Y/H luma syntax (§ 5.20.5.5, use_dpcm_y=1, dpcm_mode_y=1), SDP/chroma-part explicit non-DPCM PAETH_PRED chroma syntax (§ 5.20.5.6, uv_mode_idx=5 resolves to PAETH_PRED, use_dpcm_uv=0), and lossless 4x4 chroma residual units; avmdec and splot decode byte-exact to raw SHA-256 b064c9c6fbeaac7b04e7c5cc4430f1af7a968488b9f2508127e82024f973fb96; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-lossless-sdp-nondc-chroma-paeth-intra-64x64.ivf"
 description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned flat-luma, Paeth-shaped chroma input with SDP enabled and broad decode tools disabled. The stream carries DC luma plus SDP/chroma-part explicit non-DPCM PAETH_PRED chroma syntax (§ 5.20.5.6, uv_mode=4 resolves to PAETH_PRED, use_dpcm_uv=0) with lossless 4x4 chroma residual units; avmdec and splot decode byte-exact to raw SHA-256 82bece3a5ee82789940b30339ec764d664f12c8fdd0f6201a7a25cbc74dcda53; validates clean."
 expect = "clean"
