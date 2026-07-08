@@ -11113,7 +11113,7 @@ change_id = "decode-luma-txtype-residual-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial runtime prerequisite row for the local decoder mission Wiener NS LR selectable transform-record residual path after active intra IST and chroma CCTX syntax handoff. The transform-tool residual helper resolves active luma §5.20.8.2/§5.20.8.3 transform-type syntax to a retained `PlaneTxType`, admits non-DCT luma transform types only for the Wiener NS LR tx-skip syntax-only handoff, and passes the retained type into the staged ordinary coefficient branch so §5.20.7.30 scan order and §8.3.2 coefficient contexts derive from the actual transform class. Reconstruction-safe callers still fail closed on the same non-DCT luma transform type before decoded samples. The live local decoder mission probe advances past the former `unsupported_dctonly_residual_luma_tx_type` stop and now reaches `unsupported_wienerns_lr_live_transform_record_fsc_mode` at byte offset 110 after active MRL metadata handoff. This row does not claim inverse transform support, residual addition, chroma-offset residual coordinate handoff, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, raw/Y4M/hash success, reference refresh, AVM/dav2d byte equality, or successful local decoder mission decode."
+notes = "Partial runtime prerequisite row for the local decoder mission Wiener NS LR selectable transform-record residual path after active intra IST and chroma CCTX syntax handoff. The transform-tool residual helper resolves active luma §5.20.8.2/§5.20.8.3 transform-type syntax to a retained `PlaneTxType`, admits non-DCT luma transform types only for the Wiener NS LR tx-skip syntax-only handoff, and passes the retained type into the staged ordinary coefficient branch so §5.20.7.30 scan order and §8.3.2 coefficient contexts derive from the actual transform class. The staged handoff now also threads block-local `use_tcq` into `LumaCoeffBlock` so §7.14.4 dequantization suppresses the TCQ denominator increment for active `useFsc` luma IDTX blocks while preserving ordinary TCQ blocks. Reconstruction-safe callers still fail closed on unsupported non-DCT luma transform types before decoded samples. The live local decoder mission probe advances past the former `unsupported_dctonly_residual_luma_tx_type` stop and now reaches `unsupported_wienerns_lr_live_transform_record_fsc_mode` at byte offset 110 after active MRL metadata handoff. This row does not claim broad inverse transform support, chroma-offset residual coordinate handoff, decoded CurrFrame/CdefFrame sample population, loop-restoration filtering/output, raw/Y4M/hash success, reference refresh, AVM/dav2d byte equality, or successful local decoder mission decode."
 
 [feature.status]
 mapped = "done"
@@ -11137,6 +11137,8 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::luma_txtype_residual_staged_base_config_derives_flags_for_2d_luma_tx_type",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::luma_txtype_residual_staged_base_config_suppresses_parity_hiding_for_idtx",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::luma_txtype_residual_staged_base_config_suppresses_tcq_for_1d_luma_tx_type",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::coefficient_block_use_tcq_suppresses_fsc",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::fsc_idtx_block_reconstructs_without_tcq_dequant_shift",
     "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
     "local decoder mission probe: unsupported_wienerns_lr_live_transform_record_fsc_mode at byte offset 110 after active MRL metadata handoff",
 ]
@@ -11151,6 +11153,7 @@ commands = [
 fixtures = [
     "local decoder mission fixture",
     "crates/splot-cli/tests/decode_cli.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
     "crates/splot-decode/src/pipeline/mod.rs",
     "crates/splot-decode/src/filters/wienerns_lr/diagnostics.rs",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
