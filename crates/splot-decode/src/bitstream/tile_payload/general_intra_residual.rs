@@ -29,7 +29,8 @@ use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryBranchModeToTxfmBaseConfig,
     CoeffOrdinaryStagedLosslessNonZeroInput, CoeffOrdinaryTxSizeGeometryConfig,
-    apply_staged_nonzero_coeff_ordinary_branch_from_lossless, resolve_mode_to_txfm_plane_tx_type,
+    apply_staged_nonzero_coeff_ordinary_branch_from_lossless, read_lossless_inter_plane_tx_type,
+    resolve_mode_to_txfm_plane_tx_type,
 };
 use super::coeff_loop::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
 use super::coeff_loop::use_fsc_branch::{
@@ -1355,7 +1356,7 @@ fn staged_transform_tool_plane_tx_type(
     base_config: CoeffOrdinaryBranchLosslessBaseConfig,
 ) -> Result<usize, GeneralIntraResidualError> {
     if lossless {
-        if geometry.plane == 0 && base_config.luma_tx_type == IDTX && !is_inter {
+        if geometry.plane == 0 && base_config.luma_tx_type == IDTX {
             return Ok(IDTX);
         }
         return Ok(DCT_DCT);
@@ -1426,9 +1427,17 @@ fn ensure_transform_tool_residual_handoff(
         }
         metadata.cctx_type = Some(cctx_type);
     }
+    if lossless {
+        if !is_inter && plane == 0 && input.fsc_mode {
+            metadata.luma_tx_type = IDTX;
+        } else if is_inter && plane == 0 {
+            metadata.luma_tx_type = read_lossless_inter_plane_tx_type(cdfs, symbols, tx_size)
+                .map_err(|source| GeneralIntraResidualError::TransformTypeRead { source })?;
+        }
+        return Ok(metadata);
+    }
     let tx_set = transform_set(frame_facts, plane, tx_size, is_inter)?;
     let dct_forced = (!is_inter && plane == 0 && eob == 1)
-        || lossless
         || (plane > 0 && frame_facts.enable_chroma_dctonly())
         || tx_set == TX_SET_DCTONLY
         || (!is_inter && plane == 0 && frame_facts.reduced_tx_set() == 2);
@@ -2280,7 +2289,6 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
             actual: quant.len(),
         });
     }
-
     let mut out = vec![T::default(); setup.samples];
     with_residual_scratch(|scratch| {
         let dequant_scratch = &mut scratch.dequant[..setup.adjusted];

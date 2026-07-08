@@ -370,6 +370,35 @@ fn lossless_intra_transform_handoff_forces_dct_without_tx_type_or_ist_reads() {
 }
 
 #[test]
+fn lossless_fsc_luma_transform_handoff_retains_idtx_without_tx_type_read() {
+    let payload = intra_tx_type_set1_payload(TX_8X8, 1);
+    let mut cdfs = tile_cdfs();
+    let mut symbols = symbol_decoder_for_payload(&payload);
+
+    let metadata = ensure_transform_tool_residual_handoff(
+        &mut cdfs,
+        &mut symbols,
+        TransformToolResidualInput {
+            frame_facts: lossless_frame_facts(),
+            plane: 0,
+            tx_size: TX_8X8,
+            is_inter: false,
+            lossless: true,
+            fsc_mode: true,
+            eob: 2,
+            luma_transform_type_context: None,
+            active_intra_ist_policy: ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
+            active_chroma_policy: ActiveChromaResidualPolicy::Reject,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(metadata.luma_tx_type, IDTX);
+    assert_eq!(metadata.intra_ist, None);
+    assert_eq!(symbols.symbol_count(), 0);
+}
+
+#[test]
 fn fsc_mode_luma_transform_handoff_derives_idtx_without_luma_context() {
     let metadata = ensure_with_test_payload_fsc_and_policy(
         frame_facts_with_fsc(),
@@ -888,6 +917,33 @@ fn lossless_fsc_staged_plane_tx_type_remains_idtx() {
 }
 
 #[test]
+fn lossless_inter_staged_plane_tx_type_remains_idtx() {
+    let geometry = CoeffOrdinaryTxSizeGeometryConfig {
+        plane: 0,
+        start_x: 0,
+        start_y: 0,
+        tx_size: TX_4X4,
+    };
+    let base_config = staged_transform_tool_lossless_base_config(
+        lossless_frame_facts(),
+        0,
+        0,
+        0,
+        DCT_DCT,
+        true,
+        TransformToolResidualMetadata {
+            luma_tx_type: IDTX,
+            ..TransformToolResidualMetadata::default()
+        },
+    );
+
+    assert_eq!(
+        staged_transform_tool_plane_tx_type(geometry, true, true, base_config).unwrap(),
+        IDTX
+    );
+}
+
+#[test]
 fn luma_txtype_residual_staged_base_config_derives_coeff_tool_flags() {
     for (luma_tx_type, parity_hiding, use_tcq) in [
         (ADST_DCT, true, true),
@@ -984,6 +1040,94 @@ fn lossless_chroma_transform_handoff_skips_cctx_read() {
     .unwrap();
 
     assert_eq!(metadata.cctx_type, None);
+    assert_eq!(symbols.symbol_count(), 0);
+}
+
+#[test]
+fn lossless_inter_luma_transform_handoff_reads_tx_type_metadata() {
+    for (symbol, expected_tx_type) in [(0, DCT_DCT), (1, IDTX)] {
+        let facts = lossless_frame_facts();
+        let payload = encode_transform_symbols(&[(TileCdfSelector::LosslessInterTxType, symbol)]);
+        let mut cdfs = tile_cdfs();
+        let mut symbols = symbol_decoder_for_payload(&payload);
+
+        let metadata = ensure_transform_tool_residual_handoff(
+            &mut cdfs,
+            &mut symbols,
+            TransformToolResidualInput {
+                frame_facts: facts,
+                plane: 0,
+                tx_size: TX_4X4,
+                is_inter: true,
+                lossless: true,
+                fsc_mode: false,
+                eob: 16,
+                luma_transform_type_context: None,
+                active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
+                active_chroma_policy: ActiveChromaResidualPolicy::Reject,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(metadata.luma_tx_type, expected_tx_type);
+        assert_eq!(symbols.symbol_count(), 1);
+    }
+}
+
+#[test]
+fn lossless_inter_luma_transform_handoff_large_tx_implies_idtx_without_symbol() {
+    let facts = lossless_frame_facts();
+    let mut cdfs = tile_cdfs();
+    let mut symbols = symbol_decoder_for_payload(&[]);
+
+    let metadata = ensure_transform_tool_residual_handoff(
+        &mut cdfs,
+        &mut symbols,
+        TransformToolResidualInput {
+            frame_facts: facts,
+            plane: 0,
+            tx_size: TX_8X8,
+            is_inter: true,
+            lossless: true,
+            fsc_mode: false,
+            eob: 16,
+            luma_transform_type_context: None,
+            active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
+            active_chroma_policy: ActiveChromaResidualPolicy::Reject,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(metadata.luma_tx_type, IDTX);
+    assert_eq!(symbols.symbol_count(), 0);
+}
+
+#[test]
+fn lossless_inter_chroma_transform_handoff_skips_tx_type_metadata() {
+    let facts = lossless_frame_facts();
+    let payload = encode_transform_symbols(&[(TileCdfSelector::LosslessInterTxType, 1)]);
+    let mut cdfs = tile_cdfs();
+    let mut symbols = symbol_decoder_for_payload(&payload);
+
+    let metadata = ensure_transform_tool_residual_handoff(
+        &mut cdfs,
+        &mut symbols,
+        TransformToolResidualInput {
+            frame_facts: facts,
+            plane: 1,
+            tx_size: TX_4X4,
+            is_inter: true,
+            lossless: true,
+            fsc_mode: false,
+            eob: 16,
+            luma_transform_type_context: None,
+            active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
+            active_chroma_policy: ActiveChromaResidualPolicy::Reject,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(metadata.luma_tx_type, DCT_DCT);
     assert_eq!(symbols.symbol_count(), 0);
 }
 

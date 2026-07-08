@@ -4,6 +4,7 @@
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{MODE_TO_ANGLE, MODE_TO_TXFM};
 
+use super::super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::super::cdf::{TileCdfSelector, TileCdfSubset};
 use super::super::super::coeff_state::TileCoeffContextState;
 use super::super::base_level_pass::CoeffBaseDerivedLevelPassConfig;
@@ -238,11 +239,11 @@ pub(crate) fn read_lossless_tx_size_base_config(
     })
 }
 
-fn read_lossless_inter_plane_tx_type(
+pub(crate) fn read_lossless_inter_plane_tx_type(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     tx_size: usize,
-) -> Result<usize, CoeffOrdinaryBranchError> {
+) -> Result<usize, BlockSymbolTraceReadError> {
     if tx_size != TX_4X4 {
         return Ok(IDTX);
     }
@@ -616,7 +617,7 @@ fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless_with_tables(
         lossless,
     } = input;
     let base_config = if lossless {
-        read_lossless_tx_size_base_config(cdfs, symbols, geometry, is_inter)?
+        staged_lossless_tx_size_base_config(geometry, base_config)
     } else {
         let mode_to_txfm_base_config =
             base_config.mode_to_txfm_base_config(geometry, is_inter, tables)?;
@@ -635,6 +636,21 @@ fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless_with_tables(
         },
         tables,
     )
+}
+
+fn staged_lossless_tx_size_base_config(
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    base_config: CoeffOrdinaryBranchLosslessBaseConfig,
+) -> CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
+    CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
+        plane_tx_type: if geometry.plane == 0 && base_config.luma_tx_type == IDTX {
+            IDTX
+        } else {
+            DCT_DCT
+        },
+        parity_hiding: false,
+        use_tcq: false,
+    }
 }
 
 fn apply_staged_nonzero_coeff_ordinary_pass_from_tx_size_dimensions_with_tables(
