@@ -23,6 +23,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
     workspace: &mut CurrentFrameWorkspace<T>,
+    block_decoded: &TileBlockDecodedState,
     mv_grid: &mut NeighbourMvGrid,
     temporal_context: Option<&TemporalMvContext>,
     motion_field: &mut TemporalMotionField,
@@ -530,6 +531,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     reconstruct_placed_inter_block(
         workspace,
         &placed,
+        block_decoded,
         ref_frame_idx,
         reference,
         block_qindex,
