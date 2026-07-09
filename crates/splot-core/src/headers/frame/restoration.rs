@@ -337,6 +337,10 @@ pub fn parse_lr_params(
 /// reference is available. Temporal-copy filter banks are represented by
 /// `frame_filters_on == true` with no local `frame_filter_bank`; runtime consumers already
 /// treat that as an unsupported reconstruction input until reference-filter state is modeled.
+///
+/// # Errors
+/// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
+/// ends mid-field before a modeled read completes.
 #[allow(clippy::too_many_arguments)]
 pub fn parse_lr_params_for_inter(
     reader: &mut BitReader<'_>,

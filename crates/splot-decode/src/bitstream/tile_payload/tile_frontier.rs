@@ -329,9 +329,6 @@ fn loop_restoration_state(lr: &LrParams, num_planes: usize) -> TilePartitionLoop
         match params.restoration_type {
             FrameRestorationType::None => {}
             FrameRestorationType::WienerNonsep => {
-                if params.frame_filters_on && params.frame_filter_bank.is_none() {
-                    return TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;
-                }
                 plane_enabled[plane] = true;
                 frame_filters_on[plane] = params.frame_filters_on;
                 unit_size[plane] = lr.loop_restoration_size[plane] as usize;
