@@ -523,13 +523,12 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             SPEC_MODE_INFO
         ));
     }
-    let interp_ctx = neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true);
-    let interp = resolve_interp_filter(
+    let interp = resolve_compound_interp_filter(
         cdfs,
         symbols,
         frame_interpolation_filter,
-        true,
-        interp_ctx,
+        compound.use_optflow,
+        neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
         tile_offset,
     )?;
     reconstruct_resolved_compound_inter_block(
@@ -572,6 +571,27 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         luma_use_tcq,
         residual_use_ddt,
         bit_depth,
+        tile_offset,
+    )
+}
+
+fn resolve_compound_interp_filter(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    frame_interpolation_filter: FrameInterpolationFilter,
+    use_optflow: bool,
+    ctx: usize,
+    tile_offset: ByteOffset,
+) -> Result<ReconInterpolationFilter> {
+    if use_optflow {
+        return Ok(ReconInterpolationFilter::EightTapSharp);
+    }
+    resolve_interp_filter(
+        cdfs,
+        symbols,
+        frame_interpolation_filter,
+        true,
+        ctx,
         tile_offset,
     )
 }
@@ -2001,6 +2021,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(blend, mc::CompoundBlend::average_with_implicit_mask(true));
+        assert_eq!(symbols.checkpoint(), before);
+    }
+
+    #[test]
+    fn compound_optflow_forces_sharp_interp_without_symbols() {
+        let payload = encode_compound_local_warp(0, false);
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&payload);
+        let before = symbols.checkpoint();
+
+        let interp = resolve_compound_interp_filter(
+            &mut tile,
+            &mut symbols,
+            FrameInterpolationFilter::Switchable,
+            true,
+            0,
+            TILE_OFFSET,
+        )
+        .unwrap();
+
+        assert_eq!(interp, ReconInterpolationFilter::EightTapSharp);
         assert_eq!(symbols.checkpoint(), before);
     }
 
