@@ -142,6 +142,69 @@ fn dispatcher_uses_implicit_mask_for_offscreen_compound_refs() {
     assert_eq!(y[28], 12);
 }
 
+#[test]
+fn warp_skips_prediction_units_beyond_the_current_frame() {
+    let reference = patterned_frame(16, 8);
+    let mut workspace = workspace(16, 8);
+
+    motion_compensate_inter_block_into(
+        &mut workspace,
+        InterBlockParams::single_warp(
+            &reference,
+            rect(8, 0, 16, 8),
+            crate::prediction::inter::find_mv_stack::DEFAULT_WARP_PARAMS,
+        )
+        .with_chroma(false),
+        ByteOffset::new(0),
+    )
+    .expect("edge-clipped warp dispatcher");
+
+    let decoded = workspace
+        .freeze()
+        .expect("freeze edge-clipped warp workspace");
+    let y = visible_samples(&decoded, PlaneId::Y);
+    let reference_y = visible_samples(&reference, PlaneId::Y);
+    for row in 0..8 {
+        assert_eq!(&y[row * 16..row * 16 + 8], &[0; 8]);
+        assert_eq!(
+            &y[row * 16 + 8..row * 16 + 16],
+            &reference_y[row * 16 + 8..row * 16 + 16]
+        );
+    }
+}
+
+#[test]
+fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
+    let reference = patterned_frame(24, 8);
+    let mut workspace = workspace(16, 8);
+
+    motion_compensate_inter_block_into(
+        &mut workspace,
+        InterBlockParams::single_warp(
+            &reference,
+            rect(12, 0, 8, 4),
+            crate::prediction::inter::find_mv_stack::DEFAULT_WARP_PARAMS,
+        )
+        .with_chroma(false),
+        ByteOffset::new(0),
+    )
+    .expect("edge-clipped extended-warp dispatcher");
+
+    let decoded = workspace
+        .freeze()
+        .expect("freeze edge-clipped extended-warp workspace");
+    let y = visible_samples(&decoded, PlaneId::Y);
+    let reference_y = visible_samples(&reference, PlaneId::Y);
+    for row in 0..4 {
+        assert_eq!(&y[row * 16..row * 16 + 12], &[0; 12]);
+        assert_eq!(
+            &y[row * 16 + 12..row * 16 + 16],
+            &reference_y[row * 24 + 12..row * 24 + 16]
+        );
+    }
+    assert!(y[4 * 16..].iter().all(|&sample| sample == 0));
+}
+
 fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
     let luma_size = PlaneSize::new(width, height).expect("luma size");
     let visible = PlaneRect::new(0, 0, width, height).expect("visible rect");

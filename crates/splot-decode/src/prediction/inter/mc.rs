@@ -412,6 +412,9 @@ fn predict_warp_plane<T: ReconSample>(
 ) -> Result<()> {
     let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
     let (ref_width, ref_height) = (view.width(), view.height());
+    let destination_size = workspace.plane(plane)?.storage_size();
+    let (destination_width, destination_height) =
+        (destination_size.width(), destination_size.height());
 
     let (luma_x, luma_y, luma_w, luma_h) = rect.plane_luma_rect(plane);
     let plane_x = luma_x >> sub_x;
@@ -425,7 +428,9 @@ fn predict_warp_plane<T: ReconSample>(
     if skip_pred {
         for i4 in 0..block_h.div_euclid(4) {
             for j4 in 0..block_w.div_euclid(4) {
-                if plane_x + j4 * 4 >= ref_width || plane_y + i4 * 4 >= ref_height {
+                let write_x = plane_x + j4 * 4;
+                let write_y = plane_y + i4 * 4;
+                if write_x >= destination_width || write_y >= destination_height {
                     continue;
                 }
                 let unit_x = (plane_x + (j4 & !1) * 4) as i64;
@@ -460,7 +465,7 @@ fn predict_warp_plane<T: ReconSample>(
                     .iter()
                     .map(|&v| T::try_from_u16(v))
                     .collect::<splot_recon::Result<Vec<T>>>()?;
-                let rect = PlaneRect::new(plane_x + j4 * 4, plane_y + i4 * 4, 4, 4)?;
+                let rect = PlaneRect::new(write_x, write_y, 4, 4)?;
                 workspace.write_rect(plane, rect, &packed, 4)?;
             }
         }
@@ -469,10 +474,15 @@ fn predict_warp_plane<T: ReconSample>(
 
     for local_y in (0..block_h).step_by(WARPED_BLOCK_SIZE) {
         for local_x in (0..block_w).step_by(WARPED_BLOCK_SIZE) {
+            let write_x = plane_x + local_x;
+            let write_y = plane_y + local_y;
+            if write_x >= destination_width || write_y >= destination_height {
+                continue;
+            }
             let params = WarpPredictBlockParams {
                 warp_params,
-                block_x: (plane_x + local_x) as i64,
-                block_y: (plane_y + local_y) as i64,
+                block_x: write_x as i64,
+                block_y: write_y as i64,
                 subsampling_x: sub_x as u8,
                 subsampling_y: sub_y as u8,
                 first_x: 0,
@@ -490,7 +500,7 @@ fn predict_warp_plane<T: ReconSample>(
                     packed.push(T::try_from_u16(predicted[row * WARPED_BLOCK_SIZE + col])?);
                 }
             }
-            let rect = PlaneRect::new(plane_x + local_x, plane_y + local_y, write_w, write_h)?;
+            let rect = PlaneRect::new(write_x, write_y, write_w, write_h)?;
             workspace.write_rect(plane, rect, &packed, write_w)?;
         }
     }
