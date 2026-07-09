@@ -27,8 +27,8 @@ use splot_core::tables::cdf::{
     DEFAULT_PALETTE_SIZE_7_Y_COLOR_CDF, DEFAULT_PALETTE_SIZE_8_Y_COLOR_CDF,
     DEFAULT_PALETTE_Y_MODE_CDF, DEFAULT_PALETTE_Y_SIZE_CDF, DEFAULT_PB_MV_PRECISION_CDF,
     DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF,
-    DEFAULT_SKIP_MODE_CDF, DEFAULT_TIP_MODE_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_AMVD_CDF,
-    DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_DIP_CDF,
+    DEFAULT_SKIP_DRL_MODE_CDF, DEFAULT_SKIP_MODE_CDF, DEFAULT_TIP_MODE_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_USE_AMVD_CDF, DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_DIP_CDF,
     DEFAULT_USE_DPCM_UV_CDF, DEFAULT_USE_DPCM_Y_CDF, DEFAULT_USE_EXTEND_WARP_CDF,
     DEFAULT_USE_LOCAL_WARP_CDF, DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF, DEFAULT_USE_OPTFLOW_CDF,
     DEFAULT_USE_PC_WIENER_CDF, DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
@@ -185,6 +185,7 @@ pub(crate) type WedgeAngleCdfRows = [[i32; WEDGE_ANGLE_ROW_LEN]; WEDGE_ANGLE_CON
 pub(crate) type WedgeDist1CdfRow = [i32; WEDGE_DIST1_ROW_LEN];
 pub(crate) type WedgeDist2CdfRow = [i32; WEDGE_DIST2_ROW_LEN];
 pub(crate) type DrlModeCdfRows = [[[i32; CDF_ROW_LEN]; DRL_MODE_CONTEXTS]; DRL_MODE_IDX_BANKS];
+pub(crate) type SkipDrlModeCdfRows = [[i32; CDF_ROW_LEN]; DRL_MODE_IDX_BANKS];
 pub(crate) type TipModeCdfRows = [[i32; CDF_ROW_LEN]; TIP_CONTEXTS];
 pub(crate) type SingleRefCdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
 pub(crate) type CompModeCdfRows = [[i32; CDF_ROW_LEN]; COMP_MODE_CONTEXTS];
@@ -333,6 +334,7 @@ pub(crate) struct BlockCdfRows {
     pub(crate) wedge_dist1: WedgeDist1CdfRow,
     pub(crate) wedge_dist2: WedgeDist2CdfRow,
     pub(crate) drl_mode: DrlModeCdfRows,
+    pub(crate) skip_drl_mode: SkipDrlModeCdfRows,
     pub(crate) tip_mode: TipModeCdfRows,
     pub(crate) single_ref: SingleRefCdfRows,
     pub(crate) comp_mode: CompModeCdfRows,
@@ -665,6 +667,14 @@ macro_rules! block_cdf_row {
                     checked_block_row!($self.drl_mode, idx, "idx", TileCdfArray::DrlMode, $get)?;
                 block_row_slice!(bank, ctx, "ctx", TileCdfArray::DrlMode, $get, $as_slice)
             }
+            TileCdfSelector::SkipDrlMode { idx } => block_row_slice!(
+                $self.skip_drl_mode,
+                idx,
+                "idx",
+                TileCdfArray::SkipDrlMode,
+                $get,
+                $as_slice
+            ),
             TileCdfSelector::TipMode { ctx } => block_row_slice!(
                 $self.tip_mode,
                 ctx,
@@ -1111,6 +1121,7 @@ macro_rules! block_cdf_count_rows {
         $row!(wedge_dist1);
         $row!(wedge_dist2);
         $rows!(drl_mode.flatten());
+        $rows!(skip_drl_mode);
         $rows!(tip_mode);
         $rows!(single_ref.flatten());
         $rows!(comp_mode);
@@ -1220,6 +1231,7 @@ impl BlockCdfRows {
             wedge_dist1: DEFAULT_WEDGE_DIST1_CDF,
             wedge_dist2: DEFAULT_WEDGE_DIST2_CDF,
             drl_mode: DEFAULT_DRL_MODE_CDF,
+            skip_drl_mode: DEFAULT_SKIP_DRL_MODE_CDF,
             tip_mode: DEFAULT_TIP_MODE_CDF,
             single_ref: DEFAULT_SINGLE_REF_CDF,
             comp_mode: DEFAULT_COMP_MODE_CDF,

@@ -25,13 +25,13 @@ use splot_core::tables::cdf::{
     DEFAULT_JMVD_SCALE_MODE_CDF, DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF, DEFAULT_MORPH_PRED_CDF,
     DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
     DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_PALETTE_Y_MODE_CDF,
-    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SKIP_MODE_CDF, DEFAULT_TIP_MODE_CDF,
-    DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
-    DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_DIP_CDF,
-    DEFAULT_USE_OPTFLOW_CDF, DEFAULT_USE_PC_WIENER_CDF, DEFAULT_USE_WIENER_NS_CDF,
-    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
-    DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
-    DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SKIP_DRL_MODE_CDF, DEFAULT_SKIP_MODE_CDF,
+    DEFAULT_TIP_MODE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF,
+    DEFAULT_TX_PARTITION_TYPE_CDF, DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF,
+    DEFAULT_USE_DIP_CDF, DEFAULT_USE_OPTFLOW_CDF, DEFAULT_USE_PC_WIENER_CDF,
+    DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
+    DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF,
+    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 use super::block_rows::*;
@@ -857,6 +857,13 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
             "tip_mode ctx {ctx}"
         );
     }
+    for (idx, expected) in DEFAULT_SKIP_DRL_MODE_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::SkipDrlMode { idx }).unwrap(),
+            expected.as_slice(),
+            "skip_drl_mode idx {idx}"
+        );
+    }
     for (ctx, expected) in DEFAULT_SKIP_MODE_CDF.iter().enumerate() {
         assert_eq!(
             tile.row(TileCdfSelector::SkipMode { ctx }).unwrap(),
@@ -924,6 +931,13 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
             },
             TileCdfArray::CompRef1,
             "ctx",
+            3,
+            3,
+        ),
+        (
+            TileCdfSelector::SkipDrlMode { idx: 3 },
+            TileCdfArray::SkipDrlMode,
+            "idx",
             3,
             3,
         ),

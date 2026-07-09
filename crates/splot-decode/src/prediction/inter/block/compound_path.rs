@@ -934,11 +934,9 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     }
     block_ctx.ref_frame0 = ref_frame0;
     block_ctx.ref_frame1 = Some(ref_frame1);
-    let mode_ctx = find_mode_ctx(mv_grid, block_ctx);
-    let ref_mv_idx = read_drl_idx(
+    let ref_mv_idx = read_skip_drl_idx(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
-        mode_ctx.new_mv_context,
         max_drl_bits_minus_1,
         tile_offset,
     )?;
