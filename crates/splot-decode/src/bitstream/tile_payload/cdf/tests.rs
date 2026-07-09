@@ -27,9 +27,9 @@ use splot_core::tables::cdf::{
     DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SKIP_MODE_CDF, DEFAULT_TIP_MODE_CDF,
     DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
     DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_DIP_CDF,
-    DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF,
-    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_USE_OPTFLOW_CDF, DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF,
+    DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 use super::block_rows::*;
@@ -796,6 +796,13 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
             tile.row(TileCdfSelector::CwpIdx { idx }).unwrap(),
             expected.as_slice(),
             "cwp_idx idx {idx}"
+        );
+    }
+    for (ctx, expected) in DEFAULT_USE_OPTFLOW_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::UseOptflow { ctx }).unwrap(),
+            expected.as_slice(),
+            "use_optflow ctx {ctx}"
         );
     }
     for (ctx, ref_rows) in DEFAULT_COMP_REF0_CDF.iter().enumerate() {

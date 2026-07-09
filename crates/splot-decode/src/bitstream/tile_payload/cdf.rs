@@ -613,6 +613,9 @@ pub(crate) enum TileCdfSelector {
         index: usize,
         ctx: usize,
     },
+    UseOptflow {
+        ctx: usize,
+    },
     UseExtendWarp {
         ctx: usize,
     },
@@ -759,6 +762,7 @@ tile_cdf_arrays! {
     CompRef0 => "TileCompRef0Cdf",
     CompRef1 => "TileCompRef1Cdf",
     UseAmvd => "TileUseAmvdCdf",
+    UseOptflow => "TileUseOptflowCdf",
     UseExtendWarp => "TileUseExtendWarpCdf",
     UseLocalWarp => "TileUseLocalWarpCdf",
     UseMostProbablePrecision => "TileUseMostProbablePrecisionCdf",
