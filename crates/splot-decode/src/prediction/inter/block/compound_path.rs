@@ -499,6 +499,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             y_mode: compound.y_mode,
             jmvd_scale_mode,
             skip_mode: false,
+            use_optflow: compound.use_optflow,
             ref_frame0: compound.ref_frame0,
             ref_frame1: compound.ref_frame1,
             blend: compound_blend,
@@ -1666,6 +1667,7 @@ struct CompoundCwpInput {
     y_mode: CompoundYMode,
     jmvd_scale_mode: u8,
     skip_mode: bool,
+    use_optflow: bool,
     ref_frame0: i8,
     ref_frame1: i8,
     blend: mc::CompoundBlend,
@@ -1772,11 +1774,7 @@ fn read_compound_cwp_syntax<T: ReconSample>(
         .inter
         .as_ref()
         .is_some_and(|inter| inter.enable_cwp);
-    if !cwp_enabled
-        || input.skip_mode
-        || !compound_cwp_mode_allowed(input.y_mode, input.jmvd_scale_mode)
-        || !matches!(input.blend, mc::CompoundBlend::Average { .. })
-    {
+    if !compound_cwp_signal_allowed(cwp_enabled, input) {
         return Ok(input.blend);
     }
     let mut coding_idx = 0usize;
@@ -1801,6 +1799,14 @@ fn read_compound_cwp_syntax<T: ReconSample>(
     Ok(input
         .blend
         .average_with_cwp_weight(CWP_WEIGHTING_FACTOR[usize::from(same_side)][coding_idx]))
+}
+
+fn compound_cwp_signal_allowed(cwp_enabled: bool, input: CompoundCwpInput) -> bool {
+    cwp_enabled
+        && !input.skip_mode
+        && !input.use_optflow
+        && compound_cwp_mode_allowed(input.y_mode, input.jmvd_scale_mode)
+        && matches!(input.blend, mc::CompoundBlend::Average { .. })
 }
 
 const fn compound_cwp_mode_allowed(y_mode: CompoundYMode, jmvd_scale_mode: u8) -> bool {
@@ -2075,6 +2081,22 @@ mod tests {
         assert!(compound_cwp_mode_allowed(CompoundYMode::JointNew, 0));
         assert!(!compound_cwp_mode_allowed(CompoundYMode::JointNew, 1));
         assert!(!compound_cwp_mode_allowed(CompoundYMode::NearNew, 0));
+    }
+
+    #[test]
+    fn compound_optflow_suppresses_cwp_symbols() {
+        assert!(!compound_cwp_signal_allowed(
+            true,
+            CompoundCwpInput {
+                y_mode: CompoundYMode::NearNear,
+                jmvd_scale_mode: 0,
+                skip_mode: false,
+                use_optflow: true,
+                ref_frame0: 0,
+                ref_frame1: 1,
+                blend: mc::CompoundBlend::default(),
+            },
+        ));
     }
 
     #[test]
