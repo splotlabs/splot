@@ -1212,27 +1212,24 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
-    assert!(!part_ok(
-        Some(D203Follow),
-        false,
-        IntraYMode::DC_PRED,
-        top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(part_ok(
-        Some(D135Follow),
-        false,
-        IntraYMode::D135_PRED_FOR_TEST,
-        top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    assert!(part_ok(
-        Some(D203Follow),
-        false,
-        IntraYMode::D203_PRED_FOR_TEST,
-        top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
+    for (mode, y_mode, expected) in [
+        (D67Follow, IntraYMode::DC_PRED, false),
+        (D203Follow, IntraYMode::DC_PRED, false),
+        (D67Follow, IntraYMode::D67_PRED_FOR_TEST, true),
+        (D135Follow, IntraYMode::D135_PRED_FOR_TEST, true),
+        (D203Follow, IntraYMode::D203_PRED_FOR_TEST, true),
+    ] {
+        assert_eq!(
+            part_ok(
+                Some(mode),
+                false,
+                y_mode,
+                top_left_8,
+                general_intra::FULL_SB_N4_LUMA
+            ),
+            expected
+        );
+    }
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
         None,
         false,
