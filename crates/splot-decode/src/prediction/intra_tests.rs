@@ -187,6 +187,19 @@ fn plans_supported_luma_prediction_classes() {
             expected: Expected::Plan(IntraLumaPlan::DirectionalOneSidedAbove { p_angle: 45 }),
         },
         Case {
+            label: "d203 top-left no-neighbour default",
+            bit_depth: BitDepth::Eight,
+            row4: 0,
+            col4: 0,
+            width4: 16,
+            height4: 16,
+            frame_cols4: 16,
+            dc: false,
+            nondc: None,
+            directional: Some(SupportedDirectionalLumaMode::D203),
+            expected: Expected::Error("general_intra_d203_unverified_position"),
+        },
+        Case {
             label: "smooth full-sb neighbour",
             bit_depth: BitDepth::Ten,
             row4: 32,
@@ -755,6 +768,45 @@ fn plans_verified_cardinal_no_neighbour_luma_with_explicit_admission() {
             IntraLumaPlan::CardinalNeighbour { direction }
         );
     }
+}
+
+#[test]
+fn plans_verified_d203_no_neighbour_luma_with_explicit_admission() {
+    let case = Case {
+        label: "explicit d203 no-neighbour",
+        bit_depth: BitDepth::Eight,
+        row4: 0,
+        col4: 0,
+        width4: 16,
+        height4: 16,
+        frame_cols4: 16,
+        dc: false,
+        nondc: None,
+        directional: Some(SupportedDirectionalLumaMode::D203),
+        expected: Expected::Error("unused"),
+    };
+    let modes = GeneralIntraBlockModes::luma_only(
+        crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
+            y_mode: IntraYMode::D203_PRED_FOR_TEST,
+            angle_delta_y: 0,
+            intra_joint_mode: 0,
+            mrl_index: 0,
+            mrl_sec_index: None,
+            fsc_mode: 0,
+            uses_mrls: 0,
+            use_dip: 0,
+            dip_transpose: 0,
+            dip_mode: 0,
+            use_dpcm_y: 0,
+            dpcm_mode_y: 0,
+        },
+    );
+
+    assert!(plan_luma_prediction(&modes, ctx(case), false).is_err());
+    assert_eq!(
+        plan_luma_prediction(&modes, ctx(case), true).unwrap(),
+        IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 }
+    );
 }
 
 #[test]
