@@ -1134,6 +1134,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         SupportedChromaMode::HorizontalFollow,
         SupportedChromaMode::D45,
         SupportedChromaMode::D45Follow,
+        SupportedChromaMode::D67,
         SupportedChromaMode::D67Follow,
         SupportedChromaMode::D113,
         SupportedChromaMode::D135,

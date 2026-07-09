@@ -20,6 +20,9 @@ const LOSSLESS_NONDC_CHROMA_D67_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
 const LOSSLESS_NONDC_CHROMA_D67FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d67follow-leftedge-128x64.ivf"
 );
+const LOSSLESS_SDP_NONDC_CHROMA_D67_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d67-leftedge-128x64.ivf"
+);
 const LOSSLESS_SDP_NONDC_CHROMA_D67FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d67follow-leftedge-128x64.ivf"
 );
@@ -92,6 +95,18 @@ fn lossless_nondc_chroma_d67_leftedge_frame_decodes_to_oracle() {
         (128, 64),
         (64, 32),
         "lossless explicit D67 left-edge",
+        "c8ea02e937ad6ca39ab558192a831e71832fbda95ec2f249f5c138ece880a591",
+    );
+}
+
+#[test]
+fn lossless_sdp_nondc_chroma_d67_leftedge_frame_decodes_to_oracle() {
+    assert_lossless_explicit_chroma_oracle(
+        LOSSLESS_SDP_NONDC_CHROMA_D67_LEFTEDGE_FIXTURE,
+        197,
+        (128, 64),
+        (64, 32),
+        "lossless SDP explicit D67 left-edge",
         "c8ea02e937ad6ca39ab558192a831e71832fbda95ec2f249f5c138ece880a591",
     );
 }

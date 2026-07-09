@@ -239,6 +239,16 @@ fn supported_chroma_mode_directional_follow_resolves_d67_for_uv_mode_zero() {
 }
 
 #[test]
+fn supported_chroma_mode_h_luma_can_select_explicit_d67() {
+    assert_supported_chroma_mode(
+        IntraYMode(IntraYMode::H_PRED),
+        9,
+        IntraYMode::D67_PRED,
+        SupportedChromaMode::D67,
+    );
+}
+
+#[test]
 fn supported_chroma_mode_directional_luma_resolves_dc_for_uv_mode_one() {
     let d135 = IntraYMode(IntraYMode::D135_PRED);
     assert_eq!(
