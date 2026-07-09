@@ -43,6 +43,32 @@ const GDF_COORDS: [(isize, isize); 18] = [
 ];
 const GDF_READ_RADIUS: usize = 7;
 const GDF_INTRA_REF_DST: usize = 0;
+const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GdfReferenceContext {
+    current_order_hint: u32,
+    ref_order_hints: [Option<u32>; 2],
+}
+
+impl GdfReferenceContext {
+    pub(crate) fn from_reference_list(
+        current_order_hint: u32,
+        ref_frame_idx: &[u32],
+        ref_order_hint: &[u32],
+    ) -> Self {
+        let mut ref_order_hints = [None; 2];
+        for (list_ref, &slot) in ref_frame_idx.iter().take(2).enumerate() {
+            ref_order_hints[list_ref] = usize::try_from(slot)
+                .ok()
+                .and_then(|slot| ref_order_hint.get(slot).copied());
+        }
+        Self {
+            current_order_hint,
+            ref_order_hints,
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_frame<T: ReconSample>(
@@ -53,6 +79,7 @@ pub(crate) fn apply_frame<T: ReconSample>(
     luma_width: usize,
     luma_height: usize,
     bit_depth: BitDepth,
+    reference: Option<GdfReferenceContext>,
     offset: ByteOffset,
 ) -> Result<()> {
     let Some(gdf) = core.gdf_params.as_ref().filter(|gdf| gdf.gdf_frame_enable) else {
@@ -117,10 +144,12 @@ pub(crate) fn apply_frame<T: ReconSample>(
     let ref_dst_idx = if frame_is_intra {
         GDF_INTRA_REF_DST
     } else {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_inter",
-        ));
+        gdf_inter_ref_dst_idx(reference.ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_inter_reference",
+            )
+        })?)
     };
 
     for y in (0..luma_height).step_by(MI_SIZE) {
@@ -572,6 +601,87 @@ fn gdf_qp_idx(
     })
 }
 
+fn gdf_inter_ref_dst_idx(reference: GdfReferenceContext) -> usize {
+    let current = i32::try_from(reference.current_order_hint).unwrap_or(i32::MAX);
+    let mut max_dist = 0usize;
+    for raw_hint in reference.ref_order_hints.into_iter().flatten() {
+        if raw_hint == RESTRICTED_ORDER_HINT {
+            continue;
+        }
+        let hint = i32::try_from(raw_hint).unwrap_or(i32::MAX);
+        let dist =
+            usize::try_from(get_relative_dist(current, hint).unsigned_abs()).unwrap_or(usize::MAX);
+        max_dist = max_dist.max(dist);
+    }
+    gdf_inter_ref_dst_idx_from_max_dist(max_dist)
+}
+
+const fn gdf_inter_ref_dst_idx_from_max_dist(max_dist: usize) -> usize {
+    if max_dist == 0 {
+        5
+    } else if max_dist < 2 {
+        1
+    } else if max_dist < 3 {
+        2
+    } else if max_dist < 6 {
+        3
+    } else if max_dist < 11 {
+        4
+    } else {
+        5
+    }
+}
+
+fn get_relative_dist(a: i32, b: i32) -> i32 {
+    (a - b).clamp(-127, 127)
+}
+
 fn gdf_filter_error(offset: ByteOffset, reason: &'static str) -> crate::error::DecodeError {
     wienerns_lr_selectable_transform_record_error_reason(offset, reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        GdfReferenceContext, RESTRICTED_ORDER_HINT, gdf_inter_ref_dst_idx,
+        gdf_inter_ref_dst_idx_from_max_dist,
+    };
+
+    #[test]
+    fn inter_ref_dst_idx_uses_first_two_reference_list_entries() {
+        let context = GdfReferenceContext::from_reference_list(10, &[2, 4, 1], &[0, 6, 7, 8, 3]);
+
+        assert_eq!(gdf_inter_ref_dst_idx(context), 4);
+    }
+
+    #[test]
+    fn inter_ref_dst_idx_maps_zero_or_restricted_distance_to_far_bucket() {
+        let same = GdfReferenceContext::from_reference_list(10, &[0], &[10, RESTRICTED_ORDER_HINT]);
+        let restricted =
+            GdfReferenceContext::from_reference_list(10, &[1], &[10, RESTRICTED_ORDER_HINT]);
+
+        assert_eq!(gdf_inter_ref_dst_idx(same), 5);
+        assert_eq!(gdf_inter_ref_dst_idx(restricted), 5);
+    }
+
+    #[test]
+    fn inter_ref_dst_idx_bucket_boundaries_match_spec() {
+        let cases = [
+            (0, 5),
+            (1, 1),
+            (2, 2),
+            (3, 3),
+            (5, 3),
+            (6, 4),
+            (10, 4),
+            (11, 5),
+        ];
+        for (case, (max_dist, expected)) in cases.into_iter().enumerate() {
+            let actual = gdf_inter_ref_dst_idx_from_max_dist(max_dist);
+            assert!(
+                actual == expected,
+                "case {case}: distance {max_dist} mapped to {actual}, expected {expected}"
+            );
+        }
+    }
 }

@@ -33,6 +33,7 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     tx_skip_records: Vec<super::WienerNsLrTxSkipTransformRecord>,
     lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
+    gdf_reference: Option<crate::filters::gdf::GdfReferenceContext>,
 }
 
 #[allow(clippy::if_same_then_else)]
@@ -119,6 +120,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             tx_skip_records: Vec::new(),
             lr_source_blocks: Vec::new(),
             lr_unit_filters: Vec::new(),
+            gdf_reference: None,
         }
     }
 
@@ -162,6 +164,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     ) {
         self.lr_unit_filters = filters;
+    }
+
+    pub(crate) const fn set_gdf_reference_context(
+        &mut self,
+        context: Option<crate::filters::gdf::GdfReferenceContext>,
+    ) {
+        self.gdf_reference = context;
     }
 
     pub(crate) fn into_filtered_frame(
@@ -368,6 +377,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 self.luma_width,
                 self.luma_height,
                 self.bit_depth,
+                self.gdf_reference,
                 offset,
             )?;
         }
