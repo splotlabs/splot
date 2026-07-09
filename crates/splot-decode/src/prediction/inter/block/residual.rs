@@ -140,13 +140,7 @@ pub(crate) fn read_inter_residual(
     } else {
         frontier.b_size
     };
-    let luma_tx_size = luma_inter_residual_tx_size(
-        work_unit,
-        symbols,
-        frontier.b_size.index(),
-        lossless,
-        tile_offset,
-    )?;
+    let luma_tx_size = inter_residual_tx_size(frontier.b_size.index(), lossless, tile_offset)?;
     let luma_tx_records = if residual_uses_selectable_tx_partitions(core) {
         Some(derive_inter_luma_tx_records_for_block(
             work_unit,
@@ -664,21 +658,6 @@ fn inter_residual_tx_size(
 ) -> Result<usize> {
     if lossless {
         Ok(TX_4X4)
-    } else {
-        max_tx_size(block_size, tile_offset)
-    }
-}
-
-fn luma_inter_residual_tx_size(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
-    symbols: &mut SymbolDecoder<'_>,
-    block_size: usize,
-    lossless: bool,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
-    if lossless {
-        read_lossless_tx_size(work_unit, symbols, block_size, false, true, true)
-            .map_err(|_| residual_read_error(tile_offset))
     } else {
         max_tx_size(block_size, tile_offset)
     }
