@@ -965,9 +965,7 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
-    let unsupported_tools = core
-        .quantization_params
-        .is_none_or(|quant| quant.base_q_idx == 0)
+    let unsupported_tools = core.quantization_params.is_none()
         || core
             .segmentation_params
             .as_ref()
@@ -976,10 +974,7 @@ fn validate_inter_frame_core(
         || core
             .delta_q_params
             .is_none_or(|delta| delta.delta_q_present)
-        || core
-            .lossless_info
-            .as_ref()
-            .is_none_or(|lossless| lossless.coded_lossless)
+        || core.lossless_info.is_none()
         || sequence.inter.is_none()
         || core.deblocking_filter_params.is_none()
         || core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable)
