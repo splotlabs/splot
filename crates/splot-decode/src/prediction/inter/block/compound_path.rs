@@ -17,7 +17,6 @@ const MV_PROJECTION_DIV_MULT: [i32; 32] = [
     1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
 ];
 const SPEC_READ_REFINEMV: &str = "5.20.7.17";
-const SPEC_PREDICT_OPTFLOW: &str = "7.13.3.8";
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_compound_inter_block<T: ReconSample>(
@@ -424,14 +423,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             }
         }
     }
-    if compound.use_optflow {
-        return Err(compound_cap!(
-            "compound_optflow_prediction",
-            tile_offset,
-            "inter.compound.optflow_prediction",
-            SPEC_PREDICT_OPTFLOW
-        ));
-    }
     if compound_refinemv_reachable(
         sequence,
         core,
@@ -619,6 +610,19 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         tile_offset,
     )?;
     let placed_geometry = placed_inter_geometry(frontier, n4w, n4h, tile_offset)?;
+    let optflow_distances = if compound.use_optflow {
+        compound_sized_reference_distances(
+            core,
+            reference,
+            ref_frame_idx,
+            compound,
+            CompoundReferencePath::Opfl,
+            tile_offset,
+        )?
+        .map(|(dist0, dist1)| [dist0, dist1])
+    } else {
+        None
+    };
     let placed = PlacedInterBlock {
         luma_x: placed_geometry.luma_x,
         luma_y: placed_geometry.luma_y,
@@ -640,6 +644,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             bawp: BawpSyntax::default(),
             interintra: None,
             compound_blend,
+            optflow_distances,
             residual,
         },
     };

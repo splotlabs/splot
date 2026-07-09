@@ -240,6 +240,7 @@ fn placed_luma_block(
             bawp: BawpSyntax::default(),
             interintra: Some(InterIntraPrediction::SmoothMask { mode }),
             compound_blend: CompoundBlend::default(),
+            optflow_distances: None,
             residual: None,
         },
     }

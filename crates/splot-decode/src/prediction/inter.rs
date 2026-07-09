@@ -452,6 +452,7 @@ pub(in crate::prediction::inter) fn resolve_inter_block_params<'a, T: ReconSampl
             placed.block.interp,
             placed.block.compound_blend,
         )
+        .with_optflow_distances(placed.block.optflow_distances)
         .with_chroma(placed.has_chroma)
     } else if let Some(warp_params) = placed.block.warp_params {
         mc::InterBlockParams::single_warp(ref_frame0, rect, warp_params)
@@ -730,6 +731,7 @@ pub(crate) struct InterBlock {
     pub(crate) bawp: BawpSyntax,
     pub(crate) interintra: Option<InterIntraPrediction>,
     pub(crate) compound_blend: mc::CompoundBlend,
+    pub(crate) optflow_distances: Option<[i32; 2]>,
     pub(crate) residual: Option<InterResidual>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

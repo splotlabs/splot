@@ -199,6 +199,7 @@ fn placed_luma_block(x: usize, y: usize, width: usize, height: usize) -> PlacedI
             bawp: BawpSyntax::default(),
             interintra: None,
             compound_blend: CompoundBlend::default(),
+            optflow_distances: None,
             residual: None,
         },
     }

@@ -17,6 +17,8 @@ use crate::Result;
 use splot_core::span::ByteOffset;
 use splot_recon::math::{clip3, round2};
 
+mod optflow;
+
 pub(crate) const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =
     [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)];
 pub(crate) const CWP_EQUAL: i16 = 8;
@@ -126,6 +128,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
                 mv0,
                 mv1,
                 blend,
+                optflow_distances: None,
             },
             interp,
             has_chroma: true,
@@ -150,6 +153,16 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         self.has_chroma = has_chroma;
         self
     }
+
+    pub(crate) fn with_optflow_distances(mut self, distances: Option<[i32; 2]>) -> Self {
+        if let InterPrediction::CompoundAverage {
+            optflow_distances, ..
+        } = &mut self.prediction
+        {
+            *optflow_distances = distances;
+        }
+        self
+    }
 }
 #[derive(Clone, Copy, Debug)]
 enum InterPrediction<'a, T: ReconSample> {
@@ -167,6 +180,7 @@ enum InterPrediction<'a, T: ReconSample> {
         mv0: Mv,
         mv1: Mv,
         blend: CompoundBlend,
+        optflow_distances: Option<[i32; 2]>,
     },
 }
 #[derive(Clone, Copy, Debug)]
@@ -178,6 +192,7 @@ struct CompoundMcBlock<'a, T: ReconSample> {
     mv1: Mv,
     interp: InterpolationFilter,
     blend: CompoundBlend,
+    optflow_distances: Option<[i32; 2]>,
     has_chroma: bool,
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
@@ -212,6 +227,7 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
             mv0,
             mv1,
             blend,
+            optflow_distances,
         } => motion_compensate_compound_average_block_into(
             workspace,
             CompoundMcBlock {
@@ -222,6 +238,7 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
                 mv1,
                 interp: block.interp,
                 blend,
+                optflow_distances,
                 has_chroma: block.has_chroma,
             },
             offset,
@@ -264,7 +281,9 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
     block: CompoundMcBlock<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
-    let luma_diff_weighted_mask = compound_luma_diff_weighted_mask(workspace, block, offset)?;
+    let optflow = optflow::compound_optflow_motion_grid(workspace, block, offset)?;
+    let luma_diff_weighted_mask =
+        compound_luma_diff_weighted_mask(workspace, block, optflow.as_ref(), offset)?;
     for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
@@ -282,6 +301,7 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
             sub_x,
             sub_y,
             luma_diff_weighted_mask.as_deref(),
+            optflow.as_ref(),
             offset,
         )?;
     }
@@ -291,24 +311,14 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
 fn compound_luma_diff_weighted_mask<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     block: CompoundMcBlock<'_, T>,
+    optflow: Option<&optflow::OptflowMotionGrid>,
     offset: ByteOffset,
 ) -> Result<Option<Vec<u16>>> {
     let CompoundBlend::DiffWeighted { inverse } = block.blend else {
         return Ok(None);
     };
-    let prediction = compound_plane_prediction(
-        workspace,
-        block.reference0,
-        block.reference1,
-        PlaneId::Y,
-        block.rect,
-        block.mv0,
-        block.mv1,
-        block.interp,
-        0,
-        0,
-        offset,
-    )?;
+    let prediction =
+        compound_plane_prediction_for_block(workspace, block, PlaneId::Y, 0, 0, optflow, offset)?;
     Ok(Some(diff_weighted_mask(
         &prediction.pred0,
         &prediction.pred1,
@@ -318,6 +328,7 @@ fn compound_luma_diff_weighted_mask<T: ReconSample>(
         inverse,
     )?))
 }
+
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     reference: &DecodedFrame<T>,
@@ -521,10 +532,22 @@ fn predict_compound_plane<T: ReconSample>(
     sub_x: u32,
     sub_y: u32,
     luma_diff_weighted_mask: Option<&[u16]>,
+    optflow: Option<&optflow::OptflowMotionGrid>,
     offset: ByteOffset,
 ) -> Result<()> {
-    let prediction = compound_plane_prediction(
-        workspace, reference0, reference1, plane, rect, mv0, mv1, interp, sub_x, sub_y, offset,
+    let block = CompoundMcBlock {
+        reference0,
+        reference1,
+        rect,
+        mv0,
+        mv1,
+        interp,
+        blend,
+        optflow_distances: None,
+        has_chroma: true,
+    };
+    let prediction = compound_plane_prediction_for_block(
+        workspace, block, plane, sub_x, sub_y, optflow, offset,
     )?;
     let coded_luma_size = workspace.info().coded_luma_size();
     let frame_w = coded_luma_size.width() >> sub_x;
@@ -570,6 +593,35 @@ struct CompoundPlanePrediction {
     block_h: usize,
     scaling0: PlaneScaling,
     scaling1: PlaneScaling,
+}
+
+fn compound_plane_prediction_for_block<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    block: CompoundMcBlock<'_, T>,
+    plane: PlaneId,
+    sub_x: u32,
+    sub_y: u32,
+    optflow: Option<&optflow::OptflowMotionGrid>,
+    offset: ByteOffset,
+) -> Result<CompoundPlanePrediction> {
+    if let Some(optflow) = optflow {
+        return optflow::compound_optflow_plane_prediction(
+            workspace, block, plane, sub_x, sub_y, optflow, offset,
+        );
+    }
+    compound_plane_prediction(
+        workspace,
+        block.reference0,
+        block.reference1,
+        plane,
+        block.rect,
+        block.mv0,
+        block.mv1,
+        block.interp,
+        sub_x,
+        sub_y,
+        offset,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

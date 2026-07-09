@@ -29,3 +29,17 @@ fn chroma_420_halves_dimensions() {
     assert_eq!(s.last_x, 31);
     assert_eq!(s.last_y, 31);
 }
+
+#[test]
+fn prescaled_sixteenth_pel_mv_matches_ordinary_eighth_pel_mv() {
+    let ordinary = derive_plane_scaling(3, 5, -7, 11, 1, 1, 16, 16, 8, 8);
+    let prescaled = derive_plane_scaling_prescaled(3, 5, -14, 22, 1, 1, 16, 16);
+    assert_eq!(ordinary, prescaled);
+}
+
+#[test]
+fn prescaled_chroma_mv_rounds_odd_components() {
+    let ordinary = derive_plane_scaling(3, 5, -7, 11, 1, 1, 16, 16, 8, 8);
+    let prescaled = derive_plane_scaling_prescaled(3, 5, -13, 21, 1, 1, 16, 16);
+    assert_eq!(ordinary, prescaled);
+}
