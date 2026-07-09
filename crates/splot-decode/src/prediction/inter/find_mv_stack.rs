@@ -4,8 +4,8 @@
 use splot_core::headers::sequence::DrlReorder;
 use splot_recon::math::round2_signed;
 
-use super::Mv;
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
+use super::{Mv, mc::CWP_EQUAL};
 
 pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
 
@@ -59,6 +59,7 @@ struct NeighbourCell {
     interp_filter: u8,
     use_amvd: bool,
     masked_compound: bool,
+    cwp_weight: i16,
     motion_mode: MotionMode,
     warp_params: Option<[i64; 6]>,
     sub_mv: Mv,
@@ -89,6 +90,7 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     interp_filter: SWITCHABLE_FILTERS,
     use_amvd: false,
     masked_compound: false,
+    cwp_weight: CWP_EQUAL,
     motion_mode: MotionMode::Simple,
     warp_params: None,
     sub_mv: Mv::ZERO,
@@ -260,6 +262,7 @@ impl NeighbourMvGrid {
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
             masked_compound: false,
+            cwp_weight: CWP_EQUAL,
             motion_mode,
             warp_params,
             sub_mv: mv,
@@ -305,6 +308,8 @@ impl NeighbourMvGrid {
         interp_filter: u8,
         use_amvd: bool,
         masked_compound: bool,
+        cwp_weight: i16,
+        skip_mode: bool,
         precision: BlockPrecisionRecord,
     ) {
         let cell = NeighbourCell {
@@ -320,11 +325,12 @@ impl NeighbourMvGrid {
             newmv_for_list1: list1_is_newmv,
             mv: mv0,
             mv1: Some(mv1),
-            skip_mode: false,
+            skip_mode,
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
             masked_compound,
+            cwp_weight,
             motion_mode: MotionMode::Simple,
             warp_params: None,
             sub_mv: mv0,
@@ -378,6 +384,8 @@ impl NeighbourMvGrid {
             skip,
             interp_filter,
             use_amvd,
+            false,
+            CWP_EQUAL,
             false,
             BlockPrecisionRecord::default(),
         );
@@ -672,6 +680,19 @@ impl BlockNeighbourContext {
             core::cmp::Ordering::Less => 0,
             core::cmp::Ordering::Greater => 2,
         })
+    }
+
+    pub(crate) fn skip_mode_ref_pair(&self, default: (i8, i8)) -> (i8, i8) {
+        for cell in self.cells.iter().take(self.cell_count) {
+            if !cell.is_inter {
+                continue;
+            }
+            if let Some(ref_frame1) = cell.ref_frame1 {
+                return (cell.ref_frame0, ref_frame1);
+            }
+            break;
+        }
+        default
     }
 
     pub(crate) fn comp_mode_ctx(
@@ -1004,6 +1025,35 @@ impl MvStack {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CompoundMvCandidate {
+    pub(crate) mvs: [Mv; 2],
+    pub(crate) cwp_weight: i16,
+}
+
+impl Default for CompoundMvCandidate {
+    fn default() -> Self {
+        Self {
+            mvs: [Mv::ZERO; 2],
+            cwp_weight: CWP_EQUAL,
+        }
+    }
+}
+
+pub(crate) struct CompoundMvStack {
+    stack: Vec<CompoundMvCandidate>,
+}
+
+impl CompoundMvStack {
+    pub(crate) fn candidate(&self, idx: usize) -> CompoundMvCandidate {
+        self.stack
+            .get(idx)
+            .or_else(|| self.stack.last())
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
 pub(crate) enum ExtendWarpNeighbour {
     Params([i64; 6]),
     List1MvUnretained,
@@ -1163,11 +1213,23 @@ const BANK_REFS_PER_FRAME: i32 = 9;
 const MAX_RMB_SB_HITS: u32 = 64;
 const MAX_PR_NUM: usize = 16;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RefMvBankEntry {
     key: i32,
     mv0: Mv,
     mv1: Mv,
+    cwp_weight: i16,
+}
+
+impl Default for RefMvBankEntry {
+    fn default() -> Self {
+        Self {
+            key: 0,
+            mv0: Mv::ZERO,
+            mv1: Mv::ZERO,
+            cwp_weight: CWP_EQUAL,
+        }
+    }
 }
 
 pub(crate) struct RefMvBank {
@@ -1234,7 +1296,14 @@ impl RefMvBank {
             }
         }
         seed_walk_from_row_above(grid, sb.0 * sb_size4, sb.1 * sb_size4, sb_size4, |cell| {
-            self.update(cell.ref_frame0, cell.ref_frame1, cell.mv, cell.mv1, false);
+            self.update(
+                cell.ref_frame0,
+                cell.ref_frame1,
+                cell.mv,
+                cell.mv1,
+                cell.cwp_weight,
+                false,
+            );
         });
     }
 
@@ -1278,6 +1347,7 @@ impl RefMvBank {
         ref_frame1: Option<i8>,
         mv: Mv,
         mv1: Option<Mv>,
+        cwp_weight: i16,
         mi_row: usize,
         mi_col: usize,
         n4w: usize,
@@ -1293,7 +1363,7 @@ impl RefMvBank {
         }
         self.remain_hits -= 1;
         self.unit_hits += 1;
-        self.update(ref_frame0, ref_frame1, mv, mv1, true);
+        self.update(ref_frame0, ref_frame1, mv, mv1, cwp_weight, true);
     }
 
     fn update(
@@ -1302,6 +1372,7 @@ impl RefMvBank {
         ref_frame1: Option<i8>,
         mv: Mv,
         mv1: Option<Mv>,
+        cwp_weight: i16,
         from_within_sb: bool,
     ) {
         if from_within_sb {
@@ -1314,6 +1385,7 @@ impl RefMvBank {
             key: Self::bank_key(ref_frame0, ref_frame1),
             mv0: mv,
             mv1: mv1.unwrap_or(Mv::ZERO),
+            cwp_weight,
         };
         bank_ring_update(
             &mut self.entries[list],
@@ -1373,6 +1445,49 @@ impl RefMvBank {
                 weight: 0,
                 offsets: (0, 0),
             });
+        }
+    }
+
+    fn fill_compound(
+        &self,
+        block: &MvBlockContext,
+        entries: &mut Vec<CompoundMvStackEntry>,
+        max_ref_mv_count: usize,
+        prune_count: &mut usize,
+    ) {
+        let list = Self::list_index(block.ref_frame0, block.ref_frame1);
+        let key = Self::bank_key(block.ref_frame0, block.ref_frame1);
+        let count = self.sizes[list];
+        let start = self.starts[list];
+        for i in (0..count).rev() {
+            if entries.len() >= max_ref_mv_count {
+                return;
+            }
+            let candidate = self.entries[list][(start + i) % REF_MV_BANK_SIZE];
+            if candidate.key != key {
+                continue;
+            }
+            let bw = block.bw4 as i32 * MI_SIZE;
+            let bh = block.bh4 as i32 * MI_SIZE;
+            if [candidate.mv0, candidate.mv1].into_iter().any(|mv| {
+                let ref_y = block.mi_row as i32 * MI_SIZE + mv.row / 8;
+                let ref_x = block.mi_col as i32 * MI_SIZE + mv.col / 8;
+                ref_x <= -bw
+                    || ref_y <= -bh
+                    || ref_x >= block.mi_cols as i32 * MI_SIZE
+                    || ref_y >= block.mi_rows as i32 * MI_SIZE
+            }) {
+                continue;
+            }
+            insert_compound_mv_stack_entry(
+                entries,
+                prune_count,
+                CompoundMvCandidate {
+                    mvs: [candidate.mv0, candidate.mv1],
+                    cwp_weight: candidate.cwp_weight,
+                },
+                0,
+            );
         }
     }
 }
@@ -1652,6 +1767,204 @@ pub(crate) fn find_mv_stack_with_temporal(
         warp: warp.unwrap_or_else(WarpParamStack::new),
         block: *block,
     }
+}
+
+pub(crate) fn find_compound_mv_stack_with_temporal(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    global_mvs: [Mv; 2],
+    bank: Option<(&RefMvBank, usize)>,
+    drl_reorder: DrlReorder,
+    temporal: Option<&TemporalMvContext>,
+) -> CompoundMvStack {
+    let mut entries = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
+    let mut prune_count = 0usize;
+    let probes = mv_stack_spatial_probes(block);
+    for probe in probes.iter().take(6).copied().flatten() {
+        scan_compound_mv_stack_probe(grid, block, probe, &mut entries, &mut prune_count);
+    }
+    scan_compound_temporal_mv_stack(block, temporal, &mut entries, &mut prune_count);
+    if let Some(probe) = probes[6] {
+        scan_compound_mv_stack_probe(grid, block, probe, &mut entries, &mut prune_count);
+    }
+
+    let num_nearest = entries.len();
+    scan_compound_mv_stack_col(grid, block, -3, &mut entries, &mut prune_count);
+    let use_sort = match drl_reorder {
+        DrlReorder::Always => true,
+        DrlReorder::Constraint => num_nearest >= 4,
+        DrlReorder::Disabled => false,
+    };
+    if use_sort && num_nearest > 1 {
+        let mut max_idx = 0usize;
+        for (idx, entry) in entries.iter().enumerate().take(num_nearest).skip(1) {
+            if entry.weight > entries[max_idx].weight {
+                max_idx = idx;
+            }
+        }
+        if max_idx != 0 {
+            entries.swap(0, max_idx);
+        }
+    }
+    if let Some((bank, max_ref_mv_count)) = bank {
+        bank.fill_compound(block, &mut entries, max_ref_mv_count, &mut prune_count);
+    }
+    insert_compound_mv_stack_entry(
+        &mut entries,
+        &mut prune_count,
+        CompoundMvCandidate {
+            mvs: global_mvs,
+            cwp_weight: CWP_EQUAL,
+        },
+        0,
+    );
+    CompoundMvStack {
+        stack: entries
+            .into_iter()
+            .map(|entry| CompoundMvCandidate {
+                mvs: [
+                    clamp_mv(block, entry.candidate.mvs[0]),
+                    clamp_mv(block, entry.candidate.mvs[1]),
+                ],
+                cwp_weight: entry.candidate.cwp_weight,
+            })
+            .collect(),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CompoundMvStackEntry {
+    candidate: CompoundMvCandidate,
+    weight: u32,
+}
+
+fn scan_compound_mv_stack_col(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    delta_col: i32,
+    entries: &mut Vec<CompoundMvStackEntry>,
+    prune_count: &mut usize,
+) {
+    let delta_col = delta_col + i32::from(block.bw4 == 1 && block.mi_col & 1 == 1);
+    let bh4 = block.bh4 as i32;
+    for delta_row in [Some(bh4 - 1), (bh4 > 1).then_some(0)]
+        .into_iter()
+        .flatten()
+    {
+        let mv_row = block.mi_row as i32 + delta_row;
+        let mv_col = block.mi_col as i32 + delta_col;
+        let Some(cell) = grid.get(mv_row, mv_col) else {
+            continue;
+        };
+        let Some(left) = grid.get(mv_row, block.mi_col as i32 - 1) else {
+            continue;
+        };
+        if cell.base_c != left.base_c {
+            scan_compound_mv_stack_probe(
+                grid,
+                block,
+                RelativeProbe::new(delta_row, delta_col),
+                entries,
+                prune_count,
+            );
+        }
+    }
+}
+
+fn scan_compound_mv_stack_probe(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    probe: RelativeProbe,
+    entries: &mut Vec<CompoundMvStackEntry>,
+    prune_count: &mut usize,
+) {
+    let Some((cell, weight)) = probe.stack_cell(grid, block) else {
+        return;
+    };
+    let Some(ref_frame1) = block.ref_frame1 else {
+        return;
+    };
+    let Some(mv1) = cell.mv1.filter(|_| {
+        cell.is_inter && cell.ref_frame0 == block.ref_frame0 && cell.ref_frame1 == Some(ref_frame1)
+    }) else {
+        return;
+    };
+    insert_compound_mv_stack_entry(
+        entries,
+        prune_count,
+        CompoundMvCandidate {
+            mvs: [cell.sub_mv, mv1],
+            cwp_weight: cell.cwp_weight,
+        },
+        weight,
+    );
+}
+
+fn scan_compound_temporal_mv_stack(
+    block: &MvBlockContext,
+    temporal: Option<&TemporalMvContext>,
+    entries: &mut Vec<CompoundMvStackEntry>,
+    prune_count: &mut usize,
+) {
+    let (Some(temporal), Some(ref_frame1)) = (temporal, block.ref_frame1) else {
+        return;
+    };
+    let row_end = block.bh4.min(16);
+    let col_end = block.bw4.min(16);
+    let step_h4 = if block.bh4 >= 16 { 4 } else { 2 };
+    let step_w4 = if block.bw4 >= 16 { 4 } else { 2 };
+    let samples = [
+        (row_end >= step_h4 && col_end >= step_w4)
+            .then_some((row_end - step_h4, col_end - step_w4)),
+        (row_end >= 3 * step_h4 || col_end >= 3 * step_w4).then_some((row_end >> 1, col_end >> 1)),
+    ];
+    for (delta_row, delta_col) in samples.into_iter().flatten() {
+        let mv_row = block.mi_row.saturating_add(delta_row);
+        let mv_col = block.mi_col.saturating_add(delta_col);
+        if mv_row >= block.mi_rows || mv_col >= block.mi_cols {
+            continue;
+        }
+        let Some(mv0) = temporal.motion_field_mv(block.ref_frame0, mv_row >> 1, mv_col >> 1) else {
+            continue;
+        };
+        let Some(mv1) = temporal.motion_field_mv(ref_frame1, mv_row >> 1, mv_col >> 1) else {
+            continue;
+        };
+        if insert_compound_mv_stack_entry(
+            entries,
+            prune_count,
+            CompoundMvCandidate {
+                mvs: [mv0, mv1],
+                cwp_weight: CWP_EQUAL,
+            },
+            1,
+        ) == StackInsert::Inserted
+        {
+            break;
+        }
+    }
+}
+
+fn insert_compound_mv_stack_entry(
+    entries: &mut Vec<CompoundMvStackEntry>,
+    prune_count: &mut usize,
+    candidate: CompoundMvCandidate,
+    weight: u32,
+) -> StackInsert {
+    if entries.len() >= MAX_REF_MV_STACK_SIZE {
+        return StackInsert::Skipped;
+    }
+    if *prune_count < MAX_PR_NUM {
+        for entry in entries.iter_mut() {
+            *prune_count += 1;
+            if entry.candidate.mvs == candidate.mvs {
+                entry.weight = entry.weight.saturating_add(weight);
+                return StackInsert::Updated;
+            }
+        }
+    }
+    entries.push(CompoundMvStackEntry { candidate, weight });
+    StackInsert::Inserted
 }
 
 #[derive(Clone, Copy, Debug)]

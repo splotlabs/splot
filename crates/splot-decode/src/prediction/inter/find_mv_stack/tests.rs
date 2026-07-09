@@ -5,6 +5,7 @@
 
 use super::MotionMode;
 use super::*;
+use crate::prediction::inter::read_mv::MV_PRECISION_ONE_PEL;
 use splot_core::headers::sequence::DrlReorder;
 
 const BLOCK0_MV: Mv = Mv { row: 0, col: 48 };
@@ -97,6 +98,8 @@ fn record_compound_ref(
         SWITCHABLE_FILTERS,
         false,
         masked_compound,
+        CWP_EQUAL,
+        false,
         BlockPrecisionRecord::default(),
     );
 }
@@ -123,6 +126,102 @@ fn record_warp_inter(
         MotionMode::DeltaWarp,
         splot_recon::IDENTITY_WARP_PARAMS,
         BlockPrecisionRecord::default(),
+    );
+}
+
+#[test]
+fn skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default() {
+    let empty = empty_grid();
+    let block = block_at(0, N4_32);
+    assert_eq!(
+        block_neighbour_ctx(&empty, &block).skip_mode_ref_pair((0, 1)),
+        (0, 1)
+    );
+
+    let mut single = empty_grid();
+    record_inter_ref(&mut single, 0, 0, 2, NeighbourYMode::Other, Mv::ZERO, false);
+    assert_eq!(
+        block_neighbour_ctx(&single, &block).skip_mode_ref_pair((0, 1)),
+        (0, 1)
+    );
+
+    let mut compound = empty_grid();
+    record_compound_ref(&mut compound, 0, 0, 2, 3, false);
+    assert_eq!(
+        block_neighbour_ctx(&compound, &block).skip_mode_ref_pair((0, 1)),
+        (2, 3)
+    );
+}
+
+#[test]
+fn recorded_skip_mode_contributes_to_the_next_block_context() {
+    let mut grid = empty_grid();
+    grid.record_compound_block(
+        0,
+        0,
+        N4_32,
+        N4_32,
+        0,
+        1,
+        false,
+        false,
+        Mv::ZERO,
+        Mv::ZERO,
+        true,
+        SWITCHABLE_FILTERS,
+        false,
+        false,
+        CWP_EQUAL,
+        true,
+        BlockPrecisionRecord::default(),
+    );
+    let ctx = block_neighbour_ctx(&grid, &block_at(0, N4_32));
+    assert_eq!(ctx.skip_mode_ctx, 2);
+    assert_eq!(ctx.skip_ctx, 2);
+}
+
+#[test]
+fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
+    let mut grid = empty_grid();
+    let mvs = [Mv { row: 8, col: 16 }, Mv { row: -8, col: 24 }];
+    let cwp_weight = 12;
+    grid.record_compound_block(
+        0,
+        0,
+        N4_32,
+        N4_32,
+        0,
+        1,
+        false,
+        false,
+        mvs[0],
+        mvs[1],
+        true,
+        SWITCHABLE_FILTERS,
+        false,
+        false,
+        cwp_weight,
+        true,
+        BlockPrecisionRecord::most_probable(MV_PRECISION_ONE_PEL),
+    );
+    let mut block = block_at(0, N4_32);
+    block.ref_frame1 = Some(1);
+
+    let candidate = find_compound_mv_stack_with_temporal(
+        &grid,
+        &block,
+        [Mv::ZERO; 2],
+        None,
+        DrlReorder::Disabled,
+        None,
+    )
+    .candidate(0);
+
+    assert_eq!(candidate.mvs, mvs);
+    assert_eq!(candidate.cwp_weight, cwp_weight);
+    assert_eq!(
+        block_neighbour_ctx(&grid, &block).most_probable_precision_ctx(),
+        2
     );
 }
 

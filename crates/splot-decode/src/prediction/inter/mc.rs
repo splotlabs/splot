@@ -81,6 +81,13 @@ impl CompoundBlend {
             other => other,
         }
     }
+
+    pub(crate) const fn cwp_weight(self) -> i16 {
+        match self {
+            Self::Average { cwp_weight, .. } => cwp_weight,
+            Self::DiffWeighted { .. } | Self::Wedge { .. } => CWP_EQUAL,
+        }
+    }
 }
 
 impl Default for CompoundBlend {
