@@ -446,6 +446,13 @@ fn lossless_chroma_part_guard_admits_rect_prediction_subset() {
         BitDepth::Eight,
     );
     assert!(lossless_chroma_part_prediction_verified(
+        Some(SupportedChromaMode::D113Follow),
+        false,
+        IntraYMode::D113_PRED_FOR_TEST,
+        first_row_left_edge,
+        FULL_SB_N4_LUMA,
+    ));
+    assert!(lossless_chroma_part_prediction_verified(
         Some(SupportedChromaMode::D203Follow),
         false,
         IntraYMode::D203_PRED_FOR_TEST,
