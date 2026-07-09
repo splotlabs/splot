@@ -631,12 +631,7 @@ pub(crate) fn interintra_prediction_mode(
         Some(0) => InterIntraMode::Dc,
         Some(1) => InterIntraMode::Vertical,
         Some(2) => InterIntraMode::Horizontal,
-        Some(3) => Err(inter_cap!(
-            "inter_warp_interintra_smooth_unimplemented",
-            tile_offset,
-            "inter.interintra.ii_smooth",
-            "7.13.3.29"
-        ))?,
+        Some(3) => InterIntraMode::Smooth,
         _ => Err(inter_cap!(
             "inter_interintra_mode_missing",
             tile_offset,

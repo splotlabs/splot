@@ -18,8 +18,9 @@ use splot_recon::PlaneId as ReconPlaneId;
 use splot_recon::{
     BitDepth, CurrentFrameIntraEdges, CurrentFrameWorkspace, IDENTITY_WARP_PARAMS, InterIntraMode,
     InterpolationFilter as ReconInterpolationFilter, IntraCardinalDirection,
-    IntraDirectionalAngleEdges, IntraRectBlockSize, ReconSample, apply_intra_ibp_dc_rect,
-    predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
+    IntraDirectionalAngleEdges, IntraRectBlockSize, IntraSmoothMode, ReconSample,
+    apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
+    predict_intra_dc_rect_value,
 };
 
 use super::find_mv_stack::{
@@ -59,6 +60,9 @@ use crate::filters::wienerns_lr::tx_records::{
     derive_inter_luma_tx_records_for_block,
 };
 use crate::pipeline::effective_allow_screen_content_tools;
+use crate::pipeline::reconstruct::{
+    SmoothIntraPredictionRequest, predict_intra_smooth_over_available_edges,
+};
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
 const INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE: usize = 3;
@@ -1044,6 +1048,7 @@ fn decode_block<T: ReconSample>(
             core,
             frontier,
             workspace,
+            block_decoded,
             mv_grid,
             temporal_stack_context,
             motion_field,
@@ -1346,6 +1351,7 @@ fn decode_block<T: ReconSample>(
         reconstruct_placed_inter_block(
             workspace,
             &placed,
+            block_decoded,
             ref_frame_idx,
             reference,
             block_qindex,
@@ -1640,6 +1646,7 @@ fn decode_block<T: ReconSample>(
     reconstruct_placed_inter_block(
         workspace,
         &placed,
+        block_decoded,
         ref_frame_idx,
         reference,
         block_qindex,
@@ -1963,6 +1970,7 @@ struct InterIntraPlanePrediction<T> {
 fn predict_interintra_planes<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
+    block_decoded: &TileBlockDecodedState,
     mode: InterIntraMode,
     enable_ibp: bool,
     bit_depth: BitDepth,
@@ -2045,12 +2053,36 @@ fn predict_interintra_planes<T: ReconSample>(
                 .map_err(|_| geometry_error())?;
             }
             InterIntraMode::Smooth => {
-                return Err(inter_cap!(
-                    "inter_interintra_smooth_unimplemented",
-                    tile_offset,
-                    "inter.interintra.ii_smooth",
-                    "7.13.3.29"
-                ));
+                let x4 = x / MI_SIZE;
+                let y4 = y / MI_SIZE;
+                let w4 = (w / MI_SIZE).max(1);
+                let h4 = (h / MI_SIZE).max(1);
+                samples = predict_intra_smooth_over_available_edges(
+                    workspace,
+                    SmoothIntraPredictionRequest {
+                        plane_id: plane,
+                        x,
+                        y,
+                        block_size: size,
+                        mode: IntraSmoothMode::Smooth,
+                        available_left_samples: None,
+                        available_above_samples: None,
+                        num4_above_right: block_decoded.count_top_right_avail(
+                            plane.index(),
+                            x4,
+                            y4,
+                            w4,
+                        ),
+                        num4_below_left: block_decoded.count_bottom_left_avail(
+                            plane.index(),
+                            x4,
+                            y4,
+                            h4,
+                        ),
+                        bit_depth,
+                    },
+                )
+                .map_err(|_| geometry_error())?;
             }
         }
         planes.push(InterIntraPlanePrediction {
@@ -2070,6 +2102,7 @@ fn predict_interintra_planes<T: ReconSample>(
 fn reconstruct_placed_inter_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
+    block_decoded: &TileBlockDecodedState,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<'_, T>,
     qindex: u32,
@@ -2096,6 +2129,7 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
             predict_interintra_planes(
                 workspace,
                 placed,
+                block_decoded,
                 prediction.mode(),
                 enable_ibp,
                 bit_depth,

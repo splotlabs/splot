@@ -358,11 +358,86 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
     luma_context: Option<LumaTransformTypeContext>,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let width = 1usize << log2_width;
-    let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let prediction = predict_intra_smooth_over_available_edges(
+        workspace,
+        SmoothIntraPredictionRequest {
+            plane_id,
+            x,
+            y,
+            block_size,
+            mode: smooth_mode,
+            available_left_samples,
+            available_above_samples,
+            num4_above_right,
+            num4_below_left,
+            bit_depth,
+        },
+    )?;
+    let out = if block.all_zero {
+        prediction
+    } else if let Some(luma_context) = luma_context {
+        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
+            block,
+            &prediction,
+            qindex,
+            log2_width,
+            log2_height,
+            use_tcq,
+            bit_depth,
+            luma_context,
+        )?
+    } else {
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
+            &prediction,
+            qindex,
+            plane_id,
+            log2_width,
+            log2_height,
+            use_tcq,
+            None,
+            bit_depth,
+        )?
+    };
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SmoothIntraPredictionRequest {
+    pub(crate) plane_id: PlaneId,
+    pub(crate) x: usize,
+    pub(crate) y: usize,
+    pub(crate) block_size: IntraRectBlockSize,
+    pub(crate) mode: IntraSmoothMode,
+    pub(crate) available_left_samples: Option<usize>,
+    pub(crate) available_above_samples: Option<usize>,
+    pub(crate) num4_above_right: usize,
+    pub(crate) num4_below_left: usize,
+    pub(crate) bit_depth: BitDepth,
+}
+
+pub(crate) fn predict_intra_smooth_over_available_edges<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    request: SmoothIntraPredictionRequest,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    let SmoothIntraPredictionRequest {
+        plane_id,
+        x,
+        y,
+        block_size,
+        mode,
+        available_left_samples,
+        available_above_samples,
+        num4_above_right,
+        num4_below_left,
+        bit_depth,
+    } = request;
+    let width = block_size.width();
+    let height = block_size.height();
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
     let left_len =
         available_left_samples.unwrap_or_else(|| edges.left_samples().map_or(0, <[T]>::len));
@@ -418,39 +493,12 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
     predict_intra_smooth_rect_into(
         bit_depth,
         block_size,
-        smooth_mode,
+        mode,
         smooth_edges,
         &mut prediction,
         width,
     )?;
-    let out = if block.all_zero {
-        prediction
-    } else if let Some(luma_context) = luma_context {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
-            block,
-            &prediction,
-            qindex,
-            log2_width,
-            log2_height,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )?
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            plane_id,
-            log2_width,
-            log2_height,
-            use_tcq,
-            None,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    Ok(prediction)
 }
 
 #[allow(clippy::too_many_arguments)]
