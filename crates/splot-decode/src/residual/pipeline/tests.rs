@@ -508,67 +508,68 @@ fn palette_map_is_sliced_for_each_partitioned_transform_size() {
 }
 
 #[test]
-fn directional_first_d135_partition_handoff_stays_lossless_only() {
+fn directional_first_middle_partition_handoff_stays_lossless_only() {
     let block_ctx = ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight);
-    let plan = GeneralIntraResidualPlan::square(
-        block_ctx,
-        IntraLumaPlan::DirectionalFirst {
-            mode: SupportedDirectionalLumaMode::D135,
-        },
-        None,
-        false,
-        false,
-        None,
-        false,
-    )
-    .expect("d135 square plan");
-    let plane = plan.plane_plan(PlaneId::Y).expect("luma plane");
-    let non_origin = PositionedLumaCoeffBlock {
-        x: 4,
-        y: 0,
-        tx_size: TX_4X4,
-        middle: false,
-        coeffs: empty_luma_coeffs(),
-    };
-
-    let error = plane
-        .transform_unit_plan(&non_origin)
-        .expect_err("non-lossless D135 partitioned units must fail closed");
-    assert!(matches!(
-        error,
-        GeneralIntraResidualError::UnsupportedTransformPartition {
-            reason: "general_intra_partitioned_interior_edge_prediction"
-        }
-    ));
-
-    let mut lossless_coeffs = empty_luma_coeffs();
-    lossless_coeffs.lossless = true;
-    let lossless_unit = PositionedLumaCoeffBlock {
-        coeffs: lossless_coeffs,
-        ..non_origin
-    };
-    assert_eq!(
-        plane
-            .transform_unit_plan(&lossless_unit)
-            .expect("lossless D135 partitioned unit"),
-        ResidualPlanePlan {
+    for mode in [
+        SupportedDirectionalLumaMode::D113,
+        SupportedDirectionalLumaMode::D135,
+    ] {
+        let plan = GeneralIntraResidualPlan::square(
+            block_ctx,
+            IntraLumaPlan::DirectionalFirst { mode },
+            None,
+            false,
+            false,
+            None,
+            false,
+        )
+        .expect("middle directional square plan");
+        let plane = plan.plane_plan(PlaneId::Y).expect("luma plane");
+        let non_origin = PositionedLumaCoeffBlock {
             x: 4,
             y: 0,
             tx_size: TX_4X4,
-            tx: TxShape::from_luma_4x4(1, 1).expect("4x4 tx shape"),
-            residual_width4: 1,
-            residual_height4: 1,
-            zero_corners: false,
-            reconstruction: ResidualReconstructionPlan::LumaRectMiddle {
-                p_angle: crate::prediction::intra::directional_mode_p_angle(
-                    SupportedDirectionalLumaMode::D135,
-                ),
-                use_tcq: false,
+            middle: false,
+            coeffs: empty_luma_coeffs(),
+        };
+
+        let error = plane
+            .transform_unit_plan(&non_origin)
+            .expect_err("non-lossless partitioned units must fail closed");
+        assert!(matches!(
+            error,
+            GeneralIntraResidualError::UnsupportedTransformPartition {
+                reason: "general_intra_partitioned_interior_edge_prediction"
+            }
+        ));
+
+        let mut lossless_coeffs = empty_luma_coeffs();
+        lossless_coeffs.lossless = true;
+        let lossless_unit = PositionedLumaCoeffBlock {
+            coeffs: lossless_coeffs,
+            ..non_origin
+        };
+        assert_eq!(
+            plane
+                .transform_unit_plan(&lossless_unit)
+                .expect("lossless partitioned unit"),
+            ResidualPlanePlan {
+                x: 4,
+                y: 0,
+                tx_size: TX_4X4,
+                tx: TxShape::from_luma_4x4(1, 1).expect("4x4 tx shape"),
+                residual_width4: 1,
+                residual_height4: 1,
+                zero_corners: false,
+                reconstruction: ResidualReconstructionPlan::LumaRectMiddle {
+                    p_angle: crate::prediction::intra::directional_mode_p_angle(mode),
+                    use_tcq: false,
+                },
+                block_ctx: ctx(BlockRect::new(0, 1, 1, 1), BitDepth::Eight),
+                ..plane
             },
-            block_ctx: ctx(BlockRect::new(0, 1, 1, 1), BitDepth::Eight),
-            ..plane
-        }
-    );
+        );
+    }
 }
 
 fn assert_case(case: Case) {

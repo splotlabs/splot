@@ -1063,7 +1063,9 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::LumaSquare {
                 plan:
                     IntraLumaPlan::DirectionalFirst {
-                        mode: SupportedDirectionalLumaMode::D135,
+                        mode:
+                            mode @ (SupportedDirectionalLumaMode::D113
+                            | SupportedDirectionalLumaMode::D135),
                     },
                 use_tcq,
             } if block.coeffs.lossless => {
@@ -1071,9 +1073,7 @@ impl ResidualPlanePlan {
                     self.reconstruction
                 } else {
                     ResidualReconstructionPlan::LumaRectMiddle {
-                        p_angle: crate::prediction::intra::directional_mode_p_angle(
-                            SupportedDirectionalLumaMode::D135,
-                        ),
+                        p_angle: crate::prediction::intra::directional_mode_p_angle(mode),
                         use_tcq,
                     }
                 }
