@@ -1036,6 +1036,8 @@ fn assert_lossless_chroma_d135_oracle(
 
 #[test]
 fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
+    use SupportedChromaMode::Smooth;
+
     let top_left_8 = block_ctx(
         0,
         0,
@@ -1169,6 +1171,9 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
             general_intra::FULL_SB_N4_LUMA,
         ));
     }
+    let part_ok = general_intra::lossless_chroma_part_prediction_verified;
+    let smooth_128_sb = part_ok(Some(Smooth), false, IntraYMode::DC_PRED, top_left_8, 32);
+    assert!(smooth_128_sb);
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::Smooth),
         false,
