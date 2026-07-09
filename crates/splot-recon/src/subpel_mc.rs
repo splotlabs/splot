@@ -453,6 +453,44 @@ pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
 }
 
 /// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16
+/// COMPOUND_AVERAGE and the supplied `cwpWeight`, then applies the final § 4.8
+/// `Clip1`.
+///
+/// # Errors
+///
+/// Returns [`ReconError::CompoundBlendLengthMismatch`] when `pred0` and `pred1`
+/// have different lengths.
+pub fn blend_compound_average_weighted(
+    pred0: &[i32],
+    pred1: &[i32],
+    bit_depth: BitDepth,
+    cwp_weight: i16,
+) -> Result<Vec<u16>> {
+    if pred0.len() != pred1.len() {
+        return Err(ReconError::CompoundBlendLengthMismatch {
+            left_len: pred0.len(),
+            right_len: pred1.len(),
+        });
+    }
+
+    let max_sample = i64::from(bit_depth.max_sample());
+    let shift = 4 + compound_inter_post_round();
+    let forward = i64::from(cwp_weight);
+    let backward = 16 - forward;
+    Ok(pred0
+        .iter()
+        .zip(pred1.iter())
+        .map(|(&left, &right)| {
+            let blended = round2(
+                forward * i64::from(left) + backward * i64::from(right),
+                shift,
+            );
+            clip3(0, max_sample, blended) as u16
+        })
+        .collect())
+}
+
+/// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16
 /// COMPOUND_AVERAGE and `CWP_EQUAL` (`cwpWeight == 8`), then applies the final
 /// § 4.8 `Clip1`.
 ///
@@ -470,23 +508,7 @@ pub fn blend_compound_average_equal(
     pred1: &[i32],
     bit_depth: BitDepth,
 ) -> Result<Vec<u16>> {
-    if pred0.len() != pred1.len() {
-        return Err(ReconError::CompoundBlendLengthMismatch {
-            left_len: pred0.len(),
-            right_len: pred1.len(),
-        });
-    }
-
-    let max_sample = i64::from(bit_depth.max_sample());
-    let shift = 1 + compound_inter_post_round();
-    Ok(pred0
-        .iter()
-        .zip(pred1.iter())
-        .map(|(&left, &right)| {
-            let blended = round2(i64::from(left) + i64::from(right), shift);
-            clip3(0, max_sample, blended) as u16
-        })
-        .collect())
+    blend_compound_average_weighted(pred0, pred1, bit_depth, 8)
 }
 
 const fn compound_inter_post_round() -> u32 {
