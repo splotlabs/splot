@@ -717,7 +717,7 @@ fn intrabc_geometry_rejects_source_outside_current_tile() {
 }
 
 #[test]
-fn intrabc_geometry_rejects_self_referential_source() {
+fn intrabc_geometry_derives_overlapping_integer_copy_region() {
     let (_, core) = selectable_large_frame_fixture();
     let block = IntrabcBlockContext::new(8, 8, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
@@ -729,13 +729,12 @@ fn intrabc_geometry_rejects_self_referential_source() {
         block_mv: IntrabcBlockVector { row: 0, col: 0 },
     };
 
-    let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
-        .unwrap_err();
+    let prediction =
+        derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
+            .unwrap();
 
-    assert_eq!(
-        unsupported_reason(error),
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_mv_validity"
-    );
+    assert_eq!(prediction.source, prediction.target);
+    assert!(!prediction.fractional);
 }
 
 #[test]
@@ -935,6 +934,50 @@ fn intrabc_newmv_one_pel_record_shifts_shell_delta() {
         }
     );
     assert_eq!(symbols.symbol_count(), 6);
+}
+
+#[test]
+fn intrabc_newmv_one_pel_lowers_predictor_before_delta() {
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let payload = encode_steps(&[
+        (
+            Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellSet {
+                mv_ctx: 1,
+            })),
+            0,
+        ),
+        (
+            Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellClass {
+                precision: usize::from(MV_PRECISION_ONE_PEL),
+                shell_set: 0,
+                mv_ctx: 1,
+            })),
+            0,
+        ),
+        (
+            Some(TileCdfSelector::ReadMv(
+                MvCdfSelector::ShellOffsetLowClass {
+                    mv_ctx: 1,
+                    shell_class: 0,
+                },
+            )),
+            0,
+        ),
+    ]);
+    let mut symbols = decoder(&payload);
+
+    let block_mv = assign_intrabc_mv(
+        &mut cdfs,
+        &mut symbols,
+        0,
+        MV_PRECISION_ONE_PEL,
+        Mv { row: 4, col: -316 },
+        ByteOffset::new(20),
+    )
+    .unwrap();
+
+    assert_eq!(block_mv, IntrabcBlockVector { row: 0, col: -312 });
+    assert_eq!(symbols.symbol_count(), 3);
 }
 
 #[test]

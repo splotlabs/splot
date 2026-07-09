@@ -84,25 +84,6 @@ fn intra_gate_rejects_gdf_per_block_frame() {
 }
 
 #[test]
-fn intra_gate_rejects_mixed_lossless_active_deblock() {
-    let error = decode_intra_fixture_with_core(|core| {
-        let lossless = core.lossless_info.as_mut().expect("lossless info");
-        lossless.has_lossless_segment = true;
-        lossless.coded_lossless = false;
-        let deblock = core
-            .deblocking_filter_params
-            .as_mut()
-            .expect("deblock params");
-        deblock.apply_deblocking_filter = [true, false, false, false];
-    })
-    .expect_err("mutated mixed-lossless filtered fixture must fail closed");
-    assert_eq!(
-        unsupported_reason(error),
-        "general_intra_mixed_lossless_filters_unimplemented"
-    );
-}
-
-#[test]
 fn intra_frame_allows_nonzero_effective_quantizer_deltas() {
     decode_intra_fixture_with_core(|core| {
         core.quantization_params

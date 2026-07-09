@@ -603,6 +603,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         n4h,
         residual.as_ref(),
         block_qindex,
+        current_residual_lossless(work_unit),
         tile_offset,
     )?;
     let placed_geometry = placed_inter_geometry(frontier, n4w, n4h, tile_offset)?;

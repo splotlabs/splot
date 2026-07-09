@@ -186,6 +186,19 @@ fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
     ));
 }
 
+#[test]
+fn partitioned_luma_transform_records_skip_units_starting_outside_frame() {
+    let records =
+        luma_transform_records_for_partition(320, 64, TX_64X64, TX_PARTITION_SPLIT).unwrap();
+    let visible: Vec<(usize, usize)> = records
+        .iter()
+        .filter(|record| luma_transform_record_starts_in_frame(record, 352, 288))
+        .map(|record| (record.x, record.y))
+        .collect();
+
+    assert_eq!(visible, vec![(320, 64), (320, 96)]);
+}
+
 #[allow(clippy::fn_params_excessive_bools)]
 fn frame_facts(
     enable_idtx_intra: bool,

@@ -183,6 +183,7 @@ fn ccso_matches_per_sample_reference_for_edge_classifiers() {
             plane,
             &params,
             &grid,
+            None,
             BitDepth::Eight,
         )
         .unwrap();
@@ -238,6 +239,7 @@ fn chroma_ccso_uses_frame_subsampling_for_yuv422() {
         1,
         &params,
         &grid,
+        None,
         BitDepth::Eight,
     )
     .unwrap();
@@ -283,6 +285,7 @@ fn luma_ccso_filters_partial_coded_edge_block() {
         0,
         &bo_plane(1),
         &full_luma_grid(width, height),
+        None,
         BitDepth::Eight,
     )
     .unwrap();
@@ -292,5 +295,57 @@ fn luma_ccso_filters_partial_coded_edge_block() {
             .unwrap(),
         101,
         "CCSO must process the bottom-right partial coded block"
+    );
+}
+
+#[test]
+fn luma_ccso_preserves_lossless_4x4_samples() {
+    let width = 8;
+    let height = 8;
+    let mut workspace = yuv420_workspace(width, height, 100);
+    let curr_luma = vec![100u16; width * height];
+    let lossless_block = crate::filters::deblock::DeblockBlock {
+        r: 0,
+        c: 0,
+        block_r: 0,
+        block_c: 0,
+        chroma_base_r: 0,
+        chroma_base_c: 0,
+        n4w: 1,
+        n4h: 1,
+        luma_tx: 0,
+        chroma_tx: Some(0),
+        qindex: 0,
+        skip: false,
+        lossless: true,
+    };
+    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
+        2,
+        2,
+        &[lossless_block],
+        [&[], &[]],
+    )
+    .unwrap();
+
+    ccso_plane(
+        &mut workspace,
+        &curr_luma,
+        width,
+        height,
+        0,
+        &bo_plane(1),
+        &full_luma_grid(width, height),
+        Some(&lossless),
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    assert_eq!(
+        workspace.reconstructed_sample(PlaneId::Y, 0, 0).unwrap(),
+        100
+    );
+    assert_eq!(
+        workspace.reconstructed_sample(PlaneId::Y, 4, 0).unwrap(),
+        101
     );
 }

@@ -769,6 +769,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             |x, y| luma_window.get_abs(x, y),
         )
         .map_err(|_| luma_lr_filter_error(offset))?;
+        self.preserve_lossless_lr_samples(plane_id, &block, curr_chroma, &mut output, offset)?;
         Ok((block, output))
     }
 
@@ -850,7 +851,75 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 .map_err(|_| luma_lr_filter_error(offset))?;
         wiener_ns_filter_luma_block_padded(&mut output, &params, &padded_source)
             .map_err(|_| luma_lr_filter_error(offset))?;
+        self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, &mut output, offset)?;
         Ok((block, output))
+    }
+
+    fn preserve_lossless_lr_samples(
+        &self,
+        plane_id: PlaneId,
+        block: &WienerNsLrSourceBlock,
+        curr_plane: &[u16],
+        output: &mut [T],
+        offset: ByteOffset,
+    ) -> Result<()> {
+        let Some(lossless_grid) = self.lossless_grid.as_ref() else {
+            return Ok(());
+        };
+        let (plane_width, plane_height) = self.plane_dimensions(plane_id);
+        let expected_samples = plane_width
+            .checked_mul(plane_height)
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        if curr_plane.len() != expected_samples {
+            return Err(luma_lr_filter_error(offset));
+        }
+        let (sub_x, sub_y) = self.plane_subsampling(plane_id);
+        for row in 0..block.height {
+            for col in 0..block.width {
+                let x = block
+                    .x
+                    .checked_add(col)
+                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                let y = block
+                    .y
+                    .checked_add(row)
+                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                if !lossless_grid.plane_sample_lossless(plane_id, x, y, sub_x, sub_y) {
+                    continue;
+                }
+                let source_index = y
+                    .checked_mul(plane_width)
+                    .and_then(|start| start.checked_add(x))
+                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                let output_index = row
+                    .checked_mul(block.width)
+                    .and_then(|start| start.checked_add(col))
+                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                let sample = *curr_plane
+                    .get(source_index)
+                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                let output_sample =
+                    T::try_from_u16(sample).map_err(|_| luma_lr_filter_error(offset))?;
+                let Some(slot) = output.get_mut(output_index) else {
+                    return Err(luma_lr_filter_error(offset));
+                };
+                *slot = output_sample;
+            }
+        }
+        Ok(())
+    }
+
+    fn plane_subsampling(&self, plane_id: PlaneId) -> (usize, usize) {
+        match plane_id {
+            PlaneId::Y => (0, 0),
+            PlaneId::U | PlaneId::V => {
+                let format = self.workspace.info().pixel_format();
+                (
+                    usize::from(format.subsampling_x()),
+                    usize::from(format.subsampling_y()),
+                )
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

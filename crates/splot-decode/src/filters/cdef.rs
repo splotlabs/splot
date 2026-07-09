@@ -258,10 +258,11 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
     strengths: &[CdefFrameParams],
     grid: &CdefUnitGrid,
     skip_grid: Option<&CdefSkipGrid>,
-    mi_rows: usize,
-    mi_cols: usize,
+    lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
+    mi_size: (usize, usize),
     bit_depth: BitDepth,
 ) -> Result<(), CdefError> {
+    let (mi_rows, mi_cols) = mi_size;
     let coeff_shift = u32::from(bit_depth.bits()) - 8;
     let max_sample = i32::from(bit_depth.max_sample());
 
@@ -313,6 +314,14 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
         {
             return Ok(None);
         }
+        let luma_lossless = lossless_grid.is_some_and(|grid| grid.cdef_luma_lossless(r, c));
+        let chroma_lossless = lossless_grid.is_some_and(|grid| {
+            grid.cdef_chroma_lossless(PlaneId::U, r, c)
+                && grid.cdef_chroma_lossless(PlaneId::V, r, c)
+        });
+        if luma_lossless && (!has_chroma || chroma_lossless) {
+            return Ok(None);
+        }
         let params = *strengths.get(strength_index).ok_or(CdefError::Geometry)?;
         Ok(Some(CdefBlockCtx {
             r,
@@ -324,6 +333,8 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
             mi_cols,
             sub_x,
             sub_y,
+            luma_lossless,
+            chroma_lossless,
         }))
     };
 
@@ -420,6 +431,8 @@ struct CdefBlockCtx {
     mi_cols: usize,
     sub_x: usize,
     sub_y: usize,
+    luma_lossless: bool,
+    chroma_lossless: bool,
 }
 
 impl CdefBlockCtx {
@@ -516,13 +529,18 @@ fn compute_cdef_block<T: ReconSample>(
     let y_zero = pri_str == 0 && sec_str == 0;
     let uv_zero = uv_pri == 0 && uv_sec == 0;
     let output = [
-        plane_out(y_zero, PlaneId::Y, luma_snap, &y_filter)?,
+        plane_out(
+            y_zero || ctx.luma_lossless,
+            PlaneId::Y,
+            luma_snap,
+            &y_filter,
+        )?,
         u_snap
-            .map(|snap| plane_out(uv_zero, PlaneId::U, snap, &uv_filter))
+            .map(|snap| plane_out(uv_zero || ctx.chroma_lossless, PlaneId::U, snap, &uv_filter))
             .transpose()?
             .flatten(),
         v_snap
-            .map(|snap| plane_out(uv_zero, PlaneId::V, snap, &uv_filter))
+            .map(|snap| plane_out(uv_zero || ctx.chroma_lossless, PlaneId::V, snap, &uv_filter))
             .transpose()?
             .flatten(),
     ];

@@ -34,6 +34,7 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     gdf_reference: Option<crate::filters::gdf::GdfReferenceContext>,
+    lossless_grid: Option<crate::filters::lossless::LosslessBlockGrid>,
 }
 
 #[allow(clippy::if_same_then_else)]
@@ -121,6 +122,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             lr_source_blocks: Vec::new(),
             lr_unit_filters: Vec::new(),
             gdf_reference: None,
+            lossless_grid: None,
         }
     }
 
@@ -181,6 +183,29 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ) -> Result<DecodedFrame<T>> {
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
+        if core
+            .lossless_info
+            .as_ref()
+            .is_some_and(|lossless| lossless.has_lossless_segment)
+        {
+            self.lossless_grid = Some(
+                crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
+                    mi_rows,
+                    mi_cols,
+                    &self.deblock_blocks,
+                    [
+                        &self.chroma_deblock_blocks[0],
+                        &self.chroma_deblock_blocks[1],
+                    ],
+                )
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_lossless_grid",
+                    )
+                })?,
+            );
+        }
         if self.needs_tx_skip_grid(core) {
             self.ensure_tx_skip_grid(mi_rows, mi_cols, offset)?;
         }
@@ -268,8 +293,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 &strengths,
                 grid,
                 cdef_skip_grid.as_ref(),
-                mi_rows,
-                mi_cols,
+                self.lossless_grid.as_ref(),
+                (mi_rows, mi_cols),
                 self.bit_depth,
             )
             .map_err(|_| {
@@ -287,8 +312,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 &deblocked_luma,
                 core,
                 grid,
-                mi_rows,
-                mi_cols,
+                self.lossless_grid.as_ref(),
                 self.bit_depth,
             )
             .map_err(|_| {
@@ -374,6 +398,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 core,
                 &deblocked_luma,
                 &cdef_luma,
+                self.lossless_grid.as_ref(),
                 self.luma_width,
                 self.luma_height,
                 self.bit_depth,
@@ -447,6 +472,7 @@ pub(crate) fn chroma_transform_deblock_block(
     y: usize,
     chroma_tx: usize,
     qindex: u32,
+    lossless: bool,
 ) -> Option<(usize, crate::filters::deblock::DeblockBlock)> {
     let (log2_width, log2_height) = tx_size_log2(chroma_tx)?;
     let plane_index = match plane_id {
@@ -470,6 +496,7 @@ pub(crate) fn chroma_transform_deblock_block(
             chroma_tx: Some(chroma_tx),
             qindex,
             skip: false,
+            lossless,
         },
     ))
 }

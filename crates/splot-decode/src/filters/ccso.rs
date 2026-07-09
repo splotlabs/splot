@@ -95,8 +95,7 @@ pub(crate) fn ccso_frame<T: ReconSample>(
     curr_luma: &[u16],
     core: &FrameHeaderCore,
     grid: &CcsoUnitGrid,
-    _mi_rows: usize,
-    _mi_cols: usize,
+    lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
     bit_depth: BitDepth,
 ) -> Result<(), CcsoError> {
     if !grid.active() {
@@ -134,6 +133,7 @@ pub(crate) fn ccso_frame<T: ReconSample>(
             plane,
             plane_params,
             grid,
+            lossless_grid,
             bit_depth,
         )?;
     }
@@ -149,6 +149,7 @@ fn ccso_plane<T: ReconSample>(
     plane: usize,
     params: &CcsoPlaneParams,
     grid: &CcsoUnitGrid,
+    lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
     bit_depth: BitDepth,
 ) -> Result<(), CcsoError> {
     let plane_id = plane_id(plane);
@@ -296,10 +297,16 @@ fn ccso_plane<T: ReconSample>(
                 if cls0 >= max_edge_interval || cls1 >= max_edge_interval || band >= max_band {
                     return Err(CcsoError::Params);
                 }
+                let sample = plane_row.get(x3).ok_or(CcsoError::Workspace)?;
+                if lossless_grid
+                    .is_some_and(|grid| grid.plane_sample_lossless(plane_id, x3, y3, sub_x, sub_y))
+                {
+                    filtered.push(*sample);
+                    continue;
+                }
                 let offset = *offset_lut
                     .get((cls0 * max_edge_interval + cls1) * max_band + band)
                     .ok_or(CcsoError::Params)?;
-                let sample = plane_row.get(x3).ok_or(CcsoError::Workspace)?;
                 let value = (i32::from(sample.to_u16()) + offset).clamp(0, max_sample);
                 filtered.push(T::try_from_u16(value as u16).map_err(|_| CcsoError::Sample)?);
             }

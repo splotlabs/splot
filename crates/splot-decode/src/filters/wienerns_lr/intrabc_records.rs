@@ -17,8 +17,8 @@ use crate::prediction::inter::mv_scaling::{PlaneScaling, derive_plane_scaling};
 use crate::prediction::inter::{
     Mv,
     read_mv::{
-        MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL, MvReadConfig, mv_clamp_to_integer,
-        read_newmv_block_mvd_with_config,
+        MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL, MvReadConfig, lower_mv_precision,
+        mv_clamp_to_integer, read_newmv_block_mvd_with_config,
     },
 };
 
@@ -972,6 +972,11 @@ fn assign_intrabc_mv(
                 "unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv",
             )
         })?;
+        let pred_mv = if mv_precision == MV_PRECISION_ONE_PEL {
+            lower_mv_precision(mv_precision, pred_mv)
+        } else {
+            pred_mv
+        };
         Mv {
             row: mv_clamp_to_integer(pred_mv.row + diff.row),
             col: mv_clamp_to_integer(pred_mv.col + diff.col),
@@ -1010,12 +1015,6 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
         return Err(wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_source_bounds",
-        ));
-    }
-    if !fractional && rects_overlap(source, target) {
-        return Err(wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_mv_validity",
         ));
     }
     let scaling = derive_plane_scaling(
@@ -1209,25 +1208,6 @@ fn rect_is_within_rect(rect: PlaneRect, bounds: PlaneRect) -> bool {
         && rect.y() >= bounds.y()
         && rect_right <= bounds_right
         && rect_bottom <= bounds_bottom
-}
-
-fn rects_overlap(first: PlaneRect, second: PlaneRect) -> bool {
-    let Some(first_right) = first.x().checked_add(first.width()) else {
-        return true;
-    };
-    let Some(first_bottom) = first.y().checked_add(first.height()) else {
-        return true;
-    };
-    let Some(second_right) = second.x().checked_add(second.width()) else {
-        return true;
-    };
-    let Some(second_bottom) = second.y().checked_add(second.height()) else {
-        return true;
-    };
-    first.x() < second_right
-        && first_right > second.x()
-        && first.y() < second_bottom
-        && first_bottom > second.y()
 }
 
 fn intrabc_luma_source_envelope(

@@ -31,8 +31,8 @@ fn cdef_general_intra_frame<T: ReconSample>(
         &[params],
         &grid,
         None,
-        mi_rows,
-        mi_cols,
+        None,
+        (mi_rows, mi_cols),
         bit_depth,
     )
 }
@@ -191,12 +191,63 @@ fn run_skip_grid_ripple(skip_values: Vec<bool>) -> (Vec<u8>, Vec<u8>) {
         &[cdef_ripple_params()],
         &grid,
         Some(&skip),
-        16,
-        16,
+        None,
+        (16, 16),
         BitDepth::Eight,
     )
     .unwrap();
     (before, luma_8x8(&ws))
+}
+
+#[test]
+fn lossless_grid_leaves_lossless_luma_8x8_unfiltered() {
+    let mut ws = workspace_8bit(64, 64, 100);
+    seed_luma_ripple(&mut ws);
+    let before = luma_8x8(&ws);
+    let grid = constant_cdef_grid(16, 16, 0).unwrap();
+    let blocks = [deblock_block(0, 0, 2, 2, true)];
+    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
+        16,
+        16,
+        &blocks,
+        [&[], &[]],
+    )
+    .unwrap();
+    cdef_general_intra_frame_indexed(
+        &mut ws,
+        &[cdef_ripple_params()],
+        &grid,
+        None,
+        Some(&lossless),
+        (16, 16),
+        BitDepth::Eight,
+    )
+    .unwrap();
+    assert_eq!(before, luma_8x8(&ws));
+}
+
+fn deblock_block(
+    r: usize,
+    c: usize,
+    n4w: usize,
+    n4h: usize,
+    lossless: bool,
+) -> crate::filters::deblock::DeblockBlock {
+    crate::filters::deblock::DeblockBlock {
+        r,
+        c,
+        block_r: r,
+        block_c: c,
+        chroma_base_r: r,
+        chroma_base_c: c,
+        n4w,
+        n4h,
+        luma_tx: 0,
+        chroma_tx: Some(0),
+        qindex: 0,
+        skip: false,
+        lossless,
+    }
 }
 
 fn workspace(

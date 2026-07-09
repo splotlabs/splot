@@ -65,6 +65,30 @@ fn find_eob_payload(
     found.unwrap()
 }
 
+fn find_eob_error_payload(
+    size: EobPtSize,
+    predicate: impl Fn(&CoeffLoopContextError) -> bool,
+) -> [u8; 3] {
+    let mut found = None;
+    for first in u8::MIN..=u8::MAX {
+        for second in u8::MIN..=u8::MAX {
+            let payload = [first, second, 0x80];
+            let Err(error) = read_eob_with_payload(&payload, size, CdfUpdateMode::Enabled) else {
+                continue;
+            };
+            if predicate(&error) {
+                found = Some(payload);
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    assert!(found.is_some(), "could not find matching EOB error payload");
+    found.unwrap_or([0, 0, 0])
+}
+
 fn direct_eob_read(
     tile: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -82,7 +106,8 @@ fn direct_eob_read(
         .get();
     let eob_pt_extra_width = eob_pt_extra_width(input.size, eob_pt_symbol);
     let eob_pt_extra = read_eob_literal(symbols, eob_pt_extra_width, "eob_pt_extra")?;
-    let eob_pt = resolved_eob_pt(eob_pt_symbol, eob_pt_extra_width, eob_pt_extra);
+    let eob_pt =
+        checked_resolved_eob_pt(input.size, eob_pt_symbol, eob_pt_extra_width, eob_pt_extra)?;
     let (eob_extra, eob_extra_bits) = if eob_pt >= 3 {
         let eob_extra = tile
             .read_block_symbol_trace(
@@ -730,6 +755,24 @@ fn read_nonzero_coeff_eob_reads_size_specific_eob_point_extra_literals() {
 
     assert!(read.eob_pt_extra() <= 1);
     assert_eq!(read.eob().eob_pt(), 8 + read.eob_pt_extra() as usize);
+}
+
+#[test]
+fn read_nonzero_coeff_eob_rejects_reserved_pt512_extra_value() {
+    let payload = find_eob_error_payload(EobPtSize::Pt512, |error| {
+        matches!(
+            error,
+            CoeffLoopContextError::InvalidPt512EobExtra { eob_pt_extra: 3 }
+        )
+    });
+
+    let err =
+        read_eob_with_payload(&payload, EobPtSize::Pt512, CdfUpdateMode::Enabled).unwrap_err();
+
+    assert!(matches!(
+        err,
+        CoeffLoopContextError::InvalidPt512EobExtra { eob_pt_extra: 3 }
+    ));
 }
 
 #[test]

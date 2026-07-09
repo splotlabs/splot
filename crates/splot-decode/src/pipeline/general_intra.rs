@@ -434,6 +434,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         luma_tx_partition_context(frame_tx_mode(core), frontier.b_size.index(), lossless),
         transform_tool_residual_policy,
         qindex,
+        lossless,
         intra_edge,
         tile_offset,
     )?;
@@ -528,6 +529,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         None,
         transform_tool_residual_policy,
         qindex,
+        lossless,
         intra_edge,
         tile_offset,
     )?;
@@ -599,6 +601,7 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
         luma_tx_partition_context,
         transform_tool_residual_policy,
         qindex,
+        lossless,
         intra_edge,
         tile_offset,
     )?;
@@ -645,15 +648,7 @@ pub(super) fn ensure_lossless_verified_prediction_subset(
             "7.13.2",
         ));
     }
-    if has_chroma
-        && !lossless_chroma_block_prediction_verified(
-            modes.supported_chroma_mode(),
-            modes.uses_dpcm_uv(),
-            modes.y_mode,
-            block_ctx,
-            sb_mib,
-        )
-    {
+    if has_chroma && !lossless_chroma_block_prediction_guard_passes(modes, block_ctx, sb_mib) {
         return Err(general_intra_at!(
             "general_intra_lossless_other_nondc_chroma_block_unverified",
             tile_offset,
@@ -785,6 +780,21 @@ fn lossless_chroma_part_prediction_guard_passes(
         )
 }
 
+fn lossless_chroma_block_prediction_guard_passes(
+    modes: &GeneralIntraBlockModes,
+    block_ctx: BlockCtx,
+    sb_mib: usize,
+) -> bool {
+    modes.is_cfl()
+        || lossless_chroma_block_prediction_verified(
+            modes.supported_chroma_mode(),
+            modes.uses_dpcm_uv(),
+            modes.y_mode,
+            block_ctx,
+            sb_mib,
+        )
+}
+
 pub(super) fn lossless_chroma_part_prediction_verified(
     mode: Option<SupportedChromaMode>,
     uses_dpcm_uv: bool,
@@ -833,6 +843,17 @@ pub(super) fn lossless_chroma_part_prediction_verified(
             || (y_mode.mode_to_angle() == Some(203)
                 && matches!(mode, Some(SupportedChromaMode::D203Follow))));
     let neighbours = block_ctx.neighbours(PlaneId::U);
+    let above_only_cardinal = neighbours.has_above()
+        && !neighbours.has_left()
+        && matches!(
+            mode,
+            Some(
+                SupportedChromaMode::Vertical
+                    | SupportedChromaMode::VerticalFollow
+                    | SupportedChromaMode::Horizontal
+                    | SupportedChromaMode::HorizontalFollow
+            )
+        );
     let left_edge_directional = !neighbours.has_above()
         && neighbours.has_left()
         && matches!(
@@ -854,7 +875,11 @@ pub(super) fn lossless_chroma_part_prediction_verified(
                     | SupportedChromaMode::Paeth
             )
         );
-    top_left || top_left_horizontal_follow || top_left_directional_follow || left_edge_directional
+    top_left
+        || top_left_horizontal_follow
+        || top_left_directional_follow
+        || above_only_cardinal
+        || left_edge_directional
 }
 
 fn lossless_chroma_part_rect_prediction_verified(
@@ -907,6 +932,13 @@ pub(super) fn lossless_chroma_block_prediction_verified(
     }
     let neighbours = block_ctx.neighbours(PlaneId::U);
     let top_left = sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left();
+    let above_only_cardinal = sb_mib == FULL_SB_N4_LUMA
+        && neighbours.has_above()
+        && !neighbours.has_left()
+        && matches!(
+            mode,
+            M::Vertical | M::VerticalFollow | M::Horizontal | M::HorizontalFollow
+        );
     (top_left
         && matches!(
             mode,
@@ -924,6 +956,7 @@ pub(super) fn lossless_chroma_block_prediction_verified(
             && ((y_mode.mode_to_angle() == Some(67) && mode == M::D67Follow)
                 || (y_mode.mode_to_angle() == Some(135) && mode == M::D135Follow)
                 || (y_mode.mode_to_angle() == Some(203) && mode == M::D203Follow)))
+        || above_only_cardinal
         || (!neighbours.has_above()
             && neighbours.has_left()
             && (matches!(
@@ -1178,6 +1211,16 @@ fn rect_luma_plan_for_parts_ext(
             || (!neighbours.has_above() && supported_one_sided_above_rect && neighbours.has_left()))
     {
         return Ok(RectLumaPlan::OneSidedAbove { p_angle, use_tcq });
+    }
+    if let Some(181..=269) = directional_p_angle
+        && !neighbours.has_left()
+        && neighbours.has_above()
+        && supported_cardinal_rect
+    {
+        return Ok(RectLumaPlan::Cardinal {
+            direction: IntraCardinalDirection::Horizontal,
+            use_tcq,
+        });
     }
     match directional_p_angle {
         Some(p_angle @ 181..=269)
@@ -1530,6 +1573,7 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
     luma_tx_partition_context: Option<LumaTransformPartitionContext>,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     qindex: u32,
+    lossless: bool,
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     tile_offset: ByteOffset,
 ) -> Result<()> {
@@ -1546,6 +1590,7 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
         luma_tx: transforms.luma_tx(),
         chroma_tx: transforms.chroma_tx(),
         qindex,
+        lossless,
     };
     residual_plan
         .execute(
@@ -1742,7 +1787,7 @@ fn ensure_supported_rect_chroma_capability(
     match mode {
         SupportedChromaMode::Dc => Ok(()),
         SupportedChromaMode::D203Follow | SupportedChromaMode::D203
-            if supported_smooth_shape && neighbours.has_left() =>
+            if supported_smooth_shape && (neighbours.has_above() || neighbours.has_left()) =>
         {
             Ok(())
         }

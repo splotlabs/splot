@@ -534,6 +534,46 @@ fn lossless_chroma_part_guard_delegates_cfl_to_cfl_plan() {
 }
 
 #[test]
+fn lossless_chroma_block_guard_delegates_cfl_to_cfl_plan() {
+    let block = ctx_with_bit_depth(25, 23, 1, 1, BitDepth::Eight);
+    let params = CflParams {
+        index: CflIndex::Multi,
+        alpha_u: 0,
+        alpha_v: 0,
+        mh_dir: Some(2),
+    };
+    let luma = crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
+        y_mode: IntraYMode::H_PRED_FOR_TEST,
+        angle_delta_y: 0,
+        intra_joint_mode: 0,
+        mrl_index: 0,
+        mrl_sec_index: None,
+        fsc_mode: 1,
+        uses_mrls: 0,
+        use_dip: 0,
+        dip_transpose: 0,
+        dip_mode: 0,
+        use_dpcm_y: 0,
+        dpcm_mode_y: 0,
+    };
+    let chroma = GeneralIntraChromaBlockMode::cfl_for_test(params);
+    let modes = GeneralIntraBlockModes::from_luma_chroma_palette(luma, chroma, None);
+
+    assert!(lossless_chroma_block_prediction_guard_passes(
+        &modes, block, 16,
+    ));
+    let result = chroma_plan_for_modes(&modes, block, 1, 16, true);
+    assert_eq!(
+        result.ok(),
+        Some(RectChromaPlan::Cfl {
+            params,
+            cfl_ds_filter_index: 1,
+            sb_mib: 16,
+        })
+    );
+}
+
+#[test]
 fn cardinal_top_left_guard_admits_only_verified_shapes() {
     let top_left_8 = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
     let vertical = luma_modes_with_angle(IntraYMode::V_PRED_FOR_TEST, 2);
@@ -869,6 +909,23 @@ fn admits_rect_d203_follow_chroma_subblock_with_left_edge() {
 }
 
 #[test]
+fn admits_rect_d203_follow_chroma_subblock_with_above_only_edge() {
+    let d203_subblock = ctx(46, 0, 4, 2);
+    let neighbours = d203_subblock.neighbours(PlaneId::U);
+
+    assert!(neighbours.has_above());
+    assert!(!neighbours.has_left());
+    assert!(
+        ensure_supported_rect_chroma_capability(SupportedChromaMode::D203Follow, d203_subblock,)
+            .is_ok()
+    );
+    assert_eq!(
+        rect_chroma_plan_for_mode(SupportedChromaMode::D203Follow, 0, None, d203_subblock),
+        RectChromaPlan::OneSided { p_angle: 203 }
+    );
+}
+
+#[test]
 fn admits_rect_smooth_luma_cases() {
     use crate::bitstream::tile_payload::SupportedNonDcLumaMode::{
         Smooth, SmoothHorizontal, SmoothVertical,
@@ -1159,6 +1216,12 @@ fn admits_rect_cardinal_luma_cases() {
             "horizontal with above-only edge",
             180,
             ctx(80, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
+            IntraCardinalDirection::Horizontal,
+        ),
+        (
+            "horizontal angle delta with above-only edge",
+            183,
+            ctx(80, 0, FULL_SB_N4_LUMA, 4),
             IntraCardinalDirection::Horizontal,
         ),
         (

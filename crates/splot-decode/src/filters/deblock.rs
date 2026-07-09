@@ -31,6 +31,7 @@ pub(crate) struct DeblockBlock {
     pub(crate) chroma_tx: Option<usize>,
     pub(crate) qindex: u32,
     pub(crate) skip: bool,
+    pub(crate) lossless: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -73,6 +74,7 @@ struct MiBlockInfo {
     chroma_tx: Option<usize>,
     qindex: u32,
     skip: bool,
+    lossless: bool,
 }
 
 impl MiBlockInfo {
@@ -90,6 +92,7 @@ impl MiBlockInfo {
             chroma_tx,
             qindex,
             skip,
+            lossless,
         } = block;
         Self {
             base_row: r,
@@ -102,6 +105,7 @@ impl MiBlockInfo {
             chroma_tx,
             qindex,
             skip,
+            lossless,
         }
     }
 }
@@ -587,8 +591,8 @@ fn deblock_filter_edge<T: ReconSample>(
         q_thresh_mult,
         w_mult_neg,
         w_mult_pos,
-        prev_lossless: false,
-        curr_lossless: false,
+        prev_lossless: prev.lossless,
+        curr_lossless: curr.lossless,
         bit_depth,
     };
 

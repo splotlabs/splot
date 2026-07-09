@@ -41,7 +41,6 @@ const PALETTE_DIRECTION_REASON: &str = "palette_direction";
 const PALETTE_UNIFORM_REASON: &str = "palette_color_idx_uniform";
 const TX_4X4: usize = 0;
 const DCT_DCT: usize = 0;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraResidualPlan {
     planes: Vec<ResidualPlanePlan>,
@@ -884,6 +883,8 @@ impl ResidualPlanePlan {
             self.tx_size,
             self.x,
             self.y,
+            self.block_ctx.frame_mi_cols().saturating_mul(4),
+            self.block_ctx.frame_mi_rows().saturating_mul(4),
             self.tx_fills_residual_block(),
             tx_partition_context,
             uv_mode,
@@ -2309,7 +2310,9 @@ fn push_ordered_planes(
                     {
                         let chunk_width = if double_chroma_w { 2 } else { 1 };
                         let chunk_height = if double_chroma_h { 2 } else { 1 };
-                        let chroma_ctx = if lossless || (sub_x == 0 && sub_y == 0) {
+                        let chroma_ctx = if (lossless || (sub_x == 0 && sub_y == 0))
+                            && !block_ctx.has_chroma_ref()
+                        {
                             residual_chunk_ctx(
                                 block_ctx,
                                 chunk_x,
