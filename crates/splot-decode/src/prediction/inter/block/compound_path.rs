@@ -359,16 +359,32 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             SPEC_READ_REFINEMV
         ));
     }
+    let compound_blend_tools = CompoundBlendToolConfig::from_sequence(sequence);
+    let compound_blend_thin = compound_blend_is_thin(n4w, n4h);
+    let comp_group_idx_ctx = if !compound_blend_tools.masked_enabled || compound_blend_thin {
+        0
+    } else {
+        compound_group_idx_context(
+            neighbour_ctx,
+            reference,
+            ref_frame_idx,
+            core,
+            compound.ref_frame0,
+            compound.ref_frame1,
+            num_total_refs,
+            tile_offset,
+        )?
+    };
     let compound_blend = read_compound_blend_syntax(
         cdfs,
         symbols,
-        sequence,
+        compound_blend_tools,
         CompoundBlendInput {
             skip_mode: false,
             n4w,
             n4h,
             block_size_index: frontier.b_size.index(),
-            same_ref: compound.ref_frame0 == compound.ref_frame1,
+            comp_group_idx_ctx,
         },
         tile_offset,
     )?;
@@ -423,6 +439,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         skip == 1,
         interp_filter_symbol(interp),
         use_amvd,
+        !matches!(compound_blend, mc::CompoundBlend::Average { .. }),
         precision,
     );
     record_temporal_motion_block(
@@ -905,6 +922,111 @@ fn compound_ref_distance_signs<T: ReconSample>(
     Ok(signs)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn compound_group_idx_context<T: ReconSample>(
+    neighbour_ctx: &BlockNeighbourContext,
+    reference: &InterReferenceState<'_, T>,
+    ref_frame_idx: &[u32],
+    core: &FrameHeaderCore,
+    ref_frame0: i8,
+    ref_frame1: i8,
+    num_total_refs: usize,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    let current_order_hint = compound_current_order_hint(core, tile_offset)?;
+    let ref0_order_hint =
+        compound_reference_order_hint(reference, ref_frame_idx, ref_frame0, tile_offset)?;
+    let ref1_order_hint =
+        compound_reference_order_hint(reference, ref_frame_idx, ref_frame1, tile_offset)?;
+    let equal_ref_distance = super::super::get_relative_dist(current_order_hint, ref0_order_hint)
+        .abs()
+        == super::super::get_relative_dist(ref1_order_hint, current_order_hint).abs();
+    let furthest_future_ref = compound_furthest_future_ref(
+        reference,
+        ref_frame_idx,
+        current_order_hint,
+        num_total_refs,
+        tile_offset,
+    )?;
+    Ok(neighbour_ctx.compound_group_idx_ctx(equal_ref_distance, furthest_future_ref))
+}
+
+fn compound_furthest_future_ref<T: ReconSample>(
+    reference: &InterReferenceState<'_, T>,
+    ref_frame_idx: &[u32],
+    current_order_hint: i32,
+    num_total_refs: usize,
+    tile_offset: ByteOffset,
+) -> Result<Option<i8>> {
+    let mut best = None;
+    for ref_idx in 0..num_total_refs {
+        let ref_order_hint =
+            compound_reference_order_hint(reference, ref_frame_idx, ref_idx as i8, tile_offset)?;
+        let distance = super::super::get_relative_dist(ref_order_hint, current_order_hint);
+        if distance <= 0 {
+            continue;
+        }
+        if best.is_none_or(|(best_distance, _)| distance > best_distance) {
+            best = Some((distance, ref_idx as i8));
+        }
+    }
+    Ok(best.map(|(_, ref_idx)| ref_idx))
+}
+
+fn compound_reference_order_hint<T: ReconSample>(
+    reference: &InterReferenceState<'_, T>,
+    ref_frame_idx: &[u32],
+    ref_frame: i8,
+    tile_offset: ByteOffset,
+) -> Result<i32> {
+    let ref_index = usize::try_from(ref_frame).map_err(|_| {
+        compound_cap!(
+            "compound_group_ref_frame_range",
+            tile_offset,
+            "inter.compound.ref_frame",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let slot = *ref_frame_idx.get(ref_index).ok_or_else(|| {
+        compound_missing!(
+            "compound_group_missing_ref_frame_idx",
+            tile_offset,
+            "inter.compound.ref_frame_idx",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let slot = usize::try_from(slot).map_err(|_| {
+        compound_cap!(
+            "compound_group_ref_slot_range",
+            tile_offset,
+            "inter.compound.ref_slot",
+            SPEC_MODE_INFO
+        )
+    })?;
+    reference
+        .ref_order_hint
+        .get(slot)
+        .copied()
+        .ok_or_else(|| {
+            compound_missing!(
+                "compound_group_missing_ref_order_hint",
+                tile_offset,
+                "inter.compound.ref_order_hint",
+                SPEC_MODE_INFO
+            )
+        })
+        .and_then(|hint| {
+            i32::try_from(hint).map_err(|_| {
+                compound_cap!(
+                    "compound_group_ref_order_hint_range",
+                    tile_offset,
+                    "inter.compound.ref_order_hint",
+                    SPEC_MODE_INFO
+                )
+            })
+        })
+}
+
 fn single_ref_block_context(block_ctx: &MvBlockContext, ref_frame0: i8) -> MvBlockContext {
     let mut single = *block_ctx;
     single.ref_frame0 = ref_frame0;
@@ -935,7 +1057,28 @@ struct CompoundBlendInput {
     n4w: usize,
     n4h: usize,
     block_size_index: usize,
-    same_ref: bool,
+    comp_group_idx_ctx: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CompoundBlendToolConfig {
+    masked_enabled: bool,
+    implicit_mask: bool,
+}
+
+impl CompoundBlendToolConfig {
+    fn from_sequence(sequence: &SequenceHeader) -> Self {
+        Self {
+            masked_enabled: sequence
+                .inter
+                .as_ref()
+                .is_some_and(|inter| inter.enable_masked_compound),
+            implicit_mask: sequence
+                .inter
+                .as_ref()
+                .is_some_and(|inter| inter.enable_imp_msk_bld),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -948,27 +1091,22 @@ struct CompoundCwpInput {
 fn read_compound_blend_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    sequence: &SequenceHeader,
+    tools: CompoundBlendToolConfig,
     input: CompoundBlendInput,
     tile_offset: ByteOffset,
 ) -> Result<mc::CompoundBlend> {
-    let average_blend = mc::CompoundBlend::average_with_implicit_mask(
-        sequence
-            .inter
-            .as_ref()
-            .is_some_and(|inter| inter.enable_imp_msk_bld),
-    );
-    let masked_enabled = sequence
-        .inter
-        .as_ref()
-        .is_some_and(|inter| inter.enable_masked_compound);
-    let thin = (input.n4w == 1 && input.n4h >= 4) || (input.n4h == 1 && input.n4w >= 4);
-    if input.skip_mode || !masked_enabled || thin {
+    let average_blend = mc::CompoundBlend::average_with_implicit_mask(tools.implicit_mask);
+    let thin = compound_blend_is_thin(input.n4w, input.n4h);
+    if input.skip_mode || !tools.masked_enabled || thin {
         return Ok(average_blend);
     }
-    let ctx = if input.same_ref { 6 } else { 0 };
     let comp_group_idx = cdfs
-        .read_block_symbol_trace(TileCdfSelector::CompGroupIdx { ctx }, symbols)
+        .read_block_symbol_trace(
+            TileCdfSelector::CompGroupIdx {
+                ctx: input.comp_group_idx_ctx,
+            },
+            symbols,
+        )
         .map_err(|_| symbol_read_error(tile_offset))?
         .get();
     if comp_group_idx == 0 {
@@ -1002,13 +1140,18 @@ fn read_compound_blend_syntax(
                 != 0;
             Ok(mc::CompoundBlend::DiffWeighted { inverse: mask_type })
         }
-        MaskedCompoundType::Wedge => Err(compound_cap!(
-            "compound_wedge",
-            tile_offset,
-            "inter.compound.wedge",
-            SPEC_MODE_INFO
-        )),
+        MaskedCompoundType::Wedge => {
+            let index = read_wedge_mode_syntax(cdfs, symbols, tile_offset)?;
+            let sign = symbols
+                .read_bool()
+                .map_err(|_| symbol_read_error(tile_offset))?;
+            Ok(mc::CompoundBlend::Wedge { index, sign })
+        }
     }
+}
+
+const fn compound_blend_is_thin(n4w: usize, n4h: usize) -> bool {
+    (n4w == 1 && n4h >= 4) || (n4h == 1 && n4w >= 4)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1055,4 +1198,93 @@ fn read_compound_cwp_syntax(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
+    use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
+
+    use super::*;
+    use crate::bitstream::tile_payload::FrameCdfSubset;
+
+    const TILE_OFFSET: ByteOffset = ByteOffset::new(0);
+
+    fn encode_wedge_compound_blend() -> Vec<u8> {
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut encoder = SymbolEncoder::with_config(
+            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+        );
+        tile.with_row_mut(TileCdfSelector::CompGroupIdx { ctx: 0 }, |row| {
+            encoder.write_symbol(row, Symbol::new(1))
+        })
+        .unwrap()
+        .unwrap();
+        tile.with_row_mut(TileCdfSelector::CompoundType, |row| {
+            encoder.write_symbol(row, Symbol::new(0))
+        })
+        .unwrap()
+        .unwrap();
+        tile.with_row_mut(TileCdfSelector::WedgeQuad, |row| {
+            encoder.write_symbol(row, Symbol::new(0))
+        })
+        .unwrap()
+        .unwrap();
+        tile.with_row_mut(TileCdfSelector::WedgeAngle { quad: 0 }, |row| {
+            encoder.write_symbol(row, Symbol::new(0))
+        })
+        .unwrap()
+        .unwrap();
+        tile.with_row_mut(TileCdfSelector::WedgeDist2, |row| {
+            encoder.write_symbol(row, Symbol::new(0))
+        })
+        .unwrap()
+        .unwrap();
+        encoder.write_bool(true).unwrap();
+        encoder.finish().unwrap().into_bytes()
+    }
+
+    fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
+        SymbolDecoder::with_base_and_config(
+            payload,
+            TILE_OFFSET,
+            SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn compound_blend_reads_wedge_index_and_sign() {
+        let payload = encode_wedge_compound_blend();
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&payload);
+
+        let blend = read_compound_blend_syntax(
+            &mut tile,
+            &mut symbols,
+            CompoundBlendToolConfig {
+                masked_enabled: true,
+                implicit_mask: false,
+            },
+            CompoundBlendInput {
+                skip_mode: false,
+                n4w: 2,
+                n4h: 2,
+                block_size_index: 3,
+                comp_group_idx_ctx: 0,
+            },
+            TILE_OFFSET,
+        )
+        .unwrap();
+
+        assert_eq!(
+            blend,
+            mc::CompoundBlend::Wedge {
+                index: 0,
+                sign: true,
+            }
+        );
+    }
 }

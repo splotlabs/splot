@@ -74,6 +74,33 @@ fn record_inter_ref(
     );
 }
 
+fn record_compound_ref(
+    grid: &mut NeighbourMvGrid,
+    r: usize,
+    c: usize,
+    ref_frame0: i8,
+    ref_frame1: i8,
+    masked_compound: bool,
+) {
+    grid.record_compound_block(
+        r,
+        c,
+        N4_32,
+        N4_32,
+        ref_frame0,
+        ref_frame1,
+        false,
+        false,
+        Mv::ZERO,
+        Mv::ZERO,
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        masked_compound,
+        BlockPrecisionRecord::default(),
+    );
+}
+
 fn record_warp_inter(
     grid: &mut NeighbourMvGrid,
     r: usize,
@@ -853,6 +880,52 @@ fn single_ref_ctx_counts_refs_above_two() {
         Some(0),
         "ref-2 neighbour makes ref-1 count lower than later refs"
     );
+}
+
+#[test]
+fn compound_group_idx_ctx_uses_equal_ref_distance_offset() {
+    let grid = empty_grid();
+    let nctx = block_neighbour_ctx(&grid, &block_at(0, 0));
+
+    assert_eq!(nctx.compound_group_idx_ctx(false, Some(0)), 0);
+    assert_eq!(nctx.compound_group_idx_ctx(true, Some(0)), 6);
+}
+
+#[test]
+fn compound_group_idx_ctx_combines_left_masked_compound_probes() {
+    let mut grid = empty_grid();
+    record_compound_ref(&mut grid, 0, 0, 0, 1, true);
+    let nctx = block_neighbour_ctx(&grid, &block_at(0, N4_32));
+
+    assert_eq!(nctx.compound_group_idx_ctx(false, None), 3);
+}
+
+#[test]
+fn compound_group_idx_ctx_combines_left_furthest_future_probes() {
+    let mut grid = empty_grid();
+    record_inter_ref(&mut grid, 0, 0, 2, NeighbourYMode::Other, Mv::ZERO, false);
+    let nctx = block_neighbour_ctx(&grid, &block_at(0, N4_32));
+
+    assert_eq!(nctx.compound_group_idx_ctx(false, Some(2)), 5);
+}
+
+#[test]
+fn compound_group_idx_ctx_combines_two_nonzero_neighbours() {
+    let mut grid = empty_grid();
+    record_compound_ref(&mut grid, N4_32, 0, 0, 1, true);
+    record_inter_ref(
+        &mut grid,
+        0,
+        N4_32,
+        2,
+        NeighbourYMode::Other,
+        Mv::ZERO,
+        false,
+    );
+    let nctx = block_neighbour_ctx(&grid, &block_at(N4_32, N4_32));
+
+    assert_eq!(nctx.compound_group_idx_ctx(false, Some(2)), 4);
+    assert_eq!(nctx.compound_group_idx_ctx(true, Some(2)), 10);
 }
 
 #[test]

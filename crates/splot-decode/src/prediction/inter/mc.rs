@@ -7,7 +7,7 @@ use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect, ReconError,
     ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
     WarpPredictBlockParams, blend_compound_average_equal, subpel_predict_block,
-    subpel_predict_block_compound_intermediate, warp_predict_block,
+    subpel_predict_block_compound_intermediate, warp_predict_block, wedge_mask_plane_sample,
 };
 
 use super::mv_scaling::{PlaneScaling, derive_plane_scaling};
@@ -49,6 +49,7 @@ impl McBlockRect {
 pub(crate) enum CompoundBlend {
     Average { implicit_mask: bool },
     DiffWeighted { inverse: bool },
+    Wedge { index: u8, sign: bool },
 }
 
 impl CompoundBlend {
@@ -504,6 +505,8 @@ fn predict_compound_plane<T: ReconSample>(
         prediction.block_w,
         prediction.block_h,
         blend,
+        rect.luma_w,
+        rect.luma_h,
         prediction.scaling0,
         prediction.scaling1,
         frame_w,
@@ -637,6 +640,8 @@ fn blend_compound_average(
     w: usize,
     h: usize,
     blend: CompoundBlend,
+    luma_w: usize,
+    luma_h: usize,
     scaling0: PlaneScaling,
     scaling1: PlaneScaling,
     frame_w: usize,
@@ -653,6 +658,8 @@ fn blend_compound_average(
             w,
             h,
             blend,
+            luma_w,
+            luma_h,
             luma_diff_weighted_mask,
             sub_x,
             sub_y,
@@ -706,12 +713,19 @@ fn blend_compound_diff_weighted(
     w: usize,
     h: usize,
     blend: CompoundBlend,
+    luma_w: usize,
+    luma_h: usize,
     luma_diff_weighted_mask: Option<&[u16]>,
     sub_x: u32,
     sub_y: u32,
 ) -> splot_recon::Result<Vec<u16>> {
     if pred0.len() != pred1.len() {
         return blend_compound_average_equal(pred0, pred1, bit_depth);
+    }
+    if let CompoundBlend::Wedge { index, sign } = blend {
+        return blend_compound_wedge(
+            pred0, pred1, bit_depth, w, h, luma_w, luma_h, index, sign, sub_x, sub_y,
+        );
     }
     let CompoundBlend::DiffWeighted { inverse } = blend else {
         return blend_compound_average_equal(pred0, pred1, bit_depth);
@@ -736,6 +750,53 @@ fn blend_compound_diff_weighted(
             clip3(0, max_sample, blended) as u16
         })
         .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blend_compound_wedge(
+    pred0: &[i32],
+    pred1: &[i32],
+    bit_depth: splot_recon::BitDepth,
+    w: usize,
+    h: usize,
+    luma_w: usize,
+    luma_h: usize,
+    wedge_index: u8,
+    sign: bool,
+    sub_x: u32,
+    sub_y: u32,
+) -> splot_recon::Result<Vec<u16>> {
+    if pred0.len() != pred1.len() {
+        return Err(ReconError::CompoundBlendLengthMismatch {
+            left_len: pred0.len(),
+            right_len: pred1.len(),
+        });
+    }
+    let max_sample = i64::from(bit_depth.max_sample());
+    let shift = 6 + compound_inter_post_round();
+    let mut out = Vec::with_capacity(w.saturating_mul(h));
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            let mask = wedge_mask_plane_sample(
+                luma_w,
+                luma_h,
+                usize::from(wedge_index),
+                sign,
+                sub_x,
+                sub_y,
+                x,
+                y,
+            )?;
+            let blended = round2(
+                i64::from(mask) * i64::from(pred0[idx])
+                    + i64::from(64 - mask) * i64::from(pred1[idx]),
+                shift,
+            );
+            out.push(clip3(0, max_sample, blended) as u16);
+        }
+    }
+    Ok(out)
 }
 
 fn diff_weighted_mask(

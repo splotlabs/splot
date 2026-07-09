@@ -35,7 +35,7 @@ mod workspace_intra_dc;
 mod workspace_intra_directional_angle;
 
 pub use workspace_edges::{CurrentFrameIntraEdges, WorkspaceRectRows};
-pub use workspace_interintra::InterIntraMode;
+pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
 
 /// Mutable current-frame reconstruction workspace.
 ///
