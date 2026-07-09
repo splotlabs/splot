@@ -949,7 +949,8 @@ pub(super) fn lossless_chroma_block_prediction_verified(
     }
     let neighbours = block_ctx.neighbours(PlaneId::U);
     let top_left = sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left();
-    let top_left_smooth = top_left && y_mode == IntraYMode::DC_PRED && mode == M::Smooth;
+    let top_left_smooth =
+        top_left && y_mode == IntraYMode::DC_PRED && matches!(mode, M::Smooth | M::SmoothVertical);
     let above_only_cardinal = sb_mib == FULL_SB_N4_LUMA
         && neighbours.has_above()
         && !neighbours.has_left()
