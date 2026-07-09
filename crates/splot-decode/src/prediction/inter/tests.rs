@@ -434,6 +434,28 @@ fn inter_frame_validation_admits_lossless_header_tools() {
 }
 
 #[test]
+fn inter_frame_validation_admits_active_gdf_header_tool() {
+    let context = decode_context();
+    context
+        .pool()
+        .install(|| -> Result<()> {
+            let (sequence, mut core, offset) =
+                parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
+            let gdf = core
+                .gdf_params
+                .as_mut()
+                .expect("fixture inter core has GDF params");
+            gdf.gdf_frame_enable = true;
+            gdf.gdf_per_block = Some(false);
+            gdf.gdf_pic_qc_idx = Some(0);
+            gdf.gdf_pic_scale_idx = Some(0);
+
+            super::validate_inter_frame_core(&core, &sequence, offset)
+        })
+        .expect("active inter GDF headers should reach block-specific gates");
+}
+
+#[test]
 fn two_frame_inter_fixture_decodes_both_frames_bit_exact() {
     let frames = decode_frames();
     assert_eq!(

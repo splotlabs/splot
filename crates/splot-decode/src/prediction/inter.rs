@@ -330,6 +330,13 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         frame_height as usize,
         bit_depth,
     );
+    filter_sink.set_gdf_reference_context(Some(
+        crate::filters::gdf::GdfReferenceContext::from_reference_list(
+            core.order_hint_lsb.unwrap_or(0),
+            &ref_frame_idx,
+            &reference.ref_order_hint,
+        ),
+    ));
     filter_sink.set_deblock_blocks(
         filter_inputs.deblock_blocks,
         filter_inputs.chroma_deblock_blocks,
@@ -972,7 +979,7 @@ fn validate_inter_frame_core(
         || core.lossless_info.is_none()
         || sequence.inter.is_none()
         || core.deblocking_filter_params.is_none()
-        || core.gdf_params.is_none_or(|gdf| gdf.gdf_frame_enable)
+        || core.gdf_params.is_none()
         || core.cdef_params.is_none()
         || core.lr_params.is_none()
         || core.ccso_params.is_none()
