@@ -1210,10 +1210,12 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         general_intra::FULL_SB_N4_LUMA,
     ));
     for (mode, y_mode, expected) in [
+        (D45Follow, IntraYMode::DC_PRED, false),
         (D67Follow, IntraYMode::DC_PRED, false),
         (D113Follow, IntraYMode::DC_PRED, false),
         (D157Follow, IntraYMode::DC_PRED, false),
         (D203Follow, IntraYMode::DC_PRED, false),
+        (D45Follow, IntraYMode::D45_PRED_FOR_TEST, true),
         (D67Follow, IntraYMode::D67_PRED_FOR_TEST, true),
         (D113Follow, IntraYMode::D113_PRED_FOR_TEST, true),
         (D135Follow, IntraYMode::D135_PRED_FOR_TEST, true),
