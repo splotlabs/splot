@@ -20,6 +20,9 @@ const LOSSLESS_NONDC_CHROMA_D67_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
 const LOSSLESS_NONDC_CHROMA_D67FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d67follow-leftedge-128x64.ivf"
 );
+const LOSSLESS_SDP_NONDC_CHROMA_D67FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d67follow-leftedge-128x64.ivf"
+);
 const LOSSLESS_SDP_NONDC_CHROMA_D157_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d157-intra-64x64.ivf"
 );
@@ -95,22 +98,29 @@ fn lossless_nondc_chroma_d67_leftedge_frame_decodes_to_oracle() {
 
 #[test]
 fn lossless_nondc_chroma_d67follow_leftedge_frame_decodes_to_oracle() {
-    assert_eq!(LOSSLESS_NONDC_CHROMA_D67FOLLOW_LEFTEDGE_FIXTURE.len(), 180);
+    assert_lossless_d67follow_leftedge_oracle(
+        LOSSLESS_NONDC_CHROMA_D67FOLLOW_LEFTEDGE_FIXTURE,
+        180,
+    );
+}
+
+#[test]
+fn lossless_sdp_nondc_chroma_d67follow_leftedge_frame_decodes_to_oracle() {
+    assert_lossless_d67follow_leftedge_oracle(
+        LOSSLESS_SDP_NONDC_CHROMA_D67FOLLOW_LEFTEDGE_FIXTURE,
+        168,
+    );
+}
+
+fn assert_lossless_d67follow_leftedge_oracle(fixture: &[u8], expected_len: usize) {
+    assert_eq!(fixture.len(), expected_len);
     let options = DecodeOptions::default();
     let context =
         DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context
-        .plan_bytes(LOSSLESS_NONDC_CHROMA_D67FOLLOW_LEFTEDGE_FIXTURE, options)
-        .expect("plan");
+    let plan = context.plan_bytes(fixture, options).expect("plan");
     let decoded = context
         .pool()
-        .install(|| {
-            decode_frame_from_plan(
-                LOSSLESS_NONDC_CHROMA_D67FOLLOW_LEFTEDGE_FIXTURE,
-                &options,
-                &plan,
-            )
-        })
+        .install(|| decode_frame_from_plan(fixture, &options, &plan))
         .expect("decode");
     let PipelineDecodedFrame::Eight(frame) = decoded.frame else {
         panic!("fixture decoded as 10-bit");

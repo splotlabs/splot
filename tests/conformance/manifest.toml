@@ -236,6 +236,11 @@ description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 128x64) from the p
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-lossless-sdp-nondc-chroma-d67follow-leftedge-128x64.ivf"
+description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 128x64) from the project-owned lossless D67-follow left-edge luma/chroma source re-encoded with SDP enabled. The stream carries a first-row right 64x64 block with a decoded left neighbor and no above neighbor, D67_PRED luma syntax (§ 5.20.5.5, y_mode_idx=7 plus y_mode_idx_offset=1), SDP/chroma-part non-DPCM D67-follow chroma syntax (§ 5.20.5.6, uv_mode_idx=0 resolves through D67_PRED luma, use_dpcm_uv=0), and lossless 4x4 residual units; avmdec and splot decode byte-exact to raw SHA-256 318dce0d8ed8771aa79709051ee18e72cdb7b999c05f27095fe1a6cc611ba6ee; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-lossless-sdp-nondc-chroma-h-leftedge-128x64.ivf"
 description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 128x64) from the project-owned lossless H left-edge chroma source re-encoded with SDP enabled. The stream carries a first-row right 64x64 block with a decoded left neighbor and no above neighbor, V_PRED luma syntax, SDP/chroma-part explicit non-DPCM H_PRED chroma syntax (§ 5.20.5.6, uv_mode=2 resolves to H_PRED, use_dpcm_uv=0), and lossless 4x4 chroma residual units; avmdec and splot decode byte-exact to raw SHA-256 a5e8e56e191e9558ed8591013fa884fb573c320adea6aa6db475680a69167740; validates clean."
 expect = "clean"
