@@ -165,6 +165,7 @@ fn temporal_frame_wiener_ns_without_local_bank_keeps_lr_unit_syntax_enabled() {
         1,
         [0; 3],
         &[Vec::new(), Vec::new(), Vec::new()],
+        splot_core::headers::frame::LrTemporalReferenceView::unknown(&[0]),
     )
     .unwrap();
     let LrParseOutcome::Parsed(lr) = outcome else {
