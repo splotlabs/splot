@@ -410,6 +410,35 @@ fn lossless_prediction_guard_admits_edge_backed_rect_luma() {
 }
 
 #[test]
+fn lossless_chroma_part_guard_admits_rect_prediction_subset() {
+    let top_left_smooth_part = ctx_with_bit_depth(0, 0, 4, 16, BitDepth::Eight);
+    assert!(lossless_chroma_part_prediction_verified(
+        Some(SupportedChromaMode::Smooth),
+        false,
+        IntraYMode::DC_PRED,
+        top_left_smooth_part,
+        32,
+    ));
+
+    let edge_backed_horizontal_part = ctx_with_bit_depth(8, 4, 8, 8, BitDepth::Eight);
+    assert!(lossless_chroma_part_prediction_verified(
+        Some(SupportedChromaMode::Horizontal),
+        false,
+        IntraYMode::DC_PRED,
+        edge_backed_horizontal_part,
+        32,
+    ));
+
+    assert!(!lossless_chroma_part_prediction_verified(
+        Some(SupportedChromaMode::Horizontal),
+        false,
+        IntraYMode::DC_PRED,
+        top_left_smooth_part,
+        32,
+    ));
+}
+
+#[test]
 fn cardinal_top_left_guard_admits_only_verified_shapes() {
     let top_left_8 = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
     let vertical = luma_modes_with_angle(IntraYMode::V_PRED_FOR_TEST, 2);

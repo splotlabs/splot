@@ -780,21 +780,14 @@ pub(super) fn lossless_chroma_part_prediction_verified(
     if lossless_chroma_prediction_verified(mode, uses_dpcm_uv) {
         return true;
     }
-    if uses_dpcm_uv || !lossless_chroma_full_64_block(block_ctx) {
+    if uses_dpcm_uv {
         return false;
     }
-    let top_left_smooth = y_mode == IntraYMode::DC_PRED
-        && block_ctx.is_top_left()
-        && matches!(
-            mode,
-            Some(
-                SupportedChromaMode::Smooth
-                    | SupportedChromaMode::SmoothVertical
-                    | SupportedChromaMode::SmoothHorizontal
-            )
-        );
-    if top_left_smooth {
+    if lossless_chroma_part_rect_prediction_verified(mode, y_mode, block_ctx) {
         return true;
+    }
+    if !lossless_chroma_full_64_block(block_ctx) {
+        return false;
     }
     if sb_mib != FULL_SB_N4_LUMA {
         return false;
@@ -836,6 +829,30 @@ pub(super) fn lossless_chroma_part_prediction_verified(
             )
         );
     top_left || left_edge_directional
+}
+
+fn lossless_chroma_part_rect_prediction_verified(
+    mode: Option<SupportedChromaMode>,
+    y_mode: IntraYMode,
+    block_ctx: BlockCtx,
+) -> bool {
+    let Some(mode) = mode else {
+        return false;
+    };
+    if !lossless_chroma_8bit_420(block_ctx) {
+        return false;
+    }
+    let chroma_block = block_ctx.plane_block(PlaneId::U);
+    if chroma_block.width4() == 0 || chroma_block.height4() == 0 {
+        return false;
+    }
+    let top_left_smooth =
+        y_mode == IntraYMode::DC_PRED && block_ctx.is_top_left() && mode.is_smooth();
+    let neighbours = block_ctx.neighbours(PlaneId::U);
+    if !top_left_smooth && !neighbours.has_above() && !neighbours.has_left() {
+        return false;
+    }
+    ensure_supported_rect_chroma_capability(mode, block_ctx).is_ok()
 }
 
 pub(super) fn lossless_chroma_block_prediction_verified(
@@ -883,9 +900,12 @@ pub(super) fn lossless_chroma_block_prediction_verified(
 
 fn lossless_chroma_full_64_block(block_ctx: BlockCtx) -> bool {
     let block = block_ctx.block();
-    block_ctx.bit_depth() == BitDepth::Eight
-        && block_ctx.chroma() == ChromaSampling::Yuv420
+    lossless_chroma_8bit_420(block_ctx)
         && (block.width4(), block.height4()) == (FULL_SB_N4_LUMA, FULL_SB_N4_LUMA)
+}
+
+fn lossless_chroma_8bit_420(block_ctx: BlockCtx) -> bool {
+    block_ctx.bit_depth() == BitDepth::Eight && block_ctx.chroma() == ChromaSampling::Yuv420
 }
 
 fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformTypeContext {
