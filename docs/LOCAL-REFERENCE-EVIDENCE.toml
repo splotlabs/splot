@@ -5177,6 +5177,59 @@ left = "avm-lossless-nondc-chroma-d45-intra-64x64-raw-md5"
 right = "avm-repeat-lossless-nondc-chroma-d45-intra-64x64-raw-md5"
 
 [[evidence]]
+id = "lref-avm-syn-lossless-nondc-chroma-d67-intra-64x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 4:2:0 64x64 lossless intra IVF fixture whose top-left normal-block chroma uses explicit non-DPCM D67_PRED while luma stays DC. The fixture is re-encoded from the committed SDP D67 oracle source with SDP disabled; splot reproduces the raw SHA-256 value through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-09"
+command = "/Users/bartosztomczyk/Devel/avm/build/avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 -o /tmp/splot-normal-d67-chroma/source.i420 tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d67-intra-64x64.ivf; /Users/bartosztomczyk/Devel/avm/build/avmenc --codec=av2 --ivf -D --threads=1 --cpu-used=2 --end-usage=q --qp=0 --lossless=1 --limit=1 --kf-max-dist=0 --lag-in-frames=0 --i420 --width=64 --height=64 --input-bit-depth=8 --bit-depth=8 --sb-size=64 --min-partition-size=64 --max-partition-size=64 --tile-columns=0 --tile-rows=0 --cdf-update-mode=0 --aq-mode=0 --deltaq-mode=0 --enable-chroma-deltaq=0 --enable-tpl-model=0 --enable-sdp=0 --enable-extended-sdp=0 --enable-cfl-intra=0 --enable-mhccp=0 --enable-cctx=0 --enable-chroma-dctonly=0 --enable-qm=0 --enable-deblocking=0 --enable-cdef=0 --enable-cdef-on-skip-txfm=0 --enable-restoration=0 --enable-wiener-nonsep=0 --enable-pc-wiener=0 --enable-gdf=0 --enable-ccso=0 --enable-ibp=0 --enable-angle-delta=0 --enable-intra-edge-filter=0 --enable-ist=0 --enable-inter-ist=0 --enable-intra-dip=0 --enable-idtx-intra=0 --enable-flip-idtx=0 --enable-mrls=0 --enable-palette=0 --enable-intrabc=0 --enable-fsc=0 --enable-tx-partition=0 --enable-rect-partitions=0 --enable-ext-partitions=0 --enable-uneven-4way-partitions=0 --enable-parity-hiding=0 --enable-tcq=0 --enable-trellis-quant=0 --enable-keyframe-filtering=0 --enable-smooth-intra=0 --enable-paeth-intra=0 --auto-alt-ref=0 --enable-fwd-kf=0 --enable-overlay=0 -o /tmp/splot-normal-d67-chroma/syn-lossless-nondc-chroma-d67-intra-64x64.ivf /tmp/splot-normal-d67-chroma/source.i420; /Users/bartosztomczyk/Devel/avm/build/avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 -o /tmp/splot-normal-d67-chroma/avm.raw /tmp/splot-normal-d67-chroma/syn-lossless-nondc-chroma-d67-intra-64x64.ivf; /Users/bartosztomczyk/Devel/avm/build_inspect/examples/inspect /tmp/splot-normal-d67-chroma/syn-lossless-nondc-chroma-d67-intra-64x64.ivf -bs -ts -m -uvm --limit=1"
+
+[[evidence.fixture]]
+id = "d67-top-left-chroma-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d67-intra-64x64.ivf"
+sha256 = "bf31dcea2712aa7bc9898f22762c579acc5adb510b0622652cae7467898a98c6"
+size_bytes = 304
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally by decoding the committed project-owned lossless SDP/chroma-part D67 top-left fixture to raw I420 (source SHA-256 bd031b83ebb53396538bcfdebe5c2fe5a186e8d75a5842fabdcad123039f7b3b) and re-encoding that deterministic source with AVM lossless mode, 64x64 square partitions, SDP disabled, extended SDP disabled, default intra TX only, and broad decode tools disabled, including qmatrix, deblocking, GDF, CDEF, restoration, CCSO, CfL, MHCCP, CCTX, palette, IntraBC, FSC, intra-DIP, IBP, MRL, intra edge filtering, smooth intra, Paeth, rectangular and extended partitions, non-default intra TX, angle delta, parity hiding, TCQ, and trellis quantization. AVM inspect showed BLOCK_64X64, TX_4X4, luma DC_PRED, and top-left normal-block chroma UV_D67_PRED; accounting showed read_partition=0, read_dpcm_mode=0, and read_dpcm_uv_mode=0 with no SDP/chroma-part symbol. AVM decode raw matched the source byte-for-byte; splot pre-fix decode failed closed at byte offset 65 with general_intra_lossless_other_nondc_chroma_block_unverified. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec-lossless-nondc-chroma-d67"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3-dirty from the local fixture build; tracked dirty changes were tracing hooks guarded by SPLOT_AVM_MODE_TRACE, SPLOT_AVM_COEFF_TRACE, and SPLOT_AVM_SYMBOL_TRACE, none set for canonical encode or decode, plus untracked build directories."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:d67-top-left-chroma-input}."
+output_digest_id = "avm-lossless-nondc-chroma-d67-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "23c57542a5c6987eb948c06856b0ff8b"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 bd031b83ebb53396538bcfdebe5c2fe5a186e8d75a5842fabdcad123039f7b3b is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat-lossless-nondc-chroma-d67"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Second local AVM checkout version v1.0.0-41-g3935f4bf3-dirty decode run from the same fixture build; tracked dirty changes were tracing hooks guarded by SPLOT_AVM_MODE_TRACE, SPLOT_AVM_COEFF_TRACE, and SPLOT_AVM_SYMBOL_TRACE, none set for canonical decode, plus untracked build directories."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:d67-top-left-chroma-input}."
+output_digest_id = "avm-repeat-lossless-nondc-chroma-d67-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "23c57542a5c6987eb948c06856b0ff8b"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-nondc-chroma-d67-intra-64x64-raw-md5"
+right = "avm-repeat-lossless-nondc-chroma-d67-intra-64x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-syn-lossless-nondc-chroma-d203-intra-64x64"
 feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
 decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
