@@ -2496,6 +2496,5 @@ fn horz_rectangular_partition_intra_frame_decodes_to_oracle() {
         "6d2e94d795d46cae62d1e2cf06cf4fe5b727b0917742745af998b002a7686142",
     );
 }
-
 mod general_intra_cdef_tests;
 mod general_intra_deblock_tests;

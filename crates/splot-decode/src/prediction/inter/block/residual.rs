@@ -9,6 +9,7 @@ use super::*;
 
 const INTER_UV_MODE_DC: usize = 0;
 const DCT_DCT: usize = 0;
+const TX_4X4: usize = 0;
 #[cfg(test)]
 const V_DCT: usize = 10;
 const TX_TYPE_MAP_UNIT_4X4: usize = 4;
@@ -112,6 +113,7 @@ pub(crate) fn read_inter_residual(
     n4h: usize,
     mi_rows: usize,
     mi_cols: usize,
+    lossless: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<InterResidual> {
@@ -124,7 +126,7 @@ pub(crate) fn read_inter_residual(
     } else {
         frontier.b_size
     };
-    let luma_tx_size = max_tx_size(frontier.b_size.index(), tile_offset)?;
+    let luma_tx_size = inter_residual_tx_size(frontier.b_size.index(), lossless, tile_offset)?;
     let luma_tx_records = if residual_uses_selectable_tx_partitions(core) {
         Some(derive_inter_luma_tx_records_for_block(
             work_unit,
@@ -187,6 +189,7 @@ pub(crate) fn read_inter_residual(
                             subsampling_y,
                             chroma_chunk_x,
                             chroma_chunk_y,
+                            lossless,
                             residual_tool_policy,
                             tile_offset,
                         )?;
@@ -406,6 +409,7 @@ fn read_inter_residual_chroma_group(
     subsampling_y: bool,
     chunk_x: usize,
     chunk_y: usize,
+    lossless: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
@@ -415,7 +419,7 @@ fn read_inter_residual_chroma_group(
         .map_err(|_| residual_geometry_error(tile_offset))?
         .valid()
         .ok_or_else(|| residual_geometry_error(tile_offset))?;
-    let tx_size = max_tx_size(chroma_ref_size.index(), tile_offset)?;
+    let tx_size = inter_residual_tx_size(chroma_ref_size.index(), lossless, tile_offset)?;
     let plane_source_size = if chroma_mi_size != frontier.b_size {
         chroma_mi_size
     } else {
@@ -615,6 +619,18 @@ pub(crate) fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<
         block_size,
         tile_offset,
     )
+}
+
+fn inter_residual_tx_size(
+    block_size: usize,
+    lossless: bool,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    if lossless {
+        Ok(TX_4X4)
+    } else {
+        max_tx_size(block_size, tile_offset)
+    }
 }
 
 pub(crate) fn tx_size_dimension(

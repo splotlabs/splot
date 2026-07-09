@@ -40,13 +40,14 @@ use super::{
 };
 use crate::bitstream::tile_payload::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, BlockSize, CoeffContextReset,
-    DecodeBlockFrontier, DecodeTileWorkUnit, FrameCdfSubset, GeneralIntraLeafMode,
-    GeneralIntraMultiblockError, GeneralIntraTreeWalkError, IsCflContext, LumaCoeffBlock,
-    SavedCdfSubset, TileBlockDecodedState, TileCdfSelector, TileCdfSubset, TileCoeffContextState,
-    TileFscModeState, TileIntraJointModeState, TilePartitionTraversalError, TileSegmentIdState,
-    TileUsesMrlsState, TransformToolResidualPolicy, chroma_subsampling,
-    decode_general_intra_multiblock_tree_with_lr_source_blocks, decode_general_intra_plane_coeffs,
-    frame_mi_dimensions, get_plane_residual_size, neg_deinterleave,
+    DecodeBlockFrontier, DecodeTileWorkUnit, FrameCdfSubset, FrameQmSegmentScope,
+    GeneralIntraLeafMode, GeneralIntraMultiblockError, GeneralIntraTreeWalkError, IsCflContext,
+    LumaCoeffBlock, SavedCdfSubset, TileBlockDecodedState, TileCdfSelector, TileCdfSubset,
+    TileCoeffContextState, TileFscModeState, TileIntraJointModeState, TilePartitionTraversalError,
+    TileSegmentIdState, TileUsesMrlsState, TransformToolResidualPolicy, chroma_subsampling,
+    current_frame_qm_segment_id, decode_general_intra_multiblock_tree_with_lr_source_blocks,
+    decode_general_intra_plane_coeffs, frame_mi_dimensions, get_plane_residual_size,
+    neg_deinterleave,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcInfo, IntrabcUseSkip,
@@ -558,6 +559,13 @@ fn segment_block_qindex(
     get_qindex(&quant, current_qindex, seg, segment_id)
 }
 
+fn current_residual_lossless(work_unit: &DecodeTileWorkUnit<'_>) -> bool {
+    work_unit
+        .coeff_frame_facts()
+        .lossless_for_segment(current_frame_qm_segment_id())
+        .unwrap_or(false)
+}
+
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn decode_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -819,10 +827,15 @@ fn decode_block<T: ReconSample>(
                 usize::from(segment_id),
                 delta_q_state.qindex_u32(),
             );
+            let lossless = work_unit
+                .coeff_frame_facts()
+                .lossless_for_segment(usize::from(segment_id))
+                .unwrap_or(false);
             let residual = if prelude.skip_flag {
                 reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
                 None
             } else {
+                let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
                 Some(read_inter_residual(
                     work_unit,
                     symbols,
@@ -834,6 +847,7 @@ fn decode_block<T: ReconSample>(
                     n4h,
                     mi_rows,
                     mi_cols,
+                    lossless,
                     residual_tool_policy,
                     tile_offset,
                 )?)
@@ -1246,6 +1260,7 @@ fn decode_block<T: ReconSample>(
                 n4h,
                 mi_rows,
                 mi_cols,
+                current_residual_lossless(work_unit),
                 residual_tool_policy,
                 tile_offset,
             )?)
@@ -1537,6 +1552,7 @@ fn decode_block<T: ReconSample>(
             n4h,
             mi_rows,
             mi_cols,
+            current_residual_lossless(work_unit),
             residual_tool_policy,
             tile_offset,
         )?)
