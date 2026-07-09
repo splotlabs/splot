@@ -1281,9 +1281,12 @@ fn is_leading_record_regular_after_key(
     };
     position >= frame_unit_len
         && obus
-            .iter()
-            .skip(frame_unit_len)
-            .all(|envelope| envelope.header.obu_type == ObuType::RegularTileGroup)
+            .get(frame_unit_len..=position)
+            .is_some_and(|envelopes| {
+                envelopes
+                    .iter()
+                    .all(|envelope| envelope.header.obu_type == ObuType::RegularTileGroup)
+            })
 }
 
 fn require_following_ivf_obu_order_through(
