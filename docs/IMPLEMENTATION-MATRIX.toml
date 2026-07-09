@@ -16445,7 +16445,7 @@ id = "DECODE-INTER-COMPOUND-AVERAGE"
 name = "two-reference compound-average inter runtime"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.11", "5.20.7.13", "5.20.7.16", "5.20.7.17", "7.13.3.16", "7.13.3.18", "8.3.2", "9.3"]
+spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.11", "5.20.7.13", "5.20.7.16", "5.20.7.17", "7.13.3.8", "7.13.3.9", "7.13.3.10", "7.13.3.11", "7.13.3.12", "7.13.3.16", "7.13.3.18", "8.3.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10",
@@ -16453,6 +16453,11 @@ sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-16",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-17",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-9",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-10",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-11",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-12",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-16",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
@@ -16464,7 +16469,7 @@ change_id = "decode-inter-compound-average"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Implements the smallest oracle-proven compound-reference decode subset: NumTotalRefs == 2, reference_select chooses compound, read_compound_ref yields RefFrame[0..1] == [0, 1] for the admitted fixture, non-joint NEAR_NEARMV, no neighbour-dependent compound MV stack, zero MVs, skipped residual, identity-scaled references, and equal-weight COMPOUND_AVERAGE with CWP/masks/implicit masked blend/opfl/refinemv/TIP/warp/temporal-MV disabled. The runtime adds private minimal-inter compound syntax helpers, the needed §8.3.2 CDF rows for comp_mode/is_joint/compound_mode_non_joint plus the fixture-required comp_ref selectors, a `splot-recon` compound intermediate helper that preserves §7.13.3.18 signed intermediates, and a CWP_EQUAL blend using the §7.13.3.16 equal-weight formula. The committed syn-3frame-compound-average-64x64.ivf fixture now decodes with `splot decode --output-format raw` to the recorded avmdec/dav2d raw SHA-256 2b4f716243d9f5c30a244ecc6f7fdcb5bef804d2ba353a21d670d686cfe63ff4 (MD5 34074c6945348b146f84551a20d9affd). Broader compound, masked, CWP, optical-flow/refine-MV, temporal-MV, residual compound, and full AV2 decoder conformance remain unsupported or partial and must reject before output with decode/unsupported-feature."
+notes = "Implements the smallest oracle-proven compound-reference decode subset: NumTotalRefs == 2, reference_select chooses compound, read_compound_ref yields RefFrame[0..1] == [0, 1] for the admitted fixture, non-joint NEAR_NEARMV, no neighbour-dependent compound MV stack, zero MVs, skipped residual, identity-scaled references, and equal-weight COMPOUND_AVERAGE with CWP/masks/implicit masked blend/refinemv/TIP/warp/temporal-MV disabled. The runtime adds private minimal-inter compound syntax helpers, the needed §8.3.2 CDF rows for comp_mode/is_joint/compound_mode_non_joint plus the fixture-required comp_ref selectors, a `splot-recon` compound intermediate helper that preserves §7.13.3.18 signed intermediates, and a CWP_EQUAL blend using the §7.13.3.16 equal-weight formula. The committed syn-3frame-compound-average-64x64.ivf fixture now decodes with `splot decode --output-format raw` to the recorded avmdec/dav2d raw SHA-256 2b4f716243d9f5c30a244ecc6f7fdcb5bef804d2ba353a21d670d686cfe63ff4 (MD5 34074c6945348b146f84551a20d9affd). The compound path also implements §7.13.3.8-§7.13.3.12 explicit optical-flow prediction: ordinary clipped luma predictors feed distance reduction, 16-sample gradient units, regularized least-squares deltas, and 4x4/8x8 refined 1/16-pel motion compensation reused by chroma. The AVM deltaq1 corpus vector advances from compound_optflow_prediction to the independent inter_block_skip_mode gate. Broader refine-MV, TIP, temporal-MV, residual compound, and full AV2 decoder conformance remain unsupported or partial and must reject before output with decode/unsupported-feature."
 
 [feature.status]
 mapped = "done"
@@ -16486,12 +16491,15 @@ tests = [
     "crates/splot-recon/src/subpel_mc/tests.rs::compound_intermediate_keeps_unclipped_prescaled_predictor",
     "crates/splot-recon/src/subpel_mc/tests.rs::compound_equal_average_blend_rounds_and_clips",
     "crates/splot-recon/src/subpel_mc/tests.rs::compound_blend_rejects_length_mismatch",
+    "crates/splot-recon/src/optflow.rs::tests",
+    "crates/splot-decode/src/prediction/inter/mc_tests.rs::dispatcher_rebuilds_optflow_compound_planes_from_refined_grid",
     "crates/splot-cli/tests/decode_cli.rs::decode_compound_average_three_frame_fixture_is_bit_exact",
 ]
 commands = [
     "cargo test -p splot-decode prediction::inter --locked",
     "cargo test -p splot-decode tile_payload::cdf --locked",
     "cargo test -p splot-recon subpel_mc --locked",
+    "cargo test -p splot-recon optflow --locked",
     "cargo test -p splot-cli decode_compound_average_three_frame_fixture_is_bit_exact --locked",
     "target/debug/splot decode --output-format raw tests/conformance/vectors/valid/syn-3frame-compound-average-64x64.ivf -o /tmp/splot-compound.raw && shasum -a 256 /tmp/splot-compound.raw",
     "cargo xtask conformance",

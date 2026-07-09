@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-
 use std::borrow::Cow;
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
@@ -1031,7 +1030,6 @@ fn decode_block<T: ReconSample>(
         .and_then(|inter| inter.tip_frame_mode)
         .unwrap_or(TipFrameMode::Disabled);
     if tip_frame_mode != TipFrameMode::Disabled && tip_allowed_for_block(frontier, n4w, n4h) {
-        // Nonzero TIP refs still fail closed below, so no neighbour can contribute to ctx yet.
         let tip_ref = cdfs
             .read_block_symbol_trace(TileCdfSelector::TipMode { ctx: 0 }, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?
@@ -1367,6 +1365,7 @@ fn decode_block<T: ReconSample>(
             bawp: BawpSyntax::default(),
             interintra: warp_interintra_mode,
             compound_blend: mc::CompoundBlend::default(),
+            optflow_distances: None,
             residual,
         });
         reconstruct_placed_inter_block(
@@ -1664,6 +1663,7 @@ fn decode_block<T: ReconSample>(
         bawp,
         interintra,
         compound_blend: mc::CompoundBlend::default(),
+        optflow_distances: None,
         residual,
     });
     reconstruct_placed_inter_block(

@@ -33,13 +33,67 @@ pub(crate) fn derive_plane_scaling(
     _block_w: i64,
     _block_h: i64,
 ) -> PlaneScaling {
+    derive_plane_scaling_inner(
+        plane_x,
+        plane_y,
+        mv_row,
+        mv_col,
+        sub_x,
+        sub_y,
+        ref_mi_cols,
+        ref_mi_rows,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn derive_plane_scaling_prescaled(
+    plane_x: i64,
+    plane_y: i64,
+    mv_row: i64,
+    mv_col: i64,
+    sub_x: u32,
+    sub_y: u32,
+    ref_mi_cols: i64,
+    ref_mi_rows: i64,
+) -> PlaneScaling {
+    derive_plane_scaling_inner(
+        plane_x,
+        plane_y,
+        mv_row,
+        mv_col,
+        sub_x,
+        sub_y,
+        ref_mi_cols,
+        ref_mi_rows,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_plane_scaling_inner(
+    plane_x: i64,
+    plane_y: i64,
+    mv_row: i64,
+    mv_col: i64,
+    sub_x: u32,
+    sub_y: u32,
+    ref_mi_cols: i64,
+    ref_mi_rows: i64,
+    prescaled: bool,
+) -> PlaneScaling {
     let scale: i64 = 1 << REF_SCALE_SHIFT;
     let half_sample: i64 = 1 << (SUBPEL_BITS - 1);
     let off: i64 = (1 << (SCALE_SUBPEL_BITS - SUBPEL_BITS)) / 2;
     let round_shift = REF_SCALE_SHIFT + SUBPEL_BITS - SCALE_SUBPEL_BITS;
 
     let scaled_start = |plane_pos, mv_component, subsampling| {
-        let orig = (plane_pos << SUBPEL_BITS) + ((2 * mv_component) >> subsampling) + half_sample;
+        let mv_offset = if prescaled {
+            round2_signed(mv_component, subsampling)
+        } else {
+            (2 * mv_component) >> subsampling
+        };
+        let orig = (plane_pos << SUBPEL_BITS) + mv_offset + half_sample;
         let base = orig * scale - (half_sample << REF_SCALE_SHIFT);
         round2_signed(base, round_shift) + off
     };

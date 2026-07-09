@@ -57,6 +57,18 @@ pub enum ReconError {
         /// Actual sample count.
         actual: usize,
     },
+    /// An optical-flow unit size or predictor geometry is unsupported.
+    #[error(
+        "invalid optical-flow unit size {unit_size} for predictor {width}x{height}; expected 4 or 8 and exact tiling"
+    )]
+    InvalidOptflowUnitSize {
+        /// Optical-flow square-unit side in samples.
+        unit_size: usize,
+        /// Predictor width in samples.
+        width: usize,
+        /// Predictor height in samples.
+        height: usize,
+    },
     /// A visible rectangle fell outside the storage rectangle.
     #[error("visible rectangle x={} y={} width={} height={} is outside storage {}x{}", .rect.x(), .rect.y(), .rect.width(), .rect.height(), .storage.width(), .storage.height())]
     VisibleRectOutOfBounds {
