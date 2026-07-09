@@ -1160,6 +1160,35 @@ mod tests {
     }
 
     #[test]
+    fn temporal_filter_copy_uses_alternate_chroma_and_rejects_short_bank() {
+        let counts = [[2, 0, 1]];
+        let taps = [[Vec::new(), Vec::new(), vec![vec![9; 8]]]];
+        let references = LrTemporalReferenceView::new(&[0], Some(&counts), Some(&taps));
+        let mut chroma = LrPlaneParams {
+            restoration_type: FrameRestorationType::WienerNonsep,
+            frame_filters_on: true,
+            num_filter_classes: None,
+            frame_filter_bank: None,
+        };
+        copy_temporal_frame_filter(&mut chroma, 1, 0, references);
+        let bank = chroma
+            .frame_filter_bank
+            .as_ref()
+            .expect("U falls back to the retained V bank");
+        assert_eq!(bank.classes[0].coeffs, vec![9; 8]);
+
+        let mut luma = LrPlaneParams {
+            restoration_type: FrameRestorationType::WienerNonsep,
+            frame_filters_on: true,
+            num_filter_classes: None,
+            frame_filter_bank: None,
+        };
+        copy_temporal_frame_filter(&mut luma, 0, 0, references);
+        assert_eq!(luma.num_filter_classes, Some(2));
+        assert!(luma.frame_filter_bank.is_none());
+    }
+
+    #[test]
     fn lr_eof_mid_tool_index_is_structured_error() {
         let mut r = reader(&[]);
         assert!(matches!(
