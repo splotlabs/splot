@@ -13,7 +13,7 @@ use super::super::find_mv_stack::{BlockNeighbourContext, BlockPrecisionRecord};
 use super::super::read_mv::{
     MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_TWO_PEL, lower_mv_precision,
 };
-use super::super::{Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO, unsupported_at};
+use super::super::{Mv, SINGLE_MODE_NEWMV, SPEC_MODE_INFO, unsupported_at};
 use super::warp::inter_mv_read_config;
 use super::{
     INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE, INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET,
@@ -25,7 +25,7 @@ pub(super) fn resolve_interp_filter(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     frame_interpolation_filter: FrameInterpolationFilter,
-    mode_for_needs_interp_filter: u8,
+    needs_interp_filter: bool,
     ctx: usize,
     tile_offset: ByteOffset,
 ) -> Result<ReconInterpolationFilter> {
@@ -35,7 +35,7 @@ pub(super) fn resolve_interp_filter(
         FrameInterpolationFilter::EighttapSharp => Ok(ReconInterpolationFilter::EightTapSharp),
         FrameInterpolationFilter::Bilinear => Ok(ReconInterpolationFilter::Bilinear),
         FrameInterpolationFilter::Switchable => {
-            if mode_for_needs_interp_filter == SINGLE_MODE_GLOBALMV {
+            if !needs_interp_filter {
                 return Ok(ReconInterpolationFilter::EightTap);
             }
             let symbol = cdfs

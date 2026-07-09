@@ -3,6 +3,8 @@
 
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_core::span::ByteOffset;
+use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, InterIntraMode,
     InterpolationFilter as ReconInterpolationFilter, OutputIndex, PixelFormat, PlaneId, PlaneRect,
@@ -12,8 +14,9 @@ use splot_recon::{
 use super::{
     chroma_smooth_grid_dimensions, ensure_intra_leaf_quantizer_delta_scope,
     inter_residual_geometry_supported_flags, predict_interintra_planes,
+    read_inter_intra_syntax_enabled,
 };
-use crate::bitstream::tile_payload::TileBlockDecodedState;
+use crate::bitstream::tile_payload::{FrameCdfSubset, TileBlockDecodedState, TileCdfSelector};
 use crate::error::DecodeError;
 use crate::prediction::inter::SPEC_MODE_INFO;
 use crate::prediction::inter::{
@@ -89,6 +92,77 @@ fn warp_interintra_mode_three_maps_to_smooth() -> TestResult {
 }
 
 #[test]
+fn regular_interintra_syntax_precedes_drl() -> TestResult {
+    let bsize_group = super::SIZE_GROUP_LOOKUP[super::BLOCK_8X8];
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::with_config(
+        SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+    );
+    write_symbol(
+        &mut tile,
+        &mut encoder,
+        TileCdfSelector::InterIntra { bsize_group },
+        1,
+    )?;
+    write_symbol(
+        &mut tile,
+        &mut encoder,
+        TileCdfSelector::InterIntraMode { bsize_group },
+        3,
+    )?;
+    write_symbol(&mut tile, &mut encoder, TileCdfSelector::WedgeInterIntra, 0)?;
+    write_symbol(
+        &mut tile,
+        &mut encoder,
+        TileCdfSelector::DrlMode { idx: 0, ctx: 1 },
+        0,
+    )?;
+    let payload = encoder.finish()?.into_bytes();
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        &payload,
+        ByteOffset::new(0),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+    )?;
+
+    let interintra = read_inter_intra_syntax_enabled(
+        &mut tile,
+        &mut symbols,
+        true,
+        super::BLOCK_8X8,
+        2,
+        2,
+        ByteOffset::new(0),
+    )?;
+    let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3, ByteOffset::new(0))?;
+
+    assert!(interintra.enabled);
+    assert_eq!(interintra.mode, Some(3));
+    assert!(!interintra.use_wedge);
+    assert_eq!(drl, 0);
+    Ok(())
+}
+
+#[test]
+fn small_globalmv_blocks_still_signal_interp_filter() {
+    assert!(super::single_inter_needs_interp_filter(
+        1,
+        2,
+        super::SINGLE_MODE_GLOBALMV
+    ));
+    assert!(!super::single_inter_needs_interp_filter(
+        2,
+        2,
+        super::SINGLE_MODE_GLOBALMV
+    ));
+    assert!(super::single_inter_needs_interp_filter(
+        2,
+        2,
+        super::SINGLE_MODE_NEARMV
+    ));
+}
+
+#[test]
 fn interintra_smooth_builds_prediction_from_intra_edges() -> TestResult {
     let workspace = CurrentFrameWorkspace::<u8>::new(monochrome_info(8, 8)?, 128)?;
     let block_decoded = TileBlockDecodedState::new(1, 1, 1, 16, 16, 16)?;
@@ -113,6 +187,18 @@ fn interintra_smooth_builds_prediction_from_intra_edges() -> TestResult {
             .iter()
             .all(|sample| (127..=129).contains(sample))
     );
+    Ok(())
+}
+
+fn write_symbol(
+    tile: &mut crate::bitstream::tile_payload::TileCdfSubset,
+    encoder: &mut SymbolEncoder,
+    selector: TileCdfSelector,
+    value: u8,
+) -> TestResult {
+    tile.with_row_mut(selector, |row| {
+        encoder.write_symbol(row, Symbol::new(value))
+    })??;
     Ok(())
 }
 

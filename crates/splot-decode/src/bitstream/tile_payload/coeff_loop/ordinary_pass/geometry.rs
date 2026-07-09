@@ -617,7 +617,7 @@ fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless_with_tables(
         lossless,
     } = input;
     let base_config = if lossless {
-        staged_lossless_tx_size_base_config(geometry, base_config)
+        staged_lossless_tx_size_base_config(geometry, is_inter, base_config)
     } else {
         let mode_to_txfm_base_config =
             base_config.mode_to_txfm_base_config(geometry, is_inter, tables)?;
@@ -640,17 +640,28 @@ fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless_with_tables(
 
 fn staged_lossless_tx_size_base_config(
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    is_inter: bool,
     base_config: CoeffOrdinaryBranchLosslessBaseConfig,
 ) -> CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
     CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
-        plane_tx_type: if geometry.plane == 0 && base_config.luma_tx_type == IDTX {
-            IDTX
-        } else {
-            DCT_DCT
-        },
+        plane_tx_type: lossless_plane_tx_type(geometry, is_inter, base_config),
         parity_hiding: false,
         use_tcq: false,
     }
+}
+
+pub(crate) fn lossless_plane_tx_type(
+    geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    is_inter: bool,
+    base_config: CoeffOrdinaryBranchLosslessBaseConfig,
+) -> usize {
+    if is_inter && geometry.plane > 0 {
+        return base_config.chroma_inter_tx_type;
+    }
+    if geometry.plane == 0 && base_config.luma_tx_type == IDTX {
+        return IDTX;
+    }
+    DCT_DCT
 }
 
 fn apply_staged_nonzero_coeff_ordinary_pass_from_tx_size_dimensions_with_tables(
