@@ -58,6 +58,9 @@ const LOSSLESS_SDP_NONDC_CHROMA_D135FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_byt
 const LOSSLESS_SDP_NONDC_CHROMA_D157FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d157follow-leftedge-128x64.ivf"
 );
+const LOSSLESS_SDP_NONDC_CHROMA_D203FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d203follow-leftedge-128x64.ivf"
+);
 
 #[test]
 fn lossless_nondc_chroma_d45_leftedge_frame_decodes_to_oracle() {
@@ -99,28 +102,41 @@ fn lossless_sdp_nondc_chroma_d135follow_leftedge_frame_decodes_to_oracle() {
 
 #[test]
 fn lossless_sdp_nondc_chroma_d157follow_leftedge_frame_decodes_to_oracle() {
-    assert_eq!(
-        LOSSLESS_SDP_NONDC_CHROMA_D157FOLLOW_LEFTEDGE_FIXTURE.len(),
-        761
+    assert_lossless_sdp_directional_follow_oracle(
+        LOSSLESS_SDP_NONDC_CHROMA_D157FOLLOW_LEFTEDGE_FIXTURE,
+        761,
+        128,
+        128,
+        "01e55c1f2112e99af5bdae258410262ca5e0641e74b73bfec366c7df222d00b4",
     );
+}
+
+#[test]
+fn lossless_sdp_nondc_chroma_d203follow_leftedge_frame_decodes_to_oracle() {
+    assert_lossless_sdp_directional_follow_oracle(
+        LOSSLESS_SDP_NONDC_CHROMA_D203FOLLOW_LEFTEDGE_FIXTURE,
+        1234,
+        120,
+        130,
+        "3b95907f8808cc9d0bdd2eb376c8726019f7a4490cf8ecfcccab883fb11f8a3f",
+    );
+}
+
+fn assert_lossless_sdp_directional_follow_oracle(
+    fixture: &[u8],
+    expected_len: usize,
+    expected_u: u8,
+    expected_v: u8,
+    expected_hash: &str,
+) {
+    assert_eq!(fixture.len(), expected_len);
     let options = DecodeOptions::default();
     let context =
         DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context
-        .plan_bytes(
-            LOSSLESS_SDP_NONDC_CHROMA_D157FOLLOW_LEFTEDGE_FIXTURE,
-            options,
-        )
-        .expect("plan");
+    let plan = context.plan_bytes(fixture, options).expect("plan");
     let decoded = context
         .pool()
-        .install(|| {
-            decode_frame_from_plan(
-                LOSSLESS_SDP_NONDC_CHROMA_D157FOLLOW_LEFTEDGE_FIXTURE,
-                &options,
-                &plan,
-            )
-        })
+        .install(|| decode_frame_from_plan(fixture, &options, &plan))
         .expect("decode");
     let PipelineDecodedFrame::Eight(frame) = decoded.frame else {
         panic!("fixture decoded as 10-bit");
@@ -153,7 +169,7 @@ fn lossless_sdp_nondc_chroma_d157follow_leftedge_frame_decodes_to_oracle() {
             .unwrap()
             .samples()
             .iter()
-            .all(|&sample| sample == 128)
+            .all(|&sample| sample == expected_u)
     );
     assert!(
         frame
@@ -161,11 +177,11 @@ fn lossless_sdp_nondc_chroma_d157follow_leftedge_frame_decodes_to_oracle() {
             .unwrap()
             .samples()
             .iter()
-            .all(|&sample| sample == 128)
+            .all(|&sample| sample == expected_v)
     );
     assert_eq!(
         DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
-        "01e55c1f2112e99af5bdae258410262ca5e0641e74b73bfec366c7df222d00b4"
+        expected_hash
     );
 }
 

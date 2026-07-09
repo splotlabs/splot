@@ -420,6 +420,15 @@ fn lossless_chroma_part_guard_admits_rect_prediction_subset() {
         32,
     ));
 
+    let top_left_full = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
+    assert!(lossless_chroma_part_prediction_verified(
+        Some(SupportedChromaMode::HorizontalFollow),
+        false,
+        IntraYMode::H_PRED_FOR_TEST,
+        top_left_full,
+        FULL_SB_N4_LUMA,
+    ));
+
     let edge_backed_horizontal_part = ctx_with_bit_depth(8, 4, 8, 8, BitDepth::Eight);
     assert!(lossless_chroma_part_prediction_verified(
         Some(SupportedChromaMode::Horizontal),
@@ -427,6 +436,21 @@ fn lossless_chroma_part_guard_admits_rect_prediction_subset() {
         IntraYMode::DC_PRED,
         edge_backed_horizontal_part,
         32,
+    ));
+
+    let first_row_left_edge = ctx_with_bit_depth(
+        0,
+        FULL_SB_N4_LUMA,
+        FULL_SB_N4_LUMA,
+        FULL_SB_N4_LUMA,
+        BitDepth::Eight,
+    );
+    assert!(lossless_chroma_part_prediction_verified(
+        Some(SupportedChromaMode::D203Follow),
+        false,
+        IntraYMode::D203_PRED_FOR_TEST,
+        first_row_left_edge,
+        FULL_SB_N4_LUMA,
     ));
 
     assert!(!lossless_chroma_part_prediction_verified(
