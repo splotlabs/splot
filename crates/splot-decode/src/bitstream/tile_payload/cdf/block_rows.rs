@@ -29,14 +29,15 @@ use splot_core::tables::cdf::{
     DEFAULT_SKIP_MODE_CDF, DEFAULT_TIP_MODE_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_AMVD_CDF,
     DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_DIP_CDF,
     DEFAULT_USE_DPCM_UV_CDF, DEFAULT_USE_DPCM_Y_CDF, DEFAULT_USE_EXTEND_WARP_CDF,
-    DEFAULT_USE_LOCAL_WARP_CDF, DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF, DEFAULT_USE_WIENER_NS_CDF,
-    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WARP_DELTA_PARAM_HIGH_CDF,
-    DEFAULT_WARP_DELTA_PARAM_LOW_CDF, DEFAULT_WARP_DELTA_PARAM_SIGN_CDF, DEFAULT_WARP_IDX_CDF,
-    DEFAULT_WARP_INTER_INTRA_CDF, DEFAULT_WARP_MV_CDF, DEFAULT_WARP_PRECISION_CDF,
-    DEFAULT_WARP_WITH_MVD_CDF, DEFAULT_WEDGE_ANGLE_CDF, DEFAULT_WEDGE_DIST1_CDF,
-    DEFAULT_WEDGE_DIST2_CDF, DEFAULT_WEDGE_INTER_INTRA_CDF, DEFAULT_WEDGE_QUAD_CDF,
-    DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF,
-    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_OFFSET_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_USE_LOCAL_WARP_CDF, DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF, DEFAULT_USE_OPTFLOW_CDF,
+    DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
+    DEFAULT_WARP_DELTA_PARAM_HIGH_CDF, DEFAULT_WARP_DELTA_PARAM_LOW_CDF,
+    DEFAULT_WARP_DELTA_PARAM_SIGN_CDF, DEFAULT_WARP_IDX_CDF, DEFAULT_WARP_INTER_INTRA_CDF,
+    DEFAULT_WARP_MV_CDF, DEFAULT_WARP_PRECISION_CDF, DEFAULT_WARP_WITH_MVD_CDF,
+    DEFAULT_WEDGE_ANGLE_CDF, DEFAULT_WEDGE_DIST1_CDF, DEFAULT_WEDGE_DIST2_CDF,
+    DEFAULT_WEDGE_INTER_INTRA_CDF, DEFAULT_WEDGE_QUAD_CDF, DEFAULT_WIENER_NS_BASE_CDF,
+    DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
+    DEFAULT_Y_MODE_OFFSET_CDF, DEFAULT_Y_MODE_SET_CDF,
 };
 
 mod mv;
@@ -103,6 +104,7 @@ const COMP_REF1_BIT_TYPES: usize = 2;
 const INTERP_FILTER_CONTEXTS: usize = 16;
 const AMVD_MODE_CONTEXTS: usize = 9;
 const AMVD_CONTEXTS: usize = 3;
+const USE_OPTFLOW_CONTEXTS: usize = 2;
 const MOST_PROBABLE_PRECISION_CONTEXTS: usize = 3;
 const USE_EXTEND_WARP_CONTEXTS: usize = 3;
 const USE_LOCAL_WARP_CONTEXTS: usize = 4;
@@ -195,6 +197,7 @@ pub(crate) type CompRef0CdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1];
 pub(crate) type CompRef1CdfRows =
     [[[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; COMP_REF1_BIT_TYPES]; REF_CONTEXTS];
 pub(crate) type UseAmvdCdfRows = [[[i32; CDF_ROW_LEN]; AMVD_CONTEXTS]; AMVD_MODE_CONTEXTS];
+pub(crate) type UseOptflowCdfRows = [[i32; CDF_ROW_LEN]; USE_OPTFLOW_CONTEXTS];
 pub(crate) type UseExtendWarpCdfRows = [[i32; CDF_ROW_LEN]; USE_EXTEND_WARP_CONTEXTS];
 pub(crate) type UseLocalWarpCdfRows = [[i32; CDF_ROW_LEN]; USE_LOCAL_WARP_CONTEXTS];
 pub(crate) type UseMostProbablePrecisionCdfRows =
@@ -338,6 +341,7 @@ pub(crate) struct BlockCdfRows {
     read_mv: MvCdfRows,
     pub(crate) interp_filter: InterpFilterCdfRows,
     pub(crate) use_amvd: UseAmvdCdfRows,
+    pub(crate) use_optflow: UseOptflowCdfRows,
     pub(crate) use_extend_warp: UseExtendWarpCdfRows,
     pub(crate) use_local_warp: UseLocalWarpCdfRows,
     pub(crate) use_most_probable_precision: UseMostProbablePrecisionCdfRows,
@@ -777,6 +781,14 @@ macro_rules! block_cdf_row {
                 )?;
                 block_row_slice!(bank, ctx, "ctx", TileCdfArray::UseAmvd, $get, $as_slice)
             }
+            TileCdfSelector::UseOptflow { ctx } => block_row_slice!(
+                $self.use_optflow,
+                ctx,
+                "ctx",
+                TileCdfArray::UseOptflow,
+                $get,
+                $as_slice
+            ),
             TileCdfSelector::UseExtendWarp { ctx } => block_row_slice!(
                 $self.use_extend_warp,
                 ctx,
@@ -1207,6 +1219,7 @@ impl BlockCdfRows {
             read_mv: MvCdfRows::from_defaults(),
             interp_filter: DEFAULT_INTERP_FILTER_CDF,
             use_amvd: DEFAULT_USE_AMVD_CDF,
+            use_optflow: DEFAULT_USE_OPTFLOW_CDF,
             use_extend_warp: DEFAULT_USE_EXTEND_WARP_CDF,
             use_local_warp: DEFAULT_USE_LOCAL_WARP_CDF,
             use_most_probable_precision: DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF,

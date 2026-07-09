@@ -101,11 +101,12 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         n4w,
         n4h,
         tile_offset,
-    )? {
+    )? && read_compound_use_optflow_syntax(cdfs, symbols, compound.y_mode, tile_offset)?
+    {
         return Err(compound_cap!(
-            "compound_opfl_refine_switchable_active",
+            "compound_use_optflow_active",
             tile_offset,
-            "inter.compound.opfl_refine",
+            "inter.compound.use_optflow",
             SPEC_MODE_INFO
         ));
     }
@@ -596,6 +597,23 @@ fn compound_switchable_opfl_reachable<T: ReconSample>(
         return Ok(false);
     }
     compound_opfl_reference_allowed(core, reference, ref_frame_idx, compound, tile_offset)
+}
+
+fn read_compound_use_optflow_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    y_mode: CompoundYMode,
+    tile_offset: ByteOffset,
+) -> Result<bool> {
+    let use_optflow = cdfs
+        .read_block_symbol_trace(
+            TileCdfSelector::UseOptflow {
+                ctx: usize::from(y_mode != CompoundYMode::NearNear),
+            },
+            symbols,
+        )
+        .map_err(|_| symbol_read_error(tile_offset))?;
+    Ok(use_optflow.get() != 0)
 }
 
 #[allow(clippy::too_many_arguments)]
