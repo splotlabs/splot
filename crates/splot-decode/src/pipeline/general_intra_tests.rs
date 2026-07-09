@@ -1035,7 +1035,7 @@ fn assert_lossless_chroma_d135_oracle(
 
 #[test]
 fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
-    use SupportedChromaMode::Smooth;
+    use SupportedChromaMode::*;
     let top_left_8 = block_ctx(
         0,
         0,
@@ -1058,16 +1058,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         Some(SupportedChromaMode::Dc),
         true,
     ));
-    for mode in [
-        SupportedChromaMode::Vertical,
-        SupportedChromaMode::Horizontal,
-        SupportedChromaMode::D135,
-        SupportedChromaMode::D157,
-        SupportedChromaMode::D45,
-        SupportedChromaMode::D67,
-        SupportedChromaMode::Paeth,
-        SupportedChromaMode::D203,
-    ] {
+    for mode in [Vertical, Horizontal, D135, D157, D45, D67, Paeth, D203] {
         assert!(general_intra::lossless_chroma_block_prediction_verified(
             Some(mode),
             false,
@@ -1077,23 +1068,23 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         ));
     }
     for mode in [
-        SupportedChromaMode::Vertical,
-        SupportedChromaMode::VerticalFollow,
-        SupportedChromaMode::Horizontal,
-        SupportedChromaMode::HorizontalFollow,
-        SupportedChromaMode::D45,
-        SupportedChromaMode::D45Follow,
-        SupportedChromaMode::D67,
-        SupportedChromaMode::D67Follow,
-        SupportedChromaMode::D113,
-        SupportedChromaMode::D113Follow,
-        SupportedChromaMode::D135,
-        SupportedChromaMode::D135Follow,
-        SupportedChromaMode::D157,
-        SupportedChromaMode::D157Follow,
-        SupportedChromaMode::D203,
-        SupportedChromaMode::D203Follow,
-        SupportedChromaMode::Paeth,
+        Vertical,
+        VerticalFollow,
+        Horizontal,
+        HorizontalFollow,
+        D45,
+        D45Follow,
+        D67,
+        D67Follow,
+        D113,
+        D113Follow,
+        D135,
+        D135Follow,
+        D157,
+        D157Follow,
+        D203,
+        D203Follow,
+        Paeth,
     ] {
         assert!(general_intra::lossless_chroma_block_prediction_verified(
             Some(mode),
@@ -1111,16 +1102,16 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         32,
     ));
     for mode in [
-        SupportedChromaMode::Vertical,
-        SupportedChromaMode::VerticalFollow,
-        SupportedChromaMode::Horizontal,
-        SupportedChromaMode::D45,
-        SupportedChromaMode::D67,
-        SupportedChromaMode::D113,
-        SupportedChromaMode::D135,
-        SupportedChromaMode::D157,
-        SupportedChromaMode::D203,
-        SupportedChromaMode::Paeth,
+        Vertical,
+        VerticalFollow,
+        Horizontal,
+        D45,
+        D67,
+        D113,
+        D135,
+        D157,
+        D203,
+        Paeth,
     ] {
         assert!(general_intra::lossless_chroma_part_prediction_verified(
             Some(mode),
@@ -1131,21 +1122,21 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         ));
     }
     for mode in [
-        SupportedChromaMode::Vertical,
-        SupportedChromaMode::VerticalFollow,
-        SupportedChromaMode::Horizontal,
-        SupportedChromaMode::HorizontalFollow,
-        SupportedChromaMode::D45,
-        SupportedChromaMode::D45Follow,
-        SupportedChromaMode::D67,
-        SupportedChromaMode::D67Follow,
-        SupportedChromaMode::D113,
-        SupportedChromaMode::D135,
-        SupportedChromaMode::D135Follow,
-        SupportedChromaMode::D157,
-        SupportedChromaMode::D157Follow,
-        SupportedChromaMode::D203,
-        SupportedChromaMode::Paeth,
+        Vertical,
+        VerticalFollow,
+        Horizontal,
+        HorizontalFollow,
+        D45,
+        D45Follow,
+        D67,
+        D67Follow,
+        D113,
+        D135,
+        D135Follow,
+        D157,
+        D157Follow,
+        D203,
+        Paeth,
     ] {
         assert!(general_intra::lossless_chroma_part_prediction_verified(
             Some(mode),
@@ -1164,19 +1155,20 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         32
     ));
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::Smooth),
+        Some(Smooth),
         false,
         IntraYMode::DC_PRED,
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
     for mode in [
-        SupportedChromaMode::D45Follow,
-        SupportedChromaMode::D113Follow,
-        SupportedChromaMode::D135Follow,
-        SupportedChromaMode::D157Follow,
-        SupportedChromaMode::D203Follow,
-        SupportedChromaMode::VerticalFollow,
+        D45Follow,
+        D67Follow,
+        D113Follow,
+        D135Follow,
+        D157Follow,
+        D203Follow,
+        VerticalFollow,
     ] {
         assert!(!general_intra::lossless_chroma_block_prediction_verified(
             Some(mode),
@@ -1186,43 +1178,48 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
             general_intra::FULL_SB_N4_LUMA,
         ));
     }
-    assert!(general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D203Follow),
-        false,
-        IntraYMode::D203_PRED_FOR_TEST,
-        top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
+    for (mode, y_mode) in [
+        (D67Follow, IntraYMode::D67_PRED_FOR_TEST),
+        (D203Follow, IntraYMode::D203_PRED_FOR_TEST),
+    ] {
+        assert!(general_intra::lossless_chroma_block_prediction_verified(
+            Some(mode),
+            false,
+            y_mode,
+            top_left_8,
+            general_intra::FULL_SB_N4_LUMA,
+        ));
+    }
     assert!(!general_intra::lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::D135),
+        Some(D135),
         true,
         crate::bitstream::tile_payload::IntraYMode::DC_PRED,
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(!general_intra::lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::Horizontal),
+        Some(Horizontal),
         false,
         crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(!general_intra::lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::D135),
+        Some(D135),
         false,
         crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(!part_ok(
-        Some(SupportedChromaMode::D203Follow),
+        Some(D203Follow),
         false,
         IntraYMode::DC_PRED,
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
     assert!(part_ok(
-        Some(SupportedChromaMode::D203Follow),
+        Some(D203Follow),
         false,
         IntraYMode::D203_PRED_FOR_TEST,
         top_left_8,
