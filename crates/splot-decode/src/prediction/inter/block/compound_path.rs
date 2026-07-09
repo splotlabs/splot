@@ -233,7 +233,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 compound.mv0 = stack0.candidate(ref_mv_idx0);
                 compound.mv1 = stack1.candidate(ref_mv_idx1);
             }
-            CompoundYMode::NearNew => {
+            CompoundYMode::NearNew | CompoundYMode::NewNear => {
                 let stack0 = find_mv_stack_with_temporal(
                     mv_grid,
                     &single_ref_block_context(block_ctx, compound.ref_frame0),
@@ -256,13 +256,26 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                     temporal,
                     temporal_first1,
                 );
-                compound.mv0 = stack0.candidate(ref_mv_idx0);
-                let pred_mv1 = if use_amvd {
-                    stack1.candidate(ref_mv_idx1)
+                let has_second_drl = compound_reads_second_drl(compound, skip_mode_present);
+                let candidates = [
+                    stack0.candidate(if has_second_drl {
+                        ref_mv_idx0
+                    } else {
+                        ref_mv_idx
+                    }),
+                    stack1.candidate(if has_second_drl {
+                        ref_mv_idx1
+                    } else {
+                        ref_mv_idx
+                    }),
+                ];
+                let new_ref = usize::from(compound.y_mode == CompoundYMode::NearNew);
+                let pred_mv = if use_amvd {
+                    candidates[new_ref]
                 } else {
-                    lowered_pred_mv(precision, stack1.candidate(ref_mv_idx1))
+                    lowered_pred_mv(precision, candidates[new_ref])
                 };
-                let diff1 = if use_amvd {
+                let diff = if use_amvd {
                     let magnitude = read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?;
                     apply_inter_mvd_signs(
                         magnitude,
@@ -284,10 +297,9 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                         compound.y_mode.mvd_sign_derivation_threshold(),
                     )?
                 };
-                compound.mv1 = Mv {
-                    row: mv_clamp_to_integer(pred_mv1.row + diff1.row),
-                    col: mv_clamp_to_integer(pred_mv1.col + diff1.col),
-                };
+                let mut mvs = candidates;
+                mvs[new_ref] = add_mv_clamped(pred_mv, diff);
+                [compound.mv0, compound.mv1] = mvs;
             }
             CompoundYMode::JointNew => {
                 let stack = find_mv_stack(

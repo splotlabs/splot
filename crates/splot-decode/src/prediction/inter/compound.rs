@@ -9,7 +9,11 @@ use crate::Result;
 use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
 
 const COMPOUND_MODE_NEAR_NEARMV: u8 = 0;
+const COMPOUND_MODE_NEAR_NEWMV: u8 = 1;
+const COMPOUND_MODE_NEW_NEARMV: u8 = 2;
+const COMPOUND_MODE_GLOBAL_GLOBALMV: u8 = 3;
 const COMPOUND_MODE_SAME_REF_NEW_NEWMV: u8 = 3;
+const COMPOUND_MODE_NEW_NEWMV: u8 = 4;
 const RANKED_REF0_TO_PRUNE: usize = 3;
 const MAX_REFS_PER_FRAME: usize = 7;
 const SPEC_READ_REF_FRAMES: &str = "5.20.7.10";
@@ -28,6 +32,7 @@ pub(crate) struct CompoundParseInput {
 pub(crate) enum CompoundYMode {
     NearNear,
     NearNew,
+    NewNear,
     JointNew,
     NewNew,
 }
@@ -36,13 +41,13 @@ impl CompoundYMode {
     pub(crate) const fn has_newmv(self) -> bool {
         match self {
             Self::NearNear => false,
-            Self::NearNew | Self::JointNew | Self::NewNew => true,
+            Self::NearNew | Self::NewNear | Self::JointNew | Self::NewNew => true,
         }
     }
 
     pub(crate) const fn has_nearmv(self) -> bool {
         match self {
-            Self::NearNear | Self::NearNew => true,
+            Self::NearNear | Self::NearNew | Self::NewNear => true,
             Self::JointNew | Self::NewNew => false,
         }
     }
@@ -54,13 +59,13 @@ impl CompoundYMode {
     pub(crate) const fn has_second_drl(self, skip_mode_present: bool) -> bool {
         match self {
             Self::NearNear | Self::NearNew => !skip_mode_present,
-            Self::JointNew | Self::NewNew => false,
+            Self::NewNear | Self::JointNew | Self::NewNew => false,
         }
     }
 
     pub(crate) const fn mvd_sign_derivation_threshold(self) -> usize {
         match self {
-            Self::NearNear | Self::NearNew | Self::JointNew => 1,
+            Self::NearNear | Self::NearNew | Self::NewNear | Self::JointNew => 1,
             Self::NewNew => 4,
         }
     }
@@ -70,6 +75,8 @@ impl CompoundYMode {
             (Self::NearNear, _) => None,
             (Self::NearNew, false) => Some(0),
             (Self::NearNew, true) => Some(2),
+            (Self::NewNear, false) => Some(1),
+            (Self::NewNear, true) => Some(3),
             (Self::JointNew, false) => Some(5),
             (Self::JointNew, true) => Some(6),
             (Self::NewNew, false) => Some(7),
@@ -80,13 +87,13 @@ impl CompoundYMode {
     pub(crate) const fn list0_is_newmv(self) -> bool {
         match self {
             Self::NearNear | Self::NearNew => false,
-            Self::JointNew | Self::NewNew => true,
+            Self::NewNear | Self::JointNew | Self::NewNew => true,
         }
     }
 
     pub(crate) const fn list1_is_newmv(self) -> bool {
         match self {
-            Self::NearNear => false,
+            Self::NearNear | Self::NewNear => false,
             Self::NearNew | Self::JointNew | Self::NewNew => true,
         }
     }
@@ -270,17 +277,24 @@ pub(crate) fn read_compound_mode_syntax(
     let compound_mode = read_symbol(TileCdfSelector::CompoundModeNonJoint {
         ctx: new_mv_context,
     })?;
-    if compound_mode != COMPOUND_MODE_NEAR_NEARMV {
-        return Err(compound_cap!(
-            "compound_block_unsupported_mode",
-            tile_offset,
-            "inter.compound.mode != NEAR_NEARMV",
-            SPEC_INTER_BLOCK_MODE_INFO
-        ));
-    }
+    let y_mode = match compound_mode {
+        COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
+        COMPOUND_MODE_NEAR_NEWMV => CompoundYMode::NearNew,
+        COMPOUND_MODE_NEW_NEARMV => CompoundYMode::NewNear,
+        COMPOUND_MODE_NEW_NEWMV => CompoundYMode::NewNew,
+        COMPOUND_MODE_GLOBAL_GLOBALMV => {
+            return Err(compound_cap!(
+                "compound_block_unsupported_mode",
+                tile_offset,
+                "inter.compound.mode == GLOBAL_GLOBALMV",
+                SPEC_INTER_BLOCK_MODE_INFO
+            ));
+        }
+        _ => return Err(compound_symbol_read_error(tile_offset)),
+    };
 
     Ok(CompoundBlockSyntax {
-        y_mode: CompoundYMode::NearNear,
+        y_mode,
         use_optflow: false,
         ref_frame0: pair.0,
         ref_frame1: pair.1,
