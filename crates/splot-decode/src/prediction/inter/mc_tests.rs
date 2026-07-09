@@ -4,7 +4,10 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
-use splot_recon::{DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane, PlaneSize};
+use splot_recon::{
+    DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane, PlaneSize,
+    wedge_mask_plane_sample,
+};
 
 #[test]
 fn dispatcher_zero_mv_copies_single_reference_planes() {
@@ -60,6 +63,42 @@ fn dispatcher_subsamples_luma_diff_weighted_mask_for_chroma() {
     assert_eq!(samples.0, vec![100; 64]);
     assert_eq!(samples.1, vec![81; 16]);
     assert_eq!(samples.2, vec![81; 16]);
+}
+
+#[test]
+fn dispatcher_blends_compound_wedge_planes() {
+    let reference0 = flat_frame(8, 8, 64, 64, 64);
+    let reference1 = flat_frame(8, 8, 0, 0, 0);
+
+    let samples = dispatch_compound_samples(
+        &reference0,
+        &reference1,
+        CompoundBlend::Wedge {
+            index: 0,
+            sign: false,
+        },
+    );
+    assert_eq!(
+        u16::from(samples.0[0]),
+        wedge_mask_plane_sample(8, 8, 0, false, 0, 0, 0, 0).expect("luma wedge mask")
+    );
+    assert_eq!(
+        u16::from(samples.1[0]),
+        wedge_mask_plane_sample(8, 8, 0, false, 1, 1, 0, 0).expect("chroma wedge mask")
+    );
+
+    let inverse = dispatch_compound_samples(
+        &reference0,
+        &reference1,
+        CompoundBlend::Wedge {
+            index: 0,
+            sign: true,
+        },
+    );
+    assert_eq!(
+        u16::from(inverse.0[0]),
+        wedge_mask_plane_sample(8, 8, 0, true, 0, 0, 0, 0).expect("inverse wedge mask")
+    );
 }
 
 #[test]

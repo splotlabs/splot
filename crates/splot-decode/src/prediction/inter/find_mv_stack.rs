@@ -57,6 +57,7 @@ struct NeighbourCell {
     skip: bool,
     interp_filter: u8,
     use_amvd: bool,
+    masked_compound: bool,
     motion_mode: MotionMode,
     warp_params: Option<[i64; 6]>,
     sub_mv: Mv,
@@ -85,6 +86,7 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     skip: false,
     interp_filter: SWITCHABLE_FILTERS,
     use_amvd: false,
+    masked_compound: false,
     motion_mode: MotionMode::Simple,
     warp_params: None,
     sub_mv: Mv::ZERO,
@@ -254,6 +256,7 @@ impl NeighbourMvGrid {
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
+            masked_compound: false,
             motion_mode,
             warp_params,
             sub_mv: mv,
@@ -298,6 +301,7 @@ impl NeighbourMvGrid {
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
+        masked_compound: bool,
         precision: BlockPrecisionRecord,
     ) {
         let cell = NeighbourCell {
@@ -316,6 +320,7 @@ impl NeighbourMvGrid {
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
+            masked_compound,
             motion_mode: MotionMode::Simple,
             warp_params: None,
             sub_mv: mv0,
@@ -369,6 +374,7 @@ impl NeighbourMvGrid {
             skip,
             interp_filter,
             use_amvd,
+            false,
             BlockPrecisionRecord::default(),
         );
     }
@@ -724,6 +730,37 @@ impl BlockNeighbourContext {
                     (true, true) => 4,
                 }
             }
+        }
+    }
+
+    pub(crate) fn compound_group_idx_ctx(
+        &self,
+        equal_ref_distance: bool,
+        furthest_future_ref: Option<i8>,
+    ) -> usize {
+        let ctx0 = self.compound_one_ref_ctx(0, furthest_future_ref);
+        let ctx1 = self.compound_one_ref_ctx(1, furthest_future_ref);
+        ctx0 + ctx1 + usize::from(ctx0 != 0 && ctx1 != 0) + usize::from(equal_ref_distance) * 6
+    }
+
+    fn compound_one_ref_ctx(&self, index: usize, furthest_future_ref: Option<i8>) -> usize {
+        let Some(cell) = self
+            .cells
+            .get(index)
+            .copied()
+            .filter(|_| index < self.cell_count)
+        else {
+            return 0;
+        };
+        if !cell.is_inter {
+            return 0;
+        }
+        if cell.ref_frame1.is_some() {
+            usize::from(cell.masked_compound)
+        } else if Some(cell.ref_frame0) == furthest_future_ref {
+            2
+        } else {
+            0
         }
     }
 

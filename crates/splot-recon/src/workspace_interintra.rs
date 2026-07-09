@@ -201,17 +201,27 @@ fn wedge_mask_luma_sample(
     Ok(if sign { 64 - base } else { base })
 }
 
-fn wedge_mask_plane_sample(
+/// Returns one AV2 wedge-mask weight for a luma or chroma plane sample.
+///
+/// `sign` selects the inverse interinter wedge mask; interintra uses the base
+/// mask with `sign == false`.
+///
+/// # Errors
+/// Returns [`ReconError`] when the luma block size or wedge index does not
+/// select a valid AV2 wedge mask.
+#[allow(clippy::too_many_arguments)]
+pub fn wedge_mask_plane_sample(
     luma_width: usize,
     luma_height: usize,
     wedge_index: usize,
+    sign: bool,
     sub_x: u32,
     sub_y: u32,
     x: usize,
     y: usize,
 ) -> Result<u16> {
     if sub_x == 0 {
-        return wedge_mask_luma_sample(luma_width, luma_height, wedge_index, false, x, y);
+        return wedge_mask_luma_sample(luma_width, luma_height, wedge_index, sign, x, y);
     }
     let x0 = x << sub_x;
     let y0 = y << sub_y;
@@ -220,14 +230,14 @@ fn wedge_mask_plane_sample(
             luma_width,
             luma_height,
             wedge_index,
-            false,
+            sign,
             x0,
             y0,
         )?) + i64::from(wedge_mask_luma_sample(
             luma_width,
             luma_height,
             wedge_index,
-            false,
+            sign,
             x0 + 1,
             y0,
         )?);
@@ -239,28 +249,28 @@ fn wedge_mask_plane_sample(
         luma_width,
         luma_height,
         wedge_index,
-        false,
+        sign,
         x0,
         y0,
     )?) + i64::from(wedge_mask_luma_sample(
         luma_width,
         luma_height,
         wedge_index,
-        false,
+        sign,
         x0 + 1,
         y0,
     )?) + i64::from(wedge_mask_luma_sample(
         luma_width,
         luma_height,
         wedge_index,
-        false,
+        sign,
         x0,
         y0 + 1,
     )?) + i64::from(wedge_mask_luma_sample(
         luma_width,
         luma_height,
         wedge_index,
-        false,
+        sign,
         x0 + 1,
         y0 + 1,
     )?);
@@ -377,7 +387,16 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             intra,
             "interintra wedge blend sample storage",
             |i, j| {
-                wedge_mask_plane_sample(luma_width, luma_height, wedge_index, sub_x, sub_y, j, i)
+                wedge_mask_plane_sample(
+                    luma_width,
+                    luma_height,
+                    wedge_index,
+                    false,
+                    sub_x,
+                    sub_y,
+                    j,
+                    i,
+                )
             },
         )
     }
