@@ -471,6 +471,7 @@ pub(crate) fn chroma_transform_deblock_block(
     x: usize,
     y: usize,
     chroma_tx: usize,
+    chroma_subsampling: (u32, u32),
     qindex: u32,
     lossless: bool,
 ) -> Option<(usize, crate::filters::deblock::DeblockBlock)> {
@@ -481,17 +482,19 @@ pub(crate) fn chroma_transform_deblock_block(
         PlaneId::Y => return None,
     };
     let (mi_w, mi_h) = mi_extent(log2_width, log2_height);
+    let scale_x = 1usize.checked_shl(chroma_subsampling.0)?;
+    let scale_y = 1usize.checked_shl(chroma_subsampling.1)?;
     Some((
         plane_index,
         crate::filters::deblock::DeblockBlock {
-            r: (y / MI_SIZE).saturating_mul(2),
-            c: (x / MI_SIZE).saturating_mul(2),
-            block_r: (y / MI_SIZE).saturating_mul(2),
-            block_c: (x / MI_SIZE).saturating_mul(2),
-            chroma_base_r: (y / MI_SIZE).saturating_mul(2),
-            chroma_base_c: (x / MI_SIZE).saturating_mul(2),
-            n4w: mi_w.saturating_mul(2),
-            n4h: mi_h.saturating_mul(2),
+            r: (y / MI_SIZE).saturating_mul(scale_y),
+            c: (x / MI_SIZE).saturating_mul(scale_x),
+            block_r: (y / MI_SIZE).saturating_mul(scale_y),
+            block_c: (x / MI_SIZE).saturating_mul(scale_x),
+            chroma_base_r: (y / MI_SIZE).saturating_mul(scale_y),
+            chroma_base_c: (x / MI_SIZE).saturating_mul(scale_x),
+            n4w: mi_w.saturating_mul(scale_x),
+            n4h: mi_h.saturating_mul(scale_y),
             luma_tx: chroma_tx,
             chroma_tx: Some(chroma_tx),
             qindex,

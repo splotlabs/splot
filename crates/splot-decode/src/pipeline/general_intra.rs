@@ -1592,17 +1592,14 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let block = block_ctx.block();
-    let transforms = residual_plan.transforms();
     let mut deblock = crate::residual::pipeline::DeblockRecorder {
         blocks: deblock_blocks,
         chroma_blocks: chroma_deblock_blocks,
         tx_skip_records,
         block_r: block.row4(),
         block_c: block.col4(),
-        block_w4: block.width4(),
-        block_h4: block.height4(),
-        luma_tx: transforms.luma_tx(),
-        chroma_tx: transforms.chroma_tx(),
+        chroma_tx: residual_plan.chroma_tx(),
+        chroma_subsampling: block_ctx.chroma().subsampling(PlaneId::U),
         qindex,
         lossless,
     };

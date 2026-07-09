@@ -3,6 +3,7 @@
 
 //! Inter block filter-record handoff.
 
+use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
 
 #[allow(clippy::wildcard_imports)]
@@ -14,13 +15,16 @@ pub(crate) fn record_inter_deblock_geometry(
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     frontier: &DecodeBlockFrontier,
-    n4w: usize,
-    n4h: usize,
+    block_size4: (usize, usize),
+    chroma_format: ChromaFormatIdc,
     residual: Option<&InterResidual>,
     qindex: u32,
     lossless: bool,
     tile_offset: ByteOffset,
 ) -> Result<()> {
+    let (n4w, n4h) = block_size4;
+    let (sub_x, sub_y) = chroma_subsampling(chroma_format);
+    let chroma_subsampling = (u32::from(sub_x), u32::from(sub_y));
     let Some(residual) = residual else {
         let tx_size = super::residual::max_tx_size(frontier.b_size.index(), tile_offset)?;
         let tx_w4 =
@@ -106,6 +110,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         block.x,
                         block.y,
                         block.tx_size,
+                        chroma_subsampling,
                         qindex,
                         lossless,
                     )

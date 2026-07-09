@@ -97,7 +97,7 @@ fn omits_chroma_plans_for_luma_only_blocks() {
     .expect("rect luma plan");
     assert!(plan.plane_plan(PlaneId::U).is_none());
     assert!(plan.plane_plan(PlaneId::V).is_none());
-    assert_eq!(plan.transforms().chroma_tx(), None);
+    assert_eq!(plan.chroma_tx(), None);
 }
 
 #[test]
@@ -123,6 +123,39 @@ fn chroma_dc_uses_generic_rect_reconstruction() {
             ResidualReconstructionPlan::Rect { use_tcq: false }
         );
     }
+}
+
+#[test]
+fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
+    let tx_8x8 = rect_tx_size_from_log2(3, 3).expect("8x8 transform");
+    let mut blocks = Vec::new();
+    let mut chroma_blocks = [Vec::new(), Vec::new()];
+    let mut tx_skip_records = Vec::new();
+    let mut recorder = DeblockRecorder {
+        blocks: &mut blocks,
+        chroma_blocks: &mut chroma_blocks,
+        tx_skip_records: &mut tx_skip_records,
+        block_r: 0,
+        block_c: 0,
+        chroma_tx: Some(tx_8x8),
+        chroma_subsampling: (1, 0),
+        qindex: 37,
+        lossless: true,
+    };
+
+    recorder.record_chroma_unit(PlaneId::U, 0, 8, tx_8x8);
+    recorder.record_chroma_unit(PlaneId::U, 8, 8, tx_8x8);
+    recorder.record_chroma_unit(PlaneId::V, 0, 8, tx_8x8);
+
+    assert_eq!(chroma_blocks[0].len(), 2);
+    assert_eq!(chroma_blocks[0][0].chroma_base_c, 0);
+    assert_eq!(chroma_blocks[0][1].chroma_base_c, 4);
+    assert_eq!(chroma_blocks[0][1].n4w, 4);
+    assert_eq!(chroma_blocks[0][1].chroma_base_r, 2);
+    assert_eq!(chroma_blocks[0][1].n4h, 2);
+    assert_eq!(chroma_blocks[1].len(), 1);
+    assert_eq!(chroma_blocks[1][0].qindex, 37);
+    assert!(chroma_blocks[1][0].lossless);
 }
 
 #[test]

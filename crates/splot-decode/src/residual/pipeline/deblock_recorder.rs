@@ -10,32 +10,32 @@ pub(crate) struct DeblockRecorder<'a> {
         &'a mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     pub(crate) block_r: usize,
     pub(crate) block_c: usize,
-    pub(crate) block_w4: usize,
-    pub(crate) block_h4: usize,
-    pub(crate) luma_tx: usize,
     pub(crate) chroma_tx: Option<usize>,
+    pub(crate) chroma_subsampling: (u32, u32),
     pub(crate) qindex: u32,
     pub(crate) lossless: bool,
 }
 
 impl DeblockRecorder<'_> {
-    pub(super) fn record_chroma_part_block(&mut self) {
-        for chroma in self.chroma_blocks.iter_mut() {
-            chroma.push(crate::filters::deblock::DeblockBlock {
-                r: self.block_r,
-                c: self.block_c,
-                block_r: self.block_r,
-                block_c: self.block_c,
-                chroma_base_r: self.block_r,
-                chroma_base_c: self.block_c,
-                n4w: self.block_w4,
-                n4h: self.block_h4,
-                luma_tx: self.luma_tx,
-                chroma_tx: self.chroma_tx,
-                qindex: self.qindex,
-                skip: false,
-                lossless: self.lossless,
-            });
+    pub(super) fn record_chroma_unit(
+        &mut self,
+        plane_id: splot_recon::PlaneId,
+        x: usize,
+        y: usize,
+        tx_size: usize,
+    ) {
+        if let Some((plane_index, record)) =
+            crate::filters::wienerns_lr::chroma_transform_deblock_block(
+                plane_id,
+                x,
+                y,
+                tx_size,
+                self.chroma_subsampling,
+                self.qindex,
+                self.lossless,
+            )
+        {
+            self.chroma_blocks[plane_index].push(record);
         }
     }
 
