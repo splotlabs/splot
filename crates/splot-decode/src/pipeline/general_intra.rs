@@ -1070,6 +1070,7 @@ fn rect_luma_mrl_plan_for_parts(
     let nominal_angle = i32::from(nominal) + i32::from(angle_delta_y) * ANGLE_STEP + mrl_delta;
     let p_angle = wide_angle_mapped_p_angle(width, height, nominal_angle);
     let neighbours = block_ctx.neighbours(PlaneId::Y);
+    let has_edge = neighbours.has_above() || neighbours.has_left();
     let is_sb_boundary = sb_mib != 0 && block.row4().is_multiple_of(sb_mib);
     let above_mrl_index = if is_sb_boundary { 0 } else { mrl_index };
     let secondary_mrl = mrl_sec_index == Some(1) && !(width == MI_SIZE && height == MI_SIZE);
@@ -1110,11 +1111,7 @@ fn rect_luma_mrl_plan_for_parts(
             use_tcq,
         });
     }
-    let top_row_left = !neighbours.has_above() && neighbours.has_left();
-    if !(90 < p_angle
-        && p_angle < 180
-        && (neighbours.has_above() && neighbours.has_left() || top_row_left))
-    {
+    if !(90 < p_angle && p_angle < 180 && has_edge) {
         return Err(unsupported_rect_luma());
     }
     let p_angle = u16::try_from(p_angle).map_err(|_| unsupported_rect_luma())?;

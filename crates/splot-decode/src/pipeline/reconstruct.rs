@@ -2354,6 +2354,12 @@ pub(crate) struct MiddleEdgeAvailability {
     pub left: bool,
 }
 
+impl MiddleEdgeAvailability {
+    pub(crate) const fn new(above: bool, left: bool) -> Self {
+        Self { above, left }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -2370,6 +2376,7 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
     secondary_mrl: bool,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
+    availability: MiddleEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
@@ -2385,6 +2392,7 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
         mrl_index,
         above_mrl_index,
         is_sb_boundary,
+        availability,
         bit_depth,
     )?;
     if secondary_mrl {
@@ -2398,6 +2406,7 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
             0,
             0,
             false,
+            availability,
             bit_depth,
         )?;
         average_luma_prediction_with(&mut prediction, secondary)?;
@@ -2443,6 +2452,7 @@ fn predict_two_sided_middle_luma_mrl<T: ReconSample>(
     mrl_index: usize,
     above_mrl_index: usize,
     is_sb_boundary: bool,
+    availability: MiddleEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let width = 1usize << log2_width;
@@ -2451,39 +2461,51 @@ fn predict_two_sided_middle_luma_mrl<T: ReconSample>(
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
-    if y == 0 {
-        let above_idif =
-            build_top_row_left_only_middle_mrl_above_idif_edge(workspace, x, y, width, mrl_index)?;
-        let left_idif =
-            build_top_row_left_only_middle_mrl_left_idif_edge(workspace, x, y, height, mrl_index)?;
-        let mut prediction = vec![T::default(); width * height];
-        predict_intra_middle_directional_angle_rect_idif_mrl_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleIdifMrlEdges::both(&left_idif, &above_idif),
-            mrl_index,
-            &mut prediction,
-            width,
-        )?;
-        return Ok(prediction);
-    }
-    let above_idif = build_two_sided_middle_mrl_above_idif_edge(
-        workspace,
-        x,
-        y,
-        width,
-        mrl_index,
-        above_mrl_index,
-    )?;
-    let left_idif = build_two_sided_middle_mrl_left_idif_edge(
-        workspace,
-        x,
-        y,
-        height,
-        mrl_index,
-        is_sb_boundary,
-    )?;
+    let (above_idif, left_idif) = match (availability.above, availability.left) {
+        (true, true) => (
+            build_two_sided_middle_mrl_above_idif_edge(
+                workspace,
+                x,
+                y,
+                width,
+                mrl_index,
+                above_mrl_index,
+                true,
+            )?,
+            build_two_sided_middle_mrl_left_idif_edge(
+                workspace,
+                x,
+                y,
+                height,
+                mrl_index,
+                is_sb_boundary,
+            )?,
+        ),
+        (true, false) => (
+            build_two_sided_middle_mrl_above_idif_edge(
+                workspace,
+                x,
+                y,
+                width,
+                mrl_index,
+                above_mrl_index,
+                false,
+            )?,
+            build_above_only_middle_mrl_left_idif_edge(
+                workspace,
+                x,
+                y,
+                height,
+                mrl_index,
+                above_mrl_index,
+            )?,
+        ),
+        (false, true) => (
+            build_top_row_left_only_middle_mrl_above_idif_edge(workspace, x, y, width, mrl_index)?,
+            build_top_row_left_only_middle_mrl_left_idif_edge(workspace, x, y, height, mrl_index)?,
+        ),
+        (false, false) => return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge),
+    };
     let mut prediction = vec![T::default(); width * height];
     predict_intra_middle_directional_angle_rect_idif_mrl_into(
         bit_depth,
@@ -2542,6 +2564,25 @@ fn build_top_row_left_only_middle_mrl_left_idif_edge<T: ReconSample>(
     })
 }
 
+fn build_above_only_middle_mrl_left_idif_edge<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    x: usize,
+    y: usize,
+    height: usize,
+    mrl_index: usize,
+    above_mrl_index: usize,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    let above_row = y
+        .checked_sub(1)
+        .and_then(|row| row.checked_sub(above_mrl_index))
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let seed = workspace.reconstructed_sample(PlaneId::Y, x, above_row)?;
+    let max_logical = i64::try_from(height)
+        .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
+        + 1;
+    build_two_sided_middle_mrl_idif_edge(height, mrl_index, max_logical, |_| Ok(seed))
+}
+
 fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     x: usize,
@@ -2549,6 +2590,7 @@ fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
     width: usize,
     mrl_index: usize,
     above_mrl_index: usize,
+    have_left: bool,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let above_row = y
         .checked_sub(1)
@@ -2559,10 +2601,14 @@ fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
         + 1;
     build_two_sided_middle_mrl_idif_edge(width, mrl_index, max_logical, |logical| {
         let column = if logical < 0 {
-            let back = usize::try_from(-logical)
-                .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-            x.checked_sub(back)
-                .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
+            if have_left {
+                let back = usize::try_from(-logical)
+                    .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+                x.checked_sub(back)
+                    .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
+            } else {
+                x
+            }
         } else {
             let logical = usize::try_from(logical)
                 .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;

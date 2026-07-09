@@ -1039,6 +1039,22 @@ fn admits_rect_luma_mrl_cases() {
             },
         ),
         (
+            "left-edge active-mrl vpred middle",
+            IntraYMode::V_PRED_FOR_TEST,
+            0,
+            1,
+            Some(0),
+            ctx(4, 0, 1, 4),
+            RectLumaPlan::MiddleMrl {
+                p_angle: 91,
+                mrl_index: 1,
+                above_mrl_index: 1,
+                is_sb_boundary: false,
+                secondary_mrl: false,
+                use_tcq: false,
+            },
+        ),
+        (
             "top-row rect d67 one-sided above from left edge",
             IntraYMode::D67_PRED_FOR_TEST,
             -1,

@@ -758,6 +758,47 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
     assert_eq!(got, reference);
 }
 
+#[test]
+fn zone2_mrl_middle_left_edge_synthesizes_left_from_above() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(32, 32, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+    lay_above_row(&mut ws, 14, 4, &[73; 16]);
+
+    reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        91,
+        0,
+        16,
+        2,
+        4,
+        0,
+        1,
+        1,
+        false,
+        false,
+        false,
+        None,
+        MiddleEdgeAvailability {
+            above: true,
+            left: false,
+        },
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    for row in 0..16 {
+        for col in 0..4 {
+            assert_eq!(
+                ws.reconstructed_sample(PlaneId::Y, col, 16 + row).unwrap(),
+                73,
+                "sample ({col},{})",
+                16 + row,
+            );
+        }
+    }
+}
+
 /// STRIDE/TRANSPOSE GUARD — V_PRED over a NON-SQUARE 64x32 (`W == 64`,
 /// `H == 32`) block with a REAL, NON-FLAT above row. §7.13.2.8 V_PRED copies the
 /// 64-wide above row into every one of the 32 rows; a width/height swap or a
