@@ -19,7 +19,8 @@ use splot_core::tables::cdf::{
     DEFAULT_INTER_TX_TYPE_SET2_CDF, DEFAULT_INTER_TX_TYPE_SET3_CDF, DEFAULT_INTER_TX_TYPE_SET4_CDF,
     DEFAULT_INTERP_FILTER_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
     DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_IS_JOINT_CDF,
-    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_IS_WARP_CDF, DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
+    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_IS_WARP_CDF, DEFAULT_JMVD_ADAPTIVE_SCALE_MODE_CDF,
+    DEFAULT_JMVD_SCALE_MODE_CDF, DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF,
     DEFAULT_MOST_PROBABLE_STX_SET_CDF, DEFAULT_PALETTE_SIZE_2_Y_COLOR_CDF,
     DEFAULT_PALETTE_SIZE_3_Y_COLOR_CDF, DEFAULT_PALETTE_SIZE_4_Y_COLOR_CDF,
     DEFAULT_PALETTE_SIZE_5_Y_COLOR_CDF, DEFAULT_PALETTE_SIZE_6_Y_COLOR_CDF,
@@ -98,6 +99,8 @@ const IS_JOINT_CONTEXTS: usize = 2;
 const COMPOUND_MODE_CONTEXTS: usize = 5;
 const COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN: usize = 6;
 const COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN: usize = 5;
+const JMVD_SCALE_MODE_CDF_ROW_LEN: usize = 6;
+const JMVD_ADAPTIVE_SCALE_MODE_CDF_ROW_LEN: usize = 4;
 const COMP_GROUP_IDX_CONTEXTS: usize = 12;
 const CWP_IDX_CONTEXTS: usize = 4;
 const COMP_REF1_BIT_TYPES: usize = 2;
@@ -186,6 +189,8 @@ pub(crate) type TipModeCdfRows = [[i32; CDF_ROW_LEN]; TIP_CONTEXTS];
 pub(crate) type SingleRefCdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
 pub(crate) type CompModeCdfRows = [[i32; CDF_ROW_LEN]; COMP_MODE_CONTEXTS];
 pub(crate) type IsJointCdfRows = [[i32; CDF_ROW_LEN]; IS_JOINT_CONTEXTS];
+pub(crate) type JmvdScaleModeCdfRow = [i32; JMVD_SCALE_MODE_CDF_ROW_LEN];
+pub(crate) type JmvdAdaptiveScaleModeCdfRow = [i32; JMVD_ADAPTIVE_SCALE_MODE_CDF_ROW_LEN];
 pub(crate) type CompoundModeNonJointCdfRows =
     [[i32; COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN]; COMPOUND_MODE_CONTEXTS];
 pub(crate) type CompoundModeSameRefsCdfRows =
@@ -331,6 +336,8 @@ pub(crate) struct BlockCdfRows {
     pub(crate) single_ref: SingleRefCdfRows,
     pub(crate) comp_mode: CompModeCdfRows,
     pub(crate) is_joint: IsJointCdfRows,
+    pub(crate) jmvd_scale_mode: JmvdScaleModeCdfRow,
+    pub(crate) jmvd_adaptive_scale_mode: JmvdAdaptiveScaleModeCdfRow,
     pub(crate) compound_mode_non_joint: CompoundModeNonJointCdfRows,
     pub(crate) compound_mode_same_refs: CompoundModeSameRefsCdfRows,
     pub(crate) compound_type: CompoundTypeCdfRow,
@@ -697,6 +704,10 @@ macro_rules! block_cdf_row {
                 $get,
                 $as_slice
             ),
+            TileCdfSelector::JmvdScaleMode => Ok($self.jmvd_scale_mode.$as_slice()),
+            TileCdfSelector::JmvdAdaptiveScaleMode => {
+                Ok($self.jmvd_adaptive_scale_mode.$as_slice())
+            }
             TileCdfSelector::CompoundModeNonJoint { ctx } => block_row_slice!(
                 $self.compound_mode_non_joint,
                 ctx,
@@ -1209,6 +1220,8 @@ impl BlockCdfRows {
             single_ref: DEFAULT_SINGLE_REF_CDF,
             comp_mode: DEFAULT_COMP_MODE_CDF,
             is_joint: DEFAULT_IS_JOINT_CDF,
+            jmvd_scale_mode: DEFAULT_JMVD_SCALE_MODE_CDF,
+            jmvd_adaptive_scale_mode: DEFAULT_JMVD_ADAPTIVE_SCALE_MODE_CDF,
             compound_mode_non_joint: DEFAULT_COMPOUND_MODE_NON_JOINT_CDF,
             compound_mode_same_refs: DEFAULT_COMPOUND_MODE_SAME_REFS_CDF,
             compound_type: DEFAULT_COMPOUND_TYPE_CDF,

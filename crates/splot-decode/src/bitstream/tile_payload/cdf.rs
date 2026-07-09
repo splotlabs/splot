@@ -583,6 +583,8 @@ pub(crate) enum TileCdfSelector {
     IsJoint {
         ctx: usize,
     },
+    JmvdScaleMode,
+    JmvdAdaptiveScaleMode,
     CompoundModeNonJoint {
         ctx: usize,
     },
@@ -754,6 +756,8 @@ tile_cdf_arrays! {
     SingleRef => "TileSingleRefCdf",
     CompMode => "TileCompModeCdf",
     IsJoint => "TileIsJointCdf",
+    JmvdScaleMode => "TileJmvdScaleModeCdf",
+    JmvdAdaptiveScaleMode => "TileJmvdAdaptiveScaleModeCdf",
     CompoundModeNonJoint => "TileCompoundModeNonJointCdf",
     CompoundModeSameRefs => "TileCompoundModeSameRefsCdf",
     CompoundType => "TileCompoundTypeCdf",

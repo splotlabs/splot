@@ -12,6 +12,10 @@ use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
 
 const REFINE_SWITCHABLE: u32 = 1;
 const REFINE_ALL: u32 = 2;
+const MV_PROJECTION_DIV_MULT: [i32; 32] = [
+    0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
+    1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
+];
 const SPEC_READ_REFINEMV: &str = "5.20.7.17";
 
 #[allow(clippy::too_many_arguments)]
@@ -116,6 +120,13 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         enable_adaptive_mvd,
         compound.y_mode,
         neighbour_ctx.amvd_ctx(compound.ref_frame0),
+        tile_offset,
+    )?;
+    let jmvd_scale_mode = read_compound_jmvd_scale_mode_syntax(
+        cdfs,
+        symbols,
+        compound.y_mode,
+        use_amvd,
         tile_offset,
     )?;
     let skip_mode_present = core
@@ -281,6 +292,67 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                     col: mv_clamp_to_integer(pred_mv1.col + diff1.col),
                 };
             }
+            CompoundYMode::JointNew => {
+                let stack = find_mv_stack(
+                    mv_grid,
+                    block_ctx,
+                    Mv::ZERO,
+                    bank,
+                    warp_param_bank,
+                    false,
+                    drl_reorder,
+                    false,
+                );
+                let projection = compound_joint_mv_projection(
+                    core,
+                    reference,
+                    ref_frame_idx,
+                    compound.ref_frame0,
+                    compound.ref_frame1,
+                    tile_offset,
+                )?;
+                let raw_pred_mv = stack.candidate(ref_mv_idx);
+                let pred_mv = if use_amvd {
+                    raw_pred_mv
+                } else {
+                    lowered_pred_mv(precision, raw_pred_mv)
+                };
+                let magnitude = if use_amvd {
+                    read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?
+                } else {
+                    read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?
+                };
+                let diff = apply_inter_mvd_signs(
+                    magnitude,
+                    symbols,
+                    tile_offset,
+                    config,
+                    ref_mv_idx == 0
+                        && inter_mvd_sign_derivation_allowed(
+                            sequence,
+                            core,
+                            SINGLE_MODE_NEWMV,
+                            use_amvd,
+                            frame_mv_config,
+                            config,
+                        ),
+                    compound.y_mode.mvd_sign_derivation_threshold(),
+                )?;
+                let base_mv = add_mv_clamped(pred_mv, diff);
+                let projected = scale_joint_projected_mvd(
+                    project_joint_mvd(diff, projection.second_dist, projection.first_dist),
+                    jmvd_scale_mode,
+                    use_amvd,
+                );
+                let other_mv = add_mv_clamped(raw_pred_mv, projected);
+                if projection.base_list == 0 {
+                    compound.mv0 = base_mv;
+                    compound.mv1 = other_mv;
+                } else {
+                    compound.mv0 = other_mv;
+                    compound.mv1 = base_mv;
+                }
+            }
             CompoundYMode::NewNew => {
                 let stack = find_mv_stack(
                     mv_grid,
@@ -400,6 +472,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         },
         CompoundCwpInput {
             y_mode: compound.y_mode,
+            jmvd_scale_mode,
             skip_mode: false,
             ref_frame0: compound.ref_frame0,
             ref_frame1: compound.ref_frame1,
@@ -1060,6 +1133,103 @@ fn single_ref_block_context(block_ctx: &MvBlockContext, ref_frame0: i8) -> MvBlo
     single
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CompoundJointMvProjection {
+    base_list: usize,
+    first_dist: i32,
+    second_dist: i32,
+}
+
+fn compound_joint_mv_projection<T: ReconSample>(
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<'_, T>,
+    ref_frame_idx: &[u32],
+    ref_frame0: i8,
+    ref_frame1: i8,
+    tile_offset: ByteOffset,
+) -> Result<CompoundJointMvProjection> {
+    let current = compound_current_order_hint(core, tile_offset)?;
+    let ref0_order_hint =
+        compound_reference_order_hint(reference, ref_frame_idx, ref_frame0, tile_offset)?;
+    let ref1_order_hint =
+        compound_reference_order_hint(reference, ref_frame_idx, ref_frame1, tile_offset)?;
+    let rel0 = super::super::get_relative_dist(ref0_order_hint, current);
+    let rel1 = super::super::get_relative_dist(ref1_order_hint, current);
+    let mut first_dist = rel0.abs();
+    let mut second_dist = rel1.abs();
+    let base_list = usize::from(first_dist < second_dist);
+    if base_list == 1 {
+        core::mem::swap(&mut first_dist, &mut second_dist);
+    }
+    let same_side = (rel0 < 0 && rel1 < 0) || (rel0 > 0 && rel1 > 0);
+    if !same_side {
+        second_dist = -second_dist;
+    }
+    Ok(CompoundJointMvProjection {
+        base_list,
+        first_dist,
+        second_dist,
+    })
+}
+
+fn project_joint_mvd(diff: Mv, num: i32, den: i32) -> Mv {
+    let num = num.clamp(-31, 31);
+    let den = den.clamp(1, 31);
+    let frac = i64::from(num) * i64::from(MV_PROJECTION_DIV_MULT[den as usize]);
+    Mv {
+        row: project_joint_mvd_component(diff.row, frac),
+        col: project_joint_mvd_component(diff.col, frac),
+    }
+}
+
+fn project_joint_mvd_component(component: i32, frac: i64) -> i32 {
+    let product = i64::from(component) * frac;
+    let rounded = (product + 8192 + (product >> 63)) >> 14;
+    clamp_i64_to_i32(rounded)
+}
+
+fn clamp_i64_to_i32(value: i64) -> i32 {
+    if value < i64::from(i32::MIN) {
+        i32::MIN
+    } else if value > i64::from(i32::MAX) {
+        i32::MAX
+    } else {
+        value as i32
+    }
+}
+
+fn scale_joint_projected_mvd(mut projected: Mv, jmvd_scale_mode: u8, use_amvd: bool) -> Mv {
+    if use_amvd {
+        match jmvd_scale_mode {
+            1 => {
+                projected.row = projected.row.saturating_mul(2);
+                projected.col = projected.col.saturating_mul(2);
+            }
+            2 => {
+                projected.row /= 2;
+                projected.col /= 2;
+            }
+            _ => {}
+        }
+        return projected;
+    }
+    match jmvd_scale_mode {
+        1 => projected.row = projected.row.saturating_mul(2),
+        2 => projected.col = projected.col.saturating_mul(2),
+        3 => projected.row /= 2,
+        4 => projected.col /= 2,
+        _ => {}
+    }
+    projected
+}
+
+fn add_mv_clamped(pred: Mv, diff: Mv) -> Mv {
+    Mv {
+        row: mv_clamp_to_integer(pred.row.saturating_add(diff.row)),
+        col: mv_clamp_to_integer(pred.col.saturating_add(diff.col)),
+    }
+}
+
 fn read_compound_use_amvd_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -1075,6 +1245,26 @@ fn read_compound_use_amvd_syntax(
         .read_block_symbol_trace(TileCdfSelector::UseAmvd { index, ctx }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?;
     Ok(use_amvd.get() != 0)
+}
+
+fn read_compound_jmvd_scale_mode_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    y_mode: CompoundYMode,
+    use_amvd: bool,
+    tile_offset: ByteOffset,
+) -> Result<u8> {
+    if y_mode != CompoundYMode::JointNew {
+        return Ok(0);
+    }
+    let selector = if use_amvd {
+        TileCdfSelector::JmvdAdaptiveScaleMode
+    } else {
+        TileCdfSelector::JmvdScaleMode
+    };
+    cdfs.read_block_symbol_trace(selector, symbols)
+        .map(splot_core::symbol::Symbol::get)
+        .map_err(|_| symbol_read_error(tile_offset))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1110,6 +1300,7 @@ impl CompoundBlendToolConfig {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CompoundCwpInput {
     y_mode: CompoundYMode,
+    jmvd_scale_mode: u8,
     skip_mode: bool,
     ref_frame0: i8,
     ref_frame1: i8,
@@ -1219,7 +1410,7 @@ fn read_compound_cwp_syntax<T: ReconSample>(
         .is_some_and(|inter| inter.enable_cwp);
     if !cwp_enabled
         || input.skip_mode
-        || input.y_mode != CompoundYMode::NearNear
+        || !compound_cwp_mode_allowed(input.y_mode, input.jmvd_scale_mode)
         || !matches!(input.blend, mc::CompoundBlend::Average { .. })
     {
         return Ok(input.blend);
@@ -1246,6 +1437,11 @@ fn read_compound_cwp_syntax<T: ReconSample>(
     Ok(input
         .blend
         .average_with_cwp_weight(CWP_WEIGHTING_FACTOR[usize::from(same_side)][coding_idx]))
+}
+
+const fn compound_cwp_mode_allowed(y_mode: CompoundYMode, jmvd_scale_mode: u8) -> bool {
+    matches!(y_mode, CompoundYMode::NearNear)
+        || matches!(y_mode, CompoundYMode::JointNew) && jmvd_scale_mode == 0
 }
 
 fn compound_cwp_same_side<T: ReconSample>(
@@ -1354,5 +1550,41 @@ mod tests {
                 sign: true,
             }
         );
+    }
+
+    #[test]
+    fn joint_mvd_projection_uses_reference_distance_ratio() {
+        assert_eq!(
+            project_joint_mvd(Mv { row: 96, col: -48 }, 1, 2),
+            Mv { row: 48, col: -24 }
+        );
+        assert_eq!(
+            project_joint_mvd(Mv { row: 96, col: -48 }, -1, 2),
+            Mv { row: -48, col: 24 }
+        );
+    }
+
+    #[test]
+    fn joint_mvd_scale_mode_matches_amvd_and_non_amvd_axes() {
+        assert_eq!(
+            scale_joint_projected_mvd(Mv { row: 10, col: 6 }, 1, true),
+            Mv { row: 20, col: 12 }
+        );
+        assert_eq!(
+            scale_joint_projected_mvd(Mv { row: 10, col: 6 }, 2, false),
+            Mv { row: 10, col: 12 }
+        );
+        assert_eq!(
+            scale_joint_projected_mvd(Mv { row: 10, col: 6 }, 4, false),
+            Mv { row: 10, col: 3 }
+        );
+    }
+
+    #[test]
+    fn compound_cwp_mode_allows_unscaled_joint_newmv() {
+        assert!(compound_cwp_mode_allowed(CompoundYMode::NearNear, 4));
+        assert!(compound_cwp_mode_allowed(CompoundYMode::JointNew, 0));
+        assert!(!compound_cwp_mode_allowed(CompoundYMode::JointNew, 1));
+        assert!(!compound_cwp_mode_allowed(CompoundYMode::NearNew, 0));
     }
 }

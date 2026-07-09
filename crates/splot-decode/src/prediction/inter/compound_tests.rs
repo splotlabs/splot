@@ -237,23 +237,42 @@ fn compound_average_reads_same_reference_mode_symbol() {
 }
 
 #[test]
-fn compound_average_rejects_joint_mode() {
-    assert_compound_average_rejects_is_joint_symbol(1);
-}
-
-#[test]
-fn compound_average_rejects_short_payload() {
-    assert_compound_average_rejects_is_joint_symbol(0);
-}
-
-fn assert_compound_average_rejects_is_joint_symbol(symbol: u8) {
+fn compound_average_accepts_joint_mode_without_non_joint_symbol() {
     let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::new();
     encode_symbol(
         &mut enc_tile,
         &mut encoder,
         TileCdfSelector::IsJoint { ctx: 1 },
-        symbol,
+        1,
+    );
+    let bytes = encoder.finish().unwrap().into_bytes();
+
+    let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&bytes);
+    let syntax = read_compound_average_syntax(
+        &mut dec_tile,
+        &mut symbols,
+        default_input(),
+        ByteOffset::new(0),
+    )
+    .unwrap();
+
+    assert_eq!(syntax.y_mode, CompoundYMode::JointNew);
+    assert_eq!(syntax.ref_frame0, 0);
+    assert_eq!(syntax.ref_frame1, 1);
+    symbols.exit_symbol().unwrap();
+}
+
+#[test]
+fn compound_average_rejects_short_payload() {
+    let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::new();
+    encode_symbol(
+        &mut enc_tile,
+        &mut encoder,
+        TileCdfSelector::IsJoint { ctx: 1 },
+        0,
     );
     let bytes = encoder.finish().unwrap().into_bytes();
 
