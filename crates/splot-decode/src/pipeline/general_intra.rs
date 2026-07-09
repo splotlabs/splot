@@ -683,7 +683,7 @@ fn lossless_luma_prediction_verified(
     let top_left_directional = block_ctx.is_top_left()
         && matches!(
             directional,
-            Some(L::Vertical | L::Horizontal | L::D45 | L::D67 | L::D135 | L::D203)
+            Some(L::Vertical | L::Horizontal | L::D45 | L::D67 | L::D113 | L::D135 | L::D203)
         );
     let top_left_paeth = block_ctx.is_top_left() && modes.y_mode.is_paeth();
     let y_neighbours = block_ctx.neighbours(PlaneId::Y);
@@ -832,6 +832,8 @@ pub(super) fn lossless_chroma_part_prediction_verified(
             && matches!(mode, Some(SupportedChromaMode::D67Follow)))
             || (y_mode.mode_to_angle() == Some(135)
                 && matches!(mode, Some(SupportedChromaMode::D135Follow)))
+            || (y_mode.mode_to_angle() == Some(113)
+                && matches!(mode, Some(SupportedChromaMode::D113Follow)))
             || (y_mode.mode_to_angle() == Some(203)
                 && matches!(mode, Some(SupportedChromaMode::D203Follow))));
     let neighbours = block_ctx.neighbours(PlaneId::U);

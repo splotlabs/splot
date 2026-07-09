@@ -29,6 +29,9 @@ const LOSSLESS_SDP_NONDC_LUMA_D135_CHROMA_FOLLOW_FIXTURE: &[u8] = include_bytes!
 const LOSSLESS_SDP_NONDC_LUMA_D67_CHROMA_FOLLOW_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-luma-d67-chroma-follow-intra-64x64.ivf"
 );
+const LOSSLESS_SDP_NONDC_LUMA_D113_CHROMA_FOLLOW_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-luma-d113-chroma-follow-intra-64x64.ivf"
+);
 const LOSSLESS_SDP_NONDC_LUMA_D203_CHROMA_FOLLOW_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-luma-d203-chroma-follow-intra-64x64.ivf"
 );
@@ -200,6 +203,17 @@ fn lossless_sdp_nondc_luma_d135_chroma_follow_frame_decodes_to_oracle() {
         (64, 64),
         (32, 32),
         "5fffbdc79140da104a1721ed649130f0a2409fadeeb58632cdba54a1add778a1",
+    );
+}
+
+#[test]
+fn lossless_sdp_nondc_luma_d113_chroma_follow_frame_decodes_to_oracle() {
+    assert_lossless_yuv420_oracle(
+        LOSSLESS_SDP_NONDC_LUMA_D113_CHROMA_FOLLOW_FIXTURE,
+        218,
+        (64, 64),
+        (32, 32),
+        "8f2f920f4daf0e1c057d0ae7d51ba56508b6a5f552dd3459bba97677ba7aafd8",
     );
 }
 

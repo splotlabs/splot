@@ -264,6 +264,11 @@ fn lossless_prediction_guard_admits_top_left_d67_luma() {
 }
 
 #[test]
+fn lossless_prediction_guard_admits_top_left_d113_luma() {
+    assert_lossless_directional_luma_admitted(IntraYMode::D113_PRED_FOR_TEST);
+}
+
+#[test]
 fn lossless_prediction_guard_admits_top_left_d203_luma() {
     assert_lossless_directional_luma_admitted(IntraYMode::D203_PRED_FOR_TEST);
 }
@@ -1125,6 +1130,13 @@ fn admits_top_left_full_sb_lossless_directional_luma_cases() {
             IntraLumaPlan::DirectionalOneSidedAbove { p_angle: 67 },
         ),
         (
+            "d113",
+            IntraYMode::D113_PRED_FOR_TEST,
+            IntraLumaPlan::DirectionalFirst {
+                mode: SupportedDirectionalLumaMode::D113,
+            },
+        ),
+        (
             "d203",
             IntraYMode::D203_PRED_FOR_TEST,
             IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 },
@@ -1138,6 +1150,15 @@ fn admits_top_left_full_sb_lossless_directional_luma_cases() {
             "{label}"
         );
     }
+}
+
+#[test]
+fn top_left_d113_luma_requires_lossless_admission() {
+    let top_left = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
+    let modes = luma_modes(IntraYMode::D113_PRED_FOR_TEST);
+
+    assert!(plan_luma_prediction(&modes, top_left, false).is_err());
+    assert!(plan_luma_prediction_for_segment(&modes, top_left, false, FULL_SB_N4_LUMA).is_err());
 }
 
 #[test]
