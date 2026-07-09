@@ -835,6 +835,13 @@ ivf_sha256 = "bf31dcea2712aa7bc9898f22762c579acc5adb510b0622652cae7467898a98c6"
 avm_raw_sha256 = "bd031b83ebb53396538bcfdebe5c2fe5a186e8d75a5842fabdcad123039f7b3b"
 
 [[fixture]]
+id = "syn-lossless-nondc-chroma-smooth-intra-64x64"
+status = "must_pass"
+features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
+ivf_sha256 = "0b39ad067ad287968d2c5b71a26b222ad6e2252b985297819adc278d61ac428e"
+avm_raw_sha256 = "3abbca14c97210383c916c30aee1bfd8a9d0ee4062ad60b8b2d0941ff71dd7d1"
+
+[[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-h-intra-64x64"
 status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
