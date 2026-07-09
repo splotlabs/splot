@@ -1506,7 +1506,7 @@ fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
             edge_filter: OneSidedEdgeFilter::default(),
             num4_far: 0, // below-left clamps to left_in[7]
         },
-        true,
+        IntraEdgeAvailability::all(),
         false,
         None,
         BitDepth::Eight,
@@ -1534,4 +1534,58 @@ fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
             );
         }
     }
+}
+
+#[test]
+fn one_sided_ibp_p203_synthesizes_missing_left_edge_from_above() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+    let above: Vec<u8> = (0..16).map(|i| 80 + 4 * i as u8).collect();
+    lay_above_row(&mut ws, 7, 4, &above);
+
+    reconstruct_general_intra_one_sided_ibp_luma_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        203,
+        PlaneId::Y,
+        0,
+        8,
+        3,
+        3,
+        0,
+        0,
+        OneSidedEdgeFilter::default(),
+        IbpSecondary {
+            second_angle: 23,
+            edge_filter: OneSidedEdgeFilter::default(),
+            num4_far: 2,
+        },
+        IntraEdgeAvailability {
+            above: true,
+            left: false,
+        },
+        false,
+        None,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    let mut actual = Vec::with_capacity(64);
+    for row in 0..8 {
+        for col in 0..8 {
+            actual.push(ws.reconstructed_sample(PlaneId::Y, col, 8 + row).unwrap());
+        }
+    }
+    #[rustfmt::skip]
+    let expected = [
+        83, 86, 90, 94, 98, 102, 105, 109,
+        83, 87, 90, 94, 98, 102, 106, 109,
+        84, 87, 91, 95, 99, 102, 106, 110,
+        84, 87, 91, 95, 99, 102, 104, 106,
+        84, 88, 91, 94, 96,  99, 101, 103,
+        84, 87, 90, 92, 95,  96,  98, 100,
+        83, 86, 88, 91, 93,  95,  96,  98,
+        83, 85, 88, 89, 91,  93,  95,  96,
+    ];
+    assert_eq!(actual, expected);
 }

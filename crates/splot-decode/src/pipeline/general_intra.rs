@@ -1235,19 +1235,10 @@ fn rect_luma_plan_for_parts_ext(
     {
         return Ok(RectLumaPlan::OneSidedAbove { p_angle, use_tcq });
     }
-    if let Some(181..=269) = directional_p_angle
-        && !neighbours.has_left()
-        && neighbours.has_above()
-        && supported_cardinal_rect
-    {
-        return Ok(RectLumaPlan::Cardinal {
-            direction: IntraCardinalDirection::Horizontal,
-            use_tcq,
-        });
-    }
     match directional_p_angle {
         Some(p_angle @ 181..=269)
-            if neighbours.has_left() && (supported_rect || supported_one_sided_left_rect) =>
+            if (neighbours.has_left() || neighbours.has_above())
+                && (supported_rect || supported_one_sided_left_rect) =>
         {
             return Ok(RectLumaPlan::OneSidedLeft { p_angle, use_tcq });
         }
