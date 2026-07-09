@@ -497,9 +497,18 @@ fn plan_directional_luma_angle(
                 })
                 .ok_or(UNSUPPORTED_CARDINAL_HORIZONTAL)
         }
-        SupportedDirectionalLumaMode::D157 => full_sb_left_only
-            .then_some(IntraLumaPlan::DirectionalNeighbour { mode })
-            .ok_or(UNSUPPORTED_D157_POSITION),
+        SupportedDirectionalLumaMode::D157 => {
+            if full_sb_no_neighbour_cardinal
+                && block_ctx.bit_depth() == BitDepth::Eight
+                && p_angle == directional_mode_p_angle(mode)
+            {
+                Ok(IntraLumaPlan::DirectionalFirst { mode })
+            } else {
+                full_sb_left_only
+                    .then_some(IntraLumaPlan::DirectionalNeighbour { mode })
+                    .ok_or(UNSUPPORTED_D157_POSITION)
+            }
+        }
         SupportedDirectionalLumaMode::D113 => {
             if full_sb_no_neighbour_cardinal
                 && block_ctx.bit_depth() == BitDepth::Eight

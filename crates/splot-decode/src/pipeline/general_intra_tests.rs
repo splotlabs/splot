@@ -1182,6 +1182,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         (D67Follow, IntraYMode::D67_PRED_FOR_TEST),
         (D113Follow, IntraYMode::D113_PRED_FOR_TEST),
         (D135Follow, IntraYMode::D135_PRED_FOR_TEST),
+        (D157Follow, IntraYMode::D157_PRED_FOR_TEST),
         (D203Follow, IntraYMode::D203_PRED_FOR_TEST),
     ] {
         assert!(general_intra::lossless_chroma_block_prediction_verified(
