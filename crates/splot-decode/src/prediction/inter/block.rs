@@ -673,6 +673,7 @@ fn decode_block<T: ReconSample>(
         bank.reset_for_leaf(mv_grid, mi_row, mi_col, sb_h4);
     }
     warp_param_bank.reset_for_leaf(mv_grid, mi_row, mi_col, sb_h4);
+    let comp_ref_allowed = is_comp_ref_allowed(n4w, n4h);
     let drl_reorder = sequence
         .inter
         .as_ref()
@@ -707,13 +708,24 @@ fn decode_block<T: ReconSample>(
     let temporal_stack_context = use_temporal.then_some(temporal_context);
     let temporal_first_frame = drl_reorder != DrlReorder::Always && use_temporal && refs_one_sided;
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
+    let skip_mode = read_skip_mode_syntax(
+        work_unit.cdf_mut().tile_cdfs_mut(),
+        symbols,
+        core.inter_tail
+            .as_ref()
+            .is_some_and(|tail| tail.skip_mode_present),
+        frontier,
+        comp_ref_allowed,
+        neighbour_ctx.skip_mode_ctx,
+        tile_offset,
+    )?;
 
     let is_inter = if core.frame_is_intra == Some(true)
         || frontier.is_luma_part()
         || frontier.is_chroma_part()
     {
         0
-    } else if frontier.shared_mixed_chroma_ref_forces_inter() {
+    } else if skip_mode == 1 || frontier.shared_mixed_chroma_ref_forces_inter() {
         1
     } else {
         let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
@@ -969,6 +981,14 @@ fn decode_block<T: ReconSample>(
             "inter_block_is_intra",
             tile_offset,
             "inter.block.is_inter out of range",
+            SPEC_MODE_INFO
+        ));
+    }
+    if skip_mode == 1 {
+        return Err(inter_cap!(
+            "inter_block_skip_mode",
+            tile_offset,
+            "inter.block.skip_mode",
             SPEC_MODE_INFO
         ));
     }
@@ -2233,8 +2253,8 @@ use self::filter_records::record_inter_deblock_geometry;
 pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
 use self::syntax::{
     effective_force_integer_mv, frame_mv_precision, interp_filter_symbol, lowered_pred_mv,
-    read_block_mv_precision_syntax, read_drl_idx, read_drl_idx_from, read_use_amvd_syntax,
-    resolve_interp_filter,
+    read_block_mv_precision_syntax, read_drl_idx, read_drl_idx_from, read_skip_mode_syntax,
+    read_use_amvd_syntax, resolve_interp_filter,
 };
 use self::temporal::{block_ref_within_temporal_distance, record_temporal_motion_block};
 use self::warp::{

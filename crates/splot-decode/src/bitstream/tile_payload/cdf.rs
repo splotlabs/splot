@@ -523,6 +523,9 @@ pub(crate) enum TileCdfSelector {
     IsInter {
         ctx: usize,
     },
+    SkipMode {
+        ctx: usize,
+    },
     Skip {
         ctx: usize,
     },
@@ -724,6 +727,7 @@ tile_cdf_arrays! {
     CoeffBrIdtx => "TileCoeffBrIdtxCdf",
     IdtxSign => "TileIdtxSignCdf",
     IsInter => "TileIsInterCdf",
+    SkipMode => "TileSkipModeCdf",
     Skip => "TileSkipCdf",
     SingleMode => "TileSingleModeCdf",
     IsWarp => "TileIsWarpCdf",

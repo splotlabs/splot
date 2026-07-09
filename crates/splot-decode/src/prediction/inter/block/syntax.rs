@@ -16,8 +16,8 @@ use super::super::read_mv::{
 use super::super::{Mv, SINGLE_MODE_NEWMV, SPEC_MODE_INFO, unsupported_at};
 use super::warp::inter_mv_read_config;
 use super::{
-    INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE, INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET,
-    TileCdfSelector, TileCdfSubset, symbol_read_error,
+    DecodeBlockFrontier, INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE,
+    INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET, TileCdfSelector, TileCdfSubset, symbol_read_error,
 };
 use crate::Result;
 
@@ -144,6 +144,37 @@ pub(super) fn read_use_amvd_syntax(
         .read_block_symbol_trace(TileCdfSelector::UseAmvd { index: 4, ctx }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?;
     Ok(use_amvd.get() != 0)
+}
+
+pub(super) fn read_skip_mode_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    skip_mode_present: bool,
+    frontier: &DecodeBlockFrontier,
+    comp_ref_allowed: bool,
+    ctx: usize,
+    tile_offset: ByteOffset,
+) -> Result<u8> {
+    if !skip_mode_present
+        || frontier.is_luma_part()
+        || frontier.is_chroma_part()
+        || !comp_ref_allowed
+    {
+        return Ok(0);
+    }
+    let skip_mode = cdfs
+        .read_block_symbol_trace(TileCdfSelector::SkipMode { ctx }, symbols)
+        .map_err(|_| symbol_read_error(tile_offset))?
+        .get();
+    if skip_mode > 1 {
+        return Err(inter_cap!(
+            "inter_block_unexpected_skip_mode",
+            tile_offset,
+            "inter.block.skip_mode out of range",
+            SPEC_MODE_INFO
+        ));
+    }
+    Ok(skip_mode)
 }
 
 pub(super) fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
