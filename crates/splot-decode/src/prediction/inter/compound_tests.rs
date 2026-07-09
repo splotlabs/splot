@@ -104,6 +104,45 @@ fn compound_average_syntax_roundtrips_through_symbol_encoder() {
 }
 
 #[test]
+fn compound_average_reads_is_joint_context_zero() {
+    let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::new();
+    encode_symbol(
+        &mut enc_tile,
+        &mut encoder,
+        TileCdfSelector::IsJoint { ctx: 0 },
+        0,
+    );
+    encode_symbol(
+        &mut enc_tile,
+        &mut encoder,
+        TileCdfSelector::CompoundModeNonJoint { ctx: 0 },
+        COMPOUND_MODE_NEAR_NEARMV,
+    );
+    let bytes = encoder.finish().unwrap().into_bytes();
+
+    let mut input = default_input();
+    input.is_joint_ctx = Some(0);
+    let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&bytes);
+    let syntax =
+        read_compound_average_syntax(&mut dec_tile, &mut symbols, input, ByteOffset::new(0))
+            .unwrap();
+
+    assert_eq!(syntax.y_mode, CompoundYMode::NearNear);
+    symbols.exit_symbol().unwrap();
+    for selector in [
+        TileCdfSelector::IsJoint { ctx: 0 },
+        TileCdfSelector::CompoundModeNonJoint { ctx: 0 },
+    ] {
+        assert_eq!(
+            enc_tile.row(selector).unwrap(),
+            dec_tile.row(selector).unwrap()
+        );
+    }
+}
+
+#[test]
 fn compound_average_reads_same_ref_compound_ref_symbols() {
     let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::new();

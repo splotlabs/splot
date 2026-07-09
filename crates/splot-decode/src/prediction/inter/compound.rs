@@ -284,28 +284,13 @@ fn gate_compound_subset(input: CompoundParseInput, tile_offset: ByteOffset) -> R
         return Ok(());
     }
 
-    for (missing, reason, message, spec_section) in [
-        (
-            input.num_total_refs != 2,
+    if input.num_total_refs != 2 {
+        return Err(unsupported_compound_at(
             "compound_num_total_refs",
+            tile_offset,
             "unsupported capability: inter.compound.num_total_refs != 2",
             SPEC_READ_REF_FRAMES,
-        ),
-        (
-            input.is_joint_ctx != Some(1),
-            "compound_is_joint_context",
-            "unsupported capability: inter.compound.is_joint_ctx != 1",
-            SPEC_INTER_BLOCK_MODE_INFO,
-        ),
-    ] {
-        if missing {
-            return Err(unsupported_compound_at(
-                reason,
-                tile_offset,
-                message,
-                spec_section,
-            ));
-        }
+        ));
     }
 
     Ok(())
