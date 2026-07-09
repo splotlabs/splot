@@ -920,6 +920,7 @@ pub(super) fn lossless_chroma_block_prediction_verified(
         ))
         || (top_left
             && ((y_mode.mode_to_angle() == Some(67) && mode == M::D67Follow)
+                || (y_mode.mode_to_angle() == Some(135) && mode == M::D135Follow)
                 || (y_mode.mode_to_angle() == Some(203) && mode == M::D203Follow)))
         || (!neighbours.has_above()
             && neighbours.has_left()
