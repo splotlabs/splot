@@ -119,8 +119,20 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         neighbour_ctx.amvd_ctx(compound.ref_frame0),
         tile_offset,
     )?;
-    let signal_local_warp =
-        compound_local_warp_signal_allowed(core, compound, &mode_ctx, n4w, n4h, tile_offset)?;
+    let frame_modes = core
+        .inter
+        .as_ref()
+        .and_then(|inter| inter.frame_enabled_motion_modes)
+        .unwrap_or([false; splot_core::headers::frame::MOTION_MODES]);
+    let signal_local_warp = compound_local_warp_signal_allowed(
+        compound,
+        n4w,
+        n4h,
+        effective_force_integer_mv(core),
+        compound_opfl_refine_type(core, tile_offset)?,
+        [mode_ctx.warp_sample_found, mode_ctx.warp_sample_found1],
+        frame_modes[splot_core::headers::frame::LOCALWARP],
+    );
     read_compound_motion_mode_syntax(cdfs, symbols, signal_local_warp, neighbour_ctx, tile_offset)?;
     let jmvd_scale_mode = read_compound_jmvd_scale_mode_syntax(
         cdfs,
@@ -564,27 +576,24 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
 }
 
 fn compound_local_warp_signal_allowed(
-    core: &FrameHeaderCore,
     compound: super::super::compound::CompoundBlockSyntax,
-    mode_ctx: &ModeContext,
     n4w: usize,
     n4h: usize,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    let frame_modes = core
-        .inter
-        .as_ref()
-        .and_then(|inter| inter.frame_enabled_motion_modes)
-        .unwrap_or([false; splot_core::headers::frame::MOTION_MODES]);
-    Ok(compound.y_mode == CompoundYMode::NewNew
+    force_integer_mv: bool,
+    opfl_refine_type: u32,
+    warp_sample_found: [bool; 2],
+    local_warp_enabled: bool,
+) -> bool {
+    compound.y_mode == CompoundYMode::NewNew
         && compound.ref_frame0 != compound.ref_frame1
         && n4w >= 2
         && n4h >= 2
-        && !effective_force_integer_mv(core)
-        && compound_opfl_refine_type(core, tile_offset)? != REFINE_ALL
-        && mode_ctx.warp_sample_found
-        && mode_ctx.warp_sample_found1
-        && frame_modes[splot_core::headers::frame::LOCALWARP])
+        && !force_integer_mv
+        && !compound.use_optflow
+        && opfl_refine_type != REFINE_ALL
+        && warp_sample_found[0]
+        && warp_sample_found[1]
+        && local_warp_enabled
 }
 
 fn read_compound_motion_mode_syntax(
@@ -611,7 +620,7 @@ fn read_compound_motion_mode_syntax(
             "compound_local_warp",
             tile_offset,
             "inter.compound.local_warp",
-            "5.20.7.13"
+            "5.20.7.14"
         ));
     }
     Ok(())
@@ -2008,6 +2017,28 @@ mod tests {
         .unwrap();
 
         symbols.exit_symbol().unwrap();
+    }
+
+    #[test]
+    fn compound_optflow_suppresses_local_warp_gate() {
+        let compound = super::super::super::compound::CompoundBlockSyntax {
+            y_mode: CompoundYMode::NewNew,
+            use_optflow: true,
+            ref_frame0: 0,
+            ref_frame1: 1,
+            mv0: Mv::ZERO,
+            mv1: Mv::ZERO,
+        };
+
+        assert!(!compound_local_warp_signal_allowed(
+            compound,
+            2,
+            2,
+            false,
+            REFINE_SWITCHABLE,
+            [true; 2],
+            true,
+        ));
     }
 
     #[test]
