@@ -1285,6 +1285,18 @@ fn admits_rect_cardinal_luma_cases() {
             ctx(24, 204, 1, 2),
             IntraCardinalDirection::Vertical,
         ),
+        (
+            "top-left vertical without neighbours",
+            90,
+            ctx(0, 0, 4, FULL_SB_N4_LUMA),
+            IntraCardinalDirection::Vertical,
+        ),
+        (
+            "top-left horizontal without neighbours",
+            180,
+            ctx(0, 0, FULL_SB_N4_LUMA, 4),
+            IntraCardinalDirection::Horizontal,
+        ),
     ] {
         assert_rect_luma_plan(
             None,
