@@ -20,7 +20,6 @@ const Q80_FIXTURE: &[u8] =
 const Q80_LUMA: u8 = 100;
 const Q80_CHROMA_U: u8 = 120;
 const Q80_CHROMA_V: u8 = 130;
-
 const Q80_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-10bit-q80.ivf"
 );
@@ -1136,6 +1135,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         SupportedChromaMode::VerticalFollow,
         SupportedChromaMode::Horizontal,
         SupportedChromaMode::D45,
+        SupportedChromaMode::D67,
         SupportedChromaMode::D113,
         SupportedChromaMode::D135,
         SupportedChromaMode::D157,

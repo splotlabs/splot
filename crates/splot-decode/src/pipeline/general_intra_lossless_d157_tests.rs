@@ -4,6 +4,7 @@
 use splot_parallel::ThreadCount;
 use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize};
 
+use super::general_intra_tests::assert_lossless_explicit_chroma_oracle;
 use super::*;
 use crate::{DecodeContext, DecodeRuntimeConfig};
 
@@ -12,6 +13,9 @@ const LOSSLESS_NONDC_CHROMA_D157_FIXTURE: &[u8] = include_bytes!(
 );
 const LOSSLESS_SDP_NONDC_CHROMA_D157_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d157-intra-64x64.ivf"
+);
+const LOSSLESS_SDP_NONDC_CHROMA_D67_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d67-intra-64x64.ivf"
 );
 
 #[test]
@@ -54,4 +58,16 @@ fn lossless_nondc_chroma_d157_frame_decodes_to_oracle() {
 #[test]
 fn lossless_sdp_nondc_chroma_d157_frame_decodes_to_oracle() {
     lossless_nondc_chroma_d157_frame_decodes_to_oracle();
+}
+
+#[test]
+fn lossless_sdp_nondc_chroma_d67_frame_decodes_to_oracle() {
+    assert_lossless_explicit_chroma_oracle(
+        LOSSLESS_SDP_NONDC_CHROMA_D67_FIXTURE,
+        304,
+        (64, 64),
+        (32, 32),
+        "lossless SDP explicit D67",
+        "bd031b83ebb53396538bcfdebe5c2fe5a186e8d75a5842fabdcad123039f7b3b",
+    );
 }
