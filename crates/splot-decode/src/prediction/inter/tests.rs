@@ -5,7 +5,7 @@
 
 use splot_parallel::ThreadCount;
 
-use splot_core::headers::frame::{FrameHeaderParseStatus, QuantizationParams};
+use splot_core::headers::frame::{FrameHeaderCore, FrameHeaderParseStatus, QuantizationParams};
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 use splot_core::span::ByteOffset;
@@ -326,11 +326,100 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
     Ok(())
 }
 
+fn parse_inter_core_for_validation(
+    bytes: &[u8],
+) -> Result<(SequenceHeader, FrameHeaderCore, ByteOffset)> {
+    let options = DecodeOptions::default();
+    let plan = plan_fixture(bytes, &options);
+    let parsed = parse_ivf_fixture(bytes, "inter");
+    let header = parsed.header.expect("fixture carries an IVF header");
+    let first_ivf_frame = parsed.frames.first().expect("fixture carries a key frame");
+    let [_td_envelope, sequence_envelope, key_envelope] =
+        crate::pipeline::require_minimal_obu_order(first_ivf_frame.obus.as_slice())?;
+    let sequence = crate::pipeline::parse_sequence(sequence_envelope)?;
+
+    let mut candidates = plan.frame_candidates_all();
+    let key_candidate = candidates.next().expect("fixture has a key candidate");
+    let key_frame = crate::pipeline::decode_key_frame(
+        bytes,
+        &options,
+        &plan,
+        key_candidate,
+        key_envelope,
+        &sequence,
+        crate::pipeline::PipelineFrameRate::from_ivf_header(header),
+        None,
+    )?;
+    let key_core = crate::pipeline::parse_frame_core(key_envelope, &sequence)?;
+    let num_ref_frames = usize::from(
+        sequence
+            .inter
+            .as_ref()
+            .expect("fixture sequence has inter config")
+            .num_ref_frames,
+    );
+    let mut reference = crate::reference::buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
+    let frames = vec![key_frame];
+    reference.update(
+        0,
+        &crate::pipeline::frame_ref_update_from_core(
+            &key_core,
+            key_envelope.offset,
+            frames[0].frame_cdfs.clone(),
+            frames[0].ccso_params.clone(),
+            frames[0].ccso_grid.clone(),
+            frames[0].motion_field.clone(),
+            key_core.order_hint_lsb.unwrap_or(0),
+        )?,
+    );
+
+    let inter_candidate = candidates.next().expect("fixture has an inter candidate");
+    let mut next_unvalidated_following_ivf_record = 1;
+    let inter_envelope = crate::pipeline::following_inter_envelope(
+        &parsed,
+        inter_candidate,
+        &mut next_unvalidated_following_ivf_record,
+    )?;
+    let (store, meta) = reference.build_store_eight(&frames)?;
+    let inter_state = super::InterReferenceState::from_metadata(&store, meta);
+    let core = super::parse_inter_frame_core(inter_envelope, &sequence, &inter_state)?;
+    Ok((sequence, core, inter_envelope.offset))
+}
+
 fn unsupported_reason(error: DecodeError) -> &'static str {
     match error {
         DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
         _ => panic!("expected unsupported-feature error"),
     }
+}
+
+#[test]
+fn inter_frame_validation_admits_lossless_header_tools() {
+    let context = decode_context();
+    context
+        .pool()
+        .install(|| -> Result<()> {
+            let (sequence, mut core, offset) =
+                parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
+
+            let quant = core
+                .quantization_params
+                .as_mut()
+                .expect("fixture inter core has quantization params");
+            quant.base_q_idx = 0;
+            let lossless = core
+                .lossless_info
+                .as_mut()
+                .expect("fixture inter core has lossless facts");
+            lossless.lossless_array.fill(true);
+            lossless.coded_lossless = true;
+            lossless.has_lossless_segment = true;
+            lossless.allow_tcq = false;
+            lossless.allow_parity_hiding = false;
+
+            super::validate_inter_frame_core(&core, &sequence, offset)
+        })
+        .expect("lossless inter headers should reach block-specific gates");
 }
 
 #[test]
