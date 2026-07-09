@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::bitstream::tile_payload::{CflIndex, CflParams, GeneralIntraChromaBlockMode};
+use crate::prediction::intra::IntraLumaPlan;
 
 fn ctx(row4: usize, col4: usize, width4: usize, height4: usize) -> BlockCtx {
     ctx_with_bit_depth(row4, col4, width4, height4, BitDepth::Ten)
@@ -255,6 +256,11 @@ fn lossless_prediction_guard_admits_top_left_cardinal_luma() {
 #[test]
 fn lossless_prediction_guard_admits_top_left_d135_luma() {
     assert_lossless_directional_luma_admitted(IntraYMode::D135_PRED_FOR_TEST);
+}
+
+#[test]
+fn lossless_prediction_guard_admits_top_left_d67_luma() {
+    assert_lossless_directional_luma_admitted(IntraYMode::D67_PRED_FOR_TEST);
 }
 
 #[test]
@@ -1083,6 +1089,17 @@ fn admits_right_edge_rect_d45_as_one_sided_above_luma_without_above_right() {
             use_tcq: false,
         })
     ));
+}
+
+#[test]
+fn admits_top_left_full_sb_d67_as_one_sided_above_luma() {
+    let top_left = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
+    let modes = luma_modes(IntraYMode::D67_PRED_FOR_TEST);
+
+    assert_eq!(
+        plan_luma_prediction_for_segment(&modes, top_left, true, FULL_SB_N4_LUMA),
+        Ok(IntraLumaPlan::DirectionalOneSidedAbove { p_angle: 67 })
+    );
 }
 
 #[test]
