@@ -1083,6 +1083,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         SupportedChromaMode::D45,
         SupportedChromaMode::D45Follow,
         SupportedChromaMode::D67,
+        SupportedChromaMode::D67Follow,
         SupportedChromaMode::D113,
         SupportedChromaMode::D113Follow,
         SupportedChromaMode::D135,
@@ -1100,12 +1101,6 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
             general_intra::FULL_SB_N4_LUMA,
         ));
     }
-    assert!(!general_intra::lossless_chroma_block_prediction_verified(
-        Some(SupportedChromaMode::D67Follow),
-        false,
-        left_edge_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
     assert!(general_intra::lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::D45),
         false,
@@ -1444,7 +1439,6 @@ fn lossless_chroma_prediction_guard_rejects_unverified_non_dpcm_shapes() {
             &[
                 SupportedChromaMode::Smooth,
                 SupportedChromaMode::SmoothVertical,
-                SupportedChromaMode::D67Follow,
                 SupportedChromaMode::SmoothHorizontal,
             ][..],
         ),
