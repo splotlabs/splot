@@ -1146,68 +1146,55 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
             general_intra::FULL_SB_N4_LUMA,
         ));
     }
+    let block_ok = general_intra::lossless_chroma_block_prediction_verified;
     let part_ok = general_intra::lossless_chroma_part_prediction_verified;
+    let full_sb = general_intra::FULL_SB_N4_LUMA;
     let dc = IntraYMode::DC_PRED;
     assert!(part_ok(Some(Smooth), false, dc, top_left_8, 32));
-    assert!(!general_intra::lossless_chroma_block_prediction_verified(
-        Some(Smooth),
-        false,
-        IntraYMode::DC_PRED,
-        top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
-    for mode in [
-        D45Follow,
-        D67Follow,
-        D113Follow,
-        D135Follow,
-        D157Follow,
-        D203Follow,
-        VerticalFollow,
+    assert!(!block_ok(Some(Smooth), false, dc, top_left_8, full_sb));
+    for (mode, y_mode) in [
+        (D45Follow, dc),
+        (D67Follow, dc),
+        (D113Follow, dc),
+        (D135Follow, dc),
+        (D157Follow, dc),
+        (D203Follow, dc),
+        (VerticalFollow, dc),
+        (D45Follow, IntraYMode::D67_PRED_FOR_TEST),
+        (D67Follow, IntraYMode::D45_PRED_FOR_TEST),
     ] {
-        assert!(!general_intra::lossless_chroma_block_prediction_verified(
-            Some(mode),
-            false,
-            IntraYMode::DC_PRED,
-            top_left_8,
-            general_intra::FULL_SB_N4_LUMA,
-        ));
+        assert!(!block_ok(Some(mode), false, y_mode, top_left_8, full_sb));
     }
     for (mode, y_mode) in [
+        (D45Follow, IntraYMode::D45_PRED_FOR_TEST),
         (D67Follow, IntraYMode::D67_PRED_FOR_TEST),
         (D113Follow, IntraYMode::D113_PRED_FOR_TEST),
         (D135Follow, IntraYMode::D135_PRED_FOR_TEST),
         (D157Follow, IntraYMode::D157_PRED_FOR_TEST),
         (D203Follow, IntraYMode::D203_PRED_FOR_TEST),
     ] {
-        assert!(general_intra::lossless_chroma_block_prediction_verified(
-            Some(mode),
-            false,
-            y_mode,
-            top_left_8,
-            general_intra::FULL_SB_N4_LUMA,
-        ));
+        assert!(block_ok(Some(mode), false, y_mode, top_left_8, full_sb));
     }
     assert!(!general_intra::lossless_chroma_part_prediction_verified(
         Some(D135),
         true,
         crate::bitstream::tile_payload::IntraYMode::DC_PRED,
         top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
+        full_sb,
     ));
     assert!(!general_intra::lossless_chroma_part_prediction_verified(
         Some(Horizontal),
         false,
         crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
         top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
+        full_sb,
     ));
     assert!(!general_intra::lossless_chroma_part_prediction_verified(
         Some(D135),
         false,
         crate::bitstream::tile_payload::IntraYMode::H_PRED_FOR_TEST,
         top_left_8,
-        general_intra::FULL_SB_N4_LUMA,
+        full_sb,
     ));
     for (mode, y_mode, expected) in [
         (D45Follow, IntraYMode::DC_PRED, false),
@@ -1223,13 +1210,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         (D203Follow, IntraYMode::D203_PRED_FOR_TEST, true),
     ] {
         assert_eq!(
-            part_ok(
-                Some(mode),
-                false,
-                y_mode,
-                top_left_8,
-                general_intra::FULL_SB_N4_LUMA
-            ),
+            part_ok(Some(mode), false, y_mode, top_left_8, full_sb),
             expected
         );
     }
