@@ -15,6 +15,7 @@ pub(crate) struct DeblockRecorder<'a> {
     pub(crate) luma_tx: usize,
     pub(crate) chroma_tx: Option<usize>,
     pub(crate) qindex: u32,
+    pub(crate) lossless: bool,
 }
 
 impl DeblockRecorder<'_> {
@@ -33,6 +34,7 @@ impl DeblockRecorder<'_> {
                 chroma_tx: self.chroma_tx,
                 qindex: self.qindex,
                 skip: false,
+                lossless: self.lossless,
             });
         }
     }
@@ -59,6 +61,7 @@ impl DeblockRecorder<'_> {
             chroma_tx: self.chroma_tx,
             qindex: self.qindex,
             skip: false,
+            lossless: self.lossless,
         });
         self.tx_skip_records.push(
             crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {

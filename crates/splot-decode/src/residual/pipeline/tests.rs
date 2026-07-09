@@ -283,6 +283,29 @@ fn non_lossless_chroma_uses_partition_chroma_ref() {
 }
 
 #[test]
+fn lossless_chroma_uses_partition_chroma_ref() {
+    let block = BlockRect::new(23, 19, 1, 1);
+    let chroma_ref = BlockRect::new(22, 16, 4, 2);
+    let chroma_tx = TxShape::from_luma_4x4(4, 2).expect("valid chroma reference transform");
+    let ctx = ctx(block, BitDepth::Eight).with_chroma_ref(chroma_ref, chroma_tx);
+    let plan = GeneralIntraResidualPlan::square(
+        ctx,
+        IntraLumaPlan::Dc,
+        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
+        false,
+        true,
+        Some(0),
+        true,
+    )
+    .expect("lossless chroma ref plan");
+    let u = plan.plane_plan(PlaneId::U).expect("chroma u");
+
+    assert_eq!((u.x, u.y), (32, 44));
+    assert_eq!((u.tx.width4(), u.tx.height4()), (2, 1));
+    assert!(u.txb_skip_fsc_mode);
+}
+
+#[test]
 fn non_lossless_yuv444_chroma_follows_each_residual_chunk() {
     let block = BlockRect::new(0, 0, 32, 16);
     let ctx = ctx_with_chroma(block, BitDepth::Eight, ChromaSampling::Yuv444);

@@ -63,6 +63,13 @@ fn chroma_group_start_waits_for_subsampled_luma_chunks() {
 }
 
 #[test]
+fn selectable_inter_luma_tx_records_skip_lossless_blocks() {
+    assert!(inter_luma_tx_records_are_selectable(true, false));
+    assert!(!inter_luma_tx_records_are_selectable(true, true));
+    assert!(!inter_luma_tx_records_are_selectable(false, false));
+}
+
+#[test]
 fn lossless_inter_residual_tx_size_reads_selector() {
     let offset = ByteOffset::new(0);
     let size_group =

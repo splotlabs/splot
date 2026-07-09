@@ -124,9 +124,11 @@ impl TxShape {
     }
 
     pub(crate) const fn subsampled(self, sub_x: u32, sub_y: u32) -> Self {
+        let width_log2 = self.width_log2.saturating_sub(sub_x);
+        let height_log2 = self.height_log2.saturating_sub(sub_y);
         Self {
-            width_log2: self.width_log2.saturating_sub(sub_x),
-            height_log2: self.height_log2.saturating_sub(sub_y),
+            width_log2: if width_log2 < 2 { 2 } else { width_log2 },
+            height_log2: if height_log2 < 2 { 2 } else { height_log2 },
         }
     }
 }
@@ -300,6 +302,10 @@ impl BlockCtx {
         self
     }
 
+    pub(crate) const fn has_chroma_ref(self) -> bool {
+        self.chroma_ref.is_some()
+    }
+
     pub(crate) const fn is_top_left(self) -> bool {
         self.block.is_top_left()
     }
@@ -310,8 +316,8 @@ impl BlockCtx {
         PlaneBlock {
             x: (block.col4 * 4) >> sub_x,
             y: (block.row4 * 4) >> sub_y,
-            width4: block.width4 >> sub_x,
-            height4: block.height4 >> sub_y,
+            width4: (block.width4 >> sub_x).max(1),
+            height4: (block.height4 >> sub_y).max(1),
             tx: tx.subsampled(sub_x, sub_y),
         }
     }

@@ -18,6 +18,7 @@ pub(crate) fn record_inter_deblock_geometry(
     n4h: usize,
     residual: Option<&InterResidual>,
     qindex: u32,
+    lossless: bool,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let Some(residual) = residual else {
@@ -46,6 +47,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         ),
                     qindex,
                     skip: true,
+                    lossless,
                 });
                 tx_skip_records.push(
                     crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
@@ -83,6 +85,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         ),
                     qindex,
                     skip: false,
+                    lossless,
                 });
                 tx_skip_records.push(
                     crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
@@ -104,6 +107,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         block.y,
                         block.tx_size,
                         qindex,
+                        lossless,
                     )
                 {
                     chroma_deblock_blocks[plane_index].push(record);

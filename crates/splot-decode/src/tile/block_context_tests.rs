@@ -17,6 +17,19 @@ fn ctx(row4: usize, col4: usize, width4: usize, height4: usize) -> BlockCtx {
     )
 }
 
+fn assert_plane_block(
+    ctx: &BlockCtx,
+    plane_id: PlaneId,
+    xy: (usize, usize),
+    size4: (usize, usize),
+    tx_log2: (u32, u32),
+) {
+    let block = ctx.plane_block(plane_id);
+    assert_eq!((block.x(), block.y()), xy);
+    assert_eq!((block.width4(), block.height4()), size4);
+    assert_eq!((block.tx().width_log2(), block.tx().height_log2()), tx_log2);
+}
+
 #[test]
 fn classifies_frame_edges() {
     let cases = [
@@ -38,18 +51,15 @@ fn classifies_frame_edges() {
 }
 
 #[test]
-fn plane_blocks_scale_luma_and_420_chroma() {
-    let ctx = ctx(8, 16, 16, 8);
+fn plane_blocks_scale_and_clamp_420_chroma() {
+    let scaled = ctx(8, 16, 16, 8);
 
-    let y = ctx.plane_block(PlaneId::Y);
-    assert_eq!((y.x(), y.y()), (64, 32));
-    assert_eq!((y.width4(), y.height4()), (16, 8));
-    assert_eq!((y.tx().width_log2(), y.tx().height_log2()), (6, 5));
+    assert_plane_block(&scaled, PlaneId::Y, (64, 32), (16, 8), (6, 5));
+    assert_plane_block(&scaled, PlaneId::U, (32, 16), (8, 4), (5, 4));
 
-    let u = ctx.plane_block(PlaneId::U);
-    assert_eq!((u.x(), u.y()), (32, 16));
-    assert_eq!((u.width4(), u.height4()), (8, 4));
-    assert_eq!((u.tx().width_log2(), u.tx().height_log2()), (5, 4));
+    let minimum = ctx(0, 0, 1, 1);
+
+    assert_plane_block(&minimum, PlaneId::U, (0, 0), (1, 1), (2, 2));
 }
 
 #[test]
@@ -58,14 +68,8 @@ fn plane_blocks_use_chroma_ref_geometry_for_420_chroma() {
     let chroma_tx = TxShape::from_luma_4x4(2, 4).expect("valid chroma reference transform");
     let ctx = ctx(24, 207, 1, 4).with_chroma_ref(chroma_ref, chroma_tx);
 
-    let y = ctx.plane_block(PlaneId::Y);
-    assert_eq!((y.x(), y.y()), (828, 96));
-    assert_eq!((y.width4(), y.height4()), (1, 4));
-
-    let u = ctx.plane_block(PlaneId::U);
-    assert_eq!((u.x(), u.y()), (412, 48));
-    assert_eq!((u.width4(), u.height4()), (1, 2));
-    assert_eq!((u.tx().width_log2(), u.tx().height_log2()), (2, 3));
+    assert_plane_block(&ctx, PlaneId::Y, (828, 96), (1, 4), (2, 4));
+    assert_plane_block(&ctx, PlaneId::U, (412, 48), (1, 2), (2, 3));
 }
 
 #[test]

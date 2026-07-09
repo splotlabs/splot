@@ -76,19 +76,6 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         .as_ref()
         .is_some_and(|lossless| lossless.allow_tcq);
     if core
-        .lossless_info
-        .as_ref()
-        .is_some_and(|lossless| lossless.has_lossless_segment && !lossless.coded_lossless)
-        && mixed_lossless_filters_active(core)
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_mixed_lossless_filters_unimplemented",
-            Some(offset),
-            missing_capability_message!("filters.lossless_segments", mode = "mixed"),
-            "7.17",
-        ));
-    }
-    if core
         .gdf_params
         .as_ref()
         .is_some_and(|gdf| gdf.gdf_frame_enable && gdf.gdf_per_block == Some(true))
@@ -206,26 +193,6 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     let frame =
         filter_sink.into_filtered_frame(core, deblock_quant_deltas(sequence, core), offset)?;
     Ok((frame, frame_cdfs, ccso_grid))
-}
-
-fn mixed_lossless_filters_active(core: &FrameHeaderCore) -> bool {
-    core.deblocking_filter_params
-        .as_ref()
-        .is_some_and(|filter| filter.apply_deblocking_filter.iter().any(|active| *active))
-        || core
-            .gdf_params
-            .as_ref()
-            .is_some_and(|gdf| gdf.gdf_frame_enable)
-        || core
-            .cdef_params
-            .as_ref()
-            .is_some_and(|cdef| cdef.cdef_frame_enable)
-        || core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr)
-        || core.lr_params_partial.as_ref().is_some_and(|lr| lr.uses_lr)
-        || core
-            .ccso_params
-            .as_ref()
-            .is_some_and(|ccso| ccso.planes.iter().any(|plane| plane.ccso_planes))
 }
 
 fn build_frame_qm_levels(core: &FrameHeaderCore) -> Option<QmFrameLevels> {

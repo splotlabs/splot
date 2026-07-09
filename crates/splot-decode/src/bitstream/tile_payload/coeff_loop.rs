@@ -291,6 +291,8 @@ pub(crate) enum CoeffLoopContextError {
         eob_extra_bits: usize,
         max_eob_extra_bits: usize,
     },
+    #[error("coefficient EOB Pt512 extra value {eob_pt_extra} is reserved by AV2")]
+    InvalidPt512EobExtra { eob_pt_extra: u32 },
     #[error(
         "coefficient EOB transform {axis} log2 value {value} is below the AV2 minimum {minimum}"
     )]
@@ -441,7 +443,8 @@ pub(crate) fn read_nonzero_coeff_eob(
         .get();
     let eob_pt_extra_width = eob_pt_extra_width(input.size, eob_pt_symbol);
     let eob_pt_extra = read_eob_literal(symbols, eob_pt_extra_width, "eob_pt_extra")?;
-    let eob_pt = resolved_eob_pt(eob_pt_symbol, eob_pt_extra_width, eob_pt_extra);
+    let eob_pt =
+        checked_resolved_eob_pt(input.size, eob_pt_symbol, eob_pt_extra_width, eob_pt_extra)?;
 
     let (eob_extra, eob_extra_bits) = if eob_pt >= 3 {
         let eob_extra = cdfs
@@ -545,6 +548,22 @@ fn resolved_eob_pt(eob_pt_symbol: u8, eob_pt_extra_width: u32, eob_pt_extra: u32
     } else {
         8 + eob_pt_extra as usize
     }
+}
+
+fn checked_resolved_eob_pt(
+    size: EobPtSize,
+    eob_pt_symbol: u8,
+    eob_pt_extra_width: u32,
+    eob_pt_extra: u32,
+) -> Result<usize, CoeffLoopContextError> {
+    if matches!(size, EobPtSize::Pt512) && eob_pt_extra_width != 0 && eob_pt_extra == 3 {
+        return Err(CoeffLoopContextError::InvalidPt512EobExtra { eob_pt_extra });
+    }
+    Ok(resolved_eob_pt(
+        eob_pt_symbol,
+        eob_pt_extra_width,
+        eob_pt_extra,
+    ))
 }
 
 fn eob_extra_bits_width(eob_pt: usize) -> Result<usize, CoeffLoopContextError> {

@@ -155,7 +155,10 @@ pub(crate) fn read_inter_residual(
         luma_tx_size_mode,
         tile_offset,
     )?;
-    let luma_tx_records = if residual_uses_selectable_tx_partitions(core) {
+    let luma_tx_records = if inter_luma_tx_records_are_selectable(
+        residual_uses_selectable_tx_partitions(core),
+        lossless,
+    ) {
         Some(derive_inter_luma_tx_records_for_block(
             work_unit,
             symbols,
@@ -267,6 +270,10 @@ fn inter_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
 
 fn residual_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
     inter_uses_selectable_tx_partitions(core) || intra_frame_needs_selectable_tx_partitions(core)
+}
+
+fn inter_luma_tx_records_are_selectable(selectable_tx_partitions: bool, lossless: bool) -> bool {
+    selectable_tx_partitions && !lossless
 }
 
 fn intra_frame_needs_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {

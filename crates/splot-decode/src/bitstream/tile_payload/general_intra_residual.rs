@@ -609,6 +609,8 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
     tx_size: usize,
     start_x: usize,
     start_y: usize,
+    frame_width: usize,
+    frame_height: usize,
     tx_fills_block: bool,
     luma_tx_partition: LumaTransformPartitionContext,
     uv_mode: usize,
@@ -633,7 +635,10 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
         .try_reserve(records.len())
         .map_err(|_| unsupported_transform_partition("partition-record-allocation"))?;
     let record_count = records.len();
-    for record in records {
+    for record in records
+        .into_iter()
+        .filter(|record| luma_transform_record_starts_in_frame(record, frame_width, frame_height))
+    {
         let record_fills_block = luma_partition_record_fills_block(
             tx_fills_block,
             record_count,
@@ -679,6 +684,14 @@ fn luma_partition_record_fills_block(
     start_y: usize,
 ) -> bool {
     block_fills_residual && record_count == 1 && record.x == start_x && record.y == start_y
+}
+
+fn luma_transform_record_starts_in_frame(
+    record: &LumaTransformPartitionRecord,
+    frame_width: usize,
+    frame_height: usize,
+) -> bool {
+    record.x < frame_width && record.y < frame_height
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

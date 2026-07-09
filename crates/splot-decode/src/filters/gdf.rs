@@ -76,6 +76,7 @@ pub(crate) fn apply_frame<T: ReconSample>(
     core: &FrameHeaderCore,
     curr_luma: &[u16],
     cdef_luma: &[u16],
+    lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
     luma_width: usize,
     luma_height: usize,
     bit_depth: BitDepth,
@@ -162,7 +163,7 @@ pub(crate) fn apply_frame<T: ReconSample>(
                     "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
                 ));
             }
-            let block = compute_block(
+            let mut block = compute_block(
                 core,
                 curr_luma,
                 cdef_luma,
@@ -180,6 +181,17 @@ pub(crate) fn apply_frame<T: ReconSample>(
                     pix_scale,
                     max_sample,
                 },
+                offset,
+            )?;
+            preserve_lossless_luma_samples(
+                lossless_grid,
+                &base_luma,
+                luma_width,
+                x,
+                y,
+                width,
+                height,
+                &mut block,
                 offset,
             )?;
             let rect = PlaneRect::new(x, y, width, height).map_err(|_| {
@@ -243,6 +255,59 @@ fn compute_block<T: ReconSample>(
         }
     }
     Ok(output)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn preserve_lossless_luma_samples<T: ReconSample>(
+    lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
+    base_luma: &[u16],
+    luma_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    output: &mut [T],
+    offset: ByteOffset,
+) -> Result<()> {
+    let Some(lossless_grid) = lossless_grid else {
+        return Ok(());
+    };
+    for row in 0..height {
+        for col in 0..width {
+            let sample_x = x + col;
+            let sample_y = y + row;
+            if !lossless_grid.plane_sample_lossless(PlaneId::Y, sample_x, sample_y, 0, 0) {
+                continue;
+            }
+            let src = sample_y
+                .checked_mul(luma_width)
+                .and_then(|start| start.checked_add(sample_x))
+                .and_then(|index| base_luma.get(index).copied())
+                .ok_or_else(|| {
+                    gdf_filter_error(
+                        offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
+                    )
+                })?;
+            let dst = row
+                .checked_mul(width)
+                .and_then(|start| start.checked_add(col))
+                .and_then(|index| output.get_mut(index))
+                .ok_or_else(|| {
+                    gdf_filter_error(
+                        offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+                    )
+                })?;
+            *dst = T::try_from_u16(src).map_err(|_| {
+                gdf_filter_error(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_gdf_sample",
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn source_bounds(
@@ -644,8 +709,11 @@ fn gdf_filter_error(offset: ByteOffset, reason: &'static str) -> crate::error::D
 mod tests {
     use super::{
         GdfReferenceContext, RESTRICTED_ORDER_HINT, gdf_inter_ref_dst_idx,
-        gdf_inter_ref_dst_idx_from_max_dist,
+        gdf_inter_ref_dst_idx_from_max_dist, preserve_lossless_luma_samples,
     };
+    use crate::filters::deblock::DeblockBlock;
+    use crate::filters::lossless::LosslessBlockGrid;
+    use splot_core::span::ByteOffset;
 
     #[test]
     fn inter_ref_dst_idx_uses_first_two_reference_list_entries() {
@@ -682,6 +750,56 @@ mod tests {
                 actual == expected,
                 "case {case}: distance {max_dist} mapped to {actual}, expected {expected}"
             );
+        }
+    }
+
+    #[test]
+    fn preserve_lossless_luma_samples_keeps_only_lossless_cells() {
+        let lossless = [DeblockBlock {
+            r: 1,
+            c: 1,
+            block_r: 1,
+            block_c: 1,
+            chroma_base_r: 1,
+            chroma_base_c: 1,
+            n4w: 1,
+            n4h: 1,
+            luma_tx: 0,
+            chroma_tx: Some(0),
+            qindex: 0,
+            skip: false,
+            lossless: true,
+        }];
+        let grid = LosslessBlockGrid::from_deblock_blocks(4, 4, &lossless, [&[], &[]]);
+        assert!(grid.is_ok());
+        let Ok(grid) = grid else {
+            return;
+        };
+        let base: Vec<u16> = (0..64).collect();
+        let mut output = vec![200_u8; 32];
+
+        let result = preserve_lossless_luma_samples(
+            Some(&grid),
+            &base,
+            8,
+            4,
+            4,
+            8,
+            4,
+            &mut output,
+            ByteOffset::new(0),
+        );
+        assert!(result.is_ok());
+
+        for row in 0..4 {
+            for col in 0..8 {
+                let expected = if col < 4 {
+                    base[(4 + row) * 8 + 4 + col] as u8
+                } else {
+                    200
+                };
+                assert_eq!(output[row * 8 + col], expected, "row {row} col {col}");
+            }
         }
     }
 }

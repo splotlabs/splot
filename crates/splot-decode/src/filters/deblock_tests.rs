@@ -36,6 +36,7 @@ fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock> {
                 chroma_tx: Some(2),
                 qindex: 100,
                 skip: false,
+                lossless: false,
             });
         }
     }
@@ -93,6 +94,7 @@ fn edge_test_grid(curr_skip: bool) -> MiGrid {
         chroma_tx: None,
         qindex: 100,
         skip: false,
+        lossless: false,
     });
     cells[5] = Some(MiBlockInfo {
         base_row: 0,
@@ -105,6 +107,7 @@ fn edge_test_grid(curr_skip: bool) -> MiGrid {
         chroma_tx: None,
         qindex: 100,
         skip: curr_skip,
+        lossless: false,
     });
     MiGrid { mi_cols: 16, cells }
 }
@@ -417,9 +420,14 @@ fn mi_grid_covers_decoded_blocks() {
         chroma_tx: Some(2),
         qindex: 100,
         skip: false,
+        lossless: true,
     }];
     let grid = build_mi_grid(&blocks, 16, 16).unwrap();
     assert!(grid.get(0, 0).is_some(), "top-left MI is covered");
+    assert!(
+        grid.get(0, 0).is_some_and(|info| info.lossless),
+        "MI records preserve per-segment lossless state"
+    );
     assert!(
         grid.get(7, 7).is_some(),
         "bottom-right of the 8x8 footprint is covered"

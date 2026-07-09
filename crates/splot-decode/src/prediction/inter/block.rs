@@ -406,7 +406,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             },
         )
         .map_err(|error| map_inter_multiblock_error(error, tile_offset))?;
-
         let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput {
             symbols,
             active_source_blocks: tile_source_blocks,
@@ -433,7 +432,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         unit_filters.extend(tile_unit_filters);
         saved_cdfs.apply_completed_tile(tile_num, tile.cdf().tile_cdfs(), save_policy);
     }
-
     if !decoded_any {
         return Err(inter_missing!(
             "inter_no_decoded_block",
@@ -455,7 +453,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     };
     Ok((frame_cdfs, filter_inputs))
 }
-
 fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<usize> {
     let partition = sequence.partition?;
     core.frame_is_intra?;
@@ -878,6 +875,7 @@ fn decode_block<T: ReconSample>(
                 n4h,
                 residual.as_ref(),
                 block_qindex,
+                lossless,
                 tile_offset,
             )?;
             if let Some(residual) = residual.as_ref() {
@@ -1304,6 +1302,7 @@ fn decode_block<T: ReconSample>(
             n4h,
             residual.as_ref(),
             delta_q_state.qindex_u32(),
+            current_residual_lossless(work_unit),
             tile_offset,
         )?;
         mv_grid.record_warp_block(
@@ -1598,6 +1597,7 @@ fn decode_block<T: ReconSample>(
         n4h,
         residual.as_ref(),
         delta_q_state.qindex_u32(),
+        current_residual_lossless(work_unit),
         tile_offset,
     )?;
     let y_mode = if single_mode == SINGLE_MODE_NEWMV {
