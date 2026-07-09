@@ -782,7 +782,25 @@ pub(crate) fn read_lossless_luma_tx_size(
     fsc_mode: bool,
     allow_select: bool,
 ) -> Result<usize, GeneralIntraBlockModeError> {
-    if block_size_index == BLOCK_4X4 || !fsc_mode || !allow_select {
+    read_lossless_tx_size(
+        work_unit,
+        symbols,
+        block_size_index,
+        fsc_mode,
+        allow_select,
+        false,
+    )
+}
+
+pub(crate) fn read_lossless_tx_size(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    block_size_index: usize,
+    fsc_mode: bool,
+    allow_select: bool,
+    is_inter: bool,
+) -> Result<usize, GeneralIntraBlockModeError> {
+    if block_size_index == BLOCK_4X4 || (!is_inter && !fsc_mode) || !allow_select {
         return Ok(TX_4X4);
     }
     let size_group = lossless_tx_size_group(block_size_index)
@@ -792,7 +810,7 @@ pub(crate) fn read_lossless_luma_tx_size(
         symbols,
         TileCdfSelector::LosslessTxSize {
             size_group,
-            is_inter: 0,
+            is_inter: usize::from(is_inter),
         },
         LOSSLESS_TX_SIZE_REASON,
     )?;
