@@ -129,6 +129,24 @@ pub(super) fn read_drl_idx_from(
     Ok(m)
 }
 
+pub(super) fn read_skip_drl_idx(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    max_drl_bits_minus_1: u32,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    let max_drl_bits = max_drl_bits_minus_1.saturating_add(1) as usize;
+    for idx in 0..max_drl_bits {
+        let drl_mode = cdfs
+            .read_block_symbol_trace(TileCdfSelector::SkipDrlMode { idx: idx.min(2) }, symbols)
+            .map_err(|_| symbol_read_error(tile_offset))?;
+        if drl_mode.get() == 0 {
+            return Ok(idx);
+        }
+    }
+    Ok(max_drl_bits)
+}
+
 pub(super) fn read_use_amvd_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -289,6 +307,21 @@ mod tests {
         encoder.finish().unwrap().into_bytes()
     }
 
+    fn encode_skip_drl_symbols(sequence: &[(usize, u8)]) -> Vec<u8> {
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut encoder = SymbolEncoder::with_config(
+            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+        );
+        for &(idx, value) in sequence {
+            tile.with_row_mut(TileCdfSelector::SkipDrlMode { idx: idx.min(2) }, |row| {
+                encoder.write_symbol(row, Symbol::new(value))
+            })
+            .unwrap()
+            .unwrap();
+        }
+        encoder.finish().unwrap().into_bytes()
+    }
+
     fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
         SymbolDecoder::with_base_and_config(
             payload,
@@ -329,5 +362,16 @@ mod tests {
         let idx = read_drl_idx_from(&mut tile, &mut symbols, 0, 3, 4, TILE_OFFSET).unwrap();
 
         assert_eq!(idx, 4);
+    }
+
+    #[test]
+    fn skip_drl_idx_uses_dedicated_cdf_banks() {
+        let payload = encode_skip_drl_symbols(&[(0, 1), (1, 0)]);
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&payload);
+
+        let idx = read_skip_drl_idx(&mut tile, &mut symbols, 3, TILE_OFFSET).unwrap();
+
+        assert_eq!(idx, 1);
     }
 }

@@ -570,6 +570,9 @@ pub(crate) enum TileCdfSelector {
         idx: usize,
         ctx: usize,
     },
+    SkipDrlMode {
+        idx: usize,
+    },
     TipMode {
         ctx: usize,
     },
@@ -753,6 +756,7 @@ tile_cdf_arrays! {
     WedgeDist1 => "TileWedgeDist1Cdf",
     WedgeDist2 => "TileWedgeDist2Cdf",
     DrlMode => "TileDrlModeCdf",
+    SkipDrlMode => "TileSkipDrlModeCdf",
     TipMode => "TileTipModeCdf",
     SingleRef => "TileSingleRefCdf",
     CompMode => "TileCompModeCdf",
