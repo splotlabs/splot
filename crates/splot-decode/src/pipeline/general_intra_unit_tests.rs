@@ -506,6 +506,33 @@ fn lossless_chroma_block_guard_admits_interior_rect_prediction_subset() {
 }
 
 #[test]
+fn lossless_chroma_block_guard_admits_top_left_d113_follow_subset() {
+    let top_left = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
+
+    assert!(lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D113Follow),
+        false,
+        IntraYMode::D113_PRED_FOR_TEST,
+        top_left,
+        FULL_SB_N4_LUMA,
+    ));
+    assert!(!lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D113Follow),
+        false,
+        IntraYMode::D135_PRED_FOR_TEST,
+        top_left,
+        FULL_SB_N4_LUMA,
+    ));
+    assert!(!lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::D113Follow),
+        false,
+        IntraYMode::D113_PRED_FOR_TEST,
+        ctx_with_bit_depth(0, 0, 8, 8, BitDepth::Eight),
+        FULL_SB_N4_LUMA,
+    ));
+}
+
+#[test]
 fn lossless_chroma_part_guard_delegates_cfl_to_cfl_plan() {
     let block = ctx_with_bit_depth(2, 0, 2, 2, BitDepth::Eight);
     let params = CflParams {

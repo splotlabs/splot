@@ -20,6 +20,9 @@ const LOSSLESS_NONDC_LUMA_D203_CHROMA_FOLLOW_FIXTURE: &[u8] = include_bytes!(
 const LOSSLESS_NONDC_LUMA_D67_CHROMA_FOLLOW_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d67-chroma-follow-intra-64x64.ivf"
 );
+const LOSSLESS_NONDC_LUMA_D113_CHROMA_FOLLOW_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d113-chroma-follow-intra-64x64.ivf"
+);
 const LOSSLESS_NONDC_LUMA_D135_CHROMA_FOLLOW_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d135-chroma-follow-intra-64x64.ivf"
 );
@@ -159,6 +162,17 @@ fn lossless_nondc_luma_d67_chroma_follow_frame_decodes_to_oracle() {
         (64, 64),
         (32, 32),
         "1e06306e7d131ffc620e1969987c4f4b7dbae673c68e56e8a462a65c338c4576",
+    );
+}
+
+#[test]
+fn lossless_nondc_luma_d113_chroma_follow_frame_decodes_to_oracle() {
+    assert_lossless_yuv420_oracle(
+        LOSSLESS_NONDC_LUMA_D113_CHROMA_FOLLOW_FIXTURE,
+        218,
+        (64, 64),
+        (32, 32),
+        "8f2f920f4daf0e1c057d0ae7d51ba56508b6a5f552dd3459bba97677ba7aafd8",
     );
 }
 
