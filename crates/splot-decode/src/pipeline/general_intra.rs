@@ -922,6 +922,7 @@ pub(super) fn lossless_chroma_block_prediction_verified(
                     | M::HorizontalFollow
                     | M::D45
                     | M::D45Follow
+                    | M::D67
                     | M::D113
                     | M::D113Follow
                     | M::D135
