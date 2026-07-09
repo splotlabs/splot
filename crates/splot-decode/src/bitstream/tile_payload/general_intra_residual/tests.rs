@@ -1229,6 +1229,28 @@ fn dctonly_residual_lr_handoff_reads_cctx_metadata() {
 }
 
 #[test]
+fn dctonly_residual_lr_handoff_reads_inter_cctx_metadata() {
+    for cctx_type in [0u8, 1] {
+        let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, cctx_type)]);
+
+        let metadata = ensure_with_test_payload_and_policy(
+            frame_facts(false, false, false, true),
+            1,
+            TX_8X8,
+            true,
+            1,
+            None,
+            ActiveIntraIstResidualPolicy::Reject,
+            ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
+            &payload,
+        )
+        .unwrap();
+
+        assert_eq!(metadata.cctx_type, Some(usize::from(cctx_type)));
+    }
+}
+
+#[test]
 fn dctonly_residual_maps_intra_tx_type_zero_to_dct_dct() {
     let tx_type = md_idx_luma_tx_type(TX_8X8, dc_luma_context(), 0).unwrap();
 

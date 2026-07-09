@@ -14,7 +14,10 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::{
     ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame, parse_bitstream_partial,
 };
-use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize};
+use splot_recon::{
+    BitDepth, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneRect,
+    PlaneSize,
+};
 
 use super::block::{
     BLOCK_8X8, interp_filter_no_neighbour_ctx, segment_neighbour_availability,
@@ -22,6 +25,9 @@ use super::block::{
 };
 use super::compound_is_joint_context_from_order_hints;
 use super::test_support::fixture_sequence_and_key_core;
+use crate::bitstream::tile_payload::{
+    LumaCoeffBlock, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
+};
 use crate::error::{DecodeError, Result};
 use crate::pipeline::{PipelineDecodedFrame, PipelineFrame, decode_frames_from_plan};
 use crate::{
@@ -393,6 +399,131 @@ fn unsupported_reason(error: DecodeError) -> &'static str {
         DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
         _ => panic!("expected unsupported-feature error"),
     }
+}
+
+fn luma_coeff_block(quant: Vec<i32>, eob: usize, cctx_type: Option<usize>) -> LumaCoeffBlock {
+    LumaCoeffBlock {
+        all_zero: false,
+        eob,
+        quant,
+        intra_ist: None,
+        cctx_type,
+        plane_tx_type: 0,
+        use_tcq: false,
+        lossless: false,
+    }
+}
+
+fn all_zero_inter_coeff_block() -> LumaCoeffBlock {
+    LumaCoeffBlock {
+        all_zero: true,
+        eob: 0,
+        quant: Vec::new(),
+        intra_ist: None,
+        cctx_type: None,
+        plane_tx_type: 0,
+        use_tcq: false,
+        lossless: false,
+    }
+}
+
+fn read_rect_samples(
+    workspace: &CurrentFrameWorkspace<u8>,
+    plane: PlaneId,
+    rect: PlaneRect,
+) -> Vec<u8> {
+    let mut samples = Vec::new();
+    for row in workspace.rect_rows(plane, rect).unwrap() {
+        samples.extend_from_slice(row);
+    }
+    samples
+}
+
+#[test]
+fn inter_residual_cctx_pairs_chroma_blocks_by_location() {
+    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
+        16,
+        16,
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+    )
+    .unwrap();
+    let rect = PlaneRect::new(0, 0, 4, 4).unwrap();
+    let u_prediction: Vec<u8> = (0..16).map(|i| 96 + i as u8).collect();
+    let v_prediction: Vec<u8> = (0..16).map(|i| 141 - i as u8).collect();
+    workspace
+        .write_rect(PlaneId::U, rect, &u_prediction, 4)
+        .unwrap();
+    workspace
+        .write_rect(PlaneId::V, rect, &v_prediction, 4)
+        .unwrap();
+
+    let mut u_quant = vec![0; 16];
+    u_quant[0] = 16;
+    u_quant[1] = -7;
+    let mut v_quant = vec![0; 16];
+    v_quant[0] = -11;
+    v_quant[4] = 5;
+    let u_coeffs = luma_coeff_block(u_quant, 2, Some(1));
+    let v_coeffs = luma_coeff_block(v_quant, 5, None);
+    let (want_u, want_v) = reconstruct_general_intra_chroma_cctx_pair_with_predictions(
+        &u_coeffs,
+        &u_prediction,
+        &v_coeffs,
+        &v_prediction,
+        80,
+        2,
+        2,
+        1,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    let residual = super::InterResidual {
+        blocks: vec![
+            super::InterResidualBlock {
+                plane: PlaneId::U,
+                x: 0,
+                y: 0,
+                tx_size: 0,
+                log2_width: 2,
+                log2_height: 2,
+                coeffs: u_coeffs,
+            },
+            super::InterResidualBlock {
+                plane: PlaneId::Y,
+                x: 0,
+                y: 0,
+                tx_size: 0,
+                log2_width: 2,
+                log2_height: 2,
+                coeffs: all_zero_inter_coeff_block(),
+            },
+            super::InterResidualBlock {
+                plane: PlaneId::V,
+                x: 0,
+                y: 0,
+                tx_size: 0,
+                log2_width: 2,
+                log2_height: 2,
+                coeffs: v_coeffs,
+            },
+        ],
+    };
+
+    super::add_inter_residual_to_workspace(
+        &mut workspace,
+        &residual,
+        80,
+        false,
+        false,
+        BitDepth::Eight,
+        ByteOffset::new(0),
+    )
+    .unwrap();
+
+    assert_eq!(read_rect_samples(&workspace, PlaneId::U, rect), want_u);
+    assert_eq!(read_rect_samples(&workspace, PlaneId::V, rect), want_v);
 }
 
 #[test]
