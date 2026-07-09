@@ -2147,7 +2147,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
     primary_num4_far: usize,
     primary_edge_filter: OneSidedEdgeFilter,
     secondary: IbpSecondary,
-    have_above: bool,
+    availability: IntraEdgeAvailability,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
     bit_depth: BitDepth,
@@ -2170,10 +2170,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             primary_num4_far,
             0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
             0, // above_mrl_index
-            IntraEdgeAvailability {
-                above: have_above,
-                left: true,
-            },
+            availability,
             bit_depth,
             primary_edge_filter,
         )?;
@@ -2207,9 +2204,9 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             width,
             height,
             primary_num4_far,
-            have_above,
+            availability.above,
             0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
-            true,
+            availability.left,
             bit_depth,
             primary_edge_filter,
         )?;
@@ -2246,9 +2243,9 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             width,
             height,
             secondary.num4_far,
-            have_above,
+            availability.above,
             0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
-            true,
+            availability.left,
             bit_depth,
             secondary.edge_filter,
         )?;
@@ -2283,10 +2280,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             secondary.num4_far,
             0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
             0, // above_mrl_index
-            IntraEdgeAvailability {
-                above: have_above,
-                left: true,
-            },
+            availability,
             bit_depth,
             secondary.edge_filter,
         )?;

@@ -1280,12 +1280,6 @@ fn admits_rect_cardinal_luma_cases() {
             IntraCardinalDirection::Horizontal,
         ),
         (
-            "horizontal angle delta with above-only edge",
-            183,
-            ctx(80, 0, FULL_SB_N4_LUMA, 4),
-            IntraCardinalDirection::Horizontal,
-        ),
-        (
             "small vertical with above edge",
             90,
             ctx(24, 204, 1, 2),
@@ -1323,6 +1317,24 @@ fn admits_rect_angle_luma_cases() {
             ctx(0, 264, 8, 4),
             RectLumaPlan::OneSidedLeft {
                 p_angle: 186,
+                use_tcq: false,
+            },
+        ),
+        (
+            "horizontal angle delta with above-only edge",
+            183,
+            ctx(80, 0, FULL_SB_N4_LUMA, 4),
+            RectLumaPlan::OneSidedLeft {
+                p_angle: 183,
+                use_tcq: false,
+            },
+        ),
+        (
+            "first-column d203 uses its above edge",
+            203,
+            ctx(46, 0, 4, 2),
+            RectLumaPlan::OneSidedLeft {
+                p_angle: 203,
                 use_tcq: false,
             },
         ),
