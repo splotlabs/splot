@@ -682,7 +682,7 @@ fn lossless_luma_prediction_verified(
     let top_left_directional = block_ctx.is_top_left()
         && matches!(
             directional,
-            Some(L::Vertical | L::Horizontal | L::D45 | L::D67 | L::D135)
+            Some(L::Vertical | L::Horizontal | L::D45 | L::D67 | L::D135 | L::D203)
         );
     let top_left_paeth = block_ctx.is_top_left() && modes.y_mode.is_paeth();
     let y_neighbours = block_ctx.neighbours(PlaneId::Y);

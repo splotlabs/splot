@@ -11,6 +11,9 @@ use crate::{DecodeContext, DecodeRuntimeConfig};
 const LOSSLESS_NONDC_LUMA_D67_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d67-intra-64x64.ivf"
 );
+const LOSSLESS_NONDC_LUMA_D203_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d203-intra-64x64.ivf"
+);
 const LOSSLESS_NONDC_CHROMA_D157_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d157-intra-64x64.ivf"
 );
@@ -103,6 +106,17 @@ fn lossless_nondc_luma_d67_and_lossless_nondc_chroma_d157_frames_decode_to_oracl
 #[test]
 fn lossless_sdp_nondc_chroma_d157_frame_decodes_to_oracle() {
     lossless_nondc_luma_d67_and_lossless_nondc_chroma_d157_frames_decode_to_oracle();
+}
+
+#[test]
+fn lossless_nondc_luma_d203_frame_decodes_to_oracle() {
+    assert_lossless_yuv420_oracle(
+        LOSSLESS_NONDC_LUMA_D203_FIXTURE,
+        1493,
+        (64, 64),
+        (32, 32),
+        "547050c8d8b70f5eac7a44475fba961363945f35c490fe1554e129f6cd349662",
+    );
 }
 
 #[test]
