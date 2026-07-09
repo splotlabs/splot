@@ -28,6 +28,7 @@ pub(crate) struct CompoundParseInput {
 pub(crate) enum CompoundYMode {
     NearNear,
     NearNew,
+    JointNew,
     NewNew,
 }
 
@@ -35,14 +36,14 @@ impl CompoundYMode {
     pub(crate) const fn has_newmv(self) -> bool {
         match self {
             Self::NearNear => false,
-            Self::NearNew | Self::NewNew => true,
+            Self::NearNew | Self::JointNew | Self::NewNew => true,
         }
     }
 
     pub(crate) const fn has_nearmv(self) -> bool {
         match self {
             Self::NearNear | Self::NearNew => true,
-            Self::NewNew => false,
+            Self::JointNew | Self::NewNew => false,
         }
     }
 
@@ -53,13 +54,13 @@ impl CompoundYMode {
     pub(crate) const fn has_second_drl(self, skip_mode_present: bool) -> bool {
         match self {
             Self::NearNear | Self::NearNew => !skip_mode_present,
-            Self::NewNew => false,
+            Self::JointNew | Self::NewNew => false,
         }
     }
 
     pub(crate) const fn mvd_sign_derivation_threshold(self) -> usize {
         match self {
-            Self::NearNear | Self::NearNew => 1,
+            Self::NearNear | Self::NearNew | Self::JointNew => 1,
             Self::NewNew => 4,
         }
     }
@@ -68,6 +69,7 @@ impl CompoundYMode {
         match self {
             Self::NearNear => None,
             Self::NearNew => Some(0),
+            Self::JointNew => Some(5),
             Self::NewNew => Some(7),
         }
     }
@@ -75,14 +77,14 @@ impl CompoundYMode {
     pub(crate) const fn list0_is_newmv(self) -> bool {
         match self {
             Self::NearNear | Self::NearNew => false,
-            Self::NewNew => true,
+            Self::JointNew | Self::NewNew => true,
         }
     }
 
     pub(crate) const fn list1_is_newmv(self) -> bool {
         match self {
             Self::NearNear => false,
-            Self::NearNew | Self::NewNew => true,
+            Self::NearNew | Self::JointNew | Self::NewNew => true,
         }
     }
 }
@@ -250,12 +252,13 @@ pub(crate) fn read_compound_mode_syntax(
     })?;
     let is_joint = read_symbol(TileCdfSelector::IsJoint { ctx: is_joint_ctx })?;
     if is_joint != 0 {
-        return Err(compound_cap!(
-            "compound_block_joint_mode",
-            tile_offset,
-            "inter.compound.is_joint",
-            SPEC_INTER_BLOCK_MODE_INFO
-        ));
+        return Ok(CompoundBlockSyntax {
+            y_mode: CompoundYMode::JointNew,
+            ref_frame0: pair.0,
+            ref_frame1: pair.1,
+            mv0: Mv::ZERO,
+            mv1: Mv::ZERO,
+        });
     }
 
     let compound_mode = read_symbol(TileCdfSelector::CompoundModeNonJoint {

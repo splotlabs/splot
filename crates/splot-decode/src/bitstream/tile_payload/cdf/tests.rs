@@ -21,7 +21,8 @@ use splot_core::tables::cdf::{
     DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_FSC_MODE_CDF,
     DEFAULT_IDTX_SIGN_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
     DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF,
-    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF, DEFAULT_MORPH_PRED_CDF,
+    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_JMVD_ADAPTIVE_SCALE_MODE_CDF,
+    DEFAULT_JMVD_SCALE_MODE_CDF, DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF, DEFAULT_MORPH_PRED_CDF,
     DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
     DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_PALETTE_Y_MODE_CDF,
     DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SKIP_MODE_CDF, DEFAULT_TIP_MODE_CDF,
@@ -772,6 +773,14 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
             "is_joint ctx {ctx}"
         );
     }
+    assert_eq!(
+        tile.row(TileCdfSelector::JmvdScaleMode).unwrap(),
+        DEFAULT_JMVD_SCALE_MODE_CDF.as_slice()
+    );
+    assert_eq!(
+        tile.row(TileCdfSelector::JmvdAdaptiveScaleMode).unwrap(),
+        DEFAULT_JMVD_ADAPTIVE_SCALE_MODE_CDF.as_slice()
+    );
     for (ctx, expected) in DEFAULT_COMPOUND_MODE_NON_JOINT_CDF.iter().enumerate() {
         assert_eq!(
             tile.row(TileCdfSelector::CompoundModeNonJoint { ctx })
