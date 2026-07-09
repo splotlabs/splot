@@ -483,24 +483,19 @@ fn validate_compound_sequence_subset(
     core: &FrameHeaderCore,
     offset: ByteOffset,
 ) -> Result<()> {
-    let Some(seq_inter) = sequence.inter.as_ref() else {
+    if sequence.inter.is_none() {
         return Err(compound_missing!(
             "compound_missing_sequence_inter",
             offset,
             "inter.sequence_tools",
             SPEC_MODE_INFO
         ));
-    };
-    if seq_inter.enable_tip {
-        return Err(unsupported_compound_at(
-            "compound_tip_enabled",
-            offset,
-            "unsupported capability: inter.tip",
-            SPEC_MODE_INFO,
-        ));
     }
     let tip_frame_mode = core.inter.as_ref().and_then(|inter| inter.tip_frame_mode);
-    if tip_frame_mode != Some(TipFrameMode::Disabled) {
+    if !matches!(
+        tip_frame_mode,
+        Some(TipFrameMode::Disabled | TipFrameMode::AsRef)
+    ) {
         return Err(compound_cap!(
             "compound_active_tip_frame_mode",
             offset,
