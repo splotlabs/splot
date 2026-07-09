@@ -966,42 +966,56 @@ fn cfl_mh_dir_size_group_uses_generated_size_group() {
 
 #[test]
 fn lossless_luma_tx_size_reads_selected_large_transform() {
-    let size_group = lossless_tx_size_group(BLOCK_16X16).unwrap();
+    let (tx_size, symbol_count) = read_encoded_lossless_tx_size(BLOCK_16X16, false, 1, true, true);
+
+    assert_eq!(tx_size, TX_16X16);
+    assert_eq!(symbol_count, 1);
+}
+
+fn read_encoded_lossless_tx_size(
+    block_size_index: usize,
+    is_inter: bool,
+    symbol: u8,
+    fsc_mode: bool,
+    allow_select: bool,
+) -> (usize, u64) {
+    let is_inter_index = usize::from(is_inter);
+    let size_group = lossless_tx_size_group(block_size_index).unwrap();
     let payload = encode_symbol_sequence(&[(
         TileCdfSelector::LosslessTxSize {
             size_group,
-            is_inter: 0,
+            is_inter: is_inter_index,
         },
-        1,
+        symbol,
     )]);
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
-
-    assert_eq!(
-        read_lossless_luma_tx_size(&mut work_unit, &mut symbols, BLOCK_16X16, true, true).unwrap(),
-        TX_16X16
-    );
-    assert_eq!(symbols.symbol_count(), 1);
+    let tx_size = read_lossless_tx_size(
+        &mut work_unit,
+        &mut symbols,
+        block_size_index,
+        fsc_mode,
+        allow_select,
+        is_inter,
+    )
+    .unwrap();
+    (tx_size, symbols.symbol_count())
 }
 
 #[test]
 fn lossless_luma_tx_size_zero_keeps_4x4_transform() {
-    let size_group = lossless_tx_size_group(BLOCK_16X16).unwrap();
-    let payload = encode_symbol_sequence(&[(
-        TileCdfSelector::LosslessTxSize {
-            size_group,
-            is_inter: 0,
-        },
-        0,
-    )]);
-    let mut work_unit = make_work_unit(&payload);
-    let mut symbols = symbol_decoder(&payload);
+    let (tx_size, symbol_count) = read_encoded_lossless_tx_size(BLOCK_16X16, false, 0, true, true);
 
-    assert_eq!(
-        read_lossless_luma_tx_size(&mut work_unit, &mut symbols, BLOCK_16X16, true, true).unwrap(),
-        TX_4X4
-    );
-    assert_eq!(symbols.symbol_count(), 1);
+    assert_eq!(tx_size, TX_4X4);
+    assert_eq!(symbol_count, 1);
+}
+
+#[test]
+fn lossless_inter_tx_size_reads_selected_large_transform_without_fsc() {
+    let (tx_size, symbol_count) = read_encoded_lossless_tx_size(BLOCK_16X16, true, 1, false, true);
+
+    assert_eq!(tx_size, TX_16X16);
+    assert_eq!(symbol_count, 1);
 }
 
 #[test]
@@ -1018,20 +1032,8 @@ fn lossless_luma_tx_size_skips_intra_non_fsc() {
 
 #[test]
 fn lossless_luma_tx_size_caps_large_blocks_to_32x32() {
-    let size_group = lossless_tx_size_group(BLOCK_64X64).unwrap();
-    let payload = encode_symbol_sequence(&[(
-        TileCdfSelector::LosslessTxSize {
-            size_group,
-            is_inter: 0,
-        },
-        1,
-    )]);
-    let mut work_unit = make_work_unit(&payload);
-    let mut symbols = symbol_decoder(&payload);
+    let (tx_size, symbol_count) = read_encoded_lossless_tx_size(BLOCK_64X64, false, 1, true, true);
 
-    assert_eq!(
-        read_lossless_luma_tx_size(&mut work_unit, &mut symbols, BLOCK_64X64, true, true).unwrap(),
-        TX_32X32
-    );
-    assert_eq!(symbols.symbol_count(), 1);
+    assert_eq!(tx_size, TX_32X32);
+    assert_eq!(symbol_count, 1);
 }
