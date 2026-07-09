@@ -5,7 +5,9 @@
 
 use splot_parallel::ThreadCount;
 
-use splot_core::headers::frame::{FrameHeaderCore, FrameHeaderParseStatus, QuantizationParams};
+use splot_core::headers::frame::{
+    FrameHeaderCore, FrameHeaderParseStatus, QuantizationParams, TipFrameMode,
+};
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 use splot_core::span::ByteOffset;
@@ -399,8 +401,17 @@ fn inter_frame_validation_admits_lossless_header_tools() {
     context
         .pool()
         .install(|| -> Result<()> {
-            let (sequence, mut core, offset) =
+            let (mut sequence, mut core, offset) =
                 parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
+            sequence
+                .inter
+                .as_mut()
+                .expect("fixture sequence has inter config")
+                .enable_tip = true;
+            core.inter
+                .as_mut()
+                .expect("fixture inter core has control region")
+                .tip_frame_mode = Some(TipFrameMode::AsRef);
 
             let quant = core
                 .quantization_params
