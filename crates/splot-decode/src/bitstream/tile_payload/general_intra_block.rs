@@ -273,6 +273,11 @@ impl GeneralIntraChromaBlockMode {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) const fn cfl_for_test(cfl_params: CflParams) -> Self {
+        Self::cfl(cfl_params)
+    }
+
     pub(crate) const fn uv_mode(self) -> u8 {
         self.uv_mode
     }
