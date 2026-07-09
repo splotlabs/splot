@@ -638,6 +638,7 @@ pub(crate) enum TileCdfSelector {
     },
     ExplicitBawpScale,
     UseWienerNs,
+    UsePcWiener,
     WienerNsLength {
         plane_ctx: usize,
     },

@@ -28,9 +28,10 @@ use splot_core::tables::cdf::{
     DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SKIP_MODE_CDF, DEFAULT_TIP_MODE_CDF,
     DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
     DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_DIP_CDF,
-    DEFAULT_USE_OPTFLOW_CDF, DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
-    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF,
-    DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_USE_OPTFLOW_CDF, DEFAULT_USE_PC_WIENER_CDF, DEFAULT_USE_WIENER_NS_CDF,
+    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
+    DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
+    DEFAULT_Y_MODE_SET_CDF,
 };
 
 use super::block_rows::*;
@@ -257,6 +258,10 @@ impl TileCdfRows {
         self.block.use_wiener_ns()
     }
 
+    pub(crate) const fn use_pc_wiener(&self) -> &block_rows::UsePcWienerCdfRow {
+        self.block.use_pc_wiener()
+    }
+
     pub(crate) const fn wiener_ns_length(&self) -> &block_rows::WienerNsLengthCdfRows {
         self.block.wiener_ns_length()
     }
@@ -365,6 +370,10 @@ impl BlockCdfRows {
 
     pub(crate) const fn use_wiener_ns(&self) -> &UseWienerNsCdfRow {
         &self.use_wiener_ns
+    }
+
+    pub(crate) const fn use_pc_wiener(&self) -> &UsePcWienerCdfRow {
+        &self.use_pc_wiener
     }
 
     pub(crate) const fn wiener_ns_length(&self) -> &WienerNsLengthCdfRows {
@@ -611,6 +620,7 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
     assert_eq!(frame.rows().comp_ref1(), &DEFAULT_COMP_REF1_CDF);
     assert_eq!(frame.rows().tip_mode(), &DEFAULT_TIP_MODE_CDF);
     assert_eq!(frame.rows().use_wiener_ns(), &DEFAULT_USE_WIENER_NS_CDF);
+    assert_eq!(frame.rows().use_pc_wiener(), &DEFAULT_USE_PC_WIENER_CDF);
     assert_eq!(
         frame.rows().wiener_ns_length(),
         &DEFAULT_WIENER_NS_LENGTH_CDF

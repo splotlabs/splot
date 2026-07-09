@@ -31,8 +31,8 @@ use splot_core::tables::cdf::{
     DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_DIP_CDF,
     DEFAULT_USE_DPCM_UV_CDF, DEFAULT_USE_DPCM_Y_CDF, DEFAULT_USE_EXTEND_WARP_CDF,
     DEFAULT_USE_LOCAL_WARP_CDF, DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF, DEFAULT_USE_OPTFLOW_CDF,
-    DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_WARP_DELTA_PARAM_HIGH_CDF, DEFAULT_WARP_DELTA_PARAM_LOW_CDF,
+    DEFAULT_USE_PC_WIENER_CDF, DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
+    DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WARP_DELTA_PARAM_HIGH_CDF, DEFAULT_WARP_DELTA_PARAM_LOW_CDF,
     DEFAULT_WARP_DELTA_PARAM_SIGN_CDF, DEFAULT_WARP_IDX_CDF, DEFAULT_WARP_INTER_INTRA_CDF,
     DEFAULT_WARP_MV_CDF, DEFAULT_WARP_PRECISION_CDF, DEFAULT_WARP_WITH_MVD_CDF,
     DEFAULT_WEDGE_ANGLE_CDF, DEFAULT_WEDGE_DIST1_CDF, DEFAULT_WEDGE_DIST2_CDF,
@@ -214,6 +214,7 @@ pub(crate) type UseBawpCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type ExplicitBawpCdfRows = [[i32; CDF_ROW_LEN]; BAWP_SCALES_CONTEXTS];
 pub(crate) type ExplicitBawpScaleCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type UseWienerNsCdfRow = [i32; CDF_ROW_LEN];
+pub(crate) type UsePcWienerCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type WienerNsLengthCdfRows = [[i32; CDF_ROW_LEN]; WIENER_NS_LENGTH_CONTEXTS];
 pub(crate) type WienerNsUvSymCdfRow = [i32; CDF_ROW_LEN];
 pub(crate) type WienerNsBaseCdfRow = [i32; WIENER_NS_BASE_CDF_ROW_LEN];
@@ -358,6 +359,7 @@ pub(crate) struct BlockCdfRows {
     pub(crate) explicit_bawp: ExplicitBawpCdfRows,
     pub(crate) explicit_bawp_scale: ExplicitBawpScaleCdfRow,
     pub(crate) use_wiener_ns: UseWienerNsCdfRow,
+    pub(crate) use_pc_wiener: UsePcWienerCdfRow,
     pub(crate) wiener_ns_length: WienerNsLengthCdfRows,
     pub(crate) wiener_ns_uv_sym: WienerNsUvSymCdfRow,
     pub(crate) wiener_ns_base: WienerNsBaseCdfRow,
@@ -851,6 +853,7 @@ macro_rules! block_cdf_row {
             ),
             TileCdfSelector::ExplicitBawpScale => Ok($self.explicit_bawp_scale.$as_slice()),
             TileCdfSelector::UseWienerNs => Ok($self.use_wiener_ns.$as_slice()),
+            TileCdfSelector::UsePcWiener => Ok($self.use_pc_wiener.$as_slice()),
             TileCdfSelector::WienerNsLength { plane_ctx } => block_row_slice!(
                 $self.wiener_ns_length,
                 plane_ctx,
@@ -1131,6 +1134,7 @@ macro_rules! block_cdf_count_rows {
         $rows!(explicit_bawp);
         $row!(explicit_bawp_scale);
         $row!(use_wiener_ns);
+        $row!(use_pc_wiener);
         $rows!(wiener_ns_length);
         $row!(wiener_ns_uv_sym);
         $row!(wiener_ns_base);
@@ -1242,6 +1246,7 @@ impl BlockCdfRows {
             explicit_bawp: DEFAULT_EXPLICIT_BAWP_CDF,
             explicit_bawp_scale: DEFAULT_EXPLICIT_BAWP_SCALE_CDF,
             use_wiener_ns: DEFAULT_USE_WIENER_NS_CDF,
+            use_pc_wiener: DEFAULT_USE_PC_WIENER_CDF,
             wiener_ns_length: DEFAULT_WIENER_NS_LENGTH_CDF,
             wiener_ns_uv_sym: DEFAULT_WIENER_NS_UV_SYM_CDF,
             wiener_ns_base: DEFAULT_WIENER_NS_BASE_CDF,
