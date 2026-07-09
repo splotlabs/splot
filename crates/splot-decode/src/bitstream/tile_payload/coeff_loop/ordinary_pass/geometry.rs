@@ -658,7 +658,7 @@ pub(crate) fn lossless_plane_tx_type(
     if is_inter && geometry.plane > 0 {
         return base_config.chroma_inter_tx_type;
     }
-    if geometry.plane == 0 && base_config.luma_tx_type == IDTX {
+    if base_config.luma_tx_type == IDTX && (geometry.plane == 0 || !is_inter) {
         return IDTX;
     }
     DCT_DCT

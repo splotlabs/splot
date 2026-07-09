@@ -412,6 +412,33 @@ fn lossless_fsc_luma_transform_handoff_retains_idtx_without_tx_type_read() {
 }
 
 #[test]
+fn lossless_fsc_chroma_transform_handoff_follows_luma_idtx() {
+    let mut cdfs = tile_cdfs();
+    let mut symbols = symbol_decoder_for_payload(&PAYLOAD);
+
+    let metadata = ensure_transform_tool_residual_handoff(
+        &mut cdfs,
+        &mut symbols,
+        TransformToolResidualInput {
+            frame_facts: lossless_frame_facts(),
+            plane: 1,
+            tx_size: TX_4X4,
+            is_inter: false,
+            lossless: true,
+            fsc_mode: true,
+            eob: 2,
+            luma_transform_type_context: None,
+            active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
+            active_chroma_policy: ActiveChromaResidualPolicy::Reject,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(metadata.luma_tx_type, IDTX);
+    assert_eq!(symbols.symbol_count(), 0);
+}
+
+#[test]
 fn fsc_mode_luma_transform_handoff_derives_idtx_without_luma_context() {
     let metadata = ensure_with_test_payload_fsc_and_policy(
         frame_facts_with_fsc(),
