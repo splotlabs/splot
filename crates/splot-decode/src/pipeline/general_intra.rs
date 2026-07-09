@@ -36,6 +36,10 @@ fn general_intra_chroma_tools(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
 ) -> GeneralIntraChromaToolConfig {
+    let chroma_sampling =
+        ChromaSampling::from_chroma_format_idc(sequence.general.chroma_format_idc);
+    let (subsampling_x, subsampling_y) = chroma_sampling.subsampling(PlaneId::U);
+
     sequence
         .intra
         .as_ref()
@@ -44,6 +48,7 @@ fn general_intra_chroma_tools(
                 .with_enable_mrls(intra.enable_mrls)
                 .with_enable_dip(intra.enable_dip)
         })
+        .with_chroma_subsampling(subsampling_x, subsampling_y)
         .with_enable_idtx_intra(
             sequence
                 .transform_quant_entropy

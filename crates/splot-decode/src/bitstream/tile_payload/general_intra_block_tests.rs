@@ -20,6 +20,7 @@ use super::*;
 use crate::DecodeLimits;
 
 const BLOCK_16X16: usize = 6;
+const BLOCK_8X8: usize = 3;
 const BLOCK_32X16: usize = 8;
 const BLOCK_64X64: usize = 12;
 const BLOCK_256X256: usize = 18;
@@ -794,8 +795,12 @@ fn sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl() {
     assert_eq!(symbols.finish().unwrap().symbol_count, 1);
 }
 
-#[test]
-fn lossless_large_chroma_reads_uv_mode_without_is_cfl() {
+fn decode_lossless_chroma_uv_mode_without_is_cfl(
+    chroma_tools: GeneralIntraChromaToolConfig,
+    block_size_index: usize,
+    block_n4w: usize,
+    block_n4h: usize,
+) -> (GeneralIntraChromaBlockMode, u64, u64) {
     let payload = encode_symbol_sequence(&[
         (TileCdfSelector::UseDpcmUv, 0),
         (TileCdfSelector::UvModeCflNotAllowed { ctx: 0 }, 0),
@@ -806,19 +811,103 @@ fn lossless_large_chroma_reads_uv_mode_without_is_cfl() {
     let mode = decode_general_intra_chroma_block_mode(
         &mut work_unit,
         &mut symbols,
+        chroma_tools,
+        GeneralIntraChromaModeContext::shared_or_non_sdp(0),
+        IntraYMode::DC_PRED,
+        block_size_index,
+        block_n4w,
+        block_n4h,
+    )
+    .unwrap();
+    let symbol_count = symbols.symbol_count();
+    let finish_count = symbols.finish().unwrap().symbol_count;
+    (mode, symbol_count, finish_count)
+}
+
+#[test]
+fn lossless_chroma_cfl_gate_uses_subsampled_plane_size() {
+    let yuv420 = GeneralIntraChromaToolConfig::new(true, true).with_lossless(true);
+    let yuv444 = yuv420.with_chroma_subsampling(0, 0);
+
+    assert!(lossless_chroma_plane_is_4x4(yuv420, 2, 2));
+    assert!(lossless_chroma_plane_is_4x4(yuv420, 1, 2));
+    assert!(!lossless_chroma_plane_is_4x4(yuv420, 4, 2));
+    assert!(lossless_chroma_plane_is_4x4(yuv444, 1, 1));
+    assert!(!lossless_chroma_plane_is_4x4(yuv444, 2, 2));
+}
+
+#[test]
+fn lossless_420_chroma_4x4_reads_cfl_and_mhccp_syntax() {
+    let size_group = cfl_mh_dir_size_group(BLOCK_8X8).unwrap();
+    let payload = encode_symbol_sequence(&[
+        (TileCdfSelector::UseDpcmUv, 0),
+        (TileCdfSelector::IsCfl { ctx: 0 }, 1),
+        (TileCdfSelector::CflMhccp, 1),
+        (TileCdfSelector::CflMhDir { size_group }, 2),
+    ]);
+    let mut work_unit = make_work_unit(&payload);
+    let mut symbols = symbol_decoder(&payload);
+
+    let mode = decode_general_intra_chroma_block_mode(
+        &mut work_unit,
+        &mut symbols,
         GeneralIntraChromaToolConfig::new(true, true).with_lossless(true),
         GeneralIntraChromaModeContext::shared_or_non_sdp(0),
         IntraYMode::DC_PRED,
-        BLOCK_16X16,
-        4,
-        4,
+        BLOCK_8X8,
+        2,
+        2,
     )
     .unwrap();
 
-    assert!(!mode.is_cfl());
-    assert_eq!(mode.uv_mode(), 0);
-    assert_eq!(symbols.symbol_count(), 2);
-    assert_eq!(symbols.finish().unwrap().symbol_count, 2);
+    assert!(mode.is_cfl());
+    assert_eq!(
+        mode.cfl_params(),
+        Some(CflParams {
+            index: CflIndex::Multi,
+            alpha_u: 0,
+            alpha_v: 0,
+            mh_dir: Some(2),
+        })
+    );
+    assert_eq!(symbols.symbol_count(), 4);
+    assert_eq!(symbols.finish().unwrap().symbol_count, 4);
+}
+
+#[test]
+fn lossless_chroma_non_4x4_plane_reads_uv_mode_without_is_cfl() {
+    let cases = [
+        (
+            "420-large",
+            GeneralIntraChromaToolConfig::new(true, true).with_lossless(true),
+            BLOCK_16X16,
+            4,
+            4,
+        ),
+        (
+            "444-8x8",
+            GeneralIntraChromaToolConfig::new(true, true)
+                .with_chroma_subsampling(0, 0)
+                .with_lossless(true),
+            BLOCK_8X8,
+            2,
+            2,
+        ),
+    ];
+
+    for (label, chroma_tools, block_size_index, block_n4w, block_n4h) in cases {
+        let (mode, symbol_count, finish_count) = decode_lossless_chroma_uv_mode_without_is_cfl(
+            chroma_tools,
+            block_size_index,
+            block_n4w,
+            block_n4h,
+        );
+
+        assert!(!mode.is_cfl(), "{label}");
+        assert_eq!(mode.uv_mode(), 0, "{label}");
+        assert_eq!(symbol_count, 2, "{label}");
+        assert_eq!(finish_count, 2, "{label}");
+    }
 }
 
 #[test]

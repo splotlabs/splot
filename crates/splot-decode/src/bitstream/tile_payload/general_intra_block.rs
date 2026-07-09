@@ -87,6 +87,8 @@ const LOSSLESS_MAX_TX_DIMENSION: usize = 32;
 pub(crate) struct GeneralIntraChromaToolConfig {
     enable_cfl_intra: bool,
     enable_mhccp: bool,
+    chroma_subsampling_x: u32,
+    chroma_subsampling_y: u32,
     enable_idtx_intra: bool,
     enable_mrls: bool,
     enable_dip: bool,
@@ -100,12 +102,25 @@ impl GeneralIntraChromaToolConfig {
         Self {
             enable_cfl_intra,
             enable_mhccp,
+            chroma_subsampling_x: 1,
+            chroma_subsampling_y: 1,
             enable_idtx_intra: false,
             enable_mrls: false,
             enable_dip: false,
             allow_screen_content_tools: false,
             lossless: false,
         }
+    }
+
+    #[must_use]
+    pub(crate) const fn with_chroma_subsampling(
+        mut self,
+        subsampling_x: u32,
+        subsampling_y: u32,
+    ) -> Self {
+        self.chroma_subsampling_x = if subsampling_x > 1 { 1 } else { subsampling_x };
+        self.chroma_subsampling_y = if subsampling_y > 1 { 1 } else { subsampling_y };
+        self
     }
 
     #[must_use]
@@ -959,7 +974,7 @@ fn read_cfl_alphas(
     block_n4h: usize,
 ) -> Result<CflParams, GeneralIntraBlockModeError> {
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-    let mhccp_allowed = mhccp_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h);
+    let mhccp_allowed = mhccp_allowed_for_chroma_mode(chroma_tools, block_n4w, block_n4h);
     let cfl_mhccp = if !chroma_tools.enable_cfl_intra {
         1
     } else if mhccp_allowed {
@@ -1188,7 +1203,8 @@ fn cfl_allowed_for_chroma_mode(
     block_n4h: usize,
 ) -> bool {
     if chroma_tools.lossless {
-        return chroma_tools.enable_cfl_intra && block_n4w == 1 && block_n4h == 1;
+        return chroma_tools.enable_cfl_intra
+            && lossless_chroma_plane_is_4x4(chroma_tools, block_n4w, block_n4h);
     }
     cfl_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h)
 }
@@ -1199,9 +1215,23 @@ fn mhccp_allowed_for_chroma_mode(
     block_n4h: usize,
 ) -> bool {
     if chroma_tools.lossless {
-        return chroma_tools.enable_mhccp && block_n4w == 1 && block_n4h == 1;
+        return chroma_tools.enable_mhccp
+            && lossless_chroma_plane_is_4x4(chroma_tools, block_n4w, block_n4h);
     }
     mhccp_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h)
+}
+
+fn lossless_chroma_plane_is_4x4(
+    chroma_tools: GeneralIntraChromaToolConfig,
+    block_n4w: usize,
+    block_n4h: usize,
+) -> bool {
+    if block_n4w == 0 || block_n4h == 0 {
+        return false;
+    }
+    let chroma_n4w = (block_n4w >> chroma_tools.chroma_subsampling_x).max(1);
+    let chroma_n4h = (block_n4h >> chroma_tools.chroma_subsampling_y).max(1);
+    chroma_n4w == 1 && chroma_n4h == 1
 }
 
 fn allow_fsc_intra(
