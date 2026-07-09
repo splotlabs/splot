@@ -1939,6 +1939,9 @@ mod general_intra_lossless_hfollow_tests;
 mod general_intra_lossless_sdp_d113_tests;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod general_intra_lossless_smooth_tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_tests;
 
 #[derive(Clone, Copy)]

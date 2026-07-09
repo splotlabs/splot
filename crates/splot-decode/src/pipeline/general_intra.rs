@@ -949,6 +949,7 @@ pub(super) fn lossless_chroma_block_prediction_verified(
     }
     let neighbours = block_ctx.neighbours(PlaneId::U);
     let top_left = sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left();
+    let top_left_smooth = top_left && y_mode == IntraYMode::DC_PRED && mode == M::Smooth;
     let above_only_cardinal = sb_mib == FULL_SB_N4_LUMA
         && neighbours.has_above()
         && !neighbours.has_left()
@@ -976,6 +977,7 @@ pub(super) fn lossless_chroma_block_prediction_verified(
                 || (y_mode.mode_to_angle() == Some(135) && mode == M::D135Follow)
                 || (y_mode.mode_to_angle() == Some(157) && mode == M::D157Follow)
                 || (y_mode.mode_to_angle() == Some(203) && mode == M::D203Follow)))
+        || top_left_smooth
         || above_only_cardinal
         || (!neighbours.has_above()
             && neighbours.has_left()
