@@ -1214,6 +1214,20 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         top_left_8,
         general_intra::FULL_SB_N4_LUMA,
     ));
+    assert!(!part_ok(
+        Some(SupportedChromaMode::D203Follow),
+        false,
+        IntraYMode::DC_PRED,
+        top_left_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
+    assert!(part_ok(
+        Some(SupportedChromaMode::D203Follow),
+        false,
+        IntraYMode::D203_PRED_FOR_TEST,
+        top_left_8,
+        general_intra::FULL_SB_N4_LUMA,
+    ));
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
         None,
         false,
