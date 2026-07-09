@@ -23,6 +23,20 @@ struct InterLumaTxTypeMap {
     values: Vec<usize>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InterChromaUnit {
+    x4: usize,
+    y4: usize,
+    tx_fills_block: bool,
+    chroma_inter_tx_type: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InterChromaURead {
+    unit: InterChromaUnit,
+    u_nonzero: bool,
+}
+
 impl InterLumaTxTypeMap {
     fn new(
         row: usize,
@@ -465,6 +479,7 @@ fn read_inter_residual_chroma_group(
     let y_offset4 = (chunk_y << 4) >> usize::from(subsampling_y);
     let base_x4 = chroma_ref.col() >> usize::from(subsampling_x);
     let base_y4 = chroma_ref.row() >> usize::from(subsampling_y);
+    let mut u_reads = Vec::new();
     let mut y4 = y_offset4;
     while y4 < y_offset4 + num4x4_h {
         let mut x4 = x_offset4;
@@ -479,6 +494,12 @@ fn read_inter_residual_chroma_group(
                 subsampling_x,
                 subsampling_y,
             );
+            let unit = InterChromaUnit {
+                x4,
+                y4,
+                tx_fills_block: tx_w4 == num4x4_w && tx_h4 == num4x4_h,
+                chroma_inter_tx_type,
+            };
             let u = read_inter_residual_plane(
                 work_unit,
                 symbols,
@@ -487,8 +508,8 @@ fn read_inter_residual_chroma_group(
                 tx_size,
                 start_x,
                 start_y,
-                tx_w4 == num4x4_w && tx_h4 == num4x4_h,
-                chroma_inter_tx_type,
+                unit.tx_fills_block,
+                unit.chroma_inter_tx_type,
                 false,
                 residual_tool_policy,
                 tile_offset,
@@ -503,29 +524,10 @@ fn read_inter_residual_chroma_group(
                 u,
                 tile_offset,
             )?;
-            let v = read_inter_residual_plane(
-                work_unit,
-                symbols,
-                coeff_ctx,
-                2,
-                tx_size,
-                start_x,
-                start_y,
-                tx_w4 == num4x4_w && tx_h4 == num4x4_h,
-                chroma_inter_tx_type,
-                u_nonzero,
-                residual_tool_policy,
-                tile_offset,
-            )?;
-            push_inter_residual_block(
-                blocks,
-                ReconPlaneId::V,
-                base_x4 + x4,
-                base_y4 + y4,
-                tx_size,
-                v,
-                tile_offset,
-            )?;
+            u_reads
+                .try_reserve(1)
+                .map_err(|_| residual_geometry_error(tile_offset))?;
+            u_reads.push(InterChromaURead { unit, u_nonzero });
             x4 = x4
                 .checked_add(tx_w4)
                 .ok_or_else(|| residual_geometry_error(tile_offset))?;
@@ -533,6 +535,34 @@ fn read_inter_residual_chroma_group(
         y4 = y4
             .checked_add(tx_h4)
             .ok_or_else(|| residual_geometry_error(tile_offset))?;
+    }
+
+    for read in u_reads {
+        let start_x = (base_x4 + read.unit.x4) * MI_SIZE;
+        let start_y = (base_y4 + read.unit.y4) * MI_SIZE;
+        let v = read_inter_residual_plane(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            2,
+            tx_size,
+            start_x,
+            start_y,
+            read.unit.tx_fills_block,
+            read.unit.chroma_inter_tx_type,
+            read.u_nonzero,
+            residual_tool_policy,
+            tile_offset,
+        )?;
+        push_inter_residual_block(
+            blocks,
+            ReconPlaneId::V,
+            base_x4 + read.unit.x4,
+            base_y4 + read.unit.y4,
+            tx_size,
+            v,
+            tile_offset,
+        )?;
     }
     Ok(())
 }
