@@ -471,6 +471,23 @@ fn lossless_chroma_part_guard_admits_rect_prediction_subset() {
 }
 
 #[test]
+fn lossless_chroma_block_guard_admits_interior_rect_prediction_subset() {
+    let block = ctx_with_bit_depth(6, 10, 4, 2, BitDepth::Eight);
+    assert!(lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::Smooth),
+        false,
+        block,
+        32,
+    ));
+    assert!(!lossless_chroma_block_prediction_verified(
+        Some(SupportedChromaMode::Smooth),
+        true,
+        block,
+        32,
+    ));
+}
+
+#[test]
 fn lossless_chroma_part_guard_delegates_cfl_to_cfl_plan() {
     let block = ctx_with_bit_depth(2, 0, 2, 2, BitDepth::Eight);
     let params = CflParams {

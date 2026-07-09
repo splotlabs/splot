@@ -886,12 +886,18 @@ pub(super) fn lossless_chroma_block_prediction_verified(
     if lossless_chroma_prediction_verified(mode, uses_dpcm_uv) {
         return true;
     }
-    if uses_dpcm_uv || !lossless_chroma_full_64_block(block_ctx) {
+    if uses_dpcm_uv {
         return false;
     }
     let Some(mode) = mode else {
         return false;
     };
+    if lossless_chroma_block_rect_prediction_verified(mode, block_ctx) {
+        return true;
+    }
+    if !lossless_chroma_full_64_block(block_ctx) {
+        return false;
+    }
     let neighbours = block_ctx.neighbours(PlaneId::U);
     ((sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left())
         && matches!(
@@ -916,6 +922,17 @@ pub(super) fn lossless_chroma_block_prediction_verified(
                 mode,
                 M::D157 | M::D157Follow | M::D203 | M::D203Follow | M::Paeth
             )))
+}
+
+fn lossless_chroma_block_rect_prediction_verified(
+    mode: SupportedChromaMode,
+    block_ctx: BlockCtx,
+) -> bool {
+    let neighbours = block_ctx.neighbours(PlaneId::U);
+    lossless_chroma_8bit_420(block_ctx)
+        && neighbours.has_above()
+        && neighbours.has_left()
+        && ensure_supported_rect_chroma_capability(mode, block_ctx).is_ok()
 }
 
 fn lossless_chroma_full_64_block(block_ctx: BlockCtx) -> bool {
