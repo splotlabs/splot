@@ -970,7 +970,8 @@ pub(super) fn lossless_chroma_block_prediction_verified(
                 | M::Paeth
         ))
         || (top_left
-            && ((y_mode.mode_to_angle() == Some(67) && mode == M::D67Follow)
+            && ((y_mode.mode_to_angle() == Some(45) && mode == M::D45Follow)
+                || (y_mode.mode_to_angle() == Some(67) && mode == M::D67Follow)
                 || (y_mode.mode_to_angle() == Some(113) && mode == M::D113Follow)
                 || (y_mode.mode_to_angle() == Some(135) && mode == M::D135Follow)
                 || (y_mode.mode_to_angle() == Some(157) && mode == M::D157Follow)
