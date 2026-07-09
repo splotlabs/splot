@@ -37,6 +37,12 @@ struct InterChromaURead {
     u_nonzero: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InterResidualLumaTxSizeMode {
+    Inter,
+    Intrabc,
+}
+
 impl InterLumaTxTypeMap {
     fn new(
         row: usize,
@@ -128,6 +134,7 @@ pub(crate) fn read_inter_residual(
     mi_rows: usize,
     mi_cols: usize,
     lossless: bool,
+    luma_tx_size_mode: InterResidualLumaTxSizeMode,
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<InterResidual> {
@@ -140,7 +147,14 @@ pub(crate) fn read_inter_residual(
     } else {
         frontier.b_size
     };
-    let luma_tx_size = inter_residual_tx_size(frontier.b_size.index(), lossless, tile_offset)?;
+    let luma_tx_size = inter_residual_tx_size(
+        work_unit,
+        symbols,
+        frontier.b_size.index(),
+        lossless,
+        luma_tx_size_mode,
+        tile_offset,
+    )?;
     let luma_tx_records = if residual_uses_selectable_tx_partitions(core) {
         Some(derive_inter_luma_tx_records_for_block(
             work_unit,
@@ -433,7 +447,7 @@ fn read_inter_residual_chroma_group(
         .map_err(|_| residual_geometry_error(tile_offset))?
         .valid()
         .ok_or_else(|| residual_geometry_error(tile_offset))?;
-    let tx_size = inter_residual_tx_size(chroma_ref_size.index(), lossless, tile_offset)?;
+    let tx_size = fixed_inter_residual_tx_size(chroma_ref_size.index(), lossless, tile_offset)?;
     let plane_source_size = if chroma_mi_size != frontier.b_size {
         chroma_mi_size
     } else {
@@ -652,6 +666,26 @@ pub(crate) fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<
 }
 
 fn inter_residual_tx_size(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    block_size: usize,
+    lossless: bool,
+    mode: InterResidualLumaTxSizeMode,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    if !lossless {
+        return max_tx_size(block_size, tile_offset);
+    }
+    match mode {
+        InterResidualLumaTxSizeMode::Inter => Ok(TX_4X4),
+        InterResidualLumaTxSizeMode::Intrabc => {
+            read_lossless_tx_size(work_unit, symbols, block_size, false, true, true)
+                .map_err(|_| residual_read_error(tile_offset))
+        }
+    }
+}
+
+fn fixed_inter_residual_tx_size(
     block_size: usize,
     lossless: bool,
     tile_offset: ByteOffset,

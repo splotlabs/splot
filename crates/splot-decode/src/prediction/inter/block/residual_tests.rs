@@ -63,11 +63,11 @@ fn lossless_inter_residual_uses_4x4_transform_units() {
     let offset = ByteOffset::new(0);
 
     assert_eq!(
-        inter_residual_tx_size(BLOCK_16X8, true, offset).unwrap(),
+        fixed_inter_residual_tx_size(BLOCK_16X8, true, offset).unwrap(),
         TX_4X4
     );
     assert_eq!(
-        inter_residual_tx_size(BLOCK_16X8, false, offset).unwrap(),
+        fixed_inter_residual_tx_size(BLOCK_16X8, false, offset).unwrap(),
         max_tx_size(BLOCK_16X8, offset).unwrap()
     );
 }

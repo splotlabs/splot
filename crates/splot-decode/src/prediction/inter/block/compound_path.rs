@@ -500,6 +500,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             mi_rows,
             mi_cols,
             current_residual_lossless(work_unit),
+            InterResidualLumaTxSizeMode::Inter,
             residual_tool_policy,
             tile_offset,
         )?)
