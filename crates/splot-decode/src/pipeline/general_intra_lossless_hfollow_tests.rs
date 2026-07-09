@@ -7,7 +7,8 @@ use splot_parallel::ThreadCount;
 use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize};
 
 use super::general_intra_tests::{
-    assert_lossless_explicit_chroma_leftedge_pair_oracle, assert_lossless_explicit_chroma_oracle,
+    assert_lossless_directional_luma_oracle, assert_lossless_explicit_chroma_leftedge_pair_oracle,
+    assert_lossless_explicit_chroma_oracle,
 };
 use super::*;
 use crate::{DecodeContext, DecodeRuntimeConfig};
@@ -48,6 +49,9 @@ const LOSSLESS_SDP_NONDC_CHROMA_HFOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!
 const LOSSLESS_SDP_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d45-leftedge-128x64.ivf"
 );
+const LOSSLESS_SDP_NONDC_CHROMA_D45FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-d45follow-leftedge-128x64.ivf"
+);
 
 #[test]
 fn lossless_nondc_chroma_d45_leftedge_frame_decodes_to_oracle() {
@@ -58,6 +62,19 @@ fn lossless_nondc_chroma_d45_leftedge_frame_decodes_to_oracle() {
         120,
         "D45",
         "56a0c73c398f6adb27194cb8d3908cea02791d63e79658c7552cc15a0752fc01",
+    );
+}
+
+#[test]
+fn lossless_sdp_nondc_chroma_d45follow_leftedge_frame_decodes_to_oracle() {
+    assert_lossless_directional_luma_oracle(
+        LOSSLESS_SDP_NONDC_CHROMA_D45FOLLOW_LEFTEDGE_FIXTURE,
+        76,
+        128,
+        64,
+        64,
+        32,
+        "386bf9550c5623bc5eb0fba92f0985b2bd0f9d06c5fa991d32407f3b17f99c6f",
     );
 }
 

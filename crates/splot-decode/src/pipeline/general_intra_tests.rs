@@ -716,7 +716,7 @@ fn lossless_nondc_luma_d113_and_d157_chroma_follow_leftedge_frames_decode_to_ora
     );
 }
 
-fn assert_lossless_directional_luma_oracle(
+pub(super) fn assert_lossless_directional_luma_oracle(
     fixture: &[u8],
     expected_len: usize,
     width: usize,
@@ -1155,6 +1155,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         SupportedChromaMode::Horizontal,
         SupportedChromaMode::HorizontalFollow,
         SupportedChromaMode::D45,
+        SupportedChromaMode::D45Follow,
         SupportedChromaMode::D113,
         SupportedChromaMode::D135,
         SupportedChromaMode::D157,
