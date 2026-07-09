@@ -47,12 +47,6 @@ pub(crate) struct GeneralIntraResidualPlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ResidualBlockTransforms {
-    luma_tx: usize,
-    chroma_tx: Option<usize>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RectLumaPlan {
     Palette {
         palette: LumaPalette,
@@ -133,16 +127,6 @@ pub(crate) enum RectChromaPlan {
         cfl_ds_filter_index: u8,
         sb_mib: usize,
     },
-}
-
-impl ResidualBlockTransforms {
-    pub(crate) const fn luma_tx(self) -> usize {
-        self.luma_tx
-    }
-
-    pub(crate) const fn chroma_tx(self) -> Option<usize> {
-        self.chroma_tx
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -422,19 +406,11 @@ impl GeneralIntraResidualPlan {
         Ok(Self { planes })
     }
 
-    pub(crate) fn transforms(&self) -> ResidualBlockTransforms {
-        ResidualBlockTransforms {
-            luma_tx: self
-                .planes
-                .iter()
-                .find(|plane| plane.plane_id == PlaneId::Y)
-                .map_or(0, |plane| plane.tx_size),
-            chroma_tx: self
-                .planes
-                .iter()
-                .find(|plane| plane.plane_id == PlaneId::U)
-                .map(|plane| plane.tx_size),
-        }
+    pub(crate) fn chroma_tx(&self) -> Option<usize> {
+        self.planes
+            .iter()
+            .find(|plane| plane.plane_id == PlaneId::U)
+            .map(|plane| plane.tx_size)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -453,9 +429,6 @@ impl GeneralIntraResidualPlan {
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         deblock: &mut DeblockRecorder<'_>,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
-        if !self.planes.iter().any(|plane| plane.plane_id == PlaneId::Y) {
-            deblock.record_chroma_part_block();
-        }
         let mut u_nonzero = false;
         let mut pending_u = None;
         let mut deferred = Vec::new();
@@ -716,6 +689,8 @@ impl ResidualPlanePlan {
                 self.tx_size,
                 coeffs.eob,
             );
+        } else {
+            deblock.record_chroma_unit(self.plane_id, self.x, self.y, self.tx_size);
         }
         if !self.defer_reconstruction {
             self.reconstruct(
@@ -832,6 +807,8 @@ impl ResidualPlanePlan {
                         block.tx_size,
                         block.coeffs.eob,
                     );
+                } else {
+                    deblock.record_chroma_unit(unit.plane_id, block.x, block.y, block.tx_size);
                 }
                 let (sub_x, sub_y) = self.block_ctx.chroma().subsampling(unit.plane_id);
                 let row4 = ((block.y >> 2) << sub_y) & block_decoded.sb_size4().saturating_sub(1);
