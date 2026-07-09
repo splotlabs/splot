@@ -1065,7 +1065,8 @@ impl ResidualPlanePlan {
                     IntraLumaPlan::DirectionalFirst {
                         mode:
                             mode @ (SupportedDirectionalLumaMode::D113
-                            | SupportedDirectionalLumaMode::D135),
+                            | SupportedDirectionalLumaMode::D135
+                            | SupportedDirectionalLumaMode::D157),
                     },
                 use_tcq,
             } if block.coeffs.lossless => {

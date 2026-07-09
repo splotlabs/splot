@@ -259,6 +259,11 @@ fn lossless_prediction_guard_admits_top_left_d135_luma() {
 }
 
 #[test]
+fn lossless_prediction_guard_admits_top_left_d157_luma() {
+    assert_lossless_directional_luma_admitted(IntraYMode::D157_PRED_FOR_TEST);
+}
+
+#[test]
 fn lossless_prediction_guard_admits_top_left_d67_luma() {
     assert_lossless_directional_luma_admitted(IntraYMode::D67_PRED_FOR_TEST);
 }
@@ -629,6 +634,7 @@ fn lossless_prediction_guard_rejects_unverified_directional_variants() {
         IntraYMode::H_PRED_FOR_TEST,
         IntraYMode::D45_PRED_FOR_TEST,
         IntraYMode::D135_PRED_FOR_TEST,
+        IntraYMode::D157_PRED_FOR_TEST,
     ] {
         for (modes, block_ctx, sb_mib) in [
             (luma_modes_with_angle(mode, 1), top_left_8, FULL_SB_N4_LUMA),
@@ -1161,6 +1167,13 @@ fn admits_top_left_full_sb_lossless_directional_luma_cases() {
             IntraYMode::D113_PRED_FOR_TEST,
             IntraLumaPlan::DirectionalFirst {
                 mode: SupportedDirectionalLumaMode::D113,
+            },
+        ),
+        (
+            "d157",
+            IntraYMode::D157_PRED_FOR_TEST,
+            IntraLumaPlan::DirectionalFirst {
+                mode: SupportedDirectionalLumaMode::D157,
             },
         ),
         (

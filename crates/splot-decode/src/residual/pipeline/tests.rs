@@ -513,6 +513,7 @@ fn directional_first_middle_partition_handoff_stays_lossless_only() {
     for mode in [
         SupportedDirectionalLumaMode::D113,
         SupportedDirectionalLumaMode::D135,
+        SupportedDirectionalLumaMode::D157,
     ] {
         let plan = GeneralIntraResidualPlan::square(
             block_ctx,
