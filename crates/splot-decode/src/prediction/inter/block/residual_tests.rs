@@ -5,6 +5,8 @@
 
 use super::*;
 
+const BLOCK_16X8: usize = 5;
+
 fn tx_size_for(width: usize, height: usize) -> usize {
     TX_WIDTH
         .iter()
@@ -53,5 +55,19 @@ fn chroma_group_start_waits_for_subsampled_luma_chunks() {
     assert_eq!(
         completed_chroma_group_start(0, 1, 1, 2, true, true),
         Some((0, 0))
+    );
+}
+
+#[test]
+fn lossless_inter_residual_uses_4x4_transform_units() {
+    let offset = ByteOffset::new(0);
+
+    assert_eq!(
+        inter_residual_tx_size(BLOCK_16X8, true, offset).unwrap(),
+        TX_4X4
+    );
+    assert_eq!(
+        inter_residual_tx_size(BLOCK_16X8, false, offset).unwrap(),
+        max_tx_size(BLOCK_16X8, offset).unwrap()
     );
 }
