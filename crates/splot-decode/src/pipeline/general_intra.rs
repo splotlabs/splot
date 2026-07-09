@@ -828,8 +828,10 @@ pub(super) fn lossless_chroma_part_prediction_verified(
         && block_ctx.is_top_left()
         && matches!(mode, Some(SupportedChromaMode::HorizontalFollow));
     let top_left_directional_follow = block_ctx.is_top_left()
-        && ((y_mode.mode_to_angle() == Some(135)
-            && matches!(mode, Some(SupportedChromaMode::D135Follow)))
+        && ((y_mode.mode_to_angle() == Some(67)
+            && matches!(mode, Some(SupportedChromaMode::D67Follow)))
+            || (y_mode.mode_to_angle() == Some(135)
+                && matches!(mode, Some(SupportedChromaMode::D135Follow)))
             || (y_mode.mode_to_angle() == Some(203)
                 && matches!(mode, Some(SupportedChromaMode::D203Follow))));
     let neighbours = block_ctx.neighbours(PlaneId::U);
