@@ -132,6 +132,25 @@ fn update_after_coeffs_writes_above_and_left_ranges_only() {
 }
 
 #[test]
+fn chroma_context_updates_clip_to_subsampled_plane_edges() {
+    let mut state = TileCoeffContextState::new_with_chroma_sampling(
+        72,
+        88,
+        crate::tile::block_context::ChromaSampling::Yuv420,
+    )
+    .unwrap();
+
+    state.update_after_coeffs(update(1, 32, 0, 16, 8)).unwrap();
+
+    let above = state.above_level(1).unwrap();
+    assert!(above[32..44].iter().all(|&value| value == 4));
+    assert!(above[44..48].iter().all(|&value| value == 0));
+    let left = state.left_level(1).unwrap();
+    assert!(left[0..8].iter().all(|&value| value == 4));
+    assert!(left[36..40].iter().all(|&value| value == 0));
+}
+
+#[test]
 fn update_after_coeffs_rejects_bad_facts_without_mutation() {
     let mut state = TileCoeffContextState::new(2, 2).unwrap();
     let before = state.clone();

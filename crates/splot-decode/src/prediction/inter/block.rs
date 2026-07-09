@@ -273,20 +273,20 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     let mut tx_skip_records = Vec::new();
     let mut decoded_any = false;
     let limits = options.limits();
-    let mut active_source_blocks = Vec::new();
-    let mut unit_filters = Vec::new();
+    let (mut active_source_blocks, mut unit_filters) = (Vec::new(), Vec::new());
     for tile in work_units {
         let tile_offset = tile.tile_byte_span().start;
-        let tile_num = tile.tile_num();
-        let save_policy = tile.cdf().save_policy();
-        let mut coeff_ctx = TileCoeffContextState::new(mi_rows, mi_cols).map_err(|_| {
-            inter_cap!(
-                "inter_coeff_context_state",
-                tile_offset,
-                "inter.residual_context_state",
-                SPEC_MODE_INFO
-            )
-        })?;
+        let (tile_num, save_policy) = (tile.tile_num(), tile.cdf().save_policy());
+        let chroma = sequence.general.chroma_format_idc;
+        let mut coeff_ctx =
+            TileCoeffContextState::new_chroma(mi_rows, mi_cols, chroma).map_err(|_| {
+                inter_cap!(
+                    "inter_coeff_context_state",
+                    tile_offset,
+                    "inter.residual_context_state",
+                    SPEC_MODE_INFO
+                )
+            })?;
         let mut delta_q_state = DeltaQState::new(sequence, core, tile_offset)?;
         let mut intrabc_state =
             TileIntrabcPreludeState::new(mi_rows, mi_cols, sequence, tile_offset)?;
