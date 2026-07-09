@@ -1147,13 +1147,8 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         ));
     }
     let part_ok = general_intra::lossless_chroma_part_prediction_verified;
-    assert!(part_ok(
-        Some(Smooth),
-        false,
-        IntraYMode::DC_PRED,
-        top_left_8,
-        32
-    ));
+    let dc = IntraYMode::DC_PRED;
+    assert!(part_ok(Some(Smooth), false, dc, top_left_8, 32));
     assert!(!general_intra::lossless_chroma_block_prediction_verified(
         Some(Smooth),
         false,
@@ -1217,10 +1212,12 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     for (mode, y_mode, expected) in [
         (D67Follow, IntraYMode::DC_PRED, false),
         (D113Follow, IntraYMode::DC_PRED, false),
+        (D157Follow, IntraYMode::DC_PRED, false),
         (D203Follow, IntraYMode::DC_PRED, false),
         (D67Follow, IntraYMode::D67_PRED_FOR_TEST, true),
         (D113Follow, IntraYMode::D113_PRED_FOR_TEST, true),
         (D135Follow, IntraYMode::D135_PRED_FOR_TEST, true),
+        (D157Follow, IntraYMode::D157_PRED_FOR_TEST, true),
         (D203Follow, IntraYMode::D203_PRED_FOR_TEST, true),
     ] {
         assert_eq!(

@@ -843,6 +843,8 @@ pub(super) fn lossless_chroma_part_prediction_verified(
                 && matches!(mode, Some(SupportedChromaMode::D135Follow)))
             || (y_mode.mode_to_angle() == Some(113)
                 && matches!(mode, Some(SupportedChromaMode::D113Follow)))
+            || (y_mode.mode_to_angle() == Some(157)
+                && matches!(mode, Some(SupportedChromaMode::D157Follow)))
             || (y_mode.mode_to_angle() == Some(203)
                 && matches!(mode, Some(SupportedChromaMode::D203Follow))));
     let neighbours = block_ctx.neighbours(PlaneId::U);
