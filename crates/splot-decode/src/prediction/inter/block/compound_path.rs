@@ -119,6 +119,21 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         neighbour_ctx.amvd_ctx(compound.ref_frame0),
         tile_offset,
     )?;
+    let frame_modes = core
+        .inter
+        .as_ref()
+        .and_then(|inter| inter.frame_enabled_motion_modes)
+        .unwrap_or([false; splot_core::headers::frame::MOTION_MODES]);
+    let signal_local_warp = compound_local_warp_signal_allowed(
+        compound,
+        n4w,
+        n4h,
+        effective_force_integer_mv(core),
+        compound_opfl_refine_type(core, tile_offset)?,
+        [mode_ctx.warp_sample_found, mode_ctx.warp_sample_found1],
+        frame_modes[splot_core::headers::frame::LOCALWARP],
+    );
+    read_compound_motion_mode_syntax(cdfs, symbols, signal_local_warp, neighbour_ctx, tile_offset)?;
     let jmvd_scale_mode = read_compound_jmvd_scale_mode_syntax(
         cdfs,
         symbols,
@@ -463,6 +478,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         compound_blend_tools,
         CompoundBlendInput {
             skip_mode: false,
+            use_optflow: compound.use_optflow,
             n4w,
             n4h,
             block_size_index: frontier.b_size.index(),
@@ -483,6 +499,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             y_mode: compound.y_mode,
             jmvd_scale_mode,
             skip_mode: false,
+            use_optflow: compound.use_optflow,
             ref_frame0: compound.ref_frame0,
             ref_frame1: compound.ref_frame1,
             blend: compound_blend,
@@ -557,6 +574,57 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         bit_depth,
         tile_offset,
     )
+}
+
+fn compound_local_warp_signal_allowed(
+    compound: super::super::compound::CompoundBlockSyntax,
+    n4w: usize,
+    n4h: usize,
+    force_integer_mv: bool,
+    opfl_refine_type: u32,
+    warp_sample_found: [bool; 2],
+    local_warp_enabled: bool,
+) -> bool {
+    compound.y_mode == CompoundYMode::NewNew
+        && compound.ref_frame0 != compound.ref_frame1
+        && n4w >= 2
+        && n4h >= 2
+        && !force_integer_mv
+        && !compound.use_optflow
+        && opfl_refine_type != REFINE_ALL
+        && warp_sample_found[0]
+        && warp_sample_found[1]
+        && local_warp_enabled
+}
+
+fn read_compound_motion_mode_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    signal_local_warp: bool,
+    neighbour_ctx: &BlockNeighbourContext,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    if !signal_local_warp {
+        return Ok(());
+    }
+    let use_local_warp = cdfs
+        .read_block_symbol_trace(
+            TileCdfSelector::UseLocalWarp {
+                ctx: neighbour_ctx.use_local_warp_ctx(),
+            },
+            symbols,
+        )
+        .map_err(|_| symbol_read_error(tile_offset))?
+        .get();
+    if use_local_warp != 0 {
+        return Err(compound_cap!(
+            "compound_local_warp",
+            tile_offset,
+            "inter.compound.local_warp",
+            "5.20.7.14"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1566,6 +1634,7 @@ fn read_compound_jmvd_scale_mode_syntax(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CompoundBlendInput {
     skip_mode: bool,
+    use_optflow: bool,
     n4w: usize,
     n4h: usize,
     block_size_index: usize,
@@ -1598,6 +1667,7 @@ struct CompoundCwpInput {
     y_mode: CompoundYMode,
     jmvd_scale_mode: u8,
     skip_mode: bool,
+    use_optflow: bool,
     ref_frame0: i8,
     ref_frame1: i8,
     blend: mc::CompoundBlend,
@@ -1620,7 +1690,7 @@ fn read_compound_blend_syntax(
 ) -> Result<mc::CompoundBlend> {
     let average_blend = mc::CompoundBlend::average_with_implicit_mask(tools.implicit_mask);
     let thin = compound_blend_is_thin(input.n4w, input.n4h);
-    if input.skip_mode || !tools.masked_enabled || thin {
+    if input.skip_mode || input.use_optflow || !tools.masked_enabled || thin {
         return Ok(average_blend);
     }
     let comp_group_idx = cdfs
@@ -1704,11 +1774,7 @@ fn read_compound_cwp_syntax<T: ReconSample>(
         .inter
         .as_ref()
         .is_some_and(|inter| inter.enable_cwp);
-    if !cwp_enabled
-        || input.skip_mode
-        || !compound_cwp_mode_allowed(input.y_mode, input.jmvd_scale_mode)
-        || !matches!(input.blend, mc::CompoundBlend::Average { .. })
-    {
+    if !compound_cwp_signal_allowed(cwp_enabled, input) {
         return Ok(input.blend);
     }
     let mut coding_idx = 0usize;
@@ -1733,6 +1799,14 @@ fn read_compound_cwp_syntax<T: ReconSample>(
     Ok(input
         .blend
         .average_with_cwp_weight(CWP_WEIGHTING_FACTOR[usize::from(same_side)][coding_idx]))
+}
+
+fn compound_cwp_signal_allowed(cwp_enabled: bool, input: CompoundCwpInput) -> bool {
+    cwp_enabled
+        && !input.skip_mode
+        && !input.use_optflow
+        && compound_cwp_mode_allowed(input.y_mode, input.jmvd_scale_mode)
+        && matches!(input.blend, mc::CompoundBlend::Average { .. })
 }
 
 const fn compound_cwp_mode_allowed(y_mode: CompoundYMode, jmvd_scale_mode: u8) -> bool {
@@ -1815,6 +1889,57 @@ mod tests {
         .unwrap()
     }
 
+    fn compound_motion_contexts() -> (ModeContext, BlockNeighbourContext) {
+        let mut grid = NeighbourMvGrid::new(16, 16).unwrap();
+        grid.record_compound_block(
+            0,
+            0,
+            2,
+            2,
+            0,
+            1,
+            true,
+            true,
+            Mv::ZERO,
+            Mv::ZERO,
+            false,
+            0,
+            false,
+            false,
+            mc::CWP_EQUAL,
+            false,
+            BlockPrecisionRecord::default(),
+        );
+        let block = MvBlockContext {
+            mi_row: 0,
+            mi_col: 2,
+            bw4: 2,
+            bh4: 2,
+            sb_h4: 32,
+            ref_frame0: 0,
+            ref_frame1: Some(1),
+            mi_rows: 16,
+            mi_cols: 16,
+        };
+        (
+            find_mode_ctx(&grid, &block),
+            block_neighbour_ctx(&grid, &block),
+        )
+    }
+
+    fn encode_compound_local_warp(ctx: usize, enabled: bool) -> Vec<u8> {
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut encoder = SymbolEncoder::with_config(
+            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+        );
+        tile.with_row_mut(TileCdfSelector::UseLocalWarp { ctx }, |row| {
+            encoder.write_symbol(row, Symbol::new(u8::from(enabled)))
+        })
+        .unwrap()
+        .unwrap();
+        encoder.finish().unwrap().into_bytes()
+    }
+
     #[test]
     fn compound_blend_reads_wedge_index_and_sign() {
         let payload = encode_wedge_compound_blend();
@@ -1830,6 +1955,7 @@ mod tests {
             },
             CompoundBlendInput {
                 skip_mode: false,
+                use_optflow: false,
                 n4w: 2,
                 n4h: 2,
                 block_size_index: 3,
@@ -1846,6 +1972,79 @@ mod tests {
                 sign: true,
             }
         );
+    }
+
+    #[test]
+    fn compound_optflow_forces_average_without_blend_symbols() {
+        let payload = encode_wedge_compound_blend();
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&payload);
+        let before = symbols.checkpoint();
+
+        let blend = read_compound_blend_syntax(
+            &mut tile,
+            &mut symbols,
+            CompoundBlendToolConfig {
+                masked_enabled: true,
+                implicit_mask: true,
+            },
+            CompoundBlendInput {
+                skip_mode: false,
+                use_optflow: true,
+                n4w: 2,
+                n4h: 2,
+                block_size_index: 3,
+                comp_group_idx_ctx: 0,
+            },
+            TILE_OFFSET,
+        )
+        .unwrap();
+
+        assert_eq!(blend, mc::CompoundBlend::average_with_implicit_mask(true));
+        assert_eq!(symbols.checkpoint(), before);
+    }
+
+    #[test]
+    fn compound_simple_motion_consumes_local_warp_gate() {
+        let (mode_ctx, neighbour_ctx) = compound_motion_contexts();
+        assert!(mode_ctx.warp_sample_found && mode_ctx.warp_sample_found1);
+        let ctx = neighbour_ctx.use_local_warp_ctx();
+        let payload = encode_compound_local_warp(ctx, false);
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&payload);
+
+        read_compound_motion_mode_syntax(
+            &mut tile,
+            &mut symbols,
+            true,
+            &neighbour_ctx,
+            TILE_OFFSET,
+        )
+        .unwrap();
+
+        symbols.exit_symbol().unwrap();
+    }
+
+    #[test]
+    fn compound_optflow_suppresses_local_warp_gate() {
+        let compound = super::super::super::compound::CompoundBlockSyntax {
+            y_mode: CompoundYMode::NewNew,
+            use_optflow: true,
+            ref_frame0: 0,
+            ref_frame1: 1,
+            mv0: Mv::ZERO,
+            mv1: Mv::ZERO,
+        };
+
+        assert!(!compound_local_warp_signal_allowed(
+            compound,
+            2,
+            2,
+            false,
+            REFINE_SWITCHABLE,
+            [true; 2],
+            true,
+        ));
     }
 
     #[test]
@@ -1882,6 +2081,22 @@ mod tests {
         assert!(compound_cwp_mode_allowed(CompoundYMode::JointNew, 0));
         assert!(!compound_cwp_mode_allowed(CompoundYMode::JointNew, 1));
         assert!(!compound_cwp_mode_allowed(CompoundYMode::NearNew, 0));
+    }
+
+    #[test]
+    fn compound_optflow_suppresses_cwp_symbols() {
+        assert!(!compound_cwp_signal_allowed(
+            true,
+            CompoundCwpInput {
+                y_mode: CompoundYMode::NearNear,
+                jmvd_scale_mode: 0,
+                skip_mode: false,
+                use_optflow: true,
+                ref_frame0: 0,
+                ref_frame1: 1,
+                blend: mc::CompoundBlend::default(),
+            },
+        ));
     }
 
     #[test]
