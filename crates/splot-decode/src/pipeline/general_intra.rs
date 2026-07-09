@@ -824,6 +824,7 @@ pub(super) fn lossless_chroma_part_prediction_verified(
                     | SupportedChromaMode::D135
                     | SupportedChromaMode::D135Follow
                     | SupportedChromaMode::D157
+                    | SupportedChromaMode::D157Follow
                     | SupportedChromaMode::D203
                     | SupportedChromaMode::Paeth
             )
