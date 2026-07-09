@@ -1152,8 +1152,15 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     let dc = IntraYMode::DC_PRED;
     assert!(part_ok(Some(Smooth), false, dc, top_left_8, 32));
     assert!(block_ok(Some(Smooth), false, dc, top_left_8, full_sb));
-    assert!(!block_ok(
+    assert!(block_ok(
         Some(SmoothVertical),
+        false,
+        dc,
+        top_left_8,
+        full_sb
+    ));
+    assert!(!block_ok(
+        Some(SmoothHorizontal),
         false,
         dc,
         top_left_8,
