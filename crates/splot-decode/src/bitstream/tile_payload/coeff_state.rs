@@ -9,8 +9,14 @@
 use core::ops::Range;
 use std::collections::TryReserveError;
 
+use splot_core::headers::sequence::ChromaFormatIdc;
+use splot_recon::PlaneId;
+
+use crate::tile::block_context::ChromaSampling;
+
 const PLANE_COUNT: usize = 3;
 const MAX_ADJUSTED_TX_EXTENT: usize = 32;
+const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformCoeffBlockState {
@@ -158,6 +164,8 @@ impl TransformCoeffBlockAllocation {
 pub(crate) struct TileCoeffContextState {
     mi_rows: usize,
     mi_cols: usize,
+    plane_rows: [usize; PLANE_COUNT],
+    plane_cols: [usize; PLANE_COUNT],
     above_level: [Vec<u32>; PLANE_COUNT],
     left_level: [Vec<u32>; PLANE_COUNT],
     above_dc: [Vec<u8>; PLANE_COUNT],
@@ -186,10 +194,39 @@ impl TileCoeffContextState {
     }
 
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileCoeffStateError> {
+        Self::new_with_chroma_sampling(mi_rows, mi_cols, ChromaSampling::Yuv444)
+    }
+
+    pub(crate) fn new_chroma(
+        mi_rows: usize,
+        mi_cols: usize,
+        chroma: ChromaFormatIdc,
+    ) -> Result<Self, TileCoeffStateError> {
+        Self::new_with_chroma_sampling(
+            mi_rows,
+            mi_cols,
+            ChromaSampling::from_chroma_format_idc(chroma),
+        )
+    }
+
+    pub(crate) fn new_with_chroma_sampling(
+        mi_rows: usize,
+        mi_cols: usize,
+        chroma: ChromaSampling,
+    ) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(mi_rows, mi_cols)?;
+        let mut plane_rows = [0; PLANE_COUNT];
+        let mut plane_cols = [0; PLANE_COUNT];
+        for (index, plane) in PLANES.iter().copied().enumerate() {
+            let (sub_x, sub_y) = chroma.subsampling(plane);
+            plane_rows[index] = subsampled_context_len(mi_rows, sub_y)?;
+            plane_cols[index] = subsampled_context_len(mi_cols, sub_x)?;
+        }
         Ok(Self {
             mi_rows,
             mi_cols,
+            plane_rows,
+            plane_cols,
             above_level: zeroed_plane_lines(allocation.above_len)?,
             left_level: zeroed_plane_lines(allocation.left_len)?,
             above_dc: zeroed_plane_lines(allocation.above_len)?,
@@ -235,8 +272,8 @@ impl TileCoeffContextState {
         if input.h4 == 0 {
             return Err(TileCoeffStateError::EmptyContextRange { axis: "rows" });
         }
-        let above = edge_clamped_range("above", input.x4, input.w4, self.mi_cols)?;
-        let left = edge_clamped_range("left", input.y4, input.h4, self.mi_rows)?;
+        let above = edge_clamped_range("above", input.x4, input.w4, self.plane_cols[plane])?;
+        let left = edge_clamped_range("left", input.y4, input.h4, self.plane_rows[plane])?;
 
         fill_context_line(
             &mut self.above_level[plane],
@@ -268,9 +305,18 @@ impl TileCoeffContextState {
         let left_unshifted_end = checked_coordinate_add("row", input.r, input.h4)?;
         let above_end = shifted(above_unshifted_end, input.sub_x)?;
         let left_end = shifted(left_unshifted_end, input.sub_y)?;
-        let above =
-            edge_clamped_existing_range("above reset", above_start, above_end, self.mi_cols)?;
-        let left = edge_clamped_existing_range("left reset", left_start, left_end, self.mi_rows)?;
+        let above = edge_clamped_existing_range(
+            "above reset",
+            above_start,
+            above_end,
+            self.plane_cols[plane],
+        )?;
+        let left = edge_clamped_existing_range(
+            "left reset",
+            left_start,
+            left_end,
+            self.plane_rows[plane],
+        )?;
 
         fill_context_line(
             &mut self.above_level[plane],
@@ -414,6 +460,19 @@ fn validate_subsampling(axis: &'static str, value: u32) -> Result<(), TileCoeffS
     } else {
         Err(TileCoeffStateError::InvalidSubsampling { axis, value })
     }
+}
+
+fn subsampled_context_len(value: usize, shift: u32) -> Result<usize, TileCoeffStateError> {
+    validate_subsampling("context", shift)?;
+    let round = 1usize
+        .checked_shl(shift)
+        .and_then(|scale| scale.checked_sub(1))
+        .ok_or(TileCoeffStateError::ArithmeticOverflow {
+            operation: "1 << chroma shift - 1",
+            left: 1,
+            right: shift as usize,
+        })?;
+    Ok(checked_add_usize("context length + chroma round", value, round)? >> shift)
 }
 
 fn checked_add_usize(
