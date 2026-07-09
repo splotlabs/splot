@@ -5,10 +5,14 @@
 
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView,
-    parse_frame_header_core,
+    CoreSeqRestorationView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
+    FrameReferenceStateView, LrGeometry, LrParseOutcome, parse_frame_header_core,
+    parse_lr_params_for_inter,
 };
-use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
+use splot_core::headers::sequence::{
+    ChromaFormatIdc, SequenceHeader, SuperblockSize, parse_sequence_header,
+};
+use splot_core::span::ByteOffset;
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_parallel::ThreadCount;
 
@@ -137,6 +141,46 @@ fn lr_unit_frontier_checks_mi_state_byte_budget_before_allocation() {
             Some((2 * (256 + 16 + 16) * size_of::<usize>()) as u64)
         );
     });
+}
+
+#[test]
+fn temporal_frame_wiener_ns_without_local_bank_keeps_lr_unit_syntax_enabled() {
+    let restoration = CoreSeqRestorationView {
+        enable_restoration: true,
+        lr_pc_wiener_disabled: true,
+        lr_wiener_nonsep_disabled: false,
+        lr_uv_pc_wiener_disabled: true,
+        lr_uv_wiener_nonsep_disabled: false,
+    };
+    let geometry = LrGeometry::new(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
+    let payload = [0xe4];
+    let mut reader = BitReader::new(&payload, ByteOffset::new(0));
+    let outcome = parse_lr_params_for_inter(
+        &mut reader,
+        false,
+        3,
+        restoration,
+        geometry,
+        100,
+        1,
+        [0; 3],
+        &[Vec::new(), Vec::new(), Vec::new()],
+    )
+    .unwrap();
+    let LrParseOutcome::Parsed(lr) = outcome else {
+        panic!("expected complete temporal Wiener-NS LR params");
+    };
+
+    assert_eq!(
+        loop_restoration_state(&lr, 3),
+        TilePartitionLoopRestorationState::FrameWienerNs(
+            TilePartitionWienerNsLoopRestorationState::new(
+                [true, false, false],
+                [true, false, false],
+                [256, 0, 0],
+            )
+        )
+    );
 }
 
 fn with_minimal_work_unit<R>(
