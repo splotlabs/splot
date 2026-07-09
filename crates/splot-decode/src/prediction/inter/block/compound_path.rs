@@ -17,6 +17,7 @@ const MV_PROJECTION_DIV_MULT: [i32; 32] = [
     1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
 ];
 const SPEC_READ_REFINEMV: &str = "5.20.7.17";
+const SPEC_PREDICT_OPTFLOW: &str = "7.13.3.8";
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_compound_inter_block<T: ReconSample>(
@@ -105,20 +106,16 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         n4w,
         n4h,
         tile_offset,
-    )? && read_compound_use_optflow_syntax(cdfs, symbols, compound.y_mode, tile_offset)?
-    {
-        return Err(compound_cap!(
-            "compound_use_optflow_active",
-            tile_offset,
-            "inter.compound.use_optflow",
-            SPEC_MODE_INFO
-        ));
+    )? {
+        compound.use_optflow =
+            read_compound_use_optflow_syntax(cdfs, symbols, compound.y_mode, tile_offset)?;
     }
     let use_amvd = read_compound_use_amvd_syntax(
         cdfs,
         symbols,
         enable_adaptive_mvd,
         compound.y_mode,
+        compound.use_optflow,
         neighbour_ctx.amvd_ctx(compound.ref_frame0),
         tile_offset,
     )?;
@@ -137,7 +134,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     let mut ref_mv_idx0 = 0;
     let mut ref_mv_idx1 = 0;
     if compound.y_mode.reads_drl_idx() {
-        if compound.y_mode.has_second_drl(skip_mode_present) {
+        if compound_reads_second_drl(compound, skip_mode_present) {
             ref_mv_idx0 = read_drl_idx(
                 cdfs,
                 symbols,
@@ -415,6 +412,14 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             }
         }
     }
+    if compound.use_optflow {
+        return Err(compound_cap!(
+            "compound_optflow_prediction",
+            tile_offset,
+            "inter.compound.optflow_prediction",
+            SPEC_PREDICT_OPTFLOW
+        ));
+    }
     if compound_refinemv_reachable(
         sequence,
         core,
@@ -687,6 +692,13 @@ fn read_compound_use_optflow_syntax(
         )
         .map_err(|_| symbol_read_error(tile_offset))?;
     Ok(use_optflow.get() != 0)
+}
+
+const fn compound_reads_second_drl(
+    compound: super::super::compound::CompoundBlockSyntax,
+    skip_mode_present: bool,
+) -> bool {
+    !compound.use_optflow && compound.y_mode.has_second_drl(skip_mode_present)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1235,10 +1247,14 @@ fn read_compound_use_amvd_syntax(
     symbols: &mut SymbolDecoder<'_>,
     enable_adaptive_mvd: bool,
     y_mode: CompoundYMode,
+    use_optflow: bool,
     ctx: usize,
     tile_offset: ByteOffset,
 ) -> Result<bool> {
-    let Some(index) = y_mode.use_amvd_index().filter(|_| enable_adaptive_mvd) else {
+    let Some(index) = y_mode
+        .use_amvd_index(use_optflow)
+        .filter(|_| enable_adaptive_mvd)
+    else {
         return Ok(false);
     };
     let use_amvd = cdfs
@@ -1586,5 +1602,21 @@ mod tests {
         assert!(compound_cwp_mode_allowed(CompoundYMode::JointNew, 0));
         assert!(!compound_cwp_mode_allowed(CompoundYMode::JointNew, 1));
         assert!(!compound_cwp_mode_allowed(CompoundYMode::NearNew, 0));
+    }
+
+    #[test]
+    fn compound_opfl_mode_suppresses_second_drl_idx() {
+        let mut compound = crate::prediction::inter::compound::CompoundBlockSyntax {
+            y_mode: CompoundYMode::NearNear,
+            use_optflow: false,
+            ref_frame0: 0,
+            ref_frame1: 1,
+            mv0: Mv::ZERO,
+            mv1: Mv::ZERO,
+        };
+
+        assert!(compound_reads_second_drl(compound, false));
+        compound.use_optflow = true;
+        assert!(!compound_reads_second_drl(compound, false));
     }
 }
