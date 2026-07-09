@@ -48,7 +48,7 @@ use crate::bitstream::tile_payload::{
     TileSegmentIdState, TileUsesMrlsState, TransformToolResidualPolicy, chroma_subsampling,
     current_frame_qm_segment_id, decode_general_intra_multiblock_tree_with_lr_source_blocks,
     decode_general_intra_plane_coeffs, frame_mi_dimensions, get_plane_residual_size,
-    neg_deinterleave,
+    neg_deinterleave, read_lossless_tx_size,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcInfo, IntrabcUseSkip,
@@ -852,6 +852,7 @@ fn decode_block<T: ReconSample>(
                     mi_rows,
                     mi_cols,
                     lossless,
+                    InterResidualLumaTxSizeMode::Intrabc,
                     residual_tool_policy,
                     tile_offset,
                 )?)
@@ -1266,6 +1267,7 @@ fn decode_block<T: ReconSample>(
                 mi_rows,
                 mi_cols,
                 current_residual_lossless(work_unit),
+                InterResidualLumaTxSizeMode::Inter,
                 residual_tool_policy,
                 tile_offset,
             )?)
@@ -1559,6 +1561,7 @@ fn decode_block<T: ReconSample>(
             mi_rows,
             mi_cols,
             current_residual_lossless(work_unit),
+            InterResidualLumaTxSizeMode::Inter,
             residual_tool_policy,
             tile_offset,
         )?)
@@ -2242,7 +2245,8 @@ use self::warp::{
 };
 
 use self::residual::{
-    read_inter_residual, reset_inter_skip_coeff_contexts, transform_tool_residual_policy,
+    InterResidualLumaTxSizeMode, read_inter_residual, reset_inter_skip_coeff_contexts,
+    transform_tool_residual_policy,
 };
 
 fn read_inter_intra_syntax(
