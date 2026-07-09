@@ -54,6 +54,7 @@ struct NeighbourCell {
     newmv_for_list1: bool,
     mv: Mv,
     mv1: Option<Mv>,
+    skip_mode: bool,
     skip: bool,
     interp_filter: u8,
     use_amvd: bool,
@@ -83,6 +84,7 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     newmv_for_list1: false,
     mv: Mv::ZERO,
     mv1: None,
+    skip_mode: false,
     skip: false,
     interp_filter: SWITCHABLE_FILTERS,
     use_amvd: false,
@@ -253,6 +255,7 @@ impl NeighbourMvGrid {
             newmv_for_list1: false,
             mv,
             mv1: None,
+            skip_mode: false,
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
@@ -317,6 +320,7 @@ impl NeighbourMvGrid {
             newmv_for_list1: list1_is_newmv,
             mv: mv0,
             mv1: Some(mv1),
+            skip_mode: false,
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
             use_amvd,
@@ -638,6 +642,7 @@ pub(crate) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockNeighbourContext {
     pub(crate) is_inter_ctx: usize,
+    pub(crate) skip_mode_ctx: usize,
     pub(crate) skip_ctx: usize,
     pub(crate) has_neighbour: bool,
     ref_counts: [u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS],
@@ -850,8 +855,10 @@ pub(crate) fn block_neighbour_ctx(
     };
 
     let mut skip_ctx = 0usize;
+    let mut skip_mode_ctx = 0usize;
     for cell in buf.iter().take(num_buf) {
         skip_ctx += usize::from(cell.skip);
+        skip_mode_ctx += usize::from(cell.skip_mode);
     }
 
     let mut ref_counts = [0u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS];
@@ -871,6 +878,7 @@ pub(crate) fn block_neighbour_ctx(
 
     BlockNeighbourContext {
         is_inter_ctx,
+        skip_mode_ctx,
         skip_ctx,
         has_neighbour: num_buf >= 1,
         ref_counts,

@@ -144,6 +144,7 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
 
     let nctx = block_neighbour_ctx(&grid, &block0);
     assert_eq!(nctx.is_inter_ctx, 0, "no-neighbour is_inter ctx");
+    assert_eq!(nctx.skip_mode_ctx, 0, "no-neighbour skip_mode ctx");
     assert_eq!(nctx.skip_ctx, 0, "no-neighbour skip ctx");
     assert!(
         !nctx.has_neighbour,
@@ -343,6 +344,10 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
         "all-inter neighbours -> is_inter ctx 0"
     );
     assert_eq!(nctx.skip_ctx, 2, "two skip=1 neighbours -> skip ctx 2");
+    assert_eq!(
+        nctx.skip_mode_ctx, 0,
+        "regular skip neighbours do not affect skip_mode ctx"
+    );
     assert!(nctx.has_neighbour, "block 1 has a decoded left neighbour");
 
     let stack = find_mv_stack(

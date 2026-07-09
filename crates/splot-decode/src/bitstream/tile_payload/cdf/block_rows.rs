@@ -26,10 +26,10 @@ use splot_core::tables::cdf::{
     DEFAULT_PALETTE_SIZE_7_Y_COLOR_CDF, DEFAULT_PALETTE_SIZE_8_Y_COLOR_CDF,
     DEFAULT_PALETTE_Y_MODE_CDF, DEFAULT_PALETTE_Y_SIZE_CDF, DEFAULT_PB_MV_PRECISION_CDF,
     DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SINGLE_MODE_CDF, DEFAULT_SINGLE_REF_CDF, DEFAULT_SKIP_CDF,
-    DEFAULT_TIP_MODE_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_AMVD_CDF, DEFAULT_USE_BAWP_CDF,
-    DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_DIP_CDF, DEFAULT_USE_DPCM_UV_CDF,
-    DEFAULT_USE_DPCM_Y_CDF, DEFAULT_USE_EXTEND_WARP_CDF, DEFAULT_USE_LOCAL_WARP_CDF,
-    DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF, DEFAULT_USE_WIENER_NS_CDF,
+    DEFAULT_SKIP_MODE_CDF, DEFAULT_TIP_MODE_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_AMVD_CDF,
+    DEFAULT_USE_BAWP_CDF, DEFAULT_USE_BAWP_CHROMA_CDF, DEFAULT_USE_DIP_CDF,
+    DEFAULT_USE_DPCM_UV_CDF, DEFAULT_USE_DPCM_Y_CDF, DEFAULT_USE_EXTEND_WARP_CDF,
+    DEFAULT_USE_LOCAL_WARP_CDF, DEFAULT_USE_MOST_PROBABLE_PRECISION_CDF, DEFAULT_USE_WIENER_NS_CDF,
     DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WARP_DELTA_PARAM_HIGH_CDF,
     DEFAULT_WARP_DELTA_PARAM_LOW_CDF, DEFAULT_WARP_DELTA_PARAM_SIGN_CDF, DEFAULT_WARP_IDX_CDF,
     DEFAULT_WARP_INTER_INTRA_CDF, DEFAULT_WARP_MV_CDF, DEFAULT_WARP_PRECISION_CDF,
@@ -72,6 +72,7 @@ const V_TXB_SKIP_CONTEXTS: usize = 12;
 const DC_SIGN_GROUPS: usize = 2;
 const DC_SIGN_CONTEXTS: usize = 3;
 const IS_INTER_CONTEXTS: usize = 4;
+const SKIP_MODE_CONTEXTS: usize = 3;
 const SKIP_CONTEXTS: usize = 6;
 const SINGLE_MODE_CONTEXTS: usize = 5;
 const WARP_MODE_CONTEXTS: usize = 5;
@@ -159,6 +160,7 @@ pub(crate) type EobExtraCdfRows = [[i32; CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type DcSignCdfRows =
     [[[[[i32; CDF_ROW_LEN]; DC_SIGN_CONTEXTS]; DC_SIGN_GROUPS]; PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type IsInterCdfRows = [[i32; CDF_ROW_LEN]; IS_INTER_CONTEXTS];
+pub(crate) type SkipModeCdfRows = [[i32; CDF_ROW_LEN]; SKIP_MODE_CONTEXTS];
 pub(crate) type SkipCdfRows = [[i32; CDF_ROW_LEN]; SKIP_CONTEXTS];
 pub(crate) type SingleModeCdfRows = [[i32; 4]; SINGLE_MODE_CONTEXTS];
 pub(crate) type IsWarpCdfRows = [[i32; CDF_ROW_LEN]; WARP_MODE_CONTEXTS];
@@ -302,6 +304,7 @@ pub(crate) struct BlockCdfRows {
     pub(crate) eob_pt_1024: EobPt1024CdfRows,
     pub(crate) dc_sign: DcSignCdfRows,
     pub(crate) is_inter: IsInterCdfRows,
+    pub(crate) skip_mode: SkipModeCdfRows,
     pub(crate) skip: SkipCdfRows,
     pub(crate) single_mode: SingleModeCdfRows,
     pub(crate) is_warp: IsWarpCdfRows,
@@ -543,6 +546,14 @@ macro_rules! block_cdf_row {
                 ctx,
                 "ctx",
                 TileCdfArray::IsInter,
+                $get,
+                $as_slice
+            ),
+            TileCdfSelector::SkipMode { ctx } => block_row_slice!(
+                $self.skip_mode,
+                ctx,
+                "ctx",
+                TileCdfArray::SkipMode,
                 $get,
                 $as_slice
             ),
@@ -1054,6 +1065,7 @@ macro_rules! block_cdf_count_rows {
         $rows!(eob_pt_1024.flatten());
         $rows!(dc_sign.flatten().flatten().flatten());
         $rows!(is_inter);
+        $rows!(skip_mode);
         $rows!(skip);
         $rows!(single_mode);
         $rows!(is_warp);
@@ -1161,6 +1173,7 @@ impl BlockCdfRows {
             eob_pt_1024: DEFAULT_EOB_PT_1024_CDF,
             dc_sign: DEFAULT_DC_SIGN_CDF,
             is_inter: DEFAULT_IS_INTER_CDF,
+            skip_mode: DEFAULT_SKIP_MODE_CDF,
             skip: DEFAULT_SKIP_CDF,
             single_mode: DEFAULT_SINGLE_MODE_CDF,
             is_warp: DEFAULT_IS_WARP_CDF,

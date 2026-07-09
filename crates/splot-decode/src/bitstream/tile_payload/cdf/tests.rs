@@ -24,8 +24,8 @@ use splot_core::tables::cdf::{
     DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF, DEFAULT_MORPH_PRED_CDF,
     DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
     DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_PALETTE_Y_MODE_CDF,
-    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_TIP_MODE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF,
-    DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
+    DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SKIP_MODE_CDF, DEFAULT_TIP_MODE_CDF,
+    DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
     DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_DIP_CDF,
     DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
     DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF,
@@ -831,6 +831,13 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
             "tip_mode ctx {ctx}"
         );
     }
+    for (ctx, expected) in DEFAULT_SKIP_MODE_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::SkipMode { ctx }).unwrap(),
+            expected.as_slice(),
+            "skip_mode ctx {ctx}"
+        );
+    }
 
     tile.with_row_mut(TileCdfSelector::CompMode { ctx: 0 }, |row| row[0] = 12_345)
         .unwrap();
@@ -897,6 +904,13 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
         (
             TileCdfSelector::TipMode { ctx: 3 },
             TileCdfArray::TipMode,
+            "ctx",
+            3,
+            3,
+        ),
+        (
+            TileCdfSelector::SkipMode { ctx: 3 },
+            TileCdfArray::SkipMode,
             "ctx",
             3,
             3,
