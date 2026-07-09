@@ -65,12 +65,15 @@ impl CompoundYMode {
         }
     }
 
-    pub(crate) const fn use_amvd_index(self) -> Option<usize> {
-        match self {
-            Self::NearNear => None,
-            Self::NearNew => Some(0),
-            Self::JointNew => Some(5),
-            Self::NewNew => Some(7),
+    pub(crate) const fn use_amvd_index(self, use_optflow: bool) -> Option<usize> {
+        match (self, use_optflow) {
+            (Self::NearNear, _) => None,
+            (Self::NearNew, false) => Some(0),
+            (Self::NearNew, true) => Some(2),
+            (Self::JointNew, false) => Some(5),
+            (Self::JointNew, true) => Some(6),
+            (Self::NewNew, false) => Some(7),
+            (Self::NewNew, true) => Some(8),
         }
     }
 
@@ -92,6 +95,7 @@ impl CompoundYMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CompoundBlockSyntax {
     pub(crate) y_mode: CompoundYMode,
+    pub(crate) use_optflow: bool,
     pub(crate) ref_frame0: i8,
     pub(crate) ref_frame1: i8,
     pub(crate) mv0: Mv,
@@ -235,6 +239,7 @@ pub(crate) fn read_compound_mode_syntax(
         };
         return Ok(CompoundBlockSyntax {
             y_mode,
+            use_optflow: false,
             ref_frame0: pair.0,
             ref_frame1: pair.1,
             mv0: Mv::ZERO,
@@ -254,6 +259,7 @@ pub(crate) fn read_compound_mode_syntax(
     if is_joint != 0 {
         return Ok(CompoundBlockSyntax {
             y_mode: CompoundYMode::JointNew,
+            use_optflow: false,
             ref_frame0: pair.0,
             ref_frame1: pair.1,
             mv0: Mv::ZERO,
@@ -275,6 +281,7 @@ pub(crate) fn read_compound_mode_syntax(
 
     Ok(CompoundBlockSyntax {
         y_mode: CompoundYMode::NearNear,
+        use_optflow: false,
         ref_frame0: pair.0,
         ref_frame1: pair.1,
         mv0: Mv::ZERO,

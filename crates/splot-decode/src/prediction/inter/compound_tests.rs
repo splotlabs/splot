@@ -85,6 +85,7 @@ fn compound_average_syntax_roundtrips_through_symbol_encoder() {
         syntax,
         CompoundBlockSyntax {
             y_mode: CompoundYMode::NearNear,
+            use_optflow: false,
             ref_frame0: 0,
             ref_frame1: 1,
             mv0: Mv::ZERO,
@@ -101,6 +102,17 @@ fn compound_average_syntax_roundtrips_through_symbol_encoder() {
             dec_tile.row(selector).unwrap()
         );
     }
+}
+
+#[test]
+fn compound_opfl_modes_use_opfl_amvd_contexts() {
+    assert_eq!(CompoundYMode::NearNew.use_amvd_index(false), Some(0));
+    assert_eq!(CompoundYMode::NearNew.use_amvd_index(true), Some(2));
+    assert_eq!(CompoundYMode::JointNew.use_amvd_index(false), Some(5));
+    assert_eq!(CompoundYMode::JointNew.use_amvd_index(true), Some(6));
+    assert_eq!(CompoundYMode::NewNew.use_amvd_index(false), Some(7));
+    assert_eq!(CompoundYMode::NewNew.use_amvd_index(true), Some(8));
+    assert_eq!(CompoundYMode::NearNear.use_amvd_index(true), None);
 }
 
 #[test]
