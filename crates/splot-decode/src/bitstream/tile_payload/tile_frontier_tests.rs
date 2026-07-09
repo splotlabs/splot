@@ -173,13 +173,15 @@ fn temporal_frame_wiener_ns_without_local_bank_keeps_lr_unit_syntax_enabled() {
 
     assert_eq!(
         loop_restoration_state(&lr, 3),
-        TilePartitionLoopRestorationState::FrameWienerNs(
-            TilePartitionWienerNsLoopRestorationState::new(
-                [true, false, false],
-                [true, false, false],
-                [256, 0, 0],
-            )
-        )
+        TilePartitionLoopRestorationState::Frame(TilePartitionLoopRestorationFrameState::new(
+            [
+                TilePartitionLoopRestorationPlaneTool::WienerNs,
+                TilePartitionLoopRestorationPlaneTool::None,
+                TilePartitionLoopRestorationPlaneTool::None,
+            ],
+            [true, false, false],
+            [256, 0, 0],
+        ))
     );
 }
 

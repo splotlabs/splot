@@ -66,23 +66,52 @@ fn frame(sb_size: usize) -> TilePartitionFrameFacts {
 }
 
 fn frame_level_wiener_ns(unit_size: usize) -> TilePartitionLoopRestorationState {
-    TilePartitionLoopRestorationState::FrameWienerNs(
-        TilePartitionWienerNsLoopRestorationState::new(
-            [true, false, false],
-            [true, false, false],
-            [unit_size, 0, 0],
-        ),
-    )
+    TilePartitionLoopRestorationState::Frame(TilePartitionLoopRestorationFrameState::new(
+        [
+            TilePartitionLoopRestorationPlaneTool::WienerNs,
+            TilePartitionLoopRestorationPlaneTool::None,
+            TilePartitionLoopRestorationPlaneTool::None,
+        ],
+        [true, false, false],
+        [unit_size, 0, 0],
+    ))
 }
 
 fn frame_level_chroma_wiener_ns(unit_size: usize) -> TilePartitionLoopRestorationState {
-    TilePartitionLoopRestorationState::FrameWienerNs(
-        TilePartitionWienerNsLoopRestorationState::new(
-            [false, true, false],
-            [false, true, false],
-            [0, unit_size, 0],
-        ),
-    )
+    TilePartitionLoopRestorationState::Frame(TilePartitionLoopRestorationFrameState::new(
+        [
+            TilePartitionLoopRestorationPlaneTool::None,
+            TilePartitionLoopRestorationPlaneTool::WienerNs,
+            TilePartitionLoopRestorationPlaneTool::None,
+        ],
+        [false, true, false],
+        [0, unit_size, 0],
+    ))
+}
+
+fn frame_level_pc_wiener(unit_size: usize) -> TilePartitionLoopRestorationState {
+    TilePartitionLoopRestorationState::Frame(TilePartitionLoopRestorationFrameState::new(
+        [
+            TilePartitionLoopRestorationPlaneTool::PcWiener,
+            TilePartitionLoopRestorationPlaneTool::None,
+            TilePartitionLoopRestorationPlaneTool::None,
+        ],
+        [false, false, false],
+        [unit_size, 0, 0],
+    ))
+}
+
+#[derive(Clone, Copy)]
+enum LrUnitSymbolRow {
+    WienerNs,
+    PcWiener,
+}
+
+fn lr_unit_symbol_row(work_unit: &DecodeTileWorkUnit<'_>, row: LrUnitSymbolRow) -> [i32; 3] {
+    match row {
+        LrUnitSymbolRow::WienerNs => *work_unit.cdf().tile_cdfs().rows().use_wiener_ns(),
+        LrUnitSymbolRow::PcWiener => *work_unit.cdf().tile_cdfs().rows().use_pc_wiener(),
+    }
 }
 
 pub(crate) fn make_work_unit(payload: &[u8], update_mode: CdfUpdateMode) -> DecodeTileWorkUnit<'_> {
@@ -755,12 +784,15 @@ fn read_lr_gate_precedes_partition_symbol_reads() {
     assert_eq!(work_unit.cdf().tile_cdfs(), &before);
 }
 
-#[test]
-fn frame_level_wiener_ns_lr_symbol_precedes_partition_read() {
+fn assert_frame_level_lr_symbol_precedes_partition_read(
+    loop_restoration: TilePartitionLoopRestorationState,
+    row: LrUnitSymbolRow,
+    cdf_update_message: &'static str,
+) {
     let mut work_unit = make_work_unit(&[0x00, 0x00, 0x80], CdfUpdateMode::Enabled);
-    let before_use_wiener_ns = *work_unit.cdf().tile_cdfs().rows().use_wiener_ns();
+    let before = lr_unit_symbol_row(&work_unit, row);
     let mut facts = frame(BLOCK_32X32);
-    facts.loop_restoration = frame_level_wiener_ns(256);
+    facts.loop_restoration = loop_restoration;
 
     let plan = frontier(&mut work_unit, facts, context()).unwrap();
 
@@ -774,10 +806,29 @@ fn frame_level_wiener_ns_lr_symbol_precedes_partition_read() {
         2
     );
     assert_ne!(
-        work_unit.cdf().tile_cdfs().rows().use_wiener_ns(),
-        &before_use_wiener_ns,
-        "successful LR unit reads commit the tile-local UseWienerNs CDF row"
+        lr_unit_symbol_row(&work_unit, row),
+        before,
+        "{cdf_update_message}"
     );
+}
+
+#[test]
+fn frame_level_lr_symbol_precedes_partition_read() {
+    let cases = [
+        (
+            frame_level_wiener_ns(256),
+            LrUnitSymbolRow::WienerNs,
+            "successful LR unit reads commit the tile-local UseWienerNs CDF row",
+        ),
+        (
+            frame_level_pc_wiener(256),
+            LrUnitSymbolRow::PcWiener,
+            "successful LR unit reads commit the tile-local UsePcWiener CDF row",
+        ),
+    ];
+    for (loop_restoration, row, message) in cases {
+        assert_frame_level_lr_symbol_precedes_partition_read(loop_restoration, row, message);
+    }
 }
 
 #[test]
@@ -851,6 +902,30 @@ fn root_lr_frontier_reports_active_frame_level_wiener_ns_unit() {
             luma_stripe_end_y: 55,
         }
     );
+    assert!(!root.all_lr_units_inactive());
+}
+
+#[test]
+fn root_lr_frontier_reports_active_frame_level_pc_wiener_unit() {
+    let mut work_unit = make_work_unit(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let mut facts = frame(BLOCK_32X32);
+    facts.loop_restoration = frame_level_pc_wiener(256);
+
+    let root = root_lr_frontier(&mut work_unit, facts).unwrap();
+
+    assert_eq!(root.symbol_count_after(), 1);
+    assert_eq!(root.lr_units_consumed(), 1);
+    assert_eq!(root.active_wiener_ns_units(), 1);
+    assert_eq!(
+        root.selections(),
+        &[WienerNsLrUnitSelection {
+            plane: 0,
+            unit_row: 0,
+            unit_col: 0,
+            active: true,
+        }]
+    );
+    assert_eq!(root.active_source_blocks().len(), 4096);
     assert!(!root.all_lr_units_inactive());
 }
 

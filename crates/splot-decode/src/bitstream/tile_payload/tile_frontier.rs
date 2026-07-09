@@ -22,11 +22,11 @@ use super::partition_size::BlockSize;
 use super::partition_traversal::{
     DecodeBlockFrontier, GeneralIntraLeafMode, GeneralIntraPartitionTreeOutput,
     GeneralIntraTreeWalkError, TileLoopRestorationRootFrontier, TilePartitionBruState,
-    TilePartitionFrameFacts, TilePartitionLoopRestorationState, TilePartitionTraversalError,
-    TilePartitionTraversalInput, TilePartitionTraversalPlan,
-    TilePartitionWienerNsLoopRestorationState, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
-    consume_tile_loop_restoration_root_frontier, decode_general_intra_partition_tree,
-    plan_tile_partition_traversal_cursor,
+    TilePartitionFrameFacts, TilePartitionLoopRestorationFrameState,
+    TilePartitionLoopRestorationPlaneTool, TilePartitionLoopRestorationState,
+    TilePartitionTraversalError, TilePartitionTraversalInput, TilePartitionTraversalPlan,
+    WienerNsLrSourceBlock, WienerNsLrUnitFilter, consume_tile_loop_restoration_root_frontier,
+    decode_general_intra_partition_tree, plan_tile_partition_traversal_cursor,
 };
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimits};
 
@@ -319,7 +319,7 @@ fn loop_restoration_state(lr: &LrParams, num_planes: usize) -> TilePartitionLoop
     if !lr.uses_lr {
         return TilePartitionLoopRestorationState::NoSyntax;
     }
-    let mut plane_enabled = [false; 3];
+    let mut plane_tool = [TilePartitionLoopRestorationPlaneTool::None; 3];
     let mut frame_filters_on = [false; 3];
     let mut unit_size = [0usize; 3];
     for plane in 0..num_planes.min(3) {
@@ -329,8 +329,12 @@ fn loop_restoration_state(lr: &LrParams, num_planes: usize) -> TilePartitionLoop
         match params.restoration_type {
             FrameRestorationType::None => {}
             FrameRestorationType::WienerNonsep => {
-                plane_enabled[plane] = true;
+                plane_tool[plane] = TilePartitionLoopRestorationPlaneTool::WienerNs;
                 frame_filters_on[plane] = params.frame_filters_on;
+                unit_size[plane] = lr.loop_restoration_size[plane] as usize;
+            }
+            FrameRestorationType::PcWiener if plane == 0 => {
+                plane_tool[plane] = TilePartitionLoopRestorationPlaneTool::PcWiener;
                 unit_size[plane] = lr.loop_restoration_size[plane] as usize;
             }
             FrameRestorationType::PcWiener | FrameRestorationType::Switchable => {
@@ -338,14 +342,15 @@ fn loop_restoration_state(lr: &LrParams, num_planes: usize) -> TilePartitionLoop
             }
         }
     }
-    if plane_enabled.iter().any(|enabled| *enabled) {
-        TilePartitionLoopRestorationState::FrameWienerNs(
-            TilePartitionWienerNsLoopRestorationState::new(
-                plane_enabled,
-                frame_filters_on,
-                unit_size,
-            ),
-        )
+    if plane_tool
+        .iter()
+        .any(|tool| *tool != TilePartitionLoopRestorationPlaneTool::None)
+    {
+        TilePartitionLoopRestorationState::Frame(TilePartitionLoopRestorationFrameState::new(
+            plane_tool,
+            frame_filters_on,
+            unit_size,
+        ))
     } else {
         TilePartitionLoopRestorationState::UnsupportedReadLrSyntax
     }

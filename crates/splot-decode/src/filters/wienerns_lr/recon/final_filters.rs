@@ -476,6 +476,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Some(plane) = lr_params.planes.first() else {
             return Ok(());
         };
+        if plane.restoration_type == FrameRestorationType::PcWiener && !y_blocks.is_empty() {
+            return Err(luma_lr_filter_error(offset));
+        }
         if plane.restoration_type != FrameRestorationType::WienerNonsep || y_blocks.is_empty() {
             return Ok(());
         }

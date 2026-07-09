@@ -124,26 +124,33 @@ pub(crate) enum TilePartitionBruState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePartitionLoopRestorationState {
     NoSyntax,
-    FrameWienerNs(TilePartitionWienerNsLoopRestorationState),
+    Frame(TilePartitionLoopRestorationFrameState),
     UnsupportedReadLrSyntax,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TilePartitionWienerNsLoopRestorationState {
-    plane_enabled: [bool; 3],
+pub(crate) enum TilePartitionLoopRestorationPlaneTool {
+    None,
+    WienerNs,
+    PcWiener,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TilePartitionLoopRestorationFrameState {
+    plane_tool: [TilePartitionLoopRestorationPlaneTool; 3],
     frame_filters_on: [bool; 3],
     unit_size: [usize; 3],
 }
 
-impl TilePartitionWienerNsLoopRestorationState {
+impl TilePartitionLoopRestorationFrameState {
     #[must_use]
     pub(crate) const fn new(
-        plane_enabled: [bool; 3],
+        plane_tool: [TilePartitionLoopRestorationPlaneTool; 3],
         frame_filters_on: [bool; 3],
         unit_size: [usize; 3],
     ) -> Self {
         Self {
-            plane_enabled,
+            plane_tool,
             frame_filters_on,
             unit_size,
         }
@@ -1522,18 +1529,20 @@ fn read_loop_restoration_for_call(
     if call.b_size != frame.sb_size {
         return Ok(());
     }
-    let TilePartitionLoopRestorationState::FrameWienerNs(lr) = frame.loop_restoration else {
+    let TilePartitionLoopRestorationState::Frame(lr) = frame.loop_restoration else {
         return Ok(());
     };
     let w = call.b_size.num_4x4_wide()?;
     let h = call.b_size.num_4x4_high()?;
     let (plane_start, plane_end) = plane_range_for_tree_type(call.tree_type, frame.num_planes);
     for plane in plane_start..plane_end.min(3) {
-        if !lr.plane_enabled[plane] {
+        let tool = lr.plane_tool[plane];
+        if tool == TilePartitionLoopRestorationPlaneTool::None {
             continue;
         }
-        read_wiener_ns_lr_units_for_plane(
+        read_lr_units_for_plane(
             plane,
+            tool,
             lr.unit_size[plane],
             lr.frame_filters_on[plane],
             frame,
@@ -1551,8 +1560,9 @@ fn read_loop_restoration_for_call(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn read_wiener_ns_lr_units_for_plane(
+fn read_lr_units_for_plane(
     plane: usize,
+    tool: TilePartitionLoopRestorationPlaneTool,
     unit_size: usize,
     frame_filters_on: bool,
     frame: TilePartitionFrameFacts,
@@ -1624,16 +1634,22 @@ fn read_wiener_ns_lr_units_for_plane(
         for unit_col in unit_col_start..unit_col_end {
             let unit_row = checked_add("lr_unit_row", unit_row, lr_row_offset)?;
             let unit_col = checked_add("lr_unit_col", unit_col, lr_col_offset)?;
-            let active = read_wiener_ns_lr_unit(
-                plane,
-                frame_filters_on,
-                unit_row,
-                unit_col,
-                cdfs,
-                symbols,
-                lr_activity,
-                limits,
-            )?;
+            let active = match tool {
+                TilePartitionLoopRestorationPlaneTool::None => false,
+                TilePartitionLoopRestorationPlaneTool::WienerNs => read_wiener_ns_lr_unit(
+                    plane,
+                    frame_filters_on,
+                    unit_row,
+                    unit_col,
+                    cdfs,
+                    symbols,
+                    lr_activity,
+                    limits,
+                )?,
+                TilePartitionLoopRestorationPlaneTool::PcWiener => {
+                    read_pc_wiener_lr_unit(plane, unit_row, unit_col, cdfs, symbols, lr_activity)?
+                }
+            };
             if active {
                 record_active_wiener_ns_source_blocks_for_unit(
                     LrSourceBlockDerivation {
@@ -1654,6 +1670,25 @@ fn read_wiener_ns_lr_units_for_plane(
     }
     Ok(())
 }
+
+fn read_pc_wiener_lr_unit(
+    plane: usize,
+    unit_row: usize,
+    unit_col: usize,
+    cdfs: &mut super::cdf::TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    lr_activity: &mut WienerNsLrUnitActivity,
+) -> Result<bool, TilePartitionTraversalError> {
+    let use_pc_wiener = cdfs
+        .with_row_mut(super::cdf::TileCdfSelector::UsePcWiener, |row| {
+            symbols.read_symbol(row)
+        })??
+        .get()
+        != 0;
+    lr_activity.record(plane, unit_row, unit_col, use_pc_wiener)?;
+    Ok(use_pc_wiener)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn read_wiener_ns_lr_unit(
     plane: usize,
