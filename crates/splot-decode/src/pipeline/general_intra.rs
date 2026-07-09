@@ -1212,13 +1212,13 @@ fn rect_luma_plan_for_parts_ext(
         return Ok(RectLumaPlan::Smooth { mode, use_tcq });
     }
     match directional_p_angle {
-        Some(90) if supported_cardinal_rect && has_edge => {
+        Some(90) if supported_cardinal_rect => {
             return Ok(RectLumaPlan::Cardinal {
                 direction: IntraCardinalDirection::Vertical,
                 use_tcq,
             });
         }
-        Some(180) if supported_cardinal_rect && has_edge => {
+        Some(180) if supported_cardinal_rect => {
             return Ok(RectLumaPlan::Cardinal {
                 direction: IntraCardinalDirection::Horizontal,
                 use_tcq,
