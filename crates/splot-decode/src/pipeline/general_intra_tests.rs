@@ -1180,6 +1180,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     }
     for (mode, y_mode) in [
         (D67Follow, IntraYMode::D67_PRED_FOR_TEST),
+        (D113Follow, IntraYMode::D113_PRED_FOR_TEST),
         (D135Follow, IntraYMode::D135_PRED_FOR_TEST),
         (D203Follow, IntraYMode::D203_PRED_FOR_TEST),
     ] {
@@ -1214,8 +1215,10 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     ));
     for (mode, y_mode, expected) in [
         (D67Follow, IntraYMode::DC_PRED, false),
+        (D113Follow, IntraYMode::DC_PRED, false),
         (D203Follow, IntraYMode::DC_PRED, false),
         (D67Follow, IntraYMode::D67_PRED_FOR_TEST, true),
+        (D113Follow, IntraYMode::D113_PRED_FOR_TEST, true),
         (D135Follow, IntraYMode::D135_PRED_FOR_TEST, true),
         (D203Follow, IntraYMode::D203_PRED_FOR_TEST, true),
     ] {
