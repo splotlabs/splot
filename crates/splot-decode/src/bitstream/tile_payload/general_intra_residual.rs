@@ -1140,6 +1140,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             chroma_inter_tx_type,
             is_inter,
             fsc_mode,
+            txb_skip_fsc_mode,
             luma,
             active_intra_ist,
             active_chroma,
@@ -1198,6 +1199,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     chroma_inter_tx_type: usize,
     is_inter: bool,
     fsc_mode: bool,
+    txb_skip_fsc_mode: bool,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
     active_intra_ist_policy: ActiveIntraIstResidualPolicy,
     active_chroma_policy: ActiveChromaResidualPolicy,
@@ -1241,7 +1243,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             tx_size: geometry.tx_size,
             is_inter,
             lossless,
-            fsc_mode,
+            fsc_mode: fsc_mode || (geometry.plane > 0 && txb_skip_fsc_mode),
             eob,
             luma_transform_type_context,
             active_intra_ist_policy,
@@ -1433,7 +1435,7 @@ fn ensure_transform_tool_residual_handoff(
         metadata.cctx_type = Some(cctx_type);
     }
     if lossless {
-        if !is_inter && plane == 0 && input.fsc_mode {
+        if !is_inter && input.fsc_mode {
             metadata.luma_tx_type = IDTX;
         } else if is_inter && plane == 0 {
             metadata.luma_tx_type = read_lossless_inter_plane_tx_type(cdfs, symbols, tx_size)

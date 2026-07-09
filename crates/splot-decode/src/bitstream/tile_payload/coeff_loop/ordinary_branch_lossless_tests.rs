@@ -395,6 +395,17 @@ fn coefficient_ordinary_branch_lossless_inter_chroma_preserves_luma_tx_type() {
 }
 
 #[test]
+fn coefficient_ordinary_branch_lossless_intra_chroma_follows_luma_fsc_type() {
+    let mut base_config = lossless_base_config(UV_SMOOTH_PRED, 0, false);
+    base_config.luma_tx_type = IDTX;
+
+    assert_eq!(
+        lossless_plane_tx_type(tx_size_geometry_for_plane(TX_4X4, 1), false, base_config),
+        IDTX
+    );
+}
+
+#[test]
 fn coefficient_ordinary_branch_lossless_inter_luma_4x4_reads_tx_type_symbol() {
     for (symbol, expected_tx_type) in [(0, DCT_DCT), (1, IDTX)] {
         let payload = encode_symbol_sequence(&[(TileCdfSelector::LosslessInterTxType, symbol)]);
