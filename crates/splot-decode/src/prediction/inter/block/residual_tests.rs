@@ -5,6 +5,10 @@
 
 use super::*;
 
+use crate::bitstream::tile_payload::{encode_symbol_sequence, make_test_work_unit};
+
+use splot_core::symbol::{CdfUpdateMode, SymbolDecoderConfig};
+
 const BLOCK_16X8: usize = 5;
 
 fn tx_size_for(width: usize, height: usize) -> usize {
@@ -59,15 +63,36 @@ fn chroma_group_start_waits_for_subsampled_luma_chunks() {
 }
 
 #[test]
-fn lossless_inter_residual_uses_4x4_transform_units() {
+fn lossless_inter_residual_tx_size_reads_selector() {
     let offset = ByteOffset::new(0);
+    let size_group =
+        usize::try_from(splot_core::tables::conversion::SIZE_GROUP[BLOCK_16X8]).unwrap();
+    let payload = encode_symbol_sequence(&[(
+        TileCdfSelector::LosslessTxSize {
+            size_group,
+            is_inter: 1,
+        },
+        1,
+    )]);
+    let mut work_unit = make_test_work_unit(&payload, CdfUpdateMode::Disabled);
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        &payload,
+        offset,
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    )
+    .unwrap();
 
     assert_eq!(
-        fixed_inter_residual_tx_size(BLOCK_16X8, true, offset).unwrap(),
-        TX_4X4
+        inter_residual_tx_size(
+            &mut work_unit,
+            &mut symbols,
+            BLOCK_16X8,
+            true,
+            InterResidualLumaTxSizeMode::Inter,
+            offset,
+        )
+        .unwrap(),
+        tx_size_for(16, 8)
     );
-    assert_eq!(
-        fixed_inter_residual_tx_size(BLOCK_16X8, false, offset).unwrap(),
-        max_tx_size(BLOCK_16X8, offset).unwrap()
-    );
+    assert_eq!(symbols.symbol_count(), 1);
 }

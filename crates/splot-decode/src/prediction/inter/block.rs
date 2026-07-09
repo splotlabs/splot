@@ -1528,7 +1528,7 @@ fn decode_block<T: ReconSample>(
         cdfs,
         symbols,
         frame_interpolation_filter,
-        single_mode,
+        single_inter_needs_interp_filter(n4w, n4h, single_mode),
         interp_ctx,
         tile_offset,
     )?;
@@ -2263,6 +2263,26 @@ fn read_inter_intra_syntax(
         .as_ref()
         .and_then(|inter| inter.frame_enabled_motion_modes)
         .is_some_and(|modes| modes[splot_core::headers::frame::INTERINTRA]);
+    read_inter_intra_syntax_enabled(
+        cdfs,
+        symbols,
+        frame_enables_interintra,
+        b_size,
+        n4w,
+        n4h,
+        tile_offset,
+    )
+}
+
+fn read_inter_intra_syntax_enabled(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    frame_enables_interintra: bool,
+    b_size: usize,
+    n4w: usize,
+    n4h: usize,
+    tile_offset: ByteOffset,
+) -> Result<WarpInterIntraSyntax> {
     if !frame_enables_interintra || b_size < BLOCK_8X8 || n4w.max(n4h) > CHUNK_64_N4 {
         return Ok(WarpInterIntraSyntax::default());
     }
@@ -2406,6 +2426,10 @@ fn explicit_bawp_context(single_mode: u8, use_amvd: bool) -> usize {
     } else {
         2
     }
+}
+
+fn single_inter_needs_interp_filter(n4w: usize, n4h: usize, single_mode: u8) -> bool {
+    !(n4w >= 2 && n4h >= 2 && single_mode == SINGLE_MODE_GLOBALMV)
 }
 
 fn symbol_read_error(tile_offset: ByteOffset) -> crate::error::DecodeError {

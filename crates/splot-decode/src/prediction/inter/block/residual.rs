@@ -677,8 +677,7 @@ fn inter_residual_tx_size(
         return max_tx_size(block_size, tile_offset);
     }
     match mode {
-        InterResidualLumaTxSizeMode::Inter => Ok(TX_4X4),
-        InterResidualLumaTxSizeMode::Intrabc => {
+        InterResidualLumaTxSizeMode::Inter | InterResidualLumaTxSizeMode::Intrabc => {
             read_lossless_tx_size(work_unit, symbols, block_size, false, true, true)
                 .map_err(|_| residual_read_error(tile_offset))
         }

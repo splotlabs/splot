@@ -13,7 +13,8 @@ use super::ordinary_pass::geometry::{
     CoeffOrdinaryBranchTxSizeDimensionsBaseConfig, CoeffOrdinaryBranchTxSizeDimensionsInput,
     CoeffOrdinaryBranchTxSizeDimensionsNonZeroInput, CoeffOrdinaryTxSizeGeometryConfig,
     apply_coeff_ordinary_branch_from_lossless, apply_coeff_ordinary_branch_from_tx_set,
-    apply_coeff_ordinary_branch_from_tx_size_dimensions, read_lossless_tx_size_base_config,
+    apply_coeff_ordinary_branch_from_tx_size_dimensions, lossless_plane_tx_type,
+    read_lossless_tx_size_base_config,
 };
 use super::test_support::{
     OrdinaryBranchRun, run_ordinary_branch, seeded_context_state, symbol_decoder,
@@ -380,6 +381,17 @@ fn coefficient_ordinary_branch_lossless_inter_selects_dct_dct() {
 #[test]
 fn coefficient_ordinary_branch_lossless_inter_luma_large_tx_selects_idtx() {
     assert_lossless_inter_matches_explicit(0, TX_8X8, IDTX);
+}
+
+#[test]
+fn coefficient_ordinary_branch_lossless_inter_chroma_preserves_luma_tx_type() {
+    let mut base_config = lossless_base_config(UV_SMOOTH_PRED, 0, false);
+    base_config.chroma_inter_tx_type = IDTX;
+
+    assert_eq!(
+        lossless_plane_tx_type(tx_size_geometry_for_plane(TX_4X4, 1), true, base_config),
+        IDTX
+    );
 }
 
 #[test]

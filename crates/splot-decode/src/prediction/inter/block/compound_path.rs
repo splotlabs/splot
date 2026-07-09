@@ -428,7 +428,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         cdfs,
         symbols,
         frame_interpolation_filter,
-        SINGLE_MODE_NEARMV,
+        true,
         interp_ctx,
         tile_offset,
     )?;

@@ -29,8 +29,8 @@ use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryBranchModeToTxfmBaseConfig,
     CoeffOrdinaryStagedLosslessNonZeroInput, CoeffOrdinaryTxSizeGeometryConfig,
-    apply_staged_nonzero_coeff_ordinary_branch_from_lossless, read_lossless_inter_plane_tx_type,
-    resolve_mode_to_txfm_plane_tx_type,
+    apply_staged_nonzero_coeff_ordinary_branch_from_lossless, lossless_plane_tx_type,
+    read_lossless_inter_plane_tx_type, resolve_mode_to_txfm_plane_tx_type,
 };
 use super::coeff_loop::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
 use super::coeff_loop::use_fsc_branch::{
@@ -1356,10 +1356,7 @@ fn staged_transform_tool_plane_tx_type(
     base_config: CoeffOrdinaryBranchLosslessBaseConfig,
 ) -> Result<usize, GeneralIntraResidualError> {
     if lossless {
-        if geometry.plane == 0 && base_config.luma_tx_type == IDTX {
-            return Ok(IDTX);
-        }
-        return Ok(DCT_DCT);
+        return Ok(lossless_plane_tx_type(geometry, is_inter, base_config));
     }
     let mode_to_txfm = CoeffOrdinaryBranchModeToTxfmBaseConfig {
         tx_set: transform_set_from_flags(

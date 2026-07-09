@@ -944,6 +944,30 @@ fn lossless_inter_staged_plane_tx_type_remains_idtx() {
 }
 
 #[test]
+fn lossless_inter_chroma_staged_plane_tx_type_uses_colocated_luma_tx_type() {
+    let geometry = CoeffOrdinaryTxSizeGeometryConfig {
+        plane: 1,
+        start_x: 0,
+        start_y: 0,
+        tx_size: TX_4X4,
+    };
+    let base_config = staged_transform_tool_lossless_base_config(
+        lossless_frame_facts(),
+        1,
+        0,
+        0,
+        IDTX,
+        true,
+        TransformToolResidualMetadata::default(),
+    );
+
+    assert_eq!(
+        staged_transform_tool_plane_tx_type(geometry, true, true, base_config).unwrap(),
+        IDTX
+    );
+}
+
+#[test]
 fn luma_txtype_residual_staged_base_config_derives_coeff_tool_flags() {
     for (luma_tx_type, parity_hiding, use_tcq) in [
         (ADST_DCT, true, true),
