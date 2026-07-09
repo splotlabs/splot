@@ -463,10 +463,13 @@ fn plan_directional_luma_angle(
             || full_sb_no_above_left
             || (full_sb_top_left_no_neighbour
                 && block_ctx.bit_depth() == BitDepth::Eight
-                && matches!(mode, SupportedDirectionalLumaMode::D45)
-                && p_angle == 45))
-            .then_some(IntraLumaPlan::DirectionalOneSidedAbove { p_angle })
-            .ok_or(UNSUPPORTED_D45_POSITION);
+                && matches!(
+                    mode,
+                    SupportedDirectionalLumaMode::D45 | SupportedDirectionalLumaMode::D67
+                )
+                && p_angle == directional_mode_p_angle(mode)))
+        .then_some(IntraLumaPlan::DirectionalOneSidedAbove { p_angle })
+        .ok_or(UNSUPPORTED_D45_POSITION);
     }
     if p_angle > 180 && p_angle < 270 {
         return (full_sb_with_left || supports_small_one_sided_left)
