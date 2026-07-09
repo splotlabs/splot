@@ -2230,7 +2230,8 @@ use self::filter_records::record_inter_deblock_geometry;
 pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
 use self::syntax::{
     effective_force_integer_mv, frame_mv_precision, interp_filter_symbol, lowered_pred_mv,
-    read_block_mv_precision_syntax, read_drl_idx, read_use_amvd_syntax, resolve_interp_filter,
+    read_block_mv_precision_syntax, read_drl_idx, read_drl_idx_from, read_use_amvd_syntax,
+    resolve_interp_filter,
 };
 use self::temporal::{block_ref_within_temporal_distance, record_temporal_motion_block};
 use self::warp::{
