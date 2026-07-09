@@ -1426,7 +1426,8 @@ impl ResidualPlanePlan {
         let block_ctx = self.block_ctx;
         match self.unit_directional_replan(luma_context) {
             ResidualReconstructionPlan::LumaPalette { palette, use_tcq } => {
-                let color_map = palette_color_map.ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
+                let color_map =
+                    palette_color_map.ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_palette_block_into(
                     workspace,
                     coeffs,
@@ -1541,6 +1542,7 @@ impl ResidualPlanePlan {
                 secondary_mrl,
                 use_tcq,
             } => {
+                let edges = block_ctx.neighbours(PlaneId::Y);
                 crate::pipeline::reconstruct::reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
                     workspace,
                     coeffs,
@@ -1556,6 +1558,7 @@ impl ResidualPlanePlan {
                     secondary_mrl,
                     use_tcq,
                     Some(luma_context),
+                    MiddleAvail::new(edges.has_above(), edges.has_left()),
                     block_ctx.bit_depth(),
                 )
             }
@@ -1569,7 +1572,10 @@ impl ResidualPlanePlan {
                 let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
                 let edges = block_ctx.neighbours(PlaneId::Y);
                 let availability = EdgeAvail::new(edges.has_above(), edges.has_left());
-                let mrl = AboveMrl { mrl_index, above_mrl_index };
+                let mrl = AboveMrl {
+                    mrl_index,
+                    above_mrl_index,
+                };
                 if secondary_mrl {
                     crate::pipeline::reconstruct::reconstruct_general_intra_mrl_secondary_above_block_into(
                         workspace,
@@ -1736,21 +1742,23 @@ impl ResidualPlanePlan {
                 above_mrl_index,
                 secondary_mrl,
                 use_tcq,
-            } => crate::pipeline::reconstruct::reconstruct_general_intra_cardinal_mrl_luma_block_into(
-                workspace,
-                coeffs,
-                direction,
-                self.x,
-                self.y,
-                self.tx.width_log2(),
-                self.tx.height_log2(),
-                qindex,
-                mrl_index,
-                above_mrl_index,
-                secondary_mrl,
-                use_tcq,
-                block_ctx.bit_depth(),
-            ),
+            } => {
+                crate::pipeline::reconstruct::reconstruct_general_intra_cardinal_mrl_luma_block_into(
+                    workspace,
+                    coeffs,
+                    direction,
+                    self.x,
+                    self.y,
+                    self.tx.width_log2(),
+                    self.tx.height_log2(),
+                    qindex,
+                    mrl_index,
+                    above_mrl_index,
+                    secondary_mrl,
+                    use_tcq,
+                    block_ctx.bit_depth(),
+                )
+            }
             ResidualReconstructionPlan::LumaRectOneSidedLeft { p_angle, use_tcq } => {
                 let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
@@ -2006,8 +2014,8 @@ impl ResidualPlanePlan {
                 )
             }
             ResidualReconstructionPlan::Rect { use_tcq } => {
-                let ibp_dc =
-                    intra_edge.enable_ibp && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2);
+                let ibp_dc = intra_edge.enable_ibp
+                    && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2);
                 let neighbours = self.plane_neighbours(block_ctx, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_block_rect_with_availability_into(
                     workspace,
@@ -2051,31 +2059,20 @@ fn summarize_luma_partition(
 }
 
 fn tx_size_log2(tx_size: usize) -> core::result::Result<(u32, u32), GeneralIntraResidualError> {
-    let width = *TX_WIDTH_LOG2.get(tx_size).ok_or(
-        GeneralIntraResidualError::TransformPartitionGeometry {
-            table: "Tx_Width_Log2",
-            index: tx_size,
-        },
-    )?;
-    let height = *TX_HEIGHT_LOG2.get(tx_size).ok_or(
-        GeneralIntraResidualError::TransformPartitionGeometry {
-            table: "Tx_Height_Log2",
-            index: tx_size,
-        },
-    )?;
-    let width = u32::try_from(width).map_err(|_| {
-        GeneralIntraResidualError::TransformPartitionGeometry {
-            table: "Tx_Width_Log2",
-            index: tx_size,
-        }
-    })?;
-    let height = u32::try_from(height).map_err(|_| {
-        GeneralIntraResidualError::TransformPartitionGeometry {
-            table: "Tx_Height_Log2",
-            index: tx_size,
-        }
-    })?;
-    Ok((width, height))
+    let error = |table| GeneralIntraResidualError::TransformPartitionGeometry {
+        table,
+        index: tx_size,
+    };
+    let width = *TX_WIDTH_LOG2
+        .get(tx_size)
+        .ok_or_else(|| error("Tx_Width_Log2"))?;
+    let height = *TX_HEIGHT_LOG2
+        .get(tx_size)
+        .ok_or_else(|| error("Tx_Height_Log2"))?;
+    Ok((
+        u32::try_from(width).map_err(|_| error("Tx_Width_Log2"))?,
+        u32::try_from(height).map_err(|_| error("Tx_Height_Log2"))?,
+    ))
 }
 
 fn chroma_angle_delta_uv(
