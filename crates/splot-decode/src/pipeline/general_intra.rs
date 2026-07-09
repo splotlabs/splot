@@ -780,7 +780,23 @@ pub(super) fn lossless_chroma_part_prediction_verified(
     if lossless_chroma_prediction_verified(mode, uses_dpcm_uv) {
         return true;
     }
-    if uses_dpcm_uv || !lossless_chroma_full_64_block(block_ctx) || sb_mib != FULL_SB_N4_LUMA {
+    if uses_dpcm_uv || !lossless_chroma_full_64_block(block_ctx) {
+        return false;
+    }
+    let top_left_smooth = y_mode == IntraYMode::DC_PRED
+        && block_ctx.is_top_left()
+        && matches!(
+            mode,
+            Some(
+                SupportedChromaMode::Smooth
+                    | SupportedChromaMode::SmoothVertical
+                    | SupportedChromaMode::SmoothHorizontal
+            )
+        );
+    if top_left_smooth {
+        return true;
+    }
+    if sb_mib != FULL_SB_N4_LUMA {
         return false;
     }
     let top_left = y_mode == IntraYMode::DC_PRED
