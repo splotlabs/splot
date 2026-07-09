@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
+use crate::bitstream::tile_payload::{CflIndex, CflParams, GeneralIntraChromaBlockMode};
 
 fn ctx(row4: usize, col4: usize, width4: usize, height4: usize) -> BlockCtx {
     ctx_with_bit_depth(row4, col4, width4, height4, BitDepth::Ten)
@@ -467,6 +468,39 @@ fn lossless_chroma_part_guard_admits_rect_prediction_subset() {
         top_left_smooth_part,
         32,
     ));
+}
+
+#[test]
+fn lossless_chroma_part_guard_delegates_cfl_to_cfl_plan() {
+    let block = ctx_with_bit_depth(2, 0, 2, 2, BitDepth::Eight);
+    let params = CflParams {
+        index: CflIndex::Explicit,
+        alpha_u: 1,
+        alpha_v: -1,
+        mh_dir: None,
+    };
+    let chroma = GeneralIntraChromaBlockMode::cfl_for_test(params);
+
+    assert!(lossless_chroma_part_prediction_guard_passes(
+        chroma,
+        IntraYMode::H_PRED_FOR_TEST,
+        block,
+        32,
+    ));
+    let result = chroma_plan_for_parts(chroma, IntraYMode::H_PRED_FOR_TEST, 0, block, 1, 32, true);
+    assert!(result.is_ok());
+    let plan = result
+        .ok()
+        .expect("CFL chroma part should reach the CFL planner");
+
+    assert_eq!(
+        plan,
+        RectChromaPlan::Cfl {
+            params,
+            cfl_ds_filter_index: 1,
+            sb_mib: 32,
+        }
+    );
 }
 
 #[test]

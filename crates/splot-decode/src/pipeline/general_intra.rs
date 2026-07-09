@@ -491,14 +491,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         block_ctx.block().height4(),
     )
     .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
-    if lossless
-        && !lossless_chroma_part_prediction_verified(
-            chroma.supported_chroma_mode(y_mode),
-            chroma.uses_dpcm_uv(),
-            y_mode,
-            block_ctx,
-            sb_mib,
-        )
+    if lossless && !lossless_chroma_part_prediction_guard_passes(chroma, y_mode, block_ctx, sb_mib)
     {
         return Err(general_intra_at!(
             "general_intra_lossless_nondc_chroma_part_unverified",
@@ -773,6 +766,22 @@ pub(super) fn lossless_chroma_prediction_verified(
                 mode,
                 Some(SupportedChromaMode::Vertical | SupportedChromaMode::Horizontal)
             ))
+}
+
+fn lossless_chroma_part_prediction_guard_passes(
+    chroma: GeneralIntraChromaBlockMode,
+    y_mode: IntraYMode,
+    block_ctx: BlockCtx,
+    sb_mib: usize,
+) -> bool {
+    chroma.is_cfl()
+        || lossless_chroma_part_prediction_verified(
+            chroma.supported_chroma_mode(y_mode),
+            chroma.uses_dpcm_uv(),
+            y_mode,
+            block_ctx,
+            sb_mib,
+        )
 }
 
 pub(super) fn lossless_chroma_part_prediction_verified(
