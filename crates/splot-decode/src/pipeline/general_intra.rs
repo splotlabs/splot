@@ -918,7 +918,9 @@ pub(super) fn lossless_chroma_block_prediction_verified(
                 | M::D203
                 | M::Paeth
         ))
-        || (top_left && y_mode.mode_to_angle() == Some(203) && mode == M::D203Follow)
+        || (top_left
+            && ((y_mode.mode_to_angle() == Some(67) && mode == M::D67Follow)
+                || (y_mode.mode_to_angle() == Some(203) && mode == M::D203Follow)))
         || (!neighbours.has_above()
             && neighbours.has_left()
             && (matches!(

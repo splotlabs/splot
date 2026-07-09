@@ -3807,6 +3807,59 @@ left = "avm-lossless-nondc-luma-d203-chroma-follow-intra-64x64-raw-md5"
 right = "avm-repeat-lossless-nondc-luma-d203-chroma-follow-intra-64x64-raw-md5"
 
 [[evidence]]
+id = "lref-avm-syn-lossless-nondc-luma-d67-chroma-follow-intra-64x64"
+feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
+decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
+kind = "reference-output-agreement"
+summary = "Local AVM raw decoder output recorded for an 8-bit 4:2:0 64x64 lossless intra IVF fixture whose top-left block has no decoded above or left neighbor, explicit non-DPCM D67_PRED luma, and non-DPCM uv_mode=0 D67-follow chroma. The fixture exercises the lossless normal-block chroma predictor guard for the top-left D67-follow subset; splot reproduces the raw SHA-256 value through the committed decoder-oracle metadata and decode test."
+recorded_at = "2026-07-09"
+command = "python3 /tmp/splot-d67follow-top-left-64/generate.py /tmp/splot-d67follow-top-left-64/final 190 32; /Users/bartosztomczyk/Devel/avm/build/avmenc -D --codec=av2 --ivf --limit=1 --passes=1 --threads=1 --cpu-used=0 --end-usage=q --qp=0 --lossless=1 --bit-depth=8 --input-bit-depth=8 --sb-size=64 --tile-columns=0 --tile-rows=0 --min-partition-size=64 --max-partition-size=64 --enable-sdp=0 --enable-extended-sdp=0 --enable-cfl-intra=0 --enable-mhccp=0 --enable-cctx=0 --enable-chroma-dctonly=0 --enable-cdef=0 --enable-deblocking=0 --enable-restoration=0 --enable-ccso=0 --enable-gdf=0 --enable-pc-wiener=0 --enable-wiener-nonsep=0 --enable-qm=0 --enable-tcq=0 --enable-parity-hiding=0 --enable-trellis-quant=0 --enable-fsc=0 --enable-flip-idtx=0 --enable-idtx-intra=0 --enable-ist=0 --enable-inter-ist=0 --enable-intra-dip=0 --enable-ibp=0 --enable-mrls=0 --enable-intra-edge-filter=0 --enable-angle-delta=0 --enable-palette=0 --enable-intrabc=0 --enable-intrabc-ext=0 --enable-paeth-intra=0 --enable-smooth-intra=0 --enable-rect-partitions=0 --enable-ext-partitions=0 --enable-uneven-4way-partitions=0 --enable-tx-partition=0 --deltaq-mode=0 --aq-mode=0 --enable-chroma-deltaq=0 --enable-keyframe-filtering=0 --lag-in-frames=0 --force-video-mode=0 --test-decode=fatal --quiet --disable-warning-prompt -o /tmp/splot-d67follow-top-left-64/final/syn-lossless-nondc-luma-d67-chroma-d67follow-top-left-64x64-yg32-cg190.ivf /tmp/splot-d67follow-top-left-64/final/syn-lossless-nondc-luma-d67-chroma-d67follow-top-left-64x64-yg32-cg190.y4m; /Users/bartosztomczyk/Devel/avm/build/avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 -o /tmp/splot-d67follow-top-left-64/final/syn-lossless-nondc-luma-d67-chroma-d67follow-top-left-64x64-yg32-cg190.avm.raw /tmp/splot-d67follow-top-left-64/final/syn-lossless-nondc-luma-d67-chroma-d67follow-top-left-64x64-yg32-cg190.ivf"
+
+[[evidence.fixture]]
+id = "d67-follow-top-left-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-nondc-luma-d67-chroma-follow-intra-64x64.ivf"
+sha256 = "860a82d6f86aaba49dc906a09c6b36eb6f5512ab8d6755080fa8b5a1dc72bfcd"
+size_bytes = 168
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated locally from a project-owned 64x64 8-bit 4:2:0 I420 source. Luma uses a D67 ramp with gain 32; U uses the same D67 projection on the 32x32 chroma plane with saturated gain 190; V is 255 minus U. Re-encoded with AVM lossless mode, 64x64 square partitions, single tile, SDP disabled, and broad decode tools disabled. A second AVM encode produced the same IVF SHA-256, and AVM raw output matched the generated I420 source byte-for-byte. SPLOT_SYMBOL_TRACE recorded partition=0, use_dpcm_y=0, y_mode_set=0, y_mode_idx=7, y_mode_offset=1, use_dpcm_uv=0, and uv_mode_base/uv_mode_idx=0, resolving to D67_PRED luma and D67Follow chroma in splot's resolver tables; splot pre-fix failed closed at byte offset 64 with general_intra_lossless_other_nondc_chroma_block_unverified. AVM inspect binaries segfaulted on this lossless fixture; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avmdec-lossless-nondc-luma-d67-chroma-follow-top-left"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "AVM checkout version v1.0.0-41-g3935f4bf3-dirty; dirty source changes were local tracing hooks for inspect/mode evidence and untracked build directories."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 and SHA-256 for {fixture:d67-follow-top-left-input}."
+output_digest_id = "avm-lossless-nondc-luma-d67-chroma-follow-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "19cf459df2988fdbdacb4b26136775e7"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 1e06306e7d131ffc620e1969987c4f4b7dbae673c68e56e8a462a65c338c4576 is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "avmdec-repeat-lossless-nondc-luma-d67-chroma-follow-top-left"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Repeated local AVM checkout version v1.0.0-41-g3935f4bf3-dirty decode run from the committed fixture copy."
+command_summary = "Repeated local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1 output MD5 for {fixture:d67-follow-top-left-input}."
+output_digest_id = "avm-repeat-lossless-nondc-luma-d67-chroma-follow-intra-64x64-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "19cf459df2988fdbdacb4b26136775e7"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-nondc-luma-d67-chroma-follow-intra-64x64-raw-md5"
+right = "avm-repeat-lossless-nondc-luma-d67-chroma-follow-intra-64x64-raw-md5"
+
+[[evidence]]
 id = "lref-avm-syn-lossless-sdp-nondc-luma-d203-chroma-follow-intra-64x64"
 feature_id = "DECODE-COEFF-ORDINARY-BRANCH-LOSSLESS-HANDOFF"
 decoder_support_rows = ["general-intra-frame-frontier", "coeff-ordinary-branch-lossless-handoff"]
