@@ -1037,7 +1037,6 @@ fn assert_lossless_chroma_d135_oracle(
 #[test]
 fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     use SupportedChromaMode::Smooth;
-
     let top_left_8 = block_ctx(
         0,
         0,
@@ -1160,6 +1159,7 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         SupportedChromaMode::D45Follow,
         SupportedChromaMode::D113,
         SupportedChromaMode::D135,
+        SupportedChromaMode::D135Follow,
         SupportedChromaMode::D157,
         SupportedChromaMode::D203,
         SupportedChromaMode::Paeth,
@@ -1245,7 +1245,6 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
         general_intra::FULL_SB_N4_LUMA,
     ));
 }
-
 #[test]
 fn lossless_luma_prediction_guard_rejects_unverified_nondc_with_offset() {
     let modes = GeneralIntraBlockModes::luma_only(GeneralIntraLumaBlockMode {
