@@ -105,14 +105,64 @@ fn compound_average_syntax_roundtrips_through_symbol_encoder() {
 }
 
 #[test]
+fn non_joint_new_mv_modes_roundtrip_through_symbol_encoder() {
+    for (mode, y_mode) in [
+        (COMPOUND_MODE_NEAR_NEWMV, CompoundYMode::NearNew),
+        (COMPOUND_MODE_NEW_NEARMV, CompoundYMode::NewNear),
+        (COMPOUND_MODE_NEW_NEWMV, CompoundYMode::NewNew),
+    ] {
+        let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut encoder = SymbolEncoder::new();
+        encode_symbol(
+            &mut enc_tile,
+            &mut encoder,
+            TileCdfSelector::IsJoint { ctx: 1 },
+            0,
+        );
+        encode_symbol(
+            &mut enc_tile,
+            &mut encoder,
+            TileCdfSelector::CompoundModeNonJoint { ctx: 0 },
+            mode,
+        );
+        let bytes = encoder.finish().unwrap().into_bytes();
+
+        let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&bytes);
+        let syntax = read_compound_average_syntax(
+            &mut dec_tile,
+            &mut symbols,
+            default_input(),
+            ByteOffset::new(0),
+        )
+        .unwrap();
+
+        assert_eq!(syntax.y_mode, y_mode);
+        symbols.exit_symbol().unwrap();
+    }
+}
+
+#[test]
 fn compound_opfl_modes_use_opfl_amvd_contexts() {
     assert_eq!(CompoundYMode::NearNew.use_amvd_index(false), Some(0));
     assert_eq!(CompoundYMode::NearNew.use_amvd_index(true), Some(2));
+    assert_eq!(CompoundYMode::NewNear.use_amvd_index(false), Some(1));
+    assert_eq!(CompoundYMode::NewNear.use_amvd_index(true), Some(3));
     assert_eq!(CompoundYMode::JointNew.use_amvd_index(false), Some(5));
     assert_eq!(CompoundYMode::JointNew.use_amvd_index(true), Some(6));
     assert_eq!(CompoundYMode::NewNew.use_amvd_index(false), Some(7));
     assert_eq!(CompoundYMode::NewNew.use_amvd_index(true), Some(8));
     assert_eq!(CompoundYMode::NearNear.use_amvd_index(true), None);
+}
+
+#[test]
+fn asymmetric_compound_modes_keep_per_list_mv_roles() {
+    assert!(CompoundYMode::NearNew.has_second_drl(false));
+    assert!(!CompoundYMode::NewNear.has_second_drl(false));
+    assert!(!CompoundYMode::NearNew.list0_is_newmv());
+    assert!(CompoundYMode::NearNew.list1_is_newmv());
+    assert!(CompoundYMode::NewNear.list0_is_newmv());
+    assert!(!CompoundYMode::NewNear.list1_is_newmv());
 }
 
 #[test]
@@ -277,7 +327,7 @@ fn compound_average_accepts_joint_mode_without_non_joint_symbol() {
 }
 
 #[test]
-fn compound_average_rejects_short_payload() {
+fn compound_average_rejects_global_global_mode() {
     let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::new();
     encode_symbol(
@@ -285,6 +335,12 @@ fn compound_average_rejects_short_payload() {
         &mut encoder,
         TileCdfSelector::IsJoint { ctx: 1 },
         0,
+    );
+    encode_symbol(
+        &mut enc_tile,
+        &mut encoder,
+        TileCdfSelector::CompoundModeNonJoint { ctx: 0 },
+        COMPOUND_MODE_GLOBAL_GLOBALMV,
     );
     let bytes = encoder.finish().unwrap().into_bytes();
 
