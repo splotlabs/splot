@@ -649,6 +649,7 @@ pub(super) fn ensure_lossless_verified_prediction_subset(
         && !lossless_chroma_block_prediction_verified(
             modes.supported_chroma_mode(),
             modes.uses_dpcm_uv(),
+            modes.y_mode,
             block_ctx,
             sb_mib,
         )
@@ -878,6 +879,7 @@ fn lossless_chroma_part_rect_prediction_verified(
 pub(super) fn lossless_chroma_block_prediction_verified(
     mode: Option<SupportedChromaMode>,
     uses_dpcm_uv: bool,
+    y_mode: IntraYMode,
     block_ctx: BlockCtx,
     sb_mib: usize,
 ) -> bool {
@@ -899,7 +901,8 @@ pub(super) fn lossless_chroma_block_prediction_verified(
         return false;
     }
     let neighbours = block_ctx.neighbours(PlaneId::U);
-    ((sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left())
+    let top_left = sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left();
+    (top_left
         && matches!(
             mode,
             M::Horizontal
@@ -912,6 +915,7 @@ pub(super) fn lossless_chroma_block_prediction_verified(
                 | M::D203
                 | M::Paeth
         ))
+        || (top_left && y_mode.mode_to_angle() == Some(203) && mode == M::D203Follow)
         || (!neighbours.has_above()
             && neighbours.has_left()
             && (matches!(
@@ -1253,6 +1257,7 @@ fn chroma_plan_for_modes(
             && lossless_chroma_block_prediction_verified(
                 Some(mode),
                 modes.uses_dpcm_uv(),
+                modes.y_mode,
                 block_ctx,
                 sb_mib,
             ))

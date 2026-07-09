@@ -487,12 +487,14 @@ fn lossless_chroma_block_guard_admits_interior_rect_prediction_subset() {
     assert!(lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::Smooth),
         false,
+        IntraYMode::DC_PRED,
         block,
         32,
     ));
     assert!(!lossless_chroma_block_prediction_verified(
         Some(SupportedChromaMode::Smooth),
         true,
+        IntraYMode::DC_PRED,
         block,
         32,
     ));
