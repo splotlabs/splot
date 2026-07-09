@@ -13,7 +13,7 @@ use splot_recon::{
 
 use super::{
     chroma_smooth_grid_dimensions, ensure_intra_leaf_quantizer_delta_scope,
-    inter_residual_geometry_supported_flags, predict_interintra_planes,
+    inter_residual_geometry_supported_flags, inter_skip_txfm_ctx, predict_interintra_planes,
     read_inter_intra_syntax_enabled,
 };
 use crate::bitstream::tile_payload::{FrameCdfSubset, TileBlockDecodedState, TileCdfSelector};
@@ -24,6 +24,14 @@ use crate::prediction::inter::{
 };
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+#[test]
+fn skip_mode_selects_the_upper_skip_txfm_context_bank() {
+    assert_eq!(inter_skip_txfm_ctx(0, false), 0);
+    assert_eq!(inter_skip_txfm_ctx(2, false), 2);
+    assert_eq!(inter_skip_txfm_ctx(0, true), 3);
+    assert_eq!(inter_skip_txfm_ctx(2, true), 5);
+}
 
 #[test]
 fn inter_residual_geometry_allows_shared_leaves() {

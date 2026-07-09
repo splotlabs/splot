@@ -25,7 +25,8 @@ use splot_recon::{
 use super::find_mv_stack::{
     BlockNeighbourContext, BlockPrecisionRecord, ModeContext, MotionMode, MvBlockContext,
     NeighbourMvGrid, NeighbourYMode, TemporalMotionField, TemporalMvContext, block_neighbour_ctx,
-    find_mode_ctx, find_mv_stack, find_mv_stack_with_temporal,
+    find_compound_mv_stack_with_temporal, find_mode_ctx, find_mv_stack,
+    find_mv_stack_with_temporal,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
@@ -981,20 +982,11 @@ fn decode_block<T: ReconSample>(
             SPEC_MODE_INFO
         ));
     }
-    if skip_mode == 1 {
-        return Err(inter_cap!(
-            "inter_block_skip_mode",
-            tile_offset,
-            "inter.block.skip_mode",
-            SPEC_MODE_INFO
-        ));
-    }
-
     let skip = {
         let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
         cdfs.read_block_symbol_trace(
             TileCdfSelector::Skip {
-                ctx: neighbour_ctx.skip_ctx,
+                ctx: inter_skip_txfm_ctx(neighbour_ctx.skip_ctx, skip_mode == 1),
             },
             symbols,
         )
@@ -1023,6 +1015,48 @@ fn decode_block<T: ReconSample>(
     ccso_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     delta_q_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     let block_qindex = delta_q_state.qindex_u32();
+    if skip_mode == 1 {
+        return compound_path::decode_skip_mode_inter_block(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            sequence,
+            core,
+            frontier,
+            workspace,
+            block_decoded,
+            mv_grid,
+            temporal_stack_context,
+            motion_field,
+            &mut block_ctx,
+            &neighbour_ctx,
+            ref_mv_bank,
+            deblock_blocks,
+            chroma_deblock_blocks,
+            tx_skip_records,
+            intrabc_state,
+            ref_frame_idx,
+            reference,
+            num_total_refs,
+            skip,
+            n4w,
+            n4h,
+            mi_row,
+            mi_col,
+            mi_rows,
+            mi_cols,
+            sb_h4,
+            max_drl_bits_minus_1,
+            drl_reorder,
+            residual_quantizer_deltas_are_zero,
+            residual_tool_policy,
+            block_qindex,
+            luma_use_tcq,
+            residual_use_ddt,
+            bit_depth,
+            tile_offset,
+        );
+    }
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let tip_frame_mode = core
         .inter
@@ -1337,7 +1371,16 @@ fn decode_block<T: ReconSample>(
         warp_param_bank.update(ref_frame0, warp.warp_params);
         if let Some(bank) = ref_mv_bank.as_mut() {
             bank.update_for_block(
-                ref_frame0, None, warp.mv, None, mi_row, mi_col, n4w, n4h, sb_h4,
+                ref_frame0,
+                None,
+                warp.mv,
+                None,
+                mc::CWP_EQUAL,
+                mi_row,
+                mi_col,
+                n4w,
+                n4h,
+                sb_h4,
             );
         }
         intrabc_state.record_block(
@@ -1636,7 +1679,18 @@ fn decode_block<T: ReconSample>(
         None,
     );
     if let Some(bank) = ref_mv_bank.as_mut() {
-        bank.update_for_block(ref_frame0, None, mv, None, mi_row, mi_col, n4w, n4h, sb_h4);
+        bank.update_for_block(
+            ref_frame0,
+            None,
+            mv,
+            None,
+            mc::CWP_EQUAL,
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            sb_h4,
+        );
     }
     intrabc_state.record_block(
         frontier.r,
@@ -1682,81 +1736,16 @@ fn decode_block<T: ReconSample>(
     Ok(non_intra_leaf_mode(frontier))
 }
 
+const fn inter_skip_txfm_ctx(neighbour_skip_ctx: usize, skip_mode: bool) -> usize {
+    neighbour_skip_ctx + if skip_mode { 3 } else { 0 }
+}
+
 fn non_intra_leaf_mode(frontier: &DecodeBlockFrontier) -> GeneralIntraLeafMode {
     let leaf = GeneralIntraLeafMode::no_luma_mode();
     if frontier.has_chroma {
         return leaf.with_uv_cfl(false);
     }
     leaf
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PlacedInterGeometry {
-    luma_x: usize,
-    luma_y: usize,
-    luma_w: usize,
-    luma_h: usize,
-    chroma_luma_x: usize,
-    chroma_luma_y: usize,
-    chroma_luma_w: usize,
-    chroma_luma_h: usize,
-    has_chroma: bool,
-    interintra_chroma: bool,
-}
-
-fn placed_inter_geometry(
-    frontier: &DecodeBlockFrontier,
-    n4w: usize,
-    n4h: usize,
-    tile_offset: ByteOffset,
-) -> Result<PlacedInterGeometry> {
-    let luma_x = frontier.c * 4;
-    let luma_y = frontier.r * 4;
-    let luma_w = n4w * 4;
-    let luma_h = n4h * 4;
-    let (chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h) = if frontier.has_chroma {
-        let chroma_ref = frontier.chroma_ref_geometry();
-        let chroma_n4w = chroma_ref.size().num_4x4_wide().map_err(|_| {
-            inter_diag!(
-                "inter_chroma_ref_width",
-                tile_offset,
-                "invalid inter chroma reference width",
-                "5.20.4.1"
-            )
-        })?;
-        let chroma_n4h = chroma_ref.size().num_4x4_high().map_err(|_| {
-            inter_diag!(
-                "inter_chroma_ref_height",
-                tile_offset,
-                "invalid inter chroma reference height",
-                "5.20.4.1"
-            )
-        })?;
-        (
-            chroma_ref.col() * 4,
-            chroma_ref.row() * 4,
-            chroma_n4w * 4,
-            chroma_n4h * 4,
-        )
-    } else {
-        (luma_x, luma_y, luma_w, luma_h)
-    };
-    let mixed_offset_chroma = !frontier.is_luma_part()
-        && !frontier.is_chroma_part()
-        && frontier.is_mixed_region()
-        && frontier.chroma_offset;
-    Ok(PlacedInterGeometry {
-        luma_x,
-        luma_y,
-        luma_w,
-        luma_h,
-        chroma_luma_x,
-        chroma_luma_y,
-        chroma_luma_w,
-        chroma_luma_h,
-        has_chroma: frontier.has_chroma,
-        interintra_chroma: frontier.has_chroma && !mixed_offset_chroma,
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2244,12 +2233,14 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
 
 mod compound_path;
 mod filter_records;
+mod prediction;
 mod residual;
 mod syntax;
 mod temporal;
 mod warp;
 
 use self::filter_records::record_inter_deblock_geometry;
+use self::prediction::placed_inter_geometry;
 pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
 use self::syntax::{
     effective_force_integer_mv, frame_mv_precision, interp_filter_symbol, lowered_pred_mv,

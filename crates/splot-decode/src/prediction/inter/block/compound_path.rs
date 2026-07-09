@@ -12,6 +12,7 @@ use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
 
 const REFINE_SWITCHABLE: u32 = 1;
 const REFINE_ALL: u32 = 2;
+const RESTRICTED_ORDER_HINT: i32 = -1;
 const MV_PROJECTION_DIV_MULT: [i32; 32] = [
     0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
     1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
@@ -514,6 +515,104 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         interp_ctx,
         tile_offset,
     )?;
+    reconstruct_resolved_compound_inter_block(
+        work_unit,
+        symbols,
+        coeff_ctx,
+        sequence,
+        core,
+        frontier,
+        workspace,
+        block_decoded,
+        mv_grid,
+        motion_field,
+        deblock_blocks,
+        chroma_deblock_blocks,
+        tx_skip_records,
+        intrabc_state,
+        ref_frame_idx,
+        reference,
+        ref_mv_bank,
+        ResolvedCompoundBlock {
+            syntax: compound,
+            blend: compound_blend,
+            interp,
+            use_amvd,
+            precision,
+            skip_mode: false,
+        },
+        skip,
+        n4w,
+        n4h,
+        mi_row,
+        mi_col,
+        mi_rows,
+        mi_cols,
+        sb_h4,
+        residual_quantizer_deltas_are_zero,
+        residual_tool_policy,
+        block_qindex,
+        luma_use_tcq,
+        residual_use_ddt,
+        bit_depth,
+        tile_offset,
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ResolvedCompoundBlock {
+    pub(super) syntax: super::super::compound::CompoundBlockSyntax,
+    pub(super) blend: mc::CompoundBlend,
+    pub(super) interp: ReconInterpolationFilter,
+    pub(super) use_amvd: bool,
+    pub(super) precision: BlockPrecisionRecord,
+    pub(super) skip_mode: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    coeff_ctx: &mut TileCoeffContextState,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    frontier: &DecodeBlockFrontier,
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block_decoded: &TileBlockDecodedState,
+    mv_grid: &mut NeighbourMvGrid,
+    motion_field: &mut TemporalMotionField,
+    deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
+    chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    intrabc_state: &mut TileIntrabcPreludeState,
+    ref_frame_idx: &[u32],
+    reference: &InterReferenceState<'_, T>,
+    ref_mv_bank: &mut Option<super::super::find_mv_stack::RefMvBank>,
+    resolved: ResolvedCompoundBlock,
+    skip: u8,
+    n4w: usize,
+    n4h: usize,
+    mi_row: usize,
+    mi_col: usize,
+    mi_rows: usize,
+    mi_cols: usize,
+    sb_h4: usize,
+    residual_quantizer_deltas_are_zero: bool,
+    residual_tool_policy: TransformToolResidualPolicy,
+    block_qindex: u32,
+    luma_use_tcq: bool,
+    residual_use_ddt: bool,
+    bit_depth: BitDepth,
+    tile_offset: ByteOffset,
+) -> Result<GeneralIntraLeafMode> {
+    let ResolvedCompoundBlock {
+        syntax: compound,
+        blend: compound_blend,
+        interp,
+        use_amvd,
+        precision,
+        skip_mode,
+    } = resolved;
     mv_grid.record_compound_block(
         mi_row,
         mi_col,
@@ -529,6 +628,8 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         interp_filter_symbol(interp),
         use_amvd,
         !matches!(compound_blend, mc::CompoundBlend::Average { .. }),
+        compound_blend.cwp_weight(),
+        skip_mode,
         precision,
     );
     record_temporal_motion_block(
@@ -553,6 +654,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             Some(compound.ref_frame1),
             compound.mv0,
             Some(compound.mv1),
+            compound_blend.cwp_weight(),
             mi_row,
             mi_col,
             n4w,
@@ -676,6 +778,166 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         tile_offset,
     )?;
     Ok(non_intra_leaf_mode(frontier))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    coeff_ctx: &mut TileCoeffContextState,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    frontier: &DecodeBlockFrontier,
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block_decoded: &TileBlockDecodedState,
+    mv_grid: &mut NeighbourMvGrid,
+    temporal_context: Option<&TemporalMvContext>,
+    motion_field: &mut TemporalMotionField,
+    block_ctx: &mut MvBlockContext,
+    neighbour_ctx: &BlockNeighbourContext,
+    ref_mv_bank: &mut Option<super::super::find_mv_stack::RefMvBank>,
+    deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
+    chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    intrabc_state: &mut TileIntrabcPreludeState,
+    ref_frame_idx: &[u32],
+    reference: &InterReferenceState<'_, T>,
+    num_total_refs: usize,
+    skip: u8,
+    n4w: usize,
+    n4h: usize,
+    mi_row: usize,
+    mi_col: usize,
+    mi_rows: usize,
+    mi_cols: usize,
+    sb_h4: usize,
+    max_drl_bits_minus_1: u32,
+    drl_reorder: DrlReorder,
+    residual_quantizer_deltas_are_zero: bool,
+    residual_tool_policy: TransformToolResidualPolicy,
+    block_qindex: u32,
+    luma_use_tcq: bool,
+    residual_use_ddt: bool,
+    bit_depth: BitDepth,
+    tile_offset: ByteOffset,
+) -> Result<GeneralIntraLeafMode> {
+    let current = compound_current_order_hint(core, tile_offset)?;
+    let ref_order_hints = if num_total_refs > 1 {
+        Some((
+            compound_reference_order_hint(reference, ref_frame_idx, 0, tile_offset)?,
+            compound_reference_order_hint(reference, ref_frame_idx, 1, tile_offset)?,
+        ))
+    } else {
+        None
+    };
+    let default_pair = skip_mode_default_pair(current, ref_order_hints);
+    let (ref_frame0, ref_frame1) = neighbour_ctx.skip_mode_ref_pair(default_pair);
+    if ref_frame0 < 0
+        || ref_frame1 < 0
+        || ref_frame0 as usize >= num_total_refs
+        || ref_frame1 as usize >= num_total_refs
+    {
+        return Err(compound_cap!(
+            "skip_mode_reference_pair",
+            tile_offset,
+            "inter.skip_mode.reference_pair",
+            SPEC_MODE_INFO
+        ));
+    }
+    block_ctx.ref_frame0 = ref_frame0;
+    block_ctx.ref_frame1 = Some(ref_frame1);
+    let mode_ctx = find_mode_ctx(mv_grid, block_ctx);
+    let ref_mv_idx = read_drl_idx(
+        work_unit.cdf_mut().tile_cdfs_mut(),
+        symbols,
+        mode_ctx.new_mv_context,
+        max_drl_bits_minus_1,
+        tile_offset,
+    )?;
+    let bank = ref_mv_bank
+        .as_ref()
+        .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2));
+    let temporal = (ref_frame0 != ref_frame1)
+        .then_some(temporal_context)
+        .flatten();
+    let candidate = find_compound_mv_stack_with_temporal(
+        mv_grid,
+        block_ctx,
+        [Mv::ZERO; 2],
+        bank,
+        drl_reorder,
+        temporal,
+    )
+    .candidate(ref_mv_idx);
+    let compound = super::super::compound::CompoundBlockSyntax {
+        ref_frame0,
+        ref_frame1,
+        y_mode: CompoundYMode::NearNear,
+        mv0: candidate.mvs[0],
+        mv1: candidate.mvs[1],
+        use_optflow: false,
+    };
+    reconstruct_resolved_compound_inter_block(
+        work_unit,
+        symbols,
+        coeff_ctx,
+        sequence,
+        core,
+        frontier,
+        workspace,
+        block_decoded,
+        mv_grid,
+        motion_field,
+        deblock_blocks,
+        chroma_deblock_blocks,
+        tx_skip_records,
+        intrabc_state,
+        ref_frame_idx,
+        reference,
+        ref_mv_bank,
+        ResolvedCompoundBlock {
+            syntax: compound,
+            blend: mc::CompoundBlend::average_with_implicit_mask(
+                CompoundBlendToolConfig::from_sequence(sequence).implicit_mask,
+            )
+            .average_with_cwp_weight(candidate.cwp_weight),
+            interp: ReconInterpolationFilter::EightTapSharp,
+            use_amvd: false,
+            precision: BlockPrecisionRecord::most_probable(frame_mv_precision(core, tile_offset)?),
+            skip_mode: true,
+        },
+        skip,
+        n4w,
+        n4h,
+        mi_row,
+        mi_col,
+        mi_rows,
+        mi_cols,
+        sb_h4,
+        residual_quantizer_deltas_are_zero,
+        residual_tool_policy,
+        block_qindex,
+        luma_use_tcq,
+        residual_use_ddt,
+        bit_depth,
+        tile_offset,
+    )
+}
+
+/// AV2 § 5.9.22 `skip_mode_params` fallback reference pair.
+fn skip_mode_default_pair(current: i32, order_hints: Option<(i32, i32)>) -> (i8, i8) {
+    let Some((order_hint0, order_hint1)) = order_hints else {
+        return (0, 0);
+    };
+    let distance = |reference| {
+        if reference == RESTRICTED_ORDER_HINT {
+            0
+        } else {
+            super::super::get_relative_dist(current, reference).abs()
+        }
+    };
+    let second = i8::from((distance(order_hint0) - distance(order_hint1)).abs() <= 1);
+    (0, second)
 }
 
 fn compound_switchable_opfl_reachable<T: ReconSample>(
@@ -1636,5 +1898,14 @@ mod tests {
         assert!(compound_reads_second_drl(compound, false));
         compound.use_optflow = true;
         assert!(!compound_reads_second_drl(compound, false));
+    }
+
+    #[test]
+    fn skip_mode_default_pair_treats_restricted_order_hint_as_zero_distance() {
+        assert_eq!(
+            skip_mode_default_pair(0, Some((RESTRICTED_ORDER_HINT, 1))),
+            (0, 1)
+        );
+        assert_eq!(skip_mode_default_pair(0, None), (0, 0));
     }
 }
