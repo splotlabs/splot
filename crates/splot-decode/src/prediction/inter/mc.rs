@@ -6,8 +6,9 @@ use splot_recon::BitDepth;
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect, ReconError,
     ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
-    WarpPredictBlockParams, blend_compound_average_equal, subpel_predict_block,
-    subpel_predict_block_compound_intermediate, warp_predict_block, wedge_mask_plane_sample,
+    WarpPredictBlockParams, blend_compound_average_equal, blend_compound_average_weighted,
+    subpel_predict_block, subpel_predict_block_compound_intermediate, warp_predict_block,
+    wedge_mask_plane_sample,
 };
 
 use super::mv_scaling::{PlaneScaling, derive_plane_scaling};
@@ -18,6 +19,7 @@ use splot_recon::math::{clip3, round2};
 
 pub(crate) const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =
     [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)];
+pub(crate) const CWP_EQUAL: i16 = 8;
 
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,22 +49,41 @@ impl McBlockRect {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CompoundBlend {
-    Average { implicit_mask: bool },
-    DiffWeighted { inverse: bool },
-    Wedge { index: u8, sign: bool },
+    Average {
+        implicit_mask: bool,
+        cwp_weight: i16,
+    },
+    DiffWeighted {
+        inverse: bool,
+    },
+    Wedge {
+        index: u8,
+        sign: bool,
+    },
 }
 
 impl CompoundBlend {
     pub(crate) const fn average_with_implicit_mask(implicit_mask: bool) -> Self {
-        Self::Average { implicit_mask }
+        Self::Average {
+            implicit_mask,
+            cwp_weight: CWP_EQUAL,
+        }
+    }
+
+    pub(crate) const fn average_with_cwp_weight(self, cwp_weight: i16) -> Self {
+        match self {
+            Self::Average { implicit_mask, .. } => Self::Average {
+                implicit_mask,
+                cwp_weight,
+            },
+            other => other,
+        }
     }
 }
 
 impl Default for CompoundBlend {
     fn default() -> Self {
-        Self::Average {
-            implicit_mask: false,
-        }
+        Self::average_with_implicit_mask(false)
     }
 }
 
@@ -650,7 +671,11 @@ fn blend_compound_average(
     sub_x: u32,
     sub_y: u32,
 ) -> splot_recon::Result<Vec<u16>> {
-    let CompoundBlend::Average { implicit_mask } = blend else {
+    let CompoundBlend::Average {
+        implicit_mask,
+        cwp_weight,
+    } = blend
+    else {
         return blend_compound_diff_weighted(
             pred0,
             pred1,
@@ -666,10 +691,13 @@ fn blend_compound_average(
         );
     };
     if !implicit_mask {
-        return blend_compound_average_equal(pred0, pred1, bit_depth);
+        return blend_compound_average_weighted(pred0, pred1, bit_depth, cwp_weight);
     }
     if pred0.len() != pred1.len() {
-        return blend_compound_average_equal(pred0, pred1, bit_depth);
+        return blend_compound_average_weighted(pred0, pred1, bit_depth, cwp_weight);
+    }
+    if cwp_weight != CWP_EQUAL {
+        return blend_compound_average_weighted(pred0, pred1, bit_depth, cwp_weight);
     }
 
     let last_x = frame_w as i64 - 1;

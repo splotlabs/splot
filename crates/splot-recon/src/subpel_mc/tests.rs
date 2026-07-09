@@ -570,6 +570,21 @@ fn compound_equal_average_blend_rounds_and_clips() {
 }
 
 #[test]
+fn compound_weighted_average_blend_applies_cwp_weight() {
+    let left = [20 * 16, 60 * 16];
+    let right = [44 * 16, 120 * 16];
+
+    assert_eq!(
+        blend_compound_average_weighted(&left, &right, BitDepth::Eight, 12).unwrap(),
+        [26, 75]
+    );
+    assert_eq!(
+        blend_compound_average_weighted(&left[..1], &right[..1], BitDepth::Eight, -4).unwrap(),
+        [50]
+    );
+}
+
+#[test]
 fn compound_blend_rejects_length_mismatch() {
     assert!(matches!(
         blend_compound_average_equal(&[0], &[0, 1], BitDepth::Eight),

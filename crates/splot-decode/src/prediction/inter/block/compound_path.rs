@@ -388,13 +388,20 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         },
         tile_offset,
     )?;
-    read_compound_cwp_syntax(
+    let compound_blend = read_compound_cwp_syntax(
         cdfs,
         symbols,
-        sequence,
+        CompoundCwpContext {
+            sequence,
+            core,
+            reference,
+            ref_frame_idx,
+        },
         CompoundCwpInput {
             y_mode: compound.y_mode,
             skip_mode: false,
+            ref_frame0: compound.ref_frame0,
+            ref_frame1: compound.ref_frame1,
             blend: compound_blend,
         },
         tile_offset,
@@ -1086,7 +1093,17 @@ impl CompoundBlendToolConfig {
 struct CompoundCwpInput {
     y_mode: CompoundYMode,
     skip_mode: bool,
+    ref_frame0: i8,
+    ref_frame1: i8,
     blend: mc::CompoundBlend,
+}
+
+#[derive(Clone, Copy)]
+struct CompoundCwpContext<'a, T: ReconSample> {
+    sequence: &'a SequenceHeader,
+    core: &'a FrameHeaderCore,
+    reference: &'a InterReferenceState<'a, T>,
+    ref_frame_idx: &'a [u32],
 }
 
 fn read_compound_blend_syntax(
@@ -1168,14 +1185,17 @@ fn wedge_bits(block_size_index: usize) -> u8 {
     WEDGE_BITS.get(block_size_index).copied().unwrap_or(0)
 }
 
-fn read_compound_cwp_syntax(
+const CWP_WEIGHTING_FACTOR: [[i16; 5]; 2] = [[8, 12, 4, 10, 6], [8, 12, 4, 20, -4]];
+
+fn read_compound_cwp_syntax<T: ReconSample>(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    sequence: &SequenceHeader,
+    context: CompoundCwpContext<'_, T>,
     input: CompoundCwpInput,
     tile_offset: ByteOffset,
-) -> Result<()> {
-    let cwp_enabled = sequence
+) -> Result<mc::CompoundBlend> {
+    let cwp_enabled = context
+        .sequence
         .inter
         .as_ref()
         .is_some_and(|inter| inter.enable_cwp);
@@ -1184,21 +1204,50 @@ fn read_compound_cwp_syntax(
         || input.y_mode != CompoundYMode::NearNear
         || !matches!(input.blend, mc::CompoundBlend::Average { .. })
     {
-        return Ok(());
+        return Ok(input.blend);
     }
-    let first = cdfs
-        .read_block_symbol_trace(TileCdfSelector::CwpIdx { idx: 0 }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
-        .get();
-    if first != 0 {
-        return Err(compound_cap!(
-            "compound_cwp_weighted",
-            tile_offset,
-            "inter.compound.cwp_idx != CWP_EQUAL",
-            SPEC_MODE_INFO
-        ));
+    let mut coding_idx = 0usize;
+    for idx in 0..CWP_WEIGHTING_FACTOR[0].len() - 1 {
+        let symbol = cdfs
+            .read_block_symbol_trace(TileCdfSelector::CwpIdx { idx }, symbols)
+            .map_err(|_| symbol_read_error(tile_offset))?
+            .get();
+        coding_idx = idx + usize::from(symbol != 0);
+        if symbol == 0 {
+            break;
+        }
     }
-    Ok(())
+    let same_side = compound_cwp_same_side(
+        context.core,
+        context.reference,
+        context.ref_frame_idx,
+        input.ref_frame0,
+        input.ref_frame1,
+        tile_offset,
+    )?;
+    Ok(input
+        .blend
+        .average_with_cwp_weight(CWP_WEIGHTING_FACTOR[usize::from(same_side)][coding_idx]))
+}
+
+fn compound_cwp_same_side<T: ReconSample>(
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<'_, T>,
+    ref_frame_idx: &[u32],
+    ref_frame0: i8,
+    ref_frame1: i8,
+    tile_offset: ByteOffset,
+) -> Result<bool> {
+    let current = compound_current_order_hint(core, tile_offset)?;
+    let d0 = super::super::get_relative_dist(
+        current,
+        compound_reference_order_hint(reference, ref_frame_idx, ref_frame0, tile_offset)?,
+    );
+    let d1 = super::super::get_relative_dist(
+        current,
+        compound_reference_order_hint(reference, ref_frame_idx, ref_frame1, tile_offset)?,
+    );
+    Ok((d0 < 0 && d1 < 0) || (d0 > 0 && d1 > 0))
 }
 
 #[cfg(test)]

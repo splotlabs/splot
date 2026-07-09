@@ -52,6 +52,20 @@ fn dispatcher_blends_compound_average_planes() {
 }
 
 #[test]
+fn dispatcher_blends_compound_average_with_cwp_weight() {
+    let reference0 = flat_frame(8, 8, 40, 90, 120);
+    let reference1 = flat_frame(8, 8, 80, 110, 140);
+    let samples = dispatch_compound_samples(
+        &reference0,
+        &reference1,
+        CompoundBlend::default().average_with_cwp_weight(12),
+    );
+    assert_eq!(samples.0, vec![50; 64]);
+    assert_eq!(samples.1, vec![95; 16]);
+    assert_eq!(samples.2, vec![125; 16]);
+}
+
+#[test]
 fn dispatcher_subsamples_luma_diff_weighted_mask_for_chroma() {
     let reference0 = flat_frame(8, 8, 100, 0, 0);
     let reference1 = flat_frame(8, 8, 100, 200, 200);
