@@ -92,8 +92,26 @@ pub(super) fn read_drl_idx(
     max_drl_bits_minus_1: u32,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
+    read_drl_idx_from(
+        cdfs,
+        symbols,
+        new_mv_context,
+        max_drl_bits_minus_1,
+        0,
+        tile_offset,
+    )
+}
+
+pub(super) fn read_drl_idx_from(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    new_mv_context: usize,
+    max_drl_bits_minus_1: u32,
+    min_idx: usize,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
     let m = max_drl_bits_minus_1.saturating_add(1) as usize;
-    for idx in 0..m {
+    for idx in min_idx.min(m)..m {
         let bank = idx.min(2);
         let drl_mode = cdfs
             .read_block_symbol_trace(
@@ -206,5 +224,79 @@ pub(super) fn lowered_pred_mv(precision: BlockPrecisionRecord, pred_mv: Mv) -> M
         lower_mv_precision(precision.mv_precision, pred_mv)
     } else {
         pred_mv
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
+    use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
+
+    use super::*;
+    use crate::bitstream::tile_payload::FrameCdfSubset;
+
+    const TILE_OFFSET: ByteOffset = ByteOffset::new(0);
+
+    fn encode_drl_symbols(sequence: &[(usize, u8)]) -> Vec<u8> {
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut encoder = SymbolEncoder::with_config(
+            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+        );
+        for &(idx, value) in sequence {
+            tile.with_row_mut(
+                TileCdfSelector::DrlMode {
+                    idx: idx.min(2),
+                    ctx: 0,
+                },
+                |row| encoder.write_symbol(row, Symbol::new(value)),
+            )
+            .unwrap()
+            .unwrap();
+        }
+        encoder.finish().unwrap().into_bytes()
+    }
+
+    fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
+        SymbolDecoder::with_base_and_config(
+            payload,
+            TILE_OFFSET,
+            SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn drl_idx_from_skips_prefix_indices() {
+        let payload = encode_drl_symbols(&[(2, 0)]);
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&payload);
+
+        let idx = read_drl_idx_from(&mut tile, &mut symbols, 0, 3, 2, TILE_OFFSET).unwrap();
+
+        assert_eq!(idx, 2);
+    }
+
+    #[test]
+    fn drl_idx_from_continues_after_one_symbol() {
+        let payload = encode_drl_symbols(&[(1, 1), (2, 0)]);
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&payload);
+
+        let idx = read_drl_idx_from(&mut tile, &mut symbols, 0, 3, 1, TILE_OFFSET).unwrap();
+
+        assert_eq!(idx, 2);
+    }
+
+    #[test]
+    fn drl_idx_from_at_cap_reads_no_symbol() {
+        let payload = encode_drl_symbols(&[]);
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&payload);
+
+        let idx = read_drl_idx_from(&mut tile, &mut symbols, 0, 3, 4, TILE_OFFSET).unwrap();
+
+        assert_eq!(idx, 4);
     }
 }

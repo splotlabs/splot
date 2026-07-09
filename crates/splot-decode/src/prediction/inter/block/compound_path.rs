@@ -126,16 +126,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     let mut ref_mv_idx1 = 0;
     if compound.y_mode.reads_drl_idx() {
         if compound.y_mode.has_second_drl(skip_mode_present) {
-            if compound.ref_frame0 == compound.ref_frame1
-                && compound.y_mode == CompoundYMode::NearNear
-            {
-                return Err(compound_cap!(
-                    "compound_block_same_ref_second_drl",
-                    tile_offset,
-                    "inter.compound.same_ref.second_drl",
-                    SPEC_MODE_INFO
-                ));
-            }
             ref_mv_idx0 = read_drl_idx(
                 cdfs,
                 symbols,
@@ -143,11 +133,19 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 max_drl_bits_minus_1,
                 tile_offset,
             )?;
-            ref_mv_idx1 = read_drl_idx(
+            let second_min_idx = if compound.ref_frame0 == compound.ref_frame1
+                && compound.y_mode == CompoundYMode::NearNear
+            {
+                ref_mv_idx0.saturating_add(1)
+            } else {
+                0
+            };
+            ref_mv_idx1 = read_drl_idx_from(
                 cdfs,
                 symbols,
                 mode_ctx.new_mv_context,
                 max_drl_bits_minus_1,
+                second_min_idx,
                 tile_offset,
             )?;
         } else {
