@@ -88,8 +88,8 @@ use crate::headers::frame::quant::{
     parse_delta_q_params, parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
 };
 use crate::headers::frame::restoration::{
-    LrGeometry, LrParseOutcome, parse_ccso_params, parse_ccso_params_for_inter,
-    parse_lr_params_for_inter,
+    LrGeometry, LrParseOutcome, LrTemporalReferenceView, parse_ccso_params,
+    parse_ccso_params_for_inter, parse_lr_params_for_inter,
 };
 use crate::headers::frame::tail::{TxMode, parse_film_grain_config, read_tx_mode};
 use crate::headers::frame::tiling::parse_tile_info;
@@ -265,6 +265,11 @@ pub(crate) fn parse_inter_shared_tail(
         lr_num_total_refs,
         lr_reference_filter_counts,
         &lr_reference_filter_taps,
+        LrTemporalReferenceView::new(
+            &control.ref_frame_idx,
+            reference_state.lr_frame_filter_class_counts,
+            reference_state.lr_frame_filter_taps,
+        ),
     )? {
         LrParseOutcome::Parsed(lr) => {
             core.lr_params = Some(lr);

@@ -30,9 +30,9 @@
 //! `lr_params()` calls `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.18.7.11, mirror :7377)
 //! at its tail. The fixed-coded frame-level path of that sub-call is modeled in
 //! [`wienerns`]: it preserves the parsed `FrameLrWienerNs` class bank on
-//! [`LrPlaneParams::frame_filter_bank`]. Entropy-coded LR unit filters
-//! (`readFrameFilters == 0`), temporal-copy Wiener state, and reconstruction remain out of
-//! scope for this parser surface.
+//! [`LrPlaneParams::frame_filter_bank`]. The inter wrapper also resolves temporal-copy
+//! Wiener state from the retained reference-frame banks. Entropy-coded LR unit filters
+//! (`readFrameFilters == 0`) and reconstruction remain out of scope for this parser surface.
 
 use crate::bitio::BitReader;
 use crate::error::Result;
@@ -201,6 +201,43 @@ pub struct LrGeometry {
     pub subsampling_y: u8,
 }
 
+/// Reference-frame Wiener-NS state used by the inter `lr_params()` temporal-copy arm.
+///
+/// `ref_frame_idx` maps the coded `rst_ref_pic_idx` to a reference slot. The remaining
+/// slices are indexed by that slot and come from the decoder's § 7.23 reference buffer.
+#[derive(Debug, Clone, Copy)]
+pub struct LrTemporalReferenceView<'a> {
+    ref_frame_idx: &'a [u32],
+    class_counts_by_slot: Option<&'a [[u8; 3]]>,
+    filter_taps_by_slot: Option<&'a [[Vec<Vec<i16>>; 3]]>,
+}
+
+impl<'a> LrTemporalReferenceView<'a> {
+    /// Builds a view with no retained filter state.
+    #[must_use]
+    pub const fn unknown(ref_frame_idx: &'a [u32]) -> Self {
+        Self {
+            ref_frame_idx,
+            class_counts_by_slot: None,
+            filter_taps_by_slot: None,
+        }
+    }
+
+    /// Builds a view over retained per-slot filter counts and coefficients.
+    #[must_use]
+    pub const fn new(
+        ref_frame_idx: &'a [u32],
+        class_counts_by_slot: Option<&'a [[u8; 3]]>,
+        filter_taps_by_slot: Option<&'a [[Vec<Vec<i16>>; 3]]>,
+    ) -> Self {
+        Self {
+            ref_frame_idx,
+            class_counts_by_slot,
+            filter_taps_by_slot,
+        }
+    }
+}
+
 impl LrGeometry {
     /// Derives the geometry from the frame `SbSize` and the sequence `chroma_format_idc`
     /// (AV2 § 6.4.1, mirror :340-346).
@@ -226,12 +263,12 @@ pub struct LrPlaneParams {
     pub restoration_type: FrameRestorationType,
     /// `frame_filters_on[plane]`: whether the plane signals a frame-level Wiener filter.
     pub frame_filters_on: bool,
-    /// `NumFilterClasses` derived from `num_filter_classes_idx` when
-    /// `frame_filters_on[plane]` is set and not temporal; `None` when not signalled.
+    /// `NumFilterClasses` derived from `num_filter_classes_idx` for a locally coded bank,
+    /// or copied from the selected temporal reference; `None` when not available.
     pub num_filter_classes: Option<u8>,
-    /// Parsed frame-level `FrameLrWienerNs[plane]` bank from
-    /// `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.20.10.6), present only when
-    /// [`Self::frame_filters_on`] is `true` and the fixed-coded frame-level bank parsed.
+    /// Resolved frame-level `FrameLrWienerNs[plane]` bank, either parsed by
+    /// `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.20.10.6) or copied from the selected
+    /// reference frame by the § 5.18.7.11 temporal-prediction arm.
     pub frame_filter_bank: Option<WienerNsFrameFilterBank>,
 }
 
@@ -326,6 +363,7 @@ pub fn parse_lr_params(
         0,
         [0; 3],
         &[Vec::new(), Vec::new(), Vec::new()],
+        LrTemporalReferenceView::unknown(&[]),
     )
 }
 
@@ -334,9 +372,8 @@ pub fn parse_lr_params(
 /// The inter grammar differs from the intra wrapper only when a Wiener-NS-capable plane has
 /// `frame_filters_on[plane] == 1`: § 5.18.7.11 reads `temporal_pred_flag[plane]` when
 /// `NumTotalRefs > 0`, and reads `rst_ref_pic_idx` when that flag is set and more than one
-/// reference is available. Temporal-copy filter banks are represented by
-/// `frame_filters_on == true` with no local `frame_filter_bank`; runtime consumers already
-/// treat that as an unsupported reconstruction input until reference-filter state is modeled.
+/// reference is available. When `temporal_references` contains the selected slot, its
+/// retained class count and coefficients are copied into the current plane state.
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
@@ -352,6 +389,7 @@ pub fn parse_lr_params_for_inter(
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
     reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
+    temporal_references: LrTemporalReferenceView<'_>,
 ) -> Result<LrParseOutcome> {
     parse_lr_params_with_references(
         reader,
@@ -363,6 +401,7 @@ pub fn parse_lr_params_for_inter(
         num_ref_frames,
         reference_filter_counts,
         reference_filter_taps,
+        temporal_references,
     )
 }
 
@@ -377,6 +416,7 @@ fn parse_lr_params_with_references(
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
     reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
+    temporal_references: LrTemporalReferenceView<'_>,
 ) -> Result<LrParseOutcome> {
     let _ = base_q_idx; // `get_filter_set_index(base_q_idx)` signals no bits (SubclassLookup only).
     if coded_lossless || !view.enable_restoration {
@@ -391,6 +431,7 @@ fn parse_lr_params_with_references(
     let mut uses_chroma_lr = false;
     let mut planes: Vec<LrPlaneParams> = Vec::with_capacity(usize::from(num_planes));
     let mut temporal_pred_flags: Vec<bool> = Vec::with_capacity(usize::from(num_planes));
+    let mut temporal_ref_indices: Vec<usize> = Vec::with_capacity(usize::from(num_planes));
 
     for plane in 0..usize::from(num_planes) {
         let is_chroma = plane > 0;
@@ -410,6 +451,7 @@ fn parse_lr_params_with_references(
         let mut frame_filters_on = false;
         let mut num_filter_classes: Option<u8> = None;
         let mut temporal_pred_flag = false;
+        let mut temporal_ref_index = 0usize;
 
         if matches!(
             restoration_type,
@@ -422,7 +464,7 @@ fn parse_lr_params_with_references(
                 }
                 if temporal_pred_flag && num_ref_frames > 1 {
                     let n = ceil_log2(num_ref_frames);
-                    let _rst_ref_pic_idx = reader.read_f(n)?;
+                    temporal_ref_index = reader.read_f(n)? as usize;
                 }
                 if !temporal_pred_flag && max_num_filter_classes(plane) > 1 {
                     let idx = reader.read_bits_u8(3)?;
@@ -436,12 +478,13 @@ fn parse_lr_params_with_references(
                 temporal_pred_flag = reader.read_flag()?;
                 if temporal_pred_flag && num_ref_frames > 1 {
                     let n = ceil_log2(num_ref_frames);
-                    let _rst_ref_pic_idx = reader.read_f(n)?;
+                    temporal_ref_index = reader.read_f(n)? as usize;
                 }
             }
         }
 
         temporal_pred_flags.push(temporal_pred_flag);
+        temporal_ref_indices.push(temporal_ref_index);
         planes.push(LrPlaneParams {
             restoration_type,
             frame_filters_on,
@@ -472,9 +515,17 @@ fn parse_lr_params_with_references(
     loop_restoration_size[2] = loop_restoration_size[1];
 
     for (plane, plane_params) in planes.iter_mut().enumerate() {
-        if plane_params.frame_filters_on
-            && !temporal_pred_flags.get(plane).copied().unwrap_or(false)
-        {
+        if !plane_params.frame_filters_on {
+            continue;
+        }
+        if temporal_pred_flags.get(plane).copied().unwrap_or(false) {
+            copy_temporal_frame_filter(
+                plane_params,
+                plane,
+                temporal_ref_indices.get(plane).copied().unwrap_or(0),
+                temporal_references,
+            );
+        } else {
             let classes = plane_params.num_filter_classes.unwrap_or(1);
             let num_ref_filters = reference_filter_counts.get(plane).copied().unwrap_or(0);
             let ref_taps = reference_filter_taps
@@ -496,6 +547,67 @@ fn parse_lr_params_with_references(
         planes,
         loop_restoration_size,
     }))
+}
+
+fn copy_temporal_frame_filter(
+    plane_params: &mut LrPlaneParams,
+    plane: usize,
+    reference_index: usize,
+    references: LrTemporalReferenceView<'_>,
+) {
+    let Some(slot) = references
+        .ref_frame_idx
+        .get(reference_index)
+        .and_then(|slot| usize::try_from(*slot).ok())
+    else {
+        return;
+    };
+    let Some(counts) = references
+        .class_counts_by_slot
+        .and_then(|counts| counts.get(slot))
+    else {
+        return;
+    };
+    let ref_plane = if counts.get(plane).copied().unwrap_or(0) > 0 {
+        plane
+    } else if plane == 1 {
+        2
+    } else if plane == 2 {
+        1
+    } else {
+        return;
+    };
+    let class_count = counts.get(ref_plane).copied().unwrap_or(0);
+    if class_count == 0 {
+        return;
+    }
+    if plane == 0 {
+        plane_params.num_filter_classes = Some(class_count);
+    }
+    let class_count = usize::from(class_count);
+    let Some(classes) = references
+        .filter_taps_by_slot
+        .and_then(|slots| slots.get(slot))
+        .and_then(|planes| planes.get(ref_plane))
+        .filter(|classes| classes.len() >= class_count)
+    else {
+        return;
+    };
+    plane_params.frame_filter_bank = Some(WienerNsFrameFilterBank {
+        classes: classes
+            .iter()
+            .take(class_count)
+            .enumerate()
+            .map(|(index, coeffs)| WienerNsFrameFilterClass {
+                match_index: u8::try_from(index).unwrap_or_default(),
+                merged: true,
+                ref_bank: 0,
+                subset: None,
+                wiener_ns_uv_sym: false,
+                coeffs: coeffs.clone(),
+            })
+            .collect(),
+    });
 }
 
 /// Reads the luma/chroma restoration size `shift` (AV2 § 5.18.7.11, mirror :7287-7369).
@@ -985,6 +1097,7 @@ mod tests {
             1,
             [0; 3],
             &[Vec::new(), Vec::new(), Vec::new()],
+            LrTemporalReferenceView::unknown(&[0]),
         )
         .unwrap();
         match outcome {
@@ -1000,16 +1113,22 @@ mod tests {
     }
 
     #[test]
-    fn lr_inter_temporal_flag_one_skips_local_wienerns_bank() {
+    fn lr_inter_temporal_flag_one_copies_reference_bank() {
         let mut bits = Bits::default();
         bits.ns(1, 2); // plane 0 -> RESTORE_WIENER_NONSEP
         bits.bit(1); // frame_filters_on[0]
-        bits.bit(1); // temporal_pred_flag[0], rst_ref_pic_idx inferred 0 for one ref
+        bits.bit(1); // temporal_pred_flag[0]
+        bits.f(1, 1); // rst_ref_pic_idx == 1
         bits.ns(0, 2); // plane 1 -> RESTORE_NONE
         bits.ns(0, 2); // plane 2 -> RESTORE_NONE
         bits.bit(1); // lr_luma_use_half_size
         let data = bits.into_bytes();
         let mut r = reader(&data);
+        let counts = [[1, 0, 0], [2, 0, 0]];
+        let taps = [
+            [vec![vec![1; 16]], Vec::new(), Vec::new()],
+            [vec![vec![3; 16], vec![7; 16]], Vec::new(), Vec::new()],
+        ];
         let outcome = parse_lr_params_for_inter(
             &mut r,
             false,
@@ -1017,16 +1136,22 @@ mod tests {
             restoration_enabled_without_luma_pc(),
             geom_128_420(),
             100,
-            1,
+            2,
             [0; 3],
             &[Vec::new(), Vec::new(), Vec::new()],
+            LrTemporalReferenceView::new(&[0, 1], Some(&counts), Some(&taps)),
         )
         .unwrap();
         match outcome {
             LrParseOutcome::Parsed(params) => {
                 assert!(params.planes[0].frame_filters_on);
-                assert_eq!(params.planes[0].num_filter_classes, None);
-                assert!(params.planes[0].frame_filter_bank.is_none());
+                assert_eq!(params.planes[0].num_filter_classes, Some(2));
+                let bank = params.planes[0]
+                    .frame_filter_bank
+                    .as_ref()
+                    .expect("temporal reference coefficients are retained");
+                assert_eq!(bank.classes[0].coeffs, vec![3; 16]);
+                assert_eq!(bank.classes[1].coeffs, vec![7; 16]);
             }
             other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
                 panic!("expected Parsed, got {other:?}")

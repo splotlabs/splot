@@ -71,19 +71,21 @@ const SHUFFLED_INDEX: [usize; 64] = [
     51, 9, 46, 56, 60, 15, 2, 13, 14, 57, 29, 3, 20, 39, 10,
 ];
 
-/// The frame-level `FrameLrWienerNs[plane]` bank parsed by AV2 § 5.20.10.6.
+/// The resolved frame-level `FrameLrWienerNs[plane]` bank.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WienerNsFrameFilterBank {
-    /// One parsed class entry per `numClasses`.
+    /// One resolved class entry per `numClasses`.
     pub classes: Vec<WienerNsFrameFilterClass>,
 }
 
-/// One class from a parsed frame-level Wiener NS filter bank.
+/// One class from a resolved frame-level Wiener NS filter bank.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WienerNsFrameFilterClass {
-    /// The frame-filter match index selected before the merge flags.
+    /// The frame-filter match index selected before the merge flags, or the class ordinal
+    /// for a bank copied by the frame-header temporal-prediction arm.
     pub match_index: u8,
-    /// `merged[c]`: whether the class reuses its selected reference bank entry.
+    /// `merged[c]`: whether the class reuses its selected reference bank entry. Temporal
+    /// copies set this because their coefficients are inherited rather than coded locally.
     pub merged: bool,
     /// `refBank[c]`; the frame-level fixed-coded path always selects bank slot `0`.
     pub ref_bank: u8,
