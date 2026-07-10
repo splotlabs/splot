@@ -889,6 +889,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         n4h,
         mi_rows,
         mi_cols,
+        core.order_hint_lsb.unwrap_or(0),
     )?;
     intrabc_state.record_block(
         frontier.r,
@@ -921,6 +922,7 @@ fn record_compound_temporal_motion<T: ReconSample>(
     n4h: usize,
     mi_rows: usize,
     mi_cols: usize,
+    current_order_hint: u32,
 ) -> Result<()> {
     let Some(grid) = motion_grid else {
         record_temporal_motion_block(
@@ -933,6 +935,7 @@ fn record_compound_temporal_motion<T: ReconSample>(
             n4h,
             mi_rows,
             mi_cols,
+            current_order_hint,
             compound.ref_frame0,
             Some(compound.ref_frame1),
             compound.mv0,
@@ -955,6 +958,7 @@ fn record_compound_temporal_motion<T: ReconSample>(
                 (placed.luma_h - y).min(8).div_ceil(4),
                 mi_rows,
                 mi_cols,
+                current_order_hint,
                 compound.ref_frame0,
                 Some(compound.ref_frame1),
                 mvs[0],

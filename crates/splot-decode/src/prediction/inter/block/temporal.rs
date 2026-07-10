@@ -49,6 +49,7 @@ pub(super) fn record_temporal_motion_block<T: ReconSample>(
     n4h: usize,
     mi_rows: usize,
     mi_cols: usize,
+    current_order_hint: u32,
     ref_frame0: i8,
     ref_frame1: Option<i8>,
     mv0: Mv,
@@ -62,6 +63,7 @@ pub(super) fn record_temporal_motion_block<T: ReconSample>(
         n4h,
         mi_rows,
         mi_cols,
+        current_order_hint,
         ref_order_hints: [
             temporal_ref_order_hint(reference, ref_frame_idx, ref_frame0),
             ref_frame1.and_then(|ref_frame1| {

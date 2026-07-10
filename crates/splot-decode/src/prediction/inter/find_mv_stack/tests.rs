@@ -1431,6 +1431,7 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         n4h: 2,
         mi_rows: MI_DIM,
         mi_cols: MI_DIM,
+        current_order_hint: 2,
         ref_order_hints: [Some(0), None],
         mvs: [temporal_mv, Mv::ZERO],
         warp_params: [None, None],
