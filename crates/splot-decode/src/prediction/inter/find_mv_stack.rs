@@ -1088,6 +1088,11 @@ pub(crate) struct CompoundMvStack {
 }
 
 impl CompoundMvStack {
+    #[cfg(test)]
+    pub(crate) fn from_candidates(stack: Vec<CompoundMvCandidate>) -> Self {
+        Self { stack }
+    }
+
     pub(crate) fn candidate(&self, idx: usize) -> CompoundMvCandidate {
         self.stack
             .get(idx)

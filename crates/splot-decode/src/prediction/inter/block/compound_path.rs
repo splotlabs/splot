@@ -268,59 +268,45 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 core.order_hint_lsb.unwrap_or(0),
                 compound.ref_frame1,
             );
+        let independent_candidates = |idx0, idx1| {
+            let stack0 = find_mv_stack_with_temporal(
+                mv_grid,
+                &single_ref_block_context(block_ctx, compound.ref_frame0),
+                Mv::ZERO,
+                bank,
+                warp_param_bank,
+                false,
+                drl_reorder,
+                temporal,
+                temporal_first0,
+            );
+            let stack1 = find_mv_stack_with_temporal(
+                mv_grid,
+                &single_ref_block_context(block_ctx, compound.ref_frame1),
+                Mv::ZERO,
+                bank,
+                warp_param_bank,
+                false,
+                drl_reorder,
+                temporal,
+                temporal_first1,
+            );
+            [stack0.candidate(idx0), stack1.candidate(idx1)]
+        };
         match compound.y_mode {
             CompoundYMode::NearNear => {
-                let stack0 = find_mv_stack_with_temporal(
-                    mv_grid,
-                    &single_ref_block_context(block_ctx, compound.ref_frame0),
-                    Mv::ZERO,
-                    bank,
-                    warp_param_bank,
-                    false,
-                    drl_reorder,
-                    temporal,
-                    temporal_first0,
+                [compound.mv0, compound.mv1] = select_near_near_candidates(
+                    compound,
+                    ref_mv_idx,
+                    [ref_mv_idx0, ref_mv_idx1],
+                    |idx| paired_candidate(idx).mvs,
+                    |[idx0, idx1]| independent_candidates(idx0, idx1),
                 );
-                let stack1 = find_mv_stack_with_temporal(
-                    mv_grid,
-                    &single_ref_block_context(block_ctx, compound.ref_frame1),
-                    Mv::ZERO,
-                    bank,
-                    warp_param_bank,
-                    false,
-                    drl_reorder,
-                    temporal,
-                    temporal_first1,
-                );
-                compound.mv0 = stack0.candidate(ref_mv_idx0);
-                compound.mv1 = stack1.candidate(ref_mv_idx1);
             }
             CompoundYMode::NearNew | CompoundYMode::NewNear => {
                 let has_second_drl = compound_reads_second_drl(compound);
                 let candidates = if has_second_drl {
-                    let stack0 = find_mv_stack_with_temporal(
-                        mv_grid,
-                        &single_ref_block_context(block_ctx, compound.ref_frame0),
-                        Mv::ZERO,
-                        bank,
-                        warp_param_bank,
-                        false,
-                        drl_reorder,
-                        temporal,
-                        temporal_first0,
-                    );
-                    let stack1 = find_mv_stack_with_temporal(
-                        mv_grid,
-                        &single_ref_block_context(block_ctx, compound.ref_frame1),
-                        Mv::ZERO,
-                        bank,
-                        warp_param_bank,
-                        false,
-                        drl_reorder,
-                        temporal,
-                        temporal_first1,
-                    );
-                    [stack0.candidate(ref_mv_idx0), stack1.candidate(ref_mv_idx1)]
+                    independent_candidates(ref_mv_idx0, ref_mv_idx1)
                 } else {
                     paired_candidate(ref_mv_idx).mvs
                 };
@@ -1333,6 +1319,20 @@ fn read_compound_use_optflow_syntax(
 
 const fn compound_reads_second_drl(compound: super::super::compound::CompoundBlockSyntax) -> bool {
     !compound.use_optflow && compound.y_mode.has_second_drl()
+}
+
+fn select_near_near_candidates(
+    compound: super::super::compound::CompoundBlockSyntax,
+    paired_idx: usize,
+    independent_indices: [usize; 2],
+    paired: impl FnOnce(usize) -> [Mv; 2],
+    independent: impl FnOnce([usize; 2]) -> [Mv; 2],
+) -> [Mv; 2] {
+    if compound_reads_second_drl(compound) {
+        independent(independent_indices)
+    } else {
+        paired(paired_idx)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

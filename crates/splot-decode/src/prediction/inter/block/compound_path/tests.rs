@@ -491,7 +491,7 @@ fn wedge_temporal_storage_keeps_only_a_dominant_reference() {
 }
 
 #[test]
-fn compound_opfl_mode_suppresses_second_drl_idx() {
+fn compound_opfl_near_near_uses_one_paired_drl_idx() {
     let mut compound = crate::prediction::inter::compound::CompoundBlockSyntax {
         y_mode: CompoundYMode::NearNear,
         use_optflow: false,
@@ -504,6 +504,48 @@ fn compound_opfl_mode_suppresses_second_drl_idx() {
     assert!(compound_reads_second_drl(compound));
     compound.use_optflow = true;
     assert!(!compound_reads_second_drl(compound));
+}
+
+#[test]
+fn compound_opfl_near_near_selects_the_indexed_paired_candidate() {
+    let pairs = [
+        [Mv { row: 8, col: 16 }, Mv { row: -8, col: 24 }],
+        [Mv { row: -4, col: -149 }, Mv { row: 4, col: 187 }],
+    ];
+    let stack = crate::prediction::inter::find_mv_stack::CompoundMvStack::from_candidates(
+        pairs
+            .map(
+                |mvs| crate::prediction::inter::find_mv_stack::CompoundMvCandidate {
+                    mvs,
+                    cwp_weight: mc::CWP_EQUAL,
+                },
+            )
+            .to_vec(),
+    );
+    assert_eq!(stack.candidate(0).mvs, pairs[0]);
+    assert_eq!(stack.candidate(1).mvs, pairs[1]);
+
+    let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
+        y_mode: CompoundYMode::NearNear,
+        use_optflow: true,
+        ref_frame0: 0,
+        ref_frame1: 1,
+        mv0: Mv::ZERO,
+        mv1: Mv::ZERO,
+    };
+    let independent_called = core::cell::Cell::new(false);
+    let selected = select_near_near_candidates(
+        compound,
+        1,
+        [0, 0],
+        |idx| stack.candidate(idx).mvs,
+        |_| {
+            independent_called.set(true);
+            pairs[0]
+        },
+    );
+    assert_eq!(selected, pairs[1]);
+    assert!(!independent_called.get());
 }
 
 #[test]
