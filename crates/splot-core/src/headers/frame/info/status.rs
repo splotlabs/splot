@@ -89,8 +89,9 @@ pub enum FrameHeaderParseStatus {
     /// by the rest of `tile_group_obu()` (§ 5.19), whose `trailing_bits()` reachability
     /// is tracked separately (AV2-5.19-TILE-GROUP / NumFrameHeaderBits).
     IntraHeaderComplete,
-    /// A non-intra frame header was consumed in full through its § 5.18.2 shared tail and
-    /// inter-specific arms. After the inter control region reached
+    /// A non-intra frame header was consumed in full through either its § 5.18.2 shared
+    /// tail and inter-specific arms or the TIP-as-output terminal tail. After an ordinary
+    /// inter control region reached
     /// [`InterStop::ReachedSharedTail`](crate::headers::frame::inter::InterStop), the shared
     /// tail parsed `tile_info()` (§ 5.18.7.2), `quantization_params()` (§ 5.18.6.1),
     /// `segmentation_params()` (§ 5.18.7.1), `setup_qm_params()` (§ 5.18.6.2),
@@ -103,10 +104,11 @@ pub enum FrameHeaderParseStatus {
     /// `reduced_tx_set`, `global_motion_params()` § 5.18.9.1, and `film_grain_config()`
     /// § 5.18.10.1), reaching the terminal. The frame header is complete; the inter facts are
     /// on `core.inter` and the shared-tail facts on the shared `core` fields
-    /// (`tile_info`/`quantization_params`/…). No full-payload trailing-bits conformance is
-    /// implied (§ 5.19 tile data follows). Only reached for the minimal-tool single-reference
-    /// inter subset the shared tail models exactly; anything outside it (segmentation on,
-    /// `use_global_motion` warp models, the TIP / bridge return arms) stays an honest
+    /// (`tile_info`/`quantization_params`/…). A TIP-as-output arm instead parses its optional
+    /// explicit `quantization_params()`, `allow_df_sub_pu`, `apply_deblocking_filter_tip`,
+    /// conditional `tile_info()`, and terminal `film_grain_config()`. No full-payload
+    /// tile-data or trailing-bits conformance is implied. Ordinary inter subsets outside the
+    /// shared-tail model and the BRU/bridge return arms stay an honest
     /// [`Self::UnsupportedUntilFeature`] coverage stop.
     InterHeaderComplete,
     /// An intra frame's control region was read through `disable_cdf_update`,
@@ -187,8 +189,9 @@ pub enum FrameHeaderParseStatus {
     /// bridge's `bridge_frame_ref_idx`), but the payload ran out **inside** one of the
     /// modeled control fields — the primary-reference signaling, `bridge_frame_overwrite_flag`,
     /// `refresh_frame_flags`, the explicit reference map (`num_total_refs` / `ref_frame_idx`),
-    /// the reference-grounded frame size, or any field through `disable_cdf_update`. That
-    /// region IS fully modeled up to its coverage stops
+    /// the reference-grounded frame size, any field through `disable_cdf_update`, or a
+    /// TIP-as-output quantization/deblocking/tile/film-grain tail field. That region IS fully
+    /// modeled up to its coverage stops
     /// ([`InterStop`](crate::headers::frame::inter::InterStop)), so the parser only returns
     /// `Ok` at a coverage stop or `Err(UnexpectedEof)` while reading a mandated field; this
     /// status records the EOF case. The fields parsed before the EOF are intact and exposed on

@@ -40,8 +40,8 @@
 //!   the caller continues into the shared structure cluster.
 //! - [`InterStop::BruInactiveOrBridgeReturn`] / [`InterStop::TipAsOutputReturn`] — the
 //!   `bru_inactive` / `IsBridge` (mirror :4971/:5045) or TIP-as-output (mirror :4945) arm
-//!   `return`s after `film_grain_config()` / `tile_info()` reads needing reference-frame
-//!   dims this phase does not thread.
+//!   selects its terminal tail. The caller models the TIP tail; BRU/bridge still stops on
+//!   reference-derived quantization state.
 //! - [`InterStop::UnmodeledDerivation`] — a derivation needing unmodeled syntax
 //!   (`get_ref_frames()` for the implicit reference map).
 //! - [`InterStop::PoisonedReferenceState`] — see *Honest poisoning* below.
@@ -218,10 +218,9 @@ pub enum InterStop {
     /// single-picture-bridge `FrameIsIntra` path, where `immediate_output_frame == 1` makes the
     /// grain tail non-trivial, is handled separately by `parse_single_picture_bridge_tail`.)
     BruInactiveOrBridgeReturn,
-    /// `TipFrameMode == TIP_FRAME_AS_OUTPUT`, so the control region takes the TIP-output
-    /// arm (mirror :4945) and `return`s (mirror :5177) after its quant / deblocking /
-    /// `film_grain_config()` reads — which need reference-frame dims this phase does not
-    /// yet thread, so the parse stops at the start of that arm with the facts preserved.
+    /// `TipFrameMode == TIP_FRAME_AS_OUTPUT`, so the control region selects the TIP-output
+    /// terminal tail (mirror :4945-5031). The caller continues with its quantization,
+    /// deblocking, conditional tile-info, and film-grain reads before the return at :5177.
     TipAsOutputReturn,
 }
 
@@ -298,6 +297,14 @@ pub struct InterControl {
     pub tip_global_mv: Option<TipGlobalMv>,
     /// `TipInterpFilter` (mirror :4829-4839), when exactly derived.
     pub tip_interpolation_filter: Option<InterpolationFilter>,
+    /// `allow_df_sub_pu` from the TIP-as-output tail (mirror :4953), read when
+    /// `enable_df_sub_pu` or inferred `false` otherwise.
+    pub allow_df_sub_pu: Option<bool>,
+    /// `apply_deblocking_filter_tip` from the TIP-as-output tail (mirror :4957), read
+    /// when `allow_df_sub_pu` or inferred `false` otherwise.
+    pub apply_deblocking_filter_tip: Option<bool>,
+    /// The terminal TIP-as-output `film_grain_config()` (§ 5.18.10.1), when parsed.
+    pub tip_film_grain: Option<super::tail::FilmGrainConfig>,
     /// `opfl_refine_type` from `frame_opfl_refine_type()` (§ 5.18.3.2), when derived.
     pub opfl_refine_type: Option<u32>,
     /// `max_drl_bits_minus_1` (mirror :4863-4881), when read or inferred.

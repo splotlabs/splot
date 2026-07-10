@@ -37,6 +37,9 @@ pub struct CoreSeqInterView {
     pub(crate) enable_tip: bool,
     pub(crate) enable_tip_output: bool,
     pub(crate) enable_tip_hole_fill: bool,
+    /// `enable_tip_explicit_qp` (AV2 § 5.4.6): gates the TIP-as-output
+    /// `quantization_params()` call in § 5.18.2.
+    pub(crate) enable_tip_explicit_qp: bool,
     pub(crate) enable_refinemv: bool,
     pub(crate) enable_tip_refinemv: bool,
     pub(crate) seq_max_drl_bits_minus_1: u32,
@@ -150,6 +153,7 @@ impl CoreSeqView {
                 enable_tip: inter.enable_tip,
                 enable_tip_output: inter.enable_tip_output,
                 enable_tip_hole_fill: inter.enable_tip_hole_fill,
+                enable_tip_explicit_qp: inter.enable_tip_explicit_qp,
                 enable_refinemv: inter.enable_refinemv,
                 enable_tip_refinemv: inter.enable_tip_refinemv,
                 seq_max_drl_bits_minus_1: inter.seq_max_drl_bits_minus_1,
