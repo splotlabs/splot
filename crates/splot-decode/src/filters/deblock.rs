@@ -150,6 +150,158 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     Ok(())
 }
 
+pub(crate) fn deblock_tip_frame<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    luma_unit_size: usize,
+    quant: QuantizationParams,
+    base_uv_ac_delta_q: i32,
+    bit_depth: BitDepth,
+) -> Result<(), DeblockError> {
+    let pixel_format = workspace.info().pixel_format();
+    for plane in 0..3 {
+        let plane_id = plane_index_to_id(plane);
+        if workspace.plane(plane_id).is_err() {
+            continue;
+        }
+        let (sub_x, sub_y) = if plane == 0 {
+            (0, 0)
+        } else {
+            (
+                usize::from(pixel_format.subsampling_x()),
+                usize::from(pixel_format.subsampling_y()),
+            )
+        };
+        let unit_width = (luma_unit_size >> sub_x).max(1);
+        let unit_height = (luma_unit_size >> sub_y).max(1);
+        let quant_delta = match plane {
+            1 => quant.delta_q_u_ac + base_uv_ac_delta_q,
+            2 => quant.delta_q_v_ac + base_uv_ac_delta_q,
+            _ => 0,
+        };
+        let (q_thr, side) = adaptive_strength(
+            q_clamped(quant.base_q_idx, quant_delta, bit_depth),
+            bit_depth,
+        );
+        let (width, height) = coded_plane_dimensions(workspace, plane_id)?;
+        let mut frame = workspace.as_frame_mut();
+        let view = frame.plane_mut(plane_id).ok_or(DeblockError::Workspace)?;
+        let stride = view.stride_samples();
+        let mut plane_ctx = PlaneCtx::new(view.samples_mut(), stride, width, height)?;
+        for y in (0..height).step_by(MI_SIZE) {
+            for x in (unit_width..width).step_by(unit_width) {
+                let (max_width_neg, max_width_pos) =
+                    tip_filter_widths(plane, unit_width, false, x, sub_y);
+                apply_tip_filter_edge(
+                    &mut plane_ctx,
+                    x,
+                    y,
+                    1,
+                    0,
+                    height.saturating_sub(y).min(MI_SIZE),
+                    q_thr,
+                    side,
+                    max_width_neg,
+                    max_width_pos,
+                    bit_depth,
+                )?;
+            }
+        }
+        for x in (0..width).step_by(MI_SIZE) {
+            for y in (unit_height..height).step_by(unit_height) {
+                let (max_width_neg, max_width_pos) =
+                    tip_filter_widths(plane, unit_height, true, y, sub_y);
+                apply_tip_filter_edge(
+                    &mut plane_ctx,
+                    x,
+                    y,
+                    0,
+                    1,
+                    width.saturating_sub(x).min(MI_SIZE),
+                    q_thr,
+                    side,
+                    max_width_neg,
+                    max_width_pos,
+                    bit_depth,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn tip_filter_widths(
+    plane: usize,
+    unit_size: usize,
+    horizontal: bool,
+    coordinate: usize,
+    sub_y: usize,
+) -> (usize, usize) {
+    if unit_size <= 4 {
+        return (1, 1);
+    }
+    let superblock_edge = horizontal && coordinate.is_multiple_of(64 >> sub_y);
+    match unit_size {
+        8 if plane != 0 && superblock_edge => (2, 3),
+        8 => (3, 3),
+        16 if plane != 0 && superblock_edge => (2, 4),
+        16 if plane != 0 => (4, 4),
+        16 => (6, 6),
+        _ => (1, 1),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_tip_filter_edge<T: ReconSample>(
+    plane_ctx: &mut PlaneCtx<'_, T>,
+    x: usize,
+    y: usize,
+    dx: usize,
+    dy: usize,
+    lanes: usize,
+    q_thr: i32,
+    side: i32,
+    max_width_neg: usize,
+    max_width_pos: usize,
+    bit_depth: BitDepth,
+) -> Result<(), DeblockError> {
+    let width = choose_filter_width(
+        plane_ctx,
+        x,
+        y,
+        dx,
+        dy,
+        q_thr,
+        side,
+        max_width_neg,
+        max_width_pos,
+    )?;
+    if width == 0 {
+        return Ok(());
+    }
+    let eff_neg = width.min(max_width_neg);
+    let eff_pos = width.min(max_width_pos);
+    let params = DeblockSampleFilter {
+        boundary: GATHER_HALF,
+        q_thr,
+        max_width_neg: eff_neg,
+        max_width_pos: eff_pos,
+        q_thresh_mult: Q_THRESH_MULTS[eff_neg.max(eff_pos) - 1],
+        w_mult_neg: W_MULT[eff_neg - 1],
+        w_mult_pos: W_MULT[eff_pos - 1],
+        prev_lossless: false,
+        curr_lossless: false,
+        bit_depth,
+    };
+    for lane in 0..lanes {
+        apply_sample_filter(
+            plane_ctx,
+            PerpLine::new(x + dy * lane, y + dx * lane, dx, dy),
+            params,
+        )?;
+    }
+    Ok(())
+}
+
 fn deblock_plane_pass<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     grid: &MiGrid,

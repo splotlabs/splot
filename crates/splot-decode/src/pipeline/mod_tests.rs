@@ -8,6 +8,7 @@ const OBU_SEQUENCE_HEADER: u8 = 0x04;
 const OBU_TEMPORAL_DELIMITER: u8 = 0x08;
 const OBU_CLOSED_LOOP_KEY: u8 = 0x10;
 const OBU_REGULAR_TILE_GROUP: u8 = 0x1C;
+const OBU_REGULAR_TIP: u8 = 0x38;
 const OBU_OPERATING_POINT_SET: u8 = 0x48;
 const OBU_FILM_GRAIN: u8 = 0x5C;
 
@@ -49,6 +50,18 @@ fn leading_frame_unit_allows_ops_before_sequence() {
     assert_eq!(frame_unit_len, 4);
     assert!(is_leading_record_regular_after_key(0, 4, &obus));
     assert!(require_leading_ivf_obu_order(&obus).is_ok());
+}
+
+#[test]
+fn inter_frame_unit_order_accepts_regular_tip() {
+    let bytes = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        obu(OBU_REGULAR_TIP).as_slice(),
+    ]
+    .concat();
+    let obus = annexb_obus(&bytes);
+
+    assert!(require_inter_obu_order(&obus).is_ok());
 }
 
 #[test]

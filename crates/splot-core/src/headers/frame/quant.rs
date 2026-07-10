@@ -187,6 +187,22 @@ pub struct QuantizationParams {
     pub diff_uv_delta: bool,
 }
 
+impl QuantizationParams {
+    #[doc = "Builds the inferred TIP-as-output quantizer state from AV2 § 5.18.2."]
+    #[must_use]
+    pub const fn inferred_tip(base_q_idx: u32, delta_q_u_ac: i32, delta_q_v_ac: i32) -> Self {
+        Self {
+            base_q_idx,
+            delta_q_y_dc: 0,
+            delta_q_u_dc: 0,
+            delta_q_u_ac,
+            delta_q_v_dc: 0,
+            delta_q_v_ac,
+            diff_uv_delta: false,
+        }
+    }
+}
+
 /// One quantizer-matrix level set `(qm_y[i], qm_u[i], qm_v[i])` parsed by
 /// `setup_qm_params()` (AV2 v1.0.0 § 5.18.6.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -569,6 +585,15 @@ mod tests {
             delta_q_v_ac: 0,
             diff_uv_delta: false,
         }
+    }
+
+    #[test]
+    fn inferred_tip_quantization_retains_independent_ac_deltas() {
+        let params = QuantizationParams::inferred_tip(91, -3, 4);
+        assert_eq!(params.base_q_idx, 91);
+        assert_eq!(params.delta_q_u_ac, -3);
+        assert_eq!(params.delta_q_v_ac, 4);
+        assert!(!params.diff_uv_delta);
     }
 
     /// `setup_qm_params()` output with QM disabled.

@@ -107,6 +107,16 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
 ) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
 
+    if frame_envelope.header.obu_type == ObuType::RegularTip {
+        return decode_tip_output_frame(
+            frame_envelope,
+            core,
+            sequence,
+            options,
+            reference,
+            bit_depth,
+        );
+    }
     if frame_envelope.header.obu_type != ObuType::RegularTileGroup {
         return Err(inter_cap!(
             "inter_unexpected_obu_type",
@@ -354,6 +364,65 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     )?;
 
     Ok((frame, core, frame_cdfs, ccso_grid, motion_field))
+}
+
+fn decode_tip_output_frame<T: ReconSample>(
+    frame_envelope: ObuEnvelope<'_>,
+    core: FrameHeaderCore,
+    sequence: &SequenceHeader,
+    options: &DecodeOptions,
+    reference: &InterReferenceState<'_, T>,
+    bit_depth: BitDepth,
+) -> Result<InterDecodeOutput<T>> {
+    let offset = frame_envelope.offset;
+    if !matches!(
+        sequence.general.chroma_format_idc,
+        ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
+    ) {
+        return Err(inter_cap!(
+            "tip_output_non_420_chroma",
+            offset,
+            "inter.tip_output.chroma_format != monochrome_or_4:2:0",
+            SPEC_MC
+        ));
+    }
+    let frame_size = core.frame_size.ok_or_else(|| {
+        inter_missing!(
+            "tip_output_state",
+            offset,
+            "inter.tip_output.state",
+            SPEC_HEADER
+        )
+    })?;
+    let order_hint_bits = sequence
+        .inter
+        .as_ref()
+        .map_or(0, |seq_inter| u32::from(seq_inter.order_hint_bits));
+    if !order_hint_history_unwrapped(
+        &reference.ref_valid,
+        &reference.ref_order_hint,
+        order_hint_bits,
+        core.order_hint_lsb.unwrap_or(0),
+    ) {
+        return Err(inter_cap!(
+            "tip_output_order_hint_wrapped",
+            offset,
+            "inter.tip_output.order_hint.wrapped_reference_history",
+            SPEC_REFERENCE
+        ));
+    }
+    ensure_runtime_limits(
+        options.limits(),
+        frame_size.width,
+        frame_size.height,
+        0,
+        bit_depth,
+        sequence.general.chroma_format_idc,
+    )?;
+    let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
+    let (frame, motion_field) =
+        block::tip::reconstruct_output(sequence, &core, reference, bit_depth, offset)?;
+    Ok((frame, core, frame_cdfs, None, motion_field))
 }
 
 fn resolve_initial_frame_cdfs(
@@ -795,6 +864,8 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
     pub(crate) ref_frame_width: Vec<u32>,
     pub(crate) ref_frame_height: Vec<u32>,
     pub(crate) ref_base_q_idx: Vec<u32>,
+    pub(crate) ref_delta_q_u_ac: Vec<i32>,
+    pub(crate) ref_delta_q_v_ac: Vec<i32>,
     pub(crate) ref_is_inter: Vec<bool>,
     #[allow(dead_code)]
     pub(crate) ref_adapted: Vec<bool>,
@@ -815,6 +886,8 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             ref_frame_width: Vec::new(),
             ref_frame_height: Vec::new(),
             ref_base_q_idx: Vec::new(),
+            ref_delta_q_u_ac: Vec::new(),
+            ref_delta_q_v_ac: Vec::new(),
             ref_is_inter: Vec::new(),
             ref_adapted: Vec::new(),
             lr_frame_filter_class_counts: Vec::new(),
@@ -837,6 +910,8 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             ref_frame_width: metadata.ref_frame_width,
             ref_frame_height: metadata.ref_frame_height,
             ref_base_q_idx: metadata.ref_base_q_idx,
+            ref_delta_q_u_ac: metadata.ref_delta_q_u_ac,
+            ref_delta_q_v_ac: metadata.ref_delta_q_v_ac,
             ref_is_inter: metadata.ref_is_inter,
             ref_adapted: metadata.ref_adapted,
             lr_frame_filter_class_counts: metadata.lr_frame_filter_class_counts,
@@ -902,10 +977,136 @@ pub(crate) fn parse_validated_inter_frame_core(
     sequence: &SequenceHeader,
     reference: &InterReferenceState<'_, impl ReconSample>,
 ) -> Result<FrameHeaderCore> {
-    let mut core = parse_inter_frame_core(envelope, sequence, reference)?;
-    resolve_ccso_reference_reuse(&mut core, reference, envelope.offset)?;
-    validate_inter_frame_core(&core, sequence, envelope.offset)?;
+    let mut core = if envelope.header.obu_type == ObuType::RegularTip {
+        parse_tip_output_frame_core(envelope, sequence, reference)?
+    } else {
+        parse_inter_frame_core(envelope, sequence, reference)?
+    };
+    if envelope.header.obu_type == ObuType::RegularTip {
+        infer_tip_output_quantization(&mut core, sequence, reference, envelope.offset)?;
+        validate_tip_output_frame_core(&core, envelope.offset)?;
+    } else {
+        resolve_ccso_reference_reuse(&mut core, reference, envelope.offset)?;
+        validate_inter_frame_core(&core, sequence, envelope.offset)?;
+    }
     Ok(core)
+}
+
+fn parse_tip_output_frame_core(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<'_, impl ReconSample>,
+) -> Result<FrameHeaderCore> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    let input = FrameHeaderParseInput {
+        obu_type: envelope.header.obu_type,
+        first_picture_in_tu: false,
+        active_sequence: Some(sequence),
+        mfh_record: None,
+        reference_state: reference.header_view(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    parse_frame_header_core(&mut reader, &input).map_err(|_| {
+        inter_missing!(
+            "tip_output_frame_header_parse",
+            envelope.offset,
+            "inter.tip_output.frame_header_core",
+            SPEC_HEADER
+        )
+    })
+}
+
+fn infer_tip_output_quantization(
+    core: &mut FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<'_, impl ReconSample>,
+    offset: ByteOffset,
+) -> Result<()> {
+    if core.quantization_params.is_some()
+        || sequence
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.enable_tip_explicit_qp)
+    {
+        return Ok(());
+    }
+    let inter = core.inter.as_ref().ok_or_else(|| {
+        inter_missing!(
+            "tip_output_missing_control",
+            offset,
+            "inter.tip_output.control",
+            SPEC_HEADER
+        )
+    })?;
+    let hints = inter
+        .ref_frame_idx
+        .iter()
+        .map(|&slot| {
+            reference
+                .ref_valid
+                .get(slot as usize)
+                .copied()
+                .filter(|valid| *valid)
+                .and_then(|_| reference.ref_order_hint.get(slot as usize).copied())
+        })
+        .collect::<Vec<_>>();
+    let pair =
+        find_mv_stack::tip_reference_pair_from_hints(core.order_hint_lsb.unwrap_or(0), &hints);
+    let list_slot = |list_ref: i8| {
+        usize::try_from(list_ref)
+            .ok()
+            .and_then(|index| inter.ref_frame_idx.get(index))
+            .and_then(|&slot| usize::try_from(slot).ok())
+    };
+    let slots = pair.map(|pair| [list_slot(pair.past_ref), list_slot(pair.future_ref)]);
+    let values = slots.and_then(|[past, future]| {
+        let (past, future) = (past?, future?);
+        Some((
+            *reference.ref_base_q_idx.get(past)?,
+            *reference.ref_base_q_idx.get(future)?,
+            *reference.ref_delta_q_u_ac.get(past)?,
+            *reference.ref_delta_q_u_ac.get(future)?,
+            *reference.ref_delta_q_v_ac.get(past)?,
+            *reference.ref_delta_q_v_ac.get(future)?,
+        ))
+    });
+    let Some((past_q, future_q, past_u, future_u, past_v, future_v)) = values else {
+        return Err(inter_missing!(
+            "tip_output_reference_quantizer",
+            offset,
+            "inter.tip_output.reference_quantizer",
+            SPEC_HEADER
+        ));
+    };
+    core.quantization_params = Some(QuantizationParams::inferred_tip(
+        (past_q + future_q + 1) >> 1,
+        ((i64::from(past_u) + i64::from(future_u) + 1) >> 1) as i32,
+        ((i64::from(past_v) + i64::from(future_v) + 1) >> 1) as i32,
+    ));
+    Ok(())
+}
+
+fn validate_tip_output_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
+    let complete = core.status == FrameHeaderParseStatus::InterHeaderComplete
+        && core.obu_type == ObuType::RegularTip
+        && core.frame_is_intra == Some(false)
+        && core
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.tip_frame_mode == Some(TipFrameMode::AsOutput))
+        && core
+            .frame_size
+            .is_some_and(|size| size.width != 0 && size.height != 0)
+        && core.quantization_params.is_some();
+    if !complete {
+        return Err(inter_cap!(
+            "tip_output_incomplete_state",
+            offset,
+            "inter.tip_output.complete_state",
+            SPEC_HEADER
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_ccso_reference_reuse(

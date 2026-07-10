@@ -81,6 +81,37 @@ fn run_deblock(
     .unwrap();
 }
 
+#[test]
+fn tip_filter_widths_follow_unit_and_chroma_superblock_edges() {
+    assert_eq!(tip_filter_widths(0, 8, false, 8, 0), (3, 3));
+    assert_eq!(tip_filter_widths(0, 16, true, 64, 0), (6, 6));
+    assert_eq!(tip_filter_widths(1, 4, true, 32, 1), (1, 1));
+    assert_eq!(tip_filter_widths(1, 8, true, 32, 1), (2, 3));
+    assert_eq!(tip_filter_widths(1, 8, true, 24, 1), (3, 3));
+}
+
+#[test]
+fn tip_deblocking_smooths_prediction_unit_boundaries() {
+    let mut ws = yuv420_workspace(32, 32, 0);
+    fill_rect(&mut ws, PlaneId::Y, 0..16, 0..32, 100);
+    fill_rect(&mut ws, PlaneId::Y, 16..32, 0..32, 108);
+
+    deblock_tip_frame(
+        &mut ws,
+        16,
+        QuantizationParams::inferred_tip(100, 0, 0),
+        0,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    assert_smoothed_step(
+        ws.reconstructed_sample(PlaneId::Y, 15, 8).unwrap(),
+        ws.reconstructed_sample(PlaneId::Y, 16, 8).unwrap(),
+        "TIP prediction-unit boundary must be filtered",
+    );
+}
+
 fn edge_test_grid(curr_skip: bool) -> MiGrid {
     let mut cells = vec![None; 4 * 16];
     cells[4] = Some(MiBlockInfo {

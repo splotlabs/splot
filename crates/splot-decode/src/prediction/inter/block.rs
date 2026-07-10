@@ -1764,6 +1764,7 @@ fn decode_block<T: ReconSample>(
             core,
             ref_frame_idx,
             reference,
+            None,
             block_qindex,
             luma_use_tcq,
             residual_use_ddt,
@@ -2233,7 +2234,7 @@ mod prediction;
 mod residual;
 mod syntax;
 mod temporal;
-mod tip;
+pub(super) mod tip;
 mod warp;
 
 use self::filter_records::record_inter_deblock_geometry;

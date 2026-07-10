@@ -283,6 +283,9 @@ fn film_grain_config_for_core(
     if let Some(config) = core.sef_film_grain {
         return Ok(Some(config));
     }
+    if let Some(config) = core.inter.as_ref().and_then(|inter| inter.tip_film_grain) {
+        return Ok(Some(config));
+    }
     if core
         .inter_tail
         .as_ref()
@@ -501,7 +504,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
 
     for next_candidate in candidates {
         match next_candidate.obu_type() {
-            ObuType::RegularTileGroup => {
+            ObuType::RegularTileGroup | ObuType::RegularTip => {
                 let inter_envelope = match stream {
                     RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
                         obus,
@@ -1094,11 +1097,7 @@ pub(crate) fn following_inter_envelope<'a>(
             ivf_frame_index,
         )?;
         let inter_envelope = ivf_frame.obus[position];
-        require_obu_type(
-            inter_envelope,
-            ObuType::RegularTileGroup,
-            "missing_inter_regular_tile_group",
-        )?;
+        require_inter_frame_obu(inter_envelope, "missing_inter_frame_obu")?;
         if is_leading_record_regular_after_key(ivf_frame_index, position, ivf_frame.obus.as_slice())
         {
             return Ok(inter_envelope);
@@ -1145,11 +1144,7 @@ fn following_annexb_inter_envelope<'a>(
     };
     require_following_annexb_obu_order_through(obus, next_unvalidated_following_obu, position)?;
     let inter_envelope = obus[position];
-    require_obu_type(
-        inter_envelope,
-        ObuType::RegularTileGroup,
-        "missing_inter_regular_tile_group",
-    )?;
+    require_inter_frame_obu(inter_envelope, "missing_inter_frame_obu")?;
     if is_leading_record_regular_after_key(0, position, obus) {
         return Ok(inter_envelope);
     }
@@ -1285,7 +1280,7 @@ fn is_leading_record_regular_after_key(
             .is_some_and(|envelopes| {
                 envelopes
                     .iter()
-                    .all(|envelope| envelope.header.obu_type == ObuType::RegularTileGroup)
+                    .all(|envelope| is_inter_frame_obu(envelope.header.obu_type))
             })
 }
 
@@ -1342,23 +1337,19 @@ fn require_following_ivf_record_obu_order(
 fn require_leading_ivf_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
     let (_, frame_unit_len) = require_leading_frame_unit(obus)?;
     for envelope in obus.iter().skip(frame_unit_len) {
-        require_obu_type(
-            *envelope,
-            ObuType::RegularTileGroup,
-            "unexpected_leading_obu_after_key",
-        )?;
+        require_inter_frame_obu(*envelope, "unexpected_leading_obu_after_key")?;
     }
     Ok(())
 }
 
 fn require_inter_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
     for (index, envelope) in obus.iter().enumerate() {
-        let expected = if index % 2 == 0 {
-            ObuType::TemporalDelimiter
+        let valid = if index % 2 == 0 {
+            envelope.header.obu_type == ObuType::TemporalDelimiter
         } else {
-            ObuType::RegularTileGroup
+            is_inter_frame_obu(envelope.header.obu_type)
         };
-        if envelope.header.obu_type != expected {
+        if !valid {
             return Err(unsupported_at(
                 "unexpected_inter_obu_order",
                 envelope.offset,
@@ -1387,11 +1378,7 @@ fn require_following_annexb_obu_order_through(
     while *next_unvalidated_following_obu <= target_position {
         if is_leading_record_regular_after_key(0, *next_unvalidated_following_obu, obus) {
             let envelope = obus[*next_unvalidated_following_obu];
-            require_obu_type(
-                envelope,
-                ObuType::RegularTileGroup,
-                "unexpected_leading_obu_after_key",
-            )?;
+            require_inter_frame_obu(envelope, "unexpected_leading_obu_after_key")?;
             *next_unvalidated_following_obu += 1;
             continue;
         }
@@ -1416,11 +1403,7 @@ fn require_following_annexb_obu_order_through(
                 missing_capability_message!("inter.ivf_frame_unit_order"),
             ));
         };
-        require_obu_type(
-            frame_envelope,
-            ObuType::RegularTileGroup,
-            "unexpected_inter_obu_order",
-        )?;
+        require_inter_frame_obu(frame_envelope, "unexpected_inter_obu_order")?;
         *next_unvalidated_following_obu = frame_index.saturating_add(1);
     }
     Ok(())
@@ -1672,6 +1655,22 @@ fn require_obu_type(
     }
 }
 
+const fn is_inter_frame_obu(obu_type: ObuType) -> bool {
+    matches!(obu_type, ObuType::RegularTileGroup | ObuType::RegularTip)
+}
+
+fn require_inter_frame_obu(envelope: ObuEnvelope<'_>, reason: &'static str) -> Result<()> {
+    if is_inter_frame_obu(envelope.header.obu_type) {
+        Ok(())
+    } else {
+        Err(unsupported_at(
+            reason,
+            envelope.offset,
+            missing_capability_message!("obu.order minimal_frame_unit"),
+        ))
+    }
+}
+
 pub(crate) fn parse_sequence(envelope: ObuEnvelope<'_>) -> Result<SequenceHeader> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     parse_sequence_header(&mut reader).map_err(|_| {
@@ -1824,24 +1823,23 @@ pub(crate) fn frame_ref_update_from_core(
             "minimal multi-frame decode requires a parsed frame size for the §7.23 update",
         )
     })?;
-    let base_q_idx = core
-        .quantization_params
-        .map(|quant| quant.base_q_idx)
-        .ok_or_else(|| {
-            unsupported_at(
-                "missing_base_q_for_ref_update",
-                offset,
-                "minimal multi-frame decode requires a parsed base_q_idx for the §7.23 update",
-            )
-        })?;
+    let quantization = core.quantization_params.ok_or_else(|| {
+        unsupported_at(
+            "missing_base_q_for_ref_update",
+            offset,
+            "minimal multi-frame decode requires a parsed base_q_idx for the §7.23 update",
+        )
+    })?;
     let is_inter = core.frame_type == Some(FrameType::Inter);
-    let adapted = core.disable_cdf_update != Some(true);
+    let adapted = core.obu_type != ObuType::RegularTip && core.disable_cdf_update != Some(true);
     Ok(reference_buffer::FrameRefUpdate {
         refresh_frame_flags,
         order_hint,
         width: frame_size.width,
         height: frame_size.height,
-        base_q_idx,
+        base_q_idx: quantization.base_q_idx,
+        delta_q_u_ac: quantization.delta_q_u_ac,
+        delta_q_v_ac: quantization.delta_q_v_ac,
         is_key_or_switch: core.is_key_frame || core.frame_type == Some(FrameType::Switch),
         is_inter,
         adapted,

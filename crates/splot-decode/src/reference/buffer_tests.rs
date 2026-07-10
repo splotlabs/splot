@@ -17,6 +17,8 @@ fn key_update() -> FrameRefUpdate {
         width: 64,
         height: 64,
         base_q_idx: 70,
+        delta_q_u_ac: -2,
+        delta_q_v_ac: 3,
         is_key_or_switch: true,
         is_inter: false,
         adapted: false,
@@ -36,6 +38,8 @@ fn inter_update(adapted: bool) -> FrameRefUpdate {
         width: 64,
         height: 64,
         base_q_idx: 109,
+        delta_q_u_ac: 4,
+        delta_q_v_ac: -1,
         is_key_or_switch: false,
         is_inter: true,
         adapted,
@@ -88,6 +92,8 @@ fn key_refresh_marks_only_first_slot_valid() {
     assert!(buf.slots[0].valid);
     assert!(!buf.slots[1].valid);
     assert_eq!(buf.slots[0].base_q_idx, 70);
+    assert_eq!(buf.slots[0].delta_q_u_ac, -2);
+    assert_eq!(buf.slots[0].delta_q_v_ac, 3);
     assert_eq!(buf.slots[0].frame_index, Some(0));
     assert_eq!(buf.slots[0].lr_frame_filter_class_counts, [1, 0, 0]);
 }
@@ -102,6 +108,8 @@ fn inter_refresh_adds_a_second_valid_slot() {
     assert!(buf.slots[1].valid);
     assert_eq!(buf.slots[1].order_hint, 1);
     assert_eq!(buf.slots[1].base_q_idx, 109);
+    assert_eq!(buf.slots[1].delta_q_u_ac, 4);
+    assert_eq!(buf.slots[1].delta_q_v_ac, -1);
     assert_eq!(buf.slots[1].frame_index, Some(1));
     assert!(buf.slots[1].is_inter);
     assert!(!buf.slots[1].adapted);

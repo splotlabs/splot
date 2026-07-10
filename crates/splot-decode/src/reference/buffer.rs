@@ -24,6 +24,8 @@ struct Slot {
     width: u32,
     height: u32,
     base_q_idx: u32,
+    delta_q_u_ac: i32,
+    delta_q_v_ac: i32,
     is_inter: bool,
     adapted: bool,
     lr_frame_filter_class_counts: [u8; 3],
@@ -42,6 +44,8 @@ impl Slot {
         width: 0,
         height: 0,
         base_q_idx: 0,
+        delta_q_u_ac: 0,
+        delta_q_v_ac: 0,
         is_inter: false,
         adapted: false,
         lr_frame_filter_class_counts: [0; 3],
@@ -60,6 +64,8 @@ impl Slot {
             width: update.width,
             height: update.height,
             base_q_idx: update.base_q_idx,
+            delta_q_u_ac: update.delta_q_u_ac,
+            delta_q_v_ac: update.delta_q_v_ac,
             is_inter: update.is_inter,
             adapted: update.adapted,
             lr_frame_filter_class_counts: update.lr_frame_filter_class_counts,
@@ -80,6 +86,8 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) base_q_idx: u32,
+    pub(crate) delta_q_u_ac: i32,
+    pub(crate) delta_q_v_ac: i32,
     pub(crate) is_key_or_switch: bool,
     pub(crate) is_inter: bool,
     pub(crate) adapted: bool,
@@ -208,6 +216,8 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) ref_frame_width: Vec<u32>,
     pub(crate) ref_frame_height: Vec<u32>,
     pub(crate) ref_base_q_idx: Vec<u32>,
+    pub(crate) ref_delta_q_u_ac: Vec<i32>,
+    pub(crate) ref_delta_q_v_ac: Vec<i32>,
     pub(crate) ref_is_inter: Vec<bool>,
     pub(crate) ref_adapted: Vec<bool>,
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
@@ -226,6 +236,8 @@ impl ReferenceMetadata {
             ref_frame_width: Vec::with_capacity(num),
             ref_frame_height: Vec::with_capacity(num),
             ref_base_q_idx: Vec::with_capacity(num),
+            ref_delta_q_u_ac: Vec::with_capacity(num),
+            ref_delta_q_v_ac: Vec::with_capacity(num),
             ref_is_inter: Vec::with_capacity(num),
             ref_adapted: Vec::with_capacity(num),
             lr_frame_filter_class_counts: Vec::with_capacity(num),
@@ -243,6 +255,8 @@ impl ReferenceMetadata {
         self.ref_frame_width.push(slot.width);
         self.ref_frame_height.push(slot.height);
         self.ref_base_q_idx.push(slot.base_q_idx);
+        self.ref_delta_q_u_ac.push(slot.delta_q_u_ac);
+        self.ref_delta_q_v_ac.push(slot.delta_q_v_ac);
         self.ref_is_inter.push(slot.is_inter);
         self.ref_adapted.push(slot.adapted);
         self.lr_frame_filter_class_counts
