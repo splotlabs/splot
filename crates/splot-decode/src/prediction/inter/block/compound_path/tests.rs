@@ -127,6 +127,7 @@ fn compound_blend_reads_wedge_index_and_sign() {
         CompoundBlendInput {
             skip_mode: false,
             use_optflow: false,
+            joint_amvd: false,
             n4w: 2,
             n4h: 2,
             block_size_index: 3,
@@ -162,6 +163,41 @@ fn compound_optflow_forces_average_without_blend_symbols() {
         CompoundBlendInput {
             skip_mode: false,
             use_optflow: true,
+            joint_amvd: false,
+            n4w: 2,
+            n4h: 2,
+            block_size_index: 3,
+            comp_group_idx_ctx: 0,
+        },
+        TILE_OFFSET,
+    )
+    .unwrap();
+
+    assert_eq!(blend, mc::CompoundBlend::average_with_implicit_mask(true));
+    assert_eq!(symbols.checkpoint(), before);
+}
+
+/// AV2 § 5.20.7.6: a joint-AMVD compound mode (JOINT_NEWMV/JOINT_NEWMV_OPTFLOW
+/// with `use_amvd`) does not signal `comp_group_idx`, so the blend stays average
+/// and no `S()` symbol is consumed even when masked compound is enabled.
+#[test]
+fn compound_joint_amvd_forces_average_without_blend_symbols() {
+    let payload = encode_wedge_compound_blend();
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+    let before = symbols.checkpoint();
+
+    let blend = read_compound_blend_syntax(
+        &mut tile,
+        &mut symbols,
+        CompoundBlendToolConfig {
+            masked_enabled: true,
+            implicit_mask: true,
+        },
+        CompoundBlendInput {
+            skip_mode: false,
+            use_optflow: false,
+            joint_amvd: true,
             n4w: 2,
             n4h: 2,
             block_size_index: 3,
