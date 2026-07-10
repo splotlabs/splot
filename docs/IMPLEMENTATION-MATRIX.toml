@@ -16445,7 +16445,7 @@ id = "DECODE-INTER-COMPOUND-AVERAGE"
 name = "two-reference compound-average inter runtime"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.18.8.2", "5.20.7.2", "5.20.7.3", "5.20.7.6", "5.20.7.8", "5.20.7.10", "5.20.7.11", "5.20.7.13", "5.20.7.16", "5.20.7.17", "7.13.3.8", "7.13.3.9", "7.13.3.10", "7.13.3.11", "7.13.3.12", "7.13.3.16", "7.13.3.18", "7.22", "8.3.2", "9.3"]
+spec_sections = ["5.18.8.2", "5.20.7.2", "5.20.7.3", "5.20.7.6", "5.20.7.8", "5.20.7.10", "5.20.7.11", "5.20.7.13", "5.20.7.16", "5.20.7.17", "7.12.2.10", "7.12.2.15", "7.13.3.8", "7.13.3.9", "7.13.3.10", "7.13.3.11", "7.13.3.12", "7.13.3.16", "7.13.3.18", "7.22", "8.3.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-8-2",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-2",
@@ -16457,6 +16457,8 @@ sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-16",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-17",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-10",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-15",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-8",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-9",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-10",
@@ -16509,6 +16511,7 @@ tests = [
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::recorded_skip_mode_contributes_to_the_next_block_context",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_projects_tip_neighbour_to_its_reference_pair",
     "crates/splot-cli/tests/decode_cli.rs::decode_compound_average_three_frame_fixture_is_bit_exact",
 ]
 commands = [
@@ -16640,13 +16643,15 @@ id = "DECODE-INTER-TIP-REFERENCE"
 name = "TIP reference block runtime"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.1", "7.9.3", "7.13.3", "7.22", "8.3.2", "9.3"]
+spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.1", "7.9.3", "7.12.2.10", "7.12.2.15", "7.13.3", "7.22", "8.3.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-3",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-10",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-15",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-22",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
@@ -16676,6 +16681,7 @@ perf = "not-applicable"
 tests = [
     "crates/splot-decode/src/prediction/inter/block/syntax.rs::tests::skip_and_tip_drl_idx_use_dedicated_cdf_banks",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::tip_neighbour_matches_its_underlying_compound_reference_pair",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_projects_tip_neighbour_to_its_reference_pair",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::tip_reference_pair_uses_the_nearest_past_and_future_references",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::tip_projection_fills_unsampled_units_and_adds_the_block_mv",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::step_two_projection_samples_and_stores_on_the_even_grid",

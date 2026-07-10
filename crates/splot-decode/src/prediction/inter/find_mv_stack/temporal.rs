@@ -291,6 +291,26 @@ pub(crate) struct TemporalProjectionConfig {
 }
 
 impl TemporalMvContext {
+    #[cfg(test)]
+    pub(super) fn with_tip_sample(
+        mi_rows: usize,
+        mi_cols: usize,
+        references: TipReferencePair,
+        y8: usize,
+        x8: usize,
+        mv: Mv,
+    ) -> Option<Self> {
+        let mut field = ProjectedTemporalMotionField::new(mi_rows, mi_cols)?;
+        field.set(y8, x8, mv, references.ref_offset, true);
+        Some(Self {
+            current_order_hint: 0,
+            ref_order_hints: Vec::new(),
+            field: field.clone(),
+            trajectories: None,
+            tip: Some(TipMotionField { field, references }),
+        })
+    }
+
     pub(crate) fn from_references(
         mi_dimensions: (usize, usize),
         current_order_hint: u32,
