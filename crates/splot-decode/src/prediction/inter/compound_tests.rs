@@ -164,7 +164,7 @@ fn compound_mode_predicates_keep_per_list_roles() {
         (CompoundYMode::NearNew, true, false, true),
         (CompoundYMode::NewNear, false, true, false),
         (CompoundYMode::GlobalGlobal, false, false, false),
-        (CompoundYMode::JointNew, false, true, true),
+        (CompoundYMode::JointNew, false, true, false),
         (CompoundYMode::NewNew, false, true, true),
     ];
 

@@ -97,8 +97,8 @@ impl CompoundYMode {
 
     pub(crate) const fn list1_is_newmv(self) -> bool {
         match self {
-            Self::NearNear | Self::NewNear | Self::GlobalGlobal => false,
-            Self::NearNew | Self::JointNew | Self::NewNew => true,
+            Self::NearNear | Self::NewNear | Self::GlobalGlobal | Self::JointNew => false,
+            Self::NearNew | Self::NewNew => true,
         }
     }
 }
