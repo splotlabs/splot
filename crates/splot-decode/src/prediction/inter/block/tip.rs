@@ -347,6 +347,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         mi_cols,
         core.order_hint_lsb.unwrap_or(0),
         ref_frame_idx,
+        &reference.ref_valid,
         &reference.ref_order_hint,
         &reference.ref_motion_fields,
     )

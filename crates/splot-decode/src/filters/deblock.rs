@@ -236,18 +236,22 @@ fn tip_filter_widths(
     coordinate: usize,
     sub_y: usize,
 ) -> (usize, usize) {
-    if unit_size <= 4 {
-        return (1, 1);
-    }
+    // AV2 § 7.17.3, docs/spec/av2/1.0.0/07-decoding-process.md.
     let superblock_edge = horizontal && coordinate.is_multiple_of(64 >> sub_y);
-    match unit_size {
-        8 if plane != 0 && superblock_edge => (2, 3),
-        8 => (3, 3),
-        16 if plane != 0 && superblock_edge => (2, 4),
-        16 if plane != 0 => (4, 4),
-        16 => (6, 6),
-        _ => (1, 1),
-    }
+    let max_width_pos = match unit_size {
+        0..=4 => 1,
+        8 => 3,
+        16 if plane != 0 => 4,
+        16 => 6,
+        _ if plane != 0 => 4,
+        _ => 8,
+    };
+    let max_width_neg = if superblock_edge {
+        max_width_pos.min(if plane != 0 { 2 } else { 6 })
+    } else {
+        max_width_pos
+    };
+    (max_width_neg, max_width_pos)
 }
 
 #[allow(clippy::too_many_arguments)]

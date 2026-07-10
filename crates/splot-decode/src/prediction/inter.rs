@@ -1038,18 +1038,11 @@ fn infer_tip_output_quantization(
             SPEC_HEADER
         )
     })?;
-    let hints = inter
-        .ref_frame_idx
-        .iter()
-        .map(|&slot| {
-            reference
-                .ref_valid
-                .get(slot as usize)
-                .copied()
-                .filter(|valid| *valid)
-                .and_then(|_| reference.ref_order_hint.get(slot as usize).copied())
-        })
-        .collect::<Vec<_>>();
+    let hints = find_mv_stack::reference_order_hints(
+        &inter.ref_frame_idx,
+        &reference.ref_valid,
+        &reference.ref_order_hint,
+    );
     let pair =
         find_mv_stack::tip_reference_pair_from_hints(core.order_hint_lsb.unwrap_or(0), &hints);
     let list_slot = |list_ref: i8| {

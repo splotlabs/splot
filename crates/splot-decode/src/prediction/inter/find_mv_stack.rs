@@ -29,7 +29,8 @@ const MV_BORDER: i32 = 128;
 const MI_SIZE: i32 = 4;
 mod temporal;
 pub(crate) use temporal::{
-    TemporalMotionBlock, TemporalMotionField, TemporalMvContext, tip_reference_pair_from_hints,
+    TemporalMotionBlock, TemporalMotionField, TemporalMvContext, reference_order_hints,
+    tip_reference_pair_from_hints,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]

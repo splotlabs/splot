@@ -252,12 +252,15 @@ impl TemporalMvContext {
         mi_cols: usize,
         current_order_hint: u32,
         ref_frame_idx: &[u32],
+        ref_valid: &[bool],
         ref_order_hint: &[u32],
         ref_motion_fields: &[Option<TemporalMotionField>],
     ) -> Option<Self> {
         let mut field = ProjectedTemporalMotionField::new(mi_rows, mi_cols)?;
-        for &slot in ref_frame_idx {
-            let Some(source_order_hint) = ref_order_hint.get(slot as usize).copied() else {
+        let ref_order_hints = reference_order_hints(ref_frame_idx, ref_valid, ref_order_hint);
+        for (&slot, source_order_hint) in ref_frame_idx.iter().zip(ref_order_hints.iter().copied())
+        {
+            let Some(source_order_hint) = source_order_hint else {
                 continue;
             };
             let Some(source_field) = ref_motion_fields
@@ -273,10 +276,6 @@ impl TemporalMvContext {
                 &mut field,
             );
         }
-        let ref_order_hints = ref_frame_idx
-            .iter()
-            .map(|&slot| ref_order_hint.get(slot as usize).copied())
-            .collect();
         Some(Self {
             current_order_hint,
             ref_order_hints,
@@ -363,6 +362,23 @@ impl TemporalMvContext {
         );
         Some(if dist.abs() <= 2 { 2 } else { 1 })
     }
+}
+
+pub(crate) fn reference_order_hints(
+    ref_frame_idx: &[u32],
+    ref_valid: &[bool],
+    ref_order_hint: &[u32],
+) -> Vec<Option<u32>> {
+    ref_frame_idx
+        .iter()
+        .map(|&slot| {
+            ref_valid
+                .get(slot as usize)
+                .copied()
+                .filter(|valid| *valid)
+                .and_then(|_| ref_order_hint.get(slot as usize).copied())
+        })
+        .collect()
 }
 
 pub(crate) fn tip_reference_pair_from_hints(
@@ -707,6 +723,14 @@ mod tests {
                 future_offset: -2,
                 ref_offset: 3,
             })
+        );
+    }
+
+    #[test]
+    fn reference_order_hints_exclude_invalid_slots() {
+        assert_eq!(
+            reference_order_hints(&[0, 1, 2], &[true, false, true], &[8, 9, 12]),
+            vec![Some(8), None, Some(12)]
         );
     }
 

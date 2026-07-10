@@ -206,6 +206,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         mi_cols,
         current_order_hint,
         ref_frame_idx,
+        &reference.ref_valid,
         &reference.ref_order_hint,
         &reference.ref_motion_fields,
     )

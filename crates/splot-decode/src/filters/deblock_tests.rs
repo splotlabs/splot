@@ -88,6 +88,8 @@ fn tip_filter_widths_follow_unit_and_chroma_superblock_edges() {
     assert_eq!(tip_filter_widths(1, 4, true, 32, 1), (1, 1));
     assert_eq!(tip_filter_widths(1, 8, true, 32, 1), (2, 3));
     assert_eq!(tip_filter_widths(1, 8, true, 24, 1), (3, 3));
+    assert_eq!(tip_filter_widths(0, 32, false, 32, 0), (8, 8));
+    assert_eq!(tip_filter_widths(1, 32, true, 32, 1), (2, 4));
 }
 
 #[test]
