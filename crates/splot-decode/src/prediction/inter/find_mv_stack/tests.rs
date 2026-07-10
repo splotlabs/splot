@@ -1435,9 +1435,16 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         mvs: [temporal_mv, Mv::ZERO],
         warp_params: [None, None],
     });
-    let temporal =
-        TemporalMvContext::from_references(MI_DIM, MI_DIM, 2, &[0], &[true], &[1], &[Some(source)])
-            .unwrap();
+    let temporal = TemporalMvContext::from_references(
+        (MI_DIM, MI_DIM),
+        2,
+        1,
+        &[0],
+        &[true],
+        &[1],
+        &[Some(source)],
+    )
+    .unwrap();
 
     let stack = find_mv_stack_with_temporal(
         &grid,

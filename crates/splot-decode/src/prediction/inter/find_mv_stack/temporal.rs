@@ -248,14 +248,15 @@ pub(crate) struct TemporalMvContext {
 
 impl TemporalMvContext {
     pub(crate) fn from_references(
-        mi_rows: usize,
-        mi_cols: usize,
+        mi_dimensions: (usize, usize),
         current_order_hint: u32,
+        projection_step: usize,
         ref_frame_idx: &[u32],
         ref_valid: &[bool],
         ref_order_hint: &[u32],
         ref_motion_fields: &[Option<TemporalMotionField>],
     ) -> Option<Self> {
+        let (mi_rows, mi_cols) = mi_dimensions;
         let mut field = ProjectedTemporalMotionField::new(mi_rows, mi_cols)?;
         let ref_order_hints = reference_order_hints(ref_frame_idx, ref_valid, ref_order_hint);
         for (&slot, source_order_hint) in ref_frame_idx.iter().zip(ref_order_hints.iter().copied())
@@ -273,6 +274,7 @@ impl TemporalMvContext {
                 source_field,
                 source_order_hint,
                 current_order_hint,
+                projection_step,
                 &mut field,
             );
         }
@@ -585,10 +587,12 @@ fn project_temporal_motion_field(
     source: &TemporalMotionField,
     source_order_hint: u32,
     current_order_hint: u32,
+    projection_step: usize,
     output: &mut ProjectedTemporalMotionField,
 ) {
-    for y8 in 0..source.height8 {
-        for x8 in 0..source.width8 {
+    let projection_step = projection_step.clamp(1, 2);
+    for y8 in (0..source.height8).step_by(projection_step) {
+        for x8 in (0..source.width8).step_by(projection_step) {
             let Some(cell) = source.cell(y8, x8).filter(|cell| cell.is_valid()) else {
                 continue;
             };
@@ -621,9 +625,13 @@ fn project_temporal_motion_field(
                 else {
                     continue;
                 };
-                let Some((pos_y8, pos_x8)) =
-                    sampled_temporal_position(y8, x8, projected_to_current, output)
-                else {
+                let Some((pos_y8, pos_x8)) = sampled_temporal_position(
+                    y8,
+                    x8,
+                    projected_to_current,
+                    projection_step,
+                    output,
+                ) else {
                     continue;
                 };
                 output.set_if_empty(pos_y8, pos_x8, mv, ref_offset);
@@ -636,11 +644,15 @@ fn sampled_temporal_position(
     y8: usize,
     x8: usize,
     projected_mv: Mv,
+    projection_step: usize,
     field: &ProjectedTemporalMotionField,
 ) -> Option<(usize, usize)> {
     let y8 = project_no_constraint(y8, projected_mv.row, field.height8)?;
     let x8 = project_no_constraint(x8, projected_mv.col, field.width8)?;
-    Some((y8, x8))
+    Some((
+        y8 / projection_step * projection_step,
+        x8 / projection_step * projection_step,
+    ))
 }
 
 fn project_no_constraint(v8: usize, delta: i32, max8: usize) -> Option<usize> {
@@ -738,6 +750,26 @@ mod tests {
             reference_order_hints(&[0, 1, 2], &[true, false, true], &[8, 9, 12]),
             vec![Some(8), None, Some(12)]
         );
+    }
+
+    #[test]
+    fn step_two_projection_samples_and_stores_on_the_even_grid() {
+        let mut source = TemporalMotionField::new(8, 8).unwrap();
+        for x8 in 0..source.width8 {
+            source.cells[x8] = TemporalMotionCell {
+                ref_order_hints: [Some(0), None],
+                mvs: [compress_tmvp_mv(Mv { row: 0, col: -64 }), Mv::ZERO],
+            };
+        }
+
+        let context =
+            TemporalMvContext::from_references((8, 8), 2, 2, &[0], &[true], &[1], &[Some(source)])
+                .unwrap();
+
+        assert!(context.field.cell(0, 0).unwrap().valid);
+        assert!(context.field.cell(0, 2).unwrap().valid);
+        assert!(!context.field.cell(0, 1).unwrap().valid);
+        assert!(!context.field.cell(0, 3).unwrap().valid);
     }
 
     #[test]
