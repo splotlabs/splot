@@ -510,6 +510,29 @@ impl TemporalMvContext {
             .flatten()
     }
 
+    pub(super) fn derive_compound_spatial_mvs(
+        &self,
+        dst_refs: [i8; 2],
+        candidate_ref: i8,
+        candidate_mv: Mv,
+        y8: usize,
+        x8: usize,
+    ) -> Option<[Mv; 2]> {
+        let fields = self.trajectories.as_ref()?;
+        let candidate = usize::try_from(candidate_ref).ok()?;
+        let candidate_trajectory = fields.get(candidate)?.cell(y8, x8)?;
+        let mut derived = [Mv::ZERO; 2];
+        for (index, dst_ref) in dst_refs.into_iter().enumerate() {
+            let dst = usize::try_from(dst_ref).ok()?;
+            derived[index] = derive_mv_from_trajectories(
+                candidate_mv,
+                fields.get(dst)?.cell(y8, x8)?,
+                candidate_trajectory,
+            );
+        }
+        Some(derived)
+    }
+
     pub(super) fn single_ref_weight(&self, ref_frame: i8) -> Option<u32> {
         let dst_hint = usize::try_from(ref_frame)
             .ok()
@@ -978,6 +1001,30 @@ mod tests {
         assert_eq!(
             context.derive_spatial_mv(1, 0, Mv { row: -12, col: -67 }, 0, 0),
             Some(Mv { row: 10, col: 365 })
+        );
+    }
+
+    #[test]
+    fn compound_spatial_derivation_uses_both_reference_trajectories() {
+        let mut candidate = TrajectoryMotionField::new(2, 2).unwrap();
+        candidate.set(
+            0,
+            0,
+            Mv {
+                row: -10,
+                col: -192,
+            },
+        );
+        let mut dst0 = TrajectoryMotionField::new(2, 2).unwrap();
+        dst0.set(0, 0, Mv { row: 12, col: 240 });
+        let mut dst1 = TrajectoryMotionField::new(2, 2).unwrap();
+        dst1.set(0, 0, Mv { row: -8, col: 100 });
+        let mut context = tip_context(4, vec![Some(0), Some(9), Some(6)], 2, 2);
+        context.trajectories = Some(vec![candidate, dst0, dst1]);
+
+        assert_eq!(
+            context.derive_compound_spatial_mvs([1, 2], 0, Mv { row: -12, col: -67 }, 0, 0,),
+            Some([Mv { row: 10, col: 365 }, Mv { row: -10, col: 225 }])
         );
     }
 
