@@ -16,7 +16,7 @@ pub(super) struct TrajectoryMotionField {
 }
 
 impl TrajectoryMotionField {
-    fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
+    pub(super) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
         Some(Self {
             width8,
@@ -33,7 +33,7 @@ impl TrajectoryMotionField {
         self.cells.get(self.index(y8, x8)?).copied().flatten()
     }
 
-    fn set(&mut self, y8: usize, x8: usize, mv: Mv) {
+    pub(super) fn set(&mut self, y8: usize, x8: usize, mv: Mv) {
         let Some(index) = self.index(y8, x8) else {
             return;
         };

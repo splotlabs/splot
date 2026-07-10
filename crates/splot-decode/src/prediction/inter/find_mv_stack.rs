@@ -27,7 +27,9 @@ const GM_TRANS_ONLY_PREC_DIFF: u32 = WARPEDMODEL_PREC_BITS - 3;
 const MV_BORDER: i32 = 128;
 
 const MI_SIZE: i32 = 4;
+mod derived;
 mod temporal;
+use derived::DerivedMvState;
 pub(crate) use temporal::{
     TemporalMotionBlock, TemporalMotionField, TemporalMvContext, TemporalProjectionConfig,
     reference_order_hints, tip_reference_pair_from_hints,
@@ -555,17 +557,6 @@ fn matches_block_ref(cell: NeighbourCell, block: &MvBlockContext) -> bool {
 
 fn neighbour_matches_ref(cell: NeighbourCell, ref_frame: i8) -> bool {
     cell.is_inter && (cell.ref_frame0 == ref_frame || cell.ref_frame1 == Some(ref_frame))
-}
-
-fn matching_stack_mvs(cell: NeighbourCell, block: &MvBlockContext) -> [Option<Mv>; 2] {
-    if !cell.is_inter {
-        return [None; 2];
-    }
-    [
-        (cell.ref_frame0 == block.ref_frame0).then_some(cell.sub_mv),
-        cell.mv1
-            .filter(|_| cell.ref_frame1 == Some(block.ref_frame0)),
-    ]
 }
 
 fn mode_ctx_match_newmv(
@@ -1714,6 +1705,7 @@ pub(crate) fn find_mv_stack_with_temporal(
 ) -> MvStack {
     let mut entries: Vec<MvStackEntry> = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
     let mut prune_count = 0usize;
+    let mut derived = DerivedMvState::new(temporal);
     let mut warp = derive_wrl.then(WarpParamStack::new);
 
     if let Some(warp) = warp.as_mut() {
@@ -1735,6 +1727,7 @@ pub(crate) fn find_mv_stack_with_temporal(
             probe,
             &mut entries,
             &mut prune_count,
+            &mut derived,
             warp.as_mut(),
         );
     }
@@ -1748,11 +1741,11 @@ pub(crate) fn find_mv_stack_with_temporal(
             probe,
             &mut entries,
             &mut prune_count,
+            &mut derived,
             warp.as_mut(),
         );
     }
 
-    // TODO(spec: DECODE-INTER-MVSTACK-SPATIAL): 7.12.2.22 derived-SMVP fill
     let num_nearest = entries.len();
     scan_mv_stack_col(
         grid,
@@ -1760,6 +1753,7 @@ pub(crate) fn find_mv_stack_with_temporal(
         -3,
         &mut entries,
         &mut prune_count,
+        &mut derived,
         warp.as_mut(),
     );
     let use_sort = match drl_reorder {
@@ -1778,9 +1772,11 @@ pub(crate) fn find_mv_stack_with_temporal(
             entries.swap(0, max_idx);
         }
     }
-    if let Some((bank, max_ref_mv_count)) = bank {
+    let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
+    if let Some((bank, _)) = bank {
         bank.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
     }
+    derived.fill(&mut entries, max_ref_mv_count, &mut prune_count);
     extra_search(block, global_mv, &mut entries, &mut prune_count);
     if let Some(warp) = warp.as_mut() {
         warp_bank.fill(block.ref_frame0, warp);
@@ -2012,6 +2008,7 @@ fn scan_mv_stack_col(
     delta_col: i32,
     entries: &mut Vec<MvStackEntry>,
     prune_count: &mut usize,
+    derived: &mut DerivedMvState<'_>,
     mut warp: Option<&mut WarpParamStack>,
 ) {
     let delta_col = delta_col + i32::from(block.bw4 == 1 && block.mi_col & 1 == 1);
@@ -2037,6 +2034,7 @@ fn scan_mv_stack_col(
             RelativeProbe::new(delta_row, delta_col),
             entries,
             prune_count,
+            derived,
             warp.as_deref_mut(),
         );
     }
@@ -2048,6 +2046,7 @@ fn scan_mv_stack_probe(
     probe: RelativeProbe,
     entries: &mut Vec<MvStackEntry>,
     prune_count: &mut usize,
+    derived: &mut DerivedMvState<'_>,
     warp: Option<&mut WarpParamStack>,
 ) {
     let Some((cell, weight)) = probe.stack_cell(grid, block) else {
@@ -2063,14 +2062,25 @@ fn scan_mv_stack_probe(
     }
 
     let (_, _, adjusted_delta_col) = probe.stack_target(block);
-    for candidate_mv in matching_stack_mvs(cell, block).into_iter().flatten() {
-        insert_mv_stack_entry(
-            entries,
-            prune_count,
-            candidate_mv,
-            weight,
-            (probe.delta_row, adjusted_delta_col),
-        );
+    let candidates = [
+        Some((cell.ref_frame0, cell.sub_mv)),
+        cell.ref_frame1.zip(cell.mv1),
+    ];
+    for (candidate_ref, candidate_mv) in candidates.into_iter().flatten() {
+        if candidate_ref == block.ref_frame0 {
+            insert_mv_stack_entry(
+                entries,
+                prune_count,
+                candidate_mv,
+                weight,
+                (probe.delta_row, adjusted_delta_col),
+            );
+        } else if candidate_ref >= 0
+            && candidate_ref != TIP_REF_FRAME
+            && block.ref_frame0 != TIP_REF_FRAME
+        {
+            derived.add_spatial(block, candidate_ref, candidate_mv);
+        }
     }
 }
 
