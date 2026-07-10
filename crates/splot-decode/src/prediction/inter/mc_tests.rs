@@ -94,7 +94,7 @@ fn dispatcher_sub8x8_chroma_uses_only_the_first_reference() {
             InterpolationFilter::EightTap,
             CompoundBlend::default(),
         )
-        .with_chroma_first_reference_only(true),
+        .with_sub8x8_chroma(true),
         ByteOffset::new(0),
     )
     .expect("sub8x8 chroma dispatcher");
@@ -103,6 +103,50 @@ fn dispatcher_sub8x8_chroma_uses_only_the_first_reference() {
     assert_eq!(visible_samples(&decoded, PlaneId::Y), vec![60; 64]);
     assert_eq!(visible_samples(&decoded, PlaneId::U), vec![90; 16]);
     assert_eq!(visible_samples(&decoded, PlaneId::V), vec![120; 16]);
+}
+
+#[test]
+fn dispatcher_sub8x8_chroma_drops_warp() {
+    let reference = patterned_frame(16, 16);
+    let mut warped = workspace(16, 16);
+    let mut translational = workspace(16, 16);
+    let rect = rect(0, 0, 8, 8);
+    let mv = Mv::ZERO;
+
+    motion_compensate_inter_block_into(
+        &mut warped,
+        InterBlockParams::single_warp(
+            &reference,
+            rect,
+            mv,
+            InterpolationFilter::EightTap,
+            [1 << 16, 0, 1 << 16, 0, 0, 1 << 16],
+        )
+        .with_sub8x8_chroma(true),
+        ByteOffset::new(0),
+    )
+    .expect("sub8x8 chroma warp dispatcher");
+    motion_compensate_inter_block_into(
+        &mut translational,
+        InterBlockParams::single(&reference, rect, mv, InterpolationFilter::EightTap),
+        ByteOffset::new(0),
+    )
+    .expect("translational dispatcher");
+
+    let warped = warped.freeze().expect("freeze warped workspace");
+    let translational = translational
+        .freeze()
+        .expect("freeze translational workspace");
+    assert_ne!(
+        visible_samples(&warped, PlaneId::Y),
+        visible_samples(&translational, PlaneId::Y)
+    );
+    for plane in [PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            visible_samples(&warped, plane),
+            visible_samples(&translational, plane)
+        );
+    }
 }
 
 #[test]
@@ -351,6 +395,8 @@ fn warp_skips_prediction_units_beyond_the_current_frame() {
         InterBlockParams::single_warp(
             &reference,
             rect(8, 0, 16, 8),
+            Mv::ZERO,
+            InterpolationFilter::EightTap,
             crate::prediction::inter::find_mv_stack::DEFAULT_WARP_PARAMS,
         )
         .with_chroma(false),
@@ -382,6 +428,8 @@ fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
         InterBlockParams::single_warp(
             &reference,
             rect(12, 0, 8, 4),
+            Mv::ZERO,
+            InterpolationFilter::EightTap,
             crate::prediction::inter::find_mv_stack::DEFAULT_WARP_PARAMS,
         )
         .with_chroma(false),

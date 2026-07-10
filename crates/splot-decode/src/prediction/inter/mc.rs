@@ -140,7 +140,7 @@ pub(crate) struct InterBlockParams<'a, T: ReconSample> {
     prediction: InterPrediction<'a, T>,
     interp: InterpolationFilter,
     has_chroma: bool,
-    chroma_first_reference_only: bool,
+    sub8x8_chroma: bool,
     use_refinemv: bool,
 }
 
@@ -156,7 +156,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             prediction: InterPrediction::Single { reference, mv },
             interp,
             has_chroma: true,
-            chroma_first_reference_only: false,
+            sub8x8_chroma: false,
             use_refinemv: false,
         }
     }
@@ -182,24 +182,27 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             },
             interp,
             has_chroma: true,
-            chroma_first_reference_only: false,
+            sub8x8_chroma: false,
             use_refinemv: false,
         }
     }
     pub(crate) const fn single_warp(
         reference: &'a DecodedFrame<T>,
         rect: McBlockRect,
+        mv: Mv,
+        interp: InterpolationFilter,
         warp_params: [i64; 6],
     ) -> Self {
         Self {
             rect,
             prediction: InterPrediction::SingleWarp {
                 reference,
+                mv,
                 warp_params,
             },
-            interp: InterpolationFilter::EightTap,
+            interp,
             has_chroma: true,
-            chroma_first_reference_only: false,
+            sub8x8_chroma: false,
             use_refinemv: false,
         }
     }
@@ -213,8 +216,8 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         self
     }
 
-    pub(crate) const fn with_chroma_first_reference_only(mut self, enabled: bool) -> Self {
-        self.chroma_first_reference_only = enabled;
+    pub(crate) const fn with_sub8x8_chroma(mut self, enabled: bool) -> Self {
+        self.sub8x8_chroma = enabled;
         self
     }
 
@@ -243,6 +246,7 @@ enum InterPrediction<'a, T: ReconSample> {
     },
     SingleWarp {
         reference: &'a DecodedFrame<T>,
+        mv: Mv,
         warp_params: [i64; 6],
     },
     CompoundAverage {
@@ -267,7 +271,7 @@ struct CompoundMcBlock<'a, T: ReconSample> {
     optflow_distances: Option<[i32; 2]>,
     warp_params: [Option<[i64; 6]>; 2],
     has_chroma: bool,
-    chroma_first_reference_only: bool,
+    sub8x8_chroma: bool,
     use_refinemv: bool,
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
@@ -322,14 +326,15 @@ fn motion_compensate_inter_block<T: ReconSample>(
         }
         InterPrediction::SingleWarp {
             reference,
+            mv,
             warp_params,
         } => {
             motion_compensate_single_warp_block_into(
                 workspace,
                 reference,
-                block.rect,
+                block,
+                mv,
                 warp_params,
-                block.has_chroma,
                 offset,
             )?;
             Ok(None)
@@ -355,7 +360,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
                 optflow_distances,
                 warp_params,
                 has_chroma: block.has_chroma,
-                chroma_first_reference_only: block.chroma_first_reference_only,
+                sub8x8_chroma: block.sub8x8_chroma,
                 use_refinemv: block.use_refinemv,
             },
             optflow_unit_size,
@@ -417,7 +422,7 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
         }
-        if plane != PlaneId::Y && block.chroma_first_reference_only {
+        if plane != PlaneId::Y && block.sub8x8_chroma {
             predict_plane(
                 workspace,
                 block.reference0,
@@ -476,23 +481,41 @@ fn compound_luma_diff_weighted_mask<T: ReconSample>(
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     reference: &DecodedFrame<T>,
-    rect: McBlockRect,
+    block: InterBlockParams<'_, T>,
+    mv: Mv,
     warp_params: [i64; 6],
-    has_chroma: bool,
     offset: ByteOffset,
 ) -> Result<()> {
-    motion_compensate_planes(workspace, has_chroma, |workspace, plane, sub_x, sub_y| {
-        predict_warp_plane(
-            workspace,
-            reference,
-            plane,
-            rect,
-            warp_params,
-            sub_x,
-            sub_y,
-            offset,
-        )
-    })
+    motion_compensate_planes(
+        workspace,
+        block.has_chroma,
+        |workspace, plane, sub_x, sub_y| {
+            if plane != PlaneId::Y && block.sub8x8_chroma {
+                predict_plane(
+                    workspace,
+                    reference,
+                    plane,
+                    block.rect,
+                    mv,
+                    block.interp,
+                    sub_x,
+                    sub_y,
+                    offset,
+                )
+            } else {
+                predict_warp_plane(
+                    workspace,
+                    reference,
+                    plane,
+                    block.rect,
+                    warp_params,
+                    sub_x,
+                    sub_y,
+                    offset,
+                )
+            }
+        },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -689,7 +712,7 @@ fn predict_compound_plane<T: ReconSample>(
         optflow_distances: None,
         warp_params,
         has_chroma: true,
-        chroma_first_reference_only: false,
+        sub8x8_chroma: false,
         use_refinemv: false,
     };
     let prediction =

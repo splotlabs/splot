@@ -517,11 +517,18 @@ pub(in crate::prediction::inter) fn resolve_inter_block_params<'a, T: ReconSampl
         )
         .with_optflow_distances(placed.block.optflow_distances)
         .with_compound_warp(placed.block.warp_params)
-        .with_chroma_first_reference_only(placed.chroma_first_reference_only)
+        .with_sub8x8_chroma(placed.sub8x8_chroma)
         .with_chroma(placed.predict_chroma)
     } else if let Some(warp_params) = placed.block.warp_params[0] {
-        mc::InterBlockParams::single_warp(ref_frame0, rect, warp_params)
-            .with_chroma(placed.predict_chroma)
+        mc::InterBlockParams::single_warp(
+            ref_frame0,
+            rect,
+            placed.block.mv,
+            placed.block.interp,
+            warp_params,
+        )
+        .with_sub8x8_chroma(placed.sub8x8_chroma)
+        .with_chroma(placed.predict_chroma)
     } else {
         mc::InterBlockParams::single(ref_frame0, rect, placed.block.mv, placed.block.interp)
             .with_chroma(placed.predict_chroma)
@@ -848,7 +855,7 @@ pub(crate) struct PlacedInterBlock {
     pub(crate) chroma_luma_w: usize,
     pub(crate) chroma_luma_h: usize,
     pub(crate) predict_chroma: bool,
-    pub(crate) chroma_first_reference_only: bool,
+    pub(crate) sub8x8_chroma: bool,
     pub(crate) interintra_chroma: bool,
     pub(crate) block: InterBlock,
 }

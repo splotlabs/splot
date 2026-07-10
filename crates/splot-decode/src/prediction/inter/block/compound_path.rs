@@ -969,7 +969,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         chroma_luma_w: placed_geometry.chroma_luma_w,
         chroma_luma_h: placed_geometry.chroma_luma_h,
         predict_chroma: placed_geometry.predict_chroma,
-        chroma_first_reference_only: placed_geometry.chroma_first_reference_only,
+        sub8x8_chroma: placed_geometry.sub8x8_chroma,
         interintra_chroma: false,
         block: InterBlock {
             ref_frame0: compound.ref_frame0,
