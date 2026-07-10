@@ -250,6 +250,45 @@ fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
     );
 }
 
+#[test]
+fn single_ref_stack_admits_both_lists_from_same_ref_compound_neighbour() {
+    let mut grid = empty_grid();
+    let mvs = [Mv { row: 8, col: 16 }, Mv { row: -8, col: 24 }];
+    grid.record_compound_block(
+        0,
+        0,
+        N4_32,
+        N4_32,
+        0,
+        0,
+        false,
+        false,
+        mvs[0],
+        mvs[1],
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        false,
+        CWP_EQUAL,
+        false,
+        BlockPrecisionRecord::default(),
+    );
+
+    let stack = find_mv_stack(
+        &grid,
+        &block_at(0, N4_32),
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+        false,
+    );
+
+    assert_eq!(stack.candidate(0), mvs[0]);
+    assert_eq!(stack.candidate(1), mvs[1]);
+}
+
 fn grid_with_block0() -> NeighbourMvGrid {
     let mut grid = empty_grid();
     record_inter(&mut grid, 0, 0, NeighbourYMode::NewMv, BLOCK0_MV, true);
