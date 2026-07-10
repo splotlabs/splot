@@ -837,7 +837,9 @@ fn decode_block<T: ReconSample>(
             };
             prelude = IntrabcBlockPrelude::from_use_skip(use_skip, intrabc);
         }
-        segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
+        if !frontier.is_chroma_part() {
+            segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
+        }
         if prelude.use_intrabc {
             let info = prelude.intrabc.ok_or_else(|| {
                 inter_missing!(
