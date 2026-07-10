@@ -959,7 +959,7 @@ fn admits_rect_d203_follow_chroma_subblock_with_above_only_edge() {
     );
     assert_eq!(
         rect_chroma_plan_for_mode(SupportedChromaMode::D203Follow, 0, None, d203_subblock),
-        RectChromaPlan::OneSided { p_angle: 203 }
+        RectChromaPlan::OneSided(203, None)
     );
 }
 
@@ -1453,28 +1453,28 @@ fn admits_rect_middle_chroma_cases() {
             SupportedChromaMode::D135Follow,
             -3,
             ctx(FULL_SB_N4_LUMA, 320, 8, FULL_SB_N4_LUMA),
-            RectChromaPlan::Middle { p_angle: 126 },
+            RectChromaPlan::Middle(126, None),
         ),
         (
             "top-row d113 follow with left-only edge",
             SupportedChromaMode::D113Follow,
             -1,
             ctx(0, 316, 4, 8),
-            RectChromaPlan::Middle { p_angle: 110 },
+            RectChromaPlan::Middle(110, None),
         ),
         (
             "top-row d157 follow with left-only edge",
             SupportedChromaMode::D157Follow,
             -1,
             ctx(0, 352, 16, 8),
-            RectChromaPlan::Middle { p_angle: 154 },
+            RectChromaPlan::Middle(154, None),
         ),
         (
             "top-row d135 with left-only edge",
             SupportedChromaMode::D135,
-            -3,
+            0,
             ctx(0, 320, 32, 16),
-            RectChromaPlan::Middle { p_angle: 135 },
+            RectChromaPlan::Middle(135, None),
         ),
     ] {
         assert_rect_chroma_plan(mode, angle_delta, block, expected, label);
@@ -1492,7 +1492,7 @@ fn follows_luma_angle_delta_for_directional_chroma() {
             None,
             tall_chroma_block,
         ),
-        RectChromaPlan::OneSided { p_angle: 87 }
+        RectChromaPlan::OneSided(87, None)
     );
     assert_eq!(
         rect_chroma_plan_for_mode(
@@ -1501,20 +1501,36 @@ fn follows_luma_angle_delta_for_directional_chroma() {
             None,
             tall_chroma_block,
         ),
-        RectChromaPlan::Middle { p_angle: 93 }
+        RectChromaPlan::Middle(93, None)
     );
     assert_eq!(
-        rect_chroma_plan_for_mode(SupportedChromaMode::Vertical, 1, None, tall_chroma_block),
+        rect_chroma_plan_for_mode(SupportedChromaMode::Vertical, 0, None, tall_chroma_block),
         RectChromaPlan::Mode(SupportedChromaMode::Vertical, None)
     );
     assert_eq!(
         rect_chroma_plan_for_mode(
             SupportedChromaMode::Vertical,
-            1,
+            0,
             Some(DpcmDirection::Vertical),
             tall_chroma_block,
         ),
         RectChromaPlan::Mode(SupportedChromaMode::Vertical, Some(DpcmDirection::Vertical))
+    );
+
+    let horizontal_dpcm = Some(DpcmDirection::Horizontal);
+    let angle_delta = inherited_chroma_angle_delta(
+        IntraYMode::H_PRED_FOR_TEST.value(),
+        IntraYMode::H_PRED_FOR_TEST,
+        2,
+    );
+    assert_eq!(
+        rect_chroma_plan_for_mode(
+            SupportedChromaMode::Horizontal,
+            angle_delta,
+            horizontal_dpcm,
+            ctx(8, 4, 4, 2),
+        ),
+        RectChromaPlan::OneSided(186, horizontal_dpcm)
     );
 }
 
@@ -1547,7 +1563,7 @@ fn admits_top_row_rect_d45_follow_chroma_with_left_only_edge() {
     );
     assert_eq!(
         rect_chroma_plan_for_mode(SupportedChromaMode::D45, 0, None, right_edge_rect_block),
-        RectChromaPlan::OneSided { p_angle: 45 }
+        RectChromaPlan::OneSided(45, None)
     );
 }
 

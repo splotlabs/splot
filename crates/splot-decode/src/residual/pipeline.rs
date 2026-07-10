@@ -17,6 +17,7 @@ use crate::bitstream::tile_payload::{
     current_frame_qm_segment_id, decode_general_intra_luma_partition_coeffs,
     decode_general_intra_plane_coeffs,
 };
+use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 use crate::pipeline::reconstruct::IntraEdgeAvailability as EdgeAvail;
 use crate::pipeline::reconstruct::MiddleEdgeAvailability as MiddleAvail;
 use crate::pipeline::reconstruct::OneSidedAboveMrl as AboveMrl;
@@ -117,12 +118,8 @@ pub(crate) enum RectLumaPlan {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RectChromaPlan {
     Mode(SupportedChromaMode, Option<DpcmDirection>),
-    OneSided {
-        p_angle: u16,
-    },
-    Middle {
-        p_angle: u16,
-    },
+    OneSided(u16, Option<DpcmDirection>),
+    Middle(u16, Option<DpcmDirection>),
     Cfl {
         params: CflParams,
         cfl_ds_filter_index: u8,
@@ -240,12 +237,8 @@ enum ResidualReconstructionPlan {
         mode: SupportedChromaMode,
         dpcm: Option<DpcmDirection>,
     },
-    ChromaOneSided {
-        p_angle: u16,
-    },
-    ChromaMiddle {
-        p_angle: u16,
-    },
+    ChromaOneSided(u16, Option<DpcmDirection>),
+    ChromaMiddle(u16, Option<DpcmDirection>),
     ChromaCfl {
         params: CflParams,
         cfl_ds_filter_index: u8,
@@ -550,10 +543,12 @@ fn chroma_reconstruction(plan: RectChromaPlan) -> ResidualReconstructionPlan {
             ResidualReconstructionPlan::Rect { use_tcq: false }
         }
         RectChromaPlan::Mode(mode, dpcm) => ResidualReconstructionPlan::Chroma { mode, dpcm },
-        RectChromaPlan::OneSided { p_angle } => {
-            ResidualReconstructionPlan::ChromaOneSided { p_angle }
+        RectChromaPlan::OneSided(p_angle, dpcm) => {
+            ResidualReconstructionPlan::ChromaOneSided(p_angle, dpcm)
         }
-        RectChromaPlan::Middle { p_angle } => ResidualReconstructionPlan::ChromaMiddle { p_angle },
+        RectChromaPlan::Middle(p_angle, dpcm) => {
+            ResidualReconstructionPlan::ChromaMiddle(p_angle, dpcm)
+        }
         RectChromaPlan::Cfl {
             params,
             cfl_ds_filter_index,
@@ -964,8 +959,8 @@ impl ResidualPlanePlan {
         let reconstruction = match self.reconstruction {
             ResidualReconstructionPlan::Rect { .. }
             | ResidualReconstructionPlan::Chroma { .. }
-            | ResidualReconstructionPlan::ChromaMiddle { .. }
-            | ResidualReconstructionPlan::ChromaOneSided { .. }
+            | ResidualReconstructionPlan::ChromaMiddle(..)
+            | ResidualReconstructionPlan::ChromaOneSided(..)
             | ResidualReconstructionPlan::LumaPalette { .. }
             | ResidualReconstructionPlan::LumaRectCardinal { .. }
             | ResidualReconstructionPlan::LumaRectPaeth { .. }
@@ -1530,6 +1525,7 @@ impl ResidualPlanePlan {
                     qindex,
                     use_tcq,
                     Some(luma_context),
+                    None,
                     block_ctx.bit_depth(),
                     MiddleAvail { above: edges.above, left: edges.left },
                     edge_filters,
@@ -1608,6 +1604,7 @@ impl ResidualPlanePlan {
                         mrl,
                         use_tcq,
                         Some(luma_context),
+                        None,
                         availability,
                         block_ctx.bit_depth(),
                         crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
@@ -1683,6 +1680,7 @@ impl ResidualPlanePlan {
                         crate::pipeline::reconstruct::OneSidedAboveMrl::default(),
                         use_tcq,
                         Some(luma_context),
+                        None,
                         availability,
                         block_ctx.bit_depth(),
                         edge_filter,
@@ -1731,6 +1729,7 @@ impl ResidualPlanePlan {
                         mrl_index,
                         use_tcq,
                         Some(luma_context),
+                        None,
                         availability,
                         block_ctx.bit_depth(),
                         crate::pipeline::reconstruct::OneSidedEdgeFilter::default(),
@@ -1830,6 +1829,7 @@ impl ResidualPlanePlan {
                         0,
                         use_tcq,
                         Some(luma_context),
+                        None,
                         availability,
                         block_ctx.bit_depth(),
                         edge_filter,
@@ -1871,7 +1871,7 @@ impl ResidualPlanePlan {
                     block_ctx.bit_depth(),
                 )
             }
-            ResidualReconstructionPlan::ChromaOneSided { p_angle } => {
+            ResidualReconstructionPlan::ChromaOneSided(p_angle, dpcm) => {
                 let neighbours = self.plane_neighbours(block_ctx, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
@@ -1907,6 +1907,7 @@ impl ResidualPlanePlan {
                         crate::pipeline::reconstruct::OneSidedAboveMrl::default(),
                         false,
                         None,
+                        dpcm,
                         availability,
                         block_ctx.bit_depth(),
                         edge_filter,
@@ -1927,13 +1928,14 @@ impl ResidualPlanePlan {
                         0,
                         false,
                         None,
+                        dpcm,
                         availability,
                         block_ctx.bit_depth(),
                         edge_filter,
                     )
                 }
             }
-            ResidualReconstructionPlan::ChromaMiddle { p_angle } => {
+            ResidualReconstructionPlan::ChromaMiddle(p_angle, dpcm) => {
                 let neighbours = self.plane_neighbours(block_ctx, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
@@ -1965,6 +1967,7 @@ impl ResidualPlanePlan {
                     qindex,
                     false,
                     None,
+                    dpcm,
                     block_ctx.bit_depth(),
                     MiddleAvail { above: edges.above, left: edges.left },
                     edge_filters,
@@ -2076,15 +2079,13 @@ fn tx_size_log2(tx_size: usize) -> core::result::Result<(u32, u32), GeneralIntra
     ))
 }
 
-fn chroma_angle_delta_uv(
-    plane_id: PlaneId,
-    uv_mode: usize,
-    luma_transform_type_context: LumaTransformTypeContext,
-) -> i32 {
-    if matches!(plane_id, PlaneId::U | PlaneId::V)
-        && uv_mode == luma_transform_type_context.y_mode().value()
-    {
-        i32::from(luma_transform_type_context.angle_delta_y())
+fn chroma_angle_delta_uv(plane_id: PlaneId, uv_mode: usize, luma: LumaTransformTypeContext) -> i32 {
+    if matches!(plane_id, PlaneId::U | PlaneId::V) {
+        i32::from(inherited_chroma_angle_delta(
+            uv_mode,
+            luma.y_mode(),
+            luma.angle_delta_y(),
+        ))
     } else {
         0
     }

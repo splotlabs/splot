@@ -193,24 +193,16 @@ pub(crate) enum SupportedChromaMode {
 }
 
 impl SupportedChromaMode {
-    pub(crate) const fn directional_base_angle(self) -> Option<(i32, bool)> {
+    pub(crate) const fn directional_base_angle(self) -> Option<i32> {
         match self {
-            Self::VerticalFollow => Some((90, true)),
-            Self::HorizontalFollow => Some((180, true)),
-            Self::D45Follow => Some((45, true)),
-            Self::D135Follow => Some((135, true)),
-            Self::D113Follow => Some((113, true)),
-            Self::D157Follow => Some((157, true)),
-            Self::D203Follow => Some((203, true)),
-            Self::D67Follow => Some((67, true)),
-            Self::Vertical => Some((90, false)),
-            Self::Horizontal => Some((180, false)),
-            Self::D45 => Some((45, false)),
-            Self::D135 => Some((135, false)),
-            Self::D113 => Some((113, false)),
-            Self::D157 => Some((157, false)),
-            Self::D203 => Some((203, false)),
-            Self::D67 => Some((67, false)),
+            Self::VerticalFollow | Self::Vertical => Some(90),
+            Self::HorizontalFollow | Self::Horizontal => Some(180),
+            Self::D45Follow | Self::D45 => Some(45),
+            Self::D135Follow | Self::D135 => Some(135),
+            Self::D113Follow | Self::D113 => Some(113),
+            Self::D157Follow | Self::D157 => Some(157),
+            Self::D203Follow | Self::D203 => Some(203),
+            Self::D67Follow | Self::D67 => Some(67),
             _ => None,
         }
     }

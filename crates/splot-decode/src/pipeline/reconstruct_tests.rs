@@ -294,6 +294,7 @@ fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
         },
         false,
         None,
+        None,
         IntraEdgeAvailability::all(),
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
@@ -448,6 +449,7 @@ fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
         0,
         false,
         None,
+        None,
         BitDepth::Eight,
         MiddleEdgeAvailability {
             above: true,
@@ -496,6 +498,7 @@ fn zone2_top_row_left_edge_filter_matches_avm_z2_idif() {
         5,
         0,
         false,
+        None,
         None,
         BitDepth::Eight,
         MiddleEdgeAvailability {
@@ -674,6 +677,7 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
         0,
         false,
         None,
+        None,
         IntraEdgeAvailability::all(),
         BitDepth::Eight,
         OneSidedEdgeFilter::default(),
@@ -811,6 +815,7 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
         true,
         1, // mrl_index
         false,
+        None,
         None,
         IntraEdgeAvailability::all(),
         BitDepth::Eight,
@@ -1019,6 +1024,7 @@ fn zone1_d45_top_edge_synthesizes_above_from_left_corner() {
         OneSidedAboveMrl::default(),
         false,
         None,
+        None,
         IntraEdgeAvailability {
             above: false,
             left: true,
@@ -1066,6 +1072,7 @@ fn zone1_d45_top_edge_mrl_uses_offset_left_reference() {
         },
         false,
         None,
+        None,
         IntraEdgeAvailability {
             above: false,
             left: true,
@@ -1106,6 +1113,7 @@ fn zone1_d45_top_left_synthesizes_no_neighbour_above_fallback() {
         OneSidedAboveMrl::default(),
         false,
         None,
+        None,
         IntraEdgeAvailability {
             above: false,
             left: false,
@@ -1145,6 +1153,7 @@ fn zone3_d203_top_left_synthesizes_no_neighbour_left_fallback() {
         false,
         0,
         false,
+        None,
         None,
         IntraEdgeAvailability {
             above: false,
