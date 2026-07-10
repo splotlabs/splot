@@ -176,6 +176,16 @@ impl TipFrameMode {
     }
 }
 
+/// `TipGlobalMv` from the TIP-as-output frame-header arm (§ 5.18.2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TipGlobalMv {
+    /// Signed vertical component derived from `tip_mv_row` and `tip_mv_row_sign`.
+    pub row: i32,
+    /// Signed horizontal component derived from `tip_mv_col` and `tip_mv_col_sign`.
+    pub col: i32,
+}
+
 /// Why the inter control-region parse stopped (a **coverage** stop, never a truncation).
 ///
 /// The variants split into the two honest classes the module documents: a derivation
@@ -284,6 +294,10 @@ pub struct InterControl {
     pub allow_tip_hole_fill: Option<bool>,
     /// `tip_global_wtd_index` (mirror :4791), when read or inferred.
     pub tip_global_wtd_index: Option<u8>,
+    /// `TipGlobalMv[0..1]` (mirror :4795-4825), when exactly derived.
+    pub tip_global_mv: Option<TipGlobalMv>,
+    /// `TipInterpFilter` (mirror :4829-4839), when exactly derived.
+    pub tip_interpolation_filter: Option<InterpolationFilter>,
     /// `opfl_refine_type` from `frame_opfl_refine_type()` (§ 5.18.3.2), when derived.
     pub opfl_refine_type: Option<u32>,
     /// `max_drl_bits_minus_1` (mirror :4863-4881), when read or inferred.
@@ -740,6 +754,10 @@ fn parse_inter_reference_region(
             TipFrameMode::Disabled
         };
         control.tip_frame_mode = Some(tip_frame_mode);
+        if tip_frame_mode != TipFrameMode::AsOutput {
+            control.tip_global_mv = Some(TipGlobalMv::default());
+            control.tip_interpolation_filter = Some(InterpolationFilter::EighttapSharp);
+        }
 
         let opfl_refine_type = if tip_frame_mode == TipFrameMode::AsOutput {
             tip_output_opfl_refine_type(seq)
@@ -774,7 +792,30 @@ fn parse_inter_reference_region(
             control.tip_global_wtd_index = Some(0);
         }
         if tip_frame_mode == TipFrameMode::AsOutput {
-            control.stop = Some(InterStop::PoisonedReferenceState);
+            let tip_global_mv = if reader.read_flag()? {
+                TipGlobalMv::default()
+            } else {
+                let row = i32::from(reader.read_bits_u8(4)?);
+                let col = i32::from(reader.read_bits_u8(4)?);
+                TipGlobalMv {
+                    row: read_tip_mv_sign(reader, row)?,
+                    col: read_tip_mv_sign(reader, col)?,
+                }
+            };
+            let tip_sharp = reader.read_flag()?;
+            let tip_interpolation_filter = if tip_sharp {
+                InterpolationFilter::EighttapSharp
+            } else {
+                let tip_regular = reader.read_flag()?;
+                if tip_regular {
+                    InterpolationFilter::Eighttap
+                } else {
+                    InterpolationFilter::EighttapSmooth
+                }
+            };
+            control.tip_global_mv = Some(tip_global_mv);
+            control.tip_interpolation_filter = Some(tip_interpolation_filter);
+            control.stop = Some(InterStop::TipAsOutputReturn);
             return Ok(());
         }
     } else {
@@ -855,6 +896,14 @@ fn parse_inter_reference_region(
 
     control.stop = Some(InterStop::ReachedSharedTail);
     Ok(())
+}
+
+fn read_tip_mv_sign(reader: &mut BitReader<'_>, magnitude: i32) -> Result<i32> {
+    if magnitude != 0 && reader.read_flag()? {
+        Ok(-magnitude)
+    } else {
+        Ok(magnitude)
+    }
 }
 
 /// Parses `frame_opfl_refine_type()` (AV2 v1.0.0 § 5.18.3.2,
@@ -1754,9 +1803,74 @@ mod tests {
 
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsOutput));
         assert_eq!(control.allow_tip_hole_fill, Some(false));
+        assert_eq!(control.tip_global_mv, None);
+        assert_eq!(control.tip_interpolation_filter, None);
         assert_eq!(control.opfl_refine_type, Some(REFINE_ALL));
         assert_eq!(control.stop, Some(InterStop::PoisonedReferenceState));
         assert_eq!(reader.consumed_bits(), 21);
+    }
+
+    #[test]
+    fn tip_output_retains_signed_global_mv_and_regular_filter() {
+        let mut bits = Bits::default();
+        bits.f(0, 9); // signal_primary_ref_frame and refresh_frame_flags
+        bits.f(0b101_0000_0011_0101, 15); // explicit refs, TMVP, and TIP weight
+        bits.bit(0); // tip_mv_zero
+        bits.f(3, 4); // tip_mv_row
+        bits.f(4, 4); // tip_mv_col
+        bits.bit(1); // tip_mv_row_sign
+        bits.bit(0); // tip_mv_col_sign
+        bits.bit(0); // tip_sharp
+        bits.bit(1); // tip_regular
+
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.enable_tip = true;
+        seq.enable_tip_output = true;
+        let mut ctx = inter_ctx();
+        ctx.obu_type = ObuType::RegularTip;
+        let ref_valid = [true, true, false, false, false, false, false, false];
+        let ref_oh = [1, 2, 0, 0, 0, 0, 0, 0];
+        let ref_w = [4096; 8];
+        let ref_h = [2304; 8];
+        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+
+        assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsOutput));
+        assert_eq!(control.tip_global_wtd_index, Some(5));
+        assert_eq!(control.tip_global_mv, Some(TipGlobalMv { row: -3, col: 4 }));
+        assert_eq!(
+            control.tip_interpolation_filter,
+            Some(InterpolationFilter::Eighttap)
+        );
+        assert_eq!(control.stop, Some(InterStop::TipAsOutputReturn));
+        assert_eq!(reader.consumed_bits(), 37);
+    }
+
+    #[test]
+    fn tip_output_eof_before_prediction_controls_is_error() {
+        let mut bits = Bits::default();
+        bits.f(0, 9); // signal_primary_ref_frame and refresh_frame_flags
+        bits.f(0b101_0000_0011_0101, 15); // explicit refs, TMVP, and TIP weight
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.enable_tip = true;
+        seq.enable_tip_output = true;
+        let mut ctx = inter_ctx();
+        ctx.obu_type = ObuType::RegularTip;
+        let ref_valid = [true, true, false, false, false, false, false, false];
+        let ref_oh = [1, 2, 0, 0, 0, 0, 0, 0];
+        let ref_w = [4096; 8];
+        let ref_h = [2304; 8];
+        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+
+        assert!(matches!(
+            parse_inter_control(&mut reader, &seq, &ctx, &rs, false),
+            Err(crate::error::Error::UnexpectedEof { .. })
+        ));
     }
 
     #[test]
@@ -1835,6 +1949,11 @@ mod tests {
             assert_eq!(
                 control.tip_global_wtd_index,
                 Some(if equal_weight { 0 } else { 5 })
+            );
+            assert_eq!(control.tip_global_mv, Some(TipGlobalMv::default()));
+            assert_eq!(
+                control.tip_interpolation_filter,
+                Some(InterpolationFilter::EighttapSharp)
             );
             assert_eq!(control.allow_intrabc, Some(false));
             assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
