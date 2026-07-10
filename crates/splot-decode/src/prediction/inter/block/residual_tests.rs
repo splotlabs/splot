@@ -41,24 +41,51 @@ fn luma_tx_type_map_updates_on_16x16_units() {
     assert_eq!(map.values[map.index(0, 7).unwrap()], DCT_DCT);
 }
 
+/// AV2 § 5.20.7.23 parses each chroma group once at the `atStart` (top-left)
+/// collocated luma chunk, interleaved before the remaining luma chunks. The
+/// 64x128 4:2:0 case (widthChunks=1, heightChunks=2) is the regression: chroma
+/// must parse at the first luma chunk `(0, 0)`, never the last `(0, 1)`.
 #[test]
-fn chroma_group_start_waits_for_subsampled_luma_chunks() {
+fn chroma_group_parses_at_group_start_chunk() {
     assert_eq!(
-        completed_chroma_group_start(0, 0, 2, 2, false, false),
-        Some((0, 0))
-    );
-    assert_eq!(completed_chroma_group_start(0, 0, 2, 2, true, false), None);
-    assert_eq!(
-        completed_chroma_group_start(1, 0, 2, 2, true, false),
+        chroma_parse_group_start(0, 0, 1, 2, true, true, false),
         Some((0, 0))
     );
     assert_eq!(
-        completed_chroma_group_start(1, 1, 2, 2, true, true),
+        chroma_parse_group_start(0, 1, 1, 2, true, true, false),
+        None
+    );
+
+    assert_eq!(
+        chroma_parse_group_start(0, 0, 2, 2, true, true, false),
         Some((0, 0))
     );
     assert_eq!(
-        completed_chroma_group_start(0, 1, 1, 2, true, true),
+        chroma_parse_group_start(1, 0, 2, 2, true, true, false),
+        None
+    );
+    assert_eq!(
+        chroma_parse_group_start(0, 1, 2, 2, true, true, false),
+        None
+    );
+    assert_eq!(
+        chroma_parse_group_start(1, 1, 2, 2, true, true, false),
+        None
+    );
+
+    assert_eq!(
+        chroma_parse_group_start(0, 0, 1, 1, true, true, false),
         Some((0, 0))
+    );
+
+    assert_eq!(
+        chroma_parse_group_start(1, 1, 2, 2, false, false, false),
+        Some((1, 1))
+    );
+
+    assert_eq!(
+        chroma_parse_group_start(0, 1, 1, 2, true, true, true),
+        Some((0, 1))
     );
 }
 

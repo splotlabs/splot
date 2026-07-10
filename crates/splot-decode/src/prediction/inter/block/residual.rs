@@ -197,13 +197,14 @@ pub(crate) fn read_inter_residual(
                         residual_tool_policy,
                         tile_offset,
                     )?;
-                    let chroma_group = completed_chroma_group_start(
+                    let chroma_group = chroma_parse_group_start(
                         chunk_x,
                         chunk_y,
                         width_chunks,
                         height_chunks,
                         subsampling_x,
                         subsampling_y,
+                        lossless,
                     );
                     if let (true, Some((chroma_chunk_x, chroma_chunk_y))) =
                         (frontier.has_chroma, chroma_group)
@@ -233,29 +234,30 @@ pub(crate) fn read_inter_residual(
     Ok(InterResidual { blocks })
 }
 
-fn completed_chroma_group_start(
+/// Returns the chroma group's top-left chunk position when `(chunk_x, chunk_y)`
+/// is the first collocated luma 64x64 chunk of a chroma group, or `None` when
+/// this chunk's chroma is folded into an earlier chunk's group.
+///
+/// AV2 § 5.20.7.23 `residual( )` parses each chroma transform unit once, at the
+/// group's `atStart` chunk interleaved before the remaining luma chunks, where
+/// `doubleChromaW/H = Subsampling && chunks > 1 && !Lossless`
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-23`). Emitting chroma
+/// at `atEnd` instead desynchronizes the entropy coder for blocks taller or
+/// wider than 64 luma samples.
+fn chroma_parse_group_start(
     chunk_x: usize,
     chunk_y: usize,
     width_chunks: usize,
     height_chunks: usize,
     subsampling_x: bool,
     subsampling_y: bool,
+    lossless: bool,
 ) -> Option<(usize, usize)> {
-    let start_x = if subsampling_x { chunk_x & !1 } else { chunk_x };
-    let start_y = if subsampling_y { chunk_y & !1 } else { chunk_y };
-    let end_x = if subsampling_x {
-        start_x.checked_add(2)?.min(width_chunks)
-    } else {
-        start_x.checked_add(1)?
-    };
-    let end_y = if subsampling_y {
-        start_y.checked_add(2)?.min(height_chunks)
-    } else {
-        start_y.checked_add(1)?
-    };
-    let next_x = chunk_x.checked_add(1)?;
-    let next_y = chunk_y.checked_add(1)?;
-    (next_x == end_x && next_y == end_y).then_some((start_x, start_y))
+    let double_chroma_w = subsampling_x && width_chunks > 1 && !lossless;
+    let double_chroma_h = subsampling_y && height_chunks > 1 && !lossless;
+    let at_start = (!double_chroma_w || chunk_x.is_multiple_of(2))
+        && (!double_chroma_h || chunk_y.is_multiple_of(2));
+    at_start.then_some((chunk_x, chunk_y))
 }
 
 fn inter_uses_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
@@ -482,10 +484,10 @@ fn read_inter_residual_chroma_group(
     let mut num4x4_h = plane_size
         .num_4x4_high()
         .map_err(|_| residual_geometry_error(tile_offset))?;
-    if subsampling_x && chunk_x + 1 < block_width_chunks {
+    if subsampling_x && chunk_x + 1 < block_width_chunks && !lossless {
         num4x4_w <<= 1;
     }
-    if subsampling_y && chunk_y + 1 < block_height_chunks {
+    if subsampling_y && chunk_y + 1 < block_height_chunks && !lossless {
         num4x4_h <<= 1;
     }
     let tx_w4 = tx_size_dimension("Tx_Width", &TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
