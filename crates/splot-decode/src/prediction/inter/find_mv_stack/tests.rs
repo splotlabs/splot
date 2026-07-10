@@ -185,14 +185,18 @@ fn recorded_skip_mode_contributes_to_the_next_block_context() {
 #[test]
 fn tip_neighbour_matches_its_underlying_compound_reference_pair() {
     let mut grid = empty_grid();
-    record_inter_ref(
-        &mut grid,
+    grid.record_tip_block(
         0,
         0,
-        TIP_REF_FRAME,
+        N4_32,
+        N4_32,
         NeighbourYMode::NewMv,
         Mv::ZERO,
         false,
+        SWITCHABLE_FILTERS,
+        false,
+        false,
+        BlockPrecisionRecord::default(),
     );
     let mut block = block_at(0, N4_32);
     block.ref_frame1 = Some(1);
@@ -205,6 +209,104 @@ fn tip_neighbour_matches_its_underlying_compound_reference_pair() {
     assert_eq!(wrong_pair.new_mv_count, 0);
     assert_eq!(with_tip.new_mv_count, 2);
     assert_eq!(block_neighbour_ctx(&grid, &block).tip_mode_ctx(), 2);
+}
+
+#[test]
+fn compound_mv_stack_projects_tip_neighbour_to_its_reference_pair() {
+    let mut grid = empty_grid();
+    let base_mv = Mv { row: 3, col: 4 };
+    record_inter_ref(
+        &mut grid,
+        0,
+        0,
+        TIP_REF_FRAME,
+        NeighbourYMode::Other,
+        base_mv,
+        false,
+    );
+    let references = temporal::TipReferencePair {
+        past_ref: 0,
+        future_ref: 1,
+        past_offset: -1,
+        future_offset: 1,
+        ref_offset: 1,
+    };
+    let temporal = TemporalMvContext::with_tip_sample(
+        MI_DIM,
+        MI_DIM,
+        references,
+        3,
+        3,
+        Mv { row: 16, col: 32 },
+    )
+    .unwrap();
+    let expected = temporal.tip_candidate(3, 3, base_mv).unwrap();
+    let mut block = block_at(0, N4_32);
+    block.ref_frame1 = Some(1);
+
+    let candidate = find_compound_mv_stack_with_temporal(
+        &grid,
+        &block,
+        [Mv::ZERO; 2],
+        None,
+        DrlReorder::Disabled,
+        Some(&temporal),
+    )
+    .candidate(0);
+
+    assert_eq!(candidate.mvs, expected);
+    assert_eq!(candidate.cwp_weight, CWP_EQUAL);
+}
+
+#[test]
+fn compound_mv_stack_aligns_tip_neighbour_to_its_16x16_unit() {
+    let mut grid = empty_grid();
+    let base_mv = Mv { row: 3, col: 4 };
+    grid.record_tip_block(
+        0,
+        0,
+        N4_32,
+        N4_32,
+        NeighbourYMode::Other,
+        base_mv,
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        true,
+        BlockPrecisionRecord::default(),
+    );
+    let references = temporal::TipReferencePair {
+        past_ref: 0,
+        future_ref: 1,
+        past_offset: -1,
+        future_offset: 1,
+        ref_offset: 1,
+    };
+    let temporal = TemporalMvContext::with_tip_sample(
+        MI_DIM,
+        MI_DIM,
+        references,
+        2,
+        2,
+        Mv { row: 16, col: 32 },
+    )
+    .unwrap();
+    let expected = temporal.tip_candidate(2, 2, base_mv).unwrap();
+    let mut block = block_at(0, N4_32);
+    block.ref_frame1 = Some(1);
+
+    let candidate = find_compound_mv_stack_with_temporal(
+        &grid,
+        &block,
+        [Mv::ZERO; 2],
+        None,
+        DrlReorder::Disabled,
+        Some(&temporal),
+    )
+    .candidate(0);
+
+    assert_eq!(candidate.mvs, expected);
+    assert_eq!(candidate.cwp_weight, CWP_EQUAL);
 }
 
 #[test]

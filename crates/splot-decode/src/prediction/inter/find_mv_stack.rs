@@ -77,6 +77,7 @@ struct NeighbourCell {
     base_c: usize,
     bw4: usize,
     bh4: usize,
+    tip_size_16x16: bool,
     precision: BlockPrecisionRecord,
 }
 
@@ -109,6 +110,7 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     base_c: 0,
     bw4: 0,
     bh4: 0,
+    tip_size_16x16: false,
     precision: BlockPrecisionRecord {
         use_most_probable_precision: false,
         mv_precision: 0,
@@ -200,6 +202,7 @@ impl NeighbourMvGrid {
             use_amvd,
             MotionMode::Simple,
             None,
+            false,
             precision,
         );
     }
@@ -236,6 +239,7 @@ impl NeighbourMvGrid {
             use_amvd,
             motion_mode,
             Some(warp_params),
+            false,
             precision,
         );
     }
@@ -257,6 +261,7 @@ impl NeighbourMvGrid {
         use_amvd: bool,
         motion_mode: MotionMode,
         warp_params: Option<[i64; 6]>,
+        tip_size_16x16: bool,
         precision: BlockPrecisionRecord,
     ) {
         let cell = NeighbourCell {
@@ -282,6 +287,7 @@ impl NeighbourMvGrid {
             base_c: c,
             bw4: n4w,
             bh4: n4h,
+            tip_size_16x16,
             precision,
         };
         for rr in r..r.saturating_add(n4h) {
@@ -301,6 +307,41 @@ impl NeighbourMvGrid {
                 self.cells[rr * self.mi_cols + cc] = Some(cell);
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_tip_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        y_mode: NeighbourYMode,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+        tip_size_16x16: bool,
+        precision: BlockPrecisionRecord,
+    ) {
+        self.record_block_with_warp(
+            r,
+            c,
+            n4w,
+            n4h,
+            true,
+            TIP_REF_FRAME,
+            None,
+            y_mode,
+            mv,
+            skip,
+            interp_filter,
+            use_amvd,
+            MotionMode::Simple,
+            None,
+            tip_size_16x16,
+            precision,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -357,6 +398,7 @@ impl NeighbourMvGrid {
             base_c: c,
             bw4: n4w,
             bh4: n4h,
+            tip_size_16x16: false,
             precision,
         };
         for rr in r..r.saturating_add(n4h) {
@@ -1750,15 +1792,15 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
     let mut prune_count = 0usize;
     let probes = mv_stack_spatial_probes(block);
     for probe in probes.iter().take(6).copied().flatten() {
-        scan_compound_mv_stack_probe(grid, block, probe, &mut entries, &mut prune_count);
+        scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut entries, &mut prune_count);
     }
     scan_compound_temporal_mv_stack(block, temporal, &mut entries, &mut prune_count);
     if let Some(probe) = probes[6] {
-        scan_compound_mv_stack_probe(grid, block, probe, &mut entries, &mut prune_count);
+        scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut entries, &mut prune_count);
     }
 
     let num_nearest = entries.len();
-    scan_compound_mv_stack_col(grid, block, -3, &mut entries, &mut prune_count);
+    scan_compound_mv_stack_col(grid, block, -3, temporal, &mut entries, &mut prune_count);
     let use_sort = match drl_reorder {
         DrlReorder::Always => true,
         DrlReorder::Constraint => num_nearest >= 4,
@@ -1811,6 +1853,7 @@ fn scan_compound_mv_stack_col(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     delta_col: i32,
+    temporal: Option<&TemporalMvContext>,
     entries: &mut Vec<CompoundMvStackEntry>,
     prune_count: &mut usize,
 ) {
@@ -1833,6 +1876,7 @@ fn scan_compound_mv_stack_col(
                 grid,
                 block,
                 RelativeProbe::new(delta_row, delta_col),
+                temporal,
                 entries,
                 prune_count,
             );
@@ -1844,6 +1888,7 @@ fn scan_compound_mv_stack_probe(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     probe: RelativeProbe,
+    temporal: Option<&TemporalMvContext>,
     entries: &mut Vec<CompoundMvStackEntry>,
     prune_count: &mut usize,
 ) {
@@ -1853,21 +1898,46 @@ fn scan_compound_mv_stack_probe(
     let Some(ref_frame1) = block.ref_frame1 else {
         return;
     };
-    if !(cell.is_inter
-        && cell.ref_frame0 == block.ref_frame0
-        && cell.ref_frame1 == Some(ref_frame1))
-    {
+    if !cell.is_inter {
         return;
     }
-    insert_compound_mv_stack_entry(
-        entries,
-        prune_count,
+    let candidate = if cell.ref_frame0 == block.ref_frame0 && cell.ref_frame1 == Some(ref_frame1) {
         CompoundMvCandidate {
             mvs: [cell.sub_mv, cell.sub_mv1],
             cwp_weight: cell.cwp_weight,
-        },
-        weight,
-    );
+        }
+    } else {
+        let Some(temporal) = temporal else {
+            return;
+        };
+        let Some(tip_refs) = temporal.tip_references() else {
+            return;
+        };
+        if cell.ref_frame0 != TIP_REF_FRAME
+            || cell.ref_frame1.is_some()
+            || (tip_refs.past_ref, tip_refs.future_ref) != (block.ref_frame0, ref_frame1)
+        {
+            return;
+        }
+        let (row, col, _) = probe.stack_target(block);
+        let (Ok(row), Ok(col)) = (usize::try_from(row), usize::try_from(col)) else {
+            return;
+        };
+        let shift = 1 + usize::from(cell.tip_size_16x16);
+        let row = cell.base_r + (((row - cell.base_r) >> shift) << shift);
+        let col = cell.base_c + (((col - cell.base_c) >> shift) << shift);
+        let Some(base_cell) = grid.get(row as i32, col as i32) else {
+            return;
+        };
+        let Some(mvs) = temporal.tip_candidate(row >> 1, col >> 1, base_cell.sub_mv) else {
+            return;
+        };
+        CompoundMvCandidate {
+            mvs,
+            cwp_weight: CWP_EQUAL,
+        }
+    };
+    insert_compound_mv_stack_entry(entries, prune_count, candidate, weight);
 }
 
 fn scan_compound_temporal_mv_stack(
