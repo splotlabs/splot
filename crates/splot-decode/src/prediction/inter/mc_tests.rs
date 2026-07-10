@@ -119,6 +119,49 @@ fn dispatcher_rebuilds_optflow_compound_planes_from_refined_grid() {
 }
 
 #[test]
+fn optflow_derivation_is_independent_of_the_final_interpolation_filter() {
+    let width = 32;
+    let height = 32;
+    let pattern = |x: usize, y: usize| ((x * 19 + y * 37 + x * y * 3) % 251) as u8;
+    let reference0_y: Vec<u8> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| pattern(x, y)))
+        .collect();
+    let reference1_y: Vec<u8> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| pattern((x + 2).min(width - 1), y)))
+        .collect();
+    let chroma = vec![128; width.div_ceil(2) * height.div_ceil(2)];
+    let reference0 = frame(width, height, reference0_y, chroma.clone(), chroma.clone());
+    let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
+    let derive = |interp| {
+        let mut workspace = workspace(width, height);
+        motion_compensate_inter_block_with_motion_grid_into(
+            &mut workspace,
+            InterBlockParams::compound_average(
+                &reference0,
+                &reference1,
+                rect(8, 8, 8, 8),
+                Mv { row: 3, col: 5 },
+                Mv { row: -5, col: -3 },
+                interp,
+                CompoundBlend::default(),
+            )
+            .with_optflow_distances(Some([1, -1])),
+            None,
+            ByteOffset::new(0),
+        )
+        .expect("optical-flow dispatcher")
+        .expect("optical-flow motion grid")
+        .at_luma_offset(0, 0)
+        .expect("optical-flow motion cell")
+    };
+
+    assert_eq!(
+        derive(InterpolationFilter::EightTapSharp),
+        derive(InterpolationFilter::Bilinear)
+    );
+}
+
+#[test]
 fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
     let reference0 = flat_frame(8, 8, 40, 90, 120);
     let reference1 = flat_frame(8, 8, 80, 110, 140);
@@ -141,6 +184,47 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
     .expect("TIP output optical-flow dispatcher");
 
     assert_eq!(mvs, Some([Mv::ZERO; 2]));
+}
+
+#[test]
+fn dispatcher_returns_default_refinemv_motion_grid() {
+    let width = 32;
+    let height = 32;
+    let pattern = |x: usize, y: usize| ((x * 19 + y * 37 + x * y * 3) % 251) as u8;
+    let reference0_y: Vec<u8> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| pattern(x, y)))
+        .collect();
+    let reference1_y: Vec<u8> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| pattern((x + 2).min(width - 1), y)))
+        .collect();
+    let chroma = vec![128; width.div_ceil(2) * height.div_ceil(2)];
+    let reference0 = frame(width, height, reference0_y, chroma.clone(), chroma.clone());
+    let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
+    let mut workspace = workspace(width, height);
+
+    let grid = motion_compensate_inter_block_with_motion_grid_into(
+        &mut workspace,
+        InterBlockParams::compound_average(
+            &reference0,
+            &reference1,
+            rect(8, 8, 16, 16),
+            Mv::ZERO,
+            Mv::ZERO,
+            InterpolationFilter::EightTapSharp,
+            CompoundBlend::default(),
+        )
+        .with_refinemv(true),
+        None,
+        ByteOffset::new(0),
+    )
+    .expect("default refine-MV dispatcher")
+    .expect("refine-MV motion grid");
+
+    assert_eq!(
+        grid.temporal_mvs_at_luma_offset(0, 0)
+            .expect("stored refine-MVs"),
+        [Mv { row: 0, col: 8 }, Mv { row: 0, col: -8 }]
+    );
 }
 
 #[test]
