@@ -56,9 +56,9 @@ impl CompoundYMode {
         self.has_newmv() || self.has_nearmv()
     }
 
-    pub(crate) const fn has_second_drl(self, skip_mode_present: bool) -> bool {
+    pub(crate) const fn has_second_drl(self) -> bool {
         match self {
-            Self::NearNear | Self::NearNew => !skip_mode_present,
+            Self::NearNear | Self::NearNew => true,
             Self::NewNear | Self::JointNew | Self::NewNew => false,
         }
     }

@@ -1057,7 +1057,7 @@ fn read_compound_use_optflow_syntax(
 }
 
 const fn compound_reads_second_drl(compound: super::super::compound::CompoundBlockSyntax) -> bool {
-    !compound.use_optflow && compound.y_mode.has_second_drl(false)
+    !compound.use_optflow && compound.y_mode.has_second_drl()
 }
 
 #[allow(clippy::too_many_arguments)]
