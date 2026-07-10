@@ -16499,7 +16499,7 @@ tests = [
     "crates/splot-decode/src/prediction/inter/mc_tests.rs::dispatcher_rebuilds_optflow_compound_planes_from_refined_grid",
     "crates/splot-decode/src/prediction/inter/mc/optflow.rs::tests::temporal_mvs_average_four_by_four_optflow_deltas_over_eight_by_eight",
     "crates/splot-decode/src/prediction/inter/mc/optflow.rs::tests::temporal_mvs_treat_cropped_four_by_four_units_as_zero_delta",
-    "crates/splot-decode/src/prediction/inter/mc/optflow.rs::tests::reference_areas_cover_eight_by_eight_luma_and_every_chroma_subblock",
+    "crates/splot-decode/src/prediction/inter/mc/optflow.rs::tests::reference_areas_keep_nominal_luma_and_chroma_subblock_sizes",
     "crates/splot-decode/src/prediction/inter/block_tests.rs::skip_mode_selects_the_upper_skip_txfm_context_bank",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::skip_mode_default_pair_treats_restricted_order_hint_as_zero_distance",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::wedge_temporal_storage_keeps_only_a_dominant_reference",

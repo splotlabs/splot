@@ -150,8 +150,12 @@ impl CompoundMotionGrid {
     }
 }
 
-fn sets_subblock_reference_area(plane: PlaneId, width: usize, height: usize) -> bool {
-    plane != PlaneId::Y || (width == 8 && height == 8)
+fn subblock_reference_area_size(
+    plane: PlaneId,
+    width: usize,
+    height: usize,
+) -> Option<(usize, usize)> {
+    (plane != PlaneId::Y || (width == 8 && height == 8)).then_some((width, height))
 }
 
 pub(super) fn compound_motion_grid<T: ReconSample>(
@@ -419,12 +423,14 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                         ref_mi_cols,
                         ref_mi_rows,
                     ))
-                } else if sets_subblock_reference_area(plane, width, height) {
+                } else if let Some((area_width, area_height)) =
+                    subblock_reference_area_size(plane, subblock_w, subblock_h)
+                {
                     Some(super::refinemv::reference_area_bounds(
                         (plane_x + col) as i64,
                         (plane_y + row) as i64,
-                        width,
-                        height,
+                        area_width,
+                        area_height,
                         base_mvs[reference],
                         sub_x,
                         sub_y,
@@ -556,9 +562,9 @@ mod tests {
     }
 
     #[test]
-    fn reference_areas_cover_eight_by_eight_luma_and_every_chroma_subblock() {
-        assert!(sets_subblock_reference_area(PlaneId::Y, 8, 8));
-        assert!(!sets_subblock_reference_area(PlaneId::Y, 4, 4));
-        assert!(sets_subblock_reference_area(PlaneId::U, 4, 4));
+    fn reference_areas_keep_nominal_luma_and_chroma_subblock_sizes() {
+        assert_eq!(subblock_reference_area_size(PlaneId::Y, 8, 8), Some((8, 8)));
+        assert_eq!(subblock_reference_area_size(PlaneId::Y, 4, 4), None);
+        assert_eq!(subblock_reference_area_size(PlaneId::U, 4, 4), Some((4, 4)));
     }
 }
