@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::symbol::SymbolDecoder;
+use splot_recon::wedge_mask_plane_sample;
 
 use super::super::compound::{
     CompoundParseInput, CompoundYMode, read_compound_mode_syntax, read_compound_reference_pair,
@@ -885,8 +886,6 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         motion_grid.as_ref(),
         mi_row,
         mi_col,
-        n4w,
-        n4h,
         mi_rows,
         mi_cols,
         core.order_hint_lsb.unwrap_or(0),
@@ -918,36 +917,29 @@ fn record_compound_temporal_motion<T: ReconSample>(
     motion_grid: Option<&mc::CompoundMotionGrid>,
     mi_row: usize,
     mi_col: usize,
-    n4w: usize,
-    n4h: usize,
     mi_rows: usize,
     mi_cols: usize,
     current_order_hint: u32,
 ) -> Result<()> {
-    let Some(grid) = motion_grid else {
-        record_temporal_motion_block(
-            motion_field,
-            reference,
-            ref_frame_idx,
-            mi_row,
-            mi_col,
-            n4w,
-            n4h,
-            mi_rows,
-            mi_cols,
-            current_order_hint,
-            compound.ref_frame0,
-            Some(compound.ref_frame1),
-            compound.mv0,
-            compound.mv1,
-            None,
-        );
-        return Ok(());
-    };
-
     for y in (0..placed.luma_h).step_by(8) {
         for x in (0..placed.luma_w).step_by(8) {
-            let mvs = grid.temporal_mvs_at_luma_offset(x, y)?;
+            let mvs = if let Some(grid) = motion_grid {
+                grid.temporal_mvs_at_luma_offset(x, y)?
+            } else {
+                [compound.mv0, compound.mv1]
+            };
+            let allowed = wedge_temporal_allowed_lists(
+                placed.block.compound_blend,
+                placed.luma_w,
+                placed.luma_h,
+                x,
+                y,
+            )?;
+            let (ref_frame0, ref_frame1, mvs) = match allowed {
+                [true, false] => (compound.ref_frame0, None, [mvs[0], Mv::ZERO]),
+                [false, true] => (compound.ref_frame1, None, [mvs[1], Mv::ZERO]),
+                _ => (compound.ref_frame0, Some(compound.ref_frame1), mvs),
+            };
             record_temporal_motion_block(
                 motion_field,
                 reference,
@@ -959,8 +951,8 @@ fn record_compound_temporal_motion<T: ReconSample>(
                 mi_rows,
                 mi_cols,
                 current_order_hint,
-                compound.ref_frame0,
-                Some(compound.ref_frame1),
+                ref_frame0,
+                ref_frame1,
                 mvs[0],
                 mvs[1],
                 None,
@@ -968,6 +960,42 @@ fn record_compound_temporal_motion<T: ReconSample>(
         }
     }
     Ok(())
+}
+
+fn wedge_temporal_allowed_lists(
+    blend: mc::CompoundBlend,
+    luma_width: usize,
+    luma_height: usize,
+    x: usize,
+    y: usize,
+) -> Result<[bool; 2]> {
+    let mc::CompoundBlend::Wedge { index, sign } = blend else {
+        return Ok([true; 2]);
+    };
+    let mut dominant = [0usize; 2];
+    for row in y..y + 8 {
+        for col in x..x + 8 {
+            let mask = wedge_mask_plane_sample(
+                luma_width,
+                luma_height,
+                usize::from(index),
+                sign,
+                0,
+                0,
+                col,
+                row,
+            )?;
+            dominant[0] += usize::from(mask > 60);
+            dominant[1] += usize::from(mask < 4);
+        }
+    }
+    Ok(if dominant[0] >= 60 {
+        [true, false]
+    } else if dominant[1] >= 60 {
+        [false, true]
+    } else {
+        [true; 2]
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2337,6 +2365,26 @@ mod tests {
             false,
             mc::CompoundBlend::default()
         ));
+    }
+
+    #[test]
+    fn wedge_temporal_storage_keeps_only_a_dominant_reference() {
+        let blend = mc::CompoundBlend::Wedge {
+            index: 0,
+            sign: false,
+        };
+        assert_eq!(
+            wedge_temporal_allowed_lists(blend, 64, 64, 0, 0).unwrap(),
+            [false, true]
+        );
+        assert_eq!(
+            wedge_temporal_allowed_lists(blend, 64, 64, 56, 0).unwrap(),
+            [true, false]
+        );
+        assert_eq!(
+            wedge_temporal_allowed_lists(blend, 64, 64, 32, 24).unwrap(),
+            [true; 2]
+        );
     }
 
     #[test]
