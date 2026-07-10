@@ -9,7 +9,22 @@ use super::{
 const MAX_DR_STACK_SIZE: usize = 4;
 const MAX_DR_PR_NUM: usize = 2;
 
-#[derive(Clone, Copy)]
+fn push_bounded_unique<T: Copy + Eq>(entries: &mut Vec<T>, prune_count: &mut usize, candidate: T) {
+    if entries.len() >= MAX_DR_STACK_SIZE {
+        return;
+    }
+    if *prune_count < MAX_DR_PR_NUM {
+        for entry in entries.iter() {
+            *prune_count += 1;
+            if *entry == candidate {
+                return;
+            }
+        }
+    }
+    entries.push(candidate);
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct SingleMvCandidate {
     ref_frame: i8,
     mv: Mv,
@@ -87,39 +102,16 @@ impl CompoundDerivedMvState {
         {
             let mut pair = [single.mv; 2];
             pair[target] = *candidate_mv;
-            self.push_pair(pair);
+            push_bounded_unique(&mut self.entries, &mut self.prune_count, pair);
         }
-        self.push_single(target_refs[target], *candidate_mv);
-    }
-
-    fn push_pair(&mut self, candidate: [Mv; 2]) {
-        if self.entries.len() >= MAX_DR_STACK_SIZE {
-            return;
-        }
-        if self.prune_count < MAX_DR_PR_NUM {
-            for pair in &self.entries {
-                self.prune_count += 1;
-                if *pair == candidate {
-                    return;
-                }
-            }
-        }
-        self.entries.push(candidate);
-    }
-
-    fn push_single(&mut self, ref_frame: i8, mv: Mv) {
-        if self.singles.len() >= MAX_DR_STACK_SIZE {
-            return;
-        }
-        if self.single_prune_count < MAX_DR_PR_NUM {
-            for single in &self.singles {
-                self.single_prune_count += 1;
-                if (single.ref_frame, single.mv) == (ref_frame, mv) {
-                    return;
-                }
-            }
-        }
-        self.singles.push(SingleMvCandidate { ref_frame, mv });
+        push_bounded_unique(
+            &mut self.singles,
+            &mut self.single_prune_count,
+            SingleMvCandidate {
+                ref_frame: target_refs[target],
+                mv: *candidate_mv,
+            },
+        );
     }
 
     pub(super) fn fill(
@@ -181,18 +173,7 @@ impl<'a> DerivedMvState<'a> {
     }
 
     fn push(&mut self, candidate: Mv) {
-        if self.entries.len() >= MAX_DR_STACK_SIZE {
-            return;
-        }
-        if self.prune_count < MAX_DR_PR_NUM {
-            for mv in &self.entries {
-                self.prune_count += 1;
-                if *mv == candidate {
-                    return;
-                }
-            }
-        }
-        self.entries.push(candidate);
+        push_bounded_unique(&mut self.entries, &mut self.prune_count, candidate);
     }
 
     pub(super) fn fill(

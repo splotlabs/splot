@@ -1791,15 +1791,15 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
     let mut state = CompoundScanState::new();
     let probes = mv_stack_spatial_probes(block);
     for probe in probes.iter().take(6).copied().flatten() {
-        scan_compound_probe(grid, block, probe, temporal, &mut state);
+        scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut state);
     }
     scan_compound_temporal_mv_stack(block, temporal, &mut state);
     if let Some(probe) = probes[6] {
-        scan_compound_probe(grid, block, probe, temporal, &mut state);
+        scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut state);
     }
 
     let num_nearest = state.entries.len();
-    scan_compound_col(grid, block, -3, temporal, &mut state);
+    scan_compound_mv_stack_col(grid, block, -3, temporal, &mut state);
     let use_sort = match drl_reorder {
         DrlReorder::Always => true,
         DrlReorder::Constraint => num_nearest >= 4,
@@ -1858,7 +1858,7 @@ struct CompoundMvStackEntry {
     weight: u32,
 }
 
-fn scan_compound_col(
+fn scan_compound_mv_stack_col(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     delta_col: i32,
@@ -1880,7 +1880,7 @@ fn scan_compound_col(
             continue;
         };
         if cell.base_c != left.base_c {
-            scan_compound_probe(
+            scan_compound_mv_stack_probe(
                 grid,
                 block,
                 RelativeProbe::new(delta_row, delta_col),
@@ -1891,7 +1891,7 @@ fn scan_compound_col(
     }
 }
 
-fn scan_compound_probe(
+fn scan_compound_mv_stack_probe(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     probe: RelativeProbe,
