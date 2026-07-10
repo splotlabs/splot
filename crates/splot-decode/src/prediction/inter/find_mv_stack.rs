@@ -557,17 +557,15 @@ fn neighbour_matches_ref(cell: NeighbourCell, ref_frame: i8) -> bool {
     cell.is_inter && (cell.ref_frame0 == ref_frame || cell.ref_frame1 == Some(ref_frame))
 }
 
-fn matching_stack_mv(cell: NeighbourCell, block: &MvBlockContext) -> Option<Mv> {
+fn matching_stack_mvs(cell: NeighbourCell, block: &MvBlockContext) -> [Option<Mv>; 2] {
     if !cell.is_inter {
-        return None;
+        return [None; 2];
     }
-    if cell.ref_frame0 == block.ref_frame0 {
-        return Some(cell.sub_mv);
-    }
-    if cell.ref_frame1 == Some(block.ref_frame0) {
-        return cell.mv1;
-    }
-    None
+    [
+        (cell.ref_frame0 == block.ref_frame0).then_some(cell.sub_mv),
+        cell.mv1
+            .filter(|_| cell.ref_frame1 == Some(block.ref_frame0)),
+    ]
 }
 
 fn mode_ctx_match_newmv(
@@ -2064,18 +2062,16 @@ fn scan_mv_stack_probe(
         return;
     }
 
-    let Some(candidate_mv) = matching_stack_mv(cell, block) else {
-        return;
-    };
-
     let (_, _, adjusted_delta_col) = probe.stack_target(block);
-    insert_mv_stack_entry(
-        entries,
-        prune_count,
-        candidate_mv,
-        weight,
-        (probe.delta_row, adjusted_delta_col),
-    );
+    for candidate_mv in matching_stack_mvs(cell, block).into_iter().flatten() {
+        insert_mv_stack_entry(
+            entries,
+            prune_count,
+            candidate_mv,
+            weight,
+            (probe.delta_row, adjusted_delta_col),
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
