@@ -369,7 +369,18 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let mut temporal = TemporalMvContext::from_references(
         (mi_rows, mi_cols),
         core.order_hint_lsb.unwrap_or(0),
-        tmvp_projection_step(core),
+        TemporalProjectionConfig {
+            frame_size: (width, height),
+            step: tmvp_projection_step(core),
+            enable_tip: sequence
+                .inter
+                .as_ref()
+                .is_some_and(|tools| tools.enable_tip),
+            reduced: sequence
+                .inter
+                .as_ref()
+                .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
+        },
         ref_frame_idx,
         &reference.ref_valid,
         &reference.ref_order_hint,
@@ -390,6 +401,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     )?;
     let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols)
         .ok_or_else(|| missing("unsupported capability: inter.tip_output.motion_field"))?;
+    motion_field.set_reference_metadata(true, (width, height), temporal.reference_order_hints());
     let placed = PlacedInterBlock {
         luma_x: 0,
         luma_y: 0,

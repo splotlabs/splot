@@ -25,8 +25,8 @@ use splot_recon::{
 use super::find_mv_stack::{
     BlockNeighbourContext, BlockPrecisionRecord, ModeContext, MotionMode, MvBlockContext,
     NeighbourMvGrid, NeighbourYMode, TIP_REF_FRAME, TemporalMotionField, TemporalMvContext,
-    block_neighbour_ctx, find_compound_mv_stack_with_temporal, find_mode_ctx,
-    find_mode_ctx_with_tip, find_mv_stack, find_mv_stack_with_temporal,
+    TemporalProjectionConfig, block_neighbour_ctx, find_compound_mv_stack_with_temporal,
+    find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack, find_mv_stack_with_temporal,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
@@ -200,11 +200,24 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             SPEC_MODE_INFO
         )
     })?;
+    let coded_size = workspace.info().coded_luma_size();
     let current_order_hint = core.order_hint_lsb.unwrap_or(0);
+    let temporal_config = TemporalProjectionConfig {
+        frame_size: (coded_size.width(), coded_size.height()),
+        step: tip::tmvp_projection_step(core),
+        enable_tip: sequence
+            .inter
+            .as_ref()
+            .is_some_and(|tools| tools.enable_tip),
+        reduced: sequence
+            .inter
+            .as_ref()
+            .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
+    };
     let mut temporal_context = TemporalMvContext::from_references(
         (mi_rows, mi_cols),
         current_order_hint,
-        tip::tmvp_projection_step(core),
+        temporal_config,
         ref_frame_idx,
         &reference.ref_valid,
         &reference.ref_order_hint,
@@ -226,6 +239,11 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             SPEC_MODE_INFO
         )
     })?;
+    motion_field.set_reference_metadata(
+        !frame_is_intra,
+        temporal_config.frame_size,
+        temporal_context.reference_order_hints(),
+    );
     let mut cdef_state = CdefState::new(mi_rows, mi_cols, sequence, first_tile_offset)?;
     let mut ccso_state = CcsoState::new(
         mi_rows,

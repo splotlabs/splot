@@ -1435,14 +1435,23 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         mvs: [temporal_mv, Mv::ZERO],
         warp_params: [None, None],
     });
+    let frame_size = (MI_DIM * 4, MI_DIM * 4);
+    source.set_reference_metadata(true, frame_size, &[Some(0)]);
+    let mut other = TemporalMotionField::new(MI_DIM, MI_DIM).unwrap();
+    other.set_reference_metadata(true, frame_size, &[]);
     let temporal = TemporalMvContext::from_references(
         (MI_DIM, MI_DIM),
         2,
-        1,
-        &[0],
-        &[true],
-        &[1],
-        &[Some(source)],
+        TemporalProjectionConfig {
+            frame_size,
+            step: 1,
+            enable_tip: false,
+            reduced: false,
+        },
+        &[0, 1],
+        &[true, true],
+        &[1, 3],
+        &[Some(source), Some(other)],
     )
     .unwrap();
 
