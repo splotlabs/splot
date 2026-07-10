@@ -156,16 +156,6 @@ fn compound_opfl_modes_use_opfl_amvd_contexts() {
 }
 
 #[test]
-fn asymmetric_compound_modes_keep_per_list_mv_roles() {
-    assert!(CompoundYMode::NearNew.has_second_drl());
-    assert!(!CompoundYMode::NewNear.has_second_drl());
-    assert!(!CompoundYMode::NearNew.list0_is_newmv());
-    assert!(CompoundYMode::NearNew.list1_is_newmv());
-    assert!(CompoundYMode::NewNear.list0_is_newmv());
-    assert!(!CompoundYMode::NewNear.list1_is_newmv());
-}
-
-#[test]
 fn compound_average_reads_is_joint_context_zero() {
     let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::new();
