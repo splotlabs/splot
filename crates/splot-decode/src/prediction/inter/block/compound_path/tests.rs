@@ -483,6 +483,11 @@ fn compound_refinemv_switchability_matches_mode_and_optflow() {
         REFINE_SWITCHABLE
     ));
     assert!(compound_refinemv_is_switchable(compound, REFINE_ALL));
+    compound.y_mode = CompoundYMode::GlobalGlobal;
+    compound.use_optflow = false;
+    assert!(!compound_refinemv_mode_allowed_for_type(
+        compound, REFINE_ALL
+    ));
 }
 
 #[test]

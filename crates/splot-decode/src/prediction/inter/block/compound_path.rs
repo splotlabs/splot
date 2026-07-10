@@ -294,6 +294,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             [stack0.candidate(idx0), stack1.candidate(idx1)]
         };
         match compound.y_mode {
+            CompoundYMode::GlobalGlobal => {}
             CompoundYMode::NearNear => {
                 [compound.mv0, compound.mv1] = select_near_near_candidates(
                     compound,
@@ -563,7 +564,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         symbols,
         frame_interpolation_filter,
         compound.use_optflow || refinemv_default,
-        !local_warp,
+        !local_warp && compound.y_mode != CompoundYMode::GlobalGlobal,
         neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
         tile_offset,
     )?;
@@ -1293,6 +1294,9 @@ fn compound_switchable_opfl_reachable<T: ReconSample>(
     n4h: usize,
     tile_offset: ByteOffset,
 ) -> Result<bool> {
+    if compound.y_mode == CompoundYMode::GlobalGlobal {
+        return Ok(false);
+    }
     if compound_opfl_refine_type(core, tile_offset)? != REFINE_SWITCHABLE
         || !compound_opfl_block_size_allowed(n4w, n4h)
     {
@@ -1432,6 +1436,9 @@ fn compound_refinemv_mode_allowed(
     compound: super::super::compound::CompoundBlockSyntax,
     tile_offset: ByteOffset,
 ) -> Result<bool> {
+    if compound.y_mode == CompoundYMode::GlobalGlobal {
+        return Ok(false);
+    }
     let opfl_refine_type = core
         .inter
         .as_ref()
@@ -1454,7 +1461,10 @@ const fn compound_refinemv_mode_allowed_for_type(
     compound: super::super::compound::CompoundBlockSyntax,
     opfl_refine_type: u32,
 ) -> bool {
-    !(opfl_refine_type == REFINE_SWITCHABLE && compound.y_mode.has_newmv() && !compound.use_optflow)
+    !(matches!(compound.y_mode, CompoundYMode::GlobalGlobal)
+        || opfl_refine_type == REFINE_SWITCHABLE
+            && compound.y_mode.has_newmv()
+            && !compound.use_optflow)
 }
 
 fn compound_refinemv_is_switchable(

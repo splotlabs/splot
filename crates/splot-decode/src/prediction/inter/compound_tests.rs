@@ -154,6 +154,7 @@ fn compound_opfl_modes_use_opfl_amvd_contexts() {
     assert_eq!(CompoundYMode::NewNew.use_amvd_index(false), Some(7));
     assert_eq!(CompoundYMode::NewNew.use_amvd_index(true), Some(8));
     assert_eq!(CompoundYMode::NearNear.use_amvd_index(true), None);
+    assert_eq!(CompoundYMode::GlobalGlobal.use_amvd_index(true), None);
 }
 
 #[test]
@@ -162,6 +163,7 @@ fn compound_mode_predicates_keep_per_list_roles() {
         (CompoundYMode::NearNear, true, false, false),
         (CompoundYMode::NearNew, true, false, true),
         (CompoundYMode::NewNear, false, true, false),
+        (CompoundYMode::GlobalGlobal, false, false, false),
         (CompoundYMode::JointNew, false, true, true),
         (CompoundYMode::NewNew, false, true, true),
     ];
@@ -381,7 +383,7 @@ fn compound_average_accepts_joint_mode_without_non_joint_symbol() {
 }
 
 #[test]
-fn compound_average_rejects_global_global_mode() {
+fn compound_average_reads_global_global_mode() {
     let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::new();
     encode_symbol(
@@ -400,16 +402,18 @@ fn compound_average_rejects_global_global_mode() {
 
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
-    assert!(
-        read_compound_average_syntax(
-            &mut dec_tile,
-            &mut symbols,
-            default_input(),
-            1,
-            ByteOffset::new(0),
-        )
-        .is_err()
-    );
+    let syntax = read_compound_average_syntax(
+        &mut dec_tile,
+        &mut symbols,
+        default_input(),
+        1,
+        ByteOffset::new(0),
+    )
+    .unwrap();
+
+    assert_eq!(syntax.y_mode, CompoundYMode::GlobalGlobal);
+    assert_eq!([syntax.mv0, syntax.mv1], [Mv::ZERO; 2]);
+    symbols.exit_symbol().unwrap();
 }
 
 #[test]
