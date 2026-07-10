@@ -1,10 +1,149 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use super::{MAX_PR_NUM, Mv, MvBlockContext, MvStackEntry, TemporalMvContext};
+use super::{
+    CWP_EQUAL, CompoundMvCandidate, CompoundMvStackEntry, MAX_PR_NUM, MAX_REF_MV_STACK_SIZE, Mv,
+    MvBlockContext, MvStackEntry, TemporalMvContext, insert_compound_mv_stack_entry,
+};
 
 const MAX_DR_STACK_SIZE: usize = 4;
 const MAX_DR_PR_NUM: usize = 2;
+
+#[derive(Clone, Copy)]
+struct SingleMvCandidate {
+    ref_frame: i8,
+    mv: Mv,
+}
+
+pub(super) struct CompoundDerivedMvState {
+    entries: Vec<[Mv; 2]>,
+    singles: Vec<SingleMvCandidate>,
+    prune_count: usize,
+    single_prune_count: usize,
+}
+
+pub(super) struct CompoundScanState {
+    pub(super) entries: Vec<CompoundMvStackEntry>,
+    pub(super) prune_count: usize,
+    pub(super) derived: CompoundDerivedMvState,
+}
+
+impl CompoundScanState {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: Vec::with_capacity(MAX_REF_MV_STACK_SIZE),
+            prune_count: 0,
+            derived: CompoundDerivedMvState::new(),
+        }
+    }
+}
+
+impl CompoundDerivedMvState {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: Vec::with_capacity(MAX_DR_STACK_SIZE),
+            singles: Vec::with_capacity(MAX_DR_STACK_SIZE),
+            prune_count: 0,
+            single_prune_count: 0,
+        }
+    }
+
+    pub(super) fn add_spatial(
+        &mut self,
+        block: &MvBlockContext,
+        candidates: [Option<(i8, Mv)>; 2],
+    ) {
+        let Some(ref_frame1) = block.ref_frame1 else {
+            return;
+        };
+        let target_refs = [block.ref_frame0, ref_frame1];
+        let target = if candidates
+            .iter()
+            .flatten()
+            .any(|(r, _)| *r == target_refs[0])
+        {
+            0
+        } else if candidates
+            .iter()
+            .flatten()
+            .any(|(r, _)| *r == target_refs[1])
+        {
+            1
+        } else {
+            return;
+        };
+        let Some((_, candidate_mv)) = candidates
+            .iter()
+            .flatten()
+            .find(|(r, _)| *r == target_refs[target])
+        else {
+            return;
+        };
+        let other = 1 - target;
+        if let Some(single) = self
+            .singles
+            .iter()
+            .find(|single| single.ref_frame == target_refs[other])
+        {
+            let mut pair = [single.mv; 2];
+            pair[target] = *candidate_mv;
+            self.push_pair(pair);
+        }
+        self.push_single(target_refs[target], *candidate_mv);
+    }
+
+    fn push_pair(&mut self, candidate: [Mv; 2]) {
+        if self.entries.len() >= MAX_DR_STACK_SIZE {
+            return;
+        }
+        if self.prune_count < MAX_DR_PR_NUM {
+            for pair in &self.entries {
+                self.prune_count += 1;
+                if *pair == candidate {
+                    return;
+                }
+            }
+        }
+        self.entries.push(candidate);
+    }
+
+    fn push_single(&mut self, ref_frame: i8, mv: Mv) {
+        if self.singles.len() >= MAX_DR_STACK_SIZE {
+            return;
+        }
+        if self.single_prune_count < MAX_DR_PR_NUM {
+            for single in &self.singles {
+                self.single_prune_count += 1;
+                if (single.ref_frame, single.mv) == (ref_frame, mv) {
+                    return;
+                }
+            }
+        }
+        self.singles.push(SingleMvCandidate { ref_frame, mv });
+    }
+
+    pub(super) fn fill(
+        &self,
+        entries: &mut Vec<CompoundMvStackEntry>,
+        max_ref_mv_count: usize,
+        prune_count: &mut usize,
+    ) {
+        for &mvs in &self.entries {
+            if entries.len() >= max_ref_mv_count {
+                return;
+            }
+            insert_compound_mv_stack_entry(
+                entries,
+                prune_count,
+                CompoundMvCandidate {
+                    mvs,
+                    cwp_weight: CWP_EQUAL,
+                },
+                0,
+            );
+        }
+    }
+}
 
 pub(super) struct DerivedMvState<'a> {
     temporal: Option<&'a TemporalMvContext>,

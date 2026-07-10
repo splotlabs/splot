@@ -356,6 +356,49 @@ fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
 }
 
 #[test]
+fn compound_mv_stack_pairs_single_ref_spatial_neighbours_in_probe_order() {
+    let mut grid = empty_grid();
+    let mvs = [
+        Mv { row: 16, col: -263 },
+        Mv { row: -24, col: 316 },
+        Mv { row: -24, col: 300 },
+    ];
+    for (row, col, ref_frame, mv) in [(15, 7, 0, mvs[0]), (7, 15, 1, mvs[1]), (7, 7, 1, mvs[2])] {
+        grid.record_block(
+            row,
+            col,
+            1,
+            1,
+            true,
+            ref_frame,
+            None,
+            NeighbourYMode::Other,
+            mv,
+            false,
+            SWITCHABLE_FILTERS,
+            false,
+            BlockPrecisionRecord::default(),
+        );
+    }
+    let mut block = block_at(8, 8);
+    block.ref_frame1 = Some(1);
+
+    let stack = find_compound_mv_stack_with_temporal(
+        &grid,
+        &block,
+        [Mv::ZERO; 2],
+        None,
+        DrlReorder::Disabled,
+        None,
+    );
+
+    assert_eq!(stack.candidate(0).mvs, [mvs[0], mvs[1]]);
+    assert_eq!(stack.candidate(1).mvs, [mvs[0], mvs[2]]);
+    assert_eq!(stack.candidate(0).cwp_weight, CWP_EQUAL);
+    assert_eq!(stack.candidate(1).cwp_weight, CWP_EQUAL);
+}
+
+#[test]
 fn single_ref_stack_admits_both_lists_from_same_ref_compound_neighbour() {
     let mut grid = empty_grid();
     let mvs = [Mv { row: 8, col: 16 }, Mv { row: -8, col: 24 }];
