@@ -22,6 +22,53 @@ const fn tip_uses_refinemv(
     !output && enable_refinemv && enable_tip_refinemv && weight == mc::CWP_EQUAL
 }
 
+#[doc = "AV2 § 5.20.7.17 equal-distance reference gate for refine-MV search."]
+const fn tip_refinemv_offsets_allowed(past_offset: i32, future_offset: i32) -> bool {
+    past_offset != 0 && past_offset == -future_offset
+}
+
+#[doc = "AV2 § 5.20.7.14 and § 5.20.7.17 reference gate for refine-MV search."]
+fn tip_refinemv_references_allowed(
+    frame_type: Option<FrameType>,
+    frame_size: Option<splot_core::headers::frame::FrameSize>,
+    ref_frame_idx: &[u32],
+    ref_order_hint: &[u32],
+    ref_frame_width: &[u32],
+    ref_frame_height: &[u32],
+    references: [(i8, i32); 2],
+) -> bool {
+    if frame_type == Some(FrameType::Switch)
+        || !tip_refinemv_offsets_allowed(references[0].1, references[1].1)
+    {
+        return false;
+    }
+    let Some(frame_size) = frame_size else {
+        return false;
+    };
+    let no_scale = 1_u64 << 14;
+    references.into_iter().all(|(ref_frame, _)| {
+        usize::try_from(ref_frame)
+            .ok()
+            .and_then(|index| ref_frame_idx.get(index))
+            .and_then(|&slot| usize::try_from(slot).ok())
+            .is_some_and(|slot| {
+                let scale = |reference: &[u32], current: u32| {
+                    current != 0
+                        && reference.get(slot).is_some_and(|&dimension| {
+                            ((u64::from(dimension) << 14) + u64::from(current / 2))
+                                / u64::from(current)
+                                == no_scale
+                        })
+                };
+                ref_order_hint
+                    .get(slot)
+                    .is_some_and(|&order_hint| order_hint != u32::MAX)
+                    && scale(ref_frame_width, frame_size.width)
+                    && scale(ref_frame_height, frame_size.height)
+            })
+    })
+}
+
 #[doc = "AV2 § 7.13.3.1 tipSize selection for TIP prediction."]
 const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: bool) -> usize {
     if (!enable_tip_refinemv && width >= 16 && height >= 16) || (width >= 256 && height >= 256) {
@@ -227,6 +274,19 @@ pub(super) fn reconstruct<T: ReconSample>(
             weight,
         )
     });
+    let search_refinemv = use_refinemv
+        && tip_refinemv_references_allowed(
+            core.frame_type,
+            core.frame_size,
+            ref_frame_idx,
+            &reference.ref_order_hint,
+            &reference.ref_frame_width,
+            &reference.ref_frame_height,
+            [
+                (references.past_ref, references.past_offset),
+                (references.future_ref, references.future_offset),
+            ],
+        );
     let interpolation_filter = if output {
         output_interpolation_filter(inter, tile_offset)?
     } else {
@@ -317,7 +377,8 @@ pub(super) fn reconstruct<T: ReconSample>(
                 rect,
                 tile_offset,
             )?
-            .with_refinemv(use_refinemv);
+            .with_refinemv(use_refinemv)
+            .with_refinemv_search(search_refinemv);
             let stored_mvs = if use_optflow {
                 mc::motion_compensate_inter_block_with_optflow_mvs_into(
                     workspace,
@@ -511,9 +572,10 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
 #[cfg(test)]
 mod tests {
     use super::{
-        output_prediction_unit_size, prediction_unit_size, tip_uses_refinemv,
-        tip_uses_two_references,
+        output_prediction_unit_size, prediction_unit_size, tip_refinemv_offsets_allowed,
+        tip_refinemv_references_allowed, tip_uses_refinemv, tip_uses_two_references,
     };
+    use splot_core::headers::frame::{FrameSize, FrameType};
     use splot_recon::InterpolationFilter;
 
     #[test]
@@ -554,5 +616,82 @@ mod tests {
         assert!(!tip_uses_refinemv(false, true, false, 8));
         assert!(!tip_uses_refinemv(false, true, true, 12));
         assert!(!tip_uses_refinemv(false, true, true, 16));
+    }
+
+    #[test]
+    fn tip_refinemv_requires_symmetric_reference_offsets() {
+        assert!(tip_refinemv_offsets_allowed(4, -4));
+        assert!(!tip_refinemv_offsets_allowed(4, -5));
+        assert!(!tip_refinemv_offsets_allowed(0, 0));
+    }
+
+    #[test]
+    fn tip_refinemv_reference_gate_maps_slots_and_rejects_ineligible_state() {
+        let allowed = |frame_type, frame_size, order_hints: &[u32], widths: &[u32]| {
+            tip_refinemv_references_allowed(
+                frame_type,
+                frame_size,
+                &[2, 0],
+                order_hints,
+                widths,
+                &[352, 1, 352],
+                [(0, 4), (1, -4)],
+            )
+        };
+        let size = Some(FrameSize::new(352, 352));
+
+        assert!(allowed(
+            Some(FrameType::Inter),
+            size,
+            &[0, 0, 0],
+            &[352, 1, 352]
+        ));
+        assert!(!allowed(
+            Some(FrameType::Switch),
+            size,
+            &[0, 0, 0],
+            &[352, 1, 352]
+        ));
+        assert!(!allowed(
+            Some(FrameType::Inter),
+            None,
+            &[0, 0, 0],
+            &[352, 1, 352]
+        ));
+        assert!(!allowed(
+            Some(FrameType::Inter),
+            size,
+            &[u32::MAX, 0, 0],
+            &[352, 1, 352]
+        ));
+        assert!(!allowed(Some(FrameType::Inter), size, &[], &[352, 1, 352]));
+        assert!(!allowed(
+            Some(FrameType::Inter),
+            size,
+            &[0, 0, 0],
+            &[351, 1, 352]
+        ));
+        assert!(!tip_refinemv_references_allowed(
+            Some(FrameType::Inter),
+            size,
+            &[2],
+            &[0, 0, 0],
+            &[352, 1, 352],
+            &[352, 1, 352],
+            [(0, 4), (1, -4)],
+        ));
+    }
+
+    #[test]
+    fn tip_refinemv_scale_gate_uses_spec_rounding() {
+        assert!(tip_refinemv_references_allowed(
+            Some(FrameType::Inter),
+            Some(FrameSize::new(65_536, 65_536)),
+            &[0, 1],
+            &[0, 0],
+            &[65_535, 65_536],
+            &[65_535, 65_536],
+            [(0, 4), (1, -4)],
+        ));
     }
 }

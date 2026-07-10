@@ -300,6 +300,48 @@ fn dispatcher_returns_default_refinemv_motion_grid() {
 }
 
 #[test]
+fn dispatcher_skips_refinemv_search_without_disabling_refinemv() {
+    let width = 32;
+    let height = 32;
+    let pattern = |x: usize, y: usize| ((x * 19 + y * 37 + x * y * 3) % 251) as u8;
+    let reference0_y: Vec<u8> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| pattern(x, y)))
+        .collect();
+    let reference1_y: Vec<u8> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| pattern((x + 2).min(width - 1), y)))
+        .collect();
+    let chroma = vec![128; width.div_ceil(2) * height.div_ceil(2)];
+    let reference0 = frame(width, height, reference0_y, chroma.clone(), chroma.clone());
+    let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
+    let mut workspace = workspace(width, height);
+
+    let grid = motion_compensate_inter_block_with_motion_grid_into(
+        &mut workspace,
+        InterBlockParams::compound_average(
+            &reference0,
+            &reference1,
+            rect(8, 8, 16, 16),
+            Mv::ZERO,
+            Mv::ZERO,
+            InterpolationFilter::EightTapSharp,
+            CompoundBlend::default(),
+        )
+        .with_refinemv(true)
+        .with_refinemv_search(false),
+        None,
+        ByteOffset::new(0),
+    )
+    .expect("refine-MV dispatcher without search")
+    .expect("refine-MV motion grid");
+
+    assert_eq!(
+        grid.temporal_mvs_at_luma_offset(0, 0)
+            .expect("stored refine-MVs"),
+        [Mv::ZERO, Mv::ZERO]
+    );
+}
+
+#[test]
 fn chroma_geometry_rounds_odd_luma_extents_up() {
     assert_eq!(
         rect(0, 0, 17, 19).plane_rect(PlaneId::U, 1, 1),
