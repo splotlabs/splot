@@ -440,7 +440,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             }
         }
     }
-    if compound_refinemv_reachable(
+    let refinemv_default = if compound_refinemv_reachable(
         sequence,
         core,
         reference,
@@ -450,13 +450,19 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         n4h,
         tile_offset,
     )? {
-        return Err(compound_cap!(
-            "compound_refinemv_enabled",
-            tile_offset,
-            "inter.compound.refinemv",
-            SPEC_READ_REFINEMV
-        ));
-    }
+        if compound_refinemv_is_switchable(compound, compound_opfl_refine_type(core, tile_offset)?)
+        {
+            return Err(compound_cap!(
+                "compound_refinemv_signal",
+                tile_offset,
+                "inter.compound.refinemv_signal",
+                SPEC_READ_REFINEMV
+            ));
+        }
+        true
+    } else {
+        false
+    };
     let compound_blend_tools = CompoundBlendToolConfig::from_sequence(sequence);
     let compound_blend_thin = compound_blend_is_thin(n4w, n4h);
     let comp_group_idx_ctx = if !compound_blend_tools.masked_enabled || compound_blend_thin {
@@ -487,6 +493,14 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         },
         tile_offset,
     )?;
+    if compound_refinemv_active_after_blend(refinemv_default, compound_blend) {
+        return Err(compound_cap!(
+            "compound_refinemv_enabled",
+            tile_offset,
+            "inter.compound.refinemv",
+            SPEC_READ_REFINEMV
+        ));
+    }
     let compound_blend = read_compound_cwp_syntax(
         cdfs,
         symbols,
@@ -528,7 +542,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         cdfs,
         symbols,
         frame_interpolation_filter,
-        compound.use_optflow,
+        compound.use_optflow || refinemv_default,
         neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
         tile_offset,
     )?;
@@ -580,11 +594,11 @@ fn resolve_compound_interp_filter(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     frame_interpolation_filter: FrameInterpolationFilter,
-    use_optflow: bool,
+    force_sharp: bool,
     ctx: usize,
     tile_offset: ByteOffset,
 ) -> Result<ReconInterpolationFilter> {
-    if use_optflow {
+    if force_sharp {
         return Ok(ReconInterpolationFilter::EightTapSharp);
     }
     resolve_interp_filter(
@@ -1146,7 +1160,7 @@ fn compound_refinemv_reachable<T: ReconSample>(
     if !seq_inter.enable_refinemv || !compound_refinemv_size_allowed(n4w, n4h) {
         return Ok(false);
     }
-    if !compound_refinemv_mode_allowed(core, compound.y_mode, tile_offset)? {
+    if !compound_refinemv_mode_allowed(core, compound, tile_offset)? {
         return Ok(false);
     }
     compound_refinemv_reference_allowed(core, reference, ref_frame_idx, compound, tile_offset)
@@ -1158,7 +1172,7 @@ const fn compound_refinemv_size_allowed(n4w: usize, n4h: usize) -> bool {
 
 fn compound_refinemv_mode_allowed(
     core: &FrameHeaderCore,
-    y_mode: CompoundYMode,
+    compound: super::super::compound::CompoundBlockSyntax,
     tile_offset: ByteOffset,
 ) -> Result<bool> {
     let opfl_refine_type = core
@@ -1173,7 +1187,34 @@ fn compound_refinemv_mode_allowed(
                 SPEC_READ_REFINEMV
             )
         })?;
-    Ok(!(opfl_refine_type == REFINE_SWITCHABLE && y_mode.has_newmv()))
+    Ok(compound_refinemv_mode_allowed_for_type(
+        compound,
+        opfl_refine_type,
+    ))
+}
+
+const fn compound_refinemv_mode_allowed_for_type(
+    compound: super::super::compound::CompoundBlockSyntax,
+    opfl_refine_type: u32,
+) -> bool {
+    !(opfl_refine_type == REFINE_SWITCHABLE && compound.y_mode.has_newmv() && !compound.use_optflow)
+}
+
+fn compound_refinemv_is_switchable(
+    compound: super::super::compound::CompoundBlockSyntax,
+    opfl_refine_type: u32,
+) -> bool {
+    compound.y_mode != CompoundYMode::NearNear
+        && !(compound.y_mode == CompoundYMode::JointNew
+            && compound.use_optflow
+            && opfl_refine_type == REFINE_SWITCHABLE)
+}
+
+const fn compound_refinemv_active_after_blend(
+    refinemv_default: bool,
+    blend: mc::CompoundBlend,
+) -> bool {
+    refinemv_default && matches!(blend, mc::CompoundBlend::Average { .. })
 }
 
 fn compound_refinemv_reference_allowed<T: ReconSample>(
@@ -2133,6 +2174,60 @@ mod tests {
                 ref_frame1: 1,
                 blend: mc::CompoundBlend::default(),
             },
+        ));
+    }
+
+    #[test]
+    fn compound_refinemv_switchability_matches_mode_and_optflow() {
+        let mut compound = crate::prediction::inter::compound::CompoundBlockSyntax {
+            y_mode: CompoundYMode::NearNear,
+            use_optflow: false,
+            ref_frame0: 0,
+            ref_frame1: 1,
+            mv0: Mv::ZERO,
+            mv1: Mv::ZERO,
+        };
+        assert!(!compound_refinemv_is_switchable(
+            compound,
+            REFINE_SWITCHABLE
+        ));
+        compound.y_mode = CompoundYMode::NearNew;
+        assert!(compound_refinemv_is_switchable(compound, REFINE_SWITCHABLE));
+        assert!(!compound_refinemv_mode_allowed_for_type(
+            compound,
+            REFINE_SWITCHABLE
+        ));
+        compound.use_optflow = true;
+        assert!(compound_refinemv_mode_allowed_for_type(
+            compound,
+            REFINE_SWITCHABLE
+        ));
+        compound.y_mode = CompoundYMode::JointNew;
+        assert!(!compound_refinemv_is_switchable(
+            compound,
+            REFINE_SWITCHABLE
+        ));
+        assert!(compound_refinemv_is_switchable(compound, REFINE_ALL));
+    }
+
+    #[test]
+    fn compound_masked_blends_cancel_default_refinemv() {
+        for (blend, expected) in [
+            (mc::CompoundBlend::default(), true),
+            (
+                mc::CompoundBlend::Wedge {
+                    index: 0,
+                    sign: false,
+                },
+                false,
+            ),
+            (mc::CompoundBlend::DiffWeighted { inverse: false }, false),
+        ] {
+            assert_eq!(compound_refinemv_active_after_blend(true, blend), expected);
+        }
+        assert!(!compound_refinemv_active_after_blend(
+            false,
+            mc::CompoundBlend::default()
         ));
     }
 
