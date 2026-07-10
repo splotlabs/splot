@@ -268,59 +268,43 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 core.order_hint_lsb.unwrap_or(0),
                 compound.ref_frame1,
             );
+        let independent_candidates = |idx0, idx1| {
+            let stack0 = find_mv_stack_with_temporal(
+                mv_grid,
+                &single_ref_block_context(block_ctx, compound.ref_frame0),
+                Mv::ZERO,
+                bank,
+                warp_param_bank,
+                false,
+                drl_reorder,
+                temporal,
+                temporal_first0,
+            );
+            let stack1 = find_mv_stack_with_temporal(
+                mv_grid,
+                &single_ref_block_context(block_ctx, compound.ref_frame1),
+                Mv::ZERO,
+                bank,
+                warp_param_bank,
+                false,
+                drl_reorder,
+                temporal,
+                temporal_first1,
+            );
+            [stack0.candidate(idx0), stack1.candidate(idx1)]
+        };
         match compound.y_mode {
             CompoundYMode::NearNear => {
-                let stack0 = find_mv_stack_with_temporal(
-                    mv_grid,
-                    &single_ref_block_context(block_ctx, compound.ref_frame0),
-                    Mv::ZERO,
-                    bank,
-                    warp_param_bank,
-                    false,
-                    drl_reorder,
-                    temporal,
-                    temporal_first0,
-                );
-                let stack1 = find_mv_stack_with_temporal(
-                    mv_grid,
-                    &single_ref_block_context(block_ctx, compound.ref_frame1),
-                    Mv::ZERO,
-                    bank,
-                    warp_param_bank,
-                    false,
-                    drl_reorder,
-                    temporal,
-                    temporal_first1,
-                );
-                compound.mv0 = stack0.candidate(ref_mv_idx0);
-                compound.mv1 = stack1.candidate(ref_mv_idx1);
+                [compound.mv0, compound.mv1] = if compound_reads_second_drl(compound) {
+                    independent_candidates(ref_mv_idx0, ref_mv_idx1)
+                } else {
+                    paired_candidate(ref_mv_idx).mvs
+                };
             }
             CompoundYMode::NearNew | CompoundYMode::NewNear => {
                 let has_second_drl = compound_reads_second_drl(compound);
                 let candidates = if has_second_drl {
-                    let stack0 = find_mv_stack_with_temporal(
-                        mv_grid,
-                        &single_ref_block_context(block_ctx, compound.ref_frame0),
-                        Mv::ZERO,
-                        bank,
-                        warp_param_bank,
-                        false,
-                        drl_reorder,
-                        temporal,
-                        temporal_first0,
-                    );
-                    let stack1 = find_mv_stack_with_temporal(
-                        mv_grid,
-                        &single_ref_block_context(block_ctx, compound.ref_frame1),
-                        Mv::ZERO,
-                        bank,
-                        warp_param_bank,
-                        false,
-                        drl_reorder,
-                        temporal,
-                        temporal_first1,
-                    );
-                    [stack0.candidate(ref_mv_idx0), stack1.candidate(ref_mv_idx1)]
+                    independent_candidates(ref_mv_idx0, ref_mv_idx1)
                 } else {
                     paired_candidate(ref_mv_idx).mvs
                 };

@@ -491,7 +491,7 @@ fn wedge_temporal_storage_keeps_only_a_dominant_reference() {
 }
 
 #[test]
-fn compound_opfl_mode_suppresses_second_drl_idx() {
+fn compound_opfl_near_near_uses_one_paired_drl_idx() {
     let mut compound = crate::prediction::inter::compound::CompoundBlockSyntax {
         y_mode: CompoundYMode::NearNear,
         use_optflow: false,
