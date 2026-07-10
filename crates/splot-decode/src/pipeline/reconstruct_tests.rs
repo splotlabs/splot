@@ -65,7 +65,7 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
                 &[42; 64 * 16],
             )
             .unwrap();
-        reconstruct_inter_block_residual_rect_into(
+        let result = reconstruct_inter_block_residual_rect_into(
             &mut workspace,
             block,
             PlaneId::Y,
@@ -77,18 +77,25 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
             true,
             true,
             BitDepth::Eight,
-        )
-        .unwrap();
-        workspace.reconstructed_sample(PlaneId::Y, 0, 0).unwrap()
+        );
+        result.map(|()| workspace.reconstructed_sample(PlaneId::Y, 0, 0).unwrap())
     };
 
-    assert_eq!(reconstruct(&block), 40);
+    assert_eq!(reconstruct(&block).unwrap(), 40);
     assert_eq!(
         reconstruct(&LumaCoeffBlock {
             intra_ist: None,
-            ..block
-        }),
+            ..block.clone()
+        })
+        .unwrap(),
         76,
+    );
+    assert!(
+        reconstruct(&LumaCoeffBlock {
+            plane_tx_type: 1,
+            ..block
+        })
+        .is_err()
     );
 }
 
