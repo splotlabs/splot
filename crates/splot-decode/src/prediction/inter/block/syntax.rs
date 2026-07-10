@@ -135,16 +135,39 @@ pub(super) fn read_skip_drl_idx(
     max_drl_bits_minus_1: u32,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
+    read_indexed_drl_idx(cdfs, symbols, max_drl_bits_minus_1, tile_offset, |idx| {
+        TileCdfSelector::SkipDrlMode { idx }
+    })
+}
+
+fn read_indexed_drl_idx(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    max_drl_bits_minus_1: u32,
+    tile_offset: ByteOffset,
+    selector: impl Fn(usize) -> TileCdfSelector,
+) -> Result<usize> {
     let max_drl_bits = max_drl_bits_minus_1.saturating_add(1) as usize;
     for idx in 0..max_drl_bits {
         let drl_mode = cdfs
-            .read_block_symbol_trace(TileCdfSelector::SkipDrlMode { idx: idx.min(2) }, symbols)
+            .read_block_symbol_trace(selector(idx.min(2)), symbols)
             .map_err(|_| symbol_read_error(tile_offset))?;
         if drl_mode.get() == 0 {
             return Ok(idx);
         }
     }
     Ok(max_drl_bits)
+}
+
+pub(super) fn read_tip_drl_idx(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    max_drl_bits_minus_1: u32,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    read_indexed_drl_idx(cdfs, symbols, max_drl_bits_minus_1, tile_offset, |idx| {
+        TileCdfSelector::TipDrlMode { idx }
+    })
 }
 
 pub(super) fn read_use_amvd_syntax(
@@ -288,38 +311,34 @@ mod tests {
 
     const TILE_OFFSET: ByteOffset = ByteOffset::new(0);
 
-    fn encode_drl_symbols(sequence: &[(usize, u8)]) -> Vec<u8> {
+    fn encode_indexed_symbols(
+        sequence: &[(usize, u8)],
+        selector: impl Fn(usize) -> TileCdfSelector,
+    ) -> Vec<u8> {
         let mut tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut encoder = SymbolEncoder::with_config(
             SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
         );
         for &(idx, value) in sequence {
-            tile.with_row_mut(
-                TileCdfSelector::DrlMode {
-                    idx: idx.min(2),
-                    ctx: 0,
-                },
-                |row| encoder.write_symbol(row, Symbol::new(value)),
-            )
-            .unwrap()
-            .unwrap();
-        }
-        encoder.finish().unwrap().into_bytes()
-    }
-
-    fn encode_skip_drl_symbols(sequence: &[(usize, u8)]) -> Vec<u8> {
-        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut encoder = SymbolEncoder::with_config(
-            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-        );
-        for &(idx, value) in sequence {
-            tile.with_row_mut(TileCdfSelector::SkipDrlMode { idx: idx.min(2) }, |row| {
+            tile.with_row_mut(selector(idx.min(2)), |row| {
                 encoder.write_symbol(row, Symbol::new(value))
             })
             .unwrap()
             .unwrap();
         }
         encoder.finish().unwrap().into_bytes()
+    }
+
+    fn encode_drl_symbols(sequence: &[(usize, u8)]) -> Vec<u8> {
+        encode_indexed_symbols(sequence, |idx| TileCdfSelector::DrlMode { idx, ctx: 0 })
+    }
+
+    fn encode_skip_drl_symbols(sequence: &[(usize, u8)]) -> Vec<u8> {
+        encode_indexed_symbols(sequence, |idx| TileCdfSelector::SkipDrlMode { idx })
+    }
+
+    fn encode_tip_drl_symbols(sequence: &[(usize, u8)]) -> Vec<u8> {
+        encode_indexed_symbols(sequence, |idx| TileCdfSelector::TipDrlMode { idx })
     }
 
     fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
@@ -364,14 +383,22 @@ mod tests {
         assert_eq!(idx, 4);
     }
 
-    #[test]
-    fn skip_drl_idx_uses_dedicated_cdf_banks() {
-        let payload = encode_skip_drl_symbols(&[(0, 1), (1, 0)]);
+    fn assert_drl_reader(
+        payload: &[u8],
+        reader: fn(&mut TileCdfSubset, &mut SymbolDecoder<'_>, u32, ByteOffset) -> Result<usize>,
+    ) {
         let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut symbols = symbol_decoder(&payload);
+        let mut symbols = symbol_decoder(payload);
 
-        let idx = read_skip_drl_idx(&mut tile, &mut symbols, 3, TILE_OFFSET).unwrap();
+        let idx = reader(&mut tile, &mut symbols, 3, TILE_OFFSET).unwrap();
 
         assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn skip_and_tip_drl_idx_use_dedicated_cdf_banks() {
+        let sequence = [(0, 1), (1, 0)];
+        assert_drl_reader(&encode_skip_drl_symbols(&sequence), read_skip_drl_idx);
+        assert_drl_reader(&encode_tip_drl_symbols(&sequence), read_tip_drl_idx);
     }
 }

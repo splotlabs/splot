@@ -11,6 +11,8 @@ pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
 
 pub(crate) const MAX_WARP_REF_CANDIDATES: usize = 4;
 
+pub(crate) const TIP_REF_FRAME: i8 = 7;
+
 pub(crate) const DEFAULT_WARP_PARAMS: [i64; 6] = [
     0,
     0,
@@ -565,7 +567,11 @@ fn matching_stack_mv(cell: NeighbourCell, block: &MvBlockContext) -> Option<Mv> 
     None
 }
 
-fn mode_ctx_match_newmv(cell: NeighbourCell, block: &MvBlockContext) -> Option<bool> {
+fn mode_ctx_match_newmv(
+    cell: NeighbourCell,
+    block: &MvBlockContext,
+    tip_ref_pair: Option<(i8, i8)>,
+) -> Option<bool> {
     if !cell.is_inter {
         return None;
     }
@@ -578,6 +584,12 @@ fn mode_ctx_match_newmv(cell: NeighbourCell, block: &MvBlockContext) -> Option<b
         }
         return None;
     };
+    if cell.ref_frame0 == TIP_REF_FRAME
+        && cell.ref_frame1.is_none()
+        && tip_ref_pair == Some((block.ref_frame0, block_ref1))
+    {
+        return Some(cell.newmv_for_list0);
+    }
     if cell.ref_frame0 == block.ref_frame0 && cell.ref_frame1 == Some(block_ref1) {
         return Some(cell.newmv_for_list0 || cell.newmv_for_list1);
     }
@@ -595,6 +607,14 @@ pub(crate) struct ModeContext {
 }
 
 pub(crate) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> ModeContext {
+    find_mode_ctx_with_tip(grid, block, None)
+}
+
+pub(crate) fn find_mode_ctx_with_tip(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    tip_ref_pair: Option<(i8, i8)>,
+) -> ModeContext {
     let mut new_mv_count = 0usize;
     let mut warp_mv_count = 0usize;
     let mut found = [false; 4];
@@ -603,7 +623,7 @@ pub(crate) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> M
         let Some(cell) = probe.cell(grid, block) else {
             continue;
         };
-        let Some(is_newmv) = mode_ctx_match_newmv(cell, block) else {
+        let Some(is_newmv) = mode_ctx_match_newmv(cell, block, tip_ref_pair) else {
             continue;
         };
         if is_newmv {
@@ -693,6 +713,14 @@ impl BlockNeighbourContext {
             break;
         }
         default
+    }
+
+    pub(crate) fn tip_mode_ctx(&self) -> usize {
+        self.cells
+            .iter()
+            .take(self.cell_count)
+            .filter(|cell| cell.ref_frame0 == TIP_REF_FRAME)
+            .count()
     }
 
     pub(crate) fn comp_mode_ctx(
@@ -918,6 +946,9 @@ fn is_backward_ref_frame(
 ) -> bool {
     if !cell.is_inter || cell.ref_frame0 < 0 {
         return false;
+    }
+    if cell.ref_frame0 == TIP_REF_FRAME {
+        return true;
     }
     let Some(&slot) = ref_frame_idx.get(cell.ref_frame0 as usize) else {
         return false;

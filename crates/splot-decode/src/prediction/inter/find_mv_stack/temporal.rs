@@ -7,6 +7,8 @@ use super::{Mv, warp_sub_mv_at};
 
 const MAX_FRAME_DISTANCE: i32 = 31;
 const REFMVS_LIMIT: i32 = (1 << 11) - 1;
+const MV_LIMIT: i32 = (1 << 16) - 1;
+const TIP_DIRECTIONS: [(i32, i32); 4] = [(-1, 0), (0, -1), (1, 0), (0, 1)];
 const DIV_MULT: [i64; 32] = [
     0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
     1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
@@ -178,6 +180,62 @@ impl ProjectedTemporalMotionField {
             };
         }
     }
+
+    fn set(&mut self, y8: usize, x8: usize, mv: Mv, ref_offset: i32, valid: bool) {
+        let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8) else {
+            return;
+        };
+        if let Some(cell) = self.cells.get_mut(index) {
+            *cell = ProjectedTemporalMotionCell {
+                valid,
+                mv,
+                ref_offset,
+            };
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TipReferencePair {
+    pub(crate) past_ref: i8,
+    pub(crate) future_ref: i8,
+    pub(crate) past_offset: i32,
+    pub(crate) future_offset: i32,
+    pub(crate) ref_offset: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TipMotionField {
+    field: ProjectedTemporalMotionField,
+    references: TipReferencePair,
+}
+
+impl TipMotionField {
+    fn candidate(&self, y8: usize, x8: usize, base_mv: Mv) -> [Mv; 2] {
+        let cell = self.field.cell(y8, x8).unwrap_or_default();
+        let projected = if cell.valid {
+            [
+                project_mv(
+                    cell.mv,
+                    self.references.past_offset,
+                    self.references.ref_offset,
+                )
+                .unwrap_or(Mv::ZERO),
+                project_mv(
+                    cell.mv,
+                    self.references.future_offset,
+                    self.references.ref_offset,
+                )
+                .unwrap_or(Mv::ZERO),
+            ]
+        } else {
+            [Mv::ZERO; 2]
+        };
+        projected.map(|mv| Mv {
+            row: (mv.row + base_mv.row).clamp(-MV_LIMIT, MV_LIMIT),
+            col: (mv.col + base_mv.col).clamp(-MV_LIMIT, MV_LIMIT),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -185,6 +243,7 @@ pub(crate) struct TemporalMvContext {
     current_order_hint: u32,
     ref_order_hints: Vec<Option<u32>>,
     field: ProjectedTemporalMotionField,
+    tip: Option<TipMotionField>,
 }
 
 impl TemporalMvContext {
@@ -222,7 +281,80 @@ impl TemporalMvContext {
             current_order_hint,
             ref_order_hints,
             field,
+            tip: None,
         })
+    }
+
+    pub(crate) fn prepare_tip(
+        &mut self,
+        projection_step: usize,
+        superblock_size8: usize,
+        fill_holes: bool,
+    ) -> bool {
+        let Some(references) = self.tip_reference_pair() else {
+            return false;
+        };
+        let projection_step = projection_step.clamp(1, 2);
+        let mut field = ProjectedTemporalMotionField {
+            width8: self.field.width8,
+            height8: self.field.height8,
+            cells: vec![ProjectedTemporalMotionCell::default(); self.field.cells.len()],
+        };
+        for y8 in (0..field.height8).step_by(projection_step) {
+            for x8 in (0..field.width8).step_by(projection_step) {
+                let Some(source) = self.field.cell(y8, x8) else {
+                    continue;
+                };
+                if source.valid
+                    && let Some(mv) =
+                        project_mv(source.mv, references.ref_offset, source.ref_offset)
+                {
+                    field.set(y8, x8, mv, references.ref_offset, true);
+                }
+            }
+        }
+        if fill_holes {
+            fill_tip_holes(&mut field, projection_step, superblock_size8.max(1));
+            average_tip_motion(&mut field, projection_step, superblock_size8.max(1));
+        }
+        fill_tip_sampling_gaps(&mut field, projection_step);
+        self.tip = Some(TipMotionField { field, references });
+        true
+    }
+
+    pub(crate) fn tip_reference_pair(&self) -> Option<TipReferencePair> {
+        let current = i32::try_from(self.current_order_hint).ok()?;
+        let mut closest_past: Option<(usize, i32, i32)> = None;
+        let mut closest_future: Option<(usize, i32, i32)> = None;
+        for (index, hint) in self.ref_order_hints.iter().copied().enumerate() {
+            let Some(hint) = hint.and_then(|hint| i32::try_from(hint).ok()) else {
+                continue;
+            };
+            let distance = super::super::get_relative_dist(current, hint);
+            if distance > 0 && closest_past.is_none_or(|(_, old, _)| distance < old) {
+                closest_past = Some((index, distance, hint));
+            } else if distance < 0 && closest_future.is_none_or(|(_, old, _)| distance > old) {
+                closest_future = Some((index, distance, hint));
+            }
+        }
+        let (past_ref, past_offset, past_hint) = closest_past?;
+        let (future_ref, future_offset, future_hint) = closest_future?;
+        Some(TipReferencePair {
+            past_ref: i8::try_from(past_ref).ok()?,
+            future_ref: i8::try_from(future_ref).ok()?,
+            past_offset,
+            future_offset,
+            ref_offset: super::super::get_relative_dist(future_hint, past_hint)
+                .min(MAX_FRAME_DISTANCE),
+        })
+    }
+
+    pub(crate) fn tip_references(&self) -> Option<TipReferencePair> {
+        Some(self.tip.as_ref()?.references)
+    }
+
+    pub(crate) fn tip_candidate(&self, y8: usize, x8: usize, base_mv: Mv) -> Option<[Mv; 2]> {
+        Some(self.tip.as_ref()?.candidate(y8, x8, base_mv))
     }
 
     pub(super) fn motion_field_mv(&self, ref_frame: i8, y8: usize, x8: usize) -> Option<Mv> {
@@ -254,6 +386,171 @@ impl TemporalMvContext {
         );
         Some(if dist.abs() <= 2 { 2 } else { 1 })
     }
+}
+
+fn fill_tip_holes(field: &mut ProjectedTemporalMotionField, step: usize, superblock_size8: usize) {
+    for block_y in (0..field.height8).step_by(superblock_size8) {
+        for block_x in (0..field.width8).step_by(superblock_size8) {
+            let end_y = (block_y + superblock_size8).min(field.height8);
+            let end_x = (block_x + superblock_size8).min(field.width8);
+            for y8 in (block_y..end_y).step_by(step) {
+                for x8 in (block_x..end_x).step_by(step) {
+                    let source = field.cell(y8, x8).unwrap_or_default();
+                    for (dy, dx) in TIP_DIRECTIONS {
+                        let dst_y = y8 as i32 + dy * step as i32;
+                        let dst_x = x8 as i32 + dx * step as i32;
+                        let Ok(dst_y) = usize::try_from(dst_y) else {
+                            continue;
+                        };
+                        let Ok(dst_x) = usize::try_from(dst_x) else {
+                            continue;
+                        };
+                        if dst_y >= block_y
+                            && dst_y < end_y
+                            && dst_x >= block_x
+                            && dst_x < end_x
+                            && !field.cell(dst_y, dst_x).is_some_and(|cell| cell.valid)
+                        {
+                            field.set(dst_y, dst_x, source.mv, source.ref_offset, source.valid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn average_tip_motion(
+    field: &mut ProjectedTemporalMotionField,
+    step: usize,
+    superblock_size8: usize,
+) {
+    let mut averaged = field.clone();
+    for block_y in (0..field.height8).step_by(superblock_size8) {
+        for block_x in (0..field.width8).step_by(superblock_size8) {
+            let end_y = (block_y + superblock_size8).min(field.height8);
+            let end_x = (block_x + superblock_size8).min(field.width8);
+            for y8 in (block_y..end_y).step_by(step) {
+                for x8 in (block_x..end_x).step_by(step) {
+                    let mut sum = Mv::ZERO;
+                    let mut count = 0usize;
+                    for (dy, dx) in TIP_DIRECTIONS.into_iter().chain([(0, 0)]) {
+                        let candidate_y = y8 as i32 + dy * step as i32;
+                        let candidate_x = x8 as i32 + dx * step as i32;
+                        let (Ok(candidate_y), Ok(candidate_x)) =
+                            (usize::try_from(candidate_y), usize::try_from(candidate_x))
+                        else {
+                            continue;
+                        };
+                        if candidate_y < block_y
+                            || candidate_y >= end_y
+                            || candidate_x < block_x
+                            || candidate_x >= end_x
+                        {
+                            continue;
+                        }
+                        let Some(cell) = field
+                            .cell(candidate_y, candidate_x)
+                            .filter(|cell| cell.valid)
+                        else {
+                            continue;
+                        };
+                        sum.row += cell.mv.row;
+                        sum.col += cell.mv.col;
+                        count += 1;
+                    }
+                    if count == 0 {
+                        averaged.set(y8, x8, Mv::ZERO, 0, false);
+                    } else {
+                        averaged.set(
+                            y8,
+                            x8,
+                            Mv {
+                                row: divide_tip_average(sum.row, count),
+                                col: divide_tip_average(sum.col, count),
+                            },
+                            field.cell(y8, x8).map_or(0, |cell| cell.ref_offset),
+                            true,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    *field = averaged;
+}
+
+#[doc = "AV2 § 7.10.4 Weight_Div_Mult motion-vector average."]
+fn divide_tip_average(value: i32, count: usize) -> i32 {
+    const WEIGHTS: [i64; 6] = [0, 65_536, 32_768, 21_845, 16_384, 13_107];
+    round2_signed(i64::from(value) * WEIGHTS[count], 16) as i32
+}
+
+fn fill_tip_sampling_gaps(field: &mut ProjectedTemporalMotionField, step: usize) {
+    if step != 2 {
+        return;
+    }
+    for y8 in (0..field.height8).step_by(2) {
+        for x8 in (0..field.width8).step_by(2) {
+            for (dy, dx) in [(0usize, 1usize), (1, 0), (1, 1)] {
+                fill_tip_sampling_gap(field, y8, x8, dy, dx);
+            }
+        }
+    }
+}
+
+#[doc = "AV2 § 7.10.5 fill_tpl and calc_avg motion-vector gap fill."]
+fn fill_tip_sampling_gap(
+    field: &mut ProjectedTemporalMotionField,
+    y8: usize,
+    x8: usize,
+    dy: usize,
+    dx: usize,
+) {
+    let Some(anchor) = field.cell(y8, x8).filter(|cell| cell.valid) else {
+        return;
+    };
+    if y8 + dy >= field.height8 || x8 + dx >= field.width8 {
+        return;
+    }
+    let mut sum = Mv::ZERO;
+    let mut count = 0i32;
+    for candidate_y in 0..=1 {
+        for candidate_x in 0..=1 {
+            if dy < candidate_y || dx < candidate_x {
+                continue;
+            }
+            let source_y = y8 + 2 * candidate_y;
+            let source_x = x8 + 2 * candidate_x;
+            let Some(source) = field.cell(source_y, source_x).filter(|cell| cell.valid) else {
+                continue;
+            };
+            let mv = if candidate_y == 0 && candidate_x == 0 {
+                source.mv
+            } else {
+                project_mv(source.mv, anchor.ref_offset, source.ref_offset).unwrap_or(Mv::ZERO)
+            };
+            sum.row += mv.row;
+            sum.col += mv.col;
+            count += 1;
+        }
+    }
+    let average = |value: i32| match count {
+        1 => value,
+        2 => round2_signed(i64::from(value), 1) as i32,
+        3 => round2_signed(i64::from(value) * 85, 8) as i32,
+        _ => round2_signed(i64::from(value), 2) as i32,
+    };
+    field.set(
+        y8 + dy,
+        x8 + dx,
+        Mv {
+            row: average(sum.row),
+            col: average(sum.col),
+        },
+        anchor.ref_offset,
+        true,
+    );
 }
 
 fn project_temporal_motion_field(
@@ -368,5 +665,60 @@ fn uncompress_tmvp_component(value: i32) -> i32 {
         -uncompressed
     } else {
         uncompressed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn tip_context(
+        current_order_hint: u32,
+        ref_order_hints: Vec<Option<u32>>,
+        mi_rows: usize,
+        mi_cols: usize,
+    ) -> TemporalMvContext {
+        TemporalMvContext {
+            current_order_hint,
+            ref_order_hints,
+            field: ProjectedTemporalMotionField::new(mi_rows, mi_cols).unwrap(),
+            tip: None,
+        }
+    }
+
+    #[test]
+    fn tip_reference_pair_uses_the_nearest_past_and_future_references() {
+        let context = tip_context(10, vec![Some(6), Some(9), Some(12), Some(15)], 4, 4);
+
+        assert_eq!(
+            context.tip_reference_pair(),
+            Some(TipReferencePair {
+                past_ref: 1,
+                future_ref: 2,
+                past_offset: 1,
+                future_offset: -2,
+                ref_offset: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn tip_projection_fills_unsampled_units_and_adds_the_block_mv() {
+        let mut context = tip_context(10, vec![Some(8), Some(12)], 4, 4);
+        context.field.set(0, 0, Mv { row: 8, col: -16 }, 4, true);
+
+        assert!(context.prepare_tip(2, 2, false));
+        assert_eq!(context.tip_references(), context.tip_reference_pair());
+        let expected = [Mv { row: 5, col: -6 }, Mv { row: -3, col: 10 }];
+        for y8 in 0..2 {
+            for x8 in 0..2 {
+                assert_eq!(
+                    context.tip_candidate(y8, x8, Mv { row: 1, col: 2 }),
+                    Some(expected)
+                );
+            }
+        }
     }
 }

@@ -181,6 +181,31 @@ fn recorded_skip_mode_contributes_to_the_next_block_context() {
 }
 
 #[test]
+fn tip_neighbour_matches_its_underlying_compound_reference_pair() {
+    let mut grid = empty_grid();
+    record_inter_ref(
+        &mut grid,
+        0,
+        0,
+        TIP_REF_FRAME,
+        NeighbourYMode::NewMv,
+        Mv::ZERO,
+        false,
+    );
+    let mut block = block_at(0, N4_32);
+    block.ref_frame1 = Some(1);
+
+    let without_tip = find_mode_ctx(&grid, &block);
+    let with_tip = find_mode_ctx_with_tip(&grid, &block, Some((0, 1)));
+    let wrong_pair = find_mode_ctx_with_tip(&grid, &block, Some((0, 2)));
+
+    assert_eq!(without_tip.new_mv_count, 0);
+    assert_eq!(wrong_pair.new_mv_count, 0);
+    assert_eq!(with_tip.new_mv_count, 2);
+    assert_eq!(block_neighbour_ctx(&grid, &block).tip_mode_ctx(), 2);
+}
+
+#[test]
 fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
     let mut grid = empty_grid();
     let mvs = [Mv { row: 8, col: 16 }, Mv { row: -8, col: 24 }];

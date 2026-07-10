@@ -24,9 +24,9 @@ use splot_recon::{
 
 use super::find_mv_stack::{
     BlockNeighbourContext, BlockPrecisionRecord, ModeContext, MotionMode, MvBlockContext,
-    NeighbourMvGrid, NeighbourYMode, TemporalMotionField, TemporalMvContext, block_neighbour_ctx,
-    find_compound_mv_stack_with_temporal, find_mode_ctx, find_mv_stack,
-    find_mv_stack_with_temporal,
+    NeighbourMvGrid, NeighbourYMode, TIP_REF_FRAME, TemporalMotionField, TemporalMvContext,
+    block_neighbour_ctx, find_compound_mv_stack_with_temporal, find_mode_ctx,
+    find_mode_ctx_with_tip, find_mv_stack, find_mv_stack_with_temporal,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
@@ -201,7 +201,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         )
     })?;
     let current_order_hint = core.order_hint_lsb.unwrap_or(0);
-    let temporal_context = TemporalMvContext::from_references(
+    let mut temporal_context = TemporalMvContext::from_references(
         mi_rows,
         mi_cols,
         current_order_hint,
@@ -245,6 +245,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             SPEC_MODE_INFO
         )
     })?;
+    tip::prepare_motion_field(&mut temporal_context, core, sb_h4);
 
     let residual_tool_policy = if frame_is_intra {
         crate::pipeline::general_intra::general_intra_transform_tool_residual_policy(sequence)
@@ -700,6 +701,9 @@ fn decode_block<T: ReconSample>(
         .and_then(|inter| inter.use_ref_frame_mvs)
         == Some(true);
     let temporal_stack_context = use_temporal.then_some(temporal_context);
+    let tip_ref_pair = temporal_context
+        .tip_references()
+        .map(|references| (references.past_ref, references.future_ref));
     let temporal_first_frame = drl_reorder != DrlReorder::Always && use_temporal && refs_one_sided;
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
     let skip_mode = read_skip_mode_syntax(
@@ -1060,22 +1064,17 @@ fn decode_block<T: ReconSample>(
         .as_ref()
         .and_then(|inter| inter.tip_frame_mode)
         .unwrap_or(TipFrameMode::Disabled);
-    if tip_frame_mode != TipFrameMode::Disabled && tip_allowed_for_block(frontier, n4w, n4h) {
-        let tip_ref = cdfs
-            .read_block_symbol_trace(TileCdfSelector::TipMode { ctx: 0 }, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
-            .get();
-        if tip_ref != 0 {
-            return Err(inter_cap!(
-                "inter_tip_ref_frame",
-                tile_offset,
-                "inter.tip_ref_frame",
-                SPEC_MODE_INFO
-            ));
-        }
-    }
-    let uses_compound = if reference_select && is_comp_ref_allowed(n4w, n4h) {
-        read_block_reference_mode(
+    let tip_ref = tip::read_reference(
+        cdfs,
+        symbols,
+        tip_frame_mode,
+        frontier,
+        &neighbour_ctx,
+        (n4w, n4h),
+        tile_offset,
+    )?;
+    let uses_compound = if !tip_ref && reference_select && is_comp_ref_allowed(n4w, n4h) {
+        compound_path::read_reference_mode(
             cdfs,
             symbols,
             &neighbour_ctx,
@@ -1099,6 +1098,7 @@ fn decode_block<T: ReconSample>(
             block_decoded,
             mv_grid,
             temporal_stack_context,
+            tip_ref_pair,
             motion_field,
             &mut block_ctx,
             &neighbour_ctx,
@@ -1135,7 +1135,9 @@ fn decode_block<T: ReconSample>(
         );
     }
 
-    let ref_frame0: i8 = if num_total_refs >= 2 {
+    let ref_frame0: i8 = if tip_ref {
+        TIP_REF_FRAME
+    } else if num_total_refs >= 2 {
         let decisions = num_total_refs - 1;
         let mut contexts = [0usize; 6];
         for (ref_idx, ctx) in contexts.iter_mut().take(decisions).enumerate() {
@@ -1173,16 +1175,20 @@ fn decode_block<T: ReconSample>(
     block_ctx.ref_frame0 = ref_frame0;
     let mode_ctx = find_mode_ctx(mv_grid, &block_ctx);
     let force_integer_mv = effective_force_integer_mv(core);
-    let warp_mode = read_warp_inter_mode_syntax(
-        cdfs,
-        symbols,
-        allow_warpmv_mode,
-        force_integer_mv,
-        n4w,
-        n4h,
-        mode_ctx.warp_mv_count,
-        tile_offset,
-    )?;
+    let warp_mode = if tip_ref {
+        None
+    } else {
+        read_warp_inter_mode_syntax(
+            cdfs,
+            symbols,
+            allow_warpmv_mode,
+            force_integer_mv,
+            n4w,
+            n4h,
+            mode_ctx.warp_mv_count,
+            tile_offset,
+        )?
+    };
     if let Some(warp_mode) = warp_mode {
         let derive_wrl = n4w >= 2 && n4h >= 2;
         let use_temporal_first = temporal_first_frame
@@ -1423,15 +1429,27 @@ fn decode_block<T: ReconSample>(
         return Ok(non_intra_leaf_mode(frontier));
     }
 
-    let single_mode = cdfs
-        .read_block_symbol_trace(
+    let single_mode = if tip_ref {
+        if cdfs
+            .read_block_symbol_trace(TileCdfSelector::TipPredMode, symbols)
+            .map_err(|_| symbol_read_error(tile_offset))?
+            .get()
+            == 0
+        {
+            SINGLE_MODE_NEARMV
+        } else {
+            SINGLE_MODE_NEWMV
+        }
+    } else {
+        cdfs.read_block_symbol_trace(
             TileCdfSelector::SingleMode {
                 ctx: mode_ctx.new_mv_context,
             },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?;
-    let single_mode = single_mode.get();
+        .map_err(|_| symbol_read_error(tile_offset))?
+        .get()
+    };
     if single_mode != SINGLE_MODE_NEARMV
         && single_mode != SINGLE_MODE_GLOBALMV
         && single_mode != SINGLE_MODE_NEWMV
@@ -1451,20 +1469,24 @@ fn decode_block<T: ReconSample>(
         neighbour_ctx.amvd_ctx(ref_frame0),
         tile_offset,
     )?;
-    let bawp = read_bawp_syntax(
-        cdfs,
-        symbols,
-        BawpParseInput {
-            allow_bawp,
-            frame_is_switch,
-            single_mode,
-            use_amvd,
-            n4w,
-            n4h,
-            has_chroma: frontier.has_chroma,
-        },
-        tile_offset,
-    )?;
+    let bawp = if tip_ref {
+        BawpSyntax::default()
+    } else {
+        read_bawp_syntax(
+            cdfs,
+            symbols,
+            BawpParseInput {
+                allow_bawp,
+                frame_is_switch,
+                single_mode,
+                use_amvd,
+                n4w,
+                n4h,
+                has_chroma: frontier.has_chroma,
+            },
+            tile_offset,
+        )?
+    };
     let bawp = if bawp.enabled {
         let slot = usize::try_from(ref_frame0)
             .ok()
@@ -1482,7 +1504,9 @@ fn decode_block<T: ReconSample>(
     } else {
         bawp
     };
-    let interintra = if !bawp.enabled {
+    let interintra = if tip_ref {
+        None
+    } else if !bawp.enabled {
         let syntax = read_inter_intra_syntax(
             cdfs,
             symbols,
@@ -1496,7 +1520,8 @@ fn decode_block<T: ReconSample>(
     } else {
         None
     };
-    let use_temporal_first = temporal_first_frame
+    let use_temporal_first = !tip_ref
+        && temporal_first_frame
         && block_ref_within_temporal_distance(
             reference,
             ref_frame_idx,
@@ -1513,18 +1538,26 @@ fn decode_block<T: ReconSample>(
         warp_param_bank,
         false,
         drl_reorder,
-        temporal_stack_context,
+        if tip_ref {
+            None
+        } else {
+            temporal_stack_context
+        },
         use_temporal_first,
     );
 
     let ref_mv_idx = if single_mode == SINGLE_MODE_NEARMV || single_mode == SINGLE_MODE_NEWMV {
-        read_drl_idx(
-            cdfs,
-            symbols,
-            mode_ctx.new_mv_context,
-            max_drl_bits_minus_1,
-            tile_offset,
-        )?
+        if tip_ref {
+            read_tip_drl_idx(cdfs, symbols, max_drl_bits_minus_1, tile_offset)?
+        } else {
+            read_drl_idx(
+                cdfs,
+                symbols,
+                mode_ctx.new_mv_context,
+                max_drl_bits_minus_1,
+                tile_offset,
+            )?
+        }
     } else {
         0
     };
@@ -1580,15 +1613,19 @@ fn decode_block<T: ReconSample>(
         }
     };
 
-    let interp_ctx = neighbour_ctx.interp_filter_ctx(ref_frame0, false);
-    let interp = resolve_interp_filter(
-        cdfs,
-        symbols,
-        frame_interpolation_filter,
-        single_inter_needs_interp_filter(n4w, n4h, single_mode),
-        interp_ctx,
-        tile_offset,
-    )?;
+    let interp = if tip_ref {
+        ReconInterpolationFilter::EightTapSharp
+    } else {
+        let interp_ctx = neighbour_ctx.interp_filter_ctx(ref_frame0, false);
+        resolve_interp_filter(
+            cdfs,
+            symbols,
+            frame_interpolation_filter,
+            single_inter_needs_interp_filter(n4w, n4h, single_mode),
+            interp_ctx,
+            tile_offset,
+        )?
+    };
     let residual = if skip == 0 {
         if !residual_quantizer_deltas_are_zero {
             return Err(inter_cap!(
@@ -1658,22 +1695,24 @@ fn decode_block<T: ReconSample>(
         use_amvd,
         precision,
     );
-    record_temporal_motion_block(
-        motion_field,
-        reference,
-        ref_frame_idx,
-        mi_row,
-        mi_col,
-        n4w,
-        n4h,
-        mi_rows,
-        mi_cols,
-        ref_frame0,
-        None,
-        mv,
-        Mv::ZERO,
-        None,
-    );
+    if !tip_ref {
+        record_temporal_motion_block(
+            motion_field,
+            reference,
+            ref_frame_idx,
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            mi_rows,
+            mi_cols,
+            ref_frame0,
+            None,
+            mv,
+            Mv::ZERO,
+            None,
+        );
+    }
     if let Some(bank) = ref_mv_bank.as_mut() {
         bank.update_for_block(
             ref_frame0,
@@ -1716,6 +1755,23 @@ fn decode_block<T: ReconSample>(
         optflow_distances: None,
         residual,
     });
+    if tip_ref {
+        tip::reconstruct(
+            workspace,
+            &placed,
+            temporal_context,
+            sequence,
+            core,
+            ref_frame_idx,
+            reference,
+            block_qindex,
+            luma_use_tcq,
+            residual_use_ddt,
+            bit_depth,
+            tile_offset,
+        )?;
+        return Ok(non_intra_leaf_mode(frontier));
+    }
     reconstruct_placed_inter_block(
         workspace,
         &placed,
@@ -1850,62 +1906,6 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
 
 pub(crate) fn is_comp_ref_allowed(n4w: usize, n4h: usize) -> bool {
     n4w.min(n4h) >= 2 || (n4w == 1 && n4h >= 4) || (n4h == 1 && n4w >= 4)
-}
-
-fn tip_allowed_for_block(frontier: &DecodeBlockFrontier, n4w: usize, n4h: usize) -> bool {
-    tip_allowed_for_block_indices(
-        frontier.chroma_offset,
-        frontier.is_luma_part(),
-        frontier.is_chroma_part(),
-        frontier.b_size.index(),
-        frontier.chroma_ref_geometry().size().index(),
-        n4w,
-        n4h,
-    )
-}
-
-pub(super) fn tip_allowed_for_block_indices(
-    chroma_offset: bool,
-    is_luma_part: bool,
-    is_chroma_part: bool,
-    mi_size: usize,
-    chroma_mi_size: usize,
-    n4w: usize,
-    n4h: usize,
-) -> bool {
-    !chroma_offset
-        && !is_luma_part
-        && !is_chroma_part
-        && mi_size == chroma_mi_size
-        && n4w >= 2
-        && n4h >= 2
-}
-
-fn read_block_reference_mode(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    neighbour_ctx: &super::find_mv_stack::BlockNeighbourContext,
-    ref_frame_idx: &[u32],
-    ref_order_hint: &[u32],
-    current_order_hint: u32,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    let current_order_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
-    let ctx = neighbour_ctx.comp_mode_ctx(ref_frame_idx, ref_order_hint, current_order_hint);
-    let mode = cdfs
-        .read_block_symbol_trace(TileCdfSelector::CompMode { ctx }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
-        .get();
-    match mode {
-        0 => Ok(false),
-        1 => Ok(true),
-        _ => Err(inter_cap!(
-            "inter_block_reference_mode",
-            tile_offset,
-            "inter.reference_mode out of range",
-            SPEC_MODE_INFO
-        )),
-    }
 }
 
 fn inter_residual_geometry_supported(frontier: &DecodeBlockFrontier) -> bool {
@@ -2233,6 +2233,7 @@ mod prediction;
 mod residual;
 mod syntax;
 mod temporal;
+mod tip;
 mod warp;
 
 use self::filter_records::record_inter_deblock_geometry;
@@ -2241,9 +2242,11 @@ pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
 use self::syntax::{
     effective_force_integer_mv, frame_mv_precision, interp_filter_symbol, lowered_pred_mv,
     read_block_mv_precision_syntax, read_drl_idx, read_drl_idx_from, read_skip_drl_idx,
-    read_skip_mode_syntax, read_use_amvd_syntax, resolve_interp_filter,
+    read_skip_mode_syntax, read_tip_drl_idx, read_use_amvd_syntax, resolve_interp_filter,
 };
 use self::temporal::{block_ref_within_temporal_distance, record_temporal_motion_block};
+#[cfg(test)]
+pub(super) use self::tip::tip_allowed_for_block_indices;
 use self::warp::{
     WarpInterIntraSyntax, inter_mv_read_config, inter_mvd_sign_derivation_allowed,
     interintra_prediction_mode, read_warp_extend_syntax, read_warp_inter_intra_syntax,

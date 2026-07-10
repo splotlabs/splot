@@ -19,6 +19,33 @@ const MV_PROJECTION_DIV_MULT: [i32; 32] = [
 ];
 const SPEC_READ_REFINEMV: &str = "5.20.7.17";
 
+pub(super) fn read_reference_mode(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    neighbour_ctx: &BlockNeighbourContext,
+    ref_frame_idx: &[u32],
+    ref_order_hint: &[u32],
+    current_order_hint: u32,
+    tile_offset: ByteOffset,
+) -> Result<bool> {
+    let current_order_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
+    let ctx = neighbour_ctx.comp_mode_ctx(ref_frame_idx, ref_order_hint, current_order_hint);
+    let mode = cdfs
+        .read_block_symbol_trace(TileCdfSelector::CompMode { ctx }, symbols)
+        .map_err(|_| symbol_read_error(tile_offset))?
+        .get();
+    match mode {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(inter_cap!(
+            "inter_block_reference_mode",
+            tile_offset,
+            "inter.reference_mode out of range",
+            SPEC_MODE_INFO
+        )),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_compound_inter_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -31,6 +58,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     block_decoded: &TileBlockDecodedState,
     mv_grid: &mut NeighbourMvGrid,
     temporal_context: Option<&TemporalMvContext>,
+    tip_ref_pair: Option<(i8, i8)>,
     motion_field: &mut TemporalMotionField,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
@@ -94,7 +122,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     )?;
     block_ctx.ref_frame0 = pair.0;
     block_ctx.ref_frame1 = Some(pair.1);
-    let mode_ctx = find_mode_ctx(mv_grid, block_ctx);
+    let mode_ctx = find_mode_ctx_with_tip(mv_grid, block_ctx, tip_ref_pair);
     let mut compound = read_compound_mode_syntax(
         cdfs,
         symbols,
