@@ -18,6 +18,7 @@ use splot_core::span::ByteOffset;
 use splot_recon::math::{clip3, round2};
 
 mod optflow;
+pub(crate) use optflow::OptflowMotionGrid;
 
 pub(crate) const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =
     [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)];
@@ -240,6 +241,15 @@ pub(crate) fn motion_compensate_inter_block_with_optflow_mvs_into<T: ReconSample
         return Ok(None);
     };
     Ok(Some(grid.stored_mvs_at_luma_offset(0, 0)?))
+}
+
+pub(crate) fn motion_compensate_inter_block_with_optflow_grid_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: InterBlockParams<'_, T>,
+    optflow_unit_size: Option<usize>,
+    offset: ByteOffset,
+) -> Result<Option<OptflowMotionGrid>> {
+    motion_compensate_inter_block(workspace, block, optflow_unit_size, offset)
 }
 
 fn motion_compensate_inter_block<T: ReconSample>(
