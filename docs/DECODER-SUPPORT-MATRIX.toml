@@ -1486,6 +1486,20 @@ local_reference_evidence = []
 notes = "Supports the non-switchable default §5.20.7.17 refine-MV path for equal-weight compound blocks. The runtime searches each at-most-16x16 luma unit with §7.13.3.6 bilinear reference-area predictors and ordered opposing offsets, reuses the refined luma grid for chroma, composes optional optical-flow deltas over the refined bases, and stores the final motion per §7.22. The external deltaq1 vector advances from compound_refinemv_enabled to the independent compound_exit_symbol gap at byte 692. Switchable refine-MV signalling and full-stream AVM checksum agreement remain unsupported."
 
 [[row]]
+id = "inter-compound-localwarp"
+name = "compound LOCALWARP runtime"
+feature_id = "DECODE-INTER-COMPOUND-LOCALWARP"
+spec_sections = ["5.20.7.14", "7.12.3", "7.12.3.2", "7.13.3.14", "7.13.3.19", "7.13.3.20", "7.13.3.23", "7.22"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/07-decoding-process.md"
+decode_module = "crates/splot-decode/src/prediction/inter/block/compound_path.rs; crates/splot-decode/src/prediction/inter/mc.rs; crates/splot-decode/src/prediction/inter/find_mv_stack.rs; crates/splot-recon/src/warp_prediction.rs"
+tier = "tier2-inter"
+status = "partial"
+self_contained_tests = ["crates/splot-recon/src/warp_prediction.rs::tests::compound_intermediate_affine_matches_round7_spec_trace", "crates/splot-recon/src/warp_prediction.rs::tests::compound_intermediate_flat_reference_is_scaled_by_filter_gain", "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_local_warp_symbol_reports_localwarp_when_set", "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_local_warp_derives_a_model_per_reference_list", "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_warp_blend_forces_plain_average_but_keeps_masks", "cargo test -p splot-recon warp_prediction --locked", "cargo test -p splot-decode prediction::inter --locked", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = []
+notes = "Retires the inter.compound.local_warp gate. For a NEW_NEWMV compound block whose §5.20.7.14 read_motion_mode returns LOCALWARP (AVM WARP_CAUSAL), the §7.12.3 warp-sample search and §7.13.3.23 least-squares estimation run once per reference list; a list without samples keeps a translational model (AVM wm_params[ref].invalid). Each list is warped with its own model through §7.13.3.19/§7.13.3.20 emitting the §7.13.3.16 compound InterRound1=7 intermediate, then the ordinary compound average/wedge/diff-weighted blend runs; compoundWarp=1 forces the plain average. Refine-MV and CWP are suppressed and the interpolation filter is unsignalled (needs_interp_filter=0) per §5.20.7.14/16/17; masked wedge/diff-weighted remain reachable. Per-8x8 SubMvs are stored for both lists into the neighbour grid and the §7.22 motion field. On the current base (#774-#778) the ac0ej3 vector signals no compound LOCALWARP block in its reachable prefix and fails at the pre-existing general_intra_invalid_uv_mode gap at byte 12463 with or without this row, so the runtime path is proven by the bit-exact round-7 kernel, model-derivation, and parse-flow unit tests; full-stream AVM checksum agreement remains partial pending prior-reference-frame and entropy-state alignment."
+
+[[row]]
 id = "coeff-fsc-scan-walk"
 name = "Coefficient FSC scan walk"
 feature_id = "DECODE-COEFF-FSC-SCAN-WALK"

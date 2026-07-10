@@ -101,6 +101,7 @@ fn record_compound_ref(
         CWP_EQUAL,
         false,
         BlockPrecisionRecord::default(),
+        [None, None],
     );
 }
 
@@ -174,6 +175,7 @@ fn recorded_skip_mode_contributes_to_the_next_block_context() {
         CWP_EQUAL,
         true,
         BlockPrecisionRecord::default(),
+        [None, None],
     );
     let ctx = block_neighbour_ctx(&grid, &block_at(0, N4_32));
     assert_eq!(ctx.skip_mode_ctx, 2);
@@ -228,6 +230,7 @@ fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
         cwp_weight,
         true,
         BlockPrecisionRecord::most_probable(MV_PRECISION_ONE_PEL),
+        [None, None],
     );
     let mut block = block_at(0, N4_32);
     block.ref_frame1 = Some(1);

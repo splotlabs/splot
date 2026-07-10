@@ -265,7 +265,7 @@ pub(super) fn reconstruct<T: ReconSample>(
                     mv: mvs[0],
                     mv1: mvs[1],
                     interp: interpolation_filter,
-                    warp_params: None,
+                    warp_params: [None, None],
                     bawp: BawpSyntax::default(),
                     interintra: None,
                     compound_blend: blend,
@@ -319,7 +319,7 @@ pub(super) fn reconstruct<T: ReconSample>(
                     two_references.then_some(references.future_ref),
                     stored_mvs[0],
                     stored_mvs[1],
-                    None,
+                    [None, None],
                 );
             }
         }
@@ -432,7 +432,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             },
             mv1: Mv::ZERO,
             interp: ReconInterpolationFilter::EightTapSharp,
-            warp_params: None,
+            warp_params: [None, None],
             bawp: BawpSyntax::default(),
             interintra: None,
             compound_blend: mc::CompoundBlend::default(),

@@ -1392,7 +1392,7 @@ fn decode_block<T: ReconSample>(
             None,
             warp.mv,
             Mv::ZERO,
-            Some(warp.warp_params),
+            [Some(warp.warp_params), None],
         );
         warp_param_bank.update(ref_frame0, warp.warp_params);
         if let Some(bank) = ref_mv_bank.as_mut() {
@@ -1430,7 +1430,7 @@ fn decode_block<T: ReconSample>(
             mv: warp.mv,
             mv1: Mv::ZERO,
             interp: ReconInterpolationFilter::EightTap,
-            warp_params: Some(warp.warp_params),
+            warp_params: [Some(warp.warp_params), None],
             bawp: BawpSyntax::default(),
             interintra: warp_interintra_mode,
             compound_blend: mc::CompoundBlend::default(),
@@ -1737,7 +1737,7 @@ fn decode_block<T: ReconSample>(
             None,
             mv,
             Mv::ZERO,
-            None,
+            [None, None],
         );
     }
     if let Some(bank) = ref_mv_bank.as_mut() {
@@ -1775,7 +1775,7 @@ fn decode_block<T: ReconSample>(
         mv,
         mv1: Mv::ZERO,
         interp,
-        warp_params: None,
+        warp_params: [None, None],
         bawp,
         interintra,
         compound_blend: mc::CompoundBlend::default(),
@@ -2158,9 +2158,9 @@ use self::temporal::{block_ref_within_temporal_distance, record_temporal_motion_
 pub(super) use self::tip::tip_allowed_for_block_indices;
 use self::warp::{
     WarpInterIntraSyntax, inter_mv_read_config, inter_mvd_sign_derivation_allowed,
-    interintra_prediction_mode, read_warp_extend_syntax, read_warp_inter_intra_syntax,
-    read_warp_inter_mode_syntax, read_warp_newmv_delta_syntax, read_warp_newmv_motion_mode_syntax,
-    read_warpmv_delta_syntax, read_wedge_mode_syntax,
+    interintra_prediction_mode, local_warp_estimation, read_warp_extend_syntax,
+    read_warp_inter_intra_syntax, read_warp_inter_mode_syntax, read_warp_newmv_delta_syntax,
+    read_warp_newmv_motion_mode_syntax, read_warpmv_delta_syntax, read_wedge_mode_syntax,
 };
 
 use self::residual::{

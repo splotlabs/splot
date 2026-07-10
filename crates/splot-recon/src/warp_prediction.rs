@@ -30,6 +30,7 @@ const WARPEDPIXEL_PREC_SHIFTS: i64 = 1 << 6;
 const WARP_FILTER_CENTER: i64 = 3 * WARPEDPIXEL_PREC_SHIFTS;
 const INTER_ROUND0: u32 = 3;
 const INTER_ROUND1_NON_COMPOUND: u32 = 11;
+const INTER_ROUND1_COMPOUND: u32 = 7;
 const WARP_INTERMEDIATE_ROWS: usize = 15;
 const WARP_FILTER_TAPS: usize = 8;
 const WARP_PARAM_CLIP_LOW: i64 = -32_768;
@@ -103,6 +104,39 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
     i4: usize,
     j4: usize,
 ) -> Result<Vec<u16>> {
+    let raw = ext_warp_predict_unit_raw(reference, params, i4, j4, INTER_ROUND1_NON_COMPOUND)?;
+    let max_sample = i64::from(params.bit_depth.max_sample());
+    Ok(raw
+        .into_iter()
+        .map(|pred| clip3(0, max_sample, i64::from(pred)) as u16)
+        .collect())
+}
+
+/// AV2 § 7.13.3.20 extended block warp for one reference list of a compound
+/// block: identical geometry to [`ext_warp_predict_unit`] but stopping at the
+/// § 7.13.3.16 compound `InterRound1` (`Round2(s, 7)`) and returning the
+/// unclipped `Preds[refList]` intermediate for later § 7.13.3.16 blending.
+///
+/// # Errors
+/// Returns the same errors as [`ext_warp_predict_unit`].
+#[allow(clippy::too_many_arguments)]
+pub fn ext_warp_predict_unit_compound_intermediate<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    i4: usize,
+    j4: usize,
+) -> Result<Vec<i32>> {
+    ext_warp_predict_unit_raw(reference, params, i4, j4, INTER_ROUND1_COMPOUND)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ext_warp_predict_unit_raw<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    i4: usize,
+    j4: usize,
+    round1: u32,
+) -> Result<Vec<i32>> {
     validate_params(params)?;
     let sub_x = u32::from(params.subsampling_x);
     let sub_y = u32::from(params.subsampling_y);
@@ -142,16 +176,14 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
         }
     }
     let taps_y = phase(sy4)?;
-    let max_sample = i64::from(params.bit_depth.max_sample());
-    let mut out = vec![0u16; 16];
+    let mut out = vec![0i32; 16];
     for k in -2i64..2 {
         for l in -2i64..2 {
             let mut sum = 0i64;
             for (m, &tap) in taps_y.iter().enumerate() {
                 sum += i64::from(tap) * intermediate[((k + m as i64 + 2) * 4 + (l + 2)) as usize];
             }
-            let pred = round2(sum, INTER_ROUND1_NON_COMPOUND);
-            out[((k + 2) * 4 + (l + 2)) as usize] = clip3(0, max_sample, pred) as u16;
+            out[((k + 2) * 4 + (l + 2)) as usize] = round2(sum, round1) as i32;
         }
     }
     Ok(out)
@@ -178,12 +210,39 @@ pub fn warp_predict_block<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
 ) -> Result<Vec<u16>> {
+    let raw = warp_predict_block_raw(reference, params, INTER_ROUND1_NON_COMPOUND)?;
+    let max_sample = i64::from(params.bit_depth.max_sample());
+    Ok(raw
+        .into_iter()
+        .map(|pred| clip3(0, max_sample, i64::from(pred)) as u16)
+        .collect())
+}
+
+/// AV2 § 7.13.3.19 block warp for one reference list of a compound block:
+/// identical to [`warp_predict_block`] but stopping at the § 7.13.3.16 compound
+/// `InterRound1` (`Round2(s, 7)`) and returning the unclipped 8x8
+/// `Preds[refList]` intermediate for later § 7.13.3.16 compound blending.
+///
+/// # Errors
+/// Returns the same errors as [`warp_predict_block`].
+pub fn warp_predict_block_compound_intermediate<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+) -> Result<Vec<i32>> {
+    warp_predict_block_raw(reference, params, INTER_ROUND1_COMPOUND)
+}
+
+fn warp_predict_block_raw<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    round1: u32,
+) -> Result<Vec<i32>> {
     validate_params(params)?;
     let shear = setup_shear(params.warp_params)?;
     let projected = project_section_center(params)?;
     let mut intermediate = [0i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
     build_intermediate(reference, params, &shear, &projected, &mut intermediate)?;
-    build_output(params, &shear, &projected, &intermediate)
+    build_output(&shear, &projected, &intermediate, round1)
 }
 
 fn validate_params(params: &WarpPredictBlockParams) -> Result<()> {
@@ -395,13 +454,12 @@ fn build_intermediate<T: ReconSample>(
 }
 
 fn build_output(
-    params: &WarpPredictBlockParams,
     shear: &Shear,
     projected: &ProjectedCenter,
     intermediate: &[i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
-) -> Result<Vec<u16>> {
-    let mut output = vec![0u16; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
-    let max_sample = i64::from(params.bit_depth.max_sample());
+    round1: u32,
+) -> Result<Vec<i32>> {
+    let mut output = vec![0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
     for i1 in -4..4 {
         for i2 in -4..4 {
             let sy = projected
@@ -418,10 +476,9 @@ fn build_output(
                 let col = (i2 + 4) as usize;
                 sum += i64::from(tap) * i64::from(intermediate[row * WARPED_BLOCK_SIZE + col]);
             }
-            let pred = round2(sum, INTER_ROUND1_NON_COMPOUND);
             let row = (i1 + 4) as usize;
             let col = (i2 + 4) as usize;
-            output[row * WARPED_BLOCK_SIZE + col] = clip3(0, max_sample, pred) as u16;
+            output[row * WARPED_BLOCK_SIZE + col] = round2(sum, round1) as i32;
         }
     }
     Ok(output)
@@ -588,6 +645,67 @@ mod tests {
 
         let out = warp_predict_block(&view, &params).unwrap();
         assert_eq!(out, vec![77u16; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn compound_intermediate_flat_reference_is_scaled_by_filter_gain() {
+        let (ref_w, ref_h) = (16usize, 16usize);
+        let samples = vec![77u16; ref_w * ref_h];
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let params = default_params(4, 4, ref_w as i64, ref_h as i64);
+
+        let out = warp_predict_block_compound_intermediate(&view, &params).unwrap();
+        assert_eq!(out, vec![16 * 77i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn compound_intermediate_affine_matches_round7_spec_trace() {
+        let (ref_w, ref_h) = (32usize, 32usize);
+        let samples = build_ref(ref_w, ref_h);
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let mut params = default_params(10, 9, ref_w as i64, ref_h as i64);
+        params.warp_params = [
+            1 << WARPEDMODEL_PREC_BITS,
+            -(2 << WARPEDMODEL_PREC_BITS),
+            (1 << WARPEDMODEL_PREC_BITS) + 256,
+            -128,
+            192,
+            (1 << WARPEDMODEL_PREC_BITS) - 320,
+        ];
+
+        let shear = setup_shear(params.warp_params).unwrap();
+        let projected = project_section_center(&params).unwrap();
+        let mut intermediate = [0i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
+        build_intermediate(&view, &params, &shear, &projected, &mut intermediate).unwrap();
+        let mut want = vec![0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+        for i1 in -4..4 {
+            for i2 in -4..4 {
+                let sy = projected.sy4 + shear.gamma * i64::from(i2) + shear.delta * i64::from(i1);
+                let taps = &WARPED_FILTERS
+                    [(round2(sy, WARPEDDIFF_PREC_BITS) + WARP_FILTER_CENTER) as usize];
+                let mut sum = 0i64;
+                for (i3, &tap) in taps.iter().enumerate() {
+                    let row = (i1 + i3 as i32 + 4) as usize;
+                    sum += i64::from(tap)
+                        * i64::from(intermediate[row * WARPED_BLOCK_SIZE + (i2 + 4) as usize]);
+                }
+                want[(i1 + 4) as usize * WARPED_BLOCK_SIZE + (i2 + 4) as usize] =
+                    round2(sum, INTER_ROUND1_COMPOUND) as i32;
+            }
+        }
+
+        let got = warp_predict_block_compound_intermediate(&view, &params).unwrap();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn ext_compound_intermediate_flat_reference_is_scaled_by_filter_gain() {
+        let (ref_w, ref_h) = (32usize, 32usize);
+        let samples = vec![77u16; ref_w * ref_h];
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let params = default_params(8, 12, ref_w as i64, ref_h as i64);
+        let out = ext_warp_predict_unit_compound_intermediate(&view, &params, 0, 0).unwrap();
+        assert_eq!(out, vec![16 * 77i32; 16]);
     }
 
     #[test]

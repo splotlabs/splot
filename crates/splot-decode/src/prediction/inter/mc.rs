@@ -158,6 +158,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
                 mv1,
                 blend,
                 optflow_distances: None,
+                warp_params: [None, None],
             },
             interp,
             has_chroma: true,
@@ -199,6 +200,13 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         }
         self
     }
+
+    pub(crate) fn with_compound_warp(mut self, models: [Option<[i64; 6]>; 2]) -> Self {
+        if let InterPrediction::CompoundAverage { warp_params, .. } = &mut self.prediction {
+            *warp_params = models;
+        }
+        self
+    }
 }
 #[derive(Clone, Copy, Debug)]
 enum InterPrediction<'a, T: ReconSample> {
@@ -217,6 +225,7 @@ enum InterPrediction<'a, T: ReconSample> {
         mv1: Mv,
         blend: CompoundBlend,
         optflow_distances: Option<[i32; 2]>,
+        warp_params: [Option<[i64; 6]>; 2],
     },
 }
 #[derive(Clone, Copy, Debug)]
@@ -229,6 +238,7 @@ struct CompoundMcBlock<'a, T: ReconSample> {
     interp: InterpolationFilter,
     blend: CompoundBlend,
     optflow_distances: Option<[i32; 2]>,
+    warp_params: [Option<[i64; 6]>; 2],
     has_chroma: bool,
     use_refinemv: bool,
 }
@@ -303,6 +313,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
             mv1,
             blend,
             optflow_distances,
+            warp_params,
         } => motion_compensate_compound_average_block_into(
             workspace,
             CompoundMcBlock {
@@ -314,6 +325,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
                 interp: block.interp,
                 blend,
                 optflow_distances,
+                warp_params,
                 has_chroma: block.has_chroma,
                 use_refinemv: block.use_refinemv,
             },
@@ -386,6 +398,7 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
             block.mv1,
             block.interp,
             block.blend,
+            block.warp_params,
             sub_x,
             sub_y,
             luma_diff_weighted_mask.as_deref(),
@@ -609,6 +622,7 @@ fn predict_compound_plane<T: ReconSample>(
     mv1: Mv,
     interp: InterpolationFilter,
     blend: CompoundBlend,
+    warp_params: [Option<[i64; 6]>; 2],
     sub_x: u32,
     sub_y: u32,
     luma_diff_weighted_mask: Option<&[u16]>,
@@ -624,6 +638,7 @@ fn predict_compound_plane<T: ReconSample>(
         interp,
         blend,
         optflow_distances: None,
+        warp_params,
         has_chroma: true,
         use_refinemv: false,
     };
@@ -691,6 +706,9 @@ fn compound_plane_prediction_for_block<T: ReconSample>(
         return optflow::compound_optflow_plane_prediction(
             workspace, block, plane, sub_x, sub_y, motion, offset,
         );
+    }
+    if block.warp_params[0].is_some() || block.warp_params[1].is_some() {
+        return compound_warp_plane_prediction(workspace, block, plane, sub_x, sub_y, offset);
     }
     compound_plane_prediction(
         workspace,
@@ -792,6 +810,205 @@ fn compound_plane_prediction<T: ReconSample>(
         scaling0,
         scaling1,
     })
+}
+
+/// AV2 § 7.13.3.14 compound LOCALWARP plane prediction: warp each list with its
+/// own § 7.13.3.23 model (§ 7.13.3.19 block warp, § 7.13.3.20 extended warp for
+/// invalid shear / sub-8x8, or translational when the list has no samples), then
+/// feed the two § 7.13.3.16 `Preds[refList]` intermediates to the compound blend.
+fn compound_warp_plane_prediction<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    block: CompoundMcBlock<'_, T>,
+    plane: PlaneId,
+    sub_x: u32,
+    sub_y: u32,
+    offset: ByteOffset,
+) -> Result<CompoundPlanePrediction> {
+    let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
+    let pred0 = compound_ref_intermediate(
+        workspace,
+        block.reference0,
+        plane,
+        block.rect,
+        block.warp_params[0],
+        block.mv0,
+        block.interp,
+        sub_x,
+        sub_y,
+        offset,
+    )?;
+    let pred1 = compound_ref_intermediate(
+        workspace,
+        block.reference1,
+        plane,
+        block.rect,
+        block.warp_params[1],
+        block.mv1,
+        block.interp,
+        sub_x,
+        sub_y,
+        offset,
+    )?;
+    Ok(CompoundPlanePrediction {
+        pred0: pred0.samples,
+        pred1: pred1.samples,
+        plane_x,
+        plane_y,
+        block_w,
+        block_h,
+        scaling0: pred0.scaling,
+        scaling1: pred1.scaling,
+    })
+}
+
+struct CompoundRefIntermediate {
+    samples: Vec<i32>,
+    scaling: PlaneScaling,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compound_ref_intermediate<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    reference: &DecodedFrame<T>,
+    plane: PlaneId,
+    rect: McBlockRect,
+    warp_params: Option<[i64; 6]>,
+    mv: Mv,
+    interp: InterpolationFilter,
+    sub_x: u32,
+    sub_y: u32,
+    offset: ByteOffset,
+) -> Result<CompoundRefIntermediate> {
+    let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
+    let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
+    let bit_depth = workspace.info().bit_depth();
+    let scaling = derive_plane_scaling(
+        plane_x as i64,
+        plane_y as i64,
+        i64::from(mv.row),
+        i64::from(mv.col),
+        sub_x,
+        sub_y,
+        ref_mi_cols,
+        ref_mi_rows,
+        block_w as i64,
+        block_h as i64,
+    );
+    let Some(warp_params) = warp_params else {
+        let params = SubpelPredictParams {
+            interp,
+            w: block_w,
+            h: block_h,
+            start_x: scaling.start_x,
+            start_y: scaling.start_y,
+            step_x: scaling.step_x,
+            step_y: scaling.step_y,
+            first_x: scaling.first_x,
+            first_y: scaling.first_y,
+            last_x: scaling.last_x,
+            last_y: scaling.last_y,
+            bit_depth,
+        };
+        return Ok(CompoundRefIntermediate {
+            samples: subpel_predict_block_compound_intermediate(&view, &params)?,
+            scaling,
+        });
+    };
+    let (ref_width, ref_height) = (view.width(), view.height());
+    let mut samples = vec![0i32; block_w.saturating_mul(block_h)];
+    let skip_pred = !splot_recon::warp_shear_is_valid(warp_params)
+        || block_w < WARPED_BLOCK_SIZE
+        || block_h < WARPED_BLOCK_SIZE;
+    if skip_pred {
+        for i4 in 0..block_h.div_euclid(4) {
+            for j4 in 0..block_w.div_euclid(4) {
+                let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
+                    rect,
+                    plane,
+                    warp_params,
+                    (plane_x + (j4 & !1) * 4) as i64,
+                    (plane_y + (i4 & !1) * 4) as i64,
+                    block_w.min(8) as i64,
+                    block_h.min(8) as i64,
+                    sub_x,
+                    sub_y,
+                    ref_mi_cols,
+                    ref_mi_rows,
+                );
+                let params = WarpPredictBlockParams {
+                    warp_params,
+                    block_x: plane_x as i64,
+                    block_y: plane_y as i64,
+                    subsampling_x: sub_x as u8,
+                    subsampling_y: sub_y as u8,
+                    first_x,
+                    first_y,
+                    last_x,
+                    last_y,
+                    bit_depth,
+                };
+                let predicted = splot_recon::ext_warp_predict_unit_compound_intermediate(
+                    &view, &params, i4, j4,
+                )?;
+                write_compound_section(&mut samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4);
+            }
+        }
+    } else {
+        for local_y in (0..block_h).step_by(WARPED_BLOCK_SIZE) {
+            for local_x in (0..block_w).step_by(WARPED_BLOCK_SIZE) {
+                let params = WarpPredictBlockParams {
+                    warp_params,
+                    block_x: (plane_x + local_x) as i64,
+                    block_y: (plane_y + local_y) as i64,
+                    subsampling_x: sub_x as u8,
+                    subsampling_y: sub_y as u8,
+                    first_x: 0,
+                    first_y: 0,
+                    last_x: ref_width as i64 - 1,
+                    last_y: ref_height as i64 - 1,
+                    bit_depth,
+                };
+                let predicted =
+                    splot_recon::warp_predict_block_compound_intermediate(&view, &params)?;
+                let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
+                let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
+                write_compound_section(
+                    &mut samples,
+                    block_w,
+                    local_x,
+                    local_y,
+                    &predicted,
+                    WARPED_BLOCK_SIZE,
+                    write_w,
+                    write_h,
+                );
+            }
+        }
+    }
+    Ok(CompoundRefIntermediate { samples, scaling })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_compound_section(
+    dst: &mut [i32],
+    dst_w: usize,
+    x: usize,
+    y: usize,
+    src: &[i32],
+    src_stride: usize,
+    w: usize,
+    h: usize,
+) {
+    for row in 0..h {
+        for col in 0..w {
+            if let (Some(&value), Some(slot)) = (
+                src.get(row * src_stride + col),
+                dst.get_mut((y + row) * dst_w + (x + col)),
+            ) {
+                *slot = value;
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
