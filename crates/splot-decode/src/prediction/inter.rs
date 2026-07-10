@@ -5,8 +5,8 @@ use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, QuantizationParams, TipFrameMode,
-    parse_frame_header_core,
+    FrameHeaderParseStatus, FrameReferenceStateView, QuantizationParams, RESTRICTED_OH,
+    TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::span::ByteOffset;
@@ -531,7 +531,13 @@ fn compound_is_joint_context(
         ref_order_hint
             .get(slot as usize)
             .copied()
-            .map(|hint| i32::try_from(hint).unwrap_or(i32::MAX))
+            .map(|hint| {
+                if hint == u32::MAX {
+                    RESTRICTED_OH
+                } else {
+                    i32::try_from(hint).unwrap_or(i32::MAX)
+                }
+            })
             .ok_or_else(|| {
                 compound_missing!(
                     "compound_reference_order_hint",
@@ -560,11 +566,9 @@ fn compound_is_joint_context_from_order_hints(
     let first_dist = first_side.abs();
     let second_dist = second_side.abs();
     let same_side = (first_side < 0 && second_side < 0) || (first_side > 0 && second_side > 0);
-    usize::from(same_side || first_dist != second_dist)
-}
-
-fn get_relative_dist(a: i32, b: i32) -> i32 {
-    (a - b).clamp(-127, 127)
+    let one_restricted =
+        (first_order_hint == RESTRICTED_OH) != (second_order_hint == RESTRICTED_OH);
+    usize::from(same_side || first_dist != second_dist || one_restricted)
 }
 #[allow(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(

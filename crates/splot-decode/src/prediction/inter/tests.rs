@@ -2057,6 +2057,11 @@ fn compound_is_joint_context_uses_strict_same_side_signs() {
         1,
         "opposite-side unequal-distance references still use context 1"
     );
+    assert_eq!(
+        ctx(-1, 0, 127),
+        1,
+        "one restricted reference selects context 1 even at equal distance"
+    );
 }
 
 #[test]
@@ -2087,6 +2092,12 @@ fn compound_is_joint_context_uses_selected_ranked_pair() {
         .unwrap(),
         1,
         "selected past/current references have unequal distance"
+    );
+    assert_eq!(
+        compound_is_joint_context(&[0, 1], &[u32::MAX, 0], (0, 1), 127, ByteOffset::new(0),)
+            .unwrap(),
+        1,
+        "raw restricted order hints retain the restricted-reference term"
     );
 }
 

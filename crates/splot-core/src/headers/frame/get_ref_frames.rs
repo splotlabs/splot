@@ -49,7 +49,7 @@ pub(crate) const REFS_PER_FRAME: u32 = 7;
 /// `RESTRICTED_OH` (AV2 v1.0.0 § 3): the sentinel order hint marking a restricted reference
 /// frame. § 7.7 excludes a slot whose `RefOrderHint` equals this from the scored set, then
 /// (when `checkRes && !IsBridge`) appends any remaining restricted slots at the end.
-pub(crate) const RESTRICTED_OH: i32 = -1;
+pub const RESTRICTED_OH: i32 = -1;
 
 /// `DIST_WEIGHT_BITS` (AV2 v1.0.0 § 3): the scaling applied to `tDist` in the
 /// `maxDisp > OrderHint` scoring arm (§ 7.7).
@@ -169,7 +169,7 @@ struct Ranked {
 /// `get_relative_dist( a, b )` (AV2 v1.0.0 § 5.18.3.1,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-3-1`): the signed distance between two
 /// order hints, with the `RESTRICTED_OH` sentinel arms.
-pub(crate) fn get_relative_dist(a: i32, b: i32) -> i32 {
+pub fn get_relative_dist(a: i32, b: i32) -> i32 {
     if a == RESTRICTED_OH && b == RESTRICTED_OH {
         0
     } else if a == RESTRICTED_OH {
