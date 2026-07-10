@@ -463,7 +463,9 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     } else {
         [None, None]
     };
-    let refinemv_default = if !local_warp
+    let refinemv_switchable =
+        compound_refinemv_is_switchable(compound, compound_opfl_refine_type(core, tile_offset)?);
+    let refinemv_signalled = if !local_warp
         && compound_refinemv_reachable(
             sequence,
             core,
@@ -474,16 +476,17 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             n4h,
             tile_offset,
         )? {
-        if compound_refinemv_is_switchable(compound, compound_opfl_refine_type(core, tile_offset)?)
-        {
-            return Err(compound_cap!(
-                "compound_refinemv_signal",
+        if refinemv_switchable {
+            read_compound_use_refinemv_syntax(
+                cdfs,
+                symbols,
+                compound.y_mode,
+                compound.use_optflow,
                 tile_offset,
-                "inter.compound.refinemv_signal",
-                SPEC_READ_REFINEMV
-            ));
+            )?
+        } else {
+            true
         }
-        true
     } else {
         false
     };
@@ -511,6 +514,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             skip_mode: false,
             use_optflow: compound.use_optflow,
             joint_amvd: compound.y_mode == CompoundYMode::JointNew && use_amvd,
+            switchable_refinemv_on: refinemv_signalled && refinemv_switchable,
             n4w,
             n4h,
             block_size_index: frontier.b_size.index(),
@@ -518,7 +522,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         },
         tile_offset,
     )?;
-    let use_refinemv = compound_refinemv_active_after_blend(refinemv_default, compound_blend);
+    let use_refinemv = compound_refinemv_active_after_blend(refinemv_signalled, compound_blend);
     let compound_blend = read_compound_cwp_syntax(
         cdfs,
         symbols,
@@ -563,7 +567,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         cdfs,
         symbols,
         frame_interpolation_filter,
-        compound.use_optflow || refinemv_default,
+        compound.use_optflow || refinemv_signalled,
         !local_warp && compound.y_mode != CompoundYMode::GlobalGlobal,
         neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
         tile_offset,
@@ -1322,6 +1326,35 @@ fn read_compound_use_optflow_syntax(
     Ok(use_optflow.get() != 0)
 }
 
+/// AV2 § 5.20.7.17 switchable `use_refinemv` read over
+/// `TileUseRefinemvCdf[ctx]`, with the § 8.3.2 context
+/// `1 + (YMode - NEAR_NEARMV) + 6 * use_optflow`, reduced by one for
+/// optical-flow modes past `GLOBAL_GLOBALMV`.
+fn read_compound_use_refinemv_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    y_mode: CompoundYMode,
+    use_optflow: bool,
+    tile_offset: ByteOffset,
+) -> Result<bool> {
+    let mode_delta = match y_mode {
+        CompoundYMode::NearNear => 0usize,
+        CompoundYMode::NearNew => 1,
+        CompoundYMode::NewNear => 2,
+        CompoundYMode::GlobalGlobal => 3,
+        CompoundYMode::NewNew => 4,
+        CompoundYMode::JointNew => 5,
+    };
+    let mut ctx = 1 + mode_delta + 6 * usize::from(use_optflow);
+    if use_optflow && mode_delta > 3 {
+        ctx -= 1;
+    }
+    let use_refinemv = cdfs
+        .read_block_symbol_trace(TileCdfSelector::UseRefinemv { ctx }, symbols)
+        .map_err(|_| symbol_read_error(tile_offset))?;
+    Ok(use_refinemv.get() != 0)
+}
+
 const fn compound_reads_second_drl(compound: super::super::compound::CompoundBlockSyntax) -> bool {
     !compound.use_optflow && compound.y_mode.has_second_drl()
 }
@@ -1960,6 +1993,7 @@ struct CompoundBlendInput {
     skip_mode: bool,
     use_optflow: bool,
     joint_amvd: bool,
+    switchable_refinemv_on: bool,
     n4w: usize,
     n4h: usize,
     block_size_index: usize,
@@ -2017,7 +2051,13 @@ fn read_compound_blend_syntax(
 ) -> Result<mc::CompoundBlend> {
     let average_blend = mc::CompoundBlend::average_with_implicit_mask(tools.implicit_mask);
     let thin = compound_blend_is_thin(input.n4w, input.n4h);
-    if input.skip_mode || input.use_optflow || input.joint_amvd || !tools.masked_enabled || thin {
+    if input.skip_mode
+        || input.use_optflow
+        || input.joint_amvd
+        || input.switchable_refinemv_on
+        || !tools.masked_enabled
+        || thin
+    {
         return Ok(average_blend);
     }
     let comp_group_idx = cdfs
