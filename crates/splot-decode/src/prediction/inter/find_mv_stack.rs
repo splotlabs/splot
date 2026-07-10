@@ -2088,7 +2088,7 @@ fn scan_mv_stack_probe(
         && cell.ref_frame1.is_none()
         && block.ref_frame0 != TIP_REF_FRAME
         && let Some(temporal) = derived.temporal()
-        && let Some(mv) = temporal.tip_spatial_mv(grid, block, probe, cell)
+        && let Some((mv, other)) = temporal.tip_spatial_single_candidates(grid, block, probe, cell)
     {
         insert_mv_stack_entry(
             entries,
@@ -2097,6 +2097,7 @@ fn scan_mv_stack_probe(
             weight,
             (probe.delta_row, adjusted_delta_col),
         );
+        derived.add_spatial(block, other.0, other.1);
     }
     let candidates = [
         Some((cell.ref_frame0, cell.sub_mv)),
