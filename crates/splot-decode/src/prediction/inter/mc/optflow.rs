@@ -150,6 +150,10 @@ impl CompoundMotionGrid {
     }
 }
 
+fn sets_subblock_reference_area(plane: PlaneId, width: usize, height: usize) -> bool {
+    plane != PlaneId::Y || (width == 8 && height == 8)
+}
+
 pub(super) fn compound_motion_grid<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     block: CompoundMcBlock<'_, T>,
@@ -378,7 +382,7 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
             let height = subblock_h.min(block_h - row);
             let luma_x = col << sub_x;
             let luma_y = row << sub_y;
-            let mvs = motion.at_luma_offset(luma_x, luma_y)?;
+            let (base_mvs, mvs) = motion.cells_at_luma_offset(luma_x, luma_y)?;
             let candidates = motion.refinemv_candidates();
             for (reference, (view, ref_mi_cols, ref_mi_rows, output)) in [
                 (&view0, ref_mi_cols0, ref_mi_rows0, &mut pred0),
@@ -397,14 +401,14 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                     ref_mi_cols,
                     ref_mi_rows,
                 );
-                let bounds = candidates.map(|mvs| {
+                let bounds = if let Some(mvs) = candidates {
                     let refine_unit_w = 16usize >> sub_x;
                     let refine_unit_h = 16usize >> sub_y;
                     let refine_col = col / refine_unit_w * refine_unit_w;
                     let refine_row = row / refine_unit_h * refine_unit_h;
                     let refine_w = refine_unit_w.min(block_w - refine_col);
                     let refine_h = refine_unit_h.min(block_h - refine_row);
-                    super::refinemv::reference_area_bounds(
+                    Some(super::refinemv::reference_area_bounds(
                         (plane_x + refine_col) as i64,
                         (plane_y + refine_row) as i64,
                         refine_w,
@@ -414,8 +418,22 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                         sub_y,
                         ref_mi_cols,
                         ref_mi_rows,
-                    )
-                });
+                    ))
+                } else if sets_subblock_reference_area(plane, width, height) {
+                    Some(super::refinemv::reference_area_bounds(
+                        (plane_x + col) as i64,
+                        (plane_y + row) as i64,
+                        width,
+                        height,
+                        base_mvs[reference],
+                        sub_x,
+                        sub_y,
+                        ref_mi_cols,
+                        ref_mi_rows,
+                    ))
+                } else {
+                    None
+                };
                 let predicted = subpel_predict_block_compound_intermediate(
                     view,
                     &SubpelPredictParams {
@@ -535,5 +553,12 @@ mod tests {
             grid.temporal_mvs_at_luma_offset(0, 0).unwrap(),
             [Mv { row: 1, col: -1 }, Mv::ZERO]
         );
+    }
+
+    #[test]
+    fn reference_areas_cover_eight_by_eight_luma_and_every_chroma_subblock() {
+        assert!(sets_subblock_reference_area(PlaneId::Y, 8, 8));
+        assert!(!sets_subblock_reference_area(PlaneId::Y, 4, 4));
+        assert!(sets_subblock_reference_area(PlaneId::U, 4, 4));
     }
 }
