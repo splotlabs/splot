@@ -763,22 +763,6 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         skip_mode,
         precision,
     );
-    record_temporal_motion_block(
-        motion_field,
-        reference,
-        ref_frame_idx,
-        mi_row,
-        mi_col,
-        n4w,
-        n4h,
-        mi_rows,
-        mi_cols,
-        compound.ref_frame0,
-        Some(compound.ref_frame1),
-        compound.mv0,
-        compound.mv1,
-        None,
-    );
     if let Some(bank) = ref_mv_bank.as_mut() {
         bank.update_for_block(
             compound.ref_frame0,
@@ -881,7 +865,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
             residual,
         },
     };
-    reconstruct_placed_inter_block(
+    let optflow_grid = reconstruct_placed_inter_block(
         workspace,
         &placed,
         block_decoded,
@@ -893,6 +877,20 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         bit_depth,
         sequence_enables_ibp(sequence),
         tile_offset,
+    )?;
+    record_compound_temporal_motion(
+        motion_field,
+        reference,
+        ref_frame_idx,
+        &placed,
+        compound,
+        optflow_grid.as_ref(),
+        mi_row,
+        mi_col,
+        n4w,
+        n4h,
+        mi_rows,
+        mi_cols,
     )?;
     intrabc_state.record_block(
         frontier.r,
@@ -909,6 +907,65 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         tile_offset,
     )?;
     Ok(non_intra_leaf_mode(frontier))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_compound_temporal_motion<T: ReconSample>(
+    motion_field: &mut TemporalMotionField,
+    reference: &InterReferenceState<'_, T>,
+    ref_frame_idx: &[u32],
+    placed: &PlacedInterBlock,
+    compound: super::super::compound::CompoundBlockSyntax,
+    optflow_grid: Option<&mc::OptflowMotionGrid>,
+    mi_row: usize,
+    mi_col: usize,
+    n4w: usize,
+    n4h: usize,
+    mi_rows: usize,
+    mi_cols: usize,
+) -> Result<()> {
+    let Some(grid) = optflow_grid else {
+        record_temporal_motion_block(
+            motion_field,
+            reference,
+            ref_frame_idx,
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            mi_rows,
+            mi_cols,
+            compound.ref_frame0,
+            Some(compound.ref_frame1),
+            compound.mv0,
+            compound.mv1,
+            None,
+        );
+        return Ok(());
+    };
+
+    for y in (0..placed.luma_h).step_by(8) {
+        for x in (0..placed.luma_w).step_by(8) {
+            let mvs = grid.temporal_mvs_at_luma_offset(x, y)?;
+            record_temporal_motion_block(
+                motion_field,
+                reference,
+                ref_frame_idx,
+                mi_row + y / 4,
+                mi_col + x / 4,
+                (placed.luma_w - x).min(8).div_ceil(4),
+                (placed.luma_h - y).min(8).div_ceil(4),
+                mi_rows,
+                mi_cols,
+                compound.ref_frame0,
+                Some(compound.ref_frame1),
+                mvs[0],
+                mvs[1],
+                None,
+            );
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

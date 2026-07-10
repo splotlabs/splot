@@ -1426,7 +1426,8 @@ fn decode_block<T: ReconSample>(
             bit_depth,
             sequence_enables_ibp(sequence),
             tile_offset,
-        )?;
+        )
+        .map(drop)?;
         return Ok(non_intra_leaf_mode(frontier));
     }
 
@@ -1786,7 +1787,8 @@ fn decode_block<T: ReconSample>(
         bit_depth,
         sequence_enables_ibp(sequence),
         tile_offset,
-    )?;
+    )
+    .map(drop)?;
     Ok(non_intra_leaf_mode(frontier))
 }
 
@@ -2121,7 +2123,7 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
     bit_depth: BitDepth,
     enable_ibp: bool,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<Option<mc::OptflowMotionGrid>> {
     let rect = mc::McBlockRect {
         luma_x: placed.luma_x,
         luma_y: placed.luma_y,
@@ -2149,7 +2151,12 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
         .transpose()?;
     let block_params =
         super::resolve_inter_block_params(ref_frame_idx, reference, placed, rect, tile_offset)?;
-    mc::motion_compensate_inter_block_into(workspace, block_params, tile_offset)?;
+    let optflow_grid = mc::motion_compensate_inter_block_with_optflow_grid_into(
+        workspace,
+        block_params,
+        None,
+        tile_offset,
+    )?;
     if placed.block.bawp.enabled {
         let slot = usize::try_from(placed.block.ref_frame0)
             .ok()
@@ -2226,7 +2233,7 @@ fn reconstruct_placed_inter_block<T: ReconSample>(
             tile_offset,
         )?;
     }
-    Ok(())
+    Ok(optflow_grid)
 }
 
 mod compound_path;

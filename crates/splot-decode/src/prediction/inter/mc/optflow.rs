@@ -8,7 +8,7 @@ use super::*;
 use crate::prediction::inter::mv_scaling::derive_plane_scaling_prescaled;
 
 #[derive(Clone, Debug)]
-pub(super) struct OptflowMotionGrid {
+pub(crate) struct OptflowMotionGrid {
     unit_size: usize,
     columns: usize,
     base_mvs: [Mv; 2],
@@ -17,12 +17,7 @@ pub(super) struct OptflowMotionGrid {
 
 impl OptflowMotionGrid {
     fn at_luma_offset(&self, x: usize, y: usize) -> splot_recon::Result<[[i32; 2]; 2]> {
-        let index = (y / self.unit_size)
-            .checked_mul(self.columns)
-            .and_then(|row| row.checked_add(x / self.unit_size))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "optical-flow motion-grid index",
-            })?;
+        let index = self.index_at_luma_offset(x, y)?;
         self.mvs
             .get(index)
             .copied()
@@ -46,6 +41,59 @@ impl OptflowMotionGrid {
                 col: base.col + round2_signed(i64::from(col_delta), 1) as i32,
             }
         }))
+    }
+
+    pub(crate) fn temporal_mvs_at_luma_offset(
+        &self,
+        x: usize,
+        y: usize,
+    ) -> splot_recon::Result<[Mv; 2]> {
+        if self.unit_size != 4 {
+            return self.stored_mvs_at_luma_offset(x, y);
+        }
+        let mut delta_sum = [[0i64; 2]; 2];
+        for dy in [0, 4] {
+            for dx in [0, 4] {
+                let Ok(index) = self.index_at_luma_offset(x + dx, y + dy) else {
+                    continue;
+                };
+                let refined = self.mvs.get(index).ok_or(ReconError::ArithmeticOverflow {
+                    context: "optical-flow temporal motion-grid lookup",
+                })?;
+                for reference in 0..2 {
+                    delta_sum[reference][0] +=
+                        i64::from(refined[reference][0] - self.base_mvs[reference].row * 2);
+                    delta_sum[reference][1] +=
+                        i64::from(refined[reference][1] - self.base_mvs[reference].col * 2);
+                }
+            }
+        }
+        Ok(core::array::from_fn(|reference| Mv {
+            row: self.base_mvs[reference].row + round2_signed(delta_sum[reference][0], 3) as i32,
+            col: self.base_mvs[reference].col + round2_signed(delta_sum[reference][1], 3) as i32,
+        }))
+    }
+
+    fn index_at_luma_offset(&self, x: usize, y: usize) -> splot_recon::Result<usize> {
+        let column = x / self.unit_size;
+        let row = y / self.unit_size;
+        if column >= self.columns {
+            return Err(ReconError::ArithmeticOverflow {
+                context: "optical-flow motion-grid lookup",
+            });
+        }
+        let index = row
+            .checked_mul(self.columns)
+            .and_then(|row| row.checked_add(column))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "optical-flow motion-grid index",
+            })?;
+        if index >= self.mvs.len() {
+            return Err(ReconError::ArithmeticOverflow {
+                context: "optical-flow motion-grid lookup",
+            });
+        }
+        Ok(index)
     }
 }
 
@@ -298,6 +346,41 @@ mod tests {
         assert_eq!(
             grid.stored_mvs_at_luma_offset(0, 0).unwrap(),
             [Mv { row: 3, col: -3 }, Mv { row: -3, col: 3 }]
+        );
+    }
+
+    #[test]
+    fn temporal_mvs_average_four_by_four_optflow_deltas_over_eight_by_eight() {
+        let grid = OptflowMotionGrid {
+            unit_size: 4,
+            columns: 2,
+            base_mvs: [Mv::ZERO; 2],
+            mvs: vec![
+                [[1, -1], [4, -4]],
+                [[2, -2], [4, -4]],
+                [[3, -3], [4, -4]],
+                [[4, -4], [4, -4]],
+            ],
+        };
+
+        assert_eq!(
+            grid.temporal_mvs_at_luma_offset(0, 0).unwrap(),
+            [Mv { row: 1, col: -1 }, Mv { row: 2, col: -2 }]
+        );
+    }
+
+    #[test]
+    fn temporal_mvs_treat_cropped_four_by_four_units_as_zero_delta() {
+        let grid = OptflowMotionGrid {
+            unit_size: 4,
+            columns: 1,
+            base_mvs: [Mv::ZERO; 2],
+            mvs: vec![[[4, -4], [0, 0]], [[4, -4], [0, 0]]],
+        };
+
+        assert_eq!(
+            grid.temporal_mvs_at_luma_offset(0, 0).unwrap(),
+            [Mv { row: 1, col: -1 }, Mv::ZERO]
         );
     }
 }
