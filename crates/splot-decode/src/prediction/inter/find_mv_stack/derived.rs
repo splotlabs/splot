@@ -191,6 +191,10 @@ impl<'a> DerivedMvState<'a> {
         self.push(candidate);
     }
 
+    pub(super) const fn temporal(&self) -> Option<&'a TemporalMvContext> {
+        self.temporal
+    }
+
     fn push(&mut self, candidate: Mv) {
         push_bounded_unique(&mut self.entries, &mut self.prune_count, candidate);
     }
