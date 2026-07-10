@@ -129,6 +129,77 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: dupehound check --diff "$BASE_SHA" .
 
+  dav2d-test-data:
+    runs-on: ubuntu-latest
+    env:
+      DAV2D_TEST_DATA_REV: ff12d7e790bfe015c86e1a4dc87883e6a1142c1d
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Clone pinned dav2d test data
+        env:
+          TEST_DATA_DIR: ${{ runner.temp }}/dav2d-test-data
+        run: |
+          git clone --no-checkout https://code.videolan.org/videolan/dav2d-test-data.git "$TEST_DATA_DIR"
+          git -C "$TEST_DATA_DIR" checkout --detach "$DAV2D_TEST_DATA_REV"
+
+      - name: Build splot
+        run: cargo build --release -p splot-cli --locked
+
+      - name: Verify upstream AVM corpus hashes
+        env:
+          TEST_DATA_DIR: ${{ runner.temp }}/dav2d-test-data
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import tempfile
+
+          root = pathlib.Path(os.environ["TEST_DATA_DIR"])
+          manifest = (root / "avm/meson.build").read_text()
+          pattern = re.compile(
+              r"\['([^']+)',\s*files\('([^']+)'\),\s*'([0-9a-f]{32})'\]"
+          )
+          entries = {name: (path, digest) for name, path, digest in pattern.findall(manifest)}
+          required = [
+              "avm-v15.0.0-bus.352x288.l1.partial_lossless",
+              "avm-v15.0.0-bus.64x64.l1.sdp0",
+              "avm-v15.0.0-bus.64x64.l1.sdp1",
+          ]
+          missing = sorted(set(required) - entries.keys())
+          if missing:
+              raise SystemExit(f"missing upstream test entries: {missing}")
+
+          with tempfile.TemporaryDirectory() as temp:
+              for name in required:
+                  relative, expected = entries[name]
+                  output = pathlib.Path(temp) / f"{name}.raw"
+                  subprocess.run(
+                      [
+                          "target/release/splot",
+                          "decode",
+                          "--quiet",
+                          "--threads=1",
+                          "--output-format=raw",
+                          f"--output={output}",
+                          root / "avm" / relative,
+                      ],
+                      check=True,
+                  )
+                  actual = hashlib.md5(output.read_bytes(), usedforsecurity=False).hexdigest()
+                  if actual != expected:
+                      raise SystemExit(f"{name}: expected {expected}, got {actual}")
+                  print(f"{name}: {actual}")
+          PY
+
   # Supply-chain policy. The deterministic checks (bans, licenses, sources) gate the
   # merge; the advisory DB is informational because it changes without a repo diff,
   # so a newly published advisory must not retroactively fail an unrelated PR.
