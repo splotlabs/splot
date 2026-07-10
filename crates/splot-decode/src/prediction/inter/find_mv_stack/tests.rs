@@ -185,14 +185,18 @@ fn recorded_skip_mode_contributes_to_the_next_block_context() {
 #[test]
 fn tip_neighbour_matches_its_underlying_compound_reference_pair() {
     let mut grid = empty_grid();
-    record_inter_ref(
-        &mut grid,
+    grid.record_tip_block(
         0,
         0,
-        TIP_REF_FRAME,
+        N4_32,
+        N4_32,
         NeighbourYMode::NewMv,
         Mv::ZERO,
         false,
+        SWITCHABLE_FILTERS,
+        false,
+        false,
+        BlockPrecisionRecord::default(),
     );
     let mut block = block_at(0, N4_32);
     block.ref_frame1 = Some(1);
@@ -263,6 +267,7 @@ fn compound_mv_stack_aligns_tip_neighbour_to_its_16x16_unit() {
         0,
         N4_32,
         N4_32,
+        NeighbourYMode::Other,
         base_mv,
         false,
         SWITCHABLE_FILTERS,

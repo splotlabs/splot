@@ -1716,6 +1716,7 @@ fn decode_block<T: ReconSample>(
             mi_col,
             n4w,
             n4h,
+            y_mode,
             mv,
             skip == 1,
             interp_filter_symbol(interp),
