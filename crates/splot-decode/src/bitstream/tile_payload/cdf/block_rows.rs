@@ -1094,6 +1094,7 @@ macro_rules! block_cdf_count_rows {
         $row!(dpcm_mode_uv);
         $row!(y_mode_set);
         $rows!(y_mode_index);
+        $rows!(y_mode_offset);
         $rows!(txb_skip.flatten().flatten().flatten());
         $rows!(v_txb_skip.flatten());
         $rows!(eob_extra);
@@ -1142,6 +1143,8 @@ macro_rules! block_cdf_count_rows {
         $rows!(single_ref.flatten());
         $rows!(comp_mode);
         $rows!(is_joint);
+        $row!(jmvd_scale_mode);
+        $row!(jmvd_adaptive_scale_mode);
         $rows!(compound_mode_non_joint);
         $rows!(compound_mode_same_refs);
         $row!(compound_type);
@@ -1152,6 +1155,7 @@ macro_rules! block_cdf_count_rows {
         $read_mv
         $rows!(interp_filter);
         $rows!(use_amvd.flatten());
+        $rows!(use_optflow);
         $rows!(use_extend_warp);
         $rows!(use_local_warp);
         $rows!(use_most_probable_precision);
