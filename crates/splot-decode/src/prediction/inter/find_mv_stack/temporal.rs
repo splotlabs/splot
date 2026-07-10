@@ -132,6 +132,23 @@ impl TemporalMotionField {
                 } else if cell.ref_order_hints[1].is_some() && cell.ref_order_hints[0].is_none() {
                     cell.ref_order_hints[0] = cell.ref_order_hints[1];
                     cell.mvs[0] = cell.mvs[1];
+                } else if let [Some(ref0), Some(ref1)] = cell.ref_order_hints {
+                    let ref0 = i32::try_from(ref0).unwrap_or(i32::MAX);
+                    let ref1 = i32::try_from(ref1).unwrap_or(i32::MAX);
+                    let current = i32::try_from(block.current_order_hint).unwrap_or(i32::MAX);
+                    let ref0_to_current = super::super::get_relative_dist(ref0, current);
+                    let ref1_to_current = super::super::get_relative_dist(ref1, current);
+                    let same_side = (ref0_to_current < 0 && ref1_to_current < 0)
+                        || (ref0_to_current > 0 && ref1_to_current > 0);
+                    let should_swap = if same_side {
+                        super::super::get_relative_dist(ref0, ref1) < 0
+                    } else {
+                        ref0_to_current > 0 && ref1_to_current < 0
+                    };
+                    if should_swap {
+                        cell.ref_order_hints.swap(0, 1);
+                        cell.mvs.swap(0, 1);
+                    }
                 }
                 if let Some(slot) = self.cell_mut(y8, x8) {
                     *slot = cell;
@@ -160,6 +177,7 @@ pub(crate) struct TemporalMotionBlock {
     pub(crate) n4h: usize,
     pub(crate) mi_rows: usize,
     pub(crate) mi_cols: usize,
+    pub(crate) current_order_hint: u32,
     pub(crate) ref_order_hints: [Option<u32>; 2],
     pub(crate) mvs: [Mv; 2],
     pub(crate) warp_params: [Option<[i64; 6]>; 2],
@@ -814,6 +832,7 @@ mod tests {
                 n4h: 2,
                 mi_rows: 2,
                 mi_cols: 2,
+                current_order_hint: 8,
                 ref_order_hints,
                 mvs,
                 warp_params: [None; 2],
@@ -822,6 +841,37 @@ mod tests {
             let cell = field.cell(0, 0).unwrap();
             assert_eq!(cell.ref_order_hints, [Some(7); 2]);
             assert_eq!(cell.mvs, [Mv { row: 8, col: -12 }; 2]);
+        }
+    }
+
+    #[test]
+    fn compound_references_are_stored_in_temporal_slot_order() {
+        let cases = [
+            ([Some(1), Some(3)], [Some(3), Some(1)]),
+            ([Some(5), Some(6)], [Some(6), Some(5)]),
+            ([Some(6), Some(3)], [Some(3), Some(6)]),
+            ([Some(3), Some(6)], [Some(3), Some(6)]),
+        ];
+        for (input, expected) in cases {
+            let mut field = TemporalMotionField::new(2, 2).unwrap();
+            field.record_block(TemporalMotionBlock {
+                mi_row: 0,
+                mi_col: 0,
+                n4w: 2,
+                n4h: 2,
+                mi_rows: 2,
+                mi_cols: 2,
+                current_order_hint: 4,
+                ref_order_hints: input,
+                mvs: [Mv { row: 8, col: 16 }, Mv { row: 24, col: 32 }],
+                warp_params: [None; 2],
+            });
+
+            let cell = field.cell(0, 0).unwrap();
+            assert_eq!(cell.ref_order_hints, expected);
+            let swapped = input != expected;
+            assert_eq!(cell.mvs[0].row, if swapped { 24 } else { 8 });
+            assert_eq!(cell.mvs[1].row, if swapped { 8 } else { 24 });
         }
     }
 

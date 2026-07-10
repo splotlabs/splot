@@ -309,6 +309,7 @@ pub(super) fn reconstruct<T: ReconSample>(
                     luma_h.div_ceil(4),
                     frame_size.height().div_ceil(4),
                     frame_size.width().div_ceil(4),
+                    core.order_hint_lsb.unwrap_or(0),
                     references.past_ref,
                     two_references.then_some(references.future_ref),
                     stored_mvs[0],
