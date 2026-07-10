@@ -115,8 +115,6 @@ pub(crate) fn read_compound_reference_pair(
     input: CompoundParseInput,
     tile_offset: ByteOffset,
 ) -> Result<(i8, i8)> {
-    gate_compound_subset(input, tile_offset)?;
-
     let mut read_symbol = |selector| {
         cdfs.read_block_symbol_trace(selector, symbols)
             .map(splot_core::symbol::Symbol::get)
@@ -301,23 +299,6 @@ pub(crate) fn read_compound_mode_syntax(
         mv0: Mv::ZERO,
         mv1: Mv::ZERO,
     })
-}
-
-fn gate_compound_subset(input: CompoundParseInput, tile_offset: ByteOffset) -> Result<()> {
-    if input.num_total_refs == 1 && input.num_same_ref_compound > 0 {
-        return Ok(());
-    }
-
-    if input.num_total_refs != 2 {
-        return Err(unsupported_compound_at(
-            "compound_num_total_refs",
-            tile_offset,
-            "unsupported capability: inter.compound.num_total_refs != 2",
-            SPEC_READ_REF_FRAMES,
-        ));
-    }
-
-    Ok(())
 }
 
 fn compound_ref_loop_has_more(ref_idx: usize, n_refs: usize, n_bits: usize) -> bool {

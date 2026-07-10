@@ -272,6 +272,52 @@ fn compound_average_reads_same_ref_compound_ref_symbols() {
 }
 
 #[test]
+fn compound_reference_pair_roundtrips_three_ranked_refs() {
+    let selectors = [
+        (TileCdfSelector::CompRef0 { ctx: 1, ref_idx: 0 }, 1),
+        (
+            TileCdfSelector::CompRef1 {
+                ctx: 1,
+                bit_type: 0,
+                ref_idx: 0,
+            },
+            0,
+        ),
+        (
+            TileCdfSelector::CompRef1 {
+                ctx: 1,
+                bit_type: 0,
+                ref_idx: 1,
+            },
+            1,
+        ),
+    ];
+    let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::new();
+    for (selector, value) in selectors {
+        encode_symbol(&mut enc_tile, &mut encoder, selector, value);
+    }
+    let bytes = encoder.finish().unwrap().into_bytes();
+
+    let mut input = default_input();
+    input.num_total_refs = 3;
+    input.num_same_ref_compound = 2;
+    let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&bytes);
+    let pair = read_compound_reference_pair(&mut dec_tile, &mut symbols, input, ByteOffset::new(0))
+        .unwrap();
+
+    assert_eq!(pair, (0, 1));
+    symbols.exit_symbol().unwrap();
+    for (selector, _) in selectors {
+        assert_eq!(
+            enc_tile.row(selector).unwrap(),
+            dec_tile.row(selector).unwrap()
+        );
+    }
+}
+
+#[test]
 fn compound_average_reads_same_reference_mode_symbol() {
     let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::new();
