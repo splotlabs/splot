@@ -42,23 +42,30 @@ impl CompoundMotionGrid {
     }
 
     pub(super) fn at_luma_offset(&self, x: usize, y: usize) -> splot_recon::Result<[[i32; 2]; 2]> {
-        let index = self.index_at_luma_offset(x, y)?;
-        self.mvs
-            .get(index)
-            .copied()
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "compound motion-grid lookup",
-            })
+        Ok(self.cells_at_luma_offset(x, y)?.1)
     }
 
-    fn base_mvs_at_luma_offset(&self, x: usize, y: usize) -> splot_recon::Result<[Mv; 2]> {
+    fn cells_at_luma_offset(
+        &self,
+        x: usize,
+        y: usize,
+    ) -> splot_recon::Result<([Mv; 2], [[i32; 2]; 2])> {
         let index = self.index_at_luma_offset(x, y)?;
-        self.base_mvs
+        let base_mvs = self
+            .base_mvs
             .get(index)
             .copied()
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "compound base motion-grid lookup",
-            })
+            })?;
+        let mvs = self
+            .mvs
+            .get(index)
+            .copied()
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "compound motion-grid lookup",
+            })?;
+        Ok((base_mvs, mvs))
     }
 
     pub(super) const fn refinemv_candidates(&self) -> Option<[Mv; 2]> {
@@ -70,8 +77,7 @@ impl CompoundMotionGrid {
         x: usize,
         y: usize,
     ) -> splot_recon::Result<[Mv; 2]> {
-        let refined = self.at_luma_offset(x, y)?;
-        let base_mvs = self.base_mvs_at_luma_offset(x, y)?;
+        let (base_mvs, refined) = self.cells_at_luma_offset(x, y)?;
         Ok(core::array::from_fn(|reference| {
             let base = base_mvs[reference];
             let row_delta = refined[reference][0] - base.row * 2;
@@ -91,7 +97,7 @@ impl CompoundMotionGrid {
         if self.unit_size != 4 {
             return self.stored_mvs_at_luma_offset(x, y);
         }
-        let base_mvs = self.base_mvs_at_luma_offset(x, y)?;
+        let (base_mvs, _) = self.cells_at_luma_offset(x, y)?;
         let mut delta_sum = [[0i64; 2]; 2];
         for dy in [0, 4] {
             for dx in [0, 4] {
