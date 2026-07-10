@@ -32,6 +32,7 @@ pub(crate) enum CompoundYMode {
     NearNear,
     NearNew,
     NewNear,
+    GlobalGlobal,
     JointNew,
     NewNew,
 }
@@ -39,7 +40,7 @@ pub(crate) enum CompoundYMode {
 impl CompoundYMode {
     pub(crate) const fn has_newmv(self) -> bool {
         match self {
-            Self::NearNear => false,
+            Self::NearNear | Self::GlobalGlobal => false,
             Self::NearNew | Self::NewNear | Self::JointNew | Self::NewNew => true,
         }
     }
@@ -47,7 +48,7 @@ impl CompoundYMode {
     pub(crate) const fn has_nearmv(self) -> bool {
         match self {
             Self::NearNear | Self::NearNew | Self::NewNear => true,
-            Self::JointNew | Self::NewNew => false,
+            Self::GlobalGlobal | Self::JointNew | Self::NewNew => false,
         }
     }
 
@@ -58,20 +59,24 @@ impl CompoundYMode {
     pub(crate) const fn has_second_drl(self) -> bool {
         match self {
             Self::NearNear | Self::NearNew => true,
-            Self::NewNear | Self::JointNew | Self::NewNew => false,
+            Self::NewNear | Self::GlobalGlobal | Self::JointNew | Self::NewNew => false,
         }
     }
 
     pub(crate) const fn mvd_sign_derivation_threshold(self) -> usize {
         match self {
-            Self::NearNear | Self::NearNew | Self::NewNear | Self::JointNew => 1,
+            Self::NearNear
+            | Self::NearNew
+            | Self::NewNear
+            | Self::GlobalGlobal
+            | Self::JointNew => 1,
             Self::NewNew => 4,
         }
     }
 
     pub(crate) const fn use_amvd_index(self, use_optflow: bool) -> Option<usize> {
         match (self, use_optflow) {
-            (Self::NearNear, _) => None,
+            (Self::NearNear | Self::GlobalGlobal, _) => None,
             (Self::NearNew, false) => Some(0),
             (Self::NearNew, true) => Some(2),
             (Self::NewNear, false) => Some(1),
@@ -85,14 +90,14 @@ impl CompoundYMode {
 
     pub(crate) const fn list0_is_newmv(self) -> bool {
         match self {
-            Self::NearNear | Self::NearNew => false,
+            Self::NearNear | Self::NearNew | Self::GlobalGlobal => false,
             Self::NewNear | Self::JointNew | Self::NewNew => true,
         }
     }
 
     pub(crate) const fn list1_is_newmv(self) -> bool {
         match self {
-            Self::NearNear | Self::NewNear => false,
+            Self::NearNear | Self::NewNear | Self::GlobalGlobal => false,
             Self::NearNew | Self::JointNew | Self::NewNew => true,
         }
     }
@@ -271,14 +276,7 @@ pub(crate) fn read_compound_mode_syntax(
         COMPOUND_MODE_NEAR_NEWMV => CompoundYMode::NearNew,
         COMPOUND_MODE_NEW_NEARMV => CompoundYMode::NewNear,
         COMPOUND_MODE_NEW_NEWMV => CompoundYMode::NewNew,
-        COMPOUND_MODE_GLOBAL_GLOBALMV => {
-            return Err(compound_cap!(
-                "compound_block_unsupported_mode",
-                tile_offset,
-                "inter.compound.mode == GLOBAL_GLOBALMV",
-                SPEC_INTER_BLOCK_MODE_INFO
-            ));
-        }
+        COMPOUND_MODE_GLOBAL_GLOBALMV => CompoundYMode::GlobalGlobal,
         _ => return Err(compound_symbol_read_error(tile_offset)),
     };
 
