@@ -316,6 +316,34 @@ impl TemporalMvContext {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn set_trajectory_sample(
+        &mut self,
+        reference: usize,
+        y8: usize,
+        x8: usize,
+        mv: Mv,
+    ) -> Option<()> {
+        if self.trajectories.is_none() {
+            let references = self.tip_references()?;
+            let count = references.future_ref.max(references.past_ref);
+            let count = usize::try_from(count).ok()?.checked_add(1)?;
+            let mut fields = Vec::with_capacity(count);
+            for _ in 0..count {
+                fields.push(TrajectoryMotionField::new(
+                    self.field.height8 * 2,
+                    self.field.width8 * 2,
+                )?);
+            }
+            self.trajectories = Some(fields);
+        }
+        self.trajectories
+            .as_mut()?
+            .get_mut(reference)?
+            .set(y8, x8, mv);
+        Some(())
+    }
+
     pub(crate) fn from_references(
         mi_dimensions: (usize, usize),
         current_order_hint: u32,
@@ -465,22 +493,21 @@ impl TemporalMvContext {
         self.tip_candidate(row >> 1, col >> 1, base_cell.sub_mv)
     }
 
-    pub(super) fn tip_spatial_mv(
+    pub(super) fn tip_spatial_single_candidates(
         &self,
         grid: &NeighbourMvGrid,
         block: &MvBlockContext,
         probe: RelativeProbe,
         cell: NeighbourCell,
-    ) -> Option<Mv> {
+    ) -> Option<(Mv, (i8, Mv))> {
         let refs = self.tip_references()?;
-        let target = if block.ref_frame0 == refs.past_ref {
-            0
-        } else if block.ref_frame0 == refs.future_ref {
-            1
-        } else {
-            return None;
-        };
-        Some(self.tip_spatial_mvs(grid, block, probe, cell)?[target])
+        let references = [refs.past_ref, refs.future_ref];
+        let mvs = self.tip_spatial_mvs(grid, block, probe, cell)?;
+        let target = references
+            .iter()
+            .position(|&reference| reference == block.ref_frame0)?;
+        let other = 1 - target;
+        Some((mvs[target], (references[other], mvs[other])))
     }
 
     pub(super) fn motion_field_mv(&self, ref_frame: i8, y8: usize, x8: usize) -> Option<Mv> {

@@ -277,7 +277,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 warp_param_bank,
                 false,
                 drl_reorder,
-                temporal,
+                temporal_context,
                 temporal_first0,
             );
             let stack1 = find_mv_stack_with_temporal(
@@ -288,7 +288,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 warp_param_bank,
                 false,
                 drl_reorder,
-                temporal,
+                temporal_context,
                 temporal_first1,
             );
             [stack0.candidate(idx0), stack1.candidate(idx1)]

@@ -259,7 +259,7 @@ fn compound_mv_stack_projects_tip_neighbour_to_its_reference_pair() {
 }
 
 #[test]
-fn single_mv_stack_projects_tip_neighbour_to_each_reference() {
+fn single_mv_stack_projects_tip_neighbour_and_derives_other_side() {
     let mut grid = empty_grid();
     let base_mv = Mv { row: 3, col: 4 };
     record_inter_ref(
@@ -278,7 +278,7 @@ fn single_mv_stack_projects_tip_neighbour_to_each_reference() {
         future_offset: 1,
         ref_offset: 1,
     };
-    let temporal = TemporalMvContext::with_tip_sample(
+    let mut temporal = TemporalMvContext::with_tip_sample(
         MI_DIM,
         MI_DIM,
         references,
@@ -288,9 +288,22 @@ fn single_mv_stack_projects_tip_neighbour_to_each_reference() {
     )
     .unwrap();
     let expected = temporal.tip_candidate(3, 3, base_mv).unwrap();
+    let block = block_at(0, N4_32);
+    let (y8, x8) = (block.mi_row >> 1, block.mi_col >> 1);
+    let other_trajectory = Mv { row: 7, col: -9 };
+    temporal
+        .set_trajectory_sample(0, y8, x8, expected[0])
+        .unwrap();
+    temporal
+        .set_trajectory_sample(1, y8, x8, other_trajectory)
+        .unwrap();
+    let expected_derived = Mv {
+        row: expected[1].row + expected[0].row - other_trajectory.row,
+        col: expected[1].col + expected[0].col - other_trajectory.col,
+    };
 
     for (target_ref, expected_mv) in expected.into_iter().enumerate() {
-        let mut block = block_at(0, N4_32);
+        let mut block = block;
         block.ref_frame0 = target_ref as i8;
         let candidate = find_mv_stack_with_temporal(
             &grid,
@@ -305,6 +318,9 @@ fn single_mv_stack_projects_tip_neighbour_to_each_reference() {
         );
         assert_eq!(candidate.candidate(0), expected_mv);
         assert_eq!(candidate.candidate_offsets(0), (N4_32 as i32 - 1, -1));
+        if target_ref == 0 {
+            assert_eq!(candidate.candidate(2), expected_derived);
+        }
     }
 }
 
