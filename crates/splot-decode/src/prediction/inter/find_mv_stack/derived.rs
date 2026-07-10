@@ -10,9 +10,6 @@ const MAX_DR_STACK_SIZE: usize = 4;
 const MAX_DR_PR_NUM: usize = 2;
 
 fn push_bounded_unique<T: Copy + Eq>(entries: &mut Vec<T>, prune_count: &mut usize, candidate: T) {
-    if entries.len() >= MAX_DR_STACK_SIZE {
-        return;
-    }
     if *prune_count < MAX_DR_PR_NUM {
         for entry in entries.iter() {
             *prune_count += 1;
@@ -21,7 +18,9 @@ fn push_bounded_unique<T: Copy + Eq>(entries: &mut Vec<T>, prune_count: &mut usi
             }
         }
     }
-    entries.push(candidate);
+    if entries.len() < MAX_DR_STACK_SIZE {
+        entries.push(candidate);
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
