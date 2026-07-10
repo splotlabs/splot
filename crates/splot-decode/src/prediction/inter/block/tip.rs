@@ -7,6 +7,11 @@ use splot_recon::{DecodedFrame, PixelFormat};
 
 #[doc = "AV2 § 7.13.3.1 Tip_Weighting_Factor."]
 const TIP_WEIGHTING_FACTORS: [i16; 8] = [8, 12, 16, 18, 20, 4, 6, -4];
+const TIP_SINGLE_WEIGHT: i16 = 16;
+
+const fn tip_uses_two_references(weight: i16) -> bool {
+    weight != TIP_SINGLE_WEIGHT
+}
 
 #[doc = "AV2 § 7.13.3.1 tipSize selection for TIP prediction."]
 const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: bool) -> usize {
@@ -180,6 +185,7 @@ pub(super) fn reconstruct<T: ReconSample>(
         .is_some_and(|tools| tools.enable_imp_msk_bld);
     let blend = mc::CompoundBlend::average_with_implicit_mask(implicit_mask)
         .average_with_cwp_weight(weight);
+    let two_references = tip_uses_two_references(weight);
     let enable_tip_refinemv = sequence
         .inter
         .as_ref()
@@ -199,6 +205,7 @@ pub(super) fn reconstruct<T: ReconSample>(
         && inter.opfl_refine_type.unwrap_or(0) != 0
         && enable_tip_refinemv
         && interpolation_filter == ReconInterpolationFilter::EightTapSharp
+        && two_references
         && (output || weight == mc::CWP_EQUAL);
     let frame_size = workspace.info().coded_luma_size();
     let block_w = placed
@@ -243,7 +250,7 @@ pub(super) fn reconstruct<T: ReconSample>(
                 interintra_chroma: false,
                 block: InterBlock {
                     ref_frame0: references.past_ref,
-                    ref_frame1: Some(references.future_ref),
+                    ref_frame1: two_references.then_some(references.future_ref),
                     mv: mvs[0],
                     mv1: mvs[1],
                     interp: interpolation_filter,
@@ -273,7 +280,18 @@ pub(super) fn reconstruct<T: ReconSample>(
                 rect,
                 tile_offset,
             )?;
-            mc::motion_compensate_inter_block_into(workspace, params, tile_offset)?;
+            let stored_mvs = if use_optflow {
+                mc::motion_compensate_inter_block_with_optflow_mvs_into(
+                    workspace,
+                    params,
+                    8,
+                    tile_offset,
+                )?
+                .unwrap_or(mvs)
+            } else {
+                mc::motion_compensate_inter_block_into(workspace, params, tile_offset)?;
+                mvs
+            };
             if let Some(motion_field) = output_motion_field.as_deref_mut() {
                 super::temporal::record_temporal_motion_block(
                     motion_field,
@@ -286,9 +304,9 @@ pub(super) fn reconstruct<T: ReconSample>(
                     frame_size.height().div_ceil(4),
                     frame_size.width().div_ceil(4),
                     references.past_ref,
-                    Some(references.future_ref),
-                    mvs[0],
-                    mvs[1],
+                    two_references.then_some(references.future_ref),
+                    stored_mvs[0],
+                    stored_mvs[1],
                     None,
                 );
             }
@@ -436,7 +454,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
 
 #[cfg(test)]
 mod tests {
-    use super::{output_prediction_unit_size, prediction_unit_size};
+    use super::{output_prediction_unit_size, prediction_unit_size, tip_uses_two_references};
     use splot_recon::InterpolationFilter;
 
     #[test]
@@ -461,5 +479,11 @@ mod tests {
             output_prediction_unit_size(false, InterpolationFilter::EightTapSharp),
             16
         );
+    }
+
+    #[test]
+    fn tip_weight_sixteen_uses_only_the_past_reference() {
+        assert!(tip_uses_two_references(8));
+        assert!(!tip_uses_two_references(16));
     }
 }

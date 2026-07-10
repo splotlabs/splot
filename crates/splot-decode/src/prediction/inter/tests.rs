@@ -2041,6 +2041,16 @@ fn order_hint_history_wrap_guard() {
 }
 
 #[test]
+fn tip_output_disables_saved_cdf_blending() {
+    assert!(super::cdf_blending_enabled(true, None));
+    assert!(super::cdf_blending_enabled(true, Some(TipFrameMode::AsRef)));
+    assert!(!super::cdf_blending_enabled(
+        true,
+        Some(TipFrameMode::AsOutput)
+    ));
+}
+
+#[test]
 fn tip_output_quantization_uses_nearest_valid_reference_slots() {
     decode_context().pool().install(|| {
         let (mut sequence, mut core, offset) =

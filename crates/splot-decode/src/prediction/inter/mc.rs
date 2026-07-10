@@ -48,6 +48,24 @@ impl McBlockRect {
             ),
         }
     }
+
+    fn plane_rect(self, plane: PlaneId, sub_x: u32, sub_y: u32) -> (usize, usize, usize, usize) {
+        let (x, y, width, height) = self.plane_luma_rect(plane);
+        let scale_x = 1usize << sub_x;
+        let scale_y = 1usize << sub_y;
+        let plane_x = x >> sub_x;
+        let plane_y = y >> sub_y;
+        (
+            plane_x,
+            plane_y,
+            x.saturating_add(width)
+                .div_ceil(scale_x)
+                .saturating_sub(plane_x),
+            y.saturating_add(height)
+                .div_ceil(scale_y)
+                .saturating_sub(plane_y),
+        )
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CompoundBlend {
@@ -207,27 +225,56 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
     block: InterBlockParams<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
+    motion_compensate_inter_block(workspace, block, None, offset).map(drop)
+}
+
+pub(crate) fn motion_compensate_inter_block_with_optflow_mvs_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: InterBlockParams<'_, T>,
+    optflow_unit_size: usize,
+    offset: ByteOffset,
+) -> Result<Option<[Mv; 2]>> {
+    let Some(grid) =
+        motion_compensate_inter_block(workspace, block, Some(optflow_unit_size), offset)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(grid.stored_mvs_at_luma_offset(0, 0)?))
+}
+
+fn motion_compensate_inter_block<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: InterBlockParams<'_, T>,
+    optflow_unit_size: Option<usize>,
+    offset: ByteOffset,
+) -> Result<Option<optflow::OptflowMotionGrid>> {
     match block.prediction {
-        InterPrediction::Single { reference, mv } => motion_compensate_single_block_into(
-            workspace,
-            reference,
-            block.rect,
-            mv,
-            block.interp,
-            block.has_chroma,
-            offset,
-        ),
+        InterPrediction::Single { reference, mv } => {
+            motion_compensate_single_block_into(
+                workspace,
+                reference,
+                block.rect,
+                mv,
+                block.interp,
+                block.has_chroma,
+                offset,
+            )?;
+            Ok(None)
+        }
         InterPrediction::SingleWarp {
             reference,
             warp_params,
-        } => motion_compensate_single_warp_block_into(
-            workspace,
-            reference,
-            block.rect,
-            warp_params,
-            block.has_chroma,
-            offset,
-        ),
+        } => {
+            motion_compensate_single_warp_block_into(
+                workspace,
+                reference,
+                block.rect,
+                warp_params,
+                block.has_chroma,
+                offset,
+            )?;
+            Ok(None)
+        }
         InterPrediction::CompoundAverage {
             reference0,
             reference1,
@@ -248,6 +295,7 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
                 optflow_distances,
                 has_chroma: block.has_chroma,
             },
+            optflow_unit_size,
             offset,
         ),
     }
@@ -286,9 +334,11 @@ fn motion_compensate_planes<T: ReconSample>(
 fn motion_compensate_compound_average_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CompoundMcBlock<'_, T>,
+    optflow_unit_size: Option<usize>,
     offset: ByteOffset,
-) -> Result<()> {
-    let optflow = optflow::compound_optflow_motion_grid(workspace, block, offset)?;
+) -> Result<Option<optflow::OptflowMotionGrid>> {
+    let optflow =
+        optflow::compound_optflow_motion_grid(workspace, block, optflow_unit_size, offset)?;
     let luma_diff_weighted_mask =
         compound_luma_diff_weighted_mask(workspace, block, optflow.as_ref(), offset)?;
     for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
@@ -312,7 +362,7 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
             offset,
         )?;
     }
-    Ok(())
+    Ok(optflow)
 }
 
 fn compound_luma_diff_weighted_mask<T: ReconSample>(
@@ -372,11 +422,7 @@ fn predict_plane<T: ReconSample>(
 ) -> Result<()> {
     let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
 
-    let (luma_x, luma_y, luma_w, luma_h) = rect.plane_luma_rect(plane);
-    let plane_x = luma_x >> sub_x;
-    let plane_y = luma_y >> sub_y;
-    let block_w = luma_w >> sub_x;
-    let block_h = luma_h >> sub_y;
+    let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
 
     let scaling = derive_plane_scaling(
         plane_x as i64,
@@ -434,11 +480,7 @@ fn predict_warp_plane<T: ReconSample>(
     let (destination_width, destination_height) =
         (destination_size.width(), destination_size.height());
 
-    let (luma_x, luma_y, luma_w, luma_h) = rect.plane_luma_rect(plane);
-    let plane_x = luma_x >> sub_x;
-    let plane_y = luma_y >> sub_y;
-    let block_w = luma_w >> sub_x;
-    let block_h = luma_h >> sub_y;
+    let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = workspace.info().bit_depth();
     let skip_pred = !splot_recon::warp_shear_is_valid(warp_params)
         || block_w < WARPED_BLOCK_SIZE
@@ -648,11 +690,7 @@ fn compound_plane_prediction<T: ReconSample>(
     let (view0, ref_mi_cols0, ref_mi_rows0) = reference_plane_view(reference0, plane, offset)?;
     let (view1, ref_mi_cols1, ref_mi_rows1) = reference_plane_view(reference1, plane, offset)?;
 
-    let (luma_x, luma_y, luma_w, luma_h) = rect.plane_luma_rect(plane);
-    let plane_x = luma_x >> sub_x;
-    let plane_y = luma_y >> sub_y;
-    let block_w = luma_w >> sub_x;
-    let block_h = luma_h >> sub_y;
+    let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
 
     let scaling0 = derive_plane_scaling(
         plane_x as i64,
@@ -1134,8 +1172,8 @@ pub(crate) fn reference_plane_view<T: ReconSample>(
         })?;
 
     let luma_visible = reference.y().visible_size();
-    let ref_mi_cols = (luma_visible.width() as i64) / 4;
-    let ref_mi_rows = (luma_visible.height() as i64) / 4;
+    let ref_mi_cols = luma_visible.width().div_ceil(4) as i64;
+    let ref_mi_rows = luma_visible.height().div_ceil(4) as i64;
 
     Ok((view, ref_mi_cols, ref_mi_rows))
 }

@@ -462,7 +462,7 @@ fn resolve_initial_frame_cdfs(
         &reference.ref_frame_height,
         current_base_q_idx,
         current_order_hint,
-        enable_avg_cdf,
+        cdf_blending_enabled(enable_avg_cdf, inter_ctrl.tip_frame_mode),
         avg_cdf_type,
     );
     match cdf_load {
@@ -487,6 +487,10 @@ fn resolve_initial_frame_cdfs(
             Ok(cdfs)
         }
     }
+}
+
+const fn cdf_blending_enabled(enable_avg_cdf: bool, tip_frame_mode: Option<TipFrameMode>) -> bool {
+    enable_avg_cdf && !matches!(tip_frame_mode, Some(TipFrameMode::AsOutput))
 }
 
 #[allow(clippy::too_many_arguments)]
