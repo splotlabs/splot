@@ -3,7 +3,8 @@
 
 use super::{
     CWP_EQUAL, CompoundMvCandidate, CompoundMvStackEntry, MAX_PR_NUM, MAX_REF_MV_STACK_SIZE, Mv,
-    MvBlockContext, MvStackEntry, TIP_REF_FRAME, TemporalMvContext, insert_compound_mv_stack_entry,
+    MvBlockContext, MvStackEntry, NeighbourCell, TIP_REF_FRAME, TemporalMvContext,
+    insert_compound_mv_stack_entry,
 };
 
 const MAX_DR_STACK_SIZE: usize = 4;
@@ -176,7 +177,21 @@ impl<'a> DerivedMvState<'a> {
         block: &MvBlockContext,
         candidate_ref: i8,
         candidate_mv: Mv,
+        cell: NeighbourCell,
     ) {
+        if block.ref_frame0 == TIP_REF_FRAME {
+            if let Some(ref_frame1) = cell.ref_frame1
+                && let Some(candidate) = self.temporal.and_then(|temporal| {
+                    temporal.derive_tip_base_mv(
+                        [cell.ref_frame0, ref_frame1],
+                        [cell.sub_mv, cell.sub_mv1],
+                    )
+                })
+            {
+                self.push(candidate);
+            }
+            return;
+        }
         let Some(candidate) = self.temporal.and_then(|temporal| {
             temporal.derive_spatial_mv(
                 block.ref_frame0,

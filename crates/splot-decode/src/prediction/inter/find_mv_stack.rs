@@ -2097,7 +2097,7 @@ fn scan_mv_stack_probe(
             weight,
             (probe.delta_row, adjusted_delta_col),
         );
-        derived.add_spatial(block, other.0, other.1);
+        derived.add_spatial(block, other.0, other.1, cell);
     }
     let candidates = [
         Some((cell.ref_frame0, cell.sub_mv)),
@@ -2112,11 +2112,8 @@ fn scan_mv_stack_probe(
                 weight,
                 (probe.delta_row, adjusted_delta_col),
             );
-        } else if candidate_ref >= 0
-            && candidate_ref != TIP_REF_FRAME
-            && block.ref_frame0 != TIP_REF_FRAME
-        {
-            derived.add_spatial(block, candidate_ref, candidate_mv);
+        } else if candidate_ref >= 0 && candidate_ref != TIP_REF_FRAME {
+            derived.add_spatial(block, candidate_ref, candidate_mv, cell);
         }
     }
 }
