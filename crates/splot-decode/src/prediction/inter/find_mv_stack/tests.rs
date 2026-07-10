@@ -1486,6 +1486,7 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
             frame_size,
             step: 1,
             enable_tip: false,
+            enable_trajectory: false,
             reduced: false,
         },
         &[0, 1],

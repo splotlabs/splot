@@ -334,6 +334,7 @@ mod tests {
             frame_size: (16, 16),
             step: 1,
             enable_tip: true,
+            enable_trajectory: false,
             reduced: false,
         };
 
@@ -374,6 +375,7 @@ mod tests {
                     frame_size: (16, 16),
                     step: 1,
                     enable_tip: true,
+                    enable_trajectory: false,
                     reduced: true,
                 },
                 &[0, 1],
@@ -402,6 +404,7 @@ mod tests {
                 frame_size: (16, 16),
                 step: 1,
                 enable_tip: true,
+                enable_trajectory: false,
                 reduced: false,
             },
             &[0, 1],
