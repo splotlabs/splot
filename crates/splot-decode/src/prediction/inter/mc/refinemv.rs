@@ -110,7 +110,12 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
             rect.luma_y += local_y;
             rect.luma_w = width;
             rect.luma_h = height;
-            refined.push(search_refinemv(workspace, block, rect, offset)?);
+            let mvs = if block.search_refinemv {
+                search_refinemv(workspace, block, rect, offset)?
+            } else {
+                [block.mv0, block.mv1]
+            };
+            refined.push(mvs);
         }
     }
     Ok(CompoundMotionGrid::from_refinemv(

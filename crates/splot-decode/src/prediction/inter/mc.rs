@@ -142,6 +142,7 @@ pub(crate) struct InterBlockParams<'a, T: ReconSample> {
     has_chroma: bool,
     sub8x8_chroma: bool,
     use_refinemv: bool,
+    search_refinemv: bool,
 }
 
 impl<'a, T: ReconSample> InterBlockParams<'a, T> {
@@ -158,6 +159,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             has_chroma: true,
             sub8x8_chroma: false,
             use_refinemv: false,
+            search_refinemv: false,
         }
     }
     pub(crate) const fn compound_average(
@@ -184,6 +186,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             has_chroma: true,
             sub8x8_chroma: false,
             use_refinemv: false,
+            search_refinemv: false,
         }
     }
     pub(crate) const fn single_warp(
@@ -204,6 +207,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             has_chroma: true,
             sub8x8_chroma: false,
             use_refinemv: false,
+            search_refinemv: false,
         }
     }
     pub(crate) const fn with_chroma(mut self, has_chroma: bool) -> Self {
@@ -213,6 +217,12 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
 
     pub(crate) const fn with_refinemv(mut self, use_refinemv: bool) -> Self {
         self.use_refinemv = use_refinemv;
+        self.search_refinemv = use_refinemv;
+        self
+    }
+
+    pub(crate) const fn with_refinemv_search(mut self, enabled: bool) -> Self {
+        self.search_refinemv = self.use_refinemv && enabled;
         self
     }
 
@@ -273,6 +283,7 @@ struct CompoundMcBlock<'a, T: ReconSample> {
     has_chroma: bool,
     sub8x8_chroma: bool,
     use_refinemv: bool,
+    search_refinemv: bool,
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -362,6 +373,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
                 has_chroma: block.has_chroma,
                 sub8x8_chroma: block.sub8x8_chroma,
                 use_refinemv: block.use_refinemv,
+                search_refinemv: block.search_refinemv,
             },
             optflow_unit_size,
             offset,
@@ -714,6 +726,7 @@ fn predict_compound_plane<T: ReconSample>(
         has_chroma: true,
         sub8x8_chroma: false,
         use_refinemv: false,
+        search_refinemv: false,
     };
     let prediction =
         compound_plane_prediction_for_block(workspace, block, plane, sub_x, sub_y, motion, offset)?;
