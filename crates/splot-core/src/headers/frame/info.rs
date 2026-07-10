@@ -51,14 +51,12 @@
 //!   the reference-grounded frame size (`frame_size_with_refs()` § 5.18.4.3), the BRU
 //!   triple, `use_ref_frame_mvs` / `tmvp_sample_step_minus_1`, the TIP block, the
 //!   MV-precision / interpolation-filter / motion-mode reads, and `disable_cdf_update`
-//!   (mirror :5041) — converging on the shared tail
-//!   ([`super::inter::InterStop::ReachedSharedTail`]) or stopping at one of the honest
-//!   [`super::inter::InterStop`] coverage stops (an unmodeled derivation such as the
-//!   implicit reference map, a poisoned reference-state slot, or the TIP-as-output /
-//!   bru-inactive / bridge early-return arms). The parsed inter facts are recorded on
-//!   `core.inter`; the frame still stops with
-//!   [`FrameHeaderParseStatus::UnsupportedUntilFeature`] because the shared tail past the
-//!   control region is not yet threaded with the inter primary-reference / TIP inputs.
+//!   (mirror :5041). The ordinary path continues through the modeled shared tail; the
+//!   TIP-as-output path continues through its optional explicit quantization, deblocking,
+//!   tile-info, and film-grain tail. Both reach
+//!   [`FrameHeaderParseStatus::InterHeaderComplete`] when every required input is known.
+//!   Unmodeled derivations, poisoned reference slots, and the BRU/bridge return arm stay
+//!   honest [`super::inter::InterStop`] coverage stops with their parsed facts preserved.
 //! - **Intra frame (key / intra-only / single-picture)** → reads the full control
 //!   region through `frame_size()`, `screen_content_params()`, `intrabc_params()`,
 //!   `disable_cdf_update`, `tile_info()`, `quantization_params()`,
@@ -702,16 +700,19 @@ pub(crate) fn parse_core_body(
 /// when that region reaches
 /// [`InterStop::ReachedSharedTail`](crate::headers::frame::inter::InterStop) — the § 5.18.2
 /// shared tail via
-/// [`parse_inter_shared_tail`](crate::headers::frame::inter_shared_tail::parse_inter_shared_tail).
+/// [`parse_inter_shared_tail`](crate::headers::frame::inter_shared_tail::parse_inter_shared_tail),
+/// or when it reaches `TipAsOutputReturn` — the TIP output quantization, deblocking, tile,
+/// and film-grain tail.
 ///
 /// On `ReachedSharedTail` the shared tail parses `tile_info()` → `quantization_params()` →
 /// `segmentation_params()` → … → the inter coding-mode arms → `film_grain_config()` for the
 /// modeled minimal-tool single-reference inter subset, reaching the terminal
 /// [`FrameHeaderParseStatus::InterHeaderComplete`] (or an honest
 /// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] for anything outside that subset). On
-/// any other [`InterStop`](crate::headers::frame::inter::InterStop) the parse stops in the
-/// control region with the unsupported-coverage status; the distinct stop class stays on
-/// `core.inter.stop`. The inter facts are recorded on `core.inter` either way.
+/// `TipAsOutputReturn` likewise reaches `InterHeaderComplete` after the conditional TIP tail.
+/// Any other [`InterStop`](crate::headers::frame::inter::InterStop) stops with the
+/// unsupported-coverage status; the distinct stop class stays on `core.inter.stop`. The inter
+/// facts are recorded on `core.inter` either way.
 fn parse_inter_path(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
@@ -726,7 +727,7 @@ fn parse_inter_path(
 
     let mut control = crate::headers::frame::inter::InterControl::default();
 
-    let mut shared_tail_ran = false;
+    let mut tail_ran = false;
 
     let result = (|| -> Result<()> {
         let frame_size_override_flag = if frame_type == FrameType::Switch {
@@ -758,15 +759,80 @@ fn parse_inter_path(
             &mut control,
         )?;
 
-        if control.stop == Some(InterStop::ReachedSharedTail) {
-            core.frame_size = control.frame_size;
-            shared_tail_ran = true;
-            parse_inter_shared_tail(reader, core, seq, &control, frame_type, reference_state)?;
+        core.frame_size = control.frame_size;
+        match control.stop {
+            Some(InterStop::ReachedSharedTail) => {
+                tail_ran = true;
+                parse_inter_shared_tail(reader, core, seq, &control, frame_type, reference_state)?;
+            }
+            Some(InterStop::TipAsOutputReturn) => {
+                tail_ran = true;
+                parse_tip_output_tail(reader, core, seq, &mut control)?;
+            }
+            _ => {}
         }
         Ok(())
     })();
 
-    finish_inter_control_with_tail(core, control, result, shared_tail_ran)
+    finish_inter_control_with_tail(core, control, result, tail_ran)
+}
+
+/// Parses the `TipFrameMode == TIP_FRAME_AS_OUTPUT` terminal arm of § 5.18.2
+/// (mirror :4945-5031): optional explicit quantization, the TIP deblocking flags,
+/// conditional `tile_info()`, and `film_grain_config()`.
+fn parse_tip_output_tail(
+    reader: &mut BitReader<'_>,
+    core: &mut FrameHeaderCore,
+    seq: &CoreSeqView,
+    control: &mut crate::headers::frame::inter::InterControl,
+) -> Result<()> {
+    if seq.inter.enable_tip_explicit_qp {
+        core.quantization_params = Some(parse_quantization_params(reader, &seq.quant, true)?);
+    }
+
+    let allow_df_sub_pu = seq.filter.enable_df_sub_pu && reader.read_flag()?;
+    control.allow_df_sub_pu = Some(allow_df_sub_pu);
+    let apply_deblocking_filter_tip = allow_df_sub_pu && reader.read_flag()?;
+    control.apply_deblocking_filter_tip = Some(apply_deblocking_filter_tip);
+
+    if apply_deblocking_filter_tip {
+        let Some(frame_size) = control.frame_size else {
+            core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+                feature_id: FRAME_HEADER_INFO_FEATURE,
+            };
+            return Ok(());
+        };
+        core.tile_info = match parse_tile_info(reader, &seq.tile, frame_size, false, false, true) {
+            Ok(tile_info) => Some(tile_info),
+            Err(Error::Unimplemented { feature }) => {
+                core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+                    feature_id: feature,
+                };
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+    }
+
+    let Some(film_grain_params_present) = seq.film_grain_params_present else {
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: FRAME_HEADER_INFO_FEATURE,
+        };
+        return Ok(());
+    };
+    let film_grain = parse_film_grain_config(
+        reader,
+        &FrameTailInput {
+            coded_lossless: false,
+            film_grain_params_present,
+            single_picture_header_flag: seq.single_picture_header_flag,
+            immediate_output_frame: core.immediate_output_frame.unwrap_or(false),
+            implicit_output_frame: core.implicit_output_frame.unwrap_or(false),
+        },
+    )?;
+    control.tip_film_grain = Some(film_grain);
+    core.status = FrameHeaderParseStatus::InterHeaderComplete;
+    Ok(())
 }
 
 /// Records a parsed inter / bridge `control` onto `core` and sets the terminal status,
@@ -821,12 +887,12 @@ fn finish_inter_control(
 /// past `InterStop::ReachedSharedTail` into the § 5.18.2 shared tail
 /// ([`parse_inter_shared_tail`](crate::headers::frame::inter_shared_tail::parse_inter_shared_tail)).
 ///
-/// `shared_tail_ran` is `true` when the shared-tail parser was invoked (the control region
-/// reached `ReachedSharedTail`). In that case the shared-tail parser already set `core.status`
+/// `tail_ran` is `true` when the shared-tail or TIP-output-tail parser was invoked. In that
+/// case the tail parser already set `core.status`
 /// (the terminal [`FrameHeaderParseStatus::InterHeaderComplete`], an honest
 /// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] coverage stop, or a reserved
 /// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] branch), so on `Ok` the status is left
-/// untouched. When `shared_tail_ran` is `false` (any other control-region stop) the status
+/// untouched. When `tail_ran` is `false` (any other control-region stop) the status
 /// is set to the unsupported-coverage class exactly as [`finish_inter_control`] does. An
 /// [`Error::UnexpectedEof`] from anywhere in the closure — the control region OR the shared
 /// tail — is converted to the facts-preserving
@@ -835,7 +901,7 @@ fn finish_inter_control_with_tail(
     core: &mut FrameHeaderCore,
     control: crate::headers::frame::inter::InterControl,
     result: Result<()>,
-    shared_tail_ran: bool,
+    tail_ran: bool,
 ) -> Result<()> {
     if let Some(size) = control.frame_size {
         core.frame_size = Some(size);
@@ -848,7 +914,7 @@ fn finish_inter_control_with_tail(
 
     match result {
         Ok(()) => {
-            if !shared_tail_ran {
+            if !tail_ran {
                 core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
                     feature_id: FRAME_HEADER_INFO_FEATURE,
                 };

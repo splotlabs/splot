@@ -1722,6 +1722,141 @@ fn one_valid_ref_64() -> (
     (ref_valid, ref_oh, ref_w, ref_h)
 }
 
+fn tip_output_seq_64() -> CoreSeqView {
+    let mut seq = CoreSeqView::new_minimal_intra(64, 64).expect("64x64 is valid");
+    seq.inter.explicit_ref_frame_map = true;
+    seq.inter.enable_ref_frame_mvs = true;
+    seq.inter.enable_tip = true;
+    seq.inter.enable_tip_output = true;
+    seq.inter.enable_tip_hole_fill = true;
+    seq.inter.enable_tip_explicit_qp = true;
+    seq.inter.enable_tip_refinemv = true;
+    seq.inter.enable_opfl_refine = 1;
+    seq.filter.enable_df_sub_pu = true;
+    seq.film_grain_params_present = Some(true);
+    seq
+}
+
+/// Builds an exactly byte-aligned TIP-as-output header through `tip_sharp`. The two
+/// references straddle order hint 4, so equal weighting is inferred and no weight bits read.
+fn tip_output_control_prefix(bits: &mut Bits) {
+    bits.uvlc(0); // cur_mfh_id
+    bits.uvlc(0); // seq_header_id_in_frame_header
+    bits.bit(1); // immediate_output_frame; implicit_output_frame inferred 0
+    bits.bit(0); // frame_size_override_flag
+    bits.f(4, 4); // order_hint
+    bits.bit(0); // signal_primary_ref_frame
+    bits.f(0, 8); // refresh_frame_flags
+    bits.bit(1); // frame_explicit_ref_frame_map
+    bits.f(2, 3); // num_total_refs
+    bits.f(0, 3); // ref_frame_idx[0]
+    bits.f(1, 3); // ref_frame_idx[1]
+    bits.bit(1); // use_ref_frame_mvs
+    bits.bit(0); // tmvp_sample_step_minus_1
+    bits.bit(0); // allow_tip_hole_fill
+    bits.bit(1); // tip_mv_zero
+    bits.bit(1); // tip_sharp
+}
+
+fn two_tip_refs_64() -> (
+    [bool; NUM_REF_FRAMES],
+    [u32; NUM_REF_FRAMES],
+    [u32; NUM_REF_FRAMES],
+    [u32; NUM_REF_FRAMES],
+) {
+    let mut ref_valid = [false; NUM_REF_FRAMES];
+    let mut ref_oh = [0u32; NUM_REF_FRAMES];
+    let mut ref_w = [0u32; NUM_REF_FRAMES];
+    let mut ref_h = [0u32; NUM_REF_FRAMES];
+    ref_valid[0] = true;
+    ref_valid[1] = true;
+    ref_oh[0] = 2;
+    ref_oh[1] = 6;
+    ref_w[0] = 64;
+    ref_w[1] = 64;
+    ref_h[0] = 64;
+    ref_h[1] = 64;
+    (ref_valid, ref_oh, ref_w, ref_h)
+}
+
+#[test]
+fn frame_header_core_tip_output_parses_terminal_tail() {
+    let seq = tip_output_seq_64();
+    let mut bits = Bits::default();
+    tip_output_control_prefix(&mut bits);
+    bits.f(77, 8); // explicit TIP base_q_idx
+    bits.bit(1); // allow_df_sub_pu
+    bits.bit(1); // apply_deblocking_filter_tip
+    bits.bit(1); // tile_info(): uniform_tile_spacing_flag
+    bits.bit(0); // film_grain_config(): apply_grain
+    let data = bits.into_bytes();
+    let (rv, roh, rw, rh) = two_tip_refs_64();
+    let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
+
+    let (core, consumed) =
+        parse_body_with_ref(&data, ObuType::RegularTip, false, &seq, None, &rs).unwrap();
+
+    assert_eq!(core.status, FrameHeaderParseStatus::InterHeaderComplete);
+    assert_eq!(core.quantization_params.as_ref().unwrap().base_q_idx, 77);
+    let tile = core.tile_info.as_ref().unwrap();
+    assert_eq!((tile.tile_cols, tile.tile_rows), (1, 1));
+    let inter = core.inter.as_ref().unwrap();
+    assert_eq!(inter.stop, Some(InterStop::TipAsOutputReturn));
+    assert_eq!(inter.allow_df_sub_pu, Some(true));
+    assert_eq!(inter.apply_deblocking_filter_tip, Some(true));
+    assert!(!inter.tip_film_grain.as_ref().unwrap().apply_grain);
+    assert_eq!(consumed, 44);
+}
+
+#[test]
+fn frame_header_core_tip_output_infers_disabled_tail_gates() {
+    let mut seq = tip_output_seq_64();
+    seq.inter.enable_tip_explicit_qp = false;
+    seq.filter.enable_df_sub_pu = false;
+    seq.film_grain_params_present = Some(false);
+    let mut bits = Bits::default();
+    tip_output_control_prefix(&mut bits);
+    let data = bits.into_bytes();
+    let (rv, roh, rw, rh) = two_tip_refs_64();
+    let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
+
+    let (core, consumed) =
+        parse_body_with_ref(&data, ObuType::RegularTip, false, &seq, None, &rs).unwrap();
+
+    assert_eq!(core.status, FrameHeaderParseStatus::InterHeaderComplete);
+    assert!(core.quantization_params.is_none());
+    assert!(core.tile_info.is_none());
+    let inter = core.inter.as_ref().unwrap();
+    assert_eq!(inter.allow_df_sub_pu, Some(false));
+    assert_eq!(inter.apply_deblocking_filter_tip, Some(false));
+    assert!(!inter.tip_film_grain.as_ref().unwrap().apply_grain);
+    assert_eq!(consumed, 32);
+}
+
+#[test]
+fn frame_header_core_tip_output_eof_in_tail_is_truncation() {
+    let seq = tip_output_seq_64();
+    let mut bits = Bits::default();
+    tip_output_control_prefix(&mut bits);
+    let data = bits.into_bytes();
+    let (rv, roh, rw, rh) = two_tip_refs_64();
+    let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
+
+    let (core, consumed) =
+        parse_body_with_ref(&data, ObuType::RegularTip, false, &seq, None, &rs).unwrap();
+
+    assert_eq!(
+        core.status,
+        FrameHeaderParseStatus::StoppedInsideInterControl
+    );
+    assert!(core.status.is_truncated_in_modeled_region());
+    let inter = core.inter.as_ref().unwrap();
+    assert_eq!(inter.stop, Some(InterStop::TipAsOutputReturn));
+    assert_eq!(inter.allow_df_sub_pu, None);
+    assert_eq!(inter.tip_film_grain, None);
+    assert_eq!(consumed, 32);
+}
+
 #[test]
 fn frame_header_core_inter_shared_tail_reads_inter_arms_with_asymmetric_values() {
     let seq = minimal_inter_seq_64();

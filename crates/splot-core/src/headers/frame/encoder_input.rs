@@ -53,6 +53,7 @@ impl CoreSeqInterView {
             enable_tip: false,
             enable_tip_output: false,
             enable_tip_hole_fill: false,
+            enable_tip_explicit_qp: false,
             enable_refinemv: false,
             enable_tip_refinemv: false,
             seq_max_drl_bits_minus_1: 0,
