@@ -509,6 +509,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         CompoundBlendInput {
             skip_mode: false,
             use_optflow: compound.use_optflow,
+            joint_amvd: compound.y_mode == CompoundYMode::JointNew && use_amvd,
             n4w,
             n4h,
             block_size_index: frontier.b_size.index(),
@@ -1948,6 +1949,7 @@ fn read_compound_jmvd_scale_mode_syntax(
 struct CompoundBlendInput {
     skip_mode: bool,
     use_optflow: bool,
+    joint_amvd: bool,
     n4w: usize,
     n4h: usize,
     block_size_index: usize,
@@ -2005,7 +2007,7 @@ fn read_compound_blend_syntax(
 ) -> Result<mc::CompoundBlend> {
     let average_blend = mc::CompoundBlend::average_with_implicit_mask(tools.implicit_mask);
     let thin = compound_blend_is_thin(input.n4w, input.n4h);
-    if input.skip_mode || input.use_optflow || !tools.masked_enabled || thin {
+    if input.skip_mode || input.use_optflow || input.joint_amvd || !tools.masked_enabled || thin {
         return Ok(average_blend);
     }
     let comp_group_idx = cdfs
