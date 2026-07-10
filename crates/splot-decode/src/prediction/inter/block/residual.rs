@@ -100,11 +100,18 @@ impl InterLumaTxTypeMap {
         mi_col: usize,
         chroma_row: usize,
         chroma_col: usize,
-        subsampling_x: bool,
-        subsampling_y: bool,
+        subsampling: (bool, bool),
+        lossless_uses_current_block: bool,
     ) -> usize {
-        let luma_row = mi_row.max(chroma_row << usize::from(subsampling_y));
-        let luma_col = mi_col.max(chroma_col << usize::from(subsampling_x));
+        let (subsampling_x, subsampling_y) = subsampling;
+        let (luma_row, luma_col) = if lossless_uses_current_block {
+            (mi_row, mi_col)
+        } else {
+            (
+                mi_row.max(chroma_row << usize::from(subsampling_y)),
+                mi_col.max(chroma_col << usize::from(subsampling_x)),
+            )
+        };
         self.index(luma_row, luma_col)
             .map_or(DCT_DCT, |index| self.values[index])
     }
@@ -222,6 +229,7 @@ pub(crate) fn read_inter_residual(
                             chroma_chunk_x,
                             chroma_chunk_y,
                             lossless,
+                            luma_tx_size_mode == InterResidualLumaTxSizeMode::Inter,
                             residual_tool_policy,
                             tile_offset,
                         )?;
@@ -447,6 +455,7 @@ fn read_inter_residual_chroma_group(
     chunk_x: usize,
     chunk_y: usize,
     lossless: bool,
+    is_inter: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
@@ -496,6 +505,8 @@ fn read_inter_residual_chroma_group(
     let y_offset4 = (chunk_y << 4) >> usize::from(subsampling_y);
     let base_x4 = chroma_ref.col() >> usize::from(subsampling_x);
     let base_y4 = chroma_ref.row() >> usize::from(subsampling_y);
+    let lossless_uses_current_block =
+        lossless && is_inter && (frontier.r != chroma_ref.row() || frontier.c != chroma_ref.col());
     let mut u_reads = Vec::new();
     let mut y4 = y_offset4;
     while y4 < y_offset4 + num4x4_h {
@@ -508,8 +519,8 @@ fn read_inter_residual_chroma_group(
                 frontier.c,
                 base_y4 + y4,
                 base_x4 + x4,
-                subsampling_x,
-                subsampling_y,
+                (subsampling_x, subsampling_y),
+                lossless_uses_current_block,
             );
             let unit = InterChromaUnit {
                 x4,

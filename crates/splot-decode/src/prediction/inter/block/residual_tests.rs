@@ -25,8 +25,26 @@ fn luma_tx_type_map_scales_chroma_coordinates_with_mi_floor() {
     let mut map = InterLumaTxTypeMap::new(9, 4, 8, 8, offset).unwrap();
     map.update(9, 4, tx_size_for(8, 4), V_DCT, offset).unwrap();
 
-    assert_eq!(map.chroma_inter_tx_type(9, 4, 4, 2, true, true), V_DCT);
-    assert_eq!(map.chroma_inter_tx_type(9, 4, 5, 3, true, true), DCT_DCT);
+    assert_eq!(
+        map.chroma_inter_tx_type(9, 4, 4, 2, (true, true), false),
+        V_DCT
+    );
+    assert_eq!(
+        map.chroma_inter_tx_type(9, 4, 5, 3, (true, true), false),
+        DCT_DCT
+    );
+}
+
+#[test]
+fn lossless_non_base_chroma_uses_current_luma_tx_type() {
+    let offset = ByteOffset::new(0);
+    let mut map = InterLumaTxTypeMap::new(9, 4, 8, 8, offset).unwrap();
+    map.update(9, 4, tx_size_for(8, 4), V_DCT, offset).unwrap();
+
+    assert_eq!(
+        map.chroma_inter_tx_type(9, 4, 5, 3, (true, true), true),
+        V_DCT
+    );
 }
 
 #[test]
