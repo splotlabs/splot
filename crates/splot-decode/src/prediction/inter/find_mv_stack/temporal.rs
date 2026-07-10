@@ -3,7 +3,10 @@
 
 use splot_recon::math::round2_signed;
 
-use super::{Mv, warp_sub_mv_at};
+use super::{
+    Mv, MvBlockContext, NeighbourCell, NeighbourMvGrid, RelativeProbe, TIP_REF_FRAME,
+    warp_sub_mv_at,
+};
 use selection::projection_queue;
 use trajectory::{TrajectoryMotionField, TrajectoryState};
 
@@ -441,6 +444,43 @@ impl TemporalMvContext {
 
     pub(crate) fn tip_candidate(&self, y8: usize, x8: usize, base_mv: Mv) -> Option<[Mv; 2]> {
         Some(self.tip.as_ref()?.candidate(y8, x8, base_mv))
+    }
+
+    pub(super) fn tip_spatial_mvs(
+        &self,
+        grid: &NeighbourMvGrid,
+        block: &MvBlockContext,
+        probe: RelativeProbe,
+        cell: NeighbourCell,
+    ) -> Option<[Mv; 2]> {
+        if cell.ref_frame0 != TIP_REF_FRAME || cell.ref_frame1.is_some() {
+            return None;
+        }
+        let (row, col, _) = probe.stack_target(block);
+        let (row, col) = (usize::try_from(row).ok()?, usize::try_from(col).ok()?);
+        let shift = 1 + usize::from(cell.tip_size_16x16);
+        let row = cell.base_r + ((row.checked_sub(cell.base_r)? >> shift) << shift);
+        let col = cell.base_c + ((col.checked_sub(cell.base_c)? >> shift) << shift);
+        let base_cell = grid.get(row as i32, col as i32)?;
+        self.tip_candidate(row >> 1, col >> 1, base_cell.sub_mv)
+    }
+
+    pub(super) fn tip_spatial_mv(
+        &self,
+        grid: &NeighbourMvGrid,
+        block: &MvBlockContext,
+        probe: RelativeProbe,
+        cell: NeighbourCell,
+    ) -> Option<Mv> {
+        let refs = self.tip_references()?;
+        let target = if block.ref_frame0 == refs.past_ref {
+            0
+        } else if block.ref_frame0 == refs.future_ref {
+            1
+        } else {
+            return None;
+        };
+        Some(self.tip_spatial_mvs(grid, block, probe, cell)?[target])
     }
 
     pub(super) fn motion_field_mv(&self, ref_frame: i8, y8: usize, x8: usize) -> Option<Mv> {

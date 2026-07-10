@@ -1925,17 +1925,7 @@ fn scan_compound_mv_stack_probe(
         {
             return;
         }
-        let (row, col, _) = probe.stack_target(block);
-        let (Ok(row), Ok(col)) = (usize::try_from(row), usize::try_from(col)) else {
-            return;
-        };
-        let shift = 1 + usize::from(cell.tip_size_16x16);
-        let row = cell.base_r + (((row - cell.base_r) >> shift) << shift);
-        let col = cell.base_c + (((col - cell.base_c) >> shift) << shift);
-        let Some(base_cell) = grid.get(row as i32, col as i32) else {
-            return;
-        };
-        let Some(mvs) = temporal.tip_candidate(row >> 1, col >> 1, base_cell.sub_mv) else {
+        let Some(mvs) = temporal.tip_spatial_mvs(grid, block, probe, cell) else {
             return;
         };
         CompoundMvCandidate {
@@ -2094,6 +2084,20 @@ fn scan_mv_stack_probe(
     }
 
     let (_, _, adjusted_delta_col) = probe.stack_target(block);
+    if cell.ref_frame0 == TIP_REF_FRAME
+        && cell.ref_frame1.is_none()
+        && block.ref_frame0 != TIP_REF_FRAME
+        && let Some(temporal) = derived.temporal()
+        && let Some(mv) = temporal.tip_spatial_mv(grid, block, probe, cell)
+    {
+        insert_mv_stack_entry(
+            entries,
+            prune_count,
+            mv,
+            weight,
+            (probe.delta_row, adjusted_delta_col),
+        );
+    }
     let candidates = [
         Some((cell.ref_frame0, cell.sub_mv)),
         cell.ref_frame1.map(|ref_frame1| (ref_frame1, cell.sub_mv1)),

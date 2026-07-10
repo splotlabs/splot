@@ -259,6 +259,56 @@ fn compound_mv_stack_projects_tip_neighbour_to_its_reference_pair() {
 }
 
 #[test]
+fn single_mv_stack_projects_tip_neighbour_to_each_reference() {
+    let mut grid = empty_grid();
+    let base_mv = Mv { row: 3, col: 4 };
+    record_inter_ref(
+        &mut grid,
+        0,
+        0,
+        TIP_REF_FRAME,
+        NeighbourYMode::Other,
+        base_mv,
+        false,
+    );
+    let references = temporal::TipReferencePair {
+        past_ref: 0,
+        future_ref: 1,
+        past_offset: -1,
+        future_offset: 1,
+        ref_offset: 1,
+    };
+    let temporal = TemporalMvContext::with_tip_sample(
+        MI_DIM,
+        MI_DIM,
+        references,
+        3,
+        3,
+        Mv { row: 16, col: 32 },
+    )
+    .unwrap();
+    let expected = temporal.tip_candidate(3, 3, base_mv).unwrap();
+
+    for (target_ref, expected_mv) in expected.into_iter().enumerate() {
+        let mut block = block_at(0, N4_32);
+        block.ref_frame0 = target_ref as i8;
+        let candidate = find_mv_stack_with_temporal(
+            &grid,
+            &block,
+            Mv::ZERO,
+            None,
+            &WarpParamBank::new(),
+            false,
+            DrlReorder::Disabled,
+            Some(&temporal),
+            false,
+        );
+        assert_eq!(candidate.candidate(0), expected_mv);
+        assert_eq!(candidate.candidate_offsets(0), (N4_32 as i32 - 1, -1));
+    }
+}
+
+#[test]
 fn compound_mv_stack_aligns_tip_neighbour_to_its_16x16_unit() {
     let mut grid = empty_grid();
     let base_mv = Mv { row: 3, col: 4 };
