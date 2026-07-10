@@ -654,12 +654,8 @@ fn deblock_filter_edge<T: ReconSample>(
             col: prev_col,
         })?;
 
-    let Some(tx_sz) = plane_tx(plane, curr) else {
-        return Ok(());
-    };
-    let Some(prev_tx_sz) = plane_tx(plane, prev) else {
-        return Ok(());
-    };
+    let tx_sz = plane_tx(plane, curr);
+    let prev_tx_sz = plane_tx(plane, prev);
 
     let (tx_col_base, tx_row_base, prev_tx_col_base, prev_tx_row_base) = if plane == 0 {
         (curr.base_col, curr.base_row, prev.base_col, prev.base_row)
@@ -919,11 +915,11 @@ fn combine_strengths(curr_q: i32, prev_q: i32, curr_side: i32, prev_side: i32) -
     (q_thr, side)
 }
 
-fn plane_tx(plane: usize, info: MiBlockInfo) -> Option<usize> {
+fn plane_tx(plane: usize, info: MiBlockInfo) -> usize {
     if plane == 0 {
-        Some(info.luma_tx)
+        info.luma_tx
     } else {
-        info.chroma_tx
+        info.chroma_tx.unwrap_or(0)
     }
 }
 
