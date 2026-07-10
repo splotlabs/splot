@@ -3,7 +3,7 @@
 
 use super::{
     CWP_EQUAL, CompoundMvCandidate, CompoundMvStackEntry, MAX_PR_NUM, MAX_REF_MV_STACK_SIZE, Mv,
-    MvBlockContext, MvStackEntry, TemporalMvContext, insert_compound_mv_stack_entry,
+    MvBlockContext, MvStackEntry, TIP_REF_FRAME, TemporalMvContext, insert_compound_mv_stack_entry,
 };
 
 const MAX_DR_STACK_SIZE: usize = 4;
@@ -66,11 +66,31 @@ impl CompoundDerivedMvState {
         &mut self,
         block: &MvBlockContext,
         candidates: [Option<(i8, Mv)>; 2],
+        temporal: Option<&TemporalMvContext>,
     ) {
         let Some(ref_frame1) = block.ref_frame1 else {
             return;
         };
         let target_refs = [block.ref_frame0, ref_frame1];
+        if target_refs[0] != target_refs[1] {
+            for &(candidate_ref, candidate_mv) in candidates.iter().flatten() {
+                if candidate_ref < 0 || candidate_ref == TIP_REF_FRAME {
+                    continue;
+                }
+                let Some(derived) = temporal.and_then(|temporal| {
+                    temporal.derive_compound_spatial_mvs(
+                        target_refs,
+                        candidate_ref,
+                        candidate_mv,
+                        block.mi_row >> 1,
+                        block.mi_col >> 1,
+                    )
+                }) else {
+                    continue;
+                };
+                push_bounded_unique(&mut self.entries, &mut self.prune_count, derived);
+            }
+        }
         let target = if candidates
             .iter()
             .flatten()

@@ -1949,6 +1949,7 @@ fn scan_compound_mv_stack_probe(
                 Some((cell.ref_frame0, cell.sub_mv)),
                 cell.ref_frame1.map(|r| (r, cell.sub_mv1)),
             ],
+            temporal,
         );
         return;
     };
