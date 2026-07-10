@@ -32,6 +32,73 @@ fn all_zero_luma_block() -> LumaCoeffBlock {
     }
 }
 
+#[test]
+fn inter_secondary_transform_applies_parsed_sec_tx_type() {
+    let mut quant = vec![0; 32 * 16];
+    quant[0] = 1;
+    quant[33] = 1;
+    quant[64] = 1;
+    quant[96] = 2;
+    let block = LumaCoeffBlock {
+        all_zero: false,
+        eob: 7,
+        quant,
+        intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
+            sec_tx_type: 3,
+            most_probable_stx_set: None,
+        }),
+        cctx_type: None,
+        plane_tx_type: 0,
+        use_tcq: true,
+        lossless: false,
+    };
+    let reconstruct = |block: &LumaCoeffBlock| {
+        let mut workspace =
+            new_general_intra_workspace::<u8>(64, 16, BitDepth::Eight, PixelFormat::Yuv420)
+                .unwrap();
+        workspace
+            .write_rect_block(
+                PlaneId::Y,
+                0,
+                0,
+                IntraRectBlockSize::new(6, 4).unwrap(),
+                &[42; 64 * 16],
+            )
+            .unwrap();
+        let result = reconstruct_inter_block_residual_rect_into(
+            &mut workspace,
+            block,
+            PlaneId::Y,
+            0,
+            0,
+            6,
+            4,
+            215,
+            true,
+            true,
+            BitDepth::Eight,
+        );
+        result.map(|()| workspace.reconstructed_sample(PlaneId::Y, 0, 0).unwrap())
+    };
+
+    assert_eq!(reconstruct(&block).unwrap(), 40);
+    assert_eq!(
+        reconstruct(&LumaCoeffBlock {
+            intra_ist: None,
+            ..block.clone()
+        })
+        .unwrap(),
+        76,
+    );
+    assert!(
+        reconstruct(&LumaCoeffBlock {
+            plane_tx_type: 1,
+            ..block
+        })
+        .is_err()
+    );
+}
+
 /// Lays an `above_row` pattern (length `width`) so that workspace row `edge_y` is
 /// that pattern over `x[0, width)`. Writes a `width x 4` block at `(0, edge_y-3)`
 /// whose every row carries the pattern (so its bottom row `edge_y` does too).
