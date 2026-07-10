@@ -325,6 +325,63 @@ fn single_mv_stack_projects_tip_neighbour_and_derives_other_side() {
 }
 
 #[test]
+fn tip_mv_stack_derives_base_motion_from_its_reference_pair() {
+    let mut grid = empty_grid();
+    grid.record_compound_block(
+        0,
+        0,
+        N4_32,
+        N4_32,
+        0,
+        1,
+        false,
+        false,
+        Mv { row: 0, col: -5 },
+        Mv { row: 0, col: 3 },
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        false,
+        CWP_EQUAL,
+        false,
+        BlockPrecisionRecord::default(),
+        [None, None],
+    );
+    let temporal = TemporalMvContext::with_tip_sample(
+        MI_DIM,
+        MI_DIM,
+        temporal::TipReferencePair {
+            past_ref: 0,
+            future_ref: 1,
+            past_offset: 1,
+            future_offset: -1,
+            ref_offset: 2,
+        },
+        0,
+        0,
+        Mv::ZERO,
+    )
+    .unwrap();
+    let mut block = block_at(0, N4_32);
+    block.ref_frame0 = TIP_REF_FRAME;
+
+    let stack = find_mv_stack_with_temporal(
+        &grid,
+        &block,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+        Some(&temporal),
+        false,
+    );
+
+    assert_eq!(stack.candidate(0), Mv { row: 0, col: -1 });
+    assert_eq!(stack.candidate_offsets(0), (0, 0));
+}
+
+#[test]
 fn compound_mv_stack_aligns_tip_neighbour_to_its_16x16_unit() {
     let mut grid = empty_grid();
     let base_mv = Mv { row: 3, col: 4 };

@@ -1572,11 +1572,7 @@ fn decode_block<T: ReconSample>(
         warp_param_bank,
         false,
         drl_reorder,
-        if tip_ref {
-            None
-        } else {
-            temporal_stack_context
-        },
+        temporal_stack_context,
         use_temporal_first,
     );
 

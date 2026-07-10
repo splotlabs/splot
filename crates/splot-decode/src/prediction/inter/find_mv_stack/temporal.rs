@@ -510,6 +510,28 @@ impl TemporalMvContext {
         Some((mvs[target], (references[other], mvs[other])))
     }
 
+    pub(super) fn derive_tip_base_mv(&self, references: [i8; 2], mvs: [Mv; 2]) -> Option<Mv> {
+        let tip = self.tip_references()?;
+        if references != [tip.past_ref, tip.future_ref] {
+            return None;
+        }
+        let linear = Mv {
+            row: mvs[0].row.saturating_sub(mvs[1].row),
+            col: mvs[0].col.saturating_sub(mvs[1].col),
+        };
+        let projected = project_mv(linear, tip.past_offset, tip.ref_offset)?;
+        Some(Mv {
+            row: mvs[0]
+                .row
+                .saturating_sub(projected.row)
+                .clamp(-MV_LIMIT, MV_LIMIT),
+            col: mvs[0]
+                .col
+                .saturating_sub(projected.col)
+                .clamp(-MV_LIMIT, MV_LIMIT),
+        })
+    }
+
     pub(super) fn motion_field_mv(&self, ref_frame: i8, y8: usize, x8: usize) -> Option<Mv> {
         let ref_index = usize::try_from(ref_frame).ok()?;
         if let Some(mv) = self

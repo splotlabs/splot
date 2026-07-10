@@ -175,6 +175,7 @@ jobs:
               "avm-v15.0.0-bus.64x64.l1.sdp1",
               "avm-v15.0.0-bus.64x64.l5.lossless",
               "avm-v15.0.0-bus.64x64.l5",
+              "avm-v15.0.0-bus.64x64.l5.opfl0-refinemv0",
           ]
           missing = sorted(set(required) - entries.keys())
           if missing:
