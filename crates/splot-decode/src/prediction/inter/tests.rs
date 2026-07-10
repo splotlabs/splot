@@ -23,8 +23,8 @@ use super::block::{
     BLOCK_8X8, interp_filter_no_neighbour_ctx, segment_neighbour_availability,
     tip_allowed_for_block_indices,
 };
-use super::compound_is_joint_context_from_order_hints;
 use super::test_support::fixture_sequence_and_key_core;
+use super::{compound_is_joint_context, compound_is_joint_context_from_order_hints};
 use crate::bitstream::tile_payload::{
     LumaCoeffBlock, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
 };
@@ -317,7 +317,6 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
             .expect("fixture has interpolation filter"),
         inter.num_total_refs.expect("fixture has NumTotalRefs") as usize,
         tail.reference_select,
-        None,
         sequence
             .inter
             .as_ref()
@@ -2057,6 +2056,37 @@ fn compound_is_joint_context_uses_strict_same_side_signs() {
         ctx(9, 12, 10),
         1,
         "opposite-side unequal-distance references still use context 1"
+    );
+}
+
+#[test]
+fn compound_is_joint_context_uses_selected_ranked_pair() {
+    let ref_frame_idx = [2, 0, 1];
+    let ref_order_hint = [9, 10, 11];
+
+    assert_eq!(
+        compound_is_joint_context(
+            &ref_frame_idx,
+            &ref_order_hint,
+            (0, 1),
+            10,
+            ByteOffset::new(0),
+        )
+        .unwrap(),
+        0,
+        "selected future/past references have equal distance"
+    );
+    assert_eq!(
+        compound_is_joint_context(
+            &ref_frame_idx,
+            &ref_order_hint,
+            (1, 2),
+            10,
+            ByteOffset::new(0),
+        )
+        .unwrap(),
+        1,
+        "selected past/current references have unequal distance"
     );
 }
 

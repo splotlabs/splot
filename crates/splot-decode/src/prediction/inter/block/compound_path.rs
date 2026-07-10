@@ -44,7 +44,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     reference: &InterReferenceState<'_, T>,
     num_total_refs: usize,
     num_same_ref_compound: u8,
-    compound_is_joint_ctx: Option<usize>,
     skip: u8,
     n4w: usize,
     n4h: usize,
@@ -83,8 +82,14 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             num_same_ref_compound,
             ref_contexts,
             ref_distance_nonnegative,
-            is_joint_ctx: compound_is_joint_ctx,
         },
+        tile_offset,
+    )?;
+    let compound_is_joint_ctx = super::super::compound_is_joint_context(
+        ref_frame_idx,
+        &reference.ref_order_hint,
+        pair,
+        compound_current_order_hint(core, tile_offset)?,
         tile_offset,
     )?;
     block_ctx.ref_frame0 = pair.0;

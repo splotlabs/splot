@@ -156,7 +156,6 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         InterpolationFilter::Eighttap,
         0,
         false,
-        None,
         0,
         &[],
         &reference,
