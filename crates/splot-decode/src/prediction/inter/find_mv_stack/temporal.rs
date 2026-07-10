@@ -294,6 +294,11 @@ impl TemporalMvContext {
             return false;
         };
         let projection_step = projection_step.clamp(1, 2);
+        let tmvp_unit_size8 = if projection_step == 1 {
+            8
+        } else {
+            superblock_size8.max(1)
+        };
         let mut field = ProjectedTemporalMotionField {
             width8: self.field.width8,
             height8: self.field.height8,
@@ -313,8 +318,8 @@ impl TemporalMvContext {
             }
         }
         if fill_holes {
-            fill_tip_holes(&mut field, projection_step, superblock_size8.max(1));
-            average_tip_motion(&mut field, projection_step, superblock_size8.max(1));
+            fill_tip_holes(&mut field, projection_step, tmvp_unit_size8);
+            average_tip_motion(&mut field, projection_step, tmvp_unit_size8);
         }
         fill_tip_sampling_gaps(&mut field, projection_step);
         self.tip = Some(TipMotionField { field, references });
@@ -750,5 +755,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn tip_step_one_hole_fill_stays_within_64_pixel_tmvp_units() {
+        let mut context = tip_context(10, vec![Some(8), Some(12)], 2, 32);
+        context.field.set(0, 7, Mv { row: 8, col: -16 }, 4, true);
+
+        assert!(context.prepare_tip(1, 16, true));
+        assert_eq!(context.tip_candidate(0, 8, Mv::ZERO), Some([Mv::ZERO; 2]));
     }
 }
