@@ -74,12 +74,18 @@ pub(super) fn prepare_motion_field(
     else {
         return;
     };
-    let projection_step = usize::from(inter.tmvp_sample_step_minus_1.unwrap_or(false)) + 1;
+    let projection_step = tmvp_projection_step(core);
     _ = temporal.prepare_tip(
         projection_step,
         (sb_h4 / 2).min(16),
         inter.allow_tip_hole_fill.unwrap_or(false),
     );
+}
+
+pub(super) fn tmvp_projection_step(core: &FrameHeaderCore) -> usize {
+    core.inter.as_ref().map_or(1, |inter| {
+        usize::from(inter.tmvp_sample_step_minus_1.unwrap_or(false)) + 1
+    })
 }
 
 pub(super) fn read_reference(
@@ -361,9 +367,9 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         .map_err(|_| missing("unsupported capability: inter.tip_output.frame_dimensions"))?;
     let (mi_rows, mi_cols) = (height.div_ceil(4), width.div_ceil(4));
     let mut temporal = TemporalMvContext::from_references(
-        mi_rows,
-        mi_cols,
+        (mi_rows, mi_cols),
         core.order_hint_lsb.unwrap_or(0),
+        tmvp_projection_step(core),
         ref_frame_idx,
         &reference.ref_valid,
         &reference.ref_order_hint,

@@ -202,9 +202,9 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     })?;
     let current_order_hint = core.order_hint_lsb.unwrap_or(0);
     let mut temporal_context = TemporalMvContext::from_references(
-        mi_rows,
-        mi_cols,
+        (mi_rows, mi_cols),
         current_order_hint,
+        tip::tmvp_projection_step(core),
         ref_frame_idx,
         &reference.ref_valid,
         &reference.ref_order_hint,
