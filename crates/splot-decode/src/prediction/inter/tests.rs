@@ -439,7 +439,7 @@ fn read_rect_samples(
 }
 
 #[test]
-fn inter_residual_cctx_pairs_chroma_blocks_by_location() {
+fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
     let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
         16,
         16,
@@ -447,33 +447,32 @@ fn inter_residual_cctx_pairs_chroma_blocks_by_location() {
         PixelFormat::Yuv420,
     )
     .unwrap();
-    let rect = PlaneRect::new(0, 0, 4, 4).unwrap();
-    let u_prediction: Vec<u8> = (0..16).map(|i| 96 + i as u8).collect();
-    let v_prediction: Vec<u8> = (0..16).map(|i| 141 - i as u8).collect();
+    let rect = PlaneRect::new(0, 0, 8, 4).unwrap();
+    let u_prediction = vec![128; 32];
+    let v_prediction = vec![128; 32];
     workspace
-        .write_rect(PlaneId::U, rect, &u_prediction, 4)
+        .write_rect(PlaneId::U, rect, &u_prediction, 8)
         .unwrap();
     workspace
-        .write_rect(PlaneId::V, rect, &v_prediction, 4)
+        .write_rect(PlaneId::V, rect, &v_prediction, 8)
         .unwrap();
 
-    let mut u_quant = vec![0; 16];
-    u_quant[0] = 16;
-    u_quant[1] = -7;
-    let mut v_quant = vec![0; 16];
-    v_quant[0] = -11;
-    v_quant[4] = 5;
-    let u_coeffs = luma_coeff_block(u_quant, 2, Some(1));
-    let v_coeffs = luma_coeff_block(v_quant, 5, None);
+    let mut u_quant = vec![0; 32];
+    u_quant[0] = -1;
+    u_quant[1] = 1;
+    let mut u_coeffs = luma_coeff_block(u_quant, 3, Some(5));
+    u_coeffs.plane_tx_type = 6;
+    let v_coeffs = all_zero_inter_coeff_block();
     let (want_u, want_v) = reconstruct_general_intra_chroma_cctx_pair_with_predictions(
         &u_coeffs,
         &u_prediction,
         &v_coeffs,
         &v_prediction,
-        80,
+        101,
+        3,
         2,
-        2,
-        1,
+        5,
+        true,
         BitDepth::Eight,
     )
     .unwrap();
@@ -484,8 +483,8 @@ fn inter_residual_cctx_pairs_chroma_blocks_by_location() {
                 plane: PlaneId::U,
                 x: 0,
                 y: 0,
-                tx_size: 0,
-                log2_width: 2,
+                tx_size: 6,
+                log2_width: 3,
                 log2_height: 2,
                 coeffs: u_coeffs,
             },
@@ -502,8 +501,8 @@ fn inter_residual_cctx_pairs_chroma_blocks_by_location() {
                 plane: PlaneId::V,
                 x: 0,
                 y: 0,
-                tx_size: 0,
-                log2_width: 2,
+                tx_size: 6,
+                log2_width: 3,
                 log2_height: 2,
                 coeffs: v_coeffs,
             },
@@ -513,9 +512,9 @@ fn inter_residual_cctx_pairs_chroma_blocks_by_location() {
     super::add_inter_residual_to_workspace(
         &mut workspace,
         &residual,
-        80,
+        101,
         false,
-        false,
+        true,
         BitDepth::Eight,
         ByteOffset::new(0),
     )
