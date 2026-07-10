@@ -11,6 +11,7 @@ use crate::prediction::inter::mv_scaling::derive_plane_scaling_prescaled;
 pub(super) struct OptflowMotionGrid {
     unit_size: usize,
     columns: usize,
+    base_mvs: [Mv; 2],
     mvs: Vec<[[i32; 2]; 2]>,
 }
 
@@ -35,9 +36,15 @@ impl OptflowMotionGrid {
         x: usize,
         y: usize,
     ) -> splot_recon::Result<[Mv; 2]> {
-        Ok(self.at_luma_offset(x, y)?.map(|mv| Mv {
-            row: round2_signed(i64::from(mv[0]), 1) as i32,
-            col: round2_signed(i64::from(mv[1]), 1) as i32,
+        let refined = self.at_luma_offset(x, y)?;
+        Ok(core::array::from_fn(|reference| {
+            let base = self.base_mvs[reference];
+            let row_delta = refined[reference][0] - base.row * 2;
+            let col_delta = refined[reference][1] - base.col * 2;
+            Mv {
+                row: base.row + round2_signed(i64::from(row_delta), 1) as i32,
+                col: base.col + round2_signed(i64::from(col_delta), 1) as i32,
+            }
         }))
     }
 }
@@ -124,6 +131,7 @@ pub(super) fn compound_optflow_motion_grid<T: ReconSample>(
     Ok(Some(OptflowMotionGrid {
         unit_size,
         columns: prediction_rect.luma_w / unit_size,
+        base_mvs: [block.mv0, block.mv1],
         mvs,
     }))
 }
@@ -283,12 +291,13 @@ mod tests {
         let grid = OptflowMotionGrid {
             unit_size: 8,
             columns: 1,
-            mvs: vec![[[3, -3], [-5, 5]]],
+            base_mvs: [Mv { row: 5, col: -5 }, Mv { row: -5, col: 5 }],
+            mvs: vec![[[7, -7], [-7, 7]]],
         };
 
         assert_eq!(
             grid.stored_mvs_at_luma_offset(0, 0).unwrap(),
-            [Mv { row: 2, col: -2 }, Mv { row: -3, col: 3 }]
+            [Mv { row: 3, col: -3 }, Mv { row: -3, col: 3 }]
         );
     }
 }
