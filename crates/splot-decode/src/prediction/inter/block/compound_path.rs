@@ -295,11 +295,13 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         };
         match compound.y_mode {
             CompoundYMode::NearNear => {
-                [compound.mv0, compound.mv1] = if compound_reads_second_drl(compound) {
-                    independent_candidates(ref_mv_idx0, ref_mv_idx1)
-                } else {
-                    paired_candidate(ref_mv_idx).mvs
-                };
+                [compound.mv0, compound.mv1] = select_near_near_candidates(
+                    compound,
+                    ref_mv_idx,
+                    [ref_mv_idx0, ref_mv_idx1],
+                    |idx| paired_candidate(idx).mvs,
+                    |[idx0, idx1]| independent_candidates(idx0, idx1),
+                );
             }
             CompoundYMode::NearNew | CompoundYMode::NewNear => {
                 let has_second_drl = compound_reads_second_drl(compound);
@@ -1317,6 +1319,20 @@ fn read_compound_use_optflow_syntax(
 
 const fn compound_reads_second_drl(compound: super::super::compound::CompoundBlockSyntax) -> bool {
     !compound.use_optflow && compound.y_mode.has_second_drl()
+}
+
+fn select_near_near_candidates(
+    compound: super::super::compound::CompoundBlockSyntax,
+    paired_idx: usize,
+    independent_indices: [usize; 2],
+    paired: impl FnOnce(usize) -> [Mv; 2],
+    independent: impl FnOnce([usize; 2]) -> [Mv; 2],
+) -> [Mv; 2] {
+    if compound_reads_second_drl(compound) {
+        independent(independent_indices)
+    } else {
+        paired(paired_idx)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

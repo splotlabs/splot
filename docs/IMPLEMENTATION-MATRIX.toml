@@ -16505,6 +16505,7 @@ tests = [
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::skip_mode_default_pair_treats_restricted_order_hint_as_zero_distance",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::wedge_temporal_storage_keeps_only_a_dominant_reference",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_opfl_near_near_uses_one_paired_drl_idx",
+    "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_opfl_near_near_selects_the_indexed_paired_candidate",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::recorded_skip_mode_contributes_to_the_next_block_context",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state",
