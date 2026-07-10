@@ -4,13 +4,17 @@
 //! Shared transform-block reconstruction setup.
 
 use splot_recon::{
-    BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId, ac_quantizer,
-    dc_quantizer, dequantize_block,
+    BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId,
+    SecondaryInverseTransform, ac_quantizer, dc_quantizer, dequantize_block, tx_class,
 };
 
 use super::super::coeff_loop::max_level::CoeffTransformClass;
 use super::{
-    GeneralIntraResidualError, LumaCoeffBlock, current_quantizer_deltas, resolve_block_qm,
+    ADST_ADST, D67_PRED, D157_PRED, DCT_DCT, GeneralIntraResidualError, H_PRED, IST_4X4_HEIGHT,
+    IST_8X8_HEIGHT, IST_8X8_HEIGHT_RED, LumaCoeffBlock, LumaTransformTypeContext, SMOOTH_H_PRED,
+    current_quantizer_deltas, intra_secondary_transform_kernel, intra_secondary_transform_mode,
+    resolve_block_qm, unsupported_transform_tool_residual,
+    unsupported_transform_tool_residual_error,
 };
 
 pub(super) struct ReconstructBlockSetup {
@@ -18,6 +22,81 @@ pub(super) struct ReconstructBlockSetup {
     pub(super) samples: usize,
     pub(super) params: DequantBlockParams,
     pub(super) transform: InverseTransform2dOuter,
+}
+
+pub(super) fn resolve_secondary_inverse_transform(
+    block: &LumaCoeffBlock,
+    log2_width: u32,
+    log2_height: u32,
+    bit_depth: BitDepth,
+    luma_context: Option<LumaTransformTypeContext>,
+) -> Result<Option<SecondaryInverseTransform>, GeneralIntraResidualError> {
+    let Some(ist) = block.intra_ist else {
+        return Ok(None);
+    };
+    if ist.sec_tx_type == 0 {
+        return Ok(None);
+    }
+    let tx_width = transform_dimension(log2_width)?;
+    let tx_height = transform_dimension(log2_height)?;
+    let w = tx_width.min(32);
+    let h = tx_height.min(32);
+    let large = w >= 8 && h >= 8;
+    let n = if !large {
+        IST_4X4_HEIGHT
+    } else if (tx_width == 8 && tx_height == 8) || block.plane_tx_type == ADST_ADST {
+        IST_8X8_HEIGHT_RED
+    } else {
+        IST_8X8_HEIGHT
+    };
+    let (kernel, transpose) = if let Some(luma_context) = luma_context {
+        let most_probable_stx_set =
+            ist.most_probable_stx_set
+                .ok_or(unsupported_transform_tool_residual_error(
+                    "unsupported_dctonly_residual_intra_ist_missing_most_probable_stx_set",
+                ))?;
+        let mode = intra_secondary_transform_mode(luma_context, tx_width, tx_height)?;
+        (
+            intra_secondary_transform_kernel(
+                mode,
+                block.plane_tx_type,
+                most_probable_stx_set,
+                tx_width,
+                tx_height,
+            )?,
+            matches!(mode, H_PRED | D157_PRED | D67_PRED | SMOOTH_H_PRED),
+        )
+    } else {
+        if block.plane_tx_type != DCT_DCT
+            || tx_width < 16
+            || tx_height < 16
+            || ist.most_probable_stx_set.is_some()
+        {
+            return unsupported_transform_tool_residual(
+                "unsupported_dctonly_residual_inter_ist_context",
+            );
+        }
+        (0, false)
+    };
+    Ok(Some(SecondaryInverseTransform {
+        w,
+        h,
+        n,
+        kernel,
+        sec_tx_type: ist.sec_tx_type,
+        primary_scan_class: tx_class(block.plane_tx_type),
+        transpose,
+        bit_depth,
+    }))
+}
+
+fn transform_dimension(log2_dim: u32) -> Result<usize, GeneralIntraResidualError> {
+    if !(2..=6).contains(&log2_dim) {
+        return unsupported_transform_tool_residual(
+            "unsupported_dctonly_residual_intra_ist_invalid_transform_shape",
+        );
+    }
+    Ok(1usize << log2_dim)
 }
 
 #[allow(clippy::too_many_arguments)]

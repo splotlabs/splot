@@ -14,7 +14,7 @@ use splot_core::tables::conversion::{
 use splot_recon::{
     BitDepth, DpcmDirection, PlaneId, QM_OFFSET, QmDequant, QmFrameLevels, QuantizerDeltas,
     ReconError, ReconSample, SecondaryInverseTransform,
-    reconstruct_transform_block_residual_with_secondary, tx_class, tx_size_index,
+    reconstruct_transform_block_residual_with_secondary, tx_size_index,
 };
 
 use super::cdf::TileCdfSelector;
@@ -52,7 +52,7 @@ mod reconstruct;
 #[cfg(test)]
 use cctx::apply_cross_chroma_transform;
 pub(crate) use cctx::reconstruct_general_intra_chroma_cctx_pair_with_predictions;
-use reconstruct::reconstruct_block_setup;
+use reconstruct::{reconstruct_block_setup, resolve_secondary_inverse_transform};
 
 const TX_4X4: usize = 0;
 const TX_64X64: usize = 4;
@@ -2214,6 +2214,8 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
+    let secondary =
+        resolve_secondary_inverse_transform(block, log2_width, log2_height, bit_depth, None)?;
     reconstruct_general_intra_block_rect_with_prediction_core(
         &block.quant,
         prediction,
@@ -2225,7 +2227,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt
         use_tcq && block.use_tcq,
         use_ddt,
         block.lossless,
-        None,
+        secondary.as_ref(),
         None,
         bit_depth,
     )
@@ -2242,8 +2244,13 @@ pub(crate) fn reconstruct_general_intra_luma_block_rect_with_prediction_and_ist<
     bit_depth: BitDepth,
     luma_context: LumaTransformTypeContext,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
-    let secondary =
-        intra_secondary_inverse_transform(block, log2_width, log2_height, bit_depth, luma_context)?;
+    let secondary = resolve_secondary_inverse_transform(
+        block,
+        log2_width,
+        log2_height,
+        bit_depth,
+        Some(luma_context),
+    )?;
     reconstruct_general_intra_block_rect_with_prediction_core(
         &block.quant,
         prediction,
@@ -2343,66 +2350,6 @@ fn with_residual_scratch<R>(f: impl FnOnce(&mut ResidualScratch) -> R) -> R {
         cell.set(Some(scratch));
         result
     })
-}
-
-fn intra_secondary_inverse_transform(
-    block: &LumaCoeffBlock,
-    log2_width: u32,
-    log2_height: u32,
-    bit_depth: BitDepth,
-    luma_context: LumaTransformTypeContext,
-) -> Result<Option<SecondaryInverseTransform>, GeneralIntraResidualError> {
-    let Some(ist) = block.intra_ist else {
-        return Ok(None);
-    };
-    if ist.sec_tx_type == 0 {
-        return Ok(None);
-    }
-    let most_probable_stx_set =
-        ist.most_probable_stx_set
-            .ok_or(unsupported_transform_tool_residual_error(
-                "unsupported_dctonly_residual_intra_ist_missing_most_probable_stx_set",
-            ))?;
-    let tx_width = transform_dimension(log2_width)?;
-    let tx_height = transform_dimension(log2_height)?;
-    let w = tx_width.min(32);
-    let h = tx_height.min(32);
-    let large = w >= 8 && h >= 8;
-    let n = if !large {
-        IST_4X4_HEIGHT
-    } else if (tx_width == 8 && tx_height == 8) || block.plane_tx_type == ADST_ADST {
-        IST_8X8_HEIGHT_RED
-    } else {
-        IST_8X8_HEIGHT
-    };
-    let mode = intra_secondary_transform_mode(luma_context, tx_width, tx_height)?;
-    let kernel = intra_secondary_transform_kernel(
-        mode,
-        block.plane_tx_type,
-        most_probable_stx_set,
-        tx_width,
-        tx_height,
-    )?;
-    let transpose = matches!(mode, H_PRED | D157_PRED | D67_PRED | SMOOTH_H_PRED);
-    Ok(Some(SecondaryInverseTransform {
-        w,
-        h,
-        n,
-        kernel,
-        sec_tx_type: ist.sec_tx_type,
-        primary_scan_class: tx_class(block.plane_tx_type),
-        transpose,
-        bit_depth,
-    }))
-}
-
-fn transform_dimension(log2_dim: u32) -> Result<usize, GeneralIntraResidualError> {
-    if !(2..=6).contains(&log2_dim) {
-        return unsupported_transform_tool_residual(
-            "unsupported_dctonly_residual_intra_ist_invalid_transform_shape",
-        );
-    }
-    Ok(1usize << log2_dim)
 }
 
 fn intra_secondary_transform_mode(
