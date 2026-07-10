@@ -22,6 +22,14 @@ const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: 
     }
 }
 
+pub(super) const fn reference_uses_16x16_units(
+    n4w: usize,
+    n4h: usize,
+    enable_tip_refinemv: bool,
+) -> bool {
+    prediction_unit_size(n4w * 4, n4h * 4, enable_tip_refinemv) == 16
+}
+
 #[doc = "AV2 § 7.10.6 TIP-as-output prediction-unit size."]
 const fn output_prediction_unit_size(
     enable_tip_refinemv: bool,

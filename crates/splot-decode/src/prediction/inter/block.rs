@@ -1706,21 +1706,40 @@ fn decode_block<T: ReconSample>(
     } else {
         NeighbourYMode::Other
     };
-    mv_grid.record_block(
-        mi_row,
-        mi_col,
-        n4w,
-        n4h,
-        true,
-        ref_frame0,
-        None,
-        y_mode,
-        mv,
-        skip == 1,
-        interp_filter_symbol(interp),
-        use_amvd,
-        precision,
-    );
+    if tip_ref {
+        let enable_tip_refinemv = sequence
+            .inter
+            .as_ref()
+            .is_some_and(|tools| tools.enable_tip_refinemv);
+        mv_grid.record_tip_block(
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            mv,
+            skip == 1,
+            interp_filter_symbol(interp),
+            use_amvd,
+            tip::reference_uses_16x16_units(n4w, n4h, enable_tip_refinemv),
+            precision,
+        );
+    } else {
+        mv_grid.record_block(
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            true,
+            ref_frame0,
+            None,
+            y_mode,
+            mv,
+            skip == 1,
+            interp_filter_symbol(interp),
+            use_amvd,
+            precision,
+        );
+    }
     if !tip_ref {
         record_temporal_motion_block(
             motion_field,

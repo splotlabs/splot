@@ -246,6 +246,8 @@ struct TipMotionField {
 
 impl TipMotionField {
     fn candidate(&self, y8: usize, x8: usize, base_mv: Mv) -> [Mv; 2] {
+        let y8 = y8.min(self.field.height8.saturating_sub(1));
+        let x8 = x8.min(self.field.width8.saturating_sub(1));
         let cell = self.field.cell(y8, x8).unwrap_or_default();
         let projected = if cell.valid {
             [
@@ -1174,6 +1176,25 @@ mod tests {
 
         assert!(context.prepare_tip(1, 16, true));
         assert_eq!(context.tip_candidate(0, 8, Mv::ZERO), Some([Mv::ZERO; 2]));
+    }
+
+    #[test]
+    fn tip_candidate_clamps_motion_field_coordinates_to_the_frame() {
+        let references = TipReferencePair {
+            past_ref: 0,
+            future_ref: 1,
+            past_offset: -1,
+            future_offset: 1,
+            ref_offset: 1,
+        };
+        let context =
+            TemporalMvContext::with_tip_sample(4, 4, references, 1, 1, Mv { row: 16, col: 32 })
+                .unwrap();
+
+        assert_eq!(
+            context.tip_candidate(usize::MAX, usize::MAX, Mv::ZERO),
+            context.tip_candidate(1, 1, Mv::ZERO)
+        );
     }
 
     #[test]

@@ -77,6 +77,7 @@ struct NeighbourCell {
     base_c: usize,
     bw4: usize,
     bh4: usize,
+    tip_size_16x16: bool,
     precision: BlockPrecisionRecord,
 }
 
@@ -109,6 +110,7 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     base_c: 0,
     bw4: 0,
     bh4: 0,
+    tip_size_16x16: false,
     precision: BlockPrecisionRecord {
         use_most_probable_precision: false,
         mv_precision: 0,
@@ -200,6 +202,7 @@ impl NeighbourMvGrid {
             use_amvd,
             MotionMode::Simple,
             None,
+            false,
             precision,
         );
     }
@@ -236,6 +239,7 @@ impl NeighbourMvGrid {
             use_amvd,
             motion_mode,
             Some(warp_params),
+            false,
             precision,
         );
     }
@@ -257,6 +261,7 @@ impl NeighbourMvGrid {
         use_amvd: bool,
         motion_mode: MotionMode,
         warp_params: Option<[i64; 6]>,
+        tip_size_16x16: bool,
         precision: BlockPrecisionRecord,
     ) {
         let cell = NeighbourCell {
@@ -282,6 +287,7 @@ impl NeighbourMvGrid {
             base_c: c,
             bw4: n4w,
             bh4: n4h,
+            tip_size_16x16,
             precision,
         };
         for rr in r..r.saturating_add(n4h) {
@@ -301,6 +307,40 @@ impl NeighbourMvGrid {
                 self.cells[rr * self.mi_cols + cc] = Some(cell);
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_tip_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+        tip_size_16x16: bool,
+        precision: BlockPrecisionRecord,
+    ) {
+        self.record_block_with_warp(
+            r,
+            c,
+            n4w,
+            n4h,
+            true,
+            TIP_REF_FRAME,
+            None,
+            NeighbourYMode::Other,
+            mv,
+            skip,
+            interp_filter,
+            use_amvd,
+            MotionMode::Simple,
+            None,
+            tip_size_16x16,
+            precision,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -357,6 +397,7 @@ impl NeighbourMvGrid {
             base_c: c,
             bw4: n4w,
             bh4: n4h,
+            tip_size_16x16: false,
             precision,
         };
         for rr in r..r.saturating_add(n4h) {
@@ -1881,7 +1922,13 @@ fn scan_compound_mv_stack_probe(
         let (Ok(row), Ok(col)) = (usize::try_from(row), usize::try_from(col)) else {
             return;
         };
-        let Some(mvs) = temporal.tip_candidate(row >> 1, col >> 1, cell.sub_mv) else {
+        let shift = 1 + usize::from(cell.tip_size_16x16);
+        let row = cell.base_r + (((row - cell.base_r) >> shift) << shift);
+        let col = cell.base_c + (((col - cell.base_c) >> shift) << shift);
+        let Some(base_cell) = grid.get(row as i32, col as i32) else {
+            return;
+        };
+        let Some(mvs) = temporal.tip_candidate(row >> 1, col >> 1, base_cell.sub_mv) else {
             return;
         };
         CompoundMvCandidate {

@@ -255,6 +255,56 @@ fn compound_mv_stack_projects_tip_neighbour_to_its_reference_pair() {
 }
 
 #[test]
+fn compound_mv_stack_aligns_tip_neighbour_to_its_16x16_unit() {
+    let mut grid = empty_grid();
+    let base_mv = Mv { row: 3, col: 4 };
+    grid.record_tip_block(
+        0,
+        0,
+        N4_32,
+        N4_32,
+        base_mv,
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        true,
+        BlockPrecisionRecord::default(),
+    );
+    let references = temporal::TipReferencePair {
+        past_ref: 0,
+        future_ref: 1,
+        past_offset: -1,
+        future_offset: 1,
+        ref_offset: 1,
+    };
+    let temporal = TemporalMvContext::with_tip_sample(
+        MI_DIM,
+        MI_DIM,
+        references,
+        2,
+        2,
+        Mv { row: 16, col: 32 },
+    )
+    .unwrap();
+    let expected = temporal.tip_candidate(2, 2, base_mv).unwrap();
+    let mut block = block_at(0, N4_32);
+    block.ref_frame1 = Some(1);
+
+    let candidate = find_compound_mv_stack_with_temporal(
+        &grid,
+        &block,
+        [Mv::ZERO; 2],
+        None,
+        DrlReorder::Disabled,
+        Some(&temporal),
+    )
+    .candidate(0);
+
+    assert_eq!(candidate.mvs, expected);
+    assert_eq!(candidate.cwp_weight, CWP_EQUAL);
+}
+
+#[test]
 fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
     let mut grid = empty_grid();
     let mvs = [Mv { row: 8, col: 16 }, Mv { row: -8, col: 24 }];
