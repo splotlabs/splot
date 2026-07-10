@@ -939,7 +939,13 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         current_residual_lossless(work_unit),
         tile_offset,
     )?;
-    let placed_geometry = placed_inter_geometry(frontier, n4w, n4h, tile_offset)?;
+    let placed_geometry = placed_inter_geometry(
+        frontier,
+        n4w,
+        n4h,
+        sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
+        tile_offset,
+    )?;
     let optflow_distances = if compound.use_optflow {
         compound_sized_reference_distances(
             core,
@@ -962,7 +968,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         chroma_luma_y: placed_geometry.chroma_luma_y,
         chroma_luma_w: placed_geometry.chroma_luma_w,
         chroma_luma_h: placed_geometry.chroma_luma_h,
-        has_chroma: placed_geometry.has_chroma,
+        predict_chroma: placed_geometry.predict_chroma,
         interintra_chroma: false,
         block: InterBlock {
             ref_frame0: compound.ref_frame0,

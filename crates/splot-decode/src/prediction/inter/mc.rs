@@ -39,6 +39,24 @@ pub(crate) struct McBlockRect {
 }
 
 impl McBlockRect {
+    pub(crate) const fn from_luma_rect(
+        luma_x: usize,
+        luma_y: usize,
+        luma_w: usize,
+        luma_h: usize,
+    ) -> Self {
+        Self {
+            luma_x,
+            luma_y,
+            luma_w,
+            luma_h,
+            chroma_luma_x: luma_x,
+            chroma_luma_y: luma_y,
+            chroma_luma_w: luma_w,
+            chroma_luma_h: luma_h,
+        }
+    }
+
     const fn plane_luma_rect(self, plane: PlaneId) -> (usize, usize, usize, usize) {
         match plane {
             PlaneId::Y => (self.luma_x, self.luma_y, self.luma_w, self.luma_h),

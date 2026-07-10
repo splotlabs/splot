@@ -244,8 +244,8 @@ pub(super) fn reconstruct<T: ReconSample>(
             let chroma_y = luma_y.max(placed.chroma_luma_y);
             let chroma_end_x = (luma_x + luma_w).min(placed.chroma_luma_x + placed.chroma_luma_w);
             let chroma_end_y = (luma_y + luma_h).min(placed.chroma_luma_y + placed.chroma_luma_h);
-            let has_chroma =
-                placed.has_chroma && chroma_end_x > chroma_x && chroma_end_y > chroma_y;
+            let predict_chroma =
+                placed.predict_chroma && chroma_end_x > chroma_x && chroma_end_y > chroma_y;
             let mvs = temporal
                 .tip_candidate(luma_y / 8, luma_x / 8, placed.block.mv)
                 .ok_or_else(|| {
@@ -265,7 +265,7 @@ pub(super) fn reconstruct<T: ReconSample>(
                 chroma_luma_y: chroma_y,
                 chroma_luma_w: chroma_end_x.saturating_sub(chroma_x),
                 chroma_luma_h: chroma_end_y.saturating_sub(chroma_y),
-                has_chroma,
+                predict_chroma,
                 interintra_chroma: false,
                 block: InterBlock {
                     ref_frame0: references.past_ref,
@@ -429,7 +429,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         chroma_luma_y: 0,
         chroma_luma_w: width,
         chroma_luma_h: height,
-        has_chroma: sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
+        predict_chroma: sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
         interintra_chroma: false,
         block: InterBlock {
             ref_frame0: TIP_REF_FRAME,
