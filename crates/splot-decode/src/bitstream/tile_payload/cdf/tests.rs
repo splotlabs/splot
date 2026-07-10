@@ -26,12 +26,13 @@ use splot_core::tables::cdf::{
     DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
     DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_PALETTE_Y_MODE_CDF,
     DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SKIP_DRL_MODE_CDF, DEFAULT_SKIP_MODE_CDF,
-    DEFAULT_TIP_MODE_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF,
-    DEFAULT_TX_PARTITION_TYPE_CDF, DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF,
-    DEFAULT_USE_DIP_CDF, DEFAULT_USE_OPTFLOW_CDF, DEFAULT_USE_PC_WIENER_CDF,
-    DEFAULT_USE_WIENER_NS_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF,
-    DEFAULT_WIENER_NS_BASE_CDF, DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF,
-    DEFAULT_Y_MODE_INDEX_CDF, DEFAULT_Y_MODE_SET_CDF,
+    DEFAULT_TIP_DRL_MODE_CDF, DEFAULT_TIP_MODE_CDF, DEFAULT_TIP_PRED_MODE_CDF,
+    DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
+    DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_TXB_SKIP_CDF, DEFAULT_USE_DIP_CDF,
+    DEFAULT_USE_OPTFLOW_CDF, DEFAULT_USE_PC_WIENER_CDF, DEFAULT_USE_WIENER_NS_CDF,
+    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_V_TXB_SKIP_CDF, DEFAULT_WIENER_NS_BASE_CDF,
+    DEFAULT_WIENER_NS_LENGTH_CDF, DEFAULT_WIENER_NS_UV_SYM_CDF, DEFAULT_Y_MODE_INDEX_CDF,
+    DEFAULT_Y_MODE_SET_CDF,
 };
 
 use super::block_rows::*;
@@ -254,6 +255,14 @@ impl TileCdfRows {
         self.block.tip_mode()
     }
 
+    pub(crate) const fn tip_pred_mode(&self) -> &block_rows::TipPredModeCdfRow {
+        self.block.tip_pred_mode()
+    }
+
+    pub(crate) const fn tip_drl_mode(&self) -> &block_rows::TipDrlModeCdfRows {
+        self.block.tip_drl_mode()
+    }
+
     pub(crate) const fn use_wiener_ns(&self) -> &block_rows::UseWienerNsCdfRow {
         self.block.use_wiener_ns()
     }
@@ -366,6 +375,14 @@ impl BlockCdfRows {
 
     pub(crate) const fn tip_mode(&self) -> &TipModeCdfRows {
         &self.tip_mode
+    }
+
+    pub(crate) const fn tip_pred_mode(&self) -> &TipPredModeCdfRow {
+        &self.tip_pred_mode
+    }
+
+    pub(crate) const fn tip_drl_mode(&self) -> &TipDrlModeCdfRows {
+        &self.tip_drl_mode
     }
 
     pub(crate) const fn use_wiener_ns(&self) -> &UseWienerNsCdfRow {
@@ -619,6 +636,8 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
     assert_eq!(frame.rows().comp_ref0(), &DEFAULT_COMP_REF0_CDF);
     assert_eq!(frame.rows().comp_ref1(), &DEFAULT_COMP_REF1_CDF);
     assert_eq!(frame.rows().tip_mode(), &DEFAULT_TIP_MODE_CDF);
+    assert_eq!(frame.rows().tip_pred_mode(), &DEFAULT_TIP_PRED_MODE_CDF);
+    assert_eq!(frame.rows().tip_drl_mode(), &DEFAULT_TIP_DRL_MODE_CDF);
     assert_eq!(frame.rows().use_wiener_ns(), &DEFAULT_USE_WIENER_NS_CDF);
     assert_eq!(frame.rows().use_pc_wiener(), &DEFAULT_USE_PC_WIENER_CDF);
     assert_eq!(
@@ -864,6 +883,17 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
             "skip_drl_mode idx {idx}"
         );
     }
+    assert_eq!(
+        tile.row(TileCdfSelector::TipPredMode).unwrap(),
+        DEFAULT_TIP_PRED_MODE_CDF.as_slice()
+    );
+    for (idx, expected) in DEFAULT_TIP_DRL_MODE_CDF.iter().enumerate() {
+        assert_eq!(
+            tile.row(TileCdfSelector::TipDrlMode { idx }).unwrap(),
+            expected.as_slice(),
+            "tip_drl_mode idx {idx}"
+        );
+    }
     for (ctx, expected) in DEFAULT_SKIP_MODE_CDF.iter().enumerate() {
         assert_eq!(
             tile.row(TileCdfSelector::SkipMode { ctx }).unwrap(),
@@ -937,6 +967,13 @@ fn compound_inter_cdf_selectors_load_defaults_and_bound_contexts() {
         (
             TileCdfSelector::SkipDrlMode { idx: 3 },
             TileCdfArray::SkipDrlMode,
+            "idx",
+            3,
+            3,
+        ),
+        (
+            TileCdfSelector::TipDrlMode { idx: 3 },
+            TileCdfArray::TipDrlMode,
             "idx",
             3,
             3,
