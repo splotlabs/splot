@@ -16580,13 +16580,14 @@ id = "DECODE-INTER-TIP-REFERENCE"
 name = "TIP reference block runtime"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.3", "7.13.3", "8.3.2", "9.3"]
+spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.3", "7.13.3", "7.22", "8.3.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-3",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-22",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
     "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
 ]
@@ -16596,7 +16597,7 @@ change_id = "decode-inter-tip-reference"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Implements TIP-as-reference block selection with the two-neighbour tip context, TIP prediction-mode and dedicated DRL syntax, the TIP reference sentinel in spatial state, sharp interpolation inference, and projected temporal motion over 8x8 prediction units. The §7.9.3 reference projection samples source cells at the signaled ProjStep and aligns projected destinations to the same grid; on the external deltaq1 vector this reduces the step-two pre-TIP field from 1040 valid cells to 255 versus AVM's 257 and improves frame-two luma MAE from 5.9715 to 5.8972. TIP-coded neighbours also match their underlying two-reference pair when deriving a following compound block's mode context; this keeps the shared DRL CDF context aligned instead of adding a target-specific exception. Reconstruction reuses the existing compound motion-compensation and residual sinks with the frame TIP weight and optional projected-motion hole filling. Full-stream conformance remains partial: later frame kinds still reject through decode/unsupported-feature, and no committed TIP vector yet proves an end-to-end AVM checksum."
+notes = "Implements TIP-as-reference block selection with the two-neighbour tip context, TIP prediction-mode and dedicated DRL syntax, the TIP reference sentinel in spatial state, sharp interpolation inference, and projected temporal motion over 8x8 prediction units. The §7.9.3 reference projection samples source cells at the signaled ProjStep and aligns projected destinations to the same grid; on the external deltaq1 vector this reduces the step-two pre-TIP field from 1040 valid cells to 255 versus AVM's 257 and improves frame-two luma MAE from 5.9715 to 5.8972. TIP-as-reference reconstruction now passes the current frame's §7.22 motion-field sink through the existing TIP prediction units instead of discarding those stored MVs; on deltaq1 the saved order-hint-2 field grows from 264 valid cells per side to 1584 on list zero and 1352 on list one, with the remaining single-reference slot duplication kept as a separate storage gap. Frame-two luma MAE improves further from 5.8972 to 5.7045. TIP-coded neighbours also match their underlying two-reference pair when deriving a following compound block's mode context; this keeps the shared DRL CDF context aligned instead of adding a target-specific exception. Reconstruction reuses the existing compound motion-compensation and residual sinks with the frame TIP weight and optional projected-motion hole filling. Full-stream conformance remains partial: later frame kinds still reject through decode/unsupported-feature, and no committed TIP vector yet proves an end-to-end AVM checksum."
 
 [feature.status]
 mapped = "done"

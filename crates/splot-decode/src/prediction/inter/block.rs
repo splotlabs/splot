@@ -1767,7 +1767,7 @@ fn decode_block<T: ReconSample>(
             core,
             ref_frame_idx,
             reference,
-            None,
+            Some(motion_field),
             block_qindex,
             luma_use_tcq,
             residual_use_ddt,
