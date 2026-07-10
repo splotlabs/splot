@@ -208,17 +208,12 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
             prediction_rect.luma_y += region_y;
             prediction_rect.luma_w = round_up(region_w)?;
             prediction_rect.luma_h = round_up(region_h)?;
-            let derive_interp = if refinemv.is_some() {
-                InterpolationFilter::Bilinear
-            } else {
-                block.interp
-            };
             let pred0 = initial_luma_prediction(
                 workspace,
                 block.reference0,
                 prediction_rect,
                 base_mvs[0],
-                derive_interp,
+                InterpolationFilter::Bilinear,
                 candidates.map(|mvs| (mvs[0], region_w, region_h)),
                 offset,
             )?;
@@ -227,7 +222,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                 block.reference1,
                 prediction_rect,
                 base_mvs[1],
-                derive_interp,
+                InterpolationFilter::Bilinear,
                 candidates.map(|mvs| (mvs[1], region_w, region_h)),
                 offset,
             )?;
