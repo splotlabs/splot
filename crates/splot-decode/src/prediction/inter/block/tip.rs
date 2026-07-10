@@ -67,17 +67,22 @@ pub(super) fn prepare_motion_field(
     core: &FrameHeaderCore,
     sb_h4: usize,
 ) {
-    let Some(inter) = core
-        .inter
-        .as_ref()
-        .filter(|inter| inter.tip_frame_mode != Some(TipFrameMode::Disabled))
-    else {
+    let Some(inter) = core.inter.as_ref() else {
         return;
     };
     let projection_step = tmvp_projection_step(core);
+    let tmvp_unit_size8 = if projection_step == 1 {
+        8
+    } else {
+        (sb_h4 / 2).min(16)
+    };
+    if inter.tip_frame_mode == Some(TipFrameMode::Disabled) {
+        temporal.fill_sampling_gaps(projection_step, tmvp_unit_size8);
+        return;
+    }
     _ = temporal.prepare_tip(
         projection_step,
-        (sb_h4 / 2).min(16),
+        tmvp_unit_size8,
         inter.allow_tip_hole_fill.unwrap_or(false),
     );
 }

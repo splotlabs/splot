@@ -377,9 +377,14 @@ impl TemporalMvContext {
             fill_tip_holes(&mut field, projection_step, tmvp_unit_size8);
             average_tip_motion(&mut field, projection_step, tmvp_unit_size8);
         }
-        fill_tip_sampling_gaps(&mut field, projection_step);
+        fill_temporal_sampling_gaps(&mut field, projection_step, tmvp_unit_size8);
+        self.field = field.clone();
         self.tip = Some(TipMotionField { field, references });
         true
+    }
+
+    pub(crate) fn fill_sampling_gaps(&mut self, projection_step: usize, tmvp_unit_size8: usize) {
+        fill_temporal_sampling_gaps(&mut self.field, projection_step, tmvp_unit_size8);
     }
 
     pub(crate) fn tip_reference_pair(&self) -> Option<TipReferencePair> {
@@ -574,26 +579,32 @@ fn divide_tip_average(value: i32, count: usize) -> i32 {
     round2_signed(i64::from(value) * WEIGHTS[count], 16) as i32
 }
 
-fn fill_tip_sampling_gaps(field: &mut ProjectedTemporalMotionField, step: usize) {
+fn fill_temporal_sampling_gaps(
+    field: &mut ProjectedTemporalMotionField,
+    step: usize,
+    tmvp_unit_size8: usize,
+) {
     if step != 2 {
         return;
     }
+    let tmvp_unit_size8 = tmvp_unit_size8.max(1);
     for y8 in (0..field.height8).step_by(2) {
         for x8 in (0..field.width8).step_by(2) {
             for (dy, dx) in [(0usize, 1usize), (1, 0), (1, 1)] {
-                fill_tip_sampling_gap(field, y8, x8, dy, dx);
+                fill_temporal_sampling_gap(field, y8, x8, dy, dx, tmvp_unit_size8);
             }
         }
     }
 }
 
 #[doc = "AV2 § 7.10.5 fill_tpl and calc_avg motion-vector gap fill."]
-fn fill_tip_sampling_gap(
+fn fill_temporal_sampling_gap(
     field: &mut ProjectedTemporalMotionField,
     y8: usize,
     x8: usize,
     dy: usize,
     dx: usize,
+    tmvp_unit_size8: usize,
 ) {
     let Some(anchor) = field.cell(y8, x8).filter(|cell| cell.valid) else {
         return;
@@ -610,13 +621,23 @@ fn fill_tip_sampling_gap(
             }
             let source_y = y8 + 2 * candidate_y;
             let source_x = x8 + 2 * candidate_x;
+            if source_y / tmvp_unit_size8 != y8 / tmvp_unit_size8
+                || source_x / tmvp_unit_size8 != x8 / tmvp_unit_size8
+            {
+                continue;
+            }
             let Some(source) = field.cell(source_y, source_x).filter(|cell| cell.valid) else {
                 continue;
             };
             let mv = if candidate_y == 0 && candidate_x == 0 {
                 source.mv
             } else {
-                project_mv(source.mv, anchor.ref_offset, source.ref_offset).unwrap_or(Mv::ZERO)
+                project_mv(source.mv, anchor.ref_offset, source.ref_offset).map_or(Mv::ZERO, |mv| {
+                    Mv {
+                        row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+                        col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+                    }
+                })
             };
             sum.row += mv.row;
             sum.col += mv.col;
@@ -888,7 +909,7 @@ mod tests {
         let mut other = TemporalMotionField::new(8, 8).unwrap();
         other.set_reference_metadata(true, (32, 32), &[]);
 
-        let context = TemporalMvContext::from_references(
+        let mut context = TemporalMvContext::from_references(
             (8, 8),
             2,
             TemporalProjectionConfig {
@@ -908,6 +929,22 @@ mod tests {
         assert!(context.field.cell(0, 2).unwrap().valid);
         assert!(!context.field.cell(0, 1).unwrap().valid);
         assert!(!context.field.cell(0, 3).unwrap().valid);
+
+        context.fill_sampling_gaps(2, 16);
+        assert_eq!(context.field.cell(0, 1), context.field.cell(0, 0));
+        assert_eq!(context.field.cell(0, 3), context.field.cell(0, 2));
+    }
+
+    #[test]
+    fn sampling_gap_does_not_average_across_tmvp_units() {
+        let mut context = tip_context(2, vec![Some(0)], 2, 36);
+        context.field.set(0, 14, Mv { row: 8, col: 16 }, 2, true);
+        context.field.set(0, 16, Mv { row: 24, col: 80 }, 4, true);
+
+        context.fill_sampling_gaps(2, 16);
+
+        assert_eq!(context.field.cell(0, 15), context.field.cell(0, 14));
+        assert_eq!(context.field.cell(0, 17), context.field.cell(0, 16));
     }
 
     #[test]
@@ -917,6 +954,7 @@ mod tests {
 
         assert!(context.prepare_tip(2, 2, false));
         assert_eq!(context.tip_references(), context.tip_reference_pair());
+        assert_eq!(context.field, context.tip.as_ref().unwrap().field);
         let expected = [Mv { row: 5, col: -6 }, Mv { row: -3, col: 10 }];
         for y8 in 0..2 {
             for x8 in 0..2 {
