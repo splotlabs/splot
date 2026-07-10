@@ -30,7 +30,7 @@ const MI_SIZE: i32 = 4;
 mod derived;
 mod temporal;
 mod warp_bank;
-use derived::DerivedMvState;
+use derived::{CompoundScanState, DerivedMvState};
 pub(crate) use temporal::{
     TemporalMotionBlock, TemporalMotionField, TemporalMvContext, TemporalProjectionConfig,
     reference_order_hints, tip_reference_pair_from_hints,
@@ -1788,19 +1788,18 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
     drl_reorder: DrlReorder,
     temporal: Option<&TemporalMvContext>,
 ) -> CompoundMvStack {
-    let mut entries = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
-    let mut prune_count = 0usize;
+    let mut state = CompoundScanState::new();
     let probes = mv_stack_spatial_probes(block);
     for probe in probes.iter().take(6).copied().flatten() {
-        scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut entries, &mut prune_count);
+        scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut state);
     }
-    scan_compound_temporal_mv_stack(block, temporal, &mut entries, &mut prune_count);
+    scan_compound_temporal_mv_stack(block, temporal, &mut state);
     if let Some(probe) = probes[6] {
-        scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut entries, &mut prune_count);
+        scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut state);
     }
 
-    let num_nearest = entries.len();
-    scan_compound_mv_stack_col(grid, block, -3, temporal, &mut entries, &mut prune_count);
+    let num_nearest = state.entries.len();
+    scan_compound_mv_stack_col(grid, block, -3, temporal, &mut state);
     let use_sort = match drl_reorder {
         DrlReorder::Always => true,
         DrlReorder::Constraint => num_nearest >= 4,
@@ -1808,21 +1807,30 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
     };
     if use_sort && num_nearest > 1 {
         let mut max_idx = 0usize;
-        for (idx, entry) in entries.iter().enumerate().take(num_nearest).skip(1) {
-            if entry.weight > entries[max_idx].weight {
+        for (idx, entry) in state.entries.iter().enumerate().take(num_nearest).skip(1) {
+            if entry.weight > state.entries[max_idx].weight {
                 max_idx = idx;
             }
         }
         if max_idx != 0 {
-            entries.swap(0, max_idx);
+            state.entries.swap(0, max_idx);
         }
     }
-    if let Some((bank, max_ref_mv_count)) = bank {
-        bank.fill_compound(block, &mut entries, max_ref_mv_count, &mut prune_count);
+    let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
+    state
+        .derived
+        .fill(&mut state.entries, max_ref_mv_count, &mut state.prune_count);
+    if let Some((bank, _)) = bank {
+        bank.fill_compound(
+            block,
+            &mut state.entries,
+            max_ref_mv_count,
+            &mut state.prune_count,
+        );
     }
     insert_compound_mv_stack_entry(
-        &mut entries,
-        &mut prune_count,
+        &mut state.entries,
+        &mut state.prune_count,
         CompoundMvCandidate {
             mvs: global_mvs,
             cwp_weight: CWP_EQUAL,
@@ -1830,7 +1838,8 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
         0,
     );
     CompoundMvStack {
-        stack: entries
+        stack: state
+            .entries
             .into_iter()
             .map(|entry| CompoundMvCandidate {
                 mvs: [
@@ -1854,8 +1863,7 @@ fn scan_compound_mv_stack_col(
     block: &MvBlockContext,
     delta_col: i32,
     temporal: Option<&TemporalMvContext>,
-    entries: &mut Vec<CompoundMvStackEntry>,
-    prune_count: &mut usize,
+    state: &mut CompoundScanState,
 ) {
     let delta_col = delta_col + i32::from(block.bw4 == 1 && block.mi_col & 1 == 1);
     let bh4 = block.bh4 as i32;
@@ -1877,8 +1885,7 @@ fn scan_compound_mv_stack_col(
                 block,
                 RelativeProbe::new(delta_row, delta_col),
                 temporal,
-                entries,
-                prune_count,
+                state,
             );
         }
     }
@@ -1889,8 +1896,7 @@ fn scan_compound_mv_stack_probe(
     block: &MvBlockContext,
     probe: RelativeProbe,
     temporal: Option<&TemporalMvContext>,
-    entries: &mut Vec<CompoundMvStackEntry>,
-    prune_count: &mut usize,
+    state: &mut CompoundScanState,
 ) {
     let Some((cell, weight)) = probe.stack_cell(grid, block) else {
         return;
@@ -1906,7 +1912,7 @@ fn scan_compound_mv_stack_probe(
             mvs: [cell.sub_mv, cell.sub_mv1],
             cwp_weight: cell.cwp_weight,
         }
-    } else {
+    } else if cell.ref_frame0 == TIP_REF_FRAME {
         let Some(temporal) = temporal else {
             return;
         };
@@ -1936,15 +1942,28 @@ fn scan_compound_mv_stack_probe(
             mvs,
             cwp_weight: CWP_EQUAL,
         }
+    } else {
+        state.derived.add_spatial(
+            block,
+            [
+                Some((cell.ref_frame0, cell.sub_mv)),
+                cell.ref_frame1.map(|r| (r, cell.sub_mv1)),
+            ],
+        );
+        return;
     };
-    insert_compound_mv_stack_entry(entries, prune_count, candidate, weight);
+    insert_compound_mv_stack_entry(
+        &mut state.entries,
+        &mut state.prune_count,
+        candidate,
+        weight,
+    );
 }
 
 fn scan_compound_temporal_mv_stack(
     block: &MvBlockContext,
     temporal: Option<&TemporalMvContext>,
-    entries: &mut Vec<CompoundMvStackEntry>,
-    prune_count: &mut usize,
+    state: &mut CompoundScanState,
 ) {
     let (Some(temporal), Some(ref_frame1)) = (temporal, block.ref_frame1) else {
         return;
@@ -1971,8 +1990,8 @@ fn scan_compound_temporal_mv_stack(
             continue;
         };
         if insert_compound_mv_stack_entry(
-            entries,
-            prune_count,
+            &mut state.entries,
+            &mut state.prune_count,
             CompoundMvCandidate {
                 mvs: [mv0, mv1],
                 cwp_weight: CWP_EQUAL,
