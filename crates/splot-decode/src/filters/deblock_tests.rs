@@ -471,8 +471,8 @@ fn mi_grid_covers_decoded_blocks() {
     );
     let info = grid.get(0, 0).unwrap();
     assert_eq!((info.base_row, info.base_col), (0, 0));
-    assert_eq!(plane_tx(0, info), Some(3), "luma tx index");
-    assert_eq!(plane_tx(1, info), Some(2), "chroma tx index");
+    assert_eq!(plane_tx(0, info), 3, "luma tx index");
+    assert_eq!(plane_tx(1, info), 2, "chroma tx index");
 }
 
 #[test]
@@ -598,6 +598,39 @@ fn chroma_pass_filters_the_chroma_block_edge() {
         ws.reconstructed_sample(PlaneId::V, 31, 16).unwrap(),
         100,
         "V plane untouched (apply[3] == false)"
+    );
+}
+
+#[test]
+fn chroma_pass_uses_4x4_tx_for_sub8_luma_records() {
+    let mut ws = yuv420_workspace(8, 16, 100);
+    fill_rect(&mut ws, PlaneId::U, 0..4, 4..8, 108);
+    let block = |r| DeblockBlock {
+        r,
+        c: 0,
+        block_r: r,
+        block_c: 0,
+        chroma_base_r: r,
+        chroma_base_c: 0,
+        n4w: 2,
+        n4h: 2,
+        luma_tx: 0,
+        chroma_tx: None,
+        qindex: 100,
+        skip: false,
+        lossless: false,
+    };
+    run_deblock(
+        &mut ws,
+        &[block(0), block(2)],
+        4,
+        2,
+        [false, false, true, false],
+    );
+    assert_smoothed_step(
+        ws.reconstructed_sample(PlaneId::U, 1, 3).unwrap(),
+        ws.reconstructed_sample(PlaneId::U, 1, 4).unwrap(),
+        "sub-8x8 luma records still have a 4x4 chroma transform",
     );
 }
 
