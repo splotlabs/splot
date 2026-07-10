@@ -228,11 +228,16 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     let sb_mib = sequence_sb_mib(sequence);
 
     if frontier.is_chroma_part() {
+        let lossless_luma_fsc = lossless
+            && fsc_modes
+                .fsc_mode_at(frontier.r, frontier.c)
+                .is_some_and(|mode| mode != 0);
         return decode_one_general_intra_chroma_part_block::<T>(
             intra_edge,
             work_unit,
             symbols,
             frontier,
+            lossless_luma_fsc,
             chroma_tools,
             is_cfl_ctx,
             cfl_ds_filter_index,
@@ -450,6 +455,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
+    lossless_luma_fsc: bool,
     chroma_tools: GeneralIntraChromaToolConfig,
     is_cfl_ctx: IsCflContext,
     cfl_ds_filter_index: u8,
@@ -511,7 +517,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         lossless,
     )
     .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?;
-    let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan)
+    let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan, lossless_luma_fsc)
         .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
     execute_general_intra_residual_plan(
         residual_plan,
