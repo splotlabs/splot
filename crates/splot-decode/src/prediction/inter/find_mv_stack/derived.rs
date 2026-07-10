@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+use super::{MAX_PR_NUM, Mv, MvBlockContext, MvStackEntry, TemporalMvContext};
+
+const MAX_DR_STACK_SIZE: usize = 4;
+const MAX_DR_PR_NUM: usize = 2;
+
+pub(super) struct DerivedMvState<'a> {
+    temporal: Option<&'a TemporalMvContext>,
+    entries: Vec<Mv>,
+    prune_count: usize,
+}
+
+impl<'a> DerivedMvState<'a> {
+    pub(super) fn new(temporal: Option<&'a TemporalMvContext>) -> Self {
+        Self {
+            temporal,
+            entries: Vec::with_capacity(MAX_DR_STACK_SIZE),
+            prune_count: 0,
+        }
+    }
+
+    pub(super) fn add_spatial(
+        &mut self,
+        block: &MvBlockContext,
+        candidate_ref: i8,
+        candidate_mv: Mv,
+    ) {
+        let Some(candidate) = self.temporal.and_then(|temporal| {
+            temporal.derive_spatial_mv(
+                block.ref_frame0,
+                candidate_ref,
+                candidate_mv,
+                block.mi_row >> 1,
+                block.mi_col >> 1,
+            )
+        }) else {
+            return;
+        };
+        self.push(candidate);
+    }
+
+    fn push(&mut self, candidate: Mv) {
+        if self.entries.len() >= MAX_DR_STACK_SIZE {
+            return;
+        }
+        if self.prune_count < MAX_DR_PR_NUM {
+            for mv in &self.entries {
+                self.prune_count += 1;
+                if *mv == candidate {
+                    return;
+                }
+            }
+        }
+        self.entries.push(candidate);
+    }
+
+    pub(super) fn fill(
+        &self,
+        entries: &mut Vec<MvStackEntry>,
+        max_ref_mv_count: usize,
+        prune_count: &mut usize,
+    ) {
+        for &candidate in &self.entries {
+            if entries.len() >= max_ref_mv_count {
+                return;
+            }
+            let mut duplicate = false;
+            if *prune_count < MAX_PR_NUM {
+                for entry in entries.iter() {
+                    *prune_count += 1;
+                    if entry.mv == candidate {
+                        duplicate = true;
+                        break;
+                    }
+                }
+            }
+            if !duplicate {
+                entries.push(MvStackEntry {
+                    mv: candidate,
+                    weight: 0,
+                    offsets: (0, 0),
+                });
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_preserves_order_and_honors_the_drl_limit() {
+        let first = Mv { row: 10, col: 365 };
+        let second = Mv { row: -6, col: 233 };
+        let mut derived = DerivedMvState::new(None);
+        derived.push(first);
+        derived.push(second);
+        let mut entries = vec![
+            MvStackEntry {
+                mv: Mv { row: 17, col: -10 },
+                weight: 1,
+                offsets: (0, 0),
+            },
+            MvStackEntry {
+                mv: Mv { row: 17, col: -8 },
+                weight: 1,
+                offsets: (0, 0),
+            },
+            MvStackEntry {
+                mv: Mv { row: 7, col: 315 },
+                weight: 1,
+                offsets: (0, 0),
+            },
+        ];
+        let mut prune_count = MAX_PR_NUM;
+
+        derived.fill(&mut entries, 4, &mut prune_count);
+
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[3].mv, first);
+        assert_eq!(entries[3].offsets, (0, 0));
+    }
+
+    #[test]
+    fn collection_prunes_an_early_duplicate() {
+        let candidate = Mv { row: 10, col: 365 };
+        let mut derived = DerivedMvState::new(None);
+
+        derived.push(candidate);
+        derived.push(candidate);
+
+        assert_eq!(derived.entries, [candidate]);
+    }
+}

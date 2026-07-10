@@ -447,6 +447,47 @@ impl TemporalMvContext {
         project_mv(cell.mv, ref_to_dst, cell.ref_offset)
     }
 
+    pub(super) fn derive_spatial_mv(
+        &self,
+        dst_ref: i8,
+        candidate_ref: i8,
+        candidate_mv: Mv,
+        y8: usize,
+        x8: usize,
+    ) -> Option<Mv> {
+        let dst = usize::try_from(dst_ref).ok()?;
+        let candidate = usize::try_from(candidate_ref).ok()?;
+        if let Some(fields) = self.trajectories.as_ref()
+            && let (Some(dst_mv), Some(candidate_trajectory)) = (
+                fields.get(dst)?.cell(y8, x8),
+                fields.get(candidate)?.cell(y8, x8),
+            )
+        {
+            return Some(derive_mv_from_trajectories(
+                candidate_mv,
+                dst_mv,
+                candidate_trajectory,
+            ));
+        }
+
+        let current = i32::try_from(self.current_order_hint).ok()?;
+        let distance = |index: usize| {
+            self.ref_order_hints
+                .get(index)
+                .copied()
+                .flatten()
+                .and_then(|hint| i32::try_from(hint).ok())
+                .map(|hint| super::super::get_relative_dist(current, hint))
+        };
+        let dst_distance = distance(dst)?;
+        let candidate_distance = distance(candidate)?;
+        let same_side = (dst_distance > 0 && candidate_distance > 0)
+            || (dst_distance < 0 && candidate_distance < 0);
+        same_side
+            .then(|| project_mv(candidate_mv, dst_distance.abs(), candidate_distance.abs()))
+            .flatten()
+    }
+
     pub(super) fn single_ref_weight(&self, ref_frame: i8) -> Option<u32> {
         let dst_hint = usize::try_from(ref_frame)
             .ok()
@@ -827,6 +868,21 @@ fn project_mv(mv: Mv, numerator: i32, denominator: i32) -> Option<Mv> {
     Some(Mv { row, col })
 }
 
+fn derive_mv_from_trajectories(candidate: Mv, dst: Mv, candidate_trajectory: Mv) -> Mv {
+    Mv {
+        row: candidate
+            .row
+            .saturating_add(dst.row)
+            .saturating_sub(candidate_trajectory.row)
+            .clamp(-MV_LIMIT, MV_LIMIT),
+        col: candidate
+            .col
+            .saturating_add(dst.col)
+            .saturating_sub(candidate_trajectory.col)
+            .clamp(-MV_LIMIT, MV_LIMIT),
+    }
+}
+
 fn compress_tmvp_mv(mv: Mv) -> Mv {
     Mv {
         row: compress_tmvp_component(mv.row),
@@ -879,6 +935,62 @@ mod tests {
             trajectories: None,
             tip: None,
         }
+    }
+
+    #[test]
+    fn spatial_derivation_uses_reference_trajectories() {
+        let mut candidate = TrajectoryMotionField::new(2, 2).unwrap();
+        candidate.set(
+            0,
+            0,
+            Mv {
+                row: -10,
+                col: -192,
+            },
+        );
+        let mut dst = TrajectoryMotionField::new(2, 2).unwrap();
+        dst.set(0, 0, Mv { row: 12, col: 240 });
+        let mut context = tip_context(4, vec![Some(0), Some(9)], 2, 2);
+        context.trajectories = Some(vec![candidate, dst]);
+
+        assert_eq!(
+            context.derive_spatial_mv(1, 0, Mv { row: -12, col: -67 }, 0, 0),
+            Some(Mv { row: 10, col: 365 })
+        );
+    }
+
+    #[test]
+    fn spatial_derivation_projects_references_on_the_same_side() {
+        let context = tip_context(10, vec![Some(8), Some(6)], 2, 2);
+
+        assert_eq!(
+            context.derive_spatial_mv(0, 1, Mv { row: 8, col: 12 }, 0, 0),
+            Some(Mv { row: 4, col: 6 })
+        );
+    }
+
+    #[test]
+    fn trajectory_derivation_clamps_to_the_motion_vector_domain() {
+        assert_eq!(
+            derive_mv_from_trajectories(
+                Mv {
+                    row: MV_LIMIT,
+                    col: -MV_LIMIT,
+                },
+                Mv {
+                    row: MV_LIMIT,
+                    col: -MV_LIMIT,
+                },
+                Mv {
+                    row: -MV_LIMIT,
+                    col: MV_LIMIT,
+                },
+            ),
+            Mv {
+                row: MV_LIMIT,
+                col: -MV_LIMIT,
+            }
+        );
     }
 
     #[test]
