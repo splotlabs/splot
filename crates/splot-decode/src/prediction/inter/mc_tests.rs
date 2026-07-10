@@ -78,6 +78,34 @@ fn dispatcher_blends_compound_average_planes() {
 }
 
 #[test]
+fn dispatcher_sub8x8_chroma_uses_only_the_first_reference() {
+    let reference0 = flat_frame(8, 8, 40, 90, 120);
+    let reference1 = flat_frame(8, 8, 80, 110, 140);
+    let mut workspace = workspace(8, 8);
+
+    motion_compensate_inter_block_into(
+        &mut workspace,
+        InterBlockParams::compound_average(
+            &reference0,
+            &reference1,
+            rect(0, 0, 8, 8),
+            Mv::ZERO,
+            Mv::ZERO,
+            InterpolationFilter::EightTap,
+            CompoundBlend::default(),
+        )
+        .with_chroma_first_reference_only(true),
+        ByteOffset::new(0),
+    )
+    .expect("sub8x8 chroma dispatcher");
+
+    let decoded = workspace.freeze().expect("freeze sub8x8 workspace");
+    assert_eq!(visible_samples(&decoded, PlaneId::Y), vec![60; 64]);
+    assert_eq!(visible_samples(&decoded, PlaneId::U), vec![90; 16]);
+    assert_eq!(visible_samples(&decoded, PlaneId::V), vec![120; 16]);
+}
+
+#[test]
 fn dispatcher_blends_compound_average_with_cwp_weight() {
     let reference0 = flat_frame(8, 8, 40, 90, 120);
     let reference1 = flat_frame(8, 8, 80, 110, 140);

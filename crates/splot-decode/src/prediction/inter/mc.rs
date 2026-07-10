@@ -140,6 +140,7 @@ pub(crate) struct InterBlockParams<'a, T: ReconSample> {
     prediction: InterPrediction<'a, T>,
     interp: InterpolationFilter,
     has_chroma: bool,
+    chroma_first_reference_only: bool,
     use_refinemv: bool,
 }
 
@@ -155,6 +156,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             prediction: InterPrediction::Single { reference, mv },
             interp,
             has_chroma: true,
+            chroma_first_reference_only: false,
             use_refinemv: false,
         }
     }
@@ -180,6 +182,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             },
             interp,
             has_chroma: true,
+            chroma_first_reference_only: false,
             use_refinemv: false,
         }
     }
@@ -196,6 +199,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             },
             interp: InterpolationFilter::EightTap,
             has_chroma: true,
+            chroma_first_reference_only: false,
             use_refinemv: false,
         }
     }
@@ -206,6 +210,11 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
 
     pub(crate) const fn with_refinemv(mut self, use_refinemv: bool) -> Self {
         self.use_refinemv = use_refinemv;
+        self
+    }
+
+    pub(crate) const fn with_chroma_first_reference_only(mut self, enabled: bool) -> Self {
+        self.chroma_first_reference_only = enabled;
         self
     }
 
@@ -258,6 +267,7 @@ struct CompoundMcBlock<'a, T: ReconSample> {
     optflow_distances: Option<[i32; 2]>,
     warp_params: [Option<[i64; 6]>; 2],
     has_chroma: bool,
+    chroma_first_reference_only: bool,
     use_refinemv: bool,
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
@@ -345,6 +355,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
                 optflow_distances,
                 warp_params,
                 has_chroma: block.has_chroma,
+                chroma_first_reference_only: block.chroma_first_reference_only,
                 use_refinemv: block.use_refinemv,
             },
             optflow_unit_size,
@@ -406,23 +417,37 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
         }
-        predict_compound_plane(
-            workspace,
-            block.reference0,
-            block.reference1,
-            plane,
-            block.rect,
-            block.mv0,
-            block.mv1,
-            block.interp,
-            block.blend,
-            block.warp_params,
-            sub_x,
-            sub_y,
-            luma_diff_weighted_mask.as_deref(),
-            motion.as_ref(),
-            offset,
-        )?;
+        if plane != PlaneId::Y && block.chroma_first_reference_only {
+            predict_plane(
+                workspace,
+                block.reference0,
+                plane,
+                block.rect,
+                block.mv0,
+                block.interp,
+                sub_x,
+                sub_y,
+                offset,
+            )?;
+        } else {
+            predict_compound_plane(
+                workspace,
+                block.reference0,
+                block.reference1,
+                plane,
+                block.rect,
+                block.mv0,
+                block.mv1,
+                block.interp,
+                block.blend,
+                block.warp_params,
+                sub_x,
+                sub_y,
+                luma_diff_weighted_mask.as_deref(),
+                motion.as_ref(),
+                offset,
+            )?;
+        }
     }
     Ok(motion)
 }
@@ -664,6 +689,7 @@ fn predict_compound_plane<T: ReconSample>(
         optflow_distances: None,
         warp_params,
         has_chroma: true,
+        chroma_first_reference_only: false,
         use_refinemv: false,
     };
     let prediction =
