@@ -516,8 +516,9 @@ pub(in crate::prediction::inter) fn resolve_inter_block_params<'a, T: ReconSampl
             placed.block.compound_blend,
         )
         .with_optflow_distances(placed.block.optflow_distances)
+        .with_compound_warp(placed.block.warp_params)
         .with_chroma(placed.has_chroma)
-    } else if let Some(warp_params) = placed.block.warp_params {
+    } else if let Some(warp_params) = placed.block.warp_params[0] {
         mc::InterBlockParams::single_warp(ref_frame0, rect, warp_params)
             .with_chroma(placed.has_chroma)
     } else {
@@ -790,7 +791,9 @@ pub(crate) struct InterBlock {
     pub(crate) mv: Mv,
     pub(crate) mv1: Mv,
     pub(crate) interp: ReconInterpolationFilter,
-    pub(crate) warp_params: Option<[i64; 6]>,
+    /// Per-list § 7.13.3.23 warp models; slot 1 is only compound LOCALWARP and a
+    /// `None` slot uses translational motion compensation.
+    pub(crate) warp_params: [Option<[i64; 6]>; 2],
     pub(crate) bawp: BawpSyntax,
     pub(crate) interintra: Option<InterIntraPrediction>,
     pub(crate) compound_blend: mc::CompoundBlend,

@@ -101,6 +101,7 @@ fn record_compound_ref(
         CWP_EQUAL,
         false,
         BlockPrecisionRecord::default(),
+        [None, None],
     );
 }
 
@@ -174,6 +175,7 @@ fn recorded_skip_mode_contributes_to_the_next_block_context() {
         CWP_EQUAL,
         true,
         BlockPrecisionRecord::default(),
+        [None, None],
     );
     let ctx = block_neighbour_ctx(&grid, &block_at(0, N4_32));
     assert_eq!(ctx.skip_mode_ctx, 2);
@@ -228,6 +230,7 @@ fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
         cwp_weight,
         true,
         BlockPrecisionRecord::most_probable(MV_PRECISION_ONE_PEL),
+        [None, None],
     );
     let mut block = block_at(0, N4_32);
     block.ref_frame1 = Some(1);
@@ -272,6 +275,7 @@ fn single_ref_stack_admits_both_lists_from_same_ref_compound_neighbour() {
         CWP_EQUAL,
         false,
         BlockPrecisionRecord::default(),
+        [None, None],
     );
 
     let stack = find_mv_stack(
@@ -1637,4 +1641,61 @@ fn scan_col_feeds_warp_stack() {
         DEFAULT_WARP_PARAMS,
         "the tail fills identity defaults after the scan-col inserts"
     );
+}
+
+#[test]
+fn compound_warp_cells_expose_the_first_model_and_per_list_sub_mvs() {
+    let mut grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
+    let model0 = [320, -640, 65_536 + 256, -128, 192, 65_536 - 320];
+    let model1 = [-960, 480, 65_536 - 512, 96, -64, 65_536 + 448];
+    grid.record_compound_block(
+        0,
+        0,
+        2,
+        2,
+        0,
+        1,
+        true,
+        true,
+        Mv { row: 4, col: -8 },
+        Mv { row: -12, col: 16 },
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        false,
+        CWP_EQUAL,
+        false,
+        BlockPrecisionRecord::default(),
+        [Some(model0), Some(model1)],
+    );
+
+    let cell = grid.get(1, 1).unwrap();
+    assert_eq!(cell.motion_mode, MotionMode::LocalWarp);
+    assert_eq!(cell.warp_params, Some(model0));
+    assert_eq!(cell.sub_mv, warp_sub_mv_at(model0, 0, 0, 1, 1));
+    assert_eq!(cell.sub_mv1, warp_sub_mv_at(model1, 0, 0, 1, 1));
+
+    let mut bank = WarpParamBank::new();
+    bank.reset_for_leaf(&grid, 2, 0, 2);
+    let mut list0 = WarpParamStack::new();
+    bank.fill(0, &mut list0);
+    assert_eq!((list0.num_found, list0.slots[0]), (1, model0));
+    let mut list1 = WarpParamStack::new();
+    bank.fill(1, &mut list1);
+    assert_eq!(list1.num_found, 0, "row-above seeding uses only model 0");
+}
+
+#[test]
+fn warp_param_bank_updates_key_each_list_by_its_reference() {
+    let model0 = [320, -640, 65_536 + 256, -128, 192, 65_536 - 320];
+    let model1 = [-960, 480, 65_536 - 512, 96, -64, 65_536 + 448];
+    let mut bank = WarpParamBank::new();
+    bank.update(0, model0);
+    bank.update(1, model1);
+    let mut list0 = WarpParamStack::new();
+    bank.fill(0, &mut list0);
+    let mut list1 = WarpParamStack::new();
+    bank.fill(1, &mut list1);
+    assert_eq!((list0.num_found, list0.slots[0]), (1, model0));
+    assert_eq!((list1.num_found, list1.slots[0]), (1, model1));
 }

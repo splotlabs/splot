@@ -95,7 +95,7 @@ const fn ls_product(a: i64, b: i64) -> i64 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn local_warp_estimation(
+pub(super) fn local_warp_estimation(
     samples: &[[i64; 4]],
     mv: Mv,
     mi_row: usize,
@@ -388,7 +388,11 @@ pub(crate) fn read_warp_extend_syntax(
         col: mv_clamp_to_integer(pred_mv.col + diff.col),
     };
     let warp_params = if motion_mode == MotionMode::LocalWarp {
-        match super::super::find_mv_stack::find_warp_samples(mv_grid, block_ctx) {
+        match super::super::find_mv_stack::find_warp_samples(
+            mv_grid,
+            block_ctx,
+            block_ctx.ref_frame0,
+        ) {
             super::super::find_mv_stack::WarpSampleCollection::Samples(samples) => {
                 local_warp_estimation(&samples, mv, mi_row, mi_col, n4w, n4h, tile_offset)?
             }

@@ -29,11 +29,13 @@ const MV_BORDER: i32 = 128;
 const MI_SIZE: i32 = 4;
 mod derived;
 mod temporal;
+mod warp_bank;
 use derived::DerivedMvState;
 pub(crate) use temporal::{
     TemporalMotionBlock, TemporalMotionField, TemporalMvContext, TemporalProjectionConfig,
     reference_order_hints, tip_reference_pair_from_hints,
 };
+pub(crate) use warp_bank::{WarpParamBank, WarpParamStack};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub(crate) enum MotionMode {
@@ -70,6 +72,7 @@ struct NeighbourCell {
     motion_mode: MotionMode,
     warp_params: Option<[i64; 6]>,
     sub_mv: Mv,
+    sub_mv1: Mv,
     base_r: usize,
     base_c: usize,
     bw4: usize,
@@ -101,6 +104,7 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     motion_mode: MotionMode::Simple,
     warp_params: None,
     sub_mv: Mv::ZERO,
+    sub_mv1: Mv::ZERO,
     base_r: 0,
     base_c: 0,
     bw4: 0,
@@ -273,6 +277,7 @@ impl NeighbourMvGrid {
             motion_mode,
             warp_params,
             sub_mv: mv,
+            sub_mv1: Mv::ZERO,
             base_r: r,
             base_c: c,
             bw4: n4w,
@@ -318,6 +323,7 @@ impl NeighbourMvGrid {
         cwp_weight: i16,
         skip_mode: bool,
         precision: BlockPrecisionRecord,
+        warp_params: [Option<[i64; 6]>; 2],
     ) {
         let cell = NeighbourCell {
             is_inter: true,
@@ -338,9 +344,15 @@ impl NeighbourMvGrid {
             use_amvd,
             masked_compound,
             cwp_weight,
-            motion_mode: MotionMode::Simple,
-            warp_params: None,
+            motion_mode: if warp_params[0].is_some() || warp_params[1].is_some() {
+                MotionMode::LocalWarp
+            } else {
+                MotionMode::Simple
+            },
+            // Neighbour-facing derivations read only the first model (AVM `wm_params[0]`).
+            warp_params: warp_params[0],
             sub_mv: mv0,
+            sub_mv1: mv1,
             base_r: r,
             base_c: c,
             bw4: n4w,
@@ -354,6 +366,13 @@ impl NeighbourMvGrid {
             for cc in c..c.saturating_add(n4w) {
                 if cc >= self.mi_cols {
                     break;
+                }
+                let mut cell = cell;
+                if let Some(params) = warp_params[0] {
+                    cell.sub_mv = warp_sub_mv_at(params, r, c, rr, cc);
+                }
+                if let Some(params) = warp_params[1] {
+                    cell.sub_mv1 = warp_sub_mv_at(params, r, c, rr, cc);
                 }
                 self.cells[rr * self.mi_cols + cc] = Some(cell);
             }
@@ -395,6 +414,7 @@ impl NeighbourMvGrid {
             CWP_EQUAL,
             false,
             BlockPrecisionRecord::default(),
+            [None, None],
         );
     }
 
@@ -1124,6 +1144,7 @@ pub(crate) enum WarpSampleCollection {
 pub(crate) fn find_warp_samples(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
+    target_ref: i8,
 ) -> WarpSampleCollection {
     let mut samples: Vec<[i64; 4]> = Vec::with_capacity(LEAST_SQUARES_SAMPLES_MAX);
     let mi_row = block.mi_row as i32;
@@ -1141,8 +1162,8 @@ pub(crate) fn find_warp_samples(
             return;
         };
         let lists = [
-            (cell.ref_frame0 == block.ref_frame0 && cell.is_inter).then_some(Some(cell.mv)),
-            (cell.ref_frame1 == Some(block.ref_frame0)).then_some(cell.mv1),
+            (cell.ref_frame0 == target_ref && cell.is_inter).then_some(Some(cell.mv)),
+            (cell.ref_frame1 == Some(target_ref)).then_some(cell.mv1),
         ];
         for list_mv in lists.into_iter().flatten() {
             if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
@@ -1581,92 +1602,6 @@ fn bank_ring_update<T: Copy>(
     }
 }
 
-const WARP_PARAM_BANK_SIZE: usize = 4;
-const MAX_WARP_SB_HITS: u32 = 64;
-const WARP_BANK_REFS: usize = 7;
-
-pub(crate) struct WarpParamBank {
-    entries: [[[i64; 6]; WARP_PARAM_BANK_SIZE]; WARP_BANK_REFS],
-    sizes: [usize; WARP_BANK_REFS],
-    starts: [usize; WARP_BANK_REFS],
-    sb_hits: u32,
-    current_sb: Option<(usize, usize)>,
-}
-
-impl WarpParamBank {
-    pub(crate) fn new() -> Self {
-        Self {
-            entries: [[DEFAULT_WARP_PARAMS; WARP_PARAM_BANK_SIZE]; WARP_BANK_REFS],
-            sizes: [0; WARP_BANK_REFS],
-            starts: [0; WARP_BANK_REFS],
-            sb_hits: 0,
-            current_sb: None,
-        }
-    }
-
-    pub(crate) fn reset_for_leaf(
-        &mut self,
-        grid: &NeighbourMvGrid,
-        mi_row: usize,
-        mi_col: usize,
-        sb_size4: usize,
-    ) {
-        let sb = (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1));
-        if self.current_sb == Some(sb) {
-            return;
-        }
-        let new_sb_row = self.current_sb.is_none_or(|(row, _)| row != sb.0);
-        self.current_sb = Some(sb);
-        self.sb_hits = 0;
-        if new_sb_row {
-            self.sizes = [0; WARP_BANK_REFS];
-            self.starts = [0; WARP_BANK_REFS];
-        }
-        seed_walk_from_row_above(grid, sb.0 * sb_size4, sb.1 * sb_size4, sb_size4, |cell| {
-            if cell.is_warp()
-                && let Some(params) = cell.warp_params
-            {
-                self.update(cell.ref_frame0, params);
-            }
-        });
-    }
-
-    pub(crate) fn update(&mut self, ref_frame0: i8, params: [i64; 6]) {
-        if self.sb_hits >= MAX_WARP_SB_HITS {
-            return;
-        }
-        self.sb_hits += 1;
-        let Some(ref_idx) = usize::try_from(ref_frame0)
-            .ok()
-            .filter(|&idx| idx < WARP_BANK_REFS)
-        else {
-            return;
-        };
-        bank_ring_update(
-            &mut self.entries[ref_idx],
-            &mut self.sizes[ref_idx],
-            &mut self.starts[ref_idx],
-            params,
-            |candidate| candidate[2..6] == params[2..6],
-        );
-    }
-
-    fn fill(&self, ref_frame0: i8, warp: &mut WarpParamStack) {
-        let Some(ref_idx) = usize::try_from(ref_frame0)
-            .ok()
-            .filter(|&idx| idx < WARP_BANK_REFS)
-        else {
-            return;
-        };
-        let count = self.sizes[ref_idx];
-        let start = self.starts[ref_idx];
-        for i in (0..count).rev() {
-            let idx = (start + i) % WARP_PARAM_BANK_SIZE;
-            warp.insert(self.entries[ref_idx][idx]);
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn find_mv_stack(
@@ -1913,16 +1848,17 @@ fn scan_compound_mv_stack_probe(
     let Some(ref_frame1) = block.ref_frame1 else {
         return;
     };
-    let Some(mv1) = cell.mv1.filter(|_| {
-        cell.is_inter && cell.ref_frame0 == block.ref_frame0 && cell.ref_frame1 == Some(ref_frame1)
-    }) else {
+    if !(cell.is_inter
+        && cell.ref_frame0 == block.ref_frame0
+        && cell.ref_frame1 == Some(ref_frame1))
+    {
         return;
-    };
+    }
     insert_compound_mv_stack_entry(
         entries,
         prune_count,
         CompoundMvCandidate {
-            mvs: [cell.sub_mv, mv1],
+            mvs: [cell.sub_mv, cell.sub_mv1],
             cwp_weight: cell.cwp_weight,
         },
         weight,
@@ -2065,7 +2001,7 @@ fn scan_mv_stack_probe(
     let (_, _, adjusted_delta_col) = probe.stack_target(block);
     let candidates = [
         Some((cell.ref_frame0, cell.sub_mv)),
-        cell.ref_frame1.zip(cell.mv1),
+        cell.ref_frame1.map(|ref_frame1| (ref_frame1, cell.sub_mv1)),
     ];
     for (candidate_ref, candidate_mv) in candidates.into_iter().flatten() {
         if candidate_ref == block.ref_frame0 {
@@ -2255,38 +2191,6 @@ fn insert_mixture_candidate(
     });
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct WarpParamStack {
-    slots: [[i64; 6]; MAX_WARP_REF_CANDIDATES],
-    num_found: usize,
-}
-
-impl WarpParamStack {
-    fn new() -> Self {
-        Self {
-            slots: [DEFAULT_WARP_PARAMS; MAX_WARP_REF_CANDIDATES],
-            num_found: 0,
-        }
-    }
-
-    fn insert(&mut self, params: [i64; 6]) {
-        if self.num_found < MAX_WARP_REF_CANDIDATES {
-            self.slots[self.num_found] = params;
-            self.num_found += 1;
-        }
-    }
-
-    fn add_scan_point(&mut self, cell: NeighbourCell, block: &MvBlockContext) {
-        if cell.is_inter
-            && cell.is_warp()
-            && cell.ref_frame0 == block.ref_frame0
-            && let Some(params) = cell.warp_params
-        {
-            self.insert(params);
-        }
-    }
-}
-
 fn generate_points_from_corners(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -2390,10 +2294,7 @@ fn warp_corner(
         } else if ref_list == 0 {
             cell.sub_mv
         } else {
-            let Some(mv1) = cell.mv1 else {
-                return;
-            };
-            mv1
+            cell.sub_mv1
         };
         pts[*found] = [i64::from(mv_row + 1) * 4, i64::from(mv_col + 1) * 4];
         mvs[*found] = [i64::from(corner_mv.row), i64::from(corner_mv.col)];
@@ -2402,7 +2303,13 @@ fn warp_corner(
     }
 }
 
-fn warp_sub_mv_at(params: [i64; 6], block_r: usize, block_c: usize, rr: usize, cc: usize) -> Mv {
+pub(crate) fn warp_sub_mv_at(
+    params: [i64; 6],
+    block_r: usize,
+    block_c: usize,
+    rr: usize,
+    cc: usize,
+) -> Mv {
     let i8 = (rr.saturating_sub(block_r)) >> 1;
     let j8 = (cc.saturating_sub(block_c)) >> 1;
     let src_x = (block_c * 4 + j8 * 8 + 4) as i64;

@@ -244,7 +244,7 @@ fn placed_luma_block(
             mv: Mv { row: 0, col: 0 },
             mv1: Mv { row: 0, col: 0 },
             interp: ReconInterpolationFilter::EightTap,
-            warp_params: None,
+            warp_params: [None, None],
             bawp: BawpSyntax::default(),
             interintra: Some(InterIntraPrediction::SmoothMask { mode }),
             compound_blend: CompoundBlend::default(),

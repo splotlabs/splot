@@ -167,7 +167,13 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         [mode_ctx.warp_sample_found, mode_ctx.warp_sample_found1],
         frame_modes[splot_core::headers::frame::LOCALWARP],
     );
-    read_compound_motion_mode_syntax(cdfs, symbols, signal_local_warp, neighbour_ctx, tile_offset)?;
+    let local_warp = read_compound_motion_mode_syntax(
+        cdfs,
+        symbols,
+        signal_local_warp,
+        neighbour_ctx,
+        tile_offset,
+    )?;
     let jmvd_scale_mode = read_compound_jmvd_scale_mode_syntax(
         cdfs,
         symbols,
@@ -455,16 +461,32 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             }
         }
     }
-    let refinemv_default = if compound_refinemv_reachable(
-        sequence,
-        core,
-        reference,
-        ref_frame_idx,
-        compound,
-        n4w,
-        n4h,
-        tile_offset,
-    )? {
+    let warp_models = if local_warp {
+        compound_local_warp_models(
+            mv_grid,
+            block_ctx,
+            compound.mv0,
+            compound.mv1,
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            tile_offset,
+        )?
+    } else {
+        [None, None]
+    };
+    let refinemv_default = if !local_warp
+        && compound_refinemv_reachable(
+            sequence,
+            core,
+            reference,
+            ref_frame_idx,
+            compound,
+            n4w,
+            n4h,
+            tile_offset,
+        )? {
         if compound_refinemv_is_switchable(compound, compound_opfl_refine_type(core, tile_offset)?)
         {
             return Err(compound_cap!(
@@ -524,12 +546,14 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             skip_mode: false,
             use_optflow: compound.use_optflow,
             use_refinemv,
+            motion_simple: !local_warp,
             ref_frame0: compound.ref_frame0,
             ref_frame1: compound.ref_frame1,
             blend: compound_blend,
         },
         tile_offset,
     )?;
+    let compound_blend = compound_warp_blend(compound_blend, local_warp);
     if compound_all_opfl_reachable(
         core,
         reference,
@@ -552,9 +576,16 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         symbols,
         frame_interpolation_filter,
         compound.use_optflow || refinemv_default,
+        !local_warp,
         neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
         tile_offset,
     )?;
+    if let Some(params) = warp_models[0] {
+        warp_param_bank.update(compound.ref_frame0, params);
+    }
+    if let Some(params) = warp_models[1] {
+        warp_param_bank.update(compound.ref_frame1, params);
+    }
     reconstruct_resolved_compound_inter_block(
         work_unit,
         symbols,
@@ -581,6 +612,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             precision,
             skip_mode: false,
             use_refinemv,
+            warp_params: warp_models,
         },
         skip,
         n4w,
@@ -605,6 +637,7 @@ fn resolve_compound_interp_filter(
     symbols: &mut SymbolDecoder<'_>,
     frame_interpolation_filter: FrameInterpolationFilter,
     force_sharp: bool,
+    needs_interp_filter: bool,
     ctx: usize,
     tile_offset: ByteOffset,
 ) -> Result<ReconInterpolationFilter> {
@@ -615,7 +648,7 @@ fn resolve_compound_interp_filter(
         cdfs,
         symbols,
         frame_interpolation_filter,
-        true,
+        needs_interp_filter,
         ctx,
         tile_offset,
     )
@@ -642,15 +675,123 @@ fn compound_local_warp_signal_allowed(
         && local_warp_enabled
 }
 
+/// AV2 § 7.13.3.23: § 7.12.3 warp-sample search plus least-squares estimation
+/// once per reference list. A signalled list that gathers no samples (the
+/// § 5.20.7.14 `WarpSampleFound` scan is wider than the § 7.12.3.1 gathering)
+/// fails closed: the spec's det==0 identity model and AVM's
+/// `wm_params[ref].invalid` translational fallback diverge in that corner.
+#[allow(clippy::too_many_arguments)]
+fn compound_local_warp_models(
+    mv_grid: &NeighbourMvGrid,
+    block_ctx: &MvBlockContext,
+    mv0: Mv,
+    mv1: Mv,
+    mi_row: usize,
+    mi_col: usize,
+    n4w: usize,
+    n4h: usize,
+    tile_offset: ByteOffset,
+) -> Result<[Option<[i64; 6]>; 2]> {
+    let ref_frame1 = block_ctx.ref_frame1.ok_or_else(|| {
+        compound_missing!(
+            "compound_local_warp_missing_ref_frame1",
+            tile_offset,
+            "inter.compound.local_warp.ref_frame1",
+            "5.20.7.14"
+        )
+    })?;
+    let model0 = compound_ref_warp_model(
+        mv_grid,
+        block_ctx,
+        block_ctx.ref_frame0,
+        mv0,
+        mi_row,
+        mi_col,
+        n4w,
+        n4h,
+        tile_offset,
+    )?;
+    let model1 = compound_ref_warp_model(
+        mv_grid,
+        block_ctx,
+        ref_frame1,
+        mv1,
+        mi_row,
+        mi_col,
+        n4w,
+        n4h,
+        tile_offset,
+    )?;
+    Ok([model0, model1])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compound_ref_warp_model(
+    mv_grid: &NeighbourMvGrid,
+    block_ctx: &MvBlockContext,
+    target_ref: i8,
+    mv: Mv,
+    mi_row: usize,
+    mi_col: usize,
+    n4w: usize,
+    n4h: usize,
+    tile_offset: ByteOffset,
+) -> Result<Option<[i64; 6]>> {
+    match super::super::find_mv_stack::find_warp_samples(mv_grid, block_ctx, target_ref) {
+        super::super::find_mv_stack::WarpSampleCollection::Samples(samples) => {
+            if samples.is_empty() {
+                return Err(inter_cap!(
+                    "compound_local_warp_empty_sample_list",
+                    tile_offset,
+                    "inter.compound.local_warp.empty_sample_list",
+                    "7.12.3.1"
+                ));
+            }
+            Ok(Some(local_warp_estimation(
+                &samples,
+                mv,
+                mi_row,
+                mi_col,
+                n4w,
+                n4h,
+                tile_offset,
+            )?))
+        }
+        super::super::find_mv_stack::WarpSampleCollection::List1MvUnretained => Err(inter_cap!(
+            "compound_warp_sample_list1_mv_unretained",
+            tile_offset,
+            "inter.compound.local_warp.second_list_neighbour_mv",
+            "7.12.3.2"
+        )),
+    }
+}
+
+/// AV2 § 7.13.3.14: compound LOCALWARP (`compoundWarp = 1`) disables the
+/// implicit-mask average branch, so COMPOUND_AVERAGE collapses to the plain
+/// weighted average; wedge/diff-weighted blends are unaffected.
+fn compound_warp_blend(blend: mc::CompoundBlend, local_warp: bool) -> mc::CompoundBlend {
+    if !local_warp {
+        return blend;
+    }
+    match blend {
+        mc::CompoundBlend::Average { cwp_weight, .. } => {
+            mc::CompoundBlend::average_with_implicit_mask(false).average_with_cwp_weight(cwp_weight)
+        }
+        other => other,
+    }
+}
+
+/// AV2 § 5.20.7.14 `read_motion_mode`: reads `use_local_warp` when LOCALWARP is
+/// allowed and returns whether the block uses compound LOCALWARP (AVM WARP_CAUSAL).
 fn read_compound_motion_mode_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     signal_local_warp: bool,
     neighbour_ctx: &BlockNeighbourContext,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<bool> {
     if !signal_local_warp {
-        return Ok(());
+        return Ok(false);
     }
     let use_local_warp = cdfs
         .read_block_symbol_trace(
@@ -661,15 +802,7 @@ fn read_compound_motion_mode_syntax(
         )
         .map_err(|_| symbol_read_error(tile_offset))?
         .get();
-    if use_local_warp != 0 {
-        return Err(compound_cap!(
-            "compound_local_warp",
-            tile_offset,
-            "inter.compound.local_warp",
-            "5.20.7.14"
-        ));
-    }
-    Ok(())
+    Ok(use_local_warp != 0)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -681,6 +814,8 @@ pub(super) struct ResolvedCompoundBlock {
     pub(super) precision: BlockPrecisionRecord,
     pub(super) skip_mode: bool,
     pub(super) use_refinemv: bool,
+    /// Per-list § 7.13.3.23 LOCALWARP models (`[None, None]` when translational).
+    pub(super) warp_params: [Option<[i64; 6]>; 2],
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -727,6 +862,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         precision,
         skip_mode,
         use_refinemv,
+        warp_params,
     } = resolved;
     mv_grid.record_compound_block(
         mi_row,
@@ -746,6 +882,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         compound_blend.cwp_weight(),
         skip_mode,
         precision,
+        warp_params,
     );
     if let Some(bank) = ref_mv_bank.as_mut() {
         bank.update_for_block(
@@ -841,7 +978,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
             mv: compound.mv0,
             mv1: compound.mv1,
             interp,
-            warp_params: None,
+            warp_params,
             bawp: BawpSyntax::default(),
             interintra: None,
             compound_blend,
@@ -869,6 +1006,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         ref_frame_idx,
         &placed,
         compound,
+        warp_params,
         motion_grid.as_ref(),
         mi_row,
         mi_col,
@@ -900,6 +1038,7 @@ fn record_compound_temporal_motion<T: ReconSample>(
     ref_frame_idx: &[u32],
     placed: &PlacedInterBlock,
     compound: super::super::compound::CompoundBlockSyntax,
+    warp_params: [Option<[i64; 6]>; 2],
     motion_grid: Option<&mc::CompoundMotionGrid>,
     mi_row: usize,
     mi_col: usize,
@@ -912,7 +1051,21 @@ fn record_compound_temporal_motion<T: ReconSample>(
             let mvs = if let Some(grid) = motion_grid {
                 grid.temporal_mvs_at_luma_offset(x, y)?
             } else {
-                [compound.mv0, compound.mv1]
+                let unit_mv = |params: Option<[i64; 6]>, block_mv: Mv| {
+                    params.map_or(block_mv, |params| {
+                        super::super::find_mv_stack::warp_sub_mv_at(
+                            params,
+                            mi_row,
+                            mi_col,
+                            mi_row + y / 4,
+                            mi_col + x / 4,
+                        )
+                    })
+                };
+                [
+                    unit_mv(warp_params[0], compound.mv0),
+                    unit_mv(warp_params[1], compound.mv1),
+                ]
             };
             let allowed = wedge_temporal_allowed_lists(
                 placed.block.compound_blend,
@@ -941,7 +1094,7 @@ fn record_compound_temporal_motion<T: ReconSample>(
                 ref_frame1,
                 mvs[0],
                 mvs[1],
-                None,
+                [None, None],
             );
         }
     }
@@ -1108,6 +1261,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
             precision: BlockPrecisionRecord::most_probable(frame_mv_precision(core, tile_offset)?),
             skip_mode: true,
             use_refinemv: false,
+            warp_params: [None, None],
         },
         skip,
         n4w,
@@ -1828,6 +1982,7 @@ struct CompoundCwpInput {
     skip_mode: bool,
     use_optflow: bool,
     use_refinemv: bool,
+    motion_simple: bool,
     ref_frame0: i8,
     ref_frame1: i8,
     blend: mc::CompoundBlend,
@@ -1966,6 +2121,7 @@ fn compound_cwp_signal_allowed(cwp_enabled: bool, input: CompoundCwpInput) -> bo
         && !input.skip_mode
         && !input.use_optflow
         && !input.use_refinemv
+        && input.motion_simple
         && compound_cwp_mode_allowed(input.y_mode, input.jmvd_scale_mode)
         && matches!(input.blend, mc::CompoundBlend::Average { .. })
 }
@@ -1996,419 +2152,4 @@ fn compound_cwp_same_side<T: ReconSample>(
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-
-    use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
-    use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
-
-    use super::*;
-    use crate::bitstream::tile_payload::FrameCdfSubset;
-
-    const TILE_OFFSET: ByteOffset = ByteOffset::new(0);
-
-    fn encode_wedge_compound_blend() -> Vec<u8> {
-        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut encoder = SymbolEncoder::with_config(
-            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-        );
-        tile.with_row_mut(TileCdfSelector::CompGroupIdx { ctx: 0 }, |row| {
-            encoder.write_symbol(row, Symbol::new(1))
-        })
-        .unwrap()
-        .unwrap();
-        tile.with_row_mut(TileCdfSelector::CompoundType, |row| {
-            encoder.write_symbol(row, Symbol::new(0))
-        })
-        .unwrap()
-        .unwrap();
-        tile.with_row_mut(TileCdfSelector::WedgeQuad, |row| {
-            encoder.write_symbol(row, Symbol::new(0))
-        })
-        .unwrap()
-        .unwrap();
-        tile.with_row_mut(TileCdfSelector::WedgeAngle { quad: 0 }, |row| {
-            encoder.write_symbol(row, Symbol::new(0))
-        })
-        .unwrap()
-        .unwrap();
-        tile.with_row_mut(TileCdfSelector::WedgeDist2, |row| {
-            encoder.write_symbol(row, Symbol::new(0))
-        })
-        .unwrap()
-        .unwrap();
-        encoder.write_bool(true).unwrap();
-        encoder.finish().unwrap().into_bytes()
-    }
-
-    fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
-        SymbolDecoder::with_base_and_config(
-            payload,
-            TILE_OFFSET,
-            SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-        )
-        .unwrap()
-    }
-
-    fn compound_motion_contexts() -> (ModeContext, BlockNeighbourContext) {
-        let mut grid = NeighbourMvGrid::new(16, 16).unwrap();
-        grid.record_compound_block(
-            0,
-            0,
-            2,
-            2,
-            0,
-            1,
-            true,
-            true,
-            Mv::ZERO,
-            Mv::ZERO,
-            false,
-            0,
-            false,
-            false,
-            mc::CWP_EQUAL,
-            false,
-            BlockPrecisionRecord::default(),
-        );
-        let block = MvBlockContext {
-            mi_row: 0,
-            mi_col: 2,
-            bw4: 2,
-            bh4: 2,
-            sb_h4: 32,
-            ref_frame0: 0,
-            ref_frame1: Some(1),
-            mi_rows: 16,
-            mi_cols: 16,
-        };
-        (
-            find_mode_ctx(&grid, &block),
-            block_neighbour_ctx(&grid, &block),
-        )
-    }
-
-    fn encode_compound_local_warp(ctx: usize, enabled: bool) -> Vec<u8> {
-        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut encoder = SymbolEncoder::with_config(
-            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-        );
-        tile.with_row_mut(TileCdfSelector::UseLocalWarp { ctx }, |row| {
-            encoder.write_symbol(row, Symbol::new(u8::from(enabled)))
-        })
-        .unwrap()
-        .unwrap();
-        encoder.finish().unwrap().into_bytes()
-    }
-
-    #[test]
-    fn compound_blend_reads_wedge_index_and_sign() {
-        let payload = encode_wedge_compound_blend();
-        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut symbols = symbol_decoder(&payload);
-
-        let blend = read_compound_blend_syntax(
-            &mut tile,
-            &mut symbols,
-            CompoundBlendToolConfig {
-                masked_enabled: true,
-                implicit_mask: false,
-            },
-            CompoundBlendInput {
-                skip_mode: false,
-                use_optflow: false,
-                n4w: 2,
-                n4h: 2,
-                block_size_index: 3,
-                comp_group_idx_ctx: 0,
-            },
-            TILE_OFFSET,
-        )
-        .unwrap();
-
-        assert_eq!(
-            blend,
-            mc::CompoundBlend::Wedge {
-                index: 0,
-                sign: true,
-            }
-        );
-    }
-
-    #[test]
-    fn compound_optflow_forces_average_without_blend_symbols() {
-        let payload = encode_wedge_compound_blend();
-        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut symbols = symbol_decoder(&payload);
-        let before = symbols.checkpoint();
-
-        let blend = read_compound_blend_syntax(
-            &mut tile,
-            &mut symbols,
-            CompoundBlendToolConfig {
-                masked_enabled: true,
-                implicit_mask: true,
-            },
-            CompoundBlendInput {
-                skip_mode: false,
-                use_optflow: true,
-                n4w: 2,
-                n4h: 2,
-                block_size_index: 3,
-                comp_group_idx_ctx: 0,
-            },
-            TILE_OFFSET,
-        )
-        .unwrap();
-
-        assert_eq!(blend, mc::CompoundBlend::average_with_implicit_mask(true));
-        assert_eq!(symbols.checkpoint(), before);
-    }
-
-    #[test]
-    fn compound_optflow_forces_sharp_interp_without_symbols() {
-        let payload = encode_compound_local_warp(0, false);
-        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut symbols = symbol_decoder(&payload);
-        let before = symbols.checkpoint();
-
-        let interp = resolve_compound_interp_filter(
-            &mut tile,
-            &mut symbols,
-            FrameInterpolationFilter::Switchable,
-            true,
-            0,
-            TILE_OFFSET,
-        )
-        .unwrap();
-
-        assert_eq!(interp, ReconInterpolationFilter::EightTapSharp);
-        assert_eq!(symbols.checkpoint(), before);
-    }
-
-    #[test]
-    fn compound_simple_motion_consumes_local_warp_gate() {
-        let (mode_ctx, neighbour_ctx) = compound_motion_contexts();
-        assert!(mode_ctx.warp_sample_found && mode_ctx.warp_sample_found1);
-        let ctx = neighbour_ctx.use_local_warp_ctx();
-        let payload = encode_compound_local_warp(ctx, false);
-        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-        let mut symbols = symbol_decoder(&payload);
-
-        read_compound_motion_mode_syntax(
-            &mut tile,
-            &mut symbols,
-            true,
-            &neighbour_ctx,
-            TILE_OFFSET,
-        )
-        .unwrap();
-
-        symbols.exit_symbol().unwrap();
-    }
-
-    #[test]
-    fn compound_optflow_suppresses_local_warp_gate() {
-        let compound = super::super::super::compound::CompoundBlockSyntax {
-            y_mode: CompoundYMode::NewNew,
-            use_optflow: true,
-            ref_frame0: 0,
-            ref_frame1: 1,
-            mv0: Mv::ZERO,
-            mv1: Mv::ZERO,
-        };
-
-        assert!(!compound_local_warp_signal_allowed(
-            compound,
-            2,
-            2,
-            false,
-            REFINE_SWITCHABLE,
-            [true; 2],
-            true,
-        ));
-    }
-
-    #[test]
-    fn joint_mvd_projection_uses_reference_distance_ratio() {
-        assert_eq!(
-            project_joint_mvd(Mv { row: 96, col: -48 }, 1, 2),
-            Mv { row: 48, col: -24 }
-        );
-        assert_eq!(
-            project_joint_mvd(Mv { row: 96, col: -48 }, -1, 2),
-            Mv { row: -48, col: 24 }
-        );
-    }
-
-    #[test]
-    fn joint_mvd_scale_mode_matches_amvd_and_non_amvd_axes() {
-        assert_eq!(
-            scale_joint_projected_mvd(Mv { row: 10, col: 6 }, 1, true),
-            Mv { row: 20, col: 12 }
-        );
-        assert_eq!(
-            scale_joint_projected_mvd(Mv { row: 10, col: 6 }, 2, false),
-            Mv { row: 10, col: 12 }
-        );
-        assert_eq!(
-            scale_joint_projected_mvd(Mv { row: 10, col: 6 }, 4, false),
-            Mv { row: 10, col: 3 }
-        );
-    }
-
-    #[test]
-    fn compound_cwp_mode_allows_unscaled_joint_newmv() {
-        assert!(compound_cwp_mode_allowed(CompoundYMode::NearNear, 4));
-        assert!(compound_cwp_mode_allowed(CompoundYMode::JointNew, 0));
-        assert!(!compound_cwp_mode_allowed(CompoundYMode::JointNew, 1));
-        assert!(!compound_cwp_mode_allowed(CompoundYMode::NearNew, 0));
-    }
-
-    #[test]
-    fn compound_optflow_suppresses_cwp_symbols() {
-        assert!(!compound_cwp_signal_allowed(
-            true,
-            CompoundCwpInput {
-                y_mode: CompoundYMode::NearNear,
-                jmvd_scale_mode: 0,
-                skip_mode: false,
-                use_optflow: true,
-                use_refinemv: false,
-                ref_frame0: 0,
-                ref_frame1: 1,
-                blend: mc::CompoundBlend::default(),
-            },
-        ));
-    }
-
-    #[test]
-    fn compound_refinemv_suppresses_cwp_symbols() {
-        assert!(!compound_cwp_signal_allowed(
-            true,
-            CompoundCwpInput {
-                y_mode: CompoundYMode::NearNear,
-                jmvd_scale_mode: 0,
-                skip_mode: false,
-                use_optflow: false,
-                use_refinemv: true,
-                ref_frame0: 0,
-                ref_frame1: 1,
-                blend: mc::CompoundBlend::default(),
-            },
-        ));
-    }
-
-    #[test]
-    fn compound_refinemv_switchability_matches_mode_and_optflow() {
-        let mut compound = crate::prediction::inter::compound::CompoundBlockSyntax {
-            y_mode: CompoundYMode::NearNear,
-            use_optflow: false,
-            ref_frame0: 0,
-            ref_frame1: 1,
-            mv0: Mv::ZERO,
-            mv1: Mv::ZERO,
-        };
-        assert!(!compound_refinemv_is_switchable(
-            compound,
-            REFINE_SWITCHABLE
-        ));
-        compound.y_mode = CompoundYMode::NearNew;
-        assert!(compound_refinemv_is_switchable(compound, REFINE_SWITCHABLE));
-        assert!(!compound_refinemv_mode_allowed_for_type(
-            compound,
-            REFINE_SWITCHABLE
-        ));
-        compound.use_optflow = true;
-        assert!(compound_refinemv_mode_allowed_for_type(
-            compound,
-            REFINE_SWITCHABLE
-        ));
-        compound.y_mode = CompoundYMode::JointNew;
-        assert!(!compound_refinemv_is_switchable(
-            compound,
-            REFINE_SWITCHABLE
-        ));
-        assert!(compound_refinemv_is_switchable(compound, REFINE_ALL));
-    }
-
-    #[test]
-    fn compound_masked_blends_cancel_default_refinemv() {
-        for (blend, expected) in [
-            (mc::CompoundBlend::default(), true),
-            (
-                mc::CompoundBlend::Wedge {
-                    index: 0,
-                    sign: false,
-                },
-                false,
-            ),
-            (mc::CompoundBlend::DiffWeighted { inverse: false }, false),
-        ] {
-            assert_eq!(compound_refinemv_active_after_blend(true, blend), expected);
-        }
-        assert!(!compound_refinemv_active_after_blend(
-            false,
-            mc::CompoundBlend::default()
-        ));
-    }
-
-    #[test]
-    fn wedge_temporal_storage_keeps_only_a_dominant_reference() {
-        let blend = mc::CompoundBlend::Wedge {
-            index: 0,
-            sign: false,
-        };
-        assert_eq!(
-            wedge_temporal_allowed_lists(blend, 64, 64, 0, 0).unwrap(),
-            [false, true]
-        );
-        assert_eq!(
-            wedge_temporal_allowed_lists(blend, 64, 64, 56, 0).unwrap(),
-            [true, false]
-        );
-        assert_eq!(
-            wedge_temporal_allowed_lists(blend, 64, 64, 32, 24).unwrap(),
-            [true; 2]
-        );
-    }
-
-    #[test]
-    fn compound_opfl_mode_suppresses_second_drl_idx() {
-        let mut compound = crate::prediction::inter::compound::CompoundBlockSyntax {
-            y_mode: CompoundYMode::NearNear,
-            use_optflow: false,
-            ref_frame0: 0,
-            ref_frame1: 1,
-            mv0: Mv::ZERO,
-            mv1: Mv::ZERO,
-        };
-
-        assert!(compound_reads_second_drl(compound));
-        compound.use_optflow = true;
-        assert!(!compound_reads_second_drl(compound));
-    }
-
-    #[test]
-    fn compound_non_skip_near_mode_reads_second_drl_idx() {
-        let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
-            y_mode: CompoundYMode::NearNear,
-            use_optflow: false,
-            ref_frame0: 0,
-            ref_frame1: 1,
-            mv0: Mv::ZERO,
-            mv1: Mv::ZERO,
-        };
-
-        assert!(compound_reads_second_drl(compound));
-    }
-
-    #[test]
-    fn skip_mode_default_pair_treats_restricted_order_hint_as_zero_distance() {
-        assert_eq!(
-            skip_mode_default_pair(0, Some((RESTRICTED_ORDER_HINT, 1))),
-            (0, 1)
-        );
-        assert_eq!(skip_mode_default_pair(0, None), (0, 0));
-    }
-}
+mod tests;

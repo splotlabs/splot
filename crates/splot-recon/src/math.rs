@@ -89,6 +89,15 @@ pub fn resolve_division(num: i64, den: i64, shift: u8) -> i16 {
     crate::intra_dc_math::resolve_division(num, den, shift)
 }
 
+/// AV2 § 4.8 `Clip1` over a block of `Round2(s, InterRound1)` predictor values,
+/// clamping each to `[0, max_sample]` for the single-reference write path.
+pub fn clip1_predicted_samples(values: Vec<i32>, max_sample: i64) -> Vec<u16> {
+    values
+        .into_iter()
+        .map(|value| clip3(0, max_sample, i64::from(value)) as u16)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

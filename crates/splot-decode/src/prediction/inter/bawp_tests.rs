@@ -195,7 +195,7 @@ fn placed_luma_block(x: usize, y: usize, width: usize, height: usize) -> PlacedI
             mv: Mv { row: 0, col: 0 },
             mv1: Mv { row: 0, col: 0 },
             interp: InterpolationFilter::EightTap,
-            warp_params: None,
+            warp_params: [None, None],
             bawp: BawpSyntax::default(),
             interintra: None,
             compound_blend: CompoundBlend::default(),
