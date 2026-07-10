@@ -103,6 +103,13 @@ impl TemporalMotionField {
                     cell.ref_order_hints[list] = Some(order_hint);
                     cell.mvs[list] = compress_tmvp_mv(mv);
                 }
+                if cell.ref_order_hints[0].is_some() && cell.ref_order_hints[1].is_none() {
+                    cell.ref_order_hints[1] = cell.ref_order_hints[0];
+                    cell.mvs[1] = cell.mvs[0];
+                } else if cell.ref_order_hints[1].is_some() && cell.ref_order_hints[0].is_none() {
+                    cell.ref_order_hints[0] = cell.ref_order_hints[1];
+                    cell.mvs[0] = cell.mvs[1];
+                }
                 if let Some(slot) = self.cell_mut(y8, x8) {
                     *slot = cell;
                 }
@@ -750,6 +757,33 @@ mod tests {
             reference_order_hints(&[0, 1, 2], &[true, false, true], &[8, 9, 12]),
             vec![Some(8), None, Some(12)]
         );
+    }
+
+    #[test]
+    fn single_reference_motion_is_stored_in_both_slots() {
+        for source_list in 0..2 {
+            let mut field = TemporalMotionField::new(2, 2).unwrap();
+            let mut ref_order_hints = [None; 2];
+            let mut mvs = [Mv::ZERO; 2];
+            ref_order_hints[source_list] = Some(7);
+            mvs[source_list] = Mv { row: 8, col: -12 };
+
+            field.record_block(TemporalMotionBlock {
+                mi_row: 0,
+                mi_col: 0,
+                n4w: 2,
+                n4h: 2,
+                mi_rows: 2,
+                mi_cols: 2,
+                ref_order_hints,
+                mvs,
+                warp_params: [None; 2],
+            });
+
+            let cell = field.cell(0, 0).unwrap();
+            assert_eq!(cell.ref_order_hints, [Some(7); 2]);
+            assert_eq!(cell.mvs, [Mv { row: 8, col: -12 }; 2]);
+        }
     }
 
     #[test]
