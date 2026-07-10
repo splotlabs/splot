@@ -128,6 +128,7 @@ fn compound_blend_reads_wedge_index_and_sign() {
             skip_mode: false,
             use_optflow: false,
             joint_amvd: false,
+            switchable_refinemv_on: false,
             n4w: 2,
             n4h: 2,
             block_size_index: 3,
@@ -164,6 +165,7 @@ fn compound_optflow_forces_average_without_blend_symbols() {
             skip_mode: false,
             use_optflow: true,
             joint_amvd: false,
+            switchable_refinemv_on: false,
             n4w: 2,
             n4h: 2,
             block_size_index: 3,
@@ -198,6 +200,7 @@ fn compound_joint_amvd_forces_average_without_blend_symbols() {
             skip_mode: false,
             use_optflow: false,
             joint_amvd: true,
+            switchable_refinemv_on: false,
             n4w: 2,
             n4h: 2,
             block_size_index: 3,
@@ -646,4 +649,105 @@ fn compound_local_warp_neighbour_raises_warp_contexts() {
     let warp_ctx = block_neighbour_ctx(&grid, &block);
     assert!(warp_ctx.use_local_warp_ctx() > 0);
     assert!(warp_ctx.use_extend_warp_ctx() > 0);
+}
+
+fn encode_use_refinemv(ctx: usize, enabled: bool) -> Vec<u8> {
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::with_config(
+        SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+    );
+    tile.with_row_mut(TileCdfSelector::UseRefinemv { ctx }, |row| {
+        encoder.write_symbol(row, Symbol::new(u8::from(enabled)))
+    })
+    .unwrap()
+    .unwrap();
+    encoder.finish().unwrap().into_bytes()
+}
+
+#[test]
+fn switchable_refinemv_reads_both_values_at_the_optflow_context() {
+    for enabled in [false, true] {
+        let payload = encode_use_refinemv(8, enabled);
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&payload);
+
+        let use_refinemv = read_compound_use_refinemv_syntax(
+            &mut tile,
+            &mut symbols,
+            CompoundYMode::NearNew,
+            true,
+            TILE_OFFSET,
+        )
+        .unwrap();
+
+        assert_eq!(use_refinemv, enabled);
+        symbols.exit_symbol().unwrap();
+    }
+}
+
+#[test]
+fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
+    let payload = encode_use_refinemv(10, true);
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+
+    let use_refinemv = read_compound_use_refinemv_syntax(
+        &mut tile,
+        &mut symbols,
+        CompoundYMode::NewNew,
+        true,
+        TILE_OFFSET,
+    )
+    .unwrap();
+
+    assert!(use_refinemv);
+    symbols.exit_symbol().unwrap();
+
+    let payload = encode_use_refinemv(6, false);
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+
+    let use_refinemv = read_compound_use_refinemv_syntax(
+        &mut tile,
+        &mut symbols,
+        CompoundYMode::JointNew,
+        false,
+        TILE_OFFSET,
+    )
+    .unwrap();
+
+    assert!(!use_refinemv);
+    symbols.exit_symbol().unwrap();
+}
+
+#[test]
+fn switchable_refinemv_on_forces_average_without_blend_symbols() {
+    let payload = encode_wedge_compound_blend();
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+    let before = symbols.checkpoint();
+
+    let blend = read_compound_blend_syntax(
+        &mut tile,
+        &mut symbols,
+        CompoundBlendToolConfig {
+            masked_enabled: true,
+            implicit_mask: true,
+        },
+        CompoundBlendInput {
+            skip_mode: false,
+            use_optflow: false,
+            joint_amvd: false,
+            switchable_refinemv_on: true,
+            n4w: 2,
+            n4h: 2,
+            block_size_index: 3,
+            comp_group_idx_ctx: 0,
+        },
+        TILE_OFFSET,
+    )
+    .unwrap();
+
+    assert_eq!(blend, mc::CompoundBlend::average_with_implicit_mask(true));
+    assert_eq!(symbols.checkpoint(), before);
 }
