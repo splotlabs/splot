@@ -25,7 +25,6 @@ pub(crate) struct CompoundParseInput {
     pub(crate) num_same_ref_compound: u8,
     pub(crate) ref_contexts: [usize; MAX_REFS_PER_FRAME],
     pub(crate) ref_distance_nonnegative: [bool; MAX_REFS_PER_FRAME],
-    pub(crate) is_joint_ctx: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -216,7 +215,7 @@ pub(crate) fn read_compound_mode_syntax(
     symbols: &mut SymbolDecoder<'_>,
     pair: (i8, i8),
     new_mv_context: usize,
-    is_joint_ctx: Option<usize>,
+    is_joint_ctx: usize,
     tile_offset: ByteOffset,
 ) -> Result<CompoundBlockSyntax> {
     let mut read_symbol = |selector| {
@@ -252,14 +251,6 @@ pub(crate) fn read_compound_mode_syntax(
         });
     }
 
-    let is_joint_ctx = is_joint_ctx.ok_or_else(|| {
-        compound_missing!(
-            "compound_missing_is_joint_context",
-            tile_offset,
-            "inter.compound.is_joint_context",
-            SPEC_INTER_BLOCK_MODE_INFO
-        )
-    })?;
     let is_joint = read_symbol(TileCdfSelector::IsJoint { ctx: is_joint_ctx })?;
     if is_joint != 0 {
         return Ok(CompoundBlockSyntax {

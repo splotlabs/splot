@@ -127,7 +127,6 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         ));
     }
 
-    let current_order_hint = i32::try_from(core.order_hint_lsb.unwrap_or(0)).unwrap_or(i32::MAX);
     let initial_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
 
     let order_hint_bits = sequence
@@ -192,17 +191,9 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     }
 
     let block_reference_select = tail.reference_select;
-    let compound_is_joint_ctx = if block_reference_select && ref_frame_idx.len() == 2 {
+    if block_reference_select {
         validate_compound_sequence_subset(sequence, &core, offset)?;
-        Some(compound_is_joint_context(
-            &ref_frame_idx,
-            reference,
-            current_order_hint,
-            offset,
-        )?)
-    } else {
-        None
-    };
+    }
     if tail.use_global_motion {
         return Err(inter_cap!(
             "inter_use_global_motion",
@@ -311,7 +302,6 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         interpolation_filter,
         num_total_refs as usize,
         block_reference_select,
-        compound_is_joint_ctx,
         sequence
             .inter
             .as_ref()
@@ -520,29 +510,25 @@ fn validate_compound_sequence_subset(
 
 fn compound_is_joint_context(
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, impl ReconSample>,
+    ref_order_hint: &[u32],
+    pair: (i8, i8),
     current_order_hint: i32,
     offset: ByteOffset,
 ) -> Result<usize> {
-    if ref_frame_idx.len() != 2 {
-        return Err(compound_missing!(
-            "compound_missing_ref_frame_idx",
-            offset,
-            "inter.compound.ref_frame_idx[2]",
-            SPEC_MODE_INFO
-        ));
-    }
-    let ref_order_hint = |ref_idx: usize| -> Result<i32> {
-        let slot = *ref_frame_idx.get(ref_idx).ok_or_else(|| {
-            compound_cap!(
-                "compound_ref_frame_idx_out_of_range",
-                offset,
-                "inter.compound.ref_frame out of range",
-                SPEC_MODE_INFO
-            )
-        })?;
-        reference
-            .ref_order_hint
+    let order_hint_of = |ref_frame: i8| -> Result<i32> {
+        let slot = usize::try_from(ref_frame)
+            .ok()
+            .and_then(|ref_idx| ref_frame_idx.get(ref_idx))
+            .copied()
+            .ok_or_else(|| {
+                compound_cap!(
+                    "compound_ref_frame_idx_out_of_range",
+                    offset,
+                    "inter.compound.ref_frame out of range",
+                    SPEC_MODE_INFO
+                )
+            })?;
+        ref_order_hint
             .get(slot as usize)
             .copied()
             .map(|hint| i32::try_from(hint).unwrap_or(i32::MAX))
@@ -555,8 +541,8 @@ fn compound_is_joint_context(
                 )
             })
     };
-    let first_order_hint = ref_order_hint(0)?;
-    let second_order_hint = ref_order_hint(1)?;
+    let first_order_hint = order_hint_of(pair.0)?;
+    let second_order_hint = order_hint_of(pair.1)?;
     Ok(compound_is_joint_context_from_order_hints(
         first_order_hint,
         second_order_hint,
