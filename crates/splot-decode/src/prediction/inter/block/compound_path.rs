@@ -235,6 +235,17 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         } else {
             None
         };
+        let paired_candidate = |idx| {
+            find_compound_mv_stack_with_temporal(
+                mv_grid,
+                block_ctx,
+                [Mv::ZERO; 2],
+                bank,
+                drl_reorder,
+                temporal,
+            )
+            .candidate(idx)
+        };
         let temporal_first0 = compound_temporal_allowed
             && temporal_first_frame
             && super::block_ref_within_temporal_distance(
@@ -279,41 +290,34 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 compound.mv1 = stack1.candidate(ref_mv_idx1);
             }
             CompoundYMode::NearNew | CompoundYMode::NewNear => {
-                let stack0 = find_mv_stack_with_temporal(
-                    mv_grid,
-                    &single_ref_block_context(block_ctx, compound.ref_frame0),
-                    Mv::ZERO,
-                    bank,
-                    warp_param_bank,
-                    false,
-                    drl_reorder,
-                    temporal,
-                    temporal_first0,
-                );
-                let stack1 = find_mv_stack_with_temporal(
-                    mv_grid,
-                    &single_ref_block_context(block_ctx, compound.ref_frame1),
-                    Mv::ZERO,
-                    bank,
-                    warp_param_bank,
-                    false,
-                    drl_reorder,
-                    temporal,
-                    temporal_first1,
-                );
                 let has_second_drl = compound_reads_second_drl(compound);
-                let candidates = [
-                    stack0.candidate(if has_second_drl {
-                        ref_mv_idx0
-                    } else {
-                        ref_mv_idx
-                    }),
-                    stack1.candidate(if has_second_drl {
-                        ref_mv_idx1
-                    } else {
-                        ref_mv_idx
-                    }),
-                ];
+                let candidates = if has_second_drl {
+                    let stack0 = find_mv_stack_with_temporal(
+                        mv_grid,
+                        &single_ref_block_context(block_ctx, compound.ref_frame0),
+                        Mv::ZERO,
+                        bank,
+                        warp_param_bank,
+                        false,
+                        drl_reorder,
+                        temporal,
+                        temporal_first0,
+                    );
+                    let stack1 = find_mv_stack_with_temporal(
+                        mv_grid,
+                        &single_ref_block_context(block_ctx, compound.ref_frame1),
+                        Mv::ZERO,
+                        bank,
+                        warp_param_bank,
+                        false,
+                        drl_reorder,
+                        temporal,
+                        temporal_first1,
+                    );
+                    [stack0.candidate(ref_mv_idx0), stack1.candidate(ref_mv_idx1)]
+                } else {
+                    paired_candidate(ref_mv_idx).mvs
+                };
                 let new_ref = usize::from(compound.y_mode == CompoundYMode::NearNew);
                 let pred_mv = if use_amvd {
                     candidates[new_ref]
@@ -347,16 +351,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 [compound.mv0, compound.mv1] = mvs;
             }
             CompoundYMode::JointNew => {
-                let stack = find_mv_stack(
-                    mv_grid,
-                    block_ctx,
-                    Mv::ZERO,
-                    bank,
-                    warp_param_bank,
-                    false,
-                    drl_reorder,
-                    false,
-                );
                 let projection = compound_joint_mv_projection(
                     core,
                     reference,
@@ -365,7 +359,8 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                     compound.ref_frame1,
                     tile_offset,
                 )?;
-                let raw_pred_mv = stack.candidate(ref_mv_idx);
+                let candidates = paired_candidate(ref_mv_idx).mvs;
+                let raw_pred_mv = candidates[projection.base_list];
                 let pred_mv = if use_amvd {
                     raw_pred_mv
                 } else {
@@ -398,7 +393,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                     jmvd_scale_mode,
                     use_amvd,
                 );
-                let other_mv = add_mv_clamped(raw_pred_mv, projected);
+                let other_mv = add_mv_clamped(candidates[1 - projection.base_list], projected);
                 if projection.base_list == 0 {
                     compound.mv0 = base_mv;
                     compound.mv1 = other_mv;
@@ -408,16 +403,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 }
             }
             CompoundYMode::NewNew => {
-                let stack = find_mv_stack(
-                    mv_grid,
-                    block_ctx,
-                    Mv::ZERO,
-                    bank,
-                    warp_param_bank,
-                    false,
-                    drl_reorder,
-                    false,
-                );
                 let (diff0, diff1) = if use_amvd {
                     let magnitude0 = read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?;
                     let magnitude1 = read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?;
@@ -453,18 +438,19 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                         compound.y_mode.mvd_sign_derivation_threshold(),
                     )?
                 };
-                let pred_mv = if use_amvd {
-                    stack.candidate(ref_mv_idx)
+                let candidate = paired_candidate(ref_mv_idx).mvs;
+                let pred_mvs = if use_amvd {
+                    candidate
                 } else {
-                    lowered_pred_mv(precision, stack.candidate(ref_mv_idx))
+                    candidate.map(|mv| lowered_pred_mv(precision, mv))
                 };
                 compound.mv0 = Mv {
-                    row: mv_clamp_to_integer(pred_mv.row + diff0.row),
-                    col: mv_clamp_to_integer(pred_mv.col + diff0.col),
+                    row: mv_clamp_to_integer(pred_mvs[0].row + diff0.row),
+                    col: mv_clamp_to_integer(pred_mvs[0].col + diff0.col),
                 };
                 compound.mv1 = Mv {
-                    row: mv_clamp_to_integer(pred_mv.row + diff1.row),
-                    col: mv_clamp_to_integer(pred_mv.col + diff1.col),
+                    row: mv_clamp_to_integer(pred_mvs[1].row + diff1.row),
+                    col: mv_clamp_to_integer(pred_mvs[1].col + diff1.col),
                 };
             }
         }

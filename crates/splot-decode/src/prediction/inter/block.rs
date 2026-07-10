@@ -26,7 +26,7 @@ use super::find_mv_stack::{
     BlockNeighbourContext, BlockPrecisionRecord, ModeContext, MotionMode, MvBlockContext,
     NeighbourMvGrid, NeighbourYMode, TIP_REF_FRAME, TemporalMotionField, TemporalMvContext,
     TemporalProjectionConfig, block_neighbour_ctx, find_compound_mv_stack_with_temporal,
-    find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack, find_mv_stack_with_temporal,
+    find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_with_temporal,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,

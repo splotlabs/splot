@@ -1668,6 +1668,7 @@ impl WarpParamBank {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn find_mv_stack(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
