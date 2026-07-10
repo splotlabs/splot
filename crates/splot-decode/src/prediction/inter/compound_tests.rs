@@ -156,13 +156,20 @@ fn compound_opfl_modes_use_opfl_amvd_contexts() {
 }
 
 #[test]
-fn asymmetric_compound_modes_keep_per_list_mv_roles() {
-    assert!(CompoundYMode::NearNew.has_second_drl(false));
-    assert!(!CompoundYMode::NewNear.has_second_drl(false));
-    assert!(!CompoundYMode::NearNew.list0_is_newmv());
-    assert!(CompoundYMode::NearNew.list1_is_newmv());
-    assert!(CompoundYMode::NewNear.list0_is_newmv());
-    assert!(!CompoundYMode::NewNear.list1_is_newmv());
+fn compound_mode_predicates_keep_per_list_roles() {
+    let cases = [
+        (CompoundYMode::NearNear, true, false, false),
+        (CompoundYMode::NearNew, true, false, true),
+        (CompoundYMode::NewNear, false, true, false),
+        (CompoundYMode::JointNew, false, true, true),
+        (CompoundYMode::NewNew, false, true, true),
+    ];
+
+    for (mode, second_drl, list0_newmv, list1_newmv) in cases {
+        assert_eq!(mode.has_second_drl(), second_drl, "{mode:?}");
+        assert_eq!(mode.list0_is_newmv(), list0_newmv, "{mode:?}");
+        assert_eq!(mode.list1_is_newmv(), list1_newmv, "{mode:?}");
+    }
 }
 
 #[test]

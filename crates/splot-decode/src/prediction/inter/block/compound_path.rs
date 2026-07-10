@@ -141,15 +141,11 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         use_amvd,
         tile_offset,
     )?;
-    let skip_mode_present = core
-        .inter_tail
-        .as_ref()
-        .is_some_and(|tail| tail.skip_mode_present);
     let mut ref_mv_idx = 0;
     let mut ref_mv_idx0 = 0;
     let mut ref_mv_idx1 = 0;
     if compound.y_mode.reads_drl_idx() {
-        if compound_reads_second_drl(compound, skip_mode_present) {
+        if compound_reads_second_drl(compound) {
             ref_mv_idx0 = read_drl_idx(
                 cdfs,
                 symbols,
@@ -271,7 +267,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                     temporal,
                     temporal_first1,
                 );
-                let has_second_drl = compound_reads_second_drl(compound, skip_mode_present);
+                let has_second_drl = compound_reads_second_drl(compound);
                 let candidates = [
                     stack0.candidate(if has_second_drl {
                         ref_mv_idx0
@@ -1060,11 +1056,8 @@ fn read_compound_use_optflow_syntax(
     Ok(use_optflow.get() != 0)
 }
 
-const fn compound_reads_second_drl(
-    compound: super::super::compound::CompoundBlockSyntax,
-    skip_mode_present: bool,
-) -> bool {
-    !compound.use_optflow && compound.y_mode.has_second_drl(skip_mode_present)
+const fn compound_reads_second_drl(compound: super::super::compound::CompoundBlockSyntax) -> bool {
+    !compound.use_optflow && compound.y_mode.has_second_drl()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2149,9 +2142,23 @@ mod tests {
             mv1: Mv::ZERO,
         };
 
-        assert!(compound_reads_second_drl(compound, false));
+        assert!(compound_reads_second_drl(compound));
         compound.use_optflow = true;
-        assert!(!compound_reads_second_drl(compound, false));
+        assert!(!compound_reads_second_drl(compound));
+    }
+
+    #[test]
+    fn compound_non_skip_near_mode_reads_second_drl_idx() {
+        let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
+            y_mode: CompoundYMode::NearNear,
+            use_optflow: false,
+            ref_frame0: 0,
+            ref_frame1: 1,
+            mv0: Mv::ZERO,
+            mv1: Mv::ZERO,
+        };
+
+        assert!(compound_reads_second_drl(compound));
     }
 
     #[test]
