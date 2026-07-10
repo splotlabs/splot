@@ -262,7 +262,7 @@ fn compound_local_warp_derives_a_model_per_reference_list() {
 }
 
 #[test]
-fn compound_local_warp_leaves_translational_ref_without_samples() {
+fn compound_local_warp_rejects_a_signalled_list_without_samples() {
     let grid = NeighbourMvGrid::new(16, 16).unwrap();
     let block = MvBlockContext {
         mi_row: 0,
@@ -275,11 +275,15 @@ fn compound_local_warp_leaves_translational_ref_without_samples() {
         mi_rows: 16,
         mi_cols: 16,
     };
-    let models =
+    let error =
         compound_local_warp_models(&grid, &block, Mv::ZERO, Mv::ZERO, 0, 2, 2, 2, TILE_OFFSET)
-            .unwrap();
+            .unwrap_err();
 
-    assert_eq!(models, [None, None]);
+    assert!(
+        error
+            .to_string()
+            .contains("inter.compound.local_warp.empty_sample_list")
+    );
 }
 
 #[test]

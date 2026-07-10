@@ -2001,7 +2001,7 @@ fn scan_mv_stack_probe(
     let (_, _, adjusted_delta_col) = probe.stack_target(block);
     let candidates = [
         Some((cell.ref_frame0, cell.sub_mv)),
-        cell.ref_frame1.zip(cell.mv1),
+        cell.ref_frame1.map(|ref_frame1| (ref_frame1, cell.sub_mv1)),
     ];
     for (candidate_ref, candidate_mv) in candidates.into_iter().flatten() {
         if candidate_ref == block.ref_frame0 {
