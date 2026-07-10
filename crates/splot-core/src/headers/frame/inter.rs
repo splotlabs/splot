@@ -280,6 +280,10 @@ pub struct InterControl {
     pub tmvp_sample_step_minus_1: Option<bool>,
     /// `TipFrameMode` (mirror :4743-4845), when derived.
     pub tip_frame_mode: Option<TipFrameMode>,
+    /// `allow_tip_hole_fill` (mirror :4773), when read or inferred.
+    pub allow_tip_hole_fill: Option<bool>,
+    /// `tip_global_wtd_index` (mirror :4791), when read or inferred.
+    pub tip_global_wtd_index: Option<u8>,
     /// `opfl_refine_type` from `frame_opfl_refine_type()` (§ 5.18.3.2), when derived.
     pub opfl_refine_type: Option<u32>,
     /// `max_drl_bits_minus_1` (mirror :4863-4881), when read or inferred.
@@ -743,9 +747,10 @@ fn parse_inter_reference_region(
             read_frame_opfl_refine_type(reader, seq.enable_opfl_refine)?
         };
         control.opfl_refine_type = Some(opfl_refine_type);
-        if tip_frame_mode != TipFrameMode::Disabled && seq.enable_tip_hole_fill {
-            reader.read_flag()?;
-        }
+        let allow_tip_hole_fill = tip_frame_mode != TipFrameMode::Disabled
+            && seq.enable_tip_hole_fill
+            && reader.read_flag()?;
+        control.allow_tip_hole_fill = Some(allow_tip_hole_fill);
         if tip_frame_mode != TipFrameMode::Disabled {
             let Some((num_past_refs, num_future_refs)) =
                 tip_ref_counts(reference_state, &control.ref_frame_idx, ctx.order_hint)
@@ -753,9 +758,20 @@ fn parse_inter_reference_region(
                 control.stop = Some(InterStop::PoisonedReferenceState);
                 return Ok(());
             };
-            if tip_unequal_weighted_allowed(seq, num_past_refs, num_future_refs, opfl_refine_type) {
-                reader.read_bits(3)?;
-            }
+            control.tip_global_wtd_index = Some(
+                if tip_unequal_weighted_allowed(
+                    seq,
+                    num_past_refs,
+                    num_future_refs,
+                    opfl_refine_type,
+                ) {
+                    reader.read_bits_u8(3)?
+                } else {
+                    0
+                },
+            );
+        } else {
+            control.tip_global_wtd_index = Some(0);
         }
         if tip_frame_mode == TipFrameMode::AsOutput {
             control.stop = Some(InterStop::PoisonedReferenceState);
@@ -763,6 +779,8 @@ fn parse_inter_reference_region(
         }
     } else {
         control.tip_frame_mode = Some(TipFrameMode::Disabled);
+        control.allow_tip_hole_fill = Some(false);
+        control.tip_global_wtd_index = Some(0);
         if !bru_inactive && !ctx.is_bridge {
             control.opfl_refine_type =
                 Some(read_frame_opfl_refine_type(reader, seq.enable_opfl_refine)?);
@@ -1078,6 +1096,8 @@ mod tests {
         assert_eq!(control.frame_size, Some(FrameSize::new(4096, 2304)));
         assert_eq!(control.use_ref_frame_mvs, Some(false));
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::Disabled));
+        assert_eq!(control.allow_tip_hole_fill, Some(false));
+        assert_eq!(control.tip_global_wtd_index, Some(0));
         assert_eq!(control.allow_screen_content_tools, Some(false));
         assert_eq!(control.allow_intrabc, Some(false));
         assert_eq!(control.mv_precision, Some(MvPrecision::HalfPel));
@@ -1702,6 +1722,8 @@ mod tests {
                 ),
                 "tip_output_obu={tip_output_obu}"
             );
+            assert_eq!(control.allow_tip_hole_fill, Some(false));
+            assert_eq!(control.tip_global_wtd_index, None);
         }
     }
 
@@ -1731,6 +1753,7 @@ mod tests {
         let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
 
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsOutput));
+        assert_eq!(control.allow_tip_hole_fill, Some(false));
         assert_eq!(control.opfl_refine_type, Some(REFINE_ALL));
         assert_eq!(control.stop, Some(InterStop::PoisonedReferenceState));
         assert_eq!(reader.consumed_bits(), 21);
@@ -1761,42 +1784,62 @@ mod tests {
         let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
 
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsRef));
+        assert_eq!(control.allow_tip_hole_fill, Some(false));
         assert_eq!(control.stop, Some(InterStop::PoisonedReferenceState));
         assert_eq!(reader.consumed_bits(), 22);
     }
 
     #[test]
-    fn tip_as_ref_consumes_weight_and_reaches_shared_tail() {
-        let mut bits = Bits::default();
-        bits.bit(0); // signal_primary_ref_frame
-        bits.bit(0); // disable_cross_frame_cdf_init (not TIP)
-        bits.f(0, 8); // refresh_frame_flags
-        bits.bit(1); // frame_explicit_ref_frame_map
-        bits.f(2, 3); // num_total_refs = 2
-        bits.f(0, 3); // ref_frame_idx[0]
-        bits.f(1, 3); // ref_frame_idx[1]
-        bits.bit(1); // use_ref_frame_mvs
-        bits.bit(0); // tmvp_sample_step_minus_1
-        bits.bit(1); // tip_frame_mode = TIP_FRAME_AS_REF
-        bits.f(0, 3); // tip_global_wtd_index
-        opfl_refine_tail(&mut bits);
+    fn tip_as_ref_retains_coded_and_inferred_weights() {
+        for equal_weight in [false, true] {
+            let mut bits = Bits::default();
+            bits.bit(0); // signal_primary_ref_frame
+            bits.bit(0); // disable_cross_frame_cdf_init (not TIP)
+            bits.f(0, 8); // refresh_frame_flags
+            bits.bit(1); // frame_explicit_ref_frame_map
+            bits.f(2, 3); // num_total_refs = 2
+            bits.f(0, 3); // ref_frame_idx[0]
+            bits.f(1, 3); // ref_frame_idx[1]
+            bits.bit(1); // use_ref_frame_mvs
+            bits.bit(0); // tmvp_sample_step_minus_1
+            bits.bit(1); // tip_frame_mode = TIP_FRAME_AS_REF
+            bits.bit(1); // allow_tip_hole_fill
+            if !equal_weight {
+                bits.f(5, 3); // tip_global_wtd_index
+            }
+            opfl_refine_tail(&mut bits);
 
-        let data = bits.into_bytes();
-        let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let mut seq = inter_seq();
-        seq.enable_tip = true;
-        let ctx = inter_ctx();
-        let ref_valid = [true, true, false, false, false, false, false, false];
-        let ref_oh = [1, 2, 0, 0, 0, 0, 0, 0];
-        let ref_w = [4096; 8];
-        let ref_h = [2304; 8];
-        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+            let data = bits.into_bytes();
+            let mut reader = BitReader::new(&data, ByteOffset::new(0));
+            let mut seq = inter_seq();
+            seq.enable_tip = true;
+            seq.enable_tip_hole_fill = true;
+            seq.enable_tip_refinemv = equal_weight;
+            seq.enable_opfl_refine = if equal_weight { REFINE_ALL as u8 } else { 0 };
+            let mut ctx = inter_ctx();
+            ctx.order_hint = if equal_weight { 5 } else { 0 };
+            let ref_valid = [true, true, false, false, false, false, false, false];
+            let ref_oh = if equal_weight {
+                [1, 9, 0, 0, 0, 0, 0, 0]
+            } else {
+                [1, 2, 0, 0, 0, 0, 0, 0]
+            };
+            let ref_w = [4096; 8];
+            let ref_h = [2304; 8];
+            let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
 
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+            let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
 
-        assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsRef));
-        assert_eq!(control.allow_intrabc, Some(false));
-        assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+            assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsRef));
+            assert_eq!(control.allow_tip_hole_fill, Some(true));
+            assert_eq!(
+                control.tip_global_wtd_index,
+                Some(if equal_weight { 0 } else { 5 })
+            );
+            assert_eq!(control.allow_intrabc, Some(false));
+            assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+            assert_eq!(reader.consumed_bits(), if equal_weight { 29 } else { 32 });
+        }
     }
 
     #[test]
