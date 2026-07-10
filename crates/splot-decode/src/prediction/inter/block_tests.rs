@@ -11,6 +11,7 @@ use splot_recon::{
     PlaneSize,
 };
 
+use super::prediction::leaf_predicts_chroma;
 use super::{
     chroma_smooth_grid_dimensions, ensure_intra_leaf_quantizer_delta_scope,
     inter_residual_geometry_supported_flags, inter_skip_txfm_ctx, predict_interintra_planes,
@@ -20,7 +21,8 @@ use crate::bitstream::tile_payload::{FrameCdfSubset, TileBlockDecodedState, Tile
 use crate::error::DecodeError;
 use crate::prediction::inter::SPEC_MODE_INFO;
 use crate::prediction::inter::{
-    BawpSyntax, InterBlock, InterIntraPrediction, Mv, PlacedInterBlock, mc::CompoundBlend,
+    BawpSyntax, InterBlock, InterIntraPrediction, Mv, PlacedInterBlock,
+    mc::{CompoundBlend, McBlockRect},
 };
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -42,6 +44,13 @@ fn inter_residual_geometry_allows_shared_leaves() {
 fn inter_residual_geometry_rejects_chroma_partitioned_leaves() {
     assert!(!inter_residual_geometry_supported_flags(true, false));
     assert!(!inter_residual_geometry_supported_flags(false, true));
+}
+
+#[test]
+fn shared_inter_leaves_predict_chroma_before_the_offset_owner() {
+    assert!(leaf_predicts_chroma(true, false));
+    assert!(!leaf_predicts_chroma(true, true));
+    assert!(!leaf_predicts_chroma(false, false));
 }
 
 #[test]
@@ -236,7 +245,7 @@ fn placed_luma_block(
         chroma_luma_y: y,
         chroma_luma_w: width,
         chroma_luma_h: height,
-        has_chroma: false,
+        predict_chroma: false,
         interintra_chroma: false,
         block: InterBlock {
             ref_frame0: 0,
@@ -252,4 +261,28 @@ fn placed_luma_block(
             residual: None,
         },
     }
+}
+
+#[test]
+fn offset_chroma_motion_compensation_stays_leaf_scoped() {
+    let mut placed = placed_luma_block(16, 4, 8, 4, InterIntraMode::Dc);
+    placed.chroma_luma_x = 16;
+    placed.chroma_luma_y = 0;
+    placed.chroma_luma_w = 8;
+    placed.chroma_luma_h = 8;
+    placed.predict_chroma = true;
+
+    assert_eq!(
+        placed.motion_compensation_rect(),
+        McBlockRect {
+            luma_x: 16,
+            luma_y: 4,
+            luma_w: 8,
+            luma_h: 4,
+            chroma_luma_x: 16,
+            chroma_luma_y: 4,
+            chroma_luma_w: 8,
+            chroma_luma_h: 4,
+        }
+    );
 }

@@ -187,7 +187,7 @@ fn placed_luma_block(x: usize, y: usize, width: usize, height: usize) -> PlacedI
         chroma_luma_y: y,
         chroma_luma_w: width,
         chroma_luma_h: height,
-        has_chroma: false,
+        predict_chroma: false,
         interintra_chroma: false,
         block: InterBlock {
             ref_frame0: 0,

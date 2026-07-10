@@ -13,14 +13,19 @@ pub(super) struct PlacedInterGeometry {
     pub(super) chroma_luma_y: usize,
     pub(super) chroma_luma_w: usize,
     pub(super) chroma_luma_h: usize,
-    pub(super) has_chroma: bool,
+    pub(super) predict_chroma: bool,
     pub(super) interintra_chroma: bool,
+}
+
+pub(super) const fn leaf_predicts_chroma(chroma_planes: bool, luma_part: bool) -> bool {
+    chroma_planes && !luma_part
 }
 
 pub(super) fn placed_inter_geometry(
     frontier: &DecodeBlockFrontier,
     n4w: usize,
     n4h: usize,
+    chroma_planes: bool,
     tile_offset: ByteOffset,
 ) -> Result<PlacedInterGeometry> {
     let luma_x = frontier.c * 4;
@@ -67,7 +72,7 @@ pub(super) fn placed_inter_geometry(
         chroma_luma_y,
         chroma_luma_w,
         chroma_luma_h,
-        has_chroma: frontier.has_chroma,
+        predict_chroma: leaf_predicts_chroma(chroma_planes, frontier.is_luma_part()),
         interintra_chroma: frontier.has_chroma && !mixed_offset_chroma,
     })
 }
@@ -87,16 +92,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     enable_ibp: bool,
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
-    let rect = mc::McBlockRect {
-        luma_x: placed.luma_x,
-        luma_y: placed.luma_y,
-        luma_w: placed.luma_w,
-        luma_h: placed.luma_h,
-        chroma_luma_x: placed.chroma_luma_x,
-        chroma_luma_y: placed.chroma_luma_y,
-        chroma_luma_w: placed.chroma_luma_w,
-        chroma_luma_h: placed.chroma_luma_h,
-    };
+    let rect = placed.motion_compensation_rect();
     let intra_predictions = placed
         .block
         .interintra

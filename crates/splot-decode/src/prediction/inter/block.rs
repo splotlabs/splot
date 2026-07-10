@@ -6,8 +6,7 @@ use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameType, MvPrecision, TipFrameMode, TxMode, get_qindex,
 };
-use splot_core::headers::sequence::DrlReorder;
-use splot_core::headers::sequence::SequenceHeader;
+use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{
@@ -660,7 +659,13 @@ fn decode_block<T: ReconSample>(
     })?;
     let mi_row = frontier.r;
     let mi_col = frontier.c;
-    let placed_geometry = placed_inter_geometry(frontier, n4w, n4h, tile_offset)?;
+    let placed_geometry = placed_inter_geometry(
+        frontier,
+        n4w,
+        n4h,
+        sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
+        tile_offset,
+    )?;
     let placed_block = |block| PlacedInterBlock {
         luma_x: placed_geometry.luma_x,
         luma_y: placed_geometry.luma_y,
@@ -670,7 +675,7 @@ fn decode_block<T: ReconSample>(
         chroma_luma_y: placed_geometry.chroma_luma_y,
         chroma_luma_w: placed_geometry.chroma_luma_w,
         chroma_luma_h: placed_geometry.chroma_luma_h,
-        has_chroma: placed_geometry.has_chroma,
+        predict_chroma: placed_geometry.predict_chroma,
         interintra_chroma: placed_geometry.interintra_chroma,
         block,
     };
