@@ -13,6 +13,15 @@ const fn tip_uses_two_references(weight: i16) -> bool {
     weight != TIP_SINGLE_WEIGHT
 }
 
+const fn tip_uses_refinemv(
+    output: bool,
+    enable_refinemv: bool,
+    enable_tip_refinemv: bool,
+    weight: i16,
+) -> bool {
+    !output && enable_refinemv && enable_tip_refinemv && weight == mc::CWP_EQUAL
+}
+
 #[doc = "AV2 § 7.13.3.1 tipSize selection for TIP prediction."]
 const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: bool) -> usize {
     if (!enable_tip_refinemv && width >= 16 && height >= 16) || (width >= 256 && height >= 256) {
@@ -210,6 +219,14 @@ pub(super) fn reconstruct<T: ReconSample>(
         .as_ref()
         .is_some_and(|tools| tools.enable_tip_refinemv);
     let output = inter.tip_frame_mode == Some(TipFrameMode::AsOutput);
+    let use_refinemv = sequence.inter.as_ref().is_some_and(|tools| {
+        tip_uses_refinemv(
+            output,
+            tools.enable_refinemv,
+            tools.enable_tip_refinemv,
+            weight,
+        )
+    });
     let interpolation_filter = if output {
         output_interpolation_filter(inter, tile_offset)?
     } else {
@@ -299,7 +316,8 @@ pub(super) fn reconstruct<T: ReconSample>(
                 &unit,
                 rect,
                 tile_offset,
-            )?;
+            )?
+            .with_refinemv(use_refinemv);
             let stored_mvs = if use_optflow {
                 mc::motion_compensate_inter_block_with_optflow_mvs_into(
                     workspace,
@@ -492,7 +510,10 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
 
 #[cfg(test)]
 mod tests {
-    use super::{output_prediction_unit_size, prediction_unit_size, tip_uses_two_references};
+    use super::{
+        output_prediction_unit_size, prediction_unit_size, tip_uses_refinemv,
+        tip_uses_two_references,
+    };
     use splot_recon::InterpolationFilter;
 
     #[test]
@@ -523,5 +544,15 @@ mod tests {
     fn tip_weight_sixteen_uses_only_the_past_reference() {
         assert!(tip_uses_two_references(8));
         assert!(!tip_uses_two_references(16));
+    }
+
+    #[test]
+    fn tip_refinemv_requires_both_sequence_tools_and_equal_weight() {
+        assert!(tip_uses_refinemv(false, true, true, 8));
+        assert!(!tip_uses_refinemv(true, true, true, 8));
+        assert!(!tip_uses_refinemv(false, false, true, 8));
+        assert!(!tip_uses_refinemv(false, true, false, 8));
+        assert!(!tip_uses_refinemv(false, true, true, 12));
+        assert!(!tip_uses_refinemv(false, true, true, 16));
     }
 }
