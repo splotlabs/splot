@@ -10,8 +10,8 @@ use crate::bitstream::tile_payload::{MvCdfSelector, TileCdfSelector, TileCdfSubs
 
 const MAX_COL_TRUNCATED_UNARY_VAL: usize = 2;
 const NUM_CTX_COL_MV_INDEX: usize = 4;
-const MV_LOW: i32 = -(1 << 16);
-const MV_UPP: i32 = 1 << 16;
+pub(crate) const MV_LOW: i32 = -(1 << 16);
+pub(crate) const MV_UPP: i32 = 1 << 16;
 const AMVD_INDEX_TO_MVD: [i32; 9] = [0, 2, 4, 6, 8, 16, 32, 64, 128];
 
 pub(crate) const MV_PRECISION_EIGHT_PEL: u8 = 0;

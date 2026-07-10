@@ -521,14 +521,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         },
         tile_offset,
     )?;
-    if compound_refinemv_active_after_blend(refinemv_default, compound_blend) {
-        return Err(compound_cap!(
-            "compound_refinemv_enabled",
-            tile_offset,
-            "inter.compound.refinemv",
-            SPEC_READ_REFINEMV
-        ));
-    }
+    let use_refinemv = compound_refinemv_active_after_blend(refinemv_default, compound_blend);
     let compound_blend = read_compound_cwp_syntax(
         cdfs,
         symbols,
@@ -543,6 +536,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             jmvd_scale_mode,
             skip_mode: false,
             use_optflow: compound.use_optflow,
+            use_refinemv,
             ref_frame0: compound.ref_frame0,
             ref_frame1: compound.ref_frame1,
             blend: compound_blend,
@@ -599,6 +593,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             use_amvd,
             precision,
             skip_mode: false,
+            use_refinemv,
         },
         skip,
         n4w,
@@ -698,6 +693,7 @@ pub(super) struct ResolvedCompoundBlock {
     pub(super) use_amvd: bool,
     pub(super) precision: BlockPrecisionRecord,
     pub(super) skip_mode: bool,
+    pub(super) use_refinemv: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -743,6 +739,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         use_amvd,
         precision,
         skip_mode,
+        use_refinemv,
     } = resolved;
     mv_grid.record_compound_block(
         mi_row,
@@ -865,9 +862,10 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
             residual,
         },
     };
-    let optflow_grid = reconstruct_placed_inter_block(
+    let motion_grid = super::prediction::reconstruct_placed_inter_block(
         workspace,
         &placed,
+        use_refinemv,
         block_decoded,
         ref_frame_idx,
         reference,
@@ -884,7 +882,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         ref_frame_idx,
         &placed,
         compound,
-        optflow_grid.as_ref(),
+        motion_grid.as_ref(),
         mi_row,
         mi_col,
         n4w,
@@ -916,7 +914,7 @@ fn record_compound_temporal_motion<T: ReconSample>(
     ref_frame_idx: &[u32],
     placed: &PlacedInterBlock,
     compound: super::super::compound::CompoundBlockSyntax,
-    optflow_grid: Option<&mc::OptflowMotionGrid>,
+    motion_grid: Option<&mc::CompoundMotionGrid>,
     mi_row: usize,
     mi_col: usize,
     n4w: usize,
@@ -924,7 +922,7 @@ fn record_compound_temporal_motion<T: ReconSample>(
     mi_rows: usize,
     mi_cols: usize,
 ) -> Result<()> {
-    let Some(grid) = optflow_grid else {
+    let Some(grid) = motion_grid else {
         record_temporal_motion_block(
             motion_field,
             reference,
@@ -1091,6 +1089,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
             use_amvd: false,
             precision: BlockPrecisionRecord::most_probable(frame_mv_precision(core, tile_offset)?),
             skip_mode: true,
+            use_refinemv: false,
         },
         skip,
         n4w,
@@ -1810,6 +1809,7 @@ struct CompoundCwpInput {
     jmvd_scale_mode: u8,
     skip_mode: bool,
     use_optflow: bool,
+    use_refinemv: bool,
     ref_frame0: i8,
     ref_frame1: i8,
     blend: mc::CompoundBlend,
@@ -1947,6 +1947,7 @@ fn compound_cwp_signal_allowed(cwp_enabled: bool, input: CompoundCwpInput) -> bo
     cwp_enabled
         && !input.skip_mode
         && !input.use_optflow
+        && !input.use_refinemv
         && compound_cwp_mode_allowed(input.y_mode, input.jmvd_scale_mode)
         && matches!(input.blend, mc::CompoundBlend::Average { .. })
 }
@@ -2255,6 +2256,24 @@ mod tests {
                 jmvd_scale_mode: 0,
                 skip_mode: false,
                 use_optflow: true,
+                use_refinemv: false,
+                ref_frame0: 0,
+                ref_frame1: 1,
+                blend: mc::CompoundBlend::default(),
+            },
+        ));
+    }
+
+    #[test]
+    fn compound_refinemv_suppresses_cwp_symbols() {
+        assert!(!compound_cwp_signal_allowed(
+            true,
+            CompoundCwpInput {
+                y_mode: CompoundYMode::NearNear,
+                jmvd_scale_mode: 0,
+                skip_mode: false,
+                use_optflow: false,
+                use_refinemv: true,
                 ref_frame0: 0,
                 ref_frame1: 1,
                 blend: mc::CompoundBlend::default(),

@@ -16473,7 +16473,7 @@ change_id = "decode-inter-compound-average"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Implements the smallest oracle-proven compound-reference decode subset: NumTotalRefs == 2, reference_select chooses compound, read_compound_ref yields RefFrame[0..1] == [0, 1] for the admitted fixture, non-joint NEAR_NEARMV, zero MVs, skipped residual, identity-scaled references, and equal-weight COMPOUND_AVERAGE with CWP/masks/implicit masked blend/refinemv/TIP/warp/temporal-MV disabled. The runtime adds private minimal-inter compound syntax helpers, the needed §8.3.2 CDF rows for comp_mode/is_joint/compound_mode_non_joint plus the fixture-required comp_ref selectors, a `splot-recon` compound intermediate helper that preserves §7.13.3.18 signed intermediates, and a CWP_EQUAL blend using the §7.13.3.16 equal-weight formula. The committed syn-3frame-compound-average-64x64.ivf fixture now decodes with `splot decode --output-format raw` to the recorded avmdec/dav2d raw SHA-256 2b4f716243d9f5c30a244ecc6f7fdcb5bef804d2ba353a21d670d686cfe63ff4 (MD5 34074c6945348b146f84551a20d9affd). The compound path also implements §7.13.3.8-§7.13.3.12 explicit optical-flow prediction: ordinary clipped luma predictors feed distance reduction, 16-sample gradient units, regularized least-squares deltas, and 4x4/8x8 refined 1/16-pel motion compensation reused by chroma. Its §7.22 temporal storage now records the reconstructed optical-flow MV for each 8x8 motion-field cell instead of splatting the unrefined block MV; 4x4 optical-flow blocks are reduced with the specified four-delta signed average. Skip mode now uses the upper skip_txfm CDF contexts, derives or inherits the §5.20.7.10 reference pair, reads one shared DRL index, resolves both NEAR_NEARMV vectors from one compound candidate, preserves that candidate's CWP weight, records the inferred most-probable precision state, forces EIGHTTAP_SHARP, and records skip-mode neighbour state through the shared compound reconstruction sink. The AVM deltaq1 corpus vector remains entropy-aligned through its skip-mode blocks and reaches the compound refine-MV gate with temporally refined candidates. Broader refine-MV, residual compound, and full AV2 decoder conformance remain unsupported or partial and must reject before output with decode/unsupported-feature."
+notes = "Implements the smallest oracle-proven compound-reference decode subset: NumTotalRefs == 2, reference_select chooses compound, read_compound_ref yields RefFrame[0..1] == [0, 1] for the admitted fixture, non-joint NEAR_NEARMV, zero MVs, skipped residual, identity-scaled references, and equal-weight COMPOUND_AVERAGE with CWP/masks/implicit masked blend/refinemv/TIP/warp/temporal-MV disabled. The runtime adds private minimal-inter compound syntax helpers, the needed §8.3.2 CDF rows for comp_mode/is_joint/compound_mode_non_joint plus the fixture-required comp_ref selectors, a `splot-recon` compound intermediate helper that preserves §7.13.3.18 signed intermediates, and a CWP_EQUAL blend using the §7.13.3.16 equal-weight formula. The committed syn-3frame-compound-average-64x64.ivf fixture now decodes with `splot decode --output-format raw` to the recorded avmdec/dav2d raw SHA-256 2b4f716243d9f5c30a244ecc6f7fdcb5bef804d2ba353a21d670d686cfe63ff4 (MD5 34074c6945348b146f84551a20d9affd). The compound path also implements §7.13.3.8-§7.13.3.12 explicit optical-flow prediction: ordinary clipped luma predictors feed distance reduction, 16-sample gradient units, regularized least-squares deltas, and 4x4/8x8 refined 1/16-pel motion compensation reused by chroma. Its §7.22 temporal storage now records the reconstructed optical-flow MV for each 8x8 motion-field cell instead of splatting the unrefined block MV; 4x4 optical-flow blocks are reduced with the specified four-delta signed average. Skip mode now uses the upper skip_txfm CDF contexts, derives or inherits the §5.20.7.10 reference pair, reads one shared DRL index, resolves both NEAR_NEARMV vectors from one compound candidate, preserves that candidate's CWP weight, records the inferred most-probable precision state, forces EIGHTTAP_SHARP, and records skip-mode neighbour state through the shared compound reconstruction sink. The AVM deltaq1 corpus vector remains entropy-aligned through its skip-mode blocks and reaches the compound refine-MV gate with temporally refined candidates. Broader compound modes, switchable refine-MV signalling, residual compound, and full AV2 decoder conformance remain unsupported or partial and must reject before output with decode/unsupported-feature."
 
 [feature.status]
 mapped = "done"
@@ -16521,6 +16521,58 @@ commands = [
 fixtures = [
     "tests/conformance/vectors/valid/syn-3frame-compound-average-64x64.ivf",
 ]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-INTER-COMPOUND-REFINEMV"
+name = "default compound refine-MV runtime"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.7.17", "7.13.3.3", "7.13.3.4", "7.13.3.5", "7.13.3.6", "7.13.3.7", "7.22"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-17",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-3",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-4",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-5",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-6",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-7",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-22",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/prediction/inter/mc/refinemv.rs"
+change_id = "decode-inter-compound-refinemv"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Implements the non-switchable default compound refine-MV path after §5.20.7.17 derives use_refinemv without a symbol. Each luma block is divided into at-most-16x16 units; a bilinear reference-area prediction searches the 24 ordered opposing full-pixel offsets with the §7.13.3.6 downsampled SAD, centre bias, threshold, and MV range guard. One shared compound motion grid reuses the refined luma MVs for chroma, composes optical-flow deltas over each refined unit when use_optflow is active, applies the original candidate's §7.13.3.4 clipping area, and stores the final per-8x8 motion through §7.22. The deltaq1 AVM corpus vector advances from compound_refinemv_enabled to the independent compound_exit_symbol entropy-alignment gap at byte 692. Switchable refine-MV signalling remains explicitly rejected, and full-stream AVM agreement remains partial because prior reference frames and the following entropy state still differ."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/prediction/inter/mc/refinemv.rs::tests::default_search_keeps_a_low_sad_centre",
+    "crates/splot-decode/src/prediction/inter/mc/refinemv.rs::tests::default_search_selects_opposing_full_pixel_offsets",
+    "crates/splot-decode/src/prediction/inter/mc/refinemv.rs::tests::reference_area_uses_the_refinemv_extension",
+    "crates/splot-decode/src/prediction/inter/mc_tests.rs::dispatcher_returns_default_refinemv_motion_grid",
+    "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_refinemv_suppresses_cwp_symbols",
+]
+commands = [
+    "cargo test -p splot-decode prediction::inter::mc --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+    "cargo xtask ci",
+]
+fixtures = []
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]

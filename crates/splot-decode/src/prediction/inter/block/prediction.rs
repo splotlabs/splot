@@ -71,3 +71,136 @@ pub(super) fn placed_inter_geometry(
         interintra_chroma: frontier.has_chroma && !mixed_offset_chroma,
     })
 }
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    placed: &PlacedInterBlock,
+    use_refinemv: bool,
+    block_decoded: &TileBlockDecodedState,
+    ref_frame_idx: &[u32],
+    reference: &InterReferenceState<'_, T>,
+    qindex: u32,
+    luma_use_tcq: bool,
+    residual_use_ddt: bool,
+    bit_depth: BitDepth,
+    enable_ibp: bool,
+    tile_offset: ByteOffset,
+) -> Result<Option<mc::CompoundMotionGrid>> {
+    let rect = mc::McBlockRect {
+        luma_x: placed.luma_x,
+        luma_y: placed.luma_y,
+        luma_w: placed.luma_w,
+        luma_h: placed.luma_h,
+        chroma_luma_x: placed.chroma_luma_x,
+        chroma_luma_y: placed.chroma_luma_y,
+        chroma_luma_w: placed.chroma_luma_w,
+        chroma_luma_h: placed.chroma_luma_h,
+    };
+    let intra_predictions = placed
+        .block
+        .interintra
+        .map(|prediction| {
+            super::predict_interintra_planes(
+                workspace,
+                placed,
+                block_decoded,
+                prediction.mode(),
+                enable_ibp,
+                bit_depth,
+                tile_offset,
+            )
+        })
+        .transpose()?;
+    let block_params = super::super::resolve_inter_block_params(
+        ref_frame_idx,
+        reference,
+        placed,
+        rect,
+        tile_offset,
+    )?
+    .with_refinemv(use_refinemv);
+    let motion_grid = mc::motion_compensate_inter_block_with_motion_grid_into(
+        workspace,
+        block_params,
+        None,
+        tile_offset,
+    )?;
+    if placed.block.bawp.enabled {
+        let slot = usize::try_from(placed.block.ref_frame0)
+            .ok()
+            .and_then(|list_ref| ref_frame_idx.get(list_ref).copied())
+            .ok_or_else(|| {
+                inter_missing!(
+                    "inter_missing_bawp_reference_slot",
+                    tile_offset,
+                    "inter.bawp.reference_frame",
+                    super::super::SPEC_REFERENCE
+                )
+            })?;
+        let ref_frame = reference.frame_for_slot(slot).ok_or_else(|| {
+            inter_missing!(
+                "inter_missing_bawp_reference_frame",
+                tile_offset,
+                "inter.bawp.reference_frame",
+                super::super::SPEC_REFERENCE
+            )
+        })?;
+        super::super::bawp::apply_bawp(
+            workspace,
+            ref_frame,
+            placed,
+            placed.block.bawp,
+            placed.block.mv,
+            tile_offset,
+        )?;
+    }
+    if let (Some(predictions), Some(interintra)) = (intra_predictions, placed.block.interintra) {
+        for prediction in predictions {
+            let blend = match interintra {
+                InterIntraPrediction::SmoothMask { mode } => workspace
+                    .blend_smooth_interintra_rect(
+                        prediction.plane,
+                        prediction.x,
+                        prediction.y,
+                        prediction.size,
+                        mode,
+                        &prediction.samples,
+                    ),
+                InterIntraPrediction::WedgeMask { wedge_index, .. } => workspace
+                    .blend_wedge_interintra_rect(
+                        prediction.plane,
+                        prediction.x,
+                        prediction.y,
+                        prediction.size,
+                        placed.luma_w,
+                        placed.luma_h,
+                        usize::from(wedge_index),
+                        prediction.sub_x,
+                        prediction.sub_y,
+                        &prediction.samples,
+                    ),
+            };
+            blend.map_err(|_| {
+                inter_diag!(
+                    "inter_interintra_blend",
+                    tile_offset,
+                    "interintra blend failed",
+                    "7.13.3.30"
+                )
+            })?;
+        }
+    }
+    if let Some(residual) = placed.block.residual.as_ref() {
+        super::super::add_inter_residual_to_workspace(
+            workspace,
+            residual,
+            qindex,
+            luma_use_tcq,
+            residual_use_ddt,
+            bit_depth,
+            tile_offset,
+        )?;
+    }
+    Ok(motion_grid)
+}

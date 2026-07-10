@@ -11,14 +11,15 @@ use splot_recon::{
     wedge_mask_plane_sample,
 };
 
-use super::mv_scaling::{PlaneScaling, derive_plane_scaling};
+use super::mv_scaling::{PlaneScaling, derive_plane_scaling, derive_plane_scaling_prescaled};
 use super::{Mv, SPEC_MC, unsupported_at};
 use crate::Result;
 use splot_core::span::ByteOffset;
 use splot_recon::math::{clip3, round2};
 
 mod optflow;
-pub(crate) use optflow::OptflowMotionGrid;
+mod refinemv;
+pub(crate) use optflow::CompoundMotionGrid;
 
 pub(crate) const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =
     [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)];
@@ -121,6 +122,7 @@ pub(crate) struct InterBlockParams<'a, T: ReconSample> {
     prediction: InterPrediction<'a, T>,
     interp: InterpolationFilter,
     has_chroma: bool,
+    use_refinemv: bool,
 }
 
 impl<'a, T: ReconSample> InterBlockParams<'a, T> {
@@ -135,6 +137,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             prediction: InterPrediction::Single { reference, mv },
             interp,
             has_chroma: true,
+            use_refinemv: false,
         }
     }
     pub(crate) const fn compound_average(
@@ -158,6 +161,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             },
             interp,
             has_chroma: true,
+            use_refinemv: false,
         }
     }
     pub(crate) const fn single_warp(
@@ -173,10 +177,16 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             },
             interp: InterpolationFilter::EightTap,
             has_chroma: true,
+            use_refinemv: false,
         }
     }
     pub(crate) const fn with_chroma(mut self, has_chroma: bool) -> Self {
         self.has_chroma = has_chroma;
+        self
+    }
+
+    pub(crate) const fn with_refinemv(mut self, use_refinemv: bool) -> Self {
+        self.use_refinemv = use_refinemv;
         self
     }
 
@@ -220,6 +230,7 @@ struct CompoundMcBlock<'a, T: ReconSample> {
     blend: CompoundBlend,
     optflow_distances: Option<[i32; 2]>,
     has_chroma: bool,
+    use_refinemv: bool,
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -243,12 +254,12 @@ pub(crate) fn motion_compensate_inter_block_with_optflow_mvs_into<T: ReconSample
     Ok(Some(grid.stored_mvs_at_luma_offset(0, 0)?))
 }
 
-pub(crate) fn motion_compensate_inter_block_with_optflow_grid_into<T: ReconSample>(
+pub(crate) fn motion_compensate_inter_block_with_motion_grid_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: InterBlockParams<'_, T>,
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
-) -> Result<Option<OptflowMotionGrid>> {
+) -> Result<Option<CompoundMotionGrid>> {
     motion_compensate_inter_block(workspace, block, optflow_unit_size, offset)
 }
 
@@ -257,7 +268,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
     block: InterBlockParams<'_, T>,
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
-) -> Result<Option<optflow::OptflowMotionGrid>> {
+) -> Result<Option<CompoundMotionGrid>> {
     match block.prediction {
         InterPrediction::Single { reference, mv } => {
             motion_compensate_single_block_into(
@@ -304,6 +315,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
                 blend,
                 optflow_distances,
                 has_chroma: block.has_chroma,
+                use_refinemv: block.use_refinemv,
             },
             optflow_unit_size,
             offset,
@@ -346,11 +358,20 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
     block: CompoundMcBlock<'_, T>,
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
-) -> Result<Option<optflow::OptflowMotionGrid>> {
-    let optflow =
-        optflow::compound_optflow_motion_grid(workspace, block, optflow_unit_size, offset)?;
+) -> Result<Option<CompoundMotionGrid>> {
+    let refinemv = block
+        .use_refinemv
+        .then(|| refinemv::compound_default_refinemv_motion_grid(workspace, block, offset))
+        .transpose()?;
+    let motion = optflow::compound_motion_grid(
+        workspace,
+        block,
+        optflow_unit_size,
+        refinemv.as_ref(),
+        offset,
+    )?;
     let luma_diff_weighted_mask =
-        compound_luma_diff_weighted_mask(workspace, block, optflow.as_ref(), offset)?;
+        compound_luma_diff_weighted_mask(workspace, block, motion.as_ref(), offset)?;
     for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
@@ -368,24 +389,24 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
             sub_x,
             sub_y,
             luma_diff_weighted_mask.as_deref(),
-            optflow.as_ref(),
+            motion.as_ref(),
             offset,
         )?;
     }
-    Ok(optflow)
+    Ok(motion)
 }
 
 fn compound_luma_diff_weighted_mask<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     block: CompoundMcBlock<'_, T>,
-    optflow: Option<&optflow::OptflowMotionGrid>,
+    motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
 ) -> Result<Option<Vec<u16>>> {
     let CompoundBlend::DiffWeighted { inverse } = block.blend else {
         return Ok(None);
     };
     let prediction =
-        compound_plane_prediction_for_block(workspace, block, PlaneId::Y, 0, 0, optflow, offset)?;
+        compound_plane_prediction_for_block(workspace, block, PlaneId::Y, 0, 0, motion, offset)?;
     Ok(Some(diff_weighted_mask(
         &prediction.pred0,
         &prediction.pred1,
@@ -591,7 +612,7 @@ fn predict_compound_plane<T: ReconSample>(
     sub_x: u32,
     sub_y: u32,
     luma_diff_weighted_mask: Option<&[u16]>,
-    optflow: Option<&optflow::OptflowMotionGrid>,
+    motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
 ) -> Result<()> {
     let block = CompoundMcBlock {
@@ -604,10 +625,10 @@ fn predict_compound_plane<T: ReconSample>(
         blend,
         optflow_distances: None,
         has_chroma: true,
+        use_refinemv: false,
     };
-    let prediction = compound_plane_prediction_for_block(
-        workspace, block, plane, sub_x, sub_y, optflow, offset,
-    )?;
+    let prediction =
+        compound_plane_prediction_for_block(workspace, block, plane, sub_x, sub_y, motion, offset)?;
     let coded_luma_size = workspace.info().coded_luma_size();
     let frame_w = coded_luma_size.width() >> sub_x;
     let frame_h = coded_luma_size.height() >> sub_y;
@@ -620,6 +641,9 @@ fn predict_compound_plane<T: ReconSample>(
         blend,
         rect.luma_w,
         rect.luma_h,
+        motion,
+        prediction.plane_x,
+        prediction.plane_y,
         prediction.scaling0,
         prediction.scaling1,
         frame_w,
@@ -660,12 +684,12 @@ fn compound_plane_prediction_for_block<T: ReconSample>(
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
-    optflow: Option<&optflow::OptflowMotionGrid>,
+    motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
 ) -> Result<CompoundPlanePrediction> {
-    if let Some(optflow) = optflow {
+    if let Some(motion) = motion {
         return optflow::compound_optflow_plane_prediction(
-            workspace, block, plane, sub_x, sub_y, optflow, offset,
+            workspace, block, plane, sub_x, sub_y, motion, offset,
         );
     }
     compound_plane_prediction(
@@ -780,6 +804,9 @@ fn blend_compound_average(
     blend: CompoundBlend,
     luma_w: usize,
     luma_h: usize,
+    motion: Option<&CompoundMotionGrid>,
+    plane_x: usize,
+    plane_y: usize,
     scaling0: PlaneScaling,
     scaling1: PlaneScaling,
     frame_w: usize,
@@ -825,29 +852,51 @@ fn blend_compound_average(
     let ref_start_y1 = scaling1.start_y >> 10;
     let max_sample = i64::from(bit_depth.max_sample());
     let shift = 1 + compound_inter_post_round();
-    Ok(pred0
+    let ref_mi_cols = ((frame_w << sub_x).div_ceil(4)) as i64;
+    let ref_mi_rows = ((frame_h << sub_y).div_ceil(4)) as i64;
+    let mut blended = Vec::with_capacity(w.saturating_mul(h));
+    for (idx, (&left, &right)) in pred0
         .iter()
         .zip(pred1.iter())
-        .enumerate()
-        .map(|(idx, (&left, &right))| {
-            let row = idx / w;
-            let col = idx % w;
-            let ref_y0 = ref_start_y0 + row as i64;
-            let ref_y1 = ref_start_y1 + row as i64;
-            let ref_x0 = ref_start_x0 + col as i64;
-            let ref_x1 = ref_start_x1 + col as i64;
-            let ref0_onscreen = (0..=last_x).contains(&ref_x0) && (0..=last_y).contains(&ref_y0);
-            let ref1_onscreen = (0..=last_x).contains(&ref_x1) && (0..=last_y).contains(&ref_y1);
-            let mask = match (ref0_onscreen, ref1_onscreen) {
-                (true, false) => 2,
-                (false, true) => 0,
-                _ => 1,
-            };
-            let blended = round2(i64::from(mask * left + (2 - mask) * right), shift);
-            clip3(0, max_sample, blended) as u16
-        })
         .take(w.saturating_mul(h))
-        .collect())
+        .enumerate()
+    {
+        let row = idx / w;
+        let col = idx % w;
+        let starts = if let Some(motion) = motion {
+            let mvs = motion.at_luma_offset(col << sub_x, row << sub_y)?;
+            core::array::from_fn(|reference| {
+                let scaling = derive_plane_scaling_prescaled(
+                    (plane_x + col) as i64,
+                    (plane_y + row) as i64,
+                    i64::from(mvs[reference][0]),
+                    i64::from(mvs[reference][1]),
+                    sub_x,
+                    sub_y,
+                    ref_mi_cols,
+                    ref_mi_rows,
+                );
+                (scaling.start_x >> 10, scaling.start_y >> 10)
+            })
+        } else {
+            [
+                (ref_start_x0 + col as i64, ref_start_y0 + row as i64),
+                (ref_start_x1 + col as i64, ref_start_y1 + row as i64),
+            ]
+        };
+        let ref0_onscreen =
+            (0..=last_x).contains(&starts[0].0) && (0..=last_y).contains(&starts[0].1);
+        let ref1_onscreen =
+            (0..=last_x).contains(&starts[1].0) && (0..=last_y).contains(&starts[1].1);
+        let mask = match (ref0_onscreen, ref1_onscreen) {
+            (true, false) => 2,
+            (false, true) => 0,
+            _ => 1,
+        };
+        let sample = round2(i64::from(mask * left + (2 - mask) * right), shift);
+        blended.push(clip3(0, max_sample, sample) as u16);
+    }
+    Ok(blended)
 }
 
 #[allow(clippy::too_many_arguments)]
