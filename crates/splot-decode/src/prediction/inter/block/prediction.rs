@@ -14,7 +14,7 @@ pub(super) struct PlacedInterGeometry {
     pub(super) chroma_luma_w: usize,
     pub(super) chroma_luma_h: usize,
     pub(super) predict_chroma: bool,
-    pub(super) chroma_first_reference_only: bool,
+    pub(super) sub8x8_chroma: bool,
     pub(super) interintra_chroma: bool,
 }
 
@@ -82,7 +82,7 @@ pub(super) fn placed_inter_geometry(
         chroma_luma_w,
         chroma_luma_h,
         predict_chroma,
-        chroma_first_reference_only: predict_chroma
+        sub8x8_chroma: predict_chroma
             && sub8x8_chroma_disables_compound(
                 frontier.b_size,
                 frontier.chroma_ref_geometry().size(),

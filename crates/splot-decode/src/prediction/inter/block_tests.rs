@@ -258,7 +258,7 @@ fn placed_luma_block(
         chroma_luma_w: width,
         chroma_luma_h: height,
         predict_chroma: false,
-        chroma_first_reference_only: false,
+        sub8x8_chroma: false,
         interintra_chroma: false,
         block: InterBlock {
             ref_frame0: 0,
