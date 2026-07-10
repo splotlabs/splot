@@ -306,6 +306,7 @@ impl TemporalMvContext {
         };
         for y8 in (0..field.height8).step_by(projection_step) {
             for x8 in (0..field.width8).step_by(projection_step) {
+                field.set(y8, x8, Mv::ZERO, references.ref_offset, false);
                 let Some(source) = self.field.cell(y8, x8) else {
                     continue;
                 };
@@ -764,5 +765,22 @@ mod tests {
 
         assert!(context.prepare_tip(1, 16, true));
         assert_eq!(context.tip_candidate(0, 8, Mv::ZERO), Some([Mv::ZERO; 2]));
+    }
+
+    #[test]
+    fn tip_newly_averaged_sample_keeps_the_scaled_reference_offset() {
+        let mut context = tip_context(10, vec![Some(6), Some(15)], 2, 32);
+        context.field.set(0, 14, Mv { row: 18, col: -36 }, 9, true);
+
+        assert!(context.prepare_tip(2, 16, true));
+        let cell = context.tip.as_ref().unwrap().field.cell(0, 11).unwrap();
+        assert_eq!(
+            cell,
+            ProjectedTemporalMotionCell {
+                valid: true,
+                mv: Mv { row: 18, col: -36 },
+                ref_offset: 9,
+            }
+        );
     }
 }
