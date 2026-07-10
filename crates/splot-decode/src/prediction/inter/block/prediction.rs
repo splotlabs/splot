@@ -14,11 +14,19 @@ pub(super) struct PlacedInterGeometry {
     pub(super) chroma_luma_w: usize,
     pub(super) chroma_luma_h: usize,
     pub(super) predict_chroma: bool,
+    pub(super) chroma_first_reference_only: bool,
     pub(super) interintra_chroma: bool,
 }
 
 pub(super) const fn leaf_predicts_chroma(chroma_planes: bool, luma_part: bool) -> bool {
     chroma_planes && !luma_part
+}
+
+pub(super) const fn sub8x8_chroma_disables_compound(
+    luma_size: BlockSize,
+    chroma_size: BlockSize,
+) -> bool {
+    luma_size.index() != chroma_size.index()
 }
 
 pub(super) fn placed_inter_geometry(
@@ -63,6 +71,7 @@ pub(super) fn placed_inter_geometry(
         && !frontier.is_chroma_part()
         && frontier.is_mixed_region()
         && frontier.chroma_offset;
+    let predict_chroma = leaf_predicts_chroma(chroma_planes, frontier.is_luma_part());
     Ok(PlacedInterGeometry {
         luma_x,
         luma_y,
@@ -72,7 +81,12 @@ pub(super) fn placed_inter_geometry(
         chroma_luma_y,
         chroma_luma_w,
         chroma_luma_h,
-        predict_chroma: leaf_predicts_chroma(chroma_planes, frontier.is_luma_part()),
+        predict_chroma,
+        chroma_first_reference_only: predict_chroma
+            && sub8x8_chroma_disables_compound(
+                frontier.b_size,
+                frontier.chroma_ref_geometry().size(),
+            ),
         interintra_chroma: frontier.has_chroma && !mixed_offset_chroma,
     })
 }

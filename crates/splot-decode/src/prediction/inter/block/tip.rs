@@ -266,6 +266,7 @@ pub(super) fn reconstruct<T: ReconSample>(
                 chroma_luma_w: chroma_end_x.saturating_sub(chroma_x),
                 chroma_luma_h: chroma_end_y.saturating_sub(chroma_y),
                 predict_chroma,
+                chroma_first_reference_only: false,
                 interintra_chroma: false,
                 block: InterBlock {
                     ref_frame0: references.past_ref,
@@ -430,6 +431,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         chroma_luma_w: width,
         chroma_luma_h: height,
         predict_chroma: sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
+        chroma_first_reference_only: false,
         interintra_chroma: false,
         block: InterBlock {
             ref_frame0: TIP_REF_FRAME,

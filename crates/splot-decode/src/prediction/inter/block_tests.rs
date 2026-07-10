@@ -11,13 +11,15 @@ use splot_recon::{
     PlaneSize,
 };
 
-use super::prediction::leaf_predicts_chroma;
+use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
 use super::{
     chroma_smooth_grid_dimensions, ensure_intra_leaf_quantizer_delta_scope,
     inter_residual_geometry_supported_flags, inter_skip_txfm_ctx, predict_interintra_planes,
     read_inter_intra_syntax_enabled,
 };
-use crate::bitstream::tile_payload::{FrameCdfSubset, TileBlockDecodedState, TileCdfSelector};
+use crate::bitstream::tile_payload::{
+    BlockSize, FrameCdfSubset, TileBlockDecodedState, TileCdfSelector,
+};
 use crate::error::DecodeError;
 use crate::prediction::inter::SPEC_MODE_INFO;
 use crate::prediction::inter::{
@@ -51,6 +53,16 @@ fn shared_inter_leaves_predict_chroma_before_the_offset_owner() {
     assert!(leaf_predicts_chroma(true, false));
     assert!(!leaf_predicts_chroma(true, true));
     assert!(!leaf_predicts_chroma(false, false));
+}
+
+#[test]
+fn shared_chroma_size_disables_compound_prediction() -> TestResult {
+    let block_8x8 = BlockSize::new(3)?;
+    let block_16x16 = BlockSize::new(6)?;
+
+    assert!(!sub8x8_chroma_disables_compound(block_8x8, block_8x8));
+    assert!(sub8x8_chroma_disables_compound(block_8x8, block_16x16));
+    Ok(())
 }
 
 #[test]
@@ -246,6 +258,7 @@ fn placed_luma_block(
         chroma_luma_w: width,
         chroma_luma_h: height,
         predict_chroma: false,
+        chroma_first_reference_only: false,
         interintra_chroma: false,
         block: InterBlock {
             ref_frame0: 0,
