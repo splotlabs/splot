@@ -1251,6 +1251,10 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
     tile.rows_mut().block.y_mode_index[0] = [
         20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
     ];
+    tile.rows_mut().block.y_mode_offset[0] = [20_000, 21_000, 22_000, 23_000, 24_000, 11, 12];
+    tile.rows_mut().block.jmvd_scale_mode = [20_000, 21_000, 22_000, 23_000, 11, 12];
+    tile.rows_mut().block.jmvd_adaptive_scale_mode = [20_000, 21_000, 11, 12];
+    tile.rows_mut().block.use_optflow[0] = [25_000, 31, 12];
     tile.rows_mut().block.txb_skip[2][0][0][0] = [25_000, 13, 20];
     tile.rows_mut().block.uv_mode_cfl_not_allowed[0] = [
         20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
@@ -1311,6 +1315,19 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
             29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 31_076, 11, 3
         ]
     );
+    assert_eq!(
+        saved.rows().block.y_mode_offset[0],
+        [29_576, 29_826, 30_076, 30_326, 30_576, 11, 3]
+    );
+    assert_eq!(
+        saved.rows().block.jmvd_scale_mode,
+        [29_576, 29_826, 30_076, 30_326, 11, 3]
+    );
+    assert_eq!(
+        saved.rows().block.jmvd_adaptive_scale_mode,
+        [29_576, 29_826, 11, 3]
+    );
+    assert_eq!(saved.rows().block.use_optflow[0], [30_826, 31, 3]);
     assert_eq!(saved.rows().txb_skip()[2][0][0][0], [30_826, 13, 5]);
     assert_eq!(
         saved.rows().uv_mode_cfl_not_allowed()[0],
@@ -1404,6 +1421,10 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
     tile.rows_mut().block.y_mode_index[0] = [
         20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
     ];
+    tile.rows_mut().block.y_mode_offset[0] = [20_000, 21_000, 22_000, 23_000, 24_000, 11, 12];
+    tile.rows_mut().block.jmvd_scale_mode = [20_000, 21_000, 22_000, 23_000, 11, 12];
+    tile.rows_mut().block.jmvd_adaptive_scale_mode = [20_000, 21_000, 11, 12];
+    tile.rows_mut().block.use_optflow[0] = [25_000, 31, 12];
     tile.rows_mut().block.txb_skip[2][0][0][0] = [25_000, 13, 20];
     tile.rows_mut().block.uv_mode_cfl_not_allowed[0] = [
         20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 16,
@@ -1453,6 +1474,19 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
             20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 9
         ]
     );
+    assert_eq!(
+        frame.rows().block.y_mode_offset[0],
+        [20_000, 21_000, 22_000, 23_000, 24_000, 11, 9]
+    );
+    assert_eq!(
+        frame.rows().block.jmvd_scale_mode,
+        [20_000, 21_000, 22_000, 23_000, 11, 9]
+    );
+    assert_eq!(
+        frame.rows().block.jmvd_adaptive_scale_mode,
+        [20_000, 21_000, 11, 9]
+    );
+    assert_eq!(frame.rows().block.use_optflow[0], [25_000, 31, 9]);
     assert_eq!(frame.rows().txb_skip()[2][0][0][0], [25_000, 13, 15]);
     assert_eq!(
         frame.rows().uv_mode_cfl_not_allowed()[0],
