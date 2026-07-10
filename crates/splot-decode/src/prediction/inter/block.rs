@@ -206,6 +206,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         mi_cols,
         current_order_hint,
         ref_frame_idx,
+        &reference.ref_valid,
         &reference.ref_order_hint,
         &reference.ref_motion_fields,
     )
@@ -1764,6 +1765,7 @@ fn decode_block<T: ReconSample>(
             core,
             ref_frame_idx,
             reference,
+            None,
             block_qindex,
             luma_use_tcq,
             residual_use_ddt,
@@ -2233,7 +2235,7 @@ mod prediction;
 mod residual;
 mod syntax;
 mod temporal;
-mod tip;
+pub(super) mod tip;
 mod warp;
 
 use self::filter_records::record_inter_deblock_geometry;

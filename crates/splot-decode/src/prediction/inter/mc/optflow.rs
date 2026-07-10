@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_recon::derive_optflow_mv_deltas;
+use splot_recon::math::round2_signed;
 
 use super::*;
 use crate::prediction::inter::mv_scaling::derive_plane_scaling_prescaled;
@@ -10,6 +11,7 @@ use crate::prediction::inter::mv_scaling::derive_plane_scaling_prescaled;
 pub(super) struct OptflowMotionGrid {
     unit_size: usize,
     columns: usize,
+    base_mvs: [Mv; 2],
     mvs: Vec<[[i32; 2]; 2]>,
 }
 
@@ -28,25 +30,62 @@ impl OptflowMotionGrid {
                 context: "optical-flow motion-grid lookup",
             })
     }
+
+    pub(super) fn stored_mvs_at_luma_offset(
+        &self,
+        x: usize,
+        y: usize,
+    ) -> splot_recon::Result<[Mv; 2]> {
+        let refined = self.at_luma_offset(x, y)?;
+        Ok(core::array::from_fn(|reference| {
+            let base = self.base_mvs[reference];
+            let row_delta = refined[reference][0] - base.row * 2;
+            let col_delta = refined[reference][1] - base.col * 2;
+            Mv {
+                row: base.row + round2_signed(i64::from(row_delta), 1) as i32,
+                col: base.col + round2_signed(i64::from(col_delta), 1) as i32,
+            }
+        }))
+    }
 }
 
 pub(super) fn compound_optflow_motion_grid<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     block: CompoundMcBlock<'_, T>,
+    unit_size: Option<usize>,
     offset: ByteOffset,
 ) -> Result<Option<OptflowMotionGrid>> {
     let Some(distances) = block.optflow_distances else {
         return Ok(None);
     };
-    let unit_size = if block.rect.luma_w <= 8 && block.rect.luma_h <= 8 {
-        4
-    } else {
-        8
+    let unit_size = match unit_size {
+        Some(unit_size @ (4 | 8)) => unit_size,
+        Some(unit_size) => {
+            return Err(ReconError::InvalidOptflowUnitSize {
+                unit_size,
+                width: block.rect.luma_w,
+                height: block.rect.luma_h,
+            }
+            .into());
+        }
+        None if block.rect.luma_w <= 8 && block.rect.luma_h <= 8 => 4,
+        None => 8,
     };
+    let mut prediction_rect = block.rect;
+    let round_up = |value: usize| {
+        value
+            .div_ceil(unit_size)
+            .checked_mul(unit_size)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "optical-flow prediction extent",
+            })
+    };
+    prediction_rect.luma_w = round_up(prediction_rect.luma_w)?;
+    prediction_rect.luma_h = round_up(prediction_rect.luma_h)?;
     let pred0 = initial_luma_prediction(
         workspace,
         block.reference0,
-        block.rect,
+        prediction_rect,
         block.mv0,
         block.interp,
         offset,
@@ -54,7 +93,7 @@ pub(super) fn compound_optflow_motion_grid<T: ReconSample>(
     let pred1 = initial_luma_prediction(
         workspace,
         block.reference1,
-        block.rect,
+        prediction_rect,
         block.mv1,
         block.interp,
         offset,
@@ -62,8 +101,8 @@ pub(super) fn compound_optflow_motion_grid<T: ReconSample>(
     let deltas = derive_optflow_mv_deltas(
         &pred0,
         &pred1,
-        block.rect.luma_w,
-        block.rect.luma_h,
+        prediction_rect.luma_w,
+        prediction_rect.luma_h,
         unit_size,
         workspace.info().bit_depth(),
         distances,
@@ -91,7 +130,8 @@ pub(super) fn compound_optflow_motion_grid<T: ReconSample>(
         .collect();
     Ok(Some(OptflowMotionGrid {
         unit_size,
-        columns: block.rect.luma_w / unit_size,
+        columns: prediction_rect.luma_w / unit_size,
+        base_mvs: [block.mv0, block.mv1],
         mvs,
     }))
 }
@@ -150,11 +190,7 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
         reference_plane_view(block.reference0, plane, offset)?;
     let (view1, ref_mi_cols1, ref_mi_rows1) =
         reference_plane_view(block.reference1, plane, offset)?;
-    let (luma_x, luma_y, luma_w, luma_h) = block.rect.plane_luma_rect(plane);
-    let plane_x = luma_x >> sub_x;
-    let plane_y = luma_y >> sub_y;
-    let block_w = luma_w >> sub_x;
-    let block_h = luma_h >> sub_y;
+    let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
     let subblock_w = (optflow.unit_size >> sub_x).max(4);
     let subblock_h = (optflow.unit_size >> sub_y).max(4);
     let mut pred0 = vec![0i32; block_w * block_h];
@@ -242,4 +278,26 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
         scaling0,
         scaling1,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn stored_mvs_round_refined_sixteenth_pel_values_to_eighth_pel() {
+        let grid = OptflowMotionGrid {
+            unit_size: 8,
+            columns: 1,
+            base_mvs: [Mv { row: 5, col: -5 }, Mv { row: -5, col: 5 }],
+            mvs: vec![[[7, -7], [-7, 7]]],
+        };
+
+        assert_eq!(
+            grid.stored_mvs_at_luma_offset(0, 0).unwrap(),
+            [Mv { row: 3, col: -3 }, Mv { row: -3, col: 3 }]
+        );
+    }
 }

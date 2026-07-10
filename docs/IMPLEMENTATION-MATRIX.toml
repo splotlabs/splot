@@ -16579,6 +16579,62 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-INTER-TIP-OUTPUT"
+name = "TIP output frame runtime"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.18.2", "7.10.6", "7.16", "7.23"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-10-6",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-16",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/prediction/inter/block/tip.rs"
+change_id = "decode-inter-tip-output"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Admits OBU_REGULAR_TIP in the multi-frame runtime and reconstructs TIP_FRAME_AS_OUTPUT from the nearest past/future references through the shared TIP motion projection and compound predictor. The runtime preserves per-slot U/V AC deltas so implicit TIP QP follows the two-reference average, stores optical-flow-refined output MVs with the §7.22 single-reference weighting rule, forwards the parsed TIP film-grain selection, and applies the single-tile §7.16 sub-PU deblocking process through the existing filter-choice and sample-filter primitives. The external deltaq1 corpus vector now emits the TIP frame and advances from byte 673 to the independent compound-refinemv gate at byte 692. Full-stream AVM agreement remains partial because earlier inter frames already differ and multi-tile TIP deblocking rejects."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "partial"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-core/src/headers/frame/quant.rs::tests::inferred_tip_quantization_retains_independent_ac_deltas",
+    "crates/splot-decode/src/filters/deblock_tests.rs::tip_deblocking_smooths_prediction_unit_boundaries",
+    "crates/splot-decode/src/filters/deblock_tests.rs::tip_filter_widths_follow_unit_and_chroma_superblock_edges",
+    "crates/splot-decode/src/pipeline/mod_tests.rs::inter_frame_unit_order_accepts_regular_tip",
+    "crates/splot-decode/src/prediction/inter/block/tip.rs::tests::tip_output_unit_size_requires_sharp_refinement",
+    "crates/splot-decode/src/reference/buffer_tests.rs::inter_refresh_adds_a_second_valid_slot",
+]
+commands = [
+    "cargo test -p splot-decode tip_ --locked",
+    "cargo clippy -p splot-decode --all-targets --all-features --locked -- -D warnings",
+    "cargo xtask check-duplication",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "crates/splot-decode/src/filters/deblock.rs",
+    "crates/splot-decode/src/pipeline/mod.rs",
+    "crates/splot-decode/src/prediction/inter.rs",
+    "crates/splot-decode/src/prediction/inter/block/tip.rs",
+    "crates/splot-decode/src/reference/buffer.rs",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-COEFF-FSC-SCAN-WALK"
 name = "Coefficient FSC scan walk"
 category = "infrastructure"

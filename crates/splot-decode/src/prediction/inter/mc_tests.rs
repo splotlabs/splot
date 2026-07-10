@@ -42,6 +42,32 @@ fn dispatcher_zero_mv_copies_single_reference_planes() {
 }
 
 #[test]
+fn dispatcher_zero_mv_copies_odd_reference_chroma_extents() {
+    let reference = patterned_frame(9, 11);
+    let mut workspace = workspace(9, 11);
+
+    motion_compensate_inter_block_into(
+        &mut workspace,
+        InterBlockParams::single(
+            &reference,
+            rect(0, 0, 9, 11),
+            Mv::ZERO,
+            InterpolationFilter::EightTap,
+        ),
+        ByteOffset::new(0),
+    )
+    .expect("odd single-reference dispatcher");
+
+    let decoded = workspace.freeze().expect("freeze odd workspace");
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            visible_samples(&decoded, plane),
+            visible_samples(&reference, plane)
+        );
+    }
+}
+
+#[test]
 fn dispatcher_blends_compound_average_planes() {
     let reference0 = flat_frame(8, 8, 40, 90, 120);
     let reference1 = flat_frame(8, 8, 80, 110, 140);
@@ -90,6 +116,40 @@ fn dispatcher_rebuilds_optflow_compound_planes_from_refined_grid() {
     assert_eq!(visible_samples(&decoded, PlaneId::Y), vec![60; 64]);
     assert_eq!(visible_samples(&decoded, PlaneId::U), vec![100; 16]);
     assert_eq!(visible_samples(&decoded, PlaneId::V), vec![130; 16]);
+}
+
+#[test]
+fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
+    let reference0 = flat_frame(8, 8, 40, 90, 120);
+    let reference1 = flat_frame(8, 8, 80, 110, 140);
+    let mut workspace = workspace(8, 8);
+    let mvs = motion_compensate_inter_block_with_optflow_mvs_into(
+        &mut workspace,
+        InterBlockParams::compound_average(
+            &reference0,
+            &reference1,
+            rect(0, 0, 8, 8),
+            Mv::ZERO,
+            Mv::ZERO,
+            InterpolationFilter::EightTap,
+            CompoundBlend::default(),
+        )
+        .with_optflow_distances(Some([1, -1])),
+        8,
+        ByteOffset::new(0),
+    )
+    .expect("TIP output optical-flow dispatcher");
+
+    assert_eq!(mvs, Some([Mv::ZERO; 2]));
+}
+
+#[test]
+fn chroma_geometry_rounds_odd_luma_extents_up() {
+    assert_eq!(
+        rect(0, 0, 17, 19).plane_rect(PlaneId::U, 1, 1),
+        (0, 0, 9, 10)
+    );
+    assert_eq!(rect(1, 1, 8, 8).plane_rect(PlaneId::V, 1, 1), (0, 0, 5, 5));
 }
 
 #[test]
@@ -279,8 +339,8 @@ fn patterned_frame(width: usize, height: usize) -> DecodedFrame<u8> {
     let y: Vec<u8> = (0..width * height)
         .map(|sample| u8::try_from(sample).expect("luma sample"))
         .collect();
-    let chroma_width = width / 2;
-    let chroma_height = height / 2;
+    let chroma_width = width.div_ceil(2);
+    let chroma_height = height.div_ceil(2);
     let u: Vec<u8> = (0..chroma_width * chroma_height)
         .map(|sample| 100 + u8::try_from(sample).expect("u sample"))
         .collect();
@@ -291,8 +351,8 @@ fn patterned_frame(width: usize, height: usize) -> DecodedFrame<u8> {
 }
 
 fn flat_frame(width: usize, height: usize, y: u8, u: u8, v: u8) -> DecodedFrame<u8> {
-    let chroma_width = width / 2;
-    let chroma_height = height / 2;
+    let chroma_width = width.div_ceil(2);
+    let chroma_height = height.div_ceil(2);
     frame(
         width,
         height,
@@ -305,8 +365,8 @@ fn flat_frame(width: usize, height: usize, y: u8, u: u8, v: u8) -> DecodedFrame<
 fn frame(width: usize, height: usize, y: Vec<u8>, u: Vec<u8>, v: Vec<u8>) -> DecodedFrame<u8> {
     let luma_size = PlaneSize::new(width, height).expect("luma size");
     let luma_rect = PlaneRect::new(0, 0, width, height).expect("luma rect");
-    let chroma_width = width / 2;
-    let chroma_height = height / 2;
+    let chroma_width = width.div_ceil(2);
+    let chroma_height = height.div_ceil(2);
     let chroma_size = PlaneSize::new(chroma_width, chroma_height).expect("chroma size");
     let chroma_rect = PlaneRect::new(0, 0, chroma_width, chroma_height).expect("chroma rect");
     let info = DecodedFrameInfo::new(

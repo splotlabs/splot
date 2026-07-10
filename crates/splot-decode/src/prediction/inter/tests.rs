@@ -15,8 +15,8 @@ use splot_core::stream::{
     ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame, parse_bitstream_partial,
 };
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneRect,
-    PlaneSize,
+    BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameHashInput, PixelFormat, PlaneId,
+    PlaneRect, PlaneSize, ReferenceFrameStore,
 };
 
 use super::block::{
@@ -2038,6 +2038,50 @@ fn order_hint_history_wrap_guard() {
     assert!(!unwrapped(&[true], &[8u32], 4, 0));
     assert!(unwrapped(&[true], &[7u32], 4, 0));
     assert!(!unwrapped(&[true, true], &[0u32, 12], 4, 1));
+}
+
+#[test]
+fn tip_output_disables_saved_cdf_blending() {
+    assert!(super::cdf_blending_enabled(true, None));
+    assert!(super::cdf_blending_enabled(true, Some(TipFrameMode::AsRef)));
+    assert!(!super::cdf_blending_enabled(
+        true,
+        Some(TipFrameMode::AsOutput)
+    ));
+}
+
+#[test]
+fn tip_output_quantization_uses_nearest_valid_reference_slots() {
+    decode_context().pool().install(|| {
+        let (mut sequence, mut core, offset) =
+            parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).unwrap();
+        sequence
+            .inter
+            .as_mut()
+            .expect("fixture has inter sequence config")
+            .enable_tip_explicit_qp = false;
+        core.order_hint_lsb = Some(10);
+        core.quantization_params = None;
+        core.inter
+            .as_mut()
+            .expect("fixture has inter control")
+            .ref_frame_idx = vec![0, 1, 2, 3];
+
+        let store = ReferenceFrameStore::<&DecodedFrame<u8>>::with_capacity(4).unwrap();
+        let mut reference = super::InterReferenceState::empty(&store);
+        reference.ref_valid = vec![true; 4];
+        reference.ref_order_hint = vec![6, 9, 12, 15];
+        reference.ref_base_q_idx = vec![50, 101, 104, 200];
+        reference.ref_delta_q_u_ac = vec![20, -3, 4, 40];
+        reference.ref_delta_q_v_ac = vec![20, -5, -2, 40];
+
+        super::infer_tip_output_quantization(&mut core, &sequence, &reference, offset).unwrap();
+
+        assert_eq!(
+            core.quantization_params,
+            Some(QuantizationParams::inferred_tip(103, 1, -3))
+        );
+    });
 }
 
 #[test]

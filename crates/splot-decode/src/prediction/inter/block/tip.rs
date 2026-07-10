@@ -2,9 +2,16 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use splot_core::headers::sequence::ChromaFormatIdc;
+use splot_recon::{DecodedFrame, PixelFormat};
 
 #[doc = "AV2 § 7.13.3.1 Tip_Weighting_Factor."]
 const TIP_WEIGHTING_FACTORS: [i16; 8] = [8, 12, 16, 18, 20, 4, 6, -4];
+const TIP_SINGLE_WEIGHT: i16 = 16;
+
+const fn tip_uses_two_references(weight: i16) -> bool {
+    weight != TIP_SINGLE_WEIGHT
+}
 
 #[doc = "AV2 § 7.13.3.1 tipSize selection for TIP prediction."]
 const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: bool) -> usize {
@@ -12,6 +19,46 @@ const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: 
         16
     } else {
         8
+    }
+}
+
+#[doc = "AV2 § 7.10.6 TIP-as-output prediction-unit size."]
+const fn output_prediction_unit_size(
+    enable_tip_refinemv: bool,
+    interpolation_filter: ReconInterpolationFilter,
+) -> usize {
+    if enable_tip_refinemv
+        && matches!(
+            interpolation_filter,
+            ReconInterpolationFilter::EightTapSharp
+        )
+    {
+        8
+    } else {
+        16
+    }
+}
+
+fn output_interpolation_filter(
+    inter: &splot_core::headers::frame::InterControl,
+    offset: ByteOffset,
+) -> Result<ReconInterpolationFilter> {
+    match inter.tip_interpolation_filter {
+        Some(splot_core::headers::frame::InterpolationFilter::Eighttap) => {
+            Ok(ReconInterpolationFilter::EightTap)
+        }
+        Some(splot_core::headers::frame::InterpolationFilter::EighttapSmooth) => {
+            Ok(ReconInterpolationFilter::EightTapSmooth)
+        }
+        Some(splot_core::headers::frame::InterpolationFilter::EighttapSharp) => {
+            Ok(ReconInterpolationFilter::EightTapSharp)
+        }
+        _ => Err(inter_cap!(
+            "tip_output_interpolation_filter",
+            offset,
+            "inter.tip_output.interpolation_filter",
+            "7.10.6"
+        )),
     }
 }
 
@@ -97,6 +144,7 @@ pub(super) fn reconstruct<T: ReconSample>(
     core: &FrameHeaderCore,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<'_, T>,
+    mut output_motion_field: Option<&mut TemporalMotionField>,
     qindex: u32,
     luma_use_tcq: bool,
     residual_use_ddt: bool,
@@ -137,15 +185,28 @@ pub(super) fn reconstruct<T: ReconSample>(
         .is_some_and(|tools| tools.enable_imp_msk_bld);
     let blend = mc::CompoundBlend::average_with_implicit_mask(implicit_mask)
         .average_with_cwp_weight(weight);
+    let two_references = tip_uses_two_references(weight);
     let enable_tip_refinemv = sequence
         .inter
         .as_ref()
         .is_some_and(|tools| tools.enable_tip_refinemv);
-    let unit_size = prediction_unit_size(placed.luma_w, placed.luma_h, enable_tip_refinemv);
+    let output = inter.tip_frame_mode == Some(TipFrameMode::AsOutput);
+    let interpolation_filter = if output {
+        output_interpolation_filter(inter, tile_offset)?
+    } else {
+        ReconInterpolationFilter::EightTapSharp
+    };
+    let unit_size = if output {
+        output_prediction_unit_size(enable_tip_refinemv, interpolation_filter)
+    } else {
+        prediction_unit_size(placed.luma_w, placed.luma_h, enable_tip_refinemv)
+    };
     let use_optflow = unit_size == 8
-        && weight == mc::CWP_EQUAL
         && inter.opfl_refine_type.unwrap_or(0) != 0
-        && enable_tip_refinemv;
+        && enable_tip_refinemv
+        && interpolation_filter == ReconInterpolationFilter::EightTapSharp
+        && two_references
+        && (output || weight == mc::CWP_EQUAL);
     let frame_size = workspace.info().coded_luma_size();
     let block_w = placed
         .luma_w
@@ -189,10 +250,10 @@ pub(super) fn reconstruct<T: ReconSample>(
                 interintra_chroma: false,
                 block: InterBlock {
                     ref_frame0: references.past_ref,
-                    ref_frame1: Some(references.future_ref),
+                    ref_frame1: two_references.then_some(references.future_ref),
                     mv: mvs[0],
                     mv1: mvs[1],
-                    interp: ReconInterpolationFilter::EightTapSharp,
+                    interp: interpolation_filter,
                     warp_params: None,
                     bawp: BawpSyntax::default(),
                     interintra: None,
@@ -219,7 +280,36 @@ pub(super) fn reconstruct<T: ReconSample>(
                 rect,
                 tile_offset,
             )?;
-            mc::motion_compensate_inter_block_into(workspace, params, tile_offset)?;
+            let stored_mvs = if use_optflow {
+                mc::motion_compensate_inter_block_with_optflow_mvs_into(
+                    workspace,
+                    params,
+                    8,
+                    tile_offset,
+                )?
+                .unwrap_or(mvs)
+            } else {
+                mc::motion_compensate_inter_block_into(workspace, params, tile_offset)?;
+                mvs
+            };
+            if let Some(motion_field) = output_motion_field.as_deref_mut() {
+                super::temporal::record_temporal_motion_block(
+                    motion_field,
+                    reference,
+                    ref_frame_idx,
+                    luma_y / 4,
+                    luma_x / 4,
+                    luma_w.div_ceil(4),
+                    luma_h.div_ceil(4),
+                    frame_size.height().div_ceil(4),
+                    frame_size.width().div_ceil(4),
+                    references.past_ref,
+                    two_references.then_some(references.future_ref),
+                    stored_mvs[0],
+                    stored_mvs[1],
+                    None,
+                );
+            }
         }
     }
     if let Some(residual) = placed.block.residual.as_ref() {
@@ -236,9 +326,136 @@ pub(super) fn reconstruct<T: ReconSample>(
     Ok(())
 }
 
+pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<'_, T>,
+    bit_depth: BitDepth,
+    offset: ByteOffset,
+) -> Result<(DecodedFrame<T>, TemporalMotionField)> {
+    let missing = |message| unsupported_at("tip_output_state", offset, message, "7.10.6");
+    let frame_size = core
+        .frame_size
+        .ok_or_else(|| missing("missing required input: inter.tip_output.frame_size"))?;
+    let inter = core
+        .inter
+        .as_ref()
+        .ok_or_else(|| missing("missing required input: inter.tip_output.control"))?;
+    if inter.apply_deblocking_filter_tip == Some(true)
+        && core
+            .tile_info
+            .as_ref()
+            .is_none_or(|tile| tile.tile_cols != 1 || tile.tile_rows != 1)
+    {
+        return Err(inter_cap!(
+            "tip_output_multi_tile_deblocking",
+            offset,
+            "inter.tip_output.multi_tile_deblocking",
+            "7.10.6"
+        ));
+    }
+    let ref_frame_idx = &inter.ref_frame_idx;
+    let width = usize::try_from(frame_size.width)
+        .map_err(|_| missing("unsupported capability: inter.tip_output.frame_dimensions"))?;
+    let height = usize::try_from(frame_size.height)
+        .map_err(|_| missing("unsupported capability: inter.tip_output.frame_dimensions"))?;
+    let (mi_rows, mi_cols) = (height.div_ceil(4), width.div_ceil(4));
+    let mut temporal = TemporalMvContext::from_references(
+        mi_rows,
+        mi_cols,
+        core.order_hint_lsb.unwrap_or(0),
+        ref_frame_idx,
+        &reference.ref_valid,
+        &reference.ref_order_hint,
+        &reference.ref_motion_fields,
+    )
+    .ok_or_else(|| missing("missing required input: inter.tip_output.temporal_context"))?;
+    let sb_h4 = super::superblock_h4(sequence, core)
+        .ok_or_else(|| missing("missing required input: inter.tip_output.superblock_size"))?;
+    prepare_motion_field(&mut temporal, core, sb_h4);
+    let global_mv = inter
+        .tip_global_mv
+        .ok_or_else(|| missing("missing required input: inter.tip_output.global_mv"))?;
+    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<T>(
+        width,
+        height,
+        bit_depth,
+        PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?,
+    )?;
+    let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols)
+        .ok_or_else(|| missing("unsupported capability: inter.tip_output.motion_field"))?;
+    let placed = PlacedInterBlock {
+        luma_x: 0,
+        luma_y: 0,
+        luma_w: width,
+        luma_h: height,
+        chroma_luma_x: 0,
+        chroma_luma_y: 0,
+        chroma_luma_w: width,
+        chroma_luma_h: height,
+        has_chroma: sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
+        interintra_chroma: false,
+        block: InterBlock {
+            ref_frame0: TIP_REF_FRAME,
+            ref_frame1: None,
+            mv: Mv {
+                row: global_mv.row,
+                col: global_mv.col,
+            },
+            mv1: Mv::ZERO,
+            interp: ReconInterpolationFilter::EightTapSharp,
+            warp_params: None,
+            bawp: BawpSyntax::default(),
+            interintra: None,
+            compound_blend: mc::CompoundBlend::default(),
+            optflow_distances: None,
+            residual: None,
+        },
+    };
+    reconstruct(
+        &mut workspace,
+        &placed,
+        &temporal,
+        sequence,
+        core,
+        ref_frame_idx,
+        reference,
+        Some(&mut motion_field),
+        0,
+        false,
+        false,
+        bit_depth,
+        offset,
+    )?;
+    if inter.apply_deblocking_filter_tip == Some(true) {
+        let quant = core
+            .quantization_params
+            .ok_or_else(|| missing("missing required input: inter.tip_output.quantizer"))?;
+        let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
+            missing("missing required input: inter.tip_output.sequence_quantizer")
+        })?;
+        let seq_quant = CoreSeqQuantView::from_sequence_configs(&sequence.general, tq);
+        let interpolation_filter = output_interpolation_filter(inter, offset)?;
+        let enable_tip_refinemv = sequence
+            .inter
+            .as_ref()
+            .is_some_and(|tools| tools.enable_tip_refinemv);
+        crate::filters::deblock::deblock_tip_frame(
+            &mut workspace,
+            output_prediction_unit_size(enable_tip_refinemv, interpolation_filter),
+            quant,
+            seq_quant.base_uv_ac_delta_q,
+            bit_depth,
+        )
+        .map_err(|_| missing("unsupported capability: inter.tip_output.deblocking"))?;
+    }
+    Ok((workspace.freeze()?, motion_field))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::prediction_unit_size;
+    use super::{output_prediction_unit_size, prediction_unit_size, tip_uses_two_references};
+    use splot_recon::InterpolationFilter;
 
     #[test]
     fn tip_reference_unit_size_follows_refinement_and_large_block_gates() {
@@ -246,5 +463,27 @@ mod tests {
         assert_eq!(prediction_unit_size(8, 32, false), 8);
         assert_eq!(prediction_unit_size(64, 32, true), 8);
         assert_eq!(prediction_unit_size(256, 256, true), 16);
+    }
+
+    #[test]
+    fn tip_output_unit_size_requires_sharp_refinement() {
+        assert_eq!(
+            output_prediction_unit_size(true, InterpolationFilter::EightTapSharp),
+            8
+        );
+        assert_eq!(
+            output_prediction_unit_size(true, InterpolationFilter::EightTapSmooth),
+            16
+        );
+        assert_eq!(
+            output_prediction_unit_size(false, InterpolationFilter::EightTapSharp),
+            16
+        );
+    }
+
+    #[test]
+    fn tip_weight_sixteen_uses_only_the_past_reference() {
+        assert!(tip_uses_two_references(8));
+        assert!(!tip_uses_two_references(16));
     }
 }
