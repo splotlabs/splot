@@ -1088,6 +1088,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     qindex: u32,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
     availability: MiddleEdgeAvailability,
     filters: TwoSidedMiddleEdgeFilters,
@@ -1210,7 +1211,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
             log2_width,
             log2_height,
             use_tcq,
-            None,
+            dpcm,
             bit_depth,
         )?
     };
@@ -1349,6 +1350,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
     mrl: OneSidedAboveMrl,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
     availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
@@ -1424,7 +1426,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
             log2_width,
             log2_height,
             use_tcq,
-            None,
+            dpcm,
             bit_depth,
         )?
     };
@@ -1863,6 +1865,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     mrl_index: usize,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
     availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
@@ -1940,7 +1943,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             log2_width,
             log2_height,
             use_tcq,
-            None,
+            dpcm,
             bit_depth,
         )?
     };

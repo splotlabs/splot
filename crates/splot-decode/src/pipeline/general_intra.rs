@@ -1294,7 +1294,7 @@ fn rect_chroma_plan(
     ensure_supported_rect_chroma_capability(mode, block_ctx)?;
     Ok(rect_chroma_plan_for_mode(
         mode,
-        modes.angle_delta_y,
+        inherited_chroma_angle_delta(modes.coeff_uv_mode(), modes.y_mode, modes.angle_delta_y),
         modes.chroma_dpcm_direction(),
         block_ctx,
     ))
@@ -1334,7 +1334,7 @@ fn chroma_plan_for_modes(
     }
     Ok(rect_chroma_plan_for_mode(
         mode,
-        modes.angle_delta_y,
+        inherited_chroma_angle_delta(modes.coeff_uv_mode(), modes.y_mode, modes.angle_delta_y),
         modes.chroma_dpcm_direction(),
         block_ctx,
     ))
@@ -1342,19 +1342,14 @@ fn chroma_plan_for_modes(
 
 fn rect_chroma_plan_for_mode(
     mode: SupportedChromaMode,
-    angle_delta_y: i8,
+    angle_delta_uv: i8,
     dpcm: Option<DpcmDirection>,
     block_ctx: BlockCtx,
 ) -> RectChromaPlan {
-    let Some((base, inherits_luma_delta)) = mode.directional_base_angle() else {
+    let Some(base) = mode.directional_base_angle() else {
         return RectChromaPlan::Mode(mode, dpcm);
     };
-    let angle_delta = if inherits_luma_delta {
-        angle_delta_y
-    } else {
-        0
-    };
-    let Some(angle) = base.checked_add(i32::from(angle_delta) * ANGLE_STEP) else {
+    let Some(angle) = base.checked_add(i32::from(angle_delta_uv) * ANGLE_STEP) else {
         return RectChromaPlan::Mode(mode, dpcm);
     };
     let block = block_ctx.plane_block(PlaneId::U);
@@ -1368,9 +1363,21 @@ fn rect_chroma_plan_for_mode(
         return RectChromaPlan::Mode(mode, dpcm);
     };
     match p_angle {
-        1..=89 | 181..=270 => RectChromaPlan::OneSided { p_angle },
-        91..=179 => RectChromaPlan::Middle { p_angle },
+        1..=89 | 181..=270 => RectChromaPlan::OneSided(p_angle, dpcm),
+        91..=179 => RectChromaPlan::Middle(p_angle, dpcm),
         _ => RectChromaPlan::Mode(mode, dpcm),
+    }
+}
+
+pub(crate) const fn inherited_chroma_angle_delta(
+    uv_mode: usize,
+    y_mode: IntraYMode,
+    angle_delta_y: i8,
+) -> i8 {
+    if uv_mode == y_mode.value() {
+        angle_delta_y
+    } else {
+        0
     }
 }
 
@@ -1411,7 +1418,7 @@ fn chroma_plan_for_parts(
     }
     Ok(rect_chroma_plan_for_mode(
         mode,
-        angle_delta_y,
+        inherited_chroma_angle_delta(chroma.coeff_uv_mode(), y_mode, angle_delta_y),
         chroma.chroma_dpcm_direction(),
         block_ctx,
     ))

@@ -289,6 +289,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             OneSidedAboveMrl::default(),
             false,
             None,
+            dpcm,
             availability,
             bit_depth,
             OneSidedEdgeFilter::default(),
@@ -309,6 +310,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 0,     // mrl_index: chroma follow uses the immediate reference line
                 false,
                 None,
+                dpcm,
                 availability,
                 bit_depth,
                 OneSidedEdgeFilter::default(),

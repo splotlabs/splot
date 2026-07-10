@@ -260,6 +260,7 @@ impl IntraLumaPlan {
                     qindex,
                     use_tcq,
                     Some(luma_context),
+                    None,
                     bit_depth,
                     crate::pipeline::reconstruct::MiddleEdgeAvailability {
                         above: neighbours.has_above(),
@@ -289,6 +290,7 @@ impl IntraLumaPlan {
                     crate::pipeline::reconstruct::OneSidedAboveMrl::default(),
                     use_tcq,
                     Some(luma_context),
+                    None,
                     crate::pipeline::reconstruct::IntraEdgeAvailability {
                         above: neighbours.has_above(),
                         left: neighbours.has_left(),
@@ -313,6 +315,7 @@ impl IntraLumaPlan {
                     0,
                     use_tcq,
                     Some(luma_context),
+                    None,
                     crate::pipeline::reconstruct::IntraEdgeAvailability {
                         above: neighbours.has_above(),
                         left: neighbours.has_left(),
