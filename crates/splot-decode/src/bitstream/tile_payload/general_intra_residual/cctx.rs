@@ -31,6 +31,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: Rec
     log2_width: u32,
     log2_height: u32,
     cctx_type: usize,
+    use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
     let u_setup = reconstruct_block_setup(
@@ -41,7 +42,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: Rec
         log2_height,
         u_block.plane_tx_type,
         u_block.use_tcq,
-        false,
+        use_ddt,
         u_block.lossless,
         None,
         bit_depth,
@@ -54,7 +55,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: Rec
         log2_height,
         u_block.plane_tx_type,
         v_block.use_tcq,
-        false,
+        use_ddt,
         v_block.lossless,
         None,
         bit_depth,

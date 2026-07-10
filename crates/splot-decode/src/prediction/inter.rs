@@ -686,7 +686,13 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
                 ));
             };
             reconstruct_inter_residual_chroma_cctx_pair(
-                workspace, block, v_block, qindex, cctx_type, bit_depth,
+                workspace,
+                block,
+                v_block,
+                qindex,
+                cctx_type,
+                residual_use_ddt,
+                bit_depth,
             )
             .map_err(map_recon)?;
             paired[index] = true;
@@ -739,6 +745,7 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     v: &InterResidualBlock,
     qindex: u32,
     cctx_type: usize,
+    use_ddt: bool,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let u_prediction = read_inter_residual_prediction(workspace, u)?;
@@ -752,6 +759,7 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
         u.log2_width,
         u.log2_height,
         cctx_type,
+        use_ddt,
         bit_depth,
     )?;
     write_inter_residual_block(workspace, u, &u_out)?;

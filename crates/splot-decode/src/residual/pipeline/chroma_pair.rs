@@ -190,6 +190,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
         u_plane.tx.width_log2(),
         u_plane.tx.height_log2(),
         cctx_type,
+        false,
         u_plane.block_ctx.bit_depth(),
     )?;
     write_plane_block(workspace, u_plane, &u_out)?;

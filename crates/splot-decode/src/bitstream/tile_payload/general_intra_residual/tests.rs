@@ -1413,6 +1413,7 @@ fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
         2,
         2,
         5,
+        false,
         BitDepth::Eight,
     )
     .unwrap();
