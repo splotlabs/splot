@@ -580,6 +580,12 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
         tile_offset,
     )?;
+    if let Some(params) = warp_models[0] {
+        warp_param_bank.update(compound.ref_frame0, params);
+    }
+    if let Some(params) = warp_models[1] {
+        warp_param_bank.update(compound.ref_frame1, params);
+    }
     reconstruct_resolved_compound_inter_block(
         work_unit,
         symbols,

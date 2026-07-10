@@ -158,8 +158,7 @@ pub use transform_params::{
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
 pub use warp_prediction::{
     IDENTITY_WARP_PARAMS, WARPED_BLOCK_SIZE, WarpPredictBlockParams, ext_warp_predict_unit,
-    ext_warp_predict_unit_compound_intermediate, warp_predict_block,
-    warp_predict_block_compound_intermediate, warp_shear_is_valid,
+    warp_predict_block, warp_shear_is_valid,
 };
 pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAPS,

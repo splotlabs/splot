@@ -564,7 +564,10 @@ fn predict_warp_plane<T: ReconSample>(
                     last_y,
                     bit_depth,
                 };
-                let predicted = splot_recon::ext_warp_predict_unit(&view, &params, i4, j4)?;
+                let predicted = splot_recon::math::clip1_predicted_samples(
+                    splot_recon::ext_warp_predict_unit(&view, &params, i4, j4, false)?,
+                    i64::from(bit_depth.max_sample()),
+                );
                 let packed: Vec<T> = predicted
                     .iter()
                     .map(|&v| T::try_from_u16(v))
@@ -595,7 +598,10 @@ fn predict_warp_plane<T: ReconSample>(
                 last_y: ref_height as i64 - 1,
                 bit_depth,
             };
-            let predicted = warp_predict_block(&view, &params)?;
+            let predicted = splot_recon::math::clip1_predicted_samples(
+                warp_predict_block(&view, &params, false)?,
+                i64::from(bit_depth.max_sample()),
+            );
             let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
             let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
             let mut packed: Vec<T> = Vec::with_capacity(write_w.saturating_mul(write_h));
@@ -947,9 +953,7 @@ fn compound_ref_intermediate<T: ReconSample>(
                     last_y,
                     bit_depth,
                 };
-                let predicted = splot_recon::ext_warp_predict_unit_compound_intermediate(
-                    &view, &params, i4, j4,
-                )?;
+                let predicted = splot_recon::ext_warp_predict_unit(&view, &params, i4, j4, true)?;
                 write_compound_section(&mut samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4);
             }
         }
@@ -968,8 +972,7 @@ fn compound_ref_intermediate<T: ReconSample>(
                     last_y: ref_height as i64 - 1,
                     bit_depth,
                 };
-                let predicted =
-                    splot_recon::warp_predict_block_compound_intermediate(&view, &params)?;
+                let predicted = splot_recon::warp_predict_block(&view, &params, true)?;
                 let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
                 let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
                 write_compound_section(

@@ -524,3 +524,39 @@ fn skip_mode_default_pair_treats_restricted_order_hint_as_zero_distance() {
     );
     assert_eq!(skip_mode_default_pair(0, None), (0, 0));
 }
+
+#[test]
+fn compound_local_warp_neighbour_raises_warp_contexts() {
+    let (grid, block) = compound_motion_grid_and_block(Mv::ZERO, Mv::ZERO);
+    let baseline = block_neighbour_ctx(&grid, &block);
+    assert_eq!(baseline.use_local_warp_ctx(), 0);
+    assert_eq!(baseline.use_extend_warp_ctx(), 0);
+
+    let mut grid = NeighbourMvGrid::new(16, 16).unwrap();
+    grid.record_compound_block(
+        0,
+        0,
+        2,
+        2,
+        0,
+        1,
+        true,
+        true,
+        Mv::ZERO,
+        Mv::ZERO,
+        false,
+        0,
+        false,
+        false,
+        mc::CWP_EQUAL,
+        false,
+        BlockPrecisionRecord::default(),
+        [
+            Some([320, -640, 65_536 + 256, -128, 192, 65_536 - 320]),
+            Some([-960, 480, 65_536 - 512, 96, -64, 65_536 + 448]),
+        ],
+    );
+    let warp_ctx = block_neighbour_ctx(&grid, &block);
+    assert!(warp_ctx.use_local_warp_ctx() > 0);
+    assert!(warp_ctx.use_extend_warp_ctx() > 0);
+}
