@@ -5,8 +5,10 @@ use splot_recon::math::round2_signed;
 
 use super::{Mv, warp_sub_mv_at};
 use selection::projection_queue;
+use trajectory::{TrajectoryMotionField, TrajectoryState};
 
 mod selection;
+mod trajectory;
 
 const MAX_FRAME_DISTANCE: i32 = 31;
 const REFMVS_LIMIT: i32 = (1 << 11) - 1;
@@ -275,6 +277,7 @@ pub(crate) struct TemporalMvContext {
     current_order_hint: u32,
     ref_order_hints: Vec<Option<u32>>,
     field: ProjectedTemporalMotionField,
+    trajectories: Option<Vec<TrajectoryMotionField>>,
     tip: Option<TipMotionField>,
 }
 
@@ -283,6 +286,7 @@ pub(crate) struct TemporalProjectionConfig {
     pub(crate) frame_size: (usize, usize),
     pub(crate) step: usize,
     pub(crate) enable_tip: bool,
+    pub(crate) enable_trajectory: bool,
     pub(crate) reduced: bool,
 }
 
@@ -307,6 +311,15 @@ impl TemporalMvContext {
             &ref_order_hints,
             ref_motion_fields,
         );
+        let mut trajectories = if config.enable_trajectory {
+            Some(TrajectoryState::new(
+                mi_dimensions,
+                ref_order_hints.len(),
+                config.step,
+            )?)
+        } else {
+            None
+        };
         for projection in projections {
             let slot = *ref_frame_idx.get(projection.ref_index)?;
             let source_order_hint = ref_order_hints
@@ -324,17 +337,22 @@ impl TemporalMvContext {
                 source_order_hint,
                 current_order_hint,
                 config.step,
+                projection.ref_index,
                 projection.side,
-                projection
-                    .target_ref
-                    .and_then(|target| ref_order_hints.get(target).copied().flatten()),
+                projection.target_ref,
+                &ref_order_hints,
+                trajectories.as_mut(),
                 &mut field,
             );
+        }
+        if let Some(trajectories) = trajectories.as_mut() {
+            trajectories.fill_gaps();
         }
         Some(Self {
             current_order_hint,
             ref_order_hints,
             field,
+            trajectories: trajectories.map(TrajectoryState::into_fields),
             tip: None,
         })
     }
@@ -404,6 +422,15 @@ impl TemporalMvContext {
     }
 
     pub(super) fn motion_field_mv(&self, ref_frame: i8, y8: usize, x8: usize) -> Option<Mv> {
+        let ref_index = usize::try_from(ref_frame).ok()?;
+        if let Some(mv) = self
+            .trajectories
+            .as_ref()
+            .and_then(|fields| fields.get(ref_index))
+            .and_then(|field| field.cell(y8, x8))
+        {
+            return Some(mv);
+        }
         let dst_hint = usize::try_from(ref_frame)
             .ok()
             .and_then(|idx| self.ref_order_hints.get(idx))
@@ -662,16 +689,22 @@ fn fill_temporal_sampling_gap(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn project_temporal_motion_field(
     source: &TemporalMotionField,
     source_order_hint: u32,
     current_order_hint: u32,
     projection_step: usize,
+    source_ref: usize,
     side: usize,
-    target_order_hint: Option<u32>,
+    target_ref: Option<usize>,
+    ref_order_hints: &[Option<u32>],
+    mut trajectories: Option<&mut TrajectoryState>,
     output: &mut ProjectedTemporalMotionField,
 ) {
     let projection_step = projection_step.clamp(1, 2);
+    let target_order_hint =
+        target_ref.and_then(|target| ref_order_hints.get(target).copied().flatten());
     for y8 in (0..source.height8).step_by(projection_step) {
         for x8 in (0..source.width8).step_by(projection_step) {
             let Some(cell) = source.cell(y8, x8).filter(|cell| cell.is_valid()) else {
@@ -697,6 +730,20 @@ fn project_temporal_motion_field(
                 continue;
             }
             let mut mv = uncompress_tmvp_mv(cell.mvs[list]);
+            let end_ref = mapped_reference(source_order_hint, saved_target_hint, ref_order_hints);
+            if let Some(trajectories) = trajectories.as_deref_mut() {
+                trajectories.observe_projection(
+                    source_ref,
+                    end_ref,
+                    target_ref,
+                    y8,
+                    x8,
+                    mv,
+                    source_to_current,
+                    ref_offset,
+                    side == 1,
+                );
+            }
             if ref_offset < 0 {
                 ref_offset = -ref_offset;
                 source_to_current = -source_to_current;
@@ -723,6 +770,26 @@ fn project_temporal_motion_field(
             }
         }
     }
+}
+
+fn mapped_reference(
+    source_order_hint: u32,
+    target_order_hint: u32,
+    ref_order_hints: &[Option<u32>],
+) -> Option<usize> {
+    ref_order_hints.iter().position(|hint| {
+        hint.is_some_and(|hint| {
+            let hint = i32::try_from(hint).unwrap_or(i32::MAX);
+            super::super::get_relative_dist(
+                hint,
+                i32::try_from(target_order_hint).unwrap_or(i32::MAX),
+            ) == 0
+                && super::super::get_relative_dist(
+                    hint,
+                    i32::try_from(source_order_hint).unwrap_or(i32::MAX),
+                ) != 0
+        })
+    })
 }
 
 fn sampled_temporal_position(
@@ -809,6 +876,7 @@ mod tests {
             current_order_hint,
             ref_order_hints,
             field: ProjectedTemporalMotionField::new(mi_rows, mi_cols).unwrap(),
+            trajectories: None,
             tip: None,
         }
     }
@@ -916,6 +984,7 @@ mod tests {
                 frame_size: (32, 32),
                 step: 2,
                 enable_tip: false,
+                enable_trajectory: false,
                 reduced: false,
             },
             &[0, 1],

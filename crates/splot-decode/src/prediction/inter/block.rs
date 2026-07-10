@@ -209,6 +209,10 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             .inter
             .as_ref()
             .is_some_and(|tools| tools.enable_tip),
+        enable_trajectory: sequence
+            .inter
+            .as_ref()
+            .is_some_and(|tools| tools.enable_mv_traj),
         reduced: sequence
             .inter
             .as_ref()

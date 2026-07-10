@@ -382,6 +382,10 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
                 .inter
                 .as_ref()
                 .is_some_and(|tools| tools.enable_tip),
+            enable_trajectory: sequence
+                .inter
+                .as_ref()
+                .is_some_and(|tools| tools.enable_mv_traj),
             reduced: sequence
                 .inter
                 .as_ref()
