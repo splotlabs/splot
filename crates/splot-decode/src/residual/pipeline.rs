@@ -10,7 +10,7 @@ use splot_recon::{
 };
 
 use crate::bitstream::tile_payload::{
-    CflParams, DecodeTileWorkUnit, GeneralIntraResidualError, LumaPalette,
+    CflParams, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock, LumaPalette,
     LumaTransformPartitionContext, LumaTransformTypeContext, PositionedLumaCoeffBlock,
     SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
     TileBlockDecodedState, TileCdfSelector, TileCoeffContextState, TransformToolResidualPolicy,
@@ -41,6 +41,7 @@ const PALETTE_DIRECTION_REASON: &str = "palette_direction";
 const PALETTE_UNIFORM_REASON: &str = "palette_color_idx_uniform";
 const TX_4X4: usize = 0;
 const DCT_DCT: usize = 0;
+const IDTX: usize = 9;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraResidualPlan {
     planes: Vec<ResidualPlanePlan>,
@@ -165,6 +166,7 @@ struct ResidualPlanePlan {
     txb_skip_fsc_mode: bool,
     zero_corners: bool,
     defer_reconstruction: bool,
+    reconstruction_tx_type: Option<usize>,
     reconstruction: ResidualReconstructionPlan,
 }
 
@@ -399,10 +401,16 @@ impl GeneralIntraResidualPlan {
     pub(crate) fn chroma(
         block_ctx: BlockCtx,
         chroma_plan: RectChromaPlan,
+        lossless_luma_fsc: bool,
     ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
         let reconstruction = chroma_reconstruction(chroma_plan);
         let mut planes = Vec::new();
-        planes.extend(chroma_plans(block_ctx, reconstruction, false, false)?);
+        let chroma = chroma_plans(block_ctx, reconstruction, false, false)?;
+        planes.extend(if lossless_luma_fsc {
+            chroma.map(|plane| plane.with_reconstruction_tx_type(IDTX))
+        } else {
+            chroma
+        });
         Ok(Self { planes })
     }
 
@@ -586,6 +594,7 @@ impl ResidualPlanePlan {
             txb_skip_fsc_mode,
             zero_corners: false,
             defer_reconstruction: false,
+            reconstruction_tx_type: None,
             reconstruction,
         })
     }
@@ -595,6 +604,17 @@ impl ResidualPlanePlan {
             defer_reconstruction: true,
             ..self
         }
+    }
+
+    const fn with_reconstruction_tx_type(self, plane_tx_type: usize) -> Self {
+        Self {
+            reconstruction_tx_type: Some(plane_tx_type),
+            ..self
+        }
+    }
+
+    fn apply_reconstruction_tx_type(self, coeffs: &mut LumaCoeffBlock) {
+        coeffs.plane_tx_type = self.reconstruction_tx_type.unwrap_or(coeffs.plane_tx_type);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -661,7 +681,7 @@ impl ResidualPlanePlan {
                 deblock,
             );
         }
-        let coeffs = crate::bitstream::tile_payload::decode_general_intra_plane_coeffs(
+        let mut coeffs = crate::bitstream::tile_payload::decode_general_intra_plane_coeffs(
             work_unit,
             symbols,
             coeff_ctx,
@@ -680,6 +700,7 @@ impl ResidualPlanePlan {
             self.txb_skip_fsc_mode,
             policy,
         )?;
+        self.apply_reconstruction_tx_type(&mut coeffs);
         if self.plane_id == PlaneId::Y {
             deblock.record_luma_unit(
                 self.y / 4,
@@ -758,7 +779,7 @@ impl ResidualPlanePlan {
                 if !self.lossless_unit_starts_in_frame(x, y) {
                     continue;
                 }
-                let coeffs = decode_general_intra_plane_coeffs(
+                let mut coeffs = decode_general_intra_plane_coeffs(
                     work_unit,
                     symbols,
                     coeff_ctx,
@@ -777,6 +798,7 @@ impl ResidualPlanePlan {
                     self.txb_skip_fsc_mode,
                     policy,
                 )?;
+                self.apply_reconstruction_tx_type(&mut coeffs);
                 let block = PositionedLumaCoeffBlock {
                     x,
                     y,

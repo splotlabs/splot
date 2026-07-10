@@ -530,6 +530,10 @@ impl TileFscModeState {
         usize::from(first) + usize::from(second)
     }
 
+    pub(crate) fn fsc_mode_at(&self, r: usize, c: usize) -> Option<u8> {
+        self.grid.cell(r, c)
+    }
+
     pub(crate) fn record_block(
         &mut self,
         r: usize,

@@ -220,6 +220,27 @@ fn fsc_coefficients_are_luma_only() {
 }
 
 #[test]
+fn chroma_part_applies_lossless_luma_fsc_only_to_reconstruction() {
+    let block = BlockRect::new(0, 6, 2, 2);
+    let plan = GeneralIntraResidualPlan::chroma(
+        ctx(block, BitDepth::Eight),
+        RectChromaPlan::Mode(SupportedChromaMode::Dc, None),
+        true,
+    )
+    .expect("chroma-part plan");
+
+    for plane_id in [PlaneId::U, PlaneId::V] {
+        let plane = plan.plane_plan(plane_id).expect("chroma plane");
+        assert!(!plane.fsc_mode);
+        assert!(!plane.txb_skip_fsc_mode);
+        assert_eq!(plane.reconstruction_tx_type, Some(IDTX));
+        let mut coeffs = empty_luma_coeffs();
+        plane.apply_reconstruction_tx_type(&mut coeffs);
+        assert_eq!(coeffs.plane_tx_type, IDTX);
+    }
+}
+
+#[test]
 fn large_luma_chunks_do_not_fill_parent_residual_block() {
     let block = BlockRect::new(0, 0, 32, 16);
     let ctx = ctx(block, BitDepth::Ten);
