@@ -490,6 +490,36 @@ fn compound_mv_stack_aligns_tip_neighbour_to_its_16x16_unit() {
 }
 
 #[test]
+fn compound_temporal_scan_skips_small_block_sample_without_underflow() {
+    let references = temporal::TipReferencePair {
+        past_ref: 0,
+        future_ref: 1,
+        past_offset: -1,
+        future_offset: 1,
+        ref_offset: 1,
+    };
+    let temporal =
+        TemporalMvContext::with_tip_sample(MI_DIM, MI_DIM, references, 0, 0, Mv::ZERO).unwrap();
+    let mut block = block_at(0, 0);
+    block.bw4 = 1;
+    block.bh4 = 1;
+    block.ref_frame1 = Some(1);
+    let global_mvs = [Mv { row: 8, col: 16 }, Mv { row: -8, col: -16 }];
+
+    let candidate = find_compound_mv_stack_with_temporal(
+        &empty_grid(),
+        &block,
+        global_mvs,
+        None,
+        DrlReorder::Disabled,
+        Some(&temporal),
+    )
+    .candidate(0);
+
+    assert_eq!(candidate.mvs, global_mvs);
+}
+
+#[test]
 fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
     let mut grid = empty_grid();
     let mvs = [Mv { row: 8, col: 16 }, Mv { row: -8, col: 24 }];
