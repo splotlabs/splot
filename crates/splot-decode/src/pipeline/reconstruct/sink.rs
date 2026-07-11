@@ -195,10 +195,14 @@ pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
     if block.all_zero {
         return Ok(());
     }
-    let rect = PlaneRect::new(x, y, width, height)?;
-    let mut prediction = Vec::with_capacity(width * height);
-    for row in workspace.rect_rows(plane_id, rect)? {
-        prediction.extend_from_slice(row);
+    let storage = workspace.plane(plane_id)?.storage_size();
+    let in_frame_width = width.min(storage.width().saturating_sub(x));
+    let in_frame_height = height.min(storage.height().saturating_sub(y));
+    let rect = PlaneRect::new(x, y, in_frame_width, in_frame_height)?;
+    let mut prediction = vec![T::default(); width * height];
+    for (row_index, row) in workspace.rect_rows(plane_id, rect)?.enumerate() {
+        let start = row_index * width;
+        prediction[start..start + in_frame_width].copy_from_slice(row);
     }
     let out = reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt(
         block,

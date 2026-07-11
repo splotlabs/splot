@@ -99,6 +99,59 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
     );
 }
 
+#[test]
+fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
+    let mut quant = vec![0; 16];
+    quant[0] = 1;
+    let block = LumaCoeffBlock {
+        all_zero: false,
+        eob: 1,
+        quant,
+        intra_ist: None,
+        cctx_type: None,
+        plane_tx_type: 0,
+        use_tcq: false,
+        lossless: false,
+    };
+    let mut full =
+        new_general_intra_workspace::<u8>(8, 8, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+    let mut cropped =
+        new_general_intra_workspace::<u8>(8, 6, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+    let prediction = [100; 16];
+    let block_size = IntraRectBlockSize::new(2, 2).unwrap();
+    full.write_rect_block(PlaneId::Y, 0, 4, block_size, &prediction)
+        .unwrap();
+    cropped
+        .write_rect_block(PlaneId::Y, 0, 4, block_size, &prediction)
+        .unwrap();
+
+    for workspace in [&mut full, &mut cropped] {
+        reconstruct_inter_block_residual_rect_into(
+            workspace,
+            &block,
+            PlaneId::Y,
+            0,
+            4,
+            2,
+            2,
+            80,
+            false,
+            false,
+            BitDepth::Eight,
+        )
+        .unwrap();
+    }
+
+    for y in 4..6 {
+        for x in 0..4 {
+            assert_eq!(
+                cropped.reconstructed_sample(PlaneId::Y, x, y).unwrap(),
+                full.reconstructed_sample(PlaneId::Y, x, y).unwrap(),
+            );
+        }
+    }
+}
+
 /// Lays an `above_row` pattern (length `width`) so that workspace row `edge_y` is
 /// that pattern over `x[0, width)`. Writes a `width x 4` block at `(0, edge_y-3)`
 /// whose every row carries the pattern (so its bottom row `edge_y` does too).
