@@ -551,6 +551,11 @@ description = "Single 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-ow
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-chroma-corner-cap-256x256-q140.ivf"
+description = "Minimal 105-byte 8-bit 4:2:0 intra key frame (IVF, 256x256) generated from a project-owned synthetic input as four fixed 128x128 square blocks with loop filters disabled at base_q_idx 140. The decisive lower-left block codes 64x64 U/V SMOOTH prediction with all-zero chroma residual and a real decoded above-right neighbour: its own final above samples are U=177 and V=63 while the distinct real above-right samples are U=240 and V=10. AV2 section 7.13.2.1 requires num4AboveRight=0 for chroma width greater than 32, so the predictor repeats its own final above sample instead of reading that real neighbour. Pre-fix splot retained num4AboveRight=16 and differed across 16,192 chroma samples; avmdec, dav2d, and fixed splot raw outputs agree byte-for-byte (SHA-256 9d1331b7f113bcd0de59adfd04681009dd8a8c03b18d7ddbd651058fb406435c); validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-quad-intra-64x64-q80.ivf"
 description = "Multi-block 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned four-quadrant luma input with broad decode tools disabled at base_q_idx 80, so the frame splits (Horz -> Vert -> Vert) into four square 32x32 DC_PRED blocks each predicted from its reconstructed neighbour; the first general-intra multi-block decode target whose avmdec and dav2d raw outputs agree and splot reproduces byte-for-byte; validates clean."
 expect = "clean"

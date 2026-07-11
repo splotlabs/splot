@@ -877,9 +877,24 @@ fn admits_small_d67_follow_chroma_with_above_right_edge() {
 #[test]
 fn admits_d67_follow_chroma_with_above_only_edge() {
     let first_col_block = ctx(128, 0, 32, 32);
+    let neighbours = first_col_block.neighbours(PlaneId::U);
+
+    assert!(neighbours.has_above());
+    assert_eq!(neighbours.num_above_right(), 0);
+    assert!(first_col_block.has_uncapped_above_right(PlaneId::U));
 
     assert_chroma_admitted(SupportedChromaMode::D67Follow, first_col_block);
     assert_rect_chroma_admitted(SupportedChromaMode::D67Follow, first_col_block);
+
+    let right_edge_block = ctx(128, 448, 32, 32);
+    let right_edge_neighbours = right_edge_block.neighbours(PlaneId::U);
+    assert!(right_edge_neighbours.has_above());
+    assert_eq!(right_edge_neighbours.num_above_right(), 0);
+    assert!(!right_edge_block.has_uncapped_above_right(PlaneId::U));
+    assert!(!ten_bit_general_intra_chroma_admitted(
+        Some(SupportedChromaMode::D67Follow),
+        right_edge_block,
+    ));
 }
 
 #[test]

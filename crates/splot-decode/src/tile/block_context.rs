@@ -216,6 +216,22 @@ impl NeighbourAvailability {
     }
 }
 
+const fn normalize_intra_corner_counts(
+    plane: PlaneId,
+    width_log2: u32,
+    height_log2: u32,
+    num_above_right: usize,
+    num_below_left: usize,
+) -> (usize, usize) {
+    match plane {
+        PlaneId::Y => (num_above_right, num_below_left),
+        PlaneId::U | PlaneId::V => (
+            if width_log2 > 5 { 0 } else { num_above_right },
+            if height_log2 > 5 { 0 } else { num_below_left },
+        ),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockCtx {
     block: BlockRect,
@@ -325,17 +341,23 @@ impl BlockCtx {
     pub(crate) fn neighbours(self, plane: PlaneId) -> NeighbourAvailability {
         let (block, _) = self.plane_geometry(plane);
         let plane_block = self.plane_block(plane);
-        let (sub_x, _) = self.chroma.subsampling(plane);
-        let above_decoded_cols = self.tile_mi_col_end.saturating_sub(block.col4) >> sub_x;
-        let num_above_right = above_decoded_cols
-            .saturating_sub(plane_block.width4())
-            .min(plane_block.width4());
+        let (num_above_right, num_below_left) = normalize_intra_corner_counts(
+            plane,
+            plane_block.tx().width_log2(),
+            plane_block.tx().height_log2(),
+            self.uncapped_num_above_right(plane),
+            0,
+        );
         NeighbourAvailability::new(
             block.row4 > self.tile_mi_row_start,
             block.col4 > self.tile_mi_col_start,
             num_above_right,
-            0,
+            num_below_left,
         )
+    }
+
+    pub(crate) fn has_uncapped_above_right(self, plane: PlaneId) -> bool {
+        self.uncapped_num_above_right(plane) > 0
     }
 
     pub(crate) fn neighbours_from_block_decoded(
@@ -353,6 +375,13 @@ impl BlockCtx {
             block_decoded.count_top_right_avail(plane.index(), x4, y4, plane_block.width4());
         let num_below_left =
             block_decoded.count_bottom_left_avail(plane.index(), x4, y4, plane_block.height4());
+        let (num_above_right, num_below_left) = normalize_intra_corner_counts(
+            plane,
+            plane_block.tx().width_log2(),
+            plane_block.tx().height_log2(),
+            num_above_right,
+            num_below_left,
+        );
         NeighbourAvailability::new(
             block.row4 > self.tile_mi_row_start,
             block.col4 > self.tile_mi_col_start,
@@ -366,6 +395,16 @@ impl BlockCtx {
             (PlaneId::Y, _) | (_, None) => (self.block, self.tx),
             (PlaneId::U | PlaneId::V, Some(chroma_ref)) => chroma_ref,
         }
+    }
+
+    fn uncapped_num_above_right(self, plane: PlaneId) -> usize {
+        let (block, _) = self.plane_geometry(plane);
+        let plane_block = self.plane_block(plane);
+        let (sub_x, _) = self.chroma.subsampling(plane);
+        let above_decoded_cols = self.tile_mi_col_end.saturating_sub(block.col4) >> sub_x;
+        above_decoded_cols
+            .saturating_sub(plane_block.width4())
+            .min(plane_block.width4())
     }
 }
 
