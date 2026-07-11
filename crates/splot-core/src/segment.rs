@@ -74,17 +74,6 @@ impl SegmentInfo {
     }
 }
 
-/// Clips `value` to the inclusive range `[low, high]` (AV2 `Clip3`).
-const fn clip3(low: i32, high: i32, value: i32) -> i32 {
-    if value < low {
-        low
-    } else if value > high {
-        high
-    } else {
-        value
-    }
-}
-
 /// Parses `seg_info(numSegments)` (AV2 v1.0.0 § 5.4.9).
 ///
 /// `num_segments` is `MaxSegments` from the caller (8 or 16). It is capped at
@@ -108,10 +97,10 @@ pub fn parse_seg_info(reader: &mut BitReader<'_>, num_segments: u8) -> Result<Se
                 let limit = SEGMENTATION_FEATURE_MAX[j];
                 if SEGMENTATION_FEATURE_SIGNED[j] {
                     let value = reader.read_su(1 + bits_to_read)?;
-                    clip3(-limit, limit, value)
+                    value.clamp(-limit, limit)
                 } else {
                     let value = reader.read_bits(bits_to_read)?;
-                    clip3(0, limit, value as i32)
+                    (value as i32).clamp(0, limit)
                 }
             } else {
                 0
