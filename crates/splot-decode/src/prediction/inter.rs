@@ -191,7 +191,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
             SPEC_MODE_INFO
         ));
     }
-    let ref_frame_idx = inter.ref_frame_idx.clone();
+    let ref_frame_idx = &inter.ref_frame_idx;
     if ref_frame_idx.len() != num_total_refs as usize || ref_frame_idx.is_empty() {
         return Err(inter_missing!(
             "inter_missing_ref_frame_idx",
@@ -214,7 +214,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         ));
     }
 
-    for &slot in &ref_frame_idx {
+    for &slot in ref_frame_idx {
         let ref_frame = reference.frame_for_slot(slot).ok_or_else(|| {
             inter_missing!(
                 "inter_missing_reference_frame",
@@ -318,7 +318,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
             .as_ref()
             .map_or(0, |seq_inter| seq_inter.num_same_ref_compound)
             .min(u8::try_from(num_total_refs).unwrap_or(u8::MAX)),
-        &ref_frame_idx,
+        ref_frame_idx,
         reference,
         &mut workspace,
         qindex,
@@ -338,7 +338,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     filter_sink.set_gdf_reference_context(Some(
         crate::filters::gdf::GdfReferenceContext::from_reference_list(
             core.order_hint_lsb.unwrap_or(0),
-            &ref_frame_idx,
+            ref_frame_idx,
             &reference.ref_order_hint,
         ),
     ));
