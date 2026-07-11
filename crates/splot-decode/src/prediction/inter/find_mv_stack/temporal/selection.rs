@@ -333,6 +333,7 @@ mod tests {
         let config = TemporalProjectionConfig {
             frame_size: (16, 16),
             step: 1,
+            unit_size8: 8,
             enable_tip: true,
             enable_trajectory: false,
             reduced: false,
@@ -374,6 +375,7 @@ mod tests {
                 TemporalProjectionConfig {
                     frame_size: (16, 16),
                     step: 1,
+                    unit_size8: 8,
                     enable_tip: true,
                     enable_trajectory: false,
                     reduced: true,
@@ -403,6 +405,7 @@ mod tests {
             TemporalProjectionConfig {
                 frame_size: (16, 16),
                 step: 1,
+                unit_size8: 8,
                 enable_tip: true,
                 enable_trajectory: false,
                 reduced: false,

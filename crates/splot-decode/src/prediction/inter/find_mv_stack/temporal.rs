@@ -290,6 +290,7 @@ pub(crate) struct TemporalMvContext {
 pub(crate) struct TemporalProjectionConfig {
     pub(crate) frame_size: (usize, usize),
     pub(crate) step: usize,
+    pub(crate) unit_size8: usize,
     pub(crate) enable_tip: bool,
     pub(crate) enable_trajectory: bool,
     pub(crate) reduced: bool,
@@ -369,6 +370,7 @@ impl TemporalMvContext {
                 mi_dimensions,
                 ref_order_hints.len(),
                 config.step,
+                config.unit_size8,
             )?)
         } else {
             None
@@ -390,6 +392,7 @@ impl TemporalMvContext {
                 source_order_hint,
                 current_order_hint,
                 config.step,
+                config.unit_size8,
                 projection.ref_index,
                 projection.side,
                 projection.target_ref,
@@ -882,6 +885,7 @@ fn project_temporal_motion_field(
     source_order_hint: u32,
     current_order_hint: u32,
     projection_step: usize,
+    tmvp_unit_size8: usize,
     source_ref: usize,
     side: usize,
     target_ref: Option<usize>,
@@ -941,9 +945,14 @@ fn project_temporal_motion_field(
             let Some(projected_to_current) = project_mv(mv, source_to_current, ref_offset) else {
                 continue;
             };
-            let Some((pos_y8, pos_x8)) =
-                sampled_temporal_position(y8, x8, projected_to_current, projection_step, output)
-            else {
+            let Some((pos_y8, pos_x8)) = sampled_temporal_position(
+                y8,
+                x8,
+                projected_to_current,
+                projection_step,
+                tmvp_unit_size8,
+                output,
+            ) else {
                 continue;
             };
             let replace = output.cell(pos_y8, pos_x8).is_none_or(|cell| {
@@ -983,14 +992,47 @@ fn sampled_temporal_position(
     x8: usize,
     projected_mv: Mv,
     projection_step: usize,
+    tmvp_unit_size8: usize,
     field: &ProjectedTemporalMotionField,
 ) -> Option<(usize, usize)> {
-    let y8 = project_no_constraint(y8, projected_mv.row, field.height8)?;
-    let x8 = project_no_constraint(x8, projected_mv.col, field.width8)?;
-    Some((
-        y8 / projection_step * projection_step,
-        x8 / projection_step * projection_step,
-    ))
+    let projected_y8 = project_no_constraint(y8, projected_mv.row, field.height8)?;
+    let projected_x8 = project_no_constraint(x8, projected_mv.col, field.width8)?;
+    let projected_y8 = projected_y8 / projection_step * projection_step;
+    let projected_x8 = projected_x8 / projection_step * projection_step;
+    tmvp_position_is_near(
+        y8,
+        x8,
+        projected_y8,
+        projected_x8,
+        projection_step,
+        tmvp_unit_size8,
+    )
+    .then_some((projected_y8, projected_x8))
+}
+
+fn tmvp_position_is_near(
+    source_y8: usize,
+    source_x8: usize,
+    projected_y8: usize,
+    projected_x8: usize,
+    projection_step: usize,
+    tmvp_unit_size8: usize,
+) -> bool {
+    let tmvp_unit_size8 = tmvp_unit_size8.max(1);
+    let base_y8 = projected_y8 / tmvp_unit_size8 * tmvp_unit_size8;
+    let base_x8 = projected_x8 / tmvp_unit_size8 * tmvp_unit_size8;
+    let horizontal_offset8 = if projection_step > 1 {
+        tmvp_unit_size8
+    } else {
+        tmvp_unit_size8 / 2
+    };
+    source_y8 >= base_y8
+        && source_y8 < base_y8.saturating_add(tmvp_unit_size8)
+        && source_x8 >= base_x8.saturating_sub(horizontal_offset8)
+        && source_x8
+            < base_x8
+                .saturating_add(tmvp_unit_size8)
+                .saturating_add(horizontal_offset8)
 }
 
 fn project_no_constraint(v8: usize, delta: i32, max8: usize) -> Option<usize> {
@@ -1280,6 +1322,7 @@ mod tests {
             TemporalProjectionConfig {
                 frame_size: (32, 32),
                 step: 2,
+                unit_size8: 8,
                 enable_tip: false,
                 enable_trajectory: false,
                 reduced: false,
@@ -1310,7 +1353,7 @@ mod tests {
         };
         let mut output = ProjectedTemporalMotionField::new(18, 56).unwrap();
 
-        project_temporal_motion_field(&source, 4, 2, 1, 0, 1, None, &[], None, &mut output);
+        project_temporal_motion_field(&source, 4, 2, 1, 8, 0, 1, None, &[], None, &mut output);
 
         assert_eq!(
             output.cell(8, 25),
@@ -1336,6 +1379,22 @@ mod tests {
 
         assert_eq!(context.field.cell(0, 15), context.field.cell(0, 14));
         assert_eq!(context.field.cell(0, 17), context.field.cell(0, 16));
+    }
+
+    #[test]
+    fn temporal_projection_stays_within_the_vertical_tmvp_unit() {
+        assert!(!tmvp_position_is_near(52, 107, 47, 107, 2, 16));
+        assert!(tmvp_position_is_near(47, 107, 47, 107, 2, 16));
+    }
+
+    #[test]
+    fn step_one_projection_uses_64_pixel_tmvp_unit_bounds() {
+        assert!(!tmvp_position_is_near(52, 107, 47, 107, 1, 8));
+        assert!(tmvp_position_is_near(47, 107, 47, 107, 1, 8));
+        assert!(tmvp_position_is_near(47, 100, 47, 107, 1, 8));
+        assert!(!tmvp_position_is_near(47, 99, 47, 107, 1, 8));
+        assert!(tmvp_position_is_near(47, 115, 47, 107, 1, 8));
+        assert!(!tmvp_position_is_near(47, 116, 47, 107, 1, 8));
     }
 
     #[test]

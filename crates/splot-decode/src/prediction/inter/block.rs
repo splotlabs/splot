@@ -201,9 +201,19 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     })?;
     let coded_size = workspace.info().coded_luma_size();
     let current_order_hint = core.order_hint_lsb.unwrap_or(0);
+    let sb_h4 = superblock_h4(sequence, core).ok_or_else(|| {
+        inter_missing!(
+            "inter_sb_size",
+            offset,
+            "inter.superblock_size",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let projection_step = tip::tmvp_projection_step(core);
     let temporal_config = TemporalProjectionConfig {
         frame_size: (coded_size.width(), coded_size.height()),
-        step: tip::tmvp_projection_step(core),
+        step: projection_step,
+        unit_size8: tip::tmvp_unit_size8(projection_step, sb_h4),
         enable_tip: sequence
             .inter
             .as_ref()
@@ -259,14 +269,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     )?;
     let (chroma_smooth_rows, chroma_smooth_cols) =
         chroma_smooth_grid_dimensions(mi_rows, mi_cols, sequence.general.chroma_format_idc);
-    let sb_h4 = superblock_h4(sequence, core).ok_or_else(|| {
-        inter_missing!(
-            "inter_sb_size",
-            offset,
-            "inter.superblock_size",
-            SPEC_MODE_INFO
-        )
-    })?;
     tip::prepare_motion_field(&mut temporal_context, core, sb_h4);
 
     let residual_tool_policy = if frame_is_intra {

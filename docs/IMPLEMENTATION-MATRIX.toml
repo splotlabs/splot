@@ -16647,13 +16647,14 @@ id = "DECODE-INTER-TIP-REFERENCE"
 name = "TIP reference block runtime"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.1", "7.9.3", "7.12.2.10", "7.12.2.15", "7.13.3", "7.22", "8.3.2", "9.3"]
+spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.1", "7.9.3", "7.9.8", "7.12.2.10", "7.12.2.15", "7.13.3", "7.22", "8.3.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-3",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-8",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-10",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-15",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3",
@@ -16667,7 +16668,7 @@ change_id = "decode-inter-tip-reference"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Implements TIP-as-reference block selection with the two-neighbour tip context, TIP prediction-mode and dedicated DRL syntax, the TIP reference sentinel in spatial state, sharp interpolation inference, and projected temporal motion over 8x8 prediction units. The §7.9.1 selector persists each source frame's reference hints, type, and exact size, then prioritizes eligible side projections by the TIP pair, interpolation distance, and reference topology; target-specific replacement and the reduced-reference cap follow the same shared queue. On the external deltaq1 vector all 30 ordered projections across eight motion-field frames match AVM, improving frame-two luma MAE from 5.7045 to 5.3567 and exact luma samples from 46419 to 50729. The §7.9.3 reference projection samples source cells at the signaled ProjStep and aligns projected destinations to the same grid; this reduces the step-two pre-TIP field from 1040 valid cells to 255 versus AVM's 257. TIP-as-reference reconstruction passes the current frame's §7.22 motion-field sink through the existing TIP prediction units instead of discarding those stored MVs; on deltaq1 the saved order-hint-2 field grows from 264 valid cells per side to 1584 on list zero and 1352 on list one, and §7.22 single-reference normalization then fills list one to the same 1584 cells. Two-reference storage orders both motion-vector slots around the current order hint before they are projected. TIP-coded neighbours also match their underlying two-reference pair when deriving a following compound block's mode context; this keeps the shared DRL CDF context aligned instead of adding a target-specific exception. Compound DRL construction projects TIP-coded spatial neighbours through that pair after snapping the probe to its recorded 8x8 or 16x16 prediction-unit base and clamping the temporal-field coordinates per §7.12.2. Reconstruction reuses the existing compound motion-compensation and residual sinks with the frame TIP weight and optional projected-motion hole filling. Full-stream conformance remains partial: deltaq1 still differs from AVM (`c12e7fc9eac3c065c4fde249d9af8c59` versus `a51faffac365722f94697051af0d9e00`), later frame kinds still reject through decode/unsupported-feature, and no committed TIP vector yet proves an end-to-end AVM checksum."
+notes = "Implements TIP-as-reference block selection with the two-neighbour tip context, TIP prediction-mode and dedicated DRL syntax, the TIP reference sentinel in spatial state, sharp interpolation inference, and projected temporal motion over 8x8 prediction units. The §7.9.1 selector persists each source frame's reference hints, type, and exact size, then prioritizes eligible side projections by the TIP pair, interpolation distance, and reference topology; target-specific replacement and the reduced-reference cap follow the same shared queue. On the external deltaq1 vector all 30 ordered projections across eight motion-field frames match AVM, improving frame-two luma MAE from 5.7045 to 5.3567 and exact luma samples from 46419 to 50729. The §7.9.3 reference projection samples source cells at the signaled ProjStep and aligns projected destinations to the same grid. The §7.9.8 position gate rejects source cells outside the projected destination's TMVP unit bounds. TIP-as-reference reconstruction passes the current frame's §7.22 motion-field sink through the existing TIP prediction units instead of discarding those stored MVs; on deltaq1 the saved order-hint-2 field grows from 264 valid cells per side to 1584 on list zero and 1352 on list one, and §7.22 single-reference normalization then fills list one to the same 1584 cells. Two-reference storage orders both motion-vector slots around the current order hint before they are projected. TIP-coded neighbours also match their underlying two-reference pair when deriving a following compound block's mode context; this keeps the shared DRL CDF context aligned instead of adding a target-specific exception. Compound DRL construction projects TIP-coded spatial neighbours through that pair after snapping the probe to its recorded 8x8 or 16x16 prediction-unit base and clamping the temporal-field coordinates per §7.12.2. Reconstruction reuses the existing compound motion-compensation and residual sinks with the frame TIP weight and optional projected-motion hole filling. Full-stream conformance remains partial: deltaq1 still differs from AVM (`c12e7fc9eac3c065c4fde249d9af8c59` versus `a51faffac365722f94697051af0d9e00`), later frame kinds still reject through decode/unsupported-feature, and no committed TIP vector yet proves an end-to-end AVM checksum."
 
 [feature.status]
 mapped = "done"
@@ -16689,8 +16690,11 @@ tests = [
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::tip_reference_pair_uses_the_nearest_past_and_future_references",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::tip_projection_fills_unsampled_units_and_adds_the_block_mv",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::step_two_projection_samples_and_stores_on_the_even_grid",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::step_one_projection_uses_64_pixel_tmvp_unit_bounds",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::temporal_projection_stays_within_the_vertical_tmvp_unit",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::compound_references_are_stored_in_temporal_slot_order",
     "crates/splot-decode/src/prediction/inter/block/tip.rs::tests::tip_reference_unit_size_follows_refinement_and_large_block_gates",
+    "crates/splot-decode/src/prediction/inter/block/tip.rs::tests::tmvp_unit_size_uses_64_pixels_for_step_one_or_64_pixel_superblocks",
 ]
 commands = [
     "cargo test -p splot-decode tip_ --locked",

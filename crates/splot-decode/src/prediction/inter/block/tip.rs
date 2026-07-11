@@ -135,11 +135,7 @@ pub(super) fn prepare_motion_field(
         return;
     };
     let projection_step = tmvp_projection_step(core);
-    let tmvp_unit_size8 = if projection_step == 1 {
-        8
-    } else {
-        (sb_h4 / 2).min(16)
-    };
+    let tmvp_unit_size8 = tmvp_unit_size8(projection_step, sb_h4);
     if inter.tip_frame_mode == Some(TipFrameMode::Disabled) {
         temporal.fill_sampling_gaps(projection_step, tmvp_unit_size8);
         return;
@@ -155,6 +151,14 @@ pub(super) fn tmvp_projection_step(core: &FrameHeaderCore) -> usize {
     core.inter.as_ref().map_or(1, |inter| {
         usize::from(inter.tmvp_sample_step_minus_1.unwrap_or(false)) + 1
     })
+}
+
+pub(super) fn tmvp_unit_size8(projection_step: usize, sb_h4: usize) -> usize {
+    if projection_step == 1 || sb_h4 == 16 {
+        8
+    } else {
+        16
+    }
 }
 
 pub(super) fn read_reference(
@@ -461,12 +465,16 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let height = usize::try_from(frame_size.height)
         .map_err(|_| missing("unsupported capability: inter.tip_output.frame_dimensions"))?;
     let (mi_rows, mi_cols) = (height.div_ceil(4), width.div_ceil(4));
+    let sb_h4 = super::superblock_h4(sequence, core)
+        .ok_or_else(|| missing("missing required input: inter.tip_output.superblock_size"))?;
+    let projection_step = tmvp_projection_step(core);
     let mut temporal = TemporalMvContext::from_references(
         (mi_rows, mi_cols),
         core.order_hint_lsb.unwrap_or(0),
         TemporalProjectionConfig {
             frame_size: (width, height),
-            step: tmvp_projection_step(core),
+            step: projection_step,
+            unit_size8: tmvp_unit_size8(projection_step, sb_h4),
             enable_tip: sequence
                 .inter
                 .as_ref()
@@ -486,8 +494,6 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         &reference.ref_motion_fields,
     )
     .ok_or_else(|| missing("missing required input: inter.tip_output.temporal_context"))?;
-    let sb_h4 = super::superblock_h4(sequence, core)
-        .ok_or_else(|| missing("missing required input: inter.tip_output.superblock_size"))?;
     prepare_motion_field(&mut temporal, core, sb_h4);
     let global_mv = inter
         .tip_global_mv
@@ -575,6 +581,7 @@ mod tests {
     use super::{
         output_prediction_unit_size, prediction_unit_size, tip_refinemv_offsets_allowed,
         tip_refinemv_references_allowed, tip_uses_refinemv, tip_uses_two_references,
+        tmvp_unit_size8,
     };
     use splot_core::headers::frame::{FrameSize, FrameType};
     use splot_recon::InterpolationFilter;
@@ -585,6 +592,15 @@ mod tests {
         assert_eq!(prediction_unit_size(8, 32, false), 8);
         assert_eq!(prediction_unit_size(64, 32, true), 8);
         assert_eq!(prediction_unit_size(256, 256, true), 16);
+    }
+
+    #[test]
+    fn tmvp_unit_size_uses_64_pixels_for_step_one_or_64_pixel_superblocks() {
+        assert!(
+            tmvp_unit_size8(1, 32) == 8
+                && tmvp_unit_size8(2, 16) == 8
+                && tmvp_unit_size8(2, 32) == 16
+        );
     }
 
     #[test]

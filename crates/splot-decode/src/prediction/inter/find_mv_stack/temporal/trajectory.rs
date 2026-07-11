@@ -56,6 +56,7 @@ impl TrajectoryState {
         mi_dimensions: (usize, usize),
         reference_count: usize,
         step: usize,
+        unit_size8: usize,
     ) -> Option<Self> {
         let template = TrajectoryMotionField::new(mi_dimensions.0, mi_dimensions.1)?;
         let cell_count = template.cells.len();
@@ -65,7 +66,7 @@ impl TrajectoryState {
             positions: vec![vec![[None; 3]; cell_count]; reference_count],
             projection_offsets: vec![None; cell_count],
             step,
-            unit_size8: if step == 1 { 8 } else { 16 },
+            unit_size8: unit_size8.max(1),
         })
     }
 
@@ -382,7 +383,7 @@ mod tests {
 
     #[test]
     fn direct_projection_records_reference_specific_trajectories() {
-        let mut state = TrajectoryState::new((8, 8), 2, 1).unwrap();
+        let mut state = TrajectoryState::new((8, 8), 2, 1, 8).unwrap();
         state.observe_projection(1, Some(0), None, 1, 1, Mv { row: 16, col: 32 }, 2, 4, false);
 
         assert_eq!(state.fields[1].cell(1, 1), Some(Mv { row: -8, col: -16 }));
@@ -391,7 +392,7 @@ mod tests {
 
     #[test]
     fn intersecting_projection_extends_the_reference_path() {
-        let mut state = TrajectoryState::new((8, 8), 3, 1).unwrap();
+        let mut state = TrajectoryState::new((8, 8), 3, 1, 8).unwrap();
         state.observe_projection(0, Some(1), None, 1, 1, Mv { row: 0, col: 64 }, 2, 4, false);
         state.observe_projection(1, Some(2), None, 1, 2, Mv { row: 0, col: 64 }, 2, 4, false);
 
@@ -408,5 +409,17 @@ mod tests {
 
         assert_eq!(field.cell(0, 15), field.cell(0, 14));
         assert_eq!(field.cell(0, 17), field.cell(0, 16));
+    }
+
+    #[test]
+    fn step_two_trajectory_uses_64_pixel_superblock_units() {
+        let mut state = TrajectoryState::new((2, 36), 1, 2, 8).unwrap();
+        state.fields[0].set(0, 6, Mv { row: 8, col: 16 });
+        state.fields[0].set(0, 8, Mv { row: 24, col: 80 });
+
+        state.fill_gaps();
+
+        assert_eq!(state.fields[0].cell(0, 7), state.fields[0].cell(0, 6));
+        assert_eq!(state.fields[0].cell(0, 9), state.fields[0].cell(0, 8));
     }
 }
