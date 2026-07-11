@@ -766,6 +766,7 @@ mod tests {
             n4h: 1,
             luma_tx: 0,
             chroma_tx: Some(0),
+            sub_pu_size: None,
             qindex: 0,
             skip: false,
             lossless: true,

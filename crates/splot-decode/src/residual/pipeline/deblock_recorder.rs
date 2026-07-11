@@ -59,6 +59,7 @@ impl DeblockRecorder<'_> {
             n4h,
             luma_tx,
             chroma_tx: self.chroma_tx,
+            sub_pu_size: None,
             qindex: self.qindex,
             skip: false,
             lossless: self.lossless,
