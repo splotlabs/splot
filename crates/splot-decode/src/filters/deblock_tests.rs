@@ -94,6 +94,14 @@ fn tip_filter_widths_follow_unit_and_chroma_superblock_edges() {
 }
 
 #[test]
+fn sub_pu_filter_dimensions_follow_filt_max_size() {
+    assert_eq!(sub_pu_filter_dimension(64, Some(8), true), (8, true));
+    assert_eq!(sub_pu_filter_dimension(8, Some(8), false), (4, true));
+    assert_eq!(sub_pu_filter_dimension(16, Some(16), false), (8, true));
+    assert_eq!(sub_pu_filter_dimension(4, Some(8), false), (4, false));
+}
+
+#[test]
 fn tip_deblocking_smooths_prediction_unit_boundaries() {
     let mut ws = yuv420_workspace(32, 32, 0);
     fill_rect(&mut ws, PlaneId::Y, 0..16, 0..32, 100);
@@ -183,6 +191,44 @@ fn skipped_block_filters_internal_prediction_unit_edges() {
         ws.reconstructed_sample(PlaneId::Y, 7, 0).unwrap(),
         ws.reconstructed_sample(PlaneId::Y, 8, 0).unwrap(),
         "internal prediction-unit boundary must be filtered",
+    );
+}
+
+#[test]
+fn prediction_unit_geometry_caps_filter_width_at_block_edges() {
+    let mut ws = yuv420_workspace(128, 8, 100);
+    fill_rect(&mut ws, PlaneId::Y, 64..128, 0..8, 108);
+    let block = |c| DeblockBlock {
+        r: 0,
+        c,
+        block_r: 0,
+        block_c: c,
+        chroma_base_r: 0,
+        chroma_base_c: c,
+        n4w: 16,
+        n4h: 2,
+        luma_tx: 4,
+        chroma_tx: Some(2),
+        sub_pu_size: Some(8),
+        qindex: 215,
+        skip: true,
+        lossless: false,
+    };
+
+    run_deblock(
+        &mut ws,
+        &[block(0), block(16)],
+        2,
+        32,
+        [true, false, false, false],
+    );
+
+    assert_eq!(ws.reconstructed_sample(PlaneId::Y, 60, 0), Ok(100));
+    assert_eq!(ws.reconstructed_sample(PlaneId::Y, 67, 0), Ok(108));
+    assert_smoothed_step(
+        ws.reconstructed_sample(PlaneId::Y, 63, 0).unwrap(),
+        ws.reconstructed_sample(PlaneId::Y, 64, 0).unwrap(),
+        "prediction-unit geometry must cap block-edge filtering",
     );
 }
 
