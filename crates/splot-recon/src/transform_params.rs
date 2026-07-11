@@ -110,25 +110,16 @@ const TX_SIZE_LOG2_DIMS: [(u32, u32); 25] = [
 /// [`InverseTransform2dOuter`](crate::InverseTransform2dOuter).
 ///
 /// This is a `const fn` so callers can resolve a fixed transform shape's shifts
-/// at compile time; the manual `while`/index loop (rather than an iterator
-/// combinator) keeps the body const-compatible.
+/// at compile time; [`tx_size_index`] owns the const-compatible shape search.
 ///
 /// # Errors
 /// Returns [`ReconError::InvalidTransformShiftShape`] if `(log2_width,
 /// log2_height)` is not one of the 25 AV2 `TX_SIZES_ALL` transform shapes.
 pub const fn transform_shift(log2_width: u32, log2_height: u32) -> Result<(u8, u8)> {
-    let mut i = 0;
-    while i < TX_SIZE_LOG2_DIMS.len() {
-        let (w, h) = TX_SIZE_LOG2_DIMS[i];
-        if w == log2_width && h == log2_height {
-            return Ok(TRANSFORM_SHIFT[i]);
-        }
-        i += 1;
+    match tx_size_index(log2_width, log2_height) {
+        Ok(index) => Ok(TRANSFORM_SHIFT[index]),
+        Err(error) => Err(error),
     }
-    Err(ReconError::InvalidTransformShiftShape {
-        log2_width,
-        log2_height,
-    })
 }
 
 /// The `TX_SIZES_ALL` ordinal `txSz` whose `(Tx_Width_Log2, Tx_Height_Log2)` equals
