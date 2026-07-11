@@ -938,6 +938,11 @@ fn project_temporal_motion_field(
                 continue;
             };
             let saved_target_hint = target_hint;
+            let mut mv = uncompress_tmvp_mv(cell.mvs[list]);
+            let end_ref = mapped_reference(source_order_hint, saved_target_hint, ref_order_hints);
+            if let Some(trajectories) = trajectories.as_deref_mut() {
+                trajectories.check_intersection(source_ref, end_ref, y8, x8, mv);
+            }
             let source_hint = i32::try_from(source_order_hint).unwrap_or(i32::MAX);
             let target_hint = i32::try_from(target_hint).unwrap_or(i32::MAX);
             let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
@@ -952,8 +957,6 @@ fn project_temporal_motion_field(
             if source_to_current.abs() > MAX_FRAME_DISTANCE {
                 continue;
             }
-            let mut mv = uncompress_tmvp_mv(cell.mvs[list]);
-            let end_ref = mapped_reference(source_order_hint, saved_target_hint, ref_order_hints);
             if let Some(trajectories) = trajectories.as_deref_mut() {
                 trajectories.observe_projection(
                     source_ref,
@@ -1399,6 +1402,54 @@ mod tests {
             })
         );
         assert!(!output.cell(8, 27).unwrap().valid);
+    }
+
+    #[test]
+    fn side_rejected_projection_still_extends_existing_trajectory() {
+        let mut trajectories = TrajectoryState::new((112, 252), 6, 1, 8).unwrap();
+        trajectories.observe_projection(
+            0,
+            Some(1),
+            Some(1),
+            54,
+            125,
+            Mv { row: 64, col: -256 },
+            1,
+            2,
+            false,
+        );
+        let mut source = TemporalMotionField::new(112, 252).unwrap();
+        source.record_block(TemporalMotionBlock {
+            mi_row: 110,
+            mi_col: 242,
+            n4w: 2,
+            n4h: 2,
+            mi_rows: 112,
+            mi_cols: 252,
+            current_order_hint: 4,
+            ref_order_hints: [Some(0), None],
+            mvs: [Mv { row: 36, col: -160 }, Mv::ZERO],
+            warp_params: [None; 2],
+        });
+        let mut output = ProjectedTemporalMotionField::new(112, 252).unwrap();
+
+        project_temporal_motion_field(
+            &source,
+            4,
+            5,
+            1,
+            8,
+            1,
+            1,
+            None,
+            &[Some(6), Some(4), None, None, None, Some(0)],
+            Some(&mut trajectories),
+            &mut output,
+        );
+
+        let fields = trajectories.into_fields();
+        assert_eq!(fields[5].cell(54, 123), Some(Mv { row: 68, col: -288 }));
+        assert!(output.cells.iter().all(|cell| !cell.valid));
     }
 
     #[test]
