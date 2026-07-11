@@ -567,11 +567,7 @@ fn decode_y4m_to_file(
 ) -> core::result::Result<(), DecodeError> {
     let mut y4m = Vec::new();
     context.decode_y4m_bytes(bytes, *options, &mut y4m)?;
-    publish_y4m_output(path, &y4m)
-}
-
-fn publish_y4m_output(path: &Path, y4m: &[u8]) -> core::result::Result<(), DecodeError> {
-    publish_output(path, y4m, OutputArtifact::Y4m)
+    publish_output(path, &y4m, Y4M_OUTPUT)
 }
 
 fn decode_raw_to_file(
@@ -583,85 +579,47 @@ fn decode_raw_to_file(
     let mut raw = Vec::new();
     context.decode_raw_bytes(bytes, *options, &mut raw)?;
     let publish_started = timing_start();
-    let published = publish_raw_output(path, &raw);
+    let published = publish_output(path, &raw, RAW_OUTPUT);
     timing_report("output_publish", publish_started);
     published
 }
 
-fn publish_raw_output(path: &Path, raw: &[u8]) -> core::result::Result<(), DecodeError> {
-    publish_output(path, raw, OutputArtifact::Raw)
+#[derive(Clone, Copy)]
+struct OutputArtifact {
+    resolve_operation: DecodeOutputOperation,
+    create_temp_operation: DecodeOutputOperation,
+    write_temp_operation: DecodeOutputOperation,
+    flush_temp_operation: DecodeOutputOperation,
+    sync_temp_operation: DecodeOutputOperation,
+    rename_operation: DecodeOutputOperation,
+    cleanup_temp_operation: DecodeOutputOperation,
+    temp_label: &'static str,
+    path_name: &'static str,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum OutputArtifact {
-    Y4m,
-    Raw,
-}
+const Y4M_OUTPUT: OutputArtifact = OutputArtifact {
+    resolve_operation: DecodeOutputOperation::ResolveY4mOutputPath,
+    create_temp_operation: DecodeOutputOperation::CreateY4mTempFile,
+    write_temp_operation: DecodeOutputOperation::WriteY4mTempFile,
+    flush_temp_operation: DecodeOutputOperation::FlushY4mTempFile,
+    sync_temp_operation: DecodeOutputOperation::SyncY4mTempFile,
+    rename_operation: DecodeOutputOperation::RenameY4mOutput,
+    cleanup_temp_operation: DecodeOutputOperation::CleanupY4mTempFile,
+    temp_label: "y4m",
+    path_name: "Y4M",
+};
 
-impl OutputArtifact {
-    const fn resolve_operation(self) -> DecodeOutputOperation {
-        match self {
-            Self::Y4m => DecodeOutputOperation::ResolveY4mOutputPath,
-            Self::Raw => DecodeOutputOperation::ResolveRawOutputPath,
-        }
-    }
-
-    const fn create_temp_operation(self) -> DecodeOutputOperation {
-        match self {
-            Self::Y4m => DecodeOutputOperation::CreateY4mTempFile,
-            Self::Raw => DecodeOutputOperation::CreateRawTempFile,
-        }
-    }
-
-    const fn write_temp_operation(self) -> DecodeOutputOperation {
-        match self {
-            Self::Y4m => DecodeOutputOperation::WriteY4mTempFile,
-            Self::Raw => DecodeOutputOperation::WriteRawTempFile,
-        }
-    }
-
-    const fn flush_temp_operation(self) -> DecodeOutputOperation {
-        match self {
-            Self::Y4m => DecodeOutputOperation::FlushY4mTempFile,
-            Self::Raw => DecodeOutputOperation::FlushRawTempFile,
-        }
-    }
-
-    const fn sync_temp_operation(self) -> DecodeOutputOperation {
-        match self {
-            Self::Y4m => DecodeOutputOperation::SyncY4mTempFile,
-            Self::Raw => DecodeOutputOperation::SyncRawTempFile,
-        }
-    }
-
-    const fn rename_operation(self) -> DecodeOutputOperation {
-        match self {
-            Self::Y4m => DecodeOutputOperation::RenameY4mOutput,
-            Self::Raw => DecodeOutputOperation::RenameRawOutput,
-        }
-    }
-
-    const fn cleanup_temp_operation(self) -> DecodeOutputOperation {
-        match self {
-            Self::Y4m => DecodeOutputOperation::CleanupY4mTempFile,
-            Self::Raw => DecodeOutputOperation::CleanupRawTempFile,
-        }
-    }
-
-    const fn temp_label(self) -> &'static str {
-        match self {
-            Self::Y4m => "y4m",
-            Self::Raw => "raw",
-        }
-    }
-
-    const fn path_name(self) -> &'static str {
-        match self {
-            Self::Y4m => "Y4M",
-            Self::Raw => "raw",
-        }
-    }
-}
+const RAW_OUTPUT: OutputArtifact = OutputArtifact {
+    resolve_operation: DecodeOutputOperation::ResolveRawOutputPath,
+    create_temp_operation: DecodeOutputOperation::CreateRawTempFile,
+    write_temp_operation: DecodeOutputOperation::WriteRawTempFile,
+    flush_temp_operation: DecodeOutputOperation::FlushRawTempFile,
+    sync_temp_operation: DecodeOutputOperation::SyncRawTempFile,
+    rename_operation: DecodeOutputOperation::RenameRawOutput,
+    cleanup_temp_operation: DecodeOutputOperation::CleanupRawTempFile,
+    temp_label: "raw",
+    path_name: "raw",
+};
 
 fn publish_output(
     path: &Path,
@@ -672,19 +630,19 @@ fn publish_output(
     let (mut temp_file, temp_path) = create_temp_file(parent, final_name, artifact)?;
 
     if let Err(source) = temp_file.write_all(bytes) {
-        let error = output_io(artifact.write_temp_operation(), source);
+        let error = output_io(artifact.write_temp_operation, source);
         return Err(close_and_cleanup_temp_file(
             temp_file, &temp_path, artifact, error,
         ));
     }
     if let Err(source) = temp_file.flush() {
-        let error = output_io(artifact.flush_temp_operation(), source);
+        let error = output_io(artifact.flush_temp_operation, source);
         return Err(close_and_cleanup_temp_file(
             temp_file, &temp_path, artifact, error,
         ));
     }
     if let Err(source) = temp_file.sync_all() {
-        let error = output_io(artifact.sync_temp_operation(), source);
+        let error = output_io(artifact.sync_temp_operation, source);
         return Err(close_and_cleanup_temp_file(
             temp_file, &temp_path, artifact, error,
         ));
@@ -704,7 +662,7 @@ fn replace_output(
     artifact: OutputArtifact,
 ) -> core::result::Result<(), DecodeError> {
     fs::rename(temp_path, final_path)
-        .map_err(|source| output_io(artifact.rename_operation(), source))
+        .map_err(|source| output_io(artifact.rename_operation, source))
         .map_err(|error| cleanup_temp_file(temp_path, artifact, error))
 }
 
@@ -717,12 +675,12 @@ fn output_parent_and_name(
         .filter(|name| !name.is_empty())
         .ok_or_else(|| {
             output_io(
-                artifact.resolve_operation(),
+                artifact.resolve_operation,
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
                         "{} output path must include a file name",
-                        artifact.path_name()
+                        artifact.path_name
                     ),
                 ),
             )
@@ -757,19 +715,19 @@ fn create_temp_file(
                 last_collision = Some(source);
             }
             Err(source) => {
-                return Err(output_io(artifact.create_temp_operation(), source));
+                return Err(output_io(artifact.create_temp_operation, source));
             }
         }
     }
 
     Err(output_io(
-        artifact.create_temp_operation(),
+        artifact.create_temp_operation,
         last_collision.unwrap_or_else(|| {
             io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 format!(
                     "could not allocate a unique {} temporary output name",
-                    artifact.path_name()
+                    artifact.path_name
                 ),
             )
         }),
@@ -778,7 +736,7 @@ fn create_temp_file(
 
 fn temp_file_name(artifact: OutputArtifact, nonce: usize, attempt: usize) -> OsString {
     let mut name = OsString::from(OsStr::new(".splot-decode-"));
-    name.push(artifact.temp_label());
+    name.push(artifact.temp_label);
     name.push("-");
     name.push(std::process::id().to_string());
     name.push("-");
@@ -803,7 +761,7 @@ fn cleanup_temp_file(path: &Path, artifact: OutputArtifact, error: DecodeError) 
     match fs::remove_file(path) {
         Ok(()) => error,
         Err(source) if source.kind() == io::ErrorKind::NotFound => error,
-        Err(source) => output_io(artifact.cleanup_temp_operation(), source),
+        Err(source) => output_io(artifact.cleanup_temp_operation, source),
     }
 }
 
