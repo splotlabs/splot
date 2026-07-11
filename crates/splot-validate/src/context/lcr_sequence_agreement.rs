@@ -34,7 +34,7 @@ impl ValidatorContext {
         };
         let lcr_is_global = association.lcr_is_global;
         let seq_lcr_id = association.lcr_id;
-        let Some(maps) = association.maps.clone() else {
+        let Some(maps) = association.maps.as_ref() else {
             return;
         };
 
