@@ -510,10 +510,13 @@ impl<T: ReconSample> GdfSource<T> {
     }
 }
 
-fn gradients<T: ReconSample>(source: &GdfSource<T>, block: &GdfBlock) -> Vec<Vec<i64>> {
+fn gradients<T: ReconSample>(
+    source: &GdfSource<T>,
+    block: &GdfBlock,
+) -> [Vec<i64>; GDF_DIRECTIONS] {
     let rows = block.height + 2;
     let cols = block.width + 2;
-    let mut grad = vec![vec![0_i64; rows * cols]; GDF_DIRECTIONS];
+    let mut grad = std::array::from_fn(|_| vec![0_i64; rows * cols]);
     for i in 0..rows {
         for j in 0..cols {
             let sample_x = block.x as isize - 1 + j as isize;
@@ -531,7 +534,7 @@ fn gradients<T: ReconSample>(source: &GdfSource<T>, block: &GdfBlock) -> Vec<Vec
     grad
 }
 
-fn classes(grad: &[Vec<i64>], width: usize, height: usize) -> Vec<u8> {
+fn classes(grad: &[Vec<i64>; GDF_DIRECTIONS], width: usize, height: usize) -> Vec<u8> {
     let class_cols = width >> 1;
     let class_rows = height >> 1;
     let mut classes = vec![0_u8; class_cols * class_rows];
