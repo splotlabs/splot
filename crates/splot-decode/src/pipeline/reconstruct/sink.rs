@@ -1,0 +1,299 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+//! Block reconstruction sinks: DC, palette, and inter-residual entries plus the shared luma write tail.
+
+use splot_recon::{
+    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraDcEdges, IntraRectBlockSize,
+    OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconSample, apply_intra_ibp_dc_rect,
+    predict_intra_dc_rect_value,
+};
+
+use crate::Result;
+use crate::bitstream::tile_payload::{
+    GeneralIntraResidualError, LumaCoeffBlock, LumaPalette, LumaTransformTypeContext,
+    reconstruct_general_intra_coeff_block_rect_with_prediction,
+    reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt,
+    reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct IntraEdgeAvailability {
+    pub(crate) above: bool,
+    pub(crate) left: bool,
+}
+
+impl IntraEdgeAvailability {
+    pub(crate) const fn new(above: bool, left: bool) -> Self {
+        Self { above, left }
+    }
+
+    pub(crate) const fn available_sample_limits(self) -> (Option<usize>, Option<usize>) {
+        (
+            if self.left { None } else { Some(0) },
+            if self.above { None } else { Some(0) },
+        )
+    }
+}
+
+pub(crate) fn new_general_intra_workspace<T: ReconSample>(
+    luma_width: usize,
+    luma_height: usize,
+    bit_depth: BitDepth,
+    pixel_format: PixelFormat,
+) -> Result<CurrentFrameWorkspace<T>> {
+    let luma_size = PlaneSize::new(luma_width, luma_height)?;
+    let luma_rect = PlaneRect::new(0, 0, luma_width, luma_height)?;
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        bit_depth,
+        pixel_format,
+        luma_size,
+        luma_rect,
+    )?;
+    Ok(CurrentFrameWorkspace::<T>::new(info, T::default())?)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    use_tcq: bool,
+    ibp_dc: bool,
+    luma_context: Option<LumaTransformTypeContext>,
+    availability: IntraEdgeAvailability,
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let dc_edges = IntraDcEdges::new(
+        availability.left.then(|| edges.left_samples()).flatten(),
+        availability.above.then(|| edges.above_samples()).flatten(),
+    );
+    let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
+    let prediction = if ibp_dc {
+        let mut pred = vec![dc; width * height];
+        apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, &mut pred, width)?;
+        pred
+    } else {
+        vec![dc; width * height]
+    };
+    let out = if block.all_zero {
+        prediction
+    } else if let Some(luma_context) = luma_context {
+        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
+            block,
+            &prediction,
+            qindex,
+            log2_width,
+            log2_height,
+            use_tcq,
+            bit_depth,
+            luma_context,
+        )?
+    } else {
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
+            &prediction,
+            qindex,
+            plane_id,
+            log2_width,
+            log2_height,
+            use_tcq,
+            None,
+            bit_depth,
+        )?
+    };
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    palette: LumaPalette,
+    color_map: &[u8],
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    use_tcq: bool,
+    luma_context: LumaTransformTypeContext,
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    if color_map.len() != width.saturating_mul(height) {
+        return Err(GeneralIntraResidualError::PredictionLength {
+            expected: width.saturating_mul(height),
+            actual: color_map.len(),
+        });
+    }
+    let mut prediction = Vec::with_capacity(color_map.len());
+    for &color_index in color_map {
+        let sample =
+            palette
+                .sample(color_index)
+                .ok_or(GeneralIntraResidualError::PaletteColorIndex {
+                    color_index: usize::from(color_index),
+                    palette_size: palette.size(),
+                })?;
+        prediction.push(T::try_from_u16(sample)?);
+    }
+    let out = if block.all_zero {
+        prediction
+    } else {
+        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
+            block,
+            &prediction,
+            qindex,
+            log2_width,
+            log2_height,
+            use_tcq,
+            bit_depth,
+            luma_context,
+        )?
+    };
+    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    use_tcq: bool,
+    use_ddt: bool,
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    if block.all_zero {
+        return Ok(());
+    }
+    let rect = PlaneRect::new(x, y, width, height)?;
+    let mut prediction = Vec::with_capacity(width * height);
+    for row in workspace.rect_rows(plane_id, rect)? {
+        prediction.extend_from_slice(row);
+    }
+    let out = reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt(
+        block,
+        &prediction,
+        qindex,
+        plane_id,
+        log2_width,
+        log2_height,
+        use_tcq,
+        use_ddt,
+        bit_depth,
+    )?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
+    Ok(())
+}
+
+pub(super) fn noneighbour_above<T: ReconSample>(bit_depth: BitDepth) -> T {
+    let half = 1u16 << (bit_depth.bits() - 1);
+    noneighbour_sample::<T>(half - 1)
+}
+
+pub(crate) fn noneighbour_left<T: ReconSample>(bit_depth: BitDepth) -> T {
+    let half = 1u16 << (bit_depth.bits() - 1);
+    noneighbour_sample::<T>(half + 1)
+}
+
+pub(super) fn noneighbour_corner<T: ReconSample>(bit_depth: BitDepth) -> T {
+    let half = 1u16 << (bit_depth.bits() - 1);
+    noneighbour_sample::<T>(half)
+}
+
+fn noneighbour_sample<T: ReconSample>(value: u16) -> T {
+    debug_assert!(
+        T::try_from_u16(value).is_ok(),
+        "§7.13.2.1 no-neighbour fallback {value} does not fit the sample storage type for the active bit depth",
+    );
+    T::try_from_u16(value).unwrap_or_default()
+}
+
+pub(super) fn average_luma_prediction_with<T: ReconSample>(
+    prediction: &mut [T],
+    secondary: Vec<T>,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    for (primary, secondary) in prediction.iter_mut().zip(secondary) {
+        let average = (u32::from(primary.to_u16()) + u32::from(secondary.to_u16()) + 1) >> 1;
+        let average = u16::try_from(average)
+            .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+        *primary = T::try_from_u16(average)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn write_luma_prediction_block<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    prediction: Vec<T>,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    use_tcq: bool,
+    bit_depth: BitDepth,
+    luma_context: Option<LumaTransformTypeContext>,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let out = if block.all_zero {
+        prediction
+    } else if let Some(luma_context) = luma_context {
+        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
+            block,
+            &prediction,
+            qindex,
+            log2_width,
+            log2_height,
+            use_tcq,
+            bit_depth,
+            luma_context,
+        )?
+    } else {
+        reconstruct_general_intra_coeff_block_rect_with_prediction(
+            block,
+            &prediction,
+            qindex,
+            PlaneId::Y,
+            log2_width,
+            log2_height,
+            use_tcq,
+            None,
+            bit_depth,
+        )?
+    };
+    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
+    Ok(())
+}

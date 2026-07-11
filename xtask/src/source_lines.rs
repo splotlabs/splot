@@ -21,18 +21,11 @@ struct SourceLineAllowance {
     reason: &'static str,
 }
 
-const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[
-    SourceLineAllowance {
-        path: "crates/splot-decode/src/pipeline/reconstruct.rs",
-        max_lines: 3_500,
-        reason: "temporary local decoder mission intra-reconstruction frontier before module split",
-    },
-    SourceLineAllowance {
-        path: "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs",
-        max_lines: 3_000,
-        reason: "temporary local decoder mission partition-traversal frontier before module split",
-    },
-];
+const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[SourceLineAllowance {
+    path: "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs",
+    max_lines: 3_000,
+    reason: "temporary local decoder mission partition-traversal frontier before module split",
+}];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceFileLineCount {
