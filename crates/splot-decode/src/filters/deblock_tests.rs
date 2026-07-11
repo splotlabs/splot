@@ -113,6 +113,20 @@ fn sub_pu_filter_dimensions_follow_filt_max_size() {
 }
 
 #[test]
+fn explicit_sub_pu_dimensions_follow_pass_and_chroma_subsampling() {
+    let mut grid = edge_test_grid(false);
+    let info = grid.cells[4].as_mut().unwrap();
+
+    info.sub_pu_size = Some(DeblockSubPuSize::square(8));
+    assert_eq!(sub_pu_dimension(info, 1, 0, 1, 1), 4);
+    assert_eq!(sub_pu_dimension(info, 1, 1, 1, 1), 4);
+
+    info.sub_pu_size = Some(DeblockSubPuSize::new(16, 8));
+    assert_eq!(sub_pu_dimension(info, 1, 0, 1, 1), 8);
+    assert_eq!(sub_pu_dimension(info, 1, 1, 1, 1), 4);
+}
+
+#[test]
 fn tip_deblocking_smooths_prediction_unit_boundaries() {
     let mut ws = yuv420_workspace(32, 32, 0);
     fill_rect(&mut ws, PlaneId::Y, 0..16, 0..32, 100);
@@ -190,7 +204,7 @@ fn skipped_block_filters_internal_prediction_unit_edges() {
         n4h: 2,
         luma_tx: 3,
         chroma_tx: Some(2),
-        sub_pu_size: Some(8),
+        sub_pu_size: Some(DeblockSubPuSize::square(8)),
         chroma_transform_only: false,
         qindex: 215,
         skip: true,
@@ -221,7 +235,7 @@ fn prediction_unit_geometry_caps_filter_width_at_block_edges() {
         n4h: 2,
         luma_tx: 4,
         chroma_tx: Some(2),
-        sub_pu_size: Some(8),
+        sub_pu_size: Some(DeblockSubPuSize::square(8)),
         chroma_transform_only: false,
         qindex: 215,
         skip: true,
@@ -675,7 +689,7 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
         n4h: 2,
         luma_tx: 0,
         chroma_tx: Some(5),
-        sub_pu_size: Some(4),
+        sub_pu_size: Some(DeblockSubPuSize::new(4, 8)),
         chroma_transform_only: false,
         qindex: 255,
         skip: false,
@@ -691,7 +705,7 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
     );
     assert_eq!((info.chroma_base_row, info.chroma_base_col), (0, 2));
     assert_eq!(info.chroma_tx, Some(5));
-    assert_eq!(info.sub_pu_size, Some(4));
+    assert_eq!(info.sub_pu_size, Some(DeblockSubPuSize::new(4, 8)));
     assert_eq!(info.qindex, 255);
     assert!(!info.skip);
     assert!(info.lossless);
