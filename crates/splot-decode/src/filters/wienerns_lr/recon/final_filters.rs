@@ -157,8 +157,7 @@ fn coalesce_bucketed_lr_rows(
         row.sort_unstable_by_key(|block| block.x);
         for block in row.iter().copied() {
             if let Some(run) = runs.last_mut()
-                && lr_blocks_mergeable(run, block)
-                && let Some(width) = run.width.checked_add(block.width)
+                && let Some(width) = run.merged_width_with(block)
             {
                 run.width = width;
                 continue;
@@ -167,25 +166,6 @@ fn coalesce_bucketed_lr_rows(
         }
     }
     runs
-}
-
-fn lr_blocks_mergeable(run: &WienerNsLrSourceBlock, next: &WienerNsLrSourceBlock) -> bool {
-    run.y == next.y
-        && run.height == next.height
-        && run.x.checked_add(run.width) == Some(next.x)
-        && run.unit_row == next.unit_row
-        && run.unit_col == next.unit_col
-        && run.tile_mi_row_start == next.tile_mi_row_start
-        && run.tile_mi_row_end == next.tile_mi_row_end
-        && run.tile_mi_col_start == next.tile_mi_col_start
-        && run.tile_mi_col_end == next.tile_mi_col_end
-        && run.luma_start_x == next.luma_start_x
-        && run.luma_end_x == next.luma_end_x
-        && run.luma_start_y == next.luma_start_y
-        && run.luma_end_y == next.luma_end_y
-        && run.frame_luma_end_y == next.frame_luma_end_y
-        && run.luma_stripe_start_y == next.luma_stripe_start_y
-        && run.luma_stripe_end_y == next.luma_stripe_end_y
 }
 
 fn clipped_lr_source_block(
