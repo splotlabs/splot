@@ -83,18 +83,12 @@ const fn tier_index(tier: Tier) -> usize {
     }
 }
 
-/// `Tile_Width_Scaling_Factor[seq_tier][seq_level_idx]`, or `None` for a reserved
-/// level index (a level with no defined scaling factor).
-fn tile_width_scaling_factor(tier: Tier, level_idx: u8) -> Option<u32> {
-    let value = *TILE_WIDTH_SCALING_FACTOR[tier_index(tier)].get(level_idx as usize)?;
-    (value != 0).then_some(value)
-}
-
-/// `Tile_Area_Scaling_Factor[seq_tier][seq_level_idx]`, or `None` for a reserved
-/// level index.
-fn tile_area_scaling_factor(tier: Tier, level_idx: u8) -> Option<u32> {
-    let value = *TILE_AREA_SCALING_FACTOR[tier_index(tier)].get(level_idx as usize)?;
-    (value != 0).then_some(value)
+/// Returns the paired width/area scaling factors, or `None` for a reserved level.
+pub(crate) fn tile_scaling_factors(tier: Tier, level_idx: u8) -> Option<(u32, u32)> {
+    let tier = tier_index(tier);
+    let width = *TILE_WIDTH_SCALING_FACTOR[tier].get(level_idx as usize)?;
+    let area = *TILE_AREA_SCALING_FACTOR[tier].get(level_idx as usize)?;
+    (width != 0 && area != 0).then_some((width, area))
 }
 
 /// `tile_log2(blkSize, target)` (AV2 v1.0.0 § 5.18.7.7): the smallest `k` such that
@@ -263,12 +257,8 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
 
     let level_idx = input.seq_level_idx.get();
     let (max_tile_width_sb, mut max_tile_area_sb) = if level_idx != NO_LEVEL_IDX {
-        let width_sf =
-            tile_width_scaling_factor(input.seq_tier, level_idx).ok_or(Error::Unimplemented {
-                feature: "AV2-5.18.7.3-TILE-PARAMS",
-            })?;
-        let area_sf =
-            tile_area_scaling_factor(input.seq_tier, level_idx).ok_or(Error::Unimplemented {
+        let (width_sf, area_sf) =
+            tile_scaling_factors(input.seq_tier, level_idx).ok_or(Error::Unimplemented {
                 feature: "AV2-5.18.7.3-TILE-PARAMS",
             })?;
         let max_tile_width_sb = (width_sf * MAX_TILE_WIDTH) >> (sb_shift + 4);
