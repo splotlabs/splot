@@ -26,17 +26,11 @@ fn temp_path(stem: &str, extension: &str) -> PathBuf {
     ))
 }
 
-/// The encoder's first end-to-end decodable output: `splot-encode` emits a 64x64 all-intra
-/// `OBU_CLOSED_LOOP_KEY` DC skip frame, and `splot decode --output-format raw` reconstructs
-/// it. The block is skipped (all-zero residual), so every luma and chroma sample is the
-/// § 7.13.2 DC prediction of a no-neighbour block — `128` for 8-bit — giving a flat frame.
-#[test]
-fn encoder_skip_ivf_decodes_to_a_flat_128_frame() {
-    let ivf = splot_encode::emit_minimal_intra_skip_ivf().expect("emit the minimal skip IVF");
-
-    let input = temp_path("input", "ivf");
-    let output = temp_path("output", "raw");
-    std::fs::write(&input, &ivf).expect("write the emitted IVF");
+#[track_caller]
+fn decode_raw_64x64(ivf: &[u8], case: &str) -> Vec<u8> {
+    let input = temp_path(case, "ivf");
+    let output = temp_path(case, "raw");
+    std::fs::write(&input, ivf).expect("write the test IVF");
 
     let status = Command::new(env!("CARGO_BIN_EXE_splot"))
         .args([
@@ -54,9 +48,20 @@ fn encoder_skip_ivf_decodes_to_a_flat_128_frame() {
     let _ = std::fs::remove_file(&input);
     let _ = std::fs::remove_file(&output);
 
-    assert!(status.success(), "splot decode of the emitted IVF failed");
+    assert!(status.success(), "splot decode failed for {case}");
     let raw = raw.expect("read the decoded raw output");
     assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    raw
+}
+
+/// The encoder's first end-to-end decodable output: `splot-encode` emits a 64x64 all-intra
+/// `OBU_CLOSED_LOOP_KEY` DC skip frame, and `splot decode --output-format raw` reconstructs
+/// it. The block is skipped (all-zero residual), so every luma and chroma sample is the
+/// § 7.13.2 DC prediction of a no-neighbour block — `128` for 8-bit — giving a flat frame.
+#[test]
+fn encoder_skip_ivf_decodes_to_a_flat_128_frame() {
+    let ivf = splot_encode::emit_minimal_intra_skip_ivf().expect("emit the minimal skip IVF");
+    let raw = decode_raw_64x64(&ivf, "skip");
     assert!(
         raw.iter().all(|&sample| sample == 128),
         "expected a flat 128 frame from the skip block",
@@ -72,30 +77,7 @@ fn encoder_skip_ivf_decodes_to_a_flat_128_frame() {
 #[test]
 fn encoder_coded_dc_ivf_decodes_to_a_flat_127_luma_frame() {
     let ivf = splot_encode::emit_minimal_intra_coded_dc_ivf().expect("emit the coded DC IVF");
-
-    let input = temp_path("coded-input", "ivf");
-    let output = temp_path("coded-output", "raw");
-    std::fs::write(&input, &ivf).expect("write the emitted IVF");
-
-    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args([
-            "decode",
-            input.to_str().expect("utf-8 input path"),
-            "--output",
-            output.to_str().expect("utf-8 output path"),
-            "--output-format",
-            "raw",
-        ])
-        .status()
-        .expect("run the splot binary");
-
-    let raw = std::fs::read(&output);
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-
-    assert!(status.success(), "splot decode of the coded IVF failed");
-    let raw = raw.expect("read the decoded raw output");
-    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    let raw = decode_raw_64x64(&ivf, "coded-dc");
     let (luma, chroma) = raw.split_at(4096);
     assert!(
         luma.iter().all(|&sample| sample == 127),
@@ -116,33 +98,7 @@ fn encoder_coded_dc_ivf_decodes_to_a_flat_127_luma_frame() {
 fn encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame() {
     let ivf =
         splot_encode::emit_minimal_intra_coded_chroma_ivf().expect("emit the coded chroma IVF");
-
-    let input = temp_path("chroma-input", "ivf");
-    let output = temp_path("chroma-output", "raw");
-    std::fs::write(&input, &ivf).expect("write the emitted IVF");
-
-    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args([
-            "decode",
-            input.to_str().expect("utf-8 input path"),
-            "--output",
-            output.to_str().expect("utf-8 output path"),
-            "--output-format",
-            "raw",
-        ])
-        .status()
-        .expect("run the splot binary");
-
-    let raw = std::fs::read(&output);
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-
-    assert!(
-        status.success(),
-        "splot decode of the coded chroma IVF failed"
-    );
-    let raw = raw.expect("read the decoded raw output");
-    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    let raw = decode_raw_64x64(&ivf, "coded-chroma-u");
     assert!(
         raw[..4096].iter().all(|&s| s == 128),
         "expected a flat 128 luma plane (skipped)",
@@ -164,33 +120,7 @@ fn encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame() {
 fn encoder_coded_chroma_v_ivf_decodes_to_a_flat_127_v_frame() {
     let ivf =
         splot_encode::emit_minimal_intra_coded_chroma_v_ivf().expect("emit the coded chroma V IVF");
-
-    let input = temp_path("chroma-v-input", "ivf");
-    let output = temp_path("chroma-v-output", "raw");
-    std::fs::write(&input, &ivf).expect("write the emitted IVF");
-
-    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args([
-            "decode",
-            input.to_str().expect("utf-8 input path"),
-            "--output",
-            output.to_str().expect("utf-8 output path"),
-            "--output-format",
-            "raw",
-        ])
-        .status()
-        .expect("run the splot binary");
-
-    let raw = std::fs::read(&output);
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-
-    assert!(
-        status.success(),
-        "splot decode of the coded chroma V IVF failed"
-    );
-    let raw = raw.expect("read the decoded raw output");
-    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    let raw = decode_raw_64x64(&ivf, "coded-chroma-v");
     assert!(
         raw[..4096].iter().all(|&s| s == 128),
         "expected a flat 128 luma plane (skipped)",
@@ -213,33 +143,7 @@ fn encoder_coded_chroma_v_ivf_decodes_to_a_flat_127_v_frame() {
 fn encoder_all_planes_coded_ivf_decodes_to_a_flat_127_frame() {
     let ivf =
         splot_encode::emit_minimal_intra_all_planes_coded_ivf().expect("emit the all-planes IVF");
-
-    let input = temp_path("all-input", "ivf");
-    let output = temp_path("all-output", "raw");
-    std::fs::write(&input, &ivf).expect("write the emitted IVF");
-
-    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args([
-            "decode",
-            input.to_str().expect("utf-8 input path"),
-            "--output",
-            output.to_str().expect("utf-8 output path"),
-            "--output-format",
-            "raw",
-        ])
-        .status()
-        .expect("run the splot binary");
-
-    let raw = std::fs::read(&output);
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-
-    assert!(
-        status.success(),
-        "splot decode of the all-planes IVF failed"
-    );
-    let raw = raw.expect("read the decoded raw output");
-    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    let raw = decode_raw_64x64(&ivf, "all-planes");
     assert!(
         raw.iter().all(|&s| s == 127),
         "expected every plane flat at 127 from the all-planes coded block",
@@ -255,30 +159,7 @@ fn encoder_all_planes_coded_ivf_decodes_to_a_flat_127_frame() {
 #[test]
 fn encoder_two_coeff_ivf_decodes_successfully() {
     let ivf = splot_encode::emit_minimal_intra_two_coeff_ivf().expect("emit the eob=2 IVF");
-
-    let input = temp_path("two-coeff-input", "ivf");
-    let output = temp_path("two-coeff-output", "raw");
-    std::fs::write(&input, &ivf).expect("write the emitted IVF");
-
-    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args([
-            "decode",
-            input.to_str().expect("utf-8 input path"),
-            "--output",
-            output.to_str().expect("utf-8 output path"),
-            "--output-format",
-            "raw",
-        ])
-        .status()
-        .expect("run the splot binary");
-
-    let raw = std::fs::read(&output);
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-
-    assert!(status.success(), "splot decode of the eob=2 IVF failed");
-    let raw = raw.expect("read the decoded raw output");
-    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    let raw = decode_raw_64x64(&ivf, "two-coeff");
     assert!(
         raw.iter().all(|&s| s == 128),
         "expected the sub-visible level-1 AC to reconstruct flat at 128",
@@ -295,33 +176,7 @@ fn encoder_two_coeff_ivf_decodes_successfully() {
 #[test]
 fn encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma() {
     let ivf = splot_encode::emit_minimal_intra_visible_ac_ivf().expect("emit the visible-AC IVF");
-
-    let input = temp_path("visible-ac-input", "ivf");
-    let output = temp_path("visible-ac-output", "raw");
-    std::fs::write(&input, &ivf).expect("write the emitted IVF");
-
-    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args([
-            "decode",
-            input.to_str().expect("utf-8 input path"),
-            "--output",
-            output.to_str().expect("utf-8 output path"),
-            "--output-format",
-            "raw",
-        ])
-        .status()
-        .expect("run the splot binary");
-
-    let raw = std::fs::read(&output);
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-
-    assert!(
-        status.success(),
-        "splot decode of the visible-AC IVF failed"
-    );
-    let raw = raw.expect("read the decoded raw output");
-    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    let raw = decode_raw_64x64(&ivf, "visible-ac");
 
     let luma = &raw[..4096];
     for row in 0..64 {
@@ -362,33 +217,7 @@ fn encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma() {
 #[test]
 fn encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset() {
     let ivf = splot_encode::emit_minimal_intra_two_nonzero_ivf().expect("emit the two-nonzero IVF");
-
-    let input = temp_path("two-nonzero-input", "ivf");
-    let output = temp_path("two-nonzero-output", "raw");
-    std::fs::write(&input, &ivf).expect("write the emitted IVF");
-
-    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args([
-            "decode",
-            input.to_str().expect("utf-8 input path"),
-            "--output",
-            output.to_str().expect("utf-8 output path"),
-            "--output-format",
-            "raw",
-        ])
-        .status()
-        .expect("run the splot binary");
-
-    let raw = std::fs::read(&output);
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-
-    assert!(
-        status.success(),
-        "splot decode of the two-nonzero IVF failed"
-    );
-    let raw = raw.expect("read the decoded raw output");
-    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    let raw = decode_raw_64x64(&ivf, "two-nonzero");
 
     let luma = &raw[..4096];
     for row in 0..64 {
@@ -424,30 +253,7 @@ fn encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset() {
 #[test]
 fn encoder_eob3_ivf_decodes_to_a_horizontal_cosine_luma() {
     let ivf = splot_encode::emit_minimal_intra_eob3_ivf().expect("emit the eob=3 IVF");
-
-    let input = temp_path("eob3-input", "ivf");
-    let output = temp_path("eob3-output", "raw");
-    std::fs::write(&input, &ivf).expect("write the emitted IVF");
-
-    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args([
-            "decode",
-            input.to_str().expect("utf-8 input path"),
-            "--output",
-            output.to_str().expect("utf-8 output path"),
-            "--output-format",
-            "raw",
-        ])
-        .status()
-        .expect("run the splot binary");
-
-    let raw = std::fs::read(&output);
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-
-    assert!(status.success(), "splot decode of the eob=3 IVF failed");
-    let raw = raw.expect("read the decoded raw output");
-    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    let raw = decode_raw_64x64(&ivf, "eob3");
 
     let luma = &raw[..4096];
     for col in 0..64 {
@@ -487,30 +293,7 @@ fn encoder_eob3_ivf_decodes_to_a_horizontal_cosine_luma() {
 #[test]
 fn encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma() {
     let ivf = splot_encode::emit_minimal_intra_2d_ivf().expect("emit the 2-D IVF");
-
-    let input = temp_path("twod-input", "ivf");
-    let output = temp_path("twod-output", "raw");
-    std::fs::write(&input, &ivf).expect("write the emitted IVF");
-
-    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args([
-            "decode",
-            input.to_str().expect("utf-8 input path"),
-            "--output",
-            output.to_str().expect("utf-8 output path"),
-            "--output-format",
-            "raw",
-        ])
-        .status()
-        .expect("run the splot binary");
-
-    let raw = std::fs::read(&output);
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-
-    assert!(status.success(), "splot decode of the 2-D IVF failed");
-    let raw = raw.expect("read the decoded raw output");
-    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    let raw = decode_raw_64x64(&ivf, "2d");
 
     let luma = &raw[..4096];
     let px = |row: usize, col: usize| luma[row * 64 + col];
@@ -591,15 +374,11 @@ fn assert_all_128_roundtrips_at_qp(qp: u8) {
         ctx.flush().expect("flush"),
         FlushStatus::Draining { .. }
     ));
-    let status = ctx.receive_packet().expect("receive_packet");
-    assert!(
-        matches!(status, ReceivePacketStatus::Packet(_)),
-        "expected a packet from the public Context, got {status:?}"
-    );
-    let packet_data = match status {
-        ReceivePacketStatus::Packet(packet) => packet.data,
-        _ => Vec::new(), // unreachable: the assert above guarantees a Packet
-    };
+    let packet_data = match ctx.receive_packet().expect("receive_packet") {
+        ReceivePacketStatus::Packet(packet) => Ok(packet.data),
+        status => Err(status),
+    }
+    .expect("expected a packet from the public Context");
     assert!(!packet_data.is_empty(), "the packet must carry coded bytes");
 
     let mut ivf = Vec::new();
@@ -610,32 +389,7 @@ fn assert_all_128_roundtrips_at_qp(qp: u8) {
     .expect("write the IVF header");
     splot_core::ivf::write_ivf_frame(&mut ivf, 0, &packet_data).expect("mux the packet into IVF");
 
-    let input = temp_path("ctx-encode-input", "ivf");
-    let output = temp_path("ctx-encode-output", "raw");
-    std::fs::write(&input, &ivf).expect("write the muxed IVF");
-
-    let status = Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args([
-            "decode",
-            input.to_str().expect("utf-8 input path"),
-            "--output",
-            output.to_str().expect("utf-8 output path"),
-            "--output-format",
-            "raw",
-        ])
-        .status()
-        .expect("run the splot binary");
-
-    let raw = std::fs::read(&output);
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-
-    assert!(
-        status.success(),
-        "splot decode of the Context packet failed"
-    );
-    let raw = raw.expect("read the decoded raw output");
-    assert_eq!(raw.len(), 6144, "unexpected decoded frame size");
+    let raw = decode_raw_64x64(&ivf, "context");
     assert!(
         raw.iter().all(|&s| s == 128),
         "the decoded frame must equal the all-128 encoder input",
