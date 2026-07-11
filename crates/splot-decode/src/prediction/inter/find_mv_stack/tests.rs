@@ -1757,6 +1757,7 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         TemporalProjectionConfig {
             frame_size,
             step: 1,
+            unit_size8: 8,
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
