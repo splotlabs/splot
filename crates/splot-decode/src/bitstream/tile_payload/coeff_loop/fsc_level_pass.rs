@@ -28,12 +28,8 @@ pub(crate) struct CoeffFscLevelPassConfig {
 }
 
 impl CoeffFscLevelPassConfig {
-    pub(crate) const fn fsc_tx_size_ctx(self) -> usize {
-        if self.tx_size_ctx < TX_16X16_CONTEXT {
-            self.tx_size_ctx
-        } else {
-            TX_16X16_CONTEXT
-        }
+    pub(crate) fn fsc_tx_size_ctx(self) -> usize {
+        self.tx_size_ctx.min(TX_16X16_CONTEXT)
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
