@@ -15,6 +15,7 @@ use crate::{BitDepth, DecodedFrame, Plane, ReconError, ReconSample, Result};
 /// Byte length of a `splot-dfh-sha256-v1` digest.
 const SHA256_DIGEST_BYTES: usize = 32;
 const SHA256_HEX_CHARS: usize = SHA256_DIGEST_BYTES * 2;
+const LOWER_HEX_DIGITS: &str = "0123456789abcdef";
 const BYTE_STREAM_ID: &str = "av2-output-samples-v1";
 const VARIANT_ID: &str = "raw_intermediate_output";
 
@@ -267,25 +268,8 @@ fn write_lower_hex_byte(f: &mut fmt::Formatter<'_>, byte: u8) -> fmt::Result {
 }
 
 fn lower_hex_digit(nibble: u8) -> &'static str {
-    match nibble {
-        0 => "0",
-        1 => "1",
-        2 => "2",
-        3 => "3",
-        4 => "4",
-        5 => "5",
-        6 => "6",
-        7 => "7",
-        8 => "8",
-        9 => "9",
-        10 => "a",
-        11 => "b",
-        12 => "c",
-        13 => "d",
-        14 => "e",
-        15 => "f",
-        _ => "",
-    }
+    let index = usize::from(nibble);
+    LOWER_HEX_DIGITS.get(index..index + 1).unwrap_or("")
 }
 
 #[cfg(test)]
