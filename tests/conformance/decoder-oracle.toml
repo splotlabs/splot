@@ -65,6 +65,14 @@ ivf_sha256 = "da285a3f2466ea1f8a163682e41d61ffe53ab95e33414210afe1bfbb6821ea59"
 avm_raw_sha256 = "5fd48d3a1e67c2abd7bbe23ad2419256de57915f66c9fe96874687a55e8c34ec"
 
 [[fixture]]
+id = "syn-2frame-lr-switchable-768x256-8bit"
+status = "xfail_splot"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "loop.lr_switchable", "loop.pc_wiener", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
+ivf_sha256 = "437ab87f9a1e35d5a855cf6ecbc622b27551e5d765ab3e2d0f8697bc2c78f841"
+avm_raw_sha256 = "21fa88e1e7aa47c2dacff85a6586266dfd1898a492917916a9261f4fcb743566"
+unsupported_reason = "general_intra_rect_non_dc_luma"
+
+[[fixture]]
 id = "syn-2frame-inter-residual-64x64"
 status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "frame.show_existing", "inter.residual_dct", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]

@@ -20,15 +20,29 @@ pub(crate) struct TileLoopRestorationRootFrontier {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LrUnitRestorationType {
+    None,
+    PcWiener,
+    WienerNonsep,
+}
+
+impl LrUnitRestorationType {
+    pub(super) const fn is_active(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrUnitSelection {
     pub(crate) plane: usize,
     pub(crate) unit_row: usize,
     pub(crate) unit_col: usize,
-    pub(crate) active: bool,
+    pub(crate) restoration_type: LrUnitRestorationType,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrSourceBlock {
+    pub(crate) restoration_type: LrUnitRestorationType,
     pub(crate) plane: usize,
     pub(crate) row: usize,
     pub(crate) col: usize,
@@ -74,12 +88,13 @@ impl WienerNsLrSourceBlock {
         self.filter_domain_key() == next.filter_domain_key()
     }
 
-    pub(crate) fn vertical_merge_key(&self) -> ([usize; 14], usize, usize) {
+    pub(crate) fn vertical_merge_key(&self) -> ([usize; 15], usize, usize) {
         (self.filter_domain_key(), self.x, self.width)
     }
 
-    fn filter_domain_key(&self) -> [usize; 14] {
+    fn filter_domain_key(&self) -> [usize; 15] {
         [
+            self.restoration_type as usize,
             self.plane,
             self.unit_row,
             self.unit_col,
@@ -168,17 +183,17 @@ impl WienerNsLrUnitActivity {
         plane: usize,
         unit_row: usize,
         unit_col: usize,
-        active: bool,
+        restoration_type: LrUnitRestorationType,
     ) -> Result<(), TilePartitionTraversalError> {
         self.units_consumed = checked_add("lr_units_consumed", self.units_consumed, 1)?;
-        if active {
+        if restoration_type.is_active() {
             self.active_units = checked_add("lr_active_wiener_ns_units", self.active_units, 1)?;
         }
         self.selections.push(WienerNsLrUnitSelection {
             plane,
             unit_row,
             unit_col,
-            active,
+            restoration_type,
         });
         Ok(())
     }
@@ -224,6 +239,7 @@ impl WienerNsLrUnitActivity {
 
 #[derive(Clone, Copy)]
 pub(super) struct LrSourceBlockDerivation {
+    pub(super) restoration_type: LrUnitRestorationType,
     pub(super) plane: usize,
     pub(super) unit_size: usize,
     pub(super) unit_row: usize,
@@ -395,6 +411,7 @@ fn lr_source_block_for(
     let luma_stripe_end_y = luma_end_y.min(checked_add("lr_source_stripe_end_y", stripe_base, 55)?);
 
     Ok(WienerNsLrSourceBlock {
+        restoration_type: input.restoration_type,
         plane: input.plane,
         row,
         col,

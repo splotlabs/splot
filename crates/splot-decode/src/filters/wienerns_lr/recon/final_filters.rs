@@ -19,7 +19,9 @@ use splot_recon::{
 
 use super::{MI_SIZE, WienerNsLrReconSink};
 use crate::Result;
-use crate::bitstream::tile_payload::{WienerNsLrSourceBlock, WienerNsLrUnitFilter};
+use crate::bitstream::tile_payload::{
+    LrUnitRestorationType, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
+};
 use crate::filters::cdef::CdefSkipGrid;
 use crate::filters::wienerns_lr::WienerNsLrTxSkipLookup;
 use crate::filters::wienerns_lr::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
@@ -476,7 +478,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         };
         if !matches!(
             plane.restoration_type,
-            FrameRestorationType::WienerNonsep | FrameRestorationType::PcWiener
+            FrameRestorationType::WienerNonsep
+                | FrameRestorationType::PcWiener
+                | FrameRestorationType::Switchable
         ) || y_blocks.is_empty()
         {
             return Ok(());
@@ -493,8 +497,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             })?
             .base_q_idx;
         let filter_set_index = pc_wiener_filter_set_index(qindex);
-        let frame_coeffs = if plane.restoration_type == FrameRestorationType::WienerNonsep
-            && plane.frame_filters_on
+        let frame_coeffs = if matches!(
+            plane.restoration_type,
+            FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
+        ) && plane.frame_filters_on
         {
             let num_classes = usize::from(plane.num_filter_classes.unwrap_or(1));
             Some((
@@ -504,33 +510,35 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         } else {
             None
         };
-        let compute = |block: &WienerNsLrSourceBlock| {
-            if plane.restoration_type == FrameRestorationType::PcWiener {
-                self.compute_pc_wiener_block(
-                    offset,
-                    block,
-                    curr_luma,
-                    cdef_luma,
-                    qindex,
-                    filter_set_index,
-                )
-            } else if let Some((coeffs, num_classes)) = frame_coeffs.as_ref() {
-                self.compute_luma_lr_block(
-                    offset,
-                    block,
-                    curr_luma,
-                    cdef_luma,
-                    qindex,
-                    *num_classes,
-                    filter_set_index,
-                    coeffs,
-                )
-            } else {
-                let coeffs = [luma_lr_unit_coeffs(lr_unit_filters, block, offset)?];
-                self.compute_luma_lr_block(
-                    offset, block, curr_luma, cdef_luma, qindex, 1, 0, &coeffs,
-                )
+        let compute = |block: &WienerNsLrSourceBlock| match block.restoration_type {
+            LrUnitRestorationType::PcWiener => self.compute_pc_wiener_block(
+                offset,
+                block,
+                curr_luma,
+                cdef_luma,
+                qindex,
+                filter_set_index,
+            ),
+            LrUnitRestorationType::WienerNonsep => {
+                if let Some((coeffs, num_classes)) = frame_coeffs.as_ref() {
+                    self.compute_luma_lr_block(
+                        offset,
+                        block,
+                        curr_luma,
+                        cdef_luma,
+                        qindex,
+                        *num_classes,
+                        filter_set_index,
+                        coeffs,
+                    )
+                } else {
+                    let coeffs = [luma_lr_unit_coeffs(lr_unit_filters, block, offset)?];
+                    self.compute_luma_lr_block(
+                        offset, block, curr_luma, cdef_luma, qindex, 1, 0, &coeffs,
+                    )
+                }
             }
+            LrUnitRestorationType::None => Err(luma_lr_filter_error(offset)),
         };
         let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
             if splot_parallel::on_multiworker_pool() {
@@ -713,6 +721,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let plane_index = plane_id.index();
         if plane.restoration_type != FrameRestorationType::WienerNonsep || plane_blocks.is_empty() {
             return Ok(());
+        }
+        if plane_blocks
+            .iter()
+            .any(|block| block.restoration_type != LrUnitRestorationType::WienerNonsep)
+        {
+            return Err(luma_lr_filter_error(offset));
         }
         let frame_coeffs = if plane.frame_filters_on {
             Some(chroma_lr_frame_coeffs(plane, offset)?)

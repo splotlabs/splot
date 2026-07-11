@@ -65,16 +65,28 @@ fn frame(sb_size: usize) -> TilePartitionFrameFacts {
     .unwrap()
 }
 
-fn frame_level_wiener_ns(unit_size: usize) -> TilePartitionLoopRestorationState {
+fn frame_level_luma_lr(
+    tool: TilePartitionLoopRestorationPlaneTool,
+    frame_filters_on: bool,
+    unit_size: usize,
+) -> TilePartitionLoopRestorationState {
     TilePartitionLoopRestorationState::Frame(TilePartitionLoopRestorationFrameState::new(
         [
-            TilePartitionLoopRestorationPlaneTool::WienerNs,
+            tool,
             TilePartitionLoopRestorationPlaneTool::None,
             TilePartitionLoopRestorationPlaneTool::None,
         ],
-        [true, false, false],
+        [frame_filters_on, false, false],
         [unit_size, 0, 0],
     ))
+}
+
+fn frame_level_wiener_ns(unit_size: usize) -> TilePartitionLoopRestorationState {
+    frame_level_luma_lr(
+        TilePartitionLoopRestorationPlaneTool::WienerNs,
+        true,
+        unit_size,
+    )
 }
 
 fn frame_level_chroma_wiener_ns(unit_size: usize) -> TilePartitionLoopRestorationState {
@@ -90,27 +102,27 @@ fn frame_level_chroma_wiener_ns(unit_size: usize) -> TilePartitionLoopRestoratio
 }
 
 fn frame_level_pc_wiener(unit_size: usize) -> TilePartitionLoopRestorationState {
-    TilePartitionLoopRestorationState::Frame(TilePartitionLoopRestorationFrameState::new(
-        [
-            TilePartitionLoopRestorationPlaneTool::PcWiener,
-            TilePartitionLoopRestorationPlaneTool::None,
-            TilePartitionLoopRestorationPlaneTool::None,
-        ],
-        [false, false, false],
-        [unit_size, 0, 0],
-    ))
+    frame_level_luma_lr(
+        TilePartitionLoopRestorationPlaneTool::PcWiener,
+        false,
+        unit_size,
+    )
 }
 
 #[derive(Clone, Copy)]
 enum LrUnitSymbolRow {
     WienerNs,
     PcWiener,
+    FlexRestorationType { tool: usize, plane: usize },
 }
 
 fn lr_unit_symbol_row(work_unit: &DecodeTileWorkUnit<'_>, row: LrUnitSymbolRow) -> [i32; 3] {
     match row {
         LrUnitSymbolRow::WienerNs => *work_unit.cdf().tile_cdfs().rows().use_wiener_ns(),
         LrUnitSymbolRow::PcWiener => *work_unit.cdf().tile_cdfs().rows().use_pc_wiener(),
+        LrUnitSymbolRow::FlexRestorationType { tool, plane } => {
+            work_unit.cdf().tile_cdfs().rows().flex_restoration_type()[tool][plane]
+        }
     }
 }
 
@@ -164,7 +176,7 @@ pub(crate) fn make_work_unit_at(
 }
 
 fn frontier(
-    work_unit: &mut DecodeTileWorkUnit<'static>,
+    work_unit: &mut DecodeTileWorkUnit<'_>,
     frame: TilePartitionFrameFacts,
     context: TilePartitionContextState<'static>,
 ) -> Result<TilePartitionTraversalPlan, TilePartitionTraversalError> {
@@ -177,14 +189,14 @@ fn frontier(
 }
 
 fn root_lr_frontier(
-    work_unit: &mut DecodeTileWorkUnit<'static>,
+    work_unit: &mut DecodeTileWorkUnit<'_>,
     frame: TilePartitionFrameFacts,
 ) -> Result<TileLoopRestorationRootFrontier, TilePartitionTraversalError> {
     root_lr_frontier_with_limits(work_unit, frame, DecodeLimits::DEFAULT)
 }
 
 fn root_lr_frontier_with_limits(
-    work_unit: &mut DecodeTileWorkUnit<'static>,
+    work_unit: &mut DecodeTileWorkUnit<'_>,
     frame: TilePartitionFrameFacts,
     limits: DecodeLimits,
 ) -> Result<TileLoopRestorationRootFrontier, TilePartitionTraversalError> {
@@ -832,6 +844,165 @@ fn frame_level_lr_symbol_precedes_partition_read() {
 }
 
 #[test]
+fn switchable_luma_selects_none_pc_wiener_then_wiener_ns() {
+    let selector = |tool| TileCdfSelector::FlexRestorationType { tool, plane: 0 };
+    let cases = [
+        (
+            vec![(selector(0), 1)],
+            LrUnitRestorationType::None,
+            1,
+            false,
+        ),
+        (
+            vec![(selector(0), 0), (selector(1), 1)],
+            LrUnitRestorationType::PcWiener,
+            2,
+            true,
+        ),
+        (
+            vec![(selector(0), 0), (selector(1), 0)],
+            LrUnitRestorationType::WienerNonsep,
+            2,
+            true,
+        ),
+    ];
+
+    for (sequence, expected_type, expected_symbols, reads_second_selector) in cases {
+        let payload = encode_symbol_sequence(&sequence);
+        let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
+        let first_before = lr_unit_symbol_row(
+            &work_unit,
+            LrUnitSymbolRow::FlexRestorationType { tool: 0, plane: 0 },
+        );
+        let second_before = lr_unit_symbol_row(
+            &work_unit,
+            LrUnitSymbolRow::FlexRestorationType { tool: 1, plane: 0 },
+        );
+        let mut facts = frame(BLOCK_32X32);
+        facts.loop_restoration =
+            frame_level_luma_lr(TilePartitionLoopRestorationPlaneTool::Switchable, true, 256);
+
+        let root = root_lr_frontier(&mut work_unit, facts).unwrap();
+
+        assert_eq!(root.symbol_count_after(), expected_symbols);
+        assert_eq!(root.lr_units_consumed(), 1);
+        assert_eq!(
+            root.selections(),
+            &[WienerNsLrUnitSelection {
+                plane: 0,
+                unit_row: 0,
+                unit_col: 0,
+                restoration_type: expected_type,
+            }]
+        );
+        assert_eq!(
+            root.active_wiener_ns_units(),
+            usize::from(expected_type.is_active())
+        );
+        assert_eq!(
+            root.active_source_blocks().is_empty(),
+            !expected_type.is_active()
+        );
+        assert!(
+            root.active_source_blocks()
+                .iter()
+                .all(|block| block.restoration_type == expected_type)
+        );
+        assert_ne!(
+            lr_unit_symbol_row(
+                &work_unit,
+                LrUnitSymbolRow::FlexRestorationType { tool: 0, plane: 0 }
+            ),
+            first_before
+        );
+        assert_eq!(
+            lr_unit_symbol_row(
+                &work_unit,
+                LrUnitSymbolRow::FlexRestorationType { tool: 1, plane: 0 }
+            ) != second_before,
+            reads_second_selector
+        );
+    }
+}
+
+#[test]
+fn switchable_luma_selector_reads_precede_partition_read() {
+    let selector = |tool| TileCdfSelector::FlexRestorationType { tool, plane: 0 };
+    let cases = [
+        (vec![(selector(0), 1)], 1),
+        (vec![(selector(0), 0), (selector(1), 1)], 2),
+        (vec![(selector(0), 0), (selector(1), 0)], 2),
+    ];
+
+    for (mut sequence, expected_lr_symbols) in cases {
+        sequence.push((
+            TileCdfSelector::DoSplit {
+                plane_start: 0,
+                ctx: 15,
+            },
+            0,
+        ));
+        let payload = encode_symbol_sequence(&sequence);
+        let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
+        let mut facts = frame(BLOCK_32X32);
+        facts.loop_restoration =
+            frame_level_luma_lr(TilePartitionLoopRestorationPlaneTool::Switchable, true, 256);
+
+        let plan = frontier(&mut work_unit, facts, context()).unwrap();
+
+        assert_eq!(plan.steps().len(), 1);
+        assert_eq!(plan.steps()[0].decision.partition, PartitionType::None);
+        assert_eq!(plan.steps()[0].symbol_count_before, expected_lr_symbols);
+        assert_eq!(plan.steps()[0].symbol_count_after, expected_lr_symbols + 1);
+        assert_eq!(
+            plan.frontier().symbol_count_before_block,
+            expected_lr_symbols + 1
+        );
+    }
+}
+
+#[test]
+fn switchable_lr_rejects_chroma_or_missing_luma_frame_filter_before_symbol_read() {
+    let invalid_states = [
+        TilePartitionLoopRestorationFrameState::new(
+            [
+                TilePartitionLoopRestorationPlaneTool::None,
+                TilePartitionLoopRestorationPlaneTool::Switchable,
+                TilePartitionLoopRestorationPlaneTool::None,
+            ],
+            [false, true, false],
+            [0, 128, 0],
+        ),
+        TilePartitionLoopRestorationFrameState::new(
+            [
+                TilePartitionLoopRestorationPlaneTool::Switchable,
+                TilePartitionLoopRestorationPlaneTool::None,
+                TilePartitionLoopRestorationPlaneTool::None,
+            ],
+            [false, false, false],
+            [256, 0, 0],
+        ),
+    ];
+
+    for lr in invalid_states {
+        let mut work_unit = make_work_unit(&[], CdfUpdateMode::Enabled);
+        let before = work_unit.cdf().tile_cdfs().clone();
+        let mut facts = frame(BLOCK_32X32);
+        facts.loop_restoration = TilePartitionLoopRestorationState::Frame(lr);
+
+        let err = frontier(&mut work_unit, facts, context()).unwrap_err();
+
+        assert!(matches!(
+            err,
+            TilePartitionTraversalError::Unsupported(
+                TilePartitionTraversalUnsupported::ReadLoopRestoration
+            )
+        ));
+        assert_eq!(work_unit.cdf().tile_cdfs(), &before);
+    }
+}
+
+#[test]
 fn root_lr_frontier_consumes_only_frame_level_wiener_ns_symbols() {
     let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     let mut facts = frame(BLOCK_32X32);
@@ -849,7 +1020,7 @@ fn root_lr_frontier_consumes_only_frame_level_wiener_ns_symbols() {
             plane: 0,
             unit_row: 0,
             unit_col: 0,
-            active: false,
+            restoration_type: LrUnitRestorationType::None,
         }]
     );
     assert!(root.active_source_blocks().is_empty());
@@ -873,13 +1044,14 @@ fn root_lr_frontier_reports_active_frame_level_wiener_ns_unit() {
             plane: 0,
             unit_row: 0,
             unit_col: 0,
-            active: true,
+            restoration_type: LrUnitRestorationType::WienerNonsep,
         }]
     );
     assert_eq!(root.active_source_blocks().len(), 64);
     assert_eq!(
         root.active_source_blocks()[0],
         WienerNsLrSourceBlock {
+            restoration_type: LrUnitRestorationType::WienerNonsep,
             plane: 0,
             row: 0,
             col: 0,
@@ -922,7 +1094,7 @@ fn root_lr_frontier_reports_active_frame_level_pc_wiener_unit() {
             plane: 0,
             unit_row: 0,
             unit_col: 0,
-            active: true,
+            restoration_type: LrUnitRestorationType::PcWiener,
         }]
     );
     assert_eq!(root.active_source_blocks().len(), 64);
@@ -1044,25 +1216,25 @@ fn frame_level_wiener_ns_multi_unit_root_counts_every_covered_unit() {
                 plane: 0,
                 unit_row: 0,
                 unit_col: 0,
-                active: false,
+                restoration_type: LrUnitRestorationType::None,
             },
             WienerNsLrUnitSelection {
                 plane: 0,
                 unit_row: 0,
                 unit_col: 1,
-                active: false,
+                restoration_type: LrUnitRestorationType::None,
             },
             WienerNsLrUnitSelection {
                 plane: 0,
                 unit_row: 1,
                 unit_col: 0,
-                active: false,
+                restoration_type: LrUnitRestorationType::None,
             },
             WienerNsLrUnitSelection {
                 plane: 0,
                 unit_row: 1,
                 unit_col: 1,
-                active: false,
+                restoration_type: LrUnitRestorationType::None,
             },
         ]
     );

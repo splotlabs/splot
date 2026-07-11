@@ -337,6 +337,11 @@ fn loop_restoration_state(lr: &LrParams, num_planes: usize) -> TilePartitionLoop
                 plane_tool[plane] = TilePartitionLoopRestorationPlaneTool::PcWiener;
                 unit_size[plane] = lr.loop_restoration_size[plane] as usize;
             }
+            FrameRestorationType::Switchable if plane == 0 && params.frame_filters_on => {
+                plane_tool[plane] = TilePartitionLoopRestorationPlaneTool::Switchable;
+                frame_filters_on[plane] = true;
+                unit_size[plane] = lr.loop_restoration_size[plane] as usize;
+            }
             FrameRestorationType::PcWiener | FrameRestorationType::Switchable => {
                 return TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;
             }

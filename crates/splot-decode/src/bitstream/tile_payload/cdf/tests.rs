@@ -18,11 +18,12 @@ use splot_core::tables::cdf::{
     DEFAULT_COMPOUND_MODE_NON_JOINT_CDF, DEFAULT_COMPOUND_TYPE_CDF, DEFAULT_CWP_IDX_CDF,
     DEFAULT_DC_SIGN_CDF, DEFAULT_DELTA_Q_CDF, DEFAULT_DIP_MODE_CDF, DEFAULT_EOB_EXTRA_CDF,
     DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_64_CDF, DEFAULT_EOB_PT_128_CDF,
-    DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_FSC_MODE_CDF,
-    DEFAULT_IDTX_SIGN_CDF, DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF,
-    DEFAULT_INTRA_TX_TYPE_SET2_CDF, DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF,
-    DEFAULT_IS_LONG_SIDE_DCT_CDF, DEFAULT_JMVD_ADAPTIVE_SCALE_MODE_CDF,
-    DEFAULT_JMVD_SCALE_MODE_CDF, DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF, DEFAULT_MORPH_PRED_CDF,
+    DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_1024_CDF,
+    DEFAULT_FLEX_RESTORATION_TYPE_CDF, DEFAULT_FSC_MODE_CDF, DEFAULT_IDTX_SIGN_CDF,
+    DEFAULT_INTRA_TX_TYPE_LONG_CDF, DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_INTRA_TX_TYPE_SET2_CDF,
+    DEFAULT_IS_CFL_CDF, DEFAULT_IS_JOINT_CDF, DEFAULT_IS_LONG_SIDE_DCT_CDF,
+    DEFAULT_JMVD_ADAPTIVE_SCALE_MODE_CDF, DEFAULT_JMVD_SCALE_MODE_CDF,
+    DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF, DEFAULT_MORPH_PRED_CDF,
     DEFAULT_MOST_PROBABLE_STX_SET_ADST_CDF, DEFAULT_MOST_PROBABLE_STX_SET_CDF,
     DEFAULT_MRL_INDEX_CDF, DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_PALETTE_Y_MODE_CDF,
     DEFAULT_SEC_TX_TYPE_CDF, DEFAULT_SKIP_DRL_MODE_CDF, DEFAULT_SKIP_MODE_CDF,
@@ -271,6 +272,10 @@ impl TileCdfRows {
         self.block.use_pc_wiener()
     }
 
+    pub(crate) const fn flex_restoration_type(&self) -> &block_rows::FlexRestorationTypeCdfRows {
+        self.block.flex_restoration_type()
+    }
+
     pub(crate) const fn wiener_ns_length(&self) -> &block_rows::WienerNsLengthCdfRows {
         self.block.wiener_ns_length()
     }
@@ -393,6 +398,10 @@ impl BlockCdfRows {
         &self.use_pc_wiener
     }
 
+    pub(crate) const fn flex_restoration_type(&self) -> &FlexRestorationTypeCdfRows {
+        &self.flex_restoration_type
+    }
+
     pub(crate) const fn wiener_ns_length(&self) -> &WienerNsLengthCdfRows {
         &self.wiener_ns_length
     }
@@ -485,6 +494,38 @@ fn assert_selector_out_of_range(
             max_exclusive,
         },
         "{selector:?}"
+    );
+}
+
+#[test]
+fn flex_restoration_type_selector_loads_defaults_and_checks_tool_and_plane() {
+    let tile = FrameCdfSubset::from_defaults().tile_copy();
+
+    for (tool, planes) in DEFAULT_FLEX_RESTORATION_TYPE_CDF.iter().enumerate() {
+        for (plane, expected) in planes.iter().enumerate() {
+            assert_eq!(
+                tile.row(TileCdfSelector::FlexRestorationType { tool, plane })
+                    .unwrap(),
+                expected.as_slice(),
+                "flex restoration tool {tool} plane {plane}"
+            );
+        }
+    }
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::FlexRestorationType { tool: 3, plane: 0 },
+        TileCdfArray::FlexRestorationType,
+        "tool",
+        3,
+        3,
+    );
+    assert_selector_out_of_range(
+        &tile,
+        TileCdfSelector::FlexRestorationType { tool: 0, plane: 3 },
+        TileCdfArray::FlexRestorationType,
+        "plane",
+        3,
+        3,
     );
 }
 
@@ -653,6 +694,10 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
     assert_eq!(frame.rows().tip_drl_mode(), &DEFAULT_TIP_DRL_MODE_CDF);
     assert_eq!(frame.rows().use_wiener_ns(), &DEFAULT_USE_WIENER_NS_CDF);
     assert_eq!(frame.rows().use_pc_wiener(), &DEFAULT_USE_PC_WIENER_CDF);
+    assert_eq!(
+        frame.rows().flex_restoration_type(),
+        &DEFAULT_FLEX_RESTORATION_TYPE_CDF
+    );
     assert_eq!(
         frame.rows().wiener_ns_length(),
         &DEFAULT_WIENER_NS_LENGTH_CDF

@@ -656,6 +656,10 @@ pub(crate) enum TileCdfSelector {
     ExplicitBawpScale,
     UseWienerNs,
     UsePcWiener,
+    FlexRestorationType {
+        tool: usize,
+        plane: usize,
+    },
     WienerNsLength {
         plane_ctx: usize,
     },
@@ -802,6 +806,7 @@ tile_cdf_arrays! {
     ColMvGreater => "TileColMvGreaterCdf",
     ColMvIndex => "TileColMvIndexCdf",
     InterpFilter => "TileInterpFilterCdf",
+    FlexRestorationType => "TileFlexRestorationTypeCdf",
     WienerNsLength => "TileWienerNsLengthCdf",
     PaletteYSize => "TilePaletteYSizeCdf",
     IdentityRowY => "TileIdentityRowYCdf",
