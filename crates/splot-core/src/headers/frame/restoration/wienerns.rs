@@ -296,16 +296,15 @@ fn read_match_indices(
     Ok(match_indices)
 }
 
-const fn num_dictionary_slots(num_classes: usize, nopcw: bool) -> usize {
-    let _ = num_classes;
+fn num_dictionary_slots(nopcw: bool) -> usize {
     if nopcw { 16 } else { 64 }
 }
 
-const fn max_num_base_filters(num_classes: usize, nopcw: bool) -> usize {
-    num_dictionary_slots(num_classes, nopcw).saturating_sub(num_classes)
+fn max_num_base_filters(num_classes: usize, nopcw: bool) -> usize {
+    num_dictionary_slots(nopcw).saturating_sub(num_classes)
 }
 
-const fn sampled_pc_wiener_filter_count(
+fn sampled_pc_wiener_filter_count(
     plane: usize,
     num_classes: usize,
     num_ref_filters: usize,
@@ -315,11 +314,11 @@ const fn sampled_pc_wiener_filter_count(
         0
     } else {
         let available = max_num_base_filters(num_classes, false).saturating_sub(num_ref_filters);
-        if available > 64 { 64 } else { available }
+        available.min(64)
     }
 }
 
-const fn capped_reference_filter_count(
+fn capped_reference_filter_count(
     plane: usize,
     num_classes: usize,
     num_ref_filters: usize,
@@ -327,11 +326,7 @@ const fn capped_reference_filter_count(
 ) -> usize {
     let min_pc_wiener = if plane == 0 && !nopcw { 16 } else { 0 };
     let allowed = max_num_base_filters(num_classes, nopcw).saturating_sub(min_pc_wiener);
-    if num_ref_filters > allowed {
-        allowed
-    } else {
-        num_ref_filters
-    }
+    num_ref_filters.min(allowed)
 }
 
 fn read_merged_flags(reader: &mut BitReader<'_>, num_classes: usize) -> Result<Vec<bool>> {
