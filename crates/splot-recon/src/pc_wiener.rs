@@ -35,6 +35,9 @@ pub const PC_WIENER_LUT_CLASSES: usize = 256;
 /// Number of AV2 § 9.8 PC-Wiener filter classes in the full classifier.
 pub const PC_WIENER_FULL_CLASSES: usize = 64;
 
+/// Distance between adjacent § 7.20.4 classification positions.
+const PC_WIENER_BLOCK_SIZE: usize = 4;
+
 /// Maximum absolute § 7.20.4 PC-Wiener filter-tap offset in either axis.
 pub const PC_WIENER_FILTER_TAP_RADIUS: usize = 3;
 
@@ -221,7 +224,180 @@ where
         }
     }
 
-    let scale_shift = u32::from(params.bit_depth.bits() - 8);
+    finish_pc_wiener_classification(
+        raw_features,
+        raw_tx_skip_sum,
+        params.base_q_idx,
+        params.bit_depth,
+    )
+}
+
+/// Classifies a row-major grid of four-sample-spaced PC-Wiener cells.
+///
+/// `params.x` and `params.y` identify the first cell. All cells must share the
+/// supplied block, stripe, and tile bounds. The implementation evaluates each
+/// overlapping feature point once, then reuses it across the 6x6 windows.
+///
+/// # Errors
+///
+/// Returns the same typed failures as [`pc_wiener_classify`], plus geometry or
+/// allocation-size overflow for an unrepresentable grid.
+#[inline]
+pub fn pc_wiener_classify_grid<T, FS, FT>(
+    params: &PcWienerClassifyParams,
+    cell_cols: usize,
+    cell_rows: usize,
+    mut source_sample: FS,
+    mut tx_skip: FT,
+) -> Result<Vec<PcWienerClassification>>
+where
+    T: ReconSample,
+    FS: FnMut(isize, isize) -> Result<T>,
+    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+{
+    validate_sample_type::<T>(params.bit_depth)?;
+    validate_params(params)?;
+    if cell_cols == 0 || cell_rows == 0 {
+        return Ok(Vec::new());
+    }
+
+    let feature_width = (cell_cols - 1)
+        .checked_mul(PC_WIENER_BLOCK_SIZE)
+        .and_then(|span| span.checked_add(PC_WIENER_FEATURE_WINDOW_SIDE))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "PC-Wiener feature-grid width",
+        })?;
+    let feature_height = (cell_rows - 1)
+        .checked_mul(PC_WIENER_BLOCK_SIZE)
+        .and_then(|span| span.checked_add(PC_WIENER_FEATURE_WINDOW_SIDE))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "PC-Wiener feature-grid height",
+        })?;
+    let feature_count =
+        feature_width
+            .checked_mul(feature_height)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "PC-Wiener feature-grid sample count",
+            })?;
+    let feature_start_x = coordinate_add(params.x, -PC_WIENER_LEAD, "PC-Wiener grid x")?;
+    let feature_start_y = coordinate_add(params.y, -PC_WIENER_LEAD, "PC-Wiener grid y")?;
+    let mut cached = Vec::new();
+    cached
+        .try_reserve_exact(feature_count)
+        .map_err(|_| ReconError::ArithmeticOverflow {
+            context: "PC-Wiener feature-grid allocation",
+        })?;
+    for row in 0..feature_height {
+        let y = coordinate_add(
+            feature_start_y,
+            isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
+                context: "PC-Wiener feature-grid row",
+            })?,
+            "PC-Wiener feature-grid y",
+        )?;
+        for col in 0..feature_width {
+            let x = coordinate_add(
+                feature_start_x,
+                isize::try_from(col).map_err(|_| ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener feature-grid column",
+                })?,
+                "PC-Wiener feature-grid x",
+            )?;
+            let feature = pc_wiener_features(params, x, y, &mut source_sample)?;
+            let lookup = tx_skip_lookup(params, feature.x, y)?;
+            let skip = tx_skip(lookup)?;
+            if !(0..=1).contains(&skip) {
+                return Err(ReconError::PcWienerInvalidTxSkip {
+                    x: lookup.x,
+                    y: lookup.y,
+                    row: lookup.row,
+                    col: lookup.col,
+                    value: skip,
+                });
+            }
+            cached.push(CachedPcWienerFeature {
+                values: feature.values,
+                tx_skip: i64::from(skip),
+            });
+        }
+    }
+
+    let cell_count = cell_cols
+        .checked_mul(cell_rows)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "PC-Wiener classification-grid cell count",
+        })?;
+    let mut classifications = Vec::new();
+    classifications
+        .try_reserve_exact(cell_count)
+        .map_err(|_| ReconError::ArithmeticOverflow {
+            context: "PC-Wiener classification-grid allocation",
+        })?;
+    for cell_row in 0..cell_rows {
+        let feature_row =
+            cell_row
+                .checked_mul(PC_WIENER_BLOCK_SIZE)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener classification-grid row",
+                })?;
+        for cell_col in 0..cell_cols {
+            let feature_col = cell_col.checked_mul(PC_WIENER_BLOCK_SIZE).ok_or(
+                ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener classification-grid column",
+                },
+            )?;
+            let mut raw_features = [0i64; PC_WIENER_NUM_FEATURES];
+            let mut raw_tx_skip_sum = 0i64;
+            for row in 0..PC_WIENER_FEATURE_WINDOW_SIDE {
+                let start = feature_row
+                    .checked_add(row)
+                    .and_then(|row| row.checked_mul(feature_width))
+                    .and_then(|start| start.checked_add(feature_col))
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "PC-Wiener classification-grid feature index",
+                    })?;
+                let end = start.checked_add(PC_WIENER_FEATURE_WINDOW_SIDE).ok_or(
+                    ReconError::ArithmeticOverflow {
+                        context: "PC-Wiener classification-grid feature end",
+                    },
+                )?;
+                let Some(feature_row) = cached.get(start..end) else {
+                    return Err(ReconError::BufferLengthMismatch {
+                        expected: end,
+                        actual: cached.len(),
+                    });
+                };
+                for feature in feature_row {
+                    for (dst, src) in raw_features.iter_mut().zip(feature.values) {
+                        *dst = dst.checked_add(src).ok_or(ReconError::ArithmeticOverflow {
+                            context: "PC-Wiener feature accumulation",
+                        })?;
+                    }
+                    raw_tx_skip_sum = raw_tx_skip_sum.checked_add(feature.tx_skip).ok_or(
+                        ReconError::ArithmeticOverflow {
+                            context: "PC-Wiener tx-skip accumulation",
+                        },
+                    )?;
+                }
+            }
+            classifications.push(finish_pc_wiener_classification(
+                raw_features,
+                raw_tx_skip_sum,
+                params.base_q_idx,
+                params.bit_depth,
+            )?);
+        }
+    }
+    Ok(classifications)
+}
+
+fn finish_pc_wiener_classification(
+    raw_features: [i64; PC_WIENER_NUM_FEATURES],
+    raw_tx_skip_sum: i64,
+    base_q_idx: u32,
+    bit_depth: BitDepth,
+) -> Result<PcWienerClassification> {
+    let scale_shift = u32::from(bit_depth.bits() - 8);
     let mut features = [0i64; PC_WIENER_NUM_FEATURES];
     for (i, feature) in features.iter_mut().enumerate() {
         *feature = round2(
@@ -238,12 +414,7 @@ where
         .ok_or(ReconError::ArithmeticOverflow {
             context: "PC-Wiener tx-skip normalization",
         })?;
-    let lut_input = pc_wiener_lut_input(
-        features,
-        normalized_tx_skip,
-        params.base_q_idx,
-        params.bit_depth,
-    )?;
+    let lut_input = pc_wiener_lut_input(features, normalized_tx_skip, base_q_idx, bit_depth)?;
     let class = u8::try_from(PC_WIENER_LUT_TO_CLASS[usize::from(lut_input)]).map_err(|_| {
         ReconError::ArithmeticOverflow {
             context: "PC-Wiener LUT class",
@@ -438,6 +609,12 @@ const fn pc_wiener_subclass_target_index(num_classes: usize) -> Option<usize> {
 struct PcWienerFeatureValues {
     x: isize,
     values: [i64; PC_WIENER_NUM_FEATURES],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CachedPcWienerFeature {
+    values: [i64; PC_WIENER_NUM_FEATURES],
+    tx_skip: i64,
 }
 
 #[inline]
@@ -746,6 +923,58 @@ mod tests {
         assert_eq!(result.tx_skip, 252);
         assert_eq!(result.lut_input, 128);
         assert_eq!(result.class, 243);
+    }
+
+    #[test]
+    fn grid_classification_matches_scalar_cells_and_reuses_features() {
+        let mut params = params(BitDepth::Eight);
+        params.x = 52;
+        params.block_end_x = 61;
+        let cell_cols = 3;
+        let cell_rows = 3;
+        let source = |x: isize, y: isize| {
+            let value = (3 * x + 5 * y + x * y).rem_euclid(200) + 20;
+            Ok(u8::try_from(value).unwrap())
+        };
+        let tx_skip = |lookup: PcWienerTxSkipLookup| {
+            Ok(i32::try_from((lookup.row + lookup.col) & 1).unwrap())
+        };
+        let mut grid_source_calls = 0;
+        let grid = pc_wiener_classify_grid::<u8, _, _>(
+            &params,
+            cell_cols,
+            cell_rows,
+            |x, y| {
+                grid_source_calls += 1;
+                source(x, y)
+            },
+            tx_skip,
+        )
+        .unwrap();
+
+        let mut scalar_source_calls = 0;
+        let mut scalar = Vec::new();
+        for row in 0..cell_rows {
+            for col in 0..cell_cols {
+                let mut cell = params;
+                cell.x += isize::try_from(col * PC_WIENER_BLOCK_SIZE).unwrap();
+                cell.y += isize::try_from(row * PC_WIENER_BLOCK_SIZE).unwrap();
+                scalar.push(
+                    pc_wiener_classify::<u8, _, _>(
+                        &cell,
+                        |x, y| {
+                            scalar_source_calls += 1;
+                            source(x, y)
+                        },
+                        tx_skip,
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+
+        assert_eq!(grid, scalar);
+        assert!(grid_source_calls < scalar_source_calls);
     }
 
     #[test]

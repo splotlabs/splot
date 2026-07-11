@@ -12,7 +12,7 @@ use splot_recon::{
     PlaneId, PlaneRect, ReconError, ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS,
     WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
     WienerNsChromaFilter, WienerNsLumaFilter, WienerNsLumaPaddedSource,
-    loop_restoration_source_sample, pc_wiener_classify, pc_wiener_filter_block,
+    loop_restoration_source_sample, pc_wiener_classify_grid, pc_wiener_filter_block,
     pc_wiener_filter_set_index, pc_wiener_subclass, wiener_ns_filter_chroma_block,
     wiener_ns_filter_luma_block_padded,
 };
@@ -1032,7 +1032,79 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
         let cell_cols = block.width.div_ceil(MI_SIZE).max(1);
         let cell_rows = block.height.div_ceil(MI_SIZE).max(1);
-        let mut cell_subclasses = vec![None; cell_cols * cell_rows];
+        let Some(tx_skip_grid) = self.tx_skip_grid.as_ref() else {
+            return Err(luma_lr_filter_error(offset));
+        };
+        let tile_start_y = mi_to_luma_start_recon(block.tile_mi_row_start, "luma LR tile start y")
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let tile_end_y = mi_to_luma_end_recon(block.tile_mi_row_end, "luma LR tile end y")
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let mut cell_subclasses = vec![0; cell_cols * cell_rows];
+        let mut group_start = 0;
+        while group_start < cell_cols {
+            let class_x = block
+                .x
+                .checked_add(group_start.saturating_mul(MI_SIZE))
+                .ok_or_else(|| luma_lr_filter_error(offset))?;
+            let block_start_x = (class_x >> 6) << 6;
+            let mut group_end = group_start + 1;
+            while group_end < cell_cols {
+                let next_x = block
+                    .x
+                    .checked_add(group_end.saturating_mul(MI_SIZE))
+                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                if ((next_x >> 6) << 6) != block_start_x {
+                    break;
+                }
+                group_end += 1;
+            }
+            let block_end_x = super::super::pc_wiener_block_end_x(block, block_start_x)
+                .map_err(|_| luma_lr_filter_error(offset))?;
+            let params = PcWienerClassifyParams {
+                x: usize_to_isize_recon(class_x, "luma LR PC-Wiener x")
+                    .map_err(|_| luma_lr_filter_error(offset))?,
+                y: usize_to_isize_recon(block.y, "luma LR PC-Wiener y")
+                    .map_err(|_| luma_lr_filter_error(offset))?,
+                bit_depth: self.bit_depth,
+                base_q_idx: qindex,
+                block_start_x,
+                block_end_x,
+                luma_stripe_start_y: block.luma_stripe_start_y,
+                luma_stripe_end_y: block.luma_stripe_end_y,
+                tile_start_y,
+                tile_end_y,
+            };
+            let group_cols = group_end - group_start;
+            let classifications = pc_wiener_classify_grid::<T, _, _>(
+                &params,
+                group_cols,
+                cell_rows,
+                |x, y| Ok(window.get_abs(x, y)),
+                |lookup| {
+                    tx_skip_grid.lookup(
+                        crate::filters::wienerns_lr::wienerns_lr_tx_skip_lookup_from_pc(lookup),
+                    )
+                },
+            )
+            .map_err(|_| luma_lr_filter_error(offset))?;
+            for (index, classification) in classifications.into_iter().enumerate() {
+                let cell_row = index / group_cols;
+                let cell_col = group_start + index % group_cols;
+                let cell_index = cell_row
+                    .checked_mul(cell_cols)
+                    .and_then(|start| start.checked_add(cell_col))
+                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                let subclass =
+                    pc_wiener_subclass(num_classes, filter_set_index, classification.class)
+                        .map_err(|_| luma_lr_filter_error(offset))?;
+                let Some(slot) = cell_subclasses.get_mut(cell_index) else {
+                    return Err(luma_lr_filter_error(offset));
+                };
+                *slot = subclass;
+            }
+            group_start = group_end;
+        }
+
         let mut subclasses = Vec::with_capacity(sample_count);
         for row in 0..block.height {
             let cell_row = row / MI_SIZE;
@@ -1041,87 +1113,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     .checked_mul(cell_cols)
                     .and_then(|start| start.checked_add(cell_col))
                     .ok_or_else(|| luma_lr_filter_error(offset))?;
-                let subclass =
-                    if let Some(subclass) = cell_subclasses.get(cell_index).copied().flatten() {
-                        subclass
-                    } else {
-                        let class_x = block
-                            .x
-                            .checked_add(cell_col.saturating_mul(MI_SIZE))
-                            .ok_or_else(|| luma_lr_filter_error(offset))?;
-                        let class_y = block
-                            .y
-                            .checked_add(cell_row.saturating_mul(MI_SIZE))
-                            .ok_or_else(|| luma_lr_filter_error(offset))?;
-                        let subclass = self.luma_lr_subclass_at(
-                            offset,
-                            block,
-                            window,
-                            qindex,
-                            num_classes,
-                            filter_set_index,
-                            class_x,
-                            class_y,
-                        )?;
-                        let Some(slot) = cell_subclasses.get_mut(cell_index) else {
-                            return Err(luma_lr_filter_error(offset));
-                        };
-                        *slot = Some(subclass);
-                        subclass
-                    };
+                let Some(&subclass) = cell_subclasses.get(cell_index) else {
+                    return Err(luma_lr_filter_error(offset));
+                };
                 let cell_start = cell_col.saturating_mul(MI_SIZE);
                 let cell_width = MI_SIZE.min(block.width.saturating_sub(cell_start));
                 subclasses.extend(core::iter::repeat_n(subclass, cell_width));
             }
         }
         Ok(subclasses)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn luma_lr_subclass_at(
-        &self,
-        offset: ByteOffset,
-        block: &WienerNsLrSourceBlock,
-        window: &LrSourceWindow<T>,
-        qindex: u32,
-        num_classes: usize,
-        filter_set_index: usize,
-        class_x: usize,
-        class_y: usize,
-    ) -> Result<usize> {
-        let Some(tx_skip_grid) = self.tx_skip_grid.as_ref() else {
-            return Err(luma_lr_filter_error(offset));
-        };
-        let block_start_x = (class_x >> 6) << 6;
-        let block_end_x = super::super::pc_wiener_block_end_x(block, block_start_x)
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        let params = PcWienerClassifyParams {
-            x: usize_to_isize_recon(class_x, "luma LR PC-Wiener x")
-                .map_err(|_| luma_lr_filter_error(offset))?,
-            y: usize_to_isize_recon(class_y, "luma LR PC-Wiener y")
-                .map_err(|_| luma_lr_filter_error(offset))?,
-            bit_depth: self.bit_depth,
-            base_q_idx: qindex,
-            block_start_x,
-            block_end_x,
-            luma_stripe_start_y: block.luma_stripe_start_y,
-            luma_stripe_end_y: block.luma_stripe_end_y,
-            tile_start_y: mi_to_luma_start_recon(block.tile_mi_row_start, "luma LR tile start y")
-                .map_err(|_| luma_lr_filter_error(offset))?,
-            tile_end_y: mi_to_luma_end_recon(block.tile_mi_row_end, "luma LR tile end y")
-                .map_err(|_| luma_lr_filter_error(offset))?,
-        };
-        let classification = pc_wiener_classify::<T, _, _>(
-            &params,
-            |x, y| Ok(window.get_abs(x, y)),
-            |lookup| {
-                tx_skip_grid
-                    .lookup(crate::filters::wienerns_lr::wienerns_lr_tx_skip_lookup_from_pc(lookup))
-            },
-        )
-        .map_err(|_| luma_lr_filter_error(offset))?;
-        pc_wiener_subclass(num_classes, filter_set_index, classification.class)
-            .map_err(|_| luma_lr_filter_error(offset))
     }
 }
 
