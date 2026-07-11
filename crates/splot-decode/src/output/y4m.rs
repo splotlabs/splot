@@ -14,9 +14,8 @@ use splot_recon::{
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::output::film_grain;
 use crate::pipeline::PipelineDecodedFrame;
-use crate::{
-    DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeOptions, DecodeStreamPlan,
-};
+use crate::support::pipeline_limits::{checked_add, checked_mul};
+use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, DecodeStreamPlan};
 
 const MINIMAL_Y4M_LUMA_WIDTH: usize = 64;
 const MINIMAL_Y4M_LUMA_HEIGHT: usize = 64;
@@ -142,34 +141,6 @@ fn ensure_minimal_y4m_output_limit(limits: DecodeLimits, frame_rate: Y4mFrameRat
     limits.ensure(DecodeLimitName::MaxOutputBytes, total_bytes)?;
 
     Ok(())
-}
-
-fn checked_add(
-    name: DecodeLimitName,
-    left: u64,
-    right: u64,
-) -> core::result::Result<u64, DecodeLimitError> {
-    left.checked_add(right)
-        .ok_or(DecodeLimitError::ArithmeticOverflow {
-            name,
-            op: DecodeLimitOp::Add,
-            left,
-            right,
-        })
-}
-
-fn checked_mul(
-    name: DecodeLimitName,
-    left: u64,
-    right: u64,
-) -> core::result::Result<u64, DecodeLimitError> {
-    left.checked_mul(right)
-        .ok_or(DecodeLimitError::ArithmeticOverflow {
-            name,
-            op: DecodeLimitOp::Mul,
-            left,
-            right,
-        })
 }
 
 #[cfg(test)]
