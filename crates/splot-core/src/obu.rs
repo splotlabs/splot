@@ -361,8 +361,8 @@ pub fn dispatch_obu_payload(
                 feature: "AV2-5.18-FRAME-HEADER",
             })
         }
-        obu_type => Ok(PayloadStatus::Unimplemented {
-            feature: unimplemented_payload_feature(obu_type),
+        _ => Ok(PayloadStatus::Unimplemented {
+            feature: "AV2-5.2.1-OBU-DISPATCH",
             payload,
         }),
     }
@@ -419,47 +419,6 @@ fn parse_empty_payload_syntax(payload: &[u8], payload_offset: ByteOffset) -> Res
     let mut reader = BitReader::new(payload, payload_offset);
     let nb_bits = (payload.len() as u64).saturating_mul(8);
     parse_trailing_bits(&mut reader, nb_bits)
-}
-
-/// Returns the implementation-matrix feature ID that owns the payload parser for an
-/// `obu_type` that `dispatch_obu_payload` does not yet parse (its catch-all arm).
-///
-/// As of the frame-carrying prefix dispatch, **no** type reaches this function: every
-/// frame-carrying type is handled by an explicit `PrefixParsed` arm, every other type is
-/// parsed by an explicit dispatch arm or kept opaque (reserved types). All variants are
-/// matched only to keep the match exhaustive and to keep an honest fallback feature ID if
-/// the dispatch arms ever change; the tile-group / frame-header arms below name the
-/// state-dependent residual owners directly.
-fn unimplemented_payload_feature(obu_type: ObuType) -> &'static str {
-    match obu_type {
-        ObuType::ClosedLoopKey
-        | ObuType::OpenLoopKey
-        | ObuType::LeadingTileGroup
-        | ObuType::RegularTileGroup
-        | ObuType::Switch
-        | ObuType::RasFrame => "AV2-5.19-TILE-GROUP",
-        ObuType::LeadingSef
-        | ObuType::RegularSef
-        | ObuType::LeadingTip
-        | ObuType::RegularTip
-        | ObuType::BridgeFrame => "AV2-5.18-FRAME-HEADER",
-        ObuType::Reserved0
-        | ObuType::TemporalDelimiter
-        | ObuType::Reserved(_)
-        | ObuType::SequenceHeader
-        | ObuType::MultiFrameHeader
-        | ObuType::Msdo
-        | ObuType::LayerConfigurationRecord
-        | ObuType::AtlasSegment
-        | ObuType::OperatingPointSet
-        | ObuType::BufferRemovalTiming
-        | ObuType::QuantizationMatrix
-        | ObuType::FilmGrain
-        | ObuType::ContentInterpretation
-        | ObuType::Padding
-        | ObuType::MetadataShort
-        | ObuType::MetadataGroup => "AV2-5.2.1-OBU-DISPATCH",
-    }
 }
 
 /// Parses AV2 `trailing_bits(nbBits)` from `reader` (AV2 v1.0.0 § 5.2.3).
