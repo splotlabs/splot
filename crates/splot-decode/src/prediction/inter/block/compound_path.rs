@@ -332,12 +332,8 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                         compound.y_mode.mvd_sign_derivation_threshold(),
                     )?
                 } else {
-                    let magnitude = read_newmv_block_mvd_magnitude_with_config(
-                        cdfs,
-                        symbols,
-                        tile_offset,
-                        config,
-                    )?;
+                    let magnitude =
+                        read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?;
                     apply_inter_mvd_signs(
                         magnitude,
                         symbols,
@@ -370,7 +366,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 let magnitude = if use_amvd {
                     read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?
                 } else {
-                    read_newmv_block_mvd_magnitude_with_config(cdfs, symbols, tile_offset, config)?
+                    read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?
                 };
                 let diff = apply_inter_mvd_signs(
                     magnitude,
@@ -417,18 +413,10 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                         compound.y_mode.mvd_sign_derivation_threshold(),
                     )?
                 } else {
-                    let magnitude0 = read_newmv_block_mvd_magnitude_with_config(
-                        cdfs,
-                        symbols,
-                        tile_offset,
-                        config,
-                    )?;
-                    let magnitude1 = read_newmv_block_mvd_magnitude_with_config(
-                        cdfs,
-                        symbols,
-                        tile_offset,
-                        config,
-                    )?;
+                    let magnitude0 =
+                        read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?;
+                    let magnitude1 =
+                        read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?;
                     apply_inter_mvd_sign_pair(
                         magnitude0,
                         magnitude1,

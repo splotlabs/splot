@@ -398,8 +398,7 @@ pub(crate) fn read_warp_extend_syntax(
     )?;
     let block_config = MvReadConfig::inter(block_precision.mv_precision);
     let pred_mv = lowered_pred_mv(block_precision, stack.candidate(ref_mv_idx));
-    let magnitude =
-        read_newmv_block_mvd_magnitude_with_config(cdfs, symbols, tile_offset, block_config)?;
+    let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, block_config)?;
     let diff = apply_inter_mvd_signs(magnitude, symbols, tile_offset, block_config, false, 1)?;
     let mv = Mv {
         row: mv_clamp_to_integer(pred_mv.row + diff.row),
@@ -488,8 +487,7 @@ pub(crate) fn read_warp_newmv_delta_syntax(
     )?;
     let block_config = MvReadConfig::inter(block_precision.mv_precision);
     let pred_mv = lowered_pred_mv(block_precision, stack.candidate(ref_mv_idx));
-    let magnitude =
-        read_newmv_block_mvd_magnitude_with_config(cdfs, symbols, tile_offset, block_config)?;
+    let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, block_config)?;
     let diff = apply_inter_mvd_signs(magnitude, symbols, tile_offset, block_config, false, 1)?;
     let mv = Mv {
         row: mv_clamp_to_integer(pred_mv.row + diff.row),
@@ -546,8 +544,7 @@ pub(crate) fn read_warpmv_delta_syntax(
     };
     let base_mv = stack.warp_predicted_mv(ref_warp_idx, base_precision);
     let mv = if warpmv_with_mvd {
-        let magnitude =
-            read_newmv_block_mvd_magnitude_with_config(cdfs, symbols, tile_offset, mv_config)?;
+        let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, mv_config)?;
         let diff = apply_inter_mvd_signs(magnitude, symbols, tile_offset, mv_config, false, 1)?;
         Mv {
             row: mv_clamp_to_integer(base_mv.row + diff.row),
