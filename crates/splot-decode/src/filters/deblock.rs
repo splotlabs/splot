@@ -17,11 +17,27 @@ const MI_SIZE: usize = 4;
 
 const SB_SIZE: usize = 64;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DeblockPredictionUnit {
     pub(crate) base_r: usize,
     pub(crate) base_c: usize,
     pub(crate) default_sub_pu_tx: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DeblockSubPuSize {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+}
+
+impl DeblockSubPuSize {
+    pub(crate) const fn new(width: usize, height: usize) -> Self {
+        Self { width, height }
+    }
+
+    pub(crate) const fn square(size: usize) -> Self {
+        Self::new(size, size)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -36,7 +52,7 @@ pub(crate) struct DeblockBlock {
     pub(crate) n4h: usize,
     pub(crate) luma_tx: usize,
     pub(crate) chroma_tx: Option<usize>,
-    pub(crate) sub_pu_size: Option<usize>,
+    pub(crate) sub_pu_size: Option<DeblockSubPuSize>,
     pub(crate) chroma_transform_only: bool,
     pub(crate) qindex: u32,
     pub(crate) skip: bool,
@@ -81,7 +97,7 @@ struct MiBlockInfo {
     chroma_base_col: usize,
     luma_tx: usize,
     chroma_tx: Option<usize>,
-    sub_pu_size: Option<usize>,
+    sub_pu_size: Option<DeblockSubPuSize>,
     qindex: u32,
     skip: bool,
     lossless: bool,
@@ -633,7 +649,12 @@ fn sub_pu_dimension(
     sub_y: usize,
 ) -> usize {
     if let Some(size) = info.sub_pu_size {
-        return (size >> if pass == 0 { sub_x } else { sub_y }).max(1);
+        let (dimension, subsampling) = if pass == 0 {
+            (size.width, sub_x)
+        } else {
+            (size.height, sub_y)
+        };
+        return (dimension >> subsampling).max(1);
     }
     let tx = if plane == 0 {
         info.luma_prediction.default_sub_pu_tx
@@ -665,8 +686,8 @@ fn sub_pu_base(
     let Some(size) = info.sub_pu_size else {
         return (block_x, block_y);
     };
-    let width = (size >> sub_x).max(1);
-    let height = (size >> sub_y).max(1);
+    let width = (size.width >> sub_x).max(1);
+    let height = (size.height >> sub_y).max(1);
     (
         block_x + x.saturating_sub(block_x) / width * width,
         block_y + y.saturating_sub(block_y) / height * height,

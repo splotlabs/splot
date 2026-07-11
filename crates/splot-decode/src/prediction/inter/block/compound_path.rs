@@ -934,9 +934,12 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
         None
     };
-    let sub_pu_size = compound
-        .use_optflow
-        .then(|| super::super::mc::optflow_unit_size(n4w * MI_SIZE, n4h * MI_SIZE));
+    let sub_pu_size = compound_deblock_sub_pu_size(
+        compound.use_optflow,
+        use_refinemv,
+        n4w * MI_SIZE,
+        n4h * MI_SIZE,
+    );
     record_inter_deblock_geometry(
         deblock_blocks,
         chroma_deblock_blocks,
@@ -1040,6 +1043,25 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         tile_offset,
     )?;
     Ok(non_intra_leaf_mode(frontier))
+}
+
+const fn compound_deblock_sub_pu_size(
+    use_optflow: bool,
+    use_refinemv: bool,
+    luma_width: usize,
+    luma_height: usize,
+) -> Option<crate::filters::deblock::DeblockSubPuSize> {
+    if use_optflow {
+        let size = super::super::mc::optflow_unit_size(luma_width, luma_height);
+        Some(crate::filters::deblock::DeblockSubPuSize::square(size))
+    } else if use_refinemv {
+        Some(crate::filters::deblock::DeblockSubPuSize::new(
+            if luma_width < 16 { luma_width } else { 16 },
+            if luma_height < 16 { luma_height } else { 16 },
+        ))
+    } else {
+        None
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

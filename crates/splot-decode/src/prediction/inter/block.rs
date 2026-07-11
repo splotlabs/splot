@@ -1755,7 +1755,9 @@ fn decode_block<T: ReconSample>(
         (n4w, n4h),
         sequence.general.chroma_format_idc,
         residual.as_ref(),
-        tip_ref.then_some(if tip_uses_16x16_units { 16 } else { 8 }),
+        tip_ref.then_some(crate::filters::deblock::DeblockSubPuSize::square(
+            if tip_uses_16x16_units { 16 } else { 8 },
+        )),
         block_qindex,
         current_residual_lossless(work_unit),
         tile_offset,

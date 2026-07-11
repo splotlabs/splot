@@ -21018,9 +21018,11 @@ id = "DECODE-INTER-DEBLOCK-SUBPU-METADATA"
 name = "Inter deblock sub-PU and inherited chroma metadata"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.4.1", "7.13.3.15", "7.17.2"]
+spec_sections = ["5.20.4.1", "7.13.3.1", "7.13.3.14", "7.13.3.15", "7.17.2"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-14",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-15",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-2",
 ]
@@ -21030,7 +21032,7 @@ change_id = "fix-inter-deblock-subpu-metadata"
 tracking_issue = ""
 owner = "decoder"
 risk = "high"
-notes = "Preserves the separate luma and chroma prediction-unit bases, default sub-PU transform sizes, and chroma transform-unit overlays consumed by the section 7.17.2 deblocking edge process. A sub-8 luma leaf no longer replaces the larger ChromaMiSize / MiRowBase[1] / MiColBase[1] state saved by section 5.20.4.1 and section 7.13.3.15: inherited chroma metadata covers the chroma-reference geometry, while actual U/V transform records replace only transform-base and DeblockingTxSizes cells. Frame-level allow_df_sub_pu is threaded into the edge gate instead of being inferred from whether the current record happens to carry a sub-PU size. The committed 10-bit 4:2:0 three-frame fixture contains MI (0,3) BLOCK_4X8 inheriting MI (0,0) BLOCK_16X8 with all deblocking passes active and frame-2 allow_df_sub_pu=true; pre-fix output differed from AVM in eight U samples and the fixed decoder matches pinned AVM and independent dav2d byte-for-byte. The fixture's one-bit header normalization makes allow_df_sub_pu=true explicit but is not output-discriminating versus its stock AVM source; the focused edge test and live decoder stream discriminate the allow gate, while the fixture discriminates inherited chroma metadata on an allow=true frame."
+notes = "Preserves the separate luma and chroma prediction-unit bases, default sub-PU transform sizes, explicit sub-PU geometry, and chroma transform-unit overlays consumed by the section 7.17.2 deblocking edge process. A sub-8 luma leaf no longer replaces the larger ChromaMiSize / MiRowBase[1] / MiColBase[1] state saved by section 5.20.4.1 and section 7.13.3.15: inherited chroma metadata covers the chroma-reference geometry, while actual U/V transform records replace only transform-base and DeblockingTxSizes cells. Ordinary U/V residual-transform records retain the parent luma/chroma prediction bases and sub-PU geometry instead of resetting them at each transform. Explicit sub-PU geometry is rectangular: RefineMV records min(blockWidth,16) by min(blockHeight,16), including 8x16 and 16x8 cases, while the later OPFL subdivision takes precedence when both tools run. Pass-specific deblocking uses width for the horizontal pass and height for the vertical pass after plane subsampling. Frame-level allow_df_sub_pu is threaded into the edge gate instead of being inferred from whether the current record happens to carry a sub-PU size. Together these handoffs make the target stream's hidden order-hint-4 final SHA-256 byte-exact to pinned AVM revision 457cd58681a747465661baccb1f32095bc5b7774 at ed9720a741451bda28eb91e904c1756797913977fdb3a8a7358d37a32eebfb08. The committed 10-bit 4:2:0 three-frame fixture contains MI (0,3) BLOCK_4X8 inheriting MI (0,0) BLOCK_16X8 with all deblocking passes active and frame-2 allow_df_sub_pu=true; pre-fix output differed from AVM in eight U samples and the fixed decoder matches pinned AVM and independent dav2d byte-for-byte. The fixture's one-bit header normalization makes allow_df_sub_pu=true explicit but is not output-discriminating versus its stock AVM source; focused tests and the live decoder stream discriminate the allow gate, rectangular RefineMV/OPFL geometry, and ordinary chroma metadata handoff."
 
 [feature.status]
 mapped = "done"
@@ -21049,12 +21051,18 @@ tests = [
     "crates/splot-decode/src/filters/deblock_tests.rs::inherited_chroma_residual_transform_retains_prediction_metadata",
     "crates/splot-decode/src/filters/deblock_tests.rs::ordinary_chroma_overlay_replaces_full_block_metadata",
     "crates/splot-decode/src/filters/deblock_tests.rs::allow_df_sub_pu_gates_prediction_boundary_filtering",
+    "crates/splot-decode/src/filters/deblock_tests.rs::explicit_sub_pu_dimensions_follow_pass_and_chroma_subsampling",
+    "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::refinemv_deblock_subpu_geometry_preserves_rectangular_blocks",
+    "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::optflow_deblock_subpu_geometry_takes_precedence_over_refinemv",
+    "crates/splot-decode/src/prediction/inter/block/filter_records.rs::tests::ordinary_chroma_residual_retains_parent_prediction_and_rectangular_subpu",
     "crates/splot-core/src/write/frame_filters_tests.rs::deblocking_allow_df_sub_pu_rejected_before_write",
     "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
 ]
 commands = [
     "cargo test -p splot-decode inherited_chroma_residual_transform_retains_prediction_metadata --locked",
     "cargo test -p splot-decode allow_df_sub_pu_gates_prediction_boundary_filtering --locked",
+    "cargo test -p splot-decode deblock_subpu --locked",
+    "cargo test -p splot-decode ordinary_chroma_residual_retains_parent_prediction_and_rectangular_subpu --locked",
     "cargo test -p splot-core deblocking_allow_df_sub_pu_rejected_before_write --locked",
     "cargo xtask decoder-fixtures verify",
 ]

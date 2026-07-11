@@ -18,7 +18,7 @@ pub(crate) fn record_inter_deblock_geometry(
     block_size4: (usize, usize),
     chroma_format: ChromaFormatIdc,
     residual: Option<&InterResidual>,
-    sub_pu_size: Option<usize>,
+    sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
     qindex: u32,
     lossless: bool,
     tile_offset: ByteOffset,
@@ -169,11 +169,77 @@ pub(crate) fn record_inter_deblock_geometry(
                         lossless,
                     )
                 {
-                    record.chroma_transform_only = inherited_chroma_metadata;
+                    retain_inter_prediction_metadata(
+                        &mut record,
+                        luma_prediction,
+                        chroma_prediction,
+                        sub_pu_size,
+                        inherited_chroma_metadata,
+                    );
                     chroma_deblock_blocks[plane_index].push(record);
                 }
             }
         }
     }
     Ok(())
+}
+
+fn retain_inter_prediction_metadata(
+    record: &mut crate::filters::deblock::DeblockBlock,
+    luma_prediction: crate::filters::deblock::DeblockPredictionUnit,
+    chroma_prediction: crate::filters::deblock::DeblockPredictionUnit,
+    sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
+    chroma_transform_only: bool,
+) {
+    record.luma_prediction = luma_prediction;
+    record.chroma_prediction = chroma_prediction;
+    record.sub_pu_size = sub_pu_size;
+    record.chroma_transform_only = chroma_transform_only;
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use splot_recon::PlaneId;
+
+    use super::*;
+
+    #[test]
+    fn ordinary_chroma_residual_retains_parent_prediction_and_rectangular_subpu() {
+        let (_, mut record) = crate::filters::wienerns_lr::chroma_transform_deblock_block(
+            PlaneId::U,
+            8,
+            12,
+            3,
+            (1, 1),
+            77,
+            false,
+        )
+        .unwrap();
+        let luma_prediction = crate::filters::deblock::DeblockPredictionUnit {
+            base_r: 2,
+            base_c: 3,
+            default_sub_pu_tx: 4,
+        };
+        let chroma_prediction = crate::filters::deblock::DeblockPredictionUnit {
+            base_r: 4,
+            base_c: 5,
+            default_sub_pu_tx: 6,
+        };
+        let sub_pu_size = crate::filters::deblock::DeblockSubPuSize::new(8, 16);
+
+        retain_inter_prediction_metadata(
+            &mut record,
+            luma_prediction,
+            chroma_prediction,
+            Some(sub_pu_size),
+            false,
+        );
+
+        assert_eq!(record.luma_prediction, luma_prediction);
+        assert_eq!(record.chroma_prediction, chroma_prediction);
+        assert_eq!(record.sub_pu_size, Some(sub_pu_size));
+        assert!(!record.chroma_transform_only);
+    }
 }

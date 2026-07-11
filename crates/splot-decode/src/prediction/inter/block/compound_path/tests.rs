@@ -11,6 +11,34 @@ use crate::bitstream::tile_payload::FrameCdfSubset;
 
 const TILE_OFFSET: ByteOffset = ByteOffset::new(0);
 
+#[test]
+fn refinemv_deblock_subpu_geometry_preserves_rectangular_blocks() {
+    use crate::filters::deblock::DeblockSubPuSize;
+
+    assert_eq!(
+        compound_deblock_sub_pu_size(false, true, 32, 32),
+        Some(DeblockSubPuSize::new(16, 16))
+    );
+    assert_eq!(
+        compound_deblock_sub_pu_size(false, true, 8, 32),
+        Some(DeblockSubPuSize::new(8, 16))
+    );
+    assert_eq!(
+        compound_deblock_sub_pu_size(false, true, 32, 8),
+        Some(DeblockSubPuSize::new(16, 8))
+    );
+}
+
+#[test]
+fn optflow_deblock_subpu_geometry_takes_precedence_over_refinemv() {
+    use crate::filters::deblock::DeblockSubPuSize;
+
+    assert_eq!(
+        compound_deblock_sub_pu_size(true, true, 8, 16),
+        Some(DeblockSubPuSize::square(8))
+    );
+}
+
 fn encode_wedge_compound_blend() -> Vec<u8> {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::with_config(
