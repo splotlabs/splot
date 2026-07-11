@@ -1,0 +1,382 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+//! Loop-restoration selection and source-block records.
+
+use super::lr_syntax::{MI_SIZE, WIENER_NS_CHROMA_COEFFS, WienerNsUnitFilterState};
+use super::{
+    DecodeLimitName, DecodeLimits, TilePartitionBounds, TilePartitionFrameFacts,
+    TilePartitionTraversalError, checked_add, checked_mul, checked_mul_shifted, checked_sub,
+};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TileLoopRestorationRootFrontier {
+    pub(super) symbol_count_after: u64,
+    pub(super) consumed_bits_after: u64,
+    pub(super) lr_units_consumed: usize,
+    pub(super) active_wiener_ns_units: usize,
+    pub(super) selections: Vec<WienerNsLrUnitSelection>,
+    pub(super) active_source_blocks: Vec<WienerNsLrSourceBlock>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WienerNsLrUnitSelection {
+    pub(crate) plane: usize,
+    pub(crate) unit_row: usize,
+    pub(crate) unit_col: usize,
+    pub(crate) active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WienerNsLrSourceBlock {
+    pub(crate) plane: usize,
+    pub(crate) row: usize,
+    pub(crate) col: usize,
+    pub(crate) unit_row: usize,
+    pub(crate) unit_col: usize,
+    pub(crate) tile_mi_row_start: usize,
+    pub(crate) tile_mi_row_end: usize,
+    pub(crate) tile_mi_col_start: usize,
+    pub(crate) tile_mi_col_end: usize,
+    pub(crate) x: usize,
+    pub(crate) y: usize,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) luma_start_x: usize,
+    pub(crate) luma_end_x: usize,
+    pub(crate) luma_start_y: usize,
+    pub(crate) luma_end_y: usize,
+    pub(crate) frame_luma_end_y: usize,
+    pub(crate) luma_stripe_start_y: usize,
+    pub(crate) luma_stripe_end_y: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WienerNsLrUnitFilter {
+    pub(crate) plane: usize,
+    pub(crate) unit_row: usize,
+    pub(crate) unit_col: usize,
+    pub(crate) coeff_count: usize,
+    pub(crate) coeffs: [i16; WIENER_NS_CHROMA_COEFFS],
+}
+
+impl TileLoopRestorationRootFrontier {
+    #[must_use]
+    pub(crate) const fn symbol_count_after(&self) -> u64 {
+        self.symbol_count_after
+    }
+
+    #[must_use]
+    pub(crate) const fn consumed_bits_after(&self) -> u64 {
+        self.consumed_bits_after
+    }
+
+    #[must_use]
+    pub(crate) const fn lr_units_consumed(&self) -> usize {
+        self.lr_units_consumed
+    }
+
+    #[must_use]
+    pub(crate) const fn active_wiener_ns_units(&self) -> usize {
+        self.active_wiener_ns_units
+    }
+
+    #[must_use]
+    pub(crate) fn selections(&self) -> &[WienerNsLrUnitSelection] {
+        &self.selections
+    }
+
+    #[must_use]
+    pub(crate) fn active_source_blocks(&self) -> &[WienerNsLrSourceBlock] {
+        &self.active_source_blocks
+    }
+
+    #[must_use]
+    pub(crate) const fn all_lr_units_inactive(&self) -> bool {
+        self.active_wiener_ns_units == 0
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct WienerNsLrUnitActivity {
+    pub(super) units_consumed: usize,
+    pub(super) active_units: usize,
+    pub(super) selections: Vec<WienerNsLrUnitSelection>,
+    pub(super) active_source_blocks: Vec<WienerNsLrSourceBlock>,
+    pub(super) unit_filters: Vec<WienerNsLrUnitFilter>,
+    pub(super) unit_filter_state: WienerNsUnitFilterState,
+    retain_source_blocks: bool,
+}
+
+impl WienerNsLrUnitActivity {
+    pub(super) fn retaining_source_blocks() -> Self {
+        Self {
+            retain_source_blocks: true,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn record(
+        &mut self,
+        plane: usize,
+        unit_row: usize,
+        unit_col: usize,
+        active: bool,
+    ) -> Result<(), TilePartitionTraversalError> {
+        self.units_consumed = checked_add("lr_units_consumed", self.units_consumed, 1)?;
+        if active {
+            self.active_units = checked_add("lr_active_wiener_ns_units", self.active_units, 1)?;
+        }
+        self.selections.push(WienerNsLrUnitSelection {
+            plane,
+            unit_row,
+            unit_col,
+            active,
+        });
+        Ok(())
+    }
+
+    fn record_source_block(
+        &mut self,
+        block: WienerNsLrSourceBlock,
+        limits: DecodeLimits,
+    ) -> Result<(), TilePartitionTraversalError> {
+        if !self.retain_source_blocks {
+            return Ok(());
+        }
+        let next_len = checked_add(
+            "lr_active_source_blocks",
+            self.active_source_blocks.len(),
+            1,
+        )?;
+        limits.ensure_allocation_len(DecodeLimitName::MaxLumaSamplesPerFrame, next_len as u64)?;
+        self.active_source_blocks.push(block);
+        Ok(())
+    }
+
+    pub(super) fn record_unit_filter(
+        &mut self,
+        filter: WienerNsLrUnitFilter,
+        limits: DecodeLimits,
+    ) -> Result<(), TilePartitionTraversalError> {
+        if !self.retain_source_blocks {
+            return Ok(());
+        }
+        let next_len = checked_add("lr_unit_filters", self.unit_filters.len(), 1)?;
+        limits.ensure_allocation_len(DecodeLimitName::MaxLumaSamplesPerFrame, next_len as u64)?;
+        self.unit_filters.push(filter);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct LrSourceBlockDerivation {
+    pub(super) plane: usize,
+    pub(super) unit_size: usize,
+    pub(super) unit_row: usize,
+    pub(super) unit_col: usize,
+    pub(super) frame: TilePartitionFrameFacts,
+    pub(super) tile_bounds: TilePartitionBounds,
+    pub(super) sub_x: usize,
+    pub(super) sub_y: usize,
+}
+
+pub(super) fn record_active_wiener_ns_source_blocks_for_unit(
+    input: LrSourceBlockDerivation,
+    limits: DecodeLimits,
+    lr_activity: &mut WienerNsLrUnitActivity,
+) -> Result<(), TilePartitionTraversalError> {
+    if !lr_activity.retain_source_blocks {
+        return Ok(());
+    }
+    let geometry = lr_unit_geometry(input)?;
+    let mut rows = Vec::new();
+    for row in input.tile_bounds.mi_row_start..input.tile_bounds.mi_row_end {
+        if lr_unit_row_for_mi(input, geometry, row)? == input.unit_row {
+            rows.push(row);
+        }
+    }
+    let mut cols = Vec::new();
+    for col in input.tile_bounds.mi_col_start..input.tile_bounds.mi_col_end {
+        if lr_unit_col_for_mi(input, geometry, col)? == input.unit_col {
+            cols.push(col);
+        }
+    }
+    for &row in &rows {
+        for &col in &cols {
+            let block = lr_source_block_for(input, row, col)?;
+            lr_activity.record_source_block(block, limits)?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct LrUnitGeometry {
+    unit_rows: usize,
+    unit_cols: usize,
+    lr_row_offset: usize,
+    lr_col_offset: usize,
+}
+
+fn lr_unit_geometry(
+    input: LrSourceBlockDerivation,
+) -> Result<LrUnitGeometry, TilePartitionTraversalError> {
+    let mi_cols = checked_sub(
+        "lr_source_mi_cols",
+        input.tile_bounds.mi_col_end,
+        input.tile_bounds.mi_col_start,
+    )?;
+    let mi_rows = checked_sub(
+        "lr_source_mi_rows",
+        input.tile_bounds.mi_row_end,
+        input.tile_bounds.mi_row_start,
+    )?;
+    let frame_cols = checked_mul_shifted("lr_source_frame_cols", mi_cols, MI_SIZE, input.sub_x)?;
+    let frame_rows = checked_mul_shifted("lr_source_frame_rows", mi_rows, MI_SIZE, input.sub_y)?;
+    let unit_rows = count_units_in_frame(input.unit_size, frame_rows)?;
+    let unit_cols = count_units_in_frame(input.unit_size, frame_cols)?;
+    let lr_row_offset = checked_mul_shifted(
+        "lr_source_row_offset",
+        input.tile_bounds.mi_row_start,
+        MI_SIZE,
+        input.sub_y,
+    )? / input.unit_size;
+    let lr_col_offset = checked_mul_shifted(
+        "lr_source_col_offset",
+        input.tile_bounds.mi_col_start,
+        MI_SIZE,
+        input.sub_x,
+    )? / input.unit_size;
+    Ok(LrUnitGeometry {
+        unit_rows,
+        unit_cols,
+        lr_row_offset,
+        lr_col_offset,
+    })
+}
+
+fn lr_unit_row_for_mi(
+    input: LrSourceBlockDerivation,
+    geometry: LrUnitGeometry,
+    row: usize,
+) -> Result<usize, TilePartitionTraversalError> {
+    let local_row = checked_sub("lr_source_row", row, input.tile_bounds.mi_row_start)?;
+    let row_sample = checked_mul("lr_source_unit_row_sample", local_row, MI_SIZE)?;
+    let row_sample = checked_add("lr_source_unit_row_sample", row_sample, 8)?;
+    let row_sample = row_sample >> input.sub_y;
+    checked_add(
+        "lr_source_unit_row",
+        geometry.lr_row_offset,
+        (row_sample / input.unit_size).min(geometry.unit_rows.saturating_sub(1)),
+    )
+}
+
+fn lr_unit_col_for_mi(
+    input: LrSourceBlockDerivation,
+    geometry: LrUnitGeometry,
+    col: usize,
+) -> Result<usize, TilePartitionTraversalError> {
+    let local_col = checked_sub("lr_source_col", col, input.tile_bounds.mi_col_start)?;
+    let col_sample =
+        checked_mul_shifted("lr_source_unit_col_sample", local_col, MI_SIZE, input.sub_x)?;
+    checked_add(
+        "lr_source_unit_col",
+        geometry.lr_col_offset,
+        (col_sample / input.unit_size).min(geometry.unit_cols.saturating_sub(1)),
+    )
+}
+
+fn lr_source_block_for(
+    input: LrSourceBlockDerivation,
+    row: usize,
+    col: usize,
+) -> Result<WienerNsLrSourceBlock, TilePartitionTraversalError> {
+    let x = checked_mul_shifted("lr_source_x", col, MI_SIZE, input.sub_x)?;
+    let y = checked_mul_shifted("lr_source_y", row, MI_SIZE, input.sub_y)?;
+    let width = MI_SIZE >> input.sub_x;
+    let height = MI_SIZE >> input.sub_y;
+    let (luma_start_x_mi, luma_end_x_mi, luma_start_y_mi, luma_end_y_mi) =
+        if input.frame.disable_loopfilters_across_tiles {
+            (
+                input.tile_bounds.mi_col_start,
+                input.tile_bounds.mi_col_end,
+                input.tile_bounds.mi_row_start,
+                input.tile_bounds.mi_row_end,
+            )
+        } else {
+            (0, input.frame.mi_cols, 0, input.frame.mi_rows)
+        };
+    let luma_start_x = checked_mul("lr_luma_start_x", luma_start_x_mi, MI_SIZE)?;
+    let luma_start_y = checked_mul("lr_luma_start_y", luma_start_y_mi, MI_SIZE)?;
+    let luma_end_x = checked_sub(
+        "lr_luma_end_x",
+        checked_mul("lr_luma_end_x", luma_end_x_mi, MI_SIZE)?,
+        1,
+    )?;
+    let luma_end_y = checked_sub(
+        "lr_luma_end_y",
+        checked_mul("lr_luma_end_y", luma_end_y_mi, MI_SIZE)?,
+        1,
+    )?;
+    let frame_luma_end_y = checked_sub(
+        "lr_frame_luma_end_y",
+        checked_mul("lr_frame_luma_end_y", input.frame.mi_rows, MI_SIZE)?,
+        1,
+    )?;
+    let local_row = checked_sub("lr_source_local_row", row, input.tile_bounds.mi_row_start)?;
+    let luma_y = checked_mul("lr_source_luma_y", local_row, MI_SIZE)?;
+    let stripe_num = checked_add("lr_source_stripe_num", luma_y, 8)? / 64;
+    let stripe_base = checked_add(
+        "lr_source_stripe_base",
+        checked_mul(
+            "lr_source_stripe_base",
+            input.tile_bounds.mi_row_start,
+            MI_SIZE,
+        )?,
+        checked_mul("lr_source_stripe_base", stripe_num, 64)?,
+    )?;
+    let luma_stripe_start_y = stripe_base
+        .checked_sub(8)
+        .map_or(luma_start_y, |start| luma_start_y.max(start));
+    let luma_stripe_end_y = luma_end_y.min(checked_add("lr_source_stripe_end_y", stripe_base, 55)?);
+
+    Ok(WienerNsLrSourceBlock {
+        plane: input.plane,
+        row,
+        col,
+        unit_row: input.unit_row,
+        unit_col: input.unit_col,
+        tile_mi_row_start: input.tile_bounds.mi_row_start,
+        tile_mi_row_end: input.tile_bounds.mi_row_end,
+        tile_mi_col_start: input.tile_bounds.mi_col_start,
+        tile_mi_col_end: input.tile_bounds.mi_col_end,
+        x,
+        y,
+        width,
+        height,
+        luma_start_x,
+        luma_end_x,
+        luma_start_y,
+        luma_end_y,
+        frame_luma_end_y,
+        luma_stripe_start_y,
+        luma_stripe_end_y,
+    })
+}
+
+pub(super) fn count_units_in_frame(
+    unit_size: usize,
+    frame_size: usize,
+) -> Result<usize, TilePartitionTraversalError> {
+    Ok(checked_add("lr_count_units", frame_size, unit_size >> 1)? / unit_size)
+        .map(|count| count.max(1))
+}
+
+pub(super) fn ceil_unit_index(
+    value: usize,
+    unit_size: usize,
+) -> Result<usize, TilePartitionTraversalError> {
+    let adjusted = checked_add("lr_unit_ceil", value, unit_size.saturating_sub(1))?;
+    Ok(adjusted / unit_size)
+}
