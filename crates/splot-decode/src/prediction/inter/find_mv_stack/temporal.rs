@@ -900,7 +900,7 @@ fn project_temporal_motion_field(
             if (side == 0 && ref_offset < 0) || (side == 1 && ref_offset > 0) {
                 continue;
             }
-            let mut source_to_current = super::super::get_relative_dist(source_hint, current_hint);
+            let source_to_current = super::super::get_relative_dist(source_hint, current_hint);
             if source_to_current.abs() > MAX_FRAME_DISTANCE {
                 continue;
             }
@@ -921,7 +921,6 @@ fn project_temporal_motion_field(
             }
             if ref_offset < 0 {
                 ref_offset = -ref_offset;
-                source_to_current = -source_to_current;
                 mv = Mv {
                     row: -mv.row,
                     col: -mv.col,
@@ -1272,6 +1271,31 @@ mod tests {
         context.fill_sampling_gaps(2, 16);
         assert_eq!(context.field.cell(0, 1), context.field.cell(0, 0));
         assert_eq!(context.field.cell(0, 3), context.field.cell(0, 2));
+    }
+
+    #[test]
+    fn backward_projection_preserves_source_to_current_direction() {
+        let mut source = TemporalMotionField::new(18, 56).unwrap();
+        *source.cell_mut(8, 26).unwrap() = TemporalMotionCell {
+            ref_order_hints: [None, Some(9)],
+            mvs: [Mv::ZERO, compress_tmvp_mv(Mv { row: 10, col: 232 })],
+        };
+        let mut output = ProjectedTemporalMotionField::new(18, 56).unwrap();
+
+        project_temporal_motion_field(&source, 4, 2, 1, 0, 1, None, &[], None, &mut output);
+
+        assert_eq!(
+            output.cell(8, 25),
+            Some(ProjectedTemporalMotionCell {
+                valid: true,
+                mv: Mv {
+                    row: -10,
+                    col: -232,
+                },
+                ref_offset: 5,
+            })
+        );
+        assert!(!output.cell(8, 27).unwrap().valid);
     }
 
     #[test]
