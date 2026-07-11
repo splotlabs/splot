@@ -7,6 +7,7 @@ use splot_recon::wedge_mask_plane_sample;
 use super::super::compound::{
     CompoundParseInput, CompoundYMode, read_compound_mode_syntax, read_compound_reference_pair,
 };
+use super::super::find_mv_stack::OrderHintMvContext;
 use super::super::read_mv::apply_inter_mvd_sign_pair;
 use super::*;
 use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
@@ -59,6 +60,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     block_decoded: &TileBlockDecodedState,
     mv_grid: &mut NeighbourMvGrid,
     temporal_context: Option<&TemporalMvContext>,
+    order_hints: OrderHintMvContext<'_>,
     tip_ref_pair: Option<(i8, i8)>,
     motion_field: &mut TemporalMotionField,
     block_ctx: &mut MvBlockContext,
@@ -278,6 +280,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 false,
                 drl_reorder,
                 temporal_context,
+                Some(order_hints),
                 temporal_first0,
             );
             let stack1 = find_mv_stack_with_temporal(
@@ -289,6 +292,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 false,
                 drl_reorder,
                 temporal_context,
+                Some(order_hints),
                 temporal_first1,
             );
             [stack0.candidate(idx0), stack1.candidate(idx1)]

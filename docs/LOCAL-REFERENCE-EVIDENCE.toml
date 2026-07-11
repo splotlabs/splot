@@ -2248,6 +2248,58 @@ left = "avm-2frame-inter-mvstack-raw-md5"
 right = "dav2d-2frame-inter-mvstack-raw-md5"
 
 [[evidence]]
+id = "lref-avm-dav2d-syn-3frame-derived-smvp-96x64-q100"
+feature_id = "DECODE-INTER-MVSTACK-SPATIAL"
+decoder_support_rows = ["inter-mvstack-spatial"]
+kind = "reference-output-agreement"
+summary = "The repository-pinned AVM decoder and an independent dav2d build produced identical raw output for a three-frame 10-bit 4:2:0 IVF whose decisive frame-2 NEWMV block requires §7.12.2.16 same-side derived spatial projection while use_ref_frame_mvs is false. At MI(12,13), the target-reference-1 block projects its above neighbour's DeltaWarp reference-0 sub-MV (-12,9) through the order hints to (-24,18), lowers it to (-24,16), and reconstructs the coded MV as (-16,24); dropping spatial derivation when the temporal scan is disabled instead uses the zero predictor and reconstructs (8,8)."
+recorded_at = "2026-07-11"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-3frame-derived-smvp-96x64-q100.ivf"
+sha256 = "cbc0b6287c6dc1f5f764cc36a81cf450b40438a074384e8d238c8323d8deff3d"
+size_bytes = 941
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Reproducibly generated with AVM encoder 1.0.0-41-g3935f4bf3 (commit 3935f4bf31ee774177d9300341bbbaf5b6116500) from a project-owned three-frame 96x64 10-bit little-endian I420 source. The source generator places a rotating textured disk (6 degrees per frame) over a static axis-aligned two-sine luma background and uses flat U/V at 512. The encode uses --i420 -w 96 -h 64 --bit-depth=10 --input-bit-depth=10 --profile=0 --limit=3 --fps=30/1 --cpu-used=0 --passes=1 --end-usage=q --qp=100 --min-qp=100 --max-qp=100 --sb-size=64 --tile-columns=0 --tile-rows=0 --kf-min-dist=16 --kf-max-dist=16, enables warped motion, warp causal, warp delta, warp extend, TIP, deblocking, CDEF, restoration, and CCSO, and explicitly disables six-parameter warp delta, global motion, TIP refine-MV, temporal reference-frame MVs, one-sided compound, skip mode, GDF, TCQ, inter DDT, IntraBC, smooth intra, angle delta, FSC, intra DIP, Wiener NS, BAWP, extended segmentation, delta-Q, and adaptive quantization. Regenerating from that source and command produced the committed IVF byte-for-byte. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AVM decoder 1.0.0-33-g457cd5868 built from the repository-pinned commit 457cd58681a747465661baccb1f32095bc5b7774."
+command_summary = "avmdec --rawvideo --i420 decoded {fixture:input} to 55296 raw bytes."
+output_digest_id = "avm-3frame-derived-smvp-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "7b5f9068d515351d82ae3363166d8052"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.reference_run]]
+id = "dav2d"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "a88febb3e546d6bf08897f094a13a13551ab9740"
+version_summary = "dav2d 0.0.1-193-ga88febb3 built from commit a88febb3e546d6bf08897f094a13a13551ab9740."
+command_summary = "dav2d --demuxer ivf --muxer yuv decoded {fixture:input} to 55296 raw bytes."
+output_digest_id = "dav2d-3frame-derived-smvp-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "7b5f9068d515351d82ae3363166d8052"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-3frame-derived-smvp-raw-md5"
+right = "dav2d-3frame-derived-smvp-raw-md5"
+
+[[evidence]]
 id = "lref-avm-dav2d-syn-2sb-inter-128x64-q80"
 feature_id = "DECODE-INTER-MULTI-SB-SPATIAL"
 decoder_support_rows = ["inter-multi-sb-spatial"]

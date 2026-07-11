@@ -32,8 +32,8 @@ mod temporal;
 mod warp_bank;
 use derived::{CompoundScanState, DerivedMvState};
 pub(crate) use temporal::{
-    TemporalMotionBlock, TemporalMotionField, TemporalMvContext, TemporalProjectionConfig,
-    reference_order_hints, tip_reference_pair_from_hints,
+    OrderHintMvContext, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
+    TemporalProjectionConfig, reference_order_hints, tip_reference_pair_from_hints,
 };
 pub(crate) use warp_bank::{WarpParamBank, WarpParamStack};
 
@@ -1673,6 +1673,7 @@ pub(crate) fn find_mv_stack(
         derive_wrl,
         drl_reorder,
         None,
+        None,
         use_temporal_first,
     )
 }
@@ -1687,20 +1688,19 @@ pub(crate) fn find_mv_stack_with_temporal(
     derive_wrl: bool,
     drl_reorder: DrlReorder,
     temporal: Option<&TemporalMvContext>,
+    order_hints: Option<OrderHintMvContext<'_>>,
     use_temporal_first: bool,
 ) -> MvStack {
     let mut entries: Vec<MvStackEntry> = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
     let mut prune_count = 0usize;
-    let mut derived = DerivedMvState::new(temporal);
+    let mut derived = DerivedMvState::new(temporal, order_hints);
     let mut warp = derive_wrl.then(WarpParamStack::new);
-
     if let Some(warp) = warp.as_mut() {
         generate_points_from_corners(grid, block, 0, warp);
         if warp.num_found == 0 && block.bw4 <= 16 {
             generate_points_from_corners(grid, block, 1, warp);
         }
     }
-
     if use_temporal_first {
         scan_temporal_mv_stack(block, temporal, &mut entries, &mut prune_count);
     }

@@ -314,6 +314,7 @@ fn single_mv_stack_projects_tip_neighbour_and_derives_other_side() {
             false,
             DrlReorder::Disabled,
             Some(&temporal),
+            Some(temporal.order_hint_mv_context()),
             false,
         );
         assert_eq!(candidate.candidate(0), expected_mv);
@@ -374,6 +375,7 @@ fn tip_mv_stack_derives_base_motion_from_its_reference_pair() {
         false,
         DrlReorder::Disabled,
         Some(&temporal),
+        Some(temporal.order_hint_mv_context()),
         false,
     );
 
@@ -1778,6 +1780,7 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         false,
         DrlReorder::Always,
         Some(&temporal),
+        Some(temporal.order_hint_mv_context()),
         false,
     );
     assert_eq!(
@@ -1790,6 +1793,54 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         first_mv,
         "the original first spatial candidate is swapped behind the heavier temporal candidate"
     );
+}
+
+#[test]
+fn same_side_spatial_projection_survives_disabled_temporal_scan() {
+    let mut grid = empty_grid();
+    record_inter_ref(
+        &mut grid,
+        0,
+        0,
+        1,
+        NeighbourYMode::Other,
+        Mv { row: 8, col: 12 },
+        false,
+    );
+    let block = block_at(0, N4_32);
+    let frame_size = (MI_DIM * 4, MI_DIM * 4);
+    let context = TemporalMvContext::from_references(
+        (MI_DIM, MI_DIM),
+        10,
+        TemporalProjectionConfig {
+            frame_size,
+            step: 1,
+            unit_size8: 8,
+            enable_tip: false,
+            enable_trajectory: false,
+            reduced: false,
+        },
+        &[0, 1],
+        &[true, true],
+        &[8, 6],
+        &[None, None],
+    )
+    .unwrap();
+
+    let stack = find_mv_stack_with_temporal(
+        &grid,
+        &block,
+        Mv::ZERO,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+        None,
+        Some(context.order_hint_mv_context()),
+        false,
+    );
+
+    assert_eq!(stack.candidate(0), Mv { row: 4, col: 6 });
 }
 
 fn record_two_wide_column(grid: &mut NeighbourMvGrid, c: usize, mv: Mv) {
