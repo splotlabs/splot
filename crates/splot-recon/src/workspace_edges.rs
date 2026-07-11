@@ -406,7 +406,5 @@ fn extend_edge_to_nominal<T: ReconSample>(edge: &mut Vec<T>, nominal_len: usize)
     let Some(&last) = edge.last() else {
         return;
     };
-    while edge.len() < nominal_len {
-        edge.push(last);
-    }
+    edge.resize(nominal_len, last);
 }
