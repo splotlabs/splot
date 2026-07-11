@@ -362,7 +362,7 @@ impl ValidatorContext {
             .any(|snapshot| snapshot.offset == obu.offset)
         {
             self.msdo_agreement_snapshots.push(MsdoWindowSnapshot {
-                aggregate: aggregate.clone(),
+                aggregate,
                 offset: obu.offset,
                 observed_tu_index: self.cvs.tu_index,
             });
