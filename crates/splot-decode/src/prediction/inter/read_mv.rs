@@ -87,15 +87,6 @@ pub(crate) fn lower_mv_precision(precision: u8, mv: Mv) -> Mv {
     }
 }
 
-pub(crate) fn read_newmv_block_mvd_magnitude(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    tile_offset: ByteOffset,
-    config: MvReadConfig,
-) -> Result<Mv> {
-    read_newmv_block_mvd_magnitude_with_config(cdfs, symbols, tile_offset, config)
-}
-
 pub(crate) fn read_newmv_amvd_block_mvd(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
