@@ -379,8 +379,9 @@ pub fn write_sequence_inter_config(
     writer.write_flag(config.enable_refmvbank)?;
     write_drl_reorder(writer, config.drl_reorder)?;
     writer.write_flag(config.explicit_ref_frame_map)?;
-    writer.write_flag(config.explicit_num_ref_frames())?;
-    if config.explicit_num_ref_frames() {
+    let explicit_num_ref_frames = config.num_ref_frames != 8;
+    writer.write_flag(explicit_num_ref_frames)?;
+    if explicit_num_ref_frames {
         writer.write_bits_u8(config.num_ref_frames - 1, 4)?;
     }
     writer.write_bits_u8(config.long_term_frame_id_bits, 3)?;
@@ -426,18 +427,6 @@ fn any_motion_mode_enabled(config: &SequenceInterConfig) -> bool {
     config.seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
         .iter()
         .any(|&enabled| enabled)
-}
-
-trait InterConfigExt {
-    /// Recovers `explicit_num_ref_frames` (§ 5.4.6): the parser reads `f(4)` of
-    /// `num_ref_frames_minus_1` when this is `true`, else infers `NumRefFrames = 8`.
-    fn explicit_num_ref_frames(&self) -> bool;
-}
-
-impl InterConfigExt for SequenceInterConfig {
-    fn explicit_num_ref_frames(&self) -> bool {
-        self.num_ref_frames != 8
-    }
 }
 
 /// Validates that `config` is a model the § 5.4.6 parser could have produced. The
