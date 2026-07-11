@@ -891,31 +891,10 @@ fn finish_inter_control(
     control: crate::headers::frame::inter::InterControl,
     result: Result<()>,
 ) -> Result<()> {
-    if let Some(size) = control.frame_size {
-        core.frame_size = Some(size);
-    }
-    if let Some(flags) = control.refresh_frame_flags {
-        core.refresh_frame_flags = Some(flags);
-    }
     if let Some(force_integer_mv) = control.force_integer_mv {
         core.force_integer_mv = Some(force_integer_mv);
     }
-    core.disable_cdf_update = control.disable_cdf_update;
-    core.inter = Some(control);
-
-    match result {
-        Ok(()) => {
-            core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
-                feature_id: FRAME_HEADER_INFO_FEATURE,
-            };
-            Ok(())
-        }
-        Err(Error::UnexpectedEof { .. }) => {
-            core.status = FrameHeaderParseStatus::StoppedInsideInterControl;
-            Ok(())
-        }
-        Err(error) => Err(error),
-    }
+    finish_inter_control_with_tail(core, control, result, false)
 }
 
 /// Like [`finish_inter_control`], but for the non-bridge inter path that may have continued
