@@ -51,8 +51,16 @@ impl DeblockRecorder<'_> {
         self.blocks.push(crate::filters::deblock::DeblockBlock {
             r,
             c,
-            block_r: self.block_r,
-            block_c: self.block_c,
+            luma_prediction: crate::filters::deblock::DeblockPredictionUnit {
+                base_r: self.block_r,
+                base_c: self.block_c,
+                default_sub_pu_tx: luma_tx,
+            },
+            chroma_prediction: crate::filters::deblock::DeblockPredictionUnit {
+                base_r: self.block_r,
+                base_c: self.block_c,
+                default_sub_pu_tx: self.chroma_tx.unwrap_or(luma_tx),
+            },
             chroma_base_r: self.block_r,
             chroma_base_c: self.block_c,
             n4w,
@@ -60,6 +68,7 @@ impl DeblockRecorder<'_> {
             luma_tx,
             chroma_tx: self.chroma_tx,
             sub_pu_size: None,
+            chroma_transform_only: false,
             qindex: self.qindex,
             skip: false,
             lossless: self.lossless,

@@ -758,8 +758,16 @@ mod tests {
         let lossless = [DeblockBlock {
             r: 1,
             c: 1,
-            block_r: 1,
-            block_c: 1,
+            luma_prediction: crate::filters::deblock::DeblockPredictionUnit {
+                base_r: 1,
+                base_c: 1,
+                default_sub_pu_tx: 0,
+            },
+            chroma_prediction: crate::filters::deblock::DeblockPredictionUnit {
+                base_r: 1,
+                base_c: 1,
+                default_sub_pu_tx: 0,
+            },
             chroma_base_r: 1,
             chroma_base_c: 1,
             n4w: 1,
@@ -767,6 +775,7 @@ mod tests {
             luma_tx: 0,
             chroma_tx: Some(0),
             sub_pu_size: None,
+            chroma_transform_only: false,
             qindex: 0,
             skip: false,
             lossless: true,

@@ -738,7 +738,7 @@ fn table_value_usize(
     usize::try_from(value).map_err(|_| residual_geometry_error(tile_offset))
 }
 
-fn residual_geometry_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
+pub(super) fn residual_geometry_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
     inter_cap!(
         "inter_block_residual_geometry",
         tile_offset,

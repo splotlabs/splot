@@ -158,6 +158,7 @@ mod tests {
     #[test]
     fn deblocking_coded_lossless_nonzero_rejected() {
         let params = DeblockingFilterParams {
+            allow_df_sub_pu: false,
             apply_deblocking_filter: [true, false, false, false],
             df_delta_q_present: [false; 4],
             df_delta_q: [0; 4],
@@ -175,8 +176,25 @@ mod tests {
     }
 
     #[test]
+    fn deblocking_allow_df_sub_pu_rejected_before_write() {
+        let mut params = DeblockingFilterParams::new([false; 4], [false; 4], [0; 4]);
+        params.allow_df_sub_pu = true;
+        let mut writer = BitWriter::new();
+        let err =
+            write_deblocking_filter_params(&mut writer, &params, false, 3, 0, None).unwrap_err();
+        assert_eq!(
+            err,
+            WriteError::NonCanonicalFrameHeader {
+                what: "allow_df_sub_pu"
+            }
+        );
+        assert_eq!(writer.bit_len(), 0);
+    }
+
+    #[test]
     fn deblocking_oversized_df_par_bits_rejected() {
         let params = DeblockingFilterParams {
+            allow_df_sub_pu: false,
             apply_deblocking_filter: [false; 4],
             df_delta_q_present: [false; 4],
             df_delta_q: [0; 4],
@@ -208,6 +226,7 @@ mod tests {
             mfh_apply_deblocking_filter: [true, false, false, false],
         };
         let params = DeblockingFilterParams {
+            allow_df_sub_pu: false,
             apply_deblocking_filter: [true, true, false, false],
             df_delta_q_present: [false; 4],
             df_delta_q: [0; 4],
@@ -228,6 +247,7 @@ mod tests {
     fn deblocking_uncoded_chroma_apply_rejected() {
         // Direct arm, monochrome (num_planes 1): apply[2] has no bitstream home.
         let params = DeblockingFilterParams {
+            allow_df_sub_pu: false,
             apply_deblocking_filter: [true, false, true, false],
             df_delta_q_present: [false; 4],
             df_delta_q: [0; 4],
@@ -247,6 +267,7 @@ mod tests {
     #[test]
     fn deblocking_gated_off_delta_q_rejected() {
         let params = DeblockingFilterParams {
+            allow_df_sub_pu: false,
             apply_deblocking_filter: [false; 4],
             df_delta_q_present: [true, false, false, false],
             df_delta_q: [0; 4],
@@ -264,6 +285,7 @@ mod tests {
     #[test]
     fn deblocking_inferred_index_one_mismatch_rejected() {
         let params = DeblockingFilterParams {
+            allow_df_sub_pu: false,
             apply_deblocking_filter: [true, true, false, false],
             df_delta_q_present: [true, false, false, false],
             df_delta_q: [1, 2, 0, 0], // [1] should be 1 (== [0])
@@ -281,6 +303,7 @@ mod tests {
     #[test]
     fn deblocking_coded_delta_q_out_of_domain_rejected() {
         let params = DeblockingFilterParams {
+            allow_df_sub_pu: false,
             apply_deblocking_filter: [true, false, false, false],
             df_delta_q_present: [true, false, false, false],
             df_delta_q: [5, 0, 0, 0],

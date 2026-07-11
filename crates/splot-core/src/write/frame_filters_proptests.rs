@@ -113,6 +113,7 @@ mod proptests {
                 mfh_apply_deblocking_filter: a,
             });
             let params = DeblockingFilterParams {
+                allow_df_sub_pu: false,
                 apply_deblocking_filter: apply,
                 df_delta_q_present: present,
                 df_delta_q,

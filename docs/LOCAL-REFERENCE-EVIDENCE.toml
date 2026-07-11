@@ -7340,3 +7340,56 @@ output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
 kind = "digest-equality"
 left = "avm-lossless-nondc-luma-d203-chroma-follow-leftedge-128x64-raw-md5"
 right = "avm-repeat-lossless-nondc-luma-d203-chroma-follow-leftedge-128x64-raw-md5"
+
+[[evidence]]
+id = "lref-avm-dav2d-syn-3frame-deblock-subpu-chroma-64x32-10bit-q90"
+feature_id = "DECODE-INTER-DEBLOCK-SUBPU-METADATA"
+decoder_support_rows = ["first-inter-frame-frontier"]
+kind = "reference-output-agreement"
+summary = "Local pinned AVM and independent dav2d raw output agreed for a three-frame 10-bit 4:2:0 64x32 inter fixture with active deblocking, CDEF/CCSO/LR/GDF disabled, and a final frame whose existing allow_df_sub_pu header bit was normalized from 0 to 1. The frame contains a BLOCK_4X8 luma leaf at MI (0,3) inheriting the larger BLOCK_16X8 chroma reference at MI (0,0). Pre-fix splot lost that inherited chroma prediction-unit and DeblockingTxSizes metadata and differed in eight frame-2 U samples; the fixed decoder reproduces the oracle byte-for-byte. The one-bit normalization makes the allow gate explicit but is not output-discriminating versus the stock AVM stream; focused unit coverage and the live target stream discriminate allow_df_sub_pu behavior, while this fixture discriminates inherited chroma metadata on an allow=true frame."
+recorded_at = "2026-07-11"
+command = '''python3 /Users/bartosztomczyk/Documents/SplotLabs/inter-fixtures/gen_edges.py 64 32 10 0.3 /tmp/edges03_64x32.yuv; /Users/bartosztomczyk/Devel/avm/build/avmenc --i420 -w 64 -h 32 --bit-depth=10 --input-bit-depth=10 --profile=0 --limit=3 --fps=30/1 --cpu-used=0 --passes=1 --end-usage=q --qp=90 --min-qp=90 --max-qp=90 --sb-size=64 --tile-columns=0 --tile-rows=0 --kf-min-dist=16 --kf-max-dist=16 --enable-warped-motion=1 --enable-warp-causal=1 --enable-warp-delta=1 --enable-six-param-warp-delta=0 --enable-warp-extend=1 --enable-global-motion=0 --enable-interintra-comp=1 --enable-interintra-wedge=0 --enable-smooth-interintra=1 --enable-tip=0 --enable-skip-mode=0 --enable-ext-seg=0 --deltaq-mode=0 --aq-mode=0 --enable-gdf=0 --enable-tcq=0 --enable-inter-ddt=0 --enable-intrabc=0 --enable-smooth-intra=0 --enable-angle-delta=0 --enable-fsc=0 --enable-intra-dip=0 --enable-wiener-nonsep=0 --enable-bawp=0 --enable-deblocking=1 --enable-cdef=0 --enable-restoration=0 --enable-ccso=0 --enable-lf-sub-pu=1 --min-partition-size=4 --max-partition-size=64 --enable-rect-partitions=1 --enable-ext-partitions=1 --enable-uneven-4way-partitions=1 -y -o /tmp/syn-3frame-deblock-subpu-chroma-stock.ivf /tmp/edges03_64x32.yuv; python3 -c "from pathlib import Path; p=Path('/tmp/syn-3frame-deblock-subpu-chroma-stock.ivf'); b=bytearray(p.read_bytes()); assert len(b)==774 and b[731]==0xbc; b[731]|=0x40; Path('/tmp/syn-3frame-deblock-subpu-chroma-64x32-10bit-q90.ivf').write_bytes(b)"; /tmp/avm-457cd/build/avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=10 --limit=3 -o /tmp/deblock-subpu.avm.raw /tmp/syn-3frame-deblock-subpu-chroma-64x32-10bit-q90.ivf; /Users/bartosztomczyk/Devel/dav2d/build/tools/dav2d -q --demuxer ivf --muxer yuv --limit 3 -i /tmp/syn-3frame-deblock-subpu-chroma-64x32-10bit-q90.ivf -o /tmp/deblock-subpu.dav2d.raw'''
+
+[[evidence.fixture]]
+id = "deblock-subpu-chroma-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-3frame-deblock-subpu-chroma-64x32-10bit-q90.ivf"
+sha256 = "b0771269cc17c810990a8fbce30175ee4977e4fd42a7500739aba5cb07670c47"
+size_bytes = 774
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated from the project-owned gen_edges.py 64x32 10-bit I420 source at grid weight 0.3 (source raw SHA-256 ab849216a4c74d74d52d956ce1061183fa7550a7cdfa60c038d7e42a56d9434e), then encoded deterministically with local avmenc using the exact command above. The stock AVM IVF SHA-256 was b2bc2f360ea8b2c31e26b9d13c16c743f692d360c28c06b091a1f49a6ff910d1. Its frame-2 allow_df_sub_pu bit at absolute byte 731, MSB-first bit position 1, was normalized from 0 to 1 (byte 0xbc to 0xfc), producing the committed SHA-256. The mutation changes no syntax length or subsequent alignment and does not change AVM or dav2d decoded output. Local avmenc binary SHA-256 was 4dd7250d694acb92cea0185595fea3aee12772bb4ddc5fe05f947c5278c0c382; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-deblock-subpu-chroma"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Pinned clean AVM decoder checkout 1.0.0-33-g457cd5868; decoder binary SHA-256 5f8b97dc6c66138ca20ecc3ac6b0e7004cb3af7bfa470d64fda26c0f725289f8."
+command_summary = "Local avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=10 --limit=3 output MD5 for {fixture:deblock-subpu-chroma-input}."
+output_digest_id = "avm-3frame-deblock-subpu-chroma-64x32-10bit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "a9eb872da0dd77fdacbfb7f92a4c396e"
+output_scope = "reference raw decoder output MD5; matching raw SHA-256 7b63416de76f67af781247f878bebc9ad42bc5eabb043eda15a0fdde7eca5a9f is recorded in tests/conformance/decoder-oracle.toml"
+
+[[evidence.reference_run]]
+id = "dav2d-deblock-subpu-chroma"
+tool = "dav2d"
+executable_name = "dav2d"
+tool_role = "decode-reference"
+source_url = "https://code.videolan.org/videolan/dav2d"
+revision = "a88febb3e546d6bf08897f094a13a13551ab9740"
+version_summary = "dav2d 0.0.1-193-ga88febb3, decoded with --demuxer ivf --muxer yuv; binary SHA-256 d90b43bb1dc8e90814c238d619995689e8d724e8cb92d9293b81fda07fa16481."
+command_summary = "Local dav2d --demuxer ivf --muxer yuv --limit 3 output MD5 for {fixture:deblock-subpu-chroma-input}."
+output_digest_id = "dav2d-3frame-deblock-subpu-chroma-64x32-10bit-raw-md5"
+output_digest_algorithm = "md5"
+output_digest = "a9eb872da0dd77fdacbfb7f92a4c396e"
+output_scope = "reference raw decoder output MD5, not splot-dfh-sha256-v1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-3frame-deblock-subpu-chroma-64x32-10bit-raw-md5"
+right = "dav2d-3frame-deblock-subpu-chroma-64x32-10bit-raw-md5"

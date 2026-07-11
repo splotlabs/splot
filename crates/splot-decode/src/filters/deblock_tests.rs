@@ -6,6 +6,14 @@
 use super::*;
 use crate::test_support::{yuv420_workspace, yuv420_workspace_with};
 
+const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
+    DeblockPredictionUnit {
+        base_r: r,
+        base_c: c,
+        default_sub_pu_tx: tx,
+    }
+}
+
 fn with_plane_ctx<T: ReconSample, R>(
     ws: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
@@ -26,8 +34,8 @@ fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock> {
             blocks.push(DeblockBlock {
                 r,
                 c,
-                block_r: r,
-                block_c: c,
+                luma_prediction: prediction(r, c, 3),
+                chroma_prediction: prediction(r, c, 2),
                 chroma_base_r: r,
                 chroma_base_c: c,
                 n4w: 8,
@@ -35,6 +43,7 @@ fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock> {
                 luma_tx: 3,
                 chroma_tx: Some(2),
                 sub_pu_size: None,
+                chroma_transform_only: false,
                 qindex: 100,
                 skip: false,
                 lossless: false,
@@ -69,13 +78,15 @@ fn run_deblock(
     mi_cols: usize,
     apply_deblocking_filter: [bool; 4],
 ) {
+    let mut filter = filter(apply_deblocking_filter);
+    filter.allow_df_sub_pu = blocks.iter().any(|block| block.sub_pu_size.is_some());
     deblock_general_intra_frame(
         ws,
         blocks,
         [&[], &[]],
         mi_rows,
         mi_cols,
-        filter(apply_deblocking_filter),
+        filter,
         DeblockQuantDeltas::ZERO,
         BitDepth::Eight,
     )
@@ -95,10 +106,10 @@ fn tip_filter_widths_follow_unit_and_chroma_superblock_edges() {
 
 #[test]
 fn sub_pu_filter_dimensions_follow_filt_max_size() {
-    assert_eq!(sub_pu_filter_dimension(64, Some(8), true), (8, true));
-    assert_eq!(sub_pu_filter_dimension(8, Some(8), false), (4, true));
-    assert_eq!(sub_pu_filter_dimension(16, Some(16), false), (8, true));
-    assert_eq!(sub_pu_filter_dimension(4, Some(8), false), (4, false));
+    assert_eq!(sub_pu_filter_dimension(64, 8, true), (8, true));
+    assert_eq!(sub_pu_filter_dimension(8, 8, false), (4, true));
+    assert_eq!(sub_pu_filter_dimension(16, 16, false), (8, true));
+    assert_eq!(sub_pu_filter_dimension(4, 8, false), (4, false));
 }
 
 #[test]
@@ -128,8 +139,8 @@ fn edge_test_grid(curr_skip: bool) -> MiGrid {
     cells[4] = Some(MiBlockInfo {
         base_row: 0,
         base_col: 2,
-        block_row: 0,
-        block_col: 2,
+        luma_prediction: prediction(0, 2, 3),
+        chroma_prediction: prediction(0, 2, 3),
         chroma_base_row: 0,
         chroma_base_col: 2,
         luma_tx: 3,
@@ -142,8 +153,8 @@ fn edge_test_grid(curr_skip: bool) -> MiGrid {
     cells[5] = Some(MiBlockInfo {
         base_row: 0,
         base_col: 0,
-        block_row: 0,
-        block_col: 0,
+        luma_prediction: prediction(0, 0, 3),
+        chroma_prediction: prediction(0, 0, 3),
         chroma_base_row: 0,
         chroma_base_col: 0,
         luma_tx: 3,
@@ -171,8 +182,8 @@ fn skipped_block_filters_internal_prediction_unit_edges() {
     let block = DeblockBlock {
         r: 0,
         c: 0,
-        block_r: 0,
-        block_c: 0,
+        luma_prediction: prediction(0, 0, 3),
+        chroma_prediction: prediction(0, 0, 2),
         chroma_base_r: 0,
         chroma_base_c: 0,
         n4w: 8,
@@ -180,6 +191,7 @@ fn skipped_block_filters_internal_prediction_unit_edges() {
         luma_tx: 3,
         chroma_tx: Some(2),
         sub_pu_size: Some(8),
+        chroma_transform_only: false,
         qindex: 215,
         skip: true,
         lossless: false,
@@ -201,8 +213,8 @@ fn prediction_unit_geometry_caps_filter_width_at_block_edges() {
     let block = |c| DeblockBlock {
         r: 0,
         c,
-        block_r: 0,
-        block_c: c,
+        luma_prediction: prediction(0, c, 4),
+        chroma_prediction: prediction(0, c, 2),
         chroma_base_r: 0,
         chroma_base_c: c,
         n4w: 16,
@@ -210,6 +222,7 @@ fn prediction_unit_geometry_caps_filter_width_at_block_edges() {
         luma_tx: 4,
         chroma_tx: Some(2),
         sub_pu_size: Some(8),
+        chroma_transform_only: false,
         qindex: 215,
         skip: true,
         lossless: false,
@@ -522,8 +535,8 @@ fn mi_grid_covers_decoded_blocks() {
     let blocks = [DeblockBlock {
         r: 0,
         c: 0,
-        block_r: 0,
-        block_c: 0,
+        luma_prediction: prediction(0, 0, 3),
+        chroma_prediction: prediction(0, 0, 2),
         chroma_base_r: 0,
         chroma_base_c: 0,
         n4w: 8,
@@ -531,6 +544,7 @@ fn mi_grid_covers_decoded_blocks() {
         luma_tx: 3,
         chroma_tx: Some(2),
         sub_pu_size: None,
+        chroma_transform_only: false,
         qindex: 100,
         skip: false,
         lossless: true,
@@ -556,6 +570,134 @@ fn mi_grid_covers_decoded_blocks() {
 }
 
 #[test]
+fn inherited_chroma_residual_transform_retains_prediction_metadata() {
+    let luma = [DeblockBlock {
+        r: 0,
+        c: 0,
+        luma_prediction: prediction(0, 0, 0),
+        chroma_prediction: prediction(0, 0, 0),
+        chroma_base_r: 0,
+        chroma_base_c: 0,
+        n4w: 8,
+        n4h: 8,
+        luma_tx: 0,
+        chroma_tx: None,
+        sub_pu_size: None,
+        chroma_transform_only: false,
+        qindex: 1,
+        skip: false,
+        lossless: false,
+    }];
+    let metadata = DeblockBlock {
+        r: 0,
+        c: 0,
+        luma_prediction: prediction(0, 3, 1),
+        chroma_prediction: prediction(0, 0, 3),
+        chroma_base_r: 0,
+        chroma_base_c: 0,
+        n4w: 4,
+        n4h: 2,
+        luma_tx: 1,
+        chroma_tx: Some(2),
+        sub_pu_size: None,
+        chroma_transform_only: false,
+        qindex: 90,
+        skip: false,
+        lossless: false,
+    };
+    let transform = DeblockBlock {
+        r: 0,
+        c: 2,
+        luma_prediction: prediction(7, 7, 0),
+        chroma_prediction: prediction(7, 7, 0),
+        chroma_base_r: 0,
+        chroma_base_c: 2,
+        n4w: 2,
+        n4h: 2,
+        luma_tx: 0,
+        chroma_tx: Some(5),
+        sub_pu_size: None,
+        chroma_transform_only: true,
+        qindex: 90,
+        skip: false,
+        lossless: false,
+    };
+    let mut grid = build_mi_grid(&luma, 8, 8).unwrap();
+    overlay_mi_grid(&mut grid, &[metadata, transform], 8, 8);
+
+    let inherited = grid.get(1, 3).unwrap();
+    assert_eq!(
+        (
+            inherited.chroma_prediction.base_r,
+            inherited.chroma_prediction.base_c
+        ),
+        (0, 0)
+    );
+    assert_eq!(inherited.chroma_prediction.default_sub_pu_tx, 3);
+    assert_eq!(
+        (inherited.chroma_base_row, inherited.chroma_base_col),
+        (0, 2)
+    );
+    assert_eq!(inherited.chroma_tx, Some(5));
+    assert_eq!(inherited.qindex, 90);
+    assert!(!inherited.skip);
+    assert!(!inherited.lossless);
+    assert_eq!(inherited.sub_pu_size, None);
+}
+
+#[test]
+fn ordinary_chroma_overlay_replaces_full_block_metadata() {
+    let luma = [DeblockBlock {
+        r: 0,
+        c: 0,
+        luma_prediction: prediction(0, 0, 0),
+        chroma_prediction: prediction(0, 0, 0),
+        chroma_base_r: 0,
+        chroma_base_c: 0,
+        n4w: 4,
+        n4h: 2,
+        luma_tx: 0,
+        chroma_tx: None,
+        sub_pu_size: None,
+        chroma_transform_only: false,
+        qindex: 1,
+        skip: true,
+        lossless: false,
+    }];
+    let ordinary = DeblockBlock {
+        r: 0,
+        c: 2,
+        luma_prediction: prediction(7, 7, 0),
+        chroma_prediction: prediction(7, 7, 0),
+        chroma_base_r: 0,
+        chroma_base_c: 2,
+        n4w: 2,
+        n4h: 2,
+        luma_tx: 0,
+        chroma_tx: Some(5),
+        sub_pu_size: Some(4),
+        chroma_transform_only: false,
+        qindex: 255,
+        skip: false,
+        lossless: true,
+    };
+    let mut grid = build_mi_grid(&luma, 8, 8).unwrap();
+    overlay_mi_grid(&mut grid, &[ordinary], 8, 8);
+
+    let info = grid.get(1, 3).unwrap();
+    assert_eq!(
+        (info.chroma_prediction.base_r, info.chroma_prediction.base_c),
+        (7, 7)
+    );
+    assert_eq!((info.chroma_base_row, info.chroma_base_col), (0, 2));
+    assert_eq!(info.chroma_tx, Some(5));
+    assert_eq!(info.sub_pu_size, Some(4));
+    assert_eq!(info.qindex, 255);
+    assert!(!info.skip);
+    assert!(info.lossless);
+}
+
+#[test]
 fn skip_suppresses_internal_tx_edge_filtering() {
     let mut skipped = yuv420_workspace(64, 16, 100);
     fill_rect(&mut skipped, PlaneId::Y, 20..64, 0..16, 108);
@@ -573,6 +715,7 @@ fn skip_suppresses_internal_tx_edge_filtering() {
                 df_delta_q: 0,
                 quant_delta: 0,
                 bit_depth: BitDepth::Eight,
+                allow_df_sub_pu: false,
             },
             &mut StrengthCache::default(),
         )
@@ -605,6 +748,7 @@ fn skip_suppresses_internal_tx_edge_filtering() {
                 df_delta_q: 0,
                 quant_delta: 0,
                 bit_depth: BitDepth::Eight,
+                allow_df_sub_pu: false,
             },
             &mut StrengthCache::default(),
         )
@@ -614,6 +758,53 @@ fn skip_suppresses_internal_tx_edge_filtering() {
         coded.reconstructed_sample(PlaneId::Y, 19, 0).unwrap(),
         coded.reconstructed_sample(PlaneId::Y, 20, 0).unwrap(),
         "coded internal edge still filters",
+    );
+}
+
+#[test]
+fn allow_df_sub_pu_gates_prediction_boundary_filtering() {
+    let mut grid = edge_test_grid(true);
+    for index in [4, 5] {
+        let info = grid.cells[index].as_mut().unwrap();
+        info.base_row = 0;
+        info.base_col = 0;
+        info.qindex = 215;
+    }
+    let run = |allow_df_sub_pu| {
+        let mut workspace = yuv420_workspace(64, 16, 100);
+        fill_rect(&mut workspace, PlaneId::Y, 20..64, 0..16, 108);
+        with_plane_ctx(&mut workspace, PlaneId::Y, |ctx| {
+            deblock_filter_edge(
+                ctx,
+                &grid,
+                EdgeContext {
+                    plane: 0,
+                    pass: 0,
+                    row: 0,
+                    col: 5,
+                    plane_sub_x: 0,
+                    plane_sub_y: 0,
+                    df_delta_q: 0,
+                    quant_delta: 0,
+                    bit_depth: BitDepth::Eight,
+                    allow_df_sub_pu,
+                },
+                &mut StrengthCache::default(),
+            )
+            .unwrap();
+        });
+        workspace
+    };
+
+    let disabled = run(false);
+    assert_eq!(disabled.reconstructed_sample(PlaneId::Y, 19, 0), Ok(100));
+    assert_eq!(disabled.reconstructed_sample(PlaneId::Y, 20, 0), Ok(108));
+
+    let enabled = run(true);
+    assert_smoothed_step(
+        enabled.reconstructed_sample(PlaneId::Y, 19, 0).unwrap(),
+        enabled.reconstructed_sample(PlaneId::Y, 20, 0).unwrap(),
+        "allow_df_sub_pu enables the prediction boundary",
     );
 }
 
@@ -688,8 +879,8 @@ fn chroma_pass_uses_4x4_tx_for_sub8_luma_records() {
     let block = |r| DeblockBlock {
         r,
         c: 0,
-        block_r: r,
-        block_c: 0,
+        luma_prediction: prediction(r, 0, 0),
+        chroma_prediction: prediction(r, 0, 0),
         chroma_base_r: r,
         chroma_base_c: 0,
         n4w: 2,
@@ -697,6 +888,7 @@ fn chroma_pass_uses_4x4_tx_for_sub8_luma_records() {
         luma_tx: 0,
         chroma_tx: None,
         sub_pu_size: None,
+        chroma_transform_only: false,
         qindex: 100,
         skip: false,
         lossless: false,
