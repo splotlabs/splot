@@ -262,7 +262,7 @@ fn inspect_json_includes_payload_status_without_dropping_header_fields() {
     let path = fixture("conformant.av2");
     let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
-    assert!(records.len() >= 2, "stdout was: {json}");
+    assert!(records.len() >= 2, "records were: {json}");
 
     let temporal_delimiter = &records[0];
     assert_eq!(temporal_delimiter["payload_status"]["status"], "parsed");
@@ -325,7 +325,7 @@ fn inspect_json_exposes_frame_header_prefix() {
     let path = fixture("frame-header-prefix.av2");
     let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
-    assert!(records.len() >= 3, "stdout was: {json}");
+    assert!(records.len() >= 3, "records were: {json}");
 
     let frame = &records[2];
     let prefix = &frame["frame_header_prefix"];
@@ -347,7 +347,7 @@ fn inspect_json_exposes_frame_header_core() {
     let path = fixture("frame-header-core.av2");
     let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
-    assert!(records.len() >= 3, "stdout was: {json}");
+    assert!(records.len() >= 3, "records were: {json}");
 
     let core = &records[2]["frame_header_core"];
     assert_eq!(core["payload_kind"], "frame_header_core");
@@ -467,7 +467,7 @@ fn inspect_json_exposes_mfh_backed_frame_header_core() {
     let path = fixture("frame-header-core-mfh.av2");
     let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
-    assert!(records.len() >= 4, "stdout was: {json}");
+    assert!(records.len() >= 4, "records were: {json}");
 
     assert_eq!(records[2]["header"]["obu_type"], "MultiFrameHeader");
     let core = &records[3]["frame_header_core"];
@@ -522,7 +522,7 @@ fn inspect_json_surfaces_inter_disable_cdf_update() {
     assert_eq!(
         inter["disable_cdf_update"], false,
         "the inter view must surface the parsed §5.18.2 disable_cdf_update bit; \
-         stdout was: {json}"
+         records were: {json}"
     );
 }
 
