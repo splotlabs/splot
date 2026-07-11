@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+#![allow(clippy::unwrap_used)]
+
 use super::*;
 
 fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
     WienerNsLrSourceBlock {
+        restoration_type: crate::bitstream::tile_payload::LrUnitRestorationType::WienerNonsep,
         plane,
         row: y / 4,
         col: x / 4,
@@ -26,6 +29,34 @@ fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
         luma_stripe_start_y: 0,
         luma_stripe_end_y: 15,
     }
+}
+
+fn switchable_core() -> FrameHeaderCore {
+    let fixture = include_bytes!(
+        "../../../../../../tests/conformance/vectors/valid/\
+         syn-2frame-lr-switchable-768x256-8bit.ivf"
+    );
+    crate::prediction::inter::test_support::fixture_sequence_and_key_core(fixture).1
+}
+
+fn lr_sink(snapshot: &[u8]) -> WienerNsLrReconSink<u8> {
+    let mut workspace = crate::test_support::yuv420_workspace(16, 16, 0);
+    for (index, &sample) in snapshot.iter().enumerate() {
+        workspace
+            .set_reconstructed_sample(PlaneId::Y, index % 16, index / 16, sample)
+            .unwrap();
+    }
+    let mut sink =
+        WienerNsLrReconSink::for_final_filtering(workspace, 16, 16, splot_recon::BitDepth::Eight);
+    sink.tx_skip_grid =
+        Some(crate::filters::wienerns_lr::WienerNsLrTxSkipGrid::new(4, 4, vec![0; 16]).unwrap());
+    sink
+}
+
+fn luma_rect(samples: &[u8], x: usize) -> Vec<u8> {
+    (0..4)
+        .flat_map(|y| samples[y * 16 + x..y * 16 + x + 4].iter().copied())
+        .collect()
 }
 
 #[test]
@@ -71,6 +102,89 @@ fn does_not_merge_across_row_gaps() {
     let blocks = [block(0, 0, 0), block(0, 8, 0)];
     let runs = coalesced_lr_source_rows(&blocks, 0);
     assert_eq!(runs.len(), 2);
+}
+
+#[test]
+fn keeps_switchable_restoration_types_in_separate_runs() {
+    let mut pc_wiener = block(0, 0, 0);
+    pc_wiener.restoration_type = crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener;
+    let wiener_nonsep = block(0, 4, 0);
+
+    let runs = coalesced_lr_source_rows(&[pc_wiener, wiener_nonsep], 0);
+
+    assert_eq!(runs.len(), 2);
+    assert_eq!(
+        runs[0].restoration_type,
+        crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener
+    );
+    assert_eq!(
+        runs[1].restoration_type,
+        crate::bitstream::tile_payload::LrUnitRestorationType::WienerNonsep
+    );
+}
+
+#[test]
+fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
+    let snapshot: Vec<u8> = (0..256)
+        .map(|index| 48 + ((index * 37 + index / 16 * 19) % 160) as u8)
+        .collect();
+    let source: Vec<u16> = snapshot.iter().map(|&sample| u16::from(sample)).collect();
+    let mixed_core = switchable_core();
+    assert_eq!(
+        mixed_core.lr_params.as_ref().unwrap().planes[0].restoration_type,
+        FrameRestorationType::Switchable
+    );
+    let mut pc_core = mixed_core.clone();
+    pc_core.lr_params.as_mut().unwrap().planes[0].restoration_type = FrameRestorationType::PcWiener;
+    let mut wiener_ns_core = mixed_core.clone();
+    wiener_ns_core.lr_params.as_mut().unwrap().planes[0].restoration_type =
+        FrameRestorationType::WienerNonsep;
+
+    let mut pc_block = block(0, 0, 0);
+    pc_block.restoration_type = crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener;
+    let wiener_ns_block = block(0, 8, 0);
+    let mut mixed = lr_sink(&snapshot);
+    mixed
+        .apply_luma_lr_runs(
+            &mixed_core,
+            ByteOffset::new(0),
+            &[pc_block, wiener_ns_block],
+            &[],
+            &source,
+            &source,
+        )
+        .unwrap();
+    let mut pc_only = lr_sink(&snapshot);
+    pc_only
+        .apply_luma_lr_runs(
+            &pc_core,
+            ByteOffset::new(0),
+            &[pc_block],
+            &[],
+            &source,
+            &source,
+        )
+        .unwrap();
+    let mut wiener_ns_only = lr_sink(&snapshot);
+    wiener_ns_only
+        .apply_luma_lr_runs(
+            &wiener_ns_core,
+            ByteOffset::new(0),
+            &[wiener_ns_block],
+            &[],
+            &source,
+            &source,
+        )
+        .unwrap();
+
+    let mixed_luma = mixed.workspace.samples(PlaneId::Y).unwrap();
+    let pc_luma = pc_only.workspace.samples(PlaneId::Y).unwrap();
+    let wiener_ns_luma = wiener_ns_only.workspace.samples(PlaneId::Y).unwrap();
+    assert_eq!(luma_rect(mixed_luma, 0), luma_rect(pc_luma, 0));
+    assert_eq!(luma_rect(mixed_luma, 8), luma_rect(wiener_ns_luma, 8));
+    assert_eq!(luma_rect(mixed_luma, 4), luma_rect(&snapshot, 4));
+    assert_ne!(luma_rect(mixed_luma, 0), luma_rect(&snapshot, 0));
+    assert_ne!(luma_rect(mixed_luma, 8), luma_rect(&snapshot, 8));
 }
 
 #[test]

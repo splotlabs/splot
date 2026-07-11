@@ -11155,6 +11155,7 @@ commands = [
     "cargo xtask check-decoder-support",
 ]
 fixtures = [
+    "tests/conformance/vectors/valid/syn-2frame-lr-switchable-768x256-8bit.ivf",
     "local decoder mission fixture",
     "crates/splot-cli/tests/decode_cli.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
@@ -11373,14 +11374,15 @@ diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
 id = "DECODE-LR-UNIT-SYNTAX-FRONTIER"
-name = "Wiener NS LR unit syntax frontier"
+name = "Loop-restoration unit syntax frontier"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.10.4", "5.20.10.5", "5.20.10.6", "8.3.2", "9.3"]
+spec_sections = ["5.20.10.4", "5.20.10.5", "5.20.10.6", "7.20.1", "7.20.3", "7.20.4", "8.3.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-4",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-5",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-10-6",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
     "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
 ]
@@ -11390,7 +11392,7 @@ change_id = "decode-lr-unit-syntax-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Consumes the proven frame-level Wiener NS LR unit syntax before the runtime reconstruction gate. `tile_payload/cdf/block_rows.rs` owns the generated `Default_Use_Wiener_Ns_Cdf` row inside the tile CDF subset; `partition_traversal.rs` calls AV2 §5.20.10.4 `read_lr()` only for superblock-root §5.20.3.1 calls, counts the covered restoration units for active `RESTORE_WIENER_NONSEP` planes with `frame_filters_on`, consumes one §5.20.10.5 `use_wiener_ns S()` symbol per covered unit, and intentionally skips the §5.20.10.6 per-unit coefficient body because frame-level filters make `read_wienerns_filter(..., readFrameFilters == 0)` return immediately. `DECODE-INACTIVE-LR-UNITS-FRONTIER` superseded this row with aggregate active/inactive state, and `DECODE-LR-UNIT-SELECTIONS-FRONTIER` now retains the consumed LR units' plane and coordinates while rejecting active units precisely. This row does not implement PC-Wiener, switchable LR, Wiener NS without a frame-level bank, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, per-unit coefficient syntax beyond the frame-level no-op, loop-restoration reconstruction/filtering, 10-bit output/storage, reference refresh, hash/raw/Y4M output, or successful local decoder mission decode."
+notes = "Consumes AV2 §5.20.10.4-.6 loop-restoration unit syntax for the supported fixed Wiener NS and PC-Wiener paths plus luma `RESTORE_SWITCHABLE` when frame-level Wiener filters are present. The tile CDF subset owns the generated `Default_Flex_Restoration_Type_Cdf` rows with the same copy, blend, and scaling lifecycle as the existing LR rows. Switchable units read tool 0 then tool 1 exactly as §5.20.10.5 specifies, retain a typed `RESTORE_NONE` / `RESTORE_PC_WIENER` / `RESTORE_WIENER_NONSEP` selection, omit source blocks for None, and carry the active type through §7.20 source records. The final-filter sink dispatches each luma source run to the existing PC-Wiener or Wiener NS implementation while all runs read the same pre-restoration snapshots. The target stream's 32-unit sequence is retained as 25 Wiener NS, 5 None, and 2 PC-Wiener units and advances from the former `ReadLoopRestoration` gate to emitted output. Unsupported chroma Switchable, luma Switchable without frame filters, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, and other unproven forms remain fail-closed."
 
 [feature.status]
 mapped = "done"
@@ -11413,6 +11415,11 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::root_lr_frontier_consumes_only_frame_level_wiener_ns_symbols",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_multi_unit_root_counts_every_covered_unit",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_rejects_invalid_unit_size_before_partition_read",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::switchable_luma_selects_none_pc_wiener_then_wiener_ns",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::switchable_luma_selector_reads_precede_partition_read",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::switchable_lr_rejects_chroma_or_missing_luma_frame_filter_before_symbol_read",
+    "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::keeps_switchable_restoration_types_in_separate_runs",
+    "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::switchable_luma_dispatches_mixed_units_from_one_snapshot",
     "crates/splot-decode/src/prediction/inter/tests.rs::parsed_wienerns_bank_reports_next_tile_frontier",
     "crates/splot-decode/src/prediction/inter/tests.rs::wienerns_lr_unit_frontier_limit_errors_stay_limits",
     "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",

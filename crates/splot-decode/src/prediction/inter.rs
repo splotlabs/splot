@@ -1399,7 +1399,7 @@ pub(crate) use find_mv_stack::TemporalMotionField;
 
 #[cfg(test)]
 #[path = "inter/test_support_tests.rs"]
-mod test_support;
+pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests;

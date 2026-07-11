@@ -1238,6 +1238,11 @@ description = "Tiny AVM loop.pc_wiener fixture (decode-oracle coverage; the tool
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2frame-lr-switchable-768x256-8bit.ivf"
+description = "Procedural 525-byte AVM mixed luma loop-restoration fixture. Both frames select RESTORE_SWITCHABLE and contain None, PC-Wiener, and Wiener NS units; splot consumes the switchable LR-unit syntax before failing closed at rectangular non-DC intra luma."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-gdf-intra-128x128.ivf"
 description = "Tiny AVM loop.gdf fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"

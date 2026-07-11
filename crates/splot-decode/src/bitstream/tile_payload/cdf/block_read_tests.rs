@@ -62,6 +62,7 @@ const SUPPORTED_BLOCK_SYMBOL_SELECTORS: &[TileCdfSelector] = &[
     TileCdfSelector::CctxType,
     TileCdfSelector::UseWienerNs,
     TileCdfSelector::UsePcWiener,
+    TileCdfSelector::FlexRestorationType { tool: 0, plane: 0 },
     TileCdfSelector::UseAmvd { index: 4, ctx: 0 },
     TileCdfSelector::ReadMv(MvCdfSelector::AmvdJoint),
     TileCdfSelector::ReadMv(MvCdfSelector::AmvdIndex { comp: 0 }),

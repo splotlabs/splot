@@ -33,6 +33,7 @@ mod partition_children;
 mod state_publication;
 mod tree_walk;
 
+pub(crate) use lr_records::LrUnitRestorationType;
 #[cfg(test)]
 use lr_records::WienerNsLrUnitSelection;
 pub(crate) use lr_records::{
@@ -99,6 +100,7 @@ pub(crate) enum TilePartitionLoopRestorationPlaneTool {
     None,
     WienerNs,
     PcWiener,
+    Switchable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -719,6 +721,17 @@ fn ensure_supported_traversal_frame(
         return Err(TilePartitionTraversalError::Unsupported(
             TilePartitionTraversalUnsupported::ReadLoopRestoration,
         ));
+    }
+    if let TilePartitionLoopRestorationState::Frame(lr) = frame.loop_restoration {
+        for plane in 0..frame.num_planes.min(3) {
+            if lr.plane_tool[plane] == TilePartitionLoopRestorationPlaneTool::Switchable
+                && (plane != 0 || !lr.frame_filters_on[plane])
+            {
+                return Err(TilePartitionTraversalError::Unsupported(
+                    TilePartitionTraversalUnsupported::ReadLoopRestoration,
+                ));
+            }
+        }
     }
     if frame.bru_state != TilePartitionBruState::Active {
         return Err(TilePartitionTraversalError::Unsupported(

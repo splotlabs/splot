@@ -241,8 +241,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     plane.restoration_type
                         == splot_core::headers::frame::FrameRestorationType::WienerNonsep
                         || (plane_index == PlaneId::Y.index()
-                            && plane.restoration_type
-                                == splot_core::headers::frame::FrameRestorationType::PcWiener)
+                            && matches!(
+                                plane.restoration_type,
+                                splot_core::headers::frame::FrameRestorationType::PcWiener
+                                    | splot_core::headers::frame::FrameRestorationType::Switchable
+                            ))
                 })
             }) && self
                 .lr_source_blocks
@@ -420,11 +423,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .is_some_and(|cdef| cdef.cdef_on_skip_txfm_frame_enable == Some(false));
         let luma_lr_needs_skip_grid = core.lr_params.as_ref().is_some_and(|lr| {
             lr.planes.get(PlaneId::Y.index()).is_some_and(|plane| {
-                plane.restoration_type == splot_core::headers::frame::FrameRestorationType::PcWiener
-                    || (plane.restoration_type
-                        == splot_core::headers::frame::FrameRestorationType::WienerNonsep
-                        && plane.frame_filters_on
-                        && plane.num_filter_classes.unwrap_or(1) > 1)
+                matches!(
+                    plane.restoration_type,
+                    splot_core::headers::frame::FrameRestorationType::PcWiener
+                        | splot_core::headers::frame::FrameRestorationType::Switchable
+                ) || (plane.restoration_type
+                    == splot_core::headers::frame::FrameRestorationType::WienerNonsep
+                    && plane.frame_filters_on
+                    && plane.num_filter_classes.unwrap_or(1) > 1)
             })
         }) && self
             .lr_source_blocks
