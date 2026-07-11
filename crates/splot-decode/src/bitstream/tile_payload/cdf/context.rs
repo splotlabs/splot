@@ -278,9 +278,9 @@ impl<'a> SquareSplitContextInput<'a> {
         };
         let ctx = partition_context(
             TileCdfArray::DoSquareSplit,
-            context_bit(self.b_size.index() == BLOCK_256X256_INDEX),
-            context_bit(left),
-            context_bit(above),
+            usize::from(self.b_size.index() == BLOCK_256X256_INDEX),
+            usize::from(left),
+            usize::from(above),
             DO_SQUARE_SPLIT_CONTEXTS,
         )?;
 
@@ -479,10 +479,6 @@ fn partition_context(
         });
     }
     Ok(ctx)
-}
-
-const fn context_bit(value: bool) -> usize {
-    if value { 1 } else { 0 }
 }
 
 #[cfg(test)]
