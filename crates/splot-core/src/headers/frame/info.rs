@@ -713,7 +713,7 @@ pub(crate) fn parse_core_body(
         return parse_intra_tail(reader, core, seq, mfh, frame_type, false);
     }
 
-    parse_inter_path(reader, core, seq, frame_type, reference_state)
+    parse_inter_path(reader, core, seq, mfh, frame_type, reference_state)
 }
 
 /// Parses the non-intra `frame_header_info()` path (AV2 § 5.18.2, mirror :4351-5343):
@@ -739,11 +739,12 @@ fn parse_inter_path(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
+    mfh: Option<&MfhFrameView>,
     frame_type: FrameType,
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
     use crate::headers::frame::inter::{InterFrameContext, InterStop, parse_inter_control_into};
-    use crate::headers::frame::inter_shared_tail::parse_inter_shared_tail;
+    use crate::headers::frame::inter_shared_tail::{InterMfhState, parse_inter_shared_tail};
 
     let obu_type = core.obu_type;
 
@@ -785,7 +786,19 @@ fn parse_inter_path(
         match control.stop {
             Some(InterStop::ReachedSharedTail) => {
                 tail_ran = true;
-                parse_inter_shared_tail(reader, core, seq, &control, frame_type, reference_state)?;
+                parse_inter_shared_tail(
+                    reader,
+                    core,
+                    seq,
+                    &control,
+                    frame_type,
+                    InterMfhState {
+                        seg: mfh.and_then(|view| view.seg.as_ref()),
+                        deblocking: mfh.map(|view| &view.deblocking),
+                        missing: !core.cur_mfh_id.is_zero() && mfh.is_none(),
+                    },
+                    reference_state,
+                )?;
             }
             Some(InterStop::TipAsOutputReturn) => {
                 tail_ran = true;

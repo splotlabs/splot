@@ -74,7 +74,8 @@
 use crate::bitio::BitReader;
 use crate::error::{Error, Result};
 use crate::headers::frame::filtering::{
-    GdfGeometry, parse_cdef_params, parse_deblocking_filter_params, parse_gdf_params,
+    GdfGeometry, MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params,
+    parse_gdf_params,
 };
 use crate::headers::frame::global_motion::{GlobalMotionInput, parse_global_motion_params};
 use crate::headers::frame::info::{
@@ -88,6 +89,7 @@ use crate::headers::frame::restoration::{
     LrGeometry, LrParseOutcome, LrTemporalReferenceView, parse_ccso_params,
     parse_ccso_params_for_inter, parse_lr_params_for_inter,
 };
+use crate::headers::frame::segmentation::MfhSegView;
 use crate::headers::frame::tail::{TxMode, parse_film_grain_config, read_tx_mode};
 use crate::headers::frame::tiling::parse_tile_info;
 
@@ -99,6 +101,14 @@ const FRAME_HEADER_INFO_FEATURE: &str = "AV2-5.18.2-FRAME-HEADER-INFO";
 /// `DELTAWARP` (AV2 v1.0.0 § 3): the delta-warp motion-mode index, gating
 /// `allow_warpmv_mode` (`frame_enabled_motion_modes[DELTAWARP]`, § 5.18.2 mirror :5327).
 const DELTAWARP: usize = 3;
+
+/// MFH-derived state for an inter shared-tail parse.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InterMfhState<'a> {
+    pub(crate) seg: Option<&'a MfhSegView>,
+    pub(crate) deblocking: Option<&'a MfhDeblockingView>,
+    pub(crate) missing: bool,
+}
 
 /// The parsed § 5.18.2 inter-tail coding-mode arms after `ccso_params()` (AV2 v1.0.0
 /// § 5.18.2, mirror :5307-5341). Every field is exactly determined by the reached bits and
@@ -148,6 +158,7 @@ pub(crate) fn parse_inter_shared_tail(
     seq: &CoreSeqView,
     control: &InterControl,
     frame_type: FrameType,
+    mfh: InterMfhState<'_>,
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
     let tip_frame_as_output = false;
@@ -175,10 +186,18 @@ pub(crate) fn parse_inter_shared_tail(
     let quantization = parse_quantization_params(reader, &seq.quant, tip_frame_as_output)?;
     trace_tail_position(reader, "after_quant");
 
+    if mfh.missing {
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: FRAME_HEADER_INFO_FEATURE,
+        };
+        return Ok(());
+    }
+
     let derived_primary_is_none = derived_primary_is_none(control, reference_state, frame_type);
     let Some(segmentation) = crate::headers::frame::segmentation::parse_inter_segmentation_params(
         reader,
         &seq.seg,
+        mfh.seg,
         derived_primary_is_none,
         frame_type == FrameType::Switch,
     )?
@@ -214,7 +233,7 @@ pub(crate) fn parse_inter_shared_tail(
         seq.quant.num_planes,
         seq.filter.df_par_bits_minus_2,
         read_allow_df_sub_pu,
-        None,
+        mfh.deblocking,
     )?);
     trace_tail_position(reader, "after_deblock");
 
