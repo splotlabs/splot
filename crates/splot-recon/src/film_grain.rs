@@ -367,7 +367,7 @@ fn init_scaling_lut(points: &[FilmGrainScalingPoint], lut: &mut [i32; 256]) {
 
 struct NoiseImage {
     planes: Vec<Vec<i32>>,
-    widths: Vec<usize>,
+    widths: [usize; 3],
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -388,8 +388,8 @@ fn build_noise_image(
         16
     };
     let stripe_count = stripe_count(height, luma_size);
-    let plane_widths = plane_axis_lengths(width, sub_x, num_planes);
-    let plane_heights = plane_axis_lengths(height, sub_y, num_planes);
+    let plane_widths = plane_axis_lengths(width, sub_x);
+    let plane_heights = plane_axis_lengths(height, sub_y);
     let mut stripes = (0..stripe_count)
         .map(|_| Stripe::new(&plane_widths, luma_size, sub_x, sub_y))
         .collect::<Vec<_>>();
@@ -764,13 +764,9 @@ fn stripe_count(height: usize, luma_size: usize) -> usize {
     }
 }
 
-fn plane_axis_lengths(length: usize, subsampling: usize, num_planes: usize) -> Vec<usize> {
-    (0..num_planes)
-        .map(|plane| {
-            let plane_subsampling = if plane > 0 { subsampling } else { 0 };
-            (length + plane_subsampling) >> plane_subsampling
-        })
-        .collect()
+fn plane_axis_lengths(length: usize, subsampling: usize) -> [usize; 3] {
+    let chroma = (length + subsampling) >> subsampling;
+    [length, chroma, chroma]
 }
 
 fn scale_lut(lut: &[i32; 256], index: i32, bit_depth: u8) -> i32 {
