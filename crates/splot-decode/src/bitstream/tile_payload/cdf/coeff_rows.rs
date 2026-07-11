@@ -19,11 +19,8 @@ use splot_core::tables::cdf::{
 use super::{TileCdfArray, TileCdfError, avg_cdf_rows, blend_cdf_rows, scale_cdf_rows};
 
 fn replicate_q_context_rows<T: Copy, const N: usize>(rows: &mut [T; N], q: usize) {
-    for idx in 0..N {
-        if idx != q {
-            rows.copy_within(q..=q, idx);
-        }
-    }
+    let row = rows[q];
+    rows.fill(row);
 }
 
 const COEFF_CDF_Q_CONTEXTS: usize = 4;
