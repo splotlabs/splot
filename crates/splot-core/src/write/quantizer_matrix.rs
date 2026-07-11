@@ -34,6 +34,7 @@
 
 use crate::headers::quantizer_matrix::{
     FundamentalQmTransform, QuantizerMatrixObu, UserDefinedQmPlane, UserDefinedQmTransform,
+    diagonal_scan_2d,
 };
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
@@ -182,32 +183,6 @@ fn quant_delta_for(quant: i32, target: i32) -> i32 {
     } else {
         raw
     }
-}
-
-/// Builds the AV2 2D (up-right diagonal) coefficient scan for a `width`-by-`height` matrix:
-/// `get_scan(txSz, TX_CLASS_2D)` (AV2 v1.0.0 § 5.20.7.30). Returns the raster positions
-/// `row * width + col` in scan order — the same order
-/// [`crate::headers::quantizer_matrix::parse_quantizer_matrix`] fills, so the deltas land in the
-/// matching cells. Re-declared here (the parser's copy is private; the writer stays additive); the
-/// `diagonal_scan_matches_av2_oracle_order` test pins it to the same golden order, and the
-/// non-flat round-trip test makes the order load-bearing.
-#[allow(clippy::many_single_char_names)]
-fn diagonal_scan_2d(width: usize, height: usize) -> Vec<usize> {
-    let mut out = vec![0usize; width * height];
-    let (w, h) = (width as i64, height as i64);
-    let (mut x, mut y) = (0i64, 0i64);
-    for slot in &mut out {
-        *slot = (y as usize) * width + (x as usize);
-        x += 1;
-        y -= 1;
-        if y < 0 || x >= w {
-            x += 1;
-            let s = x.min(h - 1 - y);
-            x -= s;
-            y += s;
-        }
-    }
-    out
 }
 
 /// Helper constructing the quantizer-matrix-specific non-canonical reject with a stable `what`.
