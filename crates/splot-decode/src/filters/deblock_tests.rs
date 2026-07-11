@@ -698,6 +698,45 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
 }
 
 #[test]
+fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
+    let (plane, record) = crate::filters::wienerns_lr::chroma_transform_deblock_block(
+        PlaneId::U,
+        8,
+        12,
+        3,
+        (1, 1),
+        77,
+        false,
+    )
+    .unwrap();
+    assert_eq!(plane, 0);
+    assert_eq!((record.r, record.c), (6, 4));
+    assert_eq!(
+        (record.luma_prediction.base_r, record.luma_prediction.base_c),
+        (6, 4)
+    );
+    assert_eq!(
+        (
+            record.chroma_prediction.base_r,
+            record.chroma_prediction.base_c
+        ),
+        (6, 4)
+    );
+    assert_eq!((record.chroma_base_r, record.chroma_base_c), (6, 4));
+    assert!(!record.chroma_transform_only);
+
+    let mut grid = build_mi_grid(&deblock_blocks(16, 16), 16, 16).unwrap();
+    overlay_mi_grid(&mut grid, &[record], 16, 16);
+    let info = grid.get(6, 4).unwrap();
+    assert_eq!(
+        (info.chroma_prediction.base_r, info.chroma_prediction.base_c),
+        (6, 4)
+    );
+    assert_eq!((info.chroma_base_row, info.chroma_base_col), (6, 4));
+    assert_eq!(info.qindex, 77);
+}
+
+#[test]
 fn skip_suppresses_internal_tx_edge_filtering() {
     let mut skipped = yuv420_workspace(64, 16, 100);
     fill_rect(&mut skipped, PlaneId::Y, 20..64, 0..16, 108);
