@@ -324,35 +324,24 @@ fn check_reuse_layout(
             what: "reuse_tile_info",
         })?;
 
-    let reused = if seq.uniform_spacing {
-        reuse_tile_params(ReuseTileParamsInput {
-            uniform_spacing: true,
-            seq_sb_row_starts: &[],
-            seq_tile_rows: seq.tile_rows,
-            seq_tile_rows_log2: seq.tile_rows_log2,
-            seq_sb_col_starts: &[],
-            seq_tile_cols: seq.tile_cols,
-            seq_tile_cols_log2: seq.tile_cols_log2,
-            seq_sb_size: tile.seq_sb_size,
-            sb_size: grid.sb_size,
-            mi_cols: grid.mi_cols,
-            mi_rows: grid.mi_rows,
-        })
+    let (seq_sb_row_starts, seq_sb_col_starts): (&[u32], &[u32]) = if seq.uniform_spacing {
+        (&[], &[])
     } else {
-        reuse_tile_params(ReuseTileParamsInput {
-            uniform_spacing: false,
-            seq_sb_row_starts: &tile.seq_sb_row_starts,
-            seq_tile_rows: seq.tile_rows,
-            seq_tile_rows_log2: seq.tile_rows_log2,
-            seq_sb_col_starts: &tile.seq_sb_col_starts,
-            seq_tile_cols: seq.tile_cols,
-            seq_tile_cols_log2: seq.tile_cols_log2,
-            seq_sb_size: tile.seq_sb_size,
-            sb_size: grid.sb_size,
-            mi_cols: grid.mi_cols,
-            mi_rows: grid.mi_rows,
-        })
+        (&tile.seq_sb_row_starts, &tile.seq_sb_col_starts)
     };
+    let reused = reuse_tile_params(ReuseTileParamsInput {
+        uniform_spacing: seq.uniform_spacing,
+        seq_sb_row_starts,
+        seq_tile_rows: seq.tile_rows,
+        seq_tile_rows_log2: seq.tile_rows_log2,
+        seq_sb_col_starts,
+        seq_tile_cols: seq.tile_cols,
+        seq_tile_cols_log2: seq.tile_cols_log2,
+        seq_sb_size: tile.seq_sb_size,
+        sb_size: grid.sb_size,
+        mi_cols: grid.mi_cols,
+        mi_rows: grid.mi_rows,
+    });
 
     let sb_shift2 = branch_sb_shift2(seq.uniform_spacing, tile.seq_sb_size, grid.sb_size);
     let mut mi_col_starts: Vec<u32> = reused
