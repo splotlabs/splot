@@ -30,6 +30,7 @@ use crate::{DecodeLimitError, DecodeLimitName, DecodeLimits};
 mod lr_records;
 mod lr_syntax;
 mod partition_children;
+mod state_publication;
 mod tree_walk;
 
 #[cfg(test)]
