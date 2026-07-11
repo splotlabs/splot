@@ -1967,8 +1967,7 @@ fn scan_compound_temporal_mv_stack(
     let step_h4 = if block.bh4 >= 16 { 4 } else { 2 };
     let step_w4 = if block.bw4 >= 16 { 4 } else { 2 };
     let samples = [
-        (row_end >= step_h4 && col_end >= step_w4)
-            .then_some((row_end - step_h4, col_end - step_w4)),
+        (row_end >= step_h4 && col_end >= step_w4).then(|| (row_end - step_h4, col_end - step_w4)),
         (row_end >= 3 * step_h4 || col_end >= 3 * step_w4).then_some((row_end >> 1, col_end >> 1)),
     ];
     for (delta_row, delta_col) in samples.into_iter().flatten() {
