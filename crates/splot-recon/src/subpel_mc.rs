@@ -530,11 +530,26 @@ fn subpel_copy_block<T: ReconSample>(
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let mut output = Vec::with_capacity(params.w * params.h);
+    let direct_x = usize::try_from(x0).ok().filter(|&x| {
+        x >= usize::try_from(params.first_x.max(0)).unwrap_or(usize::MAX)
+            && x.checked_add(params.w).is_some_and(|end| {
+                end <= reference.width
+                    && i64::try_from(end - 1).is_ok_and(|last| last <= params.last_x)
+            })
+    });
     for r in 0..params.h {
         let row = clip3(params.first_y, params.last_y, y0 + r as i64) as usize;
-        for c in 0..params.w {
-            let col = clip3(params.first_x, params.last_x, x0 + c as i64) as usize;
-            output.push((reference.sample(row, col) as i32) << shift_up);
+        if let Some(x) = direct_x {
+            let row = row.min(reference.height - 1);
+            let start = row * reference.stride + x;
+            for sample in &reference.samples[start..start + params.w] {
+                output.push(i32::from(sample.to_u16()) << shift_up);
+            }
+        } else {
+            for c in 0..params.w {
+                let col = clip3(params.first_x, params.last_x, x0 + c as i64) as usize;
+                output.push((reference.sample(row, col) as i32) << shift_up);
+            }
         }
     }
     output

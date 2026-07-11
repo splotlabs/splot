@@ -10343,6 +10343,8 @@ tests = [
     "crates/splot-recon/src/subpel_mc/tests.rs::tests::full_pel_zero_fraction_is_exact_copy",
     "crates/splot-recon/src/subpel_mc/tests.rs::tests::half_pel_horizontal_worked_example",
     "crates/splot-recon/src/subpel_mc/tests.rs::tests::matches_independent_reference_over_many_cases",
+    "crates/splot-recon/src/subpel_mc/tests.rs::zero_phase_copy_matches_independent_reference",
+    "crates/splot-recon/src/subpel_mc/tests.rs::strided_view_matches_contiguous_view",
     "crates/splot-recon/src/subpel_mc/tests.rs::tests::subpel_filters_table_shape_and_sums",
 ]
 commands = [
@@ -20909,6 +20911,7 @@ perf = "done"
 tests = [
     "crates/splot-recon/src/subpel_mc/tests.rs::edge_positions_match_independent_reference",
     "crates/splot-recon/src/subpel_mc/tests.rs::strided_view_matches_contiguous_view",
+    "crates/splot-recon/src/subpel_mc/tests.rs::zero_phase_copy_matches_independent_reference",
     "crates/splot-recon/src/inverse_transform.rs::tests::kernel_transform_matches_per_element_reference",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::with_selectable_tx_grid_reuses_scratch_without_cross_block_state",
     "crates/splot-decode/src/filters/wienerns_lr/recon_tests.rs::luma_lr_coalesced_runs_match_per_block_dispatch_bit_exactly",
