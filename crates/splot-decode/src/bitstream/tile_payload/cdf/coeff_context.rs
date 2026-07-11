@@ -47,11 +47,7 @@ const fn coeff_position(pos: usize, bwl: u32) -> CoeffPosition {
     }
 }
 
-const fn clamp_u32(value: u32, limit: u32) -> u32 {
-    if value < limit { value } else { limit }
-}
-
-const fn clamped_level_at(
+fn clamped_level_at(
     level: &[u32],
     row: usize,
     col: usize,
@@ -64,7 +60,7 @@ const fn clamped_level_at(
     }
     let flat = row.saturating_mul(txw).saturating_add(col);
     if flat < level.len() {
-        clamp_u32(level[flat], limit)
+        level[flat].min(limit)
     } else {
         0
     }
@@ -108,7 +104,7 @@ pub(crate) struct CoeffBrContext {
 }
 
 impl CoeffBrContext {
-    pub(crate) const fn ctx(self, level: &[u32]) -> usize {
+    pub(crate) fn ctx(self, level: &[u32]) -> usize {
         let pos = coeff_position(self.pos, self.bwl);
         let class_idx = tx_class_idx(self.tx_class);
         let num = if class_idx != 0 && self.plane > 0 {
@@ -131,9 +127,9 @@ impl CoeffBrContext {
             );
             idx += 1;
         }
-        let mag = clamp_u32((mag + 1) >> 1, MAX_BASE_BR_RANGE) as usize;
+        let mag = ((mag + 1) >> 1).min(MAX_BASE_BR_RANGE) as usize;
         if self.plane > 0 {
-            if mag < 3 { mag } else { 3 }
+            mag.min(3)
         } else if (self.pos == 0 && class_idx != 0) || (self.pos != 0 && self.is_lf) {
             mag + 7
         } else {
@@ -142,7 +138,7 @@ impl CoeffBrContext {
     }
 }
 
-const fn idtx_neighbour_mag(level: &[u32], row: usize, col: usize, txw: usize, clamp: u32) -> u32 {
+fn idtx_neighbour_mag(level: &[u32], row: usize, col: usize, txw: usize, clamp: u32) -> u32 {
     let mut mag = 0u32;
     if col > 0 {
         mag += clamped_level_at(level, row, col - 1, txw, usize::MAX, clamp);
@@ -153,18 +149,13 @@ const fn idtx_neighbour_mag(level: &[u32], row: usize, col: usize, txw: usize, c
     mag
 }
 
-pub(crate) const fn coeff_base_idtx_ctx(
-    level: &[u32],
-    row: usize,
-    col: usize,
-    txw: usize,
-) -> usize {
+pub(crate) fn coeff_base_idtx_ctx(level: &[u32], row: usize, col: usize, txw: usize) -> usize {
     idtx_neighbour_mag(level, row, col, txw, 3) as usize
 }
 
-pub(crate) const fn coeff_br_idtx_ctx(level: &[u32], row: usize, col: usize, txw: usize) -> usize {
+pub(crate) fn coeff_br_idtx_ctx(level: &[u32], row: usize, col: usize, txw: usize) -> usize {
     let mag = idtx_neighbour_mag(level, row, col, txw, MAX_BASE_BR_RANGE - 1);
-    (if mag < 6 { mag } else { 6 }) as usize
+    mag.min(6) as usize
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -228,11 +219,7 @@ impl CoeffBaseContext {
             let uv_ctx = if class_idx != 0 {
                 ctx2 + LF_SIG_COEF_CONTEXTS_2D_UV
             } else {
-                let plane = if self.plane < CHROMA_2D_PLANE_CONTEXT_OFFSET.len() {
-                    self.plane
-                } else {
-                    2
-                };
+                let plane = self.plane.min(2);
                 ctx2 + CHROMA_2D_PLANE_CONTEXT_OFFSET[plane]
             };
             return if self.is_lf {
