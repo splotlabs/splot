@@ -265,17 +265,6 @@ pub struct LosslessInfo {
     pub allow_parity_hiding: bool,
 }
 
-/// `Clip3( low, high, value )` (AV2 v1.0.0 § 4.8 mathematical functions).
-const fn clip3(low: i64, high: i64, value: i64) -> i64 {
-    if value < low {
-        low
-    } else if value > high {
-        high
-    } else {
-        value
-    }
-}
-
 /// `get_qindex( 1, segmentId )` (AV2 v1.0.0 § 7.14.2,
 /// `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-2`): the `ignoreDeltaQ == 1`
 /// form used by the § 5.18.2 lossless derivation.
@@ -305,7 +294,7 @@ pub(crate) fn get_qindex_ignore_delta_q(
         .unwrap_or(SegmentFeature::DISABLED);
     if segmentation.segmentation_enabled && feature.enabled {
         let qindex = i64::from(base_q_idx) + i64::from(feature.data);
-        clip3(0, quant.max_q(), qindex)
+        qindex.clamp(0, quant.max_q())
     } else {
         i64::from(base_q_idx)
     }
@@ -463,14 +452,12 @@ pub fn parse_setup_qm_params(
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the
 /// payload ends mid-field.
 pub fn parse_delta_q_params(reader: &mut BitReader<'_>, base_q_idx: u32) -> Result<DeltaQParams> {
-    let mut delta_q_present = false;
-    let mut delta_q_res = 0u8;
-    if base_q_idx > 0 {
-        delta_q_present = reader.read_flag()?;
-    }
-    if delta_q_present {
-        delta_q_res = reader.read_bits_u8(2)?;
-    }
+    let delta_q_present = base_q_idx > 0 && reader.read_flag()?;
+    let delta_q_res = if delta_q_present {
+        reader.read_bits_u8(2)?
+    } else {
+        0
+    };
     Ok(DeltaQParams {
         delta_q_present,
         delta_q_res,
