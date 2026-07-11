@@ -606,6 +606,33 @@ fn inter_frame_validation_admits_active_gdf_header_tool() {
 }
 
 #[test]
+fn inter_frame_validation_admits_delta_q_and_rejects_missing_params() {
+    let context = decode_context();
+    context
+        .pool()
+        .install(|| -> Result<()> {
+            let (sequence, mut core, offset) =
+                parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
+            let delta_q = core
+                .delta_q_params
+                .as_mut()
+                .expect("fixture inter core has delta-Q params");
+            delta_q.delta_q_present = true;
+            delta_q.delta_q_res = 2;
+
+            super::validate_inter_frame_core(&core, &sequence, offset)
+                .expect("active delta-Q is handled by the inter block walk");
+
+            core.delta_q_params = None;
+            let error = super::validate_inter_frame_core(&core, &sequence, offset)
+                .expect_err("missing delta-Q params must stay fail-closed");
+            assert_eq!(unsupported_reason(error), "inter_unsupported_frame_tools");
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn two_frame_inter_fixture_decodes_both_frames_bit_exact() {
     let frames = decode_frames();
     assert_eq!(
