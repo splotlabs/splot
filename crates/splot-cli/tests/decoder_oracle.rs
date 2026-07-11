@@ -74,7 +74,7 @@ fn decoder_oracle_corpus_matches_manifest() {
     let vectors = root.join(&manifest.vectors_dir);
     assert!(!manifest.fixture.is_empty(), "manifest has no fixtures");
 
-    let (mut saw_pass, mut saw_xfail) = (false, false);
+    let mut saw_pass = false;
     let mut xpasses: Vec<String> = Vec::new();
     let mut ids: BTreeSet<&str> = BTreeSet::new();
 
@@ -96,45 +96,39 @@ fn decoder_oracle_corpus_matches_manifest() {
                     fx.id
                 );
             }
-            "xfail_splot" => {
-                saw_xfail = true;
-                match decode_raw(&bytes) {
-                    Ok(raw) => {
-                        assert_eq!(
-                            sha256_hex(&raw),
-                            fx.avm_raw_sha256,
-                            "xfail {} decoded to output that DIFFERS from the AVM oracle: the \
+            "xfail_splot" => match decode_raw(&bytes) {
+                Ok(raw) => {
+                    assert_eq!(
+                        sha256_hex(&raw),
+                        fx.avm_raw_sha256,
+                        "xfail {} decoded to output that DIFFERS from the AVM oracle: the \
                              decoder neither failed closed nor matched AVM (non-conforming output)",
-                            fx.id
-                        );
-                        xpasses.push(fx.id.clone());
-                    }
-                    Err(error) => {
-                        let report = DecodeDiagnosticReport::from_decode_error(&error)
-                            .unwrap_or_else(|| panic!("xfail {} non-reportable: {error}", fx.id));
-                        assert_eq!(
-                            report.diagnostic.rule_id, UNSUPPORTED_RULE,
-                            "{} rule",
-                            fx.id
-                        );
-                        let reason = match &report.details {
-                            DecodeDiagnosticDetails::UnsupportedFeature(d) => d.unsupported_reason,
-                            DecodeDiagnosticDetails::UnsupportedStructure(d) => {
-                                d.unsupported_reason
-                            }
-                            other => panic!("xfail {} unexpected details: {other:?}", fx.id),
-                        };
-                        if let Some(want) = fx.unsupported_reason.as_deref() {
-                            assert_eq!(reason, want, "{} reason", fx.id);
-                        }
+                        fx.id
+                    );
+                    xpasses.push(fx.id.clone());
+                }
+                Err(error) => {
+                    let report = DecodeDiagnosticReport::from_decode_error(&error)
+                        .unwrap_or_else(|| panic!("xfail {} non-reportable: {error}", fx.id));
+                    assert_eq!(
+                        report.diagnostic.rule_id, UNSUPPORTED_RULE,
+                        "{} rule",
+                        fx.id
+                    );
+                    let reason = match &report.details {
+                        DecodeDiagnosticDetails::UnsupportedFeature(d) => d.unsupported_reason,
+                        DecodeDiagnosticDetails::UnsupportedStructure(d) => d.unsupported_reason,
+                        other => panic!("xfail {} unexpected details: {other:?}", fx.id),
+                    };
+                    if let Some(want) = fx.unsupported_reason.as_deref() {
+                        assert_eq!(reason, want, "{} reason", fx.id);
                     }
                 }
-            }
+            },
             other => panic!("{} unknown status {other:?}", fx.id),
         }
     }
     assert!(saw_pass, "corpus must exercise the must_pass arm");
-    let _ = saw_xfail;
 
     let orphans: Vec<String> = std::fs::read_dir(&vectors)
         .into_iter()
