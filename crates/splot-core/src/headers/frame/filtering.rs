@@ -230,7 +230,6 @@ pub fn parse_deblocking_filter_params(
     }
 
     let mut apply_deblocking_filter = [false; 4];
-    let use_mfh_update = mfh.is_some_and(|view| view.mfh_deblocking_filter_update);
     if let Some(view) = mfh.filter(|view| view.mfh_deblocking_filter_update) {
         apply_deblocking_filter[0] = view.mfh_apply_deblocking_filter[0];
         apply_deblocking_filter[1] = view.mfh_apply_deblocking_filter[1];
@@ -238,8 +237,7 @@ pub fn parse_deblocking_filter_params(
             apply_deblocking_filter[2] = view.mfh_apply_deblocking_filter[2];
             apply_deblocking_filter[3] = view.mfh_apply_deblocking_filter[3];
         }
-    }
-    if !use_mfh_update {
+    } else {
         apply_deblocking_filter[0] = reader.read_flag()?;
         apply_deblocking_filter[1] = reader.read_flag()?;
         if num_planes > 1 && (apply_deblocking_filter[0] || apply_deblocking_filter[1]) {
@@ -437,20 +435,9 @@ pub fn parse_gdf_params(
     filter: &CoreSeqFilterView,
     geometry: GdfGeometry<'_>,
 ) -> Result<GdfParams> {
-    if coded_lossless || !filter.enable_gdf {
-        return Ok(GdfParams {
-            gdf_frame_enable: false,
-            gdf_per_block: None,
-            gdf_pic_qc_idx: None,
-            gdf_pic_scale_idx: None,
-        });
-    }
-
-    let gdf_frame_enable = if filter.single_picture_header_flag {
-        true
-    } else {
-        reader.read_flag()?
-    };
+    let gdf_frame_enable = !coded_lossless
+        && filter.enable_gdf
+        && (filter.single_picture_header_flag || reader.read_flag()?);
     if !gdf_frame_enable {
         return Ok(GdfParams {
             gdf_frame_enable: false,
@@ -493,21 +480,9 @@ pub fn parse_cdef_params(
     num_planes: u8,
     filter: &CoreSeqFilterView,
 ) -> Result<CdefParams> {
-    if coded_lossless || !filter.enable_cdef {
-        return Ok(CdefParams {
-            cdef_frame_enable: false,
-            cdef_damping: None,
-            cdef_strengths: None,
-            cdef_on_skip_txfm_frame_enable: None,
-            strengths: Vec::new(),
-        });
-    }
-
-    let cdef_frame_enable = if filter.single_picture_header_flag {
-        true
-    } else {
-        reader.read_flag()?
-    };
+    let cdef_frame_enable = !coded_lossless
+        && filter.enable_cdef
+        && (filter.single_picture_header_flag || reader.read_flag()?);
     if !cdef_frame_enable {
         return Ok(CdefParams {
             cdef_frame_enable: false,
