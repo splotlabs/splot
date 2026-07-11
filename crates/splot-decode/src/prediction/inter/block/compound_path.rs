@@ -1944,17 +1944,7 @@ fn project_joint_mvd(diff: Mv, num: i32, den: i32) -> Mv {
 fn project_joint_mvd_component(component: i32, frac: i64) -> i32 {
     let product = i64::from(component) * frac;
     let rounded = (product + 8192 + (product >> 63)) >> 14;
-    clamp_i64_to_i32(rounded)
-}
-
-fn clamp_i64_to_i32(value: i64) -> i32 {
-    if value < i64::from(i32::MIN) {
-        i32::MIN
-    } else if value > i64::from(i32::MAX) {
-        i32::MAX
-    } else {
-        value as i32
-    }
+    rounded.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 fn scale_joint_projected_mvd(mut projected: Mv, jmvd_scale_mode: u8, use_amvd: bool) -> Mv {
