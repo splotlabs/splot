@@ -25,6 +25,10 @@ pub(crate) const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =
     [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)];
 pub(crate) const CWP_EQUAL: i16 = 8;
 
+pub(super) const fn optflow_unit_size(luma_w: usize, luma_h: usize) -> usize {
+    if luma_w <= 8 && luma_h <= 8 { 4 } else { 8 }
+}
+
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct McBlockRect {

@@ -927,6 +927,9 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
         None
     };
+    let sub_pu_size = compound
+        .use_optflow
+        .then(|| super::super::mc::optflow_unit_size(n4w * MI_SIZE, n4h * MI_SIZE));
     record_inter_deblock_geometry(
         deblock_blocks,
         chroma_deblock_blocks,
@@ -935,7 +938,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         (n4w, n4h),
         sequence.general.chroma_format_idc,
         residual.as_ref(),
-        None,
+        sub_pu_size,
         block_qindex,
         current_residual_lossless(work_unit),
         tile_offset,
