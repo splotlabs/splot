@@ -143,6 +143,7 @@ pub(crate) struct InterBlockParams<'a, T: ReconSample> {
     sub8x8_chroma: bool,
     use_refinemv: bool,
     search_refinemv: bool,
+    optflow_sad_threshold: Option<u64>,
 }
 
 impl<'a, T: ReconSample> InterBlockParams<'a, T> {
@@ -160,6 +161,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             sub8x8_chroma: false,
             use_refinemv: false,
             search_refinemv: false,
+            optflow_sad_threshold: None,
         }
     }
     pub(crate) const fn compound_average(
@@ -187,6 +189,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             sub8x8_chroma: false,
             use_refinemv: false,
             search_refinemv: false,
+            optflow_sad_threshold: None,
         }
     }
     pub(crate) const fn single_warp(
@@ -208,6 +211,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             sub8x8_chroma: false,
             use_refinemv: false,
             search_refinemv: false,
+            optflow_sad_threshold: None,
         }
     }
     pub(crate) const fn with_chroma(mut self, has_chroma: bool) -> Self {
@@ -238,6 +242,11 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         {
             *optflow_distances = distances;
         }
+        self
+    }
+
+    pub(crate) const fn with_optflow_sad_threshold(mut self, threshold: Option<u64>) -> Self {
+        self.optflow_sad_threshold = threshold;
         self
     }
 
@@ -284,6 +293,7 @@ struct CompoundMcBlock<'a, T: ReconSample> {
     sub8x8_chroma: bool,
     use_refinemv: bool,
     search_refinemv: bool,
+    optflow_sad_threshold: Option<u64>,
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -374,6 +384,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
                 sub8x8_chroma: block.sub8x8_chroma,
                 use_refinemv: block.use_refinemv,
                 search_refinemv: block.search_refinemv,
+                optflow_sad_threshold: block.optflow_sad_threshold,
             },
             optflow_unit_size,
             offset,
@@ -727,6 +738,7 @@ fn predict_compound_plane<T: ReconSample>(
         sub8x8_chroma: false,
         use_refinemv: false,
         search_refinemv: false,
+        optflow_sad_threshold: None,
     };
     let prediction =
         compound_plane_prediction_for_block(workspace, block, plane, sub_x, sub_y, motion, offset)?;

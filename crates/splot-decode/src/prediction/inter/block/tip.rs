@@ -378,7 +378,8 @@ pub(super) fn reconstruct<T: ReconSample>(
                 tile_offset,
             )?
             .with_refinemv(use_refinemv)
-            .with_refinemv_search(search_refinemv);
+            .with_refinemv_search(search_refinemv)
+            .with_optflow_sad_threshold(use_optflow.then_some(if output { 15 } else { 6 }));
             let stored_mvs = if use_optflow {
                 mc::motion_compensate_inter_block_with_optflow_mvs_into(
                     workspace,

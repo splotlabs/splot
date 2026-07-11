@@ -158,6 +158,15 @@ fn subblock_reference_area_size(
     (plane != PlaneId::Y || (width == 8 && height == 8)).then_some((width, height))
 }
 
+fn normalized_sad(pred0: &[u16], pred1: &[u16], bit_depth: splot_recon::BitDepth) -> u64 {
+    let sad = pred0
+        .iter()
+        .zip(pred1)
+        .map(|(&a, &b)| u64::from(a.abs_diff(b)))
+        .sum::<u64>();
+    sad >> bit_depth.bits().saturating_sub(8)
+}
+
 pub(super) fn compound_motion_grid<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     block: CompoundMcBlock<'_, T>,
@@ -234,6 +243,11 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                 candidates.map(|mvs| (mvs[1], region_w, region_h)),
                 offset,
             )?;
+            if block.optflow_sad_threshold.is_some_and(|threshold| {
+                normalized_sad(&pred0, &pred1, workspace.info().bit_depth()) < threshold
+            }) {
+                return Ok(refinemv.cloned());
+            }
             let deltas = derive_optflow_mv_deltas(
                 &pred0,
                 &pred1,
