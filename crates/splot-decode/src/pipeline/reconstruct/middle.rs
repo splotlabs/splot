@@ -180,12 +180,18 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         let left_col = x
             .checked_sub(1)
             .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+        let max_y = workspace
+            .plane(plane_id)?
+            .storage_size()
+            .height()
+            .checked_sub(1)
+            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
         let corner = workspace.reconstructed_sample(plane_id, left_col, above_row)?;
         let above_idif = build_two_sided_middle_idif_edge(width, filters.above, corner, |i| {
             workspace.reconstructed_sample(plane_id, x.saturating_add(i), above_row)
         })?;
         let left_idif = build_two_sided_middle_idif_edge(height, filters.left, corner, |i| {
-            workspace.reconstructed_sample(plane_id, left_col, y.saturating_add(i))
+            workspace.reconstructed_sample(plane_id, left_col, y.saturating_add(i).min(max_y))
         })?;
         if matches!(plane_id, PlaneId::Y) {
             predict_intra_middle_directional_angle_rect_idif_into(
