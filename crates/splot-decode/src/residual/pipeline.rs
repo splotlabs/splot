@@ -889,11 +889,13 @@ impl ResidualPlanePlan {
         if blocks.len() == 1 {
             let block = blocks.remove(0);
             let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
+            let width4 = ((1usize << log2_width) >> 2).max(1);
+            let height4 = ((1usize << log2_height) >> 2).max(1);
             deblock.record_luma_unit(
                 block.y / 4,
                 block.x / 4,
-                ((1usize << log2_width) / 4).max(1),
-                ((1usize << log2_height) / 4).max(1),
+                width4,
+                height4,
                 block.tx_size,
                 block.coeffs.eob,
             );
@@ -908,13 +910,13 @@ impl ResidualPlanePlan {
                 intra_edge,
                 luma_context,
             )?;
+            block_decoded.set_luma_transform(block.x, block.y, width4, height4);
             return Ok(ResidualPlaneExecution {
                 coeffs: block.coeffs,
                 last_unit_nonzero: None,
             });
         }
 
-        let sb_mask = block_decoded.sb_size4().saturating_sub(1);
         for block in &blocks {
             let unit = self.transform_unit_plan(block)?;
             let unit_palette_color_map =
@@ -929,21 +931,17 @@ impl ResidualPlanePlan {
                 luma_context,
             )?;
             let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
+            let width4 = ((1usize << log2_width) >> 2).max(1);
+            let height4 = ((1usize << log2_height) >> 2).max(1);
             deblock.record_luma_unit(
                 block.y / 4,
                 block.x / 4,
-                ((1usize << log2_width) / 4).max(1),
-                ((1usize << log2_height) / 4).max(1),
+                width4,
+                height4,
                 block.tx_size,
                 block.coeffs.eob,
             );
-            block_decoded.set_block(
-                0,
-                (block.y >> 2) & sb_mask,
-                (block.x >> 2) & sb_mask,
-                ((1usize << log2_width) >> 2).max(1),
-                ((1usize << log2_height) >> 2).max(1),
-            );
+            block_decoded.set_luma_transform(block.x, block.y, width4, height4);
         }
         let summary = summarize_luma_partition(&blocks);
         Ok(ResidualPlaneExecution {

@@ -64,7 +64,7 @@ fn split_bottom_left_reads_decoded_top_right_sibling() {
     state.clear_superblock(0, 0);
     assert_eq!(state.count_top_right_avail(0, 0, 8, 8), 0);
     state.set_block(0, 0, 0, 8, 8);
-    state.set_block(0, 0, 8, 8, 8);
+    state.set_luma_transform(32, 0, 8, 8);
     assert_eq!(state.count_top_right_avail(0, 0, 8, 8), 8);
 }
 
