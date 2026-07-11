@@ -16122,6 +16122,7 @@ tests = [
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::block1_predicts_block0_mv_via_left_neighbour",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::block2_predicts_block0_mv_via_above_neighbour",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::same_side_spatial_projection_survives_disabled_temporal_scan",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::single_mv_stack_derives_tip_neighbour_for_another_reference",
     "crates/splot-decode/src/prediction/inter/tests.rs::mvstack_fixture_decodes_two_frames",
     "crates/splot-decode/src/prediction/inter/tests.rs::mvstack_fixture_per_frame_hash_is_stable",
     "crates/splot-cli/tests/decode_cli.rs::decode_two_frame_inter_mvstack_fixture_decodes_bit_exact",

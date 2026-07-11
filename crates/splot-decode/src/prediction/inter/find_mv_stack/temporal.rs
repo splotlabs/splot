@@ -379,6 +379,16 @@ impl TemporalMvContext {
         Some(())
     }
 
+    #[cfg(test)]
+    pub(super) fn set_order_hint_context(
+        &mut self,
+        current_order_hint: u32,
+        ref_order_hints: Vec<Option<u32>>,
+    ) {
+        self.current_order_hint = current_order_hint;
+        self.ref_order_hints = ref_order_hints;
+    }
+
     pub(crate) fn from_references(
         mi_dimensions: (usize, usize),
         current_order_hint: u32,
@@ -543,15 +553,10 @@ impl TemporalMvContext {
         block: &MvBlockContext,
         probe: RelativeProbe,
         cell: NeighbourCell,
-    ) -> Option<(Mv, (i8, Mv))> {
+    ) -> Option<[(i8, Mv); 2]> {
         let refs = self.tip_references()?;
-        let references = [refs.past_ref, refs.future_ref];
         let mvs = self.tip_spatial_mvs(grid, block, probe, cell)?;
-        let target = references
-            .iter()
-            .position(|&reference| reference == block.ref_frame0)?;
-        let other = 1 - target;
-        Some((mvs[target], (references[other], mvs[other])))
+        Some([(refs.past_ref, mvs[0]), (refs.future_ref, mvs[1])])
     }
 
     pub(super) fn derive_tip_base_mv(&self, references: [i8; 2], mvs: [Mv; 2]) -> Option<Mv> {
