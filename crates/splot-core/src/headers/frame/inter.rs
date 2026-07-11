@@ -2301,6 +2301,6 @@ mod tests {
             !tail.use_global_motion,
             "global motion enabled in the sequence but unused by this frame"
         );
-        assert!(!tail.apply_grain, "no film grain applied");
+        assert!(!tail.film_grain.apply_grain, "no film grain applied");
     }
 }

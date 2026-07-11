@@ -1314,8 +1314,7 @@ fn validate_inter_frame_core(
         || core.gdf_params.is_none()
         || core.cdef_params.is_none()
         || core.lr_params.is_none()
-        || core.ccso_params.is_none()
-        || core.inter_tail.as_ref().is_none_or(|tail| tail.apply_grain);
+        || core.ccso_params.is_none();
     if unsupported_tools {
         return Err(inter_cap!(
             "inter_unsupported_frame_tools",

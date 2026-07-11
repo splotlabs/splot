@@ -48,30 +48,37 @@ fn leading_frame_unit_allows_ops_before_sequence() {
     assert_eq!(sequence.header.obu_type, ObuType::SequenceHeader);
     assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
     assert_eq!(frame_unit_len, 4);
-    assert!(is_leading_record_regular_after_key(0, 4, &obus));
+    assert_eq!(leading_record_inter_frame_unit_start(0, 4, &obus), Some(4));
     assert!(require_leading_ivf_obu_order(&obus).is_ok());
 }
 
 #[test]
-fn inter_frame_unit_order_accepts_regular_tip() {
-    let bytes = [
+fn inter_frame_unit_order_accepts_regular_tip_with_optional_film_grain() {
+    let without_film_grain = [
         obu(OBU_TEMPORAL_DELIMITER).as_slice(),
         obu(OBU_REGULAR_TIP).as_slice(),
     ]
     .concat();
-    let obus = annexb_obus(&bytes);
+    let with_film_grain = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        obu(OBU_FILM_GRAIN).as_slice(),
+        obu(OBU_REGULAR_TIP).as_slice(),
+    ]
+    .concat();
 
-    assert!(require_inter_obu_order(&obus).is_ok());
+    assert!(require_inter_obu_order(&annexb_obus(&without_film_grain)).is_ok());
+    assert!(require_inter_obu_order(&annexb_obus(&with_film_grain)).is_ok());
 }
 
 #[test]
-fn leading_frame_unit_allows_film_grain_before_key() {
+fn leading_frame_unit_allows_film_grain_before_key_and_inter() {
     let bytes = [
         obu(OBU_TEMPORAL_DELIMITER).as_slice(),
         obu(OBU_OPERATING_POINT_SET).as_slice(),
         obu(OBU_SEQUENCE_HEADER).as_slice(),
         obu(OBU_FILM_GRAIN).as_slice(),
         obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+        obu(OBU_FILM_GRAIN).as_slice(),
         obu(OBU_REGULAR_TILE_GROUP).as_slice(),
     ]
     .concat();
@@ -93,7 +100,7 @@ fn leading_frame_unit_allows_film_grain_before_key() {
     assert_eq!(film_grain_obus.len(), 1);
     assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
     assert_eq!(frame_unit_len, 5);
-    assert!(is_leading_record_regular_after_key(0, 5, &obus));
+    assert_eq!(leading_record_inter_frame_unit_start(0, 6, &obus), Some(5));
     assert!(require_leading_ivf_obu_order(&obus).is_ok());
 }
 
@@ -103,6 +110,7 @@ fn leading_annexb_regular_after_key_stops_at_next_temporal_delimiter() {
         obu(OBU_TEMPORAL_DELIMITER).as_slice(),
         obu(OBU_SEQUENCE_HEADER).as_slice(),
         obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+        obu(OBU_FILM_GRAIN).as_slice(),
         obu(OBU_REGULAR_TILE_GROUP).as_slice(),
         obu(OBU_TEMPORAL_DELIMITER).as_slice(),
         obu(OBU_REGULAR_TILE_GROUP).as_slice(),
@@ -117,11 +125,11 @@ fn leading_annexb_regular_after_key_stops_at_next_temporal_delimiter() {
     let mut next_unvalidated = frame_unit_len;
 
     assert_eq!(frame_unit_len, 3);
-    assert!(is_leading_record_regular_after_key(0, 3, &obus));
-    assert!(!is_leading_record_regular_after_key(0, 5, &obus));
+    assert_eq!(leading_record_inter_frame_unit_start(0, 4, &obus), Some(3));
+    assert_eq!(leading_record_inter_frame_unit_start(0, 6, &obus), None);
 
-    assert!(require_following_annexb_obu_order_through(&obus, &mut next_unvalidated, 3).is_ok());
-    assert_eq!(next_unvalidated, 4);
-    assert!(require_following_annexb_obu_order_through(&obus, &mut next_unvalidated, 5).is_ok());
-    assert_eq!(next_unvalidated, 6);
+    assert!(require_following_annexb_obu_order_through(&obus, &mut next_unvalidated, 4).is_ok());
+    assert_eq!(next_unvalidated, 5);
+    assert!(require_following_annexb_obu_order_through(&obus, &mut next_unvalidated, 6).is_ok());
+    assert_eq!(next_unvalidated, 7);
 }

@@ -234,7 +234,7 @@ impl FilmGrainSlots {
         core: &FrameHeaderCore,
         frame_offset: ByteOffset,
     ) -> Result<Option<ActiveFilmGrain>> {
-        let Some(config) = film_grain_config_for_core(core, frame_offset)? else {
+        let Some(config) = film_grain_config_for_core(core) else {
             return Ok(None);
         };
         if !config.apply_grain {
@@ -273,32 +273,20 @@ impl FilmGrainSlots {
     }
 }
 
-fn film_grain_config_for_core(
-    core: &FrameHeaderCore,
-    frame_offset: ByteOffset,
-) -> Result<Option<FilmGrainConfig>> {
+fn film_grain_config_for_core(core: &FrameHeaderCore) -> Option<FilmGrainConfig> {
     if let Some(tail) = core.intra_tail.as_ref() {
-        return Ok(Some(tail.film_grain));
+        return Some(tail.film_grain);
     }
     if let Some(config) = core.sef_film_grain {
-        return Ok(Some(config));
+        return Some(config);
     }
     if let Some(config) = core.inter.as_ref().and_then(|inter| inter.tip_film_grain) {
-        return Ok(Some(config));
+        return Some(config);
     }
-    if core
-        .inter_tail
-        .as_ref()
-        .is_some_and(|tail| tail.apply_grain)
-    {
-        return Err(unsupported_feature_at(
-            "inter_film_grain_config_unmodeled",
-            frame_offset,
-            "inter header parsing does not yet preserve fgm_id and grain_seed for apply_grain",
-            "5.18.10.1",
-        ));
+    if let Some(tail) = core.inter_tail.as_ref() {
+        return Some(tail.film_grain);
     }
-    Ok(None)
+    None
 }
 #[cfg(test)]
 pub(crate) fn decode_frame_from_plan(
@@ -505,7 +493,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
     for next_candidate in candidates {
         match next_candidate.obu_type() {
             ObuType::RegularTileGroup | ObuType::RegularTip => {
-                let inter_envelope = match stream {
+                let (inter_film_grain_obus, inter_envelope) = match stream {
                     RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
                         obus,
                         next_candidate,
@@ -517,6 +505,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                         &mut next_unvalidated_following_ivf_record,
                     )?,
                 };
+                film_grain_slots.update_from_obus(inter_film_grain_obus)?;
                 let inter_frame_timer = crate::timing::start();
                 let (inter_frame, inter_core, frame_cdfs, ccso_grid, motion_field) = match sequence
                     .general
@@ -1082,7 +1071,7 @@ pub(crate) fn following_inter_envelope<'a>(
     ivf: &'a ParsedIvfBitstream<'a>,
     candidate: &DecodePlannedObu,
     next_unvalidated_following_ivf_record: &mut usize,
-) -> Result<ObuEnvelope<'a>> {
+) -> Result<(&'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
     for (ivf_frame_index, ivf_frame) in ivf.frames.iter().enumerate() {
         let Some(position) = ivf_frame
             .obus
@@ -1098,14 +1087,16 @@ pub(crate) fn following_inter_envelope<'a>(
         )?;
         let inter_envelope = ivf_frame.obus[position];
         require_inter_frame_obu(inter_envelope, "missing_inter_frame_obu")?;
-        if is_leading_record_regular_after_key(ivf_frame_index, position, ivf_frame.obus.as_slice())
-        {
-            return Ok(inter_envelope);
+        if let Some(start) = leading_record_inter_frame_unit_start(
+            ivf_frame_index,
+            position,
+            ivf_frame.obus.as_slice(),
+        ) {
+            return Ok((&ivf_frame.obus[start..position], inter_envelope));
         }
-        let Some(td_envelope) = position
-            .checked_sub(1)
-            .and_then(|previous| ivf_frame.obus.get(previous))
-            .copied()
+        let Some(td_index) = ivf_frame.obus[..position]
+            .iter()
+            .rposition(|envelope| envelope.header.obu_type == ObuType::TemporalDelimiter)
         else {
             return Err(unsupported_at(
                 "missing_inter_temporal_delimiter",
@@ -1113,12 +1104,7 @@ pub(crate) fn following_inter_envelope<'a>(
                 missing_capability_message!("inter.ivf_frame_unit_order"),
             ));
         };
-        require_obu_type(
-            td_envelope,
-            ObuType::TemporalDelimiter,
-            "missing_inter_temporal_delimiter",
-        )?;
-        return Ok(inter_envelope);
+        return Ok((&ivf_frame.obus[td_index + 1..position], inter_envelope));
     }
     Err(unsupported_at(
         "missing_inter_ivf_obu",
@@ -1131,7 +1117,7 @@ fn following_annexb_inter_envelope<'a>(
     obus: &'a [ObuEnvelope<'a>],
     candidate: &DecodePlannedObu,
     next_unvalidated_following_obu: &mut usize,
-) -> Result<ObuEnvelope<'a>> {
+) -> Result<(&'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
     let Some(position) = obus
         .iter()
         .position(|envelope| envelope.offset == candidate.offset())
@@ -1145,13 +1131,12 @@ fn following_annexb_inter_envelope<'a>(
     require_following_annexb_obu_order_through(obus, next_unvalidated_following_obu, position)?;
     let inter_envelope = obus[position];
     require_inter_frame_obu(inter_envelope, "missing_inter_frame_obu")?;
-    if is_leading_record_regular_after_key(0, position, obus) {
-        return Ok(inter_envelope);
+    if let Some(start) = leading_record_inter_frame_unit_start(0, position, obus) {
+        return Ok((&obus[start..position], inter_envelope));
     }
-    let Some(td_envelope) = position
-        .checked_sub(1)
-        .and_then(|previous| obus.get(previous))
-        .copied()
+    let Some(td_index) = obus[..position]
+        .iter()
+        .rposition(|envelope| envelope.header.obu_type == ObuType::TemporalDelimiter)
     else {
         return Err(unsupported_at(
             "missing_inter_temporal_delimiter",
@@ -1159,12 +1144,7 @@ fn following_annexb_inter_envelope<'a>(
             missing_capability_message!("inter.ivf_frame_unit_order"),
         ));
     };
-    require_obu_type(
-        td_envelope,
-        ObuType::TemporalDelimiter,
-        "missing_inter_temporal_delimiter",
-    )?;
-    Ok(inter_envelope)
+    Ok((&obus[td_index + 1..position], inter_envelope))
 }
 
 fn following_key_frame_unit<'a>(
@@ -1263,25 +1243,31 @@ fn following_annexb_key_frame_unit<'a>(
     ))
 }
 
-fn is_leading_record_regular_after_key(
+fn leading_record_inter_frame_unit_start(
     ivf_frame_index: usize,
     position: usize,
     obus: &[ObuEnvelope<'_>],
-) -> bool {
+) -> Option<usize> {
     if ivf_frame_index != 0 {
-        return false;
+        return None;
     }
     let Ok((_, frame_unit_len)) = require_leading_frame_unit(obus) else {
-        return false;
+        return None;
     };
-    position >= frame_unit_len
-        && obus
-            .get(frame_unit_len..=position)
-            .is_some_and(|envelopes| {
-                envelopes
-                    .iter()
-                    .all(|envelope| is_inter_frame_obu(envelope.header.obu_type))
-            })
+    let mut index = frame_unit_len;
+    while index <= position {
+        let unit_start = index;
+        index = skip_film_grain_obus(obus, index);
+        let envelope = obus.get(index)?;
+        if !is_inter_frame_obu(envelope.header.obu_type) {
+            return None;
+        }
+        if index == position {
+            return Some(unit_start);
+        }
+        index += 1;
+    }
+    None
 }
 
 fn require_following_ivf_obu_order_through(
@@ -1336,36 +1322,55 @@ fn require_following_ivf_record_obu_order(
 
 fn require_leading_ivf_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
     let (_, frame_unit_len) = require_leading_frame_unit(obus)?;
-    for envelope in obus.iter().skip(frame_unit_len) {
-        require_inter_frame_obu(*envelope, "unexpected_leading_obu_after_key")?;
+    let mut index = frame_unit_len;
+    while index < obus.len() {
+        index = skip_film_grain_obus(obus, index);
+        let Some(envelope) = obus.get(index).copied() else {
+            return Err(unsupported_at(
+                "unexpected_leading_obu_after_key",
+                obus.last()
+                    .map_or(ByteOffset::new(0), |envelope| envelope.offset),
+                missing_capability_message!("inter.ivf_frame_unit_order"),
+            ));
+        };
+        require_inter_frame_obu(envelope, "unexpected_leading_obu_after_key")?;
+        index += 1;
     }
     Ok(())
 }
 
+fn skip_film_grain_obus(obus: &[ObuEnvelope<'_>], mut index: usize) -> usize {
+    while obus
+        .get(index)
+        .is_some_and(|envelope| envelope.header.obu_type == ObuType::FilmGrain)
+    {
+        index += 1;
+    }
+    index
+}
+
 fn require_inter_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
-    for (index, envelope) in obus.iter().enumerate() {
-        let valid = if index % 2 == 0 {
-            envelope.header.obu_type == ObuType::TemporalDelimiter
-        } else {
-            is_inter_frame_obu(envelope.header.obu_type)
-        };
-        if !valid {
+    let mut index = 0;
+    while index < obus.len() {
+        let td_envelope = obus[index];
+        if td_envelope.header.obu_type != ObuType::TemporalDelimiter {
             return Err(unsupported_at(
                 "unexpected_inter_obu_order",
-                envelope.offset,
+                td_envelope.offset,
                 missing_capability_message!("inter.ivf_frame_unit_order"),
             ));
         }
-    }
-    if !obus.len().is_multiple_of(2) {
-        let offset = obus
-            .last()
-            .map_or(ByteOffset::new(0), |envelope| envelope.offset);
-        return Err(unsupported_at(
-            "unexpected_inter_obu_order",
-            offset,
-            missing_capability_message!("inter.ivf_frame_unit_order"),
-        ));
+        index += 1;
+        index = skip_film_grain_obus(obus, index);
+        let Some(frame_envelope) = obus.get(index).copied() else {
+            return Err(unsupported_at(
+                "unexpected_inter_obu_order",
+                td_envelope.offset,
+                missing_capability_message!("inter.ivf_frame_unit_order"),
+            ));
+        };
+        require_inter_frame_obu(frame_envelope, "unexpected_inter_obu_order")?;
+        index += 1;
     }
     Ok(())
 }
@@ -1376,10 +1381,11 @@ fn require_following_annexb_obu_order_through(
     target_position: usize,
 ) -> Result<()> {
     while *next_unvalidated_following_obu <= target_position {
-        if is_leading_record_regular_after_key(0, *next_unvalidated_following_obu, obus) {
-            let envelope = obus[*next_unvalidated_following_obu];
+        let leading_frame_index = skip_film_grain_obus(obus, *next_unvalidated_following_obu);
+        if leading_record_inter_frame_unit_start(0, leading_frame_index, obus).is_some() {
+            let envelope = obus[leading_frame_index];
             require_inter_frame_obu(envelope, "unexpected_leading_obu_after_key")?;
-            *next_unvalidated_following_obu += 1;
+            *next_unvalidated_following_obu = leading_frame_index.saturating_add(1);
             continue;
         }
 
@@ -1395,7 +1401,8 @@ fn require_following_annexb_obu_order_through(
             ObuType::TemporalDelimiter,
             "unexpected_inter_obu_order",
         )?;
-        let frame_index = next_unvalidated_following_obu.saturating_add(1);
+        let frame_index =
+            skip_film_grain_obus(obus, next_unvalidated_following_obu.saturating_add(1));
         let Some(frame_envelope) = obus.get(frame_index).copied() else {
             return Err(unsupported_at(
                 "unexpected_inter_obu_order",
