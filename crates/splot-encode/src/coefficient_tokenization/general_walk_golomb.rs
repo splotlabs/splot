@@ -76,21 +76,14 @@ pub(super) struct GolombParams {
     prefix_x_min: u32,
 }
 
-/// `GetMsb(value)`: the position of the most-significant set bit, `0` for `0`
-/// (mirroring the decoder `get_msb`). `GetMsb(0) == 0` clamps `m` to `MIN_M == 1`.
-const fn get_msb(value: u32) -> u32 {
-    if value == 0 {
-        0
-    } else {
-        u32::BITS - 1 - value.leading_zeros()
-    }
-}
-
 /// Derives `m = Clip3(1, 6, GetMsb(hrLevelAvg))` for a golomb coefficient with
 /// `lvlShift == 0` (`predLevel == hrLevelAvg`), mirroring the decoder's `m`
 /// derivation. Used by [`golomb_params_from_hr_level_avg`].
 const fn golomb_m_from_hr_level_avg(hr_level_avg: u32) -> u32 {
-    let msb = get_msb(hr_level_avg);
+    let msb = match hr_level_avg.checked_ilog2() {
+        Some(msb) => msb,
+        None => 0,
+    };
     if msb < MIN_M {
         MIN_M
     } else if msb > MAX_M {
