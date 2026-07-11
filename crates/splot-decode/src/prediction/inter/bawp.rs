@@ -5,8 +5,8 @@
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrame, IntraRectBlockSize, PlaneId, PlaneRect, ReconSample,
-    ReferencePlaneView,
+    CurrentFrameIntraEdges, CurrentFrameWorkspace, DecodedFrame, IntraRectBlockSize, PlaneId,
+    PlaneRect, ReconSample, ReferencePlaneView,
 };
 
 use super::{BawpSyntax, Mv, PlacedInterBlock};
@@ -17,6 +17,70 @@ const MAX_BAWP_RECT_DIM: usize = 64;
 
 const fn to_fullmv(mv: i32) -> i32 {
     (mv + 3 + if mv >= 0 { 1 } else { 0 }) >> 3
+}
+
+#[derive(Default)]
+struct TemplateStats {
+    sum_x: i64,
+    sum_y: i64,
+    sum_xx: i64,
+    sum_xy: i64,
+    count: i64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_template_stats<T, F>(
+    edges: &CurrentFrameIntraEdges<T>,
+    width: usize,
+    height: usize,
+    num_up: usize,
+    num_left: usize,
+    ref_x: i64,
+    ref_y: i64,
+    mut reference_sample: F,
+) -> Option<TemplateStats>
+where
+    T: ReconSample,
+    F: FnMut(i64, i64) -> Option<i64>,
+{
+    let mut stats = TemplateStats::default();
+    if num_up > 0 {
+        let step = width.checked_div(num_up)?;
+        let above = edges.above_samples()?;
+        let mut i = step >> 1;
+        while i < width {
+            let recon = i64::from(above.get(i)?.to_u16());
+            let sample_col = i64::try_from(i)
+                .ok()
+                .and_then(|offset| ref_x.checked_add(offset))?;
+            let reference = reference_sample(ref_y - 1, sample_col)?;
+            stats.sum_x += reference;
+            stats.sum_y += recon;
+            stats.sum_xy += reference * recon;
+            stats.sum_xx += reference * reference;
+            i += step;
+        }
+        stats.count = stats.count.checked_add(i64::try_from(num_up).ok()?)?;
+    }
+    if num_left > 0 {
+        let step = height.checked_div(num_left)?;
+        let left = edges.left_samples()?;
+        let mut i = step >> 1;
+        while i < height {
+            let recon = i64::from(left.get(i)?.to_u16());
+            let sample_row = i64::try_from(i)
+                .ok()
+                .and_then(|offset| ref_y.checked_add(offset))?;
+            let reference = reference_sample(sample_row, ref_x - 1)?;
+            stats.sum_x += reference;
+            stats.sum_y += recon;
+            stats.sum_xy += reference * recon;
+            stats.sum_xx += reference * reference;
+            i += step;
+        }
+        stats.count = stats.count.checked_add(i64::try_from(num_left).ok()?)?;
+    }
+    Some(stats)
 }
 
 pub(crate) fn apply_bawp<T: ReconSample>(
@@ -102,77 +166,25 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     };
     let edges = workspace.intra_dc_edges_for_rect(PlaneId::Y, target.x(), target.y(), size)?;
 
-    let mut sum_x = 0i64;
-    let mut sum_y = 0i64;
-    let mut sum_xx = 0i64;
-    let mut sum_xy = 0i64;
-    let mut count = 0i64;
-    if let Some(step) = width.checked_div(num_up).filter(|_| num_up > 0) {
-        let Some(above) = edges.above_samples() else {
-            return Ok(());
-        };
-        let mut i = step >> 1;
-        while i < width {
-            let Some(recon) = above.get(i).map(|sample| i64::from(sample.to_u16())) else {
-                return Ok(());
-            };
-            let Some(sample_col) = i64::try_from(i)
-                .ok()
-                .and_then(|offset| ref_x.checked_add(offset))
-            else {
-                return Ok(());
-            };
-            let Some(reference_sample) = intrabc_morph_sample(workspace, ref_y - 1, sample_col)
-            else {
-                return Ok(());
-            };
-            sum_x += reference_sample;
-            sum_y += recon;
-            sum_xy += reference_sample * recon;
-            sum_xx += reference_sample * reference_sample;
-            i += step;
-        }
-        let Some(delta_count) = i64::try_from(num_up).ok() else {
-            return Ok(());
-        };
-        let Some(next_count) = count.checked_add(delta_count) else {
-            return Ok(());
-        };
-        count = next_count;
-    }
-    if let Some(step) = height.checked_div(num_left).filter(|_| num_left > 0) {
-        let Some(left) = edges.left_samples() else {
-            return Ok(());
-        };
-        let mut i = step >> 1;
-        while i < height {
-            let Some(recon) = left.get(i).map(|sample| i64::from(sample.to_u16())) else {
-                return Ok(());
-            };
-            let Some(sample_row) = i64::try_from(i)
-                .ok()
-                .and_then(|offset| ref_y.checked_add(offset))
-            else {
-                return Ok(());
-            };
-            let Some(reference_sample) = intrabc_morph_sample(workspace, sample_row, ref_x - 1)
-            else {
-                return Ok(());
-            };
-            sum_x += reference_sample;
-            sum_y += recon;
-            sum_xy += reference_sample * recon;
-            sum_xx += reference_sample * reference_sample;
-            i += step;
-        }
-        let Some(delta_count) = i64::try_from(num_left).ok() else {
-            return Ok(());
-        };
-        let Some(next_count) = count.checked_add(delta_count) else {
-            return Ok(());
-        };
-        count = next_count;
-    }
+    let Some(TemplateStats {
+        sum_x,
+        sum_y,
+        sum_xx,
+        sum_xy,
+        count,
+    }) = collect_template_stats(
+        &edges,
+        width,
+        height,
+        num_up,
+        num_left,
+        ref_x,
+        ref_y,
+        |row, col| intrabc_morph_sample(workspace, row, col),
+    )
+    else {
+        return Ok(());
+    };
 
     let mut alpha = 1i64 << SHIFT;
     if count > 0 {
@@ -285,75 +297,18 @@ fn apply_bawp_plane<T: ReconSample>(
         Some(ref_samples.sample(row, col))
     };
 
-    let mut sum_x = 0i64;
-    let mut sum_y = 0i64;
-    let mut sum_xx = 0i64;
-    let mut sum_xy = 0i64;
-    let mut count = 0i64;
-    if let Some(step) = width.checked_div(num_up).filter(|_| num_up > 0) {
-        let Some(above) = edges.above_samples() else {
-            return Ok(luma_alpha);
-        };
-        let mut i = step >> 1;
-        while i < width {
-            let Some(recon) = above.get(i).map(|sample| i64::from(sample.to_u16())) else {
-                return Ok(luma_alpha);
-            };
-            let Some(sample_col) = i64::try_from(i)
-                .ok()
-                .and_then(|offset| ref_x.checked_add(offset))
-            else {
-                return Ok(luma_alpha);
-            };
-            let Some(reference_sample) = ref_at(ref_y - 1, sample_col) else {
-                return Ok(luma_alpha);
-            };
-            sum_x += reference_sample;
-            sum_y += recon;
-            sum_xy += reference_sample * recon;
-            sum_xx += reference_sample * reference_sample;
-            i += step;
-        }
-        let Some(delta_count) = i64::try_from(num_up).ok() else {
-            return Ok(luma_alpha);
-        };
-        let Some(next_count) = count.checked_add(delta_count) else {
-            return Ok(luma_alpha);
-        };
-        count = next_count;
-    }
-    if let Some(step) = height.checked_div(num_left).filter(|_| num_left > 0) {
-        let Some(left) = edges.left_samples() else {
-            return Ok(luma_alpha);
-        };
-        let mut i = step >> 1;
-        while i < height {
-            let Some(recon) = left.get(i).map(|sample| i64::from(sample.to_u16())) else {
-                return Ok(luma_alpha);
-            };
-            let Some(sample_row) = i64::try_from(i)
-                .ok()
-                .and_then(|offset| ref_y.checked_add(offset))
-            else {
-                return Ok(luma_alpha);
-            };
-            let Some(reference_sample) = ref_at(sample_row, ref_x - 1) else {
-                return Ok(luma_alpha);
-            };
-            sum_x += reference_sample;
-            sum_y += recon;
-            sum_xy += reference_sample * recon;
-            sum_xx += reference_sample * reference_sample;
-            i += step;
-        }
-        let Some(delta_count) = i64::try_from(num_left).ok() else {
-            return Ok(luma_alpha);
-        };
-        let Some(next_count) = count.checked_add(delta_count) else {
-            return Ok(luma_alpha);
-        };
-        count = next_count;
-    }
+    let Some(TemplateStats {
+        sum_x,
+        sum_y,
+        sum_xx,
+        sum_xy,
+        count,
+    }) = collect_template_stats(
+        &edges, width, height, num_up, num_left, ref_x, ref_y, ref_at,
+    )
+    else {
+        return Ok(luma_alpha);
+    };
 
     let mut alpha = 1i64 << SHIFT;
     if plane != PlaneId::Y {
