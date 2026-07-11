@@ -138,8 +138,7 @@ pub fn write_segmentation_params(
             writer.write_flag(params.reuse_seg_info)?;
         }
 
-        if params.reuse_seg_info {
-        } else {
+        if !params.reuse_seg_info {
             let info = SegmentInfo {
                 num_segments: (seg.max_segments as usize).min(MAX_SEGMENTS) as u8,
                 features: params.features,
@@ -168,8 +167,7 @@ fn check_segmentation_encodable(
     if params.segmentation_enabled {
         let (have_seg_params, allow_change, reuse_source) = derive_seg_params(seg, mfh);
 
-        if allow_change {
-        } else if params.reuse_seg_info != have_seg_params {
+        if !allow_change && params.reuse_seg_info != have_seg_params {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "segmentation_reuse_seg_info",
             });
