@@ -2087,20 +2087,20 @@ fn scan_mv_stack_probe(
     }
 
     let (_, _, adjusted_delta_col) = probe.stack_target(block);
+    let offsets = (probe.delta_row, adjusted_delta_col);
     if cell.ref_frame0 == TIP_REF_FRAME
         && cell.ref_frame1.is_none()
         && block.ref_frame0 != TIP_REF_FRAME
         && let Some(temporal) = derived.temporal()
-        && let Some((mv, other)) = temporal.tip_spatial_single_candidates(grid, block, probe, cell)
+        && let Some(candidates) = temporal.tip_spatial_single_candidates(grid, block, probe, cell)
     {
-        insert_mv_stack_entry(
-            entries,
-            prune_count,
-            mv,
-            weight,
-            (probe.delta_row, adjusted_delta_col),
-        );
-        derived.add_spatial(block, other.0, other.1, cell);
+        for (candidate_ref, candidate_mv) in candidates {
+            if candidate_ref == block.ref_frame0 {
+                insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, offsets);
+            } else {
+                derived.add_spatial(block, candidate_ref, candidate_mv, cell);
+            }
+        }
     }
     let candidates = [
         Some((cell.ref_frame0, cell.sub_mv)),
@@ -2108,13 +2108,7 @@ fn scan_mv_stack_probe(
     ];
     for (candidate_ref, candidate_mv) in candidates.into_iter().flatten() {
         if candidate_ref == block.ref_frame0 {
-            insert_mv_stack_entry(
-                entries,
-                prune_count,
-                candidate_mv,
-                weight,
-                (probe.delta_row, adjusted_delta_col),
-            );
+            insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, offsets);
         } else if candidate_ref >= 0 && candidate_ref != TIP_REF_FRAME {
             derived.add_spatial(block, candidate_ref, candidate_mv, cell);
         }
