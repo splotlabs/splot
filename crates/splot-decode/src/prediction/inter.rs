@@ -1305,9 +1305,7 @@ fn validate_inter_frame_core(
             )
         })
         || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
-        || core
-            .delta_q_params
-            .is_none_or(|delta| delta.delta_q_present)
+        || core.delta_q_params.is_none()
         || core.lossless_info.is_none()
         || sequence.inter.is_none()
         || core.deblocking_filter_params.is_none()
