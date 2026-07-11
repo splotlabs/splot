@@ -58,6 +58,7 @@ pub fn did_you_mean(rule_id: &str) -> Vec<&'static str> {
         .iter()
         .map(|info| info.rule_id)
         .filter(|id| id.split('/').next() == Some(namespace))
+        .take(8)
         .collect();
     if hits.is_empty() {
         let lead = rule_id.chars().next();
@@ -65,9 +66,9 @@ pub fn did_you_mean(rule_id: &str) -> Vec<&'static str> {
             .iter()
             .map(|info| info.rule_id)
             .filter(|id| id.chars().next() == lead)
+            .take(8)
             .collect();
     }
-    hits.truncate(8);
     hits
 }
 
