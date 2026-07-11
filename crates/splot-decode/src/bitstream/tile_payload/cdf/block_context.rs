@@ -490,10 +490,9 @@ fn mi_size_at_least_block_8x8(block_n4w: usize, block_n4h: usize) -> bool {
 }
 
 fn block_area_exceeds_64_samples(block_n4w: usize, block_n4h: usize) -> bool {
-    match block_n4w.checked_mul(block_n4h) {
-        Some(area_in_4x4_units) => area_in_4x4_units > 4,
-        None => true,
-    }
+    block_n4w
+        .checked_mul(block_n4h)
+        .is_none_or(|area_in_4x4_units| area_in_4x4_units > 4)
 }
 
 fn wrap_directional_mode(base_mode: usize, distance: usize, sign: isize) -> usize {
@@ -511,7 +510,7 @@ pub(crate) const fn uv_mode_ctx(y_mode: IntraYMode) -> usize {
 
 const TXB_SKIP_CONTEXTS: usize = 10;
 
-pub(crate) const fn txb_skip_ctx_luma(
+pub(crate) fn txb_skip_ctx_luma(
     above_level_or: u32,
     left_level_or: u32,
     tx_fills_block: bool,
@@ -522,12 +521,8 @@ pub(crate) const fn txb_skip_ctx_luma(
     } else if tx_fills_block {
         0
     } else {
-        let top = if above_level_or < 4 {
-            above_level_or
-        } else {
-            4
-        };
-        let left = if left_level_or < 4 { left_level_or } else { 4 };
+        let top = above_level_or.min(4);
+        let left = left_level_or.min(4);
         ((top + left + 3) >> 1) as usize
     }
 }
