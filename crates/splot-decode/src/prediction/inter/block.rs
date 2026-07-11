@@ -843,7 +843,13 @@ fn decode_block<T: ReconSample>(
                 tile_offset,
             )?;
             ccso_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
-            delta_q_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
+            delta_q_state.read_for_block(
+                work_unit,
+                symbols,
+                frontier,
+                use_skip.skip_flag,
+                tile_offset,
+            )?;
             let intrabc = if use_skip.use_intrabc {
                 Some(read_intrabc_info(
                     work_unit.cdf_mut().tile_cdfs_mut(),
@@ -1080,7 +1086,7 @@ fn decode_block<T: ReconSample>(
         tile_offset,
     )?;
     ccso_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
-    delta_q_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
+    delta_q_state.read_for_block(work_unit, symbols, frontier, skip == 1, tile_offset)?;
     let block_qindex = segment_block_qindex(
         sequence,
         core,

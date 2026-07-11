@@ -228,6 +228,7 @@ impl DeltaQState {
         work_unit: &mut DecodeTileWorkUnit<'_>,
         symbols: &mut SymbolDecoder<'_>,
         frontier: &DecodeBlockFrontier,
+        skip: bool,
         tile_offset: ByteOffset,
     ) -> Result<()> {
         if !self.present {
@@ -238,7 +239,10 @@ impl DeltaQState {
             self.current_sb = Some(sb);
             self.read_deltas = true;
         }
-        if self.read_deltas {
+        let delta_q_is_coded =
+            delta_q_is_coded_for_block(frontier.b_size.index(), self.sb_size4, skip)
+                .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+        if self.read_deltas && delta_q_is_coded {
             let delta_q_abs = read_delta_q_abs(work_unit, symbols, tile_offset)?;
             if delta_q_abs != 0 {
                 let sign_bit = symbols.read_literal(DELTA_Q_SIGN_BIT_WIDTH).map_err(|_| {
@@ -1059,6 +1063,16 @@ fn updated_current_q_index(
     current_q_index.saturating_add(delta).clamp(1, max_q)
 }
 
+fn delta_q_is_coded_for_block(
+    block_size: usize,
+    sb_size4: usize,
+    skip: bool,
+) -> std::result::Result<bool, SelectableTransformRecordError> {
+    let width4 = table_usize("Num_4x4_Blocks_Wide", &NUM_4X4_BLOCKS_WIDE, block_size)?;
+    let height4 = table_usize("Num_4x4_Blocks_High", &NUM_4X4_BLOCKS_HIGH, block_size)?;
+    Ok(width4 != sb_size4 || height4 != sb_size4 || !skip)
+}
+
 fn intra_delta_q_sb_size4(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<usize> {
     Ok(match intra_capped_seq_sb_size(sequence, tile_offset)? {
         SuperblockSize::Block64x64 => 16,
@@ -1149,3 +1163,8 @@ mod cdef_tests;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[path = "tx_records_grid_tests.rs"]
 mod grid_tests;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "tx_records_delta_q_tests.rs"]
+mod delta_q_tests;
