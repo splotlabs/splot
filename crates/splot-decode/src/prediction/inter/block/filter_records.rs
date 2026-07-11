@@ -18,6 +18,7 @@ pub(crate) fn record_inter_deblock_geometry(
     block_size4: (usize, usize),
     chroma_format: ChromaFormatIdc,
     residual: Option<&InterResidual>,
+    sub_pu_size: Option<usize>,
     qindex: u32,
     lossless: bool,
     tile_offset: ByteOffset,
@@ -49,6 +50,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         crate::filters::wienerns_lr::fixed_largest_420_chroma_tx_size_from_luma_4x4(
                             tx_w4, tx_h4,
                         ),
+                    sub_pu_size,
                     qindex,
                     skip: true,
                     lossless,
@@ -87,6 +89,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         crate::filters::wienerns_lr::fixed_largest_420_chroma_tx_size_from_luma_4x4(
                             tx_w4, tx_h4,
                         ),
+                    sub_pu_size,
                     qindex,
                     skip: false,
                     lossless,

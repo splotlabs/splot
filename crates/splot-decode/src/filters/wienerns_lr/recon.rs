@@ -497,6 +497,7 @@ pub(crate) fn chroma_transform_deblock_block(
             n4h: mi_h.saturating_mul(scale_y),
             luma_tx: chroma_tx,
             chroma_tx: Some(chroma_tx),
+            sub_pu_size: None,
             qindex,
             skip: false,
             lossless,

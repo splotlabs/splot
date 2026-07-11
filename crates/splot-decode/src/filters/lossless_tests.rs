@@ -18,6 +18,7 @@ fn block(r: usize, c: usize, n4w: usize, n4h: usize, lossless: bool) -> DeblockB
         n4h,
         luma_tx: 0,
         chroma_tx: Some(0),
+        sub_pu_size: None,
         qindex: 0,
         skip: false,
         lossless,

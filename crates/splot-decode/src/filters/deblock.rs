@@ -29,6 +29,7 @@ pub(crate) struct DeblockBlock {
     pub(crate) n4h: usize,
     pub(crate) luma_tx: usize,
     pub(crate) chroma_tx: Option<usize>,
+    pub(crate) sub_pu_size: Option<usize>,
     pub(crate) qindex: u32,
     pub(crate) skip: bool,
     pub(crate) lossless: bool,
@@ -72,6 +73,7 @@ struct MiBlockInfo {
     chroma_base_col: usize,
     luma_tx: usize,
     chroma_tx: Option<usize>,
+    sub_pu_size: Option<usize>,
     qindex: u32,
     skip: bool,
     lossless: bool,
@@ -90,6 +92,7 @@ impl MiBlockInfo {
             n4h: _,
             luma_tx,
             chroma_tx,
+            sub_pu_size,
             qindex,
             skip,
             lossless,
@@ -103,6 +106,7 @@ impl MiBlockInfo {
             chroma_base_col: chroma_base_c,
             luma_tx,
             chroma_tx,
+            sub_pu_size,
             qindex,
             skip,
             lossless,
@@ -668,11 +672,31 @@ fn deblock_filter_edge<T: ReconSample>(
         )
     };
 
-    let skip = curr.skip;
-    let is_sub_pu_edge = false;
-
     let block_y = (curr.block_row * MI_SIZE) >> plane_sub_y;
     let block_x = (curr.block_col * MI_SIZE) >> plane_sub_x;
+    let skip = curr.skip;
+    let current_tx_size = usize::try_from(if pass == 0 {
+        TX_WIDTH[tx_sz]
+    } else {
+        TX_HEIGHT[tx_sz]
+    })
+    .unwrap_or(0);
+    let sub_pu_size = curr
+        .sub_pu_size
+        .map(|size| {
+            if pass == 0 {
+                size >> plane_sub_x
+            } else {
+                size >> plane_sub_y
+            }
+        })
+        .filter(|&size| size <= current_tx_size);
+    let coordinate = if pass == 0 { x_p } else { y_p };
+    let block_start = if pass == 0 { block_x } else { block_y };
+    let is_sub_pu_edge = sub_pu_size.is_some_and(|size| {
+        size != 0 && coordinate > block_start && (coordinate - block_start).is_multiple_of(size)
+    });
+
     let is_block_edge = (pass == 0 && x_p == block_x) || (pass == 1 && y_p == block_y);
     let is_tx_edge = tx_col_base != prev_tx_col_base || tx_row_base != prev_tx_row_base;
 
@@ -694,6 +718,9 @@ fn deblock_filter_edge<T: ReconSample>(
         TX_HEIGHT[tx_sz].min(TX_HEIGHT[prev_tx_sz])
     };
     let mut filter_size = usize::try_from(filter_size).unwrap_or(0);
+    if is_sub_pu_edge {
+        filter_size = filter_size.min(sub_pu_size.unwrap_or(filter_size));
+    }
 
     let (plane_width, plane_height) = (plane_ctx.width, plane_ctx.height);
     if plane == 0 {

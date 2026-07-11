@@ -935,6 +935,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         (n4w, n4h),
         sequence.general.chroma_format_idc,
         residual.as_ref(),
+        None,
         block_qindex,
         current_residual_lossless(work_unit),
         tile_offset,

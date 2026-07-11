@@ -906,6 +906,7 @@ fn decode_block<T: ReconSample>(
                 (n4w, n4h),
                 sequence.general.chroma_format_idc,
                 residual.as_ref(),
+                None,
                 block_qindex,
                 lossless,
                 tile_offset,
@@ -1366,6 +1367,7 @@ fn decode_block<T: ReconSample>(
             (n4w, n4h),
             sequence.general.chroma_format_idc,
             residual.as_ref(),
+            None,
             delta_q_state.qindex_u32(),
             current_residual_lossless(work_unit),
             tile_offset,
@@ -1693,6 +1695,15 @@ fn decode_block<T: ReconSample>(
         reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
         None
     };
+    let tip_uses_16x16_units = tip_ref
+        && tip::reference_uses_16x16_units(
+            n4w,
+            n4h,
+            sequence
+                .inter
+                .as_ref()
+                .is_some_and(|tools| tools.enable_tip_refinemv),
+        );
     record_inter_deblock_geometry(
         deblock_blocks,
         chroma_deblock_blocks,
@@ -1701,6 +1712,7 @@ fn decode_block<T: ReconSample>(
         (n4w, n4h),
         sequence.general.chroma_format_idc,
         residual.as_ref(),
+        tip_ref.then_some(if tip_uses_16x16_units { 16 } else { 8 }),
         delta_q_state.qindex_u32(),
         current_residual_lossless(work_unit),
         tile_offset,
@@ -1711,10 +1723,6 @@ fn decode_block<T: ReconSample>(
         NeighbourYMode::Other
     };
     if tip_ref {
-        let enable_tip_refinemv = sequence
-            .inter
-            .as_ref()
-            .is_some_and(|tools| tools.enable_tip_refinemv);
         mv_grid.record_tip_block(
             mi_row,
             mi_col,
@@ -1725,7 +1733,7 @@ fn decode_block<T: ReconSample>(
             skip == 1,
             interp_filter_symbol(interp),
             use_amvd,
-            tip::reference_uses_16x16_units(n4w, n4h, enable_tip_refinemv),
+            tip_uses_16x16_units,
             precision,
         );
     } else {

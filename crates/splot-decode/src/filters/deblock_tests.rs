@@ -34,6 +34,7 @@ fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock> {
                 n4h: 8,
                 luma_tx: 3,
                 chroma_tx: Some(2),
+                sub_pu_size: None,
                 qindex: 100,
                 skip: false,
                 lossless: false,
@@ -125,6 +126,7 @@ fn edge_test_grid(curr_skip: bool) -> MiGrid {
         chroma_base_col: 2,
         luma_tx: 3,
         chroma_tx: None,
+        sub_pu_size: None,
         qindex: 100,
         skip: false,
         lossless: false,
@@ -138,6 +140,7 @@ fn edge_test_grid(curr_skip: bool) -> MiGrid {
         chroma_base_col: 0,
         luma_tx: 3,
         chroma_tx: None,
+        sub_pu_size: None,
         qindex: 100,
         skip: curr_skip,
         lossless: false,
@@ -151,6 +154,36 @@ fn assert_smoothed_step(p0: u8, q0: u8, reason: &str) {
         "smoothing stays within the step band: p0={p0} q0={q0}"
     );
     assert!(p0 > 100 || q0 < 108, "{reason}: p0={p0} q0={q0}");
+}
+
+#[test]
+fn skipped_block_filters_internal_prediction_unit_edges() {
+    let mut ws = yuv420_workspace(32, 8, 100);
+    fill_rect(&mut ws, PlaneId::Y, 8..32, 0..8, 108);
+    let block = DeblockBlock {
+        r: 0,
+        c: 0,
+        block_r: 0,
+        block_c: 0,
+        chroma_base_r: 0,
+        chroma_base_c: 0,
+        n4w: 8,
+        n4h: 2,
+        luma_tx: 3,
+        chroma_tx: Some(2),
+        sub_pu_size: Some(8),
+        qindex: 215,
+        skip: true,
+        lossless: false,
+    };
+
+    run_deblock(&mut ws, &[block], 2, 8, [true, false, false, false]);
+
+    assert_smoothed_step(
+        ws.reconstructed_sample(PlaneId::Y, 7, 0).unwrap(),
+        ws.reconstructed_sample(PlaneId::Y, 8, 0).unwrap(),
+        "internal prediction-unit boundary must be filtered",
+    );
 }
 
 fn yuv420_workspace_10bit(width: usize, height: usize, fill: u16) -> CurrentFrameWorkspace<u16> {
@@ -451,6 +484,7 @@ fn mi_grid_covers_decoded_blocks() {
         n4h: 8,
         luma_tx: 3,
         chroma_tx: Some(2),
+        sub_pu_size: None,
         qindex: 100,
         skip: false,
         lossless: true,
@@ -616,6 +650,7 @@ fn chroma_pass_uses_4x4_tx_for_sub8_luma_records() {
         n4h: 2,
         luma_tx: 0,
         chroma_tx: None,
+        sub_pu_size: None,
         qindex: 100,
         skip: false,
         lossless: false,
