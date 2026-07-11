@@ -18,11 +18,18 @@ const MI_SIZE: usize = 4;
 const SB_SIZE: usize = 64;
 
 #[derive(Clone, Copy, Debug)]
+pub(crate) struct DeblockPredictionUnit {
+    pub(crate) base_r: usize,
+    pub(crate) base_c: usize,
+    pub(crate) default_sub_pu_tx: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct DeblockBlock {
     pub(crate) r: usize,
     pub(crate) c: usize,
-    pub(crate) block_r: usize,
-    pub(crate) block_c: usize,
+    pub(crate) luma_prediction: DeblockPredictionUnit,
+    pub(crate) chroma_prediction: DeblockPredictionUnit,
     pub(crate) chroma_base_r: usize,
     pub(crate) chroma_base_c: usize,
     pub(crate) n4w: usize,
@@ -30,6 +37,7 @@ pub(crate) struct DeblockBlock {
     pub(crate) luma_tx: usize,
     pub(crate) chroma_tx: Option<usize>,
     pub(crate) sub_pu_size: Option<usize>,
+    pub(crate) chroma_transform_only: bool,
     pub(crate) qindex: u32,
     pub(crate) skip: bool,
     pub(crate) lossless: bool,
@@ -67,8 +75,8 @@ impl DeblockQuantDeltas {
 struct MiBlockInfo {
     base_row: usize,
     base_col: usize,
-    block_row: usize,
-    block_col: usize,
+    luma_prediction: DeblockPredictionUnit,
+    chroma_prediction: DeblockPredictionUnit,
     chroma_base_row: usize,
     chroma_base_col: usize,
     luma_tx: usize,
@@ -84,8 +92,8 @@ impl MiBlockInfo {
         let DeblockBlock {
             r,
             c,
-            block_r,
-            block_c,
+            luma_prediction,
+            chroma_prediction,
             chroma_base_r,
             chroma_base_c,
             n4w: _,
@@ -93,6 +101,7 @@ impl MiBlockInfo {
             luma_tx,
             chroma_tx,
             sub_pu_size,
+            chroma_transform_only: _,
             qindex,
             skip,
             lossless,
@@ -100,8 +109,8 @@ impl MiBlockInfo {
         Self {
             base_row: r,
             base_col: c,
-            block_row: block_r,
-            block_col: block_c,
+            luma_prediction,
+            chroma_prediction,
             chroma_base_row: chroma_base_r,
             chroma_base_col: chroma_base_c,
             luma_tx,
@@ -542,6 +551,7 @@ struct PlanePass {
     df_delta_q: i32,
     quant_delta: i32,
     bit_depth: BitDepth,
+    allow_df_sub_pu: bool,
 }
 
 impl PlanePass {
@@ -577,6 +587,7 @@ impl PlanePass {
             df_delta_q: filter.df_delta_q[apply_index],
             quant_delta: quant_deltas.ac_delta(plane),
             bit_depth,
+            allow_df_sub_pu: filter.allow_df_sub_pu,
         })
     }
 
@@ -591,6 +602,7 @@ impl PlanePass {
             df_delta_q: self.df_delta_q,
             quant_delta: self.quant_delta,
             bit_depth: self.bit_depth,
+            allow_df_sub_pu: self.allow_df_sub_pu,
         }
     }
 }
@@ -606,32 +618,50 @@ struct EdgeContext {
     df_delta_q: i32,
     quant_delta: i32,
     bit_depth: BitDepth,
+    allow_df_sub_pu: bool,
 }
 
 fn column_chunks<T>(row: &mut [T], size: usize) -> core::slice::ChunksMut<'_, T> {
     row.chunks_mut(size)
 }
 
-fn scaled_sub_pu_size(
+fn sub_pu_dimension(
     info: &MiBlockInfo,
+    plane: usize,
     pass: usize,
     sub_x: usize,
     sub_y: usize,
-) -> Option<usize> {
-    info.sub_pu_size
-        .map(|size| size >> if pass == 0 { sub_x } else { sub_y })
-        .filter(|&size| size != 0)
+) -> usize {
+    if let Some(size) = info.sub_pu_size {
+        return (size >> if pass == 0 { sub_x } else { sub_y }).max(1);
+    }
+    let tx = if plane == 0 {
+        info.luma_prediction.default_sub_pu_tx
+    } else {
+        info.chroma_prediction.default_sub_pu_tx
+    };
+    let dimensions = if pass == 0 { &TX_WIDTH } else { &TX_HEIGHT };
+    dimensions
+        .get(tx)
+        .and_then(|&size| usize::try_from(size).ok())
+        .unwrap_or(1)
 }
 
 fn sub_pu_base(
     info: &MiBlockInfo,
+    plane: usize,
     x: usize,
     y: usize,
     sub_x: usize,
     sub_y: usize,
 ) -> (usize, usize) {
-    let block_x = (info.block_col * MI_SIZE) >> sub_x;
-    let block_y = (info.block_row * MI_SIZE) >> sub_y;
+    let prediction = if plane == 0 {
+        info.luma_prediction
+    } else {
+        info.chroma_prediction
+    };
+    let block_x = (prediction.base_c * MI_SIZE) >> sub_x;
+    let block_y = (prediction.base_r * MI_SIZE) >> sub_y;
     let Some(size) = info.sub_pu_size else {
         return (block_x, block_y);
     };
@@ -643,14 +673,7 @@ fn sub_pu_base(
     )
 }
 
-fn sub_pu_filter_dimension(
-    tx_size: usize,
-    sub_pu_size: Option<usize>,
-    is_tx_edge: bool,
-) -> (usize, bool) {
-    let Some(sub_pu_size) = sub_pu_size else {
-        return (tx_size, true);
-    };
+fn sub_pu_filter_dimension(tx_size: usize, sub_pu_size: usize, is_tx_edge: bool) -> (usize, bool) {
     if tx_size < sub_pu_size {
         (tx_size, false)
     } else if !is_tx_edge && tx_size == 8 {
@@ -678,6 +701,7 @@ fn deblock_filter_edge<T: ReconSample>(
         df_delta_q,
         quant_delta,
         bit_depth,
+        allow_df_sub_pu,
     } = ctx;
 
     let (dx, dy) = if pass == 0 { (1usize, 0usize) } else { (0, 1) };
@@ -722,8 +746,13 @@ fn deblock_filter_edge<T: ReconSample>(
         )
     };
 
-    let block_y = (curr.block_row * MI_SIZE) >> plane_sub_y;
-    let block_x = (curr.block_col * MI_SIZE) >> plane_sub_x;
+    let prediction = if plane == 0 {
+        curr.luma_prediction
+    } else {
+        curr.chroma_prediction
+    };
+    let block_y = (prediction.base_r * MI_SIZE) >> plane_sub_y;
+    let block_x = (prediction.base_c * MI_SIZE) >> plane_sub_x;
     let skip = curr.skip;
     let curr_tx_size = usize::try_from(if pass == 0 {
         TX_WIDTH[tx_sz]
@@ -737,18 +766,18 @@ fn deblock_filter_edge<T: ReconSample>(
         TX_HEIGHT[prev_tx_sz]
     })
     .unwrap_or(0);
-    let curr_sub_pu_size = scaled_sub_pu_size(&curr, pass, plane_sub_x, plane_sub_y);
-    let prev_sub_pu_size = scaled_sub_pu_size(&prev, pass, plane_sub_x, plane_sub_y);
-    let curr_sub_pu_base = sub_pu_base(&curr, x_p, y_p, plane_sub_x, plane_sub_y);
+    let curr_sub_pu_size = sub_pu_dimension(&curr, plane, pass, plane_sub_x, plane_sub_y);
+    let prev_sub_pu_size = sub_pu_dimension(&prev, plane, pass, plane_sub_x, plane_sub_y);
+    let curr_sub_pu_base = sub_pu_base(&curr, plane, x_p, y_p, plane_sub_x, plane_sub_y);
     let prev_sub_pu_base = sub_pu_base(
         &prev,
+        plane,
         x_p.saturating_sub(dx),
         y_p.saturating_sub(dy),
         plane_sub_x,
         plane_sub_y,
     );
-    let is_sub_pu_boundary = (curr_sub_pu_size.is_some() || prev_sub_pu_size.is_some())
-        && curr_sub_pu_base != prev_sub_pu_base;
+    let is_sub_pu_boundary = allow_df_sub_pu && curr_sub_pu_base != prev_sub_pu_base;
 
     let is_block_edge = (pass == 0 && x_p == block_x) || (pass == 1 && y_p == block_y);
     let is_tx_edge = tx_col_base != prev_tx_col_base || tx_row_base != prev_tx_row_base;
@@ -1054,12 +1083,26 @@ fn build_mi_grid(
 }
 
 fn overlay_mi_grid(grid: &mut MiGrid, blocks: &[DeblockBlock], mi_rows: usize, mi_cols: usize) {
-    for block in blocks {
+    for block in blocks.iter().filter(|block| !block.chroma_transform_only) {
         let info = MiBlockInfo::from_block(*block);
         for rr in block.r..block.r + block.n4h {
             for cc in block.c..block.c + block.n4w {
                 if rr < mi_rows && cc < mi_cols {
                     grid.cells[rr * mi_cols + cc] = Some(info);
+                }
+            }
+        }
+    }
+    for block in blocks.iter().filter(|block| block.chroma_transform_only) {
+        for rr in block.r..block.r + block.n4h {
+            for cc in block.c..block.c + block.n4w {
+                if rr < mi_rows
+                    && cc < mi_cols
+                    && let Some(info) = grid.cells[rr * mi_cols + cc].as_mut()
+                {
+                    info.chroma_base_row = block.chroma_base_r;
+                    info.chroma_base_col = block.chroma_base_c;
+                    info.chroma_tx = block.chroma_tx;
                 }
             }
         }

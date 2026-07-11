@@ -26,6 +26,55 @@ pub(crate) fn record_inter_deblock_geometry(
     let (n4w, n4h) = block_size4;
     let (sub_x, sub_y) = chroma_subsampling(chroma_format);
     let chroma_subsampling = (u32::from(sub_x), u32::from(sub_y));
+    let chroma_ref = frontier.chroma_ref_geometry();
+    let luma_prediction = crate::filters::deblock::DeblockPredictionUnit {
+        base_r: frontier.r,
+        base_c: frontier.c,
+        default_sub_pu_tx: super::residual::max_tx_size(frontier.b_size.index(), tile_offset)?,
+    };
+    let chroma_prediction = crate::filters::deblock::DeblockPredictionUnit {
+        base_r: chroma_ref.row(),
+        base_c: chroma_ref.col(),
+        default_sub_pu_tx: super::residual::max_tx_size(chroma_ref.size().index(), tile_offset)?,
+    };
+    let inherited_chroma = chroma_ref.row() != frontier.r
+        || chroma_ref.col() != frontier.c
+        || chroma_ref.size() != frontier.b_size;
+    let inherited_chroma_metadata = frontier.has_chroma && inherited_chroma;
+    if inherited_chroma_metadata {
+        let chroma_plane_size = get_plane_residual_size(chroma_ref.size(), 1, sub_x, sub_y)
+            .map_err(|_| super::residual::residual_geometry_error(tile_offset))?
+            .valid()
+            .ok_or_else(|| super::residual::residual_geometry_error(tile_offset))?;
+        let chroma_tx = super::residual::max_tx_size(chroma_plane_size.index(), tile_offset)?;
+        let chroma_n4w = chroma_ref
+            .size()
+            .num_4x4_wide()
+            .map_err(|_| super::residual::residual_geometry_error(tile_offset))?;
+        let chroma_n4h = chroma_ref
+            .size()
+            .num_4x4_high()
+            .map_err(|_| super::residual::residual_geometry_error(tile_offset))?;
+        let block = crate::filters::deblock::DeblockBlock {
+            r: chroma_ref.row(),
+            c: chroma_ref.col(),
+            luma_prediction,
+            chroma_prediction,
+            chroma_base_r: chroma_ref.row(),
+            chroma_base_c: chroma_ref.col(),
+            n4w: chroma_n4w,
+            n4h: chroma_n4h,
+            luma_tx: chroma_tx,
+            chroma_tx: Some(chroma_tx),
+            sub_pu_size,
+            chroma_transform_only: false,
+            qindex,
+            skip: residual.is_none(),
+            lossless,
+        };
+        chroma_deblock_blocks[0].push(block);
+        chroma_deblock_blocks[1].push(block);
+    }
     let Some(residual) = residual else {
         let tx_size = super::residual::max_tx_size(frontier.b_size.index(), tile_offset)?;
         let tx_w4 =
@@ -39,8 +88,8 @@ pub(crate) fn record_inter_deblock_geometry(
                 deblock_blocks.push(crate::filters::deblock::DeblockBlock {
                     r: frontier.r + row4,
                     c: frontier.c + col4,
-                    block_r: frontier.r,
-                    block_c: frontier.c,
+                    luma_prediction,
+                    chroma_prediction,
                     chroma_base_r: frontier.r + row4,
                     chroma_base_c: frontier.c + col4,
                     n4w: tx_w4,
@@ -51,6 +100,7 @@ pub(crate) fn record_inter_deblock_geometry(
                             tx_w4, tx_h4,
                         ),
                     sub_pu_size,
+                    chroma_transform_only: false,
                     qindex,
                     skip: true,
                     lossless,
@@ -78,8 +128,8 @@ pub(crate) fn record_inter_deblock_geometry(
                 deblock_blocks.push(crate::filters::deblock::DeblockBlock {
                     r: block.y / MI_SIZE,
                     c: block.x / MI_SIZE,
-                    block_r: frontier.r,
-                    block_c: frontier.c,
+                    luma_prediction,
+                    chroma_prediction,
                     chroma_base_r: block.y / MI_SIZE,
                     chroma_base_c: block.x / MI_SIZE,
                     n4w: tx_w4,
@@ -90,6 +140,7 @@ pub(crate) fn record_inter_deblock_geometry(
                             tx_w4, tx_h4,
                         ),
                     sub_pu_size,
+                    chroma_transform_only: false,
                     qindex,
                     skip: false,
                     lossless,
@@ -107,7 +158,7 @@ pub(crate) fn record_inter_deblock_geometry(
                 );
             }
             ReconPlaneId::U | ReconPlaneId::V => {
-                if let Some((plane_index, record)) =
+                if let Some((plane_index, mut record)) =
                     crate::filters::wienerns_lr::chroma_transform_deblock_block(
                         block.plane,
                         block.x,
@@ -118,6 +169,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         lossless,
                     )
                 {
+                    record.chroma_transform_only = inherited_chroma_metadata;
                     chroma_deblock_blocks[plane_index].push(record);
                 }
             }

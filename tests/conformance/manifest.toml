@@ -1076,6 +1076,23 @@ byte-for-byte (md5 29381ec960496d7a604acd63abd43cd3). Validates clean."""
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-3frame-deblock-subpu-chroma-64x32-10bit-q90.ivf"
+description = """
+Three-frame 10-bit 4:2:0 64x32 inter stream (IVF) generated from the project-owned \
+edge-grid source at fixed --qp=90 with deblocking and LF-sub-PU enabled while \
+CDEF/CCSO/LR/GDF are disabled. The final inter frame signals \
+allow_df_sub_pu=true and contains sub-8 luma leaves that inherit larger chroma \
+reference geometry, including MI (0,3) BLOCK_4X8 inheriting MI (0,0) \
+BLOCK_16X8. This pins the section 7.17.2 chroma prediction-unit bases and \
+DeblockingTxSizes handoff: pre-fix splot differed in eight U samples on frame 2, \
+while the fixed decoder reproduces the AVM and dav2d raw SHA-256 \
+7b63416de76f67af781247f878bebc9ad42bc5eabb043eda15a0fdde7eca5a9f. \
+The AVM-generated stream's existing frame-2 allow_df_sub_pu bit was normalized \
+from 0 to 1 without changing syntax length or reference output; that bit makes \
+the gate explicit but is not itself output-discriminating. Validates clean."""
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-2frame-cdef-inter-64x32-10bit-q120.ivf"
 description = """
 Two-frame 10-bit 4:2:0 64x32 inter stream (IVF) from a project-owned synthetic \

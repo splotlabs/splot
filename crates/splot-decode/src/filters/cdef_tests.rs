@@ -236,8 +236,16 @@ fn deblock_block(
     crate::filters::deblock::DeblockBlock {
         r,
         c,
-        block_r: r,
-        block_c: c,
+        luma_prediction: crate::filters::deblock::DeblockPredictionUnit {
+            base_r: r,
+            base_c: c,
+            default_sub_pu_tx: 0,
+        },
+        chroma_prediction: crate::filters::deblock::DeblockPredictionUnit {
+            base_r: r,
+            base_c: c,
+            default_sub_pu_tx: 0,
+        },
         chroma_base_r: r,
         chroma_base_c: c,
         n4w,
@@ -245,6 +253,7 @@ fn deblock_block(
         luma_tx: 0,
         chroma_tx: Some(0),
         sub_pu_size: None,
+        chroma_transform_only: false,
         qindex: 0,
         skip: false,
         lossless,

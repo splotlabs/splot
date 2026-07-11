@@ -102,6 +102,9 @@ pub struct MfhDeblockingView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DeblockingFilterParams {
+    /// `allow_df_sub_pu`: enables prediction-subunit edges in the deblocking process
+    /// (§ 5.18.5.2 / § 7.17.2). Inferred `false` when the syntax gate is closed.
+    pub allow_df_sub_pu: bool,
     /// `apply_deblocking_filter[0..4]`: luma vertical/horizontal and chroma
     /// vertical/horizontal enable flags (§ 5.18.5.2).
     pub apply_deblocking_filter: [bool; 4],
@@ -122,6 +125,7 @@ impl DeblockingFilterParams {
         df_delta_q: [i32; 4],
     ) -> Self {
         Self {
+            allow_df_sub_pu: false,
             apply_deblocking_filter,
             df_delta_q_present,
             df_delta_q,
@@ -194,8 +198,7 @@ pub struct CdefParams {
 /// INTER_FRAME` gate (mirror :5935). On the intra / switch / SEF / writer paths it is
 /// `false` (`FrameType != INTER_FRAME`), so the `allow_df_sub_pu` `f(1)` read does not
 /// fire; on the inter path the caller passes `true` exactly when the sequence enabled the
-/// tool, so the bit is consumed for alignment (the parsed `allow_df_sub_pu` value drives
-/// reconstruction this phase does not model, so it is read but not surfaced).
+/// tool. The parsed value is retained for the § 7.17.2 deblocking process.
 ///
 /// `coded_lossless` is the frame `CodedLossless`; `num_planes` is `NumPlanes`
 /// (`Monochrome ? 1 : 3`, § 6.4.1); `df_par_bits_minus_2` is the § 5.4.10 sequence
@@ -219,15 +222,14 @@ pub fn parse_deblocking_filter_params(
 ) -> Result<DeblockingFilterParams> {
     if coded_lossless {
         return Ok(DeblockingFilterParams {
+            allow_df_sub_pu: false,
             apply_deblocking_filter: [false; 4],
             df_delta_q_present: [false; 4],
             df_delta_q: [0; 4],
         });
     }
 
-    if read_allow_df_sub_pu {
-        let _allow_df_sub_pu = reader.read_flag()?;
-    }
+    let allow_df_sub_pu = read_allow_df_sub_pu && reader.read_flag()?;
 
     let mut apply_deblocking_filter = [false; 4];
     if let Some(view) = mfh.filter(|view| view.mfh_deblocking_filter_update) {
@@ -272,6 +274,7 @@ pub fn parse_deblocking_filter_params(
     }
 
     Ok(DeblockingFilterParams {
+        allow_df_sub_pu,
         apply_deblocking_filter,
         df_delta_q_present,
         df_delta_q,
@@ -597,7 +600,7 @@ mod tests {
     #[test]
     fn deblocking_inter_reads_allow_df_sub_pu_before_apply() {
         let mut bits = Bits::default();
-        bits.bit(1); // allow_df_sub_pu (consumed, not surfaced)
+        bits.bit(1); // allow_df_sub_pu
         bits.bit(1); // apply_deblocking_filter[0]
         bits.bit(0); // apply_deblocking_filter[1]
         bits.bit(0); // apply_deblocking_filter[2]
@@ -606,6 +609,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_deblocking_filter_params(&mut r, false, 3, 0, true, None).unwrap();
+        assert!(params.allow_df_sub_pu);
         assert_eq!(params.apply_deblocking_filter, [true, false, false, false]);
         assert_eq!(r.consumed_bits(), 6);
     }
@@ -621,6 +625,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_deblocking_filter_params(&mut r, false, 3, 0, false, None).unwrap();
+        assert!(!params.allow_df_sub_pu);
         assert_eq!(params.apply_deblocking_filter, [true, false, false, false]);
         assert_eq!(r.consumed_bits(), 5);
     }

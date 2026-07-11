@@ -82,6 +82,8 @@ const GDF_IDX_MAX_PLUS_1: u8 = 4;
 /// The model is fully validated before any bit is written (reject-before-write).
 ///
 /// # Errors
+/// - [`WriteError::NonCanonicalFrameHeader`] when `allow_df_sub_pu` is `true`; this writer
+///   currently serves paths where the inter-only syntax gate is closed.
 /// - [`WriteError::BitWidthTooLarge`] if `dfParBits = df_par_bits_minus_2 + 2` exceeds `32` on
 ///   the non-`coded_lossless` path (the `f(dfParBits)` field width the reader could never have
 ///   consumed). On the `coded_lossless` path the width is never coded, so it is not checked —
@@ -152,6 +154,11 @@ fn check_deblocking_encodable(
     df_par_bits_minus_2: u8,
     mfh: Option<&MfhDeblockingView>,
 ) -> WriteResult<DeblockingPlan> {
+    if params.allow_df_sub_pu {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "allow_df_sub_pu",
+        });
+    }
     if coded_lossless {
         if params.apply_deblocking_filter != [false; 4]
             || params.df_delta_q_present != [false; 4]
