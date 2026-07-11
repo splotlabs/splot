@@ -253,6 +253,10 @@ impl BitWriter {
     /// Never fails for whole bytes; returns [`WriteResult`] for symmetry with the
     /// other primitives.
     pub fn write_le(&mut self, bytes: &[u8]) -> WriteResult<()> {
+        if self.is_byte_aligned() {
+            self.bytes.extend_from_slice(bytes);
+            return Ok(());
+        }
         for &byte in bytes {
             self.write_bits_u8(byte, 8)?;
         }
@@ -287,11 +291,7 @@ impl BitWriter {
                 return Err(WriteError::ValueTooWide { value, width_bits });
             }
         }
-        for i in 0..n {
-            let byte = ((value >> (8 * i)) & 0xff) as u8;
-            self.write_bits_u8(byte, 8)?;
-        }
-        Ok(())
+        self.write_le(&value.to_le_bytes()[..n as usize])
     }
 
     /// Writes an AV2 `leb128()` descriptor (AV2 v1.0.0 § 4.11.6,
