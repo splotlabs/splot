@@ -201,9 +201,9 @@ fn assemble_unit_edge_filter<T: ReconSample>(
         .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
     let corner_opposite = if spec.corner_applies && (w + h) >= 24 {
         let (sx, sy) = if spec.above {
-            (x.checked_sub(1).unwrap_or(x), y)
+            (x.saturating_sub(1), y)
         } else {
-            (x, y.checked_sub(1).unwrap_or(y))
+            (x, y.saturating_sub(1))
         };
         Some(workspace.reconstructed_sample(plane_id, sx, sy)?.to_u16())
     } else {
