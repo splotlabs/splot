@@ -470,6 +470,9 @@ impl NeighbourMvGrid {
         }
         self.cells[r * self.mi_cols + c]
     }
+    pub(crate) fn is_non_tip_at(&self, r: i32, c: i32) -> bool {
+        matches!(self.get(r, c), Some(cell) if cell.ref_frame0 != TIP_REF_FRAME)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
