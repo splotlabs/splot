@@ -12,6 +12,7 @@ use splot_recon::{
 };
 
 use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
+use super::warp::extend_warp_base_position;
 use super::{
     chroma_smooth_grid_dimensions, ensure_intra_leaf_quantizer_delta_scope,
     inter_residual_geometry_supported_flags, inter_skip_txfm_ctx, predict_interintra_planes,
@@ -24,10 +25,65 @@ use crate::error::DecodeError;
 use crate::prediction::inter::SPEC_MODE_INFO;
 use crate::prediction::inter::{
     BawpSyntax, InterBlock, InterIntraPrediction, Mv, PlacedInterBlock,
+    find_mv_stack::{BlockPrecisionRecord, MvBlockContext, NeighbourMvGrid, NeighbourYMode},
     mc::{CompoundBlend, McBlockRect},
 };
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+#[test]
+fn extend_warp_base_rejects_tip_candidate_and_uses_matching_fallback() -> TestResult {
+    let mut grid = NeighbourMvGrid::new(16, 16).ok_or("valid neighbour grid")?;
+    grid.record_tip_block(
+        8,
+        0,
+        8,
+        8,
+        NeighbourYMode::Other,
+        Mv::ZERO,
+        false,
+        3,
+        false,
+        false,
+        BlockPrecisionRecord::default(),
+    );
+    let block = MvBlockContext {
+        mi_row: 8,
+        mi_col: 8,
+        bw4: 8,
+        bh4: 8,
+        sb_h4: 16,
+        ref_frame0: 0,
+        ref_frame1: None,
+        mi_rows: 16,
+        mi_cols: 16,
+    };
+
+    assert_eq!(
+        extend_warp_base_position(&grid, &block, (0, -1), Some((-1, 0))),
+        Some((-1, 0))
+    );
+    grid.record_block(
+        8,
+        0,
+        8,
+        8,
+        true,
+        0,
+        None,
+        NeighbourYMode::Other,
+        Mv { row: 8, col: 16 },
+        false,
+        3,
+        false,
+        BlockPrecisionRecord::default(),
+    );
+    assert_eq!(
+        extend_warp_base_position(&grid, &block, (0, -1), Some((-1, 0))),
+        Some((0, -1))
+    );
+    Ok(())
+}
 
 #[test]
 fn skip_mode_selects_the_upper_skip_txfm_context_bank() {

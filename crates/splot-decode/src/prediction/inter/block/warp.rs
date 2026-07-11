@@ -188,19 +188,19 @@ fn extend_warp_estimation(
     n4h: usize,
     tile_offset: ByteOffset,
 ) -> Result<[i64; 6]> {
-    let (mut delta_row, mut delta_col) = stack.candidate_offsets(ref_mv_idx);
-    if delta_row != -1 && delta_col != -1 {
-        let Some((fallback_row, fallback_col)) = mode_ctx.extend_delta else {
-            return Err(inter_cap!(
-                "inter_warp_extend_base_missing",
-                tile_offset,
-                "inter.warp_extend.base_position",
-                "7.13.3.24"
-            ));
-        };
-        delta_row = fallback_row;
-        delta_col = fallback_col;
-    }
+    let Some((delta_row, delta_col)) = extend_warp_base_position(
+        mv_grid,
+        block_ctx,
+        stack.candidate_offsets(ref_mv_idx),
+        mode_ctx.extend_delta,
+    ) else {
+        return Err(inter_cap!(
+            "inter_warp_extend_base_missing",
+            tile_offset,
+            "inter.warp_extend.base_position",
+            "7.13.3.24"
+        ));
+    };
     let params = match super::super::find_mv_stack::extend_warp_neighbour_params(
         mv_grid, block_ctx, delta_row, delta_col,
     ) {
@@ -257,6 +257,23 @@ fn extend_warp_estimation(
     reduce_warp_model(&mut extended);
     set_warp_translation(&mut extended, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
     Ok(extended)
+}
+
+/// AVM `get_extend_base_pos` rejects TIP spatial bases, although that guard is
+/// absent from the mirrored AV2 § 7.13.3.24 pseudocode.
+pub(super) fn extend_warp_base_position(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    candidate: (i32, i32),
+    fallback: Option<(i32, i32)>,
+) -> Option<(i32, i32)> {
+    let (row, col) = candidate;
+    if (row == -1 || col == -1)
+        && grid.is_non_tip_at(block.mi_row as i32 + row, block.mi_col as i32 + col)
+    {
+        return Some(candidate);
+    }
+    fallback
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
