@@ -313,8 +313,7 @@ fn sampled_pc_wiener_filter_count(
     if plane != 0 || nopcw {
         0
     } else {
-        let available = max_num_base_filters(num_classes, false).saturating_sub(num_ref_filters);
-        available.min(64)
+        max_num_base_filters(num_classes, false).saturating_sub(num_ref_filters)
     }
 }
 
