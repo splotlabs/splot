@@ -53,25 +53,48 @@ pub(crate) struct WienerNsLrSourceBlock {
 
 impl WienerNsLrSourceBlock {
     pub(crate) fn merged_width_with(&self, next: &Self) -> Option<usize> {
-        (self.plane == next.plane
+        (self.same_filter_domain(next)
             && self.y == next.y
             && self.height == next.height
-            && self.x.checked_add(self.width) == Some(next.x)
-            && self.unit_row == next.unit_row
-            && self.unit_col == next.unit_col
-            && self.tile_mi_row_start == next.tile_mi_row_start
-            && self.tile_mi_row_end == next.tile_mi_row_end
-            && self.tile_mi_col_start == next.tile_mi_col_start
-            && self.tile_mi_col_end == next.tile_mi_col_end
-            && self.luma_start_x == next.luma_start_x
-            && self.luma_end_x == next.luma_end_x
-            && self.luma_start_y == next.luma_start_y
-            && self.luma_end_y == next.luma_end_y
-            && self.frame_luma_end_y == next.frame_luma_end_y
-            && self.luma_stripe_start_y == next.luma_stripe_start_y
-            && self.luma_stripe_end_y == next.luma_stripe_end_y)
-            .then(|| self.width.checked_add(next.width))
-            .flatten()
+            && self.x.checked_add(self.width) == Some(next.x))
+        .then(|| self.width.checked_add(next.width))
+        .flatten()
+    }
+
+    pub(crate) fn merged_height_with(&self, next: &Self) -> Option<usize> {
+        (self.same_filter_domain(next)
+            && self.x == next.x
+            && self.width == next.width
+            && self.y.checked_add(self.height) == Some(next.y))
+        .then(|| self.height.checked_add(next.height))
+        .flatten()
+    }
+
+    fn same_filter_domain(&self, next: &Self) -> bool {
+        self.filter_domain_key() == next.filter_domain_key()
+    }
+
+    pub(crate) fn vertical_merge_key(&self) -> ([usize; 14], usize, usize) {
+        (self.filter_domain_key(), self.x, self.width)
+    }
+
+    fn filter_domain_key(&self) -> [usize; 14] {
+        [
+            self.plane,
+            self.unit_row,
+            self.unit_col,
+            self.tile_mi_row_start,
+            self.tile_mi_row_end,
+            self.tile_mi_col_start,
+            self.tile_mi_col_end,
+            self.luma_start_x,
+            self.luma_end_x,
+            self.luma_start_y,
+            self.luma_end_y,
+            self.frame_luma_end_y,
+            self.luma_stripe_start_y,
+            self.luma_stripe_end_y,
+        ]
     }
 }
 

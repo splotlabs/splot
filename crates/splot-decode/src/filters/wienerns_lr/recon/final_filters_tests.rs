@@ -72,3 +72,30 @@ fn does_not_merge_across_row_gaps() {
     let runs = coalesced_lr_source_rows(&blocks, 0);
     assert_eq!(runs.len(), 2);
 }
+
+#[test]
+fn merges_compatible_adjacent_rows_into_rectangles() {
+    let blocks = [
+        block(0, 0, 0),
+        block(0, 4, 0),
+        block(0, 0, 4),
+        block(0, 4, 4),
+    ];
+    let runs = coalesced_lr_source_rows(&blocks, 0);
+
+    assert_eq!(runs.len(), 1);
+    assert_eq!((runs[0].x, runs[0].y), (0, 0));
+    assert_eq!((runs[0].width, runs[0].height), (8, 8));
+}
+
+#[test]
+fn does_not_merge_rows_across_source_boundaries() {
+    let top = block(0, 0, 0);
+    let mut bottom = block(0, 0, 4);
+    bottom.luma_stripe_start_y = 4;
+    let runs = coalesced_lr_source_rows(&[top, bottom], 0);
+
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].height, 4);
+    assert_eq!(runs[1].height, 4);
+}
