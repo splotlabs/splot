@@ -215,8 +215,8 @@ pub(crate) fn resolve_division(num: i64, den: i64, shift: u8) -> i16 {
     let sign_negative = num < 0;
     let n_abs = num.unsigned_abs();
     let d = den as u64;
-    let shift_n = floor_log2(n_abs);
-    let shift_d = floor_log2(d);
+    let shift_n = n_abs.ilog2() as u8;
+    let shift_d = d.ilog2() as u8;
     let e_d = d - (1u64 << shift_d);
     let f_d = if shift_d > DIV_LUT_BITS {
         round2_u64(e_d, shift_d - DIV_LUT_BITS) as usize
@@ -266,7 +266,7 @@ pub fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
         });
     }
 
-    let n = floor_log2(den);
+    let n = den.ilog2() as u8;
     let e = den - (1u64 << n);
     let f = if n > DIV_LUT_BITS {
         round2_u64(e, n - DIV_LUT_BITS) as usize
@@ -280,10 +280,6 @@ pub fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
             context: "intra DC divisor lookup",
         })?;
     Ok((n + DIV_LUT_PREC_BITS, scale))
-}
-
-fn floor_log2(value: u64) -> u8 {
-    (u64::BITS - 1 - value.leading_zeros()) as u8
 }
 
 pub(crate) fn round2(value: u64, shift: u8) -> u16 {
