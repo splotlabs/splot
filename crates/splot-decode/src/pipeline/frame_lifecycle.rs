@@ -393,6 +393,16 @@ pub(crate) fn frame_ref_update_from_core(
             "multi-frame decode requires a parsed base_q_idx for the §7.23 update",
         )
     })?;
+    let mut frame_cdfs = frame_cdfs;
+    frame_cdfs
+        .replicate_coeff_q_context_for_base_q(quantization.base_q_idx)
+        .map_err(|_| {
+            unsupported_at(
+                "reference_coefficient_cdf_context",
+                offset,
+                "reference refresh requires a valid coefficient CDF context",
+            )
+        })?;
     let is_inter = core.frame_type == Some(FrameType::Inter);
     let adapted = core.obu_type != ObuType::RegularTip && core.disable_cdf_update != Some(true);
     Ok(reference_buffer::FrameRefUpdate {

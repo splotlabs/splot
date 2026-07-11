@@ -232,10 +232,17 @@ impl FrameCdfSubset {
 
     pub(crate) fn default_for_base_q(base_q_idx: u32) -> Result<Self, TileCdfError> {
         let mut cdfs = Self::from_defaults();
-        cdfs.rows
-            .block
-            .replicate_coeff_q_context(coeff_cdf_q_ctx_from_base_q_idx(base_q_idx))?;
+        cdfs.replicate_coeff_q_context_for_base_q(base_q_idx)?;
         Ok(cdfs)
+    }
+
+    pub(crate) fn replicate_coeff_q_context_for_base_q(
+        &mut self,
+        base_q_idx: u32,
+    ) -> Result<(), TileCdfError> {
+        self.rows
+            .block
+            .replicate_coeff_q_context(coeff_cdf_q_ctx_from_base_q_idx(base_q_idx))
     }
 
     pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
