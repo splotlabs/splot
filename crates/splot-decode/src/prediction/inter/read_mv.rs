@@ -112,11 +112,11 @@ pub(crate) fn read_newmv_block_mvd_with_config(
     tile_offset: ByteOffset,
     config: MvReadConfig,
 ) -> Result<Mv> {
-    let diff = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?;
+    let diff = read_newmv_block_mvd_magnitude_with_config(cdfs, symbols, tile_offset, config)?;
     apply_inter_mvd_signs(diff, symbols, tile_offset, config, false, 1)
 }
 
-pub(crate) fn read_newmv_block_mvd_magnitude(
+pub(crate) fn read_newmv_block_mvd_magnitude_with_config(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     tile_offset: ByteOffset,

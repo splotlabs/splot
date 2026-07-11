@@ -30,7 +30,7 @@ use super::find_mv_stack::{
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
     MvReadConfig, apply_inter_mvd_signs, mv_clamp_to_integer, read_newmv_amvd_block_mvd,
-    read_newmv_block_mvd_magnitude,
+    read_newmv_block_mvd_magnitude_with_config,
 };
 use super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
@@ -1659,7 +1659,8 @@ fn decode_block<T: ReconSample>(
                 let magnitude = read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?;
                 apply_inter_mvd_signs(magnitude, symbols, tile_offset, config, false, 1)?
             } else {
-                let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?;
+                let magnitude =
+                    read_newmv_block_mvd_magnitude_with_config(cdfs, symbols, tile_offset, config)?;
                 apply_inter_mvd_signs(
                     magnitude,
                     symbols,
