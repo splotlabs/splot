@@ -330,6 +330,40 @@ fn dispatcher_returns_default_refinemv_motion_grid() {
 }
 
 #[test]
+fn dispatcher_switchable_refinemv_excludes_low_sad_center() {
+    let width = 32;
+    let height = 32;
+    let reference0 = flat_frame(width, height, 80, 128, 128);
+    let reference1 = flat_frame(width, height, 80, 128, 128);
+    let mut workspace = workspace(width, height);
+
+    let grid = motion_compensate_inter_block_with_motion_grid_into(
+        &mut workspace,
+        InterBlockParams::compound_average(
+            &reference0,
+            &reference1,
+            rect(8, 8, 16, 16),
+            Mv::ZERO,
+            Mv::ZERO,
+            InterpolationFilter::EightTapSharp,
+            CompoundBlend::default(),
+        )
+        .with_refinemv(true)
+        .with_switchable_refinemv(true),
+        None,
+        ByteOffset::new(0),
+    )
+    .expect("switchable refine-MV dispatcher")
+    .expect("refine-MV motion grid");
+
+    assert_eq!(
+        grid.temporal_mvs_at_luma_offset(0, 0)
+            .expect("stored switchable refine-MVs"),
+        [Mv { row: -16, col: -16 }, Mv { row: 16, col: 16 }]
+    );
+}
+
+#[test]
 fn dispatcher_skips_refinemv_search_without_disabling_refinemv() {
     let width = 32;
     let height = 32;

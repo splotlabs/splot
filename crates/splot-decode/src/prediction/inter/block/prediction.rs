@@ -96,6 +96,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
     use_refinemv: bool,
+    refinemv_switchable: bool,
     block_decoded: &TileBlockDecodedState,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<'_, T>,
@@ -129,7 +130,8 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
         rect,
         tile_offset,
     )?
-    .with_refinemv(use_refinemv);
+    .with_refinemv(use_refinemv)
+    .with_switchable_refinemv(refinemv_switchable);
     let motion_grid = mc::motion_compensate_inter_block_with_motion_grid_into(
         workspace,
         block_params,

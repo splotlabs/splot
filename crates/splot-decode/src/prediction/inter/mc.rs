@@ -147,6 +147,7 @@ pub(crate) struct InterBlockParams<'a, T: ReconSample> {
     sub8x8_chroma: bool,
     use_refinemv: bool,
     search_refinemv: bool,
+    refinemv_switchable: bool,
     optflow_sad_threshold: Option<u64>,
 }
 
@@ -165,6 +166,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             sub8x8_chroma: false,
             use_refinemv: false,
             search_refinemv: false,
+            refinemv_switchable: false,
             optflow_sad_threshold: None,
         }
     }
@@ -193,6 +195,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             sub8x8_chroma: false,
             use_refinemv: false,
             search_refinemv: false,
+            refinemv_switchable: false,
             optflow_sad_threshold: None,
         }
     }
@@ -215,6 +218,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
             sub8x8_chroma: false,
             use_refinemv: false,
             search_refinemv: false,
+            refinemv_switchable: false,
             optflow_sad_threshold: None,
         }
     }
@@ -231,6 +235,11 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
 
     pub(crate) const fn with_refinemv_search(mut self, enabled: bool) -> Self {
         self.search_refinemv = self.use_refinemv && enabled;
+        self
+    }
+
+    pub(crate) const fn with_switchable_refinemv(mut self, switchable: bool) -> Self {
+        self.refinemv_switchable = switchable;
         self
     }
 
@@ -297,6 +306,7 @@ struct CompoundMcBlock<'a, T: ReconSample> {
     sub8x8_chroma: bool,
     use_refinemv: bool,
     search_refinemv: bool,
+    refinemv_switchable: bool,
     optflow_sad_threshold: Option<u64>,
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
@@ -388,6 +398,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
                 sub8x8_chroma: block.sub8x8_chroma,
                 use_refinemv: block.use_refinemv,
                 search_refinemv: block.search_refinemv,
+                refinemv_switchable: block.refinemv_switchable,
                 optflow_sad_threshold: block.optflow_sad_threshold,
             },
             optflow_unit_size,
@@ -742,6 +753,7 @@ fn predict_compound_plane<T: ReconSample>(
         sub8x8_chroma: false,
         use_refinemv: false,
         search_refinemv: false,
+        refinemv_switchable: false,
         optflow_sad_threshold: None,
     };
     let prediction =

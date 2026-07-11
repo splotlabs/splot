@@ -1492,6 +1492,7 @@ fn decode_block<T: ReconSample>(
             workspace,
             &placed,
             false,
+            false,
             block_decoded,
             ref_frame_idx,
             reference,
@@ -1877,6 +1878,7 @@ fn decode_block<T: ReconSample>(
     prediction::reconstruct_placed_inter_block(
         workspace,
         &placed,
+        false,
         false,
         block_decoded,
         ref_frame_idx,
