@@ -14,6 +14,7 @@ fn splot(args: &[&str]) -> Output {
         .expect("failed to run the splot binary")
 }
 
+#[track_caller]
 fn assert_accepted_but_unimplemented(args: &[&str]) {
     let out = splot(args);
     let stderr = String::from_utf8_lossy(&out.stderr);
