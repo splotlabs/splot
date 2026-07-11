@@ -108,8 +108,8 @@ pub fn loop_restoration_source_sample(
         "loop restoration stripe end y",
     )?;
 
-    let clipped_x = clip3(x, min_x, max_x);
-    let mut clipped_y = clip3(y, min_y, max_y);
+    let clipped_x = x.clamp(min_x, max_x);
+    let mut clipped_y = y.clamp(min_y, max_y);
     let source = if clipped_y < stripe_start {
         clipped_y = clipped_y.max(stripe_start.saturating_sub(2));
         LoopRestorationSource::CurrFrame
@@ -335,16 +335,6 @@ const fn plane_subsampling(plane: PlaneId, bounds: &LoopRestorationSourceBounds)
 fn shifted_bound(value: usize, shift: u8, context: &'static str) -> Result<isize> {
     let shifted = value >> usize::from(shift);
     isize::try_from(shifted).map_err(|_| ReconError::ArithmeticOverflow { context })
-}
-
-const fn clip3(value: isize, min: isize, max: isize) -> isize {
-    if value < min {
-        min
-    } else if value > max {
-        max
-    } else {
-        value
-    }
 }
 
 #[cfg(test)]
