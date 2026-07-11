@@ -187,8 +187,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
             }
             .into());
         }
-        None if block.rect.luma_w <= 8 && block.rect.luma_h <= 8 => 4,
-        None => 8,
+        None => super::optflow_unit_size(block.rect.luma_w, block.rect.luma_h),
     };
     let round_up = |value: usize| {
         value

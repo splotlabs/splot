@@ -171,6 +171,7 @@ jobs:
           entries = {name: (path, digest) for name, path, digest in pattern.findall(manifest)}
           required = [
               "avm-v15.0.0-bus.352x288.l1.partial_lossless",
+              "avm-v15.0.0-bus.352x288.l10.deltaq1",
               "avm-v15.0.0-bus.64x64.l1.sdp0",
               "avm-v15.0.0-bus.64x64.l1.sdp1",
               "avm-v15.0.0-bus.64x64.l5.lossless",
