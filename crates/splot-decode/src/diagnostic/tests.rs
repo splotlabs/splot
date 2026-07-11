@@ -94,27 +94,6 @@ fn unsupported_structure_report_uses_planner_metadata() {
 }
 
 #[test]
-fn runtime_unsupported_report_summarizes_successful_plan() {
-    let plan = plan_byte_stream(&[0x01, 0x10], &DecodeOptions::default()).unwrap();
-
-    let report = DecodeDiagnosticReport::runtime_unsupported(&plan);
-
-    assert_eq!(report.diagnostic.rule_id, UNSUPPORTED_FEATURE_RULE_ID);
-    assert_eq!(report.diagnostic.spec_section, Some("7.1"));
-    let DecodeDiagnosticDetails::RuntimeUnsupported(summary) = report.details else {
-        panic!("expected runtime-unsupported summary");
-    };
-    assert_eq!(summary.bitstream_format, "annex_b");
-    assert_eq!(summary.input_len_bytes, 2);
-    assert_eq!(summary.obu_count, 1);
-    assert_eq!(summary.frame_candidate_count, 1);
-    assert_eq!(summary.source_warning_count, 0);
-    assert_eq!(summary.selected_temporal_layer_id, 0);
-    assert_eq!(summary.selected_embedded_layer_id, 0);
-    assert_eq!(summary.selected_extended_layer_id, 0);
-}
-
-#[test]
 fn output_error_report_has_stable_operation_details() {
     let error = DecodeError::Output {
         source: DecodeOutputError::io(

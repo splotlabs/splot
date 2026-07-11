@@ -42,7 +42,7 @@ fn spatial_intrabc_scan(
     spatial_intrabc_scan_with_base_col(geometry, lookup, is_coded, |_, _| None)
 }
 
-/// frontier frame-0 SB row 0, mib_size 32 (128x128 SB). Walks the first three
+/// Mission-stream frame-0 SB row 0, mib_size 32 (128x128 SB). Walks the first three
 /// reachable IntrABC blocks and checks the bank + stack against the AVM
 /// `av2_find_mv_refs` dump.
 fn frontier_geometry(mi_row: usize, mi_col: usize) -> IntrabcStackGeometry {
@@ -161,12 +161,11 @@ fn first_block_of_new_sb_row_reads_empty_bank() {
     );
 }
 
-/// No spatial candidate, no defer.
+/// No spatial candidate.
 fn no_spatial() -> SpatialIntrabcScan {
     SpatialIntrabcScan {
         candidates: Vec::new(),
         nearest_len: 0,
-        defer: false,
     }
 }
 
@@ -227,7 +226,6 @@ fn admission_selects_frontier_mi_0_240_spatial_bv() {
     let spatial = SpatialIntrabcScan {
         candidates: vec![adj(Mv { row: 0, col: -3072 })],
         nearest_len: 1,
-        defer: false,
     };
     let stack = build_intrabc_ref_mv_stack(
         &bank,
@@ -260,27 +258,6 @@ fn admission_selects_frontier_mi_0_240_spatial_bv() {
 }
 
 #[test]
-fn admission_defers_on_unmodelled_spatial_intrabc() {
-    let bank = IntrabcRefMvBank::new(32);
-    let spatial = SpatialIntrabcScan {
-        candidates: Vec::new(),
-        nearest_len: 0,
-        defer: true,
-    };
-    assert_eq!(
-        intrabc_ref_stack_admission(
-            &bank,
-            frontier_geometry(0, 112),
-            &spatial,
-            true,
-            DrlReorderMode::Always,
-            0,
-        ),
-        IntrabcStackAdmission::Defer
-    );
-}
-
-#[test]
 fn admission_forced_swap_places_max_weight_at_slot0() {
     let bank = IntrabcRefMvBank::new(32);
     let unsorted = SpatialIntrabcScan {
@@ -289,7 +266,6 @@ fn admission_forced_swap_places_max_weight_at_slot0() {
             wbv(Mv { row: -512, col: 0 }, 1),
         ],
         nearest_len: 2,
-        defer: false,
     };
     assert_eq!(
         intrabc_ref_stack_admission(
@@ -329,7 +305,6 @@ fn admission_no_op_swap_when_slot0_already_max() {
             wbv(Mv { row: -512, col: 0 }, 1),
         ],
         nearest_len: 2,
-        defer: false,
     };
     assert_eq!(
         intrabc_ref_stack_admission(
@@ -351,7 +326,6 @@ fn admission_no_op_swap_when_slot0_already_max() {
             wbv(Mv { row: -512, col: 0 }, 1),
         ],
         nearest_len: 2,
-        defer: false,
     };
     assert_eq!(
         intrabc_ref_stack_admission(
@@ -379,7 +353,6 @@ fn admission_sort_respects_drl_reorder_mode() {
     let scan = SpatialIntrabcScan {
         candidates: candidates.clone(),
         nearest_len: 2,
-        defer: false,
     };
     assert_eq!(
         intrabc_ref_stack_admission(
@@ -434,7 +407,6 @@ fn admission_sort_leaves_scan_col_tail_outside_nearest_prefix() {
             wbv(Mv { row: -512, col: 0 }, 1),
         ],
         nearest_len: 1,
-        defer: false,
     };
     assert_eq!(
         intrabc_ref_stack_admission(
@@ -458,7 +430,6 @@ fn admission_admits_single_spatial_candidate() {
     let one = SpatialIntrabcScan {
         candidates: vec![adj(Mv { row: 0, col: -64 })],
         nearest_len: 1,
-        defer: false,
     };
     assert!(matches!(
         intrabc_ref_stack_admission(
@@ -507,21 +478,18 @@ fn spatial_scan_adds_left_neighbour_and_admits_modelled_above_neighbour() {
         |_, _| false,
     );
     assert_eq!(left_only.candidates, vec![adj(Mv { row: 0, col: -64 })]);
-    assert!(!left_only.defer);
     let above = spatial_intrabc_scan(
         geom,
         |row, col| (row == 3 && col == 8).then_some(Mv { row: -8, col: 0 }),
         |_, _| false,
     );
     assert_eq!(above.candidates, vec![adj(Mv { row: -8, col: 0 })]);
-    assert!(!above.defer);
     let deep_left = spatial_intrabc_scan(
         geom,
         |row, col| (row == 4 && col == 5).then_some(Mv { row: 0, col: -512 }),
         |_, _| false,
     );
     assert!(deep_left.candidates.is_empty());
-    assert!(!deep_left.defer);
     let scan_col = spatial_intrabc_scan_with_base_col(
         geom,
         |row, col| (row == 4 && col == 5).then_some(Mv { row: 0, col: -512 }),
@@ -538,10 +506,9 @@ fn spatial_scan_adds_left_neighbour_and_admits_modelled_above_neighbour() {
     );
     assert_eq!(scan_col.candidates, vec![wbv(Mv { row: 0, col: -512 }, 0)]);
     assert_eq!(scan_col.nearest_len, 0);
-    assert!(!scan_col.defer);
 }
 
-/// frontier frame-0 MI(32,56) geometry for the § 7.12.2.1 step-8 SB-border probe.
+/// Mission-stream frame-0 MI(32,56) geometry for the § 7.12.2.1 step-8 SB-border probe.
 /// mib_size 32, so MiRow 32 sits on a horizontal SB border (`32 % 32 == 0`).
 fn frontier_mi_32_56_scan_geometry() -> SpatialScanGeometry {
     SpatialScanGeometry {
@@ -563,7 +530,6 @@ fn spatial_scan_admits_frontier_mi_32_56_step8_above_neighbour() {
         |_, _| false,
     );
     assert_eq!(scan.candidates, vec![adj(Mv { row: -512, col: 0 })]);
-    assert!(!scan.defer);
 }
 
 #[test]
@@ -610,7 +576,6 @@ fn spatial_scan_ignores_non_table_above_row_column() {
         |_, _| false,
     );
     assert!(scan.candidates.is_empty());
-    assert!(!scan.defer);
     let scan = spatial_intrabc_scan(
         frontier_mi_32_56_scan_geometry(),
         |row, col| {
@@ -625,7 +590,6 @@ fn spatial_scan_ignores_non_table_above_row_column() {
         |_, _| false,
     );
     assert_eq!(scan.candidates, vec![adj(Mv { row: -512, col: 0 })]);
-    assert!(!scan.defer);
 }
 
 fn assert_sb_border_step8_aligns_odd_mi_col(
@@ -650,7 +614,6 @@ fn assert_sb_border_step8_aligns_odd_mi_col(
         |_, _| false,
     );
     assert_eq!(scan.candidates, vec![adj(Mv { row: -512, col: 0 })]);
-    assert!(!scan.defer);
 }
 
 #[test]
@@ -658,7 +621,7 @@ fn spatial_scan_aligns_odd_mi_col_sb_border() {
     assert_sb_border_step8_aligns_odd_mi_col(32, 57, 62);
 }
 
-/// frontier frame-0 MI(48,56) geometry: mib_size 32, MiRow 48, `48 % 32 == 16 != 0`
+/// Mission-stream frame-0 MI(48,56) geometry: mib_size 32, MiRow 48, `48 % 32 == 16 != 0`
 /// -> NOT an SB border, so the within-SB 4x4-resolution above-row scan applies.
 /// BLOCK_32X64 (bw4 = 8, bh4 = 16), the new frontier-class block.
 fn frontier_mi_48_56_scan_geometry() -> SpatialScanGeometry {
@@ -681,7 +644,6 @@ fn spatial_scan_admits_frontier_mi_48_56_within_sb_step8() {
         |_, _| true,
     );
     assert_eq!(scan.candidates, vec![wbv(Mv { row: -512, col: 0 }, 2)]);
-    assert!(!scan.defer);
 }
 
 #[test]
@@ -698,14 +660,12 @@ fn spatial_scan_step12_top_right_respects_has_top_right() {
     let bv = Mv { row: -8, col: -8 };
     let not_coded = spatial_intrabc_scan(geom, |_, _| None, |_, _| false);
     assert!(not_coded.candidates.is_empty());
-    assert!(!not_coded.defer);
     let coded = spatial_intrabc_scan(
         geom,
         |row, col| (row == 19 && col == 12).then_some(bv),
         |row, col| row == 19 && col == 12,
     );
     assert_eq!(coded.candidates, vec![adj(bv)]);
-    assert!(!coded.defer);
 }
 
 #[test]
@@ -730,7 +690,6 @@ fn spatial_scan_disables_step10_for_block_width_4_within_sb() {
         vec![wbv(bv, 1)],
         "step 10 disabled for bw4 == 1: the above candidate keeps step-8 weight 1"
     );
-    assert!(!scan.defer);
     let wide = SpatialScanGeometry { n4w: 2, ..narrow };
     let wide_scan = spatial_intrabc_scan(
         wide,
@@ -742,7 +701,6 @@ fn spatial_scan_disables_step10_for_block_width_4_within_sb() {
         vec![wbv(bv, 2)],
         "bw4 >= 2 enables step 10: step 8 + step 10 accumulate weight 2"
     );
-    assert!(!wide_scan.defer);
 }
 
 #[test]
@@ -767,7 +725,6 @@ fn spatial_scan_disables_step10_for_block_width_4_sb_border() {
         vec![wbv(bv, 1)],
         "step 10 disabled for bw4 == 1 on the SB border: the above candidate keeps step-8 weight 1"
     );
-    assert!(!scan.defer);
     let wide = SpatialScanGeometry { n4w: 8, ..narrow };
     let wide_scan = spatial_intrabc_scan(
         wide,
@@ -779,7 +736,6 @@ fn spatial_scan_disables_step10_for_block_width_4_sb_border() {
         vec![wbv(bv, 2)],
         "bw4 >= 4 enables step 10 on the SB border: step 8 + step 10 accumulate weight 2"
     );
-    assert!(!wide_scan.defer);
 }
 
 #[test]
@@ -799,10 +755,9 @@ fn spatial_scan_dedups_same_left_neighbour() {
         |_, _| false,
     );
     assert_eq!(scan.candidates, vec![wbv(Mv { row: 0, col: -3072 }, 2)]);
-    assert!(!scan.defer);
 }
 
-/// frontier frame-0 MI(192,112) geometry: MiRow 192, `192 % 32 == 0` -> SB border;
+/// Mission-stream frame-0 MI(192,112) geometry: MiRow 192, `192 % 32 == 0` -> SB border;
 /// MiCol 112 even; BLOCK_64X32 (bw4 = 16, bh4 = 8) — the §7.12.2.19 weight-sort
 /// frontier.
 fn frontier_mi_192_112_scan_geometry() -> SpatialScanGeometry {
@@ -839,10 +794,6 @@ fn admission_admits_frontier_mi_192_112_no_op_weight_sort() {
             wbv(Mv { row: -512, col: 0 }, 1),
         ],
         "(-1024,0) accumulates step 7 + step 9 weight (2); (-512,0) step 8 weight (1)"
-    );
-    assert!(
-        !scan.defer,
-        "the scan itself does not defer (the candidates are placed)"
     );
     let geometry = IntrabcStackGeometry {
         mi_row: 192,
@@ -899,7 +850,6 @@ fn spatial_scan_admits_sb_border_even_mi_col_step14() {
         |_, _| false,
     );
     assert_eq!(scan.candidates, vec![wbv(Mv { row: 0, col: -256 }, 0)]);
-    assert!(!scan.defer);
 }
 
 #[test]
@@ -919,7 +869,6 @@ fn spatial_scan_aligns_sb_border_odd_mi_col_above_neighbour() {
         |_, _| false,
     );
     assert_eq!(scan.candidates, vec![adj(Mv { row: 0, col: -256 })]);
-    assert!(!scan.defer);
 }
 
 /// A synthetic geometry at an even MiCol (so the SB-border 8x8 alignment is a
@@ -1037,7 +986,6 @@ fn sb_border_narrow_disabled_step10_column_is_ignored() {
         scan.candidates.is_empty(),
         "no SB-border state reaches col 7"
     );
-    assert!(!scan.defer);
 }
 
 #[test]
@@ -1063,14 +1011,9 @@ fn sb_border_block_width_4_step12_reads_max2_column() {
     let geom = generic_scan_geom(32, 8, 1);
     let at_10 = scan_single_intrabc_probe(geom, 31, 10, Mv { row: -8, col: -8 });
     assert_eq!(at_10.candidates, vec![adj(Mv { row: -8, col: -8 })]);
-    assert!(
-        !at_10.defer,
-        "step-12 Max(2,1)=2 column is modelled -> admitted"
-    );
     let at_9 = scan_single_intrabc_probe(geom, 31, 9, Mv { row: -8, col: -8 });
     assert!(
         at_9.candidates.is_empty(),
         "no state reaches MiCol+1 for bw4==1"
     );
-    assert!(!at_9.defer);
 }

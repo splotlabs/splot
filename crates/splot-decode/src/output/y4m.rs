@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Minimal-tier Y4M adapter.
+//! Y4M output adapter.
 //!
 //! Feature tracking: `DECODE-Y4M-RUNTIME-OUTPUT`.
 

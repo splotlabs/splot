@@ -875,7 +875,7 @@ fn zone2_mrl_middle_left_edge_synthesizes_left_from_above() {
 /// `H == 32`) block with a REAL, NON-FLAT above row. §7.13.2.8 V_PRED copies the
 /// 64-wide above row into every one of the 32 rows; a width/height swap or a
 /// `stride == height`-instead-of-`width` bug would corrupt the layout and fail.
-/// The asymmetric edge is the key: a flat block (the frontier all-68 oracle) would
+/// The asymmetric edge is the key: a flat block (the mission-stream all-68 oracle) would
 /// MASK a transpose.
 #[test]
 fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
@@ -955,7 +955,7 @@ fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
     }
 }
 
-/// §7.13.2.1 NO-ABOVE FALLBACK GUARD — the frontier MI(64,0) case: a NON-SQUARE
+/// §7.13.2.1 NO-ABOVE FALLBACK GUARD — the mission-stream MI(64,0) case: a NON-SQUARE
 /// 64x32 V_PRED block at the frame TOP (`y == 0`, `haveAbove == 0`) with a
 /// NON-FLAT reconstructed left column. §7.13.2.1 synthesizes
 /// `AboveRow[i] = CurrFrame[plane][y][x-1]` — the block's top-left left neighbour
@@ -1283,7 +1283,7 @@ fn ref_paeth(left: i32, above: i32, top_left: i32) -> u8 {
 /// AboveRow[-1]`), so a width/height swap, a wrong stride, or reading the corner
 /// from the above row / left column instead of `CurrFrame[y-1][x-1]` would
 /// corrupt the output and fail. The asymmetric edges are the key: the flat
-/// frontier oracle (all `68`) would MASK every one of those mix-ups.
+/// mission-stream oracle (all `68`) would MASK every one of those mix-ups.
 #[test]
 fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
     let mut ws =
@@ -1527,7 +1527,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
 /// primary + secondary predictors and the §7.13.2.9 weights/blend (asymmetric
 /// above/left values, so a primary<->secondary swap, a missing transpose, or a
 /// wrong secondAngle changes the pinned bytes). This exercises the whole IBP
-/// reconstructor end to end, since no frontier leaf reaches it (the decode-order
+/// reconstructor end to end, since no mission-stream leaf reaches it (the decode-order
 /// cascade is config-blocked; see the recon-region tests).
 ///
 /// Neighbour layout: above row `y=7` over `x[8,16)` is `100+i` (laid via an 8x4

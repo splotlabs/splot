@@ -234,7 +234,7 @@ fn tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record() {
 
 /// §5.20.6.1 PC-Wiener `LrTxSkip` FilterClass grid retention drops the off-frame MI
 /// cells of a bottom-edge skipped block instead of erroring on the overhang. Models
-/// the frontier frontier: a skipped 16x16-MI block at MI(256,0) overhangs the 270-row
+/// the mission-stream case: a skipped 16x16-MI block at MI(256,0) overhangs the 270-row
 /// grid by 2; its in-frame rows 256..270 fill, the off-frame rows 270,271 are dropped
 /// (they carry no FilterClass), mirroring AVM `av2_set_entropy_contexts` and the
 /// §5.20.3.2 `block_coded` clamp. The full grid stays populated by the in-frame cells.
@@ -442,7 +442,7 @@ fn interior_block_records_match_edge_block_minus_dropped_cells() {
 }
 
 /// Right-edge symmetry: a block whose chunk tiles overshoot MiCols drops the
-/// past-edge columns the same way the bottom edge drops past-edge rows. frontier
+/// past-edge columns the same way the bottom edge drops past-edge rows. Mission-stream
 /// frame 0 exercises only the bottom edge, so this is tested, not assumed.
 #[test]
 fn set_tx_size_drops_right_edge_cells_past_frame_extent() {

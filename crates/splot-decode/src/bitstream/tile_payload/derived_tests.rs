@@ -136,7 +136,7 @@ fn derive_tile_payload_plan<'a>(
 ) -> Result<DecodeTilePayloadPlan<'a>, FrameCandidateTileBoundaryError> {
     let stream_plan = ctx.plan_bytes(bytes, DecodeOptions::default()).unwrap();
     let candidate = stream_plan.frame_candidates().next().unwrap();
-    ctx.plan_derived_tile_payload_boundary(&FrameCandidateTileBoundaryInput::new(
+    let input = FrameCandidateTileBoundaryInput::new(
         &stream_plan,
         candidate,
         bytes,
@@ -145,7 +145,9 @@ fn derive_tile_payload_plan<'a>(
         facts,
         base_cdf_facts(),
         limits,
-    ))
+    );
+    ctx.pool()
+        .install(|| plan_derived_tile_payload_boundary(&input))
 }
 
 fn derive_annex_b_tile_payload_plan<'a>(

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Non-bitstream runtime configuration for the decode driver scaffold.
+//! Non-bitstream runtime configuration for the decode driver.
 
 use splot_parallel::ThreadCount;
 
 /// Runtime (non-bitstream) decode knobs.
 ///
-/// This scaffold carries only the worker-thread policy; it does not read or
-/// decode any bitstream bytes.
+/// Carries only the worker-thread policy; it does not read or decode any
+/// bitstream bytes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct DecodeRuntimeConfig {

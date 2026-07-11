@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Data model for future `splot decode --output-format hash --json` reports.
+//! Data model for `splot decode --output-format hash --json` reports.
 //!
 //! This module models only the success artifact shape. It does not decode
 //! bitstreams, allocate frames, compute digests, write output paths, or invoke

@@ -6,12 +6,10 @@
 //! Feature tracking: `CLI-DECODE`, `DECODE-BYTE-STREAM-PLANNER`,
 //! `DECODE-STREAM-STATE-PLANNER`, `DOC-DECODE-LIMITS-CONTRACT`.
 
-use splot_core::stream::BitstreamFormat;
-
 use crate::{
     DecodeDiagnostic, DecodeError, DecodeLimitError, DecodeLimitName, DecodeOutputError,
-    DecodeSeverity, DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamPlan,
-    DecodeUnsupportedFeature, DecodeUnsupportedStructure, UNSUPPORTED_FEATURE_RULE_ID,
+    DecodeSeverity, DecodeSourceIssue, DecodeSourceIssueKind, DecodeUnsupportedFeature,
+    DecodeUnsupportedStructure, UNSUPPORTED_FEATURE_RULE_ID,
 };
 
 /// Stable rule id for malformed decode-source diagnostics.
@@ -52,16 +50,6 @@ impl DecodeDiagnosticReport {
                 Some(Self::unsupported_feature(unsupported.as_ref()))
             }
             DecodeError::Output { source } => Some(Self::output_error(source)),
-        }
-    }
-
-    /// Builds the diagnostic emitted after byte planning succeeds but runtime
-    /// decode/output remains unsupported.
-    #[must_use]
-    pub fn runtime_unsupported(plan: &DecodeStreamPlan) -> Self {
-        Self {
-            diagnostic: crate::UNSUPPORTED_FEATURE_DIAGNOSTIC,
-            details: DecodeDiagnosticDetails::RuntimeUnsupported(DecodePlanSummary::from(plan)),
         }
     }
 
@@ -181,8 +169,6 @@ pub enum DecodeDiagnosticDetails {
     UnsupportedFeature(DecodeUnsupportedFeatureDetails),
     /// Decode output serialization or caller-writer failure details.
     OutputError(DecodeOutputErrorDetails),
-    /// Byte-plan summary for runtime decode/output deferral.
-    RuntimeUnsupported(DecodePlanSummary),
 }
 
 /// Details for `decode/malformed-source`.
@@ -248,43 +234,6 @@ pub struct DecodeOutputErrorDetails {
     pub source_message: String,
 }
 
-/// Byte-plan summary attached to runtime unsupported diagnostics.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DecodePlanSummary {
-    /// Detected input bitstream/container format.
-    pub bitstream_format: &'static str,
-    /// Caller-provided input length in bytes.
-    pub input_len_bytes: u64,
-    /// Number of accepted planned OBUs.
-    pub obu_count: u64,
-    /// Number of accepted frame candidates.
-    pub frame_candidate_count: u64,
-    /// Number of non-fatal source warnings carried into the plan.
-    pub source_warning_count: u64,
-    /// Selected temporal layer id.
-    pub selected_temporal_layer_id: u8,
-    /// Selected embedded layer id.
-    pub selected_embedded_layer_id: u8,
-    /// Selected extended layer id.
-    pub selected_extended_layer_id: u8,
-}
-
-impl From<&DecodeStreamPlan> for DecodePlanSummary {
-    fn from(plan: &DecodeStreamPlan) -> Self {
-        let selected_layer = plan.selected_layer();
-        Self {
-            bitstream_format: bitstream_format_as_str(plan.format()),
-            input_len_bytes: plan.input_len_bytes(),
-            obu_count: plan.obu_count(),
-            frame_candidate_count: plan.frame_candidate_count(),
-            source_warning_count: plan.source_warnings().len() as u64,
-            selected_temporal_layer_id: selected_layer.temporal_layer_id().get(),
-            selected_embedded_layer_id: selected_layer.embedded_layer_id().get(),
-            selected_extended_layer_id: selected_layer.extended_layer_id().get(),
-        }
-    }
-}
-
 const fn malformed_source_spec_section(kind: DecodeSourceIssueKind) -> Option<&'static str> {
     match kind {
         DecodeSourceIssueKind::AnnexBParseError
@@ -311,13 +260,6 @@ const fn resource_limit_spec_section(name: DecodeLimitName) -> Option<&'static s
         | DecodeLimitName::MaxTilePayloadBytes
         | DecodeLimitName::MaxOutputBytes => Some("7.1"),
         DecodeLimitName::MaxLoopRestorationSourceReads => Some("7.20.2"),
-    }
-}
-
-const fn bitstream_format_as_str(format: BitstreamFormat) -> &'static str {
-    match format {
-        BitstreamFormat::AnnexB => "annex_b",
-        BitstreamFormat::Ivf => "ivf",
     }
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Minimal-tier raw sample-byte adapter.
+//! Raw sample-byte output adapter.
 //!
 //! Feature tracking: `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`.
 

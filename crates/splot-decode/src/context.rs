@@ -12,20 +12,16 @@ use crate::DecodeHashReport;
 use crate::DecodeOptions;
 use crate::bitstream::byte_stream::plan_byte_stream;
 use crate::bitstream::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
-use crate::bitstream::tile_payload::{
-    DecodeTilePayloadPlan, FrameCandidateTileBoundaryError, FrameCandidateTileBoundaryInput,
-    TilePayloadBoundaryError, TilePayloadBoundaryInput, plan_derived_tile_payload_boundary,
-    plan_tile_payload_boundary,
-};
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::runtime::DecodeRuntimeConfig;
 
 /// A decode context.
 ///
 /// Owns exactly one [`WorkerPool`], plans bounded stream metadata from raw Annex
-/// B/IVF or parsed streams, and exposes the narrow `minimal-intra-8bit420-hash-v1`
-/// runtime hash, raw, and Y4M byte paths. It does not touch the filesystem,
-/// invoke any external decoder, or claim broad AV2 runtime decode support.
+/// B/IVF or parsed streams, and exposes the runtime hash, raw, and Y4M byte
+/// paths for the supported decode envelope (tracked in
+/// `docs/DECODER-SUPPORT-MATRIX.toml`). It does not touch the filesystem or
+/// invoke any external decoder.
 #[derive(Debug)]
 pub struct DecodeContext {
     runtime: DecodeRuntimeConfig,
@@ -79,11 +75,12 @@ impl DecodeContext {
         self.pool.install(|| plan_byte_stream(bytes, &options))
     }
 
-    /// Decodes the documented minimal tier and returns a deterministic hash report.
+    /// Decodes the supported envelope and returns a deterministic hash report.
     ///
     /// Runs [`Self::plan_bytes`] first so malformed sources, resource-limit
     /// failures, layer selection, and planner-level unsupported structures stay
-    /// transactional. Limited to the `minimal-intra-8bit420-hash-v1` tier.
+    /// transactional. The supported decode envelope is tracked in
+    /// `docs/DECODER-SUPPORT-MATRIX.toml`.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed sources, unsupported
@@ -110,11 +107,10 @@ impl DecodeContext {
         report
     }
 
-    /// Decodes the documented minimal tier and writes complete raw sample bytes.
+    /// Decodes the supported envelope and writes complete raw sample bytes.
     ///
-    /// Runs [`Self::plan_bytes`] first (see [`Self::decode_hash_report_bytes`]),
-    /// limited to the same `minimal-intra-8bit420-hash-v1` IVF tier. The complete
-    /// raw byte stream is buffered and checked against
+    /// Runs [`Self::plan_bytes`] first (see [`Self::decode_hash_report_bytes`]).
+    /// The complete raw byte stream is buffered and checked against
     /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes reach `writer`.
     ///
     /// # Errors
@@ -140,11 +136,10 @@ impl DecodeContext {
         Ok(())
     }
 
-    /// Decodes the documented minimal tier and writes a complete Y4M stream.
+    /// Decodes the supported envelope and writes a complete Y4M stream.
     ///
-    /// Runs [`Self::plan_bytes`] first (see [`Self::decode_hash_report_bytes`]),
-    /// limited to the same `minimal-intra-8bit420-hash-v1` IVF tier. The complete
-    /// Y4M stream is buffered and checked against
+    /// Runs [`Self::plan_bytes`] first (see [`Self::decode_hash_report_bytes`]).
+    /// The complete Y4M stream is buffered and checked against
     /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes reach `writer`.
     ///
     /// # Errors
@@ -183,47 +178,6 @@ impl DecodeContext {
         options: DecodeOptions,
     ) -> Result<DecodeStreamPlan> {
         self.pool.install(|| plan_stream(input, &options))
-    }
-
-    /// Builds a deterministic tile-payload boundary plan inside this context's
-    /// worker pool.
-    ///
-    /// Plan-only: does not run `decode_tile()`, reconstruct pixels, update
-    /// references, write output, or invoke external decoders.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "crate-private tile handoff is tested before runtime decode derives tile facts"
-        )
-    )]
-    pub(crate) fn plan_tile_payload_boundary<'a>(
-        &self,
-        input: &TilePayloadBoundaryInput<'a, '_>,
-    ) -> core::result::Result<DecodeTilePayloadPlan<'a>, TilePayloadBoundaryError> {
-        self.pool.install(|| plan_tile_payload_boundary(input))
-    }
-
-    /// Derives and plans a deterministic tile-payload boundary inside this
-    /// context's worker pool.
-    ///
-    /// Plan-only: validates source-backed parser facts before slicing the § 5.20
-    /// payload region, then stops at the unsupported `decode_tile()` boundary
-    /// without reconstructing pixels, updating references, writing output, or
-    /// invoking external decoders.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "crate-private derived tile handoff is tested before runtime decode wires it"
-        )
-    )]
-    pub(crate) fn plan_derived_tile_payload_boundary<'a>(
-        &self,
-        input: &FrameCandidateTileBoundaryInput<'a, '_>,
-    ) -> core::result::Result<DecodeTilePayloadPlan<'a>, FrameCandidateTileBoundaryError> {
-        self.pool
-            .install(|| plan_derived_tile_payload_boundary(input))
     }
 }
 
