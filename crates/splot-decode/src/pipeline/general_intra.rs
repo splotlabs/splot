@@ -1541,7 +1541,8 @@ fn ten_bit_general_intra_chroma_admitted(
     let chroma_cardinal_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
     let chroma_middle_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
     let chroma_one_sided_above_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    let one_sided_above_available = (neighbours.has_above() && neighbours.num_above_right() > 0)
+    let one_sided_above_available = (neighbours.has_above()
+        && block_ctx.has_uncapped_above_right(PlaneId::U))
         || (!neighbours.has_above() && neighbours.has_left());
     let no_neighbour_horizontal_first = mode == Some(SupportedChromaMode::Horizontal)
         && block_ctx.block().width4() == FULL_SB_N4_LUMA

@@ -5,6 +5,10 @@
 
 use super::*;
 
+const CHROMA_CORNER_CAP_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-chroma-corner-cap-256x256-q140.ivf"
+);
+
 fn ctx(row4: usize, col4: usize, width4: usize, height4: usize) -> BlockCtx {
     let rect = BlockRect::new(row4, col4, width4, height4);
     BlockCtx::new(
@@ -28,6 +32,126 @@ fn assert_plane_block(
     assert_eq!((block.x(), block.y()), xy);
     assert_eq!((block.width4(), block.height4()), size4);
     assert_eq!((block.tx().width_log2(), block.tx().height_log2()), tx_log2);
+}
+
+#[test]
+fn chroma_corner_counts_follow_large_transform_dimension_caps() {
+    assert_eq!(
+        normalize_intra_corner_counts(PlaneId::U, 6, 6, 7, 9),
+        (0, 0)
+    );
+    assert_eq!(
+        normalize_intra_corner_counts(PlaneId::U, 6, 5, 7, 9),
+        (0, 9)
+    );
+    assert_eq!(
+        normalize_intra_corner_counts(PlaneId::V, 5, 6, 7, 9),
+        (7, 0)
+    );
+    assert_eq!(
+        normalize_intra_corner_counts(PlaneId::V, 5, 5, 7, 9),
+        (7, 9)
+    );
+    assert_eq!(
+        normalize_intra_corner_counts(PlaneId::Y, 6, 6, 7, 9),
+        (7, 9)
+    );
+}
+
+#[test]
+fn large_chroma_smooth_repeats_top_edge_instead_of_decoded_above_right() {
+    use splot_recon::{IntraRectBlockSize, IntraSmoothMode, PixelFormat};
+
+    let block = BlockRect::new(16, 0, 16, 16);
+    let tx = TxShape::from_luma_4x4(16, 16).expect("valid 64x64 transform");
+    let block_ctx = BlockCtx::new(block, tx, 32, 32, BitDepth::Ten, ChromaSampling::Yuv444);
+    let mut decoded =
+        crate::bitstream::tile_payload::TileBlockDecodedState::new(3, 0, 0, 16, 32, 32)
+            .expect("valid decoded-state grid");
+    decoded.clear_superblock(16, 0);
+    assert_eq!(decoded.count_top_right_avail(1, 0, 0, 16), 16);
+    let neighbours = block_ctx.neighbours_from_block_decoded(PlaneId::U, &decoded);
+    assert_eq!(neighbours.num_above_right(), 0);
+
+    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u16>(
+        128,
+        128,
+        BitDepth::Ten,
+        PixelFormat::Yuv444,
+    )
+    .expect("valid 10-bit workspace");
+    workspace
+        .write_rect_block(
+            PlaneId::U,
+            0,
+            60,
+            IntraRectBlockSize::new(6, 2).expect("valid 64x4 edge block"),
+            &[510; 64 * 4],
+        )
+        .expect("write top edge");
+    workspace
+        .write_rect_block(
+            PlaneId::U,
+            64,
+            60,
+            IntraRectBlockSize::new(2, 2).expect("valid sentinel block"),
+            &[511; 4 * 4],
+        )
+        .expect("write decoded above-right sentinel");
+
+    let prediction = crate::pipeline::reconstruct::predict_intra_smooth_over_available_edges(
+        &workspace,
+        crate::pipeline::reconstruct::SmoothIntraPredictionRequest {
+            plane_id: PlaneId::U,
+            x: 0,
+            y: 64,
+            block_size: IntraRectBlockSize::new(6, 6).expect("valid 64x64 block"),
+            mode: IntraSmoothMode::SmoothHorizontal,
+            available_left_samples: None,
+            available_above_samples: Some(64),
+            num4_above_right: neighbours.num_above_right(),
+            num4_below_left: neighbours.num_below_left(),
+            bit_depth: BitDepth::Ten,
+        },
+    )
+    .expect("smooth prediction");
+
+    assert!(prediction.iter().all(|&sample| sample == 510));
+}
+
+#[test]
+fn large_chroma_smooth_corner_cap_fixture_decodes_to_oracle() {
+    use splot_parallel::ThreadCount;
+    use splot_recon::DecodedFrameHashInput;
+
+    let options = crate::DecodeOptions::default();
+    let context =
+        crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
+            .expect("decode context");
+    let plan = context
+        .plan_bytes(CHROMA_CORNER_CAP_FIXTURE, options)
+        .expect("decode plan");
+    let decoded = context
+        .pool()
+        .install(|| {
+            crate::pipeline::decode_frame_from_plan(CHROMA_CORNER_CAP_FIXTURE, &options, &plan)
+        })
+        .expect("decode fixture");
+    assert!(
+        matches!(
+            &decoded.frame,
+            crate::pipeline::PipelineDecodedFrame::Eight(_)
+        ),
+        "fixture decoded at the wrong bit depth"
+    );
+    let crate::pipeline::PipelineDecodedFrame::Eight(frame) = decoded.frame else {
+        return;
+    };
+
+    assert_eq!(
+        DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
+        "9d1331b7f113bcd0de59adfd04681009dd8a8c03b18d7ddbd651058fb406435c",
+    );
 }
 
 #[test]
