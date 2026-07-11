@@ -20912,6 +20912,8 @@ tests = [
     "crates/splot-decode/src/filters/wienerns_lr/recon_tests.rs::luma_lr_coalesced_runs_match_per_block_dispatch_bit_exactly",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::root_lr_frontier_reports_active_frame_level_wiener_ns_unit",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::merges_contiguous_row_blocks_and_splits_on_filter_visible_fields",
+    "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::merges_compatible_adjacent_rows_into_rectangles",
+    "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::does_not_merge_rows_across_source_boundaries",
     "crates/splot-decode/src/filters/deblock.rs::tests::banded_parallel_pass_matches_serial_output",
 ]
 commands = [

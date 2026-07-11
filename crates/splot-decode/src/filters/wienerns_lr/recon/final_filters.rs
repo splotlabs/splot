@@ -165,7 +165,23 @@ fn coalesce_bucketed_lr_rows(
             runs.push(*block);
         }
     }
-    runs
+    coalesce_vertical_lr_runs(runs)
+}
+
+fn coalesce_vertical_lr_runs(mut runs: Vec<WienerNsLrSourceBlock>) -> Vec<WienerNsLrSourceBlock> {
+    runs.sort_unstable_by_key(|block| (block.vertical_merge_key(), block.y));
+    let mut rectangles: Vec<WienerNsLrSourceBlock> = Vec::with_capacity(runs.len());
+    for run in runs {
+        if let Some(rectangle) = rectangles.last_mut()
+            && let Some(height) = rectangle.merged_height_with(&run)
+        {
+            rectangle.height = height;
+            continue;
+        }
+        rectangles.push(run);
+    }
+    rectangles.sort_unstable_by_key(|block| (block.y, block.x));
+    rectangles
 }
 
 fn clipped_lr_source_block(
