@@ -34,6 +34,22 @@ fn validate(fixture_name: &str, extra: &[&str]) -> Output {
     splot(&args)
 }
 
+fn inspect_json(path: &Path) -> serde_json::Value {
+    let out = splot(&[
+        "inspect",
+        "--json",
+        path.to_str().expect("inspect input path is valid UTF-8"),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("inspect output is valid JSON")
+}
+
 fn temp_path(stem: &str, extension: &str) -> PathBuf {
     let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = std::time::SystemTime::now()
@@ -195,9 +211,7 @@ fn inspect_lists_obu_headers() {
 #[test]
 fn inspect_ivf_json_includes_container_metadata() {
     let path = temp_input("ivf", &ivf_stream(&[&[0x01, 0x08]]));
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
     assert_eq!(records.len(), 1);
     let record = &records[0];
@@ -246,15 +260,9 @@ fn inspect_ivf_json_trailing_partial_frame_header_prints_warning_on_stderr() {
 #[test]
 fn inspect_json_includes_payload_status_without_dropping_header_fields() {
     let path = fixture("conformant.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
-    assert!(
-        records.len() >= 2,
-        "stdout was: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+    assert!(records.len() >= 2, "records were: {json}");
 
     let temporal_delimiter = &records[0];
     assert_eq!(temporal_delimiter["payload_status"]["status"], "parsed");
@@ -285,9 +293,7 @@ fn inspect_json_includes_payload_status_without_dropping_header_fields() {
 #[test]
 fn inspect_json_reports_parsed_sequence_tile_config() {
     let path = fixture("seq-header-tile-params.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
     let sequence_header = &records[1];
     assert_eq!(sequence_header["payload_status"]["status"], "parsed");
@@ -317,15 +323,9 @@ fn inspect_prints_valid_prefix_before_a_tail_error() {
 #[test]
 fn inspect_json_exposes_frame_header_prefix() {
     let path = fixture("frame-header-prefix.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
-    assert!(
-        records.len() >= 3,
-        "stdout was: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+    assert!(records.len() >= 3, "records were: {json}");
 
     let frame = &records[2];
     let prefix = &frame["frame_header_prefix"];
@@ -345,15 +345,9 @@ fn inspect_json_exposes_frame_header_prefix() {
 #[test]
 fn inspect_json_exposes_frame_header_core() {
     let path = fixture("frame-header-core.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
-    assert!(
-        records.len() >= 3,
-        "stdout was: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+    assert!(records.len() >= 3, "records were: {json}");
 
     let core = &records[2]["frame_header_core"];
     assert_eq!(core["payload_kind"], "frame_header_core");
@@ -458,15 +452,7 @@ fn inspect_json_surfaces_frame_header_copy_on_non_first_tile_group() {
     let mut data = annex_b_obu(0x12, &[]); // OBU_TEMPORAL_DELIMITER (global)
     data.extend(annex_b_obu(0x10, &[0b0110_1010]));
     let path = temp_input("av2", &data);
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "stdout: {} stderr: {}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
     let copy = &records[1]["frame_header_copy"];
     assert_eq!(copy["payload_kind"], "frame_header_copy");
@@ -479,15 +465,9 @@ fn inspect_json_surfaces_frame_header_copy_on_non_first_tile_group() {
 #[test]
 fn inspect_json_exposes_mfh_backed_frame_header_core() {
     let path = fixture("frame-header-core-mfh.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
-    assert!(
-        records.len() >= 4,
-        "stdout was: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+    assert!(records.len() >= 4, "records were: {json}");
 
     assert_eq!(records[2]["header"]["obu_type"], "MultiFrameHeader");
     let core = &records[3]["frame_header_core"];
@@ -532,9 +512,7 @@ fn inspect_json_surfaces_inter_disable_cdf_update() {
         0x00, 0x00, 0x06, 0x00, 0x10, 0x00, 0x02, 0x05, 0x1c, 0xf8, 0x00, 0x48, 0x08,
     ];
     let path = temp_input("av2", &data);
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
     let core = &records[2]["frame_header_core"];
     assert_eq!(core["frame_type"], "inter");
@@ -542,11 +520,9 @@ fn inspect_json_surfaces_inter_disable_cdf_update() {
     let inter = &core["inter"];
     assert_eq!(inter["stop"], "reached_shared_tail");
     assert_eq!(
-        inter["disable_cdf_update"],
-        false,
+        inter["disable_cdf_update"], false,
         "the inter view must surface the parsed §5.18.2 disable_cdf_update bit; \
-         stdout was: {}",
-        String::from_utf8_lossy(&out.stdout)
+         records were: {json}"
     );
 }
 
@@ -561,9 +537,7 @@ fn validate_frame_header_prefix_fixture_exits_zero() {
 #[test]
 fn inspect_json_surfaces_operating_point_set() {
     let path = fixture("operating-point-set.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
     let ops = records
         .iter()
@@ -582,9 +556,7 @@ fn inspect_json_surfaces_operating_point_set() {
 #[test]
 fn inspect_json_surfaces_buffer_removal_timing() {
     let path = fixture("buffer-removal-timing.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
     let brt = records
         .iter()
@@ -602,9 +574,7 @@ fn inspect_json_surfaces_buffer_removal_timing() {
 #[test]
 fn inspect_json_surfaces_quantizer_matrix() {
     let path = fixture("quantizer-matrix.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
     let qm = records
         .iter()
@@ -623,9 +593,7 @@ fn inspect_json_surfaces_quantizer_matrix() {
 #[test]
 fn inspect_json_surfaces_padding() {
     let path = fixture("padding.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
     let padding = records
         .iter()
@@ -641,9 +609,7 @@ fn inspect_json_surfaces_padding() {
 #[test]
 fn inspect_json_surfaces_metadata_short() {
     let path = fixture("metadata-short.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
     let metadata = records
         .iter()
@@ -662,9 +628,7 @@ fn inspect_json_surfaces_metadata_short() {
 #[test]
 fn inspect_json_surfaces_metadata_group() {
     let path = fixture("metadata-group.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
     let metadata = records
         .iter()
@@ -683,9 +647,7 @@ fn inspect_json_surfaces_metadata_group() {
 #[test]
 fn inspect_json_surfaces_film_grain() {
     let path = fixture("film-grain.av2");
-    let out = splot(&["inspect", "--json", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json = inspect_json(&path);
     let records = json.as_array().expect("inspect output is an array");
     let fg = records
         .iter()
