@@ -156,6 +156,11 @@ pub struct FrameReferenceStateView<'a> {
     /// at-most-one-valid-slot behavior — the unmodeled `RefBaseQIdx` makes a
     /// multi-valid-slot derivation an honest `UnmodeledDerivation` stop.
     pub ref_base_q_idx: Option<&'a [u32]>,
+    /// `RefCounter[ i ]` per reference slot (AV2 § 7.23), used to identify the first slot
+    /// holding each distinct frame when deriving primary-reference eligibility.
+    pub ref_counter: Option<&'a [u32]>,
+    /// Whether each reference slot stores an inter frame (`RefFrameType == INTER_FRAME`).
+    pub ref_frame_is_inter: Option<&'a [bool]>,
     /// Per-slot retained frame-level Wiener-NS filter class counts for Y/U/V. The inter
     /// `lr_params()` frame-filter dictionary uses these counts when reading the next
     /// frame's frame-level Wiener-NS match indices.
@@ -169,19 +174,23 @@ pub struct FrameReferenceStateView<'a> {
 }
 
 impl<'a> FrameReferenceStateView<'a> {
+    const UNKNOWN: Self = Self {
+        ref_valid: None,
+        ref_order_hint: None,
+        ref_frame_width: None,
+        ref_frame_height: None,
+        ref_base_q_idx: None,
+        ref_counter: None,
+        ref_frame_is_inter: None,
+        lr_frame_filter_class_counts: None,
+        lr_frame_filter_taps: None,
+    };
+
     /// A fully-unknown reference state (passed when the caller models no reference
     /// buffer for this layer).
     #[must_use]
     pub const fn unknown() -> Self {
-        Self {
-            ref_valid: None,
-            ref_order_hint: None,
-            ref_frame_width: None,
-            ref_frame_height: None,
-            ref_base_q_idx: None,
-            lr_frame_filter_class_counts: None,
-            lr_frame_filter_taps: None,
-        }
+        Self::UNKNOWN
     }
 
     /// Builds a reference state from the caller's modeled `RefValid[]` / `RefOrderHint[]`
@@ -237,6 +246,19 @@ impl<'a> FrameReferenceStateView<'a> {
             Self::from_slots(ref_valid, ref_order_hint, ref_frame_width, ref_frame_height);
         view.ref_base_q_idx = Some(ref_base_q_idx);
         view
+    }
+
+    /// Attaches the remaining § 7.23 state needed to determine whether a primary-reference
+    /// candidate exists.
+    #[must_use]
+    pub const fn with_primary_reference_state(
+        mut self,
+        ref_counter: &'a [u32],
+        ref_frame_is_inter: &'a [bool],
+    ) -> Self {
+        self.ref_counter = Some(ref_counter);
+        self.ref_frame_is_inter = Some(ref_frame_is_inter);
+        self
     }
 
     /// Attaches the per-slot retained frame-level Wiener-NS filter TAPS.

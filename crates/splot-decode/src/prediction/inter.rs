@@ -894,6 +894,7 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
     pub(crate) ref_frame_width: Vec<u32>,
     pub(crate) ref_frame_height: Vec<u32>,
     pub(crate) ref_base_q_idx: Vec<u32>,
+    pub(crate) ref_counter: Vec<u32>,
     pub(crate) ref_delta_q_u_ac: Vec<i32>,
     pub(crate) ref_delta_q_v_ac: Vec<i32>,
     pub(crate) ref_is_inter: Vec<bool>,
@@ -916,6 +917,7 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             ref_frame_width: Vec::new(),
             ref_frame_height: Vec::new(),
             ref_base_q_idx: Vec::new(),
+            ref_counter: Vec::new(),
             ref_delta_q_u_ac: Vec::new(),
             ref_delta_q_v_ac: Vec::new(),
             ref_is_inter: Vec::new(),
@@ -940,6 +942,7 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             ref_frame_width: metadata.ref_frame_width,
             ref_frame_height: metadata.ref_frame_height,
             ref_base_q_idx: metadata.ref_base_q_idx,
+            ref_counter: metadata.ref_counter,
             ref_delta_q_u_ac: metadata.ref_delta_q_u_ac,
             ref_delta_q_v_ac: metadata.ref_delta_q_v_ac,
             ref_is_inter: metadata.ref_is_inter,
@@ -998,6 +1001,7 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             &self.ref_frame_height,
             &self.ref_base_q_idx,
         )
+        .with_primary_reference_state(&self.ref_counter, &self.ref_is_inter)
         .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
         .with_lr_frame_filter_taps(&self.lr_frame_filter_taps)
     }
