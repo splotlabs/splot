@@ -10,6 +10,7 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
+use splot_core::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use splot_core::span::ByteOffset;
 use splot_core::stream::{
     ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame, parse_bitstream_partial,
@@ -24,7 +25,10 @@ use super::block::{
     tip_allowed_for_block_indices,
 };
 use super::test_support::fixture_sequence_and_key_core;
-use super::{compound_is_joint_context, compound_is_joint_context_from_order_hints};
+use super::{
+    compound_is_joint_context, compound_is_joint_context_from_order_hints,
+    inter_segmentation_supported,
+};
 use crate::bitstream::tile_payload::{
     LumaCoeffBlock, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
 };
@@ -37,6 +41,23 @@ use crate::{
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
+
+#[test]
+fn inter_segmentation_admits_only_current_alt_q_maps() {
+    let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+    features[7][0] = SegmentFeature {
+        enabled: true,
+        data: 11,
+    };
+    assert!(inter_segmentation_supported(true, true, false, &features));
+    assert!(!inter_segmentation_supported(true, false, false, &features));
+    assert!(!inter_segmentation_supported(true, true, true, &features));
+    features[7][1] = SegmentFeature {
+        enabled: true,
+        data: 0,
+    };
+    assert!(!inter_segmentation_supported(true, true, false, &features));
+}
 
 const TWO_FRAME_INTER_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64-10bit.ivf"

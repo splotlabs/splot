@@ -497,7 +497,7 @@ fn chroma_smooth_grid_dimensions(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn read_intra_segment_id(
+fn read_segment_id(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     segment_id_state: &TileSegmentIdState,
@@ -549,7 +549,21 @@ fn read_intra_segment_id(
         i64::from(pred),
         i64::from(seg.last_active_seg_id) + 1,
     );
-    Ok(u8::try_from(segment_id.clamp(0, i64::from(u8::MAX))).unwrap_or(0))
+    validate_segment_id(segment_id, seg.last_active_seg_id, tile_offset)
+}
+
+fn validate_segment_id(segment_id: i64, last_active: u8, tile_offset: ByteOffset) -> Result<u8> {
+    u8::try_from(segment_id)
+        .ok()
+        .filter(|&id| id <= last_active)
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_segment_id_out_of_range",
+                tile_offset,
+                "inter.segment_id out of range",
+                "5.20.5.8"
+            )
+        })
 }
 
 pub(super) const fn segment_neighbour_availability(
@@ -784,7 +798,7 @@ fn decode_block<T: ReconSample>(
         );
         if !frontier.is_chroma_part() {
             if seg_pre_skip {
-                segment_id = read_intra_segment_id(
+                segment_id = read_segment_id(
                     work_unit,
                     symbols,
                     segment_id_state,
@@ -805,7 +819,7 @@ fn decode_block<T: ReconSample>(
                 tile_offset,
             )?;
             if !seg_pre_skip {
-                segment_id = read_intra_segment_id(
+                segment_id = read_segment_id(
                     work_unit,
                     symbols,
                     segment_id_state,
@@ -1035,6 +1049,24 @@ fn decode_block<T: ReconSample>(
         ));
     }
 
+    let segment_id = if frontier.is_chroma_part() {
+        segment_id_state.cell(frontier.r, frontier.c).unwrap_or(0)
+    } else {
+        let segment_id = read_segment_id(
+            work_unit,
+            symbols,
+            segment_id_state,
+            sequence,
+            core,
+            frontier,
+            skip == 1,
+            tile_offset,
+        )?;
+        segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
+        segment_id
+    };
+    let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
+
     cdef_state.read_for_block(
         work_unit,
         symbols,
@@ -1047,7 +1079,12 @@ fn decode_block<T: ReconSample>(
     )?;
     ccso_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     delta_q_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
-    let block_qindex = delta_q_state.qindex_u32();
+    let block_qindex = segment_block_qindex(
+        sequence,
+        core,
+        usize::from(segment_id),
+        delta_q_state.qindex_u32(),
+    );
     if skip_mode == 1 {
         return compound_path::decode_skip_mode_inter_block(
             work_unit,
@@ -1368,7 +1405,7 @@ fn decode_block<T: ReconSample>(
             sequence.general.chroma_format_idc,
             residual.as_ref(),
             None,
-            delta_q_state.qindex_u32(),
+            block_qindex,
             current_residual_lossless(work_unit),
             tile_offset,
         )?;
@@ -1713,7 +1750,7 @@ fn decode_block<T: ReconSample>(
         sequence.general.chroma_format_idc,
         residual.as_ref(),
         tip_ref.then_some(if tip_uses_16x16_units { 16 } else { 8 }),
-        delta_q_state.qindex_u32(),
+        block_qindex,
         current_residual_lossless(work_unit),
         tile_offset,
     )?;
