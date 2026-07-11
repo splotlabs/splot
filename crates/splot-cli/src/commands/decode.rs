@@ -170,26 +170,6 @@ fn render_text_diagnostic(report: &DecodeDiagnosticReport, output_format: Decode
             eprintln!("output_source_kind: {}", details.source_kind);
             eprintln!("output_source_message: {}", details.source_message);
         }
-        DecodeDiagnosticDetails::RuntimeUnsupported(summary) => {
-            eprintln!("detail_kind: runtime_unsupported");
-            eprintln!("bitstream_format: {}", summary.bitstream_format);
-            eprintln!("input_len_bytes: {}", summary.input_len_bytes);
-            eprintln!("obu_count: {}", summary.obu_count);
-            eprintln!("frame_candidate_count: {}", summary.frame_candidate_count);
-            eprintln!("source_warning_count: {}", summary.source_warning_count);
-            eprintln!(
-                "selected_temporal_layer_id: {}",
-                summary.selected_temporal_layer_id
-            );
-            eprintln!(
-                "selected_embedded_layer_id: {}",
-                summary.selected_embedded_layer_id
-            );
-            eprintln!(
-                "selected_extended_layer_id: {}",
-                summary.selected_extended_layer_id
-            );
-        }
         _ => {
             eprintln!("detail_kind: unknown");
         }
@@ -250,22 +230,6 @@ struct DecodeDiagnosticJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     obu_type: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    bitstream_format: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    input_len_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    obu_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    frame_candidate_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_warning_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    selected_temporal_layer_id: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    selected_embedded_layer_id: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    selected_extended_layer_id: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     byte_offset: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bit_offset: Option<u64>,
@@ -296,14 +260,6 @@ impl<'a> DecodeDiagnosticJson<'a> {
             output_source_kind: None,
             output_source_message: None,
             obu_type: None,
-            bitstream_format: None,
-            input_len_bytes: None,
-            obu_count: None,
-            frame_candidate_count: None,
-            source_warning_count: None,
-            selected_temporal_layer_id: None,
-            selected_embedded_layer_id: None,
-            selected_extended_layer_id: None,
             byte_offset: None,
             bit_offset: None,
             ivf_frame_index: None,
@@ -343,17 +299,6 @@ impl<'a> DecodeDiagnosticJson<'a> {
                 json.output_operation = Some(details.operation);
                 json.output_source_kind = Some(details.source_kind);
                 json.output_source_message = Some(&details.source_message);
-            }
-            DecodeDiagnosticDetails::RuntimeUnsupported(summary) => {
-                json.detail_kind = "runtime_unsupported";
-                json.bitstream_format = Some(summary.bitstream_format);
-                json.input_len_bytes = Some(summary.input_len_bytes);
-                json.obu_count = Some(summary.obu_count);
-                json.frame_candidate_count = Some(summary.frame_candidate_count);
-                json.source_warning_count = Some(summary.source_warning_count);
-                json.selected_temporal_layer_id = Some(summary.selected_temporal_layer_id);
-                json.selected_embedded_layer_id = Some(summary.selected_embedded_layer_id);
-                json.selected_extended_layer_id = Some(summary.selected_extended_layer_id);
             }
             _ => {
                 json.detail_kind = "unknown";

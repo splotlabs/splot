@@ -622,43 +622,6 @@ fn non_increasing_mi_grid_ranges_are_invalid() {
 }
 
 #[test]
-fn boundary_is_deterministic_through_decode_context_worker_pool() {
-    let payload = [0x80, 0x00];
-    let framing = one_tile_framing(&payload);
-    let runtimes = [
-        DecodeRuntimeConfig::default(),
-        DecodeRuntimeConfig::new(splot_parallel::ThreadCount::from(1)),
-        DecodeRuntimeConfig::new(splot_parallel::ThreadCount::from(3)),
-    ];
-
-    let plans = runtimes.map(|runtime| {
-        let ctx = DecodeContext::new(runtime).unwrap();
-        ctx.plan_tile_payload_boundary(&input(&payload, &framing, DecodeLimits::unlimited()))
-            .unwrap()
-    });
-
-    assert_eq!(plans[0], plans[1]);
-    assert_eq!(plans[1], plans[2]);
-    assert_eq!(plans[0].work_units()[0].tile_bytes(), &payload);
-}
-
-#[test]
-fn decode_context_tile_payload_handoff_preserves_limit_errors() {
-    let payload = [0x80, 0x00];
-    let framing = one_tile_framing(&payload);
-    let ctx = DecodeContext::new(DecodeRuntimeConfig::default()).unwrap();
-    let limits = DecodeLimits::unlimited().with_max_tile_payload_bytes(MAX(1));
-
-    let error = ctx
-        .plan_tile_payload_boundary(&input(&payload, &framing, limits))
-        .unwrap_err();
-    let limit = limit_error(&error);
-
-    assert_eq!(limit.name(), DecodeLimitName::MaxTilePayloadBytes);
-    assert_eq!(limit.actual(), Some(2));
-}
-
-#[test]
 fn arbitrary_small_inputs_do_not_panic() {
     for len in 0..=8usize {
         let payload = vec![0x80; len];

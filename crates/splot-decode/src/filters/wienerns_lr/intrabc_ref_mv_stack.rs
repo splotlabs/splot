@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! AV2 § 7.12.2 IntrABC (IBC) reference-block-vector stack derivation for the
-//! frontier decoder frontier.
+//! decoder.
 //!
 //! For an IntrABC block (`use_intrabc == 1`, single prediction, reference frame
 //! `INTRA_FRAME`), AV2 § 7.12.2 Find MV stack process builds `RefStackMv` in this
@@ -29,9 +29,9 @@
 //! decoded IntrABC block's block vector within the row, gated by the per-unit
 //! "remain hits" budget (`decide_rmb_unit_update_count`, `mvref_common.c:4589`).
 //!
-//! This module models the bank + default-BVP fill exactly, and DEFERS (returns no
-//! admissible stack) when the spatial scan could contribute a candidate, so a
-//! wrong block vector is never produced.
+//! This module models the spatial scan, bank fill, and default-BVP fill, and
+//! DEFERS (returns no admissible stack) only when `ref_mv_idx` selects beyond
+//! the derived stack.
 
 use crate::prediction::inter::Mv;
 
@@ -238,7 +238,6 @@ pub(crate) struct WeightedBv {
 pub(crate) struct SpatialIntrabcScan {
     pub(crate) candidates: Vec<WeightedBv>,
     pub(crate) nearest_len: usize,
-    pub(crate) defer: bool,
 }
 
 pub(crate) fn spatial_intrabc_scan_with_base_col(
@@ -325,7 +324,6 @@ pub(crate) fn spatial_intrabc_scan_with_base_col(
     SpatialIntrabcScan {
         candidates,
         nearest_len,
-        defer: false,
     }
 }
 
@@ -683,9 +681,6 @@ pub(crate) fn intrabc_ref_stack_admission(
     drl_reorder: DrlReorderMode,
     ref_mv_idx: usize,
 ) -> IntrabcStackAdmission {
-    if spatial.defer {
-        return IntrabcStackAdmission::Defer;
-    }
     let mut ordered: Vec<WeightedBv> = spatial.candidates.clone();
     let nearest_len = spatial.nearest_len.min(ordered.len());
     if drl_reorder.use_sort(nearest_len) && nearest_len > 1 {

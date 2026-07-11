@@ -228,7 +228,7 @@ pub enum DecodePlannedObuRole {
     Global,
     /// State OBU for the selected base layer.
     SelectedLayerState,
-    /// Closed-loop-key frame candidate for a future decode stage (AV2 § 5.2.1
+    /// Closed-loop-key frame candidate for the decode stage (AV2 § 5.2.1
     /// `OBU_CLOSED_LOOP_KEY`).
     FrameCandidate,
     /// Inter frame candidate carried in an `OBU_REGULAR_TILE_GROUP` (AV2 § 5.2.1,
@@ -240,7 +240,7 @@ pub enum DecodePlannedObuRole {
     /// so a frame split across multiple tile groups (§ 5.19 continuation,
     /// `tg_start`..`tg_end`) is over-counted by `frame_candidate_count` — only the
     /// first tile group of a frame starts a new frame. See the `classify_obu` TODO;
-    /// the minimal-tier's one-tile-group shape gate masks this today.
+    /// the runtime's one-tile-group shape gate masks this today.
     InterFrameCandidate,
 }
 
@@ -496,7 +496,7 @@ pub struct DecodeUnsupportedStructure {
 }
 
 impl DecodeUnsupportedStructure {
-    /// Stable decoder diagnostic rule id for future diagnostic adaptation.
+    /// Stable decoder diagnostic rule id for diagnostic adaptation.
     #[must_use]
     pub const fn rule_id(&self) -> &'static str {
         UNSUPPORTED_FEATURE_RULE_ID
@@ -812,7 +812,7 @@ fn classify_obu(
         // continuations, not new frames. Distinguishing them needs the tile-group
         // structure (`tg_start`), which is not parsed at planner classification, so
         // `frame_candidate_count` would over-count a multi-tile-group frame. This is
-        // masked today by the minimal-tier's strict one-`OBU_REGULAR_TILE_GROUP`
+        // masked today by the runtime's strict one-`OBU_REGULAR_TILE_GROUP`
         // shape gate (`ensure_multiframe_plan_shape`); refine when multi-tile-group
         // inter frames are supported.
         ObuType::RegularTileGroup | ObuType::RegularTip => {

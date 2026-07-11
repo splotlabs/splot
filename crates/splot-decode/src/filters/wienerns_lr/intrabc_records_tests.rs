@@ -510,7 +510,6 @@ fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
             weight: 0,
         }]
     );
-    assert!(!scan.defer);
 
     let mut interior = TileIntrabcPreludeState::new(64, 64, &sequence, no_off()).unwrap();
     interior
@@ -520,7 +519,6 @@ fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
         IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 56, BLOCK_16X16, false), 8, 16);
     let control = interior.spatial_intrabc_scan(at_interior);
     assert!(control.candidates.is_empty());
-    assert!(!control.defer);
 }
 
 #[test]

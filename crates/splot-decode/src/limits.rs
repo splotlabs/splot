@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Source-backed runtime resource-limit API for future decode planning.
+//! Source-backed resource-limit API for decode planning and runtime.
 //!
 //! Feature tracking: `DECODE-LIMITS-RUNTIME-API`.
 
@@ -100,7 +100,7 @@ impl Default for DecodeOptions {
     }
 }
 
-/// Caller-provided resource limits for future decode planning.
+/// Caller-provided resource limits for decode planning and runtime.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLimits {

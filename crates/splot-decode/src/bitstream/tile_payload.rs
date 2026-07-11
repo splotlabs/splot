@@ -830,7 +830,7 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         return Err(unsupported_boundary_without_tile(
             TilePayloadUnsupportedReason::MissingCompleteIntraFirstTileGroup,
             input.payload_base,
-            "tile payload planning requires a complete first tile group in the minimal tier.",
+            "tile payload planning requires a complete first tile group.",
         ));
     }
     if !input.frame.is_last_tile_group {

@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! `splot-decode` - scaffold for the future AV2 decode driver.
+//! `splot-decode` - the AV2 decode driver.
 //!
-//! This crate will coordinate parsed AV2 bitstream facts from `splot-core` with
-//! reconstruction and output state from `splot-recon`. It owns the current
-//! structured `decode/unsupported-feature` diagnostic API plus local
-//! resource-limit policy types, plus a bounded, plan-only raw byte stream
-//! planner. It also exposes a [`DecodeContext`]/[`DecodeRuntimeConfig`]
-//! worker-pool scaffold that owns a [`splot_parallel::WorkerPool`]. The stream
-//! planners consume either bounded raw bytes or already parsed `splot-core`
-//! stream facts, while the runtime adapters expose only the documented minimal
-//! hash, raw, and Y4M byte-output tier.
+//! This crate coordinates parsed AV2 bitstream facts from `splot-core` with
+//! reconstruction and output state from `splot-recon`. It owns the structured
+//! `decode/unsupported-feature` diagnostic API, local resource-limit policy
+//! types, and a bounded raw byte stream planner. It also exposes a
+//! [`DecodeContext`]/[`DecodeRuntimeConfig`] pair that owns a
+//! [`splot_parallel::WorkerPool`]. The stream planners consume either bounded
+//! raw bytes or already parsed `splot-core` stream facts; the runtime decodes
+//! planned streams to hash, raw, and Y4M byte output.
 //!
 //! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
 //! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`, `DECODE-LIMITS-RUNTIME-API`,
@@ -51,9 +50,8 @@ pub use bitstream::stream_plan;
 pub use context::DecodeContext;
 pub use diagnostic::{
     DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeMalformedSourceDetails,
-    DecodeOutputErrorDetails, DecodePlanSummary, DecodeResourceLimitDetails,
-    DecodeUnsupportedStructureDetails, MALFORMED_SOURCE_RULE_ID, OUTPUT_ERROR_RULE_ID,
-    RESOURCE_LIMIT_RULE_ID,
+    DecodeOutputErrorDetails, DecodeResourceLimitDetails, DecodeUnsupportedStructureDetails,
+    MALFORMED_SOURCE_RULE_ID, OUTPUT_ERROR_RULE_ID, RESOURCE_LIMIT_RULE_ID,
 };
 pub use error::{DecodeError, DecodeReferenceStateError, Result};
 pub use error::{DecodeOutputError, DecodeOutputOperation, DecodeUnsupportedFeature};
@@ -119,26 +117,6 @@ pub struct DecodeDiagnostic {
     pub spec_section: Option<&'static str>,
     /// Human-readable diagnostic message.
     pub message: &'static str,
-}
-
-/// Current unsupported diagnostic descriptor for `splot decode`.
-///
-/// The descriptor cites AV2 §7.1 as context for the unimplemented decoding
-/// process, while keeping `cli-decode-entrypoint` intentionally unsupported.
-pub const UNSUPPORTED_FEATURE_DIAGNOSTIC: DecodeDiagnostic = DecodeDiagnostic {
-    rule_id: UNSUPPORTED_FEATURE_RULE_ID,
-    severity: DecodeSeverity::Error,
-    spec_section: Some("7.1"),
-    message: "Byte stream planning succeeded, but `splot decode` runtime output is not implemented yet.",
-};
-
-/// Returns the current unsupported diagnostic for `splot decode`.
-///
-/// This function is intentionally metadata-only: it does not allocate decoded
-/// frames, write output paths, or invoke external decoders.
-#[must_use]
-pub const fn unsupported_feature_diagnostic() -> DecodeDiagnostic {
-    UNSUPPORTED_FEATURE_DIAGNOSTIC
 }
 
 #[cfg(test)]

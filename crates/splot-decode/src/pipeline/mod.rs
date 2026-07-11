@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Decode pipeline orchestration for the currently supported decoder tiers.
+//! Decode pipeline orchestration for the supported decode runtime.
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
@@ -142,7 +142,7 @@ impl<'a> RuntimeStream<'a> {
                     unsupported(
                         "missing_first_ivf_frame",
                         None,
-                        "minimal tier requires at least one IVF frame",
+                        "decode runtime requires at least one IVF frame",
                     )
                 }),
         }
@@ -299,7 +299,7 @@ pub(crate) fn decode_frame_from_plan(
         return Err(unsupported(
             "missing_decoded_frame",
             None,
-            "minimal tier requires at least one decoded frame",
+            "decode runtime requires at least one decoded frame",
         ));
     }
     Ok(frames.swap_remove(0))
@@ -411,7 +411,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
         unsupported(
             "missing_frame_candidate",
             None,
-            "minimal tier requires one selected key frame candidate",
+            "decode runtime requires one selected key frame candidate",
         )
     })?;
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
@@ -420,7 +420,7 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
         unsupported(
             "missing_sequence_inter_config",
             None,
-            "minimal multi-frame decode requires the sequence inter config (NumRefFrames)",
+            "multi-frame decode requires the sequence inter config (NumRefFrames)",
         )
     })?;
     let num_ref_frames = usize::from(sequence_inter.num_ref_frames);
@@ -775,9 +775,9 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
             }
             _ => {
                 return Err(unsupported_at(
-                    "multiple_frames_unimplemented",
+                    "non_frame_candidate_in_frame_loop",
                     next_candidate.offset(),
-                    missing_capability_message!("frame.sequence key_plus_inter"),
+                    "internal invariant violation: non-frame-candidate obu reached the frame decode loop",
                 ));
             }
         }
@@ -853,7 +853,7 @@ fn require_runtime_stream<'a>(parsed: &'a ParsedBitstream<'a>) -> Result<Runtime
                 return Err(unsupported(
                     "empty_annex_b_input",
                     None,
-                    "minimal tier requires at least one Annex B OBU",
+                    "decode runtime requires at least one Annex B OBU",
                 ));
             }
             Ok(RuntimeStream::AnnexB {
@@ -1421,7 +1421,7 @@ fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<()> {
         return Err(unsupported(
             "unsupported_frame_candidate_count",
             None,
-            "minimal tier requires at least one selected key frame candidate",
+            "decode runtime requires at least one selected key frame candidate",
         ));
     }
     if plan.obu_count() >= 3 {
@@ -1430,7 +1430,7 @@ fn ensure_multiframe_plan_shape(plan: &DecodeStreamPlan) -> Result<()> {
         Err(unsupported(
             "unexpected_planned_stream_shape",
             None,
-            "minimal tier requires a leading [TD, SEQ, CLK] frame unit",
+            "decode runtime requires a leading [TD, SEQ, CLK] frame unit",
         ))
     }
 }
@@ -1439,7 +1439,7 @@ fn require_multiframe_ivf(ivf: &ParsedIvfBitstream<'_>) -> Result<IvfHeader> {
         return Err(unsupported(
             "missing_ivf_header",
             None,
-            "minimal tier requires a complete IVF header",
+            "decode runtime requires a complete IVF header",
         ));
     };
     let parsed_frame_count = ivf.frames.len() as u64;
@@ -1607,7 +1607,7 @@ fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUn
         return Err(unsupported(
             "unexpected_obu_order",
             None,
-            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, optional film-grain state, and closed-loop-key OBU",
+            "decode runtime requires a leading temporal delimiter, optional operating-point metadata, sequence header, optional film-grain state, and closed-loop-key OBU",
         ));
     }
     let mut sequence_index = 1usize;
@@ -1621,7 +1621,7 @@ fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUn
         unsupported(
             "unexpected_obu_order",
             None,
-            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, optional film-grain state, and closed-loop-key OBU",
+            "decode runtime requires a leading temporal delimiter, optional operating-point metadata, sequence header, optional film-grain state, and closed-loop-key OBU",
         )
     })?;
     let mut frame_index = frame_index;
@@ -1635,7 +1635,7 @@ fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUn
         return Err(unsupported(
             "unexpected_obu_order",
             None,
-            "minimal tier requires a leading temporal delimiter, optional operating-point metadata, sequence header, optional film-grain state, and closed-loop-key OBU",
+            "decode runtime requires a leading temporal delimiter, optional operating-point metadata, sequence header, optional film-grain state, and closed-loop-key OBU",
         ));
     }
     Ok(MinimalFrameUnitIndices {
@@ -1684,7 +1684,7 @@ pub(crate) fn parse_sequence(envelope: ObuEnvelope<'_>) -> Result<SequenceHeader
         unsupported_at(
             "sequence_header_parse",
             envelope.offset,
-            "minimal tier requires a fully parseable sequence header",
+            "decode runtime requires a fully parseable sequence header",
         )
     })
 }
@@ -1695,35 +1695,35 @@ fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -> Result<()
         return Err(unsupported_at(
             "sequence_header_not_fully_parsed",
             offset,
-            "minimal tier requires a fully parsed sequence header",
+            "decode runtime requires a fully parsed sequence header",
         ));
     }
     if !supported_profile_chroma(general.seq_profile_idc.get(), general.chroma_format_idc) {
         return Err(unsupported_at(
             "unsupported_profile",
             offset,
-            "minimal tier requires a supported Annex A profile/chroma combination",
+            "decode runtime requires a supported Annex A profile/chroma combination",
         ));
     }
     if general.max_tlayer_id.get() != 0 || general.max_mlayer_id.get() != 0 {
         return Err(unsupported_at(
             "non_base_layer_sequence",
             offset,
-            "minimal tier requires a single base temporal and embedded layer",
+            "decode runtime requires a single base temporal and embedded layer",
         ));
     }
     if general.seq_cropping_window_present_flag {
         return Err(unsupported_at(
             "crop_window_present",
             offset,
-            "minimal tier does not support sequence crop windows",
+            "decode runtime does not support sequence crop windows",
         ));
     }
     if sequence.intra.is_none() {
         return Err(unsupported_at(
             "missing_sequence_intra_config",
             offset,
-            "minimal tier requires a fully parsed sequence intra config",
+            "decode runtime requires a fully parsed sequence intra config",
         ));
     }
     Ok(())
@@ -1781,14 +1781,14 @@ pub(crate) fn parse_frame_core(
         unsupported_at(
             "tile_group_prefix_parse",
             envelope.offset,
-            "minimal tier requires a parseable first tile-group prefix",
+            "decode runtime requires a parseable first tile-group prefix",
         )
     })? != 0;
     if !is_first_tile_group {
         return Err(unsupported_at(
             "non_first_tile_group",
             envelope.offset,
-            "minimal tier requires the frame header in the first tile group",
+            "decode runtime requires the frame header in the first tile group",
         ));
     }
     let input = FrameHeaderParseInput {
@@ -1803,7 +1803,7 @@ pub(crate) fn parse_frame_core(
         unsupported_at(
             "frame_header_parse",
             envelope.offset,
-            "minimal tier requires a fully parseable closed-loop-key frame header",
+            "decode runtime requires a fully parseable closed-loop-key frame header",
         )
     })
 }
@@ -1820,21 +1820,21 @@ pub(crate) fn frame_ref_update_from_core(
         unsupported_at(
             "missing_refresh_frame_flags",
             offset,
-            "minimal multi-frame decode requires a parsed refresh_frame_flags for the §7.23 update",
+            "multi-frame decode requires a parsed refresh_frame_flags for the §7.23 update",
         )
     })?;
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_at(
             "missing_frame_size_for_ref_update",
             offset,
-            "minimal multi-frame decode requires a parsed frame size for the §7.23 update",
+            "multi-frame decode requires a parsed frame size for the §7.23 update",
         )
     })?;
     let quantization = core.quantization_params.ok_or_else(|| {
         unsupported_at(
             "missing_base_q_for_ref_update",
             offset,
-            "minimal multi-frame decode requires a parsed base_q_idx for the §7.23 update",
+            "multi-frame decode requires a parsed base_q_idx for the §7.23 update",
         )
     })?;
     let is_inter = core.frame_type == Some(FrameType::Inter);
@@ -1921,7 +1921,7 @@ pub(crate) fn incomplete_intra_header_error(
         _ => unsupported_at(
             "incomplete_frame_header",
             offset,
-            "minimal tier requires a complete intra frame header",
+            "decode runtime requires a complete intra frame header",
         ),
     }
 }
@@ -1970,7 +1970,7 @@ fn derive_tile_plan_with<'a>(
         unsupported_at(
             "missing_tq_entropy_config",
             envelope.offset,
-            "minimal tier requires sequence transform/quant/entropy config",
+            "decode runtime requires sequence transform/quant/entropy config",
         )
     })?;
     let coeff = FrameCandidateCoeffFacts::from_tq(tq);
@@ -2049,18 +2049,18 @@ fn decode_tile_boundary_error(error: FrameCandidateTileBoundaryError) -> DecodeE
         FrameCandidateTileBoundaryError::Malformed(malformed) => unsupported(
             malformed_tile_boundary_reason(malformed),
             None,
-            "minimal tier could not derive a source-backed tile payload boundary",
+            "decode runtime could not derive a source-backed tile payload boundary",
         ),
         FrameCandidateTileBoundaryError::MissingFact { .. } => unsupported(
             "missing_tile_fact",
             None,
-            "minimal tier requires complete parser-derived tile facts",
+            "decode runtime requires complete parser-derived tile facts",
         ),
         FrameCandidateTileBoundaryError::Unsupported { .. }
         | FrameCandidateTileBoundaryError::Boundary(_) => unsupported(
             "unsupported_tile_boundary",
             None,
-            "minimal tier requires source-backed tile work units",
+            "decode runtime requires source-backed tile work units",
         ),
     }
 }

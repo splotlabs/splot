@@ -421,8 +421,4 @@ fn limit_errors_are_local_and_not_decoder_diagnostics() {
         core::any::type_name::<DecodeLimitError>(),
         core::any::type_name::<crate::DecodeDiagnostic>()
     );
-    assert_eq!(
-        crate::unsupported_feature_diagnostic(),
-        crate::UNSUPPORTED_FEATURE_DIAGNOSTIC
-    );
 }

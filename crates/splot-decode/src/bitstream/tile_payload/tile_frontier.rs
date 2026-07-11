@@ -36,27 +36,27 @@ const BLOCK_256X256_INDEX: usize = 18;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TilePartitionFrontierError {
-    #[error("minimal-tier partition frontier missing fact: {fact}")]
+    #[error("partition frontier missing fact: {fact}")]
     MissingFact { fact: &'static str },
-    #[error("minimal-tier partition frontier limit failed: {0}")]
+    #[error("partition frontier limit failed: {0}")]
     Limit(#[from] DecodeLimitError),
-    #[error("minimal-tier partition traversal failed: {0}")]
+    #[error("partition traversal failed: {0}")]
     Traversal(#[from] TilePartitionTraversalError),
-    #[error("minimal-tier MI-size state failed: {0}")]
+    #[error("MI-size state failed: {0}")]
     MiSizeState(#[from] TileMiSizeStateError),
-    #[error("minimal-tier intra joint-mode state failed: {0}")]
+    #[error("intra joint-mode state failed: {0}")]
     IntraJointModeState(#[from] TileIntraJointModeStateError),
-    #[error("minimal-tier intra UsesMrls state failed: {0}")]
+    #[error("intra UsesMrls state failed: {0}")]
     UsesMrlsState(#[from] TileUsesMrlsStateError),
-    #[error("minimal-tier intra UseDip state failed: {0}")]
+    #[error("intra UseDip state failed: {0}")]
     UseDipState(#[from] TileUseDipStateError),
-    #[error("minimal-tier intra FscModes state failed: {0}")]
+    #[error("intra FscModes state failed: {0}")]
     FscModeState(#[from] TileFscModeStateError),
-    #[error("minimal-tier luma palette state failed: {0}")]
+    #[error("luma palette state failed: {0}")]
     LumaPaletteState(#[from] TileLumaPaletteStateError),
-    #[error("minimal-tier intra UVCfls state failed: {0}")]
+    #[error("intra UVCfls state failed: {0}")]
     UvCflState(#[from] TileUvCflStateError),
-    #[error("minimal-tier partition frontier mismatch: {reason}")]
+    #[error("partition frontier mismatch: {reason}")]
     UnexpectedFrontier { reason: &'static str },
 }
 
