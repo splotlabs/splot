@@ -876,7 +876,7 @@ fn root_lr_frontier_reports_active_frame_level_wiener_ns_unit() {
             active: true,
         }]
     );
-    assert_eq!(root.active_source_blocks().len(), 4096);
+    assert_eq!(root.active_source_blocks().len(), 64);
     assert_eq!(
         root.active_source_blocks()[0],
         WienerNsLrSourceBlock {
@@ -891,7 +891,7 @@ fn root_lr_frontier_reports_active_frame_level_wiener_ns_unit() {
             tile_mi_col_end: 64,
             x: 0,
             y: 0,
-            width: 4,
+            width: 256,
             height: 4,
             luma_start_x: 0,
             luma_end_x: 255,
@@ -925,7 +925,7 @@ fn root_lr_frontier_reports_active_frame_level_pc_wiener_unit() {
             active: true,
         }]
     );
-    assert_eq!(root.active_source_blocks().len(), 4096);
+    assert_eq!(root.active_source_blocks().len(), 64);
     assert!(!root.all_lr_units_inactive());
 }
 
@@ -968,7 +968,7 @@ fn active_lr_source_blocks_track_stripe_bounds() {
 
     let root = root_lr_frontier(&mut work_unit, facts).unwrap();
 
-    assert_eq!(root.active_source_blocks().len(), 4096);
+    assert_eq!(root.active_source_blocks().len(), 64);
     let second_stripe = root
         .active_source_blocks()
         .iter()
@@ -989,7 +989,7 @@ fn active_lr_source_bounds_clamp_to_tile_when_loopfilters_across_tiles_disabled(
 
     let root = root_lr_frontier(&mut work_unit, facts).unwrap();
 
-    assert_eq!(root.active_source_blocks().len(), 1024);
+    assert_eq!(root.active_source_blocks().len(), 32);
     assert_eq!(root.active_source_blocks()[0].luma_end_x, 127);
     assert_eq!(root.active_source_blocks()[0].luma_end_y, 127);
 }

@@ -51,6 +51,30 @@ pub(crate) struct WienerNsLrSourceBlock {
     pub(crate) luma_stripe_end_y: usize,
 }
 
+impl WienerNsLrSourceBlock {
+    pub(crate) fn merged_width_with(&self, next: &Self) -> Option<usize> {
+        (self.plane == next.plane
+            && self.y == next.y
+            && self.height == next.height
+            && self.x.checked_add(self.width) == Some(next.x)
+            && self.unit_row == next.unit_row
+            && self.unit_col == next.unit_col
+            && self.tile_mi_row_start == next.tile_mi_row_start
+            && self.tile_mi_row_end == next.tile_mi_row_end
+            && self.tile_mi_col_start == next.tile_mi_col_start
+            && self.tile_mi_col_end == next.tile_mi_col_end
+            && self.luma_start_x == next.luma_start_x
+            && self.luma_end_x == next.luma_end_x
+            && self.luma_start_y == next.luma_start_y
+            && self.luma_end_y == next.luma_end_y
+            && self.frame_luma_end_y == next.frame_luma_end_y
+            && self.luma_stripe_start_y == next.luma_stripe_start_y
+            && self.luma_stripe_end_y == next.luma_stripe_end_y)
+            .then(|| self.width.checked_add(next.width))
+            .flatten()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrUnitFilter {
     pub(crate) plane: usize,
@@ -142,6 +166,12 @@ impl WienerNsLrUnitActivity {
         limits: DecodeLimits,
     ) -> Result<(), TilePartitionTraversalError> {
         if !self.retain_source_blocks {
+            return Ok(());
+        }
+        if let Some(last) = self.active_source_blocks.last_mut()
+            && let Some(width) = last.merged_width_with(&block)
+        {
+            last.width = width;
             return Ok(());
         }
         let next_len = checked_add(
