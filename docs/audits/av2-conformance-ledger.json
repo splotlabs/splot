@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "0142dbe453fa888ec9e1d3540762d06907e87759",
+  "audited_commit": "386e95a36bbff053edce41a35c4770c31a18e530",
   "outcome": "success",
   "files": [
     {
@@ -2320,7 +2320,7 @@
     },
     {
       "path": "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs",
-      "sha256": "eab46427b3ba02c7afb1920883084f3f78ca7c1a999b47104d7f28f08909c2ac",
+      "sha256": "d7f88261beb2162b00d0264b90fc8e5923ce1cc3792cef1174cbc287579829e1",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -7229,6 +7229,13 @@
     {
       "path": "tests/conformance/vectors/valid/syn-444-intra-64x64.ivf",
       "sha256": "18c8f0f5e80e0e9c3b25ce3f61296201015d8a14e6a3f897d2202d9344f7db95",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-cctx-444-intra-128x128.ivf",
+      "sha256": "4e44edfb887e1d8d6467fd8a9d3dc43ee4c7cda2ffc4f0cac2a7263e4c62518b",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"

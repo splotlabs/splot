@@ -1116,33 +1116,35 @@ fn lossless_chroma_transform_handoff_skips_cctx_read() {
 fn chroma_transform_handoff_skips_cctx_read_when_geometry_disallows() {
     let facts = frame_facts(false, false, false, true);
     let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, 1)]);
-    for (cctx_allowed, expected_cctx_type, expected_symbols) in
-        [(false, None, 0), (true, Some(1), 1)]
-    {
-        let mut cdfs = tile_cdfs();
-        let mut symbols = symbol_decoder_for_payload(&payload);
+    for (is_inter, eob) in [(false, 2), (true, 1)] {
+        for (cctx_allowed, expected_cctx_type, expected_symbols) in
+            [(false, None, 0), (true, Some(1), 1)]
+        {
+            let mut cdfs = tile_cdfs();
+            let mut symbols = symbol_decoder_for_payload(&payload);
 
-        let metadata = ensure_transform_tool_residual_handoff(
-            &mut cdfs,
-            &mut symbols,
-            TransformToolResidualInput {
-                frame_facts: facts,
-                plane: 1,
-                tx_size: TX_32X32,
-                is_inter: false,
-                lossless: false,
-                fsc_mode: false,
-                eob: 2,
-                cctx_allowed,
-                luma_transform_type_context: None,
-                active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
-                active_chroma_policy: ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
-            },
-        )
-        .unwrap();
+            let metadata = ensure_transform_tool_residual_handoff(
+                &mut cdfs,
+                &mut symbols,
+                TransformToolResidualInput {
+                    frame_facts: facts,
+                    plane: 1,
+                    tx_size: TX_32X32,
+                    is_inter,
+                    lossless: false,
+                    fsc_mode: false,
+                    eob,
+                    cctx_allowed,
+                    luma_transform_type_context: None,
+                    active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
+                    active_chroma_policy: ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
+                },
+            )
+            .unwrap();
 
-        assert_eq!(metadata.cctx_type, expected_cctx_type);
-        assert_eq!(symbols.symbol_count(), expected_symbols);
+            assert_eq!(metadata.cctx_type, expected_cctx_type);
+            assert_eq!(symbols.symbol_count(), expected_symbols);
+        }
     }
 }
 
