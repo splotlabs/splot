@@ -146,15 +146,26 @@ pub struct ExtendedSampleAspectRatio {
     pub sar_height: u32,
 }
 
-/// `Aspect_Ratio_Width[17]` (AV2 § 5.15): sample-aspect-ratio width for
-/// `ci_aspect_ratio_idc` in `0..=16`.
-const ASPECT_RATIO_WIDTH: [u32; 17] = [
-    0, 1, 12, 10, 16, 40, 24, 20, 32, 80, 18, 15, 64, 160, 4, 3, 2,
-];
-/// `Aspect_Ratio_Height[17]` (AV2 § 5.15): sample-aspect-ratio height for
-/// `ci_aspect_ratio_idc` in `0..=16`.
-const ASPECT_RATIO_HEIGHT: [u32; 17] = [
-    0, 1, 11, 11, 11, 33, 11, 11, 11, 33, 11, 11, 33, 99, 3, 2, 1,
+/// `(Aspect_Ratio_Width[i], Aspect_Ratio_Height[i])` for
+/// `ci_aspect_ratio_idc` in `0..=16` (AV2 § 5.15).
+const ASPECT_RATIOS: [(u32, u32); 17] = [
+    (0, 0),
+    (1, 1),
+    (12, 11),
+    (10, 11),
+    (16, 11),
+    (40, 33),
+    (24, 11),
+    (20, 11),
+    (32, 11),
+    (80, 33),
+    (18, 11),
+    (15, 11),
+    (64, 33),
+    (160, 99),
+    (4, 3),
+    (3, 2),
+    (2, 1),
 ];
 
 /// `ci_aspect_ratio_info_present_flag` payload (AV2 § 5.15).
@@ -184,11 +195,9 @@ impl AspectRatioInfo {
         let raw = if self.aspect_ratio_idc == 255 {
             self.extended_sar.map(|s| (s.sar_width, s.sar_height))
         } else {
-            let index = usize::from(self.aspect_ratio_idc);
-            ASPECT_RATIO_WIDTH
-                .get(index)
+            ASPECT_RATIOS
+                .get(usize::from(self.aspect_ratio_idc))
                 .copied()
-                .zip(ASPECT_RATIO_HEIGHT.get(index).copied())
         };
         raw.map(|(w, h)| normalize_sample_aspect_ratio(w, h))
     }
