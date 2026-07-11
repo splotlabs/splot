@@ -1952,9 +1952,25 @@ fn print_human(parsed: &ParsedBitstream<'_>, headers_only: bool) {
         );
     }
 
-    let obus = collect_obus(parsed);
-    println!("{} OBU(s)", obus.len());
-    for (index, obu) in obus.iter().enumerate() {
+    match parsed {
+        ParsedBitstream::AnnexB(parsed) => {
+            print_obus(parsed.obus.len(), parsed.obus.iter(), headers_only);
+        }
+        ParsedBitstream::Ivf(parsed) => {
+            let count = parsed.frames.iter().map(|frame| frame.obus.len()).sum();
+            let obus = parsed.frames.iter().flat_map(|frame| frame.obus.iter());
+            print_obus(count, obus, headers_only);
+        }
+    }
+}
+
+fn print_obus<'data>(
+    count: usize,
+    obus: impl Iterator<Item = &'data ObuEnvelope<'data>>,
+    headers_only: bool,
+) {
+    println!("{count} OBU(s)");
+    for (index, obu) in obus.enumerate() {
         let header = &obu.header;
         println!(
             "OBU #{index}  @byte {}  size={}  type={}({})  ext={}  tlayer={} mlayer={} xlayer={}",
@@ -1970,17 +1986,6 @@ fn print_human(parsed: &ParsedBitstream<'_>, headers_only: bool) {
         if !headers_only {
             println!("        payload: {} byte(s)", obu.payload.len());
         }
-    }
-}
-
-fn collect_obus<'data>(parsed: &ParsedBitstream<'data>) -> Vec<ObuEnvelope<'data>> {
-    match parsed {
-        ParsedBitstream::AnnexB(parsed) => parsed.obus.clone(),
-        ParsedBitstream::Ivf(parsed) => parsed
-            .frames
-            .iter()
-            .flat_map(|frame| frame.obus.iter().copied())
-            .collect(),
     }
 }
 
