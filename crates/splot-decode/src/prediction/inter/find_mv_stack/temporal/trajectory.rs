@@ -155,7 +155,7 @@ impl TrajectoryState {
         }
     }
 
-    fn check_intersection(
+    pub(super) fn check_intersection(
         &mut self,
         source: usize,
         end: Option<usize>,
@@ -232,7 +232,6 @@ impl TrajectoryState {
         reference_offset: i32,
         backward: bool,
     ) {
-        self.check_intersection(source, end, y8, x8, mv);
         let reference_offset = reference_offset.abs();
         if reference_offset == 0 || reference_offset > super::MAX_FRAME_DISTANCE {
             return;
@@ -394,7 +393,7 @@ mod tests {
     fn intersecting_projection_extends_the_reference_path() {
         let mut state = TrajectoryState::new((8, 8), 3, 1, 8).unwrap();
         state.observe_projection(0, Some(1), None, 1, 1, Mv { row: 0, col: 64 }, 2, 4, false);
-        state.observe_projection(1, Some(2), None, 1, 2, Mv { row: 0, col: 64 }, 2, 4, false);
+        state.check_intersection(1, Some(2), 1, 2, Mv { row: 0, col: 64 });
 
         assert_eq!(state.fields[2].cell(1, 1), Some(Mv { row: 0, col: 96 }));
     }

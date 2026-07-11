@@ -16702,6 +16702,7 @@ tests = [
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::step_one_projection_uses_64_pixel_tmvp_unit_bounds",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::temporal_projection_stays_within_the_vertical_tmvp_unit",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::compound_references_are_stored_in_temporal_slot_order",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::side_rejected_projection_still_extends_existing_trajectory",
     "crates/splot-decode/src/prediction/inter/block/tip.rs::tests::tip_reference_unit_size_follows_refinement_and_large_block_gates",
     "crates/splot-decode/src/prediction/inter/block/tip.rs::tests::tmvp_unit_size_uses_64_pixels_for_step_one_or_64_pixel_superblocks",
 ]
