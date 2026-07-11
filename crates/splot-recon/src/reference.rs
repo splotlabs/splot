@@ -231,7 +231,7 @@ impl<F> ReferenceFrameStore<F> {
     ) -> Result<ReferenceRefreshOutcome<F>> {
         self.ensure_refresh_mask(mask)?;
 
-        let mut replacements = Vec::new();
+        let mut replacements = Vec::with_capacity(mask.bits().count_ones() as usize);
         for slot in mask.slots() {
             let previous = self.slots[slot.index()].replace(produce(slot));
             if previous.is_none() {
