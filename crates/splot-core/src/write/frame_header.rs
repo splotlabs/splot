@@ -21,35 +21,13 @@
 //! it round-trips every prefix the parser produces (bridge, `cur_mfh_id == 0`, and
 //! `cur_mfh_id > 0`).
 
-use crate::headers::frame::{FrameHeaderPrefix, FrameHeaderPrefixStatus};
+use crate::headers::frame::{
+    FrameHeaderPrefix, FrameHeaderPrefixStatus, derive_is_regular, derive_key_frame,
+};
 use crate::headers::sequence::SequenceHeaderId;
 use crate::types::ObuType;
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
-
-/// Returns `keyFrame` for `obu_type` per AV2 v1.0.0 § 5.18.2
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`). Mirrors the private
-/// `crate::headers::frame::derive_key_frame`; the all-`obu_type` round-trip test guards
-/// against drift.
-fn derive_key_frame(obu_type: ObuType) -> bool {
-    matches!(obu_type, ObuType::ClosedLoopKey | ObuType::OpenLoopKey)
-}
-
-/// Returns `IsRegular` for `obu_type` per AV2 v1.0.0 § 5.18.2
-/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`). Mirrors the private
-/// `crate::headers::frame::derive_is_regular`.
-fn derive_is_regular(obu_type: ObuType) -> bool {
-    matches!(
-        obu_type,
-        ObuType::OpenLoopKey
-            | ObuType::RegularTileGroup
-            | ObuType::RegularTip
-            | ObuType::RegularSef
-            | ObuType::Switch
-            | ObuType::RasFrame
-            | ObuType::BridgeFrame
-    )
-}
 
 /// Validates that `prefix` is a [`FrameHeaderPrefix`] the § 5.18.2
 /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`) parser could have produced,
