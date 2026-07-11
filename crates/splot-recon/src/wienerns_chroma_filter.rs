@@ -337,9 +337,7 @@ impl LumaDsCache {
             return Ok(value);
         }
         let value = get_luma_sample(context, x, y, max_sample, luma_source_sample)?;
-        if let Some(slot) = self.slot(x, y) {
-            *slot = Some(value);
-        }
+        *slot = Some(value);
         Ok(value)
     }
 }
@@ -402,8 +400,8 @@ where
 {
     let x = scale_coord(x, context.subsampling_x, "Wiener NS chroma luma sample x")?;
     let y = scale_coord(y, context.subsampling_y, "Wiener NS chroma luma sample y")?;
-    let x = clip3(x, context.luma_start_x, context.luma_last_x);
-    let y = clip3(y, 0, context.luma_last_y);
+    let x = x.clamp(context.luma_start_x, context.luma_last_x);
+    let y = y.clamp(0, context.luma_last_y);
 
     if context.subsampling_x == 1 && context.subsampling_y == 1 && context.cfl_ds_filter_index <= 1
     {
@@ -476,16 +474,6 @@ fn scale_coord(value: isize, shift: u8, context: &'static str) -> Result<isize> 
             .checked_mul(2)
             .ok_or(ReconError::ArithmeticOverflow { context }),
         _ => Err(ReconError::ArithmeticOverflow { context }),
-    }
-}
-
-const fn clip3(value: isize, min: isize, max: isize) -> isize {
-    if value < min {
-        min
-    } else if value > max {
-        max
-    } else {
-        value
     }
 }
 
