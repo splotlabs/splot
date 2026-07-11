@@ -612,6 +612,56 @@ fn column_chunks<T>(row: &mut [T], size: usize) -> core::slice::ChunksMut<'_, T>
     row.chunks_mut(size)
 }
 
+fn scaled_sub_pu_size(
+    info: &MiBlockInfo,
+    pass: usize,
+    sub_x: usize,
+    sub_y: usize,
+) -> Option<usize> {
+    info.sub_pu_size
+        .map(|size| size >> if pass == 0 { sub_x } else { sub_y })
+        .filter(|&size| size != 0)
+}
+
+fn sub_pu_base(
+    info: &MiBlockInfo,
+    x: usize,
+    y: usize,
+    sub_x: usize,
+    sub_y: usize,
+) -> (usize, usize) {
+    let block_x = (info.block_col * MI_SIZE) >> sub_x;
+    let block_y = (info.block_row * MI_SIZE) >> sub_y;
+    let Some(size) = info.sub_pu_size else {
+        return (block_x, block_y);
+    };
+    let width = (size >> sub_x).max(1);
+    let height = (size >> sub_y).max(1);
+    (
+        block_x + x.saturating_sub(block_x) / width * width,
+        block_y + y.saturating_sub(block_y) / height * height,
+    )
+}
+
+fn sub_pu_filter_dimension(
+    tx_size: usize,
+    sub_pu_size: Option<usize>,
+    is_tx_edge: bool,
+) -> (usize, bool) {
+    let Some(sub_pu_size) = sub_pu_size else {
+        return (tx_size, true);
+    };
+    if tx_size < sub_pu_size {
+        (tx_size, false)
+    } else if !is_tx_edge && tx_size == 8 {
+        (4, true)
+    } else if !is_tx_edge && tx_size == 16 && sub_pu_size == 16 {
+        (8, true)
+    } else {
+        (sub_pu_size, true)
+    }
+}
+
 fn deblock_filter_edge<T: ReconSample>(
     plane_ctx: &mut PlaneCtx<'_, T>,
     grid: &MiGrid,
@@ -675,30 +725,44 @@ fn deblock_filter_edge<T: ReconSample>(
     let block_y = (curr.block_row * MI_SIZE) >> plane_sub_y;
     let block_x = (curr.block_col * MI_SIZE) >> plane_sub_x;
     let skip = curr.skip;
-    let current_tx_size = usize::try_from(if pass == 0 {
+    let curr_tx_size = usize::try_from(if pass == 0 {
         TX_WIDTH[tx_sz]
     } else {
         TX_HEIGHT[tx_sz]
     })
     .unwrap_or(0);
-    let sub_pu_size = curr
-        .sub_pu_size
-        .map(|size| {
-            if pass == 0 {
-                size >> plane_sub_x
-            } else {
-                size >> plane_sub_y
-            }
-        })
-        .filter(|&size| size <= current_tx_size);
-    let coordinate = if pass == 0 { x_p } else { y_p };
-    let block_start = if pass == 0 { block_x } else { block_y };
-    let is_sub_pu_edge = sub_pu_size.is_some_and(|size| {
-        size != 0 && coordinate > block_start && (coordinate - block_start).is_multiple_of(size)
-    });
+    let prev_tx_size = usize::try_from(if pass == 0 {
+        TX_WIDTH[prev_tx_sz]
+    } else {
+        TX_HEIGHT[prev_tx_sz]
+    })
+    .unwrap_or(0);
+    let curr_sub_pu_size = scaled_sub_pu_size(&curr, pass, plane_sub_x, plane_sub_y);
+    let prev_sub_pu_size = scaled_sub_pu_size(&prev, pass, plane_sub_x, plane_sub_y);
+    let curr_sub_pu_base = sub_pu_base(&curr, x_p, y_p, plane_sub_x, plane_sub_y);
+    let prev_sub_pu_base = sub_pu_base(
+        &prev,
+        x_p.saturating_sub(dx),
+        y_p.saturating_sub(dy),
+        plane_sub_x,
+        plane_sub_y,
+    );
+    let is_sub_pu_boundary = (curr_sub_pu_size.is_some() || prev_sub_pu_size.is_some())
+        && curr_sub_pu_base != prev_sub_pu_base;
 
     let is_block_edge = (pass == 0 && x_p == block_x) || (pass == 1 && y_p == block_y);
     let is_tx_edge = tx_col_base != prev_tx_col_base || tx_row_base != prev_tx_row_base;
+    let (curr_filter_size, curr_sub_pu_edge) = if is_sub_pu_boundary {
+        sub_pu_filter_dimension(curr_tx_size, curr_sub_pu_size, is_tx_edge)
+    } else {
+        (curr_tx_size, false)
+    };
+    let prev_filter_size = if is_sub_pu_boundary {
+        sub_pu_filter_dimension(prev_tx_size, prev_sub_pu_size, is_tx_edge).0
+    } else {
+        prev_tx_size
+    };
+    let is_sub_pu_edge = curr_sub_pu_edge && !is_block_edge;
 
     let (curr_q, curr_side) = strengths.get(curr.qindex, quant_delta, df_delta_q, bit_depth);
     let (prev_q, prev_side) = strengths.get(prev.qindex, quant_delta, df_delta_q, bit_depth);
@@ -712,15 +776,7 @@ fn deblock_filter_edge<T: ReconSample>(
         return Ok(());
     }
 
-    let filter_size = if pass == 0 {
-        TX_WIDTH[tx_sz].min(TX_WIDTH[prev_tx_sz])
-    } else {
-        TX_HEIGHT[tx_sz].min(TX_HEIGHT[prev_tx_sz])
-    };
-    let mut filter_size = usize::try_from(filter_size).unwrap_or(0);
-    if is_sub_pu_edge {
-        filter_size = filter_size.min(sub_pu_size.unwrap_or(filter_size));
-    }
+    let mut filter_size = curr_filter_size.min(prev_filter_size);
 
     let (plane_width, plane_height) = (plane_ctx.width, plane_ctx.height);
     if plane == 0 {
