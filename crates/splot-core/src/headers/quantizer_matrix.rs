@@ -317,7 +317,7 @@ fn user_defined_qm(
 /// quantizer-matrix transforms are at most 8x8, so the spec's `Min(.., 32)` width/
 /// height clamps never apply.
 #[allow(clippy::many_single_char_names)]
-fn diagonal_scan_2d(width: usize, height: usize) -> Vec<usize> {
+pub(crate) fn diagonal_scan_2d(width: usize, height: usize) -> Vec<usize> {
     let mut out = vec![0usize; width * height];
     let (w, h) = (width as i64, height as i64);
     let (mut x, mut y) = (0i64, 0i64);
