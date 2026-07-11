@@ -1900,6 +1900,134 @@ fn frame_header_core_inter_shared_tail_reads_inter_arms_with_asymmetric_values()
 }
 
 #[test]
+fn frame_header_core_inter_mfh_segmentation_reuses_mfh_feature_data() {
+    let seq = minimal_inter_seq_64();
+    let mut mfh_features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+    mfh_features[3][0] = SegmentFeature {
+        enabled: true,
+        data: 7,
+    };
+    let mut record = mfh_record(
+        None,
+        Some(&(
+            false,
+            false,
+            SegmentInfo {
+                num_segments: 8,
+                features: mfh_features,
+            },
+        )),
+    );
+    record.mfh_deblocking_filter_update = true;
+    record.mfh_apply_deblocking_filter = [true, false, true, true];
+    let view = MfhFrameView::from_record(&record, &seq);
+
+    let mut bits = Bits::default();
+    bits.uvlc(1); // cur_mfh_id == 1, resolved from the MFH view.
+    bits.bit(1); // frame_is_inter == 1
+    bits.bit(1); // immediate_output_frame == 1 -> implicit_output_frame inferred 0
+    bits.bit(1); // frame_size_override_flag
+    bits.f(1, 4); // order_hint
+    bits.bit(0); // signal_primary_ref_frame
+    bits.bit(0); // disable_cross_frame_cdf_init
+    bits.f(0, 8); // refresh_frame_flags
+    bits.bit(1); // frame_size_with_refs(): found_ref = 1 -> slot 0 dimensions
+    bits.bit(0); // use_ref_frame_mvs = 0
+    bits.bit(0); // intrabc_params(): allow_intrabc = 0
+    bits.bit(0); // use_qtr_precision_mv = 0
+    bits.bit(0); // allow_high_precision_mv = 0 -> HALF_PEL
+    bits.bit(1); // is_filter_switchable = 1
+    bits.bit(0); // disable_cdf_update
+    bits.f(90, 8); // quantization_params(): base_q_idx
+    bits.bit(1); // segmentation_enabled; MFH reuse consumes no seg_info bits
+    bits.bit(0); // setup_qm_params(): using_qmatrix = 0
+    bits.bit(0); // delta_q_params(): delta_q_present = 0
+    bits.bit(0); // allow_df_sub_pu
+    bits.bit(0); // df_delta_q_present[0] from MFH apply_deblocking_filter[0]
+    bits.bit(0); // df_delta_q_present[2] from MFH apply_deblocking_filter[2]
+    bits.bit(0); // df_delta_q_present[3] from MFH apply_deblocking_filter[3]
+    bits.bit(1); // read_tx_mode(): tx_mode_select = 1 -> TX_MODE_SELECT
+    bits.bit(1); // frame_reference_mode(): reference_select = 1
+    bits.bit(1); // skip_mode_params(): skip_mode_present = 1
+    bits.f(2, 2); // reduced_tx_set
+    bits.bit(0); // film_grain_config(): apply_grain = 0
+    let data = bits.into_bytes();
+
+    let (rv, roh, rw, rh) = one_valid_ref_64();
+    let ref_q = [90u32; NUM_REF_FRAMES];
+    let ref_counter = [0u32; NUM_REF_FRAMES];
+    let ref_is_inter = [false; NUM_REF_FRAMES];
+    let rs = FrameReferenceStateView::from_slots_with_base_q_idx(&rv, &roh, &rw, &rh, &ref_q)
+        .with_primary_reference_state(&ref_counter, &ref_is_inter);
+    let (core, _) = parse_body_with_ref(
+        &data,
+        ObuType::RegularTileGroup,
+        false,
+        &seq,
+        Some(&view),
+        &rs,
+    )
+    .unwrap();
+
+    assert_eq!(core.status, FrameHeaderParseStatus::InterHeaderComplete);
+    let seg = core.segmentation_params.expect("inter segmentation parsed");
+    assert!(seg.segmentation_enabled);
+    assert!(seg.segmentation_update_map);
+    assert!(!seg.segmentation_temporal_update);
+    assert!(seg.features[3][0].enabled);
+    assert_eq!(seg.features[3][0].data, 7);
+    let deblocking = core
+        .deblocking_filter_params
+        .expect("inter deblocking parsed");
+    assert_eq!(
+        deblocking.apply_deblocking_filter,
+        [true, false, true, true]
+    );
+    assert!(core.inter_tail.is_some());
+}
+
+#[test]
+fn frame_header_core_inter_missing_mfh_stops_before_mfh_gated_tail() {
+    let seq = minimal_inter_seq_64();
+    let mut bits = Bits::default();
+    bits.uvlc(1); // cur_mfh_id == 1, but no MFH view is supplied.
+    bits.bit(1); // frame_is_inter == 1
+    bits.bit(1); // immediate_output_frame == 1 -> implicit_output_frame inferred 0
+    bits.bit(1); // frame_size_override_flag
+    bits.f(1, 4); // order_hint
+    bits.bit(0); // signal_primary_ref_frame
+    bits.bit(0); // disable_cross_frame_cdf_init
+    bits.f(0, 8); // refresh_frame_flags
+    bits.bit(1); // frame_size_with_refs(): found_ref = 1 -> slot 0 dimensions
+    bits.bit(0); // use_ref_frame_mvs = 0
+    bits.bit(0); // intrabc_params(): allow_intrabc = 0
+    bits.bit(0); // use_qtr_precision_mv = 0
+    bits.bit(0); // allow_high_precision_mv = 0 -> HALF_PEL
+    bits.bit(1); // is_filter_switchable = 1
+    bits.bit(0); // disable_cdf_update
+    bits.f(90, 8); // quantization_params(): base_q_idx
+    bits.bit(1); // padding that must not be read as segmentation_enabled
+    let data = bits.into_bytes();
+
+    let (rv, roh, rw, rh) = one_valid_ref_64();
+    let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
+    let (core, _) =
+        parse_body_with_ref(&data, ObuType::RegularTileGroup, false, &seq, None, &rs).unwrap();
+
+    assert!(matches!(
+        core.status,
+        FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
+    ));
+    assert_eq!(
+        core.inter.as_ref().unwrap().stop,
+        Some(crate::headers::frame::inter::InterStop::ReachedSharedTail)
+    );
+    assert!(core.segmentation_params.is_none());
+    assert!(core.deblocking_filter_params.is_none());
+    assert!(core.inter_tail.is_none());
+}
+
+#[test]
 fn frame_header_core_inter_shared_tail_segmentation_on_stops_unmodeled() {
     let seq = minimal_inter_seq_64();
     let mut bits = Bits::default();

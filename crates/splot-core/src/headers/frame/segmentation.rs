@@ -144,6 +144,7 @@ pub fn parse_segmentation_params(
 pub(crate) fn parse_inter_segmentation_params(
     reader: &mut BitReader<'_>,
     seg: &CoreSeqSegView,
+    mfh: Option<&MfhSegView>,
     derived_primary_is_none: Option<bool>,
     frame_is_switch: bool,
 ) -> Result<Option<SegmentationParams>> {
@@ -156,7 +157,7 @@ pub(crate) fn parse_inter_segmentation_params(
     parse_segmentation_params_body(
         reader,
         seg,
-        None,
+        mfh,
         segmentation_enabled,
         derived_primary_is_none,
         frame_is_switch,
@@ -558,10 +559,15 @@ mod tests {
         bits.bit(1);
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params =
-            parse_inter_segmentation_params(&mut reader, &seq_info_view(false), Some(true), false)
-                .unwrap()
-                .unwrap();
+        let params = parse_inter_segmentation_params(
+            &mut reader,
+            &seq_info_view(false),
+            None,
+            Some(true),
+            false,
+        )
+        .unwrap()
+        .unwrap();
         assert!(params.segmentation_update_map);
         assert!(!params.segmentation_temporal_update);
         assert_eq!(reader.consumed_bits(), 1);
@@ -575,10 +581,15 @@ mod tests {
         bits.bit(1);
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params =
-            parse_inter_segmentation_params(&mut reader, &seq_info_view(false), Some(false), false)
-                .unwrap()
-                .unwrap();
+        let params = parse_inter_segmentation_params(
+            &mut reader,
+            &seq_info_view(false),
+            None,
+            Some(false),
+            false,
+        )
+        .unwrap()
+        .unwrap();
         assert!(params.segmentation_update_map);
         assert!(params.segmentation_temporal_update);
         assert_eq!(reader.consumed_bits(), 3);
@@ -591,7 +602,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let params =
-            parse_inter_segmentation_params(&mut reader, &seq_info_view(false), None, false)
+            parse_inter_segmentation_params(&mut reader, &seq_info_view(false), None, None, false)
                 .unwrap();
         assert!(params.is_none());
         assert_eq!(reader.consumed_bits(), 1);
