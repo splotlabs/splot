@@ -10278,6 +10278,7 @@ perf = "not-applicable"
 tests = [
     "crates/splot-recon/src/pc_wiener.rs::tests::flat_source_without_skips_classifies_to_lut_zero",
     "crates/splot-recon/src/pc_wiener.rs::tests::quadratic_ten_bit_source_accumulates_features_and_tx_skip",
+    "crates/splot-recon/src/pc_wiener.rs::tests::grid_classification_matches_scalar_cells_and_reuses_features",
     "crates/splot-recon/src/pc_wiener.rs::tests::tx_skip_lookup_clips_to_block_stripe_and_tile_bounds",
     "crates/splot-recon/src/pc_wiener.rs::tests::rejects_source_samples_outside_bit_depth",
     "crates/splot-recon/src/pc_wiener.rs::tests::propagates_tx_skip_lookup_errors",
@@ -20915,6 +20916,7 @@ tests = [
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::merges_contiguous_row_blocks_and_splits_on_filter_visible_fields",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::merges_compatible_adjacent_rows_into_rectangles",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::does_not_merge_rows_across_source_boundaries",
+    "crates/splot-recon/src/pc_wiener.rs::tests::grid_classification_matches_scalar_cells_and_reuses_features",
     "crates/splot-decode/src/filters/deblock.rs::tests::banded_parallel_pass_matches_serial_output",
 ]
 commands = [
