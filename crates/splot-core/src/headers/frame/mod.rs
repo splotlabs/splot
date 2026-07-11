@@ -180,13 +180,13 @@ pub struct FrameHeaderPrefix {
 
 /// Returns `true` if `obu_type` is `keyFrame` per AV2 § 5.18.2.
 #[must_use]
-fn derive_key_frame(obu_type: ObuType) -> bool {
+pub(crate) fn derive_key_frame(obu_type: ObuType) -> bool {
     matches!(obu_type, ObuType::ClosedLoopKey | ObuType::OpenLoopKey)
 }
 
 /// Returns `IsRegular` per AV2 § 5.18.2.
 #[must_use]
-fn derive_is_regular(obu_type: ObuType) -> bool {
+pub(crate) fn derive_is_regular(obu_type: ObuType) -> bool {
     matches!(
         obu_type,
         ObuType::OpenLoopKey
