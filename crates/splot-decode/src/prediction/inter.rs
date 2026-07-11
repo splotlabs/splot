@@ -9,6 +9,7 @@ use splot_core::headers::frame::{
     TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use splot_core::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
@@ -1295,10 +1296,14 @@ fn validate_inter_frame_core(
         ));
     }
     let unsupported_tools = core.quantization_params.is_none()
-        || core
-            .segmentation_params
-            .as_ref()
-            .is_none_or(|seg| seg.segmentation_enabled)
+        || core.segmentation_params.as_ref().is_none_or(|seg| {
+            !inter_segmentation_supported(
+                seg.segmentation_enabled,
+                seg.segmentation_update_map,
+                seg.segmentation_temporal_update,
+                &seg.features,
+            )
+        })
         || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
         || core
             .delta_q_params
@@ -1320,6 +1325,20 @@ fn validate_inter_frame_core(
         ));
     }
     Ok(())
+}
+
+fn inter_segmentation_supported(
+    enabled: bool,
+    update_map: bool,
+    temporal_update: bool,
+    features: &[[SegmentFeature; SEG_LVL_MAX]; MAX_SEGMENTS],
+) -> bool {
+    !enabled
+        || (update_map
+            && !temporal_update
+            && features
+                .iter()
+                .all(|features| features[1..].iter().all(|feature| !feature.enabled)))
 }
 
 pub(crate) fn effective_quantizer_deltas_are_zero(

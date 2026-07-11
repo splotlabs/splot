@@ -15,7 +15,7 @@ use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
 use super::{
     chroma_smooth_grid_dimensions, ensure_intra_leaf_quantizer_delta_scope,
     inter_residual_geometry_supported_flags, inter_skip_txfm_ctx, predict_interintra_planes,
-    read_inter_intra_syntax_enabled,
+    read_inter_intra_syntax_enabled, validate_segment_id,
 };
 use crate::bitstream::tile_payload::{
     BlockSize, FrameCdfSubset, TileBlockDecodedState, TileCdfSelector,
@@ -46,6 +46,25 @@ fn inter_residual_geometry_allows_shared_leaves() {
 fn inter_residual_geometry_rejects_chroma_partitioned_leaves() {
     assert!(!inter_residual_geometry_supported_flags(true, false));
     assert!(!inter_residual_geometry_supported_flags(false, true));
+}
+
+#[test]
+fn segment_id_validation_accepts_the_last_active_segment() {
+    assert!(matches!(
+        validate_segment_id(7, 7, ByteOffset::new(11)),
+        Ok(7)
+    ));
+}
+
+#[test]
+fn segment_id_validation_rejects_values_above_the_active_range() {
+    assert!(matches!(
+        validate_segment_id(8, 7, ByteOffset::new(11)),
+        Err(DecodeError::UnsupportedFeature { unsupported })
+            if unsupported.reason() == "inter_segment_id_out_of_range"
+                && unsupported.spec_section() == "5.20.5.8"
+                && unsupported.byte_offset() == Some(ByteOffset::new(11))
+    ));
 }
 
 #[test]
