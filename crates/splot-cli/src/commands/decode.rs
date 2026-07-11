@@ -39,15 +39,15 @@ fn timing_report(phase: &str, started: Option<std::time::Instant>) {
     }
 }
 
-/// Output artifact selected for future `splot decode` success.
+/// Output artifact selected for `splot decode`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 pub enum DecodeOutputFormat {
-    /// Runtime Y4M decoded-video output for the documented minimal tier.
+    /// Runtime Y4M decoded-video output.
     Y4m,
-    /// Headerless raw decoded sample output for the documented minimal tier.
+    /// Headerless raw decoded sample output.
     Raw,
-    /// Deterministic decoded-frame hash output for the documented minimal tier.
+    /// Deterministic decoded-frame hash output.
     Hash,
 }
 
@@ -220,8 +220,6 @@ struct DecodeDiagnosticJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     unsupported_reason: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tier_id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     output_operation: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     output_source_kind: Option<&'a str>,
@@ -255,7 +253,6 @@ impl<'a> DecodeDiagnosticJson<'a> {
             actual: None,
             unit: None,
             unsupported_reason: None,
-            tier_id: None,
             output_operation: None,
             output_source_kind: None,
             output_source_message: None,
@@ -432,9 +429,8 @@ fn render_hash_report(report: &DecodeHashReport, json: bool) -> Result<()> {
 
 /// Runs `splot decode` through the byte-stream decode handoff.
 ///
-/// Hash, raw, and Y4M modes have narrow minimal tier success paths;
-/// broader runtime outputs remain diagnostic-only until later decoder
-/// milestones.
+/// Hash, raw, and Y4M modes decode streams the runtime supports; unsupported
+/// streams surface structured diagnostics instead of output.
 ///
 /// # Errors
 /// Returns an error if input cannot be read, the decode context cannot be
