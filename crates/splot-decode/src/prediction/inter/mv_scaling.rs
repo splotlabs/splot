@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_recon::math::{clip3, round2_signed};
+use splot_recon::math::round2_signed;
 
 const REF_SCALE_SHIFT: u32 = 14;
 const SUBPEL_BITS: u32 = 4;
@@ -97,9 +97,9 @@ fn derive_plane_scaling_inner(
         let base = orig * scale - (half_sample << REF_SCALE_SHIFT);
         round2_signed(base, round_shift) + off
     };
-    let last_bound = |ref_mi, subsampling| {
+    let last_bound = |ref_mi: i64, subsampling: u32| {
         let last = ((ref_mi * MI_SIZE) >> subsampling) - 1;
-        clip3(0, last, last)
+        last.max(0)
     };
 
     let step = round2_signed(scale, REF_SCALE_SHIFT - SCALE_SUBPEL_BITS);
