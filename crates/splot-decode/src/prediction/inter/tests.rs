@@ -277,7 +277,7 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
     let mut next_unvalidated_following_ivf_record = 1;
-    let inter_envelope = crate::pipeline::following_inter_envelope(
+    let (_, inter_envelope) = crate::pipeline::following_inter_envelope(
         &parsed,
         inter_candidate,
         &mut next_unvalidated_following_ivf_record,
@@ -403,7 +403,7 @@ fn parse_inter_core_for_validation(
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
     let mut next_unvalidated_following_ivf_record = 1;
-    let inter_envelope = crate::pipeline::following_inter_envelope(
+    let (_, inter_envelope) = crate::pipeline::following_inter_envelope(
         &parsed,
         inter_candidate,
         &mut next_unvalidated_following_ivf_record,

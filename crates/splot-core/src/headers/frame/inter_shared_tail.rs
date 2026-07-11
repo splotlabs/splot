@@ -90,7 +90,7 @@ use crate::headers::frame::restoration::{
     parse_ccso_params_for_inter, parse_lr_params_for_inter,
 };
 use crate::headers::frame::segmentation::MfhSegView;
-use crate::headers::frame::tail::{TxMode, parse_film_grain_config, read_tx_mode};
+use crate::headers::frame::tail::{FilmGrainConfig, TxMode, parse_film_grain_config, read_tx_mode};
 use crate::headers::frame::tiling::parse_tile_info;
 
 use super::info::FrameType;
@@ -133,8 +133,8 @@ pub struct InterTail {
     pub reduced_tx_set: u8,
     /// `use_global_motion` from `global_motion_params()` (§ 5.18.9.1).
     pub use_global_motion: bool,
-    /// `apply_grain` from `film_grain_config()` (§ 5.18.10.1).
-    pub apply_grain: bool,
+    /// Parsed `film_grain_config()` (§ 5.18.10.1).
+    pub film_grain: FilmGrainConfig,
 }
 
 /// Parses the § 5.18.2 inter shared tail (mirror :5183-5343) into `core`, after the inter
@@ -514,7 +514,7 @@ fn parse_inter_tail_arms(
         allow_warpmv_mode,
         reduced_tx_set,
         use_global_motion: gm.use_global_motion,
-        apply_grain: film_grain.apply_grain,
+        film_grain,
     });
     core.status = FrameHeaderParseStatus::InterHeaderComplete;
     Ok(())

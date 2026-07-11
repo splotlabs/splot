@@ -1859,7 +1859,8 @@ fn frame_header_core_tip_output_eof_in_tail_is_truncation() {
 
 #[test]
 fn frame_header_core_inter_shared_tail_reads_inter_arms_with_asymmetric_values() {
-    let seq = minimal_inter_seq_64();
+    let mut seq = minimal_inter_seq_64();
+    seq.film_grain_params_present = Some(true);
     let mut bits = Bits::default();
     minimal_inter_control_prefix(&mut bits);
     bits.f(90, 8); // quantization_params(): base_q_idx f(8) (asymmetric, != 0)
@@ -1873,7 +1874,9 @@ fn frame_header_core_inter_shared_tail_reads_inter_arms_with_asymmetric_values()
     bits.bit(1); // frame_reference_mode(): reference_select = 1
     bits.bit(1); // skip_mode_params(): skip_mode_present = 1 (skipModeAllowed)
     bits.f(2, 2); // reduced_tx_set f(2) = 2
-    bits.bit(0); // film_grain_config(): apply_grain = 0 (output frame, grain present)
+    bits.bit(1); // film_grain_config(): apply_grain = 1 (output frame, grain present)
+    bits.f(5, 3); // fgm_id
+    bits.f(0x1234, 16); // grain_seed
     let data = bits.into_bytes();
     let (rv, roh, rw, rh) = one_valid_ref_64();
     let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
@@ -1896,7 +1899,9 @@ fn frame_header_core_inter_shared_tail_reads_inter_arms_with_asymmetric_values()
     assert!(!tail.allow_warpmv_mode);
     assert_eq!(tail.reduced_tx_set, 2);
     assert!(!tail.use_global_motion);
-    assert!(!tail.apply_grain);
+    assert!(tail.film_grain.apply_grain);
+    assert_eq!(tail.film_grain.fgm_id, Some(5));
+    assert_eq!(tail.film_grain.grain_seed, Some(0x1234));
 }
 
 #[test]

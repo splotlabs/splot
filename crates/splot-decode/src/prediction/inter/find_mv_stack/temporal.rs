@@ -660,26 +660,38 @@ pub(crate) fn tip_reference_pair_from_hints(
 ) -> Option<TipReferencePair> {
     let current = i32::try_from(current_order_hint).ok()?;
     let mut closest_past: Option<(usize, i32, i32)> = None;
+    let mut second_past: Option<(usize, i32, i32)> = None;
     let mut closest_future: Option<(usize, i32, i32)> = None;
     for (index, hint) in ref_order_hints.iter().copied().enumerate() {
         let Some(hint) = hint.and_then(|hint| i32::try_from(hint).ok()) else {
             continue;
         };
         let distance = super::super::get_relative_dist(current, hint);
-        if distance > 0 && closest_past.is_none_or(|(_, old, _)| distance < old) {
-            closest_past = Some((index, distance, hint));
+        if distance > 0 {
+            let candidate = (index, distance, hint);
+            if closest_past.is_none_or(|(_, old, _)| distance < old) {
+                second_past = closest_past;
+                closest_past = Some(candidate);
+            } else if second_past.is_none_or(|(_, old, _)| distance < old) {
+                second_past = Some(candidate);
+            }
         } else if distance < 0 && closest_future.is_none_or(|(_, old, _)| distance > old) {
             closest_future = Some((index, distance, hint));
         }
     }
     let (past_ref, past_offset, past_hint) = closest_past?;
-    let (future_ref, future_offset, future_hint) = closest_future?;
+    let (future_ref, future_offset, future_hint) = closest_future.or(second_past)?;
+    let ref_offset = if future_offset < 0 {
+        super::super::get_relative_dist(future_hint, past_hint)
+    } else {
+        super::super::get_relative_dist(past_hint, future_hint)
+    };
     Some(TipReferencePair {
         past_ref: i8::try_from(past_ref).ok()?,
         future_ref: i8::try_from(future_ref).ok()?,
         past_offset,
         future_offset,
-        ref_offset: super::super::get_relative_dist(future_hint, past_hint).min(MAX_FRAME_DISTANCE),
+        ref_offset: ref_offset.min(MAX_FRAME_DISTANCE),
     })
 }
 
@@ -1161,6 +1173,22 @@ mod tests {
                 future_ref: 2,
                 past_offset: 1,
                 future_offset: -2,
+                ref_offset: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn tip_reference_pair_uses_the_two_nearest_past_references() {
+        let context = tip_context(10, vec![Some(2), Some(6), Some(9)], 4, 4);
+
+        assert_eq!(
+            context.tip_reference_pair(),
+            Some(TipReferencePair {
+                past_ref: 2,
+                future_ref: 1,
+                past_offset: 1,
+                future_offset: 4,
                 ref_offset: 3,
             })
         );
