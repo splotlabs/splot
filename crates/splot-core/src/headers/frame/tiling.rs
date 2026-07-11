@@ -240,61 +240,36 @@ pub fn parse_tile_info(
         tile_rows_log2,
         sb_shift2,
     ) = if reuse_tile_info {
-        match seq {
-            Some(seq) if seq.uniform_spacing => {
-                let reused = reuse_tile_params(ReuseTileParamsInput {
-                    uniform_spacing: true,
-                    seq_sb_row_starts: &[],
-                    seq_tile_rows: seq.tile_rows,
-                    seq_tile_rows_log2: seq.tile_rows_log2,
-                    seq_sb_col_starts: &[],
-                    seq_tile_cols: seq.tile_cols,
-                    seq_tile_cols_log2: seq.tile_cols_log2,
-                    seq_sb_size,
-                    sb_size,
-                    mi_cols,
-                    mi_rows,
-                });
-                (
-                    reused.sb_col_starts,
-                    reused.sb_row_starts,
-                    reused.tile_cols,
-                    reused.tile_rows,
-                    reused.tile_cols_log2,
-                    reused.tile_rows_log2,
-                    reused.sb_shift2,
-                )
-            }
-            Some(seq) => {
-                let reused = reuse_tile_params(ReuseTileParamsInput {
-                    uniform_spacing: false,
-                    seq_sb_row_starts: &tile.seq_sb_row_starts,
-                    seq_tile_rows: seq.tile_rows,
-                    seq_tile_rows_log2: seq.tile_rows_log2,
-                    seq_sb_col_starts: &tile.seq_sb_col_starts,
-                    seq_tile_cols: seq.tile_cols,
-                    seq_tile_cols_log2: seq.tile_cols_log2,
-                    seq_sb_size,
-                    sb_size,
-                    mi_cols,
-                    mi_rows,
-                });
-                (
-                    reused.sb_col_starts,
-                    reused.sb_row_starts,
-                    reused.tile_cols,
-                    reused.tile_rows,
-                    reused.tile_cols_log2,
-                    reused.tile_rows_log2,
-                    reused.sb_shift2,
-                )
-            }
-            None => {
-                return Err(Error::Unimplemented {
-                    feature: "AV2-5.18.7-SEGMENTATION-TILING",
-                });
-            }
-        }
+        let seq = seq.ok_or(Error::Unimplemented {
+            feature: "AV2-5.18.7-SEGMENTATION-TILING",
+        })?;
+        let (seq_sb_row_starts, seq_sb_col_starts): (&[u32], &[u32]) = if seq.uniform_spacing {
+            (&[], &[])
+        } else {
+            (&tile.seq_sb_row_starts, &tile.seq_sb_col_starts)
+        };
+        let reused = reuse_tile_params(ReuseTileParamsInput {
+            uniform_spacing: seq.uniform_spacing,
+            seq_sb_row_starts,
+            seq_tile_rows: seq.tile_rows,
+            seq_tile_rows_log2: seq.tile_rows_log2,
+            seq_sb_col_starts,
+            seq_tile_cols: seq.tile_cols,
+            seq_tile_cols_log2: seq.tile_cols_log2,
+            seq_sb_size,
+            sb_size,
+            mi_cols,
+            mi_rows,
+        });
+        (
+            reused.sb_col_starts,
+            reused.sb_row_starts,
+            reused.tile_cols,
+            reused.tile_rows,
+            reused.tile_cols_log2,
+            reused.tile_rows_log2,
+            reused.sb_shift2,
+        )
     } else {
         let layout = parse_tile_layout(
             reader,
