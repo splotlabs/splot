@@ -3,8 +3,8 @@
 
 use super::{
     CWP_EQUAL, CompoundMvCandidate, CompoundMvStackEntry, MAX_PR_NUM, MAX_REF_MV_STACK_SIZE, Mv,
-    MvBlockContext, MvStackEntry, NeighbourCell, TIP_REF_FRAME, TemporalMvContext,
-    insert_compound_mv_stack_entry,
+    MvBlockContext, MvStackEntry, NeighbourCell, OrderHintMvContext, TIP_REF_FRAME,
+    TemporalMvContext, insert_compound_mv_stack_entry,
 };
 
 const MAX_DR_STACK_SIZE: usize = 4;
@@ -159,14 +159,19 @@ impl CompoundDerivedMvState {
 
 pub(super) struct DerivedMvState<'a> {
     temporal: Option<&'a TemporalMvContext>,
+    order_hints: Option<OrderHintMvContext<'a>>,
     entries: Vec<Mv>,
     prune_count: usize,
 }
 
 impl<'a> DerivedMvState<'a> {
-    pub(super) fn new(temporal: Option<&'a TemporalMvContext>) -> Self {
+    pub(super) fn new(
+        temporal: Option<&'a TemporalMvContext>,
+        order_hints: Option<OrderHintMvContext<'a>>,
+    ) -> Self {
         Self {
             temporal,
+            order_hints,
             entries: Vec::with_capacity(MAX_DR_STACK_SIZE),
             prune_count: 0,
         }
@@ -192,15 +197,23 @@ impl<'a> DerivedMvState<'a> {
             }
             return;
         }
-        let Some(candidate) = self.temporal.and_then(|temporal| {
-            temporal.derive_spatial_mv(
-                block.ref_frame0,
-                candidate_ref,
-                candidate_mv,
-                block.mi_row >> 1,
-                block.mi_col >> 1,
-            )
-        }) else {
+        let candidate = self
+            .temporal
+            .and_then(|temporal| {
+                temporal.derive_spatial_mv(
+                    block.ref_frame0,
+                    candidate_ref,
+                    candidate_mv,
+                    block.mi_row >> 1,
+                    block.mi_col >> 1,
+                )
+            })
+            .or_else(|| {
+                self.order_hints.and_then(|order_hints| {
+                    order_hints.derive_spatial_mv(block.ref_frame0, candidate_ref, candidate_mv)
+                })
+            });
+        let Some(candidate) = candidate else {
             return;
         };
         self.push(candidate);
@@ -253,7 +266,7 @@ mod tests {
     fn fill_preserves_order_and_honors_the_drl_limit() {
         let first = Mv { row: 10, col: 365 };
         let second = Mv { row: -6, col: 233 };
-        let mut derived = DerivedMvState::new(None);
+        let mut derived = DerivedMvState::new(None, None);
         derived.push(first);
         derived.push(second);
         let mut entries = vec![
@@ -285,7 +298,7 @@ mod tests {
     #[test]
     fn collection_prunes_an_early_duplicate() {
         let candidate = Mv { row: 10, col: 365 };
-        let mut derived = DerivedMvState::new(None);
+        let mut derived = DerivedMvState::new(None, None);
 
         derived.push(candidate);
         derived.push(candidate);

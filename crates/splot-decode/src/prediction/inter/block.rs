@@ -1169,6 +1169,7 @@ fn decode_block<T: ReconSample>(
             block_decoded,
             mv_grid,
             temporal_stack_context,
+            temporal_context.order_hint_mv_context(),
             tip_ref_pair,
             motion_field,
             &mut block_ctx,
@@ -1280,6 +1281,7 @@ fn decode_block<T: ReconSample>(
             derive_wrl,
             drl_reorder,
             temporal_stack_context,
+            Some(temporal_context.order_hint_mv_context()),
             use_temporal_first,
         );
         let mv_config = inter_mv_read_config(core, tile_offset)?;
@@ -1614,6 +1616,7 @@ fn decode_block<T: ReconSample>(
         false,
         drl_reorder,
         temporal_stack_context,
+        Some(temporal_context.order_hint_mv_context()),
         use_temporal_first,
     );
 

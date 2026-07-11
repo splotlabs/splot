@@ -286,6 +286,40 @@ pub(crate) struct TemporalMvContext {
     tip: Option<TipMotionField>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct OrderHintMvContext<'a> {
+    current_order_hint: u32,
+    ref_order_hints: &'a [Option<u32>],
+}
+
+impl OrderHintMvContext<'_> {
+    pub(super) fn derive_spatial_mv(
+        self,
+        dst_ref: i8,
+        candidate_ref: i8,
+        candidate_mv: Mv,
+    ) -> Option<Mv> {
+        let dst = usize::try_from(dst_ref).ok()?;
+        let candidate = usize::try_from(candidate_ref).ok()?;
+        let current = i32::try_from(self.current_order_hint).ok()?;
+        let distance = |index: usize| {
+            self.ref_order_hints
+                .get(index)
+                .copied()
+                .flatten()
+                .and_then(|hint| i32::try_from(hint).ok())
+                .map(|hint| super::super::get_relative_dist(current, hint))
+        };
+        let dst_distance = distance(dst)?;
+        let candidate_distance = distance(candidate)?;
+        let same_side = (dst_distance > 0 && candidate_distance > 0)
+            || (dst_distance < 0 && candidate_distance < 0);
+        same_side
+            .then(|| project_mv(candidate_mv, dst_distance.abs(), candidate_distance.abs()))
+            .flatten()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TemporalProjectionConfig {
     pub(crate) frame_size: (usize, usize),
@@ -469,6 +503,13 @@ impl TemporalMvContext {
         &self.ref_order_hints
     }
 
+    pub(crate) fn order_hint_mv_context(&self) -> OrderHintMvContext<'_> {
+        OrderHintMvContext {
+            current_order_hint: self.current_order_hint,
+            ref_order_hints: &self.ref_order_hints,
+        }
+    }
+
     pub(crate) fn tip_references(&self) -> Option<TipReferencePair> {
         Some(self.tip.as_ref()?.references)
     }
@@ -584,22 +625,8 @@ impl TemporalMvContext {
             ));
         }
 
-        let current = i32::try_from(self.current_order_hint).ok()?;
-        let distance = |index: usize| {
-            self.ref_order_hints
-                .get(index)
-                .copied()
-                .flatten()
-                .and_then(|hint| i32::try_from(hint).ok())
-                .map(|hint| super::super::get_relative_dist(current, hint))
-        };
-        let dst_distance = distance(dst)?;
-        let candidate_distance = distance(candidate)?;
-        let same_side = (dst_distance > 0 && candidate_distance > 0)
-            || (dst_distance < 0 && candidate_distance < 0);
-        same_side
-            .then(|| project_mv(candidate_mv, dst_distance.abs(), candidate_distance.abs()))
-            .flatten()
+        self.order_hint_mv_context()
+            .derive_spatial_mv(dst_ref, candidate_ref, candidate_mv)
     }
 
     pub(super) fn derive_compound_spatial_mvs(
