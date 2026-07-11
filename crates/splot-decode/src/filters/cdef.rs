@@ -498,11 +498,7 @@ fn compute_cdef_block<T: ReconSample>(
     };
 
     let dir = if pri_base == 0 { 0 } else { y_dir };
-    let var_str = if var >> 6 != 0 {
-        floor_log2_i64(var >> 6).min(12)
-    } else {
-        0
-    };
+    let var_str = (var >> 6).checked_ilog2().unwrap_or(0).min(12) as i32;
     let pri_str = if var != 0 {
         (pri_base * (4 + var_str) + 8) >> 4
     } else {
@@ -708,14 +704,6 @@ fn gather_taps(
         center,
         primary,
         secondary,
-    }
-}
-
-const fn floor_log2_i64(x: i64) -> i32 {
-    if x <= 0 {
-        0
-    } else {
-        63 - x.leading_zeros() as i32
     }
 }
 
