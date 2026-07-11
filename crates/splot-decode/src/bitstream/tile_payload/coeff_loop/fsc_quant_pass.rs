@@ -230,8 +230,7 @@ pub(crate) fn apply_coeff_fsc_branch(
     input: CoeffFscBranchInput<'_>,
 ) -> Result<CoeffFscBranch, CoeffFscBranchError> {
     let input = match input {
-        CoeffFscBranchInput::AllZero(input) => {
-            let _ = input;
+        CoeffFscBranchInput::AllZero(_) => {
             return Err(CoeffFscBranchError::AllZero);
         }
         CoeffFscBranchInput::NonZero(input) => input,
