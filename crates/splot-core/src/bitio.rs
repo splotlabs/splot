@@ -174,7 +174,7 @@ impl<'a> BitReader<'a> {
     /// Returns [`Error::BitWidthTooLarge`] if `n > 32`, or [`Error::UnexpectedEof`]
     /// if fewer than `n` bits remain. `n == 0` never errors.
     pub(crate) fn read_f(&mut self, n: u32) -> Result<u32> {
-        if n == 0 { Ok(0) } else { self.read_bits(n) }
+        self.read_bits(n)
     }
 
     /// Reads `n` bits (MSB-first) into a `u8`.
@@ -291,13 +291,11 @@ impl<'a> BitReader<'a> {
             });
         }
 
-        match self.read_le(n)?.to_u64() {
-            Some(value) => Ok(value),
-            None => Err(Error::ByteWidthTooLarge {
-                requested: n,
-                max: 8,
-            }),
+        let mut value = 0;
+        for i in 0..n {
+            value |= u64::from(self.read_bits_u8(8)?) << (i * 8);
         }
+        Ok(value)
     }
 
     /// Reads an AV2 `leb128()` descriptor (AV2 v1.0.0 § 4.11.6).
