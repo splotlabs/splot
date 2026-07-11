@@ -980,6 +980,64 @@ fn two_sided_middle_mrl_clamps_bottom_edge_extension() {
     }
 }
 
+#[test]
+fn chroma_middle_prediction_clamps_bottom_edge_extension() {
+    let mut full =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+    let mut cropped =
+        new_general_intra_workspace::<u8>(64, 48, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+
+    for workspace in [&mut full, &mut cropped] {
+        for x in 0..32 {
+            workspace
+                .set_reconstructed_sample(PlaneId::U, x, 15, (32 + x) as u8)
+                .unwrap();
+        }
+    }
+    for row in 16..32 {
+        full.set_reconstructed_sample(PlaneId::U, 7, row, (40 + row.min(23)) as u8)
+            .unwrap();
+    }
+    for row in 16..24 {
+        cropped
+            .set_reconstructed_sample(PlaneId::U, 7, row, (40 + row) as u8)
+            .unwrap();
+    }
+
+    for workspace in [&mut full, &mut cropped] {
+        reconstruct_general_intra_middle_neighbour_rect_block_into(
+            workspace,
+            &all_zero_luma_block(),
+            157,
+            PlaneId::U,
+            8,
+            16,
+            3,
+            4,
+            121,
+            false,
+            None,
+            None,
+            BitDepth::Eight,
+            MiddleEdgeAvailability::new(true, true),
+            TwoSidedMiddleEdgeFilters {
+                above: OneSidedEdgeFilter::default(),
+                left: OneSidedEdgeFilter::default(),
+            },
+        )
+        .unwrap();
+    }
+
+    for y in 16..24 {
+        for x in 8..16 {
+            assert_eq!(
+                cropped.reconstructed_sample(PlaneId::U, x, y).unwrap(),
+                full.reconstructed_sample(PlaneId::U, x, y).unwrap(),
+            );
+        }
+    }
+}
+
 /// STRIDE/TRANSPOSE GUARD — V_PRED over a NON-SQUARE 64x32 (`W == 64`,
 /// `H == 32`) block with a REAL, NON-FLAT above row. §7.13.2.8 V_PRED copies the
 /// 64-wide above row into every one of the 32 rows; a width/height swap or a
