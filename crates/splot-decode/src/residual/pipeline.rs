@@ -693,6 +693,7 @@ impl ResidualPlanePlan {
             false,
             self.fsc_mode,
             self.txb_skip_fsc_mode,
+            chroma_pair::cctx_allowed(self),
             policy,
         )?;
         self.apply_reconstruction_tx_type(&mut coeffs);
@@ -791,6 +792,7 @@ impl ResidualPlanePlan {
                     false,
                     self.fsc_mode,
                     self.txb_skip_fsc_mode,
+                    chroma_pair::cctx_allowed(self),
                     policy,
                 )?;
                 self.apply_reconstruction_tx_type(&mut coeffs);

@@ -663,6 +663,7 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
             false,
             fsc_mode,
             fsc_mode,
+            false,
             transform_tool_residual_policy,
         )?;
         blocks.push(PositionedLumaCoeffBlock {
@@ -1016,6 +1017,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     is_inter: bool,
     fsc_mode: bool,
     txb_skip_fsc_mode: bool,
+    cctx_allowed: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let frame_facts = work_unit.coeff_frame_facts();
@@ -1141,6 +1143,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             is_inter,
             fsc_mode,
             txb_skip_fsc_mode,
+            cctx_allowed,
             luma,
             active_intra_ist,
             active_chroma,
@@ -1186,7 +1189,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn decode_staged_transform_tool_nonzero_coeffs(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
@@ -1200,6 +1203,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     is_inter: bool,
     fsc_mode: bool,
     txb_skip_fsc_mode: bool,
+    cctx_allowed: bool,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
     active_intra_ist_policy: ActiveIntraIstResidualPolicy,
     active_chroma_policy: ActiveChromaResidualPolicy,
@@ -1245,6 +1249,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             lossless,
             fsc_mode: fsc_mode || (geometry.plane > 0 && txb_skip_fsc_mode),
             eob,
+            cctx_allowed,
             luma_transform_type_context,
             active_intra_ist_policy,
             active_chroma_policy,
@@ -1409,9 +1414,21 @@ struct TransformToolResidualInput {
     lossless: bool,
     fsc_mode: bool,
     eob: usize,
+    cctx_allowed: bool,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
     active_intra_ist_policy: ActiveIntraIstResidualPolicy,
     active_chroma_policy: ActiveChromaResidualPolicy,
+}
+
+/// § 5.20.7.27 `is_cctx_allowed` block-geometry clause: cross-chroma transforms
+/// stay available for 4:2:0 and for chroma plane residual blocks under 32
+/// samples in either dimension.
+pub(crate) const fn is_cctx_geometry_allowed(
+    is_420: bool,
+    plane_width: usize,
+    plane_height: usize,
+) -> bool {
+    is_420 || plane_width < 32 || plane_height < 32
 }
 
 fn ensure_transform_tool_residual_handoff(
@@ -1429,8 +1446,12 @@ fn ensure_transform_tool_residual_handoff(
         luma_tx_type: DCT_DCT,
         ..TransformToolResidualMetadata::default()
     };
-    // TODO(spec: DECODE-FIRST-INTER-FRAME-FRONTIER): 5.20.7.27 is_cctx_allowed also excludes non-4:2:0 >=32x32 chroma; exact for the admitted 4:2:0 subset.
-    if plane == 1 && frame_facts.enable_cctx() && !lossless && (is_inter || eob != 1) {
+    if plane == 1
+        && frame_facts.enable_cctx()
+        && !lossless
+        && input.cctx_allowed
+        && (is_inter || eob != 1)
+    {
         let cctx_type = read_chroma_cctx_type(cdfs, symbols, input.active_chroma_policy)?;
         metadata.cctx_type = Some(cctx_type);
     }

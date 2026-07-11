@@ -485,6 +485,13 @@ ivf_sha256 = "18c8f0f5e80e0e9c3b25ce3f61296201015d8a14e6a3f897d2202d9344f7db95"
 avm_raw_sha256 = "a24bd8a8cb3c9b293d3bc0209c2b0f6357fec74727a4958baf341791ee1a1bae"
 
 [[fixture]]
+id = "syn-cctx-444-intra-128x128"
+status = "must_pass"
+features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single", "transform.cctx"]
+ivf_sha256 = "4e44edfb887e1d8d6467fd8a9d3dc43ee4c7cda2ffc4f0cac2a7263e4c62518b"
+avm_raw_sha256 = "61854be209ee4caceec47baf4bd5d2b796e296d5451f89973f0e2e519a524a05"
+
+[[fixture]]
 id = "syn-filmgrain-intra-64x64"
 status = "must_pass"
 features = ["container.ivf", "film_grain.present", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]

@@ -1158,6 +1158,11 @@ description = "Tiny AVM transform.idtx_fsc fixture (decode-oracle coverage; the 
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-cctx-444-intra-128x128.ivf"
+description = "Tiny AVM transform.cctx fixture: 4:4:4 with >=32x32 chroma-plane blocks exercising the 5.20.7.27 is_cctx_allowed geometry exclusion; validates clean, and the general-intra decoder reproduces avmdec's raw output byte-for-byte."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-ist-intra-128x128.ivf"
 description = "Tiny AVM transform.secondary_ist fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"

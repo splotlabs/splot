@@ -394,6 +394,13 @@ fixtureable = true
 spec_sections = ["5.20.7.7", "7.13.3.19", "7.13.3.23"]
 
 [[capability]]
+id = "transform.cctx"
+name = "Cross-chroma component transform (CCTX)"
+category = "transform"
+fixtureable = true
+spec_sections = ["5.20.7.27", "7.14.6"]
+
+[[capability]]
 id = "transform.dct_adst"
 name = "DCT/ADST/FDST separable transforms"
 category = "transform"

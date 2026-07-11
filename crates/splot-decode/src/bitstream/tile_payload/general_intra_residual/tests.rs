@@ -340,6 +340,7 @@ fn ensure_with_test_payload_fsc_and_policy(
                 .unwrap_or(false),
             fsc_mode,
             eob,
+            cctx_allowed: true,
             luma_transform_type_context: luma,
             active_intra_ist_policy,
             active_chroma_policy,
@@ -370,6 +371,7 @@ fn lossless_intra_transform_handoff_forces_dct_without_tx_type_or_ist_reads() {
             lossless: true,
             fsc_mode: false,
             eob: 2,
+            cctx_allowed: true,
             luma_transform_type_context: Some(dc_luma_context()),
             active_intra_ist_policy: ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
             active_chroma_policy: ActiveChromaResidualPolicy::Reject,
@@ -399,6 +401,7 @@ fn lossless_fsc_luma_transform_handoff_retains_idtx_without_tx_type_read() {
             lossless: true,
             fsc_mode: true,
             eob: 2,
+            cctx_allowed: true,
             luma_transform_type_context: None,
             active_intra_ist_policy: ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
             active_chroma_policy: ActiveChromaResidualPolicy::Reject,
@@ -427,6 +430,7 @@ fn lossless_fsc_chroma_transform_handoff_follows_luma_idtx() {
             lossless: true,
             fsc_mode: true,
             eob: 2,
+            cctx_allowed: true,
             luma_transform_type_context: None,
             active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
             active_chroma_policy: ActiveChromaResidualPolicy::Reject,
@@ -1096,6 +1100,7 @@ fn lossless_chroma_transform_handoff_skips_cctx_read() {
             lossless: true,
             fsc_mode: false,
             eob: 2,
+            cctx_allowed: true,
             luma_transform_type_context: None,
             active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
             active_chroma_policy: ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
@@ -1105,6 +1110,51 @@ fn lossless_chroma_transform_handoff_skips_cctx_read() {
 
     assert_eq!(metadata.cctx_type, None);
     assert_eq!(symbols.symbol_count(), 0);
+}
+
+#[test]
+fn chroma_transform_handoff_skips_cctx_read_when_geometry_disallows() {
+    let facts = frame_facts(false, false, false, true);
+    let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, 1)]);
+    for (cctx_allowed, expected_cctx_type, expected_symbols) in
+        [(false, None, 0), (true, Some(1), 1)]
+    {
+        let mut cdfs = tile_cdfs();
+        let mut symbols = symbol_decoder_for_payload(&payload);
+
+        let metadata = ensure_transform_tool_residual_handoff(
+            &mut cdfs,
+            &mut symbols,
+            TransformToolResidualInput {
+                frame_facts: facts,
+                plane: 1,
+                tx_size: TX_32X32,
+                is_inter: false,
+                lossless: false,
+                fsc_mode: false,
+                eob: 2,
+                cctx_allowed,
+                luma_transform_type_context: None,
+                active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
+                active_chroma_policy: ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(metadata.cctx_type, expected_cctx_type);
+        assert_eq!(symbols.symbol_count(), expected_symbols);
+    }
+}
+
+#[test]
+fn cctx_geometry_allowance_matches_spec_clause() {
+    assert!(is_cctx_geometry_allowed(true, 64, 64));
+    assert!(is_cctx_geometry_allowed(false, 16, 64));
+    assert!(is_cctx_geometry_allowed(false, 64, 16));
+    assert!(is_cctx_geometry_allowed(false, 16, 16));
+    assert!(!is_cctx_geometry_allowed(false, 32, 32));
+    assert!(!is_cctx_geometry_allowed(false, 32, 64));
+    assert!(!is_cctx_geometry_allowed(false, 64, 64));
 }
 
 #[test]
@@ -1126,6 +1176,7 @@ fn lossless_inter_luma_transform_handoff_reads_tx_type_metadata() {
                 lossless: true,
                 fsc_mode: false,
                 eob: 16,
+                cctx_allowed: true,
                 luma_transform_type_context: None,
                 active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
                 active_chroma_policy: ActiveChromaResidualPolicy::Reject,
@@ -1155,6 +1206,7 @@ fn lossless_inter_luma_transform_handoff_large_tx_implies_idtx_without_symbol() 
             lossless: true,
             fsc_mode: false,
             eob: 16,
+            cctx_allowed: true,
             luma_transform_type_context: None,
             active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
             active_chroma_policy: ActiveChromaResidualPolicy::Reject,
@@ -1184,6 +1236,7 @@ fn lossless_inter_chroma_transform_handoff_skips_tx_type_metadata() {
             lossless: true,
             fsc_mode: false,
             eob: 16,
+            cctx_allowed: true,
             luma_transform_type_context: None,
             active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
             active_chroma_policy: ActiveChromaResidualPolicy::Reject,

@@ -353,6 +353,7 @@ fn read_inter_residual_luma_chunk(
                 tx_fills_block,
                 DCT_DCT,
                 false,
+                false,
                 residual_tool_policy,
                 tile_offset,
             )?;
@@ -414,6 +415,7 @@ fn read_inter_residual_luma_records_for_chunk(
             tx_fills_block,
             DCT_DCT,
             false,
+            false,
             residual_tool_policy,
             tile_offset,
         )?;
@@ -466,6 +468,17 @@ fn read_inter_residual_chroma_group(
         .valid()
         .ok_or_else(|| residual_geometry_error(tile_offset))?;
     let tx_size = fixed_inter_residual_tx_size(chroma_ref_size.index(), lossless, tile_offset)?;
+    let cctx_allowed = is_cctx_geometry_allowed(
+        subsampling_x && subsampling_y,
+        chroma_ref_size
+            .num_4x4_wide()
+            .map_err(|_| residual_geometry_error(tile_offset))?
+            * MI_SIZE,
+        chroma_ref_size
+            .num_4x4_high()
+            .map_err(|_| residual_geometry_error(tile_offset))?
+            * MI_SIZE,
+    );
     let plane_source_size = if chroma_mi_size != frontier.b_size {
         chroma_mi_size
     } else {
@@ -539,6 +552,7 @@ fn read_inter_residual_chroma_group(
                 unit.tx_fills_block,
                 unit.chroma_inter_tx_type,
                 false,
+                cctx_allowed,
                 residual_tool_policy,
                 tile_offset,
             )?;
@@ -579,6 +593,7 @@ fn read_inter_residual_chroma_group(
             read.unit.tx_fills_block,
             read.unit.chroma_inter_tx_type,
             read.u_nonzero,
+            cctx_allowed,
             residual_tool_policy,
             tile_offset,
         )?;
@@ -641,6 +656,7 @@ fn read_inter_residual_plane(
     tx_fills_block: bool,
     chroma_inter_tx_type: usize,
     chroma_eob_ctx: bool,
+    cctx_allowed: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<LumaCoeffBlock> {
@@ -661,6 +677,7 @@ fn read_inter_residual_plane(
         true,
         false,
         false,
+        cctx_allowed,
         residual_tool_policy,
     )
     .map_err(|_| residual_read_error(tile_offset))

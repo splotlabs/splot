@@ -7,7 +7,7 @@ use splot_recon::{CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
 
 use crate::bitstream::tile_payload::{
     DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
-    TileBlockDecodedState, current_frame_qm_segment_id,
+    TileBlockDecodedState, current_frame_qm_segment_id, is_cctx_geometry_allowed,
     reconstruct_general_intra_chroma_cctx_pair_with_predictions,
 };
 
@@ -25,6 +25,19 @@ pub(super) fn can_hold_for_cctx_pair(
                 .lossless_for_segment(current_frame_qm_segment_id()),
             Some(false)
         )
+}
+
+pub(super) fn cctx_allowed(plane: ResidualPlanePlan) -> bool {
+    if plane.plane_id == PlaneId::Y {
+        return false;
+    }
+    let (sub_x, sub_y) = plane.block_ctx.chroma().subsampling(plane.plane_id);
+    let block = plane.block_ctx.plane_block(plane.plane_id);
+    is_cctx_geometry_allowed(
+        sub_x != 0 && sub_y != 0,
+        block.width4() * 4,
+        block.height4() * 4,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
