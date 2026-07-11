@@ -556,6 +556,12 @@ fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
     let max_logical = i64::try_from(height)
         .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
         + 1;
+    let max_y = workspace
+        .plane(PlaneId::Y)?
+        .storage_size()
+        .height()
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     build_two_sided_middle_mrl_idif_edge(height, mrl_index, max_logical, |logical| {
         let row = if logical < 0 {
             if is_sb_boundary {
@@ -571,6 +577,7 @@ fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
             let logical = usize::try_from(logical)
                 .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
             y.saturating_add(logical.min(height.saturating_sub(1)))
+                .min(max_y)
         };
         Ok(workspace.reconstructed_sample(PlaneId::Y, left_col, row)?)
     })
