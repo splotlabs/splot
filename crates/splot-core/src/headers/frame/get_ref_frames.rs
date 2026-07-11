@@ -184,15 +184,10 @@ pub fn get_relative_dist(a: i32, b: i32) -> i32 {
 /// `first_slot_with_ref( i )` (AV2 v1.0.0 § 7.7): `true` when slot `i` is the lowest-indexed
 /// valid slot holding its distinct decoded frame (deduplicated by `RefCounter`).
 fn first_slot_with_ref(slots: &[RefSlot], i: usize) -> bool {
-    if !slots[i].valid {
-        return false;
-    }
-    for slot in &slots[..i] {
-        if slot.valid && slot.counter == slots[i].counter {
-            return false;
-        }
-    }
-    true
+    slots[i].valid
+        && !slots[..i]
+            .iter()
+            .any(|slot| slot.valid && slot.counter == slots[i].counter)
 }
 
 /// `valid_ref_frame_size( checkRes, slot )` (AV2 v1.0.0 § 7.7): the resolution-compatibility
@@ -225,10 +220,9 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
     let active_num_ref_frames = REFS_PER_FRAME.min(input.num_ref_frames);
 
     let mut map_order_hint: [Option<i32>; NUM_REF_FRAMES] = [None; NUM_REF_FRAMES];
-    let mut map_base_q_idx: [u32; NUM_REF_FRAMES] = [0; NUM_REF_FRAMES];
     let mut max_disp: i32 = 0;
 
-    for i in 0..num_ref_frames {
+    for (i, mapped_order_hint) in map_order_hint.iter_mut().enumerate().take(num_ref_frames) {
         let slot = &input.slots[i];
         let allowed = (input.allowed_frames & (1i32 << i)) != 0;
         let bridge_ok = !input.is_bridge || i as u32 == input.bridge_frame_ref_idx;
@@ -245,9 +239,8 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
             && layer_ok
         {
             if valid_ref_frame_size(check_res, input.frame_width, input.frame_height, slot) {
-                map_order_hint[i] = Some(slot.order_hint);
+                *mapped_order_hint = Some(slot.order_hint);
             }
-            map_base_q_idx[i] = slot.base_q_idx;
             max_disp = max_disp.max(slot.order_hint);
         }
     }
@@ -255,12 +248,12 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
     let mut ranked: Vec<Ranked> = Vec::with_capacity(num_ref_frames);
     let mut min_q: u32 = 0;
     let mut max_q: u32 = 0;
-    for i in 0..num_ref_frames {
-        let Some(d) = map_order_hint[i] else {
+    for (i, mapped_order_hint) in map_order_hint.iter().enumerate().take(num_ref_frames) {
+        let Some(d) = *mapped_order_hint else {
             continue;
         };
         let slot = &input.slots[i];
-        let q = map_base_q_idx[i];
+        let q = slot.base_q_idx;
         let disp_diff = get_relative_dist(input.order_hint, d);
         let t_dist =
             i64::from(disp_diff.abs()) + i64::from(input.obu_mlayer_id) - i64::from(slot.mlayer_id);
@@ -395,9 +388,6 @@ fn get_unmapped_ref(ranked: &[Ranked], q_thresh: u32) -> Option<usize> {
 /// matching the spec's exact comparison (`ScoresScore[j] > ScoresScore[j + 1]`) so the
 /// equal-score ordering is the spec's, not a library sort's.
 fn bubble_sort_ref_scores(ranked: &mut [Ranked]) {
-    if ranked.is_empty() {
-        return;
-    }
     for i in (1..ranked.len()).rev() {
         for j in 0..i {
             if ranked[j].score > ranked[j + 1].score {
