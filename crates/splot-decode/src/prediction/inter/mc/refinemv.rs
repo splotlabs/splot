@@ -179,6 +179,7 @@ fn search_refinemv<T: ReconSample>(
         rect.luma_w,
         rect.luma_h,
         workspace.info().bit_depth(),
+        !block.refinemv_switchable,
     )?;
     Ok([
         Mv {
@@ -208,6 +209,7 @@ fn search_refinemv_offset(
     width: usize,
     height: usize,
     bit_depth: splot_recon::BitDepth,
+    allow_center: bool,
 ) -> splot_recon::Result<(i32, i32)> {
     let sad_width = width.checked_add(4).ok_or(ReconError::ArithmeticOverflow {
         context: "refine-MV SAD width",
@@ -217,19 +219,28 @@ fn search_refinemv_offset(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "refine-MV SAD height",
         })?;
-    let threshold = sad_width
-        .checked_mul(sad_height)
-        .and_then(|area| area.checked_mul(2))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "refine-MV SAD threshold",
-        })? as u64;
-    let center = refinemv_sad(pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth)?;
-    let mut best_sad = center - (center >> 3);
-    if best_sad < threshold {
-        return Ok((0, 0));
-    }
-    let mut best = (0, 0);
-    for (dy, dx) in SEARCH_NEIGHBORS {
+    // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
+    let (mut best, mut best_sad, first_unchecked_neighbor) = if allow_center {
+        let threshold = sad_width
+            .checked_mul(sad_height)
+            .and_then(|area| area.checked_mul(2))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "refine-MV SAD threshold",
+            })? as u64;
+        let center = refinemv_sad(pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth)?;
+        let biased_center = center - (center >> 3);
+        if biased_center < threshold {
+            return Ok((0, 0));
+        }
+        ((0, 0), biased_center, 0)
+    } else {
+        let (dy, dx) = SEARCH_NEIGHBORS[0];
+        let sad = refinemv_sad(
+            pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth,
+        )?;
+        ((dx, dy), sad, 1)
+    };
+    for &(dy, dx) in &SEARCH_NEIGHBORS[first_unchecked_neighbor..] {
         let sad = refinemv_sad(
             pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth,
         )?;
@@ -307,7 +318,8 @@ mod tests {
                 24,
                 16,
                 16,
-                splot_recon::BitDepth::Eight
+                splot_recon::BitDepth::Eight,
+                true,
             )
             .expect("centre search"),
             (0, 0)
@@ -324,9 +336,35 @@ mod tests {
             .flat_map(|y| (0..24).map(move |x| sample(y - 2, x + 2)))
             .collect();
         assert_eq!(
-            search_refinemv_offset(&pred0, &pred1, 24, 16, 16, splot_recon::BitDepth::Eight)
-                .expect("offset search"),
+            search_refinemv_offset(
+                &pred0,
+                &pred1,
+                24,
+                16,
+                16,
+                splot_recon::BitDepth::Eight,
+                true,
+            )
+            .expect("offset search"),
             (1, -1)
+        );
+    }
+
+    #[test]
+    fn switchable_search_rejects_low_sad_center_and_starts_with_first_neighbor() {
+        let prediction = vec![80u16; 24 * 24];
+        assert_eq!(
+            search_refinemv_offset(
+                &prediction,
+                &prediction,
+                24,
+                16,
+                16,
+                splot_recon::BitDepth::Eight,
+                false,
+            )
+            .expect("center-disabled search"),
+            (-2, -2)
         );
     }
 

@@ -608,6 +608,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             precision,
             skip_mode: false,
             use_refinemv,
+            refinemv_switchable,
             warp_params: warp_models,
         },
         skip,
@@ -810,6 +811,7 @@ pub(super) struct ResolvedCompoundBlock {
     pub(super) precision: BlockPrecisionRecord,
     pub(super) skip_mode: bool,
     pub(super) use_refinemv: bool,
+    pub(super) refinemv_switchable: bool,
     /// Per-list § 7.13.3.23 LOCALWARP models (`[None, None]` when translational).
     pub(super) warp_params: [Option<[i64; 6]>; 2],
 }
@@ -858,6 +860,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         precision,
         skip_mode,
         use_refinemv,
+        refinemv_switchable,
         warp_params,
     } = resolved;
     mv_grid.record_compound_block(
@@ -997,6 +1000,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         workspace,
         &placed,
         use_refinemv,
+        refinemv_switchable,
         block_decoded,
         ref_frame_idx,
         reference,
@@ -1268,6 +1272,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
             precision: BlockPrecisionRecord::most_probable(frame_mv_precision(core, tile_offset)?),
             skip_mode: true,
             use_refinemv: false,
+            refinemv_switchable: false,
             warp_params: [None, None],
         },
         skip,
