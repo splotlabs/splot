@@ -8,11 +8,13 @@ use splot_core::span::ByteOffset;
 use splot_parallel::prelude::*;
 use splot_recon::{
     LoopRestorationSource, LoopRestorationSourceBounds, PC_WIENER_CLASSIFY_READ_RADIUS,
-    PcWienerClassifyParams, PlaneId, PlaneRect, ReconError, ReconSample, Result as ReconResult,
-    WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS,
-    WIENER_NS_LUMA_TAP_RADIUS, WienerNsChromaFilter, WienerNsLumaFilter, WienerNsLumaPaddedSource,
-    loop_restoration_source_sample, pc_wiener_classify, pc_wiener_filter_set_index,
-    pc_wiener_subclass, wiener_ns_filter_chroma_block, wiener_ns_filter_luma_block_padded,
+    PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES, PcWienerClassifyParams, PcWienerFilter,
+    PlaneId, PlaneRect, ReconError, ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS,
+    WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
+    WienerNsChromaFilter, WienerNsLumaFilter, WienerNsLumaPaddedSource,
+    loop_restoration_source_sample, pc_wiener_classify, pc_wiener_filter_block,
+    pc_wiener_filter_set_index, pc_wiener_subclass, wiener_ns_filter_chroma_block,
+    wiener_ns_filter_luma_block_padded,
 };
 
 use super::{MI_SIZE, WienerNsLrReconSink};
@@ -476,10 +478,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let Some(plane) = lr_params.planes.first() else {
             return Ok(());
         };
-        if plane.restoration_type == FrameRestorationType::PcWiener && !y_blocks.is_empty() {
-            return Err(luma_lr_filter_error(offset));
-        }
-        if plane.restoration_type != FrameRestorationType::WienerNonsep || y_blocks.is_empty() {
+        if !matches!(
+            plane.restoration_type,
+            FrameRestorationType::WienerNonsep | FrameRestorationType::PcWiener
+        ) || y_blocks.is_empty()
+        {
             return Ok(());
         }
 
@@ -493,18 +496,29 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?
             .base_q_idx;
-        let frame_coeffs = if plane.frame_filters_on {
+        let filter_set_index = pc_wiener_filter_set_index(qindex);
+        let frame_coeffs = if plane.restoration_type == FrameRestorationType::WienerNonsep
+            && plane.frame_filters_on
+        {
             let num_classes = usize::from(plane.num_filter_classes.unwrap_or(1));
             Some((
                 luma_lr_frame_coeffs(plane, num_classes, offset)?,
                 num_classes,
-                pc_wiener_filter_set_index(qindex),
             ))
         } else {
             None
         };
         let compute = |block: &WienerNsLrSourceBlock| {
-            if let Some((coeffs, num_classes, filter_set_index)) = frame_coeffs.as_ref() {
+            if plane.restoration_type == FrameRestorationType::PcWiener {
+                self.compute_pc_wiener_block(
+                    offset,
+                    block,
+                    curr_luma,
+                    cdef_luma,
+                    qindex,
+                    filter_set_index,
+                )
+            } else if let Some((coeffs, num_classes)) = frame_coeffs.as_ref() {
                 self.compute_luma_lr_block(
                     offset,
                     block,
@@ -512,7 +526,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     cdef_luma,
                     qindex,
                     *num_classes,
-                    *filter_set_index,
+                    filter_set_index,
                     coeffs,
                 )
             } else {
@@ -548,6 +562,82 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 y_blocks.iter().map(&compute).collect::<Result<_>>()?
             };
         self.publish_lr_outputs(PlaneId::Y, filtered, offset)
+    }
+
+    fn compute_pc_wiener_block(
+        &self,
+        offset: ByteOffset,
+        block: &WienerNsLrSourceBlock,
+        curr_luma: &[u16],
+        cdef_luma: &[u16],
+        qindex: u32,
+        filter_set_index: usize,
+    ) -> Result<(WienerNsLrSourceBlock, Vec<T>)> {
+        let block = clipped_lr_source_block(
+            block,
+            self.luma_width,
+            self.luma_height,
+            self.luma_width,
+            self.luma_height,
+            offset,
+        )?;
+        let sample_count = block
+            .width
+            .checked_mul(block.height)
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let bounds = crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(&block, 0, 0);
+        let block_x = usize_to_isize_recon(block.x, "PC-Wiener block x")
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let block_y = usize_to_isize_recon(block.y, "PC-Wiener block y")
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let window = LrSourceWindow::<T>::materialize(
+            PlaneId::Y,
+            curr_luma,
+            cdef_luma,
+            self.luma_width,
+            self.luma_height,
+            &bounds,
+            block_x,
+            block_y,
+            block.width,
+            block.height,
+            PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS),
+        )
+        .map_err(|_| luma_lr_filter_error(offset))?;
+        let subclasses = self.luma_lr_subclasses(
+            offset,
+            &block,
+            &window,
+            qindex,
+            PC_WIENER_FULL_CLASSES,
+            filter_set_index,
+            sample_count,
+        )?;
+        let mut output = vec![T::default(); sample_count];
+        let params = PcWienerFilter {
+            width: block.width,
+            height: block.height,
+            output_stride: block.width,
+            bit_depth: self.bit_depth,
+            filter_set_index,
+            subclasses: &subclasses,
+        };
+        pc_wiener_filter_block(&mut output, &params, |x, y| {
+            let x = block_x
+                .checked_add(x)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener source x",
+                })?;
+            let y = block_y
+                .checked_add(y)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener source y",
+                })?;
+            Ok(window.get_abs(x, y))
+        })
+        .map_err(|_| luma_lr_filter_error(offset))?;
+        self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, &mut output, offset)?;
+        Ok((block, output))
     }
 
     fn publish_lr_outputs(

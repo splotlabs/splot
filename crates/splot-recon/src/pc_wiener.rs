@@ -1,21 +1,20 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 7.20.4 pixel-classified Wiener skip-filter classification.
+//! AV2 § 7.20.4 pixel-classified Wiener filtering.
 //!
-//! This module implements the scheduler-free classification portion of the AV2
-//! § 7.20.4 pixel-classified Wiener filter process
+//! This module implements scheduler-free primitives for the AV2 § 7.20.4
+//! pixel-classified Wiener filter process
 //! ([`07-decoding-process.md`](../../../docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-4)).
 //! The caller resolves § 7.20.2 source-sample selection, frame/restoration-unit
-//! traversal, and the `LrTxSkip` grid storage. This primitive derives the
-//! skip-filter class value from caller-provided source samples and `LrTxSkip`
-//! values; it does not store `FilterClass`, derive `SubclassLookup`, invoke
-//! § 7.20.3 filtering, or wire runtime decode output.
+//! traversal, and the `LrTxSkip` grid storage. The primitives derive the
+//! skip-filter class and apply the fixed § 9.8 filter selected by the caller;
+//! they do not store `FilterClass` or wire runtime decode output.
 //!
 //! Feature tracking: `RECON-PC-WIENER-CLASSIFICATION`.
 
 use splot_tables::tables::loop_restoration::{
-    PC_WIENER_LUT_TO_CLASS, PC_WIENER_SUB_CLASSIFY, PC_WIENER_SUB_CLASSIFY2,
+    PC_WIENER_FILTERS, PC_WIENER_LUT_TO_CLASS, PC_WIENER_SUB_CLASSIFY, PC_WIENER_SUB_CLASSIFY2,
 };
 
 use crate::dequant::quantizer_value;
@@ -36,6 +35,9 @@ pub const PC_WIENER_LUT_CLASSES: usize = 256;
 /// Number of AV2 § 9.8 PC-Wiener filter classes in the full classifier.
 pub const PC_WIENER_FULL_CLASSES: usize = 64;
 
+/// Maximum absolute § 7.20.4 PC-Wiener filter-tap offset in either axis.
+pub const PC_WIENER_FILTER_TAP_RADIUS: usize = 3;
+
 /// Maximum distance of any § 7.20.4 classification source read from the
 /// classified sample, in either axis (`PC_WIENER_LAG` plus the one-sample
 /// feature neighborhood).
@@ -55,6 +57,23 @@ const PC_WIENER_LEAD: isize = 1;
 const PC_WIENER_LAG: isize = 4;
 /// AV2 § 7.20.4 `Pc_Wiener_Normalizer`.
 const PC_WIENER_NORMALIZER: [i64; PC_WIENER_NUM_FEATURES + 1] = [0, 3739, 3273, 3074, 7];
+/// AV2 § 3 `PC_WIENER_PREC_BITS`.
+const PC_WIENER_PREC_BITS: u32 = 7;
+/// One representative from each symmetric pair in § 7.20.4 `Pc_Wiener_Config`.
+const PC_WIENER_CONFIG: [(isize, isize); 12] = [
+    (1, 0),
+    (0, 1),
+    (2, 0),
+    (0, 2),
+    (1, 1),
+    (-1, 1),
+    (2, 1),
+    (2, -1),
+    (1, 2),
+    (1, -2),
+    (3, 0),
+    (0, 3),
+];
 /// AV2 § 7.20.4 `Mode_Weights`.
 const MODE_WEIGHTS: [[i64; 3]; PC_WIENER_NUM_FEATURES] = [
     [-527, 15325, 321],
@@ -123,6 +142,23 @@ pub struct PcWienerClassification {
     pub lut_input: u16,
     /// AV2 § 7.20.4 `cls = Pc_Wiener_Lut_To_Class[lutInput]`.
     pub class: u8,
+}
+
+/// Caller-resolved parameters for AV2 § 7.20.4 PC-Wiener block filtering.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PcWienerFilter<'a> {
+    /// Output block width in samples.
+    pub width: usize,
+    /// Output block height in samples.
+    pub height: usize,
+    /// Distance in samples between adjacent output rows.
+    pub output_stride: usize,
+    /// Active decoded bit depth used for source validation and `Clip1`.
+    pub bit_depth: BitDepth,
+    /// Caller-selected § 9.8 filter set.
+    pub filter_set_index: usize,
+    /// Row-major per-output-sample filter indices.
+    pub subclasses: &'a [usize],
 }
 
 /// Derives an AV2 § 7.20.4 pixel-classified Wiener skip-filter class.
@@ -275,6 +311,113 @@ pub fn pc_wiener_subclass(
     usize::try_from(value).map_err(|_| ReconError::PcWienerInvalidBounds {
         field: "PC-Wiener subclass table value",
     })
+}
+
+/// Applies the fixed AV2 § 7.20.4 PC-Wiener filter to a luma block.
+///
+/// `subclasses` is a row-major per-output-sample map into the selected § 9.8
+/// filter set. `source_sample(x, y)` receives block-relative coordinates after
+/// the caller resolves § 7.20.2 source selection and frame offsets.
+///
+/// # Errors
+/// Returns typed [`ReconError`] values for unsupported sample storage, invalid
+/// block geometry or table indices, too-small buffers, source lookup failures,
+/// and source samples outside the active bit-depth range. Output is fail-atomic.
+#[inline]
+pub fn pc_wiener_filter_block<T, F>(
+    output: &mut [T],
+    params: &PcWienerFilter<'_>,
+    mut source_sample: F,
+) -> Result<()>
+where
+    T: ReconSample,
+    F: FnMut(isize, isize) -> Result<T>,
+{
+    validate_sample_type::<T>(params.bit_depth)?;
+    if params.width == 0 || params.height == 0 || params.output_stride < params.width {
+        return Err(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener filter geometry",
+        });
+    }
+    let sample_count =
+        params
+            .width
+            .checked_mul(params.height)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "PC-Wiener filter sample count",
+            })?;
+    let output_len = (params.height - 1)
+        .checked_mul(params.output_stride)
+        .and_then(|prefix| prefix.checked_add(params.width))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "PC-Wiener filter output length",
+        })?;
+    if output.len() < output_len {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output_len,
+            actual: output.len(),
+        });
+    }
+    if params.subclasses.len() < sample_count {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: sample_count,
+            actual: params.subclasses.len(),
+        });
+    }
+    let Some(filters) = PC_WIENER_FILTERS.get(params.filter_set_index) else {
+        return Err(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener filter set index",
+        });
+    };
+    if params.subclasses[..sample_count]
+        .iter()
+        .any(|&subclass| subclass >= filters.len())
+    {
+        return Err(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener filter index",
+        });
+    }
+
+    let max_sample = i64::from(params.bit_depth.max_sample());
+    let mut filtered = Vec::with_capacity(sample_count);
+    for row in 0..params.height {
+        for col in 0..params.width {
+            let row = isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
+                context: "PC-Wiener filter row",
+            })?;
+            let col = isize::try_from(col).map_err(|_| ReconError::ArithmeticOverflow {
+                context: "PC-Wiener filter column",
+            })?;
+            let index = filtered.len();
+            let coeffs = &filters[params.subclasses[index]];
+            let center = source_value(&mut source_sample, col, row, params.bit_depth)?;
+            let mut sum = (center << PC_WIENER_PREC_BITS) + center * i64::from(coeffs[12]);
+            for (&(dy, dx), &coeff) in PC_WIENER_CONFIG.iter().zip(coeffs) {
+                let positive = source_value(
+                    &mut source_sample,
+                    coordinate_add(col, dx, "PC-Wiener filter x")?,
+                    coordinate_add(row, dy, "PC-Wiener filter y")?,
+                    params.bit_depth,
+                )?;
+                let negative = source_value(
+                    &mut source_sample,
+                    coordinate_add(col, -dx, "PC-Wiener filter x")?,
+                    coordinate_add(row, -dy, "PC-Wiener filter y")?,
+                    params.bit_depth,
+                )?;
+                sum += (positive + negative) * i64::from(coeff);
+            }
+            let sample = round2(sum, PC_WIENER_PREC_BITS).clamp(0, max_sample);
+            filtered.push(T::try_from_u16(sample as u16)?);
+        }
+    }
+
+    for row in 0..params.height {
+        for col in 0..params.width {
+            output[row * params.output_stride + col] = filtered[row * params.width + col];
+        }
+    }
+    Ok(())
 }
 
 const fn pc_wiener_subclass_target_index(num_classes: usize) -> Option<usize> {
@@ -744,5 +887,50 @@ mod tests {
                 field: "block x range",
             }
         );
+    }
+
+    #[test]
+    fn fixed_filter_matches_hand_computed_quadratic_sample() {
+        let mut output = [0u16; 1];
+        let params = PcWienerFilter {
+            width: 1,
+            height: 1,
+            output_stride: 1,
+            bit_depth: BitDepth::Ten,
+            filter_set_index: 0,
+            subclasses: &[2],
+        };
+        pc_wiener_filter_block(&mut output, &params, |x, y| {
+            u16::try_from(500 + 10 * x * x + 20 * y * y + 5 * x * y).map_err(|_| {
+                ReconError::ArithmeticOverflow {
+                    context: "test PC-Wiener source",
+                }
+            })
+        })
+        .unwrap();
+
+        assert_eq!(output, [499]);
+    }
+
+    #[test]
+    fn fixed_filter_rejects_out_of_range_subclass_without_writing() {
+        let mut output = [7u8; 1];
+        let params = PcWienerFilter {
+            width: 1,
+            height: 1,
+            output_stride: 1,
+            bit_depth: BitDepth::Eight,
+            filter_set_index: 0,
+            subclasses: &[PC_WIENER_FULL_CLASSES],
+        };
+        let err = pc_wiener_filter_block(&mut output, &params, |_, _| Ok(0)).unwrap_err();
+
+        assert_eq!(
+            err,
+            ReconError::PcWienerInvalidBounds {
+                field: "PC-Wiener filter index",
+            }
+        );
+        assert_eq!(output, [7]);
     }
 }
