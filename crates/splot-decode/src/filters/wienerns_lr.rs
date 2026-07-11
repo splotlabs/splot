@@ -136,16 +136,14 @@ fn derive_wienerns_lr_skip_grid(
             actual: populated,
         });
     }
-    let mut dense = Vec::with_capacity(expected);
-    for value in values {
-        let Some(value) = value else {
-            return Err(ReconError::BufferLengthMismatch {
+    let dense =
+        values
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(ReconError::BufferLengthMismatch {
                 expected,
                 actual: populated,
-            });
-        };
-        dense.push(value);
-    }
+            })?;
     WienerNsLrTxSkipGrid::new(rows, cols, dense)
 }
 
