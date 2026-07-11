@@ -246,7 +246,7 @@ impl TrajectoryState {
         };
         let Some(position) = self
             .sampled_position(y8, x8, projected)
-            .filter(|&position| self.position_allowed(position, (y8, x8)))
+            .filter(|&position| self.position_allowed((y8, x8), position))
         else {
             return;
         };
@@ -387,6 +387,25 @@ mod tests {
 
         assert_eq!(state.fields[1].cell(1, 1), Some(Mv { row: -8, col: -16 }));
         assert_eq!(state.fields[0].cell(1, 1), Some(Mv { row: 8, col: 16 }));
+    }
+
+    #[test]
+    fn direct_projection_checks_source_against_destination_unit() {
+        let mut state = TrajectoryState::new((4, 32), 2, 1, 8).unwrap();
+        state.observe_projection(
+            0,
+            Some(1),
+            None,
+            1,
+            7,
+            Mv { row: 0, col: 1120 },
+            2,
+            5,
+            false,
+        );
+
+        assert_eq!(state.fields[0].cell(1, 14), Some(Mv { row: 0, col: -448 }));
+        assert_eq!(state.fields[1].cell(1, 14), Some(Mv { row: 0, col: 672 }));
     }
 
     #[test]
