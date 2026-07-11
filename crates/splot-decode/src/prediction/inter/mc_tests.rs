@@ -259,6 +259,36 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
 }
 
 #[test]
+fn tip_optflow_skips_low_sad_predictors() {
+    let pred0 = vec![55; 64];
+    let mut pred1 = pred0.clone();
+    pred1.iter_mut().take(10).for_each(|sample| *sample -= 1);
+    let chroma = vec![128; 16];
+    let reference0 = frame(8, 8, pred0, chroma.clone(), chroma.clone());
+    let reference1 = frame(8, 8, pred1, chroma.clone(), chroma);
+    let mut workspace = workspace(8, 8);
+    let mvs = motion_compensate_inter_block_with_optflow_mvs_into(
+        &mut workspace,
+        InterBlockParams::compound_average(
+            &reference0,
+            &reference1,
+            rect(0, 0, 8, 8),
+            Mv::ZERO,
+            Mv::ZERO,
+            InterpolationFilter::Bilinear,
+            CompoundBlend::default(),
+        )
+        .with_optflow_distances(Some([1, -1]))
+        .with_optflow_sad_threshold(Some(15)),
+        8,
+        ByteOffset::new(0),
+    )
+    .expect("TIP optical-flow SAD gate");
+
+    assert_eq!(mvs, None);
+}
+
+#[test]
 fn dispatcher_returns_default_refinemv_motion_grid() {
     let width = 32;
     let height = 32;
