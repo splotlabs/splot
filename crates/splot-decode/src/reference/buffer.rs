@@ -24,6 +24,7 @@ struct Slot {
     width: u32,
     height: u32,
     base_q_idx: u32,
+    counter: u32,
     delta_q_u_ac: i32,
     delta_q_v_ac: i32,
     is_inter: bool,
@@ -44,6 +45,7 @@ impl Slot {
         width: 0,
         height: 0,
         base_q_idx: 0,
+        counter: 0,
         delta_q_u_ac: 0,
         delta_q_v_ac: 0,
         is_inter: false,
@@ -57,13 +59,14 @@ impl Slot {
         motion_field: None,
     };
 
-    fn refresh(&mut self, frame_index: usize, update: &FrameRefUpdate, valid: bool) {
+    fn refresh(&mut self, frame_index: usize, update: &FrameRefUpdate, valid: bool, counter: u32) {
         *self = Self {
             valid,
             order_hint: update.order_hint,
             width: update.width,
             height: update.height,
             base_q_idx: update.base_q_idx,
+            counter,
             delta_q_u_ac: update.delta_q_u_ac,
             delta_q_v_ac: update.delta_q_v_ac,
             is_inter: update.is_inter,
@@ -127,9 +130,8 @@ impl RuntimeReferenceBuffer {
             }
             let valid = !update.is_key_or_switch || first;
             first = false;
-            slot.refresh(frame_index, update, valid);
+            slot.refresh(frame_index, update, valid, self.frame_counter);
         }
-        let _ = self.frame_counter;
     }
 
     pub(crate) fn build_store_eight<'a>(
@@ -216,6 +218,7 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) ref_frame_width: Vec<u32>,
     pub(crate) ref_frame_height: Vec<u32>,
     pub(crate) ref_base_q_idx: Vec<u32>,
+    pub(crate) ref_counter: Vec<u32>,
     pub(crate) ref_delta_q_u_ac: Vec<i32>,
     pub(crate) ref_delta_q_v_ac: Vec<i32>,
     pub(crate) ref_is_inter: Vec<bool>,
@@ -236,6 +239,7 @@ impl ReferenceMetadata {
             ref_frame_width: Vec::with_capacity(num),
             ref_frame_height: Vec::with_capacity(num),
             ref_base_q_idx: Vec::with_capacity(num),
+            ref_counter: Vec::with_capacity(num),
             ref_delta_q_u_ac: Vec::with_capacity(num),
             ref_delta_q_v_ac: Vec::with_capacity(num),
             ref_is_inter: Vec::with_capacity(num),
@@ -255,6 +259,7 @@ impl ReferenceMetadata {
         self.ref_frame_width.push(slot.width);
         self.ref_frame_height.push(slot.height);
         self.ref_base_q_idx.push(slot.base_q_idx);
+        self.ref_counter.push(slot.counter);
         self.ref_delta_q_u_ac.push(slot.delta_q_u_ac);
         self.ref_delta_q_v_ac.push(slot.delta_q_v_ac);
         self.ref_is_inter.push(slot.is_inter);

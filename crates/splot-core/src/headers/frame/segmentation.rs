@@ -4,11 +4,12 @@
 //! Frame-header segmentation parameters (AV2 v1.0.0 § 5.18.7.1,
 //! `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-1`).
 //!
-//! Models `segmentation_params()` on the **intra path** for both reference forms:
+//! Models `segmentation_params()` on the intra path and the inter paths whose
+//! `DerivedPrimaryRefFrame` availability is known, for both reference forms:
 //! the direct sequence reference (`cur_mfh_id == 0`) and the resolved multi-frame
-//! header reference (`cur_mfh_id > 0`). On the intra path `DerivedPrimaryRefFrame ==
-//! PRIMARY_REF_NONE`, so `segmentation_update_map` is inferred `1` and
-//! `segmentation_temporal_update` is inferred `0` without reading bits.
+//! header reference (`cur_mfh_id > 0`). When `DerivedPrimaryRefFrame == PRIMARY_REF_NONE`,
+//! `segmentation_update_map` is inferred `1` and `segmentation_temporal_update` is inferred
+//! `0`; otherwise the inter path reads the map flags.
 //!
 //! The `haveSegParams` / `allowChange` / `mfhId` derivation follows § 5.18.7.1:
 //! - When `cur_mfh_id > 0 && mfh_seg_info_present_flag[cur_mfh_id]` (the resolved MFH
@@ -118,27 +119,6 @@ pub struct SegmentationParams {
     pub last_active_seg_id: u8,
 }
 
-impl SegmentationParams {
-    /// The `segmentation_enabled == 0` result (AV2 § 5.18.7.1): every feature disabled, all
-    /// derived flags `0`. This is the value `parse_segmentation_params` returns for the
-    /// disabled path (after reading only the `segmentation_enabled` `f(1)` bit), exposed so a
-    /// caller that has already read that bit (e.g. the inter shared tail, which reads
-    /// `segmentation_enabled` itself to gate the unmodeled enabled-segmentation inter arm) can
-    /// reuse it without re-reading.
-    #[must_use]
-    pub(crate) const fn disabled() -> Self {
-        Self {
-            segmentation_enabled: false,
-            reuse_seg_info: false,
-            features: [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS],
-            segmentation_update_map: false,
-            segmentation_temporal_update: false,
-            seg_id_pre_skip: false,
-            last_active_seg_id: 0,
-        }
-    }
-}
-
 /// Parses `segmentation_params()` (AV2 v1.0.0 § 5.18.7.1,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-1`) on the intra path.
 ///
@@ -158,11 +138,44 @@ pub fn parse_segmentation_params(
     mfh: Option<&MfhSegView>,
 ) -> Result<SegmentationParams> {
     let segmentation_enabled = reader.read_flag()?;
+    parse_segmentation_params_body(reader, seg, mfh, segmentation_enabled, true, false)
+}
 
+pub(crate) fn parse_inter_segmentation_params(
+    reader: &mut BitReader<'_>,
+    seg: &CoreSeqSegView,
+    derived_primary_is_none: Option<bool>,
+    frame_is_switch: bool,
+) -> Result<Option<SegmentationParams>> {
+    let segmentation_enabled = reader.read_flag()?;
+    let Some(derived_primary_is_none) =
+        derived_primary_is_none.or((!segmentation_enabled).then_some(true))
+    else {
+        return Ok(None);
+    };
+    parse_segmentation_params_body(
+        reader,
+        seg,
+        None,
+        segmentation_enabled,
+        derived_primary_is_none,
+        frame_is_switch,
+    )
+    .map(Some)
+}
+
+fn parse_segmentation_params_body(
+    reader: &mut BitReader<'_>,
+    seg: &CoreSeqSegView,
+    mfh: Option<&MfhSegView>,
+    segmentation_enabled: bool,
+    derived_primary_is_none: bool,
+    frame_is_switch: bool,
+) -> Result<SegmentationParams> {
     let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
     let mut reuse_seg_info = false;
     let mut segmentation_update_map = false;
-    let segmentation_temporal_update = false;
+    let mut segmentation_temporal_update = false;
 
     if segmentation_enabled {
         let (have_seg_params, allow_change, reuse_source) = if let Some(mfh) = mfh {
@@ -192,7 +205,14 @@ pub fn parse_segmentation_params(
             features = parse_seg_info(reader, seg.max_segments)?.features;
         }
 
-        segmentation_update_map = true;
+        if derived_primary_is_none {
+            segmentation_update_map = true;
+        } else {
+            segmentation_update_map = reader.read_flag()?;
+            if segmentation_update_map && !frame_is_switch {
+                segmentation_temporal_update = reader.read_flag()?;
+            }
+        }
     }
 
     let max_segments = (seg.max_segments as usize).min(MAX_SEGMENTS);
@@ -530,6 +550,51 @@ mod tests {
             parse_segmentation_params(&mut reader, &seg, Some(&mfh)),
             Err(Error::UnexpectedEof { .. })
         ));
+    }
+
+    #[test]
+    fn inter_without_primary_infers_segmentation_map_flags() {
+        let mut bits = Bits::default();
+        bits.bit(1);
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let params =
+            parse_inter_segmentation_params(&mut reader, &seq_info_view(false), Some(true), false)
+                .unwrap()
+                .unwrap();
+        assert!(params.segmentation_update_map);
+        assert!(!params.segmentation_temporal_update);
+        assert_eq!(reader.consumed_bits(), 1);
+    }
+
+    #[test]
+    fn inter_with_primary_reads_segmentation_map_flags() {
+        let mut bits = Bits::default();
+        bits.bit(1);
+        bits.bit(1);
+        bits.bit(1);
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let params =
+            parse_inter_segmentation_params(&mut reader, &seq_info_view(false), Some(false), false)
+                .unwrap()
+                .unwrap();
+        assert!(params.segmentation_update_map);
+        assert!(params.segmentation_temporal_update);
+        assert_eq!(reader.consumed_bits(), 3);
+    }
+
+    #[test]
+    fn inter_enabled_segmentation_stops_when_primary_state_is_unknown() {
+        let mut bits = Bits::default();
+        bits.bit(1);
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let params =
+            parse_inter_segmentation_params(&mut reader, &seq_info_view(false), None, false)
+                .unwrap();
+        assert!(params.is_none());
+        assert_eq!(reader.consumed_bits(), 1);
     }
 }
 

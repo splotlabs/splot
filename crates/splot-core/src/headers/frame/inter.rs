@@ -96,7 +96,7 @@ pub const LOCALWARP: usize = 2;
 pub const EXTENDWARP: usize = 4;
 
 /// `PRIMARY_REF_NONE` (AV2 v1.0.0 § 3).
-const PRIMARY_REF_NONE: u8 = 7;
+pub(super) const PRIMARY_REF_NONE: u8 = 7;
 
 /// `PRIMARY_REF_CHOOSE` (AV2 v1.0.0 § 3): the value `primary_ref_frame` takes when
 /// `signal_primary_ref_frame == 0` (§ 5.18.2 mirror :4397).
@@ -1045,7 +1045,10 @@ fn derive_implicit_ref_map(
             .map_or(0, |oh| i32::try_from(oh).unwrap_or(i32::MAX));
         slot.valid = valid;
         slot.order_hint = order_hint;
-        slot.counter = i as u32; // distinct per slot (dedup is a no-op for <= 1 valid)
+        slot.counter = reference_state
+            .ref_counter
+            .and_then(|counters| counters.get(i).copied())
+            .unwrap_or(i as u32);
         slot.width = ref_w.and_then(|s| s.get(i).copied()).unwrap_or(0);
         slot.height = ref_h.and_then(|s| s.get(i).copied()).unwrap_or(0);
         slot.base_q_idx = ref_base_q_idx.and_then(|s| s.get(i).copied()).unwrap_or(0);

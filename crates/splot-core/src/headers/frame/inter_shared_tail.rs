@@ -58,12 +58,9 @@
 //! [`FrameHeaderParseStatus::UnsupportedUntilFeature`] (a coverage stop, never a
 //! truncation) rather than guessing bit positions:
 //!
-//! - `segmentation_enabled == 1`: the § 5.18.7.1 `segmentation_update_map` /
-//!   `segmentation_temporal_update` reads depend on `DerivedPrimaryRefFrame`, which is the
-//!   `choose_primary_secondary_ref_frame()` (§ 5.18.2 mirror :5451) ranking over unmodeled
-//!   `RefBaseQIdx`. The shared `parse_segmentation_params` only models the
-//!   `DerivedPrimaryRefFrame == PRIMARY_REF_NONE` arm, so an enabled-segmentation inter
-//!   frame cannot continue soundly.
+//! - `segmentation_enabled == 1` when the modeled reference state cannot determine whether
+//!   `DerivedPrimaryRefFrame == PRIMARY_REF_NONE`; the no-eligible-primary arm and its
+//!   inferred map flags are modeled.
 //! - `global_motion_params()` reaching a cross-frame stop (`use_global_motion == 1` with
 //!   per-reference warp models): the honest [`GlobalMotionStop`] is surfaced.
 //! - the per-segment QM index loop reaching a `using_qmatrix` read it cannot evaluate, or a
@@ -83,7 +80,7 @@ use crate::headers::frame::global_motion::{GlobalMotionInput, parse_global_motio
 use crate::headers::frame::info::{
     CoreSeqView, FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView,
 };
-use crate::headers::frame::inter::InterControl;
+use crate::headers::frame::inter::{InterControl, PRIMARY_REF_NONE};
 use crate::headers::frame::quant::{
     parse_delta_q_params, parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
 };
@@ -178,14 +175,19 @@ pub(crate) fn parse_inter_shared_tail(
     let quantization = parse_quantization_params(reader, &seq.quant, tip_frame_as_output)?;
     trace_tail_position(reader, "after_quant");
 
-    let segmentation_enabled = reader.read_flag()?;
-    if segmentation_enabled {
+    let derived_primary_is_none = derived_primary_is_none(control, reference_state, frame_type);
+    let Some(segmentation) = crate::headers::frame::segmentation::parse_inter_segmentation_params(
+        reader,
+        &seq.seg,
+        derived_primary_is_none,
+        frame_type == FrameType::Switch,
+    )?
+    else {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
             feature_id: FRAME_HEADER_INFO_FEATURE,
         };
         return Ok(());
-    }
-    let segmentation = crate::headers::frame::segmentation::SegmentationParams::disabled();
+    };
     trace_tail_position(reader, "after_segmentation");
 
     let qm = parse_setup_qm_params(reader, &seq.quant, segmentation.segmentation_enabled)?;
@@ -302,6 +304,43 @@ pub(crate) fn parse_inter_shared_tail(
     store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);
 
     parse_inter_tail_arms(reader, core, seq, control, frame_type, coded_lossless)
+}
+
+fn derived_primary_is_none(
+    control: &InterControl,
+    reference_state: &FrameReferenceStateView<'_>,
+    frame_type: FrameType,
+) -> Option<bool> {
+    if frame_type == FrameType::Switch {
+        return Some(true);
+    }
+    if control.signal_primary_ref_frame == Some(true) {
+        return control
+            .primary_ref_frame
+            .map(|primary| primary == PRIMARY_REF_NONE);
+    }
+    let valid = reference_state.ref_valid?;
+    let order_hint = reference_state.ref_order_hint?;
+    let counter = reference_state.ref_counter?;
+    let is_inter = reference_state.ref_frame_is_inter?;
+    for &slot in &control.ref_frame_idx {
+        let index = usize::try_from(slot).ok()?;
+        let slot_valid = *valid.get(index)?;
+        let slot_counter = *counter.get(index)?;
+        let first_slot = valid
+            .iter()
+            .zip(counter)
+            .take(index)
+            .all(|(&prior_valid, &prior_counter)| !prior_valid || prior_counter != slot_counter);
+        if slot_valid
+            && first_slot
+            && is_inter.get(index).copied()?
+            && order_hint.get(index).copied()? != u32::MAX
+        {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 /// Builds the § 5.18 `search_frame_filters` ordered reference-filter entries
@@ -488,4 +527,65 @@ fn store_shared_facts(
     core.setup_qm_params = Some(qm);
     core.delta_q_params = Some(delta_q);
     core.lossless_info = Some(lossless);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn derive(
+        counters: &[u32],
+        is_inter: &[bool],
+        order_hints: &[u32],
+        refs: &[u32],
+        signal: Option<bool>,
+        primary: Option<u8>,
+    ) -> Option<bool> {
+        let valid = vec![true; counters.len()];
+        let sizes = vec![64; counters.len()];
+        let base_q = vec![100; counters.len()];
+        let state = FrameReferenceStateView::from_slots_with_base_q_idx(
+            &valid,
+            order_hints,
+            &sizes,
+            &sizes,
+            &base_q,
+        )
+        .with_primary_reference_state(counters, is_inter);
+        let control = InterControl {
+            signal_primary_ref_frame: signal,
+            primary_ref_frame: primary,
+            ref_frame_idx: refs.to_vec(),
+            ..InterControl::default()
+        };
+        derived_primary_is_none(&control, &state, FrameType::Inter)
+    }
+
+    #[test]
+    fn primary_availability_uses_frame_type_restriction_and_distinct_slot() {
+        assert_eq!(
+            derive(&[0], &[false], &[0], &[0], Some(false), None),
+            Some(true)
+        );
+        assert_eq!(
+            derive(&[0], &[true], &[u32::MAX], &[0], Some(false), None),
+            Some(true)
+        );
+        assert_eq!(
+            derive(&[0, 0], &[false, true], &[0, 1], &[1], Some(false), None),
+            Some(true)
+        );
+        assert_eq!(
+            derive(&[0, 1], &[false, true], &[0, 1], &[1], Some(false), None),
+            Some(false)
+        );
+        assert_eq!(
+            derive(&[0], &[true], &[0], &[0], Some(true), Some(7)),
+            Some(true)
+        );
+        assert_eq!(
+            derive(&[0], &[false], &[0], &[0], Some(true), Some(0)),
+            Some(false)
+        );
+    }
 }
