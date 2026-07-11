@@ -1471,9 +1471,8 @@ fn ensure_transform_tool_residual_handoff(
         || (!is_inter && plane == 0 && frame_facts.reduced_tx_set() == 2);
     if !is_inter && plane == 0 && input.fsc_mode {
         metadata.luma_tx_type = IDTX;
-    } else if !dct_forced {
-        if plane > 0 && input.active_chroma_policy.allows_record_handoff() {
-        } else if !is_inter && plane == 0 {
+    } else if !(dct_forced || plane > 0 && input.active_chroma_policy.allows_record_handoff()) {
+        if !is_inter && plane == 0 {
             let luma_tx_type = read_active_luma_transform_type(
                 cdfs,
                 symbols,
