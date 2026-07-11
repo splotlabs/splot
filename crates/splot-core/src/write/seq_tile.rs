@@ -32,19 +32,21 @@
 //! `uniform_tile_spacing_flag` / `increment_tile_*_log2` / `width_in_sbs_minus_1`
 //! `ns()` bits; it stores the *derived* [`TileParams`] and the superblock start arrays.
 //! `write_tile_params` reproduces the exact bit sequence by re-running the parser's
-//! § 5.18.7.3 derivation forward (duplicating the private level/tier scaling tables) and
+//! § 5.18.7.3 derivation forward (using the parser's level/tier scaling table) and
 //! a model whose derived state the parser could never have produced is rejected up front
 //! with a typed [`WriteError`] *before any bit is written* (reject-before-write). A
 //! reserved-level header the parser left as a bounded residual
 //! (`SequenceHeader::unimplemented_at`) cannot be re-emitted at all and is rejected with
 //! [`WriteError::UnwritableSequenceHeader`].
 
+#[cfg(test)]
+use crate::headers::sequence::Tier;
 use crate::headers::sequence::{
-    CdefOnSkipTxfm, SequenceFilterConfig, SequenceHeader, SequenceTileConfig, SuperblockSize, Tier,
+    CdefOnSkipTxfm, SequenceFilterConfig, SequenceHeader, SequenceTileConfig, SuperblockSize,
 };
 use crate::tile::{
     MAX_TILE_AREA, MAX_TILE_COLS, MAX_TILE_ROWS, MAX_TILE_WIDTH, TileParams, TileParamsInput,
-    mi_width_log2, num_4x4_blocks_wide, tile_log2, uniform_spacing,
+    mi_width_log2, num_4x4_blocks_wide, tile_log2, tile_scaling_factors, uniform_spacing,
 };
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
@@ -60,57 +62,6 @@ use crate::write::seq_header::{check_general_encodable, write_sequence_header_ge
 /// (AV2 v1.0.0 § 5.18.7.3: `if (seq_level_idx != 31)`). Duplicated locally because the
 /// parser's copy in [`crate::tile`] is private.
 const NO_LEVEL_IDX: u8 = 31;
-
-/// `Tile_Width_Scaling_Factor[2][31]` (AV2 v1.0.0 § A): indexed by `seq_tier`
-/// (Main = 0, High = 1) and `seq_level_idx` (0..=30). Reserved level indices are `0`
-/// ("no defined scaling"). Duplicated from [`crate::tile`] (private there) so the writer
-/// can re-derive `maxTileWidthSb` exactly as the parser does.
-const TILE_WIDTH_SCALING_FACTOR: [[u32; 31]; 2] = [
-    [
-        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 8, 8, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ],
-    [
-        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 8, 8, 8, 8, 16, 16, 16, 16, 0, 0, 0, 0, 0, 0, 0,
-        0, 0,
-    ],
-];
-
-/// `Tile_Area_Scaling_Factor[2][31]` (AV2 v1.0.0 § A): indexed by `seq_tier` and
-/// `seq_level_idx` (0..=30). Reserved level indices are `0`. Duplicated from
-/// [`crate::tile`] (private there).
-const TILE_AREA_SCALING_FACTOR: [[u32; 31]; 2] = [
-    [
-        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 8, 8, 8, 8, 16, 16, 16, 16, 0, 0, 0, 0, 0, 0, 0,
-        0, 0,
-    ],
-    [
-        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 16, 16, 16, 16, 32, 32, 32, 32, 0, 0, 0, 0, 0, 0,
-        0, 0, 0,
-    ],
-];
-
-/// Returns the tier table index (Main = 0, High = 1).
-const fn tier_index(tier: Tier) -> usize {
-    match tier {
-        Tier::Main => 0,
-        Tier::High => 1,
-    }
-}
-
-/// `Tile_Width_Scaling_Factor[seq_tier][seq_level_idx]`, or `None` for a reserved
-/// level index (a level with no defined scaling factor). Mirrors the private
-/// `crate::tile::tile_width_scaling_factor`.
-fn tile_width_scaling_factor(tier: Tier, level_idx: u8) -> Option<u32> {
-    let value = *TILE_WIDTH_SCALING_FACTOR[tier_index(tier)].get(level_idx as usize)?;
-    (value != 0).then_some(value)
-}
-
-/// `Tile_Area_Scaling_Factor[seq_tier][seq_level_idx]`, or `None` for a reserved
-/// level index. Mirrors the private `crate::tile::tile_area_scaling_factor`.
-fn tile_area_scaling_factor(tier: Tier, level_idx: u8) -> Option<u32> {
-    let value = *TILE_AREA_SCALING_FACTOR[tier_index(tier)].get(level_idx as usize)?;
-    (value != 0).then_some(value)
-}
 
 /// Returns `Ok(())` if `value` fits in `width_bits`, else [`WriteError::ValueTooWide`].
 fn check_field_width(value: u64, width_bits: u32) -> WriteResult<()> {
@@ -278,8 +229,7 @@ pub(crate) fn compute_tile_grid(input: &TileParamsInput) -> Option<TileGrid> {
     let (max_tile_width_sb, max_tile_area_sb) = if level_idx == NO_LEVEL_IDX {
         (sb_cols, sb_cols.saturating_mul(sb_rows))
     } else {
-        let width_sf = tile_width_scaling_factor(input.seq_tier, level_idx)?;
-        let area_sf = tile_area_scaling_factor(input.seq_tier, level_idx)?;
+        let (width_sf, area_sf) = tile_scaling_factors(input.seq_tier, level_idx)?;
         let max_tile_width_sb = (width_sf * MAX_TILE_WIDTH) >> (sb_shift + 4);
         let max_tile_area_sb = (area_sf * MAX_TILE_AREA) >> (2 * (sb_shift + 2) + 2);
         (max_tile_width_sb, max_tile_area_sb)
