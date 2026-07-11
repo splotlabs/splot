@@ -248,13 +248,6 @@ pub(crate) fn read_nonzero_coeff_signs(
     inputs: &[CoeffSignReadInput],
 ) -> Result<Vec<CoeffSignRead>, CoeffSignReadError> {
     let entries = walk.entries();
-    if inputs.len() != entries.len() {
-        return Err(CoeffSignReadError::InputCountMismatch {
-            inputs: inputs.len(),
-            entries: entries.len(),
-        });
-    }
-
     let levels = preflight_nonzero_coeff_signs(block, walk, inputs)?;
     let mut reads = Vec::new();
     reads.try_reserve(entries.len())?;
