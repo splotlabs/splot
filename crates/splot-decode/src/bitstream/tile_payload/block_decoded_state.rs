@@ -142,6 +142,11 @@ impl TileBlockDecodedState {
         }
     }
 
+    pub(crate) fn set_luma_transform(&mut self, x: usize, y: usize, width4: usize, height4: usize) {
+        let sb_mask = self.sb_size4.saturating_sub(1);
+        self.set_block(0, (y >> 2) & sb_mask, (x >> 2) & sb_mask, width4, height4);
+    }
+
     pub(crate) fn count_top_right_avail(
         &self,
         plane: usize,
