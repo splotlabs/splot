@@ -136,18 +136,17 @@ pub fn write_film_grain(writer: &mut BitWriter, fg: &FilmGrainObu) -> WriteResul
         return Err(non_canonical("chroma_subsampling"));
     }
 
-    let expected_slots: Vec<u8> = (0..MAX_FILM_GRAIN)
-        .filter(|i| fg.update_flags & (1u8 << i) != 0)
-        .map(|i| i as u8)
-        .collect();
-    if fg.models.len() != expected_slots.len() {
+    if fg.models.len() != fg.update_flags.count_ones() as usize {
         return Err(non_canonical("slot_update_flags"));
     }
 
     let mut scratch = BitWriter::new();
     scratch.write_bits_u8(fg.update_flags, UPDATE_FLAGS_BITS)?;
     scratch.write_uvlc(fg.chroma_idc)?;
-    for (update, &expected_slot) in fg.models.iter().zip(&expected_slots) {
+    let expected_slots = (0..MAX_FILM_GRAIN)
+        .filter(|&slot| fg.update_flags & (1u8 << slot) != 0)
+        .map(|slot| slot as u8);
+    for (update, expected_slot) in fg.models.iter().zip(expected_slots) {
         if update.slot != expected_slot {
             return Err(non_canonical("slot_update_flags"));
         }
