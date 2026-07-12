@@ -259,6 +259,53 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
 }
 
 #[test]
+fn deferred_compound_prediction_matches_direct_publication() {
+    let reference0 = flat_frame(8, 8, 40, 90, 120);
+    let reference1 = flat_frame(8, 8, 80, 110, 140);
+    let block = InterBlockParams::compound_average(
+        &reference0,
+        &reference1,
+        rect(0, 0, 8, 8),
+        Mv::ZERO,
+        Mv::ZERO,
+        InterpolationFilter::EightTap,
+        CompoundBlend::default(),
+    )
+    .with_optflow_distances(Some([1, -1]));
+    let offset = ByteOffset::new(0);
+
+    let mut direct = workspace(8, 8);
+    let direct_mvs =
+        motion_compensate_inter_block_with_optflow_mvs_into(&mut direct, block, 8, offset)
+            .expect("direct TIP optical-flow prediction");
+
+    let mut deferred = workspace(8, 8);
+    let output = predict_compound_average_block(
+        &deferred,
+        block.into_compound().expect("compound block"),
+        Some(8),
+        offset,
+    )
+    .expect("deferred TIP optical-flow prediction");
+    let deferred_mvs = output
+        .stored_mvs_at_origin()
+        .expect("deferred stored motion vectors");
+    output
+        .publish(&mut deferred)
+        .expect("publish deferred TIP prediction");
+
+    assert_eq!(deferred_mvs, direct_mvs);
+    let direct = direct.freeze().expect("freeze direct workspace");
+    let deferred = deferred.freeze().expect("freeze deferred workspace");
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            visible_samples(&deferred, plane),
+            visible_samples(&direct, plane)
+        );
+    }
+}
+
+#[test]
 fn tip_optflow_skips_low_sad_predictors() {
     let pred0 = vec![55; 64];
     let mut pred1 = pred0.clone();

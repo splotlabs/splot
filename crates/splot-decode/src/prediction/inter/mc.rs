@@ -25,6 +25,20 @@ pub(crate) const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =
     [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)];
 pub(crate) const CWP_EQUAL: i16 = 8;
 
+struct PredictedPlane<T> {
+    plane: PlaneId,
+    rect: PlaneRect,
+    samples: Vec<T>,
+    stride: usize,
+}
+
+impl<T: ReconSample> PredictedPlane<T> {
+    fn publish(self, workspace: &mut CurrentFrameWorkspace<T>) -> Result<()> {
+        workspace.write_rect(self.plane, self.rect, &self.samples, self.stride)?;
+        Ok(())
+    }
+}
+
 pub(super) const fn optflow_unit_size(luma_w: usize, luma_h: usize) -> usize {
     if luma_w <= 8 && luma_h <= 8 { 4 } else { 8 }
 }
@@ -269,6 +283,38 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         }
         self
     }
+
+    pub(crate) fn into_compound(self) -> Option<CompoundMcBlock<'a, T>> {
+        let InterPrediction::CompoundAverage {
+            reference0,
+            reference1,
+            mv0,
+            mv1,
+            blend,
+            optflow_distances,
+            warp_params,
+        } = self.prediction
+        else {
+            return None;
+        };
+        Some(CompoundMcBlock {
+            reference0,
+            reference1,
+            rect: self.rect,
+            mv0,
+            mv1,
+            interp: self.interp,
+            blend,
+            optflow_distances,
+            warp_params,
+            has_chroma: self.has_chroma,
+            sub8x8_chroma: self.sub8x8_chroma,
+            use_refinemv: self.use_refinemv,
+            search_refinemv: self.search_refinemv,
+            refinemv_switchable: self.refinemv_switchable,
+            optflow_sad_threshold: self.optflow_sad_threshold,
+        })
+    }
 }
 #[derive(Clone, Copy, Debug)]
 enum InterPrediction<'a, T: ReconSample> {
@@ -292,7 +338,7 @@ enum InterPrediction<'a, T: ReconSample> {
     },
 }
 #[derive(Clone, Copy, Debug)]
-struct CompoundMcBlock<'a, T: ReconSample> {
+pub(crate) struct CompoundMcBlock<'a, T: ReconSample> {
     reference0: &'a DecodedFrame<T>,
     reference1: &'a DecodedFrame<T>,
     rect: McBlockRect,
@@ -308,6 +354,30 @@ struct CompoundMcBlock<'a, T: ReconSample> {
     search_refinemv: bool,
     refinemv_switchable: bool,
     optflow_sad_threshold: Option<u64>,
+}
+
+pub(crate) struct CompoundBlockOutput<T> {
+    planes: Vec<PredictedPlane<T>>,
+    motion: Option<CompoundMotionGrid>,
+}
+
+impl<T: ReconSample> CompoundBlockOutput<T> {
+    pub(crate) fn stored_mvs_at_origin(&self) -> splot_recon::Result<Option<[Mv; 2]>> {
+        self.motion
+            .as_ref()
+            .map(|motion| motion.stored_mvs_at_luma_offset(0, 0))
+            .transpose()
+    }
+
+    pub(crate) fn publish(
+        self,
+        workspace: &mut CurrentFrameWorkspace<T>,
+    ) -> Result<Option<CompoundMotionGrid>> {
+        for plane in self.planes {
+            plane.publish(workspace)?;
+        }
+        Ok(self.motion)
+    }
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -443,6 +513,15 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
 ) -> Result<Option<CompoundMotionGrid>> {
+    predict_compound_average_block(workspace, block, optflow_unit_size, offset)?.publish(workspace)
+}
+
+pub(crate) fn predict_compound_average_block<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    block: CompoundMcBlock<'_, T>,
+    optflow_unit_size: Option<usize>,
+    offset: ByteOffset,
+) -> Result<CompoundBlockOutput<T>> {
     let refinemv = block
         .use_refinemv
         .then(|| refinemv::compound_default_refinemv_motion_grid(workspace, block, offset))
@@ -456,12 +535,13 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
     )?;
     let luma_diff_weighted_mask =
         compound_luma_diff_weighted_mask(workspace, block, motion.as_ref(), offset)?;
+    let mut planes = Vec::with_capacity(YUV420_MC_PLANES.len());
     for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
         }
         if plane != PlaneId::Y && block.sub8x8_chroma {
-            predict_plane(
+            planes.push(predict_plane_output(
                 workspace,
                 block.reference0,
                 plane,
@@ -471,9 +551,9 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
                 sub_x,
                 sub_y,
                 offset,
-            )?;
+            )?);
         } else {
-            predict_compound_plane(
+            planes.push(predict_compound_plane_output(
                 workspace,
                 block.reference0,
                 block.reference1,
@@ -489,10 +569,10 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
                 luma_diff_weighted_mask.as_deref(),
                 motion.as_ref(),
                 offset,
-            )?;
+            )?);
         }
     }
-    Ok(motion)
+    Ok(CompoundBlockOutput { planes, motion })
 }
 
 fn compound_luma_diff_weighted_mask<T: ReconSample>(
@@ -568,6 +648,24 @@ fn predict_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
+    predict_plane_output(
+        workspace, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
+    )?
+    .publish(workspace)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn predict_plane_output<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    reference: &DecodedFrame<T>,
+    plane: PlaneId,
+    rect: McBlockRect,
+    mv: Mv,
+    interp: InterpolationFilter,
+    sub_x: u32,
+    sub_y: u32,
+    offset: ByteOffset,
+) -> Result<PredictedPlane<T>> {
     let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
 
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
@@ -607,8 +705,12 @@ fn predict_plane<T: ReconSample>(
         .collect::<splot_recon::Result<Vec<T>>>()?;
 
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
-    workspace.write_rect(plane, rect, &packed, block_w)?;
-    Ok(())
+    Ok(PredictedPlane {
+        plane,
+        rect,
+        samples: packed,
+        stride: block_w,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -722,8 +824,8 @@ fn predict_warp_plane<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn predict_compound_plane<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
+fn predict_compound_plane_output<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
     reference0: &DecodedFrame<T>,
     reference1: &DecodedFrame<T>,
     plane: PlaneId,
@@ -738,7 +840,7 @@ fn predict_compound_plane<T: ReconSample>(
     luma_diff_weighted_mask: Option<&[u16]>,
     motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
-) -> Result<()> {
+) -> Result<PredictedPlane<T>> {
     let block = CompoundMcBlock {
         reference0,
         reference1,
@@ -792,8 +894,12 @@ fn predict_compound_plane<T: ReconSample>(
         prediction.block_w,
         prediction.block_h,
     )?;
-    workspace.write_rect(plane, rect, &packed, prediction.block_w)?;
-    Ok(())
+    Ok(PredictedPlane {
+        plane,
+        rect,
+        samples: packed,
+        stride: prediction.block_w,
+    })
 }
 
 struct CompoundPlanePrediction {

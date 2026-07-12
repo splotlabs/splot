@@ -3,14 +3,34 @@
 
 use super::*;
 use splot_core::headers::sequence::ChromaFormatIdc;
+use splot_parallel::prelude::*;
 use splot_recon::{DecodedFrame, PixelFormat};
 
 #[doc = "AV2 § 7.13.3.1 Tip_Weighting_Factor."]
 const TIP_WEIGHTING_FACTORS: [i16; 8] = [8, 12, 16, 18, 20, 4, 6, -4];
 const TIP_SINGLE_WEIGHT: i16 = 16;
 
+#[derive(Clone, Copy)]
+struct TipUnit<'a, T: ReconSample> {
+    params: mc::InterBlockParams<'a, T>,
+    mvs: [Mv; 2],
+    luma_x: usize,
+    luma_y: usize,
+    luma_w: usize,
+    luma_h: usize,
+}
+
 const fn tip_uses_two_references(weight: i16) -> bool {
     weight != TIP_SINGLE_WEIGHT
+}
+
+fn tip_reference_pair_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
+    inter_missing!(
+        "inter_tip_reference_pair",
+        tile_offset,
+        "inter.tip.closest_past_and_future",
+        SPEC_MODE_INFO
+    )
 }
 
 const fn tip_uses_refinemv(
@@ -230,14 +250,9 @@ pub(super) fn reconstruct<T: ReconSample>(
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    let references = temporal.tip_references().ok_or_else(|| {
-        inter_missing!(
-            "inter_tip_reference_pair",
-            tile_offset,
-            "inter.tip.closest_past_and_future",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let references = temporal
+        .tip_references()
+        .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
     let inter = core.inter.as_ref().ok_or_else(|| {
         inter_missing!(
             "inter_tip_control",
@@ -315,6 +330,7 @@ pub(super) fn reconstruct<T: ReconSample>(
         .luma_h
         .min(frame_size.height().saturating_sub(placed.luma_y));
 
+    let mut units = Vec::new();
     for local_y in (0..block_h).step_by(unit_size) {
         for local_x in (0..block_w).step_by(unit_size) {
             let luma_x = placed.luma_x + local_x;
@@ -384,37 +400,72 @@ pub(super) fn reconstruct<T: ReconSample>(
             .with_refinemv(use_refinemv)
             .with_refinemv_search(search_refinemv)
             .with_optflow_sad_threshold(use_optflow.then_some(if output { 15 } else { 6 }));
-            let stored_mvs = if use_optflow {
-                mc::motion_compensate_inter_block_with_optflow_mvs_into(
+            units.push(TipUnit {
+                params,
+                mvs,
+                luma_x,
+                luma_y,
+                luma_w,
+                luma_h,
+            });
+        }
+    }
+    let outputs = if two_references && splot_parallel::on_worker_pool() {
+        let results: Vec<_> = units
+            .par_iter()
+            .map(|unit| {
+                let compound = unit
+                    .params
+                    .into_compound()
+                    .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+                mc::predict_compound_average_block(
                     workspace,
-                    params,
-                    8,
+                    compound,
+                    use_optflow.then_some(8),
                     tile_offset,
-                )?
-                .unwrap_or(mvs)
-            } else {
-                mc::motion_compensate_inter_block_into(workspace, params, tile_offset)?;
-                mvs
-            };
-            if let Some(motion_field) = output_motion_field.as_deref_mut() {
-                super::temporal::record_temporal_motion_block(
-                    motion_field,
-                    reference,
-                    ref_frame_idx,
-                    luma_y / 4,
-                    luma_x / 4,
-                    luma_w.div_ceil(4),
-                    luma_h.div_ceil(4),
-                    frame_size.height().div_ceil(4),
-                    frame_size.width().div_ceil(4),
-                    core.display_order_hint().unwrap_or(0),
-                    references.past_ref,
-                    two_references.then_some(references.future_ref),
-                    stored_mvs[0],
-                    stored_mvs[1],
-                    [None, None],
-                );
-            }
+                )
+                .map(Some)
+            })
+            .collect();
+        results.into_iter().collect::<Result<Vec<_>>>()?
+    } else {
+        (0..units.len()).map(|_| None).collect()
+    };
+    for (unit, output) in units.into_iter().zip(outputs) {
+        let stored_mvs = if let Some(output) = output {
+            let stored_mvs = output.stored_mvs_at_origin()?.unwrap_or(unit.mvs);
+            output.publish(workspace)?;
+            stored_mvs
+        } else if use_optflow {
+            mc::motion_compensate_inter_block_with_optflow_mvs_into(
+                workspace,
+                unit.params,
+                8,
+                tile_offset,
+            )?
+            .unwrap_or(unit.mvs)
+        } else {
+            mc::motion_compensate_inter_block_into(workspace, unit.params, tile_offset)?;
+            unit.mvs
+        };
+        if let Some(motion_field) = output_motion_field.as_deref_mut() {
+            super::temporal::record_temporal_motion_block(
+                motion_field,
+                reference,
+                ref_frame_idx,
+                unit.luma_y / 4,
+                unit.luma_x / 4,
+                unit.luma_w.div_ceil(4),
+                unit.luma_h.div_ceil(4),
+                frame_size.height().div_ceil(4),
+                frame_size.width().div_ceil(4),
+                core.display_order_hint().unwrap_or(0),
+                references.past_ref,
+                two_references.then_some(references.future_ref),
+                stored_mvs[0],
+                stored_mvs[1],
+                [None, None],
+            );
         }
     }
     if let Some(residual) = placed.block.residual.as_ref() {
