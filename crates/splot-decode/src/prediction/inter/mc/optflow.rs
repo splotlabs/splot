@@ -545,6 +545,28 @@ mod tests {
     }
 
     #[test]
+    fn uniform_mvs_requires_exactly_one_motion_cell() {
+        let mvs = [[3, -5], [-7, 9]];
+        let grid = CompoundMotionGrid {
+            unit_size: 8,
+            columns: 1,
+            base_mvs: vec![[Mv::ZERO; 2]],
+            mvs: vec![mvs],
+            refinemv_candidates: None,
+        };
+        assert_eq!(grid.uniform_mvs(), Some(mvs));
+
+        let multiple = CompoundMotionGrid {
+            unit_size: 8,
+            columns: 2,
+            base_mvs: vec![[Mv::ZERO; 2]; 2],
+            mvs: vec![mvs; 2],
+            refinemv_candidates: None,
+        };
+        assert_eq!(multiple.uniform_mvs(), None);
+    }
+
+    #[test]
     fn temporal_mvs_average_four_by_four_optflow_deltas_over_eight_by_eight() {
         let grid = CompoundMotionGrid {
             unit_size: 4,
