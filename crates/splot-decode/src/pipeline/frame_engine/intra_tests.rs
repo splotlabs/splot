@@ -30,8 +30,18 @@ fn decode_intra_fixture_with_core(
     FrameCdfSubset,
     Option<crate::filters::ccso::CcsoUnitGrid>,
 )> {
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
+    decode_intra_fixture_with_core_on_threads(ThreadCount::from(1usize), mutate)
+}
+
+fn decode_intra_fixture_with_core_on_threads(
+    threads: ThreadCount,
+    mutate: impl FnOnce(&mut FrameHeaderCore),
+) -> crate::Result<(
+    DecodedFrame<u8>,
+    FrameCdfSubset,
+    Option<crate::filters::ccso::CcsoUnitGrid>,
+)> {
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(threads)).expect("context");
     let options = DecodeOptions::default();
     let plan = context.plan_bytes(Q80_FIXTURE, options).expect("plan");
     let candidate = plan.frame_candidates().next().expect("candidate").clone();
@@ -67,6 +77,33 @@ fn decode_intra_fixture_with_core(
             BitDepth::Eight,
         )
     })
+}
+
+#[test]
+fn frame_gdf_is_bit_exact_across_worker_counts() {
+    let decode = |threads| {
+        decode_intra_fixture_with_core_on_threads(threads, |core| {
+            let gdf = core.gdf_params.as_mut().expect("gdf params");
+            gdf.gdf_frame_enable = true;
+            gdf.gdf_per_block = Some(false);
+            gdf.gdf_pic_qc_idx = Some(0);
+            gdf.gdf_pic_scale_idx = Some(0);
+        })
+        .expect("active frame GDF decode")
+        .0
+    };
+    let serial = decode(ThreadCount::from(1usize));
+    let parallel = decode(ThreadCount::from(4usize));
+
+    assert_eq!(parallel.y().samples(), serial.y().samples());
+    assert_eq!(
+        parallel.u().expect("parallel U").samples(),
+        serial.u().expect("serial U").samples()
+    );
+    assert_eq!(
+        parallel.v().expect("parallel V").samples(),
+        serial.v().expect("serial V").samples()
+    );
 }
 
 #[test]

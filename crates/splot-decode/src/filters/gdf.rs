@@ -8,6 +8,7 @@ use splot_core::span::ByteOffset;
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_BIAS, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
 };
+use splot_parallel::prelude::*;
 use splot_recon::math::{clip3, round2_signed};
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, LoopRestorationSourceBounds, PlaneId, PlaneRect, ReconError,
@@ -153,10 +154,12 @@ pub(crate) fn apply_frame<T: ReconSample>(
         })?)
     };
 
-    for y in (0..luma_height).step_by(MI_SIZE) {
+    let band_rows: Vec<_> = (0..luma_height).step_by(MI_SIZE).collect();
+    let compute_band = |y: usize| -> Result<(usize, usize, Vec<T>)> {
+        let height = MI_SIZE.min(luma_height - y);
+        let mut band = vec![T::default(); luma_width * height];
         for x in (0..luma_width).step_by(MI_SIZE) {
             let width = MI_SIZE.min(luma_width - x);
-            let height = MI_SIZE.min(luma_height - y);
             if width < 2 || height < 2 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
                 return Err(gdf_filter_error(
                     offset,
@@ -194,21 +197,56 @@ pub(crate) fn apply_frame<T: ReconSample>(
                 &mut block,
                 offset,
             )?;
-            let rect = PlaneRect::new(x, y, width, height).map_err(|_| {
+            for row in 0..height {
+                let src = &block[row * width..(row + 1) * width];
+                let dst = &mut band[row * luma_width + x..row * luma_width + x + width];
+                dst.copy_from_slice(src);
+            }
+        }
+        Ok((y, height, band))
+    };
+    let bands = if splot_parallel::on_worker_pool() {
+        let timer = crate::timing::start();
+        let tally = crate::timing::WorkerTally::new();
+        let outputs = band_rows
+            .par_iter()
+            .map(|&y| {
+                tally.note_worker();
+                compute_band(y)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        crate::timing::report_detail(
+            "gdf_bands",
+            timer,
+            &format!(
+                "units={} threads={} workers_used={}",
+                band_rows.len(),
+                splot_parallel::current_pool_width(),
+                tally.workers_used()
+            ),
+        );
+        outputs
+    } else {
+        band_rows
+            .iter()
+            .map(|&y| compute_band(y))
+            .collect::<Result<Vec<_>>>()?
+    };
+    for (y, height, band) in bands {
+        let rect = PlaneRect::new(0, y, luma_width, height).map_err(|_| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
+            )
+        })?;
+        workspace
+            .write_rect(PlaneId::Y, rect, &band, luma_width)
+            .map_err(|_| {
                 gdf_filter_error(
                     offset,
                     "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
                 )
             })?;
-            workspace
-                .write_rect(PlaneId::Y, rect, &block, width)
-                .map_err(|_| {
-                    gdf_filter_error(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
-                    )
-                })?;
-        }
     }
     Ok(())
 }

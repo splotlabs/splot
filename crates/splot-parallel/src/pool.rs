@@ -3,6 +3,7 @@
 
 //! The owned, local Rayon worker pool ([`WorkerPool`]).
 use core::num::NonZeroUsize;
+use std::cell::Cell;
 use std::sync::Arc;
 
 use rayon::ThreadPool;
@@ -11,6 +12,10 @@ use crate::error::ParallelError;
 use crate::thread_count::ThreadCount;
 
 const WORKER_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+
+std::thread_local! {
+    static ON_SPLOT_WORKER: Cell<bool> = const { Cell::new(false) };
+}
 
 /// A codec context's single owned worker pool, wrapping a *local* Rayon
 /// [`ThreadPool`]. The global Rayon pool is never used.
@@ -34,6 +39,7 @@ impl WorkerPool {
         let inner = rayon::ThreadPoolBuilder::new()
             .num_threads(threads.get())
             .thread_name(|index| format!("splot-worker-{index}"))
+            .start_handler(|_| ON_SPLOT_WORKER.with(|active| active.set(true)))
             .stack_size(WORKER_STACK_SIZE_BYTES)
             .build()?;
         Ok(Self {
@@ -81,6 +87,16 @@ impl WorkerPool {
     }
 }
 
+/// Returns whether the calling thread belongs to a splot-owned worker pool.
+///
+/// Unlike Rayon's worker-index query, this stays false on unrelated local or
+/// global Rayon pools, so codec helpers can avoid accidentally scheduling work
+/// outside their owning [`WorkerPool`].
+#[must_use]
+pub fn on_worker_pool() -> bool {
+    ON_SPLOT_WORKER.get()
+}
+
 /// Returns whether the calling thread is a worker of an installed pool that
 /// has more than one thread.
 ///
@@ -91,7 +107,7 @@ impl WorkerPool {
 /// pool and a one-thread pool never pays work-splitting overhead.
 #[must_use]
 pub fn on_multiworker_pool() -> bool {
-    rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1
+    on_worker_pool() && rayon::current_num_threads() > 1
 }
 
 /// Returns the calling worker's index within the installed pool, or `None`
@@ -162,6 +178,18 @@ mod tests {
         assert!(pool.install(on_multiworker_pool));
         let single = WorkerPool::new(ThreadCount::Fixed(nz(1))).unwrap();
         assert!(!single.install(on_multiworker_pool));
+    }
+
+    #[test]
+    fn on_worker_pool_rejects_unrelated_rayon_pool() {
+        assert!(!on_worker_pool());
+        let pool = WorkerPool::new(ThreadCount::Fixed(nz(1))).unwrap();
+        assert!(pool.install(on_worker_pool));
+        let unrelated = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        assert!(!unrelated.install(on_worker_pool));
     }
 
     #[test]

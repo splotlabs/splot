@@ -23,7 +23,9 @@ pub mod queue;
 pub mod thread_count;
 
 pub use error::{ParallelError, ThreadCountParseError};
-pub use pool::{WorkerPool, current_pool_width, current_worker_index, on_multiworker_pool};
+pub use pool::{
+    WorkerPool, current_pool_width, current_worker_index, on_multiworker_pool, on_worker_pool,
+};
 pub use queue::{
     QueueCapacity, QueueReceiver, QueueSender, RecvError, SendError, TryRecvError, TrySendError,
     bounded_queue,
