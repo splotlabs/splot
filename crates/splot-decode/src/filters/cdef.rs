@@ -338,7 +338,7 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
         }))
     };
 
-    if splot_parallel::on_multiworker_pool()
+    if splot_parallel::on_worker_pool()
         && let Some(bands) = CdefRowBands::split(workspace, mi_rows, sub_y)
     {
         let timer = crate::timing::start();
