@@ -1039,7 +1039,8 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
                 skip_flag: skip == 1,
             },
             None,
-        ),
+        )
+        .mark_inter(),
         tile_offset,
     )?;
     Ok(non_intra_leaf_mode(frontier))

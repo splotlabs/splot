@@ -312,8 +312,13 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                 )
             })?;
         let mut delta_q_state = DeltaQState::new(sequence, core, tile_offset)?;
-        let mut intrabc_state =
-            TileIntrabcPreludeState::new(mi_rows, mi_cols, sequence, tile_offset)?;
+        let mut intrabc_state = TileIntrabcPreludeState::new(
+            mi_rows,
+            mi_cols,
+            sequence,
+            core.frame_is_intra == Some(true),
+            tile_offset,
+        )?;
         let mut segment_id_state = TileSegmentIdState::new(mi_rows, mi_cols).map_err(|_| {
             inter_missing!(
                 "inter_segment_id_grid",
@@ -1478,7 +1483,8 @@ fn decode_block<T: ReconSample>(
                     skip_flag: skip == 1,
                 },
                 None,
-            ),
+            )
+            .mark_inter(),
             tile_offset,
         )?;
 
@@ -1849,7 +1855,8 @@ fn decode_block<T: ReconSample>(
                 skip_flag: skip == 1,
             },
             None,
-        ),
+        )
+        .mark_inter(),
         tile_offset,
     )?;
 

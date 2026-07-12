@@ -23,8 +23,8 @@ use crate::prediction::inter::{
 };
 
 use super::intrabc_ref_mv_stack::{
-    DrlReorderMode, IntrabcRefMvBank, IntrabcStackAdmission, IntrabcStackGeometry,
-    SpatialIntrabcScan, SpatialScanGeometry, intrabc_ref_stack_admission,
+    BANK_SB_ABOVE_ROW_MAX_HITS, DrlReorderMode, IntrabcRefMvBank, IntrabcStackAdmission,
+    IntrabcStackGeometry, SpatialIntrabcScan, SpatialScanGeometry, intrabc_ref_stack_admission,
     spatial_intrabc_scan_with_base_col,
 };
 use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
@@ -78,6 +78,11 @@ impl IntrabcBlockPrelude {
             },
             intrabc,
         }
+    }
+
+    pub(crate) const fn mark_inter(mut self) -> Self {
+        self.is_inter = true;
+        self
     }
 }
 
@@ -364,16 +369,19 @@ pub(crate) struct TileIntrabcPreludeState {
     values: Vec<Option<IntrabcBlockFacts>>,
     bank: IntrabcRefMvBank,
     enable_refmvbank: bool,
+    seed_bank_from_above: bool,
     drl_reorder: DrlReorderMode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct IntrabcBlockFacts {
     use_intrabc: bool,
+    is_inter: bool,
     skip_flag: bool,
     morph_pred: bool,
     block_mv: Option<IntrabcBlockVector>,
     base_col: usize,
+    n4w: usize,
 }
 
 impl TileIntrabcPreludeState {
@@ -381,6 +389,7 @@ impl TileIntrabcPreludeState {
         mi_rows: usize,
         mi_cols: usize,
         sequence: &SequenceHeader,
+        frame_is_intra_only: bool,
         tile_offset: ByteOffset,
     ) -> Result<Self> {
         let values_len = mi_rows.checked_mul(mi_cols).ok_or_else(|| {
@@ -406,6 +415,7 @@ impl TileIntrabcPreludeState {
             values: vec![None; values_len],
             bank: IntrabcRefMvBank::new(sb_size4),
             enable_refmvbank,
+            seed_bank_from_above: !frame_is_intra_only,
             drl_reorder,
         })
     }
@@ -422,10 +432,12 @@ impl TileIntrabcPreludeState {
         let block_mv = prelude.intrabc.map(|info| info.block_mv);
         let facts = IntrabcBlockFacts {
             use_intrabc: prelude.use_intrabc,
+            is_inter: prelude.is_inter,
             skip_flag: prelude.skip_flag,
             morph_pred: prelude.morph_pred,
             block_mv,
             base_col: col,
+            n4w,
         };
         let area = self.clipped_record_area(row, col, n4w, n4h, tile_offset)?;
         for r in area.rows {
@@ -448,8 +460,51 @@ impl TileIntrabcPreludeState {
     }
 
     pub(crate) fn prepare_for_block(&mut self, row: usize, col: usize) {
-        if self.enable_refmvbank {
-            self.bank.enter_block_superblock(row, col);
+        if self.enable_refmvbank
+            && self.bank.enter_block_superblock(row, col)
+            && self.seed_bank_from_above
+        {
+            self.seed_bank_from_above_row(row, col);
+        }
+    }
+
+    fn seed_bank_from_above_row(&mut self, row: usize, col: usize) {
+        if self.sb_size4 == 0 {
+            return;
+        }
+        let sb_row = row / self.sb_size4 * self.sb_size4;
+        if sb_row == 0 {
+            return;
+        }
+        let sb_col = col / self.sb_size4 * self.sb_size4;
+        let sb_width = self.sb_size4.min(self.mi_cols.saturating_sub(sb_col));
+        let mut offset = 0usize;
+        let mut hits = 0usize;
+        while offset < sb_width && hits < BANK_SB_ABOVE_ROW_MAX_HITS {
+            let aligned = offset / 2 * 2;
+            let index = (sb_row - 1).checked_mul(self.mi_cols).and_then(|start| {
+                sb_col
+                    .checked_add(aligned)
+                    .and_then(|col| start.checked_add(col))
+            });
+            let Some(facts) = index
+                .and_then(|index| self.values.get(index))
+                .copied()
+                .flatten()
+            else {
+                offset = offset.saturating_add(1);
+                continue;
+            };
+            if facts.is_inter {
+                hits += 1;
+                let mv = facts
+                    .use_intrabc
+                    .then_some(facts.block_mv)
+                    .flatten()
+                    .map(Into::into);
+                self.bank.seed_from_above_row(mv);
+            }
+            offset = offset.saturating_add(facts.n4w.max(1));
         }
     }
 

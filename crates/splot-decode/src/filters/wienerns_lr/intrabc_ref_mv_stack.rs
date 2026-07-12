@@ -23,11 +23,11 @@
 //!    tail, `mvref_common.c:2711`-`2732`): the four default block vectors fill the
 //!    remaining slots with NO dedup, up to `max_bvp_drl_bits_minus_1 + 2`.
 //!
-//! The bank itself is maintained by AV2 § 7.12.2 `av2_update_ref_mv_bank`
-//! (`mvref_common.c:4617`): for an intra-only frame the bank is zeroed at the
-//! start of each superblock row (`decodeframe.c:4639`) and accumulates each
-//! decoded IntrABC block's block vector within the row, gated by the per-unit
-//! "remain hits" budget (`decide_rmb_unit_update_count`, `mvref_common.c:4589`).
+//! The bank itself is maintained by AV2 § 7.12.2 `av2_update_ref_mv_bank`:
+//! intra-only frames zero it at each superblock row, while inter frames seed up
+//! to four eligible blocks from the preceding row at every superblock entry
+//! (`av2_common_int.h:4283`), then accumulate decoded IntrABC block vectors under
+//! the `decide_rmb_unit_update_count` per-unit budget (`mvref_common.c:4589`).
 //!
 //! This module models the spatial scan, bank fill, and default-BVP fill, and
 //! DEFERS (returns no admissible stack) only when `ref_mv_idx` selects beyond
@@ -38,6 +38,7 @@ use crate::prediction::inter::Mv;
 const REF_MV_BANK_SIZE: usize = 4;
 const MAX_SMVP_AXIS_MI: usize = 16;
 const MAX_RMB_SB_HITS: u32 = 64;
+pub(crate) const BANK_SB_ABOVE_ROW_MAX_HITS: usize = 4;
 const BANK_1ST_UNIT_UPDATE_COUNT: u32 = 4;
 const BANK_UNIT_MAX_ALLOWED_LEFTOVER_UPDATES: u32 = 16;
 const SB_TO_RMB_UNITS_LOG2: u32 = 3;
@@ -87,14 +88,16 @@ impl IntrabcRefMvBank {
         &self.queue
     }
 
-    pub(crate) fn enter_block_superblock(&mut self, mi_row: usize, mi_col: usize) {
+    pub(crate) fn enter_block_superblock(&mut self, mi_row: usize, mi_col: usize) -> bool {
         if self.mib_size == 0 {
-            return;
+            return false;
         }
         let sb_row = mi_row / self.mib_size;
         let sb_col = mi_col / self.mib_size;
         let sb_row_start = sb_row * self.mib_size;
         let sb_col_start = sb_col * self.mib_size;
+        let entered =
+            self.current_sb_row != Some(sb_row_start) || self.current_sb_col != Some(sb_col_start);
         if self.current_sb_row != Some(sb_row_start) {
             self.queue.clear();
             self.remain_hits = 0;
@@ -107,6 +110,17 @@ impl IntrabcRefMvBank {
             self.remain_hits = 0;
             self.unit_hits = 0;
             self.current_sb_col = Some(sb_col_start);
+        }
+        entered
+    }
+
+    pub(crate) fn seed_from_above_row(&mut self, mv: Option<Mv>) {
+        if self.sb_hits >= MAX_RMB_SB_HITS {
+            return;
+        }
+        self.sb_hits += 1;
+        if let Some(mv) = mv {
+            self.append_or_move_to_end(mv);
         }
     }
 
