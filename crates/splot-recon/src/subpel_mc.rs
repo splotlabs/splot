@@ -561,7 +561,8 @@ fn subpel_copy_block<T: ReconSample>(
 /// read directly; the vertical pass accumulates its eight consecutive
 /// `w`-sample tap rows one row at a time. Both shapes perform the same
 /// per-sample additions in the same ascending-tap order as the general
-/// per-column fallback, which remains for scaled or clipped blocks.
+/// per-column fallback, which remains for scaled or clipped blocks. A zero
+/// phase on either axis uses that filter row's pure center tap directly.
 fn subpel_predict_block_internal<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -655,8 +656,14 @@ fn subpel_predict_block_internal<T: ReconSample>(
             .flatten();
         if let Some(window) = window {
             let phase = ((start_x >> 6) & SUBPEL_MASK) as usize;
-            let taps = &h_filter_rows[phase];
             let row_out = &mut intermediate[r * w..(r + 1) * w];
+            if phase == 0 {
+                for (out, sample) in row_out.iter_mut().zip(&window[3..3 + w]) {
+                    *out = i32::from(sample.to_u16()) << (FILTER_BITS - INTER_ROUND0);
+                }
+                continue;
+            }
+            let taps = &h_filter_rows[phase];
             for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
                 let mut s: i64 = 0;
                 for (&tap, &sample) in taps.iter().zip(win) {
@@ -669,6 +676,12 @@ fn subpel_predict_block_internal<T: ReconSample>(
         for c in 0..w {
             let p = start_x + step_x * c as i64;
             let phase = ((p >> 6) & SUBPEL_MASK) as usize;
+            if phase == 0 {
+                let ref_col = clip3(first_x, last_x, p >> SCALE_SUBPEL_BITS);
+                intermediate[r * w + c] = (reference.sample(ref_row, ref_col as usize) as i32)
+                    << (FILTER_BITS - INTER_ROUND0);
+                continue;
+            }
             let taps = &h_filter_rows[phase];
             let mut s: i64 = 0;
             for (t, &tap) in taps.iter().enumerate() {
@@ -694,6 +707,13 @@ fn subpel_predict_block_internal<T: ReconSample>(
                 base,
                 intermediate_height,
             });
+        }
+        if phase == 0 {
+            let center = &intermediate[(base + 3) * w..(base + 4) * w];
+            for (out, &value) in output[r * w..(r + 1) * w].iter_mut().zip(center) {
+                *out = round2(i64::from(value) << FILTER_BITS, inter_round1) as i32;
+            }
+            continue;
         }
         let rows = &intermediate[base * w..(base + NUM_TAPS) * w];
         let acc = &mut acc[..w];

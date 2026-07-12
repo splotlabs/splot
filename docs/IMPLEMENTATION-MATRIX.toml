@@ -10344,6 +10344,7 @@ tests = [
     "crates/splot-recon/src/subpel_mc/tests.rs::tests::half_pel_horizontal_worked_example",
     "crates/splot-recon/src/subpel_mc/tests.rs::tests::matches_independent_reference_over_many_cases",
     "crates/splot-recon/src/subpel_mc/tests.rs::zero_phase_copy_matches_independent_reference",
+    "crates/splot-recon/src/subpel_mc/tests.rs::half_pel_vertical_with_horizontal_zero_phase_matches_reference",
     "crates/splot-recon/src/subpel_mc/tests.rs::strided_view_matches_contiguous_view",
     "crates/splot-recon/src/subpel_mc/tests.rs::tests::subpel_filters_table_shape_and_sums",
 ]

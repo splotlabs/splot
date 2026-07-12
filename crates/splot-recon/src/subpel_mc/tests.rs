@@ -272,6 +272,36 @@ fn half_pel_horizontal_worked_example() {
 }
 
 #[test]
+fn half_pel_vertical_with_horizontal_zero_phase_matches_reference() {
+    let ref_w = 16usize;
+    let ref_h = 16usize;
+    let samples: Vec<u16> = (0..ref_w * ref_h)
+        .map(|index| ((index * 17 + 23) % 256) as u16)
+        .collect();
+    let samples = build_ref(samples, ref_w, ref_h);
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let params = SubpelPredictParams {
+        interp: InterpolationFilter::EightTapSharp,
+        w: 8,
+        h: 8,
+        start_x: 4 << SCALE_SUBPEL_BITS,
+        start_y: (4 << SCALE_SUBPEL_BITS) + (8 << 6),
+        step_x: 1 << SCALE_SUBPEL_BITS,
+        step_y: 1 << SCALE_SUBPEL_BITS,
+        first_x: 0,
+        first_y: 0,
+        last_x: ref_w as i64 - 1,
+        last_y: ref_h as i64 - 1,
+        bit_depth: BitDepth::Eight,
+    };
+
+    assert_eq!(
+        subpel_predict_block(&view, &params).unwrap(),
+        reference_subpel(&samples, ref_w, ref_h, &params)
+    );
+}
+
+#[test]
 fn reference_border_extension_clips() {
     let ref_w = 8usize;
     let ref_h = 8usize;
