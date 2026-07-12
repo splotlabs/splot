@@ -609,6 +609,44 @@ fn compound_mv_stack_pairs_single_ref_spatial_neighbours_in_probe_order() {
 }
 
 #[test]
+fn compound_extra_search_adds_large_block_mixed_candidates() {
+    let zero = CompoundMvCandidate {
+        mvs: [Mv::ZERO; 2],
+        cwp_weight: CWP_EQUAL,
+    };
+    let temporal = CompoundMvCandidate {
+        mvs: [Mv { row: -8, col: 0 }, Mv { row: -9, col: 1 }],
+        cwp_weight: CWP_EQUAL,
+    };
+    let mut entries = vec![
+        CompoundMvStackEntry {
+            candidate: zero,
+            weight: 6,
+        },
+        CompoundMvStackEntry {
+            candidate: temporal,
+            weight: 1,
+        },
+    ];
+    let mut prune_count = 0;
+    let mut block = block_at(0, 0);
+    block.bw4 = 16;
+    block.bh4 = 16;
+    block.ref_frame1 = Some(1);
+
+    compound_extra_search(&block, [Mv::ZERO; 2], &mut entries, &mut prune_count);
+
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0].candidate, zero);
+    assert_eq!(entries[1].candidate, temporal);
+    assert_eq!(entries[2].candidate.mvs, [Mv::ZERO, Mv { row: 0, col: 1 }]);
+    assert_eq!(
+        entries[3].candidate.mvs,
+        [Mv { row: -8, col: 0 }, Mv { row: -9, col: 0 }]
+    );
+}
+
+#[test]
 fn single_ref_stack_admits_both_lists_from_same_ref_compound_neighbour() {
     let mut grid = empty_grid();
     let mvs = [Mv { row: 8, col: 16 }, Mv { row: -8, col: 24 }];

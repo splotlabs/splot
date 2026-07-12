@@ -28,9 +28,11 @@ const MV_BORDER: i32 = 128;
 
 const MI_SIZE: i32 = 4;
 mod derived;
+mod extra_search;
 mod temporal;
 mod warp_bank;
 use derived::{CompoundScanState, DerivedMvState};
+use extra_search::{compound_extra_search, extra_search};
 pub(crate) use temporal::{
     OrderHintMvContext, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
     TemporalProjectionConfig, reference_order_hints, tip_reference_pair_from_hints,
@@ -1835,14 +1837,11 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
             &mut state.prune_count,
         );
     }
-    insert_compound_mv_stack_entry(
+    compound_extra_search(
+        block,
+        global_mvs,
         &mut state.entries,
         &mut state.prune_count,
-        CompoundMvCandidate {
-            mvs: global_mvs,
-            cwp_weight: CWP_EQUAL,
-        },
-        0,
     );
     CompoundMvStack {
         stack: state
@@ -2210,82 +2209,6 @@ fn add_temporal_mv_sample(
         return StackInsert::Skipped;
     };
     insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, (0, 0))
-}
-
-fn extra_search(
-    block: &MvBlockContext,
-    global_mv: Mv,
-    entries: &mut Vec<MvStackEntry>,
-    prune_count: &mut usize,
-) {
-    for entry in entries.iter_mut() {
-        entry.mv = clamp_mv(block, entry.mv);
-    }
-
-    if entries.len() < MAX_REF_MV_STACK_SIZE {
-        let mut already_present = false;
-        if *prune_count < MAX_PR_NUM {
-            for entry in entries.iter() {
-                *prune_count += 1;
-                if entry.mv == global_mv {
-                    already_present = true;
-                    break;
-                }
-            }
-        }
-        if !already_present {
-            entries.push(MvStackEntry {
-                mv: global_mv,
-                weight: 0,
-                offsets: (0, 0),
-            });
-        }
-    }
-
-    if block.bw4 > 8 && block.bh4 > 8 {
-        let num = entries.len();
-        if num > 1 {
-            insert_mixture_candidate(entries, prune_count, 0, 1);
-            insert_mixture_candidate(entries, prune_count, 1, 0);
-        }
-        if num > 2 {
-            insert_mixture_candidate(entries, prune_count, 0, 2);
-            insert_mixture_candidate(entries, prune_count, 2, 0);
-            insert_mixture_candidate(entries, prune_count, 1, 2);
-            insert_mixture_candidate(entries, prune_count, 2, 1);
-        }
-    }
-}
-
-fn insert_mixture_candidate(
-    entries: &mut Vec<MvStackEntry>,
-    prune_count: &mut usize,
-    y_cand: usize,
-    x_cand: usize,
-) {
-    let (Some(y_entry), Some(x_entry)) = (entries.get(y_cand), entries.get(x_cand)) else {
-        return;
-    };
-    let candidate = Mv {
-        row: y_entry.mv.row,
-        col: x_entry.mv.col,
-    };
-    if entries.len() >= MAX_REF_MV_STACK_SIZE {
-        return;
-    }
-    if *prune_count < MAX_PR_NUM {
-        for entry in entries.iter() {
-            *prune_count += 1;
-            if entry.mv == candidate {
-                return;
-            }
-        }
-    }
-    entries.push(MvStackEntry {
-        mv: candidate,
-        weight: 0,
-        offsets: (0, 0),
-    });
 }
 
 fn generate_points_from_corners(
