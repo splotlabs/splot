@@ -1552,6 +1552,32 @@ fn warp_bank_hit_keeps_the_original_translation_and_evicts_oldest() {
 }
 
 #[test]
+fn ref_mv_bank_same_mvs_refresh_preserves_original_cwp_weight() {
+    let mut bank = RefMvBank::new();
+    let mv0 = Mv { row: 0, col: 8 };
+    let mv1 = Mv { row: 0, col: -8 };
+    bank.update(0, Some(1), mv0, Some(mv1), 10, false);
+    bank.update(0, Some(1), mv0, Some(mv1), CWP_EQUAL, false);
+
+    let mut entries = Vec::new();
+    let mut prune_count = 0;
+    let block = MvBlockContext {
+        ref_frame1: Some(1),
+        ..block_at(0, 0)
+    };
+    bank.fill_compound(
+        &block,
+        &mut entries,
+        MAX_REF_MV_STACK_SIZE,
+        &mut prune_count,
+    );
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].candidate.mvs, [mv0, mv1]);
+    assert_eq!(entries[0].candidate.cwp_weight, 10);
+}
+
+#[test]
 fn warp_bank_clears_per_superblock_row_and_reseeds_per_superblock() {
     let mut grid = NeighbourMvGrid::new(64, 64).unwrap();
     let above = [4 << 16, -6 << 16, 65536 + 512, 64, -128, 65536];
