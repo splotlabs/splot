@@ -23,7 +23,7 @@ use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
 pub(super) const FULL_SB_N4_LUMA: usize = 16;
 const MI_SIZE: usize = 4;
 const ANGLE_STEP: i32 = 3;
-const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
+pub(crate) const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
 const WAIP_WH_RATIO_THRESHOLDS: [(usize, i32); 4] = [(2, 61), (4, 73), (8, 82), (16, 86)];
 
 macro_rules! general_intra_at {
@@ -1174,6 +1174,8 @@ fn rect_luma_mrl_plan_for_parts(
         return Ok(RectLumaPlan::OneSidedLeftMrl {
             p_angle,
             mrl_index,
+            above_mrl_index,
+            is_sb_boundary,
             secondary_mrl,
             use_tcq,
         });

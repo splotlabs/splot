@@ -650,6 +650,151 @@ fn directional_first_middle_partition_handoff_stays_lossless_only() {
     }
 }
 
+#[test]
+fn active_mrl_directional_plan_uses_transform_unit_wide_angle_mapping() {
+    let luma_context = LumaTransformTypeContext::with_mrl_indices(
+        crate::bitstream::tile_payload::IntraYMode::D45_PRED_FOR_TEST,
+        2,
+        2,
+        Some(1),
+        None,
+    );
+
+    for secondary_mrl in [false, true] {
+        let plan_for = |width4, height4| {
+            mrl_directional_plane(
+                width4,
+                height4,
+                RectLumaPlan::OneSidedAboveMrl {
+                    p_angle: 50,
+                    mrl_index: 2,
+                    above_mrl_index: 0,
+                    secondary_mrl,
+                    use_tcq: true,
+                },
+            )
+        };
+
+        assert_eq!(
+            plan_for(4, 8).unit_directional_replan(luma_context),
+            ResidualReconstructionPlan::LumaRectOneSidedLeftMrl {
+                p_angle: 230,
+                mrl_index: 2,
+                above_mrl_index: 0,
+                is_sb_boundary: true,
+                secondary_mrl,
+                use_tcq: true,
+            }
+        );
+        assert_eq!(
+            plan_for(8, 8).unit_directional_replan(luma_context),
+            ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
+                p_angle: 50,
+                mrl_index: 2,
+                above_mrl_index: 0,
+                secondary_mrl,
+                use_tcq: true,
+            }
+        );
+    }
+}
+
+#[test]
+fn left_mrl_replan_preserves_superblock_boundary_above_line() {
+    let plane = mrl_directional_plane(
+        8,
+        4,
+        RectLumaPlan::OneSidedLeftMrl {
+            p_angle: 210,
+            mrl_index: 1,
+            above_mrl_index: 0,
+            is_sb_boundary: true,
+            secondary_mrl: true,
+            use_tcq: false,
+        },
+    );
+    let luma_context = LumaTransformTypeContext::with_mrl_indices(
+        crate::bitstream::tile_payload::IntraYMode::D203_PRED_FOR_TEST,
+        2,
+        1,
+        Some(1),
+        None,
+    );
+
+    assert_eq!(
+        plane.unit_directional_replan(luma_context),
+        ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
+            p_angle: 30,
+            mrl_index: 1,
+            above_mrl_index: 0,
+            secondary_mrl: true,
+            use_tcq: false,
+        }
+    );
+}
+
+#[test]
+fn interior_middle_mrl_unit_uses_local_above_line() {
+    let plane = mrl_directional_plane(
+        8,
+        8,
+        RectLumaPlan::MiddleMrl {
+            p_angle: 135,
+            mrl_index: 3,
+            above_mrl_index: 0,
+            is_sb_boundary: true,
+            secondary_mrl: true,
+            use_tcq: false,
+        },
+    );
+    let unit = plane
+        .transform_unit_plan(&PositionedLumaCoeffBlock {
+            x: 0,
+            y: 16,
+            tx_size: rect_tx_size_from_log2(4, 4).expect("16x16 transform size"),
+            middle: false,
+            coeffs: empty_luma_coeffs(),
+        })
+        .expect("interior transform-unit plan");
+    let luma_context = LumaTransformTypeContext::with_mrl_indices(
+        crate::bitstream::tile_payload::IntraYMode::D135_PRED_FOR_TEST,
+        0,
+        3,
+        Some(1),
+        None,
+    );
+
+    assert_eq!(
+        unit.unit_directional_replan(luma_context),
+        ResidualReconstructionPlan::LumaRectMiddleMrl {
+            p_angle: 135,
+            mrl_index: 3,
+            above_mrl_index: 3,
+            is_sb_boundary: false,
+            secondary_mrl: true,
+            use_tcq: false,
+        }
+    );
+}
+
+fn mrl_directional_plane(
+    width4: usize,
+    height4: usize,
+    luma_plan: RectLumaPlan,
+) -> ResidualPlanePlan {
+    GeneralIntraResidualPlan::rect(
+        ctx(BlockRect::new(0, 0, width4, height4), BitDepth::Eight),
+        luma_plan,
+        None,
+        false,
+        None,
+        false,
+    )
+    .expect("MRL directional plan")
+    .plane_plan(PlaneId::Y)
+    .expect("luma plane")
+}
+
 fn assert_case(case: Case) {
     let ctx = ctx(case.rect, case.bit_depth);
     let plan = if case.rect.width4() == case.rect.height4() {

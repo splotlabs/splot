@@ -60,8 +60,26 @@ impl ResidualPlanePlan {
             | ResidualReconstructionPlan::LumaRectMiddle { .. }
             | ResidualReconstructionPlan::LumaRectOneSidedAbove { .. }
             | ResidualReconstructionPlan::LumaRectOneSidedLeft { .. }
-            | ResidualReconstructionPlan::LumaRectOneSidedLeftMrl { .. }
             | ResidualReconstructionPlan::LumaRectDip { .. } => self.reconstruction,
+            ResidualReconstructionPlan::LumaRectOneSidedLeftMrl {
+                p_angle,
+                mrl_index,
+                above_mrl_index,
+                is_sb_boundary,
+                secondary_mrl,
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaRectOneSidedLeftMrl {
+                p_angle,
+                mrl_index,
+                above_mrl_index: if block.y == self.y {
+                    above_mrl_index
+                } else {
+                    mrl_index
+                },
+                is_sb_boundary: is_sb_boundary && block.y == self.y,
+                secondary_mrl,
+                use_tcq,
+            },
             ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
                 p_angle,
                 mrl_index,
