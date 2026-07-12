@@ -64,9 +64,9 @@ pub(crate) use general_intra_block::{
 };
 pub(crate) use general_intra_residual::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, FrameQmScope, FrameQmSegmentScope,
-    FrameQuantizerDeltasScope, GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock,
-    LumaTransformPartitionContext, LumaTransformTypeContext, PositionedLumaCoeffBlock,
-    TransformToolResidualPolicy, current_frame_qm_segment_id,
+    FrameQuantizerDeltasScope, FrameQuantizerSnapshot, GeneralIntraResidualError, IntraIstSyntax,
+    LumaCoeffBlock, LumaTransformPartitionContext, LumaTransformTypeContext,
+    PositionedLumaCoeffBlock, TransformToolResidualPolicy, current_frame_qm_segment_id,
     decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
     is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
     reconstruct_general_intra_coeff_block_rect_with_prediction,

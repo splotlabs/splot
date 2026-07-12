@@ -13,9 +13,9 @@ use splot_core::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
-    PixelFormat, PlaneId as ReconPlaneId, PlaneRect, QuantizerDeltas, ReconSample,
-    ReferenceFrameStore, ReferenceSlot,
+    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter, PixelFormat,
+    PlaneId as ReconPlaneId, PlaneRect, QuantizerDeltas, ReconSample, ReferenceFrameStore,
+    ReferenceSlot,
 };
 
 use crate::bitstream::tile_payload::{
@@ -620,7 +620,7 @@ fn compound_is_joint_context_from_order_hints(
 }
 #[allow(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
-    workspace: &mut CurrentFrameWorkspace<impl ReconSample>,
+    sink: &mut mc::WorkspaceSink<'_, impl ReconSample>,
     residual: &InterResidual,
     qindex: u32,
     luma_use_tcq: bool,
@@ -654,7 +654,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
                 ));
             };
             reconstruct_inter_residual_chroma_cctx_pair(
-                workspace, block, v_block, qindex, cctx_type, use_ddt, bit_depth,
+                sink, block, v_block, qindex, cctx_type, use_ddt, bit_depth,
             )
             .map_err(map_recon)?;
             paired[index] = true;
@@ -663,7 +663,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
         }
         let use_tcq = block.plane == ReconPlaneId::Y && luma_use_tcq;
         crate::pipeline::reconstruct::reconstruct_inter_block_residual_rect_into(
-            workspace,
+            sink,
             &block.coeffs,
             block.plane,
             block.x,
@@ -702,7 +702,7 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 }
 
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
+    sink: &mut mc::WorkspaceSink<'_, T>,
     u: &InterResidualBlock,
     v: &InterResidualBlock,
     qindex: u32,
@@ -710,8 +710,8 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let u_prediction = read_inter_residual_prediction(workspace, u)?;
-    let v_prediction = read_inter_residual_prediction(workspace, v)?;
+    let u_prediction = read_inter_residual_prediction(sink, u)?;
+    let v_prediction = read_inter_residual_prediction(sink, v)?;
     let (u_out, v_out) = reconstruct_general_intra_chroma_cctx_pair_with_predictions(
         &u.coeffs,
         &u_prediction,
@@ -724,30 +724,30 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
         use_ddt,
         bit_depth,
     )?;
-    write_inter_residual_block(workspace, u, &u_out)?;
-    write_inter_residual_block(workspace, v, &v_out)?;
+    write_inter_residual_block(sink, u, &u_out)?;
+    write_inter_residual_block(sink, v, &v_out)?;
     Ok(())
 }
 
 fn read_inter_residual_prediction<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
+    sink: &mc::WorkspaceSink<'_, T>,
     block: &InterResidualBlock,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let rect = inter_residual_block_rect(block)?;
     let mut prediction = Vec::with_capacity(rect.width() * rect.height());
-    for row in workspace.rect_rows(block.plane, rect)? {
+    for row in sink.rect_rows(block.plane, rect)? {
         prediction.extend_from_slice(row);
     }
     Ok(prediction)
 }
 
 fn write_inter_residual_block<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
+    sink: &mut mc::WorkspaceSink<'_, T>,
     block: &InterResidualBlock,
     samples: &[T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let rect = inter_residual_block_rect(block)?;
-    workspace.write_rect(block.plane, rect, samples, rect.width())?;
+    sink.write_rect(block.plane, rect, samples, rect.width())?;
     Ok(())
 }
 
@@ -1373,7 +1373,7 @@ mod block;
 mod compound;
 mod cross_frame;
 mod find_mv_stack;
-mod mc;
+pub(crate) mod mc;
 pub(crate) mod mv_scaling;
 pub(crate) mod read_mv;
 mod single_ref;

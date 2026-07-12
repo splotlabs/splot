@@ -133,7 +133,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     .with_refinemv(use_refinemv)
     .with_switchable_refinemv(refinemv_switchable);
     let motion_grid = mc::motion_compensate_inter_block_with_motion_grid_into(
-        workspace,
+        &mut mc::WorkspaceSink::Frame(workspace),
         block_params,
         None,
         tile_offset,
@@ -205,7 +205,53 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     }
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
-            workspace,
+            &mut mc::WorkspaceSink::Frame(workspace),
+            residual,
+            qindex,
+            luma_use_tcq,
+            residual_use_ddt,
+            false,
+            bit_depth,
+            tile_offset,
+        )?;
+    }
+    Ok(motion_grid)
+}
+
+/// Reconstructs one deferable inter block (no interintra, no BAWP, no
+/// current-frame reads) into `sink`: motion compensation, then residual add.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
+    sink: &mut mc::WorkspaceSink<'_, T>,
+    placed: &PlacedInterBlock,
+    use_refinemv: bool,
+    refinemv_switchable: bool,
+    ref_frame_idx: &[u32],
+    reference: &InterReferenceState<'_, T>,
+    qindex: u32,
+    luma_use_tcq: bool,
+    residual_use_ddt: bool,
+    bit_depth: BitDepth,
+    tile_offset: ByteOffset,
+) -> Result<Option<mc::CompoundMotionGrid>> {
+    let block_params = super::super::resolve_inter_block_params(
+        ref_frame_idx,
+        reference,
+        placed,
+        placed.motion_compensation_rect(),
+        tile_offset,
+    )?
+    .with_refinemv(use_refinemv)
+    .with_switchable_refinemv(refinemv_switchable);
+    let motion_grid = mc::motion_compensate_inter_block_with_motion_grid_into(
+        sink,
+        block_params,
+        None,
+        tile_offset,
+    )?;
+    if let Some(residual) = placed.block.residual.as_ref() {
+        super::super::add_inter_residual_to_workspace(
+            sink,
             residual,
             qindex,
             luma_use_tcq,

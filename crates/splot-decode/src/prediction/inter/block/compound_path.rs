@@ -56,6 +56,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
+    deferred: &mut super::deferred_recon::DeferredInterRecon,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
     mv_grid: &mut NeighbourMvGrid,
@@ -589,6 +590,8 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         sequence,
         core,
         frontier,
+        deferred,
+        temporal_context,
         workspace,
         block_decoded,
         mv_grid,
@@ -824,6 +827,8 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
+    deferred: &mut super::deferred_recon::DeferredInterRecon,
+    temporal_context: Option<&TemporalMvContext>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
     mv_grid: &mut NeighbourMvGrid,
@@ -999,6 +1004,53 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
             residual,
         },
     };
+    intrabc_state.record_block(
+        frontier.r,
+        frontier.c,
+        n4w,
+        n4h,
+        IntrabcBlockPrelude::from_use_skip(
+            IntrabcUseSkip {
+                use_intrabc: false,
+                skip_flag: skip == 1,
+            },
+            None,
+        )
+        .mark_inter(),
+        tile_offset,
+    )?;
+    if deferred.parallel() && super::deferred_recon::deferable_placed_geometry(&placed, frontier) {
+        deferred.push(
+            placed,
+            super::deferred_recon::PendingKind::Compound {
+                syntax: compound,
+                warp_params,
+                mi_row,
+                mi_col,
+                use_refinemv,
+                refinemv_switchable,
+            },
+            block_qindex,
+            tile_offset,
+        );
+        return Ok(non_intra_leaf_mode(frontier));
+    }
+    super::deferred_recon::flush_deferred(
+        deferred,
+        workspace,
+        motion_field,
+        temporal_context,
+        reference,
+        ref_frame_idx,
+        sequence,
+        core,
+        mi_rows,
+        mi_cols,
+        core.display_order_hint().unwrap_or(0),
+        luma_use_tcq,
+        residual_use_ddt,
+        bit_depth,
+    )?;
     let motion_grid = super::prediction::reconstruct_placed_inter_block(
         workspace,
         &placed,
@@ -1028,21 +1080,6 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         mi_cols,
         core.display_order_hint().unwrap_or(0),
     )?;
-    intrabc_state.record_block(
-        frontier.r,
-        frontier.c,
-        n4w,
-        n4h,
-        IntrabcBlockPrelude::from_use_skip(
-            IntrabcUseSkip {
-                use_intrabc: false,
-                skip_flag: skip == 1,
-            },
-            None,
-        )
-        .mark_inter(),
-        tile_offset,
-    )?;
     Ok(non_intra_leaf_mode(frontier))
 }
 
@@ -1066,7 +1103,7 @@ const fn compound_deblock_sub_pu_size(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn record_compound_temporal_motion<T: ReconSample>(
+pub(super) fn record_compound_temporal_motion<T: ReconSample>(
     motion_field: &mut TemporalMotionField,
     reference: &InterReferenceState<'_, T>,
     ref_frame_idx: &[u32],
@@ -1179,6 +1216,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
+    deferred: &mut super::deferred_recon::DeferredInterRecon,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
     mv_grid: &mut NeighbourMvGrid,
@@ -1273,6 +1311,8 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         sequence,
         core,
         frontier,
+        deferred,
+        temporal_context,
         workspace,
         block_decoded,
         mv_grid,

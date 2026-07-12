@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-use std::borrow::Cow;
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
@@ -14,11 +13,8 @@ use splot_core::tables::conversion::{
 };
 use splot_recon::PlaneId as ReconPlaneId;
 use splot_recon::{
-    BitDepth, CurrentFrameIntraEdges, CurrentFrameWorkspace, IDENTITY_WARP_PARAMS, InterIntraMode,
-    InterpolationFilter as ReconInterpolationFilter, IntraCardinalDirection,
-    IntraDirectionalAngleEdges, IntraRectBlockSize, IntraSmoothMode, ReconSample,
-    apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
-    predict_intra_dc_rect_value,
+    BitDepth, CurrentFrameWorkspace, IDENTITY_WARP_PARAMS, InterIntraMode,
+    InterpolationFilter as ReconInterpolationFilter, ReconSample,
 };
 
 use super::find_mv_stack::{
@@ -59,9 +55,6 @@ use crate::filters::wienerns_lr::tx_records::{
     derive_inter_luma_tx_records_for_block,
 };
 use crate::pipeline::effective_allow_screen_content_tools;
-use crate::pipeline::reconstruct::{
-    SmoothIntraPredictionRequest, predict_intra_smooth_over_available_edges,
-};
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
 const INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE: usize = 3;
@@ -356,6 +349,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                 SPEC_MODE_INFO
             )
         })?;
+        let mut deferred = deferred_recon::DeferredInterRecon::new();
         let mut ref_mv_bank = sequence
             .inter
             .as_ref()
@@ -413,6 +407,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                     palette_state,
                     is_cfl_ctx,
                     block_decoded,
+                    &mut deferred,
                     workspace,
                     &mut deblock_blocks,
                     &mut chroma_deblock_blocks,
@@ -434,6 +429,22 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             },
         )
         .map_err(|error| map_inter_multiblock_error(error, tile_offset))?;
+        deferred_recon::flush_deferred(
+            &mut deferred,
+            workspace,
+            &mut motion_field,
+            Some(&temporal_context),
+            reference,
+            ref_frame_idx,
+            sequence,
+            core,
+            mi_rows,
+            mi_cols,
+            current_order_hint,
+            luma_use_tcq,
+            residual_use_ddt,
+            bit_depth,
+        )?;
         let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput {
             symbols,
             active_source_blocks: tile_source_blocks,
@@ -646,6 +657,7 @@ fn decode_block<T: ReconSample>(
     palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
     is_cfl_ctx: IsCflContext,
     block_decoded: &mut TileBlockDecodedState,
+    deferred: &mut deferred_recon::DeferredInterRecon,
     workspace: &mut CurrentFrameWorkspace<T>,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
@@ -662,6 +674,26 @@ fn decode_block<T: ReconSample>(
     current_order_hint: u32,
     tile_offset: ByteOffset,
 ) -> Result<GeneralIntraLeafMode> {
+    macro_rules! flush_pending {
+        () => {
+            deferred_recon::flush_deferred(
+                deferred,
+                workspace,
+                motion_field,
+                Some(temporal_context),
+                reference,
+                ref_frame_idx,
+                sequence,
+                core,
+                mi_rows,
+                mi_cols,
+                current_order_hint,
+                luma_use_tcq,
+                residual_use_ddt,
+                bit_depth,
+            )?
+        };
+    }
     let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
         inter_diag!(
             "inter_block_geometry",
@@ -874,6 +906,7 @@ fn decode_block<T: ReconSample>(
             segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
         }
         if prelude.use_intrabc {
+            flush_pending!();
             let info = prelude.intrabc.ok_or_else(|| {
                 inter_missing!(
                     "inter_intrabc_info",
@@ -940,7 +973,7 @@ fn decode_block<T: ReconSample>(
             )?;
             if let Some(residual) = residual.as_ref() {
                 super::add_inter_residual_to_workspace(
-                    workspace,
+                    &mut mc::WorkspaceSink::Frame(workspace),
                     residual,
                     block_qindex,
                     luma_use_tcq,
@@ -982,6 +1015,7 @@ fn decode_block<T: ReconSample>(
             residual_quantizer_deltas_are_zero,
             tile_offset,
         )?;
+        flush_pending!();
         let leaf = crate::pipeline::general_intra::decode_one_general_intra_block::<T>(
             work_unit,
             symbols,
@@ -1107,6 +1141,7 @@ fn decode_block<T: ReconSample>(
             sequence,
             core,
             frontier,
+            deferred,
             workspace,
             block_decoded,
             mv_grid,
@@ -1177,6 +1212,7 @@ fn decode_block<T: ReconSample>(
             sequence,
             core,
             frontier,
+            deferred,
             workspace,
             block_decoded,
             mv_grid,
@@ -1501,6 +1537,19 @@ fn decode_block<T: ReconSample>(
             optflow_distances: None,
             residual,
         });
+        if deferred.parallel()
+            && placed.block.interintra.is_none()
+            && deferred_recon::deferable_placed_geometry(&placed, frontier)
+        {
+            deferred.push(
+                placed,
+                deferred_recon::PendingKind::Single,
+                block_qindex,
+                tile_offset,
+            );
+            return Ok(non_intra_leaf_mode(frontier));
+        }
+        flush_pending!();
         prediction::reconstruct_placed_inter_block(
             workspace,
             &placed,
@@ -1873,24 +1922,56 @@ fn decode_block<T: ReconSample>(
         optflow_distances: None,
         residual,
     });
+    let deferable = placed.block.interintra.is_none()
+        && !placed.block.bawp.enabled
+        && deferred_recon::deferable_placed_geometry(&placed, frontier);
     if tip_ref {
-        tip::reconstruct(
-            workspace,
+        if deferred.parallel() && deferable {
+            deferred.push(
+                placed,
+                deferred_recon::PendingKind::Tip,
+                block_qindex,
+                tile_offset,
+            );
+            return Ok(non_intra_leaf_mode(frontier));
+        }
+        flush_pending!();
+        let coded = workspace.info().coded_luma_size();
+        let records = tip::reconstruct(
+            &mut mc::WorkspaceSink::Frame(workspace),
             &placed,
             temporal_context,
             sequence,
             core,
             ref_frame_idx,
             reference,
-            Some(motion_field),
             block_qindex,
             luma_use_tcq,
             residual_use_ddt,
             bit_depth,
             tile_offset,
         )?;
+        tip::apply_tip_temporal_records(
+            motion_field,
+            reference,
+            ref_frame_idx,
+            coded.height().div_ceil(4),
+            coded.width().div_ceil(4),
+            core.display_order_hint().unwrap_or(0),
+            &records,
+        );
         return Ok(non_intra_leaf_mode(frontier));
     }
+    if deferred.parallel() && deferable {
+        deferred.push(
+            placed,
+            deferred_recon::PendingKind::Single,
+            block_qindex,
+            tile_offset,
+        );
+        return Ok(non_intra_leaf_mode(frontier));
+    }
+    flush_pending!();
     prediction::reconstruct_placed_inter_block(
         workspace,
         &placed,
@@ -2045,191 +2126,10 @@ fn sequence_enables_ibp(sequence: &SequenceHeader) -> bool {
         .is_some_and(|intra| intra.enable_ibp)
 }
 
-fn interintra_cardinal_edge<T: ReconSample>(
-    mode: InterIntraMode,
-    edges: &CurrentFrameIntraEdges<T>,
-    len: usize,
-    bit_depth: BitDepth,
-) -> splot_recon::Result<Cow<'_, [T]>> {
-    let sample = |above: bool| {
-        if above {
-            edges
-                .left_samples()
-                .and_then(|left| left.first().copied())
-                .map_or_else(|| no_neighbour_above(bit_depth), Ok)
-        } else {
-            edges
-                .above_samples()
-                .and_then(|above_edge| above_edge.first().copied())
-                .map_or_else(|| no_neighbour_left(bit_depth), Ok)
-        }
-    };
-    match mode {
-        InterIntraMode::Vertical => edges.above_samples().map_or_else(
-            || sample(true).map(|value| Cow::Owned(vec![value; len])),
-            |above| Ok(Cow::Borrowed(above)),
-        ),
-        InterIntraMode::Horizontal => edges.left_samples().map_or_else(
-            || sample(false).map(|value| Cow::Owned(vec![value; len])),
-            |left| Ok(Cow::Borrowed(left)),
-        ),
-        InterIntraMode::Dc | InterIntraMode::Smooth => Ok(Cow::Borrowed(&[])),
-    }
-}
-
-fn no_neighbour_above<T: ReconSample>(bit_depth: BitDepth) -> splot_recon::Result<T> {
-    let midpoint = 1u16 << (u32::from(bit_depth.bits()) - 1);
-    T::try_from_u16(midpoint - 1)
-}
-
-fn no_neighbour_left<T: ReconSample>(bit_depth: BitDepth) -> splot_recon::Result<T> {
-    let midpoint = 1u16 << (u32::from(bit_depth.bits()) - 1);
-    T::try_from_u16(midpoint + 1)
-}
-
-struct InterIntraPlanePrediction<T> {
-    plane: ReconPlaneId,
-    sub_x: u32,
-    sub_y: u32,
-    x: usize,
-    y: usize,
-    size: IntraRectBlockSize,
-    samples: Vec<T>,
-}
-
-fn predict_interintra_planes<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    placed: &PlacedInterBlock,
-    block_decoded: &TileBlockDecodedState,
-    mode: InterIntraMode,
-    enable_ibp: bool,
-    bit_depth: BitDepth,
-    tile_offset: ByteOffset,
-) -> Result<Vec<InterIntraPlanePrediction<T>>> {
-    let geometry_error = || {
-        inter_diag!(
-            "inter_interintra_geometry",
-            tile_offset,
-            "invalid interintra plane geometry",
-            "5.20.7.22"
-        )
-    };
-    let mut planes = Vec::with_capacity(mc::YUV420_MC_PLANES.len());
-    for (plane, sub_x, sub_y) in mc::YUV420_MC_PLANES {
-        if plane != ReconPlaneId::Y && !placed.interintra_chroma {
-            continue;
-        }
-        let (luma_x, luma_y, luma_w, luma_h) = if plane == ReconPlaneId::Y {
-            (placed.luma_x, placed.luma_y, placed.luma_w, placed.luma_h)
-        } else {
-            (
-                placed.chroma_luma_x,
-                placed.chroma_luma_y,
-                placed.chroma_luma_w,
-                placed.chroma_luma_h,
-            )
-        };
-        let x = luma_x >> sub_x;
-        let y = luma_y >> sub_y;
-        let w = luma_w >> sub_x;
-        let h = luma_h >> sub_y;
-        if !w.is_power_of_two() || !h.is_power_of_two() {
-            return Err(geometry_error());
-        }
-        let log2_w = u8::try_from(w.trailing_zeros()).map_err(|_| geometry_error())?;
-        let log2_h = u8::try_from(h.trailing_zeros()).map_err(|_| geometry_error())?;
-        let size = IntraRectBlockSize::new(log2_w, log2_h).map_err(|_| geometry_error())?;
-        let edges = workspace
-            .intra_dc_edges_for_rect(plane, x, y, size)
-            .map_err(|_| geometry_error())?;
-        let mut samples = vec![T::default(); w * h];
-        match mode {
-            InterIntraMode::Dc => {
-                let dc = predict_intra_dc_rect_value(bit_depth, size, edges.as_dc_edges())
-                    .map_err(|_| geometry_error())?;
-                samples.fill(dc);
-                if enable_ibp && !(w == 4 && h == 4) {
-                    apply_intra_ibp_dc_rect(bit_depth, size, edges.as_dc_edges(), &mut samples, w)
-                        .map_err(|_| geometry_error())?;
-                }
-            }
-            InterIntraMode::Vertical | InterIntraMode::Horizontal => {
-                let (direction, edge) = if mode == InterIntraMode::Vertical {
-                    (
-                        IntraCardinalDirection::Vertical,
-                        interintra_cardinal_edge(mode, &edges, w, bit_depth)
-                            .map_err(|_| geometry_error())?,
-                    )
-                } else {
-                    (
-                        IntraCardinalDirection::Horizontal,
-                        interintra_cardinal_edge(mode, &edges, h, bit_depth)
-                            .map_err(|_| geometry_error())?,
-                    )
-                };
-                let prepared = if mode == InterIntraMode::Vertical {
-                    IntraDirectionalAngleEdges::above(edge.as_ref())
-                } else {
-                    IntraDirectionalAngleEdges::left(edge.as_ref())
-                };
-                predict_intra_cardinal_directional_rect_into(
-                    bit_depth,
-                    size,
-                    direction,
-                    prepared,
-                    &mut samples,
-                    w,
-                )
-                .map_err(|_| geometry_error())?;
-            }
-            InterIntraMode::Smooth => {
-                let x4 = x / MI_SIZE;
-                let y4 = y / MI_SIZE;
-                let w4 = (w / MI_SIZE).max(1);
-                let h4 = (h / MI_SIZE).max(1);
-                samples = predict_intra_smooth_over_available_edges(
-                    workspace,
-                    SmoothIntraPredictionRequest {
-                        plane_id: plane,
-                        x,
-                        y,
-                        block_size: size,
-                        mode: IntraSmoothMode::Smooth,
-                        available_left_samples: None,
-                        available_above_samples: None,
-                        num4_above_right: block_decoded.count_top_right_avail(
-                            plane.index(),
-                            x4,
-                            y4,
-                            w4,
-                        ),
-                        num4_below_left: block_decoded.count_bottom_left_avail(
-                            plane.index(),
-                            x4,
-                            y4,
-                            h4,
-                        ),
-                        bit_depth,
-                    },
-                )
-                .map_err(|_| geometry_error())?;
-            }
-        }
-        planes.push(InterIntraPlanePrediction {
-            plane,
-            sub_x,
-            sub_y,
-            x,
-            y,
-            size,
-            samples,
-        });
-    }
-    Ok(planes)
-}
-
 mod compound_path;
+mod deferred_recon;
 mod filter_records;
+mod interintra;
 mod prediction;
 mod residual;
 mod syntax;
@@ -2238,6 +2138,7 @@ pub(super) mod tip;
 mod warp;
 
 use self::filter_records::record_inter_deblock_geometry;
+use self::interintra::predict_interintra_planes;
 use self::prediction::placed_inter_geometry;
 pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
 use self::syntax::{

@@ -66,7 +66,7 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
             )
             .unwrap();
         let result = reconstruct_inter_block_residual_rect_into(
-            &mut workspace,
+            &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
             block,
             PlaneId::Y,
             0,
@@ -127,7 +127,7 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
 
     for workspace in [&mut full, &mut cropped] {
         reconstruct_inter_block_residual_rect_into(
-            workspace,
+            &mut crate::prediction::inter::mc::WorkspaceSink::Frame(workspace),
             &block,
             PlaneId::Y,
             0,

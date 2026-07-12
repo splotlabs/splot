@@ -143,6 +143,34 @@ pub(crate) fn current_frame_qm_segment_id() -> usize {
     FRAME_QM_SEGMENT_ID.with(core::cell::Cell::get)
 }
 
+/// Snapshot of the thread-local frame quantizer state, for re-installing on a
+/// worker thread that reconstructs a deferred block.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameQuantizerSnapshot {
+    deltas: QuantizerDeltas,
+    qm: Option<QmFrameLevels>,
+}
+
+impl FrameQuantizerSnapshot {
+    pub(crate) fn capture() -> Self {
+        Self {
+            deltas: FRAME_QUANTIZER_DELTAS.with(core::cell::Cell::get),
+            qm: FRAME_QM.with(core::cell::Cell::get),
+        }
+    }
+
+    pub(crate) fn install(
+        &self,
+        segment_id: usize,
+    ) -> (FrameQuantizerDeltasScope, FrameQmScope, FrameQmSegmentScope) {
+        (
+            FrameQuantizerDeltasScope::install(self.deltas),
+            FrameQmScope::install(self.qm),
+            FrameQmSegmentScope::install(segment_id),
+        )
+    }
+}
+
 fn current_segment_id() -> usize {
     current_frame_qm_segment_id()
 }

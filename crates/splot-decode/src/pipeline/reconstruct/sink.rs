@@ -175,7 +175,7 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
+    sink: &mut crate::prediction::inter::mc::WorkspaceSink<'_, T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,
@@ -195,12 +195,12 @@ pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
     if block.all_zero {
         return Ok(());
     }
-    let storage = workspace.plane(plane_id)?.storage_size();
+    let storage = sink.plane_storage_size(plane_id)?;
     let in_frame_width = width.min(storage.width().saturating_sub(x));
     let in_frame_height = height.min(storage.height().saturating_sub(y));
     let rect = PlaneRect::new(x, y, in_frame_width, in_frame_height)?;
     let mut prediction = vec![T::default(); width * height];
-    for (row_index, row) in workspace.rect_rows(plane_id, rect)?.enumerate() {
+    for (row_index, row) in sink.rect_rows(plane_id, rect)?.enumerate() {
         let start = row_index * width;
         prediction[start..start + in_frame_width].copy_from_slice(row);
     }
@@ -215,7 +215,7 @@ pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
         use_ddt,
         bit_depth,
     )?;
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
+    sink.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }
 

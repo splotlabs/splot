@@ -15,7 +15,7 @@ fn dispatcher_zero_mv_copies_single_reference_planes() {
     let mut workspace = workspace(8, 8);
 
     motion_compensate_inter_block_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::single(
             &reference,
             rect(0, 0, 8, 8),
@@ -47,7 +47,7 @@ fn dispatcher_zero_mv_copies_odd_reference_chroma_extents() {
     let mut workspace = workspace(9, 11);
 
     motion_compensate_inter_block_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::single(
             &reference,
             rect(0, 0, 9, 11),
@@ -84,7 +84,7 @@ fn dispatcher_sub8x8_chroma_uses_only_the_first_reference() {
     let mut workspace = workspace(8, 8);
 
     motion_compensate_inter_block_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             &reference0,
             &reference1,
@@ -114,7 +114,7 @@ fn dispatcher_sub8x8_chroma_drops_warp() {
     let mv = Mv::ZERO;
 
     motion_compensate_inter_block_into(
-        &mut warped,
+        &mut super::WorkspaceSink::Frame(&mut warped),
         InterBlockParams::single_warp(
             &reference,
             rect,
@@ -127,7 +127,7 @@ fn dispatcher_sub8x8_chroma_drops_warp() {
     )
     .expect("sub8x8 chroma warp dispatcher");
     motion_compensate_inter_block_into(
-        &mut translational,
+        &mut super::WorkspaceSink::Frame(&mut translational),
         InterBlockParams::single(&reference, rect, mv, InterpolationFilter::EightTap),
         ByteOffset::new(0),
     )
@@ -169,7 +169,7 @@ fn dispatcher_rebuilds_optflow_compound_planes_from_refined_grid() {
     let reference1 = flat_frame(8, 8, 80, 110, 140);
     let mut workspace = workspace(8, 8);
     motion_compensate_inter_block_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             &reference0,
             &reference1,
@@ -207,7 +207,7 @@ fn optflow_derivation_is_independent_of_the_final_interpolation_filter() {
     let derive = |interp| {
         let mut workspace = workspace(width, height);
         motion_compensate_inter_block_with_motion_grid_into(
-            &mut workspace,
+            &mut super::WorkspaceSink::Frame(&mut workspace),
             InterBlockParams::compound_average(
                 &reference0,
                 &reference1,
@@ -239,7 +239,7 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
     let reference1 = flat_frame(8, 8, 80, 110, 140);
     let mut workspace = workspace(8, 8);
     let mvs = motion_compensate_inter_block_with_optflow_mvs_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             &reference0,
             &reference1,
@@ -275,13 +275,17 @@ fn deferred_compound_prediction_matches_direct_publication() {
     let offset = ByteOffset::new(0);
 
     let mut direct = workspace(8, 8);
-    let direct_mvs =
-        motion_compensate_inter_block_with_optflow_mvs_into(&mut direct, block, 8, offset)
-            .expect("direct TIP optical-flow prediction");
+    let direct_mvs = motion_compensate_inter_block_with_optflow_mvs_into(
+        &mut super::WorkspaceSink::Frame(&mut direct),
+        block,
+        8,
+        offset,
+    )
+    .expect("direct TIP optical-flow prediction");
 
     let mut deferred = workspace(8, 8);
     let output = predict_compound_average_block(
-        &deferred,
+        &super::WorkspaceSink::Frame(&mut deferred),
         block.into_compound().expect("compound block"),
         Some(8),
         offset,
@@ -291,7 +295,7 @@ fn deferred_compound_prediction_matches_direct_publication() {
         .stored_mvs_at_origin()
         .expect("deferred stored motion vectors");
     output
-        .publish(&mut deferred)
+        .publish(&mut super::WorkspaceSink::Frame(&mut deferred))
         .expect("publish deferred TIP prediction");
 
     assert_eq!(deferred_mvs, direct_mvs);
@@ -315,7 +319,7 @@ fn tip_optflow_skips_low_sad_predictors() {
     let reference1 = frame(8, 8, pred1, chroma.clone(), chroma);
     let mut workspace = workspace(8, 8);
     let mvs = motion_compensate_inter_block_with_optflow_mvs_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             &reference0,
             &reference1,
@@ -352,7 +356,7 @@ fn dispatcher_returns_default_refinemv_motion_grid() {
     let mut workspace = workspace(width, height);
 
     let grid = motion_compensate_inter_block_with_motion_grid_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             &reference0,
             &reference1,
@@ -385,7 +389,7 @@ fn dispatcher_switchable_refinemv_excludes_low_sad_center() {
     let mut workspace = workspace(width, height);
 
     let grid = motion_compensate_inter_block_with_motion_grid_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             &reference0,
             &reference1,
@@ -427,7 +431,7 @@ fn dispatcher_skips_refinemv_search_without_disabling_refinemv() {
     let mut workspace = workspace(width, height);
 
     let grid = motion_compensate_inter_block_with_motion_grid_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             &reference0,
             &reference1,
@@ -517,7 +521,7 @@ fn dispatcher_uses_implicit_mask_for_offscreen_compound_refs() {
     let mut workspace = workspace(32, 8);
 
     motion_compensate_inter_block_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             &reference,
             &reference,
@@ -580,7 +584,7 @@ fn warp_skips_prediction_units_beyond_the_current_frame() {
     let mut workspace = workspace(16, 8);
 
     motion_compensate_inter_block_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::single_warp(
             &reference,
             rect(8, 0, 16, 8),
@@ -613,7 +617,7 @@ fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
     let mut workspace = workspace(16, 8);
 
     motion_compensate_inter_block_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::single_warp(
             &reference,
             rect(12, 0, 8, 4),
@@ -662,7 +666,7 @@ fn dispatch_compound_samples(
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut workspace = workspace(8, 8);
     motion_compensate_inter_block_into(
-        &mut workspace,
+        &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             reference0,
             reference1,

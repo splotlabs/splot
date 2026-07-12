@@ -89,7 +89,7 @@ pub(super) fn reference_area_bounds(
 }
 
 pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
+    sink: &WorkspaceSink<'_, T>,
     block: CompoundMcBlock<'_, T>,
     offset: ByteOffset,
 ) -> Result<CompoundMotionGrid> {
@@ -111,7 +111,7 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
             rect.luma_w = width;
             rect.luma_h = height;
             let mvs = if block.search_refinemv {
-                search_refinemv(workspace, block, rect, offset)?
+                search_refinemv(sink, block, rect, offset)?
             } else {
                 [block.mv0, block.mv1]
             };
@@ -126,7 +126,7 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
 }
 
 fn search_refinemv<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
+    sink: &WorkspaceSink<'_, T>,
     block: CompoundMcBlock<'_, T>,
     rect: McBlockRect,
     offset: ByteOffset,
@@ -155,7 +155,7 @@ fn search_refinemv<T: ReconSample>(
         col: candidate.col - SEARCH_PADDING,
     };
     let pred0 = super::optflow::initial_luma_prediction(
-        workspace,
+        sink,
         block.reference0,
         prediction_rect,
         search_mv(candidates[0]),
@@ -164,7 +164,7 @@ fn search_refinemv<T: ReconSample>(
         offset,
     )?;
     let pred1 = super::optflow::initial_luma_prediction(
-        workspace,
+        sink,
         block.reference1,
         prediction_rect,
         search_mv(candidates[1]),
@@ -178,7 +178,7 @@ fn search_refinemv<T: ReconSample>(
         prediction_width,
         rect.luma_w,
         rect.luma_h,
-        workspace.info().bit_depth(),
+        sink.info().bit_depth(),
         !block.refinemv_switchable,
     )?;
     Ok([
