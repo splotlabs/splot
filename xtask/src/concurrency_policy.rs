@@ -197,12 +197,13 @@ const PARALLEL_CRATE_PREFIX: &str = "crates/splot-parallel/";
 ///
 /// The decode filter stages below run inside `DecodeContext`'s
 /// `WorkerPool::install` (crates/splot-decode/src/context.rs) and gate their
-/// parallel path on `splot_parallel::on_multiworker_pool()`, so direct callers such
-/// as tests take the serial path instead of Rayon's global pool.
+/// parallel path with `on_worker_pool` or `on_multiworker_pool`, so direct callers
+/// and unrelated Rayon pools take the serial path instead of Rayon's global pool.
 const PAR_ITER_RULE_ALLOWLIST: &[&str] = &[
     "crates/splot-decode/src/filters/ccso.rs",
     "crates/splot-decode/src/filters/cdef.rs",
     "crates/splot-decode/src/filters/deblock.rs",
+    "crates/splot-decode/src/filters/gdf.rs",
     "crates/splot-decode/src/tile/plane_bands.rs",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters.rs",
 ];
