@@ -555,6 +555,17 @@ fn subpel_copy_block<T: ReconSample>(
     output
 }
 
+fn active_tap_span(taps: &[i32; NUM_TAPS]) -> (usize, &[i32]) {
+    let Some(first) = taps.iter().position(|&tap| tap != 0) else {
+        return (0, &[]);
+    };
+    let end = taps
+        .iter()
+        .rposition(|&tap| tap != 0)
+        .map_or(first, |last| last + 1);
+    (first, &taps[first..end])
+}
+
 /// Two-pass § 7.13.3.18 convolution core. With an unscaled horizontal step
 /// the sub-pel phase is column-invariant, and when every clipped column read
 /// is the identity a row's whole tap window is one contiguous `w + 7` slice
@@ -664,12 +675,12 @@ fn subpel_predict_block_internal<T: ReconSample>(
                 continue;
             }
             let taps = &h_filter_rows[phase];
+            let (tap_start, taps) = active_tap_span(taps);
             for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
                 let mut s: i64 = 0;
-                for (&tap, &sample) in taps.iter().zip(win) {
-                    if tap != 0 {
-                        s += i64::from(tap) * i64::from(sample.to_u16());
-                    }
+                let samples = &win[tap_start..tap_start + taps.len()];
+                for (&tap, &sample) in taps.iter().zip(samples) {
+                    s += i64::from(tap) * i64::from(sample.to_u16());
                 }
                 *out = round2(s, INTER_ROUND0) as i32;
             }
@@ -685,11 +696,10 @@ fn subpel_predict_block_internal<T: ReconSample>(
                 continue;
             }
             let taps = &h_filter_rows[phase];
+            let (tap_start, taps) = active_tap_span(taps);
             let mut s: i64 = 0;
-            for (t, &tap) in taps.iter().enumerate() {
-                if tap == 0 {
-                    continue;
-                }
+            for (tap_offset, &tap) in taps.iter().enumerate() {
+                let t = tap_start + tap_offset;
                 let ref_col = clip3(first_x, last_x, (p >> SCALE_SUBPEL_BITS) + t as i64 - 3);
                 s += i64::from(tap) * reference.sample(ref_row, ref_col as usize);
             }
@@ -721,12 +731,11 @@ fn subpel_predict_block_internal<T: ReconSample>(
             continue;
         }
         let rows = &intermediate[base * w..(base + NUM_TAPS) * w];
+        let (tap_start, taps) = active_tap_span(taps);
         let acc = &mut acc[..w];
         acc.fill(0);
-        for (t, &tap) in taps.iter().enumerate() {
-            if tap == 0 {
-                continue;
-            }
+        for (tap_offset, &tap) in taps.iter().enumerate() {
+            let t = tap_start + tap_offset;
             let tap = i64::from(tap);
             for (a, &v) in acc.iter_mut().zip(&rows[t * w..(t + 1) * w]) {
                 *a += tap * i64::from(v);
