@@ -137,7 +137,7 @@ fn reference_refresh_preserves_full_and_lsb_order_hints() {
 
     assert_eq!(buf.slots[1].order_hint, 136);
     assert_eq!(buf.slots[1].order_hint_lsb, 8);
-    let frames = vec![pipeline_frame(64, 64), pipeline_frame(64, 64)];
+    let frames = vec![Some(pipeline_frame(64, 64)), Some(pipeline_frame(64, 64))];
     let metadata = buf.build_store_eight(&frames).unwrap().1;
     assert_eq!(metadata.ref_order_hint[1], 136);
     assert_eq!(metadata.ref_order_hint_lsbs[1], 8);
@@ -153,6 +153,26 @@ fn per_slot_adaptation_is_tracked_independently() {
     assert!(buf.slots[1].adapted);
     assert!(!buf.slots[0].is_inter);
     assert!(buf.slots[1].is_inter);
+}
+
+#[test]
+fn frame_index_is_retained_until_last_slot_is_overwritten() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &key_update());
+    let mut update = inter_update(false);
+    update.refresh_frame_flags = (1 << 1) | (1 << 2);
+    buf.update(1, &update);
+
+    assert!(buf.retains(0));
+    assert!(buf.retains(1));
+
+    update.refresh_frame_flags = 1 << 1;
+    buf.update(2, &update);
+    assert!(buf.retains(1));
+
+    update.refresh_frame_flags = 1 << 2;
+    buf.update(3, &update);
+    assert!(!buf.retains(1));
 }
 
 #[test]
@@ -215,7 +235,7 @@ fn valid_slot_with_out_of_range_frame_index_is_reference_state_error() {
 fn valid_slot_with_mismatched_frame_size_is_reference_state_error() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     buf.update(0, &key_update());
-    let frames = vec![pipeline_frame(32, 64)];
+    let frames = vec![Some(pipeline_frame(32, 64))];
 
     let Err(error) = buf.build_store_eight(&frames) else {
         panic!("mismatched retained-frame size must be rejected");

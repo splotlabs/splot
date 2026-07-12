@@ -148,14 +148,14 @@ impl RuntimeReferenceBuffer {
 
     pub(crate) fn build_store_eight<'a>(
         &self,
-        frames: &'a [PipelineFrame],
+        frames: &'a [Option<PipelineFrame>],
     ) -> Result<(ReferenceFrameStore<&'a DecodedFrame<u8>>, ReferenceMetadata)> {
         self.build_store(frames, PipelineFrame::frame_eight)
     }
 
     pub(crate) fn build_store_ten<'a>(
         &self,
-        frames: &'a [PipelineFrame],
+        frames: &'a [Option<PipelineFrame>],
     ) -> Result<(
         ReferenceFrameStore<&'a DecodedFrame<u16>>,
         ReferenceMetadata,
@@ -165,7 +165,7 @@ impl RuntimeReferenceBuffer {
 
     fn build_store<'a, T: splot_recon::ReconSample>(
         &self,
-        frames: &'a [PipelineFrame],
+        frames: &'a [Option<PipelineFrame>],
         frame_view: impl Fn(&'a PipelineFrame) -> Result<&'a DecodedFrame<T>>,
     ) -> Result<(ReferenceFrameStore<&'a DecodedFrame<T>>, ReferenceMetadata)> {
         let num = self.slots.len();
@@ -180,20 +180,27 @@ impl RuntimeReferenceBuffer {
             let frame_index = slot
                 .frame_index
                 .ok_or(DecodeReferenceStateError::MissingFrame { slot: i })?;
-            let frame =
-                frames
-                    .get(frame_index)
-                    .ok_or(DecodeReferenceStateError::FrameIndexOutOfRange {
-                        slot: i,
-                        frame_index,
-                        frame_count: frames.len(),
-                    })?;
+            let frame = frames
+                .get(frame_index)
+                .ok_or(DecodeReferenceStateError::FrameIndexOutOfRange {
+                    slot: i,
+                    frame_index,
+                    frame_count: frames.len(),
+                })?
+                .as_ref()
+                .ok_or(DecodeReferenceStateError::MissingFrame { slot: i })?;
             let reference_slot = ReferenceSlot::new(i)?;
             let frame = frame_view(frame)?;
             ensure_slot_matches_frame(i, slot, frame_index, frame)?;
             store.put(reference_slot, frame)?;
         }
         Ok((store, meta))
+    }
+
+    pub(crate) fn retains(&self, frame_index: usize) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| slot.valid && slot.frame_index == Some(frame_index))
     }
 }
 

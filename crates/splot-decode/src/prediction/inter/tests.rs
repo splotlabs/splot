@@ -261,18 +261,16 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
             .num_ref_frames,
     );
     let mut reference = crate::reference::buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
-    let frames = vec![key_frame];
-    reference.update(
-        0,
-        &crate::pipeline::frame_ref_update_from_core(
-            &key_core,
-            key_envelope.offset,
-            frames[0].frame_cdfs.clone(),
-            frames[0].ccso_params.clone(),
-            frames[0].ccso_grid.clone(),
-            frames[0].motion_field.clone(),
-        )?,
-    );
+    let update = crate::pipeline::frame_ref_update_from_core(
+        &key_core,
+        key_envelope.offset,
+        key_frame.frame_cdfs.clone(),
+        key_frame.ccso_params.clone(),
+        key_frame.ccso_grid.clone(),
+        key_frame.motion_field.clone(),
+    )?;
+    reference.update(0, &update);
+    let frames = vec![Some(key_frame)];
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
     let mut next_unvalidated_following_ivf_record = 1;
@@ -386,18 +384,16 @@ fn parse_inter_core_for_validation(
             .num_ref_frames,
     );
     let mut reference = crate::reference::buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
-    let frames = vec![key_frame];
-    reference.update(
-        0,
-        &crate::pipeline::frame_ref_update_from_core(
-            &key_core,
-            key_envelope.offset,
-            frames[0].frame_cdfs.clone(),
-            frames[0].ccso_params.clone(),
-            frames[0].ccso_grid.clone(),
-            frames[0].motion_field.clone(),
-        )?,
-    );
+    let update = crate::pipeline::frame_ref_update_from_core(
+        &key_core,
+        key_envelope.offset,
+        key_frame.frame_cdfs.clone(),
+        key_frame.ccso_params.clone(),
+        key_frame.ccso_grid.clone(),
+        key_frame.motion_field.clone(),
+    )?;
+    reference.update(0, &update);
+    let frames = vec![Some(key_frame)];
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
     let mut next_unvalidated_following_ivf_record = 1;
